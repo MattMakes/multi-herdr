@@ -51,16 +51,6 @@ use crate::taskledger::model::{Actor, TriageDecision, WorktreeStatus};
 use crate::taskledger::triage::{apply as triage_apply, refs, reply::Decided, Row};
 use crate::taskledger::{finish, runs, util, workers, worktree_ops};
 
-/// The triage decisions that the `worktree_triage` handler refuses: each
-/// runs git or gh writes, and no job kind does them yet. The command
-/// refuses them too (T-885), until a later task gives them 1 job kind.
-pub const TRIAGE_NOT_HANDLED: [TriageDecision; 4] = [
-    TriageDecision::Archive,
-    TriageDecision::Delete,
-    TriageDecision::Land,
-    TriageDecision::Pr,
-];
-
 /// What the handlers of this file read: the generation of the fleetd that
 /// applies the requests, its `fleet.toml`, and the refs of git, read with
 /// no write (the `branch_abandon` handler verifies its rescue ref).
@@ -581,20 +571,20 @@ struct TicketFile {
 }
 
 /// `horch worktree triage apply`: each `KEEP` and `FINISH` decision of the
-/// reply, as the command of today applies it. A reply with a decision of
-/// [`TRIAGE_NOT_HANDLED`] refuses the request and writes nothing.
+/// reply, as the command of today applies it. The decisions of
+/// [`triage_apply::JOB_DECISIONS`] (`ARCHIVE`, `DELETE`, `LAND` and `PR`)
+/// run git or gh: they go to 1 `triage_apply` job, and fleetd writes their
+/// rows from its result file.
 fn worktree_triage(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let t: WorktreeTriage = payload("worktree_triage", p)?;
     let root = Path::new(&t.root);
     let mut decided = Vec::new();
+    let mut for_job = Vec::new();
     for item in &t.decisions {
         let decision = TriageDecision::parse(&item.decision)?;
-        if TRIAGE_NOT_HANDLED.contains(&decision) {
-            bail!(
-                "{} of {} is not handled in this version; nothing is applied",
-                decision,
-                item.row.id
-            );
+        if triage_apply::JOB_DECISIONS.contains(&decision) {
+            for_job.push((item.row.clone(), decision, item.direction.clone()));
+            continue;
         }
         let ticket = match &item.ticket {
             Some(file) => Some(checked_ticket(c, root, file)?),
@@ -628,7 +618,20 @@ fn worktree_triage(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
         }));
     }
     let failed = applied.iter().filter(|a| a["ok"] == false).count();
-    Ok(json!({ "applied": applied, "failed": failed }))
+    if for_job.is_empty() {
+        return Ok(json!({ "applied": applied, "failed": failed, "job": null, "queued": [] }));
+    }
+    let job = triage_apply::queue_job(&c.jobs(), tx, root, &for_job)?;
+    let queued: Vec<String> = for_job
+        .iter()
+        .map(|(row, d, _)| {
+            format!(
+                "{} {} {d}: queued in the triage_apply job {job}; horch worktree triage shows the result",
+                row.id, row.name
+            )
+        })
+        .collect();
+    Ok(json!({ "applied": applied, "failed": failed, "job": job, "queued": queued }))
 }
 
 /// The path of the brief `file` under `root`, after its read with the size

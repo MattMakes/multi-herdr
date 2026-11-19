@@ -66,6 +66,7 @@ use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::runs;
 use crate::taskledger::tasks;
+use crate::taskledger::triage::apply as triage_apply;
 use crate::taskledger::workers::{self, Worker};
 use crate::vcs::network::{OTHER_BOUND, PUSH_BOUND};
 use horch_platform::channel::User;
@@ -145,8 +146,14 @@ pub fn time_limit_s(kind: Kind, config: &FleetConfig) -> Option<u64> {
         Kind::TrialMerge => Some(limits.trial_merge),
         Kind::BundleBuild => Some(limits.bundle_build),
         Kind::Rebase => Some(limits.rebase),
+        Kind::TriageApply => Some(TRIAGE_APPLY_LIMIT_S),
     }
 }
+
+/// The time limit of a `triage_apply` run, in seconds: a starting value.
+/// 1 run can rebase, push, open a pull request, rescue and remove the
+/// folder of each decision of 1 reply.
+pub const TRIAGE_APPLY_LIMIT_S: u64 = 1800;
 
 fn limit_of(kind: Kind, config: &FleetConfig) -> Result<u64> {
     time_limit_s(kind, config).with_context(|| {
@@ -486,11 +493,12 @@ fn result_json(ran: &Ran) -> String {
 
 /// The kinds that change the git state of their repository. At most 1 run
 /// of them runs for 1 repository at a time (MAP.md of fleetd-p3, Q12).
-const GIT_WRITERS: [Kind; 4] = [
+const GIT_WRITERS: [Kind; 5] = [
     Kind::WorktreeAdd,
     Kind::WorktreeRemove,
     Kind::Rescue,
     Kind::BundleBuild,
+    Kind::TriageApply,
 ];
 
 /// Whether a run of `kind` changes the git state of its repository.
@@ -745,6 +753,7 @@ pub fn run_job_with(
         | Kind::Push
         | Kind::Rebase
         | Kind::TrialMerge => integration::run(conn, &row)?,
+        Kind::TriageApply => triage_apply::run(conn, &row)?,
     };
     let Some(now) = store::get(conn, job_id)? else {
         return Ok(None);
@@ -869,7 +878,11 @@ fn end_from(
 /// no facts.
 fn record_facts(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: Ran) -> Result<Ran> {
     tx.execute_batch("SAVEPOINT job_facts")?;
-    match integration::record(ctx, tx, row, &ran) {
+    let recorded = match row.kind {
+        Kind::TriageApply => triage_apply::ingest(ctx, tx, row, &ran),
+        _ => integration::record(ctx, tx, row, &ran),
+    };
+    match recorded {
         Ok(()) => {
             tx.execute_batch("RELEASE job_facts")?;
             Ok(ran)

@@ -452,10 +452,11 @@ fn worktree_restore_and_triage_send_their_kinds() {
     );
 }
 
-/// `ARCHIVE` has no fleetd handler yet (`TRIAGE_NOT_HANDLED`): the command
-/// refuses it, sends no request, and runs nothing (T-885).
+/// `ARCHIVE` is 1 `worktree_triage` request, and fleetd queues 1
+/// `triage_apply` job for it (T-888). The command runs no git write: the
+/// folder stays until the job runs.
 #[test]
-fn worktree_triage_archive_is_refused_and_runs_nothing() {
+fn worktree_triage_archive_sends_1_request_and_queues_1_job() {
     let w = World::new();
     let proj = w.proj();
     let tree = proj.join(".worktrees").join("feat");
@@ -483,16 +484,22 @@ fn worktree_triage_archive_is_refused_and_runs_nothing() {
         &["worktree", "triage", "apply", reply.to_str().unwrap()],
         &[],
     );
-    assert_eq!(o.code, 1, "{}{}", o.out, o.err);
+    assert_eq!(o.code, 0, "{}{}", o.out, o.err);
+    let job = w.one("SELECT id FROM jobs WHERE kind = 'triage_apply' AND state = 'queued'");
     assert!(
-        o.err
-            .contains("fleetd does not apply the decisions ARCHIVE in this version")
-            && o.err.contains("They return in a later task"),
+        o.out.contains(&format!(
+            "W1 feat ARCHIVE: queued in the triage_apply job {job}"
+        )),
         "{}",
-        o.err
+        o.out
     );
-    assert!(w.requests().is_empty());
+    assert_eq!(w.requests(), applied(&["worktree_triage"]));
     assert!(tree.exists());
+    let archive = git(
+        &w.proj(),
+        &["for-each-ref", "--format=%(refname)", "refs/horch/archive/"],
+    );
+    assert!(archive.is_empty(), "{archive}");
 }
 
 #[test]

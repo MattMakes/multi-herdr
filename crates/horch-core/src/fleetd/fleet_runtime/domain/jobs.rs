@@ -38,6 +38,7 @@ pub enum Kind {
     WorktreeList,
     DocsSync,
     Conformance,
+    TriageApply,
 }
 
 /// 1 row of the table "The kinds of job" of the design.
@@ -57,7 +58,7 @@ pub struct KindRow {
 
 /// The table "The kinds of job", in the order of the design. The phase of
 /// each executor comes from the "Migration plan".
-pub const KINDS: [KindRow; 14] = [
+pub const KINDS: [KindRow; 15] = [
     KindRow {
         kind: Kind::TaskCheck,
         word: "task_check",
@@ -170,6 +171,14 @@ pub const KINDS: [KindRow; 14] = [
         input_key: "the CLI, its version and the hash of its adapter",
         executor_phase: 7,
     },
+    KindRow {
+        kind: Kind::TriageApply,
+        word: "triage_apply",
+        class: Class::Effect,
+        subject: "the main checkout of the project",
+        input_key: "the ARCHIVE, DELETE, LAND and PR decisions of 1 triage reply",
+        executor_phase: 5,
+    },
 ];
 
 impl Kind {
@@ -191,6 +200,7 @@ impl Kind {
             Kind::WorktreeList => 11,
             Kind::DocsSync => 12,
             Kind::Conformance => 13,
+            Kind::TriageApply => 14,
         };
         &KINDS[i]
     }
@@ -415,7 +425,8 @@ mod tests {
 
     #[test]
     fn each_kind_of_the_design_has_its_class_and_input_key() {
-        // The kind CHECK of `jobs` (schema v8), in its order.
+        // The kind CHECK of `jobs` (schema v8, and `triage_apply` from the
+        // Phase 5 step), in its order.
         let words = [
             "task_check",
             "fast_gate",
@@ -431,6 +442,7 @@ mod tests {
             "worktree_list",
             "docs_sync",
             "conformance",
+            "triage_apply",
         ];
         assert_eq!(KINDS.map(|r| r.word), words);
         for row in &KINDS {

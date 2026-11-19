@@ -574,15 +574,22 @@ fn attempts_table() -> String {
     )
 }
 
+/// The job kinds that the `kind` CHECK of `jobs` allows at version 8.
+const V8_JOB_KINDS: &str = "'task_check', 'fast_gate', 'full_gate', 'trial_merge',
+        'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
+        'worktree_add', 'worktree_remove', 'worktree_list', 'docs_sync', 'conformance'";
+
+/// The job kind that the step of [`PHASE_5_VERSION`] adds to the `kind`
+/// CHECK of `jobs`: the triage decisions that run git or gh (T-888).
+const PHASE_5_JOB_KIND: &str = "'triage_apply'";
+
 /// The `jobs` table and its index: at most 1 run of 1 kind and 1 subject
 /// is queued or running.
 fn jobs_table() -> String {
     format!(
         "CREATE TABLE jobs (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ('task_check', 'fast_gate', 'full_gate', 'trial_merge',
-        'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
-        'worktree_add', 'worktree_remove', 'worktree_list', 'docs_sync', 'conformance')),
+    kind TEXT NOT NULL CHECK (kind IN ({V8_JOB_KINDS})),
     subject TEXT NOT NULL,
     repo TEXT,
     input_key TEXT NOT NULL,
@@ -1327,6 +1334,38 @@ CREATE TABLE polite_stops (
     )
 }
 
+/// The step of [`PHASE_5_VERSION`] builds `jobs` again, so its kind `CHECK`
+/// also allows [`PHASE_5_JOB_KIND`]. The new table comes from the text of
+/// the code ([`jobs_table`]), never from the stored text. Each row keeps
+/// each of its columns and its `id`. The index goes with the old table and
+/// is made again after the rename; `jobs` has no trigger. The rows of
+/// `bundles` and `gate_runs` point at `jobs`: [`migrate`] turns the
+/// foreign keys off around it and checks them before the commit.
+fn phase_5_jobs(conn: &Connection) -> Result<()> {
+    let ddl = jobs_table()
+        .replace("CREATE TABLE jobs (", "CREATE TABLE jobs_kinds (")
+        .replace(V8_JOB_KINDS, &format!("{V8_JOB_KINDS}, {PHASE_5_JOB_KIND}"));
+    let (table, index) = ddl
+        .split_once("\nCREATE UNIQUE INDEX")
+        .expect("jobs has its index");
+    conn.execute_batch(table)?;
+    let columns = column_names(conn, "jobs_kinds")?;
+    if column_names(conn, "jobs")? != columns {
+        bail!(
+            "the jobs table does not have the columns of version {}",
+            PHASE_5_VERSION - 1
+        );
+    }
+    conn.execute_batch(&format!(
+        "INSERT INTO jobs_kinds ({columns}) SELECT {columns} FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_kinds RENAME TO jobs;
+CREATE UNIQUE INDEX{index}",
+        columns = columns.join(", "),
+    ))?;
+    Ok(())
+}
+
 /// Version [`PHASE_6_VERSION`]: the Phase 6 tables of fleetd, as the design
 /// writes them (docs/specs/fleetd/design.md, "Ledger"), the idea of each
 /// task (FR-12) and of each sub-orchestrator attempt, and the fix rounds of
@@ -1704,6 +1743,8 @@ fn migrate_unchecked(
     if due(PHASE_5_VERSION) {
         tx.execute_batch(&phase_5())
             .context("adding the requests and polite_stops tables of fleetd")?;
+        phase_5_jobs(&tx).context("building jobs again with the triage_apply kind")?;
+        no_broken_reference(&tx, PHASE_5_VERSION)?;
     }
     if due(PHASE_6_VERSION) {
         tx.execute_batch(PHASE_6).context(

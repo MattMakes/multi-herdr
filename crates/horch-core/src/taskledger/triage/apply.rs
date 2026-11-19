@@ -17,21 +17,35 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use horch_platform::sandbox::sandboxed_hiding;
 use horch_platform::start;
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 
 use super::reply::Decided;
 use super::{human_bytes, listed_worktrees, refs, Row};
-use crate::fleetd::fleet_runtime::application::jobs::{outcome, JobCtx, Queued as JobQueued};
+use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
+use crate::fleetd::fleet_runtime::application::jobs::{
+    self, outcome, JobCtx, JobKey, Queued as JobQueued, Ran,
+};
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError};
+use crate::fleetd::fleet_runtime::domain::jobs::{Kind as JobKind, Outcome};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::integration::adapters::executors::{check_text, clip, facts_of, FACT_TEXT_MAX};
+use crate::fleetd::worktree_custody::adapters::executors as custody_executors;
+use crate::fleetd::worktree_custody::adapters::git::{self as custody_git, CliWorktreeGit};
+use crate::fleetd::worktree_custody::adapters::remove_git::{self, CliRemoval, Owner};
+use crate::fleetd::worktree_custody::adapters::rescue_git::{self, Rescue};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeState,
 };
 use crate::fleetd::worktree_custody::application::create::{self, Lease, RunJob};
 use crate::fleetd::worktree_custody::application::remove;
 use crate::fleetd::worktree_custody::domain::worktree::{settle_refusal, Folder};
+use crate::fleetd::worktree_custody::domain::{removal, rescue};
+use crate::runtime::bins::{git_bin, BinOverrides};
+use crate::runtime::context::{EnvSource, ProcessEnv};
 use crate::runtime::process::scrub_child_env;
 use crate::taskledger::finish::{self, land, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
@@ -147,11 +161,11 @@ fn apply_one(store: &mut Store, env: &Env<'_>, row: &Row, d: &Decided) -> Result
             text: "kept; it comes back at the next triage".into(),
             ..Default::default()
         }),
-        TriageDecision::Archive => archive(store, env, row, &wt),
-        TriageDecision::Delete => delete(store, env, row, &wt),
-        TriageDecision::Land => land_decision(store, env, row, &wt),
+        TriageDecision::Archive => archive(&mut Direct(store), env, row, &wt),
+        TriageDecision::Delete => delete(&mut Direct(store), env, row, &wt),
+        TriageDecision::Land => land_decision(&mut Direct(store), env, row, &wt),
         TriageDecision::Finish => finish_decision(store, env, row, &wt, direction(d)),
-        TriageDecision::Pr => pr(store, env, row, &wt, direction(d)),
+        TriageDecision::Pr => pr(&mut Direct(store), env, row, &wt, direction(d)),
     };
     let (ok, text, queued) = match result {
         Ok(done) => {
@@ -645,17 +659,17 @@ impl<'a> Freeing<'a> {
 
 /// `ARCHIVE`: the work stays at `refs/horch/archive/<name>` and on its
 /// branch; the folder goes.
-fn archive(store: &mut Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+fn archive(fx: &mut dyn Folders, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let f = Freeing::prepare(env, row, wt, TriageDecision::Archive)?;
-    archive_at(store, env, &f, "")
+    archive_at(fx, env, &f, "")
 }
 
-fn archive_at(store: &mut Store, env: &Env<'_>, f: &Freeing<'_>, before: &str) -> Result<Done> {
+fn archive_at(fx: &mut dyn Folders, env: &Env<'_>, f: &Freeing<'_>, before: &str) -> Result<Done> {
     let (row, wt) = (f.row, f.wt);
     let r = refs::archive_ref(&row.name);
     refs::write(env.git, env.root, &r, &f.tip)?;
     must_be_safe(env.git, env.root, wt, &r, &f.tip)?;
-    let bytes = remove_folder(store, env, f, &r)?;
+    let bytes = fx.free(env, f, &r)?;
     let branch = if wt.branch.is_empty() {
         String::new()
     } else {
@@ -730,12 +744,12 @@ fn delete_branch(
 
 /// `DELETE`: the work goes to a dated trash ref, then the folder and the
 /// branch go. `horch ledger gc` deletes the trash ref 30 days on.
-fn delete(store: &mut Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+fn delete(fx: &mut dyn Folders, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let f = Freeing::prepare(env, row, wt, TriageDecision::Delete)?;
     let trash = refs::trash_ref(&row.name, crate::clock::now());
     refs::write(env.git, env.root, &trash, &f.tip)?;
     must_be_safe(env.git, env.root, wt, &trash, &f.tip)?;
-    let bytes = remove_folder(store, env, &f, &trash)?;
+    let bytes = fx.free(env, &f, &trash)?;
     let branch = delete_branch(env.git, env.root, wt, &trash, &f.tip)?;
     Ok(Done {
         status: Some(WorktreeStatus::Trashed),
@@ -782,7 +796,7 @@ const CONFLICTS: &str = "conflicts: choose FINISH";
 /// `LAND`: rebase the work onto the branch the main checkout has checked
 /// out. On the default branch it goes to a new branch `land/<name>`; on a
 /// feature branch it fast-forwards that branch under the land lock.
-fn land_decision(store: &mut Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+fn land_decision(fx: &mut dyn Folders, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let (git, root) = (env.git, env.root);
     let dir = Path::new(&wt.path);
     if !dir.exists() {
@@ -807,9 +821,9 @@ fn land_decision(store: &mut Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) 
     }
     let new = git.rev(dir, "HEAD")?;
     if is_default(git, root, &dest) {
-        land_aside(store, env, row, wt, &dest, &new)
+        land_aside(fx, env, row, wt, &dest, &new)
     } else {
-        land_on(store, env, row, wt, &dest, &new)
+        land_on(fx, env, row, wt, &dest, &new)
     }
 }
 
@@ -817,7 +831,8 @@ fn short(sha: &str) -> &str {
     &sha[..sha.len().min(12)]
 }
 
-/// Remove the folder after a land; the work is on `on`.
+/// Remove the folder after a land through the rows of `store`; the work
+/// is on `on`.
 fn remove_landed(store: &Store, env: &Env<'_>, wt: &WorktreeRow, on: &str) -> Result<String> {
     let o = land::remove_with(store, env.git, wt, on, None, env.jobs)?;
     if !o.status.is_through() {
@@ -826,10 +841,55 @@ fn remove_landed(store: &Store, env: &Env<'_>, wt: &WorktreeRow, on: &str) -> Re
     Ok(o.note)
 }
 
+/// How a decision frees a folder. [`Direct`] writes the rows as it goes;
+/// the job path ([`run`]) writes no row and keeps the facts for the ingest.
+trait Folders {
+    /// Remove the folder of `f` once `holder` holds its work. The bytes it
+    /// held.
+    fn free(&mut self, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<u64>;
+
+    /// Remove the folder of `wt` after a land: the work is on `on`, and
+    /// `landed` is the commit that the branch of the main checkout moved
+    /// to. The result text.
+    fn free_landed(
+        &mut self,
+        env: &Env<'_>,
+        wt: &WorktreeRow,
+        on: &str,
+        landed: Option<&str>,
+    ) -> Result<String>;
+}
+
+/// The folders of [`apply`]: each removal runs its custody jobs through
+/// `env.jobs` and writes its rows in the ledger of the store.
+struct Direct<'s>(&'s mut Store);
+
+impl Folders for Direct<'_> {
+    fn free(&mut self, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<u64> {
+        remove_folder(self.0, env, f, holder)
+    }
+
+    fn free_landed(
+        &mut self,
+        env: &Env<'_>,
+        wt: &WorktreeRow,
+        on: &str,
+        landed: Option<&str>,
+    ) -> Result<String> {
+        if let Some(new) = landed {
+            self.0.conn().execute(
+                "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
+                params![wt.worktree_id, new, util::now()],
+            )?;
+        }
+        remove_landed(self.0, env, wt, on)
+    }
+}
+
 /// The main checkout is on the default branch: leave it, and put the work
 /// on `land/<name>` for the operator.
 fn land_aside(
-    store: &Store,
+    fx: &mut dyn Folders,
     env: &Env<'_>,
     row: &Row,
     wt: &WorktreeRow,
@@ -844,7 +904,7 @@ fn land_aside(
         );
     }
     env.git.run(env.root, &["branch", &target, new])?;
-    let gone = remove_landed(store, env, wt, &target)?;
+    let gone = fx.free_landed(env, wt, &target, None)?;
     Ok(Done {
         text: format!(
             "left on the new branch {target} at {}; {dest} did not move; {gone}",
@@ -856,7 +916,7 @@ fn land_aside(
 
 /// The main checkout is on a feature branch: fast-forward it to the work.
 fn land_on(
-    store: &Store,
+    fx: &mut dyn Folders,
     env: &Env<'_>,
     row: &Row,
     wt: &WorktreeRow,
@@ -886,11 +946,7 @@ fn land_on(
             );
         }
     }
-    store.conn().execute(
-        "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
-        params![wt.worktree_id, new, util::now()],
-    )?;
-    let gone = remove_landed(store, env, wt, dest)?;
+    let gone = fx.free_landed(env, wt, dest, Some(new))?;
     Ok(Done {
         text: format!("landed on {dest} at {}; {gone}", short(new)),
         ..Default::default()
@@ -1125,7 +1181,7 @@ fn resume_parked(
 /// `PR`: push the branch, open a pull request with the direction as its
 /// title and body, then archive the folder.
 fn pr(
-    store: &mut Store,
+    fx: &mut dyn Folders,
     env: &Env<'_>,
     row: &Row,
     wt: &WorktreeRow,
@@ -1161,7 +1217,7 @@ fn pr(
     }
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
     archive_at(
-        store,
+        fx,
         env,
         &f,
         &format!("pushed {b} to {remote}; opened {url}; "),
@@ -1264,4 +1320,488 @@ pub(crate) fn note_restored(conn: &Connection, id: &str, r: &str) -> Result<()> 
         params![id, format!("restored from {r}")],
     )?;
     Ok(())
+}
+
+// ─── the `triage_apply` job (T-888) ─────────────────────────────────────
+//
+// fleetd applies `ARCHIVE`, `DELETE`, `LAND` and `PR` through 1 job kind.
+// The handler of `worktree_triage` gives each row its ledger row and
+// queues 1 run ([`queue_job`]). The job process ([`run`]) opens the ledger
+// read-only, runs the git and gh work of each decision, writes a verified
+// rescue ref before each removal, removes the folder through the custody
+// removal, and puts its facts in the result file. fleetd writes the rows
+// from that file ([`ingest`]), in the transaction of the end of the run.
+
+/// The input of a `triage_apply` run, in its `input_key`: fleetd wrote it,
+/// so the ingest trusts it, and trusts no row of the result file.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JobInput {
+    /// The main checkout.
+    root: PathBuf,
+    items: Vec<JobItem>,
+}
+
+/// 1 decision of a run: the triage row, its ledger row and the decision.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JobItem {
+    worktree_id: String,
+    row: Row,
+    decision: String,
+    direction: Option<String>,
+}
+
+/// The decisions that a `triage_apply` run applies: each runs git or gh.
+pub const JOB_DECISIONS: [TriageDecision; 4] = [
+    TriageDecision::Archive,
+    TriageDecision::Delete,
+    TriageDecision::Land,
+    TriageDecision::Pr,
+];
+
+/// Queue the `triage_apply` run of the decisions `items` (each one of
+/// [`JOB_DECISIONS`], with its direction) for the main checkout `root`,
+/// in `tx` of fleetd. Each row gets its ledger row first, as [`apply`]
+/// adopts it. The id of the run. An open run of `root` refuses.
+pub fn queue_job(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    root: &Path,
+    items: &[(Row, TriageDecision, Option<String>)],
+) -> Result<i64> {
+    let mut input = JobInput {
+        root: root.to_path_buf(),
+        items: Vec::new(),
+    };
+    for (row, decision, direction) in items {
+        if !JOB_DECISIONS.contains(decision) {
+            bail!(
+                "{decision} of {} is not a decision of a triage_apply job",
+                row.id
+            );
+        }
+        let wt = adopt(tx, root, row)?;
+        input.items.push(JobItem {
+            worktree_id: wt.worktree_id,
+            row: row.clone(),
+            decision: decision.as_str().to_string(),
+            direction: direction.clone(),
+        });
+    }
+    let subject = root.to_string_lossy();
+    let input_key = serde_json::to_string(&input)?;
+    let key = JobKey {
+        kind: JobKind::TriageApply,
+        subject: &subject,
+        input_key: &input_key,
+    };
+    match jobs::queue(ctx, tx, &key, Some(&subject), create::fleet_clock(tx)?)? {
+        JobQueued::New(id) => Ok(id),
+        JobQueued::Active(r) => bail!(
+            "the triage_apply job {} of {subject} is {}; send the reply again after it ends",
+            r.id,
+            r.state.as_str()
+        ),
+        JobQueued::Reused(r) | JobQueued::Held(r) => {
+            bail!(
+                "the triage_apply job {} of {subject} gives no new run",
+                r.id
+            )
+        }
+    }
+}
+
+/// The facts of 1 decision of a run, in the result file.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionFacts {
+    worktree_id: String,
+    ok: bool,
+    /// The result line, or why the decision failed.
+    text: String,
+    archive_ref: Option<String>,
+    bytes_freed: Option<u64>,
+    /// The commit that the branch of the main checkout moved to (`LAND`).
+    landed_commit: Option<String>,
+    /// The verified rescue ref of the folder, written before its removal.
+    rescue_ref: Option<String>,
+    /// The folder is removed, or it was gone and a ref holds its work.
+    removed: bool,
+}
+
+/// The facts of a run: 1 for each item of its input, in its order.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JobFacts {
+    decisions: Vec<DecisionFacts>,
+}
+
+/// A run starts no other job: [`InJob`] removes each folder itself.
+struct NoNestedJob;
+
+impl RunJob for NoNestedJob {
+    fn run_job(&self, _: &JobCtx<'_>, _: &mut Connection, job: i64) -> Result<JobRow> {
+        bail!("a triage_apply run starts no other job (job {job})")
+    }
+}
+
+/// Run the `triage_apply` job `row` in the job process, on the read-only
+/// ledger `conn`. Each git call of a rescue and a removal runs in the
+/// sandbox of the custody jobs. A host with no sandbox runs no git.
+pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
+    let input: JobInput =
+        serde_json::from_str(&row.input_key).context("the input of the triage_apply job")?;
+    let fleet_root = custody_executors::fleet_root(conn)?;
+    let git_bin = git_bin(&BinOverrides::from_env(&ProcessEnv));
+    let custody = CliWorktreeGit::new(&git_bin, &fleet_root).with_sandbox_host(sandboxed_hiding);
+    if let Some(ran) = custody_git::no_sandbox(&custody) {
+        return Ok(ran);
+    }
+    let git = Git::new(&git_bin);
+    let root = input.root.as_path();
+    let gh = ProcessEnv
+        .var_os("HORCH_GH_BIN")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from("gh"), PathBuf::from);
+    let wants_pr = input.items.iter().any(|i| i.decision == "PR");
+    let remote = wants_pr.then(|| pr_remote(&git, root, &gh)).flatten();
+    let evidence = conn
+        .path()
+        .and_then(|p| Path::new(p).parent())
+        .map_or_else(|| PathBuf::from("evidence"), |p| p.join("evidence"));
+    let env = Env {
+        git: &git,
+        root,
+        evidence_root: &evidence,
+        gh: remote.is_some().then_some(gh.as_path()),
+        remote: remote.as_deref(),
+        primary: "",
+        jobs: &NoNestedJob,
+    };
+    let mut facts = JobFacts::default();
+    let mut lines = Vec::new();
+    for item in &input.items {
+        let mut fx = InJob::new(conn, &fleet_root, &custody);
+        let fact = run_item(&mut fx, &env, item);
+        lines.push(format!(
+            "{} {} {}{}: {}",
+            item.row.id,
+            item.row.name,
+            item.decision,
+            if fact.ok { "" } else { " FAILED" },
+            fact.text
+        ));
+        facts.decisions.push(fact);
+    }
+    Ok(Ran {
+        outcome: Outcome {
+            passed: true,
+            verdict: true,
+            text: clip(lines.join("\n")),
+        },
+        data: Some(serde_json::to_value(&facts)?),
+    })
+}
+
+/// Run 1 decision of a run with `fx`, and give its facts.
+fn run_item(fx: &mut InJob<'_>, env: &Env<'_>, item: &JobItem) -> DecisionFacts {
+    let done = finish::worktree(fx.conn, &item.worktree_id).and_then(|wt| {
+        let direction = item.direction.as_deref().unwrap_or("");
+        match TriageDecision::parse(&item.decision)? {
+            TriageDecision::Archive => archive(fx, env, &item.row, &wt),
+            TriageDecision::Delete => delete(fx, env, &item.row, &wt),
+            TriageDecision::Land => land_decision(fx, env, &item.row, &wt),
+            TriageDecision::Pr => pr(fx, env, &item.row, &wt, direction),
+            d => bail!("{d} is not a decision of a triage_apply job"),
+        }
+    });
+    match done {
+        Ok(done) => DecisionFacts {
+            worktree_id: item.worktree_id.clone(),
+            ok: true,
+            text: clip(done.text),
+            archive_ref: done.archive_ref,
+            bytes_freed: done.bytes_freed.or(fx.bytes),
+            landed_commit: fx.landed.take(),
+            rescue_ref: fx.rescue_ref.take(),
+            removed: fx.removed,
+        },
+        Err(e) => DecisionFacts {
+            worktree_id: item.worktree_id.clone(),
+            text: clip(format!("{e:#}")),
+            ..DecisionFacts::default()
+        },
+    }
+}
+
+/// The folders of a run: no row is written. A removal writes a verified
+/// rescue ref, then removes the folder through the custody removal, and
+/// keeps its facts.
+struct InJob<'a> {
+    conn: &'a Connection,
+    fleet_root: &'a Path,
+    custody: &'a CliWorktreeGit,
+    rescue_ref: Option<String>,
+    bytes: Option<u64>,
+    landed: Option<String>,
+    removed: bool,
+}
+
+impl<'a> InJob<'a> {
+    fn new(conn: &'a Connection, fleet_root: &'a Path, custody: &'a CliWorktreeGit) -> Self {
+        InJob {
+            conn,
+            fleet_root,
+            custody,
+            rescue_ref: None,
+            bytes: None,
+            landed: None,
+            removed: false,
+        }
+    }
+
+    /// Rescue the folder of `wt` to a verified rescue ref, then remove it,
+    /// as the `rescue` and `worktree_remove` jobs do. The branch stays.
+    fn rescue_and_remove(&mut self, wt: &WorktreeRow) -> Result<u64> {
+        let id = wt.worktree_id.as_str();
+        let tree = trees::get(self.conn, id)?.with_context(|| format!("no worktree {id}"))?;
+        let dir = PathBuf::from(&tree.path);
+        let bytes = dir_bytes(&dir);
+        let git = self
+            .custody
+            .clone()
+            .reading(&[PathBuf::from(&tree.repo_root)]);
+        let saved = rescue_git::rescue(&git, self.fleet_root, &tree);
+        if !saved.outcome.passed {
+            rescue_git::drop_index_folder(self.fleet_root, &tree);
+            bail!("the worktree stays: {}", saved.outcome.text);
+        }
+        let rescue: Rescue = serde_json::from_value(saved.data.unwrap_or_default())
+            .context("the rescue gives no rescue ref")?;
+        self.rescue_ref = Some(rescue.rescue_ref.clone());
+        // The ingest moves the row to `rescued` with this ref and clears its
+        // owner: the removal reads the row as the ingest leaves it.
+        let held = |mut t: trees::WorktreeRow| {
+            t.state = WorktreeState::Rescued;
+            t.rescue_ref = Some(rescue.rescue_ref.clone());
+            t.owner_attempt = None;
+            t
+        };
+        let row = held(tree.clone());
+        let quarantine = removal::quarantine_path(&dir, id);
+        let writer = custody_git::tree_writer(git, &row)?.writing(&[quarantine]);
+        let gw = CliRemoval::new(writer, self.fleet_root.to_path_buf());
+        let conn = self.conn;
+        let ledger = |id: &str| Ok(trees::get(conn, id)?.map(held));
+        let gone = remove_git::remove(&gw, &row, None, &Owner::NoAttempt, &ledger, true);
+        rescue_git::drop_index_folder(self.fleet_root, &tree);
+        if !gone.outcome.passed {
+            bail!("{}", gone.outcome.text);
+        }
+        self.removed = true;
+        self.bytes = Some(bytes);
+        Ok(bytes)
+    }
+}
+
+impl Folders for InJob<'_> {
+    fn free(&mut self, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<u64> {
+        let wt = f.wt;
+        if Path::new(&wt.path).exists() {
+            return self.rescue_and_remove(wt);
+        }
+        // The folder is gone: the rows may go to `removed` only when
+        // `holder` holds the tip of the branch and git lists no folder.
+        let holds_tip = if wt.branch.is_empty() {
+            None
+        } else {
+            let tip = env.git.rev(env.root, &wt.branch).ok();
+            Some(tip.is_some() && refs::read(env.git, env.root, holder) == tip)
+        };
+        let listed = git_lists(env.git, env.root, &wt.path)?;
+        if let Some(why) = settle_refusal(Folder::Missing, listed, holds_tip) {
+            bail!("the row stays: {why}");
+        }
+        self.removed = true;
+        Ok(0)
+    }
+
+    fn free_landed(
+        &mut self,
+        env: &Env<'_>,
+        wt: &WorktreeRow,
+        on: &str,
+        landed: Option<&str>,
+    ) -> Result<String> {
+        if let Some(why) = land::unsafe_to_remove(env.git, env.root, wt, on, None)? {
+            bail!("the worktree stays: {why}");
+        }
+        self.landed = landed.map(str::to_string);
+        let bytes = self.rescue_and_remove(wt)?;
+        Ok(format!(
+            "{} is gone ({} freed)",
+            wt.path,
+            human_bytes(bytes)
+        ))
+    }
+}
+
+/// Write the rows of the result `ran` of the `triage_apply` run `job`, in
+/// `tx` of fleetd. The result file is untrusted: each fact must name the
+/// ledger row of its item of the input, in its order, and each ref, commit
+/// and text is checked before a write. An error refuses each fact of the
+/// run, and the caller rolls back each write of this call. Each state move
+/// goes through `transition()`.
+pub fn ingest(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, ran: &Ran) -> Result<()> {
+    let Some(facts) = facts_of::<JobFacts>(ran.data.as_ref())? else {
+        return Ok(());
+    };
+    let input: JobInput = serde_json::from_str(&job.input_key)?;
+    if facts.decisions.len() != input.items.len() {
+        bail!(
+            "the result file has {} decisions; the job has {}",
+            facts.decisions.len(),
+            input.items.len()
+        );
+    }
+    for (item, fact) in input.items.iter().zip(&facts.decisions) {
+        let decision = TriageDecision::parse(&item.decision)?;
+        check_fact(item, decision, fact)?;
+        let wt = finish::worktree(tx, &item.worktree_id)?;
+        if !fact.ok {
+            failed(tx, &item.row, &wt, decision, &fact.text)?;
+            continue;
+        }
+        if let Some(c) = &fact.landed_commit {
+            tx.execute(
+                "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
+                params![wt.worktree_id, c, util::now()],
+            )?;
+        }
+        settle_removed(ctx, tx, &wt.worktree_id, fact.rescue_ref.as_deref())?;
+        let done = Done {
+            status: Some(match decision {
+                TriageDecision::Delete => WorktreeStatus::Trashed,
+                TriageDecision::Land => WorktreeStatus::Cleaned,
+                _ => WorktreeStatus::Archived,
+            }),
+            archive_ref: fact.archive_ref.clone(),
+            bytes_freed: fact.bytes_freed,
+            text: fact.text.clone(),
+            queued: None,
+        };
+        record(tx, &item.row, &wt, decision, &done)?;
+    }
+    Ok(())
+}
+
+/// Refuse a fact that does not fit its item: another ledger row, a text
+/// that is too long or holds a control character, a ref outside the refs
+/// of its decision, a commit that is not an object id, or a decision that
+/// passed and did not remove its folder.
+fn check_fact(item: &JobItem, decision: TriageDecision, f: &DecisionFacts) -> Result<()> {
+    if f.worktree_id != item.worktree_id {
+        bail!(
+            "the result file names worktree {}; the job has {}",
+            f.worktree_id,
+            item.worktree_id
+        );
+    }
+    check_text("text", &f.text, FACT_TEXT_MAX)?;
+    if !f.ok {
+        return Ok(());
+    }
+    if !f.removed {
+        bail!("{decision} of {} passed and its folder stays", item.row.id);
+    }
+    let archive_ok = match (decision, f.archive_ref.as_deref()) {
+        (TriageDecision::Archive | TriageDecision::Pr, Some(r)) => {
+            r == refs::archive_ref(&item.row.name)
+        }
+        (TriageDecision::Delete, Some(r)) => r.strip_prefix(refs::TRASH).is_some_and(|rest| {
+            !rest.is_empty() && rest.len() < 512 && !rest.contains(['\0', ' ', '\n', '\t'])
+        }),
+        (TriageDecision::Land, None) => true,
+        _ => false,
+    };
+    if !archive_ok {
+        bail!("the ref {:?} is not a ref of {decision}", f.archive_ref);
+    }
+    if f.landed_commit.is_some() && decision != TriageDecision::Land {
+        bail!("{decision} gives a landed commit");
+    }
+    if let Some(c) = &f.landed_commit {
+        let hex = c
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+        if !(hex && matches!(c.len(), 40 | 64)) {
+            bail!("the landed commit {c:?} is not an object id");
+        }
+    }
+    if let Some(r) = &f.rescue_ref {
+        let folder = rescue::ref_folder(&item.worktree_id);
+        let n = r.strip_prefix(&folder).unwrap_or("");
+        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+            bail!("the rescue ref {r:?} is not a rescue ref of its worktree");
+        }
+    }
+    if f.bytes_freed.is_some_and(|b| b > i64::MAX as u64) {
+        bail!("the bytes freed are out of range");
+    }
+    Ok(())
+}
+
+/// The custody rows of a folder that a run removed: `orphaned` (cause
+/// `triage`, no owner), then `rescued` with `rescue_ref` when the run
+/// wrote one, then `removed`.
+fn settle_removed(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    id: &str,
+    rescue_ref: Option<&str>,
+) -> Result<()> {
+    let row = trees::get(tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    let keep = [
+        WorktreeState::Orphaned,
+        WorktreeState::Rescued,
+        WorktreeState::Landing,
+    ];
+    if !keep.contains(&row.state) {
+        door(ctx, tx, id, "orphaned", TRIAGE)?;
+        trees::set_owner(tx, id, None)?;
+    }
+    if let Some(r) = rescue_ref {
+        trees::set_rescue_ref(tx, id, r)?;
+        let cause = Cause {
+            actor: Actor::Operator,
+            text: "triage: its rescue ref is read back and verified",
+        };
+        door(ctx, tx, id, "rescued", cause)?;
+    }
+    let cause = Cause {
+        actor: Actor::Operator,
+        text: "triage: its triage_apply job removed the folder",
+    };
+    door(ctx, tx, id, "removed", cause)?;
+    tx.execute(
+        "UPDATE worktrees SET cleaned_at = ?2 WHERE worktree_id = ?1",
+        params![id, util::now()],
+    )?;
+    Ok(())
+}
+
+/// Move the worktree `id` to `to` through the door, in `tx`.
+fn door(ctx: &JobCtx<'_>, tx: &Connection, id: &str, to: &str, cause: Cause<'_>) -> Result<()> {
+    transition(
+        tx,
+        ctx.guard,
+        Entity::Worktree,
+        id,
+        to,
+        cause,
+        ctx.needs_you,
+    )
+    .map(|_| ())
+    .map_err(|e| anyhow::anyhow!("worktree {id} cannot move to {to}: {e}"))
 }

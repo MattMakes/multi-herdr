@@ -5,7 +5,6 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, Context, Result};
 use horch_core::digest::sha256_bytes;
-use horch_core::fleetd::fleet_runtime::application::handlers_custody::TRIAGE_NOT_HANDLED;
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
 use horch_core::fleetd::worktree_custody::application::queries::{
@@ -218,8 +217,9 @@ fn gh_bin() -> PathBuf {
 }
 
 /// `horch worktree triage apply <file|->`: parse the operator's reply and
-/// run each decision. A bad reply runs nothing. A reply of `KEEP` and
-/// `FINISH` decisions only is 1 `worktree_triage` request to fleetd.
+/// send its decisions to fleetd as 1 `worktree_triage` request. A bad reply
+/// runs nothing. fleetd applies `KEEP` and `FINISH` in the request, and
+/// queues 1 `triage_apply` job for `ARCHIVE`, `DELETE`, `LAND` and `PR`.
 pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<ExitCode> {
     let text = read_reply(file)?;
     let git = Git::new(&ctx.bins.harness.git);
@@ -229,12 +229,6 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<E
     let gh = gh_bin();
     let remote = triage::apply::pr_remote(&git, &root, &gh);
     let decided = triage::reply::parse(&text, &rows, remote.is_some())?;
-    if decided
-        .iter()
-        .any(|d| TRIAGE_NOT_HANDLED.contains(&d.decision))
-    {
-        return refuse_direct_decisions(&decided);
-    }
     let mut decisions = Vec::new();
     for d in &decided {
         let row = rows
@@ -267,6 +261,9 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<E
         for a in r["applied"].as_array().into_iter().flatten() {
             println!("{}", a["line"].as_str().unwrap_or_default());
         }
+        for line in r["queued"].as_array().into_iter().flatten() {
+            println!("{}", line.as_str().unwrap_or_default());
+        }
         let failed = r["failed"].as_u64().unwrap_or(0);
         if failed > 0 {
             return Err(anyhow!(
@@ -276,26 +273,6 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<E
         }
         Ok(())
     })
-}
-
-/// A reply with an `ARCHIVE`, `DELETE`, `LAND` or `PR` decision is refused
-/// and runs nothing (T-885): only fleetd writes the ledger (RR-5), and no
-/// fleetd job does their git or gh writes yet
-/// (`handlers_custody::TRIAGE_NOT_HANDLED`). A later task gives them back
-/// as 1 fleetd job kind.
-fn refuse_direct_decisions(decided: &[triage::reply::Decided]) -> Result<ExitCode> {
-    let mut words: Vec<&str> = decided
-        .iter()
-        .filter(|d| TRIAGE_NOT_HANDLED.contains(&d.decision))
-        .map(|d| d.decision.as_str())
-        .collect();
-    words.sort_unstable();
-    words.dedup();
-    eprintln!(
-        "refused: fleetd does not apply the decisions {} in this version, and nothing ran. They return in a later task as a fleetd job. Use KEEP or FINISH now, or leave the worktree parked.",
-        words.join(", ")
-    );
-    Ok(ExitCode::from(1))
 }
 
 /// `horch worktree restore <name>`: a task (`T<seq>` of the active run) or
