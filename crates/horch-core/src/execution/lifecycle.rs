@@ -3078,10 +3078,19 @@ mod tests {
                     })
                     .unwrap();
                 std::fs::create_dir_all(&state).unwrap();
-                let fleetd = crate::execution::store::test_serve(
-                    &state.join(crate::execution::store::STATE_DB),
-                );
-                crate::execution::records::SessionLedger::for_project(&state, &project_text)
+                // The brief names the ledger explicitly, so the session
+                // records are in that ledger, and its fleetd serves them
+                // (T-890).
+                let fleetd = crate::execution::store::test_serve(&db);
+                let ctx = RuntimeContext::from_env(
+                    &MapEnv::new(&project)
+                        .with("HOME", &top.join("home").to_string_lossy())
+                        .with("HORCH_STATE_DIR", &state.to_string_lossy())
+                        .with("HORCH_LEDGER_DB", &db.to_string_lossy()),
+                )
+                .unwrap();
+                crate::execution::records::SessionLedger::open_in(&ctx)
+                    .unwrap()
                     .add(crate::execution::records::NewRecord {
                         record_id: "r1",
                         agent: "claude",
@@ -3134,7 +3143,7 @@ mod tests {
             }
 
             fn record(&self) -> serde_json::Value {
-                let r = ExecutionStore::for_project(&self.state, &self.brief.project_dir)
+                let r = ExecutionStore::in_db(&self.state, &self.db, &self.brief.project_dir)
                     .get("r1")
                     .unwrap();
                 serde_json::to_value(r).unwrap()
