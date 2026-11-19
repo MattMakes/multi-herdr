@@ -31,7 +31,7 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::integration::adapters::sqlite::{self as rows, BranchFact, BundleRow};
-use crate::fleetd::integration::application::landing;
+use crate::fleetd::integration::application::{bundles, landing};
 use crate::fleetd::integration::application::ports::{IntegrationGitGateway, RefMove};
 use crate::fleetd::integration::domain::bundle::BundleState;
 use crate::fleetd::integration::domain::task_branch::LandingState;
@@ -212,7 +212,12 @@ fn land(
     );
     enter(r.jobs, tx, bundle.id, BundleState::Landed, &why)?;
     for member in in_bundle(tx, bundle)? {
-        let tip = r.git.tip(repo, &format!("refs/heads/{member}"))?;
+        // A member that git no longer has, as after the old path landed it
+        // and removed its tree, is judged by the tip the ledger recorded.
+        let tip = match r.git.tip(repo, &format!("refs/heads/{member}"))? {
+            Some(tip) => Some(tip),
+            None => bundles::recorded_tip(r.git, tx, repo, &member)?,
+        };
         let landed = match &tip {
             Some(tip) => r.git.changes_in(repo, tip, &bundle.base_tip, candidate)?,
             None => false,

@@ -79,8 +79,12 @@ pub trait IntegrationGitGateway {
         target_tip: &str,
     ) -> Result<bool>;
 
+    /// Whether the commit `a` is an ancestor of `b`, or `a` is `b`.
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool>;
+
     /// The candidate of a bundle on `base_tip` (Q15), with no checkout and
-    /// no worktree.
+    /// no worktree. A member whose tip is already in the candidate adds no
+    /// merge commit.
     fn build_candidate(&self, repo: &Path, base_tip: &str, members: &[Member])
         -> Result<Candidate>;
 

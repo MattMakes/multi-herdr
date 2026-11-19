@@ -181,6 +181,21 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<WorktreeRow>> {
     one(conn, &sql, id)
 }
 
+/// The tip that the newest row of the branch `branch` recorded, also a
+/// `removed` row: its landed commit, else its head. `None` when no row
+/// records one.
+pub fn recorded_tip(conn: &Connection, branch: &str) -> Result<Option<String>> {
+    let tip: Option<Option<String>> = conn
+        .query_row(
+            "SELECT COALESCE(landed_commit, head_sha) FROM worktrees WHERE branch = ?1
+             ORDER BY rowid DESC LIMIT 1",
+            [branch],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(tip.flatten())
+}
+
 /// The row of `task_id` that is not `removed`; the newest when there are
 /// more.
 pub fn of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {

@@ -648,3 +648,28 @@ fn passed_bundle_past_its_limit_has_1_needs_you_item() {
     assert_eq!(w.bundle(id).state, "landed");
     assert!(items(&w).is_empty());
 }
+
+/// T-402, run B: the old path landed the member and git no longer has its
+/// branch. The bundle lands at the feature tip with no move, and the member
+/// is `landed` by the tip that the ledger recorded for it, not sent back to
+/// `ready` for a new bundle.
+#[test]
+fn member_that_git_lost_lands_by_its_recorded_tip() {
+    let mut w = world();
+    w.ready_branch(A, "a1.txt");
+    let tip = w.tip(A);
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &tip]);
+    let id = w.passed_bundle(&[A], 10);
+    assert_eq!(w.bundle(id).candidate_tip.as_deref(), Some(tip.as_str()));
+    let tx = w.conn.transaction().unwrap();
+    let fact = BranchFact::SeenTip(&tip);
+    rows::set_branch_fact(&tx, None, A, fact, cause("fleetd read the tip")).unwrap();
+    tx.commit().unwrap();
+    git(&w.repo, &["branch", "-D", A]);
+
+    let moves = w.pass(20);
+    assert!(moves.is_empty(), "the feature is at the candidate: {moves:?}");
+    assert_eq!(w.bundle(id).state, "landed");
+    assert_eq!(w.landing_state(A), "landed");
+    assert_eq!(w.tip(FEATURE_BRANCH), tip);
+}

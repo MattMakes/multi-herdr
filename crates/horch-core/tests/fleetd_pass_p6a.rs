@@ -450,6 +450,10 @@ impl IntegrationGitGateway for Git {
         Ok(false)
     }
 
+    fn is_ancestor(&self, _: &Path, a: &str, b: &str) -> Result<bool> {
+        Ok(a == b)
+    }
+
     fn build_candidate(&self, _: &Path, _: &str, _: &[Member]) -> Result<Candidate> {
         anyhow::bail!("no candidate in this test")
     }

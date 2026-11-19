@@ -411,6 +411,10 @@ impl IntegrationGitGateway for Counting<'_> {
         self.call();
         self.inner.changes_in(repo, tip, base, target)
     }
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
+        self.call();
+        self.inner.is_ancestor(repo, a, b)
+    }
     fn build_candidate(&self, repo: &Path, base: &str, members: &[Member]) -> Result<Candidate> {
         self.call();
         self.inner.build_candidate(repo, base, members)

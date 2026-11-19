@@ -25,7 +25,7 @@
 //! - A bundle past the time limit of its state has 1 needs-you item, and
 //!   the item ends when the bundle is no longer past it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -50,6 +50,7 @@ use crate::fleetd::integration::domain::bundle::{
     self as rules, BuildFact, BundleState, DropCause, Limits, Step,
 };
 use crate::fleetd::integration::domain::task_branch::{self, LandingState};
+use crate::fleetd::worktree_custody::adapters::sqlite as trees;
 use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTreeRequest};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
@@ -228,7 +229,7 @@ fn form(
     let mut members = Vec::new();
     let mut tips = Vec::new();
     for name in ready {
-        if let Some(tip) = head_tip(b, &t, &name)? {
+        if let Some(tip) = member_tip(b, tx, &t, &base, &name)? {
             members.push(name);
             tips.push(tip);
         }
@@ -251,6 +252,80 @@ fn form(
         landing::enter(ctx, tx, name, LandingState::InBundle, clock, &why)?;
     }
     Ok(())
+}
+
+/// The kind of the needs-you item of a `ready` task branch that git no
+/// longer has and whose work fleetd cannot find in its feature.
+pub const NO_TIP_KIND: &str = "branch_tip_missing";
+
+/// The key of the needs-you item of the task branch `branch` with no tip.
+pub fn no_tip_key(branch: &str) -> String {
+    format!("{NO_TIP_KIND}:{branch}")
+}
+
+/// The tip of the `ready` task branch `name` for a bundle on `base`: the
+/// tip of its ref. When git no longer has the ref, as after the old path
+/// landed it and removed its tree, the tip that the ledger recorded for it
+/// (its `seen_tip`, its rescue ref, else the tip of its newest tree row)
+/// when that tip is already in `base`: the bundle then lands it with no
+/// candidate commit. Else `None`, with 1 needs-you item, so the branch does
+/// not wait in `ready` with no word.
+fn member_tip(
+    b: &Bundles<'_>,
+    tx: &Connection,
+    t: &Target,
+    base: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let ctx = b.jobs;
+    let key = no_tip_key(name);
+    if let Some(tip) = head_tip(b, t, name)? {
+        ctx.needs_you.resolve_item(tx, &key)?;
+        return Ok(Some(tip));
+    }
+    if let Some(tip) = recorded_tip(b.git, tx, &t.repo, name)? {
+        if b.git.is_ancestor(&t.repo, &tip, base)? {
+            ctx.needs_you.resolve_item(tx, &key)?;
+            return Ok(Some(tip));
+        }
+    }
+    let text = format!(
+        "fleetd cannot land the ready task branch {name}: git has no branch {name}, and \
+         the ledger records no tip of it that is in {}. Restore the branch, or run \
+         horch branch abandon {name}.",
+        t.branch
+    );
+    ctx.needs_you.open_item(
+        tx,
+        &NewItem {
+            key: &key,
+            kind: NO_TIP_KIND,
+            entity: Entity::TaskBranch,
+            entity_id: name,
+            text: &text,
+        },
+    )?;
+    Ok(None)
+}
+
+/// The tip that the ledger recorded for the task branch `name` that git no
+/// longer has: its `seen_tip`, else the tip of its rescue ref, else the tip
+/// of its newest tree row. `None` when none is known.
+pub(crate) fn recorded_tip(
+    git: &dyn IntegrationGitGateway,
+    tx: &Connection,
+    repo: &Path,
+    name: &str,
+) -> Result<Option<String>> {
+    let row = rows::branch(tx, name)?.with_context(|| format!("no task branch {name}"))?;
+    let rescued = match row.rescue_ref.as_deref() {
+        Some(r) => git.tip(repo, r)?,
+        None => None,
+    };
+    match row.seen_tip.or(rescued) {
+        Some(tip) => Ok(Some(tip)),
+        None => trees::recorded_tip(tx, name),
+    }
 }
 
 /// The rows of 1 new bundle: its members in queue order and the tip of
