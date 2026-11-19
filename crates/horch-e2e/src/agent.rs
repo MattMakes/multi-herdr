@@ -17,11 +17,14 @@
 //!   worktree. Logged as `result`.
 //! - `noresult`: exit with no result. It wins over `result`.
 //!
-//! A fake plays only the keys of its role. The role comes from the task of
-//! the attempt in the ledger: a judge task (`judged_task`) plays the judge
-//! keys of [`crate::idea_agent`] and not `commit` or `ask`, and commits its
-//! verdict before `result`. Each other task plays no judge key. When the
-//! ledger does not know the task, the fake plays each key of the scenario.
+//! A fake plays only the keys of its role. A sub-orchestrator (its launch
+//! argument names an idea folder) plays only the keys of
+//! [`crate::idea_agent`], and no key of this module. Else the role comes
+//! from the task of the attempt in the ledger: a judge task
+//! (`judged_task`) plays the judge keys of [`crate::idea_agent`] and not
+//! `commit` or `ask`, and commits its verdict before `result`. Each other
+//! task plays no judge key. When the ledger does not know the task, the
+//! fake plays each key of the scenario.
 //!
 //! `horch` is the one on `PATH`, as in a pane.
 
@@ -34,7 +37,7 @@ use horch_core::runtime::{Paths, ProcessEnv};
 use horch_core::taskledger::{tasks, Store};
 use serde_json::{json, Value};
 
-use crate::idea_agent::{judge, VERDICT_KEYS};
+use crate::idea_agent::{idea_folder, judge, VERDICT_KEYS};
 use crate::{scenario_has, Call};
 
 /// The variable of a pane that names the `task.yaml` of its attempt.
@@ -45,6 +48,9 @@ const TASK_YAML_ENV: &str = "HORCH_TASK_YAML";
 pub fn play(call: &mut Call) {
     let keys = ["bound", "commit", "ask", "result", "noresult"];
     if !keys.iter().chain(&VERDICT_KEYS).any(|k| scenario_has(k)) {
+        return;
+    }
+    if idea_folder(&call.argv).is_some() {
         return;
     }
     let binding = binding();

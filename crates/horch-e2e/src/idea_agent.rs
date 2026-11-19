@@ -142,7 +142,7 @@ pub fn play(call: &mut Call) {
 }
 
 /// The first word of `argv` that is a folder with an `idea.md`.
-fn idea_folder(argv: &[String]) -> Option<PathBuf> {
+pub(crate) fn idea_folder(argv: &[String]) -> Option<PathBuf> {
     argv.iter()
         .flat_map(|a| a.split_whitespace())
         .map(PathBuf::from)

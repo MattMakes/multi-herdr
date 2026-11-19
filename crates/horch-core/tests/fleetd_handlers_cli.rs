@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
-use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers};
@@ -80,12 +80,7 @@ fn world() -> World {
         .unwrap();
     let mut handlers = Handlers::new();
     handlers_run::register(&mut handlers);
-    handlers_cli::register(
-        &mut handlers,
-        CliHandlers {
-            state_root: state.clone(),
-        },
-    );
+    handlers_cli::register(&mut handlers);
     handlers_custody::register(
         &mut handlers,
         Arc::new(Custody {
@@ -284,13 +279,14 @@ fn run_adopt_gives_a_run_with_no_workspace_the_workspace_once() {
 }
 
 #[test]
-fn question_answer_checks_its_payload_and_answers_no_row_of_an_unknown_mail() {
+fn question_answer_checks_its_payload_and_refuses_a_mail_with_no_row() {
     let mut w = world();
-    std::fs::create_dir_all(&w.state).unwrap();
     let answer = |ws: &str, mail: &str, text: &str| json!({ "workspace": ws, "mail_id": mail, "text": text });
-    let r = w.applied(Kind::QuestionAnswer, answer("w1", "m-1", "use SQLite"));
-    assert_eq!(r["question_id"], Value::Null);
     for (payload, why) in [
+        (
+            answer("w1", "m-1", "use SQLite"),
+            "no question row waits for an answer to mail m-1",
+        ),
         (answer("../w1", "m-1", "x"), "is not valid"),
         (answer("w1", "../m", "x"), "is not valid"),
         (answer("w1", "m-1", ""), "is empty"),

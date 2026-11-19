@@ -105,14 +105,22 @@ pub struct Question {
     pub attempt: String,
     pub at: String,
     pub text: String,
+    /// The id of the mail of a QUESTION line of `horch tell`, so that
+    /// `horch tell <role> --answers <id>` finds the row of this file.
+    /// `None` for `horch ask`.
+    pub mail_id: Option<String>,
 }
 
 impl Question {
     /// The JSON text of the file, when it has at most `max_bytes` bytes
     /// (`question_max_bytes` of `fleet.toml`).
     pub fn to_json(&self, max_bytes: u64) -> Result<String, TooLarge> {
+        let mail_id = self
+            .mail_id
+            .as_deref()
+            .map_or(String::new(), |id| format!(",\n  \"mail_id\": {}", json_string(id)));
         let text = format!(
-            "{{\n  \"task\": {},\n  \"attempt\": {},\n  \"at\": {},\n  \"text\": {}\n}}\n",
+            "{{\n  \"task\": {},\n  \"attempt\": {},\n  \"at\": {},\n  \"text\": {}{mail_id}\n}}\n",
             json_string(&self.task),
             json_string(&self.attempt),
             json_string(&self.at),
@@ -208,10 +216,26 @@ mod tests {
             attempt: "A1".into(),
             at: "2026-11-18T12:00:00Z".into(),
             text: "which file?".into(),
+            mail_id: None,
         };
         let text = q.to_json(MAX).unwrap();
         assert!(text.contains("\"text\": \"which file?\""));
         assert!(q.to_json(text.len() as u64 - 1).is_err());
+    }
+
+    #[test]
+    fn question_file_names_its_mail_only_when_it_has_one() {
+        let mut q = Question {
+            task: "T-1".into(),
+            attempt: "A1".into(),
+            at: "2026-11-18T12:00:00Z".into(),
+            text: "which file?".into(),
+            mail_id: None,
+        };
+        assert!(!q.to_json(MAX).unwrap().contains("mail_id"));
+        q.mail_id = Some("m-1".into());
+        let text = q.to_json(MAX).unwrap();
+        assert!(text.contains("\"text\": \"which file?\",\n  \"mail_id\": \"m-1\"\n}"));
     }
 
     #[test]

@@ -302,7 +302,7 @@ fn no_respawn_duty_in_the_pass() {
     .unwrap();
     runs::set_orchestrator(&conn, &w.run.run_id, &old).unwrap();
 
-    let duties = WatchdogDuties::new(&Quiet, &NoEffects, w.root.join("state"));
+    let duties = WatchdogDuties::new(&Quiet, &NoEffects);
     let facts = Facts::default();
     let time_up = || false;
     let budget = || DutyBudget {

@@ -1260,7 +1260,8 @@ impl<'a> Pass<'a> {
         // the job observations: a result of this pass wins over an expiry
         // of this pass ("Order inside 1 pass").
         let guard = Some(self.settings.generation);
-        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
+        let question_limit_s = self.settings.config.question_limit_s;
+        outbox_ingest::ingest(&tx, guard, &read.outboxes, question_limit_s)?;
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;

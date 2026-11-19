@@ -466,25 +466,6 @@ fn g70_waiting_background_deadline_and_dead_process() {
     drop(agent);
 }
 #[test]
-fn g70_question_wait_clears_on_orchestrator_answer_and_stalls_restart() {
-    use horch_core::taskledger::workers;
-    let (dir, mut store, run, worker) = ledger_worker();
-    let mail = Mail::under(dir.path(), "w1");
-    let id = mail.enqueue("worker-1", "QUESTION: choose?").unwrap();
-    mail.ack(&id).unwrap();
-    workers::sync_questions(store.conn(), dir.path(), "w1").unwrap();
-    for _ in 0..6 {
-        assert_eq!(check(&mut store, &run, &worker, true), "progress");
-    }
-    mail.close_question(&id.short()).unwrap().unwrap();
-    workers::sync_questions(store.conn(), dir.path(), "w1").unwrap();
-    assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
-    // The checks of today see no progress, but no stall round reaps
-    // (docs/tickets/fleetd-p2/MAP.md, Q14). The ladder proof: g70_pinned_cli_question_reply_resets_stalls.
-    assert_no_reap(&mut store, &run, &worker);
-}
-
-#[test]
 fn g60_pinned_two_hour_old_mail_redelivers_and_inbox_stops_courier() {
     use horch_e2e::harness::wait_for;
     let mut h = world("g60-two-hours");

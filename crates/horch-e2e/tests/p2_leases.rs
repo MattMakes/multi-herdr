@@ -580,7 +580,7 @@ fn cancel_of_a_blocked_on_user_task_is_immediate() {
     let ask = Ask {
         task_id: &t.id,
         attempt_id: &attempt,
-        mail_id: "m1",
+        mail_id: Some("m1"),
         text: "which way?",
         asked_at: &now,
     };

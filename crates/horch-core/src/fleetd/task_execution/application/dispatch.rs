@@ -33,6 +33,7 @@ use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::ideas::application::park_cancel::PARKED;
+use crate::fleetd::ideas::application::questions;
 use crate::fleetd::integration::application::landing;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
@@ -45,7 +46,9 @@ use crate::fleetd::task_execution::domain::dispatch::{
 use crate::fleetd::task_execution::domain::task::{
     attempt_id, judged_task, AttemptRow, AttemptState,
 };
-use crate::fleetd::task_execution::domain::task_files::{Secret, TaskFacts};
+use crate::fleetd::task_execution::domain::task_files::{
+    answers_section, AnsweredQuestion, Secret, TaskFacts,
+};
 use crate::fleetd::worker_profiles::application::health;
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeRow, WorktreeState,
@@ -565,11 +568,22 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
     let run = runs::get(conn, &task.run_id)?;
     let worker = workers::get(conn, &worker_id)?;
     // The section of a resolver or fix attempt (ticket 33), else the
-    // section of a review that failed the last attempt (ticket 20).
-    let extra = match repair::start_section(conn, fleet_root, attempt_id)? {
+    // section of a review that failed the last attempt (ticket 20). Then
+    // the answered questions of the task (RR-12).
+    let work = match repair::start_section(conn, fleet_root, attempt_id)? {
         Some(section) => Some(section),
         None => review::start_section(conn, &task_id)?,
     };
+    let answered: Vec<AnsweredQuestion> = questions::answered_of_task(conn, &task_id)?
+        .into_iter()
+        .map(|q| AnsweredQuestion {
+            id: q.id,
+            question: q.question,
+            answer: q.answer,
+        })
+        .collect();
+    let sections: Vec<String> = work.into_iter().chain(answers_section(&answered)).collect();
+    let extra = (!sections.is_empty()).then(|| sections.join("\n"));
     let n = worker
         .attempt
         .with_context(|| format!("the worker of attempt {attempt_id} has no attempt number"))?;

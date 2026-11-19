@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use horch_core::fleetd::fleet_runtime::adapters::token_file;
-use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
@@ -109,12 +109,7 @@ impl World {
     fn serve(&self) -> ChannelServer {
         let mut handlers = Handlers::new();
         handlers_run::register(&mut handlers);
-        handlers_cli::register(
-            &mut handlers,
-            CliHandlers {
-                state_root: self.root.join("state"),
-            },
-        );
+        handlers_cli::register(&mut handlers);
         let refs = CliWorktreeGit::new(GIT, self.fleet()).reading(&[self.proj()]);
         handlers_custody::register(
             &mut handlers,

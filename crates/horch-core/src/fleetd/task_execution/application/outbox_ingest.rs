@@ -211,8 +211,14 @@ fn log_offset(conn: &Connection, path: &Path) -> Result<Option<u64>> {
 }
 
 /// Part 2: record each file of `reads` 1 time and act on it, in the open
-/// transaction `tx`. The fleetd of generation `guard` writes.
-pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) -> Result<Report> {
+/// transaction `tx`. The fleetd of generation `guard` writes. A question
+/// gets the time limit `question_limit_s`.
+pub fn ingest(
+    tx: &Connection,
+    guard: Option<Generation>,
+    reads: &[OutboxRead],
+    question_limit_s: u64,
+) -> Result<Report> {
     // The message ingest checks the transaction and the generation first.
     let messages: Vec<ingest::OutboxRead> = reads
         .iter()
@@ -221,7 +227,7 @@ pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) 
             files: r.messages.clone(),
         })
         .collect();
-    let done = ingest::ingest(tx, guard, &messages)?;
+    let done = ingest::ingest(tx, guard, &messages, question_limit_s)?;
     let mut report = Report {
         to_verifying: done.to_verifying,
         to_blocked: done.to_blocked,

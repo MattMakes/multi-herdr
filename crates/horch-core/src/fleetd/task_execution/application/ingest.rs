@@ -15,9 +15,16 @@
 //!   a task to `done`.
 //! - A valid question file of the newest attempt of a `running` task ends
 //!   the attempt with the outcome `asked`, which burns no attempt, and
-//!   moves the task to `blocked_on_user`.
+//!   moves the task to `blocked_on_user`. In the same transaction the file
+//!   gives 1 `questions` row, owned by the sub-orchestrator of the feature
+//!   of the task (RR-12, FM-35; [`questions::ask`]). A later question file
+//!   of that attempt, while the task waits, gives 1 more row. A task with
+//!   no idea has no sub-orchestrator: its question goes to you as 1
+//!   needs-you item.
 //! - A rejected file gets its row with the reason, and changes nothing
-//!   else. fleetd stays healthy.
+//!   else. A rejected question file also gives you 1 needs-you item, as
+//!   its worker waits for an answer that nobody can give (OR-3). fleetd
+//!   stays healthy.
 
 use std::path::{Path, PathBuf};
 
@@ -28,12 +35,17 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError, Moved};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
-use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::ideas::application::question_flow::feature_of_task;
+use crate::fleetd::ideas::application::questions::{self, Ask};
+use crate::fleetd::ideas::domain::needs_you::Write;
+use crate::fleetd::ideas::domain::questions::printable;
 use crate::fleetd::task_execution::adapters::ingested_store as store;
 use crate::fleetd::task_execution::adapters::result_reader::{
-    read_outbox, AttemptRef, FileRead, Payload, Read,
+    read_outbox, AttemptRef, FileKind, FileRead, Payload, QuestionFile, Read,
 };
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
@@ -82,9 +94,18 @@ pub fn read(
     Ok(out)
 }
 
+/// The kind of the needs-you item of a question file that has no row.
+pub const QUESTION_FILE_KIND: &str = "question_file";
+
 /// Part 2: record each file of `reads` 1 time and act on each valid file,
 /// in the open transaction `tx`. The fleetd of generation `guard` writes.
-pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) -> Result<Report> {
+/// A question gets the time limit `question_limit_s` on the fleet clock.
+pub fn ingest(
+    tx: &Connection,
+    guard: Option<Generation>,
+    reads: &[OutboxRead],
+    question_limit_s: u64,
+) -> Result<Report> {
     check_pass(tx, guard)?;
     let at = util::now();
     let mut report = Report::default();
@@ -101,7 +122,12 @@ pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) 
                 continue;
             }
             match &file.read {
-                Read::Rejected { .. } => report.rejected.push(file.path.clone()),
+                Read::Rejected { reason, .. } => {
+                    if file.kind == FileKind::Question {
+                        rejected_question(tx, a, &file.path, reason)?;
+                    }
+                    report.rejected.push(file.path.clone());
+                }
                 Read::Valid {
                     payload: Payload::Result(_),
                     ..
@@ -111,10 +137,16 @@ pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) 
                     }
                 }
                 Read::Valid {
-                    payload: Payload::Question(_),
+                    payload: Payload::Question(q),
                     ..
                 } => {
-                    if asked(tx, guard, a)? {
+                    let asking = Asking {
+                        attempt: a,
+                        path: &file.path,
+                        file: q,
+                        question_limit_s,
+                    };
+                    if asked(tx, guard, &asking)? {
                         report.to_blocked.push(a.task_id.clone());
                     }
                 }
@@ -204,18 +236,37 @@ fn to_verifying(tx: &Connection, guard: Option<Generation>, a: &AttemptRef) -> R
     )
 }
 
-/// A valid question file of `a`: the attempt ends with the outcome
-/// `asked`, which burns no attempt, its worker row ends, and its `running`
-/// task moves to `blocked_on_user`.
-fn asked(tx: &Connection, guard: Option<Generation>, a: &AttemptRef) -> Result<bool> {
+/// 1 valid question file of an attempt.
+struct Asking<'a> {
+    attempt: &'a AttemptRef,
+    path: &'a Path,
+    file: &'a QuestionFile,
+    question_limit_s: u64,
+}
+
+/// A valid question file of the newest attempt of its task. A `running`
+/// task: the attempt ends with the outcome `asked`, which burns no attempt,
+/// its worker row ends, and the task moves to `blocked_on_user`. The file
+/// then gives its question ([`question_row`]), also when the task waits
+/// already for an earlier question of the same attempt. true when the task
+/// moved.
+fn asked(tx: &Connection, guard: Option<Generation>, q: &Asking<'_>) -> Result<bool> {
+    let a = q.attempt;
     let Some((worker, state)) = newest(tx, a)? else {
         return Ok(false);
     };
     let status = tasks::get(tx, &a.task_id)?.status;
-    if status != TaskStatus::Running.as_str() || state == AttemptState::Ended.as_str() {
+    let outcome = Outcome::Asked.as_str();
+    let ended = state == AttemptState::Ended.as_str();
+    if status == TaskStatus::BlockedOnUser.as_str() && ended {
+        if outcome_of(tx, &a.attempt_id)?.as_deref() == Some(outcome) {
+            question_row(tx, q)?;
+        }
         return Ok(false);
     }
-    let outcome = Outcome::Asked.as_str();
+    if status != TaskStatus::Running.as_str() || ended {
+        return Ok(false);
+    }
     let text = format!("attempt {} asked a question", a.attempt_id);
     attempts_store::set_ended(tx, &a.attempt_id, outcome, &util::now())?;
     moved(
@@ -228,12 +279,84 @@ fn asked(tx: &Connection, guard: Option<Generation>, a: &AttemptRef) -> Result<b
     )?;
     let reason = format!("{outcome}: attempt {}", a.attempt_id);
     workers::end(tx, &worker, WorkerStatus::Incomplete, &reason, None)?;
-    moved(
+    let blocked = moved(
         tx,
         guard,
         Entity::Task,
         &a.task_id,
         TaskStatus::BlockedOnUser.as_str(),
         &text,
+    )?;
+    if blocked {
+        question_row(tx, q)?;
+    }
+    Ok(blocked)
+}
+
+/// The question of the file of `q`: 1 `questions` row owned by the
+/// sub-orchestrator of the feature of its task, with the time limit after
+/// the fleet clock. The row names the mail of a QUESTION line. A task with
+/// no idea has no owner: its question goes to you as 1 needs-you item.
+fn question_row(tx: &Connection, q: &Asking<'_>) -> Result<()> {
+    let a = q.attempt;
+    if feature_of_task(tx, &a.task_id)?.is_none() {
+        let text = format!(
+            "Task {} asked a question, but it has no idea, so no sub-orchestrator owns the \
+             question. The task stays in blocked_on_user until you run horch task requeue {} or \
+             horch task cancel {}. The question: {}",
+            a.task_id,
+            a.task_id,
+            a.task_id,
+            printable(&q.file.text)
+        );
+        return question_file_item(tx, a, q.path, &text);
+    }
+    let asked_at = util::now();
+    let ask = Ask {
+        task_id: &a.task_id,
+        attempt_id: &a.attempt_id,
+        mail_id: q.file.mail_id.as_deref(),
+        text: &q.file.text,
+        asked_at: &asked_at,
+    };
+    let clock = lease::fleet_clock(tx)?;
+    questions::ask(tx, &ask, clock, q.question_limit_s)?;
+    Ok(())
+}
+
+/// The outcome of the attempt `id`.
+fn outcome_of(tx: &Connection, id: &str) -> Result<Option<String>> {
+    Ok(tx
+        .query_row("SELECT outcome FROM attempts WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .flatten())
+}
+
+/// A rejected question file of `a`: 1 needs-you item, because its worker
+/// waits for an answer to a question that has no row.
+fn rejected_question(tx: &Connection, a: &AttemptRef, path: &Path, reason: &str) -> Result<()> {
+    let text = format!(
+        "The question file {} of task {} is rejected, so its question has no row and no \
+         owner: {}. fleetd does not read the file again.",
+        path.display(),
+        a.task_id,
+        printable(reason)
+    );
+    question_file_item(tx, a, path, &text)
+}
+
+/// The needs-you item of the question file `path` of `a`, by its key.
+fn question_file_item(tx: &Connection, a: &AttemptRef, path: &Path, text: &str) -> Result<()> {
+    needs_you::open_item(
+        tx,
+        &Write {
+            key: &format!("{QUESTION_FILE_KIND}:{}", key(path)),
+            kind: QUESTION_FILE_KIND,
+            entity: Entity::Task.as_str(),
+            entity_id: &a.task_id,
+            text,
+        },
     )
 }

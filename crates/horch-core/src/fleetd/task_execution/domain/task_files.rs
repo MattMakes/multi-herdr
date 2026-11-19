@@ -121,6 +121,37 @@ pub fn render_start_md(f: &TaskFacts, report_to: &str, read_first: &[String]) ->
     out
 }
 
+/// 1 answered question of the task, for `START.md` of its next attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnsweredQuestion {
+    /// The id of the `questions` row.
+    pub id: String,
+    pub question: Option<String>,
+    pub answer: Option<String>,
+}
+
+/// The section of `START.md` with the answered questions of the task,
+/// oldest first, so that the next attempt starts from the question and the
+/// answer (RR-12). `None` when the task has no answered question.
+pub fn answers_section(answered: &[AnsweredQuestion]) -> Option<String> {
+    if answered.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "## Answers to the questions of this task\n\n\
+         An earlier attempt asked these questions. Use each answer.\n",
+    );
+    for q in answered {
+        out.push_str(&format!(
+            "\n### Question {}\n\n{}\n\nAnswer: {}\n",
+            q.id,
+            q.question.as_deref().unwrap_or("(the question has no text)"),
+            q.answer.as_deref().unwrap_or("(the answer has no text)"),
+        ));
+    }
+    Some(out)
+}
+
 /// `value` as a YAML scalar: plain when it is safe, else double-quoted.
 fn scalar(value: &str) -> String {
     if is_plain(value) {
@@ -362,6 +393,27 @@ mod tests {
         f.handoff = Some("/fleet/tasks/t-1/handoff.md".into());
         assert!(render_start_md(&f, "/o/", &[])
             .contains("Read its handoff file first: `/fleet/tasks/t-1/handoff.md`"));
+    }
+
+    #[test]
+    fn answers_section_holds_each_question_and_its_answer() {
+        assert_eq!(answers_section(&[]), None);
+        let q = |id: &str, question: &str, answer: Option<&str>| AnsweredQuestion {
+            id: id.into(),
+            question: Some(question.into()),
+            answer: answer.map(str::to_string),
+        };
+        let section = answers_section(&[
+            q("t-1/A1/Q1", "Which port?", Some("Port 8080.")),
+            q("t-1/A1/Q2", "Which host?", None),
+        ])
+        .unwrap();
+        let first = section.find("Which port?\n\nAnswer: Port 8080.").unwrap();
+        let second = section
+            .find("Which host?\n\nAnswer: (the answer has no text)")
+            .unwrap();
+        assert!(first < second, "oldest first:\n{section}");
+        assert!(section.contains("### Question t-1/A1/Q1"), "{section}");
     }
 
     #[test]

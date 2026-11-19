@@ -718,8 +718,7 @@ fn stall_rounds_of_today_no_longer_reap_a_worker() {
         )
         .unwrap();
     let fake = Fake::new(&w);
-    let state = w.file("state");
-    let duties = WatchdogDuties::new(&Quiet, &NoEffects, state).forced();
+    let duties = WatchdogDuties::new(&Quiet, &NoEffects).forced();
 
     for clock in [10, 20, 30] {
         w.pass_with(clock, &worker, &fake, &duties);

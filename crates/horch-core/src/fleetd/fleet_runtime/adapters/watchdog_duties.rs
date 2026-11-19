@@ -128,8 +128,6 @@ struct State {
 pub struct WatchdogDuties<'a> {
     observer: &'a dyn Observer,
     effects: &'a dyn DutyEffects,
-    /// The state folder of the mail, for the open questions of each worker.
-    state_root: PathBuf,
     state: RefCell<State>,
     /// Check each working worker, due or not (`horch ledger watch --once
     /// --force`).
@@ -141,15 +139,10 @@ pub struct WatchdogDuties<'a> {
 }
 
 impl<'a> WatchdogDuties<'a> {
-    pub fn new(
-        observer: &'a dyn Observer,
-        effects: &'a dyn DutyEffects,
-        state_root: PathBuf,
-    ) -> WatchdogDuties<'a> {
+    pub fn new(observer: &'a dyn Observer, effects: &'a dyn DutyEffects) -> WatchdogDuties<'a> {
         WatchdogDuties {
             observer,
             effects,
-            state_root,
             state: RefCell::new(State::default()),
             force: false,
             checked: RefCell::new(Vec::new()),
@@ -338,11 +331,6 @@ impl RunDuties for WatchdogDuties<'_> {
         let time_up = ctx.budget.time_up;
         let runs = watchdog::active_runs(tx)?;
         let now = util::now();
-        for run in runs.iter().take_while(|_| !time_up()) {
-            if let Some(workspace) = run.workspace_id.as_deref() {
-                workers::sync_questions(tx, &self.state_root, workspace)?;
-            }
-        }
         // The findings of `horch ledger unfinished`, which only reads (T-885).
         crate::taskledger::import::sync_native(tx)?;
         let mut reaped = BTreeSet::new();
@@ -1107,7 +1095,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1129,7 +1117,7 @@ mod tests {
         let agent = Proc::sleep();
         let (task, worker) = w.stalled_task(agent.recorded());
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         let report = pass(&mut w, &duties, Faults::default());
 
@@ -1158,7 +1146,7 @@ mod tests {
         let mut w = world();
         let old = w.gone_orchestrator();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         for _ in 0..3 {
             let report = pass(&mut w, &duties, Faults::default());
@@ -1193,7 +1181,7 @@ mod tests {
         };
         attempts_store::insert_attempt(&w.conn, &a, &util::now()).unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
         assert!(duties.launches(&a), "the pass does not launch it");
 
         let report = pass(&mut w, &duties, Faults::default());
@@ -1206,7 +1194,7 @@ mod tests {
     fn pass_writes_no_startable_rewake() {
         let mut w = world();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
         let startable = |w: &World, title: &str| {
             let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
             tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
@@ -1272,7 +1260,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1298,7 +1286,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1322,7 +1310,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1342,7 +1330,7 @@ mod tests {
     fn pass_opens_1_item_for_a_settled_run_of_a_ready_feature() {
         let mut w = world();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         assert!(
@@ -1374,7 +1362,7 @@ mod tests {
         tasks::add(&w.conn, &w.run, &second, Actor::Orchestrator).unwrap();
         tasks::cancel(&w.conn, &first, "drop").unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1401,7 +1389,7 @@ mod tests {
         let lead = Proc::sleep();
         let attempt = w.sub_orchestrator(&task, lead.recorded());
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1428,7 +1416,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
 
@@ -1468,7 +1456,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1478,34 +1466,10 @@ mod tests {
     }
 
     #[test]
-    fn pass_syncs_open_questions_so_a_waiting_worker_is_not_reaped() {
-        let mut w = world();
-        let agent = Proc::sleep();
-        let (_, worker) = w.stalled_task(agent.recorded());
-        w.conn
-            .execute(
-                "UPDATE workers SET role = 'worker-1' WHERE worker_id = ?1",
-                [&worker],
-            )
-            .unwrap();
-        let mail = crate::messaging::mail::Mail::under(&w.dir, "w1");
-        let id = mail.enqueue("worker-1", "QUESTION: choose?").unwrap();
-        mail.ack(&id).unwrap();
-        let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
-
-        pass(&mut w, &duties, Faults::default());
-
-        assert_eq!(w.status("workers", "worker_id", &worker), "working");
-        let waits = w.count("SELECT count(*) FROM worker_waits WHERE kind = 'question'");
-        assert_eq!(waits, 1);
-    }
-
-    #[test]
     fn pass_retries_the_worktree_cleanups_once_each_pass() {
         let mut w = world();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1610,7 +1574,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         // No worker is live, so the run is stuck too: that wake is apart.
         pass(&mut w, &duties, Faults::default());
@@ -1745,7 +1709,7 @@ mod tests {
         seed_big_run(&w, WORKING, CLAIMING, HELD);
         let observer = Counting::default();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&observer, &effects);
         let mut settings = w.settings(Faults::default());
         settings.config.pass_budget = BUDGET as u64;
         let ports = Ports {
@@ -1845,7 +1809,7 @@ mod tests {
             clock: clock.clone(),
         };
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&observer, &effects);
         let ports = Ports {
             outside: &NoOutside,
             duties: &duties,
@@ -1888,7 +1852,7 @@ mod tests {
         seed_big_run(&w, 50, 0, 0);
         let observer = Counting::default();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&observer, &effects);
         let mut settings = w.settings(Faults::default());
         settings.config.pass_time_budget_s = 0;
         let ports = Ports {
