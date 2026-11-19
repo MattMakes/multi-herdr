@@ -4733,26 +4733,44 @@ impl Pass<'_> {
                 Err(e) => failed.push(format!("the deletion of {}: {e:#}", d.name)),
             }
         }
-        let judge_refs =
+        self.judge_branch_effects(conn, &todo.judges, git, deadline, &mut done, &mut failed);
+        report.done.extend(done.into_iter().map(Done::Git));
+        report.failed.extend(failed);
+    }
+
+    /// The rescues and moves of the judge branches of a fix round (ticket
+    /// 42), after the commit, then their record in 1 transaction. Each
+    /// effect waits for the next pass when the time budget of the pass
+    /// ends.
+    fn judge_branch_effects(
+        &mut self,
+        conn: &mut Connection,
+        judges: &[judge_branch::Effect],
+        git: CliWorktreeGit,
+        deadline: Deadline,
+        done: &mut Vec<String>,
+        failed: &mut Vec<String>,
+    ) {
+        let gw = CliGitGateway::new(git.clone());
+        let refs =
             GitJudgeBranchRefs::new(git, effects::judge_index_folder(&self.settings.fleet_root));
         let mut judged = Vec::new();
-        for e in &todo.judges {
+        for e in judges {
             if deadline.reached((self.now)()) {
                 break;
             }
-            match judge_branch::run(e, &gw, &judge_refs) {
+            match judge_branch::run(e, &gw, &refs) {
                 Ok(d) => judged.push(d),
                 Err(err) => failed.push(format!("the judge branch effect {e:?}: {err:#}")),
             }
         }
-        if !judged.is_empty() {
-            match self.observe_judges(conn, &judged) {
-                Ok(()) => done.extend(judged.iter().map(|d| format!("{d:?}"))),
-                Err(e) => failed.push(format!("the record of the judge branches: {e:#}")),
-            }
+        if judged.is_empty() {
+            return;
         }
-        report.done.extend(done.into_iter().map(Done::Git));
-        report.failed.extend(failed);
+        match self.observe_judges(conn, &judged) {
+            Ok(()) => done.extend(judged.iter().map(|d| format!("{d:?}"))),
+            Err(e) => failed.push(format!("the record of the judge branches: {e:#}")),
+        }
     }
 
     /// The effects of a merge with ideas in flight (ticket 35), after the
