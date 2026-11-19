@@ -609,6 +609,13 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
                 let mut new = NewTask::work("a", "tickets/a.md", persona);
                 new.fallback = fallback.map(str::to_string);
                 tasks::add(tx, &run, &new, Actor::Orchestrator)?;

@@ -149,6 +149,13 @@ impl World {
                         ..Default::default()
                     },
                 )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
                 let feature = NewFeature {
                     id: FEATURE,
                     name: Some("r1"),

@@ -1289,6 +1289,13 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
                 insert(
                     tx,
                     &NewWorker {
@@ -1315,6 +1322,13 @@ mod tests {
                         workspace_id: Some("w1".into()),
                         ..Default::default()
                     },
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
                 )?;
                 tasks::add(
                     tx,

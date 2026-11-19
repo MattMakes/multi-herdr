@@ -59,6 +59,14 @@ fn world() -> World {
         },
     )
     .unwrap();
+    // FR-12: a task needs an idea in flight of the feature of its run.
+    horch_core::taskledger::schema::run_idea(
+        &conn,
+        &run.run_id,
+        &horch_core::taskledger::util::now(),
+        true,
+    )
+    .unwrap();
     std::fs::create_dir_all(dir.join("fleet")).unwrap();
     World {
         dir,

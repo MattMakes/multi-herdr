@@ -163,6 +163,14 @@ impl World {
             ..Default::default()
         };
         let run = runs::create(&self.conn, &self.repo, &new).unwrap();
+        // FR-12: a task needs an idea in flight of the feature of its run.
+        horch_core::taskledger::schema::run_idea(
+            &self.conn,
+            &run.run_id,
+            &horch_core::taskledger::util::now(),
+            true,
+        )
+        .unwrap();
         let status = match idea {
             "merged" => "done",
             "cancelled" => "abandoned",

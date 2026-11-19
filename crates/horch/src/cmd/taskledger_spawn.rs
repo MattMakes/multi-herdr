@@ -697,7 +697,7 @@ mod trf_33_34_tests {
             .map(|(slug, ws)| {
                 store
                     .immediate(|tx| {
-                        runs::create(
+                        let run = runs::create(
                             tx,
                             dir.path(),
                             &NewRun {
@@ -705,7 +705,15 @@ mod trf_33_34_tests {
                                 workspace_id: ws.map(str::to_string),
                                 ..Default::default()
                             },
-                        )
+                        )?;
+                        // FR-12: a task needs an idea in flight of the feature of its run.
+                        horch_core::taskledger::schema::run_idea(
+                            tx,
+                            &run.run_id,
+                            &horch_core::taskledger::util::now(),
+                            true,
+                        )?;
+                        Ok(run)
                     })
                     .unwrap()
             })
@@ -982,6 +990,13 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
                 let new = |persona: &str| NewWorker {
                     run_id: run.run_id.clone(),
                     kind: Some(WorkerKind::Worker),
@@ -1060,6 +1075,13 @@ mod adoption_tests {
                         slug: "r1".into(),
                         ..Default::default()
                     },
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
                 )?;
                 let t = tasks::add(
                     tx,
@@ -1176,14 +1198,22 @@ mod adoption_tests {
         let other = w
             .store
             .immediate(|tx| {
-                runs::create(
+                let run = runs::create(
                     tx,
                     w.dir.path(),
                     &NewRun {
                         slug: "r2".into(),
                         ..Default::default()
                     },
-                )
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
+                Ok(run)
             })
             .unwrap();
         refused(
@@ -1287,7 +1317,7 @@ mod push_tests {
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
         let run = store
             .immediate(|tx| {
-                runs::create(
+                let run = runs::create(
                     tx,
                     dir.path(),
                     &NewRun {
@@ -1295,7 +1325,15 @@ mod push_tests {
                         base_branch: Some("main".into()),
                         ..Default::default()
                     },
-                )
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
+                Ok(run)
             })
             .unwrap();
         let mut w = World {

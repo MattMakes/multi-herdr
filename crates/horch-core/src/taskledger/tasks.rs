@@ -2327,7 +2327,17 @@ mod tests {
             ..Default::default()
         };
         let run = store
-            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .immediate(|tx| {
+                let run = runs::create(tx, dir, &new_run)?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
+                Ok(run)
+            })
             .unwrap();
         (store, run)
     }
@@ -3053,7 +3063,17 @@ mod attempt_tests {
             ..Default::default()
         };
         let run = store
-            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .immediate(|tx| {
+                let run = runs::create(tx, dir, &new_run)?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
+                Ok(run)
+            })
             .unwrap();
         (store, run)
     }

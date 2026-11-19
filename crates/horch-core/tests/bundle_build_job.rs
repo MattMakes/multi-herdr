@@ -53,7 +53,19 @@ fn world() -> World {
         slug: "r1".into(),
         ..Default::default()
     };
-    let run = store.immediate(|tx| runs::create(tx, &root, &new)).unwrap();
+    let run = store
+        .immediate(|tx| {
+            let run = runs::create(tx, &root, &new)?;
+            // FR-12: a task needs an idea in flight of the feature of its run.
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
+            Ok(run)
+        })
+        .unwrap();
     let new = NewFeature {
         id: FEATURE,
         name: Some("f-0001"),

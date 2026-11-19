@@ -156,7 +156,17 @@ mod tests {
             ..Default::default()
         };
         let run = store
-            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .immediate(|tx| {
+                let run = runs::create(tx, dir, &new_run)?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
+                Ok(run)
+            })
             .unwrap();
         let new_worker = NewWorker {
             run_id: run.run_id.clone(),
@@ -319,6 +329,13 @@ mod tests {
         let (run, worker) = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir, &new_run)?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
                 tasks::add(
                     tx,
                     &run,

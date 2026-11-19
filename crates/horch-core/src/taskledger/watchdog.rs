@@ -1204,6 +1204,13 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
                 tasks::add(
                     tx,
                     &run,
@@ -1684,6 +1691,13 @@ mod reconcile_tests {
                         slug: "s".into(),
                         ..Default::default()
                     },
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
                 )?;
                 tasks::add(
                     tx,

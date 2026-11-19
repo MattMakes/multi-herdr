@@ -297,14 +297,22 @@ mod trf_15_tests {
             let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
             let run = store
                 .immediate(|tx| {
-                    runs::create(
+                    let run = runs::create(
                         tx,
                         Path::new("/repo"),
                         &NewRun {
                             slug: "r1".into(),
                             ..Default::default()
                         },
-                    )
+                    )?;
+                    // FR-12: a task needs an idea in flight of the feature of its run.
+                    horch_core::taskledger::schema::run_idea(
+                        tx,
+                        &run.run_id,
+                        &horch_core::taskledger::util::now(),
+                        true,
+                    )?;
+                    Ok(run)
                 })
                 .unwrap();
             let t = NewTask::work("alpha", "tickets/alpha.md", "dev");
@@ -374,14 +382,22 @@ mod trf_21_tests {
         let mut store = Store::open(&db).unwrap();
         let run = store
             .immediate(|tx| {
-                runs::create(
+                let run = runs::create(
                     tx,
                     Path::new("/repo"),
                     &NewRun {
                         slug: "r1".into(),
                         ..Default::default()
                     },
-                )
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
+                Ok(run)
             })
             .unwrap();
         (dir, ctx, store, run)

@@ -15,14 +15,22 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
     let run = store
         .immediate(|tx| {
-            runs::create(
+            let run = runs::create(
                 tx,
                 Path::new("/repo"),
                 &NewRun {
                     slug: "r1".into(),
                     ..Default::default()
                 },
-            )
+            )?;
+            // FR-12: a task needs an idea in flight of the feature of its run.
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
+            Ok(run)
         })
         .unwrap();
     (dir, store, run)

@@ -15,14 +15,22 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
     let run = store
         .immediate(|tx| {
-            runs::create(
+            let run = runs::create(
                 tx,
                 Path::new("/repo"),
                 &NewRun {
                     slug: "r1".into(),
                     ..Default::default()
                 },
-            )
+            )?;
+            // FR-12: a task needs an idea in flight of the feature of its run.
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
+            Ok(run)
         })
         .unwrap();
     (dir, store, run)
@@ -295,14 +303,22 @@ fn eight_racing_claims_take_exactly_three_tasks() {
     let mut s = Store::open(&path).unwrap();
     let run = s
         .immediate(|tx| {
-            runs::create(
+            let run = runs::create(
                 tx,
                 Path::new("/repo"),
                 &NewRun {
                     slug: "race".into(),
                     ..Default::default()
                 },
-            )
+            )?;
+            // FR-12: a task needs an idea in flight of the feature of its run.
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
+            Ok(run)
         })
         .unwrap();
     for n in 0..3 {
@@ -392,7 +408,7 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     let mut store = Store::open(&db).unwrap();
     let run = store
         .immediate(|tx| {
-            runs::create(
+            let run = runs::create(
                 tx,
                 Path::new("/repo"),
                 &NewRun {
@@ -403,7 +419,15 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
                     },
                     ..Default::default()
                 },
-            )
+            )?;
+            // FR-12: a task needs an idea in flight of the feature of its run.
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
+            Ok(run)
         })
         .unwrap();
     let t = add(&mut store, &run, "a", "opus", |_| {});

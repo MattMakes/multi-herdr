@@ -1295,6 +1295,13 @@ mod trf_44_tests {
                         },
                     )?,
                 };
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
                 let task = match tasks::resolve(tx, &run.run_id, "T-1") {
                     Ok(t) => t,
                     Err(_) => tasks::add(
@@ -1603,6 +1610,13 @@ mod trf_45_tests {
                         slug: "r1".into(),
                         ..Default::default()
                     },
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
                 )?;
                 workers::insert(
                     tx,

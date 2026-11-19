@@ -364,6 +364,13 @@ mod tests {
                     ..Default::default()
                 };
                 let run = runs::create(tx, dir.path(), &new_run)?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &crate::taskledger::util::now(),
+                    true,
+                )?;
                 let new = NewTask::work("a", "tickets/a.md", "dev");
                 tasks::add(tx, &run, &new, Actor::Orchestrator)?;
                 let w = NewWorker {

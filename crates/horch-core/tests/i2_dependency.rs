@@ -55,6 +55,14 @@ fn world() -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &dir, &new_run).unwrap();
+    // FR-12: a task needs an idea in flight of the feature of its run.
+    horch_core::taskledger::schema::run_idea(
+        &conn,
+        &run.run_id,
+        &horch_core::taskledger::util::now(),
+        true,
+    )
+    .unwrap();
     let new = NewFeature {
         id: FEATURE,
         name: Some("r1"),

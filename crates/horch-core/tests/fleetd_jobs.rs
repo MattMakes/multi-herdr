@@ -201,6 +201,14 @@ impl World {
             },
         )
         .unwrap();
+        // FR-12: a task needs an idea in flight of the feature of its run.
+        horch_core::taskledger::schema::run_idea(
+            &self.conn,
+            &run.run_id,
+            &horch_core::taskledger::util::now(),
+            true,
+        )
+        .unwrap();
         let mut new = NewTask::work("check", "check.md", "dev");
         new.land_check = Some(check.into());
         let task = tasks::add(&self.conn, &run, &new, Actor::Orchestrator).unwrap();

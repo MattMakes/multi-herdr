@@ -826,6 +826,8 @@ fn rescue_ref_exists_before_the_rebase() {
 fn both_gates_run_again_after_the_rebase() {
     let mut w = world();
     let (lower, lower_branch, upper, upper_branch) = stack(&mut w);
+    // FR-12: the task of the upper feature needs an idea in flight.
+    w.idea(&upper, "I-1", "in_progress");
     w.task_branch(&upper, &upper_branch, "fleet/t1", "t1.txt", "landed");
     // Each idea of the upper feature is integrating.
     w.conn

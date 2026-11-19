@@ -207,6 +207,13 @@ fn a_run_with_open_work_closes_only_with_abandon_and_closes_once() {
     let (_d, mut s) = store();
     let run = new_run(&mut s, "/repo", "a", None);
     s.immediate(|tx| {
+        // FR-12: a task needs an idea in flight of the feature of its run.
+        horch_core::taskledger::schema::run_idea(
+            tx,
+            &run.run_id,
+            &horch_core::taskledger::util::now(),
+            true,
+        )?;
         tasks::add(
             tx,
             &run,

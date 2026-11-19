@@ -108,7 +108,17 @@ fn world(path: &[&str]) -> World {
         ..Default::default()
     };
     let run = store
-        .immediate(|tx| runs::create(tx, dir.path(), &new_run))
+        .immediate(|tx| {
+            let run = runs::create(tx, dir.path(), &new_run)?;
+            // FR-12: a task needs an idea in flight of the feature of its run.
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
+            Ok(run)
+        })
         .unwrap();
     store
         .immediate(|tx| {

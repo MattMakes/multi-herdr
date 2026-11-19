@@ -89,6 +89,14 @@ impl World {
             },
         )
         .unwrap();
+        // FR-12: a task needs an idea in flight of the feature of its run.
+        horch_core::taskledger::schema::run_idea(
+            &conn,
+            &run.run_id,
+            &horch_core::taskledger::util::now(),
+            true,
+        )
+        .unwrap();
         token_file::ensure(&root.join("fleet")).unwrap();
         World {
             _tmp: tmp,

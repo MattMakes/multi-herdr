@@ -105,6 +105,14 @@ fn world() -> World {
         },
     )
     .unwrap();
+    // FR-12: a task needs an idea in flight of the feature of its run.
+    horch_core::taskledger::schema::run_idea(
+        &conn,
+        &run.run_id,
+        &horch_core::taskledger::util::now(),
+        true,
+    )
+    .unwrap();
     let deps = WorkerDeps {
         guard: Generation(1),
         config: Arc::new(FleetConfig::default()),
@@ -547,6 +555,14 @@ fn worker_of_other_run(w: &World) -> String {
             slug: "r2".into(),
             ..Default::default()
         },
+    )
+    .unwrap();
+    // FR-12: a task needs an idea in flight of the feature of its run.
+    horch_core::taskledger::schema::run_idea(
+        &w.conn,
+        &other.run_id,
+        &horch_core::taskledger::util::now(),
+        true,
     )
     .unwrap();
     workers::insert(
