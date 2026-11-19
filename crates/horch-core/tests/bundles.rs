@@ -607,6 +607,54 @@ fn moved_feature_tip_drops_a_building_bundle() {
     assert_eq!(next.members, names(&ABC));
 }
 
+/// The build job of a bundle is a separate process. When the feature tip
+/// moves while the job runs, a pass drops the bundle, and the job can still
+/// write the candidate ref after the drop. The pass that sees the passed
+/// job records that ref on the dropped row, so fleetd deletes it ("fleetd
+/// owns the candidate refs").
+#[test]
+fn candidate_written_after_the_drop_is_recorded_for_its_deletion() {
+    let mut w = three_ready();
+    w.pass(100);
+    let id = w.only_bundle().id;
+    let build = w.jobs_of(Kind::BundleBuild)[0].id;
+    // The job process checks that the bundle is building and writes the
+    // ref, then fleetd drops the bundle, then the job ends.
+    let row = jobs_store::get(&w.conn, build).unwrap().unwrap();
+    let ran = exec_bundle::run(&w.conn, &row).unwrap();
+    let Some(Build::Candidate {
+        candidate_ref,
+        candidate_tip,
+    }) = ran.data.clone().map(|d| serde_json::from_value(d).unwrap())
+    else {
+        panic!("the build of 3 clean members gives a candidate");
+    };
+    w.commit_on(FEATURE_BRANCH, "f.txt", "moved\n");
+    w.pass(200);
+    assert_eq!(w.bundle(id).state, "dropped");
+    assert_eq!(w.bundle(id).candidate_ref, None);
+    let json = serde_json::json!({
+        "passed": true,
+        "verdict": true,
+        "text": ran.outcome.text,
+        "data": ran.data,
+    });
+    w.end_job(build, "passed", Some(&json.to_string()));
+
+    w.pass(300);
+    let bundle = w.bundle(id);
+    assert_eq!(bundle.state, "dropped");
+    assert_eq!(
+        bundle.candidate_ref.as_deref(),
+        Some(candidate_ref.as_str())
+    );
+    assert_eq!(
+        bundle.candidate_tip.as_deref(),
+        Some(candidate_tip.as_str())
+    );
+    assert_eq!(w.tip(&candidate_ref), candidate_tip);
+}
+
 #[test]
 fn moved_feature_tip_drops_a_gating_bundle() {
     let mut w = three_ready();

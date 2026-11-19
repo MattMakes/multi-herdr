@@ -127,7 +127,57 @@ pub fn advance_in(
             step(b, tx, clock, id)?;
         }
     }
+    late_candidates(b.jobs, tx, bundles)?;
     overdue_items(b.jobs, tx, clock)
+}
+
+/// The build job of a bundle is a separate process: a pass can drop the
+/// bundle while the job runs, and the job can still write the candidate
+/// ref after the drop. Record the candidate of each such passed job on its
+/// dropped bundle, so the deletion of candidate refs deletes the ref. A
+/// recorded bundle has its `candidate_tip`, so it is recorded 1 time.
+fn late_candidates(ctx: &JobCtx<'_>, tx: &Connection, bundles: Option<&[i64]>) -> Result<()> {
+    let mut stmt = tx.prepare(
+        "SELECT b.id FROM bundles b JOIN jobs j ON j.id = b.job_id
+         WHERE b.state = ?1 AND b.candidate_tip IS NULL AND j.kind = ?2 AND j.state = ?3
+         ORDER BY b.id",
+    )?;
+    let ids: Vec<i64> = stmt
+        .query_map(
+            params![
+                BundleState::Dropped.as_str(),
+                Kind::BundleBuild.as_str(),
+                State::Passed.as_str()
+            ],
+            |r| r.get(0),
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in ids {
+        if bundles.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
+        let bundle = rows::bundle(tx, id)?.with_context(|| format!("no bundle {id}"))?;
+        let job = match bundle.job_id {
+            Some(job) => jobs_store::get(tx, job)?,
+            None => None,
+        };
+        let BuildFact::Built {
+            candidate_ref,
+            candidate_tip,
+        } = build_fact(job.as_ref())
+        else {
+            continue;
+        };
+        let why = "its build job wrote the candidate after the drop";
+        let facts = [
+            BundleFact::CandidateRef(Some(&candidate_ref)),
+            BundleFact::CandidateTip(&candidate_tip),
+        ];
+        for fact in facts {
+            rows::set_bundle_fact(tx, ctx.guard, id, fact, by_fleetd(why))?;
+        }
+    }
+    Ok(())
 }
 
 /// The repository and the branch of `feature_id`, or `None` when the
