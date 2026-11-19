@@ -511,6 +511,14 @@ impl IntegrationGitGateway for ProjectGitGateway {
         self.writer(repo)?.delete_ref(repo, name, expected_old)
     }
 
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        self.reader().contains(repo, tip, ancestor)
+    }
+
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
+        self.reader().is_ancestor(repo, a, b)
+    }
+
     fn changes_in(
         &self,
         repo: &Path,
