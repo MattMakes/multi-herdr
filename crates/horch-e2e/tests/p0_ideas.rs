@@ -127,29 +127,42 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
             let children: Vec<_> = texts
                 .iter()
                 .map(|t| {
-                    h.horch(&["idea", "add", t])
+                    h.horch(&["idea", "add", "--json", t])
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
                         .spawn()
                         .unwrap()
                 })
                 .collect();
+            // The id of each idea that the operator sent. A drift idea of
+            // the fleet can be on the board too, so the test counts only
+            // these ideas.
+            let mut sent = Vec::new();
             for (t, child) in texts.iter().zip(children) {
                 let o = child.wait_with_output().unwrap();
                 assert!(o.status.success(), "horch idea add \"{t}\": {}", text(&o));
+                let result: Value = serde_json::from_slice(&o.stdout)
+                    .unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
+                let id = result["idea"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("horch idea add gives no idea id: {result}"))
+                    .to_string();
+                sent.push((*t, id));
             }
+            assert_ne!(sent[0].1, sent[1].1, "2 ideas got 1 id: {sent:?}");
 
             let board = json_of(&h, &["ideas", "--json"]);
-            let ideas = board["ideas"]
+            let ids: Vec<_> = board["ideas"]
                 .as_array()
-                .unwrap_or_else(|| panic!("horch ideas --json has no ideas list: {board}"));
-            assert_eq!(ideas.len(), 2, "horch ideas --json: {board}");
-            let mut folders = Vec::new();
-            let mut found_texts = Vec::new();
-            for idea in ideas {
-                let id = idea["id"]
-                    .as_str()
-                    .unwrap_or_else(|| panic!("idea has no id: {idea}"));
+                .unwrap_or_else(|| panic!("horch ideas --json has no ideas list: {board}"))
+                .iter()
+                .filter_map(|i| i["id"].as_str())
+                .collect();
+            for (t, id) in &sent {
+                assert!(
+                    ids.contains(&id.as_str()),
+                    "the idea {id} of \"{t}\" is lost: {board}"
+                );
                 // The folder of an idea is `<fleet root>/ideas/<id>/`, and
                 // `horch idea show --json` gives its idea.md.
                 let folder = h.fleet_root().join("ideas").join(id);
@@ -165,20 +178,13 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
                 let on_disk = std::fs::read_to_string(folder.join("idea.md"))
                     .unwrap_or_else(|e| panic!("{}: {e}", folder.display()));
                 assert_eq!(on_disk, body, "idea show {id} is not its idea.md");
-                let matching_texts: Vec<_> = texts.iter().filter(|t| body.contains(*t)).collect();
+                let held: Vec<_> = texts.iter().filter(|x| body.contains(*x)).collect();
                 assert_eq!(
-                    matching_texts.len(),
-                    1,
-                    "idea.md holds not exactly 1 idea: {body}"
+                    held,
+                    [t],
+                    "idea.md of {id} does not hold exactly its 1 idea: {body}"
                 );
-                found_texts.push(*matching_texts[0]);
-                folders.push(folder);
             }
-            assert_ne!(folders[0], folders[1], "2 ideas share 1 folder: {board}");
-            found_texts.sort_unstable();
-            let mut sent_texts = texts.to_vec();
-            sent_texts.sort_unstable();
-            assert_eq!(found_texts, sent_texts, "an idea is lost: {board}");
         },
     );
 }
