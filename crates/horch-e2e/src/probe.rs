@@ -28,6 +28,10 @@ use crate::{scenarios, Call};
 /// The first argument of the probe child: the fake does 1 act and exits.
 const CHILD: &str = "__horch_probe_act";
 
+/// The first argument of the probe orphan: a double fork, whose grandchild
+/// does 1 act and writes its result in a file.
+const ORPHAN: &str = "__horch_probe_orphan";
+
 /// The text of the scenario key `version:<text>`, else `default`.
 pub fn version_or(default: &str) -> String {
     scenarios()
@@ -40,14 +44,67 @@ pub fn version_or(default: &str) -> String {
 /// first in `main`.
 pub fn child_entry() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [first, act, path, out] = args.as_slice() {
+        if first == ORPHAN {
+            orphan_entry(act, Path::new(path), Path::new(out));
+        }
+    }
     let [first, act, path] = args.as_slice() else {
         return;
     };
     if first != CHILD {
         return;
     }
-    let path = Path::new(path);
-    let done = match act.as_str() {
+    match do_act(act, Path::new(path)) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The probe orphan: the child makes a new session (so a new process
+/// group), starts the grandchild and exits, so the grandchild has no
+/// parent, group or session of the agent. The grandchild does `act` and
+/// writes `allowed` or `refused: <why>` in `out`. This process exits when
+/// its child exited.
+#[cfg(unix)]
+fn orphan_entry(act: &str, path: &Path, out: &Path) -> ! {
+    // SAFETY: the fake is 1 thread here; each branch only calls exit,
+    // setsid, waitpid or plain Rust code.
+    unsafe {
+        let child = libc::fork();
+        if child > 0 {
+            let mut status = 0;
+            libc::waitpid(child, &mut status, 0);
+            std::process::exit(0);
+        }
+        if child < 0 {
+            std::process::exit(1);
+        }
+        libc::setsid();
+        if libc::fork() != 0 {
+            libc::_exit(0);
+        }
+    }
+    let result = match do_act(act, path) {
+        Ok(()) => "allowed".to_owned(),
+        Err(e) => format!("refused: {e}"),
+    };
+    let tmp = out.with_extension("tmp");
+    let _ = std::fs::write(&tmp, result).and_then(|()| std::fs::rename(&tmp, out));
+    std::process::exit(0);
+}
+
+#[cfg(not(unix))]
+fn orphan_entry(_act: &str, _path: &Path, _out: &Path) -> ! {
+    std::process::exit(1);
+}
+
+/// Do 1 act of the probe on `path`.
+fn do_act(act: &str, path: &Path) -> Result<(), String> {
+    match act {
         "write" => std::fs::write(path, "horch probe\n").map_err(|e| e.to_string()),
         "read" => match std::fs::read(path) {
             Ok(bytes) if bytes.is_empty() => Err("the read gave no bytes".to_owned()),
@@ -56,13 +113,6 @@ pub fn child_entry() {
         },
         "connect" => connect(path),
         other => Err(format!("unknown act {other}")),
-    };
-    match done {
-        Ok(()) => std::process::exit(0),
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
     }
 }
 
@@ -423,14 +473,60 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
         "sandbox".into(),
         json!(if rules.is_some() { "on" } else { "none" }),
     );
+    let mut orphan = Map::new();
     for (name, act, path) in acts {
         let result = in_child(rules, act, &path);
         if act == "write" {
             let _ = std::fs::remove_file(&path);
         }
+        if matches!(name, "read_token" | "connect_channel" | "write_requests") {
+            // With the key `orphan_escapes`, the orphan runs with no
+            // sandbox: a sandbox that does not hold for a process that
+            // left the tree of the agent.
+            let escapes = crate::scenario_has("orphan_escapes");
+            let out = cwd.join(format!("{tag}-orphan-{name}"));
+            let result = in_orphan(rules.filter(|_| !escapes), act, &path, &out);
+            if act == "write" {
+                let _ = std::fs::remove_file(&path);
+            }
+            orphan.insert(name.into(), Value::String(result));
+        }
         report.insert(name.into(), Value::String(result));
     }
+    report.insert("orphan".into(), Value::Object(orphan));
     Value::Object(report)
+}
+
+/// Do `act` on `path` in a double-fork orphan of a child under `rules`,
+/// and give its result, which the orphan writes in `out`.
+fn in_orphan(rules: Option<&Rules>, act: &str, path: &Path, out: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("not run: {e}"),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(ORPHAN).arg(act).arg(path).arg(out);
+    if let Some(rules) = rules {
+        cmd = match sandboxed(cmd, &rules.writable, &rules.denials) {
+            Ok(cmd) => cmd,
+            Err(e) => return format!("not run: {e}"),
+        };
+    }
+    cmd.stdin(std::process::Stdio::null());
+    if let Err(e) = cmd.output() {
+        return format!("not run: {e}");
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(result) = std::fs::read_to_string(out) {
+            let _ = std::fs::remove_file(out);
+            return result;
+        }
+        if std::time::Instant::now() >= end {
+            return "not run: the orphan wrote no result in 10 s".to_owned();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn in_child(rules: Option<&Rules>, act: &str, path: &Path) -> String {
