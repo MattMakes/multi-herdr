@@ -20,7 +20,7 @@ use crate::fleetd::integration::application::ports::{
     BranchTip, Candidate, IntegrationGitGateway, Member, RefMove,
 };
 use crate::fleetd::integration::application::stacks::StackGit;
-use crate::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
 
 /// The reflog message of each ref move of fleetd.
 const MOVE_MESSAGE: &str = "fleetd: compare-and-set";
@@ -447,6 +447,100 @@ impl StackGit for CliStackGit {
             );
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// [`IntegrationGitGateway`] for a caller that does not know its
+/// repositories before a call: the idea duties and the idea requests of
+/// fleetd (Phase 6). Each call gets its own [`CliGitGateway`] that can read
+/// only the repository of the call. A call that moves a ref, writes an
+/// object or sets a key can also write the git folder of that repository
+/// (`repo_git_dir`), as each other git job of fleetd (Q26 of fleetd-p4).
+/// It cannot write the files of the project.
+#[derive(Debug, Clone)]
+pub struct ProjectGitGateway {
+    git: CliWorktreeGit,
+}
+
+impl ProjectGitGateway {
+    pub fn new(git: CliWorktreeGit) -> ProjectGitGateway {
+        ProjectGitGateway { git }
+    }
+
+    /// The gateway of a call that reads `repo`.
+    fn reader(&self, repo: &Path) -> CliGitGateway {
+        CliGitGateway::new(self.git.clone().reading(&[repo.to_path_buf()]))
+    }
+
+    /// The gateway of a call that writes the git folder of `repo`.
+    fn writer(&self, repo: &Path) -> Result<CliGitGateway> {
+        let git_dir = repo_git_dir(repo)?;
+        Ok(CliGitGateway::new(
+            self.git
+                .clone()
+                .reading(&[repo.to_path_buf()])
+                .writing(&[git_dir]),
+        ))
+    }
+}
+
+impl IntegrationGitGateway for ProjectGitGateway {
+    fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>> {
+        self.reader(repo).tip(repo, name)
+    }
+
+    fn update_ref(
+        &self,
+        repo: &Path,
+        name: &str,
+        new: &str,
+        expected_old: Option<&str>,
+    ) -> Result<RefMove> {
+        self.writer(repo)?.update_ref(repo, name, new, expected_old)
+    }
+
+    fn delete_ref(&self, repo: &Path, name: &str, expected_old: &str) -> Result<RefMove> {
+        self.writer(repo)?.delete_ref(repo, name, expected_old)
+    }
+
+    fn changes_in(
+        &self,
+        repo: &Path,
+        branch_tip: &str,
+        base: &str,
+        target_tip: &str,
+    ) -> Result<bool> {
+        self.reader(repo)
+            .changes_in(repo, branch_tip, base, target_tip)
+    }
+
+    fn build_candidate(
+        &self,
+        repo: &Path,
+        base_tip: &str,
+        members: &[Member],
+    ) -> Result<Candidate> {
+        self.writer(repo)?.build_candidate(repo, base_tip, members)
+    }
+
+    fn fleet_branches(&self, repo: &Path) -> Result<Vec<BranchTip>> {
+        self.reader(repo).fleet_branches(repo)
+    }
+
+    fn task_branches(&self, repo: &Path, run_branch: &str) -> Result<Vec<BranchTip>> {
+        self.reader(repo).task_branches(repo, run_branch)
+    }
+
+    fn stash_branches(&self, repo: &Path) -> Result<Vec<String>> {
+        self.reader(repo).stash_branches(repo)
+    }
+
+    fn fleet_toml(&self, repo: &Path, tip: &str) -> Result<Option<String>> {
+        self.reader(repo).fleet_toml(repo, tip)
+    }
+
+    fn ensure_settings(&self, dir: &Path) -> Result<()> {
+        self.writer(dir)?.ensure_settings(dir)
     }
 }
 
