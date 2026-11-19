@@ -1235,7 +1235,7 @@ impl<'a> Pass<'a> {
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
-        start_running(&tx, guard, clock, &wrappers.checkins, |persona| {
+        start_running(&tx, guard, clock, &wrappers, |persona| {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
@@ -2100,6 +2100,12 @@ impl Rules<'_> {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
                 continue;
             };
+            if verifying(self.tx, &task_id)? {
+                // Rule D: the verifier ends the task and gives the attempt
+                // its outcome. The exit of its author burns no attempt.
+                stops.extend(commands::end_attempt(self.tx, &reap)?);
+                continue;
+            }
             if !reap.end_worker {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
                 commands::schedule_retry(self.tx, &task_id, &why)?;
@@ -2108,7 +2114,7 @@ impl Rules<'_> {
             let persona = self.persona_of(&reap.worker)?;
             let outcome = self.exit_outcome(
                 questions_store::open_of_task(self.tx, &task_id)? > 0,
-                self.pool_limited(persona.as_deref()),
+                self.pool_limited(persona.as_deref()) || quota_hinted(self.tx, &reap.attempt)?,
             );
             reap.outcome = outcome.as_str().to_string();
             stops.extend(commands::end_attempt(self.tx, &reap)?);
@@ -2844,21 +2850,35 @@ fn dispatch_holds(
     }
 }
 
+/// Whether task `task` is `verifying`.
+fn verifying(tx: &Connection, task: &str) -> Result<bool> {
+    Ok(tasks::get(tx, task)?.status == TaskStatus::Verifying.as_str())
+}
+
+/// Whether the `exit.json` of attempt `attempt` had the outcome hint
+/// `quota`: the ingest recorded [`attempt_files::QUOTA_HINT`] on it.
+fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
+    let hint = attempt_files::QUOTA_HINT;
+    door::has_fact(tx, Entity::Attempt, attempt, EventKind::Note, hint)
+}
+
 /// The first heartbeat of the wrapper of a push attempt
 /// (`docs/specs/fleetd/design.md`, the task state table, row `leased`):
 /// the attempt in `launching` goes `live`, and its `leased` task goes
 /// `running` and takes its lease for `lease_s` of the persona of the
-/// attempt. `checkins` are the attempts whose heartbeat this pass used. A
-/// repair attempt of a `done` task only goes `live`: its bind took the
-/// lease.
+/// attempt. `wrappers.checkins` are the attempts whose heartbeat this pass
+/// used. The wrapper that the heartbeat names, when it passed the PID
+/// check, goes on the attempt row, so the commands of its agent find their
+/// attempt and a pass sees its exit. A repair attempt of a `done` task only
+/// goes `live`: its bind took the lease.
 fn start_running(
     tx: &Connection,
     guard: Option<Generation>,
     clock: FleetSeconds,
-    checkins: &[String],
+    wrappers: &attempt_files::Report,
     lease_s: impl Fn(Option<&str>) -> i64,
 ) -> Result<()> {
-    for id in checkins {
+    for id in &wrappers.checkins {
         let Some((Some(task_id), state, via, persona)) = attempts_store::attempt_via(tx, id)?
         else {
             continue;
@@ -2866,10 +2886,13 @@ fn start_running(
         if via != PUSH {
             continue;
         }
+        let wrapper = wrappers.wrappers.get(id).copied();
         if state == AttemptState::Launching.as_str() {
-            commands::attempt_live(tx, guard, id, None)?;
+            commands::attempt_live(tx, guard, id, wrapper)?;
         } else if state != AttemptState::Live.as_str() {
             continue;
+        } else if let Some(w) = wrapper {
+            commands::attempt_wrapper(tx, id, w)?;
         }
         if tasks::get(tx, &task_id)?.status != TaskStatus::Leased.as_str() {
             continue;

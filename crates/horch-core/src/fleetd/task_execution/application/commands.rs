@@ -126,6 +126,16 @@ pub fn attempt_live(
     Ok(())
 }
 
+/// The wrapper `wrapper` of the `live` attempt `attempt` passed its PID
+/// check after the attempt went live: it goes on the row when the row has
+/// no process. The first heartbeat can come before the agent starts, and
+/// only a heartbeat with the agent PID names the wrapper.
+pub fn attempt_wrapper(tx: &Connection, attempt: &str, wrapper: Recorded) -> Result<()> {
+    check_open(tx)?;
+    store::set_missing_process(tx, attempt, wrapper)?;
+    Ok(())
+}
+
 /// `ScheduleRetry`, rung 6 with the design numbers: the attempt of task
 /// `task_id` crashed. The task waits for its backoff in `ready`, first in
 /// line, or goes to `failed` or `escalated`

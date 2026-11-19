@@ -672,6 +672,37 @@ pub fn settle_exit(
     Ok(ended)
 }
 
+/// The ingest of `exit.json` of an attempt whose wrapper fleetd records on
+/// the attempt row (a live push attempt): the next pass sees the wrapper
+/// gone and ends the attempt and the worker row by rung 5. So this writes
+/// only the exit code, the exit event and the end of the session record,
+/// in `tx`.
+pub fn exit_seen(
+    tx: &rusqlite::Connection,
+    worker_id: &str,
+    code: Option<i32>,
+    at: &str,
+) -> Result<()> {
+    let w = workers::get(tx, worker_id)?;
+    let about = About {
+        run: w.run_id.as_deref(),
+        task: w.task_id.as_deref(),
+        worker: Some(worker_id),
+    };
+    workers::set_exit_code(tx, worker_id, code)?;
+    util::event(
+        tx,
+        &about,
+        Actor::Supervisor,
+        EventKind::Exited,
+        &exit_text(code),
+    )?;
+    if let Some(record) = w.legacy_record_id {
+        crate::execution::store::record_exit_in(tx, &record, code, at)?;
+    }
+    Ok(())
+}
+
 /// End the worker per [`exit_rule`], or only record the exit code. Returns
 /// the reason text of the exit event.
 fn record_exit(

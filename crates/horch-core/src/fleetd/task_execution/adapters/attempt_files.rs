@@ -33,6 +33,7 @@
 //! fleetd, and while a recorded wrapper runs, a new agent must be its
 //! child. A fact that the platform does not give fails the check.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -51,11 +52,18 @@ use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::domain::repair::{REPAIR_CAUSE, REPAIR_LINE};
+use crate::fleetd::task_execution::domain::task::Recorded;
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::supervisor::{
-    self, Ended, ExitFile, HeartbeatFile, SessionFile, EXIT_JSON, HEARTBEAT_JSON, SESSION_JSON,
+    self, Ended, ExitFile, HeartbeatFile, OutcomeHint, SessionFile, EXIT_JSON, HEARTBEAT_JSON,
+    SESSION_JSON,
 };
 use crate::taskledger::{util, workers};
+
+/// The cause of the note on an attempt whose `exit.json` has the outcome
+/// hint `quota`: the wrapper saw the usage-limit signal of the CLI. Rung 5
+/// then gives the outcome `quota` (RR-11).
+pub const QUOTA_HINT: &str = "the wrapper saw a usage limit";
 
 /// The size limit of `exit.json`.
 pub const EXIT_MAX_BYTES: u64 = 4096;
@@ -97,6 +105,10 @@ pub struct WrapperRead {
 pub struct Report {
     /// The attempts whose heartbeat was used.
     pub checkins: Vec<String>,
+    /// The wrapper of each used heartbeat that passed the PID check, by
+    /// attempt. The pass records it on the attempt row at `launching ->
+    /// live`.
+    pub wrappers: BTreeMap<String, Recorded>,
     /// The attempts whose exit settled their worker, with how it ended.
     pub exits: Vec<(String, Ended)>,
     /// The attempts whose session was recorded.
@@ -399,6 +411,11 @@ impl Ingest<'_> {
                     wrapper.1 as i64
                 ],
             )?;
+            let recorded = Recorded {
+                pid: wrapper.0,
+                pid_start: Some(wrapper.1),
+            };
+            self.report.wrappers.insert(id.to_string(), recorded);
         }
         if output_since(hb, before.last_checkin_at.as_deref()) {
             leases_store::set_active_at(self.tx, id, self.clock.0)?;
@@ -408,9 +425,16 @@ impl Ingest<'_> {
     }
 
     /// Settle the worker of attempt `id` with the new `exit`, and end its
-    /// session record.
+    /// session record. A live push attempt with a recorded wrapper keeps
+    /// its worker row: the pass ends both by rung 5 when it sees the
+    /// wrapper gone, so an agent that was live never ends `launch_failed`.
     fn exit(&mut self, id: &str, worker: &str, exit: &ExitFile) -> Result<()> {
-        let ended = supervisor::settle_exit(self.tx, worker, exit.code, self.at)?;
+        let ended = if self.pass_ends(id)? {
+            supervisor::exit_seen(self.tx, worker, exit.code, self.at)?;
+            Ended::Clean
+        } else {
+            supervisor::settle_exit(self.tx, worker, exit.code, self.at)?
+        };
         let noted = has_fact(self.tx, Entity::Attempt, id, EventKind::Note, REPAIR_CAUSE)?;
         if exit.repaired && !noted {
             let cause = Cause {
@@ -428,7 +452,44 @@ impl Ingest<'_> {
                 &data,
             )?;
         }
+        if exit.outcome_hint == Some(OutcomeHint::Quota) {
+            self.note_once(id, QUOTA_HINT)?;
+        }
         self.report.exits.push((id.to_string(), ended));
+        Ok(())
+    }
+
+    /// Whether attempt `id` is a live push attempt with a recorded
+    /// wrapper, whose end the pass sees by the process of the wrapper.
+    fn pass_ends(&self, id: &str) -> Result<bool> {
+        let found: bool = self.tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM attempts WHERE id = ?1 AND via = 'push'
+               AND state = 'live' AND pid IS NOT NULL AND pid_start IS NOT NULL)",
+            [id],
+            |r| r.get(0),
+        )?;
+        Ok(found)
+    }
+
+    /// Record the note `text` on attempt `id` 1 time.
+    fn note_once(&self, id: &str, text: &str) -> Result<()> {
+        if has_fact(self.tx, Entity::Attempt, id, EventKind::Note, text)? {
+            return Ok(());
+        }
+        let cause = Cause {
+            actor: Actor::Supervisor,
+            text,
+        };
+        let data = serde_json::json!({});
+        record(
+            self.tx,
+            self.guard,
+            EventKind::Note,
+            Entity::Attempt,
+            id,
+            cause,
+            &data,
+        )?;
         Ok(())
     }
 
