@@ -3484,7 +3484,8 @@ impl<'a> Pass<'a> {
         // Part 1: the facts, with no transaction.
         retry_answers(work, &root, &owner, failed);
         let requests = request_effects(conn, &stamp, budget)?;
-        let effects_cursor = write_request_effects(&ideas, &owner, git, requests, failed);
+        let (effects_cursor, unwritten) =
+            write_request_effects(&ideas, &owner, git, requests, failed);
         self.recover_idea_files(conn, work, &ideas, &owner, failed);
         let (folders_cursor, notes) = self.idea_notes(conn, &ideas, &owner, &stamp, deadline)?;
         let asking = self.asking(conn)?;
@@ -3493,6 +3494,9 @@ impl<'a> Pass<'a> {
         let ingested = idea_tx(conn, guard, failed, "the notes and the questions", |tx| {
             cursors_store::save(tx, IdeaCursor::IdeaFolders.as_str(), &folders_cursor)?;
             cursors_store::save(tx, IdeaCursor::RequestEffects.as_str(), &effects_cursor)?;
+            for u in &unwritten {
+                unwritten_item(tx, u)?;
+            }
             let mut out = Ingested::default();
             if release_due {
                 let ctx = release::Release {
@@ -3986,17 +3990,27 @@ fn request_effects(
     Ok((cursor, out))
 }
 
+/// 1 `requests` row whose effects fleetd cannot write.
+struct Unwritten {
+    key: String,
+    /// The idea of the effects, when they name one.
+    idea: String,
+    reason: String,
+}
+
 /// Write the effects of each row of `requests` in order, and give the
-/// cursor after the last row whose effects are written. A failed effect
-/// stops there: the next pass writes that row again.
+/// cursor after the last row and each row whose effects fail. A failed
+/// row does not stop the later rows (design.md, "Ledger", Three rules,
+/// rule 1): it gets 1 needs-you item ([`unwritten_item`]).
 fn write_request_effects(
     ideas: &Path,
     owner: &User,
     git: &dyn IntegrationGitGateway,
     (mut cursor, requests): (Cursor, Vec<RequestRow>),
     failed: &mut Vec<String>,
-) -> Cursor {
+) -> (Cursor, Vec<Unwritten>) {
     let stamp = cursor.lap_started_at.clone();
+    let mut unwritten = Vec::new();
     for r in requests {
         if r.pending {
             break;
@@ -4004,12 +4018,40 @@ fn write_request_effects(
         if let Some(effects) = &r.effects {
             if let Err(e) = write_idea_effects(ideas, owner, git, effects) {
                 failed.push(format!("the effects of request row {}: {e:#}", r.key));
-                break;
+                unwritten.push(Unwritten {
+                    key: r.key.clone(),
+                    idea: effects["idea"].as_str().unwrap_or("-").to_string(),
+                    reason: format!("{e:#}"),
+                });
             }
         }
         cursor.step(&r.key, &stamp);
     }
-    cursor
+    (cursor, unwritten)
+}
+
+/// The kind of the needs-you item of a request whose effects fleetd
+/// cannot write.
+pub const EFFECTS_UNWRITTEN: &str = "request_effects_unwritten";
+
+/// Open the needs-you item of the request row `u`, in `tx`.
+fn unwritten_item(tx: &Connection, u: &Unwritten) -> Result<()> {
+    let key = format!("{EFFECTS_UNWRITTEN}:{}", u.key.trim_start_matches('0'));
+    let text = format!(
+        "fleetd cannot write the files of a request of idea {}: {}. fleetd does not try again, \
+         and the later requests go on. Correct the cause, then send the request again.",
+        u.idea, u.reason
+    );
+    needs_you::open_item(
+        tx,
+        &NeedsYouWrite {
+            key: &key,
+            kind: EFFECTS_UNWRITTEN,
+            entity: Entity::Idea.as_str(),
+            entity_id: &u.idea,
+            text: &text,
+        },
+    )
 }
 
 /// The effects of 1 idea request (`handlers_idea`), after its commit: the

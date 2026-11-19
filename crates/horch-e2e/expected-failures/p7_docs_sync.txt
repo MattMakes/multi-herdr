@@ -1,8 +1,0 @@
-# Owner: T-891. It corrects the conformance suite, the adapters and the fakes,
-# and removes this line. The production suite fails checks of each exec CLI
-# with the fakes, so no conformance run passes.
-passed_conformance_marks_the_profiles_healthy_and_dispatch_resumes | 7 | the conformance run of the new binary did not pass
-
-# Owner: T-891. The reference profile of Codex renders no sandbox rule, so the
-# check "Operator boundary" of Codex allows each operator act.
-operator_boundary_passes_for_each_adapter | 7 | failed for 1 adapters: codex: CheckResult { check: OperatorBoundary, verdict: Fail,

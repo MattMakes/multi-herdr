@@ -423,6 +423,9 @@ impl Roster {
                 t.agent
             ));
         }
+        if t.agent == HarnessKind::Codex {
+            problems.extend(crate::harness::codex::mcp_server_problems(t));
+        }
         // pi turns `tools` into --tools or, for an empty list, --no-tools.
         // The Rust build of Prime refuses --tools, --no-tools and
         // --exclude-tools, so any `tools:` value would exit the pane at launch.

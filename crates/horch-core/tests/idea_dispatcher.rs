@@ -22,9 +22,11 @@ use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
+use horch_core::fleetd::ideas::application::direct::{add_direct_idea, Direct, DirectAdded};
 use horch_core::fleetd::ideas::application::dispatcher::{
     Dispatch, Dispatcher, PassReport, PrimaryTip, PLANNING,
 };
+use horch_core::fleetd::ideas::application::intake::Target;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::ideas::application::plan_commit::PlanCommit;
 use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
@@ -238,12 +240,70 @@ impl World {
         self.write(idea, "plan.yaml", &plan);
     }
 
+    fn gateway(&self) -> CliGitGateway {
+        CliGitGateway::new(
+            CliWorktreeGit::new("git", self.root.join("fleet")).writing(&[self.repo.join(".git")]),
+        )
+    }
+
+    /// `horch idea add --direct` of [`TICKET`] in a new feature: the request
+    /// commits the idea in `captured`. The effects after the commit do not
+    /// run here: [`World::effects`] runs them.
+    fn direct(&mut self) -> DirectAdded {
+        self.ideas_added += 1;
+        let gateway = self.gateway();
+        let ctx = JobCtx {
+            guard: None,
+            config: &self.config,
+            needs_you: &NeedsYouList,
+        };
+        let direct = Direct {
+            roster: &self.roster,
+            git: &gateway,
+            primary_tip: &self.main_tip,
+            clock: FleetSeconds(1_000),
+        };
+        let target = Target::New(Project {
+            root: &self.repo,
+            primary_branch: "main",
+        });
+        let cause = Cause {
+            actor: Actor::Operator,
+            text: "horch idea add --direct",
+        };
+        self.store
+            .immediate(|tx| add_direct_idea(tx, &ctx, &direct, TICKET, target, cause))
+            .unwrap()
+    }
+
+    /// The effects of the request of `added` after its commit: its files
+    /// and the branch of its feature.
+    fn effects(&self, added: &DirectAdded) {
+        added
+            .write(&self.ideas(), self.owner.clone(), &self.gateway())
+            .unwrap();
+    }
+
+    /// Whether `idea` was in `state` at any time: the ledger has an event
+    /// of a move to it.
+    fn was(&self, idea: &str, state: &str) -> bool {
+        let n: i64 = self
+            .store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE entity = 'idea' AND entity_id = ?1 AND to_state = ?2",
+                [idea, state],
+                |r| r.get(0),
+            )
+            .unwrap();
+        n > 0
+    }
+
     /// 1 pass of the dispatcher.
     fn pass(&mut self) -> PassReport {
         let ideas = self.ideas();
-        let gateway = CliGitGateway::new(
-            CliWorktreeGit::new("git", self.root.join("fleet")).writing(&[self.repo.join(".git")]),
-        );
+        let gateway = self.gateway();
         let primaries = [PrimaryTip {
             repo: &self.repo,
             branch: "main",
@@ -405,11 +465,51 @@ fn ideas_of_2_features_move_at_the_same_time() {
 #[test]
 fn a_direct_idea_moves_from_captured_to_ticketing() {
     let mut w = world();
-    let f = w.feature();
-    let direct = w.idea(&f);
-    w.plan(&direct, &f, "fleet/x", "cargo test");
+    let added = w.direct();
+    let idea = added.idea.file.id.clone();
+    w.effects(&added);
     w.pass();
-    assert_eq!(w.state(&direct), "ticketing");
+    assert_eq!(w.state(&idea), "ticketing");
+}
+
+/// A pass between the commit of a `--direct` request and its effects: the
+/// idea waits in `captured`, then goes to `ticketing` and gets its planned
+/// tasks. It is never in `clarifying` (ticket 58 of fleetd-build).
+#[test]
+fn a_direct_idea_never_goes_to_clarifying_when_a_pass_runs_before_its_files() {
+    let mut w = world();
+    let added = w.direct();
+    let idea = added.idea.file.id.clone();
+
+    w.pass();
+    assert_eq!(w.state(&idea), "captured", "the files are not written yet");
+
+    w.effects(&added);
+    w.pass();
+    assert_eq!(w.state(&idea), "ticketing");
+    w.pass();
+    assert_eq!(w.state(&idea), "in_progress", "the plan is committed");
+    assert!(!w.was(&idea, "clarifying"), "{idea} was in clarifying");
+}
+
+/// fleetd stops after the commit of a `--direct` request and before its
+/// effects. A new fleetd has a new dispatcher: its passes leave the idea in
+/// `captured` until the effects run again, then move it to `ticketing`.
+#[test]
+fn a_direct_idea_reaches_ticketing_after_a_stop_before_its_files() {
+    let mut w = world();
+    let added = w.direct();
+    let idea = added.idea.file.id.clone();
+    // The stop: the dispatcher of the old fleetd is gone.
+    w.dispatcher = Dispatcher::new();
+    w.pass();
+    w.pass();
+    assert_eq!(w.state(&idea), "captured");
+
+    w.effects(&added);
+    w.pass();
+    assert_eq!(w.state(&idea), "ticketing");
+    assert!(!w.was(&idea, "clarifying"), "{idea} was in clarifying");
 }
 
 #[test]

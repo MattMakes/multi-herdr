@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::digest::sha256_bytes;
-use crate::fleetd::fleet_runtime::adapters::sqlite::has_fact;
+use crate::fleetd::fleet_runtime::adapters::sqlite::{facts_of, has_fact};
 use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::adapters::idea_folder_files::{FolderError, IdeaFolder};
@@ -172,7 +172,6 @@ pub fn revise(
     if let Err(r) = check_revise(idea, &row.state) {
         return Ok(Revised::Refused(r));
     }
-    let n = u32::try_from(folder.read_amendments()?.len())? + 1;
     let cause = Cause {
         actor: Actor::Operator,
         text: "you revised the assumptions",
@@ -186,10 +185,47 @@ pub fn revise(
         cause,
         &NeedsYouList,
     )?;
-    Ok(Revised::Revised(Amendment {
+    Ok(Revised::Revised(record_amendment(
+        tx, guard, folder, idea, text, cause,
+    )?))
+}
+
+/// Give the next amendment of `idea` its number and record it in `tx`: 1
+/// event of the idea with the number and the text. The number is 1 more
+/// than the highest number that an event of the idea records, so 2
+/// requests before the effects of the first get 2 numbers. A folder with
+/// more amendment files than that (files from before these events) gives
+/// a number after its files.
+pub fn record_amendment(
+    tx: &Connection,
+    guard: Option<Generation>,
+    folder: &IdeaFolder,
+    idea: &str,
+    text: &str,
+    cause: Cause<'_>,
+) -> Result<Amendment> {
+    let recorded = facts_of(tx, Entity::Idea, idea, EventKind::Note)?
+        .iter()
+        .filter_map(|f| {
+            serde_json::from_str::<serde_json::Value>(&f.data_json).ok()?["amendment"].as_u64()
+        })
+        .max()
+        .unwrap_or(0);
+    let files = u64::try_from(folder.read_amendments()?.len())?;
+    let n = u32::try_from(recorded.max(files))? + 1;
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Idea,
+        idea,
+        cause,
+        &json!({ "amendment": n, "text": text }),
+    )?;
+    Ok(Amendment {
         n,
         text: text.to_string(),
-    }))
+    })
 }
 
 /// The approval.json of `idea` when fleetd wrote it: its sha256 is
