@@ -36,9 +36,19 @@ const FLEET_TOML: &str = "pass_period_s = 1\n";
 /// The docs sources with an exec adapter, the fake of each, the version
 /// text of the fake and the agent of its profiles.
 const EXEC_CLIS: [(&str, &str, &str, HarnessKind); 3] = [
-    ("claude", "fake-claude", "2.1.284 (Claude Code)", HarnessKind::Claude),
+    (
+        "claude",
+        "fake-claude",
+        "2.1.284 (Claude Code)",
+        HarnessKind::Claude,
+    ),
     // The lowest Codex on which the operator boundary is proven on macOS.
-    ("codex", "fake-codex", "codex-cli 0.167.0", HarnessKind::Codex),
+    (
+        "codex",
+        "fake-codex",
+        "codex-cli 0.167.0",
+        HarnessKind::Codex,
+    ),
     ("agy", "fake-antigravity", "1.1.3", HarnessKind::Antigravity),
 ];
 
@@ -108,7 +118,10 @@ fn docs_fixture(h: &Harness, fixture: &Path) {
         };
         let url = quoted(&key("url").unwrap_or_default());
         if key("kind").is_some_and(|k| quoted(&k) == "sitemap") {
-            put(&fixture_path(fixture, &url), &read(&herdr.join("sitemap.xml")));
+            put(
+                &fixture_path(fixture, &url),
+                &read(&herdr.join("sitemap.xml")),
+            );
             for (page, file) in [
                 ("https://herdr.dev/docs/", "index.html"),
                 ("https://herdr.dev/docs/install/", "install.html"),
@@ -124,7 +137,10 @@ fn docs_fixture(h: &Harness, fixture: &Path) {
             for entry in include.split(',').map(quoted) {
                 let page = format!("{base}{entry}{suffix}");
                 index.push_str(&format!("- [{entry}]({page}): {entry}.\n"));
-                put(&fixture_path(fixture, &page), &format!("# {entry}\n\nA page.\n"));
+                put(
+                    &fixture_path(fixture, &page),
+                    &format!("# {entry}\n\nA page.\n"),
+                );
             }
             put(&fixture_path(fixture, &url), &index);
         }
@@ -316,38 +332,64 @@ fn profiles_of(agent: HarnessKind) -> BTreeSet<String> {
         .collect()
 }
 
+/// The checks that fail for Antigravity by design: agy has no sandbox
+/// (`antigravity::operator_boundary` is not supported, and a worker never
+/// runs without its sandbox, design A37), its launch uses the HOME of the
+/// operator, and it renders no MCP server of a profile. Its profiles stay
+/// unhealthy until agy gets a sandbox.
+const AGY_FAILS: [&str; 3] = ["Private home honoured", "Exact MCP set", "Sandbox boundary"];
+
 /// FR-8: fleetd runs the production conformance suite for each exec CLI
-/// through the binary. Each run passes, no check fails, and no profile of
-/// the CLI is unhealthy.
+/// through the binary. The runs of Claude Code and Codex pass, and their
+/// profiles are healthy. The run of Antigravity fails only the checks of
+/// [`AGY_FAILS`], and its profiles are unhealthy.
 #[test]
-fn conformance_passes_for_each_exec_cli_and_its_profiles_are_healthy() {
+fn conformance_passes_for_claude_and_codex_and_agy_fails_only_by_design() {
     let h = fleetd("p7-conformance-binary");
-    let mut failed = Vec::new();
+    let mut wrong = Vec::new();
     for (cli, _, _, _) in EXEC_CLIS {
         let state = wait_for_or(
             &format!("an ended conformance run of {cli}"),
             || ended(&h, "conformance", cli),
             || diagnostics(&h),
         );
-        if state != "passed" {
-            failed.push(format!("{cli}: the run is {state}"));
+        let failed = failed_checks(&h, cli);
+        let (want_state, want_failed): (&str, Vec<String>) = match cli {
+            "agy" => ("failed", AGY_FAILS.map(|c| format!("{cli}: {c}")).into()),
+            _ => ("passed", Vec::new()),
+        };
+        let names: Vec<String> = failed
+            .iter()
+            .map(|f| f.split(": ").take(2).collect::<Vec<_>>().join(": "))
+            .collect();
+        if state != want_state || names != want_failed {
+            wrong.push(format!(
+                "{cli}: the run is {state}; failed checks: {failed:?}"
+            ));
         }
-        failed.extend(failed_checks(&h, cli));
     }
     assert!(
-        failed.is_empty(),
-        "the conformance suite failed {} times:\n{}\n{}",
-        failed.len(),
-        failed.join("\n"),
+        wrong.is_empty(),
+        "the conformance suite gave {} wrong runs:\n{}\n{}",
+        wrong.len(),
+        wrong.join("\n"),
         diagnostics(&h)
     );
-    let unhealthy: BTreeSet<String> = unhealthy_profiles(&ledger(&h))
-        .unwrap()
-        .into_keys()
-        .collect();
-    for (cli, _, _, agent) in EXEC_CLIS {
-        let profiles = profiles_of(agent);
-        let sick: Vec<_> = unhealthy.intersection(&profiles).collect();
+    let unhealthy = || -> BTreeSet<String> {
+        unhealthy_profiles(&ledger(&h))
+            .unwrap()
+            .into_keys()
+            .collect()
+    };
+    let agy = profiles_of(HarnessKind::Antigravity);
+    wait_for_or(
+        "the unhealthy marks of the agy profiles",
+        || agy.is_subset(&unhealthy()).then_some(()),
+        || diagnostics(&h),
+    );
+    for (cli, _, _, agent) in &EXEC_CLIS[..2] {
+        let profiles = profiles_of(*agent);
+        let sick: Vec<_> = unhealthy().intersection(&profiles).cloned().collect();
         assert!(sick.is_empty(), "unhealthy profiles of {cli}: {sick:?}");
     }
 }
