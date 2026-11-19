@@ -5,11 +5,11 @@
 
 #![cfg(unix)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
 use horch_e2e::expected::check;
-use horch_e2e::harness::{wait_for, Harness};
+use horch_e2e::harness::{wait_for_or, Harness};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -35,6 +35,20 @@ fn world(name: &str) -> Harness {
 fn json_of(h: &Harness, args: &[&str]) -> Value {
     let o = h.run(args);
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
+}
+
+/// The board of ideas, the files of `folder` and the log of the test
+/// fleetd, for the message of a failed wait.
+fn evidence(h: &Harness, folder: &Path) -> String {
+    let files: Vec<_> = std::fs::read_dir(folder)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    let log = std::fs::read_to_string(h.root.join("fleetd.stderr")).unwrap_or_default();
+    format!(
+        "board: {}\nfiles of {}: {files:?}\nfleetd.stderr: {log}",
+        text(&h.run(&["ideas", "--json"])),
+        folder.display()
+    )
 }
 
 fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
@@ -139,11 +153,15 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
                 // The folder of an idea is `<fleet root>/ideas/<id>/`, and
                 // `horch idea show --json` gives its idea.md.
                 let folder = h.fleet_root().join("ideas").join(id);
-                let body = wait_for(&format!("idea.md of {id}"), || {
-                    json_of(&h, &["idea", "show", id, "--json"])["idea"]
-                        .as_str()
-                        .map(str::to_string)
-                });
+                let body = wait_for_or(
+                    &format!("idea.md of {id}"),
+                    || {
+                        json_of(&h, &["idea", "show", id, "--json"])["idea"]
+                            .as_str()
+                            .map(str::to_string)
+                    },
+                    || evidence(&h, &folder),
+                );
                 let on_disk = std::fs::read_to_string(folder.join("idea.md"))
                     .unwrap_or_else(|e| panic!("{}: {e}", folder.display()));
                 assert_eq!(on_disk, body, "idea show {id} is not its idea.md");
