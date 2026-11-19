@@ -174,8 +174,18 @@ impl World {
         let mut create = Command::new(h.bin.join("herdr"));
         h.seal(&mut create);
         create.env_remove(FORBIDDEN);
+        // The label of the project folder, as `horch fleet` names the
+        // workspace (`Harness::fleet_workspace`): a push launch finds its
+        // pane there. This call removes the forbidden name, so the fake
+        // herdr does not pass it to a pane.
+        let label = h
+            .project
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let o = create
-            .args(["workspace", "create", "--label", name])
+            .args(["workspace", "create", "--label", &label])
             .output()
             .unwrap();
         assert!(o.status.success(), "{}", text(&o));
@@ -255,9 +265,10 @@ impl World {
     }
 
     /// Whether `call` is a launch of the conformance suite: its argv names
-    /// a throwaway folder `conformance-<id>` of the runner.
+    /// a throwaway folder `conformance-<id>` of the runner. The `/` keeps a
+    /// folder such as a worktree `...-conformance-...` out.
     fn is_conformance(call: &Value) -> bool {
-        call["argv"].to_string().contains("conformance-")
+        call["argv"].to_string().contains("/conformance-")
     }
 
     /// What a failed wait shows: the fake calls, the output of fleetd, the

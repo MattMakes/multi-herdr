@@ -1264,7 +1264,7 @@ impl<'a> Pass<'a> {
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
-        start_running(&tx, guard, clock, &wrappers.checkins, |persona| {
+        start_running(&tx, guard, clock, &wrappers, |persona| {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
@@ -1285,6 +1285,7 @@ impl<'a> Pass<'a> {
             config: &self.settings.config,
             needs_you: self.ports.needs_you,
             sent: &read.sent,
+            exited: &wrappers.exited,
         };
         let mut doorbells = Vec::new();
         rules.run(&read, &mut stops, &mut doorbells)?;
@@ -2053,6 +2054,8 @@ struct Rules<'a> {
     needs_you: &'a dyn NeedsYouItems,
     /// The doorbell events that part 3 typed, of each live attempt.
     sent: &'a BTreeMap<String, BTreeSet<i64>>,
+    /// The push attempts whose `exit.json` this pass ingested.
+    exited: &'a [String],
 }
 
 impl Rules<'_> {
@@ -2171,7 +2174,8 @@ impl Rules<'_> {
     /// `no_result` (rung 6). An attempt whose worker row ended first keeps
     /// the path of Phase 1.
     fn finish_exited(&self, facts: &Facts) -> Result<Vec<Stop>> {
-        let rows = attempts_store::rows(self.tx, &util::host_name())?;
+        let mut rows = attempts_store::rows(self.tx, &util::host_name())?;
+        exited_by_file(self.tx, self.guard, self.exited, &mut rows)?;
         let mut stops = Vec::new();
         for mut reap in task::dead_attempts(&rows, facts) {
             let why = format!("the process of attempt {} is gone", reap.attempt);
@@ -2179,6 +2183,12 @@ impl Rules<'_> {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
                 continue;
             };
+            if verifying(self.tx, &task_id)? {
+                // Rule D: the verifier ends the task and gives the attempt
+                // its outcome. The exit of its author burns no attempt.
+                stops.extend(commands::end_attempt(self.tx, &reap)?);
+                continue;
+            }
             if !reap.end_worker {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
                 commands::schedule_retry(self.tx, &task_id, &why)?;
@@ -2187,7 +2197,7 @@ impl Rules<'_> {
             let persona = self.persona_of(&reap.worker)?;
             let outcome = self.exit_outcome(
                 questions_store::open_of_task(self.tx, &task_id)? > 0,
-                self.pool_limited(persona.as_deref()),
+                self.pool_limited(persona.as_deref()) || quota_hinted(self.tx, &reap.attempt)?,
             );
             reap.outcome = outcome.as_str().to_string();
             stops.extend(commands::end_attempt(self.tx, &reap)?);
@@ -2936,6 +2946,49 @@ fn dispatch_holds(
     }
 }
 
+/// Each attempt of `exited`, whose wrapper wrote `exit.json` in this
+/// pass, ends by rung 5 as an attempt whose process is gone: its agent
+/// ended, also when the pass never saw its wrapper. A `launching` one goes
+/// `live` first, and its task joins `rows`.
+fn exited_by_file(
+    tx: &Connection,
+    guard: Option<Generation>,
+    exited: &[String],
+    rows: &mut task::Rows,
+) -> Result<()> {
+    let mut moved = false;
+    for a in rows.attempts.iter_mut().filter(|a| exited.contains(&a.id)) {
+        if a.state == AttemptState::Launching {
+            commands::attempt_live(tx, guard, &a.id, None)?;
+            a.state = AttemptState::Live;
+            moved = true;
+        }
+        if a.state == AttemptState::Live {
+            a.process = None;
+            a.pane = None;
+        }
+    }
+    if moved {
+        let fresh = attempts_store::rows(tx, &util::host_name())?;
+        for (id, t) in fresh.tasks {
+            rows.tasks.entry(id).or_insert(t);
+        }
+    }
+    Ok(())
+}
+
+/// Whether task `task` is `verifying`.
+fn verifying(tx: &Connection, task: &str) -> Result<bool> {
+    Ok(tasks::get(tx, task)?.status == TaskStatus::Verifying.as_str())
+}
+
+/// Whether the `exit.json` of attempt `attempt` had the outcome hint
+/// `quota`: the ingest recorded [`attempt_files::QUOTA_HINT`] on it.
+fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
+    let hint = attempt_files::QUOTA_HINT;
+    door::has_fact(tx, Entity::Attempt, attempt, EventKind::Note, hint)
+}
+
 /// The cause of the hold of each project with no fast gate, by project
 /// id: its open needs-you item records it (Q-C of
 /// `docs/tickets/fleetd-p4/MAP.md`).
@@ -2954,17 +3007,19 @@ fn project_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
 /// (`docs/specs/fleetd/design.md`, the task state table, row `leased`):
 /// the attempt in `launching` goes `live`, and its `leased` task goes
 /// `running` and takes its lease for `lease_s` of the persona of the
-/// attempt. `checkins` are the attempts whose heartbeat this pass used. A
-/// repair attempt of a `done` task only goes `live`: its bind took the
-/// lease.
+/// attempt. `wrappers.checkins` are the attempts whose heartbeat this pass
+/// used. The wrapper that the heartbeat names, when it passed the PID
+/// check, goes on the attempt row, so the commands of its agent find their
+/// attempt and a pass sees its exit. A repair attempt of a `done` task only
+/// goes `live`: its bind took the lease.
 fn start_running(
     tx: &Connection,
     guard: Option<Generation>,
     clock: FleetSeconds,
-    checkins: &[String],
+    wrappers: &attempt_files::Report,
     lease_s: impl Fn(Option<&str>) -> i64,
 ) -> Result<()> {
-    for id in checkins {
+    for id in &wrappers.checkins {
         let Some((Some(task_id), state, via, persona)) = attempts_store::attempt_via(tx, id)?
         else {
             continue;
@@ -2972,10 +3027,16 @@ fn start_running(
         if via != PUSH {
             continue;
         }
+        let wrapper = wrappers.wrappers.get(id).copied();
         if state == AttemptState::Launching.as_str() {
-            commands::attempt_live(tx, guard, id, None)?;
+            commands::attempt_live(tx, guard, id, wrapper)?;
         } else if state != AttemptState::Live.as_str() {
             continue;
+        } else if let Some(w) = wrapper {
+            commands::attempt_wrapper(tx, id, w)?;
+        }
+        if wrapper.is_some() {
+            commands::push_worker_working(tx, guard, id)?;
         }
         if tasks::get(tx, &task_id)?.status != TaskStatus::Leased.as_str() {
             continue;
@@ -3423,7 +3484,8 @@ impl<'a> Pass<'a> {
         // Part 1: the facts, with no transaction.
         retry_answers(work, &root, &owner, failed);
         let requests = request_effects(conn, &stamp, budget)?;
-        let effects_cursor = write_request_effects(&ideas, &owner, git, requests, failed);
+        let (effects_cursor, unwritten) =
+            write_request_effects(&ideas, &owner, git, requests, failed);
         self.recover_idea_files(conn, work, &ideas, &owner, failed);
         let (folders_cursor, notes) = self.idea_notes(conn, &ideas, &owner, &stamp, deadline)?;
         let asking = self.asking(conn)?;
@@ -3432,6 +3494,9 @@ impl<'a> Pass<'a> {
         let ingested = idea_tx(conn, guard, failed, "the notes and the questions", |tx| {
             cursors_store::save(tx, IdeaCursor::IdeaFolders.as_str(), &folders_cursor)?;
             cursors_store::save(tx, IdeaCursor::RequestEffects.as_str(), &effects_cursor)?;
+            for u in &unwritten {
+                unwritten_item(tx, u)?;
+            }
             let mut out = Ingested::default();
             if release_due {
                 let ctx = release::Release {
@@ -3925,17 +3990,27 @@ fn request_effects(
     Ok((cursor, out))
 }
 
+/// 1 `requests` row whose effects fleetd cannot write.
+struct Unwritten {
+    key: String,
+    /// The idea of the effects, when they name one.
+    idea: String,
+    reason: String,
+}
+
 /// Write the effects of each row of `requests` in order, and give the
-/// cursor after the last row whose effects are written. A failed effect
-/// stops there: the next pass writes that row again.
+/// cursor after the last row and each row whose effects fail. A failed
+/// row does not stop the later rows (design.md, "Ledger", Three rules,
+/// rule 1): it gets 1 needs-you item ([`unwritten_item`]).
 fn write_request_effects(
     ideas: &Path,
     owner: &User,
     git: &dyn IntegrationGitGateway,
     (mut cursor, requests): (Cursor, Vec<RequestRow>),
     failed: &mut Vec<String>,
-) -> Cursor {
+) -> (Cursor, Vec<Unwritten>) {
     let stamp = cursor.lap_started_at.clone();
+    let mut unwritten = Vec::new();
     for r in requests {
         if r.pending {
             break;
@@ -3943,12 +4018,40 @@ fn write_request_effects(
         if let Some(effects) = &r.effects {
             if let Err(e) = write_idea_effects(ideas, owner, git, effects) {
                 failed.push(format!("the effects of request row {}: {e:#}", r.key));
-                break;
+                unwritten.push(Unwritten {
+                    key: r.key.clone(),
+                    idea: effects["idea"].as_str().unwrap_or("-").to_string(),
+                    reason: format!("{e:#}"),
+                });
             }
         }
         cursor.step(&r.key, &stamp);
     }
-    cursor
+    (cursor, unwritten)
+}
+
+/// The kind of the needs-you item of a request whose effects fleetd
+/// cannot write.
+pub const EFFECTS_UNWRITTEN: &str = "request_effects_unwritten";
+
+/// Open the needs-you item of the request row `u`, in `tx`.
+fn unwritten_item(tx: &Connection, u: &Unwritten) -> Result<()> {
+    let key = format!("{EFFECTS_UNWRITTEN}:{}", u.key.trim_start_matches('0'));
+    let text = format!(
+        "fleetd cannot write the files of a request of idea {}: {}. fleetd does not try again, \
+         and the later requests go on. Correct the cause, then send the request again.",
+        u.idea, u.reason
+    );
+    needs_you::open_item(
+        tx,
+        &NeedsYouWrite {
+            key: &key,
+            kind: EFFECTS_UNWRITTEN,
+            entity: Entity::Idea.as_str(),
+            entity_id: &u.idea,
+            text: &text,
+        },
+    )
 }
 
 /// The effects of 1 idea request (`handlers_idea`), after its commit: the

@@ -11,7 +11,9 @@
 //!   is in the parent chain of this process. It reads no environment
 //!   variable, so a worker cannot name the attempt of another worker. No
 //!   such attempt, or a process fact that cannot be read, is a refusal:
-//!   [`NO_LIVE_ATTEMPT`].
+//!   [`NO_LIVE_ATTEMPT`]. While an attempt has no recorded wrapper yet,
+//!   the writer reads the ledger again before it refuses, for at most the
+//!   start timeout of a launch.
 //! - The outbox: made with mode 0700 when it is missing. Each file gets mode
 //!   0600. A link in the place of the outbox or of a file is refused.
 //! - A message (`result.json`, a question file): a temp file `*.tmp`, fsync,
@@ -29,12 +31,14 @@
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::peer_process::{ProcessFacts, MAX_CHAIN};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+use crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::domain::outbox::{
     question_name, question_number, LineKind, ProgressLine, Question, DIR_MODE, FILE_MODE,
@@ -167,6 +171,47 @@ fn the_one(found: &[&LiveAttempt]) -> Result<AttemptRef, NoLiveAttempt> {
     }
 }
 
+/// The longest time that a command waits for its attempt to record its
+/// wrapper: the start timeout of a launch.
+const ATTEMPT_WAIT: Duration = Duration::from_secs(START_TIMEOUT_S.unsigned_abs());
+
+/// The time between 2 reads of the ledger while a command waits.
+const ATTEMPT_POLL: Duration = Duration::from_millis(250);
+
+/// The own attempt of this process, as [`own_attempt`] finds it. A push
+/// attempt records its wrapper only when fleetd ingests a heartbeat with
+/// the agent PID, and the agent can run a command before that. So while
+/// the ledger has an attempt that has no wrapper yet, a process with no
+/// own attempt reads the ledger again, for at most `wait`.
+fn wait_own_attempt(
+    ledger: &Connection,
+    facts: &dyn ProcessFacts,
+    wait: Duration,
+) -> Result<AttemptRef> {
+    let until = Instant::now() + wait;
+    loop {
+        let live = live_attempts(ledger)?;
+        match own_attempt(std::process::id(), &live, facts) {
+            Err(e) if e.detail.is_none() && Instant::now() < until && starting(ledger)? => {
+                std::thread::sleep(ATTEMPT_POLL);
+            }
+            found => return Ok(found?),
+        }
+    }
+}
+
+/// Whether the ledger `conn` has an attempt of a task that has no recorded
+/// wrapper yet: `launching`, or `live` with no PID. It only reads.
+fn starting(conn: &Connection) -> Result<bool> {
+    let found: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM attempts WHERE task_id IS NOT NULL
+           AND (state = 'launching' OR (state = 'live' AND pid IS NULL)))",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(found)
+}
+
 /// The writer of the outbox of the own attempt of this process.
 #[derive(Debug)]
 pub struct OutboxWriter {
@@ -189,8 +234,7 @@ impl OutboxWriter {
         config: &FleetConfig,
         facts: &dyn ProcessFacts,
     ) -> Result<OutboxWriter> {
-        let live = live_attempts(ledger)?;
-        let attempt = own_attempt(std::process::id(), &live, facts)?;
+        let attempt = wait_own_attempt(ledger, facts, ATTEMPT_WAIT)?;
         Ok(OutboxWriter {
             outbox: attempt.outbox(fleet_root),
             attempt,

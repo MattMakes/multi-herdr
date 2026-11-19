@@ -444,13 +444,10 @@ fn world(name: &str) -> Harness {
     std::fs::create_dir_all(&docs).unwrap();
     h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
     declare_gates(&h);
-    let mut create = Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "herdr workspace create: {o:?}");
+    // The workspace of the project, as `horch fleet` names it: a push
+    // launch finds its pane there.
+    let ws = h.fleet_workspace();
+    assert_eq!(ws, "w1", "the seed of the run names w1");
     h
 }
 

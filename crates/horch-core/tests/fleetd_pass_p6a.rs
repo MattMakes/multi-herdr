@@ -281,7 +281,7 @@ impl World {
                 "INSERT INTO requests (request_id, kind, payload_json, payload_sha256, caller, class,
                      auth, state, result_json, received_at, decided_at)
                  VALUES (?1, 'idea_amend', '{}', 'x', 'test', 'operator', 'token', 'applied', ?2, ?3, ?3)",
-                params![format!("req-{idea}-{n}"), result.to_string(), util::now()],
+                params![format!("req-{idea}-{n}-{text}"), result.to_string(), util::now()],
             )
             .unwrap();
     }
@@ -703,6 +703,44 @@ fn crash_after_a_commit_completes_each_idea_effect_once() {
     );
     assert_eq!(w.rung(), vec![PANE.to_string()], "1 ring of {sub}");
     assert_eq!(files(), 1, "the amendment is written 1 time");
+}
+
+/// A request whose effects fleetd cannot write gets 1 needs-you item, and
+/// the effects of the later requests are written: 1 bad row never stops
+/// the pass (design.md, "Ledger", Three rules, rule 1; ticket 58 of
+/// fleetd-build, F3).
+#[test]
+fn a_request_effect_that_cannot_be_written_does_not_block_the_next_one() {
+    let mut w = world();
+    let idea = w.add_idea(FEATURE);
+    // 2 requests with 1 number: the file of the second conflicts with the
+    // file of the first.
+    w.amend_request(&idea, 1, "first");
+    w.amend_request(&idea, 1, "second");
+    w.amend_request(&idea, 2, "third");
+
+    let fake = Fake::new(&w);
+    let ideas = Ideas::default();
+    let mut p = pass(&w, &fake, &ideas, Faults::default());
+    run(&mut p, &mut w.conn);
+    run(&mut p, &mut w.conn);
+
+    let dir = w.ideas().join(&idea).join("amendments");
+    let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
+    assert_eq!(read("0001.md"), "first");
+    assert_eq!(read("0002.md"), "third", "the later request is written");
+    let items: Vec<(String, String)> = w
+        .conn
+        .prepare("SELECT key, entity_id FROM needs_you WHERE kind = ?1 AND state = 'open'")
+        .unwrap()
+        .query_map(["request_effects_unwritten"], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(items.len(), 1, "1 item for the bad row: {items:?}");
+    assert_eq!(items[0].1, idea);
 }
 
 /// The pass starts a sub-orchestrator and ends: it does not wait for the
