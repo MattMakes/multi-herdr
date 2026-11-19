@@ -19,16 +19,24 @@
 //!   worktree. Logged as `result`.
 //! - `noresult`: exit with no result. It wins over `result`.
 //!
+//! A fake plays only the keys of its role. The role comes from the task of
+//! the attempt in the ledger: a judge task (`judged_task`) plays the judge
+//! keys of [`crate::idea_agent`] and not `commit` or `ask`, and commits its
+//! verdict before `result`. Each other task plays no judge key. When the
+//! ledger does not know the task, the fake plays each key of the scenario.
+//!
 //! `horch` is the one on `PATH`, as in a pane.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
+use horch_core::fleetd::task_execution::domain::task::judged_task;
 use horch_core::runtime::{Paths, ProcessEnv};
-use horch_core::taskledger::Store;
+use horch_core::taskledger::{tasks, Store};
 use serde_json::{json, Value};
 
+use crate::idea_agent::{judge, VERDICT_KEYS};
 use crate::{scenario_has, Call};
 
 /// The variable of a pane that names the `task.yaml` of its attempt.
@@ -38,11 +46,12 @@ const TASK_YAML_ENV: &str = "HORCH_TASK_YAML";
 /// first in the launch path, so `bound` records the state at entry.
 pub fn play(call: &mut Call) {
     let keys = ["bound", "commit", "ask", "ask_file", "result", "noresult"];
-    if !keys.iter().any(|k| scenario_has(k)) {
+    if !keys.iter().chain(&VERDICT_KEYS).any(|k| scenario_has(k)) {
         return;
     }
     let binding = binding();
     let task_yaml = task_yaml(binding.as_ref());
+    let role = role(task_yaml.as_deref(), binding.as_ref());
     if scenario_has("bound") {
         let entry = entry(
             call,
@@ -53,11 +62,11 @@ pub fn play(call: &mut Call) {
         call.flush();
     }
     let worktree = worktree_of(task_yaml.as_deref());
-    if scenario_has("commit") {
+    if role != Role::Judge && scenario_has("commit") {
         let out = commit(call, &worktree);
         call.extra.insert("commit".into(), out);
     }
-    if scenario_has("ask") {
+    if role != Role::Judge && scenario_has("ask") {
         let text = format!(
             "QUESTION: fake {} asks: which option is correct?",
             call.fake
@@ -66,11 +75,14 @@ pub fn play(call: &mut Call) {
         out["text"] = json!(text);
         call.extra.insert("ask".into(), out);
     }
-    if scenario_has("ask_file") {
+    if role != Role::Judge && scenario_has("ask_file") {
         let text = format!("fake {} asks: which option is correct?", call.fake);
         let mut out = horch(&worktree, &["ask", &text]);
         out["text"] = json!(text);
         call.extra.insert("ask_file".into(), out);
+    }
+    if role != Role::Worker {
+        judge(call);
     }
     if scenario_has("result") && !scenario_has("noresult") {
         let summary = format!("fake {} committed its work", call.fake);
@@ -78,6 +90,35 @@ pub fn play(call: &mut Call) {
         call.extra.insert("result".into(), horch(&worktree, &args));
     }
     call.flush();
+}
+
+/// The role of a fake in its attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Worker,
+    Judge,
+    /// The ledger does not know the task of the attempt.
+    Any,
+}
+
+/// The role of the task of the attempt: the `task_id` of `task_yaml`, else
+/// the task that the ledger binds to the worker.
+fn role(task_yaml: Option<&Path>, binding: Option<&(String, i64)>) -> Role {
+    let task_id = task_yaml
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| yaml_value(&text, "task_id"))
+        .or_else(|| binding.map(|b| b.0.clone()));
+    let Some(task_id) = task_id else {
+        return Role::Any;
+    };
+    let Ok(store) = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db) else {
+        return Role::Any;
+    };
+    match tasks::get(store.conn(), &task_id) {
+        Ok(t) if judged_task(&t.kind, t.parent_task_id.as_deref()).is_some() => Role::Judge,
+        Ok(_) => Role::Worker,
+        Err(_) => Role::Any,
+    }
 }
 
 /// The worktree of the attempt of this pane: the `worktree` of its

@@ -633,14 +633,16 @@ pub fn write_task_files(
 
 /// Write the 2 files of each attempt of a push dispatch in `launching`
 /// that has no `task.yaml`: a crash came between its commit and its files.
-/// Gives each such attempt with the result of its write.
+/// Gives each such attempt with the result of its write. An idea-lead
+/// attempt has `via` push and no task, so it has no task files (T-890).
 pub fn write_missing_task_files(
     conn: &Connection,
     fleet_root: &Path,
     secrets: &[Secret],
 ) -> Result<Vec<(String, Result<AttemptFiles>)>> {
     let mut stmt = conn.prepare(
-        "SELECT id FROM attempts WHERE via = 'push' AND state = 'launching' ORDER BY rowid",
+        "SELECT id FROM attempts
+         WHERE via = 'push' AND state = 'launching' AND task_id IS NOT NULL ORDER BY rowid",
     )?;
     let ids: Vec<String> = stmt
         .query_map([], |r| r.get(0))?

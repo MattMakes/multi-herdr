@@ -463,8 +463,16 @@ pub fn push_launch_spec(ctx: &RuntimeContext, l: &PushLaunch) -> Result<LaunchSp
         program: ctx.bins.exe()?,
         args: args.iter().map(OsString::from).collect(),
         cwd: Some(PathBuf::from(&l.project_root)),
+        // The fleet of fleetd goes explicitly to the spawn (T-890), so it
+        // never guesses its ledger or fleet root from `HORCH_STATE_DIR`.
         env_rule: EnvRule {
-            vars: vec![("HORCH_WORKSPACE_ID".into(), workspace.into())],
+            vars: std::iter::once(("HORCH_WORKSPACE_ID".into(), workspace.into()))
+                .chain(
+                    ctx.paths
+                        .fleet_env()
+                        .map(|(k, v)| (k.into(), v.as_os_str().to_os_string())),
+                )
+                .collect(),
         },
         detach: true,
         output: Some(ctx.paths.fleet_root.join("run").join("launch.log")),
@@ -1042,7 +1050,15 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(env, [("HORCH_WORKSPACE_ID".to_string(), "w0".to_string())]);
+        let text = |p: &Path| p.to_string_lossy().into_owned();
+        assert_eq!(
+            env,
+            [
+                ("HORCH_WORKSPACE_ID".to_string(), "w0".to_string()),
+                ("HORCH_LEDGER_DB".to_string(), text(&ctx.paths.ledger_db)),
+                ("FLEET_ROOT".to_string(), text(&ctx.paths.fleet_root)),
+            ]
+        );
         assert!(spec.detach);
         assert_eq!(
             spec.output,

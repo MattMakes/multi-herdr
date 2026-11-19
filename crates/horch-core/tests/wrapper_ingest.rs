@@ -158,7 +158,10 @@ impl World {
     /// The session records of the project `/r`, in the ledger file of the
     /// world, read as stored: no worker row is laid over them.
     fn sessions(&self) -> SessionLedger {
-        SessionLedger::for_project(self._tmp.path(), "/r")
+        // The world is fleetd here: it writes with the writer of fleetd.
+        SessionLedger::for_project(self._tmp.path(), "/r").with_writer(std::sync::Arc::new(
+            horch_core::taskledger::store::LedgerWriter::fleetd(),
+        ))
     }
 
     /// A live session record `record` of the worker, as the launch writes it.

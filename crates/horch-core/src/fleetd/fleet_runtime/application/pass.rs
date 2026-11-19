@@ -118,12 +118,19 @@ use crate::fleetd::ideas::application::{
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
 use crate::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
 use crate::fleetd::integration::adapters::exec_rebase::GitRebaseRefs;
+use crate::fleetd::integration::adapters::exec_trial_merge::CliTrialMergeGit;
 use crate::fleetd::integration::adapters::git::{CliGitGateway, CliStackGit};
 use crate::fleetd::integration::adapters::sqlite as integration_rows;
 use crate::fleetd::integration::application as integration;
+use crate::fleetd::integration::application::judge_branch::{self, GitJudgeBranchRefs};
 use crate::fleetd::integration::application::new_features::Project;
 use crate::fleetd::integration::application::new_features::{self, BranchRef};
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
+use crate::fleetd::integration::application::trial_merges;
+use crate::fleetd::integration::application::{merged_with_ideas, stack_edges, stacks};
+use crate::fleetd::integration::domain::project::{
+    missing_fast_gate_cause, ProjectSettings, MISSING_FAST_GATE_KIND,
+};
 use crate::fleetd::integration::domain::stack::StackPlanner;
 use crate::fleetd::integration::domain::task_branch::LandingState;
 use crate::fleetd::task_execution::adapters::attempt_files::{
@@ -133,6 +140,7 @@ use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
+use crate::fleetd::task_execution::application::judge_pair::Settled;
 use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::planned_tasks;
@@ -150,8 +158,8 @@ use crate::fleetd::task_execution::domain::quota::limited;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::stall::{self as rungs, Decision, PaneStatus};
 use crate::fleetd::task_execution::domain::task::{
-    self, promotable, AttemptRow, AttemptState, Facts, InPane, ProcessScope, Reap, Recorded,
-    RowRef, Rows, Seen, Stop, Target,
+    self, judged_task, promotable_deps, AttemptRow, AttemptState, Dep, DepKind, Facts, InPane,
+    ProcessScope, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use crate::fleetd::worker_profiles::application::conformance::read_conformance_json;
@@ -163,7 +171,9 @@ use crate::fleetd::worker_profiles::application::health::mark_after_conformance;
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worker_profiles::domain::conformance::ConformanceReport;
 use crate::fleetd::worker_profiles::domain::profile::{Mode, Profile};
-use crate::fleetd::worktree_custody::adapters::git::{worktree_list_key, ListResult};
+use crate::fleetd::worktree_custody::adapters::git::{
+    worktree_list_key, CliWorktreeGit, ListResult,
+};
 use crate::fleetd::worktree_custody::adapters::sqlite as trees;
 use crate::fleetd::worktree_custody::application::disk::disk_budget;
 use crate::fleetd::worktree_custody::application::reconcile::{
@@ -811,8 +821,7 @@ impl<'a> Pass<'a> {
         let git = std::mem::take(&mut decided.integration);
         self.integration_effects(conn, git, decided.clock, deadline, &mut report);
         if let Some(w) = self.work {
-            let lines = self.verify_after_commit(conn, w, &decided, passed, deadline);
-            report.failed.extend(lines);
+            self.verify_after_commit(conn, w, &decided, passed, deadline, &mut report);
         }
         self.p7_effects(conn, deadline, &mut report);
         report.failed.extend(old_stops);
@@ -1301,7 +1310,15 @@ impl<'a> Pass<'a> {
         }
         let mut work = WorkRows::default();
         if let Some(w) = &self.work {
+            // The project holds of this pass come before its dispatch.
+            let repos = feature_repos(&tx)?;
+            let gw =
+                CliGitGateway::new(effects::integration_git(&self.settings.fleet_root, &repos));
+            let gates = sync_gate_holds(&self.job_ctx(), &tx, &gw);
             work = self.dispatch_rows(&tx, w, &holds, &personas, clock, &read.stamp)?;
+            if let Err(e) = gates {
+                work.failed.push(format!("the gate holds: {e:#}"));
+            }
             stops.append(&mut work.stops);
         }
         let ctx = self.job_ctx();
@@ -1391,7 +1408,7 @@ impl<'a> Pass<'a> {
         let mut d = dispatch::dispatch_due(
             tx,
             &ctx,
-            &dispatch_holds(holds, paced, clock),
+            &dispatch_holds(holds, paced, project_holds(tx)?, clock),
             w.sandboxes,
             budget,
         )?;
@@ -1430,28 +1447,62 @@ impl<'a> Pass<'a> {
         decided: &Decided,
         passed: Vec<Passed>,
         deadline: Deadline,
-    ) -> Vec<String> {
-        let mut failed = Vec::new();
+        report: &mut PassReport,
+    ) {
         if !passed.is_empty() && !deadline.reached((self.now)()) {
-            if let Err(e) = self.review_steps(conn, w, decided, passed) {
-                failed.push(format!("the review steps: {e:#}"));
+            match self.review_steps(conn, w, decided, passed) {
+                Ok(judged) => self.judge_pair_effects(judged, report),
+                Err(e) => report.failed.push(format!("the review steps: {e:#}")),
             }
         }
         if let Err(e) = verifier::write_verdicts(conn, &self.settings.fleet_root) {
-            failed.push(format!("the verdict files: {e:#}"));
+            report.failed.push(format!("the verdict files: {e:#}"));
         }
-        failed
+    }
+
+    /// The effects of the judge pair after the commit of its verdicts
+    /// (ticket 41): the entry of the HIGH items in the decision log of the
+    /// feature, then the doorbell to the live sub-orchestrator of the
+    /// feature. A doorbell that is not typed here stays an event that the
+    /// idea duties of a next pass type.
+    fn judge_pair_effects(&self, judged: Vec<Settled>, report: &mut PassReport) {
+        let root = &self.settings.fleet_root;
+        let mut sent = None;
+        for s in judged {
+            if let Some(entry) = &s.decision {
+                let written = User::current()
+                    .context("reading the user of fleetd")
+                    .and_then(|owner| entry.write(root, &owner));
+                if let Err(e) = written {
+                    report
+                        .failed
+                        .push(format!("the decision log of {}: {e:#}", entry.feature));
+                }
+            }
+            if let Some(ring) = s.ring {
+                let sent = sent.get_or_insert_with(|| effects::read_doorbells(root));
+                let bell = Bell {
+                    attempt: ring.attempt,
+                    event: ring.event,
+                    pane: ring.pane,
+                };
+                if let Some(d) = self.doorbell(bell, sent, report) {
+                    report.done.push(d);
+                }
+            }
+        }
     }
 
     /// The structural check and the review steps of `passed`, in a store of
-    /// the ledger of `conn` with no transaction open.
+    /// the ledger of `conn` with no transaction open. Gives what the judge
+    /// pair settled, for its effects.
     fn review_steps(
         &self,
         conn: &Connection,
         w: TaskWork<'_>,
         decided: &Decided,
         passed: Vec<Passed>,
-    ) -> Result<()> {
+    ) -> Result<Vec<Settled>> {
         let path = conn
             .path()
             .filter(|p| !p.is_empty())
@@ -1467,9 +1518,15 @@ impl<'a> Pass<'a> {
             tools: w.tools,
             policy: &policy,
         };
-        verifier::structural(&r, &mut store, &passed)?;
+        let judged = verifier::structural(&r, &mut store, &passed)?
+            .into_iter()
+            .filter_map(|(_, s)| match s {
+                verifier::Structural::Judged(settled) => Some(settled),
+                _ => None,
+            })
+            .collect();
         verifier::review(&r, &mut store, passed)?;
-        Ok(())
+        Ok(judged)
     }
 
     fn job_ctx(&self) -> JobCtx<'_> {
@@ -2197,7 +2254,17 @@ impl Rules<'_> {
                 }
             }
             let landed = integration_rows::tasks_landed(self.tx)?;
-            for id in promotable(&statuses, &deps, &landed) {
+            let (judges, passed) = judge_deps(self.tx, &all)?;
+            let deps: Vec<Dep> = deps
+                .into_iter()
+                .map(|(t, on)| Dep {
+                    task: t,
+                    on,
+                    kind: DepKind::After,
+                })
+                .chain(judges)
+                .collect();
+            for id in promotable_deps(&statuses, &deps, &landed, &passed) {
                 let to = TaskStatus::Ready.as_str();
                 let by = cause("each task that it waits for is done and landed (I2)");
                 transition(
@@ -2847,12 +2914,14 @@ fn retry_policy(
     }
 }
 
-/// The holds of a dispatch from the global holds `holds` of the pass, at
-/// fleet clock `clock`. A pacing hold of a pool is not here: the spawn of
-/// the attempt refuses a paced pool, as today.
+/// The holds of a dispatch from the global holds `holds` of the pass and
+/// the project holds `projects`, at fleet clock `clock`. A pacing hold of a
+/// pool is not here: the spawn of the attempt refuses a paced pool, as
+/// today.
 fn dispatch_holds(
     holds: &[Hold],
     paced: &BTreeMap<String, String>,
+    projects: BTreeMap<String, String>,
     clock: FleetSeconds,
 ) -> DispatchHolds {
     DispatchHolds {
@@ -2862,8 +2931,23 @@ fn dispatch_holds(
             .filter_map(|h| h.global().map(|name| format!("{name}: {}", h.cause())))
             .collect(),
         personas: paced.clone(),
+        projects,
         ..DispatchHolds::default()
     }
+}
+
+/// The cause of the hold of each project with no fast gate, by project
+/// id: its open needs-you item records it (Q-C of
+/// `docs/tickets/fleetd-p4/MAP.md`).
+fn project_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    Ok(needs_you::open_items(conn)?
+        .into_iter()
+        .filter(|i| i.kind == MISSING_FAST_GATE_KIND)
+        .map(|i| {
+            let cause = missing_fast_gate_cause(&i.entity_id);
+            (i.entity_id, cause)
+        })
+        .collect())
 }
 
 /// The first heartbeat of the wrapper of a push attempt
@@ -4337,6 +4421,11 @@ struct Integrated {
     branches: Vec<integration::branches::Deletion>,
     /// The deletions of `superseded` rescue refs that expired (FM-40).
     rescue_refs: Vec<rescue_refs::Deletion>,
+    /// A merge with ideas in flight moved ideas to a new feature in this
+    /// pass: its branch ref and the moves of its task branches are due.
+    moved_ideas: bool,
+    /// The rescues and moves of judge branches in a fix round (I9, I10).
+    judges: Vec<judge_branch::Effect>,
     /// The lines of what failed.
     failed: Vec<String>,
 }
@@ -4349,6 +4438,7 @@ impl Integrated {
             && self.candidates.is_empty()
             && self.branches.is_empty()
             && self.rescue_refs.is_empty()
+            && self.judges.is_empty()
     }
 }
 
@@ -4378,15 +4468,17 @@ impl Pass<'_> {
         }
     }
 
-    /// The integration rows in the order of the design: `queue_due_jobs`
-    /// (fetch and push), `land_bundles` (the task branches, the bundles,
-    /// the ref moves and the candidate refs), `integrate_features` (the
-    /// feature state machine, the rebases and their resolver tasks), and
-    /// the checks of I11, the I12 deletion guard and the rescue classes
-    /// from the last `worktree_list` run of each repository (a schema
-    /// trigger holds the I12 bundle membership). I8 holds at each transition
-    /// to `landed` or `merged`, I9 at each ref move, and I10 before each
-    /// rebase: the use cases check them.
+    /// The integration rows in the order of ticket 52 of fleetd-p6: the
+    /// fetch and push jobs; a merge with ideas in flight before the feature
+    /// ready rule; the trial merges to queue; the stacks; the stack edges;
+    /// then `land_bundles` of Phase 4 (the task branches, the bundles, the
+    /// ref moves and the candidate refs), the rebases and their resolver
+    /// tasks, the judge branches of a fix round, and the checks of I11, the
+    /// I12 deletion guard and the rescue classes from the last
+    /// `worktree_list` run of each repository (a schema trigger holds the
+    /// I12 bundle membership). I8 holds at each transition to `landed` or
+    /// `merged`, I9 at each ref move, and I10 before each rebase: the use
+    /// cases check them.
     fn integration_rows(
         &self,
         tx: &Transaction<'_>,
@@ -4401,10 +4493,11 @@ impl Pass<'_> {
         let gw = CliGitGateway::new(git.clone());
         let live = integration_rows::feature_ids(tx, true)?;
         let chosen = take(tx, RowKind::Features.as_str(), &live, budget, stamp)?;
-        let keys: Vec<String> = integration_rows::bundles_to_follow(tx)?
-            .into_iter()
-            .map(id_key)
-            .collect();
+        let mut follow = integration_rows::bundles_to_follow(tx)?;
+        follow.extend(bundles::late_builds(tx)?);
+        follow.sort_unstable();
+        follow.dedup();
+        let keys: Vec<String> = follow.into_iter().map(id_key).collect();
         let ids: Vec<i64> = take(tx, RowKind::Bundles.as_str(), &keys, budget, stamp)?
             .iter()
             .filter_map(|k| k.parse().ok())
@@ -4417,6 +4510,39 @@ impl Pass<'_> {
             out.failed
                 .extend(queue_remote(&ctx, tx, &gw, feature, clock)?);
         }
+        // Phase 6 (ticket 52 of fleetd-p6), each duty in its own savepoint:
+        // a merge with ideas in flight before the feature ready rule, then
+        // the trial merges, the stacks and the stack edges, before the
+        // bundles.
+        let m = merged_with_ideas::MergedWithIdeas {
+            jobs: &ctx,
+            git: &gw,
+        };
+        let moved = duty(tx, "merged_with_ideas", &mut out.failed, |tx| {
+            merged_with_ideas::move_ideas(&m, tx, clock)
+        })?;
+        out.moved_ideas = moved.is_some_and(|m| !m.is_empty());
+        let f = features::Features {
+            jobs: &ctx,
+            git: &gw,
+        };
+        features::follow_in(&f, tx, clock, Some(&chosen))?;
+        duty(tx, "trial_merges", &mut out.failed, |tx| {
+            queue_trial_merges(&ctx, tx, &gw, &git, &chosen, budget, clock)
+        })?;
+        duty(tx, "stacks", &mut out.failed, |tx| {
+            self.stack_conflicts(tx, &git)
+        })?;
+        let refs = GitRebaseRefs::new(git.clone());
+        let rebases = rebase::Rebases {
+            jobs: &ctx,
+            git: &gw,
+            refs: &refs,
+        };
+        let edges = duty(tx, "stack_edges", &mut out.failed, |tx| {
+            self.stack_edges(tx, &rebases, clock)
+        })?;
+        out.rebase_rescues.extend(edges.into_iter().flatten());
         let l = landing::Landing { jobs: &ctx };
         out.rescues = landing::follow(&l, tx, clock, budget.rows())?;
         let b = bundles::Bundles {
@@ -4434,19 +4560,20 @@ impl Pass<'_> {
             git: &gw,
         };
         out.candidates = candidates::advance_in(&c, tx, Some(&ids))?;
-        let f = features::Features {
+        out.rebase_rescues
+            .extend(rebase::follow_in(&rebases, tx, clock, Some(&chosen))?);
+        self.open_resolvers(tx, &gw, &CliStackGit::new(git.clone()), &chosen)?;
+        let judge_refs =
+            GitJudgeBranchRefs::new(git, effects::judge_index_folder(&self.settings.fleet_root));
+        let j = judge_branch::JudgeBranches {
             jobs: &ctx,
             git: &gw,
+            refs: &judge_refs,
         };
-        features::follow_in(&f, tx, clock, Some(&chosen))?;
-        let refs = GitRebaseRefs::new(git.clone());
-        let r = rebase::Rebases {
-            jobs: &ctx,
-            git: &gw,
-            refs: &refs,
-        };
-        out.rebase_rescues = rebase::follow_in(&r, tx, clock, Some(&chosen))?;
-        self.open_resolvers(tx, &gw, &CliStackGit::new(git), &chosen)?;
+        let judges = duty(tx, "judge_branches", &mut out.failed, |tx| {
+            judge_branch::follow(&j, tx)
+        })?;
+        out.judges = judges.unwrap_or_default();
         let lists = branches::listings(tx)?;
         branches::adopt_orphans(&ctx, tx, &lists, clock)?;
         out.branches = branches::deletions(tx, &lists)?;
@@ -4497,6 +4624,67 @@ impl Pass<'_> {
         Ok(())
     }
 
+    /// The stacks (ticket 37): each newest conflicting trial merge of 2
+    /// in-flight features stacks the younger one on the older one, 1 time,
+    /// with its resolver tasks in its repository. A resolver task takes the persona of
+    /// [`integration::branches::resolver_persona`] of the younger feature;
+    /// a younger feature with no task that has a persona waits.
+    fn stack_conflicts(&self, tx: &Transaction<'_>, git: &CliWorktreeGit) -> Result<()> {
+        let config = &self.settings.config;
+        let planner = StackPlanner {
+            max_lines: config.resolver_max_lines,
+            max_files: config.resolver_max_files,
+        };
+        let stack_git = CliStackGit::new(git.clone());
+        let ideas = self.settings.fleet_root.join(IDEAS_DIR);
+        let why = cause("a trial merge of 2 features conflicts");
+        for (row, upper) in stacks::newest_conflicts(tx, &planner)? {
+            let Some(run) = runs::feature_run(tx, &upper)? else {
+                continue;
+            };
+            let Some(profile) = feature_persona(tx, &upper)? else {
+                continue;
+            };
+            let s = stacks::Stacking {
+                repo: Path::new(&run.project_root),
+                ideas: &ideas,
+                profile: &profile,
+                planner,
+                guard: Some(self.settings.generation),
+            };
+            stacks::stack_conflict(tx, &s, &stack_git, &row, why)
+                .with_context(|| format!("the stack of {upper}"))?;
+        }
+        Ok(())
+    }
+
+    /// The stack edges whose lower feature is `merged` or `abandoned`
+    /// (ticket 38). The resolver task of a conflict takes the persona of
+    /// [`integration::branches::resolver_persona`] of the upper feature; an
+    /// upper feature with no task that has a persona waits. Gives the
+    /// rescue effects of the rebases.
+    fn stack_edges(
+        &self,
+        tx: &Transaction<'_>,
+        rebases: &integration::rebase::Rebases<'_>,
+        clock: FleetSeconds,
+    ) -> Result<Vec<integration::rebase::Effect>> {
+        let ideas = self.settings.fleet_root.join(IDEAS_DIR);
+        let mut effects = Vec::new();
+        for upper in stack_edges::ended_uppers(tx)? {
+            let Some(profile) = feature_persona(tx, &upper)? else {
+                continue;
+            };
+            let e = stack_edges::Edges {
+                rebases,
+                ideas: &ideas,
+                profile: &profile,
+            };
+            effects.extend(stack_edges::follow_in(&e, tx, clock, Some(&upper))?);
+        }
+        Ok(effects)
+    }
+
     /// Part 3 of integration, after the other effects: write the rescue
     /// refs and record them in 1 transaction, then move the feature refs
     /// and delete the refs that are due. Each effect waits for the next
@@ -4511,6 +4699,7 @@ impl Pass<'_> {
     ) {
         use integration::{branches, candidates, landing, rebase, ref_move};
         report.failed.append(&mut todo.failed);
+        self.moved_ideas_effects(conn, todo.moved_ideas, clock, deadline, report);
         if todo.is_empty() {
             return;
         }
@@ -4583,8 +4772,115 @@ impl Pass<'_> {
                 Err(e) => failed.push(format!("the deletion of {}: {e:#}", d.name)),
             }
         }
+        self.judge_branch_effects(conn, &todo.judges, git, deadline, &mut done, &mut failed);
         report.done.extend(done.into_iter().map(Done::Git));
         report.failed.extend(failed);
+    }
+
+    /// The rescues and moves of the judge branches of a fix round (ticket
+    /// 42), after the commit, then their record in 1 transaction. Each
+    /// effect waits for the next pass when the time budget of the pass
+    /// ends.
+    fn judge_branch_effects(
+        &mut self,
+        conn: &mut Connection,
+        judges: &[judge_branch::Effect],
+        git: CliWorktreeGit,
+        deadline: Deadline,
+        done: &mut Vec<String>,
+        failed: &mut Vec<String>,
+    ) {
+        let gw = CliGitGateway::new(git.clone());
+        let refs =
+            GitJudgeBranchRefs::new(git, effects::judge_index_folder(&self.settings.fleet_root));
+        let mut judged = Vec::new();
+        for e in judges {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match judge_branch::run(e, &gw, &refs) {
+                Ok(d) => judged.push(d),
+                Err(err) => failed.push(format!("the judge branch effect {e:?}: {err:#}")),
+            }
+        }
+        if judged.is_empty() {
+            return;
+        }
+        match self.observe_judges(conn, &judged) {
+            Ok(()) => done.extend(judged.iter().map(|d| format!("{d:?}"))),
+            Err(e) => failed.push(format!("the record of the judge branches: {e:#}")),
+        }
+    }
+
+    /// The effects of a merge with ideas in flight (ticket 35), after the
+    /// commit: the branch ref of each new feature, then the rescue ref and
+    /// the move of each task branch of a moved idea, each move in its own
+    /// transaction. They run when this pass moved ideas, or when a task
+    /// branch still waits on a `merged` feature, as after a crash. Each
+    /// step reads git and the rows again, so a repeat writes nothing twice.
+    fn moved_ideas_effects(
+        &mut self,
+        conn: &mut Connection,
+        moved: bool,
+        clock: FleetSeconds,
+        deadline: Deadline,
+        report: &mut PassReport,
+    ) {
+        let pending = match merged_with_ideas::pending_moves(conn) {
+            Ok(p) => p,
+            Err(e) => {
+                report
+                    .failed
+                    .push(format!("the task branches of merged features: {e:#}"));
+                return;
+            }
+        };
+        if (!moved && pending.is_empty()) || deadline.reached((self.now)()) {
+            return;
+        }
+        match self.complete_moved_ideas(conn, clock) {
+            Ok(done) => report.done.extend(done.into_iter().map(Done::Git)),
+            Err(e) => report.failed.push(format!(
+                "the effects of a merge with ideas in flight: {e:#}"
+            )),
+        }
+    }
+
+    fn complete_moved_ideas(&self, conn: &Connection, clock: FleetSeconds) -> Result<Vec<String>> {
+        let repos = feature_repos(conn)?;
+        let git = effects::integration_git(&self.settings.fleet_root, &repos);
+        let gw = CliGitGateway::new(git.clone());
+        let mut done = Vec::new();
+        for r in new_features::pending_refs(conn, &gw)? {
+            new_features::create_ref(&gw, &r)?;
+            done.push(format!("create {}", r.name));
+        }
+        let path = conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .context("the ledger has no file")?;
+        let mut store = Store::open(Path::new(path))?;
+        let rescues = integration::landing::GitBranchRescues { git: &git };
+        let ctx = self.job_ctx();
+        let moved = merged_with_ideas::complete_moves(&ctx, &mut store, &gw, &rescues, clock)?;
+        done.extend(
+            moved
+                .into_iter()
+                .map(|b| format!("move {b} to its new feature")),
+        );
+        Ok(done)
+    }
+
+    /// Record what the judge branch effects did in 1 transaction.
+    fn observe_judges(&self, conn: &mut Connection, done: &[judge_branch::Done]) -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        fleetd_row::check_generation(&tx, self.settings.generation)?;
+        let ctx = self.job_ctx();
+        for d in done {
+            judge_branch::observe(&ctx, &tx, d)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Record the written rescue refs on their branch rows in 1
@@ -4610,8 +4906,107 @@ impl Pass<'_> {
     }
 }
 
+/// Run the Phase 6 duty `name` in its own savepoint of `tx`. An error rolls
+/// back only the rows of the duty and gives its line in `failed`, and the
+/// next duties go on: `None`. `name` is a SQL name.
+fn duty<T>(
+    tx: &Transaction<'_>,
+    name: &str,
+    failed: &mut Vec<String>,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<Option<T>> {
+    tx.execute_batch(&format!("SAVEPOINT {name}"))?;
+    match f(tx) {
+        Ok(v) => {
+            tx.execute_batch(&format!("RELEASE {name}"))?;
+            Ok(Some(v))
+        }
+        Err(e) => {
+            tx.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))?;
+            failed.push(format!("the duty {name}: {e:#}"));
+            Ok(None)
+        }
+    }
+}
+
+/// The trial merges (ticket 36): record the verdict of each ended run,
+/// then queue the runs that are due for the primary branch of each feature
+/// of `chosen`, at most `budget` new runs in this pass. A pass never waits
+/// for a trial merge.
+fn queue_trial_merges(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    gw: &CliGitGateway,
+    git: &CliWorktreeGit,
+    chosen: &[String],
+    budget: PassBudget,
+    clock: FleetSeconds,
+) -> Result<()> {
+    trial_merges::record_ended(ctx, tx)?;
+    let reads = CliTrialMergeGit::new(git.clone());
+    let mut done = BTreeSet::new();
+    let mut left = budget.rows();
+    for id in chosen {
+        let Some(row) = integration_rows::feature(tx, id)? else {
+            continue;
+        };
+        let Some(run) = runs::feature_run(tx, id)? else {
+            continue;
+        };
+        let Ok(tips) = integration::features::read_tips(gw, tx, &run.project_root, &row)? else {
+            continue;
+        };
+        if !done.insert((tips.repo.clone(), row.primary_branch.clone())) {
+            continue;
+        }
+        let primary = trial_merges::Primary {
+            repo: &tips.repo,
+            branch: &row.primary_branch,
+            tip: &tips.primary,
+        };
+        let queued = trial_merges::queue_due(ctx, tx, &reads, &primary, left, clock)?;
+        left = left.saturating_sub(queued.len());
+    }
+    Ok(())
+}
+
+/// The persona of a resolver task of the feature `id`: the rule of
+/// [`integration::branches::resolver_persona`] for its feature branch.
+fn feature_persona(tx: &Connection, id: &str) -> Result<Option<String>> {
+    let branch = integration_rows::feature(tx, id)?.and_then(|f| f.branch);
+    match branch {
+        Some(b) => integration::branches::resolver_persona(tx, id, &b),
+        None => Ok(None),
+    }
+}
+
 /// The repository of each feature, each 1 time: the git of integration
 /// reads them. A folder that is not a git repository is left out.
+/// The `judges:` dependency of each `pending` judge task of `all`, and the
+/// judged tasks whose structural check passed for their newest attempt
+/// (I2; ticket 40 of fleetd-p6). A judge task has no `task_deps` row.
+fn judge_deps(tx: &Connection, all: &[tasks::Task]) -> Result<(Vec<Dep>, BTreeSet<String>)> {
+    let mut deps = Vec::new();
+    let mut passed = BTreeSet::new();
+    for t in all
+        .iter()
+        .filter(|t| t.status == TaskStatus::Pending.as_str())
+    {
+        let Some(judged) = judged_task(&t.kind, t.parent_task_id.as_deref()) else {
+            continue;
+        };
+        if verifier::structural_passed(tx, judged)? {
+            passed.insert(judged.to_string());
+        }
+        deps.push(Dep {
+            task: t.task_id.clone(),
+            on: judged.to_string(),
+            kind: DepKind::Judges,
+        });
+    }
+    Ok((deps, passed))
+}
+
 fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {
     let mut repos = Vec::new();
     for id in integration_rows::feature_ids(conn, false)? {
@@ -4627,6 +5022,57 @@ fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// The run of the feature `feature` and the project file at its tip, or
+/// the line of a project file that does not parse. `None`: the feature has
+/// no branch tip yet.
+fn feature_settings(
+    tx: &Connection,
+    gw: &CliGitGateway,
+    feature: &str,
+) -> Result<Option<(runs::Run, std::result::Result<ProjectSettings, String>)>> {
+    let Some(branch) = integration_rows::feature(tx, feature)?.and_then(|f| f.branch) else {
+        return Ok(None);
+    };
+    let Some(run) = runs::feature_run(tx, feature)? else {
+        return Ok(None);
+    };
+    let repo = PathBuf::from(&run.project_root);
+    let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
+        return Ok(None);
+    };
+    let settings = integration::features::project_settings(gw, &repo, &tip)
+        .map_err(|e| format!("feature {feature}: {e:#}"));
+    Ok(Some((run, settings)))
+}
+
+/// Q-C of `docs/tickets/fleetd-p4/MAP.md`: a project with no fast gate
+/// holds the new dispatch of its tasks, with 1 needs-you item, and no task
+/// is lost or cancelled. The project file is read at the tip of each live
+/// feature of the project; 1 tip with no fast gate holds the project. The
+/// hold ends when each tip declares the gate. A project file that does not
+/// parse changes no hold: [`queue_remote`] reports it.
+fn sync_gate_holds(ctx: &JobCtx<'_>, tx: &Connection, gw: &CliGitGateway) -> Result<()> {
+    let mut by_project: BTreeMap<String, ProjectSettings> = BTreeMap::new();
+    for feature in integration_rows::feature_ids(tx, true)? {
+        let Some((run, settings)) = feature_settings(tx, gw, &feature)? else {
+            continue;
+        };
+        let Ok(s) = settings else {
+            continue;
+        };
+        let held = by_project
+            .get(&run.project_id)
+            .is_some_and(|h| h.fast_gate().is_none());
+        if !held {
+            by_project.insert(run.project_id, s);
+        }
+    }
+    for (project, settings) in &by_project {
+        holds::sync_missing_fast_gate(tx, ctx.needs_you, project, settings)?;
+    }
+    Ok(())
+}
+
 /// `queue_due_jobs` of 1 feature: the fetch of its repository at each
 /// period, and the push of its branch when it is due, each with the remote
 /// of the project file at the feature tip. A feature with no branch tip
@@ -4638,19 +5084,12 @@ fn queue_remote(
     feature: &str,
     clock: FleetSeconds,
 ) -> Result<Option<String>> {
-    let Some(branch) = integration_rows::feature(tx, feature)?.and_then(|f| f.branch) else {
+    let Some((run, settings)) = feature_settings(tx, gw, feature)? else {
         return Ok(None);
     };
-    let Some(run) = runs::feature_run(tx, feature)? else {
-        return Ok(None);
-    };
-    let repo = PathBuf::from(&run.project_root);
-    let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
-        return Ok(None);
-    };
-    let settings = match integration::features::project_settings(gw, &repo, &tip) {
+    let settings = match settings {
         Ok(s) => s,
-        Err(e) => return Ok(Some(format!("feature {feature}: {e:#}"))),
+        Err(e) => return Ok(Some(e)),
     };
     let root = &run.project_root;
     integration::remote::queue_fetch(ctx, tx, root, &settings.remote, clock)?;

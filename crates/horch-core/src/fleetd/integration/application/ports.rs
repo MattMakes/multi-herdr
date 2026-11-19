@@ -66,6 +66,10 @@ pub trait IntegrationGitGateway {
     /// Delete the ref `name` only when it is at `expected_old`.
     fn delete_ref(&self, repo: &Path, name: &str, expected_old: &str) -> Result<RefMove>;
 
+    /// Whether `ancestor` is an ancestor of `tip`, or is `tip`:
+    /// `git merge-base --is-ancestor <ancestor> <tip>`.
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool>;
+
     /// Whether the changes of the branch at `branch_tip` are in
     /// `target_tip` (I8): `branch_tip` is an ancestor of `target_tip`, or
     /// each file that the branch changed from its merge base with `base`
@@ -79,8 +83,12 @@ pub trait IntegrationGitGateway {
         target_tip: &str,
     ) -> Result<bool>;
 
+    /// Whether the commit `a` is an ancestor of `b`, or `a` is `b`.
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool>;
+
     /// The candidate of a bundle on `base_tip` (Q15), with no checkout and
-    /// no worktree.
+    /// no worktree. A member whose tip is already in the candidate adds no
+    /// merge commit.
     fn build_candidate(&self, repo: &Path, base_tip: &str, members: &[Member])
         -> Result<Candidate>;
 

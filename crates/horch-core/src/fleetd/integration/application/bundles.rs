@@ -25,7 +25,7 @@
 //! - A bundle past the time limit of its state has 1 needs-you item, and
 //!   the item ends when the bundle is no longer past it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -50,6 +50,8 @@ use crate::fleetd::integration::domain::bundle::{
     self as rules, BuildFact, BundleState, DropCause, Limits, Step,
 };
 use crate::fleetd::integration::domain::task_branch::{self, LandingState};
+use crate::fleetd::worktree_custody::adapters::sqlite as trees;
+use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTreeRequest};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
@@ -86,10 +88,11 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The repository and the branch of a feature.
+/// The repository, the branch and the run of a feature.
 struct Target {
     repo: PathBuf,
     branch: String,
+    run_id: String,
 }
 
 impl Target {
@@ -125,7 +128,62 @@ pub fn advance_in(
             step(b, tx, clock, id)?;
         }
     }
+    late_candidates(b.jobs, tx, bundles)?;
     overdue_items(b.jobs, tx, clock)
+}
+
+/// The build job of a bundle is a separate process: a pass can drop the
+/// bundle while the job runs, and the job can still write the candidate
+/// ref after the drop. The ids of the dropped bundles whose build job has
+/// not ended, or passed with a candidate that the row does not record yet.
+/// A pass follows them, so [`advance_in`] records each such candidate.
+pub fn late_builds(conn: &Connection) -> Result<Vec<i64>> {
+    let mut ids = Vec::new();
+    for (id, job) in rows::dropped_without_candidate(conn)? {
+        let job = jobs_store::get(conn, job)?;
+        let late = job.as_ref().is_some_and(|j| j.kind == Kind::BundleBuild)
+            && matches!(
+                build_fact(job.as_ref()),
+                BuildFact::Pending | BuildFact::Built { .. }
+            );
+        if late {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Record the candidate of the passed build job of each dropped bundle of
+/// [`late_builds`] on its row, so the deletion of candidate refs deletes
+/// the ref. A recorded bundle has its `candidate_tip`, so it is recorded 1
+/// time.
+fn late_candidates(ctx: &JobCtx<'_>, tx: &Connection, bundles: Option<&[i64]>) -> Result<()> {
+    for id in late_builds(tx)? {
+        if bundles.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
+        let bundle = rows::bundle(tx, id)?.with_context(|| format!("no bundle {id}"))?;
+        let job = match bundle.job_id {
+            Some(job) => jobs_store::get(tx, job)?,
+            None => None,
+        };
+        let BuildFact::Built {
+            candidate_ref,
+            candidate_tip,
+        } = build_fact(job.as_ref())
+        else {
+            continue;
+        };
+        let why = "its build job wrote the candidate after the drop";
+        let facts = [
+            BundleFact::CandidateRef(Some(&candidate_ref)),
+            BundleFact::CandidateTip(&candidate_tip),
+        ];
+        for fact in facts {
+            rows::set_bundle_fact(tx, ctx.guard, id, fact, by_fleetd(why))?;
+        }
+    }
+    Ok(())
 }
 
 /// The repository and the branch of `feature_id`, or `None` when the
@@ -137,6 +195,7 @@ fn target(tx: &Connection, feature_id: &str) -> Result<Option<Target>> {
     Ok(runs::feature_run(tx, feature_id)?.map(|run| Target {
         repo: PathBuf::from(run.project_root),
         branch,
+        run_id: run.run_id,
     }))
 }
 
@@ -170,7 +229,7 @@ fn form(
     let mut members = Vec::new();
     let mut tips = Vec::new();
     for name in ready {
-        if let Some(tip) = head_tip(b, &t, &name)? {
+        if let Some(tip) = member_tip(b, tx, &t, &base, &name)? {
             members.push(name);
             tips.push(tip);
         }
@@ -193,6 +252,80 @@ fn form(
         landing::enter(ctx, tx, name, LandingState::InBundle, clock, &why)?;
     }
     Ok(())
+}
+
+/// The kind of the needs-you item of a `ready` task branch that git no
+/// longer has and whose work fleetd cannot find in its feature.
+pub const NO_TIP_KIND: &str = "branch_tip_missing";
+
+/// The key of the needs-you item of the task branch `branch` with no tip.
+pub fn no_tip_key(branch: &str) -> String {
+    format!("{NO_TIP_KIND}:{branch}")
+}
+
+/// The tip of the `ready` task branch `name` for a bundle on `base`: the
+/// tip of its ref. When git no longer has the ref, as after the old path
+/// landed it and removed its tree, the tip that the ledger recorded for it
+/// (its `seen_tip`, its rescue ref, else the tip of its newest tree row)
+/// when that tip is already in `base`: the bundle then lands it with no
+/// candidate commit. Else `None`, with 1 needs-you item, so the branch does
+/// not wait in `ready` with no word.
+fn member_tip(
+    b: &Bundles<'_>,
+    tx: &Connection,
+    t: &Target,
+    base: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let ctx = b.jobs;
+    let key = no_tip_key(name);
+    if let Some(tip) = head_tip(b, t, name)? {
+        ctx.needs_you.resolve_item(tx, &key)?;
+        return Ok(Some(tip));
+    }
+    if let Some(tip) = recorded_tip(b.git, tx, &t.repo, name)? {
+        if b.git.is_ancestor(&t.repo, &tip, base)? {
+            ctx.needs_you.resolve_item(tx, &key)?;
+            return Ok(Some(tip));
+        }
+    }
+    let text = format!(
+        "fleetd cannot land the ready task branch {name}: git has no branch {name}, and \
+         the ledger records no tip of it that is in {}. Restore the branch, or run \
+         horch branch abandon {name}.",
+        t.branch
+    );
+    ctx.needs_you.open_item(
+        tx,
+        &NewItem {
+            key: &key,
+            kind: NO_TIP_KIND,
+            entity: Entity::TaskBranch,
+            entity_id: name,
+            text: &text,
+        },
+    )?;
+    Ok(None)
+}
+
+/// The tip that the ledger recorded for the task branch `name` that git no
+/// longer has: its `seen_tip`, else the tip of its rescue ref, else the tip
+/// of its newest tree row. `None` when none is known.
+pub(crate) fn recorded_tip(
+    git: &dyn IntegrationGitGateway,
+    tx: &Connection,
+    repo: &Path,
+    name: &str,
+) -> Result<Option<String>> {
+    let row = rows::branch(tx, name)?.with_context(|| format!("no task branch {name}"))?;
+    let rescued = match row.rescue_ref.as_deref() {
+        Some(r) => git.tip(repo, r)?,
+        None => None,
+    };
+    match row.seen_tip.or(rescued) {
+        Some(tip) => Ok(Some(tip)),
+        None => trees::recorded_tip(tx, name),
+    }
 }
 
 /// The rows of 1 new bundle: its members in queue order and the tip of
@@ -365,6 +498,16 @@ fn gate(
         .candidate_tip
         .as_deref()
         .with_context(|| format!("bundle {} is gating with no candidate tip", bundle.id))?;
+    let tree = GateTreeRequest {
+        feature_id: &bundle.feature_id,
+        run_id: &t.run_id,
+        repo: &t.repo,
+        base: &t.branch,
+        tip: &bundle.base_tip,
+    };
+    if !gate_tree::ready(ctx, tx, &tree, clock)? {
+        return Ok(());
+    }
     let subject = bundle.id.to_string();
     let req = GateRequest {
         kind: Kind::FastGate,

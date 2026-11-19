@@ -16,6 +16,8 @@
 //!   spawn --attempt` and the restart on a fallback) that `horch spawn`
 //!   wrote itself before (ticket 23 of fleetd-p5). Each handler checks that
 //!   the worker row of its payload exists and is a row of its run.
+//! - `session_records` writes the session records that 1 process changed
+//!   ([`crate::execution::store::apply_session_records`], T-884).
 //! - `worker_stop` ends the worker row. The pass stops each process of an
 //!   ended row by its PID and start time, and closes its pane only with a
 //!   fact that proves it (`commands::mark_orphans`).
@@ -62,6 +64,9 @@ pub fn register(handlers: &mut Handlers, deps: &WorkerDeps) {
     });
     handlers.insert(Kind::WorkerLaunchFailed, |tx, p| {
         worker_launch_failed(tx, &record(Kind::WorkerLaunchFailed, p)?)
+    });
+    handlers.insert(Kind::SessionRecords, |tx, p| {
+        crate::execution::store::apply_session_records(tx, p)
     });
     handlers.insert(Kind::WorkerStop, |tx, p| worker_stop(tx, &parse(p)?));
 }

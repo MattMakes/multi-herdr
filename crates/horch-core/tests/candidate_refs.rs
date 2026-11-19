@@ -387,8 +387,14 @@ impl IntegrationGitGateway for Counting {
         }
         Ok(out)
     }
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        self.inner.contains(repo, tip, ancestor)
+    }
     fn changes_in(&self, repo: &Path, branch_tip: &str, base: &str, target: &str) -> Result<bool> {
         self.inner.changes_in(repo, branch_tip, base, target)
+    }
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
+        self.inner.is_ancestor(repo, a, b)
     }
     fn build_candidate(&self, repo: &Path, base: &str, members: &[Member]) -> Result<Candidate> {
         self.inner.build_candidate(repo, base, members)

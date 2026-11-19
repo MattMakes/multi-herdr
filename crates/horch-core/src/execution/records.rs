@@ -83,6 +83,16 @@ impl SessionLedger {
         self
     }
 
+    /// Write through the writer of fleetd, in this process
+    /// ([`ExecutionStore::with_writer`]).
+    pub fn with_writer(
+        mut self,
+        writer: std::sync::Arc<crate::taskledger::store::LedgerWriter>,
+    ) -> Self {
+        self.store = self.store.with_writer(writer);
+        self
+    }
+
     /// The workspace [`SessionLedger::insert`] fills into a record without one.
     pub fn with_workspace(mut self, workspace_id: Option<String>) -> Self {
         self.workspace_id = workspace_id;
@@ -377,7 +387,10 @@ mod tests {
 
     fn ledger() -> (tempfile::TempDir, SessionLedger) {
         let tmp = tempfile::tempdir().unwrap();
-        let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj");
+        // A test of the store writes with the writer of fleetd (T-884).
+        let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj").with_writer(
+            std::sync::Arc::new(crate::taskledger::store::LedgerWriter::fleetd()),
+        );
         (tmp, l)
     }
 

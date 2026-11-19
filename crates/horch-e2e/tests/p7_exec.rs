@@ -22,10 +22,9 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use horch_core::fleetd::task_execution::application::retry::CONTEXT_LIMIT_LOOP;
-use horch_core::taskledger::model::{Actor, ReviewMode, WorkerKind};
+use horch_core::taskledger::model::{Actor, ReviewMode};
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::tasks::{self, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
@@ -122,7 +121,7 @@ struct Spec<'a> {
     runs: &'a [(Cli, &'a [&'a str])],
 }
 
-/// A fleet with 1 ready task, a test fleetd and the workspace `w1`, whose
+/// A fleet with 1 ready task, a test fleetd and the workspace of the project, whose
 /// panes run their commands.
 struct World {
     h: Harness,
@@ -150,7 +149,6 @@ impl World {
             "HORCH_QUOTA_FILE",
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
-        h.set("HORCH_WORKSPACE_ID", "w1");
         // `exec`: the fake herdr runs the command of each pane.
         h.set("HORCH_FAKE_SCENARIO", "exec");
         let built = Harness::horch_bin().parent().unwrap().to_path_buf();
@@ -164,28 +162,17 @@ impl World {
             let path = h.write_warmed(&format!("{}-p7", cli.fake()), script.as_bytes());
             h.set(cli.bin_env(), path.to_string_lossy());
         }
+        // The workspace of the project, as `horch fleet` makes it: fleetd
+        // opens the pane of each attempt in its first pane (T-890).
+        let ws = h.fleet_workspace();
+        h.set("HORCH_WORKSPACE_ID", &ws);
         let mut w = World {
             h,
             task_id: String::new(),
         };
         w.declare_gates();
-        w.task_id = w.seed_task(spec);
+        w.task_id = w.seed_task(spec, &ws);
         w.h.serve_fleetd();
-        // The workspace of the project, as `horch fleet` names it: fleetd
-        // opens the pane of each attempt beside its first pane.
-        let label =
-            w.h.project
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-        let mut create = std::process::Command::new(w.h.bin.join("herdr"));
-        w.h.seal(&mut create);
-        let o = create
-            .args(["workspace", "create", "--label", &label])
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "{}", text(&o));
         w
     }
 
@@ -210,10 +197,10 @@ impl World {
         }
     }
 
-    /// The run, its idea in flight (FR-12), the pane that fleetd splits
-    /// for a launch, and 1 queued task. The test writes them before fleetd
+    /// The run in the workspace `ws`, its idea in flight (FR-12), and 1
+    /// queued task. The test writes them before fleetd
     /// runs. Gives the task id.
-    fn seed_task(&self, spec: &Spec<'_>) -> String {
+    fn seed_task(&self, spec: &Spec<'_>, ws: &str) -> String {
         let ticket = "# T0\n";
         let dir = self.h.project.join("tickets");
         std::fs::create_dir_all(&dir).unwrap();
@@ -226,7 +213,7 @@ impl World {
             &NewRun {
                 slug: "r1".into(),
                 base_branch: Some("main".into()),
-                workspace_id: Some("w1".into()),
+                workspace_id: Some(ws.into()),
                 ..Default::default()
             },
         )
@@ -234,19 +221,6 @@ impl World {
         schema::run_idea(conn, &run.run_id, &horch_core::clock::now_stamp(), true)
             .unwrap()
             .expect("the idea of r1");
-        let seat = workers::insert(
-            conn,
-            &NewWorker {
-                run_id: run.run_id.clone(),
-                kind: Some(WorkerKind::Orchestrator),
-                persona: "orchestrator".into(),
-                workspace_id: Some("w1".into()),
-                pane_id: Some("w1:p1".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        runs::set_orchestrator(conn, &run.run_id, &seat).unwrap();
         let mut new = NewTask::work("t0", "tickets/t0.md", spec.persona);
         new.fallback = spec.fallback.map(str::to_string);
         new.ticket_snapshot = Some(ticket.to_string());

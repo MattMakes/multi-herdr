@@ -13,6 +13,8 @@ use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{
     ExecutionPlan, ExecutionStatus, LaunchStage, SpawnRequest, TilingMode,
 };
+use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records;
 use horch_core::ids::{ExecutionId, SessionId};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{Phase, Roster};
@@ -26,6 +28,9 @@ use horch_core::workspace::testing::FakeWorkspace;
 const NOW: &str = "2026-09-28T18:00:00Z";
 
 struct World {
+    /// The fleetd of the session records (T-884). Declared first, so it
+    /// drops before the folder.
+    _fleetd: ChannelServer,
     _tmp: tempfile::TempDir,
     ctx: RuntimeContext,
     store: ExecutionStore,
@@ -49,10 +54,12 @@ fn world() -> World {
         .with_exe("/opt/horch/bin/horch");
     let ctx = RuntimeContext::from_env(&env).unwrap();
     let store = ExecutionStore::open(&ctx.paths, &project);
+    let fleetd = serve_session_records(&ctx.paths).unwrap();
     let mailbox = Mailbox::in_context(&ctx, "w1");
     let fake = FakeWorkspace::new();
     fake.workspace_create("w1", None, false).unwrap();
     World {
+        _fleetd: fleetd,
         _tmp: tmp,
         ctx,
         store,
@@ -252,7 +259,7 @@ fn a_resume_updates_its_record_in_place_and_keeps_its_history() {
         });
     w.store
         .update(|rs| {
-            rs.push(stored);
+            rs.push(stored.clone());
             Ok(())
         })
         .unwrap();

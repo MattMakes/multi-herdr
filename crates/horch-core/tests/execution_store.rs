@@ -5,6 +5,7 @@
 //! records.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use horch_core::digest::Digest;
@@ -16,6 +17,7 @@ use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
 use horch_core::roster::Phase;
 use horch_core::skills::{InvocationPolicy, ResolvedSkillRef};
+use horch_core::taskledger::store::LedgerWriter;
 use horch_core::taskledger::Store;
 use horch_marketplace::SkillVersion;
 use serde::Deserialize;
@@ -28,14 +30,20 @@ fn oracle_ledger(name: &str) -> PathBuf {
 
 /// A store at `<tmp>/<slug>.json` holding a copy of the A0 fixture `name`.
 fn fixture_store(tmp: &Path, name: &str) -> ExecutionStore {
-    let store = ExecutionStore::for_project(tmp, &format!("/oracle/{name}"));
+    let store = ExecutionStore::for_project(tmp, &format!("/oracle/{name}")).with_writer(writer());
     std::fs::copy(oracle_ledger(&format!("{name}.json")), store.path()).unwrap();
     store
 }
 
+/// The writer of fleetd: a test of the store writes on the path of the
+/// `session_records` handler, in process (T-884).
+fn writer() -> Arc<LedgerWriter> {
+    Arc::new(LedgerWriter::fleetd())
+}
+
 fn ledger() -> (tempfile::TempDir, SessionLedger) {
     let tmp = tempfile::tempdir().unwrap();
-    let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj");
+    let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj").with_writer(writer());
     (tmp, l)
 }
 
@@ -60,7 +68,8 @@ fn arc_17_legacy_ledgers_load_and_resume() {
         let Some(worker) = records.iter().find(|r| r.kind == KIND_WORKER) else {
             continue;
         };
-        let ledger = SessionLedger::for_project(tmp.path(), &format!("/oracle/{name}"));
+        let ledger = SessionLedger::for_project(tmp.path(), &format!("/oracle/{name}"))
+            .with_writer(writer());
         ledger
             .resume(&worker.record_id, "opus-9", "resume ai_docs/plans/next.md")
             .unwrap();
@@ -318,7 +327,7 @@ fn store_dirlock_excludes_concurrent_writers() {
         .map(|w| {
             let root = root.clone();
             std::thread::spawn(move || {
-                let store = ExecutionStore::for_project(&root, "/p");
+                let store = ExecutionStore::for_project(&root, "/p").with_writer(writer());
                 for n in 0..50 {
                     store
                         .insert(LedgerRecordV1 {
@@ -439,7 +448,7 @@ fn tel_08_insert_fills_plan_project_and_workspace() {
 #[test]
 fn reads_a_ledger_written_by_the_bash_version() {
     let tmp = tempfile::tempdir().unwrap();
-    let l = SessionLedger::for_project(tmp.path(), "/p");
+    let l = SessionLedger::for_project(tmp.path(), "/p").with_writer(writer());
     std::fs::create_dir_all(tmp.path()).unwrap();
     std::fs::write(
         l.path(),

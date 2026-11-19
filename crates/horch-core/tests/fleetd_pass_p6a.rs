@@ -446,8 +446,17 @@ impl IntegrationGitGateway for Git {
         Ok(RefMove::Moved)
     }
 
+    /// Each feature tip contains the primary tip in this test.
+    fn contains(&self, _: &Path, _: &str, _: &str) -> Result<bool> {
+        Ok(true)
+    }
+
     fn changes_in(&self, _: &Path, _: &str, _: &str, _: &str) -> Result<bool> {
         Ok(false)
+    }
+
+    fn is_ancestor(&self, _: &Path, a: &str, b: &str) -> Result<bool> {
+        Ok(a == b)
     }
 
     fn build_candidate(&self, _: &Path, _: &str, _: &[Member]) -> Result<Candidate> {

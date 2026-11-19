@@ -633,6 +633,19 @@ pub fn bundles_to_follow(conn: &Connection) -> Result<Vec<i64>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Each `dropped` bundle with no recorded candidate and with a job, as
+/// (bundle id, job id), by bundle id. Its build job can have written the
+/// candidate ref after the drop.
+pub fn dropped_without_candidate(conn: &Connection) -> Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, job_id FROM bundles
+         WHERE state = 'dropped' AND candidate_tip IS NULL AND job_id IS NOT NULL
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The branch of each `open` or `ready` feature that has its branch row,
 /// with the `seen_tip` of that row, as (feature id, branch, seen tip), by
 /// feature id.

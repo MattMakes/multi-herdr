@@ -706,6 +706,9 @@ fn arc_17_execution_conversion_lossless() {
 // ─── ARC-16 ─────────────────────────────────────────────────────────────────
 
 struct World {
+    /// The fleetd of the session records (T-884). Declared first, so it
+    /// drops before the folder.
+    _fleetd: horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
     _tmp: tempfile::TempDir,
     ctx: RuntimeContext,
     store: ExecutionStore,
@@ -732,10 +735,14 @@ fn world(faults: Option<&str>) -> World {
     }
     let ctx = RuntimeContext::from_env(&env).unwrap();
     let store = ExecutionStore::open(&ctx.paths, &project);
+    let fleetd =
+        horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(&ctx.paths)
+            .unwrap();
     let mailbox = Mailbox::in_context(&ctx, "w1");
     let fake = FakeWorkspace::new();
     fake.workspace_create("w1", None, false).unwrap();
     World {
+        _fleetd: fleetd,
         _tmp: tmp,
         ctx,
         store,
@@ -1187,7 +1194,10 @@ fn arc_18_worker_startup_order() {
 
 fn store_with(record: LedgerRecordV1) -> (tempfile::TempDir, ExecutionStore) {
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExecutionStore::for_project(tmp.path(), "/p");
+    // A test of the store writes with the writer of fleetd (T-884).
+    let store = ExecutionStore::for_project(tmp.path(), "/p").with_writer(std::sync::Arc::new(
+        horch_core::taskledger::store::LedgerWriter::fleetd(),
+    ));
     store.insert(record).unwrap();
     (tmp, store)
 }

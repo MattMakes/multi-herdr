@@ -326,6 +326,12 @@ pub fn integration_git(fleet_root: &Path, repos: &[PathBuf]) -> CliWorktreeGit {
         .writing(&git_dirs)
 }
 
+/// The folder of the private index of each rebuild of a judge branch
+/// (ticket 42 of fleetd-p6), in the fleet root and outside every project.
+pub fn judge_index_folder(fleet_root: &Path) -> PathBuf {
+    fleet_root.join("tmp").join("judge-branch")
+}
+
 // ─── activity ───────────────────────────────────────────────────────────
 
 /// The activity signals of 1 live attempt, as 1 pass saw them

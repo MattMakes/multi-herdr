@@ -1878,6 +1878,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = sweep_ctx(dir.path());
         let state = dir.path().join("state");
+        // The fleetd of the session records (T-884).
+        let _fleetd =
+            horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at(
+                &state.join(horch_core::execution::store::STATE_DB),
+                &state.join("fleet"),
+            )
+            .unwrap();
         let ledger = horch_core::execution::records::SessionLedger::for_project(&state, "/proj");
         for (id, pane) in [("done-1", "p1"), ("closed-1", "p7")] {
             ledger
