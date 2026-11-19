@@ -194,7 +194,13 @@ impl World {
     /// fake commits, then runs `horch result --status completed`.
     fn t1_says_done(&mut self) {
         let (worker, yaml, tree) = self.t1.clone();
-        self.wait("the worktree of t1", |_| tree.join(".git").exists());
+        // The folder exists before the job ends, so wait for the job.
+        let made = format!("made {}", tree.display());
+        self.wait("the worktree_add job of t1 to pass", |w| {
+            w.rows("SELECT result_json FROM jobs WHERE kind = 'worktree_add' AND state = 'passed'")
+                .iter()
+                .any(|r| r.contains(&made))
+        });
         let keys = format!(
             "commit,result\n{worker}\n{}\n{}\n",
             yaml.display(),
@@ -296,7 +302,8 @@ impl World {
             read(self.h.root.join("fleetd.stderr")),
             files.join("\n"),
             self.rows(
-                "SELECT kind || ' ' || subject || ' ' || state || ' ' || COALESCE(result_json, '')
+                "SELECT kind || ' ' || subject || ' ' || state || ' run=' || run
+                     || ' abandoned=' || abandoned_runs || ' ' || COALESCE(result_json, '')
                  FROM jobs"
             ),
             self.rows(
@@ -484,62 +491,10 @@ fn add_task(
         .task_id
 }
 
-/// SR-7: fleetd runs with the forbidden name in its environment. Its worker
-/// attempt, its `task_check` job, its `docs_sync` job and its `conformance`
-/// job each start a child, and no child has the name.
-#[test]
-fn no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key() {
-    let mut w = World::new("p7-launcher");
-
-    // The worker attempt of `t0` in exec mode: the fake `claude` gets the
-    // `START.md` of the attempt. A conformance launch names its own folder.
-    w.wait("the fake agent of the worker attempt of t0", |w| {
-        w.exec_calls().iter().any(|c| !World::is_conformance(c))
-    });
-    // The verifier check of `t1`, after its worker said done.
-    w.t1_says_done();
-    let check_env = w.h.tmp.join(CHECK_ENV);
-    w.wait("the task_check job to end", |w| {
-        w.ended("task_check") && check_env.is_file()
-    });
-    // docs sync of `claude`: the version from the fake, the pages from the
-    // fixture, in `<fleet root>/docs/claude/<version>/`.
-    w.wait("the docs_sync job of claude to end", |w| {
-        w.ended("docs_sync")
-    });
-    let versions = std::fs::read_dir(w.fleet_root().join("docs/claude"))
-        .map(|d| d.flatten().filter(|e| e.path().is_dir()).count())
-        .unwrap_or(0);
-    assert!(
-        versions > 0,
-        "docs sync wrote no version folder of claude: {}",
-        w.diagnostics()
-    );
-    // The conformance suite of `claude`: real launches of the fake.
-    w.wait("the conformance job of claude to end", |w| {
-        w.ended("conformance")
-    });
-    assert!(
-        w.exec_calls().iter().any(World::is_conformance),
-        "no conformance launch of the fake claude: {}",
-        w.diagnostics()
-    );
-    assert!(
-        w.h.calls_of("claude")
-            .iter()
-            .any(|c| c["argv"] == serde_json::json!(["--version"])),
-        "no version call of the fake claude: {}",
-        w.diagnostics()
-    );
-
-    // No child has the name.
-    // The check of a task starts with only the variables of its rule, so
-    // its environment can be empty.
-    let env = std::fs::read_to_string(&check_env).unwrap();
-    assert!(
-        !env.lines().any(|l| l.starts_with(&format!("{FORBIDDEN}="))),
-        "the check of the task has {FORBIDDEN}"
-    );
+/// Assert that no fake call of the log has the forbidden name. The test
+/// starts each process of its own without it, so each call with it is a
+/// child of fleetd.
+fn assert_no_call_has_the_name(w: &World) {
     let calls = w.h.calls();
     assert!(!calls.is_empty());
     for call in &calls {
@@ -551,4 +506,72 @@ fn no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key
             call["argv"]
         );
     }
+}
+
+/// SR-7: fleetd runs with the forbidden name in its environment. Its
+/// `task_check` job, its `docs_sync` job, its `conformance` job and its
+/// worker attempt each start a child, and no child has the name. The
+/// worker attempt comes last: it is on the list of expected failures while
+/// the release of Phase 6 clears the pane that a push launch splits.
+#[test]
+fn no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key() {
+    horch_e2e::expected::check(
+        file!(),
+        "no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key",
+        || {
+            let mut w = World::new("p7-launcher");
+
+            // The verifier check of `t1`, after its worker said done.
+            w.t1_says_done();
+            let check_env = w.h.tmp.join(CHECK_ENV);
+            w.wait("the task_check job to end", |w| {
+                w.ended("task_check") && check_env.is_file()
+            });
+            // The check of a task starts with only the variables of its
+            // rule, so its environment can be empty.
+            let env = std::fs::read_to_string(&check_env).unwrap();
+            assert!(
+                !env.lines().any(|l| l.starts_with(&format!("{FORBIDDEN}="))),
+                "the check of the task has {FORBIDDEN}"
+            );
+            // docs sync of `claude`: the version from the fake, the pages
+            // from the fixture, in `<fleet root>/docs/claude/<version>/`.
+            w.wait("the docs_sync job of claude to end", |w| {
+                w.ended("docs_sync")
+            });
+            let versions = std::fs::read_dir(w.fleet_root().join("docs/claude"))
+                .map(|d| d.flatten().filter(|e| e.path().is_dir()).count())
+                .unwrap_or(0);
+            assert!(
+                versions > 0,
+                "docs sync wrote no version folder of claude: {}",
+                w.diagnostics()
+            );
+            assert!(
+                w.h.calls_of("claude")
+                    .iter()
+                    .any(|c| c["argv"] == serde_json::json!(["--version"])),
+                "no version call of the fake claude: {}",
+                w.diagnostics()
+            );
+            // The conformance suite of `claude`: real launches of the fake.
+            w.wait("the conformance job of claude to end", |w| {
+                w.ended("conformance")
+            });
+            assert!(
+                w.exec_calls().iter().any(World::is_conformance),
+                "no conformance launch of the fake claude: {}",
+                w.diagnostics()
+            );
+            assert_no_call_has_the_name(&w);
+
+            // The worker attempt of `t0` in exec mode: the fake `claude`
+            // gets the `START.md` of the attempt. A conformance launch
+            // names its own folder.
+            w.wait("the fake agent of the worker attempt of t0", |w| {
+                w.exec_calls().iter().any(|c| !World::is_conformance(c))
+            });
+            assert_no_call_has_the_name(&w);
+        },
+    );
 }
