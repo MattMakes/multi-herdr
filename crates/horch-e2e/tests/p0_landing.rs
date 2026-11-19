@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Output, Stdio};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
@@ -477,16 +477,6 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
     );
 }
 
-/// Kills a started `horch fleetd` when the test ends, also on a panic.
-struct Fleetd(Child);
-
-impl Drop for Fleetd {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 /// Commit `body` as `file` on `branch` with no checkout, because a fleet
 /// worktree can hold the branch. Returns the new tip.
 fn commit_on_branch(h: &Harness, branch: &str, file: &str, body: &str) -> String {
@@ -543,17 +533,29 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
             let project = h.project.clone();
             std::fs::write(project.join("shared.txt"), "line 1\n").unwrap();
             declare_gates(&h, "true");
-            let retry_ticket = ticket(&h, "01-retry", "# 01: Retry sync\n\n**Check:** true\n");
-            let log_ticket = ticket(&h, "02-log", "# 02: Log retries\n\n**Check:** true\n");
+            // The ticket format C1 of Phase 6: plan validation refuses a
+            // ticket with no field block.
+            let c1 = |title: &str, own: &str| {
+                format!(
+                    "# {title}\n\n<!-- horch-ticket: 1 -->\n\
+                     **Persona:** primary `opus` · **Parallel:** yes\n\
+                     **Kind:** feature\n\
+                     **Check:** `true`\n\
+                     **Own:** `{own}`\n\n\
+                     ## Goal\n\n{title}.\n\n\
+                     ## Steps\n\n1. {title}.\n\n\
+                     ## Done when\n\nThe Check passes.\n"
+                )
+            };
+            let retry_ticket = ticket(&h, "01-retry", &c1("01: Retry sync", "src/retry.rs"));
+            let log_ticket = ticket(&h, "02-log", &c1("02: Log retries", "src/log.rs"));
             git_commit_all(&h, "base");
+            // fleetd reads the primary tip from the fetched remote.
+            add_bare_remote(&h);
 
-            let fleetd = h
-                .horch(&["fleetd"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
-            let _fleetd = Fleetd(fleetd);
+            // fleet.toml and the tickets are committed: the test fleetd
+            // reads them at its next start.
+            pass(&h, || ());
 
             // 2 ideas with no `--to`: each one starts its own feature.
             ok(
@@ -565,8 +567,10 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                 &["idea", "add", "--direct", &log_ticket.to_string_lossy()],
             );
             // (feature id, feature branch) of each idea, from the ledger:
-            // a task branch is not a feature branch.
+            // a task branch is not a feature branch. A pass creates the ref
+            // of each feature branch after the commit of its row.
             let features: Vec<(String, String)> = wait_for("2 feature branches", || {
+                pass(&h, || ());
                 let rows = ledger_rows(
                     &h,
                     "SELECT DISTINCT f.id || ' ' || f.branch FROM features f \
@@ -577,7 +581,20 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                     .filter_map(|r| r.split_once(' '))
                     .map(|(id, b)| (id.to_string(), b.to_string()))
                     .collect();
-                (rows.len() >= 2).then_some(rows)
+                let refs = rows.iter().all(|(_, b)| {
+                    h.git_cmd(&[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{b}"),
+                    ])
+                    .current_dir(&project)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+                });
+                (rows.len() >= 2 && refs).then_some(rows)
             });
             assert_eq!(features.len(), 2, "2 ideas make 2 features: {features:?}");
 
@@ -588,6 +605,7 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                 .collect();
 
             let conflict = wait_for("a trial merge that conflicts", || {
+                pass(&h, || ());
                 let rows = ledger_rows(
                     &h,
                     "SELECT left_ref || ' ' || right_ref || ' ' || conflict_files \
@@ -609,6 +627,7 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
             // features.
             let ids: BTreeSet<&str> = features.iter().map(|(id, _)| id.as_str()).collect();
             let decision = wait_for("a decision on the conflict", || {
+                pass(&h, || ());
                 let stacks = ledger_rows(
                     &h,
                     "SELECT id || ' ' || stacked_on FROM features WHERE stacked_on IS NOT NULL",

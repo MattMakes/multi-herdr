@@ -1,3 +1,1 @@
 # Red tests of crates/horch-e2e/tests/p0_landing.rs (fleetd Phase 0, ticket 07).
-# T-557 owns the next line: it makes the test green. The failure text was the same in 3 runs.
-two_conflicting_features_keep_their_tips_and_reach_a_decision | 6 | git rev-parse refs/heads/fleet/
