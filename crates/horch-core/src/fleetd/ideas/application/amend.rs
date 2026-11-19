@@ -23,21 +23,20 @@
 
 use anyhow::{anyhow, bail, Result};
 use rusqlite::Connection;
-use serde_json::json;
 
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
-use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
 use crate::fleetd::ideas::adapters::ideas_store;
-use crate::fleetd::ideas::application::approval::Amendment;
+use crate::fleetd::ideas::application::approval::{record_amendment, Amendment};
 use crate::fleetd::ideas::application::intake::{add_dependent_idea, Added, Target};
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::ideas::domain::approval::{AWAITING_APPROVAL, PAST_APPROVAL, REVISED_TO};
 use crate::fleetd::ideas::domain::idea::TERMINAL;
 use crate::fleetd::ideas::domain::idea_folder::FILE_LIMIT;
 use crate::fleetd::integration::application::new_features::Project;
-use crate::taskledger::model::{Actor, EventKind};
+use crate::taskledger::model::Actor;
 
 /// The cause of the event of an amendment.
 pub const AMENDED_CAUSE: &str = "you amended the idea";
@@ -119,23 +118,12 @@ pub fn amend_idea(
         }
         Step::Amendment(to) => to,
     };
-    let n = u32::try_from(folder.read_amendments()?.len())? + 1;
     if let Some(to) = to {
         transition(tx, ctx.guard, Entity::Idea, idea, to, cause, &NeedsYouList)?;
     }
-    record(
-        tx,
-        ctx.guard,
-        EventKind::Note,
-        Entity::Idea,
-        idea,
-        cause,
-        &json!({ "amendment": n, "text": text }),
-    )?;
-    Ok(Amended::Amendment(Amendment {
-        n,
-        text: text.to_string(),
-    }))
+    Ok(Amended::Amendment(record_amendment(
+        tx, ctx.guard, folder, idea, text, cause,
+    )?))
 }
 
 #[cfg(test)]

@@ -237,6 +237,35 @@ fn a_crash_after_the_commit_rewrites_the_new_idea_with_its_depends_on() {
     assert_eq!(pending, vec![added.file]);
 }
 
+/// 2 amend requests of 1 idea commit before the pass writes the file of
+/// the first: the ledger gives them 2 numbers, and the effects write 2
+/// files (ticket 58 of fleetd-build, F3).
+#[test]
+fn two_amends_before_their_effects_get_2_numbers_and_2_files() {
+    let (w, idea) = world("clarifying");
+    let folder = w.folder(&idea);
+    let mut amendments = Vec::new();
+    for text in ["Cap the delay at 30 s", "Log each retry"] {
+        let tx = rusqlite::Transaction::new_unchecked(&w.conn, TransactionBehavior::Immediate)
+            .unwrap();
+        let amended = amend_idea(&tx, &w.ctx(), &folder, &idea, text, w.project()).unwrap();
+        tx.commit().unwrap();
+        let Amended::Amendment(a) = amended else {
+            panic!("no amendment: {amended:?}");
+        };
+        amendments.push(a);
+    }
+    let numbers: Vec<u32> = amendments.iter().map(|a| a.n).collect();
+    assert_eq!(numbers, vec![1, 2]);
+    for a in &amendments {
+        a.write(&folder).unwrap();
+    }
+    assert_eq!(
+        folder.read_amendments().unwrap(),
+        vec!["Cap the delay at 30 s".to_string(), "Log each retry".to_string()]
+    );
+}
+
 #[test]
 fn amend_of_a_parked_idea_is_refused_and_writes_nothing() {
     let (w, idea) = world("parked");
