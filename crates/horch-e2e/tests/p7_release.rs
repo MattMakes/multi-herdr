@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use horch_core::execution::lifecycle::TRANSCRIPT_JSONL;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
@@ -61,6 +62,10 @@ const WORKER: &str = "w-interactive";
 
 /// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
+
+/// The guard of [`Flight::wait_claude_conformance`] against a hang. A
+/// conformance run ends long before it on any host.
+const HANG_GUARD: Duration = Duration::from_secs(1200);
 
 /// The window of a new attempt (FR-9; `teammates/_base/context-windows.md`).
 const WINDOW: &str = "256000";
@@ -264,39 +269,47 @@ impl Flight {
         rows
     }
 
-    /// Whether the docs jobs that the update queued have ended: no docs job
-    /// is queued or running, and a conformance run of Claude Code, the CLI
-    /// of [`PERSONA`], has a result.
-    fn docs_jobs_ended(&self) -> bool {
-        let (active, claude): (i64, i64) = read(&self.h)
+    /// The conformance runs of Claude Code, the CLI of [`PERSONA`]: how
+    /// many are queued or running, and how many have a result.
+    fn claude_conformance(&self) -> (i64, i64) {
+        read(&self.h)
             .query_row(
                 "SELECT
-                    (SELECT count(*) FROM jobs WHERE kind IN ('docs_sync', 'conformance')
-                        AND state IN ('queued', 'running')),
-                    (SELECT count(*) FROM jobs WHERE kind = 'conformance'
-                        AND subject LIKE 'claude %' AND state IN ('passed', 'failed'))",
+                    count(*) FILTER (WHERE state IN ('queued', 'running')),
+                    count(*) FILTER (WHERE state IN ('passed', 'failed'))
+                 FROM jobs WHERE kind = 'conformance' AND subject LIKE 'claude %'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .unwrap();
-        active == 0 && claude > 0
+            .unwrap()
     }
 
-    /// Wait until the docs jobs that the update queued have ended, also
-    /// after 1 more pass, so the health of each profile is known before the
-    /// next attempt is due. The conformance run of Claude Code must pass: a
-    /// failed run marks [`PERSONA`] unhealthy, and dispatch holds its task
-    /// (FM-19; MAP.md Q15).
-    fn wait_docs_jobs(&self) {
-        for _ in 0..2 {
-            wait_for_or(
-                "the docs jobs of the update to end",
-                || self.docs_jobs_ended().then_some(()),
-                || self.docs_jobs().join("\n"),
+    /// Wait until the conformance run of Claude Code that the update queued
+    /// has a result, and for 1 more pass, so the health of [`PERSONA`] is
+    /// known before the next attempt is due. The run must pass: a failed
+    /// run marks [`PERSONA`] unhealthy, and dispatch holds its task (FM-19;
+    /// MAP.md Q15).
+    ///
+    /// The run is 9 launches of the fake CLI, and its time depends on the
+    /// host. So this waits for the event, the result of the job, while the
+    /// job is queued or running: the time limit of the job in fleetd bounds
+    /// the wait. [`HANG_GUARD`] only stops a test that hangs.
+    fn wait_claude_conformance(&self) {
+        let until = Instant::now() + HANG_GUARD;
+        loop {
+            let (active, ended) = self.claude_conformance();
+            if active == 0 && ended > 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "no result of the conformance run of claude after {} s:\n{}",
+                HANG_GUARD.as_secs(),
+                self.docs_jobs().join("\n")
             );
-            self.wait_passes(1);
+            std::thread::sleep(Duration::from_millis(200));
         }
-        assert!(self.docs_jobs_ended(), "{}", self.docs_jobs().join("\n"));
+        self.wait_passes(1);
         let failed: i64 = read(&self.h)
             .query_row(
                 "SELECT count(*) FROM jobs WHERE kind = 'conformance'
@@ -671,7 +684,7 @@ fn next_attempt_of_its_task_runs_in_exec_mode() {
         || {
             let mut f = Flight::on_phase_6("p7r-next");
             f.update();
-            f.wait_docs_jobs();
+            f.wait_claude_conformance();
             f.hand_off();
 
             let call = f.exec_call();
@@ -731,7 +744,7 @@ fn new_attempt_after_the_update_gets_256000() {
     horch_e2e::expected::check(file!(), "new_attempt_after_the_update_gets_256000", || {
         let mut f = Flight::on_phase_6("p7r-window");
         f.update();
-        f.wait_docs_jobs();
+        f.wait_claude_conformance();
         f.hand_off();
 
         let call = f.exec_call();
