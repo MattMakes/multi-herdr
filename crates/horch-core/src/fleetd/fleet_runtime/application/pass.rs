@@ -1264,7 +1264,7 @@ impl<'a> Pass<'a> {
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
-        start_running(&tx, guard, clock, &wrappers.checkins, |persona| {
+        start_running(&tx, guard, clock, &wrappers, |persona| {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
@@ -1285,6 +1285,7 @@ impl<'a> Pass<'a> {
             config: &self.settings.config,
             needs_you: self.ports.needs_you,
             sent: &read.sent,
+            exited: &wrappers.exited,
         };
         let mut doorbells = Vec::new();
         rules.run(&read, &mut stops, &mut doorbells)?;
@@ -2053,6 +2054,8 @@ struct Rules<'a> {
     needs_you: &'a dyn NeedsYouItems,
     /// The doorbell events that part 3 typed, of each live attempt.
     sent: &'a BTreeMap<String, BTreeSet<i64>>,
+    /// The push attempts whose `exit.json` this pass ingested.
+    exited: &'a [String],
 }
 
 impl Rules<'_> {
@@ -2171,7 +2174,8 @@ impl Rules<'_> {
     /// `no_result` (rung 6). An attempt whose worker row ended first keeps
     /// the path of Phase 1.
     fn finish_exited(&self, facts: &Facts) -> Result<Vec<Stop>> {
-        let rows = attempts_store::rows(self.tx, &util::host_name())?;
+        let mut rows = attempts_store::rows(self.tx, &util::host_name())?;
+        exited_by_file(self.tx, self.guard, self.exited, &mut rows)?;
         let mut stops = Vec::new();
         for mut reap in task::dead_attempts(&rows, facts) {
             let why = format!("the process of attempt {} is gone", reap.attempt);
@@ -2179,6 +2183,12 @@ impl Rules<'_> {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
                 continue;
             };
+            if verifying(self.tx, &task_id)? {
+                // Rule D: the verifier ends the task and gives the attempt
+                // its outcome. The exit of its author burns no attempt.
+                stops.extend(commands::end_attempt(self.tx, &reap)?);
+                continue;
+            }
             if !reap.end_worker {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
                 commands::schedule_retry(self.tx, &task_id, &why)?;
@@ -2187,7 +2197,7 @@ impl Rules<'_> {
             let persona = self.persona_of(&reap.worker)?;
             let outcome = self.exit_outcome(
                 questions_store::open_of_task(self.tx, &task_id)? > 0,
-                self.pool_limited(persona.as_deref()),
+                self.pool_limited(persona.as_deref()) || quota_hinted(self.tx, &reap.attempt)?,
             );
             reap.outcome = outcome.as_str().to_string();
             stops.extend(commands::end_attempt(self.tx, &reap)?);
@@ -2936,6 +2946,49 @@ fn dispatch_holds(
     }
 }
 
+/// Each attempt of `exited`, whose wrapper wrote `exit.json` in this
+/// pass, ends by rung 5 as an attempt whose process is gone: its agent
+/// ended, also when the pass never saw its wrapper. A `launching` one goes
+/// `live` first, and its task joins `rows`.
+fn exited_by_file(
+    tx: &Connection,
+    guard: Option<Generation>,
+    exited: &[String],
+    rows: &mut task::Rows,
+) -> Result<()> {
+    let mut moved = false;
+    for a in rows.attempts.iter_mut().filter(|a| exited.contains(&a.id)) {
+        if a.state == AttemptState::Launching {
+            commands::attempt_live(tx, guard, &a.id, None)?;
+            a.state = AttemptState::Live;
+            moved = true;
+        }
+        if a.state == AttemptState::Live {
+            a.process = None;
+            a.pane = None;
+        }
+    }
+    if moved {
+        let fresh = attempts_store::rows(tx, &util::host_name())?;
+        for (id, t) in fresh.tasks {
+            rows.tasks.entry(id).or_insert(t);
+        }
+    }
+    Ok(())
+}
+
+/// Whether task `task` is `verifying`.
+fn verifying(tx: &Connection, task: &str) -> Result<bool> {
+    Ok(tasks::get(tx, task)?.status == TaskStatus::Verifying.as_str())
+}
+
+/// Whether the `exit.json` of attempt `attempt` had the outcome hint
+/// `quota`: the ingest recorded [`attempt_files::QUOTA_HINT`] on it.
+fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
+    let hint = attempt_files::QUOTA_HINT;
+    door::has_fact(tx, Entity::Attempt, attempt, EventKind::Note, hint)
+}
+
 /// The cause of the hold of each project with no fast gate, by project
 /// id: its open needs-you item records it (Q-C of
 /// `docs/tickets/fleetd-p4/MAP.md`).
@@ -2954,17 +3007,19 @@ fn project_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
 /// (`docs/specs/fleetd/design.md`, the task state table, row `leased`):
 /// the attempt in `launching` goes `live`, and its `leased` task goes
 /// `running` and takes its lease for `lease_s` of the persona of the
-/// attempt. `checkins` are the attempts whose heartbeat this pass used. A
-/// repair attempt of a `done` task only goes `live`: its bind took the
-/// lease.
+/// attempt. `wrappers.checkins` are the attempts whose heartbeat this pass
+/// used. The wrapper that the heartbeat names, when it passed the PID
+/// check, goes on the attempt row, so the commands of its agent find their
+/// attempt and a pass sees its exit. A repair attempt of a `done` task only
+/// goes `live`: its bind took the lease.
 fn start_running(
     tx: &Connection,
     guard: Option<Generation>,
     clock: FleetSeconds,
-    checkins: &[String],
+    wrappers: &attempt_files::Report,
     lease_s: impl Fn(Option<&str>) -> i64,
 ) -> Result<()> {
-    for id in checkins {
+    for id in &wrappers.checkins {
         let Some((Some(task_id), state, via, persona)) = attempts_store::attempt_via(tx, id)?
         else {
             continue;
@@ -2972,10 +3027,16 @@ fn start_running(
         if via != PUSH {
             continue;
         }
+        let wrapper = wrappers.wrappers.get(id).copied();
         if state == AttemptState::Launching.as_str() {
-            commands::attempt_live(tx, guard, id, None)?;
+            commands::attempt_live(tx, guard, id, wrapper)?;
         } else if state != AttemptState::Live.as_str() {
             continue;
+        } else if let Some(w) = wrapper {
+            commands::attempt_wrapper(tx, id, w)?;
+        }
+        if wrapper.is_some() {
+            commands::push_worker_working(tx, guard, id)?;
         }
         if tasks::get(tx, &task_id)?.status != TaskStatus::Leased.as_str() {
             continue;

@@ -1909,6 +1909,27 @@ mod phase6 {
         assert!(plan_rules_dag::check(&plan, &PlanFacts::default()).is_empty());
     }
 
+    /// plan.yaml names the feature id that the launch argument names, as
+    /// the brief of fleetd gives it and plan commit checks it.
+    #[test]
+    fn ticket_plan_names_the_feature_id_of_the_launch_argument() {
+        let (mut h, folder) = idea("p6-ticket-feature");
+        h.set("HORCH_FAKE_SCENARIO", "ticket");
+        let arg = format!(
+            "You are the idea-lead of idea {IDEA} in phase ticketing. \
+             The feature of your idea is F-0007. Your idea folder is {} and \
+             it is your only memory.",
+            folder.display()
+        );
+        let mut cmd = Command::new(h.bin.join("claude"));
+        cmd.arg(arg);
+        h.seal(&mut cmd);
+        let o = cmd.output().unwrap();
+        assert!(o.status.success(), "{o:?}");
+        let plan = plan_yaml::read(&folder.join("plan.yaml")).unwrap();
+        assert_eq!(plan.feature, "F-0007");
+    }
+
     #[test]
     fn ticket_cycle_writes_a_plan_with_a_cycle() {
         let (mut h, folder) = idea("p6-ticket-cycle");
