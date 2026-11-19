@@ -180,7 +180,10 @@ fn attempts_of(h: &Harness, id: &str) -> Vec<(String, Option<String>)> {
 fn a_stop_of_a_push_worker_ends_its_attempt_and_its_agent_only() {
     let h = push_fleet("ps-stop-one", "exec,stay", &["T0", "T1"]);
     let ws = launched(&h, 2);
-    let o = ok(&h, &["ledger", "stop", &ws[0].id, "the operator dropped it"]);
+    let o = ok(
+        &h,
+        &["ledger", "stop", &ws[0].id, "the operator dropped it"],
+    );
     assert!(o.contains("Stopped"), "{o}");
     let ended = attempts_of(&h, &ws[0].id);
     assert!(
@@ -189,7 +192,9 @@ fn a_stop_of_a_push_worker_ends_its_attempt_and_its_agent_only() {
             .all(|(state, outcome)| state == "ended" && outcome.as_deref() == Some("killed")),
         "the stop ends the live attempt of the worker: {ended:?}"
     );
-    wait_push("the stopped agent is gone", || (!ws[0].alive()).then_some(()));
+    wait_push("the stopped agent is gone", || {
+        (!ws[0].alive()).then_some(())
+    });
     assert!(ws[1].alive(), "the other agent runs on");
     let other = attempts_of(&h, &ws[1].id);
     assert!(other.iter().any(|(s, _)| s == "live"), "{other:?}");
@@ -210,7 +215,11 @@ fn each_stop_that_fleetd_sends_is_recorded_and_a_second_stop_sends_nothing() {
         rows.iter().any(|s| s["target"] == "pane").then_some(rows)
     });
     let agent: Vec<&Value> = rows.iter().filter(|s| s["target"] == "agent").collect();
-    assert_eq!(agent.len(), 1, "1 row for the 1 TERM of the agent: {rows:?}");
+    assert_eq!(
+        agent.len(),
+        1,
+        "1 row for the 1 TERM of the agent: {rows:?}"
+    );
     assert_eq!(agent[0]["pid"].as_i64().unwrap() as u32, w.agent.0);
     assert_eq!(agent[0]["pid_started"].as_i64().unwrap() as u64, w.agent.1);
     assert_eq!(agent[0]["signal"], "TERM");
