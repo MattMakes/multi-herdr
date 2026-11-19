@@ -171,7 +171,6 @@ impl World {
             h.tmp.join(CHECK_ENV).display()
         );
         let t1 = seed(&h, &check, &agent);
-        h.serve_fleetd();
         let mut create = Command::new(h.bin.join("herdr"));
         h.seal(&mut create);
         create.env_remove(FORBIDDEN);
@@ -180,6 +179,9 @@ impl World {
             .output()
             .unwrap();
         assert!(o.status.success(), "{}", text(&o));
+        // fleetd starts after the workspace exists, so its first dispatch
+        // finds the pane to split.
+        h.serve_fleetd();
         World { h, agent, t1 }
     }
 
