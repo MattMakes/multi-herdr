@@ -1587,36 +1587,6 @@ fn review_all_as(h: &Harness, persona: &str, n: usize, findings: &str) -> String
     last
 }
 
-/// A claimed task's worktree, with 1 committed file, finished through every
-/// step. Returns the finish report.
-fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
-    let wt = ok_as(h, w, &["ledger", "worktree", "new", name]);
-    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
-    std::fs::write(
-        path.join(format!("{name}.rs")),
-        format!("fn {name}() {{}}\n"),
-    )
-    .unwrap();
-    git_in(h, &path, &["add", "."]);
-    git_in(
-        h,
-        &path,
-        &["commit", "--quiet", "--no-gpg-sign", "-m", name],
-    );
-    let (code, r) = finish_json(h, w);
-    assert_eq!(code, Some(1), "round 1 waits for reviews: {r}");
-    let n = r["queued_reviews"].as_array().unwrap().len();
-    review_all(
-        h,
-        n,
-        "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
-    );
-    let (code, r) = finish_json(h, w);
-    assert_eq!(code, Some(0), "{r}");
-    assert!(!path.exists(), "{name}: the worktree is gone");
-    r
-}
-
 #[test]
 fn the_whole_flow_on_the_fake_herdr() {
     horch_e2e::expected::check(file!(), "the_whole_flow_on_the_fake_herdr", || {
@@ -1625,48 +1595,51 @@ fn the_whole_flow_on_the_fake_herdr() {
         h.set("HORCH_STOP_GRACE_MS", "2000");
         push_env(&mut h, "e2e", "exec,stay");
 
-        // 1. The orchestrator queues 3 tasks: A and B parallel, C blocked by A.
+        // 1. The orchestrator queues B first: fleetd launches its agent, the
+        // fake codex that stays and never ends with a result.
         let run = seed_run(&h, "alpha", Some(1), "w1:p1");
-        for (n, t, persona, blocked_by) in [
-            ("a", "A", "opus", None),
-            ("b", "B", "codex-terra", None),
-            ("c", "C", "opus", Some("T-1")),
-        ] {
-            let p = ticket(
-                &h,
-                n,
-                &format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n"),
-            );
-            seed_blocked_task(&h, &run, &p, persona, blocked_by);
-        }
-
-        // 2. The test holds A as its worker (FR-5). fleetd launches B by push
-        // in a real pane: its agent is the fake codex that stays. C waits.
-        let (wa, ta) = bind_task(&h, "opus");
-        assert_eq!(ta.seq, 1, "{ta:?}");
+        let b = ticket_of(&h, "b", "B", "codex-terra");
+        seed_blocked_task(&h, &run, &b, "codex-terra", None);
         h.serve_fleetd();
         let b = wait_push("B's agent PID", || {
             worker_rows(&h)
                 .into_iter()
                 .find(|w| w["persona"] == "codex-terra" && w["agent_started"].is_i64())
         });
-        assert_eq!(worker_rows(&h).len(), 2, "1 worker for A and 1 for B");
         let wb = b["worker_id"].as_str().unwrap().to_string();
         let (bpid, bstart) = (
             b["agent_pid"].as_i64().unwrap() as u32,
             b["agent_started"].as_i64().unwrap() as u64,
         );
-        // fleetd bound T-2 to B (FR-5), and C waits for A.
-        let t2 = json_of(&h, &["ledger", "show", "T-2", "--json"]);
-        assert_eq!(t2["task"]["current_worker_id"], wb.as_str(), "{t2}");
+        // fleetd bound T-1 to B (FR-5).
+        let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+        assert_eq!(t1["task"]["current_worker_id"], wb.as_str(), "{t1}");
+
+        // 2. Then A and C, C blocked by A. Their agents commit their work and
+        // end with horch result. fleetd launches A beside B; C waits.
+        h.stop_fleetd();
+        h.set("HORCH_FAKE_SCENARIO", "exec,stay,commit,result");
+        for (n, t, blocked_by) in [("a", "A", None), ("c", "C", Some("T-2"))] {
+            let p = ticket_of(&h, n, t, "opus");
+            seed_blocked_task(&h, &run, &p, "opus", blocked_by);
+        }
+        h.serve_fleetd();
+        let a_tree = wait_push("A's worktree", || task_worktree(&h, "T-2"));
+        let workers: Vec<String> = worker_rows(&h)
+            .iter()
+            .map(|w| w["persona"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(workers.len(), 2, "1 worker for A and 1 for B: {workers:?}");
+        assert!(workers.iter().any(|p| p == "opus"), "{workers:?}");
         let t3 = json_of(&h, &["ledger", "show", "T-3", "--json"]);
         assert_eq!(t3["task"]["status"], "queued", "{t3}");
 
         // 3. B stops making progress: its fake agent runs, but shows no timer
         // and writes nothing.
-        // 4. A lands: every step passes, its folder is gone, and C can start.
-        work_and_finish(&h, &wa, "alpha_a");
-        ok_as(&h, &wa, &["ledger", "done", "A done."]);
+        // 4. A lands: its result passes the verifier and its reviews, its
+        // folder is gone, and C can start.
+        let reviews = land_by_push(&h, "T-2", &a_tree);
+        assert!(reviews > 0, "the code-sweep of A queued its reviews");
         let events = json_of(&h, &["ledger", "events", "--json"]);
         assert!(
             events
@@ -1679,42 +1652,36 @@ fn the_whole_flow_on_the_fake_herdr() {
         );
         // 5. B's checks and the stall ladder; A's worker is untouched.
         stall_by_the_ladder(&h, &wb, bpid, bstart);
-        assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-2");
+        assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
         // The orchestrator got the wake for B.
         let wakes = outbox(&h);
         assert!(
             wakes
                 .iter()
-                .any(|w| w.contains("codex-terra-1 on T-2 shows no progress")),
+                .any(|w| w.contains("codex-terra-1 on T-1 shows no progress")),
             "{wakes:?}"
         );
         // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
+        // Then fleetd launches C, and B again as attempt 2 of T-1, which
+        // replaces the stalled worker.
         h.advance_fleet_clock(30);
-        // C is bound now (a worker row without a live process would be judged
-        // dead by the checks above).
-        let (wc, tc) = bind_task(&h, "opus");
-        assert_eq!(tc.seq, 3, "{tc:?}");
-        let replacement = NewWorker {
-            persona: "codex-terra".into(),
-            previous_worker_id: Some(wb.clone()),
-            ..Default::default()
-        };
-        let rb = bind_worker(&h, replacement, None);
-        let t2 = json_of(&h, &["ledger", "show", "T-2", "--json"]);
-        assert_eq!(rb.task_id, t2["task"]["task_id"], "{rb:?}");
-        let prior = worker_json(&h, &rb.worker_id);
-        assert_eq!(prior["previous_worker_id"], wb.as_str(), "{prior}");
-        let rb = rb.worker_id;
+        let c_tree = wait_push("C's worktree", || task_worktree(&h, "T-3"));
+        let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+        let rb = wait_push("the replacement of B", || {
+            worker_rows(&h)
+                .into_iter()
+                .find(|w| w["task_id"] == t1["task"]["task_id"] && w["attempt"] == 2)
+        });
+        assert_eq!(rb["previous_worker_id"], wb.as_str(), "{rb}");
 
         // 6. No task is left for a spare worker of opus.
         let none = try_bind(&h, "opus", None);
         assert!(none.is_err(), "{none:?}");
 
-        // 7. B (replaced) and C finish; everything is done and cleaned.
-        work_and_finish(&h, &rb, "alpha_b");
-        ok_as(&h, &rb, &["ledger", "done", "B done by the replacement."]);
-        work_and_finish(&h, &wc, "alpha_c");
-        ok_as(&h, &wc, &["ledger", "done", "C done."]);
+        // 7. B (replaced) and C land; everything is done and cleaned.
+        let b_tree = wait_push("B's worktree", || task_worktree(&h, "T-1"));
+        land_by_push(&h, "T-1", &b_tree);
+        land_by_push(&h, "T-3", &c_tree);
         let o = h.run(&["ledger", "status"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o));
         let st = json_of(&h, &["ledger", "status", "--json"]);
@@ -1741,6 +1708,67 @@ fn the_whole_flow_on_the_fake_herdr() {
         assert!(events.as_array().is_some());
     });
 }
+
+/// The ticket `n` of the task `t` for `persona`, with no check.
+fn ticket_of(h: &Harness, n: &str, t: &str, persona: &str) -> PathBuf {
+    let body = format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n");
+    ticket(h, n, &body)
+}
+
+/// The worktree path of the task `short` (`T-<n>`) in `horch ledger
+/// status`, when fleetd has made it. Any status: an exec agent can end
+/// before a poll sees its worktree open.
+fn task_worktree(h: &Harness, short: &str) -> Option<PathBuf> {
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    st["worktrees"]
+        .as_array()?
+        .iter()
+        .find(|w| w["task"] == short)
+        .map(|w| PathBuf::from(w["path"].as_str().unwrap()))
+}
+
+/// Wait until the task `short` is `done` and its worktree `tree` is gone.
+/// Its agent ends with `horch result`, and fleetd runs the verifier, the
+/// review steps and the land. The test plays each reviewer: it writes the
+/// findings file of each review task with no findings. Gives the count of
+/// findings files that it wrote.
+fn land_by_push(h: &Harness, short: &str, tree: &Path) -> usize {
+    let mut written = 0;
+    wait_push(&format!("{short} done"), || {
+        written += write_findings(h);
+        let t = json_of(h, &["ledger", "show", short, "--json"]);
+        (t["task"]["status"] == "done").then_some(())
+    });
+    wait_push(&format!("the worktree of {short} is gone"), || {
+        (!tree.exists()).then_some(())
+    });
+    written
+}
+
+/// Write the findings file of each review task that has none: 0 findings
+/// of each level. Gives the count of files written.
+fn write_findings(h: &Harness) -> usize {
+    let store = Store::open(&h.ledger_db()).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT spec_ref FROM tasks WHERE kind = 'review' AND spec_ref IS NOT NULL")
+        .unwrap();
+    let files: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut written = 0;
+    for f in files.iter().map(Path::new).filter(|f| !f.exists()) {
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, NO_FINDINGS).unwrap();
+        written += 1;
+    }
+    written
+}
+
+/// The findings of a reviewer that finds nothing.
+const NO_FINDINGS: &str = "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n";
 
 /// The output of `horch ledger <args>` as `worker`, success or not.
 fn as_worker(h: &Harness, worker: &str, args: &[&str]) -> Output {
