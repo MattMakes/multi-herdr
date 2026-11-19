@@ -27,7 +27,7 @@ use std::process::Output;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::repair::{repair_kind, RepairKind};
 use horch_core::fleetd::task_execution::domain::repair::REPAIR_LIMIT_KIND;
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, VerifyProfile, WorkerKind};
 use horch_core::taskledger::runs::{self, NewRun, Thresholds};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
@@ -407,6 +407,9 @@ fn seed(h: &Harness, max_attempts: Option<i64>) -> String {
             workspace_id: Some("w1".into()),
             base_branch: Some("main".into()),
             run_branch: Some(FEATURE.into()),
+            // The verification profile `minimal`: the check, then land, so
+            // no review step runs.
+            finish_steps: VerifyProfile::Minimal.steps(),
             thresholds: Thresholds {
                 max_attempts,
                 ..Default::default()
