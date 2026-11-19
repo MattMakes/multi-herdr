@@ -11,6 +11,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use horch_core::taskledger::workers::NewWorker;
 use support::fleetd::{short_tempdir, TestFleetd};
 
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
@@ -45,7 +46,7 @@ struct World {
 }
 
 impl World {
-    /// A project with 1 run `r1`, 1 task T1 claimed by the worker `dev1`,
+    /// A project with 1 run `r1`, 1 task T1 bound to the worker `dev1`,
     /// and its tree `T1-feat` with 1 untracked and 1 changed file.
     fn with_a_tree() -> World {
         let tmp = short_tempdir();
@@ -74,20 +75,12 @@ impl World {
         w._fleetd = Some(TestFleetd::start(w.command(None), &w.root().join("fleet")));
         w.ok(&["ledger", "run", "new", "r1"]);
         w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-        w.worker = w
-            .ok(&[
-                "ledger",
-                "worker",
-                "new",
-                "--persona",
-                "dev",
-                "--role",
-                "dev1",
-            ])
-            .trim()
-            .to_string();
-        let claim = w.as_worker(&["ledger", "claim"]);
-        assert_eq!(claim.code, 0, "{}", claim.err);
+        let worker = NewWorker {
+            persona: "dev".into(),
+            role: Some("dev1".into()),
+            ..Default::default()
+        };
+        w.worker = support::bind::bind(&w.ledger(), worker, None).worker_id;
         let made = w.as_worker(&["ledger", "worktree", "new", "feat"]);
         assert_eq!(made.code, 0, "{}", made.err);
         let tree = w.tree();

@@ -28,6 +28,7 @@ use std::time::Duration;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::ideas::application::questions::{self, Ask};
 use horch_core::taskledger::Store;
+use horch_e2e::bind::{bind, try_bind};
 use horch_e2e::harness::{fixtures, wait_for, Harness};
 
 /// The design lease of a profile, in seconds of the fleet clock.
@@ -143,35 +144,11 @@ impl Fleet {
         self.pass();
     }
 
-    /// A new worker of `opus` whose agent is `agent`, with no supervisor.
-    /// Returns its id.
-    fn worker(&self, agent: &Agent) -> String {
-        let o = self.run_as(None, &["ledger", "worker", "new", "--persona", "opus"]);
-        assert!(o.status.success(), "{}", text(&o));
-        let w = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        horch_core::taskledger::Store::open(&self.db())
-            .and_then(|mut store| {
-                let pid = agent.pid;
-                // The agent PID row that `horch worker` wrote before Phase 5.
-                store.immediate(|tx| {
-                    horch_core::taskledger::workers::agent_started(
-                        tx,
-                        &w,
-                        pid,
-                        horch_core::procid::start_time(pid),
-                    )
-                })
-            })
-            .unwrap();
-        w
-    }
-
-    /// A new worker with `agent` that claims T-1.
+    /// A new worker of `opus` with `agent` and no supervisor, bound to T-1
+    /// (FR-5). Returns its id.
     fn claimed(&self, agent: &Agent) -> String {
-        let w = self.worker(agent);
-        let claim = self.run_as(Some(&w), &["ledger", "claim"]);
-        assert!(claim.status.success(), "{}", text(&claim));
-        assert_eq!(self.task().status, "running", "{}", text(&claim));
+        let w = bind(&self.h, "opus", Some(agent.pid)).worker_id;
+        assert_eq!(self.task().status, "running");
         w
     }
 
@@ -496,15 +473,15 @@ fn rr2_expired_lease_never_leaves_the_task_assigned() {
 
 /// The phases of RR-6, each 1 failed attempt at a time.
 impl Fleet {
-    /// Wait out the backoff of rung 6. A claim in the backoff gets no task.
+    /// Wait out the backoff of rung 6. A bind in the backoff gets no task.
     fn through_backoff(&mut self) {
         let Some(nb) = self.task().not_before.filter(|nb| *nb > self.clock()) else {
             return;
         };
         let early = Agent::start();
-        let w = self.worker(&early);
-        let o = self.run_as(Some(&w), &["ledger", "claim"]);
-        assert!(!assigned(&self.task().status), "{}", text(&o));
+        let o = try_bind(&self.h, "opus", Some(early.pid));
+        assert!(o.is_err(), "{o:?}");
+        assert!(!assigned(&self.task().status), "{o:?}");
         self.advance_clocks(nb - self.clock());
     }
 
@@ -659,16 +636,15 @@ fn fm14_no_second_attempt_starts_while_the_old_process_lives() {
     assert_eq!(state, "ended", "{}", log.join("\n"));
     #[cfg(unix)]
     assert!(old.alive(), "the old process lives in its grace");
-    // A new worker tries to claim after each pass, while the old process
+    // A new worker tries to bind after each pass, while the old process
     // lives in its grace and after the kill.
     let mut agents = Vec::new();
     for _ in 0..=(GRACE_S / 60 + 2) {
         log.push(f.pass_after(60));
         let agent = Agent::start();
-        let w = f.worker(&agent);
+        let bound = try_bind(&f.h, "opus", Some(agent.pid));
         agents.push(agent);
-        let claim = f.run_as(Some(&w), &["ledger", "claim"]);
-        log.push(text(&claim));
+        log.push(format!("{bound:?}"));
         assert!(f.lease_rows() <= 1, "{}", log.join("\n"));
         assert!(f.open_attempts() <= 1, "{}", log.join("\n"));
         if assigned(&f.task().status) {
@@ -677,6 +653,9 @@ fn fm14_no_second_attempt_starts_while_the_old_process_lives() {
                 "a second attempt started while a process of the first lives\n{}",
                 log.join("\n")
             );
+            let w = bound
+                .expect("the task is assigned to the new bind")
+                .worker_id;
             let (_, state) = f.attempt_of(&w);
             assert_ne!(state, "ended", "{}", log.join("\n"));
             assert_eq!(f.lease_rows(), 1, "{}", log.join("\n"));

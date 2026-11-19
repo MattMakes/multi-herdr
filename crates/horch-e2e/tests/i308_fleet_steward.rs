@@ -78,10 +78,7 @@ fn abandoned_worktree(h: &Harness) -> PathBuf {
             "opus",
         ],
     );
-    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
-    worker_ok(h, &w, &["ledger", "claim"]);
+    let w = horch_e2e::bind::bind(h, "opus", None).worker_id;
     let said = worker_ok(h, &w, &["ledger", "worktree", "new", "f"]);
     ok(h, &["ledger", "cancel", "T-1", "not needed now"]);
     PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap())
@@ -345,14 +342,16 @@ fn the_no_change_steward_task_finishes_without_a_worktree() {
     abandoned_worktree(&h);
     fleet(&h);
     let status = board(&h, "solo-w1");
-    let worker = status["workers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["worker"]["persona"] == "worktree-steward")
-        .and_then(|w| w["worker"]["worker_id"].as_str())
-        .unwrap();
-    worker_ok(&h, worker, &["ledger", "claim"]);
+    assert!(
+        status["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["worker"]["persona"] == "worktree-steward"),
+        "the fleet spawns the steward: {status}"
+    );
+    // fleetd binds the steward task (FR-5); the test binds it the same way.
+    let worker = &horch_e2e::bind::bind(&h, "worktree-steward", None).worker_id;
     let finished = worker_ok(&h, worker, &["ledger", "finish", "--wait"]);
     assert!(finished.contains("every finish step passed"), "{finished}");
     worker_ok(&h, worker, &["ledger", "done", "triage complete"]);

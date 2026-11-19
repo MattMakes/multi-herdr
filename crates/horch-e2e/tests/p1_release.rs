@@ -116,7 +116,7 @@ fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc, started: Option<u64>
     lock
 }
 
-/// Phase P in `h`: run `zeta` with 1 claimed task and a live fake worker.
+/// Phase P in `h`: run `zeta` with 1 bound task and a live fake worker.
 /// Many stall rounds keep a check from reaping the live worker. Gives the
 /// worker id, its agent and the run id.
 fn phase_p_run(h: &Harness) -> (String, Proc, String) {
@@ -151,29 +151,9 @@ fn phase_p_run(h: &Harness) -> (String, Proc, String) {
             "opus",
         ],
     );
-    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
-    let agent = Proc::sleep();
-    horch_core::taskledger::Store::open(&db(h))
-        .and_then(|mut store| {
-            let pid = agent.pid;
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &w,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
-        })
-        .unwrap();
     h.stop_fleetd();
-    let mut claim = h.horch(&["ledger", "claim"]);
-    claim.env("HORCH_WORKER_ID", &w);
-    let o = claim.output().unwrap();
-    assert!(o.status.success(), "horch ledger claim: {}", text(&o));
+    let agent = Proc::sleep();
+    let w = horch_e2e::bind::bind(h, "opus", Some(agent.pid)).worker_id;
     let run_id = texts(h, "SELECT run_id FROM runs").remove(0);
     (w, agent, run_id)
 }

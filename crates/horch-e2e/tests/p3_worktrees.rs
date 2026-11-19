@@ -136,14 +136,11 @@ fn queue(h: &Harness, name: &str) {
     );
 }
 
-/// A new worker claims the next task. Gives the worker and the task id.
-fn claim(h: &Harness) -> (String, String) {
-    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
-    let c: Value = serde_json::from_str(&ok_as(h, &w, &["ledger", "claim", "--json"])).unwrap();
-    let task = c["task"]["task_id"].as_str().unwrap().to_string();
-    (w, task)
+/// The next task is bound to a new worker (FR-5). Gives the worker and the
+/// task id.
+fn bind_next(h: &Harness) -> (String, String) {
+    let b = horch_e2e::bind::bind(h, "opus", None);
+    (b.worker_id, b.task_id)
 }
 
 /// The stand-in agents of a test: each is killed when dropped, so a failed
@@ -159,46 +156,23 @@ impl Drop for Agents {
     }
 }
 
-/// A worker in its own pane with a `sleep` process as its live agent
-/// claims the next task. Gives the worker and the task id.
-fn live_claim(h: &Harness, agents: &mut Agents) -> (String, String) {
+/// A worker in its own pane with a `sleep` process as its live agent, bound
+/// to the next task (FR-5). Gives the worker and the task id.
+fn live_bind(h: &Harness, agents: &mut Agents) -> (String, String) {
     let split: Value = serde_json::from_str(&herdr(h, &["pane", "split", "w1:p1"])).unwrap();
     let pane = split["result"]["pane"]["pane_id"].as_str().unwrap();
-    let w = ok(
-        h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "opus",
-            "--pane",
-            pane,
-        ],
-    )
-    .trim()
-    .to_string();
     let agent = std::process::Command::new("/bin/sleep")
         .arg("600")
         .spawn()
         .unwrap();
-    horch_core::taskledger::Store::open(&ledger(h))
-        .and_then(|mut store| {
-            let pid = agent.id();
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &w,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
-        })
-        .unwrap();
+    let worker = horch_core::taskledger::workers::NewWorker {
+        persona: "opus".into(),
+        pane_id: Some(pane.to_string()),
+        ..Default::default()
+    };
+    let b = horch_e2e::bind::bind_worker(h, worker, Some(agent.id()));
     agents.0.push(agent);
-    let c: Value = serde_json::from_str(&ok_as(h, &w, &["ledger", "claim", "--json"])).unwrap();
-    (w, c["task"]["task_id"].as_str().unwrap().to_string())
+    (b.worker_id, b.task_id)
 }
 
 /// The values of the first column of `sql`, as text; `NULL` is "".
@@ -491,7 +465,7 @@ fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
     let h = world("p3-fr11");
     ok(&h, &["ledger", "run", "new", "fr11"]);
     queue(&h, "t1");
-    let (_, task) = claim(&h);
+    let (_, task) = bind_next(&h);
     pass(&h);
     let lists = lists_passed(&h);
     let branch = format!("{}-T1-own", run_branch(&h, "fr11"));
@@ -601,7 +575,7 @@ fn fm27_only_landed_or_rescued_trees_are_removed() {
     ok(&h, &["ledger", "run", "new", "fm27", "--steps", "land"]);
     queue(&h, "t1");
     queue(&h, "t2");
-    let (w1, _) = claim(&h);
+    let (w1, _) = bind_next(&h);
     let landed = tree_path(&ok_as(&h, &w1, &["ledger", "worktree", "new", "lands"]));
     let w = work_in(&h, &landed, "lands");
     std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
@@ -617,7 +591,7 @@ fn fm27_only_landed_or_rescued_trees_are_removed() {
     assert!(o.status.success(), "{r}");
     assert_eq!(state(&h, &landed).as_deref(), Some("landed"), "{r}");
 
-    let (w2, _) = claim(&h);
+    let (w2, _) = bind_next(&h);
     let open = tree_path(&ok_as(&h, &w2, &["ledger", "worktree", "new", "open"]));
     let open_work = work_in(&h, &open, "open");
     let hand = hand_tree(&h, "hand", "hand-branch");
@@ -693,7 +667,7 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     ok(&h, &["ledger", "run", "new", "live"]);
     queue(&h, "live");
     let mut agents = Agents(Vec::new());
-    let (w, _) = live_claim(&h, &mut agents);
+    let (w, _) = live_bind(&h, &mut agents);
     let active = tree_path(&ok_as(&h, &w, &["ledger", "worktree", "new", "live"]));
     let live = work_in(&h, &active, "live");
 
@@ -876,7 +850,7 @@ fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after
     ok(&h, &["ledger", "run", "new", "slow"]);
     queue(&h, "t1");
     let mut agents = Agents(Vec::new());
-    let (w, _) = live_claim(&h, &mut agents);
+    let (w, _) = live_bind(&h, &mut agents);
     let mut fleetds = Fleetds::new(&h);
     let pid = fleetds.start(&h, "fleetd");
     wait_for_heartbeat(&h, pid);

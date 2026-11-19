@@ -206,8 +206,8 @@ fn ok(cmd: &mut Command) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A task-ledger run of 1 task that the worker claimed, committed and
-/// finished; the worker id, for `horch ledger done`.
+/// A task-ledger run of 1 task that the test binds to a worker, and that
+/// the worker committed and finished; the worker id, for `horch ledger done`.
 fn finished_task(h: &Harness) -> String {
     ok(&mut h.horch(&[
         "ledger",
@@ -230,10 +230,8 @@ fn finished_task(h: &Harness) -> String {
         "--check",
         "true",
     ]));
-    let worker = ok(&mut h.horch(&["ledger", "worker", "new", "--persona", "opus"]));
-    let worker = worker.trim();
-    let mut claim = as_worker(h, &["ledger", "claim"]);
-    ok(claim.env("HORCH_WORKER_ID", worker));
+    let worker = horch_e2e::bind::bind(h, "opus", None).worker_id;
+    let worker = worker.as_str();
     let mut wt = as_worker(h, &["ledger", "worktree", "new", "feature"]);
     let wt = ok(wt.env("HORCH_WORKER_ID", worker));
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());

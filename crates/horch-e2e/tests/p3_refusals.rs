@@ -93,7 +93,7 @@ fn tree_path(said: &str) -> PathBuf {
 }
 
 /// A run `alpha` with the finish steps `steps`, 1 task with no check, a
-/// worker that claimed it, and its worktree `feat`. Gives the worker, the
+/// worker bound to it, and its worktree `feat`. Gives the worker, the
 /// task id and the path of the tree.
 fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
     ok(h, &["ledger", "run", "new", "alpha", "--steps", steps]);
@@ -112,11 +112,8 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
             "opus",
         ],
     );
-    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
-    let claim: Value = serde_json::from_str(&ok_as(h, &w, &["ledger", "claim", "--json"])).unwrap();
-    let task = claim["task"]["task_id"].as_str().unwrap().to_string();
+    let bound = horch_e2e::bind::bind(h, "opus", None);
+    let (w, task) = (bound.worker_id, bound.task_id);
     let path = tree_path(&ok_as(h, &w, &["ledger", "worktree", "new", "feat"]));
     (w, task, path)
 }

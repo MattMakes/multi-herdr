@@ -82,22 +82,12 @@ impl World {
             None,
             &["ledger", "add", "--file", "t1.md", "--primary", "dev"],
         );
-        let worker = w
-            .ok(
-                None,
-                &[
-                    "ledger",
-                    "worker",
-                    "new",
-                    "--persona",
-                    "dev",
-                    "--role",
-                    "dev1",
-                ],
-            )
-            .trim()
-            .to_string();
-        w.ok(Some(&worker), &["ledger", "claim"]);
+        let new = horch_core::taskledger::workers::NewWorker {
+            persona: "dev".into(),
+            role: Some("dev1".into()),
+            ..Default::default()
+        };
+        let worker = support::bind::bind(&w.root.join("ledger.sqlite3"), new, None).worker_id;
         w.ok(Some(&worker), &["ledger", "worktree", "new", "feat"]);
         let conn = rusqlite::Connection::open(w.root.join("ledger.sqlite3")).unwrap();
         w.task_id = conn

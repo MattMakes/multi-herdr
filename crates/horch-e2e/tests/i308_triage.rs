@@ -188,7 +188,7 @@ fn archive_restore_and_gc_through_the_cli() {
     );
 }
 
-/// A run `alpha` with task T-1 claimed by a worker that made the worktree
+/// A run `alpha` with task T-1 bound to a worker that made the worktree
 /// `T1-f` and committed in it. Returns the worker id and the path.
 fn claimed_worktree(h: &Harness) -> (String, PathBuf) {
     ok(h, &["ledger", "run", "new", "alpha"]);
@@ -207,9 +207,7 @@ fn claimed_worktree(h: &Harness) -> (String, PathBuf) {
             "opus",
         ],
     );
-    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
+    let w = horch_e2e::bind::bind(h, "opus", None).worker_id;
     let as_worker = |args: &[&str]| {
         let mut cmd = h.horch(args);
         cmd.env("HORCH_WORKER_ID", &w);
@@ -217,7 +215,6 @@ fn claimed_worktree(h: &Harness) -> (String, PathBuf) {
         assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
         out(&o)
     };
-    as_worker(&["ledger", "claim"]);
     let said = as_worker(&["ledger", "worktree", "new", "f"]);
     let path = PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(path.join("f.txt"), "work\n").unwrap();
