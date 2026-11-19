@@ -217,7 +217,10 @@ impl World {
         let mut seen = std::collections::BTreeSet::new();
         let fleetd: Vec<&str> = fleetd.lines().filter(|l| seen.insert(*l)).collect();
         [
-            show("features", "SELECT id, IFNULL(branch, '-'), state FROM features"),
+            show(
+                "features",
+                "SELECT id, IFNULL(branch, '-'), state FROM features",
+            ),
             show(
                 "ideas",
                 "SELECT id, feature_id, state, IFNULL(waiting_on_you_since, '-') FROM ideas",
@@ -232,8 +235,14 @@ impl World {
                 "SELECT id, task_id, state, IFNULL(outcome, '-') FROM attempts
                  WHERE task_id IS NOT NULL",
             ),
-            show("tasks", "SELECT task_id, status, IFNULL(idea_id, '-') FROM tasks"),
-            show("questions", "SELECT id, task_id, feature_id, owner, state FROM questions"),
+            show(
+                "tasks",
+                "SELECT task_id, status, IFNULL(idea_id, '-') FROM tasks",
+            ),
+            show(
+                "questions",
+                "SELECT id, task_id, feature_id, owner, state FROM questions",
+            ),
             show("needs-you items", "SELECT key, state, text FROM needs_you"),
             format!("fleet clock: {}\n", self.fleet_clock()),
             format!(
@@ -241,11 +250,13 @@ impl World {
                 self.h
                     .calls_of("claude")
                     .iter()
-                    .filter(|c| ["commit", "ask", "result"].iter().any(|k| c.get(k).is_some()))
+                    .filter(|c| ["commit", "ask", "result", "notes"]
+                        .iter()
+                        .any(|k| c.get(k).is_some()))
                     .map(|c| {
                         format!(
-                            "  commit: {} ask: {} result: {}",
-                            c["commit"], c["ask"], c["result"]
+                            "  commit: {} ask: {} result: {} notes: {}",
+                            c["commit"], c["ask"], c["result"], c["notes"]
                         )
                     })
                     .collect::<Vec<_>>()
@@ -280,7 +291,9 @@ impl World {
     /// Wait until the idea `idea` is in `state`.
     fn wait_state(&self, idea: &str, state: &str) {
         self.wait(&format!("idea {idea} in {state}"), || {
-            (self.one(&format!("SELECT state FROM ideas WHERE id = '{idea}'")).as_deref()
+            (self
+                .one(&format!("SELECT state FROM ideas WHERE id = '{idea}'"))
+                .as_deref()
                 == Some(state))
             .then_some(())
         });
@@ -353,8 +366,10 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
         w.context()
     );
     assert!(
-        w.rows(&format!("SELECT id FROM attempts WHERE idea_id = '{second}'"))
-            .is_empty(),
+        w.rows(&format!(
+            "SELECT id FROM attempts WHERE idea_id = '{second}'"
+        ))
+        .is_empty(),
         "{}",
         w.context()
     );
@@ -402,7 +417,11 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
     let w = World::new("p6-fm16", "commit,ask,stay", |h| {
         let tickets = h.project.join("tickets");
         std::fs::create_dir_all(&tickets).unwrap();
-        std::fs::write(tickets.join("01-queue.md"), ticket(1, "Write the queue guide")).unwrap();
+        std::fs::write(
+            tickets.join("01-queue.md"),
+            ticket(1, "Write the queue guide"),
+        )
+        .unwrap();
         std::fs::write(tickets.join("02-help.md"), ticket(2, "Write the help page")).unwrap();
     });
     let ideas = [w.add_direct("01-queue.md"), w.add_direct("02-help.md")];
@@ -413,7 +432,9 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
     // of its feature.
     for f in &features {
         let owner = w.wait(&format!("a question of feature {f}"), || {
-            w.one(&format!("SELECT owner FROM questions WHERE feature_id = '{f}'"))
+            w.one(&format!(
+                "SELECT owner FROM questions WHERE feature_id = '{f}'"
+            ))
         });
         assert_eq!(owner, format!("idea-lead:{f}"), "{}", w.context());
     }
@@ -427,12 +448,15 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
         ))
     };
     for f in &features {
-        w.wait(&format!("a doorbell of the sub-orchestrator of {f}"), || {
-            (!rung(f).is_empty()).then_some(())
-        });
+        w.wait(
+            &format!("a doorbell of the sub-orchestrator of {f}"),
+            || (!rung(f).is_empty()).then_some(()),
+        );
     }
     for f in &features {
-        let own: Vec<String> = w.rows(&format!("SELECT id FROM questions WHERE feature_id = '{f}'"));
+        let own: Vec<String> = w.rows(&format!(
+            "SELECT id FROM questions WHERE feature_id = '{f}'"
+        ));
         for data in rung(f) {
             let data: Value = serde_json::from_str(&data).unwrap();
             for q in data["question_ids"].as_array().into_iter().flatten() {
@@ -492,8 +516,10 @@ fn fm29_idle_stop_and_park() {
     w.h.advance_fleet_clock(IDLE_STOP_S - 60);
     w.two_passes();
     assert_eq!(
-        w.one(&format!("SELECT state FROM attempts WHERE id = '{attempt}'"))
-            .as_deref(),
+        w.one(&format!(
+            "SELECT state FROM attempts WHERE id = '{attempt}'"
+        ))
+        .as_deref(),
         Some("live"),
         "{}",
         w.context()
@@ -585,7 +611,9 @@ fn fm31_killed_sub_orchestrator_resumes_from_its_folder() {
         w.context()
     );
     assert!(
-        phases.iter().all(|id| id.starts_with(&format!("{idea}/clarifying/"))),
+        phases
+            .iter()
+            .all(|id| id.starts_with(&format!("{idea}/clarifying/"))),
         "each process of the idea is in the phase clarifying: {phases:?}"
     );
     assert!(folder.join("assumptions.md").is_file(), "{}", w.context());
