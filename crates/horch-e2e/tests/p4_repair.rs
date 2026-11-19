@@ -23,7 +23,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::time::{Duration, Instant};
 
+use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::repair::{repair_kind, RepairKind};
 use horch_core::fleetd::task_execution::domain::repair::REPAIR_LIMIT_KIND;
@@ -32,7 +34,8 @@ use horch_core::taskledger::runs::{self, NewRun, Thresholds};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, Store};
-use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+use horch_core::vcs::network::OTHER_BOUND;
+use horch_e2e::harness::{fixtures, Harness, DEADLINE};
 use rusqlite::{Connection, OptionalExtension};
 
 /// The persona of the task. Its fake agent is `fake-claude`.
@@ -149,8 +152,24 @@ impl World {
     }
 
     /// Wait while the test fleetd runs its passes, until `f` gives a value.
+    /// A step can wait behind 1 `fetch` job of the repository (1 git writer
+    /// at a time), and the design bounds a fetch by its time limit and the
+    /// stop grace. So the wait is [`DEADLINE`] after that bound.
     fn until<T>(&self, what: &str, mut f: impl FnMut(&World) -> Option<T>) -> T {
-        wait_for_or(what, || f(self), || self.diagnostics())
+        let bound = OTHER_BOUND + Duration::from_secs(FleetConfig::default().stop_grace_s);
+        let wait = DEADLINE + bound;
+        let end = Instant::now() + wait;
+        while Instant::now() < end {
+            if let Some(v) = f(self) {
+                return v;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!(
+            "timed out after {} s waiting for {what}\n{}",
+            wait.as_secs(),
+            self.diagnostics()
+        );
     }
 
     /// Stop the test fleetd after its current pass, run `f` while no pass
@@ -348,6 +367,61 @@ impl World {
         worktree
     }
 
+    /// Each job: its state, start, pid, deadline and run, and its result
+    /// file `<fleet root>/run/jobs/<id>-<run>.json` with whether it exists.
+    /// A `running` job also shows whether its process lives, so a slow job
+    /// leaves the evidence of what it waits for.
+    fn jobs(&self, conn: &Connection) -> String {
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, kind, state, COALESCE(started_at, '-'), pid, deadline, run, \
+             COALESCE(substr(result_json, 1, 300), '-') FROM jobs ORDER BY id",
+        ) else {
+            return "bad jobs query".into();
+        };
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            })
+            .map(|it| it.flatten().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let dir = self.h.fleet_root().join("run/jobs");
+        let mut out = String::new();
+        for (id, kind, state, started, pid, deadline, run, result) in rows {
+            let file = dir.join(format!("{id}-{run}.json"));
+            let process = match (state.as_str(), pid) {
+                ("running", Some(pid)) => {
+                    let ps = std::process::Command::new("ps")
+                        .args(["-o", "stat=,command=", "-p", &pid.to_string()])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    if ps.is_empty() {
+                        " process gone".to_string()
+                    } else {
+                        format!(" process alive: {ps}")
+                    }
+                }
+                _ => String::new(),
+            };
+            out.push_str(&format!(
+                "  {id} {kind} {state} started {started} pid {pid:?} deadline {deadline:?} \
+                 run {run}; result file {} exists={}{process}; {result}\n",
+                file.display(),
+                file.exists(),
+            ));
+        }
+        out
+    }
+
     /// What a failed wait shows: the rows of the task, its branch and its
     /// bundles, the needs-you items and the jobs.
     fn diagnostics(&self) -> String {
@@ -362,7 +436,7 @@ impl World {
         };
         format!(
             "tasks: {:?}\nattempts: {:?}\nworkers: {:?}\nbranches: {:?}\nbundles: {:?}\n\
-             jobs: {:?}\nneeds_you: {:?}\nfeature log: {:?}\nlaunch.log:\n{}\nfleetd.stderr:\n{}",
+             fleet clock: {}\njobs:\n{}\nneeds_you: {:?}\nfeature log: {:?}\nlaunch.log:\n{}\nfleetd.stderr:\n{}",
             rows("SELECT task_id || ' ' || status FROM tasks"),
             rows("SELECT id || ' ' || via || ' ' || state FROM attempts"),
             rows("SELECT worker_id || ' ' || status FROM workers"),
@@ -371,10 +445,8 @@ impl World {
                  repair_attempts FROM branches"
             ),
             rows("SELECT id || ' ' || state || ' ' || COALESCE(result, '-') FROM bundles"),
-            rows(
-                "SELECT id || ' ' || kind || ' ' || state || ' ' || \
-                 COALESCE(substr(result_json, 1, 300), '-') FROM jobs ORDER BY id"
-            ),
+            self.fleet_clock(),
+            self.jobs(&conn),
             rows("SELECT key || ' ' || state || ' ' || text FROM needs_you"),
             git_in(&self.h, &self.h.project, &["log", "--format=%s", FEATURE]),
             tail(&self.h.fleet_root().join("run/launch.log")),
