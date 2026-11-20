@@ -455,6 +455,50 @@ fn ask_note_with_a_line_break_or_too_long_is_rejected() {
 }
 
 #[test]
+fn ask_with_a_line_separator_or_a_bidi_character_is_refused() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let mut chars = vec!['\u{2028}', '\u{2029}', '\u{200E}', '\u{200F}'];
+    chars.extend('\u{202A}'..='\u{202E}');
+    chars.extend('\u{2066}'..='\u{2069}');
+    assert_eq!(chars.len(), 13);
+    for (n, c) in (1..).zip(chars) {
+        let question = format!("Do retries apply{c} to uploads?");
+        let refused = writer.write(NoteBody::Ask {
+            question: question.clone(),
+        });
+        let err = format!("{:#}", refused.expect_err(&format!("U+{:04X}", c as u32)));
+        assert!(
+            err.contains("a line separator or a bidi character"),
+            "{err}"
+        );
+
+        // A raw writer can skip the writer check: the reader rejects the note.
+        let path = write_raw(
+            &w,
+            IDEA,
+            n,
+            &serde_json::json!({
+                "idea": IDEA, "attempt": attempt, "kind": "ask", "text": question,
+            }),
+        );
+        let report = w.pass();
+        assert!(report.asked.is_empty(), "U+{:04X}: {report:?}", c as u32);
+        assert_eq!(report.rejected, vec![path.clone()]);
+        let (outcome, reason) = w.ingested(&path);
+        assert_eq!(outcome, "rejected");
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason.contains("a line separator or a bidi character"),
+            "U+{:04X}: {reason}",
+            c as u32
+        );
+    }
+    assert!(w.idea_notes().is_empty(), "no question row is written");
+}
+
+#[test]
 fn ask_note_with_unreadable_amendments_is_rejected_and_the_pass_goes_on() {
     let mut w = world();
     w.sub_orchestrator();

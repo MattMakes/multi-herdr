@@ -272,11 +272,17 @@ fn check(note: &Note) -> Result<(), String> {
 pub const ASK_LIMIT: usize = 1000;
 
 /// The question of an `ask` note is 1 line of at most [`ASK_LIMIT`]
-/// characters with no control character, so the needs-you item that shows
-/// it holds only that line.
+/// characters with no control character, line separator or bidi character,
+/// so the needs-you item that shows it holds only that line in its order.
 fn check_ask(question: &str) -> Result<(), String> {
     if question.chars().any(char::is_control) {
         return Err("the question has a line break or a control character".into());
+    }
+    if let Some(c) = question.chars().find(|&c| is_separator_or_bidi(c)) {
+        return Err(format!(
+            "the question has a line separator or a bidi character (U+{:04X})",
+            c as u32
+        ));
     }
     if question.chars().count() > ASK_LIMIT {
         return Err(format!(
@@ -284,6 +290,17 @@ fn check_ask(question: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// `c` is U+2028 or U+2029, which break a line, or a bidi mark, embedding,
+/// override or isolate, which change the order of the text that the
+/// operator reads.
+fn is_separator_or_bidi(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// The writer of the notes of the sub-orchestrator of 1 idea.
