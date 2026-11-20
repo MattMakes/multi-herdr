@@ -2,7 +2,8 @@
 # setup to ledger_seed and the fleetd push launch. Each one stays red for a
 # product cause.
 #
-# T-900: A waits in verifying for its 3 review tasks. A review task of a
-# push attempt has no worktree, so its horch result fails ('the task ledger
-# has no worktree of <task>; give --commit'), and no path ends it done.
-the_whole_flow_on_the_fake_herdr | 4 | timed out waiting for T-2 done
+# T-900 makes each review task of a push attempt end done, and T-2 lands.
+# The test then waits for the worktree of T-2 to be gone, and no code moves
+# a worktree to landing or landed. Ticket 168 (T-207) of fleetd-finish
+# removes this entry.
+the_whole_flow_on_the_fake_herdr | 4 | timed out waiting for the worktree of T-2 is gone

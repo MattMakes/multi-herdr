@@ -1727,6 +1727,73 @@ fn the_whole_flow_on_the_fake_herdr() {
     });
 }
 
+/// T-900: each code-sweep review task of a push attempt ends `done` by its
+/// findings file, with no worktree of its own and no check job, and the
+/// reviewed task moves to `done` and its branch lands. It does not wait for
+/// the removal of the worktree (ticket 168, T-207).
+#[test]
+fn a_push_review_task_ends_done_by_its_findings_file_and_its_task_lands() {
+    let mut h = finish_world("tl-review");
+    h.stop_fleetd();
+    push_env(&mut h, "exec,stay,commit,result");
+    let run = seed_run(&h, "alpha", Some(1), "w1:p1");
+    let a = ticket_of(&h, "a", "A", "opus");
+    seed_blocked_task(&h, &run, &a, "opus", None);
+    h.serve_fleetd();
+    let mut written = 0;
+    wait_push("T-1 done", || {
+        written += write_findings(&h);
+        let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+        (t["task"]["status"] == "done").then_some(())
+    });
+    assert!(written > 0, "the code-sweep of A queued its reviews");
+    let store = Store::open(&h.ledger_db()).unwrap();
+    let conn = store.conn();
+    let rows = |sql: &str| -> Vec<String> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let reviews = rows("SELECT status FROM tasks WHERE kind = 'review'");
+    assert!(!reviews.is_empty());
+    assert!(reviews.iter().all(|s| s == "done"), "{reviews:?}");
+    // The newest attempt of each review task ended `verified`.
+    let outcomes = rows(
+        "SELECT COALESCE(a.outcome, '') FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+         WHERE t.kind = 'review'
+           AND a.rowid = (SELECT max(rowid) FROM attempts WHERE task_id = t.task_id)",
+    );
+    assert_eq!(outcomes.len(), reviews.len(), "{outcomes:?}");
+    assert!(outcomes.iter().all(|o| o == "verified"), "{outcomes:?}");
+    // A review task has no worktree and gets no task_check job.
+    let trees = rows(
+        "SELECT w.worktree_id FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
+         WHERE t.kind = 'review'",
+    );
+    assert!(trees.is_empty(), "{trees:?}");
+    let checks = rows(
+        "SELECT j.subject FROM jobs j JOIN tasks t ON t.task_id = j.subject
+         WHERE j.kind = 'task_check' AND t.kind = 'review'",
+    );
+    assert!(checks.is_empty(), "{checks:?}");
+    drop(store);
+    wait_push("the branch of T-1 landed", || {
+        let store = Store::open(&h.ledger_db()).unwrap();
+        let landed: bool = store
+            .conn()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM branches b JOIN tasks t ON t.task_id = b.task_id
+                     WHERE t.seq = 1 AND b.landing_state = 'landed')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        landed.then_some(())
+    });
+}
+
 /// The ticket `n` of the task `t` for `persona`, with no check.
 fn ticket_of(h: &Harness, n: &str, t: &str, persona: &str) -> PathBuf {
     let body = format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n");
