@@ -1,20 +1,6 @@
 //! The e2e tests of exec mode (fleetd-p7 ticket 33; FM-20, FR-6 part,
 //! FR-9 part, RR-11; `docs/specs/fleetd/design.md`, "Worker profiles and
 //! adapters" (Exec or interactive)).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, seeds 1 ready task, and starts a test `horch fleetd` with 1 pass
-//! each second. fleetd binds the task, launches its attempt in a pane of the
-//! fake herdr, and the wrapper `horch worker` runs the fake CLI of the
-//! profile in exec mode. No test starts a real agent CLI, and each test
-//! waits for an event (a row, a call of a fake), never for a time.
-//!
-//! The binary of each CLI is a small script around its fake. A conformance
-//! run of fleetd (its prompt is under `conformance/`) gets the scenario
-//! `conformance`, so each profile stays healthy. The exec run of each
-//! attempt gets the scenario that the test gives for its attempt number.
-//!
-//! Unix only: the scripts are `sh`.
 
 #![cfg(unix)]
 
@@ -29,13 +15,10 @@ use horch_core::taskledger::{schema, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The scenario of a run that does the task: 1 commit, then the result.
 const DOES_THE_TASK: &str = "commit,result";
 
-/// The context window of each new attempt (FR-9).
 const WINDOW: &str = "256000";
 
 fn text(o: &Output) -> String {
@@ -47,8 +30,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A CLI with an exec adapter: the name of its fake in the call log, the
-/// fake binary, and the variable that names its binary for horch.
 #[derive(Clone, Copy)]
 enum Cli {
     Claude,
@@ -84,12 +65,6 @@ impl Cli {
     }
 }
 
-/// The script of the binary of 1 CLI. `$1` of a warm call is `warm`. The
-/// exec run of the attempt `A<n>` gets `runs[n - 1]`, and the last entry
-/// when `runs` is shorter. The script reads `n` from the path of the
-/// `START.md` of the attempt with `sh` builtins only: it writes no file and
-/// needs no other program, so neither the sandbox nor the `PATH` of the CLI
-/// changes it.
 fn cli_script(fake: &std::path::Path, runs: &[&str]) -> String {
     let mut pick = String::new();
     for (i, s) in runs.iter().enumerate() {
@@ -113,16 +88,12 @@ fn cli_script(fake: &std::path::Path, runs: &[&str]) -> String {
     )
 }
 
-/// 1 task of a persona, its fallback, and the scenarios of each CLI, by
-/// attempt number.
 struct Spec<'a> {
     persona: &'a str,
     fallback: Option<&'a str>,
     runs: &'a [(Cli, &'a [&'a str])],
 }
 
-/// A fleet with 1 ready task, a test fleetd and the workspace of the project, whose
-/// panes run their commands.
 struct World {
     h: Harness,
     task_id: String,
@@ -131,20 +102,10 @@ struct World {
 impl World {
     fn new(name: &str, spec: &Spec<'_>) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its worker finds the same paths there.
         let fleet = h.state.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
-        // agy is unhealthy by design: it has no sandbox (A37), so its
-        // conformance run marks each Antigravity profile unhealthy, and a
-        // real fleetd gives agy no dispatch. These tests prove the exec
-        // adapter of agy only. So the world has no `agy` for the scan of the
-        // CLI binaries, and fleetd runs no agy conformance here. The
-        // attempts use the fake of `Cli::bin_env`.
-        std::fs::remove_file(h.bin.join("agy")).unwrap();
-        // The fake agent runs `horch result` and `horch ask` from PATH.
+        skip_agy_conformance(&h);
         std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
         h.set(
             "HORCH_LEDGER_DB",
@@ -156,7 +117,6 @@ impl World {
             "HORCH_QUOTA_FILE",
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
-        // `exec`: the fake herdr runs the command of each pane.
         h.set("HORCH_FAKE_SCENARIO", "exec");
         let built = Harness::horch_bin().parent().unwrap().to_path_buf();
         for cli in Cli::ALL {
@@ -169,8 +129,6 @@ impl World {
             let path = h.write_warmed(&format!("{}-p7", cli.fake()), script.as_bytes());
             h.set(cli.bin_env(), path.to_string_lossy());
         }
-        // The workspace of the project, as `horch fleet` makes it: fleetd
-        // opens the pane of each attempt in its first pane (T-890).
         let ws = h.fleet_workspace();
         h.set("HORCH_WORKSPACE_ID", &ws);
         let mut w = World {
@@ -187,8 +145,6 @@ impl World {
         self.h.fleet_root()
     }
 
-    /// The project declares its gates, so no hold of a missing fast gate
-    /// stops the dispatch (Phase 4, Q-C).
     fn declare_gates(&self) {
         std::fs::write(
             self.h.project.join("fleet.toml"),
@@ -204,9 +160,6 @@ impl World {
         }
     }
 
-    /// The run in the workspace `ws`, its idea in flight (FR-12), and 1
-    /// queued task. The test writes them before fleetd
-    /// runs. Gives the task id.
     fn seed_task(&self, spec: &Spec<'_>, ws: &str) -> String {
         let ticket = "# T0\n";
         let dir = self.h.project.join("tickets");
@@ -232,15 +185,12 @@ impl World {
         new.fallback = spec.fallback.map(str::to_string);
         new.ticket_snapshot = Some(ticket.to_string());
         new.land_check = Some("true".into());
-        // The ticket says `Review: none`: no reviewer runs, so the task
-        // needs no code-sweep skill on this host.
         new.review_mode = Some(ReviewMode::NoReview);
         tasks::add(conn, &run, &new, Actor::Orchestrator)
             .unwrap()
             .task_id
     }
 
-    /// Rows of 1 text column of the ledger.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = rusqlite::Connection::open(self.h.ledger_db()).unwrap();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -256,15 +206,12 @@ impl World {
             .unwrap_or_default()
     }
 
-    /// The attempts that the task used: `attempts - attempt_floor`.
     fn used(&self) -> String {
         self.rows("SELECT CAST(attempts - attempt_floor AS TEXT) FROM tasks")
             .pop()
             .unwrap_or_default()
     }
 
-    /// `<attempt> <state> <outcome>` of each attempt of the task, oldest
-    /// first.
     fn attempts(&self) -> Vec<String> {
         self.rows(
             "SELECT substr(id, instr(id, '/') + 1) || ' ' || state || ' ' || coalesce(outcome, '-')
@@ -272,9 +219,6 @@ impl World {
         )
     }
 
-    /// `<attempt> <state>` of each attempt of the task, oldest first. The
-    /// outcome of an attempt that did the task is not checked: the design
-    /// names no outcome word for it.
     fn states(&self) -> Vec<String> {
         self.rows(
             "SELECT substr(id, instr(id, '/') + 1) || ' ' || state
@@ -282,8 +226,6 @@ impl World {
         )
     }
 
-    /// The exec runs of the attempts by `cli`: each call of its fake with
-    /// a `START.md` that is not a conformance run, oldest first.
     fn exec_runs(&self, cli: Cli) -> Vec<Value> {
         self.h
             .calls_of(cli.fake())
@@ -294,7 +236,6 @@ impl World {
             .collect()
     }
 
-    /// What a failed wait shows.
     fn diagnostics(&self) -> String {
         let mut calls: Vec<String> = self
             .h
@@ -355,7 +296,6 @@ impl World {
         });
     }
 
-    /// Wait for the attempt `n` (`A<n>`) to end, and give its outcome.
     fn wait_ended(&self, n: usize) -> String {
         let id = format!("A{n} ended ");
         self.wait(&format!("the attempt A{n} to end"), || {
@@ -365,8 +305,6 @@ impl World {
         })
     }
 
-    /// The output of the act `key` (`result` or `ask`) of the exec run of
-    /// the attempt `A<n>` on `cli`, once that run did it.
     fn act(&self, cli: Cli, n: usize, key: &str) -> Value {
         self.wait(&format!("the exec run of A{n} to do its {key}"), || {
             self.exec_runs(cli)
@@ -380,8 +318,6 @@ impl World {
         })
     }
 
-    /// The agent of the attempt `A<n>` on `cli` wrote its `result.json`
-    /// with `horch result`.
     fn assert_result_written(&self, cli: Cli, n: usize) {
         let out = self.act(cli, n, "result");
         assert_eq!(
@@ -398,7 +334,6 @@ impl World {
     }
 }
 
-/// The 1 task of `persona` runs in exec mode on `cli` and reaches `done`.
 fn task_runs_to_done(name: &str, persona: &str, cli: Cli) {
     let w = World::new(
         name,
@@ -408,8 +343,6 @@ fn task_runs_to_done(name: &str, persona: &str, cli: Cli) {
             runs: &[(cli, &[DOES_THE_TASK])],
         },
     );
-    // The wrapper ran the CLI in exec mode with the START.md of the
-    // attempt (FR-6: the mode of the profile decides the launch).
     w.assert_result_written(cli, 1);
     w.wait_status("done");
     let runs = w.exec_runs(cli);
@@ -447,8 +380,6 @@ fn exec_agy_task_runs_to_done() {
     });
 }
 
-/// A task of `opus` with the fallback `codex-sol`: the exec run of A1 on
-/// Claude Code shows a usage limit, and A2 on Codex does the task.
 fn usage_limit_world(name: &str) -> World {
     World::new(
         name,
@@ -463,9 +394,6 @@ fn usage_limit_world(name: &str) -> World {
     )
 }
 
-/// RR-11 in exec mode: the stream of Claude Code shows a usage limit. The
-/// wrapper ends the attempt with `quota`, the attempt burns nothing, and
-/// fleetd restarts the task on its fallback `codex-sol`, which does it.
 #[test]
 fn exec_usage_limit_restarts_on_the_fallback_and_burns_no_attempt() {
     horch_e2e::expected::check(
@@ -480,14 +408,11 @@ fn exec_usage_limit_restarts_on_the_fallback_and_burns_no_attempt() {
             assert_eq!(w.attempts()[0], "A1 ended quota", "{}", w.diagnostics());
             assert_eq!(w.exec_runs(Cli::Claude).len(), 1, "{}", w.diagnostics());
             assert_eq!(w.exec_runs(Cli::Codex).len(), 1, "{}", w.diagnostics());
-            // Only the attempt on the fallback counts.
             assert_eq!(w.used(), "1", "{}", w.diagnostics());
         },
     );
 }
 
-/// An exec agent that asks a question exits. Its attempt ends with
-/// `asked`, and the task waits in `blocked_on_user`.
 #[test]
 fn exec_question_exits_and_the_task_waits_in_blocked_on_user() {
     horch_e2e::expected::check(
@@ -519,10 +444,6 @@ fn exec_question_exits_and_the_task_waits_in_blocked_on_user() {
     );
 }
 
-/// FM-20: Antigravity has no compaction setting. Its stream passes 256000
-/// context tokens, so the wrapper ends the attempt with `context_limit`.
-/// The attempt burns nothing, and the next attempt gets the handoff file
-/// in the same worktree and does the task.
 #[test]
 fn agy_long_context_ends_with_context_limit_and_the_next_attempt_has_the_handoff() {
     horch_e2e::expected::check(
@@ -547,7 +468,6 @@ fn agy_long_context_ends_with_context_limit_and_the_next_attempt_has_the_handoff
                 prompt.contains("handoff.md"),
                 "the START.md of A2 names no handoff file:\n{prompt}"
             );
-            // Both attempts work in the 1 worktree of the task.
             let trees = w.rows("SELECT DISTINCT path FROM worktrees WHERE task_id IS NOT NULL");
             assert_eq!(trees.len(), 1, "{trees:?}\n{}", w.diagnostics());
             w.assert_result_written(Cli::Agy, 2);
@@ -560,15 +480,11 @@ fn agy_long_context_ends_with_context_limit_and_the_next_attempt_has_the_handoff
                 w.diagnostics()
             );
             assert_eq!(w.exec_runs(Cli::Agy).len(), 2, "{}", w.diagnostics());
-            // Only the attempt after the context limit counts.
             assert_eq!(w.used(), "1", "{}", w.diagnostics());
         },
     );
 }
 
-/// FM-20, the guard of MAP.md Q2: 2 attempts in a row end with
-/// `context_limit` and the task branch has no new commit between them. The
-/// task does not go to `ready` again, and 1 needs-you item opens.
 #[test]
 #[ignore = "flaky until T-895: the A2 agent can end by a signal with no_result"]
 fn context_limit_loop_with_no_commit_opens_1_needs_you_item() {
@@ -580,7 +496,6 @@ fn context_limit_loop_with_no_commit_opens_1_needs_you_item() {
             runs: &[(Cli::Agy, &["long_context"])],
         },
     );
-    // 1 wait for each step, so each step has the whole deadline.
     assert_eq!(w.wait_ended(1), "context_limit", "{}", w.diagnostics());
     assert_eq!(w.wait_ended(2), "context_limit", "{}", w.diagnostics());
     let key = format!("{CONTEXT_LIMIT_LOOP}:{}", w.task_id);
@@ -604,12 +519,9 @@ fn context_limit_loop_with_no_commit_opens_1_needs_you_item() {
     assert_ne!(w.task_status(), "ready", "{}", w.diagnostics());
     assert_ne!(w.task_status(), "queued", "{}", w.diagnostics());
     assert_eq!(w.exec_runs(Cli::Agy).len(), 2, "{}", w.diagnostics());
-    // No attempt burned: the 2 context limits count as none.
     assert_eq!(w.used(), "0", "{}", w.diagnostics());
 }
 
-/// FR-9 (part): each new attempt gets the window 256000. A1 runs on Claude
-/// Code and ends on a usage limit, and A2 runs on Codex.
 #[test]
 fn new_attempt_gets_the_256000_window() {
     horch_e2e::expected::check(file!(), "new_attempt_gets_the_256000_window", || {
@@ -634,7 +546,10 @@ fn new_attempt_gets_the_256000_window() {
     });
 }
 
-/// Each file under `dir`, at any depth.
+fn skip_agy_conformance(h: &Harness) {
+    std::fs::remove_file(h.bin.join("agy")).unwrap();
+}
+
 fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
