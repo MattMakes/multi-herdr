@@ -18,12 +18,12 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The check sandbox needs bubblewrap on Linux (crates/horch-platform/src/linux/sandbox.rs).
+      # The check sandbox needs bubblewrap and socat on Linux (crates/horch-platform/src/linux/sandbox.rs).
       # Ubuntu 24.04 lets no unconfined program make a user namespace, and bwrap needs one.
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y bubblewrap socat
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --workspace --locked --no-fail-fast
 
