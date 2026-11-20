@@ -6,7 +6,8 @@
 //! Each test makes its own ledger, fleet root and git project in a temp
 //! folder, and runs a test `horch fleetd` with the fake herdr and the fake
 //! idea-lead of `horch_e2e::fr10_agent`. A word `[fr10:<key>]` in the text
-//! of an idea gives the key of its fake.
+//! of an idea gives the key of its fake, and the word
+//! `[fr10:target=<idea id>]` gives the idea that the fake tries to approve.
 //!
 //! In each case the idea stays in `awaiting_approval`. A try through the
 //! CLI is refused with a reason that names the caller as a fleet process.
@@ -43,6 +44,10 @@ const LATER_TICKS: i64 = 3;
 const FLEET_PROCESS: &str = "fleet process";
 
 const WAITING_IDEA: &str = "Show the queue length in the status bar";
+
+fn lead_of(key: &str, target: &str) -> String {
+    format!("Show the disk use [fr10:{key}] [fr10:target={target}]")
+}
 
 fn text(o: &Output) -> String {
     format!(
@@ -262,6 +267,17 @@ impl World {
                 "SELECT request_id, kind, state, IFNULL(reason, '-') FROM requests ORDER BY rowid",
             ),
             show(
+                "jobs",
+                "SELECT id, kind, state, time_limit_s, IFNULL(started_at, '-'),
+                        IFNULL(ended_at, '-'), IFNULL(result_json, '-')
+                 FROM jobs ORDER BY id",
+            ),
+            show(
+                "worker_launch_failed payloads",
+                "SELECT request_id, payload_json FROM requests
+                 WHERE kind = 'worker_launch_failed' ORDER BY rowid",
+            ),
+            show(
                 "attempts",
                 "SELECT id, IFNULL(pid, '-'), IFNULL(pid_start, '-'), state,
                         started_at, IFNULL(ended_at, '-'), IFNULL(outcome, '-')
@@ -290,7 +306,7 @@ fn alive(pid: i64) -> bool {
 fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     let w = World::new("p6-fr10-a", "clarify");
     let waiting = w.add(WAITING_IDEA);
-    w.add("Show the disk use [fr10:approve_waiting]");
+    w.add(&lead_of("approve_waiting", &waiting));
     let call = w.fake_call("tries");
     assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
     let attempts = call["attempts"].to_string();
@@ -345,7 +361,7 @@ fn fix_a_idea_note_of_the_idea_lead_is_accepted() {
 fn fr10_b_agent_after_its_attempt_ended_cannot_approve_and_is_stopped() {
     let w = World::new("p6-fr10-b", "clarify");
     let waiting = w.add(WAITING_IDEA);
-    let own = w.add("Show the disk use [fr10:outlive]");
+    let own = w.add(&lead_of("outlive", &waiting));
     for idea in [&waiting, &own] {
         w.wait("the idea in awaiting_approval", || {
             (w.idea_state(idea).as_deref() == Some("awaiting_approval")).then_some(())
@@ -374,7 +390,7 @@ fn fr10_b_agent_after_its_attempt_ended_cannot_approve_and_is_stopped() {
 fn fr10_c_child_shell_and_detached_child_cannot_approve() {
     let w = World::new("p6-fr10-c", "clarify");
     let waiting = w.add(WAITING_IDEA);
-    w.add("Show the disk use [fr10:approve_waiting]");
+    w.add(&lead_of("approve_waiting", &waiting));
     let call = w.fake_call("tries");
     w.assert_cli_refused("child_shell", &call["tries"]["child_shell"]);
     w.assert_cli_refused("detached", &call["tries"]["detached"]);
@@ -394,4 +410,46 @@ fn fr10_d_agent_written_approval_is_not_accepted() {
            AND cause LIKE 'approval.json ignored%'"
     ));
     assert_eq!(ignored.len(), 1, "{ignored:?}\n{}", w.context());
+}
+
+#[test]
+fn a_system_idea_in_awaiting_approval_does_not_change_which_idea_the_agent_tries_to_approve() {
+    // `ignore_stop_gate` fails the conformance check "Stop gate", so the
+    // boot conformance job adds a system idea, as on the loaded host of the
+    // T-6 land run.
+    let w = World::new("p6-fr10-sys", "clarify,ignore_stop_gate");
+    // The run of this idea gives the fleet its project, so the job can add
+    // its system idea. The idea stays in `clarifying`.
+    w.add("Show the disk use [fr10:stay]");
+    let system = w.wait("the system idea of the failed conformance job", || {
+        w.one(
+            "SELECT entity_id FROM events WHERE entity = 'idea'
+               AND cause LIKE 'adapter-conformance-failed%' LIMIT 1",
+        )
+    });
+    w.wait("the system idea in awaiting_approval", || {
+        (w.idea_state(&system).as_deref() == Some("awaiting_approval")).then_some(())
+    });
+    let waiting = w.add(WAITING_IDEA);
+    assert!(
+        system < waiting,
+        "the system idea is first: {system} {waiting}"
+    );
+    w.add(&lead_of("approve_waiting", &waiting));
+    let call = w.fake_call("tries");
+    assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
+    let attempts = call["attempts"].to_string();
+    assert!(
+        attempts.contains(" live"),
+        "the own attempt is live: {attempts}"
+    );
+    w.assert_cli_refused("cli", &call["tries"]["cli"]);
+    w.assert_raw_refused(&call["tries"]["raw"]);
+    w.assert_still_waiting(&waiting);
+    assert_eq!(
+        w.idea_state(&system).as_deref(),
+        Some("awaiting_approval"),
+        "{}",
+        w.context()
+    );
 }

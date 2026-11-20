@@ -4,8 +4,13 @@
 //! idea, so 2 ideas of 1 fleet can have 2 behaviours. An idea with such a
 //! word gets only this fake, not the keys of `idea_agent`.
 //!
+//! The idea under test is named by the word `[fr10:target=<idea id>]`.
+//! The fake waits for that idea and never takes another idea in
+//! `awaiting_approval`, such as a system idea of a failed conformance job.
+//!
 //! - `approve_waiting`: the own idea stays in `clarifying`, so the own
-//!   attempt stays live. Wait until another idea is in `awaiting_approval`.
+//!   attempt stays live. Wait until the own attempt is `live` (fleetd
+//!   recorded its process) and the target is in `awaiting_approval`.
 //!   Then try to approve it 5 ways, each logged under `tries`: `cli`
 //!   (`horch idea approve`), `child_shell` (`sh -c` of it), `detached` (a
 //!   child in a new session and a new process group, whose parent waits),
@@ -17,7 +22,7 @@
 //! - `outlive`: write a valid `assumptions.md` and ignore `SIGTERM`, so the
 //!   agent lives on after fleetd ended its attempt. Wait until each own
 //!   `clarifying` attempt is ended (the operator approves the own idea, so the phase of
-//!   the attempt is old), then try `cli` and `raw` on another idea in
+//!   the attempt is old), then try `cli` and `raw` on the target in
 //!   `awaiting_approval`. Then wait for the stop of fleetd.
 //! - `forge`: write a valid `assumptions.md`, wait until the own idea is in
 //!   `awaiting_approval`, then write `approval.json` with its sha256.
@@ -62,11 +67,12 @@ pub fn play(call: &mut Call) -> bool {
     if !call.argv.iter().any(|a| a.contains("in phase clarifying")) {
         return true;
     }
-    let lead = Lead::new(folder);
+    let lead = Lead::new(folder, target_of(&text));
     if has("approve_waiting") {
-        let Some(target) = lead.other_waiting() else {
+        lead.wait_live();
+        let Some(target) = lead.waiting_target() else {
             call.extra
-                .insert("fr10".into(), json!({"error": "no other idea waits"}));
+                .insert("fr10".into(), json!({"error": "the target does not wait"}));
             return true;
         };
         call.extra.insert("target".into(), json!(target));
@@ -94,9 +100,9 @@ pub fn play(call: &mut Call) -> bool {
         lead.write_assumptions();
         call.extra
             .insert("attempts".into(), json!(lead.wait_ended()));
-        let Some(target) = lead.other_waiting() else {
+        let Some(target) = lead.waiting_target() else {
             call.extra
-                .insert("fr10".into(), json!({"error": "no other idea waits"}));
+                .insert("fr10".into(), json!({"error": "the target does not wait"}));
             return true;
         };
         call.extra.insert("target".into(), json!(target));
@@ -124,18 +130,30 @@ pub fn play(call: &mut Call) -> bool {
     false
 }
 
+/// The id of the word `[fr10:target=<idea id>]` in the text of an idea.
+fn target_of(text: &str) -> Option<String> {
+    let (_, rest) = text.split_once("[fr10:target=")?;
+    let (id, _) = rest.split_once(']')?;
+    Some(id.to_string())
+}
+
 struct Lead {
     folder: PathBuf,
     idea: String,
+    target: Option<String>,
 }
 
 impl Lead {
-    fn new(folder: PathBuf) -> Lead {
+    fn new(folder: PathBuf, target: Option<String>) -> Lead {
         let idea = folder
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Lead { folder, idea }
+        Lead {
+            folder,
+            idea,
+            target,
+        }
     }
 
     fn ideas(&self) -> PathBuf {
@@ -181,17 +199,15 @@ impl Lead {
         }
     }
 
-    fn other_waiting(&self) -> Option<String> {
+    fn waiting_target(&self) -> Option<String> {
+        let target = self.target.as_deref().filter(|t| *t != self.idea)?;
+        let state = self.wait_state(target)?;
+        (state == AWAITING).then(|| target.to_string())
+    }
+
+    fn wait_live(&self) {
         let end = Instant::now() + STATE_WAIT;
-        loop {
-            let other = query_one(
-                "SELECT id FROM ideas WHERE state = 'awaiting_approval' AND id != ?1
-                 ORDER BY id LIMIT 1",
-                &self.idea,
-            );
-            if other.is_some() || Instant::now() >= end {
-                return other;
-            }
+        while Instant::now() < end && !self.attempts().iter().any(|a| a.ends_with(" live")) {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
