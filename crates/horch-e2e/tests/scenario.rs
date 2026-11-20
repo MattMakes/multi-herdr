@@ -5,7 +5,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use horch_e2e::harness::{copy_tree, fixtures, Harness};
+use horch_core::execution::records::SessionLedger;
+use horch_e2e::harness::{copy_tree, fixtures, wait_for_or, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 fn pass(step: &str) {
@@ -99,6 +101,90 @@ fn the_hermetic_story() {
 #[test]
 fn the_hermetic_story_with_an_ollama_that_starts_in_7_s() {
     story(true);
+}
+
+/// Step 8: fleetd launches the attempt of a task for opus while every pool
+/// is exhausted. The gate of the launch refuses it before any side effect:
+/// the worker row ends `launch_failed` with the REFUSED line, no session
+/// record is written, no brief is written and no pane is split or run.
+/// (`horch spawn opus` gave exit 3 and the REFUSED line on stdout before
+/// Phase 6 retired it, FR-5.)
+fn refused_launch_changes_nothing() {
+    let mut g = Harness::new("story-refused").with_git();
+    g.set(
+        "HORCH_LEDGER_DB",
+        g.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    g.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
+    g.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    g.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
+    g.set(
+        "HORCH_QUOTA_FILE",
+        fixtures()
+            .join("quota/all-exhausted.json")
+            .to_string_lossy(),
+    );
+    g.set("HORCH_FAKE_SCENARIO", "exec");
+    let root = g.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        g.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        assert!(g.git_cmd(args).output().unwrap().status.success());
+    }
+    let workspace = g.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    g.set("HORCH_WORKSPACE_ID", workspace);
+
+    let ticket = g.project.join("opus-1.md");
+    std::fs::write(&ticket, "# Opus\n**Check:** `true`\n").unwrap();
+    let run = seed_run(&g, "refused", Some(1), "w1:p1");
+    seed_task(&g, &run, &ticket, "opus");
+    g.serve_fleetd();
+    let shown = || {
+        let o = g.run(&["ledger", "show", "T-1", "--json"]);
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    wait_for_or(
+        "the refusal of the launch",
+        || {
+            shown()
+                .contains("launch_failed: REFUSED: opus cannot start.")
+                .then_some(())
+        },
+        shown,
+    );
+    let ledger = SessionLedger::for_project(&g.state, &g.project.to_string_lossy());
+    assert!(ledger.read().unwrap().is_empty(), "no session record");
+    let pane_calls: Vec<String> = g
+        .calls_of("herdr")
+        .iter()
+        .map(|c| c["argv"].to_string())
+        .filter(|a| a.contains("\"split\"") || a.contains("\"run\""))
+        .collect();
+    assert!(
+        pane_calls.is_empty(),
+        "no pane split or run: {pane_calls:?}"
+    );
+    assert!(!g
+        .state
+        .join("herdr-orchestration-w1")
+        .join("opus-1.brief.json")
+        .exists());
 }
 
 /// The story of the module doc. `slow_ollama` delays every `ollama` call by
@@ -234,20 +320,10 @@ fn story(slow_ollama: bool) {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("REFUSED: opus cannot start."));
     pass("7 route opus: REFUSED, exit 3");
-    let ledger = h.state.join("-work-alpha.json");
-    let before = std::fs::read(&ledger).unwrap();
-    let herdr_calls = h.calls_of("herdr").len();
-    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
-    assert_eq!(out.status.code(), Some(3));
-    assert_eq!(std::fs::read(&ledger).unwrap(), before);
-    assert_eq!(
-        h.calls_of("herdr").len(),
-        herdr_calls,
-        "no herdr call, so no pane split"
-    );
+    refused_launch_changes_nothing();
     h.unset("HORCH_QUOTA_FILE");
     h.unset("HORCH_WORKSPACE_ID");
-    pass("8 spawn opus: exit 3, ledger unchanged, no pane split");
+    pass("8 launch of opus: REFUSED, no record, no pane split");
 
     // 9. One frame of the screen, from the stage 2 snapshot.
     let out = h.run(&["telemetry", "render", "--size", "120x40", "--window", "7d"]);
