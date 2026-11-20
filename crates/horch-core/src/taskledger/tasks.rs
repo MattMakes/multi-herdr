@@ -58,7 +58,7 @@ pub struct Task {
     pub kind: String,
     pub parent_task_id: Option<String>,
     /// The stored word. Its JSON is the shown word `status` and the stored
-    /// word `state` ([`status_json`]).
+    /// word `state` (`status_json`).
     #[serde(flatten, serialize_with = "status_json")]
     pub status: String,
     pub attempts: i64,

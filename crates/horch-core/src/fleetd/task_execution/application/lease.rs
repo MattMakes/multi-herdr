@@ -8,7 +8,7 @@
 //!   after `finish_exited`: a task that a result moved out of `running` in
 //!   the pass is not expired ("Order inside 1 pass"). The expiry of the
 //!   lease of a resolver or fix attempt of a `done` task ends that attempt
-//!   and moves no task ([`end_repair_attempt`], ticket 33).
+//!   and moves no task (`end_repair_attempt`, ticket 33).
 //! - `transition()`, the 1 door, deletes the lease of each task that moves
 //!   to a state that holds no lease, in the transaction of the move. The
 //!   I1 check of the pass ([`check_i1`]) deletes a row that another writer

@@ -1042,7 +1042,7 @@ impl ExecutionStore {
 
     /// Mutate the records and send the change to fleetd, the only writer of
     /// the ledger (RR-5, T-884). The wrapper of a worker keeps the change
-    /// in its process ([`Self::keep_in_wrapper`]). Else 1 `session_records` request with each
+    /// in its process (`Self::keep_in_wrapper`). Else 1 `session_records` request with each
     /// changed row and the hash of each row as it was read. fleetd refuses a
     /// row that changed after the read; then `f` runs again on a new read,
     /// so 2 writers cannot lose a change. When fleetd is down, the request

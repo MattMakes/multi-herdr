@@ -260,7 +260,7 @@ fn judged_passes(tx: &Connection, judged: &str) -> Result<Option<(String, Vec<St
 }
 
 /// Whether the judge branch of the judge task `judge` holds the judged tip
-/// of [`judged_passes`]: the rule by which [`follow`] moves nothing. With
+/// of `judged_passes`: the rule by which [`follow`] moves nothing. With
 /// no judge branch that waits, no tip of it, or no passed check of the
 /// judged task, it holds nothing.
 pub fn holds_judged_tip(

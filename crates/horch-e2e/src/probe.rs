@@ -8,7 +8,7 @@
 //!   sent to the wrapper. It also tries a write outside the allowed paths,
 //!   a write inside them, and the 3 operator acts, each in a child under
 //!   [`horch_platform::sandbox::sandboxed`] with the rules of its rendered
-//!   config, and records each result ([`operator_boundary`]). A config that
+//!   config, and records each result (`operator_boundary`). A config that
 //!   renders no sandbox rule runs the child with no sandbox. It then writes
 //!   `outbox/result.json` of its task folder the same way ([`write_result`]).
 //!

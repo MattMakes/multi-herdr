@@ -1444,14 +1444,14 @@ fn phase_6_backfill(conn: &Connection, now: &str) -> Result<()> {
 ///
 /// - A run with no feature row gets one only when it has, or gets, a task
 ///   that is not done and not cancelled; else it gets no idea (`None`). The
-///   new feature follows the rule of [`phase_4_backfill`] for 1 run: `name`
+///   new feature follows the rule of `phase_4_backfill` for 1 run: `name`
 ///   is the slug, or `<slug>-<rowid>` when a feature has that name;
 ///   `branch` is the run branch when no feature and no branch row has it,
 ///   with its `branches` row owned by fleetd; `primary_branch` is the base
 ///   branch, or `main` for a run that names none.
 /// - The idea is `in_progress` when the run has, or gets, a task that is
 ///   not done and not cancelled, else `integrating`. Its `approved_sha256`
-///   is [`RELEASE_APPROVAL`].
+///   is `RELEASE_APPROVAL`.
 /// - Each task of the run with no idea gets it. Each question of the run
 ///   moves to the feature, owned by `idea-lead:<feature id>` (MAP.md, Q11).
 pub fn run_idea(

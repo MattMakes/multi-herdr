@@ -506,7 +506,7 @@ impl fmt::Debug for Race {
 /// the paths of the job and the git install folder), has no network, and
 /// gets only the environment of
 /// `horch_marketplace::git::SANDBOX_KEPT_ENV` and of the runner. The keys of
-/// [`SAFE_CONFIG`] and [`SAFE_ENV`] are the second layer (way B): they stop
+/// `SAFE_CONFIG` and `SAFE_ENV` are the second layer (way B): they stop
 /// hooks, the fsmonitor, gpg, each transport, credential helpers, askpass
 /// and the global filter drivers. A filter, merge or diff driver of the
 /// project config has a free name, and `$GIT_DIR/info/attributes` can
@@ -663,7 +663,7 @@ impl CliWorktreeGit {
 
     /// The 1 way this adapter runs a git command: first refuse a key of the
     /// project config that starts a program, then run `git <args>` in `dir`
-    /// in the sandbox, with the keys of [`SAFE_CONFIG`], whatever its exit
+    /// in the sandbox, with the keys of `SAFE_CONFIG`, whatever its exit
     /// code.
     pub fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
         self.refuse_project_programs(dir)?;

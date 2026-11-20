@@ -2,8 +2,8 @@
 //! (`docs/specs/fleetd/design.md`, "Docs sync and adapter conformance",
 //! step 4; FM-19; fleetd-p7 ticket 27).
 //!
-//! [`add_drift_idea`] adds 1 idea "Update the <tool> adapter for
-//! <version>" through the intake of Phase 6, with
+//! [`add_drift_idea`] adds 1 idea "Update the `<tool>` adapter for
+//! `<version>`" through the intake of Phase 6, with
 //! `<fleet root>/docs/<tool>/CHANGES.md` and the failed checks of
 //! `conformance.json` in its text, and opens 1 needs-you item for it, so
 //! the needs-you mirror shows it in `needs-you/`.

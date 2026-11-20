@@ -184,7 +184,7 @@ impl ProcessFacts for PlatformFacts {
 /// - its PID and start time are those of a process of `recorded`, or
 /// - its process group or its session has the PID of a process of
 ///   `recorded`, and that PID still names that process (see
-///   [`still_names`]).
+///   `still_names`).
 ///
 /// A fact that cannot be read is [`Fact::Unknown`]: the caller refuses.
 /// A process of the chain can end during the walk (the stop ladder stops

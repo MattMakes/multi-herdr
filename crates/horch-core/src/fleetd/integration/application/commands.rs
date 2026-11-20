@@ -6,7 +6,7 @@
 //! `conflicted` and `gate_failed`. fleetd writes a rescue ref of the branch,
 //! then moves it to `abandoned` (I10). The task stays as it is.
 //!
-//! [`abandon`] is crash safe: [`rescue`] writes the create-only rescue ref
+//! [`abandon`] is crash safe: [`rescue()`] writes the create-only rescue ref
 //! of the tip and reads it back, and only then [`record`] commits the ref
 //! name and the move in 1 transaction. A crash before the commit leaves the
 //! branch in its state with its rescue ref. The next [`abandon`] gets the
@@ -138,7 +138,7 @@ fn check_ref_name(branch: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Abandon the task branch `branch` of the repository `repo`: [`rescue`],
+/// Abandon the task branch `branch` of the repository `repo`: [`rescue()`],
 /// then [`record`] in 1 transaction of `store`.
 pub fn abandon(
     store: &mut Store,

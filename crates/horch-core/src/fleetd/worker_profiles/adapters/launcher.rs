@@ -3,7 +3,7 @@
 //! Each process of fleetd starts here (`docs/specs/fleetd/design.md`, SR-7),
 //! through [`horch_platform::start::Command`]. The launcher removes the
 //! forbidden keys with
-//! [`scrub_child_env`](crate::runtime::process::scrub_child_env) and starts
+//! [`scrub_child_env`] and starts
 //! the process as the leader of its own process group.
 //!
 //! Windows gap: Windows has no process groups, and the launcher makes no job

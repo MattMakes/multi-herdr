@@ -68,7 +68,7 @@ pub fn create_new_owner_only(path: &Path) -> io::Result<File> {
 /// checks the owner with [`owner_of`].
 ///
 /// macOS and Linux: the mode of `meta` has no bit of group or others, else
-/// the reason is "mode <mode> is wider than <rule>". Windows: the DACL of
+/// the reason is "mode `<mode>` is wider than `<rule>`". Windows: the DACL of
 /// the handle has no allow rule for a user other than the owner, `SYSTEM`
 /// and `Administrators`, and no rule of another type than allow or deny.
 pub fn check_owner_only(file: &File, meta: &Metadata, rule: u32) -> Result<(), String> {

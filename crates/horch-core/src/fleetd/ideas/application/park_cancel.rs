@@ -14,7 +14,7 @@
 //!   dispatched (the hold `IdeaParked` of task dispatch). The stop of the
 //!   sub-orchestrator process is the rule of the live owner of a feature
 //!   (ticket 28): a parked idea needs no process.
-//! - [`cancel`]: 1 event of the idea records the cancel request. Each task
+//! - [`cancel()`]: 1 event of the idea records the cancel request. Each task
 //!   of the idea that is not terminal gets the cancel of a task
 //!   (`task_execution::application::cancel::request`): a task with a live
 //!   attempt waits for the stop of its process, each other task is
@@ -67,7 +67,7 @@ const PASS_REASON: &str = "its idea is cancelled";
 /// no unsaved work.
 const TO_RESCUE: [WorktreeState; 2] = [WorktreeState::Created, WorktreeState::Orphaned];
 
-/// What [`cancel`] did with 1 idea.
+/// What [`cancel()`] did with 1 idea.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IdeaCancel {
     /// The idea is `cancelled`.
@@ -324,7 +324,7 @@ pub fn complete_cancels(ctx: &JobCtx<'_>, tx: &Connection) -> Result<Vec<(String
 }
 
 /// The policy on the event `feature-abandoned` of the feature `feature_id`:
-/// [`cancel`] of each idea of the feature that is not `merged` and not
+/// [`cancel()`] of each idea of the feature that is not `merged` and not
 /// `cancelled`, by id (A34). Gives what each cancel did.
 pub fn on_feature_abandoned(
     ctx: &JobCtx<'_>,

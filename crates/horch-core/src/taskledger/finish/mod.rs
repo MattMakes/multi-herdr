@@ -543,7 +543,7 @@ pub(crate) fn lease_tree(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) ->
 
 /// The custody setup of a command that needs a tree: the config of the
 /// fleet of the writable ledger `store`, the job context of a command, its
-/// own connection, then [`create_and_wait`] for `lease`. It gives the id of the
+/// own connection, then `create_and_wait` for `lease`. It gives the id of the
 /// tree. `horch ledger worktree new` and `horch worktree restore` call it.
 pub fn lease_and_wait(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
     with_custody(store, |conn, ctx| {

@@ -231,7 +231,7 @@ fn queued_run(
 /// - `orphaned`: no change; [`Attach::NeedsRescue`].
 ///
 /// It refuses a row that another live attempt owns (FM-14), and a row
-/// whose removal can run ([`refuse_while_removal_active`]).
+/// whose removal can run (`refuse_while_removal_active`).
 ///
 /// The claim calls it too (ticket 11 of fleetd-p3).
 pub fn attach(

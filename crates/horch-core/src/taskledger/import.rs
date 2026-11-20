@@ -1211,7 +1211,7 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
 ///
 /// The detail of a finding whose tree has a rescue ref names that ref. A
 /// finding is not listed while the work of its tree is landed
-/// ([`work_landed`]); a tree with work that did not land stays listed
+/// (`work_landed`); a tree with work that did not land stays listed
 /// until a decision, also when its task is done (RR-15).
 pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinished>> {
     let mut stmt = conn.prepare(&format!(

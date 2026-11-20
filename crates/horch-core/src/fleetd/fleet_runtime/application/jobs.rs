@@ -672,7 +672,7 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// fleetd-p3, Q22), and the 7 integration kinds have their router in the
 /// integration context. A `docs_sync` or `conformance` run with no runner
 /// ends `failed`, with no verdict, and the result "no executor before phase
-/// <n>". The time limit is the deadline of the
+/// `<n>`". The time limit is the deadline of the
 /// row: the pass stops this process at it. `checks` starts a check (SR-4).
 /// The job process writes no row, so it uses no field of `_ctx`; the
 /// parameter stays so that the callers of Phase 4 keep their form.

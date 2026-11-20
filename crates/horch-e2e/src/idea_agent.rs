@@ -25,7 +25,7 @@
 //!   `answers`.
 //! - `await_approval`: before `forge_approval`, `approve_inside` and
 //!   `operator_request`, wait until the idea is in `awaiting_approval`
-//!   (at most [`AWAIT_APPROVAL`]). Logged as `awaited` with the state seen.
+//!   (at most `AWAIT_APPROVAL`). Logged as `awaited` with the state seen.
 //! - `forge_approval`: write `approval.json` with the sha256 of
 //!   `assumptions.md`, as if the operator approved it.
 //! - `approve_inside`: run `horch idea approve <idea>`. Logged as `approve`.

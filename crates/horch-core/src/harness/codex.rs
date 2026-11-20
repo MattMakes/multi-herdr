@@ -1903,7 +1903,7 @@ fn plain_text(v: &serde_json::Value) -> bool {
 /// Each problem of the `mcp_servers` of `t` for a Codex launch. A name or a
 /// value of a profile is untrusted: a server name has only `A-Z a-z 0-9 _
 /// -`, a value is a string with no control character (no newline), and an
-/// entry has only the keys of [`MCP_SERVER_KEYS`]. A text never shows an
+/// entry has only the keys of `MCP_SERVER_KEYS`. A text never shows an
 /// env value.
 pub fn mcp_server_problems(t: &Teammate) -> Vec<String> {
     let mut out = Vec::new();

@@ -573,7 +573,7 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
 }
 
 /// The exec launch of 1 attempt (fleetd-p7 ticket 17). The preparation is
-/// the one of [`run_flow_code`]: skills, trust, the window decision, the
+/// the one of `run_flow_code`: skills, trust, the window decision, the
 /// adapter's `prepare` and the agent git env of SR-3. The command is the
 /// exec launch of the adapter, with `task_dir` (the attempt folder) and the
 /// workdir as its writable folders, and `req.prompt` as its prompt: the

@@ -9,7 +9,7 @@
 //! 1. The fleetd git rule (Q26 of MAP.md of fleetd-p4): this job runs git
 //!    with the rights of fleetd and with no sandbox, so git starts no hook
 //!    and no program of the project. Each git call has the keys of
-//!    [`SAFE_CONFIG`] and the environment of [`SAFE_ENV`]. The run first
+//!    `SAFE_CONFIG` and the environment of `SAFE_ENV`. The run first
 //!    reads `git config --list --show-origin`: a key of the repository or
 //!    worktree config that starts a program ends the run `failed`, with the
 //!    key in its reason, before the push.

@@ -1,6 +1,6 @@
 //! The use case that moves a task on a usage limit (RR-11, FM-5): the
-//! rows of [`exit`](crate::fleetd::task_execution::domain::quota::exit)
-//! and [`released`](crate::fleetd::task_execution::domain::quota::released).
+//! rows of [`exit`]
+//! and [`released`].
 //!
 //! - [`on_quota`]: the pass calls it for each attempt that ended with the
 //!   outcome `quota` (the stall ladder stopped its process). The attempt

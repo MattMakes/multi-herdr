@@ -8,7 +8,7 @@
 //! - Part 1 of a pass calls [`read`] for the outboxes of its outbox scan.
 //!   Each file passes the owner and mode checks of the protected file
 //!   reader. A path with a `rejected` row is not read again.
-//! - Part 2 calls [`ingest`] in its transaction. `result.json` and the
+//! - Part 2 calls [`ingest()`] in its transaction. `result.json` and the
 //!   question files go to [`super::ingest`]. Each file is ingested 1 time:
 //!   a message by its `ingested` row, the log by its offset, which moves
 //!   only from the offset that part 1 read.

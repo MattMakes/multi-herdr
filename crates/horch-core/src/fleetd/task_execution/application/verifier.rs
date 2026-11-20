@@ -22,9 +22,9 @@
 //!   needs a [`Verified`] that still stands. A code kind also needs each of
 //!   its review steps passed or not applicable. A judgment kind also needs
 //!   its judge task `done` (`application::judge_pair`).
-//! - Part 3 calls [`review`] after the commit: the review steps of each
+//! - Part 3 calls [`review()`] after the commit: the review steps of each
 //!   code kind whose check passed (`application::review`, ticket 20).
-//! - Part 3 calls [`structural`] after the commit: the structural check of
+//! - Part 3 calls [`structural()`] after the commit: the structural check of
 //!   each judgment kind and judge task whose check passed
 //!   (`domain::structural`). A judgment kind then waits in `verifying` for
 //!   its judge task. The verdict file of a judge task goes to the judge
@@ -522,7 +522,7 @@ pub fn done(
 /// Part 3 of a pass, after the commit of part 2 (ticket 20): the review
 /// steps of each task of `passed` whose next step is [`Next::Review`], in
 /// `store` with no transaction open. The structural check of a judgment
-/// kind runs in [`structural`] (ticket 21). Gives what each review did, by
+/// kind runs in [`structural()`] (ticket 21). Gives what each review did, by
 /// task.
 pub fn review(
     r: &review::Review<'_>,

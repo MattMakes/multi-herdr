@@ -82,7 +82,7 @@ pub enum Sent {
 /// operator token. It sends nothing to a server that is not the fleetd of
 /// the `fleetd` row. When fleetd is down, it writes the request file. The
 /// wrapper of a worker and a process of a live attempt send nothing and
-/// do not read the token ([`refuse_fleet_caller`]).
+/// do not read the token (`refuse_fleet_caller`).
 pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Result<Sent> {
     if kind.class() != Class::Operator {
         bail!(
