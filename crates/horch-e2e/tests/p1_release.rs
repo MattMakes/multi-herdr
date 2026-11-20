@@ -112,8 +112,6 @@ fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc, started: Option<u64>
     lock
 }
 
-/// The watchdog timing of `run`: `horch ledger run new --check-every` and
-/// `--stall-rounds` are retired, so the test writes the 2 columns.
 fn set_thresholds(h: &Harness, run: &Run, check_every_s: i64, stall_rounds: i64) {
     Store::open(&db(h))
         .unwrap()
@@ -180,7 +178,6 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
         remaining.is_empty(),
         "the record of the old watchdog is cleared"
     );
-    // fleetd removes the lock after the transaction that clears the record.
     wait_for("the lock of the old watchdog to be removed", || {
         (!lock.exists()).then_some(())
     });

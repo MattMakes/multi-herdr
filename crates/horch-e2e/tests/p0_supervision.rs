@@ -197,8 +197,6 @@ fn kill_lock_owner(lock: &Path) {
     }
 }
 
-/// The watchdog timing of `run`: `horch ledger run new --check-every` and
-/// `--stall-rounds` are retired, so the test writes the 2 columns.
 fn set_thresholds(h: &Harness, run: &Run, check_every_s: i64, stall_rounds: i64) {
     Store::open(&db(h))
         .unwrap()

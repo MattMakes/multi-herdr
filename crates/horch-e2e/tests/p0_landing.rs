@@ -648,8 +648,6 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                 stacked.len() + items.len() == 1,
                 "1 decision names both features: stacks {stacked:?}, needs-you items {items:?}"
             );
-            // A job that runs at the end of the test would outlive the
-            // teardown of the test fleetd: passes ingest each result.
             let running =
                 "SELECT id || ' ' || kind || ' ' || subject || ' ' || ifnull(started_at, '-') \
                  FROM jobs WHERE state = 'running'";

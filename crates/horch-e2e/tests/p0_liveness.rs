@@ -105,9 +105,6 @@ impl Drop for Agent {
     }
 }
 
-/// 1 task of `persona` (with `fallback`, if any) in a new run `eps`.
-/// `horch ledger run new` and `horch ledger add` are retired, so the test
-/// seeds the rows.
 fn queue(h: &Harness, persona: &str, fallback: Option<&str>) {
     let run = seed_run(h, "eps", None, "w1:p1");
     let p = ticket(h, "t0", "# T0\n");
