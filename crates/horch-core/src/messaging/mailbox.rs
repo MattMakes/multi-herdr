@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::runtime::RuntimeContext;
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use anyhow::{bail, Context, Result};
 
 /// The brief moved to [`crate::messaging::brief`] in A2.
@@ -82,7 +82,7 @@ impl Mailbox {
     /// (`p_2`), which `herdr pane get` upgrades to the public workspace id. That
     /// fallback is what lets these commands also work from an unregistered pane.
     fn resolve(
-        herdr: &Herdr,
+        herdr: &PaneHost,
         state_root: &Path,
         temp_root: &Path,
         workspace: Option<&str>,
@@ -105,7 +105,7 @@ impl Mailbox {
     }
 
     /// `Mailbox::resolve` with the context's dirs, workspace and pane.
-    pub fn resolve_in(herdr: &Herdr, ctx: &RuntimeContext) -> Result<Self> {
+    pub fn resolve_in(herdr: &PaneHost, ctx: &RuntimeContext) -> Result<Self> {
         Self::resolve(
             herdr,
             &ctx.paths.state_root,
@@ -238,7 +238,7 @@ impl Mailbox {
     /// its children as `HORCH_WORKSPACE_ID`; this process's environment is
     /// left alone.
     fn locate(
-        herdr: &Herdr,
+        herdr: &PaneHost,
         state_root: &Path,
         temp_root: &Path,
         pane: Option<&str>,
@@ -268,7 +268,7 @@ impl Mailbox {
     /// role registered yet ([`Mailbox::register_role`]). The workspace is
     /// recorded in the context, so everything this process does next, and
     /// every child it starts, belongs to that workspace.
-    pub fn locate_in(herdr: &Herdr, ctx: &mut RuntimeContext) -> Result<(Self, String)> {
+    pub fn locate_in(herdr: &PaneHost, ctx: &mut RuntimeContext) -> Result<(Self, String)> {
         let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
         let (mailbox, pane_id) = Self::locate(
             herdr,
@@ -283,7 +283,7 @@ impl Mailbox {
     /// [`Mailbox::locate_in`] this context's pane, then register it under
     /// `role`.
     pub fn register_in(
-        herdr: &Herdr,
+        herdr: &PaneHost,
         ctx: &mut RuntimeContext,
         role: &str,
     ) -> Result<(Self, String)> {

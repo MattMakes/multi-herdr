@@ -4,20 +4,26 @@ pub mod arrange;
 pub mod balance;
 pub mod client;
 pub mod herdr;
+pub mod host;
 pub mod layout;
 pub mod model;
 pub mod paneshell;
 pub mod testing;
 pub mod tile;
 
+pub use herdr::HerdrFailed;
+pub use host::{Caps, PaneHost};
+
 #[cfg(test)]
 mod tests {
-    const FORBIDDEN: [&str; 7] = [
+    const FORBIDDEN: [&str; 9] = [
         "std::process",
         "Command::new",
         "Herdr",
+        "PaneHost",
         "WorkspaceClient",
         "crate::workspace::herdr",
+        "crate::workspace::host",
         "crate::workspace::herdr",
         "std::env",
     ];

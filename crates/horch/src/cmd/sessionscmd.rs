@@ -104,7 +104,7 @@ pub(crate) fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
         return Some(workspace.to_string());
     }
     let pane = ctx.herdr.pane.as_ref()?;
-    horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr)
+    horch_core::workspace::PaneHost::of(ctx)
         .pane_get(pane.as_str())
         .ok()
         .and_then(|p| p.workspace_id)
@@ -130,7 +130,7 @@ pub fn sessions_filtered(
     };
     let caller = caller_workspace(ctx);
     let records = session_records(ctx, all, &filter, caller.as_deref())?;
-    let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = horch_core::workspace::PaneHost::of(ctx);
     let mut panes = std::collections::BTreeMap::new();
     for workspace in records.iter().filter_map(|r| r.workspace_id.as_deref()) {
         panes

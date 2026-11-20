@@ -17,8 +17,8 @@ use horch::{bootstrap, exit, output};
 use horch_core::execution::service::SpawnError;
 use horch_core::execution::TilingMode;
 use horch_core::runtime::{EnvSource, ProcessEnv};
-use horch_core::workspace::herdr::HerdrFailed;
 use horch_core::workspace::model::Direction;
+use horch_core::workspace::HerdrFailed;
 
 #[derive(Parser)]
 #[command(

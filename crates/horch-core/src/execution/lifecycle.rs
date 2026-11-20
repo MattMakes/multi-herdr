@@ -20,7 +20,7 @@ use crate::roster::{HorchAccess, Roster, Teammate};
 use crate::runtime::{process, RuntimeContext};
 use crate::taskledger::supervisor::Checkins;
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::model::Pane;
 
 /// Who hears about an execution when it ends.
@@ -834,8 +834,8 @@ impl<'a> PaneWorker<'a> {
         out
     }
 
-    fn herdr(&self) -> Herdr {
-        Herdr::with_bin(&self.ctx.bins.harness.herdr)
+    fn herdr(&self) -> PaneHost {
+        PaneHost::of(self.ctx)
     }
 
     fn mailbox(&self) -> Result<&Mailbox> {

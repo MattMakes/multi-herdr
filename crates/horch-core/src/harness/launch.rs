@@ -30,7 +30,7 @@ use crate::runtime::context::DEFAULT_ENV_YIELD;
 use crate::runtime::BinOverrides;
 use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest, WindowInputs};
 
@@ -942,7 +942,7 @@ const POLL_SCHEDULE: [Duration; 62] = {
 struct Search<'a> {
     ctx: &'a RuntimeContext,
     agent: HarnessKind,
-    herdr: &'a Herdr,
+    herdr: &'a PaneHost,
     pane: &'a str,
     ledger: &'a SessionLedger,
     workdir: &'a Path,
@@ -1025,7 +1025,7 @@ fn discover_into_ledger(
     let marker = mailbox.launch_marker_read_path(role);
     let since = std::fs::metadata(&marker).and_then(|m| m.modified())?;
     let sessions_dir = marker_sessions_dir(&marker);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let pane = ctx
         .herdr
         .pane
@@ -1091,7 +1091,7 @@ fn start_typed_prompt(
             .map(|l| (l, t.record_id.to_string()))
     });
     let orchestrator = target.and_then(|t| t.mailbox.pane_for("orchestrator"));
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let role = role.to_string();
     let prompt = prompt.to_string();
     let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
@@ -1200,7 +1200,7 @@ fn start_discovery(
     let record_id = target.record_id.to_string();
     let workdir = PathBuf::from(target.workdir);
     let ledger = SessionLedger::open_in(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let ctx = ctx.clone();
 
     std::thread::spawn(move || {

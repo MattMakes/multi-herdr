@@ -18,7 +18,7 @@ use horch_core::taskledger::stop;
 use horch_core::taskledger::watchdog::{self, Observation, Observer, Sighting};
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{self, Store};
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 use super::taskledger::{stop_grace, HerdrPanes};
 use super::taskledger_wake;
@@ -53,22 +53,32 @@ fn sleep_unless_term(d: Duration) {
     }
 }
 
-/// What the watchdog reads: herdr for the pane, the disk for the transcript.
-struct Live {
-    herdr: Herdr,
+/// What the watchdog reads: the pane host for the pane, the disk for the transcript.
+enum Live<'a> {
+    Context(&'a RuntimeContext),
+    #[cfg(test)]
+    Fixed(PaneHost),
 }
 
-impl Observer for Live {
+impl Live<'_> {
+    fn host_for(&self, backend: horch_core::runtime::Backend) -> PaneHost {
+        match self {
+            Live::Context(ctx) => PaneHost::for_backend(ctx, backend),
+            #[cfg(test)]
+            Live::Fixed(host) => host.clone(),
+        }
+    }
+}
+
+impl Observer for Live<'_> {
     fn observe(&self, w: &Worker) -> Observation {
         let agent_alive = agent_alive(w);
-        let pane = w
-            .pane_id
-            .as_deref()
-            .and_then(|p| self.herdr.pane_get(p).ok());
+        let herdr = self.host_for(w.backend);
+        let pane = w.pane_id.as_deref().and_then(|p| herdr.pane_get(p).ok());
         let screen = w
             .pane_id
             .as_deref()
-            .and_then(|p| self.herdr.pane_read(p, "visible").ok());
+            .and_then(|p| herdr.pane_read(p, "visible").ok());
         let (transcript_bytes, transcript_mtime) = transcript_facts(w);
         Observation {
             agent_alive,
@@ -136,9 +146,7 @@ fn pass(
         me,
         horch_core::procid::start_time(me),
     )?;
-    let live = Live {
-        herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
-    };
+    let live = Live::Context(ctx);
     if let Some(workspace) = run.workspace_id.as_deref() {
         horch_core::taskledger::workers::sync_questions(
             store.conn(),
@@ -159,7 +167,22 @@ fn pass(
     taskledger_wake::after_watch(ctx, store, run);
     let now = horch_core::taskledger::util::now();
     reconcile_at(ctx, store, run, &now, seen);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let orch_backend = run
+        .orchestrator_worker_id
+        .as_deref()
+        .and_then(|id| {
+            horch_core::taskledger::workers::find(store.conn(), id)
+                .ok()
+                .flatten()
+        })
+        .map(|o| o.backend);
+    let herdr = match orch_backend {
+        Some(b) => PaneHost::for_backend(ctx, b),
+        None => match run.workspace_id.as_deref() {
+            Some(ws) => PaneHost::for_workspace(ctx, ws),
+            None => PaneHost::of(ctx),
+        },
+    };
     let open = |ws: &str| {
         herdr
             .workspace_list()
@@ -191,10 +214,10 @@ fn reconcile_at(
     now: &str,
     seen: &mut Option<Sighting>,
 ) {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     match watchdog::unclaimed_spawns(store.conn(), run, now) {
         Ok(late) => {
             for u in &late {
+                let herdr = PaneHost::for_backend(ctx, u.worker.backend);
                 let status = u
                     .worker
                     .pane_id
@@ -608,7 +631,7 @@ mod tests {
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
-    use horch_core::workspace::herdr::Herdr;
+    use horch_core::workspace::PaneHost;
     use std::path::Path;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -637,7 +660,7 @@ mod tests {
     /// A herdr that answers by pane: `p1` has a status, a change count and a
     /// screen; `p2` has a screen but no status; `p3` has a status but no
     /// screen; any other pane fails both.
-    fn herdr(dir: &Path) -> Herdr {
+    fn herdr(dir: &Path) -> PaneHost {
         let bin = dir.join("herdr");
         // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
@@ -654,15 +677,13 @@ mod tests {
             &["warm"],
         );
         assert!(warm.status.success());
-        Herdr::with_bin(bin)
+        PaneHost::herdr_bin(bin)
     }
 
     #[test]
     fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
         let dir = tempfile::tempdir().unwrap();
-        let live = Live {
-            herdr: herdr(dir.path()),
-        };
+        let live = Live::Fixed(herdr(dir.path()));
         let mut w = worker(dir.path());
         let me = std::process::id();
         let start = horch_core::procid::start_time(me).unwrap() as i64;
@@ -686,9 +707,7 @@ mod tests {
     #[test]
     fn the_pane_and_the_screen_are_read_apart_and_only_for_a_worker_with_a_pane() {
         let dir = tempfile::tempdir().unwrap();
-        let live = Live {
-            herdr: herdr(dir.path()),
-        };
+        let live = Live::Fixed(herdr(dir.path()));
         let mut w = worker(dir.path());
         let on = |w: &mut Worker, pane: Option<&str>| {
             w.pane_id = pane.map(str::to_string);
@@ -728,9 +747,7 @@ mod tests {
     #[test]
     fn the_transcript_gives_its_size_and_the_time_it_was_written() {
         let dir = tempfile::tempdir().unwrap();
-        let live = Live {
-            herdr: herdr(dir.path()),
-        };
+        let live = Live::Fixed(herdr(dir.path()));
         let mut w = worker(dir.path());
         let transcript = dir.path().join("transcript.jsonl");
         std::fs::write(&transcript, "12345").unwrap();

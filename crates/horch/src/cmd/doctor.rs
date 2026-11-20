@@ -19,7 +19,7 @@ use horch_core::runtime::{process, RuntimeContext};
 use horch_core::sweep;
 use horch_core::taskledger::timer::Agent;
 use horch_core::usage::has_transcript;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     check(ctx)?;
@@ -63,7 +63,7 @@ fn report_stale_state(ctx: &RuntimeContext, clean: bool) {
 
 /// The lines of [`report_stale_state`], and its warnings.
 fn stale_state(ctx: &RuntimeContext, clean: bool) -> (Vec<String>, Vec<String>) {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let per_kind = |counts: &BTreeMap<sweep::Kind, usize>| {
         counts
             .iter()
@@ -215,7 +215,7 @@ pub fn check(ctx: &RuntimeContext) -> Result<()> {
              Install it with `herdr-install`, or see https://herdr.dev/docs/install/"
         );
     }
-    if !Herdr::with_bin(&ctx.bins.harness.herdr).server_reachable() {
+    if !PaneHost::of(ctx).server_reachable() {
         bail!(
             "herdr server is not reachable (herdr workspace list failed). Checks:\n\
              \x20 - is a herdr session running? (launch the herdr app, or `herdr server` headless)\n\

@@ -5,7 +5,7 @@ use horch_core::execution::records::SessionLedger;
 use horch_core::harness::HarnessKind;
 use horch_core::messaging::channel::{self, ServeOptions};
 use horch_core::runtime::RuntimeContext;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 /// Run the channel relay until its MCP input reaches EOF.
 pub fn serve(ctx: &RuntimeContext, agent: HarnessKind) -> Result<()> {
@@ -59,7 +59,7 @@ fn thread_id(ctx: &RuntimeContext) -> Result<String> {
         .pane
         .as_ref()
         .context("HORCH_RECORD_ID and HERDR_PANE_ID are unset")?;
-    let pane = Herdr::with_bin(&ctx.bins.harness.herdr).pane_get(pane.as_str())?;
+    let pane = PaneHost::of(ctx).pane_get(pane.as_str())?;
     pane.agent_session
         .as_ref()
         .and_then(agent_session_id)

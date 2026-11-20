@@ -1691,23 +1691,27 @@ pub fn stop_grace() -> std::time::Duration {
         .unwrap_or(std::time::Duration::from_secs(10))
 }
 
-/// herdr as the stop's pane closer: 1 pane, by its id.
-pub struct HerdrPanes(horch_core::workspace::herdr::Herdr);
+/// Pane host as the stop's pane closer: 1 pane, by its id and recorded backend.
+pub struct HerdrPanes(RuntimeContext);
 
 impl HerdrPanes {
     pub fn new(ctx: &RuntimeContext) -> HerdrPanes {
-        HerdrPanes(horch_core::workspace::herdr::Herdr::with_bin(
-            &ctx.bins.harness.herdr,
-        ))
+        HerdrPanes(ctx.clone())
     }
 }
 
 impl stop::Panes for HerdrPanes {
     fn exists(&self, pane: &str) -> bool {
-        self.0.pane_exists(pane)
+        horch_core::workspace::PaneHost::of(&self.0).pane_exists(pane)
     }
     fn close(&self, pane: &str) -> Result<()> {
-        self.0.pane_close(pane)
+        horch_core::workspace::PaneHost::of(&self.0).pane_close(pane)
+    }
+    fn exists_on(&self, backend: horch_core::runtime::Backend, pane: &str) -> bool {
+        horch_core::workspace::PaneHost::for_backend(&self.0, backend).pane_exists(pane)
+    }
+    fn close_on(&self, backend: horch_core::runtime::Backend, pane: &str) -> Result<()> {
+        horch_core::workspace::PaneHost::for_backend(&self.0, backend).pane_close(pane)
     }
 }
 

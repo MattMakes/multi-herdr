@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use horch_core::messaging::{channel, delivery, mail::Mail};
 use horch_core::runtime::RuntimeContext;
-use horch_core::workspace::{herdr::Herdr, model::Direction, paneshell::PaneShell};
+use horch_core::workspace::{model::Direction, paneshell::PaneShell, PaneHost};
 
 const PROBE: &str = "[horch] NOTE: run horch inbox to confirm delivery";
 /// The probe through a live relay. The relay's answer confirms it, so the
@@ -44,7 +44,7 @@ pub fn doctor(ctx: &RuntimeContext) {
 
 fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
     let deadline = Instant::now() + budget(ctx);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr)
+    let herdr = PaneHost::of(ctx)
         .with_timeout(call_timeout(ctx, Duration::from_secs(2)))
         .until(Some(deadline));
     let ws = herdr.workspace_create("horch delivery test", None, false)?;
@@ -76,7 +76,7 @@ fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
         }
     })();
     // Use a separate short cleanup budget even when the probe spent its own.
-    let cleanup = Herdr::with_bin(&ctx.bins.harness.herdr)
+    let cleanup = PaneHost::of(ctx)
         .with_timeout(call_timeout(ctx, Duration::from_secs(2)))
         .workspace_close(&ws.workspace_id);
     match (checked, cleanup) {
@@ -109,7 +109,7 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<&'st
         eprintln!("warning: delivery-probe courier could not start: {error:#}");
     }
     let deadline = Instant::now() + budget(ctx);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr)
+    let herdr = PaneHost::for_workspace(ctx, workspace)
         .with_timeout(call_timeout(ctx, Duration::from_secs(1)))
         .until(Some(deadline));
     let socket = channel::socket_path(&ctx.paths.state_root, workspace);

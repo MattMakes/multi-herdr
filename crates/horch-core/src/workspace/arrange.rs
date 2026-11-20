@@ -13,7 +13,7 @@
 //! evening out the columns.
 //!
 //! Moved out of the CLI's `cmd/{tilecmd,layoutcmd,balancecmd}.rs` in A7. Every
-//! function takes [`Herdr`]: the tab, layout, move, resize and focus calls are
+//! function takes [`PaneHost`]: the tab, layout, move, resize and focus calls are
 //! not part of [`WorkspaceClient`](crate::workspace::client::WorkspaceClient).
 
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ use crate::messaging::mailbox::Mailbox;
 use crate::runtime::process::spawn_detached;
 use crate::runtime::RuntimeContext;
 use crate::workspace::balance;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::layout::{self, Orchestrator};
 use crate::workspace::model::{Direction, Layout};
 use crate::workspace::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
@@ -46,7 +46,7 @@ const LOCK_WAIT: Duration = Duration::from_secs(20);
 const LOCK_STALE: Duration = Duration::from_secs(60);
 
 /// Whether `workspace_id` is the `horch telemetry` workspace.
-fn is_telemetry_space(herdr: &Herdr, workspace_id: &str) -> bool {
+fn is_telemetry_space(herdr: &PaneHost, workspace_id: &str) -> bool {
     herdr.workspace_list().is_ok_and(|list| {
         list.iter().any(|w| {
             w.workspace_id == workspace_id && w.label.as_deref() == Some(TELEMETRY_WORKSPACE_LABEL)
@@ -137,7 +137,7 @@ impl Snapshot {
 /// One `tab list` plus one `pane list` plus one `pane layout` per tab: `pane
 /// layout` reports the whole tab that holds the pane it is asked about, and every
 /// pane in `pane list` carries its `tab_id`, so one pane per tab is enough.
-fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
+fn gather(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<Snapshot> {
     // The telemetry space holds no fleet, and its pane must stay where the
     // operator left it (design 12.3).
     if is_telemetry_space(herdr, workspace_id) {
@@ -162,7 +162,7 @@ fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Sna
 }
 
 /// Every tab that holds a pane, with its layout.
-fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
+fn read_tabs(herdr: &PaneHost, workspace_id: &str) -> Result<Vec<TabState>> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
     let states = tabs
@@ -188,7 +188,7 @@ fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
 }
 
 /// The tab the workspace shows now, when herdr says.
-fn active_tab(herdr: &Herdr, workspace_id: &str) -> Option<String> {
+fn active_tab(herdr: &PaneHost, workspace_id: &str) -> Option<String> {
     herdr
         .workspace_list()
         .ok()?
@@ -237,7 +237,7 @@ fn find_orchestrator(
 /// build a shape nobody planned. Aborting is safe - no pane is ever closed, so
 /// the workers sit in the scratch tab and the next run gathers them like any
 /// other panes and finishes the job.
-fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
+fn apply(herdr: &PaneHost, plan: &Plan) -> Result<usize> {
     let mut created: HashMap<usize, String> = HashMap::new();
     let mut moved = 0;
     for op in plan.ops() {
@@ -247,7 +247,7 @@ fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
 }
 
 /// Run 1 op. True when it moved a pane.
-fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
+fn apply_op(herdr: &PaneHost, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
     match op {
         Op::NewTab {
             pane,
@@ -274,7 +274,7 @@ fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Res
 }
 
 /// Move `pane` into a new tab, returning the id herdr gave the tab.
-fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
+fn new_tab(herdr: &PaneHost, op: &Op, pane: &str, label: &str) -> Result<String> {
     let result = herdr.pane_move_new_tab(pane, label)?;
     declined(op, result.changed, result.reason.as_deref())?;
     result
@@ -287,7 +287,7 @@ fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
 /// Move `pane` into `tab`; a tab the plan creates is looked up in `created`
 /// by its index.
 fn move_pane(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     op: &Op,
     (pane, tab, created): (&str, &TabRef, &HashMap<usize, String>),
     (split, target, ratio): (Direction, &str, Option<f64>),
@@ -324,7 +324,7 @@ fn declined(op: &Op, changed: bool, reason: Option<&str>) -> Result<()> {
 /// cannot accumulate. Two things stop it: `changed: false`, which is how the
 /// minimum pane width announces itself, and a divider asked to move from the same
 /// place twice, which means the previous op did not land.
-fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) -> Result<usize> {
+fn balance_tab(herdr: &PaneHost, mut layout: Layout, orchestrator: Option<&str>) -> Result<usize> {
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
     for _ in 0..MAX_BALANCE_OPS {
@@ -347,7 +347,7 @@ fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) ->
 }
 
 /// Even out every tab: equal columns, and the orchestrator on its share of tab 1.
-fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
+fn balance_all(herdr: &PaneHost, snapshot: &Snapshot) -> Result<usize> {
     let mut applied = 0;
     for tab in &snapshot.tabs {
         let orchestrator =
@@ -370,7 +370,7 @@ fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
 /// Best effort throughout. A view that cannot be restored must never fail a
 /// tiling that has already moved the panes.
 fn restore_focus(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     after: &Snapshot,
     before: Option<&FocusState>,
     before_tab: Option<&str>,
@@ -500,7 +500,7 @@ fn roles(ctx: &RuntimeContext, workspace_id: &str) -> HashMap<String, String> {
 /// `horch spawn` passes the pane it just made.
 pub fn run(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     newcomer: Option<&str>,
     plan_only: bool,
@@ -580,7 +580,7 @@ fn ready_to_tile(
 
 fn run_live(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     snapshot: Snapshot,
     plan: &Plan,
@@ -634,7 +634,7 @@ fn run_live(
 /// pane, else this pane's own.
 pub fn workspace_of(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<String> {
@@ -662,7 +662,7 @@ pub fn workspace_of(
 /// back to only evening out the columns.
 pub fn after_change(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     newcomer: Option<&str>,
 ) {
@@ -719,7 +719,7 @@ pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
 /// The orchestrator is only sought on the tab that actually holds it. On the
 /// others every pane is a worker, and the positional guess - leftmost full-height
 /// pane - would quietly drop a worker column from the report.
-pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<String> {
+pub fn report(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<String> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
 
@@ -812,7 +812,7 @@ pub fn orchestrator_of(ctx: &RuntimeContext, layout: &Layout) -> Option<String> 
 /// off target. Two things stop the loop: herdr reporting `changed: false`, which
 /// is how the minimum pane width announces itself, and a divider that is asked
 /// to move from the same place twice, which means the previous op did not land.
-pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Result<usize> {
+pub fn equalize(ctx: &RuntimeContext, herdr: &PaneHost, mut layout: Layout) -> Result<usize> {
     let orch = orchestrator_of(ctx, &layout);
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
@@ -840,7 +840,7 @@ pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Resu
 ///
 /// A grid that will not even out must never fail a spawn or a worker's shutdown,
 /// so this reports the problem and returns.
-pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &Herdr, layout: Layout) {
+pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &PaneHost, layout: Layout) {
     if let Err(e) = equalize(ctx, herdr, layout) {
         eprintln!("horch: could not even out the worker columns ({e:#}); carrying on");
     }
@@ -853,7 +853,7 @@ pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &Herdr, layout: Layout) {
 /// round-trips through `pane get` for the public one.
 pub fn balance_target(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<Layout> {

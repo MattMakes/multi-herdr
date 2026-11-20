@@ -29,7 +29,7 @@ use crate::execution::store::ExecutionStore;
 use crate::messaging::mail::Mail;
 use crate::runtime::RuntimeContext;
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::model::{Direction, NewWorkspace, Pane};
 
 /// A spool file lives as long as acked mail does.
@@ -627,13 +627,13 @@ impl WorkspaceClient for Answered<'_> {
 }
 
 /// What herdr lists, through `herdr`. `None` when it does not answer.
-pub fn listed(herdr: &Herdr) -> Option<BTreeSet<String>> {
+pub fn listed(herdr: &PaneHost) -> Option<BTreeSet<String>> {
     let workspaces = herdr.workspace_list().ok()?;
     Some(workspaces.into_iter().map(|w| w.workspace_id).collect())
 }
 
 /// The sweep with the context's dirs and herdr, cut off at `budget`.
-pub fn plan_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> (Plan, Option<usize>) {
+pub fn plan_in(ctx: &RuntimeContext, herdr: &PaneHost, budget: Duration) -> (Plan, Option<usize>) {
     let deadline = Instant::now() + budget;
     let herdr = herdr.clone().until(Some(deadline));
     let herd = Herd {
@@ -657,7 +657,7 @@ pub fn plan_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> (Plan, 
 }
 
 /// Sweep now, through `herdr`, and apply.
-pub fn clean_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> Applied {
+pub fn clean_in(ctx: &RuntimeContext, herdr: &PaneHost, budget: Duration) -> Applied {
     let deadline = Instant::now() + budget;
     let herdr = herdr.clone().until(Some(deadline));
     let (plan, _) = plan_in(ctx, &herdr, budget);
@@ -688,7 +688,7 @@ pub fn run_due(ctx: &RuntimeContext) {
         );
         return;
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let applied = clean_in(ctx, &herdr, HOOK_BUDGET);
     for error in &applied.errors {
         eprintln!("horch: state sweep: {error}");

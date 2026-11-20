@@ -25,7 +25,7 @@ use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};
 use horch_core::telemetry::{start, store};
 use horch_core::usage::Locations;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 use crate::output;
 
@@ -416,7 +416,7 @@ pub fn run(ctx: &RuntimeContext, command: TelemetryCommand) -> Result<ExitCode> 
     match command {
         TelemetryCommand::Run => space(ctx),
         TelemetryCommand::Ensure => {
-            ensure(ctx, &Herdr::with_bin(&ctx.bins.harness.herdr), false)?;
+            ensure(ctx, &PaneHost::of(ctx), false)?;
             Ok(ExitCode::SUCCESS)
         }
         TelemetryCommand::CollectOnce => collect_once(ctx),
@@ -485,7 +485,7 @@ fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     let source = match lock::acquire(&root, &me)? {
         Ok(held) => {
             if let Some(request) = start::current(&root) {
-                close_after_claim(&root, &request, started_for.as_deref());
+                close_after_claim(ctx, &root, &request, started_for.as_deref());
                 start::clear(&root);
             }
             let c = Collector::open_in(
@@ -551,13 +551,13 @@ fn sleep_until_shutdown(d: Duration) {
 /// is stopped first. Besides read-only list calls, only `workspace create
 /// --no-focus`, `pane run` and the `workspace close` of an old collector
 /// workspace touch herdr (W17).
-pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
+pub fn ensure(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool) -> Result<()> {
     ensure_current(ctx, herdr, quiet, &ctx.bins.exe()?, true)
 }
 
 /// After `horch install`: restart a live collector that does not run the
 /// binary just installed at `installed`. Starts none when none is live.
-pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &Herdr, installed: &Path) -> Result<()> {
+pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &PaneHost, installed: &Path) -> Result<()> {
     ensure_current(ctx, herdr, false, installed, false)
 }
 
@@ -567,7 +567,7 @@ pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &Herdr, installed: &Path) -
 /// be stopped safely is reported live, with a warning, and left running.
 fn ensure_current(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     quiet: bool,
     exe: &Path,
     start_if_none: bool,
@@ -677,7 +677,7 @@ enum LiveIn {
     Unknown,
 }
 
-fn live_collector_in(herdr: &Herdr, root: &Path) -> LiveIn {
+fn live_collector_in(herdr: &PaneHost, root: &Path) -> LiveIn {
     match lock::holder(root) {
         Holder::Live(info) => match info.pane_id {
             Some(pane) => workspace_of(herdr, &pane, info.workspace_id)
@@ -691,7 +691,7 @@ fn live_collector_in(herdr: &Herdr, root: &Path) -> LiveIn {
 /// The workspace of a collector's pane: herdr's answer, else the recorded
 /// one. herdr pane ids are `<workspace>:p<n>`: a pane herdr no longer
 /// reports still names its workspace.
-fn workspace_of(herdr: &Herdr, pane: &str, recorded: Option<String>) -> Option<String> {
+fn workspace_of(herdr: &PaneHost, pane: &str, recorded: Option<String>) -> Option<String> {
     herdr
         .pane_get(pane)
         .ok()
@@ -724,7 +724,7 @@ fn old_collector_workspaces(
 /// later call can tell a slow start from a failed one. An old collector
 /// workspace with 1 pane is reused; the new collector closes every other
 /// old one once it holds the lock ([`close_after_claim`]).
-fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result<()> {
+fn start(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool, exe: &Path) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     let id = start::new_id();
     let command = collector_command(ctx, exe, &id);
@@ -752,6 +752,7 @@ fn start_request(ctx: &RuntimeContext, id: &str, ws: &str, pane: &str) -> start:
         workspace_id: ws.to_string(),
         pane_id: pane.to_string(),
         herdr: ctx.bins.harness.herdr.clone(),
+        backend: ctx.herdr.backend,
     }
 }
 
@@ -759,7 +760,7 @@ fn start_request(ctx: &RuntimeContext, id: &str, ws: &str, pane: &str) -> start:
 /// none or the pane did not run it.
 fn start_in_old(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     id: &str,
     command: &str,
     old: &[String],
@@ -786,7 +787,7 @@ fn start_in_old(
 /// Run the collector in a new workspace. A failure clears the start record.
 fn start_in_new(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     id: &str,
     command: &str,
 ) -> Result<(String, String)> {
@@ -827,8 +828,16 @@ pub(crate) fn report_failed_start(root: &Path) {
 /// The new collector holds the lock, so every old collector workspace can
 /// be closed: one labelled [`WORKSPACE_LABEL`] that is not the collector's.
 /// The workspace of `request` stays when this process is its start.
-fn close_after_claim(root: &Path, request: &start::Request, started_for: Option<&str>) {
-    let herdr = Herdr::with_bin(&request.herdr);
+fn close_after_claim(
+    ctx: &RuntimeContext,
+    root: &Path,
+    request: &start::Request,
+    started_for: Option<&str>,
+) {
+    let herdr = match request.backend {
+        horch_core::runtime::Backend::Herdr => PaneHost::herdr_bin(&request.herdr),
+        backend => PaneHost::for_backend(ctx, backend),
+    };
     let keep = (started_for == Some(request.id.as_str())).then_some(request.workspace_id.as_str());
     if let Ok(all) = herdr.workspace_list() {
         let other = |w: &horch_core::workspace::model::Workspace| {
@@ -1101,7 +1110,7 @@ mod tests {
         )
         .unwrap();
         // No herdr: a start would fail, so a pass proves none was tried.
-        let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
+        let herdr = PaneHost::herdr_bin(tmp.path().join("no-herdr"));
         restart_if_stale(&ctx, &herdr, &bin).expect("none live: nothing to do");
 
         let (pid, ended) = fake_collector(&state, horch_core::exeid::exe_identity(&bin));
@@ -1153,7 +1162,7 @@ mod tests {
         )
         .unwrap();
         // No herdr: a start would fail, so a pass proves none was tried.
-        let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
+        let herdr = PaneHost::herdr_bin(tmp.path().join("no-herdr"));
         let (pid, ended) = fake_collector(&state, None);
         let tel = horch_core::telemetry::dir(&state);
         let path = tel.join("collector.json");

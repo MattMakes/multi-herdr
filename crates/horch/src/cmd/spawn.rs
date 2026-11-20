@@ -31,8 +31,8 @@ use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::taskledger::model::{Actor, EventKind};
 use horch_core::taskledger::util::{event as ledger_event, About};
 use horch_core::workspace::arrange;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
+use horch_core::workspace::PaneHost;
 
 /// How long `horch spawn` waits for its worker to register or to leave a
 /// startup error (`HORCH_SPAWN_WAIT_MS` overrides it). After it, the spawn
@@ -213,7 +213,7 @@ fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpa
 /// What `spawn_worker` reads before it plans, and the steps after it use.
 struct SpawnContext {
     roster: Roster,
-    herdr: Herdr,
+    herdr: PaneHost,
     mailbox: Mailbox,
     project: PathBuf,
     store: ExecutionStore,
@@ -461,9 +461,7 @@ fn parent_pid(_pid: u32) -> Option<u32> {
 
 fn caller(ctx: &RuntimeContext) -> Option<Caller> {
     let pane = ctx.herdr.pane.as_ref()?;
-    let info = Herdr::with_bin(&ctx.bins.harness.herdr)
-        .pane_get(pane.as_str())
-        .ok()?;
+    let info = PaneHost::of(ctx).pane_get(pane.as_str()).ok()?;
     let workspace = info
         .workspace_id
         .clone()
@@ -665,7 +663,7 @@ fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
 fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let roster = super::load_roster(ctx, roster_dir.as_deref())?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
     std::fs::create_dir_all(mailbox.dir())?;
@@ -852,7 +850,7 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
         eprintln!("horch: {prefix} {warning}");
     }
     let caller = super::sessionscmd::caller_workspace(ctx);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     if let Ok(workspaces) = herdr.workspace_list() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
@@ -1407,7 +1405,7 @@ mod tests {
         );
         println!("herdr bin={:?}", ctx.bins.harness.herdr);
         if let Some(pane) = ctx.herdr.pane.as_ref() {
-            match Herdr::with_bin(&ctx.bins.harness.herdr).pane_get(pane.as_str()) {
+            match PaneHost::of(&ctx).pane_get(pane.as_str()) {
                 Ok(info) => {
                     println!(
                         "pane_get: pane_id={:?} workspace_id={:?}",

@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use horch_core::runtime::RuntimeContext;
-use horch_core::workspace::arrange;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::{arrange, PaneHost};
 
 use crate::output;
 
@@ -23,7 +22,10 @@ pub fn tile(
     if settle_ms > 0 {
         std::thread::sleep(Duration::from_millis(settle_ms));
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = match workspace.filter(|s| !s.is_empty()) {
+        Some(ws) => PaneHost::for_workspace(ctx, ws),
+        None => PaneHost::of(ctx),
+    };
     let workspace_id = arrange::workspace_of(ctx, &herdr, pane, workspace)?;
     let out = arrange::run(ctx, &herdr, &workspace_id, None, plan_only)?;
     output::print(&out);

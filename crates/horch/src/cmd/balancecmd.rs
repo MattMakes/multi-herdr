@@ -12,8 +12,8 @@ use anyhow::Result;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
 use horch_core::workspace::balance::{self, ResizeOp};
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Layout;
+use horch_core::workspace::PaneHost;
 
 use crate::output;
 
@@ -27,7 +27,10 @@ pub fn balance(
     if settle_ms > 0 {
         std::thread::sleep(std::time::Duration::from_millis(settle_ms));
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = match workspace.filter(|s| !s.is_empty()) {
+        Some(ws) => PaneHost::for_workspace(ctx, ws),
+        None => PaneHost::of(ctx),
+    };
 
     let layout = arrange::balance_target(ctx, &herdr, pane, workspace)?;
     let orch = arrange::orchestrator_of(ctx, &layout);
@@ -51,7 +54,7 @@ const ALREADY_EVEN: &str = "worker columns are already even; nothing to do\n";
 /// other row's integers.
 fn balance_text(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     layout: Layout,
     orch: Option<&str>,
     dry_run: bool,
