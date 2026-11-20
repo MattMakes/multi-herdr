@@ -194,7 +194,8 @@ impl ExecutionService<'_> {
         if self.mailbox.role_taken(&role) || planned_role(records, workspace, &role) {
             return Ok(Err(PlanError::RoleTaken(role)));
         }
-        let plan = finish_plan(plan, RoleName::new(role)?, workspace);
+        let mut plan = finish_plan(plan, RoleName::new(role)?, workspace);
+        plan.execution.backend = self.ctx.herdr.backend;
         upsert(records, from_execution(&plan.execution), plan.resumed)?;
         Ok(Ok(plan))
     }

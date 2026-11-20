@@ -2061,6 +2061,7 @@ fn insert_run(
                 model,
                 workspace_id: new.workspace_id.clone(),
                 pane_id: pane.clone(),
+                backend: ctx.herdr.backend,
                 ..Default::default()
             },
         )?;

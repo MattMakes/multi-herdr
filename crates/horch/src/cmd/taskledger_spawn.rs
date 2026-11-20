@@ -242,6 +242,7 @@ fn insert_row(
                 previous_worker_id: args.replaces.clone(),
                 resumed_from_session: args.resume.clone(),
                 target_task_id: claim_target(),
+                backend: ctx.herdr.backend,
                 ..Default::default()
             },
         )

@@ -204,6 +204,7 @@ pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
         workdir: r.workdir.as_ref().map(std::path::PathBuf::from),
         workspace,
         pane,
+        backend: r.backend,
         skills: r.skills.clone(),
         routing: r.routing.clone(),
         via: r.via.clone(),
@@ -296,6 +297,7 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
         skills: e.skills.clone(),
         compact_window: None,
         model_override: e.model_override,
+        backend: e.backend,
     }
 }
 
@@ -898,6 +900,30 @@ impl ExecutionStore {
             .filter(|r| r.execution_status().is_live())
             .collect())
     }
+
+    /// The backend of any record in this store with `workspace_id == workspace`,
+    /// or `None` when no record names it.
+    pub fn backend_of_workspace(&self, workspace: &str) -> Result<Option<crate::runtime::Backend>> {
+        Ok(self
+            .read()?
+            .into_iter()
+            .rev()
+            .find(|r| r.workspace_id.as_deref() == Some(workspace))
+            .map(|r| r.backend))
+    }
+}
+
+/// Find the recorded backend of `workspace` across every project in `paths`.
+pub fn workspace_backend(paths: &Paths, workspace: &str) -> Option<crate::runtime::Backend> {
+    read_all_projects(
+        &paths.state_root,
+        &session_db(paths),
+        Some(&paths.ledger_db),
+    )
+    .into_iter()
+    .flat_map(|p| p.records.into_iter())
+    .rfind(|r| r.workspace_id.as_deref() == Some(workspace))
+    .map(|r| r.backend)
 }
 
 /// End the still-working rows of `record_id` as `PaneVanished`. Re-checked
@@ -1117,6 +1143,9 @@ fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
     fill(&mut r.session_id, &w.session_id);
     fill(&mut r.pane_id, &w.pane_id);
     fill(&mut r.workspace_id, &w.workspace_id);
+    if w.backend != crate::runtime::Backend::Herdr {
+        r.backend = w.backend;
+    }
     if r.effort.is_none() {
         r.effort = w.effort.clone();
     }
@@ -1191,6 +1220,7 @@ fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRe
         .to_string(),
         workspace_id: w.workspace_id.clone(),
         pane_id: w.pane_id.clone(),
+        backend: w.backend,
         ..LedgerRecordV1::default()
     };
     r.set_state(worker_state(w));
@@ -1650,5 +1680,136 @@ mod trf_45_tests {
             .with("HORCH_STATE_DIR", "/tmp/s")
             .with("HORCH_LEDGER_DB", "/tmp/l.sqlite3"));
         assert_eq!(session_db(&moved), Path::new("/tmp/s/ledger.sqlite3"));
+    }
+
+    #[test]
+    fn hcb_03_a_record_without_backend_reads_as_herdr() {
+        let raw = r#"{
+  "record_id": "r-herdr",
+  "session_id": "s-1",
+  "agent": "claude",
+  "tier": "sonnet",
+  "model": "sonnet",
+  "role": "sonnet-1",
+  "status": "working",
+  "task": "t",
+  "history": [],
+  "created_at": "2026-11-19T00:00:00Z",
+  "updated_at": "2026-11-19T00:00:00Z",
+  "workspace_id": "w1",
+  "pane_id": "w1:p1"
+}"#;
+        let record: LedgerRecordV1 = serde_json::from_str(raw).unwrap();
+        assert_eq!(record.backend, crate::runtime::Backend::Herdr);
+        let exec = to_execution(&record).unwrap();
+        assert_eq!(exec.backend, crate::runtime::Backend::Herdr);
+    }
+
+    #[test]
+    fn hcb_03_a_herdr_record_keeps_its_bytes() {
+        let raw = r#"[
+  {
+    "record_id": "r-herdr",
+    "session_id": "s-1",
+    "agent": "claude",
+    "tier": "sonnet",
+    "model": "sonnet",
+    "role": "sonnet-1",
+    "status": "working",
+    "task": "t",
+    "history": [],
+    "created_at": "2026-11-19T00:00:00Z",
+    "updated_at": "2026-11-19T00:00:00Z",
+    "workspace_id": "w1",
+    "pane_id": "w1:p1"
+  }
+]"#;
+        let records: Vec<LedgerRecordV1> = serde_json::from_str(raw).unwrap();
+        let exec = to_execution(&records[0]).unwrap();
+        let round_tripped = from_execution(&exec);
+        let rendered = ExecutionStore::render_json(&[round_tripped]).unwrap();
+        assert_eq!(rendered, raw);
+        assert!(!rendered.contains("backend"));
+
+        let mut hc_exec = exec;
+        hc_exec.backend = crate::runtime::Backend::Hc;
+        let hc_record = from_execution(&hc_exec);
+        let hc_json = serde_json::to_value(&hc_record).unwrap();
+        assert_eq!(hc_json["backend"], "hc");
+        let back: LedgerRecordV1 = serde_json::from_value(hc_json).unwrap();
+        assert_eq!(
+            to_execution(&back).unwrap().backend,
+            crate::runtime::Backend::Hc
+        );
+    }
+
+    #[test]
+    fn hcb_03_backend_of_workspace_finds_the_owner() {
+        use crate::taskledger::runs::{self, NewRun};
+        use crate::taskledger::workers::{self, NewWorker};
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let mut ledger = crate::taskledger::Store::open(&db).unwrap();
+        ledger
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("sp-row".into()),
+                        ..Default::default()
+                    },
+                )?;
+                workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        workspace_id: Some("sp-row".into()),
+                        pane_id: Some("t3".into()),
+                        backend: crate::runtime::Backend::Hc,
+                        ..NewWorker::default()
+                    },
+                )
+            })
+            .unwrap();
+
+        let store = ExecutionStore::in_db(tmp.path(), &db, "/repo")
+            .with_task_ledger(&db, Path::new("/repo"));
+        store
+            .insert(LedgerRecordV1 {
+                record_id: "r-herdr".into(),
+                role: "sonnet-1".into(),
+                status: STATUS_WORKING.into(),
+                workspace_id: Some("ws-herdr".into()),
+                backend: crate::runtime::Backend::Herdr,
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        store
+            .insert(LedgerRecordV1 {
+                record_id: "r-hc".into(),
+                role: "sonnet-2".into(),
+                status: STATUS_WORKING.into(),
+                workspace_id: Some("sp-rec".into()),
+                backend: crate::runtime::Backend::Hc,
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            store.backend_of_workspace("ws-herdr").unwrap(),
+            Some(crate::runtime::Backend::Herdr)
+        );
+        assert_eq!(
+            store.backend_of_workspace("sp-rec").unwrap(),
+            Some(crate::runtime::Backend::Hc)
+        );
+        assert_eq!(
+            store.backend_of_workspace("sp-row").unwrap(),
+            Some(crate::runtime::Backend::Hc)
+        );
+        assert_eq!(store.backend_of_workspace("unknown").unwrap(), None);
     }
 }

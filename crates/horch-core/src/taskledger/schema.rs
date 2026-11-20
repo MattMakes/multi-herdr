@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 8;
+pub const VERSION: i64 = 9;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -509,6 +509,10 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
+/// Version 9: the pane host backend (`herdr` or `hc`) that owns a worker's
+/// workspace and pane (HCB-03).
+const V9: &str = "ALTER TABLE workers ADD COLUMN backend TEXT NOT NULL DEFAULT 'herdr' CHECK (backend IN ('herdr', 'hc'));";
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -664,6 +668,10 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
         tx.execute_batch(&v8())
             .context("adding the comment-sweep finish step")?;
     }
+    if current < 9 {
+        tx.execute_batch(V9)
+            .context("adding the worker pane host backend")?;
+    }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
     Ok(())
@@ -740,6 +748,62 @@ mod tests {
         assert_eq!(v, VERSION);
         // A second run of the migration changes nothing.
         migrate(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn hcb_03_migrate_from_version_7_adds_backend_and_keeps_rows() {
+        for start_version in [7_i64, 8_i64] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(&v1()).unwrap();
+            for sql in [V2, V3, V4] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(&v5()).unwrap();
+            conn.execute_batch(V6).unwrap();
+            conn.execute_batch(&v7()).unwrap();
+            if start_version >= 8 {
+                conn.execute_batch(&v8()).unwrap();
+            }
+            conn.pragma_update(None, "user_version", start_version)
+                .unwrap();
+            conn.execute_batch(
+                "INSERT INTO projects VALUES ('p', '/r', 'now');
+                 INSERT INTO runs (run_id, project_id, slug, status, started_at)
+                    VALUES ('r1', 'p', 's', 'active', 'now');
+                 INSERT INTO workers (worker_id, run_id, persona, host, workspace_id, pane_id, status)
+                    VALUES ('w1', 'r1', 'opus', 'h', 'ws1', 'p1', 'working');",
+            )
+            .unwrap();
+            let mut conn = conn;
+            assert!(conn.prepare("SELECT backend FROM workers").is_err());
+
+            migrate(&mut conn).unwrap();
+
+            let v: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, VERSION);
+            let row = crate::taskledger::workers::get(&conn, "w1").unwrap();
+            assert_eq!(row.workspace_id.as_deref(), Some("ws1"));
+            assert_eq!(row.pane_id.as_deref(), Some("p1"));
+            assert_eq!(row.backend, crate::runtime::Backend::Herdr);
+
+            conn.execute(
+                "UPDATE workers SET backend = 'hc' WHERE worker_id = 'w1'",
+                [],
+            )
+            .unwrap();
+            let updated = crate::taskledger::workers::get(&conn, "w1").unwrap();
+            assert_eq!(updated.backend, crate::runtime::Backend::Hc);
+            assert!(
+                conn.execute(
+                    "UPDATE workers SET backend = 'tmux' WHERE worker_id = 'w1'",
+                    []
+                )
+                .is_err(),
+                "CHECK rejects unknown backend"
+            );
+        }
     }
 }
 
@@ -1095,6 +1159,7 @@ mod v7_tests {
             V6.into(),
             v7(),
             v8(),
+            V9.into(),
         ];
         assert_eq!(steps.len() as i64, VERSION, "add the new step here");
         for sql in &steps[..version as usize] {

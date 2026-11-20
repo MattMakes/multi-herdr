@@ -52,6 +52,9 @@ pub struct Worker {
     /// The task this worker was spawned to claim (TRF-24). The claim takes
     /// it first; no other worker claims it while this worker is live.
     pub target_task_id: Option<String>,
+    /// The pane host backend (`herdr` or `hc`) that owns `workspace_id` and
+    /// `pane_id` (HCB-03).
+    pub backend: crate::runtime::Backend,
 }
 
 impl Worker {
@@ -65,6 +68,16 @@ impl Worker {
     }
 
     pub(crate) fn from_row(r: &Row<'_>) -> rusqlite::Result<Worker> {
+        let backend_raw: String = r.get("backend")?;
+        let backend = backend_raw
+            .parse::<crate::runtime::Backend>()
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
         Ok(Worker {
             worker_id: r.get("worker_id")?,
             run_id: r.get("run_id")?,
@@ -103,6 +116,7 @@ impl Worker {
             ended_at: r.get("ended_at")?,
             handoff_path: r.get("handoff_path")?,
             target_task_id: r.get("target_task_id")?,
+            backend,
         })
     }
 }
@@ -172,6 +186,9 @@ pub struct NewWorker {
     pub legacy_record_id: Option<String>,
     /// The task this worker is spawned to claim (TRF-24).
     pub target_task_id: Option<String>,
+    /// The pane host backend (`herdr` or `hc`) that owns `workspace_id` and
+    /// `pane_id`.
+    pub backend: crate::runtime::Backend,
 }
 
 /// Insert a worker in state `spawning` and return its id.
@@ -196,8 +213,8 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
     conn.execute(
         "INSERT INTO workers (worker_id, run_id, kind, persona, role, harness, model, effort,
             host, workspace_id, pane_id, previous_worker_id, resumed_from_session,
-            legacy_record_id, status, origin, spawned_at, target_task_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            legacy_record_id, status, origin, spawned_at, target_task_id, backend)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             id,
             new.run_id,
@@ -217,6 +234,7 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
             Origin::Native.as_str(),
             util::now(),
             new.target_task_id,
+            new.backend.as_str(),
         ],
     )?;
     Ok(id)

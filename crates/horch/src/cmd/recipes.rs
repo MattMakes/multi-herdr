@@ -688,6 +688,7 @@ fn start_orchestrator(
         options,
     } = start;
     record.workspace_id = Some(ws.workspace_id.clone());
+    record.backend = ctx.herdr.backend;
     let (record_id, session_id) = (record.record_id.clone(), record.session_id.clone());
     ledger.insert(record)?;
 
@@ -1193,8 +1194,16 @@ fn claim_launch_run(
         lock_dir: &dir,
         herdr_open: &|_| None,
     };
-    let claimed = store
-        .immediate(|tx| orchestrator::claim(tx, &run.run_id, workspace, Some(pane), &probe))?;
+    let claimed = store.immediate(|tx| {
+        orchestrator::claim_on(
+            tx,
+            &run.run_id,
+            workspace,
+            Some(pane),
+            ctx.herdr.backend,
+            &probe,
+        )
+    })?;
     match claimed {
         orchestrator::Claimed::Changed(text) => println!("{text}"),
         orchestrator::Claimed::Skipped {
