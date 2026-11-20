@@ -606,9 +606,6 @@ fn launching_attempt_with_no_process_past_the_start_timeout_ends_timed_out() {
     run(&mut pass, &mut w);
     let record = effects::read_launch(&w.root(), LAUNCHING).unwrap().unwrap();
     let launched = record.process.expect("the record has the process");
-    // A pass that scans a process that still runs ends its attempt `live`,
-    // so no pass runs before the process has exited (a loaded host can
-    // delay the exit past the next pass). The pass that follows reaps it.
     assert!(wait_for(|| exited(launched.pid)), "the process exits");
     assert!(wait_for(|| pass_reaps(&mut pass, &mut w)));
 
@@ -625,8 +622,6 @@ fn launching_attempt_with_no_process_past_the_start_timeout_ends_timed_out() {
     assert_eq!(fake.asked.get(), 1, "an attempt id is launched once");
 }
 
-/// Whether the process `pid` has exited: it is gone, or it is a zombie that
-/// its parent has not reaped yet. No pass runs, so nothing reaps it.
 fn exited(pid: u32) -> bool {
     let out = Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
