@@ -1,0 +1,7 @@
+# Red tests of crates/horch-e2e/tests/i308_fleet_steward.rs.
+# horch fleet does not queue the worktree steward since Phase 6: horch ledger
+# task is retired and start_worktree_steward (crates/horch/src/cmd/recipes.rs)
+# prints a warning. Operator decision pending, fleetd-finish decisions.md 2026-11-20.
+a_fleet_with_an_abandoned_worktree_spawns_the_worktree_steward | 7 | the orchestrator and the steward: []
+an_exhausted_claude_pool_starts_no_codex_steward | 7 | the worktree steward task was not queued: horch ledger task is retired
+the_no_change_steward_task_finishes_without_a_worktree | 7 | horch: no run 'solo-w1'

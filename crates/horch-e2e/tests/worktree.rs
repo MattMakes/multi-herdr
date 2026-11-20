@@ -80,6 +80,13 @@ fn prepare_done(h: &mut Harness) -> String {
     std::fs::write(mailbox.join("orchestrator.id"), &pane).unwrap();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HERDR_PANE_ID", pane.clone());
+    // The record insert is a request to the fleetd of the fleet root beside
+    // the session records file, which makes the operator token.
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: RECORD.into(),
@@ -259,40 +266,24 @@ fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
     git(&h, &h.project, &["add", "tickets/01-t.md"]);
     git(&h, &h.project, &["commit", "--quiet", "-m", "a ticket"]);
 
-    let mut run = h.horch(&["ledger", "run", "new", "gamma"]);
-    let o = run.output().unwrap();
-    assert!(o.status.success(), "{}", stderr(&o));
-    let mut add = h.horch(&[
-        "ledger",
-        "add",
-        "--file",
-        "tickets/01-t.md",
-        "--primary",
-        "sonnet",
-    ]);
-    let o = add.output().unwrap();
-    assert!(o.status.success(), "{}", stderr(&o));
-    let worker = horch_e2e::bind::bind(&h, "sonnet", None).worker_id;
-
-    let as_worker = |args: &[&str]| {
-        let mut command = h.horch(args);
-        command.env("HORCH_WORKER_ID", &worker);
-        let o = command.output().unwrap();
-        assert!(
-            o.status.success(),
-            "horch {}: {}",
-            args.join(" "),
-            stderr(&o)
-        );
-        stdout(&o)
-    };
-    let made = as_worker(&["ledger", "worktree", "new", "feature"]);
-    let path = made
-        .lines()
-        .find_map(|line| line.strip_prefix("path: "))
-        .unwrap_or_else(|| panic!("no worktree path: {made}"))
-        .to_string();
+    let run = horch_e2e::ledger_seed::seed_run(&h, "gamma", None, "w1:p1");
+    horch_e2e::ledger_seed::seed_task(&h, &run, &h.project.join("tickets/01-t.md"), "sonnet");
+    // fleetd makes the tree of the bind (FR-5): its `worktree_add` job
+    // runs in the next pass.
+    h.serve_fleetd();
+    let tree = horch_e2e::bind::bind(&h, "sonnet", None)
+        .worktree
+        .expect("a worktree task binds a worktree");
+    let path = tree.path;
     let worktree = std::path::PathBuf::from(&path);
+    horch_e2e::harness::wait_for("the tree of the bind to leave reserved", || {
+        let o = h.run(&["worktrees", "--json"]);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
+        let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
+        rows.iter()
+            .any(|r| r["path"].as_str() == Some(path.as_str()) && r["state"] != "reserved")
+            .then_some(())
+    });
     // Work the ledger owns is ahead of main, so the scan would report it.
     commit_work(&h, &worktree);
 
