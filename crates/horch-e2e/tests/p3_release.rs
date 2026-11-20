@@ -201,8 +201,6 @@ impl Wrapper {
         self.child.id()
     }
 
-    /// Run `cmd` as a child of the wrapper, with the program, arguments,
-    /// environment and folder of `cmd`.
     fn run(&mut self, cmd: &Command) -> Output {
         use std::io::{BufRead, Write};
         use std::os::unix::process::ExitStatusExt;

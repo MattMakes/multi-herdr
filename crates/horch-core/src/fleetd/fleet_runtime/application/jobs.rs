@@ -1124,8 +1124,6 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
     };
     let mut spec = spec;
     let output = check_output_file(&executors::fleet_root(conn)?, row.id)?;
-    // `create_new` refuses a planted file or link, and the tail is read
-    // through this handle, never by the path again.
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -1176,9 +1174,6 @@ fn sandbox_rules(spec: &LaunchSpec) -> String {
 
 const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 
-/// A new path for the output of the check of job `job`, in the private
-/// folder `run/checks/` (mode 0700). No check sandbox can write in `run/`
-/// (SR-8), so no check can swap the file of another check for a link.
 fn check_output_file(fleet_root: &Path, job: i64) -> Result<PathBuf> {
     let dir = OperatorPaths::of(fleet_root).run.join("checks");
     crate::fsx::ensure_private_dir(&dir)?;
@@ -1222,9 +1217,6 @@ fn quoted_output(text: &str) -> String {
     out
 }
 
-/// A character that can break a line or hide text: a control character
-/// (also U+0085), a zero-width or bidi mark, or a line or paragraph
-/// separator (U+2028, U+2029).
 fn is_hidden(c: char) -> bool {
     c.is_control()
         || matches!(
