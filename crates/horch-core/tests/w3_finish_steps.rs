@@ -2,6 +2,8 @@
 //! complexity-sweep, pr, code-sweep, `finish` and `done` (#137, #138, #141,
 //! #144, #146). Each test pins the outcome text of 1 path, so a refactor
 //! that changes a path fails here.
+// The `pr` tests use a fake `gh` shell script and are Unix only.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
@@ -803,6 +805,7 @@ esac
 "#;
 
 /// A fake gh, warmed once, whose `pr view` prints `ghstate/view.json`.
+#[cfg(unix)]
 fn fake_gh(w: &World) -> PathBuf {
     let state = w.top().join("ghstate");
     std::fs::create_dir_all(state.join("calls")).unwrap();
@@ -852,6 +855,7 @@ fn pr_has_no_pull_request_without_a_remote() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -920,6 +924,7 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     assert_eq!(calls[3][1], "view");
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -943,6 +948,7 @@ fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -965,6 +971,7 @@ fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
     assert_eq!(gh_calls(&state).len(), calls, "no gh call for the 2nd task");
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_lists_only_the_commits_a_task_added_after_the_earlier_lands() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -982,6 +989,7 @@ fn pr_lists_only_the_commits_a_task_added_after_the_earlier_lands() {
     assert!(!body.contains("one.txt"), "the first task's commit: {body}");
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -993,6 +1001,7 @@ fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
     assert_eq!(gh_calls(&state)[0][..2], ["pr", "create"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_fails_when_its_head_lacks_the_landed_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);

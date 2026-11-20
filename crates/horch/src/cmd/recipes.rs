@@ -1376,6 +1376,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(unix)]
     #[test]
     fn trf_39_losing_launch_keeps_the_live_route() {
         let dir = tempfile::tempdir().unwrap();

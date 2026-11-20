@@ -286,6 +286,10 @@ fn make_executable(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Windows has no executable bit to set.
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
+
 /// The job process of the run `id`, as `horch job run <id>` runs it: it
 /// waits until the run is `running`, then runs the executor with the
 /// recorded pid, on its own connection.

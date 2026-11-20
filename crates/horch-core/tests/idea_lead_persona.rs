@@ -38,6 +38,7 @@ fn launch_env(home: &Path) -> LaunchEnv {
     for tool in ["bwrap", "socat"] {
         let path = bin.join(tool);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
     }

@@ -133,15 +133,19 @@ fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
     use horch_core::taskledger::runs::{self, NewRun};
     use horch_core::taskledger::schema::run_idea;
     use horch_core::taskledger::util;
+    #[cfg(unix)]
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
+    #[cfg(unix)]
     use horch_core::workspace::herdr::Herdr;
     use std::path::Path;
+    #[cfg(unix)]
     use std::time::{Duration, UNIX_EPOCH};
 
     /// A worker row of a new run in `dir`. The tests set the fields `observe`
@@ -179,6 +183,7 @@ mod tests {
     /// A herdr that answers by pane: `p1` has a status, a change count and a
     /// screen; `p2` has a screen but no status; `p3` has a status but no
     /// screen; any other pane fails both.
+    #[cfg(unix)]
     fn herdr(dir: &Path) -> Herdr {
         let bin = dir.join("herdr");
         // macOS scans a new executable at its first exec: warm it.
@@ -199,6 +204,7 @@ mod tests {
         Herdr::with_bin(bin)
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -225,6 +231,7 @@ mod tests {
         assert!(!alive(&w), "no pid");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_pane_and_the_screen_are_read_apart_and_only_for_a_worker_with_a_pane() {
         let dir = tempfile::tempdir().unwrap();
@@ -267,6 +274,7 @@ mod tests {
         assert_eq!(on(&mut w, None), Observation::default());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_transcript_gives_its_size_and_the_time_it_was_written() {
         let dir = tempfile::tempdir().unwrap();

@@ -494,6 +494,7 @@ fn gdw_10_every_godot_seat_falls_back_to_codex_sol() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn gdw_10_godot_build_verify_ships_an_executable_godot_run_script() {
     use std::os::unix::fs::PermissionsExt;

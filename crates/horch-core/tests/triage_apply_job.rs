@@ -8,7 +8,9 @@
 //! runs the executor on a read-only connection, as `horch job run` runs it,
 //! and ends the run from its result file, as a pass of fleetd ends it.
 //! Git is the host git on a temp repository. `gh` is a fake script. No
-//! test calls the real `gh` or a real remote.
+//! test calls the real `gh` or a real remote. The fake `gh` is a shell
+//! script and the setup of each test writes it, so the file is Unix only.
+#![cfg(unix)]
 
 #[path = "common/warm.rs"]
 mod warm;

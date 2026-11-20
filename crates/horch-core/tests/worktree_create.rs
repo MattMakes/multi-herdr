@@ -8,6 +8,9 @@
 //! starts a `horch` binary: a job runs in the test process (`TestJobs`),
 //! or in a thread that plays `horch job run` beside a fake `horch` that
 //! sleeps.
+// The tests with a fake `horch` or a project hook use shell scripts and are
+// Unix only.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
@@ -245,6 +248,7 @@ impl World {
 
     /// A fake `horch` that sleeps: `<horch> job run <id>` stays alive
     /// while a thread of the test runs the executor.
+    #[cfg(unix)]
     fn sleeping_horch(&self) -> PathBuf {
         let path = self.tmp.path().join("fake-horch-sleeps");
         warm::write_warmed(
@@ -256,6 +260,7 @@ impl World {
     }
 
     /// A fake `horch` whose job process ends at once with no result.
+    #[cfg(unix)]
     fn lost_horch(&self) -> PathBuf {
         let path = self.tmp.path().join("fake-horch-lost");
         warm::write_warmed(&path, "#!/bin/sh\nexit 0\n", &[]);
@@ -429,6 +434,7 @@ impl WorktreeGitGateway for Recording {
 
 /// FR-11 and I6: the row commits in `reserved` before `git worktree add`
 /// runs, and the command holds no transaction while it runs.
+#[cfg(unix)]
 #[test]
 fn worktree_row_is_reserved_before_the_folder_exists() {
     let mut w = World::new();
@@ -480,6 +486,7 @@ fn worktree_row_is_reserved_before_the_folder_exists() {
 /// Q17: the command gives no path before the job passed. The job process
 /// is slow; the command waits for it, and the lease of the attempt starts
 /// when the command returns.
+#[cfg(unix)]
 #[test]
 fn attempt_waits_for_worktree_add_job_and_lease_starts_at_launch() {
     let mut w = World::new();
@@ -513,6 +520,7 @@ fn attempt_waits_for_worktree_add_job_and_lease_starts_at_launch() {
 /// A failed run drops the `reserved` row, and the command prints the
 /// reason of the job. An abandoned run keeps the row `reserved`, and the
 /// next run of the rule of abandoned runs makes the tree.
+#[cfg(unix)]
 #[test]
 fn failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again() {
     let mut w = World::new();
@@ -872,6 +880,7 @@ fn scratch_tree_has_no_task_and_goes_through_the_job() {
 /// The fleetd git rule: a hook of the project never runs with the rights
 /// of fleetd. `git worktree add` starts `post-checkout`; the job runs, and
 /// the hook does not.
+#[cfg(unix)]
 #[test]
 fn post_checkout_hook_of_the_project_does_not_run_in_the_job() {
     let mut w = World::new();

@@ -421,6 +421,7 @@ fn g70_reviewer_wait_holds_sixty_minutes_then_three_idle_checks_reap() {
     // (docs/tickets/fleetd-p2/MAP.md, Q14). The ladder proof: g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion.
     assert_no_reap(&mut store, &run, &worker);
 }
+#[cfg(unix)]
 #[test]
 fn g70_waiting_background_deadline_and_dead_process() {
     use horch_core::taskledger::{
@@ -887,6 +888,7 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
         pinned_check(&h, &run, "2030-01-01T01:40:00Z");
     });
 }
+#[cfg(unix)]
 #[test]
 fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
     use horch_core::taskledger::workers;
@@ -959,12 +961,14 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
 
 /// An agent that leads its own process group; the group is killed on
 /// drop, so a failed assertion leaks no child.
+#[cfg(unix)]
 struct GroupAgent(std::process::Child);
 
 /// Make the agent of `worker` and of its attempt a new process that leads
 /// its own process group, with a live child: the background work that
 /// holds its wait (MAP.md of fleetd-p2, Q23). Gives the agent and the pid
 /// of its child.
+#[cfg(unix)]
 fn agent_with_child(store: &horch_core::taskledger::Store, worker: &str) -> (GroupAgent, u32) {
     use std::os::unix::process::CommandExt;
     let agent = GroupAgent(
@@ -994,6 +998,7 @@ fn agent_with_child(store: &horch_core::taskledger::Store, worker: &str) -> (Gro
 }
 
 /// Kill the child `child` of `agent`, and wait until it is gone.
+#[cfg(unix)]
 fn end_child(agent: &GroupAgent, child: u32) {
     let pid = agent.0.id();
     // SAFETY: a signal to the child that this test started.
@@ -1004,6 +1009,7 @@ fn end_child(agent: &GroupAgent, child: u32) {
 }
 
 /// The text of the last `wait_ended` event of `worker`.
+#[cfg(unix)]
 fn last_wait_end(store: &horch_core::taskledger::Store, worker: &str) -> String {
     store
         .conn()
@@ -1015,6 +1021,7 @@ fn last_wait_end(store: &horch_core::taskledger::Store, worker: &str) -> String 
         )
         .unwrap()
 }
+#[cfg(unix)]
 impl Drop for GroupAgent {
     fn drop(&mut self) {
         // SAFETY: a signal to the process group that this test started.
