@@ -25,6 +25,7 @@ use std::process::{Child, Command, Output};
 
 use horch_core::taskledger::runs::root_key;
 use horch_core::taskledger::schema;
+use horch_core::taskledger::Store;
 use horch_core::{clock, procid};
 use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::Connection;
@@ -41,6 +42,11 @@ const LIST_PERIOD_S: i64 = 60;
 const PASSES: i64 = 3 * LIST_PERIOD_S / STEP_S;
 /// The wall time of the first checkin of the old supervisor.
 const T0: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
+
+/// The slug of the run of the Phase 2 ledger. A fleetd adds a feature run of
+/// its own (a drift idea of a failed conformance check), so a pass names
+/// this run.
+const RUN: &str = "zeta";
 
 /// The live task, its attempt, its worker and its tree.
 const TASK_A: &str = "T-1";
@@ -162,7 +168,10 @@ fn tree_with_1_commit(h: &Harness, name: &str) -> (PathBuf, String) {
 
 /// The Phase 2 ledger of `h`: run `r1` of its project.
 /// - [`TASK_A`] is `running` with the live attempt [`ATTEMPT_A`] and its
-///   lease. Its worker [`WORKER_A`] has the agent `agent`, and its tree
+///   lease. The wrapper of the attempt is this test process (the stand-in
+///   of the old supervisor, so each `horch` command of the test is a
+///   process of the attempt). Its worker [`WORKER_A`] has the agent
+///   `agent`, and its tree
 ///   [`TREE_A`] at `tree_a` is `open`.
 /// - [`TASK_B`] is held. Its attempt [`ATTEMPT_B`] ended, its worker
 ///   [`WORKER_B`] is dead, and its tree [`TREE_B`] at `tree_b` is `open`.
@@ -173,6 +182,7 @@ fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) 
     let base = git_in(h, project, &["rev-parse", "main"]);
     let mut conn = Connection::open(db(h)).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_2_VERSION).unwrap();
+    let wrapper = std::process::id();
     let t0 = rfc3339(T0);
     let host = horch_core::taskledger::util::host_name();
     conn.execute(
@@ -182,8 +192,8 @@ fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) 
     .unwrap();
     conn.execute(
         "INSERT INTO runs (run_id, project_id, slug, status, started_at)
-            VALUES ('r1', 'p', 'zeta', 'active', ?1)",
-        [&t0],
+            VALUES ('r1', 'p', ?1, 'active', ?2)",
+        (RUN, &t0),
     )
     .unwrap();
     conn.execute(
@@ -220,8 +230,8 @@ fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) 
             ATTEMPT_A,
             TASK_A,
             WORKER_A,
-            agent.pid(),
-            agent.started,
+            wrapper,
+            procid::start_time(wrapper).expect("the start time of the test process"),
             &t0,
             CLOCK,
             ATTEMPT_B,
@@ -392,13 +402,15 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     std::fs::write(tree_b.join(UNTRACKED), UNTRACKED_TEXT).unwrap();
     phase_2_ledger(&h, &agent, (&tree_a, &tree_b));
 
-    // The update: the binary of this branch opens the ledger, and the
-    // migration runs.
+    // The update: the first writable open of the ledger by this branch runs
+    // the migration. Only fleetd writes the ledger, and its first pass would
+    // judge the worker before it records progress, so the test opens the
+    // ledger with the store of this branch and runs no pass.
     let mut now = T0 + STEP_S;
     checkin(&h, now);
-    let o = horch_at(&h, now, &["ledger", "show", TASK_A, "--json"]);
+    drop(Store::open(&db(&h)).unwrap());
     let conn = Connection::open(db(&h)).unwrap();
-    assert_eq!(user_version(&conn), schema::VERSION, "{}", text(&o));
+    assert_eq!(user_version(&conn), schema::VERSION);
     let (state, owner, _) = tree_row(&conn, TREE_A);
     assert_eq!(state, "active", "the backfill");
     assert_eq!(owner.as_deref(), Some(ATTEMPT_A), "the backfill");
@@ -406,6 +418,10 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     assert_eq!(state, "orphaned", "the backfill");
     assert_eq!(owner, None, "the backfill");
     drop(conn);
+    // fleetd makes the outbox of the live attempt at its start. The test
+    // runs the passes itself, so it stops that fleetd.
+    h.serve_fleetd();
+    h.stop_fleetd();
 
     // 3 periods of the worktree_list job: the old supervisor checks in,
     // the agent records progress, and fleetd runs 1 pass, each 30 s.
@@ -415,7 +431,13 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
         h.advance_fleet_clock(STEP_S);
         checkin(&h, now);
         worker_at(&h, now, &["ledger", "progress", "building"]);
-        let o = horch_at(&h, now, &["ledger", "watch", "--once", "--force", "--json"]);
+        let o = horch_at(
+            &h,
+            now,
+            &[
+                "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+            ],
+        );
         seen.push(text(&o));
     }
     // More passes at the same time, with no other bound than the wait:
@@ -432,7 +454,9 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
             last = text(&horch_at(
                 &h,
                 now,
-                &["ledger", "watch", "--once", "--force", "--json"],
+                &[
+                    "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+                ],
             ));
             let conn = Connection::open(db(&h)).unwrap();
             tree_row(&conn, TREE_B).2
