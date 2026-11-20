@@ -450,7 +450,6 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
         let fs = &settings["sandbox"]["filesystem"];
         assert!(strings(&fs["allowRead"]).contains(&dir), "{name}");
         assert!(!strings(&fs["allowWrite"]).contains(&dir), "{name}");
-        // The ledger files (RR-5) are denied after it.
         assert!(strings(&fs["denyWrite"]).contains(&dir), "{name}");
         let perms = &settings["permissions"];
         assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true, "{name}");
@@ -503,7 +502,6 @@ fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
             let i = args.iter().position(|a| a == "--settings").unwrap();
             let settings: Value = serde_json::from_str(&args[i + 1]).unwrap();
             let fs = &settings["sandbox"]["filesystem"];
-            // RR-5: the state root is open to read and closed to write.
             assert!(strings(&fs["allowRead"]).contains(&root), "{name}");
             assert!(!strings(&fs["allowWrite"]).contains(&root), "{name}");
             assert!(strings(&fs["denyWrite"]).contains(&bundles), "{name}");

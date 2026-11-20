@@ -257,8 +257,6 @@ impl World {
             ("HORCH_DATA_DIR", Some(root.join("data"))),
             ("XDG_STATE_HOME", None),
             ("XDG_DATA_HOME", None),
-            // `scripts/dev-sandbox.sh` points it at its own ledger, and the
-            // oracle names the default ledger path under the fake home.
             ("HORCH_LEDGER_DB", None),
             // A herdr pane sets it, and a sandboxed Claude teammate
             // (idea-lead) allows its socket.

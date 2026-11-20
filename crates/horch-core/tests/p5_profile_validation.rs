@@ -313,12 +313,8 @@ fn fallback_with_a_sandbox_takes_the_task() {
     assert_eq!(task.claimable_by.as_deref(), Some(PI));
 }
 
-/// [`refusal`] for each profile of `roster`, with the facts of a Codex at
-/// the lowest version that the operator boundary needs, with `network_proxy`.
-/// The Codex of this machine is not probed: its version would decide the
-/// result.
 fn refused(roster: &Roster, fleet_root: &Path) -> BTreeMap<String, String> {
-    let facts = CodexFacts {
+    let pinned_codex = CodexFacts {
         version: Some(format!("codex-cli {OPERATOR_BOUNDARY_SINCE}")),
         network_proxy: true,
     };
@@ -330,7 +326,7 @@ fn refused(roster: &Roster, fleet_root: &Path) -> BTreeMap<String, String> {
             let why = match t.agent {
                 HarnessKind::Codex => refusal_of(&codex::operator_boundary_on(
                     std::env::consts::OS,
-                    &facts,
+                    &pinned_codex,
                     t,
                     fleet_root,
                 )),

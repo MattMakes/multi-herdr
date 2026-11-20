@@ -58,7 +58,6 @@ fn trf_02_template_example_map_parses_with_the_ticket() {
     let ticket = fenced_after(&text, "== Example ticket ==");
     let plan_text = fenced_after(&text, "== Example plan.yaml ==");
     let dir = tempfile::tempdir().unwrap();
-    // The example plan names each ticket relative to its own folder.
     let named = plan_yaml::parse(&plan_text).expect("the example plan.yaml parses");
     for task in &named.tasks {
         let ticket_path = task.ticket.as_ref().expect("a task names its ticket");

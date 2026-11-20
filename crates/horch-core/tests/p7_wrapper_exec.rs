@@ -460,8 +460,6 @@ fn interactive_attempt_is_unchanged() {
             "{agent}"
         );
     }
-    // A profile with no mode runs in exec mode on a CLI with an exec
-    // adapter, and stays interactive on any other CLI.
     assert_eq!(
         ExecCli::of(&teammate("claude", None)),
         Some(ExecCli::Claude)
