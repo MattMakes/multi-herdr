@@ -766,7 +766,9 @@ fn codex_sandbox_hint(
             }
             _ => false,
         };
-        inner || e.chain().any(|c| c.is::<HerdrFailed>())
+        inner
+            || e.chain()
+                .any(|c| c.is::<HerdrFailed>() || c.is::<horch_core::workspace::HcFailed>())
     }
     (codex_sandbox.is_some() && herdr_failed(e)).then(|| {
         format!(

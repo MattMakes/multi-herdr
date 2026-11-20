@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
-use crate::runtime::RuntimeContext;
+use crate::runtime::{Backend, RuntimeContext};
 use crate::workspace::exec::output_within;
+use crate::workspace::host::Unsupported;
 use crate::workspace::model::Pane;
 
 /// An `hc` command that exited non-zero (or reported a finished terminal on a
@@ -321,6 +322,86 @@ impl HcApp {
             .with_context(|| format!("could not parse hc wait response: {}", stdout.trim()))?;
         Ok(resp.reason == "output")
     }
+
+    pub fn agent_prompt(&self, address: &str, text: &str) -> Result<()> {
+        self.hc_output(&["send", "--json", address, text])?;
+        Ok(())
+    }
+
+    pub fn pane_run(&self, address: &str, command: &str) -> Result<()> {
+        self.hc_output(&["send", "--json", address, command])?;
+        Ok(())
+    }
+
+    pub fn pane_send_keys(&self, address: &str, keys: &str) -> Result<()> {
+        let words: Vec<&str> = keys.split_whitespace().collect();
+        if words.is_empty() {
+            bail!("no keys given");
+        }
+        let mut args = Vec::with_capacity(3 + words.len());
+        args.extend(["keys", "--json", address]);
+        args.extend(words);
+        self.hc_output(&args)?;
+        Ok(())
+    }
+
+    pub fn pane_send_text(&self, _address: &str, _text: &str) -> Result<()> {
+        Err(Unsupported {
+            call: "pane_send_text",
+            backend: Backend::Hc,
+        }
+        .into())
+    }
+
+    pub fn pane_close(&self, address: &str) -> Result<()> {
+        let scoped = self.scoped();
+        match scoped.hc_output(&["kill", "--json", address]) {
+            Ok(_) => {}
+            Err(e)
+                if e.downcast_ref::<HcFailed>()
+                    .is_some_and(|f| f.kind == "finished") => {}
+            Err(e) => return Err(e),
+        }
+        scoped.hc_output(&["rm", address])?;
+        Ok(())
+    }
+
+    pub fn notification_show(&self, _title: &str, _body: &str) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn report_agent(
+        &self,
+        _address: &str,
+        _source: &str,
+        _agent: &str,
+        _state: &str,
+        _seq: u64,
+    ) -> Result<()> {
+        Err(Unsupported {
+            call: "report_agent",
+            backend: Backend::Hc,
+        }
+        .into())
+    }
+
+    pub fn release_agent(
+        &self,
+        _address: &str,
+        _source: &str,
+        _agent: &str,
+        _seq: u64,
+    ) -> Result<()> {
+        Err(Unsupported {
+            call: "release_agent",
+            backend: Backend::Hc,
+        }
+        .into())
+    }
+
+    pub fn integration_status(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -532,5 +613,139 @@ exit 0"#,
         std::fs::write(dir.path().join("default.sock"), b"").unwrap();
         assert!(hc.server_reachable());
         assert!(dir.path().join("called").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_prompt_is_one_hc_send() {
+        let (dir, hc) = hc_script(
+            r#"d=$(dirname "$0")
+printf '%s\n' "$*" >> "$d/calls"
+printf '{"started":true,"status":"idle","turn":1}\n'"#,
+        );
+        hc.agent_prompt("t4", "[sonnet-1] DONE: ok").unwrap();
+        hc.pane_run("t4", "horch worker").unwrap();
+        let calls: Vec<String> = std::fs::read_to_string(dir.path().join("calls"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "send --json t4 [sonnet-1] DONE: ok",
+                "send --json t4 horch worker",
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_blocked_terminal_refuses_the_prompt() {
+        let (_dir, hc) = hc_script(
+            r#"case "$3" in
+t1)
+  printf '{"error":{"hint":null,"kind":"blocked","message":"terminal t1 is blocked"}}\n' >&2
+  exit 9;;
+t2)
+  printf '{"error":{"hint":null,"kind":"finished","message":"terminal t2 has finished"}}\n' >&2
+  exit 11;;
+t3)
+  printf '{"error":{"hint":null,"kind":"not_found","message":"terminal t3 not found"}}\n' >&2
+  exit 3;;
+esac"#,
+        );
+        let blocked = hc.agent_prompt("t1", "hi").unwrap_err();
+        let blocked_hc = blocked.downcast_ref::<HcFailed>().unwrap();
+        assert_eq!(blocked_hc.kind, "blocked");
+        assert!(!blocked_hc.is_gone());
+
+        for gone in ["t2", "t3"] {
+            let err = hc.agent_prompt(gone, "hi").unwrap_err();
+            assert!(err.downcast_ref::<HcFailed>().unwrap().is_gone(), "{gone}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_keys_pass_through() {
+        let (dir, hc) = hc_script(
+            r#"d=$(dirname "$0")
+for a in "$@"; do printf '[%s]' "$a" >> "$d/calls"; done
+printf '\n' >> "$d/calls"
+printf '{"status":"idle","turn":1}\n'"#,
+        );
+        hc.pane_send_keys("t7", "esc enter").unwrap();
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        assert_eq!(calls.trim(), "[keys][--json][t7][esc][enter]");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_send_text_is_refused() {
+        let (dir, hc) = hc_script("echo bad > \"$(dirname \"$0\")/called\"\nexit 0");
+        let err = hc.pane_send_text("t1", "draft").unwrap_err().to_string();
+        assert_eq!(err, "hc cannot type text without Enter");
+        assert!(!dir.path().join("called").exists());
+
+        let rep = hc
+            .report_agent("t1", "horch", "claude", "idle", 1)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(rep, "hc agents report their own status");
+        let rel = hc
+            .release_agent("t1", "horch", "claude", 2)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(rel, "hc agents report their own status");
+        hc.notification_show("title", "body").unwrap();
+        assert_eq!(hc.integration_status(), None);
+        assert!(!dir.path().join("called").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_close_kills_then_removes() {
+        let (dir, hc) = hc_script(
+            r#"d=$(dirname "$0")
+printf '%s\n' "$*" >> "$d/calls"
+case "$1 $2 $3" in
+"kill --json t1")
+  printf '{"address":"t1","state":"finished"}\n';;
+"kill --json t2")
+  printf '{"error":{"hint":null,"kind":"finished","message":"already finished"}}\n' >&2
+  exit 11;;
+"kill --json t9")
+  printf '{"error":{"hint":null,"kind":"not_found","message":"no terminal t9"}}\n' >&2
+  exit 3;;
+"rm t1 "*|"rm t1")
+  printf 'removed t1\n';;
+"rm t2 "*|"rm t2")
+  printf 'removed t2\n';;
+esac"#,
+        );
+        hc.pane_close("t1").unwrap();
+        hc.pane_close("t2").unwrap();
+        let missing = hc.pane_close("t9").unwrap_err();
+        assert_eq!(
+            missing.downcast_ref::<HcFailed>().unwrap().kind,
+            "not_found"
+        );
+
+        let calls: Vec<String> = std::fs::read_to_string(dir.path().join("calls"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "kill --json t1",
+                "rm t1",
+                "kill --json t2",
+                "rm t2",
+                "kill --json t9",
+            ]
+        );
     }
 }

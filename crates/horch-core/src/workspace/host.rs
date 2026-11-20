@@ -1,9 +1,9 @@
 //! One handle for the pane host (`herdr` or `hc`).
 //!
 //! Domain and CLI code outside `crate::workspace` reaches the host exclusively
-//! through [`PaneHost`]. Until Task 9 lands `HcApp`, every constructor wraps
-//! [`Herdr`] while recording the resolved [`Backend`].
+//! through [`PaneHost`].
 
+use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -11,10 +11,32 @@ use anyhow::Result;
 
 use crate::execution::store::{workspace_backend, ExecutionStore};
 use crate::runtime::{Backend, RuntimeContext};
+use crate::workspace::hc::HcApp;
 use crate::workspace::herdr::Herdr;
 use crate::workspace::model::{
     Direction, Focus, FocusDir, Layout, Move, NewWorkspace, Pane, Resize, Tab, Workspace,
 };
+
+/// A host operation that the selected [`Backend`] does not support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unsupported {
+    pub call: &'static str,
+    pub backend: Backend,
+}
+
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.call, self.backend) {
+            ("pane_send_text", Backend::Hc) => f.write_str("hc cannot type text without Enter"),
+            ("report_agent" | "release_agent", Backend::Hc) => {
+                f.write_str("hc agents report their own status")
+            }
+            (call, backend) => write!(f, "{call} is not supported on backend {backend}"),
+        }
+    }
+}
+
+impl std::error::Error for Unsupported {}
 
 /// Capabilities of the active pane host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +47,7 @@ pub struct Caps {
 #[derive(Debug, Clone)]
 enum Inner {
     Herdr(Herdr),
+    Hc(HcApp),
 }
 
 /// Handle to the pane host that owns a pane or workspace.
@@ -42,10 +65,11 @@ impl PaneHost {
 
     /// Host for a known [`Backend`] (from a worker row or execution record).
     pub fn for_backend(ctx: &RuntimeContext, b: Backend) -> Self {
-        Self {
-            backend: b,
-            inner: Inner::Herdr(Herdr::with_bin(&ctx.bins.harness.herdr)),
-        }
+        let inner = match b {
+            Backend::Herdr => Inner::Herdr(Herdr::with_bin(&ctx.bins.harness.herdr)),
+            Backend::Hc => Inner::Hc(HcApp::from_context(ctx)),
+        };
+        Self { backend: b, inner }
     }
 
     /// Host for a workspace id: the backend recorded for `workspace` in
@@ -66,6 +90,15 @@ impl PaneHost {
         }
     }
 
+    /// Crate-internal helper: an `hc` host backed by `hc`.
+    #[cfg(test)]
+    pub(crate) fn hc_app(hc: HcApp) -> Self {
+        Self {
+            backend: Backend::Hc,
+            inner: Inner::Hc(hc),
+        }
+    }
+
     pub fn backend(&self) -> Backend {
         self.backend
     }
@@ -73,12 +106,14 @@ impl PaneHost {
     pub fn caps(&self) -> Caps {
         match &self.inner {
             Inner::Herdr(_) => Caps { geometry: true },
+            Inner::Hc(_) => Caps { geometry: false },
         }
     }
 
     pub fn with_timeout(mut self, t: Duration) -> Self {
         self.inner = match self.inner {
             Inner::Herdr(h) => Inner::Herdr(h.with_timeout(t)),
+            Inner::Hc(h) => Inner::Hc(h.with_timeout(t)),
         };
         self
     }
@@ -86,6 +121,7 @@ impl PaneHost {
     pub fn until(mut self, deadline: Option<Instant>) -> Self {
         self.inner = match self.inner {
             Inner::Herdr(h) => Inner::Herdr(h.until(deadline)),
+            Inner::Hc(h) => Inner::Hc(h.until(deadline)),
         };
         self
     }
@@ -93,96 +129,140 @@ impl PaneHost {
     pub fn server_reachable(&self) -> bool {
         match &self.inner {
             Inner::Herdr(h) => h.server_reachable(),
+            Inner::Hc(h) => h.server_reachable(),
         }
     }
 
     pub fn pane_get(&self, id: &str) -> Result<Pane> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_get(id),
+            Inner::Hc(h) => h.pane_get(id),
         }
     }
 
     pub fn pane_list(&self, workspace_id: &str) -> Result<Vec<Pane>> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_list(workspace_id),
+            Inner::Hc(h) => h.pane_list(workspace_id),
         }
     }
 
     pub fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_split(from, direction),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_split",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_run(pane, command),
+            Inner::Hc(h) => h.pane_run(pane, command),
         }
     }
 
     pub fn pane_send_text(&self, pane: &str, text: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_send_text(pane, text),
+            Inner::Hc(h) => h.pane_send_text(pane, text),
         }
     }
 
     pub fn pane_send_keys(&self, pane: &str, keys: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_send_keys(pane, keys),
+            Inner::Hc(h) => h.pane_send_keys(pane, keys),
         }
     }
 
     pub fn pane_close(&self, pane: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_close(pane),
+            Inner::Hc(h) => h.pane_close(pane),
         }
     }
 
     pub fn pane_exists(&self, pane: &str) -> bool {
         match &self.inner {
             Inner::Herdr(h) => h.pane_exists(pane),
+            Inner::Hc(h) => h.pane_exists(pane),
         }
     }
 
     pub fn pane_read(&self, pane: &str, source: &str) -> Result<String> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_read(pane, source),
+            Inner::Hc(h) => h.pane_read(pane, source),
         }
     }
 
     pub fn pane_layout(&self, pane: Option<&str>) -> Result<Layout> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_layout(pane),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_layout",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn tab_list(&self, workspace_id: &str) -> Result<Vec<Tab>> {
         match &self.inner {
             Inner::Herdr(h) => h.tab_list(workspace_id),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "tab_list",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
         match &self.inner {
             Inner::Herdr(h) => h.workspace_list(),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "workspace_list",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub(crate) fn tab_focus(&self, tab_id: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.tab_focus(tab_id),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "tab_focus",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_focus(origin, direction),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_focus",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn pane_focus_walk(&self, tab: &str, target: &str) -> Result<bool> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_focus_walk(tab, target),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_focus_walk",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
@@ -196,18 +276,33 @@ impl PaneHost {
     ) -> Result<Move> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_move(pane, tab, direction, target, ratio),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_move",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub(crate) fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_move_new_tab(pane, label),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_move_new_tab",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub(crate) fn pane_resize(&self, pane: &str, direction: &str, amount: f64) -> Result<Resize> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_resize(pane, direction, amount),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_resize",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
@@ -219,36 +314,50 @@ impl PaneHost {
     ) -> Result<NewWorkspace> {
         match &self.inner {
             Inner::Herdr(h) => h.workspace_create(label, cwd, focus),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "workspace_create",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn workspace_close(&self, workspace_id: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.workspace_close(workspace_id),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "workspace_close",
+                backend: Backend::Hc,
+            }
+            .into()),
         }
     }
 
     pub fn notification_show(&self, title: &str, body: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.notification_show(title, body),
+            Inner::Hc(h) => h.notification_show(title, body),
         }
     }
 
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         match &self.inner {
             Inner::Herdr(h) => h.wait_output(pane, needle, timeout_ms),
+            Inner::Hc(h) => h.wait_output(pane, needle, timeout_ms),
         }
     }
 
     pub fn integration_status(&self) -> Option<String> {
         match &self.inner {
             Inner::Herdr(h) => h.integration_status(),
+            Inner::Hc(h) => h.integration_status(),
         }
     }
 
     pub fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.agent_prompt(pane, text),
+            Inner::Hc(h) => h.agent_prompt(pane, text),
         }
     }
 
@@ -262,12 +371,14 @@ impl PaneHost {
     ) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.report_agent(pane, source, agent, state, seq),
+            Inner::Hc(h) => h.report_agent(pane, source, agent, state, seq),
         }
     }
 
     pub fn release_agent(&self, pane: &str, source: &str, agent: &str, seq: u64) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.release_agent(pane, source, agent, seq),
+            Inner::Hc(h) => h.release_agent(pane, source, agent, seq),
         }
     }
 }

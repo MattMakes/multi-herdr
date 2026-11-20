@@ -15,17 +15,19 @@ pub mod tile;
 
 pub use hc::HcFailed;
 pub use herdr::HerdrFailed;
-pub use host::{Caps, PaneHost};
+pub use host::{Caps, PaneHost, Unsupported};
 
 #[cfg(test)]
 mod tests {
-    const FORBIDDEN: [&str; 8] = [
+    const FORBIDDEN: [&str; 10] = [
         "std::process",
         "Command::new",
         "Herdr",
+        "HcApp",
         "PaneHost",
         "WorkspaceClient",
         "crate::workspace::herdr",
+        "crate::workspace::hc",
         "crate::workspace::host",
         "std::env",
     ];
