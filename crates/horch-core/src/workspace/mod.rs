@@ -4,6 +4,7 @@ pub mod arrange;
 pub mod balance;
 pub mod client;
 pub(crate) mod exec;
+pub mod hc;
 pub mod herdr;
 pub mod host;
 pub mod layout;
@@ -12,6 +13,7 @@ pub mod paneshell;
 pub mod testing;
 pub mod tile;
 
+pub use hc::HcFailed;
 pub use herdr::HerdrFailed;
 pub use host::{Caps, PaneHost};
 
