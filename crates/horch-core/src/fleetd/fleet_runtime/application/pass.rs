@@ -207,7 +207,7 @@ pub const ABORT_BEFORE_COMMIT: &str = "abort-before-commit";
 /// The file watching reports nothing.
 pub const DROP_WATCH_EVENTS: &str = "drop-watch-events";
 /// `hold-launching:<idea>`: each sub-orchestrator attempt of the idea stays
-/// in `launching`, with no recorded wrapper (`p6_fr10_approval.rs`).
+/// in `launching`, with no recorded wrapper.
 pub const HOLD_LAUNCHING: &str = "hold-launching";
 
 /// The cursor of the launches of part 3 in `pass_cursors`.

@@ -231,10 +231,7 @@ impl Lead {
         }
     }
 
-    /// The wait for the end starts at the approval of the own idea. The
-    /// operator approves only after the target waits too, which can take
-    /// minutes under load.
-    fn wait_ended(&self) -> Vec<String> {
+    fn wait_own_approval(&self) {
         let approved = Instant::now() + STOP_WAIT;
         while Instant::now() < approved
             && matches!(
@@ -244,6 +241,10 @@ impl Lead {
         {
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    fn wait_ended(&self) -> Vec<String> {
+        self.wait_own_approval();
         let end = Instant::now() + STATE_WAIT;
         loop {
             let seen: Vec<String> = self
@@ -263,7 +264,6 @@ impl Lead {
         self.attempts_as("id || ' ' || state")
     }
 
-    /// The id, the state and the pid (`-` for none) of each own attempt.
     fn attempts_with_pid(&self) -> Vec<String> {
         self.attempts_as("id || ' ' || state || ' ' || IFNULL(pid, '-')")
     }

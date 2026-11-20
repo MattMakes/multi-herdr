@@ -112,12 +112,7 @@ pub fn processes_of(rows: &[AttemptProcesses]) -> Option<Vec<FleetProcess>> {
 }
 
 /// FR-10: the first attempt of `rows` that is not ended and has no recorded
-/// process. Its agent can run before fleetd records its wrapper, and then
-/// no fact ties the agent to its attempt: [`fleet_process`] gives `No` for
-/// it. So an approval from a peer that is not proven inside an attempt is
-/// refused while this gives `Some`. The start timeout
-/// [`START_TIMEOUT_S`](crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S)
-/// ends a launch with no process.
+/// process.
 pub fn launching_attempt(rows: &[AttemptProcesses]) -> Option<&str> {
     rows.iter()
         .find(|r| !r.ended && r.processes.is_empty())

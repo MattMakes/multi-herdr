@@ -108,19 +108,18 @@ fn text<'a>(result: &'a Value, key: &str) -> &'a str {
 /// guard whose fact is unknown does not hold. While an attempt launches
 /// with no recorded process ([`launching_attempt`]), a process that is not
 /// proven inside an attempt is refused too, and told to try again. This
-/// guard only gives an
-/// early message. The checks of fleetd at the server stay the wall.
+/// guard only gives an early message. The checks of fleetd at the server stay the wall.
 pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -> Option<ExitCode> {
     let reason = match attempt_fact(ctx) {
-        Err(attempt) => format!(
+        AttemptFact::Launching(attempt) => format!(
             "attempt {attempt} launches and fleetd has not recorded its process yet, so horch cannot prove that this process is not a fleet process of it. Try again in some seconds"
         ),
-        Ok(Fact::No) => return None,
-        Ok(Fact::Yes(attempts)) => format!(
+        AttemptFact::Known(Fact::No) => return None,
+        AttemptFact::Known(Fact::Yes(attempts)) => format!(
             "this process is a fleet process of attempt {}",
             attempts.join(", ")
         ),
-        Ok(Fact::Unknown) => {
+        AttemptFact::Known(Fact::Unknown) => {
             "horch cannot prove that this process runs outside a fleet attempt, because a process fact is unknown".to_string()
         }
     };
@@ -130,20 +129,25 @@ pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -
     Some(ExitCode::from(1))
 }
 
-/// The fact of this process, or `Err` with the attempt that launches with
-/// no recorded process when the fact is `No`.
-fn attempt_fact(ctx: &RuntimeContext) -> Result<Fact, String> {
+enum AttemptFact {
+    Known(Fact),
+    Launching(String),
+}
+
+fn attempt_fact(ctx: &RuntimeContext) -> AttemptFact {
     let Ok(store) = taskledger::open_existing_read_only(ctx) else {
-        return Ok(Fact::Unknown);
+        return AttemptFact::Known(Fact::Unknown);
     };
     let Some(store) = store else {
-        return Ok(Fact::No);
+        return AttemptFact::Known(Fact::No);
     };
     let Ok(Some((recorded, rows))) = recorded_processes(store.conn()) else {
-        return Ok(Fact::Unknown);
+        return AttemptFact::Known(Fact::Unknown);
     };
     match fleet_process(std::process::id(), &recorded, &PlatformFacts) {
-        Fact::No => launching_attempt(&rows).map_or(Ok(Fact::No), |a| Err(a.to_string())),
-        fact => Ok(fact),
+        Fact::No => launching_attempt(&rows).map_or(AttemptFact::Known(Fact::No), |a| {
+            AttemptFact::Launching(a.to_string())
+        }),
+        fact => AttemptFact::Known(fact),
     }
 }

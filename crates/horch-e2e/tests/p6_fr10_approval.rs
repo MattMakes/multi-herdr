@@ -329,10 +329,6 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
-/// T-160: the agent of an attempt in `launching` with no recorded process
-/// tries at its first instruction. The fault point `hold-launching` keeps
-/// the attempt of I-0002 in `launching`, so the window does not depend on
-/// the time of a pass.
 #[test]
 fn fr10_e_agent_of_a_launching_attempt_with_no_recorded_process_cannot_approve() {
     let w = World::start("p6-fr10-e", "clarify", Some("hold-launching:I-0002"));

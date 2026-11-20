@@ -285,8 +285,6 @@ fn no_recorded_process_is_no_fleet_process() {
     );
 }
 
-/// The chain 10 -> 20 -> PID 1, each process in its own group and session,
-/// and each start time 5.
 struct OutsideChain;
 
 impl ProcessFacts for OutsideChain {
@@ -321,10 +319,6 @@ fn row(attempt: &str, ended: bool, processes: Vec<Recorded>) -> AttemptProcesses
     }
 }
 
-/// T-160: the agent of I-0005/clarifying/1 ran `horch idea approve` while
-/// its attempt was in `launching` with no recorded process. No fact ties
-/// the agent to its attempt, so the walk gives `No`. The rows name the
-/// launching attempt, so each caller refuses the approval.
 #[test]
 fn agent_of_a_launching_attempt_with_no_recorded_process_is_not_outside() {
     let live = row(

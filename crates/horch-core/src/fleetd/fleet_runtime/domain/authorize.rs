@@ -54,8 +54,7 @@ pub enum PeerProcess {
     /// The peer is not a fleet process.
     Outside,
     /// The peer is outside each recorded attempt, but this attempt is not
-    /// ended and has no recorded process yet. Its agent can run before
-    /// fleetd records it, so the peer may be that agent (FR-10).
+    /// ended and has no recorded process yet (FR-10).
     OutsideWhileLaunching(String),
     /// The peer is a process of each of these attempts, as the ledger
     /// records them.
@@ -330,7 +329,6 @@ mod tests {
         let reason = refusal(&facts);
         assert!(reason.contains("I-0005/clarifying/1 launches"), "{reason}");
         assert!(reason.contains("Try again in some seconds"), "{reason}");
-        // The launch helper of the attempt sends other operator kinds.
         let facts = RequestFacts {
             kind: "worker_launch_failed".to_string(),
             source: launching,

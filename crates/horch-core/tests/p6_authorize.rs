@@ -78,10 +78,6 @@ fn orchestrator_seats_key_gives_1_warning_line_and_no_right() {
     assert_eq!(none, None, "a file without the key gives no warning");
 }
 
-/// FR-10: while an attempt launches with no recorded process, its agent
-/// can be a peer that no fact ties to it. An `idea_approve` on the channel
-/// with a valid token from such a peer is refused, and the reason says to
-/// try again.
 #[test]
 fn idea_approve_while_an_attempt_launches_is_refused_with_a_retry_reason() {
     let facts = RequestFacts {
