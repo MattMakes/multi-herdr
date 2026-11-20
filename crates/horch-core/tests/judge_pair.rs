@@ -28,6 +28,7 @@ use horch_core::fleetd::fleet_runtime::domain::jobs::State;
 use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature};
+use horch_core::fleetd::task_execution::adapters::verdict_file;
 use horch_core::fleetd::task_execution::application::judge_pair::{
     self, Settled, Step, FIX_ROUND_LIMIT,
 };
@@ -35,6 +36,7 @@ use horch_core::fleetd::task_execution::application::retry::Policy;
 use horch_core::fleetd::task_execution::application::review::Review;
 use horch_core::fleetd::task_execution::application::verifier::{self, Structural, Verifier};
 use horch_core::fleetd::task_execution::domain::judge_pair::Rank;
+use horch_core::fleetd::task_execution::domain::verification;
 use horch_core::taskledger::finish::{self, CodexSandbox, Tools};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, VerifyProfile, WorkKind};
@@ -766,4 +768,63 @@ fn high_item_does_not_block() {
         )
         .unwrap();
     assert_eq!(bells, 1);
+}
+
+/// A planned judge task has no check command: the plan validator gives it
+/// none on purpose. The verifier runs its structural check and its verdict
+/// with no `task_check` job, and the pair reaches `done` (fault 7 of
+/// T-561).
+#[test]
+fn planned_judge_task_with_no_check_passes_on_its_verdict() {
+    let mut w = World::new();
+    let judged = w.judged();
+    w.checked();
+    let judge = w.judge(&judged, PASS);
+    w.conn()
+        .execute(
+            "UPDATE tasks SET land_check = NULL WHERE task_id = ?1",
+            [&judge],
+        )
+        .unwrap();
+    assert_eq!(
+        finish::default_check(w.conn(), &w.run.run_id).unwrap(),
+        None
+    );
+
+    let pass = w.pass();
+
+    assert_eq!(settled(&pass, &judge).step, Step::Done);
+    assert_eq!(
+        (w.status(&judge), w.status(&judged)),
+        ("done".into(), "done".into())
+    );
+    // The check step of the judge gives a true reason, and runs no job.
+    let reasons: Vec<String> = verdict_file::recorded(w.conn(), &judge)
+        .unwrap()
+        .into_iter()
+        .map(|v| v.reason)
+        .collect();
+    assert_eq!(
+        reasons.first().map(String::as_str),
+        Some(verification::JUDGE_NO_CHECK)
+    );
+}
+
+/// A task that is not a judge task, with no check command and no default
+/// check of its run, is still refused.
+#[test]
+fn task_with_no_check_that_is_not_a_judge_is_still_refused() {
+    let mut w = World::new();
+    let judged = w.judged();
+    w.conn()
+        .execute(
+            "UPDATE tasks SET land_check = NULL WHERE task_id = ?1",
+            [&judged],
+        )
+        .unwrap();
+
+    w.pass();
+
+    assert_ne!(w.status(&judged), "verifying");
+    assert_eq!(w.outcome(&judged).as_deref(), Some("rejected"));
 }

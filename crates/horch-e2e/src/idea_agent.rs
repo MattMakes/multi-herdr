@@ -77,8 +77,9 @@ const FEATURE_LINE: &str = "The feature of your idea is ";
 /// The keys of the fake judge.
 pub(crate) const VERDICT_KEYS: [&str; 3] = ["verdict_pass", "verdict_critical", "verdict_high"];
 
-/// The verdict file of the fake judge, in its worktree.
-const VERDICT_FILE: &str = "review.md";
+/// The verdict file of the fake judge, in its worktree, when the ledger
+/// names no Own path of its task.
+pub(crate) const VERDICT_FILE: &str = "review.md";
 
 /// The file mode of each file that the fake writes.
 const FILE_MODE: u32 = 0o600;
@@ -439,9 +440,9 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("writing {}: {e:#}", path.display()))
 }
 
-/// The fake judge: write the verdict of its key in `review.md` and commit
-/// it.
-pub(crate) fn judge(call: &mut Call) {
+/// The fake judge: write the verdict of its key in `file`, a path of its
+/// worktree, and commit it.
+pub(crate) fn judge(call: &mut Call, file: &str) {
     let verdict = if scenario_has("verdict_critical") {
         (
             "critical_open",
@@ -459,14 +460,12 @@ pub(crate) fn judge(call: &mut Call) {
         verdict.0, verdict.1
     );
     let dir = worktree();
-    let out = std::fs::write(dir.join(VERDICT_FILE), text)
-        .map_err(|e| format!("writing {VERDICT_FILE}: {e}"))
-        .and_then(|()| {
-            let message = format!("fake {}: verdict {}", call.fake, verdict.0);
-            git(&dir, &["add", "--", VERDICT_FILE])?;
-            git(&dir, &["commit", "-q", "-m", &message, "--", VERDICT_FILE])?;
-            git(&dir, &["rev-parse", "HEAD"])
-        });
+    let out = write_file(&dir.join(file), &text).and_then(|()| {
+        let message = format!("fake {}: verdict {}", call.fake, verdict.0);
+        git(&dir, &["add", "--", file])?;
+        git(&dir, &["commit", "-q", "-m", &message, "--", file])?;
+        git(&dir, &["rev-parse", "HEAD"])
+    });
     let logged = match out {
         Ok(head) => json!({"verdict": verdict.0, "head": head}),
         Err(e) => json!({"error": e}),

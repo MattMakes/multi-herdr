@@ -193,6 +193,9 @@ fn verify_one(
         None
     };
     let hash = check_hash(check.as_deref());
+    // A judge task has no check of its own (the plan validator gives it
+    // none): its structural check and its verdict decide (ticket 41).
+    let judge = judged_task(&task.kind, task.parent_task_id.as_deref()).is_some();
     let facts = Facts {
         task_id: &task.task_id,
         attempt: &a.id,
@@ -212,7 +215,12 @@ fn verify_one(
             return Ok(());
         }
     }
-    let verdict = match verification::plan(&facts) {
+    let planned = if judge {
+        verification::plan_judge(&facts)
+    } else {
+        verification::plan(&facts)
+    };
+    let verdict = match planned {
         Plan::Decided(verdict) => verdict,
         Plan::Check { input_key } => {
             let key = JobKey {

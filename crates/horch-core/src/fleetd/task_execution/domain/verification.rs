@@ -96,6 +96,25 @@ pub enum Plan {
     Check { input_key: String },
 }
 
+/// The reason of the verdict of a judge task with no check command.
+pub const JUDGE_NO_CHECK: &str = "a judge task is decided by its structural check and its verdict";
+
+/// The plan for the attempt of the judge task of `f`. A judge task has no
+/// check of its own (the plan validator gives it none): with commits and
+/// no check command, the facts decide `not_applicable`, and its structural
+/// check and its verdict decide next. Else as [`plan`].
+pub fn plan_judge(f: &Facts<'_>) -> Plan {
+    if f.check.is_none() && f.base != Some(f.tip) {
+        return Plan::Decided(Verdict::of(
+            f,
+            Decision::NotApplicable,
+            None,
+            JUDGE_NO_CHECK,
+        ));
+    }
+    plan(f)
+}
+
 /// The plan for the attempt of `f`.
 pub fn plan(f: &Facts<'_>) -> Plan {
     let decided = |decision, reason: &str| Plan::Decided(Verdict::of(f, decision, None, reason));

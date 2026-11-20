@@ -364,3 +364,43 @@ fn the_example_plan_of_the_design_parses() {
     assert_eq!(judge.judges.as_deref(), Some("retry-doc"));
     assert_eq!(frame_problems(&plan), Vec::new());
 }
+
+/// An output path of plan.yaml is untrusted: an absolute path, a path with
+/// `..` or an empty path is refused (fault 8 of T-561).
+#[test]
+fn an_output_path_outside_the_repository_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, needle) in [
+        ("/etc/passwd", "not a relative path"),
+        ("docs/../../x.md", "`..`"),
+        ("C:/x.md", "not a relative path"),
+        (" ", "is empty"),
+    ] {
+        let mut plan = read_plan(dir.path(), &plan_text(""), &[]);
+        plan.tasks[0].outputs = vec![path.to_string()];
+        let problems = frame_problems(&plan);
+        assert!(
+            has(&problems, "schema", "a", needle),
+            "{path}: {problems:?}"
+        );
+    }
+    let mut plan = read_plan(dir.path(), &plan_text(""), &[]);
+    plan.tasks[0].outputs = vec!["docs/sync.review.md".into()];
+    assert_eq!(frame_problems(&plan), Vec::new());
+}
+
+/// 2 tasks of 1 plan with the same output path are refused: each branch
+/// lands on the feature, so each output path is unique (fault 8 of T-561).
+#[test]
+fn two_tasks_with_the_same_output_path_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut plan = read_plan(dir.path(), &plan_text(""), &[]);
+    plan.tasks[0].outputs = vec!["docs/sync.review.md".into()];
+    plan.tasks[1].outputs = vec!["docs/sync.review.md".into()];
+    let problems = frame_problems(&plan);
+    assert!(
+        has(&problems, "schema", "a", "2 tasks have the output"),
+        "{problems:?}"
+    );
+    assert_eq!(problems.len(), 1, "1 problem for the path: {problems:?}");
+}

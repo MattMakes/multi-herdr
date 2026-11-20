@@ -16,7 +16,9 @@
 //! - plan.yaml has 1 work task: its profile from the Persona line and its
 //!   check from the Check line. For a judgment kind fleetd adds the judge
 //!   task: kind `judge`, `judges:` the work task, and the first profile of
-//!   another provider of the roster with a sandbox on this OS.
+//!   another provider of the roster with a sandbox on this OS that can
+//!   judge: healthy, not of a reserved top tier, and accepted by the
+//!   profile rules of the plan validator.
 //! - [`start_direct`] moves the idea to `ticketing` under the rule of the
 //!   feature, then validates its plan (`ValidatePlan`). A refused plan
 //!   opens 1 needs-you item with the reason, and the idea stays in
@@ -30,6 +32,7 @@
 //!   so a pass before the effects saw no plan.yaml and moved the idea to
 //!   `clarifying`.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -58,13 +61,18 @@ use crate::fleetd::ideas::application::plan_commit::{
 use crate::fleetd::ideas::domain::approval::{Approval, APPROVAL_JSON, BY_OPERATOR};
 use crate::fleetd::ideas::domain::idea::FIRST;
 use crate::fleetd::ideas::domain::needs_you::Write;
-use crate::fleetd::ideas::domain::plan::Kind;
-use crate::fleetd::ideas::domain::plan_validator::{Problem, Requirement, RosterProfile};
+use crate::fleetd::ideas::domain::plan::{Kind, Plan, PlannedTask};
+use crate::fleetd::ideas::domain::plan_validator::{
+    PlanFacts, Problem, Requirement, RosterProfile,
+};
+use crate::fleetd::ideas::domain::{plan_rules_model_guide, plan_rules_profiles};
 use crate::fleetd::integration::application::new_features::{
     create_ref, name_feature_branch, name_from_title, BranchRef, NameSource, Named,
 };
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
+use crate::fleetd::worker_profiles::application::health;
 use crate::fsx;
+use crate::roster::teammate::reserved_tier;
 use crate::taskledger::map::ticket_facts;
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{runs, util, Store};
@@ -181,6 +189,7 @@ pub fn add_direct_idea(
         kind: facts.kind.map(|k| k.as_str()).unwrap_or(""),
         profile: facts.primary.clone().unwrap_or_default(),
         check: facts.check.clone(),
+        first_own: facts.own.first().cloned(),
     };
     let plan = plan_yaml(
         &idea,
@@ -188,6 +197,7 @@ pub fn add_direct_idea(
         run.run_branch.as_deref().unwrap_or(""),
         &work,
         direct.roster,
+        &health::unhealthy_profiles(tx)?,
     )?;
     let sha256 = sha256_bytes(ticket.as_bytes()).hex();
     let approval = Approval {
@@ -241,6 +251,8 @@ struct WorkTask<'a> {
     kind: &'a str,
     profile: String,
     check: Option<String>,
+    /// The first `**Own:**` path of the ticket.
+    first_own: Option<String>,
 }
 
 /// The text of plan.yaml: the work task, and its judge task when its kind
@@ -251,6 +263,7 @@ fn plan_yaml(
     branch: &str,
     work: &WorkTask<'_>,
     roster: &[RosterProfile],
+    unhealthy: &BTreeMap<String, String>,
 ) -> Result<String> {
     let acceptance: Vec<_> = work.check.iter().map(|c| json!({ "run": c })).collect();
     let mut tasks = vec![json!({
@@ -268,7 +281,8 @@ fn plan_yaml(
             "title": format!("Judge: {}", work.title),
             "kind": Kind::Judge.as_str(),
             "judges": work.key,
-            "profile": judge_profile(&work.profile, roster),
+            "profile": judge_profile(&work.profile, roster, unhealthy),
+            "outputs": [verdict_file(work)],
         }));
     }
     let plan = json!({
@@ -281,23 +295,131 @@ fn plan_yaml(
     Ok(serde_yaml::to_string(&plan)?)
 }
 
+/// The verdict file of the judge of `work`, its 1 output: the first Own
+/// path of the ticket with the extension `review.md` (`docs/sync.md` gives
+/// `docs/sync.review.md`, as in ticket 39 of fleetd-p6), else
+/// `<task key>.review.md`. The design names no file name (MAP.md, Q18).
+fn verdict_file(work: &WorkTask<'_>) -> String {
+    match &work.first_own {
+        Some(own) => Path::new(own)
+            .with_extension("review.md")
+            .to_string_lossy()
+            .into_owned(),
+        None => format!("{}.review.md", work.key),
+    }
+}
+
 /// The profile of the judge of a task of the profile `author` (MAP.md, Q8):
 /// the first profile of the roster of another provider with a sandbox on
-/// this OS. An empty name when the roster has none, so the plan validator
-/// refuses the plan with the reason.
-fn judge_profile(author: &str, roster: &[RosterProfile]) -> String {
-    let Some(provider) = roster
-        .iter()
-        .find(|p| p.name == author)
-        .map(|p| &p.provider)
-    else {
-        return String::new();
-    };
-    roster
-        .iter()
-        .find(|p| &p.provider != provider && p.sandbox_here)
+/// this OS that can judge at the plan time ([`cannot_judge`]). An empty
+/// name when the roster has none, so the plan validator refuses the plan,
+/// and [`start_direct`] names the cause.
+fn judge_profile(
+    author: &str,
+    roster: &[RosterProfile],
+    unhealthy: &BTreeMap<String, String>,
+) -> String {
+    judge_candidates(author, roster)
+        .find(|p| cannot_judge(p, roster, unhealthy).is_none())
         .map(|p| p.name.clone())
         .unwrap_or_default()
+}
+
+/// Why the profile `p` cannot judge, or `None` when it can: it is
+/// unhealthy, its model is of a reserved top tier (a council seat, never
+/// picked by a planner), or the profile rules of the plan validator refuse
+/// it for a judge task. The rules are the functions of the validator, so
+/// the pick and the validator cannot differ.
+fn cannot_judge(
+    p: &RosterProfile,
+    roster: &[RosterProfile],
+    unhealthy: &BTreeMap<String, String>,
+) -> Option<String> {
+    if let Some(cause) = unhealthy.get(&p.name) {
+        return Some(format!("unhealthy: {cause}"));
+    }
+    if let Some((tier, _)) = reserved_tier(&p.model) {
+        return Some(format!(
+            "its model {} is of the reserved tier {tier}",
+            p.model
+        ));
+    }
+    let plan = Plan {
+        tasks: vec![PlannedTask {
+            key: "judge".into(),
+            kind: Some(Kind::Judge),
+            profile: p.name.clone(),
+            ..PlannedTask::default()
+        }],
+        ..Plan::default()
+    };
+    let facts = PlanFacts {
+        roster: roster.to_vec(),
+        ..PlanFacts::default()
+    };
+    let refused: Vec<String> = plan_rules_profiles::check(&plan, &facts)
+        .into_iter()
+        .chain(plan_rules_model_guide::check(&plan, &facts))
+        .map(|problem| problem.message)
+        .collect();
+    (!refused.is_empty()).then(|| refused.join("; "))
+}
+
+/// The profiles of the roster that can judge a task of the profile
+/// `author`: another provider, with a sandbox on this OS.
+fn judge_candidates<'a>(
+    author: &str,
+    roster: &'a [RosterProfile],
+) -> impl Iterator<Item = &'a RosterProfile> {
+    let provider = roster
+        .iter()
+        .find(|p| p.name == author)
+        .map(|p| p.provider.clone());
+    roster.iter().filter(move |p| {
+        provider
+            .as_ref()
+            .is_some_and(|provider| &p.provider != provider && p.sandbox_here)
+    })
+}
+
+/// The problem of a judge task of the plan of `idea` that has no profile
+/// because [`cannot_judge`] skips each profile of another provider with a
+/// sandbox: it names each of them and its cause. `None` for each other
+/// plan.
+fn judge_gap(conn: &Connection, ctx: &PlanCommit<'_>, idea: &str) -> Result<Option<Problem>> {
+    let Ok(text) = std::fs::read_to_string(ctx.ideas.join(idea).join(PLAN_YAML)) else {
+        return Ok(None);
+    };
+    let Ok(plan) = serde_yaml::from_str::<serde_json::Value>(&text) else {
+        return Ok(None);
+    };
+    let tasks = plan["tasks"].as_array().cloned().unwrap_or_default();
+    let field = |t: &serde_json::Value, k: &str| t[k].as_str().unwrap_or("").to_string();
+    let Some(judge) = tasks
+        .iter()
+        .find(|t| field(t, "kind") == Kind::Judge.as_str() && field(t, "profile").is_empty())
+    else {
+        return Ok(None);
+    };
+    let judged = field(judge, "judges");
+    let Some(author) = tasks.iter().find(|t| field(t, "key") == judged) else {
+        return Ok(None);
+    };
+    let unhealthy = health::unhealthy_profiles(conn)?;
+    let named: Vec<String> = judge_candidates(&field(author, "profile"), ctx.roster)
+        .filter_map(|p| cannot_judge(p, ctx.roster, &unhealthy).map(|c| format!("{}: {c}", p.name)))
+        .collect();
+    if named.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Problem::task(
+        "profile",
+        &field(judge, "key"),
+        format!(
+            "no profile of another provider with a sandbox on this OS can judge {judged}: {}",
+            named.join("; ")
+        ),
+    )))
 }
 
 /// What [`start_direct`] did.
@@ -349,7 +471,8 @@ pub fn start_direct(store: &mut Store, ctx: &PlanCommit<'_>, idea: &str) -> Resu
         return Ok(Started::Waiting);
     }
     match validate_plan(store, ctx, idea)? {
-        Verdict::Refused { problems } => {
+        Verdict::Refused { mut problems } => {
+            problems.extend(judge_gap(store.conn(), ctx, idea)?);
             store.immediate(|tx| open_refused(tx, idea, &problems))?;
             Ok(Started::Refused(problems))
         }
