@@ -138,6 +138,17 @@ pub fn attempt_via(conn: &Connection, id: &str) -> Result<Option<AttemptVia>> {
     Ok(row)
 }
 
+/// The worker of the attempt `id`, or `None` when the ledger has no such
+/// attempt.
+pub fn worker_of_attempt(conn: &Connection, id: &str) -> Result<Option<String>> {
+    let row = conn
+        .query_row("SELECT worker_id FROM attempts WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(row)
+}
+
 /// The id of each task with the status `status`, by id.
 pub fn tasks_in(conn: &Connection, status: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT task_id FROM tasks WHERE status = ?1 ORDER BY task_id")?;

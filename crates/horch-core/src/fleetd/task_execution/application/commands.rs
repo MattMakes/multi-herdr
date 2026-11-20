@@ -56,17 +56,36 @@ fn cause(text: &str) -> Cause<'_> {
 /// `ended` with the outcome `outcome`, in the transaction of `done`. A
 /// worker with no attempt that holds it writes nothing.
 pub fn end_own_attempt(tx: &Connection, worker_id: &str, outcome: &str) -> Result<()> {
+    let text = format!("its worker ran horch ledger done: {outcome}");
+    let by = Cause {
+        actor: Actor::Worker,
+        text: &text,
+    };
+    end_held_attempt(tx, worker_id, outcome, by)
+}
+
+/// `horch ledger stop`: the attempt that worker `worker_id` holds moves to
+/// `ended` with the outcome `killed`, in the transaction of the stop. The
+/// pass then stops its processes with the ladder, as for each ended
+/// attempt (I5). A worker with no attempt that holds it writes nothing.
+pub fn end_stopped_attempt(tx: &Connection, worker_id: &str, reason: &str) -> Result<()> {
+    let text = format!("its worker was stopped: {reason}");
+    let by = Cause {
+        actor: Actor::Orchestrator,
+        text: &text,
+    };
+    end_held_attempt(tx, worker_id, Outcome::Killed.as_str(), by)
+}
+
+/// The attempt that worker `worker_id` holds to `ended` with `outcome`,
+/// through `transition()`.
+fn end_held_attempt(tx: &Connection, worker_id: &str, outcome: &str, by: Cause<'_>) -> Result<()> {
     check_open(tx)?;
     let attempts = store::attempts_of_worker(tx, worker_id)?;
     let Some(a) = held_attempt(worker_id, &attempts) else {
         return Ok(());
     };
     store::set_ended(tx, &a.id, outcome, &util::now())?;
-    let text = format!("its worker ran horch ledger done: {outcome}");
-    let by = Cause {
-        actor: Actor::Worker,
-        text: &text,
-    };
     transition(
         tx,
         None,

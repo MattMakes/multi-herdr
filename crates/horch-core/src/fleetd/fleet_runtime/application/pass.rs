@@ -193,7 +193,7 @@ use crate::taskledger::triage::default_branch;
 use crate::taskledger::util;
 use crate::taskledger::watchdog::{self, Observation};
 use crate::taskledger::workers::{self, Worker};
-use crate::taskledger::{runs, tasks, timer};
+use crate::taskledger::{runs, stop, tasks, timer};
 
 /// After the first full pass, the next pass sleeps for ever before its
 /// heartbeat (`p0_fleetd_hang.rs`).
@@ -1788,7 +1788,9 @@ impl<'a> Pass<'a> {
                 Some(done)
             }
             Target::Pane { pane, shell } if stops.may_close(&s.row) => {
-                self.close_pane(pane, *shell, stops, report)
+                let done = self.close_pane(pane, *shell, stops, report)?;
+                self.mark_pane(conn, &s.row, pane, report);
+                Some(done)
             }
             Target::Pane { .. } => None,
         }
@@ -1877,6 +1879,25 @@ impl<'a> Pass<'a> {
             report
                 .failed
                 .push(format!("the sent mark of the stop of process {pid}: {e:#}"));
+        }
+    }
+
+    /// The `stops` row of the close of `pane` of `row`: its own
+    /// transaction after the close, as [`Self::mark_stop`].
+    fn mark_pane(&self, conn: &mut Connection, row: &RowRef, pane: &str, report: &mut PassReport) {
+        let marked = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(anyhow::Error::from)
+            .and_then(|tx| {
+                fleetd_row::check_generation(&tx, self.settings.generation)?;
+                stops_row(&tx, row, stop::Sent::Pane(pane))?;
+                tx.commit()?;
+                Ok(())
+            });
+        if let Err(e) = marked {
+            report
+                .failed
+                .push(format!("the stops row of the close of pane {pane}: {e:#}"));
         }
     }
 
@@ -2610,7 +2631,25 @@ fn stop_sent(
         cause(&text),
         &data,
     )?;
-    Ok(())
+    let sent = stop::Sent::Signal {
+        pid: process.0,
+        pid_start: process.1,
+        kill,
+    };
+    stops_row(tx, row, sent)
+}
+
+/// The `stops` row of 1 rung that fleetd sent for the worker of `row`
+/// (`preservation-04-behavior.md`, S8).
+fn stops_row(tx: &Connection, row: &RowRef, sent: stop::Sent<'_>) -> Result<()> {
+    let worker = match row {
+        RowRef::Worker(id) => Some(id.clone()),
+        RowRef::Attempt(id) => attempts_store::worker_of_attempt(tx, id)?,
+    };
+    match worker {
+        Some(w) => stop::record_sent(tx, &w, sent),
+        None => Ok(()),
+    }
 }
 
 /// The fleet clock of the sent mark of the stop of `process` (its pid and
