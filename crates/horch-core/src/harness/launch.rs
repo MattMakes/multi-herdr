@@ -3186,6 +3186,12 @@ mod tests {
                 None,
                 None,
             ),
+            // `opus` is sandboxed: on Linux it launches only with `bwrap` and
+            // `socat` on PATH. Fake ones stand in, so the host does not matter.
+            path: Some(super::super::claude::sandbox_tools_path(
+                &tmp.path().join("tools"),
+                true,
+            )),
             ..LaunchEnv::for_test()
         };
         let r = Roster::builtin().unwrap();

@@ -2237,6 +2237,7 @@ mod v7_tests {
         }
         if version >= PHASE_5_VERSION {
             conn.execute_batch(&phase_5()).unwrap();
+            phase_5_jobs(&conn).unwrap();
         }
         if version >= PHASE_6_VERSION {
             conn.execute_batch(PHASE_6).unwrap();
