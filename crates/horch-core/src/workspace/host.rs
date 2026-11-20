@@ -150,11 +150,7 @@ impl PaneHost {
     pub fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_split(from, direction),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_split",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_split(from, direction),
         }
     }
 
@@ -203,66 +199,54 @@ impl PaneHost {
     pub fn pane_layout(&self, pane: Option<&str>) -> Result<Layout> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_layout(pane),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_layout",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_layout(pane),
         }
     }
 
     pub fn tab_list(&self, workspace_id: &str) -> Result<Vec<Tab>> {
         match &self.inner {
             Inner::Herdr(h) => h.tab_list(workspace_id),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "tab_list",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.tab_list(workspace_id),
+        }
+    }
+
+    pub fn tab_new(
+        &self,
+        workspace_id: &str,
+        label: &str,
+        cwd: Option<&str>,
+    ) -> Result<(String, String)> {
+        match &self.inner {
+            Inner::Herdr(h) => h.tab_new(workspace_id, label, cwd),
+            Inner::Hc(h) => h.tab_new(workspace_id, label, cwd),
         }
     }
 
     pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
         match &self.inner {
             Inner::Herdr(h) => h.workspace_list(),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "workspace_list",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.workspace_list(),
         }
     }
 
     pub(crate) fn tab_focus(&self, tab_id: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.tab_focus(tab_id),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "tab_focus",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.tab_focus(tab_id),
         }
     }
 
     pub fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_focus(origin, direction),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_focus",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_focus(origin, direction),
         }
     }
 
     pub fn pane_focus_walk(&self, tab: &str, target: &str) -> Result<bool> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_focus_walk(tab, target),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_focus_walk",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_focus_walk(tab, target),
         }
     }
 
@@ -276,33 +260,21 @@ impl PaneHost {
     ) -> Result<Move> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_move(pane, tab, direction, target, ratio),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_move",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_move(pane, tab, direction, target, ratio),
         }
     }
 
     pub(crate) fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_move_new_tab(pane, label),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_move_new_tab",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_move_new_tab(pane, label),
         }
     }
 
     pub(crate) fn pane_resize(&self, pane: &str, direction: &str, amount: f64) -> Result<Resize> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_resize(pane, direction, amount),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "pane_resize",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.pane_resize(pane, direction, amount),
         }
     }
 
@@ -314,22 +286,21 @@ impl PaneHost {
     ) -> Result<NewWorkspace> {
         match &self.inner {
             Inner::Herdr(h) => h.workspace_create(label, cwd, focus),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "workspace_create",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.workspace_create(label, cwd, focus),
         }
     }
 
     pub fn workspace_close(&self, workspace_id: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.workspace_close(workspace_id),
-            Inner::Hc(_) => Err(Unsupported {
-                call: "workspace_close",
-                backend: Backend::Hc,
-            }
-            .into()),
+            Inner::Hc(h) => h.workspace_close(workspace_id),
+        }
+    }
+
+    pub fn window_open(&self) -> Option<bool> {
+        match &self.inner {
+            Inner::Herdr(_) => None,
+            Inner::Hc(h) => Some(h.window_open()),
         }
     }
 

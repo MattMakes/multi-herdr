@@ -263,6 +263,21 @@ impl Herdr {
         Ok(tabs)
     }
 
+    /// `herdr` creates tabs by moving an existing pane (`pane_move_new_tab`),
+    /// not by opening a fresh empty tab.
+    pub fn tab_new(
+        &self,
+        _workspace_id: &str,
+        _label: &str,
+        _cwd: Option<&str>,
+    ) -> Result<(String, String)> {
+        Err(crate::workspace::host::Unsupported {
+            call: "tab_new",
+            backend: crate::runtime::Backend::Herdr,
+        }
+        .into())
+    }
+
     /// `herdr workspace list`.
     pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
         let r: WorkspaceListResult = self.json(&["workspace", "list"])?;
