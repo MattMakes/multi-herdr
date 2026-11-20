@@ -238,11 +238,13 @@ impl Drop for OldWorker {
 /// The run in flight on Phase 4: the ledger, the old fleetd, the 2 old
 /// workers and fleetd of this branch after the update.
 struct Flight {
-    h: Harness,
-    old_fleetd: OldFleetd,
+    // Declared before `h`: each process stops before `Harness::drop` looks
+    // for leaked processes.
+    fleetds: Fleetds,
     claim: OldWorker,
     push: OldWorker,
-    fleetds: Fleetds,
+    old_fleetd: OldFleetd,
+    h: Harness,
 }
 
 /// The progress text and the done summary of the old worker of `task`.

@@ -65,10 +65,12 @@ fn text(o: &Output) -> String {
 /// its worker holds in the live push attempt `A1`, and the worktree of
 /// that task.
 struct World {
+    // Declared before `h`: the fleetd stops before `Harness::drop` looks for
+    // leaked processes.
+    fleetds: Fleetds,
     h: Harness,
     task_id: String,
     worktree: PathBuf,
-    fleetds: Fleetds,
 }
 
 impl World {
@@ -321,9 +323,12 @@ impl World {
 
     /// Start `horch fleetd`, the 1 writer of the ledger. It holds the
     /// ledger open, as on a live fleet, so the WAL files of the ledger
-    /// exist: a read-only open in the sandbox cannot make them.
+    /// exist: a read-only open in the sandbox cannot make them. It waits
+    /// for the channel, not for the `fleetd` row: fleetd closes its start
+    /// connection after the row, and the WAL files stay away until it holds
+    /// its pass connection.
     fn start_fleetd(&mut self) {
-        self.fleetds.start(&self.h, "fleetd");
+        self.fleetds.serve(&self.h, "fleetd");
     }
 
     /// Wait until fleetd ingested the progress line `text` of the worker:
