@@ -89,7 +89,7 @@ use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::runs;
 use horch_core::taskledger::sql_words::list;
-use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
+use horch_core::taskledger::store::{canonical, default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{watchdog, LedgerWriter, Store};
@@ -98,6 +98,7 @@ use horch_platform::channel::User;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 use super::taskledger_watch::LiveEffects;
 use crate::output;
@@ -439,14 +440,46 @@ fn this_mode(ctx: &RuntimeContext) -> Mode {
 /// The service of fleetd on the binary `exe`, for the default ledger of the
 /// OS user.
 pub(crate) fn service_spec(exe: &Path) -> Result<service::Spec> {
+    let home = service::os_user_home().context("finding the home of the OS user")?;
+    service_spec_for(exe, &default_path(&home), Some(&home))
+}
+
+/// The service of fleetd on the binary `exe` for `ledger`, with the label
+/// [`service_label`]. The default ledger with no FLEET_ROOT needs no env,
+/// and a Windows task refuses one. Another ledger names itself in
+/// `HORCH_LEDGER_DB`.
+pub(crate) fn service_spec_for(
+    exe: &Path,
+    ledger: &Path,
+    os_home: Option<&Path>,
+) -> Result<service::Spec> {
+    let label = service_label(ledger, os_home);
+    let env = if label == service::LABEL {
+        Vec::new()
+    } else {
+        vec![(
+            "HORCH_LEDGER_DB".into(),
+            ledger.to_string_lossy().into_owned(),
+        )]
+    };
     Ok(service::Spec {
-        label: service::LABEL.into(),
+        label,
         exe: exe.to_path_buf(),
-        // The default ledger with no FLEET_ROOT needs no env, and a Windows
-        // task refuses one.
-        env: Vec::new(),
+        env,
         folder: service::default_folder().context("finding the folder of the fleetd service")?,
     })
+}
+
+/// The service label of `ledger` (L2): [`service::LABEL`] only for the
+/// default ledger of the OS user, whose home is `os_home`. Another ledger
+/// gets [`service::ledger_label`] of the SHA-256 of its canonical path, so a
+/// development fleet never replaces or restarts the installed service.
+pub(crate) fn service_label(ledger: &Path, os_home: Option<&Path>) -> String {
+    let real = canonical(ledger);
+    if os_home.is_some_and(|home| canonical(&default_path(home)) == real) {
+        return service::LABEL.into();
+    }
+    service::ledger_label(&Sha256::digest(real.as_os_str().as_encoded_bytes()))
 }
 
 /// Start fleetd from `exe` in `mode`.
@@ -1645,6 +1678,82 @@ mod tests {
         // No home of the OS user.
         let p = paths(&[("HORCH_LEDGER_DB", &default)]);
         assert_eq!(mode(&p, None), Mode::StandIn);
+    }
+
+    /// L2: only the default ledger of the OS user has `horch-fleetd`.
+    /// Another ledger gets `horch-fleetd-<8 hex chars>` of its canonical
+    /// path, and 2 ledgers get 2 labels.
+    #[test]
+    fn the_service_label_is_horch_fleetd_only_for_the_default_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_home = dir.path().join("os-user");
+        std::fs::create_dir_all(&os_home).unwrap();
+        let default = default_path(&os_home);
+        assert_eq!(service_label(&default, Some(&os_home)), service::LABEL);
+
+        let a = dir.path().join("a").join("ledger.sqlite3");
+        let b = dir.path().join("b").join("ledger.sqlite3");
+        let label_a = service_label(&a, Some(&os_home));
+        let label_b = service_label(&b, Some(&os_home));
+        for label in [&label_a, &label_b] {
+            assert!(label.starts_with("horch-fleetd-"), "{label}");
+            assert_eq!(label.len(), "horch-fleetd-".len() + 8, "{label}");
+            service::validate_label(label).unwrap();
+        }
+        assert_ne!(label_a, label_b);
+        assert_eq!(service_label(&a, Some(&os_home)), label_a, "stable");
+        // No home of the OS user: no ledger is the default ledger.
+        assert_ne!(service_label(&default, None), service::LABEL);
+    }
+
+    /// The label follows the canonical path: a symlink to the default ledger
+    /// is the default ledger, and a relative path of a ledger is that ledger.
+    #[cfg(unix)]
+    #[test]
+    fn the_service_label_uses_the_canonical_ledger_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_home = dir.path().join("os-user");
+        std::fs::create_dir_all(&os_home).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&os_home, &link).unwrap();
+        assert_eq!(
+            service_label(&default_path(&link), Some(&os_home)),
+            service::LABEL
+        );
+        let other = dir.path().join("other").join("ledger.sqlite3");
+        let via_dots = dir
+            .path()
+            .join("other")
+            .join("..")
+            .join("other")
+            .join("ledger.sqlite3");
+        std::fs::create_dir_all(dir.path().join("other")).unwrap();
+        assert_eq!(
+            service_label(&via_dots, Some(&os_home)),
+            service_label(&other, Some(&os_home))
+        );
+    }
+
+    /// The spec of a non-default ledger names that ledger in its env, so its
+    /// service runs fleetd on that ledger and not on the default one.
+    #[test]
+    fn the_service_spec_of_a_non_default_ledger_names_its_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_home = dir.path().join("os-user");
+        let exe = dir.path().join("horch");
+        let spec = service_spec_for(&exe, &default_path(&os_home), Some(&os_home)).unwrap();
+        assert_eq!(spec.label, service::LABEL);
+        assert!(spec.env.is_empty(), "{:?}", spec.env);
+        let other = dir.path().join("ledger.sqlite3");
+        let spec = service_spec_for(&exe, &other, Some(&os_home)).unwrap();
+        assert_eq!(spec.label, service_label(&other, Some(&os_home)));
+        assert_eq!(
+            spec.env,
+            vec![(
+                "HORCH_LEDGER_DB".to_string(),
+                other.to_string_lossy().into_owned()
+            )]
+        );
     }
 
     /// Preservation 04 S10: a fleetd whose binary file changed starts the
