@@ -567,9 +567,6 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
     let task = tasks::get(conn, &task_id)?;
     let run = runs::get(conn, &task.run_id)?;
     let worker = workers::get(conn, &worker_id)?;
-    // The section of a resolver or fix attempt (ticket 33), else the
-    // section of a review that failed the last attempt (ticket 20). Then
-    // the answered questions of the task (RR-12).
     let work = match repair::start_section(conn, fleet_root, attempt_id)? {
         Some(section) => Some(section),
         None => review::start_section(conn, &task_id)?,

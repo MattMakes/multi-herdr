@@ -391,9 +391,6 @@ fn triage_delete_queues_1_triage_apply_job() {
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n| W1 | feat | | DELETE | |\n",
     )
     .unwrap();
-    // T-888 moved DELETE into 1 triage_apply job of fleetd. The CLI queues
-    // the job and removes nothing itself. The tests of the job are in
-    // crates/horch-core/tests/triage_apply_job.rs.
     let o = w.ok(
         &["worktree", "triage", "apply", reply.to_str().unwrap()],
         &[],

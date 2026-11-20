@@ -162,9 +162,6 @@ pub struct QuestionAnswer {
     pub text: String,
 }
 
-/// The row of the mail question goes to `answered`. The ingest of the
-/// question file of the QUESTION line made the row. A mail id with no row
-/// that waits for an answer is refused.
 fn question_answer(tx: &Connection, p: &QuestionAnswer) -> Result<Value> {
     check_id("workspace", &p.workspace)?;
     check_id("mail id", &p.mail_id)?;

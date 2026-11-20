@@ -124,7 +124,6 @@ pub fn render_start_md(f: &TaskFacts, report_to: &str, read_first: &[String]) ->
 /// 1 answered question of the task, for `START.md` of its next attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnsweredQuestion {
-    /// The id of the `questions` row.
     pub id: String,
     pub question: Option<String>,
     pub answer: Option<String>,

@@ -293,8 +293,6 @@ fn files_of(dir: &Path) -> Vec<String> {
 fn question_of_a_push_attempt_writes_1_question_file() {
     let w = World::new();
     w.ask(true, "QUESTION: which port? I recommend 8080.");
-    // The Stop hook runs before the ingest of fleetd, and it accepts the
-    // question file in place of result.json.
     let (code, out, err) = w.horch(Some(&w.files.task_yaml), &["result", "--check"]);
     assert_eq!(code, 0, "horch result --check: {out}{err}");
     let rows = w.question_rows();

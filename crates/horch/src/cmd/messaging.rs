@@ -98,12 +98,6 @@ pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str)
     outgoing.push().map(|_| ())
 }
 
-/// Record `text` as the answer of the `questions` row of mail question
-/// `id`, before the push closes the mail question: a worker that exited
-/// with its question gets the answer in `START.md` of the next attempt of
-/// its task. fleetd writes it: 1 `question_answer` request (RR-5, T-885).
-/// Its handler refuses a mail with no row that waits for an answer. A
-/// refused or queued request is an error, so the question stays open.
 fn record_answer(ctx: &RuntimeContext, workspace: &str, id: &str, text: &str) -> Result<()> {
     if !ctx.paths.ledger_db.exists() {
         return Ok(());
@@ -244,8 +238,6 @@ fn queue_as<'a>(
         let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
-        // The QUESTION line of a worker becomes its question file, which
-        // names this mail; the ingest of fleetd makes its questions row.
         if role == "orchestrator" {
             if from != HORCH && asks_a_question(text) {
                 if let Err(error) = write_question_file(ctx, text, id.as_str()) {
@@ -1312,12 +1304,6 @@ fn asks_a_question(text: &str) -> bool {
     })
 }
 
-/// The QUESTION line of `horch tell` from a process in a live attempt
-/// writes 1 question file in the outbox of that attempt, through the same
-/// writer as `horch ask`. A longer `text` is cut to fit
-/// `question_max_bytes`; the mail keeps all of it. The file names the
-/// mail `mail_id`, so an answer by `--answers` finds its row. A process in
-/// no attempt writes no file.
 fn write_question_file(ctx: &RuntimeContext, text: &str, mail_id: &str) -> Result<()> {
     let Ok(out) = super::askcmd::own_writer(ctx)? else {
         return Ok(());

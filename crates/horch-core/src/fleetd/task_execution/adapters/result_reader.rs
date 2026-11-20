@@ -79,10 +79,8 @@ pub struct QuestionFile {
     pub mail_id: Option<String>,
 }
 
-/// The most bytes of the mail id of a question file.
 pub const MAIL_ID_MAX_BYTES: usize = 128;
 
-/// Whether `id` has the form of a mail id.
 fn is_mail_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAIL_ID_MAX_BYTES

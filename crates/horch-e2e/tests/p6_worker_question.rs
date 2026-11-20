@@ -1,22 +1,3 @@
-//! A question of a worker in a push attempt becomes 1 `questions` row with
-//! its owner, through the ingest of fleetd (`docs/specs/fleetd/design.md`:
-//! RR-12, FM-35, OR-3 and FM-8; T-897).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. `horch idea add --direct` adds 1 ticket, so the idea `I-0001` has
-//! its feature and 1 planned task, which fleetd dispatches by push.
-//!
-//! The claude of each pane is a wrapper script. At the first launch of a
-//! worker (its argument names `inbox/START.md`), the wrapper runs the shell
-//! line of the test, for example `horch ask ...`, and exits with no result.
-//! Each other launch, of a later worker or of the sub-orchestrator, runs the
-//! fake claude with the keys of the scenario.
-//!
-//! No test reads the load, the limits or the clock of this machine. Each
-//! wait is for an event of the ledger, never for a time.
-//! `HORCH_TEST_DOCS_FIXTURE` keeps the docs sync off the network.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -26,10 +7,8 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags};
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The ticket of each test: 1 task of the code kind for the fake claude.
 const TICKET: &str = "# 01: Write the port guide\n\n\
 <!-- horch-ticket: 1 -->\n\
 **Persona:** primary `opus` · **Parallel:** yes\n\
@@ -39,14 +18,10 @@ const TICKET: &str = "# 01: Write the port guide\n\n\
 **Own:** `fake-claude.txt`\n\n\
 ## Goal\n\nThe guide names the port.\n";
 
-/// The idea of `horch idea add --direct` in each test.
 const IDEA: &str = "I-0001";
 
-/// The question of the worker in each test.
 const QUESTION: &str = "Which port does the guide name?";
 
-/// The passes that a test watches after an event, to see that nothing more
-/// comes.
 const QUIET_PASSES: usize = 3;
 
 fn text(o: &Output) -> String {
@@ -58,28 +33,21 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// SQL text of `s`, in single quotes.
 fn quoted(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// `s` as 1 shell word in single quotes.
 fn shell_word(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// A fleet with a test fleetd and 1 `--direct` idea.
 struct World {
     h: Harness,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent, and
-    /// `first` as the shell line of the first launch of a worker.
     fn new(name: &str, scenario: &str, first: &str) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger and the fleet root are outside the state folder. The
-        // launch gives each pane the ledger and the fleet root.
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -97,9 +65,7 @@ impl World {
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
-        // The worker runs `horch` from PATH, as in a pane.
         let horch = h.bin.join("horch");
         if !horch.exists() {
             std::os::unix::fs::symlink(Harness::horch_bin(), horch).unwrap();
@@ -110,7 +76,6 @@ impl World {
         let workspace = h.fleet_workspace();
         h.set("HORCH_WORKSPACE_ID", workspace);
         let w = World { h };
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             w.h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -138,7 +103,6 @@ impl World {
         Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
     }
 
-    /// Rows of 1 column of the ledger, as text.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -154,12 +118,10 @@ impl World {
             .collect()
     }
 
-    /// The first row of [`World::rows`].
     fn one(&self, sql: &str) -> Option<String> {
         self.rows(sql).into_iter().next()
     }
 
-    /// The 1 planned task of the idea.
     fn task(&self) -> String {
         self.wait("the planned task of the idea", || {
             self.one(&format!(
@@ -177,7 +139,6 @@ impl World {
         .unwrap_or_default()
     }
 
-    /// The feature of the idea.
     fn feature(&self) -> String {
         self.one(&format!(
             "SELECT feature_id FROM ideas WHERE id = {}",
@@ -186,7 +147,6 @@ impl World {
         .expect("the idea has a feature")
     }
 
-    /// The attempts of the task, oldest first: (id, state, outcome).
     fn attempts(&self, task: &str) -> Vec<(String, String, String)> {
         self.rows(&format!(
             "SELECT id || char(9) || state || char(9) || IFNULL(outcome, '-') FROM attempts
@@ -205,7 +165,6 @@ impl World {
         .collect()
     }
 
-    /// The `questions` rows of the task, oldest first: (id, state, owner).
     fn questions(&self, task: &str) -> Vec<(String, String, String)> {
         self.rows(&format!(
             "SELECT id || char(9) || state || char(9) || owner FROM questions
@@ -224,12 +183,10 @@ impl World {
         .collect()
     }
 
-    /// The mark of the last pass of fleetd.
     fn pass_mark(&self) -> Option<String> {
         self.one("SELECT clock_ticked_at FROM fleetd WHERE id = 1")
     }
 
-    /// Wait until fleetd ran `n` more passes.
     fn passes(&self, n: usize) {
         for _ in 0..n {
             let before = self.pass_mark();
@@ -239,8 +196,6 @@ impl World {
         }
     }
 
-    /// Wait until the task is `blocked_on_user`, then for [`QUIET_PASSES`]
-    /// more passes, so a second ingest of the same file has its chance.
     fn blocked(&self, task: &str) {
         self.wait("the task in blocked_on_user", || {
             (self.status(task) == "blocked_on_user").then_some(())
@@ -248,7 +203,6 @@ impl World {
         self.passes(QUIET_PASSES);
     }
 
-    /// The folder of attempt `attempt` of the task.
     fn attempt_dir(&self, attempt: &str) -> PathBuf {
         let (task, n) = attempt
             .rsplit_once('/')
@@ -261,17 +215,14 @@ impl World {
             .join(n)
     }
 
-    /// The `START.md` of attempt `attempt`, when fleetd wrote it.
     fn start_md(&self, attempt: &str) -> Option<String> {
         std::fs::read_to_string(self.attempt_dir(attempt).join("inbox/START.md")).ok()
     }
 
-    /// The text of each needs-you item that is open.
     fn needs_you(&self) -> Vec<String> {
         self.rows("SELECT key || ' ' || text FROM needs_you WHERE state = 'open' ORDER BY key")
     }
 
-    /// What a failed wait shows.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -312,16 +263,11 @@ impl World {
         )
     }
 
-    /// Wait for `f` to give a value, with [`World::context`] on a failure.
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
 }
 
-/// The claude wrapper: the first launch of a worker runs `first`, with its
-/// output in [`FIRST_LOG`] under `root`, and exits with no result; each
-/// other launch runs the fake claude. A conformance run of fleetd also has
-/// an `inbox/START.md`: it always runs the fake claude.
 fn wrapper(root: &Path, first: &str) -> String {
     let fake = Harness::horch_bin().with_file_name("fake-claude");
     format!(
@@ -334,15 +280,12 @@ fn wrapper(root: &Path, first: &str) -> String {
     )
 }
 
-/// The output of the shell line of the first launch of a worker.
 const FIRST_LOG: &str = "first-launch.log";
 
-/// The shell line of a worker that runs `horch ask` with `text`.
 fn horch_ask(text: &str) -> String {
     format!("horch ask {}", shell_word(text))
 }
 
-/// The shell line of a worker that sends a QUESTION line with `text`.
 fn question_tell(text: &str) -> String {
     format!(
         "horch tell orchestrator {}",
@@ -350,9 +293,6 @@ fn question_tell(text: &str) -> String {
     )
 }
 
-/// Assert the 1 row of a question of the first attempt: its task, its
-/// attempt, its owner and its state; the task is `blocked_on_user`, and
-/// the attempt has the outcome `asked`.
 fn assert_1_row_of_the_first_attempt(w: &World, task: &str) -> String {
     let attempts = w.attempts(task);
     let (attempt, state, outcome) = attempts.first().cloned().unwrap_or_default();
@@ -387,9 +327,6 @@ fn assert_1_row_of_the_first_attempt(w: &World, task: &str) -> String {
     id
 }
 
-/// RR-12, step 1 of T-897: `horch ask` of a worker in a push attempt gives
-/// 1 `questions` row with its owner, in the move of the task to
-/// `blocked_on_user`. More passes give no second row.
 #[test]
 fn horch_ask_of_a_push_worker_gives_1_row_with_its_owner() {
     let w = World::new("p6-wq-ask", "stay", &horch_ask(QUESTION));
@@ -398,9 +335,6 @@ fn horch_ask_of_a_push_worker_gives_1_row_with_its_owner() {
     assert_1_row_of_the_first_attempt(&w, &task);
 }
 
-/// RR-12: a QUESTION line of `horch tell` from a worker in a push attempt
-/// gives 1 `questions` row with its owner, not 0 and not 2 (the question
-/// file and the mail are 1 question). More passes give no second row.
 #[test]
 fn question_tell_of_a_push_worker_gives_1_row_with_its_owner() {
     let w = World::new("p6-wq-tell", "stay", &question_tell(QUESTION));
@@ -409,9 +343,6 @@ fn question_tell_of_a_push_worker_gives_1_row_with_its_owner() {
     assert_1_row_of_the_first_attempt(&w, &task);
 }
 
-/// RR-12: the answer by `horch tell <role> --answers <id>` to the QUESTION
-/// line of a worker answers its row, the task leaves `blocked_on_user`, and
-/// `START.md` of the next attempt holds the question and the answer.
 #[test]
 fn answer_by_tell_answers_reaches_the_next_attempt() {
     let w = World::new("p6-wq-answers", "stay", &question_tell(QUESTION));
@@ -450,7 +381,6 @@ fn answer_by_tell_answers_reaches_the_next_attempt() {
     );
 }
 
-/// RR-12: a second question of the same attempt gives a second row.
 #[test]
 fn second_question_of_the_same_attempt_gives_a_second_row() {
     let second = "Which host does the guide name?";
@@ -468,11 +398,8 @@ fn second_question_of_the_same_attempt_gives_a_second_row() {
     );
 }
 
-/// SR-6, OR-3: a question file of a bad form gives no row and 1 needs-you
-/// item, and fleetd stays healthy.
 #[test]
 fn question_file_of_a_bad_form_gives_no_row_and_1_needs_you_item() {
-    // The PATH of a pane holds only the fakes and horch.
     let first = "q=\"$(/usr/bin/dirname \"$HORCH_TASK_YAML\")/outbox/questions\"; \
                  /bin/mkdir -p \"$q\" && printf '{\"text\": 1}' > \"$q/1.json\"";
     let w = World::new("p6-wq-bad", "stay", first);
@@ -490,8 +417,6 @@ fn question_file_of_a_bad_form_gives_no_row_and_1_needs_you_item() {
     assert_eq!(items.len(), 1, "{}", w.context());
 }
 
-/// FM-8 and T-894: the fake sub-orchestrator does not play the worker key
-/// `ask`, so it sends no QUESTION line, and no idea holds a question.
 #[test]
 fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
     let w = World::new("p6-wq-fake", "stay,ask", &horch_ask(QUESTION));
@@ -501,8 +426,6 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
         w.one("SELECT id FROM attempts WHERE task_id IS NULL")
     });
     w.passes(QUIET_PASSES);
-    // A sub-orchestrator call names an idea folder in its argv. A worker
-    // call and a conformance call do not, and they can play `ask`.
     let leads: Vec<serde_json::Value> =
         w.h.calls_of("claude")
             .into_iter()
@@ -526,8 +449,6 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
         .map(|c| c.to_string())
         .collect();
     assert!(asks.is_empty(), "the sub-orchestrator asked: {asks:?}");
-    // fleetd can make an idea of its own (a failed adapter conformance
-    // run), but no idea holds the text of a question.
     for idea in w.rows("SELECT id FROM ideas") {
         let path = w.h.fleet_root().join("ideas").join(&idea).join("idea.md");
         let text = std::fs::read_to_string(&path).unwrap_or_default();

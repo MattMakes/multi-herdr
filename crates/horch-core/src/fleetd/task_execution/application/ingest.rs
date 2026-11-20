@@ -236,7 +236,6 @@ fn to_verifying(tx: &Connection, guard: Option<Generation>, a: &AttemptRef) -> R
     )
 }
 
-/// 1 valid question file of an attempt.
 struct Asking<'a> {
     attempt: &'a AttemptRef,
     path: &'a Path,
@@ -244,12 +243,6 @@ struct Asking<'a> {
     question_limit_s: u64,
 }
 
-/// A valid question file of the newest attempt of its task. A `running`
-/// task: the attempt ends with the outcome `asked`, which burns no attempt,
-/// its worker row ends, and the task moves to `blocked_on_user`. The file
-/// then gives its question ([`question_row`]), also when the task waits
-/// already for an earlier question of the same attempt. true when the task
-/// moved.
 fn asked(tx: &Connection, guard: Option<Generation>, q: &Asking<'_>) -> Result<bool> {
     let a = q.attempt;
     let Some((worker, state)) = newest(tx, a)? else {
@@ -293,10 +286,6 @@ fn asked(tx: &Connection, guard: Option<Generation>, q: &Asking<'_>) -> Result<b
     Ok(blocked)
 }
 
-/// The question of the file of `q`: 1 `questions` row owned by the
-/// sub-orchestrator of the feature of its task, with the time limit after
-/// the fleet clock. The row names the mail of a QUESTION line. A task with
-/// no idea has no owner: its question goes to you as 1 needs-you item.
 fn question_row(tx: &Connection, q: &Asking<'_>) -> Result<()> {
     let a = q.attempt;
     if feature_of_task(tx, &a.task_id)?.is_none() {
@@ -324,7 +313,6 @@ fn question_row(tx: &Connection, q: &Asking<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The outcome of the attempt `id`.
 fn outcome_of(tx: &Connection, id: &str) -> Result<Option<String>> {
     Ok(tx
         .query_row("SELECT outcome FROM attempts WHERE id = ?1", [id], |r| {
@@ -334,8 +322,6 @@ fn outcome_of(tx: &Connection, id: &str) -> Result<Option<String>> {
         .flatten())
 }
 
-/// A rejected question file of `a`: 1 needs-you item, because its worker
-/// waits for an answer to a question that has no row.
 fn rejected_question(tx: &Connection, a: &AttemptRef, path: &Path, reason: &str) -> Result<()> {
     let text = format!(
         "The question file {} of task {} is rejected, so its question has no row and no \
@@ -347,7 +333,6 @@ fn rejected_question(tx: &Connection, a: &AttemptRef, path: &Path, reason: &str)
     question_file_item(tx, a, path, &text)
 }
 
-/// The needs-you item of the question file `path` of `a`, by its key.
 fn question_file_item(tx: &Connection, a: &AttemptRef, path: &Path, text: &str) -> Result<()> {
     needs_you::open_item(
         tx,
