@@ -265,6 +265,48 @@ fn silent_client_is_dropped_at_its_deadline_and_the_next_is_served() {
     server.stop().unwrap();
 }
 
+/// A reply far larger than the buffer of the channel: 4096 bytes on a
+/// Windows pipe, a few KiB on a Unix socket.
+const LARGE_REPLY: usize = 128 * 1024;
+
+#[test]
+fn non_reading_client_with_large_reply_does_not_block_next_client_or_server_stop() {
+    let w = World::new();
+    let mut handlers = Handlers::new();
+    handlers.insert(Kind::TaskCancel, |_, _| {
+        Ok(json!({ "pad": "x".repeat(LARGE_REPLY) }))
+    });
+    let options = Options {
+        read_deadline: Duration::from_millis(300),
+        ..Options::default()
+    };
+    let server =
+        ChannelServer::start_with(w.root(), w.conn(), Generation(1), handlers, options).unwrap();
+
+    // This client sends 1 valid request, never reads the reply and keeps
+    // its handle open.
+    let silent = connect(&w.socket());
+    let first = request(Kind::TaskCancel, Some(w.token()));
+    (&silent).write_all(first.to_line().as_bytes()).unwrap();
+
+    let next = request(Kind::TaskCancel, Some(w.token()));
+    let got = reply(&ask(&w.socket(), next.to_line().as_bytes()));
+    assert_eq!(got.request_id, next.request_id);
+    assert_eq!(
+        got.outcome,
+        Outcome::Applied(json!({ "pad": "x".repeat(LARGE_REPLY) }))
+    );
+
+    let stopping = Instant::now();
+    server.stop().unwrap();
+    assert!(
+        stopping.elapsed() < Duration::from_secs(2),
+        "the stop ends in time: {:?}",
+        stopping.elapsed()
+    );
+    drop(silent);
+}
+
 #[test]
 fn worker_kind_on_the_channel_is_refused_and_recorded() {
     let w = World::new();

@@ -10,14 +10,17 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_sys::core::PWSTR;
 use windows_sys::Win32::Foundation::{
-    LocalFree, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
-    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    DuplicateHandle, LocalFree, DUPLICATE_SAME_ACCESS, ERROR_BROKEN_PIPE, ERROR_OPERATION_ABORTED,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -36,7 +39,8 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
@@ -68,6 +72,13 @@ pub(crate) struct Stream {
     /// is not overlapped has no read timeout, so a read with a limit first
     /// polls [`PeekNamedPipe`] until bytes wait or the limit passes.
     read_timeout: Mutex<Option<Duration>>,
+    /// The longest wait of each write, or `None` for no limit. A pipe that
+    /// is not overlapped has no write timeout, so a write with a limit is
+    /// cancelled with [`CancelSynchronousIo`] when the limit passes.
+    write_timeout: Mutex<Option<Duration>>,
+    /// True after a write was cancelled. The reply is then cut, so the end
+    /// of the connection does not wait for the client to read it.
+    cut: AtomicBool,
 }
 
 /// The side of 1 connection.
@@ -92,6 +103,11 @@ const DRAIN_LIMIT: Duration = Duration::from_secs(2);
 
 /// The time between 2 polls of a read with a timeout.
 const READ_POLL: Duration = Duration::from_millis(10);
+
+/// The time between 2 cancels of a write that passed its timeout. A cancel
+/// that comes before the write starts in the OS cancels nothing, so the
+/// watchdog cancels again until the write returns.
+const CANCEL_RETRY: Duration = Duration::from_millis(10);
 
 /// The longest full pipe name, in UTF-16 units.
 const MAX_PIPE_NAME: usize = 256;
@@ -246,11 +262,12 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
 /// End the connection of the server side, and free the instance for the
 /// next client. `DisconnectNamedPipe` discards the bytes that the client did
 /// not read, so a helper thread first waits with `FlushFileBuffers` until
-/// the client reads them, for at most [`DRAIN_LIMIT`].
-fn end_connection(instance: &Arc<Instance>) {
+/// the client reads them, for at most [`DRAIN_LIMIT`]. A `cut` reply is not
+/// drained: the client cannot use it.
+fn end_connection(instance: &Arc<Instance>, cut: bool) {
     let (flushed, drained) = mpsc::channel();
     let pipe = instance.pipe.as_raw_handle();
-    let flush = {
+    let flush = (!cut).then(|| {
         let instance = Arc::clone(instance);
         thread::Builder::new()
             .name("horch-pipe-drain".into())
@@ -260,7 +277,8 @@ fn end_connection(instance: &Arc<Instance>) {
                 let _ = flushed.send(());
             })
             .ok()
-    };
+    });
+    let flush = flush.flatten();
     // Without a thread, the sender is gone and this returns at once.
     let _ = drained.recv_timeout(DRAIN_LIMIT);
     // SAFETY: `pipe` is open while `instance` holds it.
@@ -281,6 +299,31 @@ impl Stream {
         Stream {
             end,
             read_timeout: Mutex::new(None),
+            write_timeout: Mutex::new(None),
+            cut: AtomicBool::new(false),
+        }
+    }
+
+    /// Write `buf`. With a write timeout, a watchdog cancels the write when
+    /// it waits longer, and the write fails with `TimedOut`.
+    fn write_by(&self, buf: &[u8]) -> io::Result<usize> {
+        let timeout = *self
+            .write_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(timeout) = timeout else {
+            return self.file().write(buf);
+        };
+        let written = cancel_after(timeout, || self.file().write(buf));
+        match written {
+            Err(e) if e.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) => {
+                self.cut.store(true, Ordering::SeqCst);
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the write passed its timeout",
+                ))
+            }
+            other => other,
         }
     }
 
@@ -346,10 +389,62 @@ impl Stream {
     }
 }
 
+/// Run the synchronous I/O `io` on this thread. A watchdog thread cancels it
+/// with [`CancelSynchronousIo`] when it runs longer than `limit`, and then
+/// again each [`CANCEL_RETRY`] until `io` returns. A cancelled `io` fails
+/// with `ERROR_OPERATION_ABORTED`. The scope joins the watchdog before the
+/// return, so no cancel reaches a later I/O of this thread.
+fn cancel_after<T>(limit: Duration, io: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let this = current_thread()?;
+    let this = &this;
+    let (done, finished) = mpsc::channel::<()>();
+    thread::scope(|scope| {
+        thread::Builder::new()
+            .name("horch-pipe-watchdog".into())
+            .spawn_scoped(scope, move || {
+                let mut wait = limit;
+                // `done` is dropped when `io` returns: that is `Disconnected`.
+                while let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(wait) {
+                    // SAFETY: `this` is an open handle of the thread that runs
+                    // `io`, and it lives until the scope ends.
+                    unsafe { CancelSynchronousIo(this.as_raw_handle()) };
+                    wait = CANCEL_RETRY;
+                }
+            })?;
+        let result = io();
+        drop(done);
+        result
+    })
+}
+
+/// A real handle of this thread, which another thread can use. The handle
+/// of `GetCurrentThread` is a pseudo handle that means "the calling thread".
+fn current_thread() -> io::Result<OwnedHandle> {
+    let mut handle: HANDLE = ptr::null_mut();
+    // SAFETY: plain calls; the pseudo handles need no close, and `handle` is
+    // valid for 1 write.
+    let duplicated = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            GetCurrentThread(),
+            GetCurrentProcess(),
+            &mut handle,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if duplicated == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `handle` is a new open handle that nothing else owns.
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
 impl Drop for Stream {
     fn drop(&mut self) {
         if let End::Server { instance, .. } = &self.end {
-            end_connection(instance);
+            end_connection(instance, self.cut.load(Ordering::SeqCst));
         }
     }
 }
@@ -368,7 +463,7 @@ impl Read for Stream {
 
 impl Write for &Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.file().write(buf)
+        self.write_by(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -378,7 +473,7 @@ impl Write for &Stream {
 
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.file().write(buf)
+        self.write_by(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -486,12 +581,20 @@ pub(crate) fn set_read_timeout(stream: &Stream, timeout: Duration) -> io::Result
     Ok(())
 }
 
-/// A pipe that is not overlapped has no write timeout.
-pub(crate) fn set_write_timeout(_: &Stream, _: Duration) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "a named pipe has no write timeout",
-    ))
+/// A pipe that is not overlapped has no write timeout, so each later write
+/// is cancelled when it waits longer than `timeout` (`Stream::write_by`).
+pub(crate) fn set_write_timeout(stream: &Stream, timeout: Duration) -> io::Result<()> {
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a write timeout of 0 is not valid",
+        ));
+    }
+    *stream
+        .write_timeout
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(timeout);
+    Ok(())
 }
 
 pub(crate) fn current_user() -> io::Result<User> {
@@ -710,5 +813,74 @@ mod tests {
             assert_eq!(server.join().unwrap(), ["silent\n", "next\n"]);
             drop(silent);
         });
+    }
+
+    /// A reply far larger than [`BUFFER`].
+    const LARGE_REPLY: usize = 128 * 1024;
+
+    /// Accept 1 client, read its line, and write [`LARGE_REPLY`] bytes and
+    /// `\n` with a write timeout of `timeout`.
+    fn serve_large_reply(
+        listener: &Listener,
+        timeout: Duration,
+    ) -> (Stream, String, io::Result<()>) {
+        let (stream, _peer) = accept(listener).unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        set_write_timeout(&stream, timeout).unwrap();
+        let mut reply = vec![b'x'; LARGE_REPLY];
+        reply.push(b'\n');
+        let written = (&stream).write_all(&reply);
+        (stream, line, written)
+    }
+
+    #[test]
+    fn large_reply_to_non_reading_client_times_out_and_does_not_block() {
+        let name = unique_name("large-reply");
+        let listener = bind(&name).unwrap();
+        let timeout = Duration::from_millis(300);
+
+        // This client sends 1 line, never reads and keeps its handle open.
+        let silent = connect(&name, far_deadline()).unwrap();
+        (&silent).write_all(b"silent\n").unwrap();
+        let started = Instant::now();
+        let (stream, line, written) = serve_large_reply(&listener, timeout);
+        let error = written.unwrap_err();
+        assert_eq!(line, "silent\n");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the write ends near its timeout: {:?}",
+            started.elapsed()
+        );
+        // The reply is cut, so the end does not wait DRAIN_LIMIT.
+        let closing = Instant::now();
+        drop(stream);
+        assert!(
+            closing.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            closing.elapsed()
+        );
+
+        // The next client connects and gets all of its reply.
+        thread::scope(|scope| {
+            let next = scope.spawn(|| {
+                let stream = connect(&name, far_deadline()).unwrap();
+                (&stream).write_all(b"next\n").unwrap();
+                let mut reply = Vec::new();
+                (&stream).read_to_end(&mut reply).unwrap();
+                reply.len()
+            });
+            let (stream, line, written) = serve_large_reply(&listener, timeout * 10);
+            assert_eq!(line, "next\n");
+            written.unwrap();
+            drop(stream);
+            assert_eq!(next.join().unwrap(), LARGE_REPLY + 1);
+        });
+
+        let closing = Instant::now();
+        drop(silent);
+        drop(listener);
+        assert!(closing.elapsed() < Duration::from_secs(1));
     }
 }

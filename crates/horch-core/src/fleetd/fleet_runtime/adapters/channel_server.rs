@@ -20,7 +20,8 @@
 //!    fleet process fact of the peer process (`fleet_process`, SR-8, FR-10),
 //!    and decides with [`authorize`].
 //! 4. It records and applies the request with [`handle`] (RR-8, FM-15),
-//!    and writes the reply line. Then it closes the connection.
+//!    and writes the reply line until [`READ_DEADLINE`] from the start of
+//!    the write. Then it closes the connection.
 //!
 //! An error ends only that connection: a failed write of the ledger closes
 //! it with no reply, and the client asks for the result of its
@@ -55,8 +56,8 @@ use crate::fleetd::fleet_runtime::domain::operator::AttemptFacts;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
 
-/// The deadline of 1 connection: the read of its line, and on unix the
-/// write of its reply. It is the connect time of today
+/// The deadline of 1 connection: the read of its line, and the write of
+/// its reply. It is the connect time of today
 /// (`preservation-05-contracts-and-values.md`, row V-18).
 pub const READ_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -67,6 +68,18 @@ pub const NAME_TAKEN_KIND: &str = "channel_name_taken";
 /// The time between 2 accepts after an accept fails, so that an error that
 /// stays does not keep 1 core busy.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
+
+/// The longest wait of 1 connect that wakes the accept at a stop. A
+/// connect that finds the pipe busy on Windows tries again after it.
+const WAKE_WAIT: Duration = Duration::from_millis(100);
+
+/// The time between 2 checks for the end of the thread at a stop.
+const WAKE_POLL: Duration = Duration::from_millis(10);
+
+/// The time at a stop for the work of 1 connection that has no deadline of
+/// its own: the decision, the end of the connection (2 s at most on
+/// Windows), and the connects that wake the accept.
+const STOP_MARGIN: Duration = Duration::from_secs(5);
 
 /// The channel of the fleet at `fleet_root`.
 pub fn socket_path(fleet_root: &Path) -> PathBuf {
@@ -98,6 +111,9 @@ impl Default for Options {
 #[derive(Debug)]
 pub struct ChannelServer {
     socket: PathBuf,
+    /// The deadline of 1 connection, so the stop knows how long the
+    /// thread can stay in 1 connection.
+    read_deadline: Duration,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<()>>>,
 }
@@ -151,6 +167,7 @@ impl ChannelServer {
         };
         Ok(ChannelServer {
             socket,
+            read_deadline: options.read_deadline,
             stop,
             thread: Some(thread),
         })
@@ -162,16 +179,31 @@ impl ChannelServer {
         self.end()
     }
 
+    /// The read of the line and the write of the reply each stop at the
+    /// deadline of the connection, so the thread comes back to its accept.
+    /// A connect wakes the accept. The stop connects again until the thread
+    /// ends, since a connect can come while the thread still serves a
+    /// connection. A thread that does not end in time is left, and the stop
+    /// fails: a stop never waits for ever (RR-7).
     fn end(&mut self) -> Result<()> {
         let Some(thread) = self.thread.take() else {
             return Ok(());
         };
         self.stop.store(true, Ordering::SeqCst);
-        // Wake the accept. A server that already ended refuses the connect.
-        drop(Stream::connect(
-            &self.socket,
-            Instant::now() + READ_DEADLINE,
-        ));
+        let limit = Instant::now() + self.read_deadline * 2 + STOP_MARGIN;
+        while !thread.is_finished() {
+            if Instant::now() >= limit {
+                bail!("the thread of the channel did not end at the stop");
+            }
+            // A server that already ended refuses the connect.
+            drop(Stream::connect(&self.socket, Instant::now() + WAKE_WAIT));
+            // At most 1 connect in each WAKE_WAIT, so the connects do not
+            // fill the queue of the socket.
+            let next = Instant::now() + WAKE_WAIT;
+            while !thread.is_finished() && Instant::now() < next {
+                thread::sleep(WAKE_POLL);
+            }
+        }
         thread
             .join()
             .map_err(|_| anyhow!("the thread of the channel panicked"))?
@@ -365,19 +397,28 @@ fn refusal_line(reason: &str) -> String {
     )
 }
 
-/// Write `line` to `stream` and wait at most `timeout` for each write. A
-/// failed write ends only this connection. Windows has no write timeout
-/// on a pipe, so there the write waits until the client reads.
+/// Write `line` to `stream`, and stop at `timeout` from now in total. A
+/// client that does not read its reply holds the thread for that time at
+/// most. Each failure ends only this connection with no more bytes: a
+/// failed write, and a stream that cannot set a write timeout (PL-3), since
+/// a write with no timeout can wait for ever.
 fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
-    if let Err(e) = stream.set_write_timeout(timeout) {
-        if e.kind() != io::ErrorKind::Unsupported {
+    let deadline = Instant::now() + timeout;
+    let mut rest = line.as_bytes();
+    let mut writer = stream;
+    while !rest.is_empty() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_write_timeout(left).is_err() {
             return;
         }
+        match writer.write(rest) {
+            Ok(0) => return,
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
     }
-    let mut writer = stream;
-    let _ = writer
-        .write_all(line.as_bytes())
-        .and_then(|()| writer.flush());
+    let _ = writer.flush();
 }
 
 fn peer_process(conn: &Connection, peer: &Peer) -> PeerProcess {

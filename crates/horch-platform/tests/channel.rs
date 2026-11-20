@@ -221,6 +221,77 @@ fn the_listener_accepts_a_next_client_after_the_first() {
     }
 }
 
+/// A reply that is far larger than the buffer of the channel: 4096 bytes on
+/// a Windows pipe, a few KiB on a Unix socket.
+const LARGE_REPLY: usize = 128 * 1024;
+
+/// Accept 1 client, read its line, and write a reply of [`LARGE_REPLY`]
+/// bytes and `\n`, with a write timeout of `timeout`. The result is the
+/// line and the result of the write.
+fn serve_large_reply(
+    listener: &Listener,
+    timeout: Duration,
+) -> (Stream, String, std::io::Result<()>) {
+    let (stream, _) = listener.accept().unwrap();
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    stream.set_write_timeout(timeout).unwrap();
+    let mut reply = vec![b'x'; LARGE_REPLY];
+    reply.push(b'\n');
+    let written = (&stream).write_all(&reply);
+    (stream, line, written)
+}
+
+#[test]
+fn large_reply_to_non_reading_client_times_out_and_does_not_block() {
+    let place = place();
+    let listener = Listener::bind(&place.name).unwrap();
+    let timeout = Duration::from_millis(300);
+
+    // This client sends 1 line, never reads and keeps its handle open.
+    let silent = Stream::connect(&place.name, deadline()).unwrap();
+    (&silent).write_all(b"silent\n").unwrap();
+    let started = Instant::now();
+    let (stream, line, written) = serve_large_reply(&listener, timeout);
+    let error = written.unwrap_err();
+    assert_eq!(line, "silent\n");
+    assert!(
+        matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock),
+        "{error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the write ends near its timeout: {:?}",
+        started.elapsed()
+    );
+    let closing = Instant::now();
+    drop(stream);
+    assert!(
+        closing.elapsed() < Duration::from_secs(1),
+        "the end of the connection does not wait for the client: {:?}",
+        closing.elapsed()
+    );
+
+    // The next client gets all of its reply.
+    let next = std::thread::spawn(move || {
+        let stream = Stream::connect(&place.name, deadline()).unwrap();
+        (&stream).write_all(b"next\n").unwrap();
+        let mut reply = Vec::new();
+        (&stream).read_to_end(&mut reply).unwrap();
+        reply.len()
+    });
+    let (stream, line, written) = serve_large_reply(&listener, timeout * 10);
+    assert_eq!(line, "next\n");
+    written.unwrap();
+    drop(stream);
+    assert_eq!(next.join().unwrap(), LARGE_REPLY + 1);
+
+    let closing = Instant::now();
+    drop(silent);
+    drop(listener);
+    assert!(closing.elapsed() < Duration::from_secs(1));
+}
+
 #[cfg(unix)]
 mod unix {
     use std::os::unix::fs::PermissionsExt;
