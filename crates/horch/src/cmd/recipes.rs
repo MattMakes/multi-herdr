@@ -288,6 +288,10 @@ fn pane_command_for(
     if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
         env.push(("HORCH_BACKEND", "hc"));
     }
+    let project_dir = super::path_text(ctx.paths.project_dir.as_deref());
+    if let Some(dir) = project_dir.as_deref() {
+        env.push(("HORCH_PROJECT_DIR", dir));
+    }
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
 }
 
@@ -397,7 +401,9 @@ pub fn fleet_with(
     super::spawn::fleet_warnings(&warning_ctx, false);
 
     warn_about_missing_integrations(&herdr);
-    super::restore::warn_if_resume_on(ctx);
+    if ctx.herdr.backend == horch_core::runtime::Backend::Herdr {
+        super::restore::warn_if_resume_on(ctx);
+    }
 
     let flavor = choose_flavor(ctx, flavor)?;
     warn_about_other_run_steps(ctx, &cwd, options.verify());

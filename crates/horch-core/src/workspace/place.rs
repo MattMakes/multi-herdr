@@ -20,11 +20,14 @@ pub enum Placement {
     NewTab { label: String },
 }
 
-/// Creation-order sort key for terminal addresses (`"t7"` -> `(7, "t7")`).
+/// Creation-order sort key for `hc` terminal addresses (base-32/36
+/// alphanumeric suffixes such as `"t17"`, `"t1c"`, `"t1j"`, `"t1k"`, `"t1m"`,
+/// `"t1n"`, `"t1p"`, `"t20"`). Base 36 preserves monotone creation order across
+/// decimal, hex, Crockford base-32, and base-36 digit alphabets.
 pub fn address_key(address: &str) -> (u64, &str) {
     let n = address
         .strip_prefix('t')
-        .and_then(|s| s.parse::<u64>().ok())
+        .and_then(|s| u64::from_str_radix(s, 36).ok())
         .unwrap_or(u64::MAX);
     (n, address)
 }
@@ -202,6 +205,36 @@ mod tests {
             ),
             Placement::NewTab {
                 label: "workers 3".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn hcb_09_hex_terminal_addresses_sort_in_creation_order() {
+        let mut addrs: Vec<String> = [
+            "t20", "t1p", "t1n", "t1m", "t1k", "t1j", "t1c", "t19", "t9", "ta",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        sort_addresses(&mut addrs);
+        assert_eq!(
+            addrs,
+            ["t9", "ta", "t19", "t1c", "t1j", "t1k", "t1m", "t1n", "t1p", "t20"]
+        );
+        // Worker 3 splits down from w[0] (t1c), worker 4 splits down from w[1] (t1j).
+        assert_eq!(
+            place("t17", &[tab("tb1", &["t1j", "t1c"])]),
+            Placement::Split {
+                from: "t1c".into(),
+                direction: Direction::Down,
+            }
+        );
+        assert_eq!(
+            place("t17", &[tab("tb1", &["t1k", "t1j", "t1c"])]),
+            Placement::Split {
+                from: "t1j".into(),
+                direction: Direction::Down,
             }
         );
     }

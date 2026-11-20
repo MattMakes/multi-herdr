@@ -83,6 +83,8 @@ struct LsResponse {
 #[derive(Debug, Deserialize)]
 struct LsRow {
     address: String,
+    #[serde(default)]
+    state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,6 +291,10 @@ impl HcApp {
     fn hc_command<S: AsRef<OsStr>>(&self, args: &[S]) -> Command {
         let mut command = Command::new(&self.hc);
         command.env("HC_TERMINAL_SOCKET", &self.core_socket);
+        // Strip caller terminal identity so `hc send` from inside an agent
+        // terminal delivers unwrapped text instead of `<hc from="...">...</hc>`.
+        command.env_remove("HC_TERMINAL_ID");
+        command.env_remove("HC_SCOPE");
         command.args(args);
         command
     }
@@ -562,13 +568,24 @@ impl HcApp {
 
     pub fn workspace_close(&self, workspace_id: &str) -> Result<()> {
         let scoped = self.scoped();
+        let label = format!("herdr.space={workspace_id}");
         let arg = serde_json::json!({"id": workspace_id, "confirmed": true}).to_string();
         match scoped.app_output(&["do", "space.close", &arg]) {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                if let Ok(listed) =
+                    scoped.hc_json::<LsResponse, _>(&["ls", "--all", "--json", "--label", &label])
+                {
+                    for row in listed.terminals {
+                        if row.state == "finished" {
+                            let _ = scoped.hc_output(&["rm", &row.address]);
+                        }
+                    }
+                }
+                return Ok(());
+            }
             Err(e) if !is_app_unavailable(&e) => return Err(e),
             Err(_) => {}
         }
-        let label = format!("herdr.space={workspace_id}");
         let listed: LsResponse = scoped.hc_json(&["ls", "--json", "--label", &label])?;
         for row in listed.terminals {
             match scoped.pane_close(&row.address) {
@@ -1446,5 +1463,26 @@ esac"#,
         let tabs = hc.tab_list("sp2").unwrap();
         let tab_ids: Vec<&str> = tabs.iter().map(|t| t.tab_id.as_str()).collect();
         assert_eq!(tab_ids, ["tb1", "tb2"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_hc_children_never_inherit_sender_identity() {
+        let env_log = tempfile::NamedTempFile::new().unwrap();
+        let (_dir, hc) = hc_and_app_scripts(
+            &format!(
+                "printf 'id=%s scope=%s\\n' \"${{HC_TERMINAL_ID:-}}\" \"${{HC_SCOPE:-}}\" > '{}'\n\
+                 printf '{{\"started\":true,\"status\":\"idle\",\"turn\":1}}\\n'\n",
+                env_log.path().display()
+            ),
+            "exit 1",
+        );
+        // Even if the test host itself runs inside an `hc` terminal with
+        // HC_TERMINAL_ID and HC_SCOPE set, `hc_command` scrubs both.
+        hc.agent_prompt("t19", "hello").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(env_log.path()).unwrap().trim(),
+            "id= scope="
+        );
     }
 }

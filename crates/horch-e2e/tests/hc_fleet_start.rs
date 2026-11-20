@@ -63,6 +63,11 @@ fn hc_fleet_start_makes_a_space_and_records_the_backend() {
         &cwd(&h),
     ]);
     assert!(o.status.success(), "{}{}", out(&o), err(&o));
+    assert!(
+        !err(&o).contains("resume_agents_on_restore"),
+        "hc fleet must not warn about herdr's resume_agents_on_restore: {}",
+        err(&o)
+    );
     let herdr_mutations: Vec<Value> = h
         .calls_of("herdr")
         .into_iter()
@@ -115,14 +120,20 @@ fn hc_fleet_start_makes_a_space_and_records_the_backend() {
     );
 
     // Execute the exact pane-launch command line inside the root terminal
-    // (HC_TERMINAL_ID set, no HERDR_PANE_ID) and confirm the launched agent
-    // gets HORCH_BACKEND=hc and no HERDR_PANE_ID.
+    // (HC_TERMINAL_ID set, no HERDR_PANE_ID, and from a canonicalized cwd that
+    // may differ from a symlinked --cwd such as /tmp vs /private/tmp on macOS)
+    // and confirm the launched agent gets HORCH_BACKEND=hc and no HERDR_PANE_ID.
     let cmdline = sends[0].last().unwrap();
+    let canon_cwd = h
+        .project
+        .canonicalize()
+        .unwrap_or_else(|_| h.project.clone());
     let mut launch = std::process::Command::new("/bin/sh");
     h.seal(&mut launch);
     launch
         .args(["-c", cmdline])
-        .current_dir(&h.project)
+        .current_dir(&canon_cwd)
+        .env_remove("HORCH_PROJECT_DIR")
         .env("HC_TERMINAL_ID", &root_term)
         .env_remove("HERDR_PANE_ID");
     let lo = launch.output().unwrap();
