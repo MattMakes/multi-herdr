@@ -13,12 +13,14 @@
 
 #![cfg(unix)]
 
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::{parse_reply, Outcome, Request};
 use horch_core::fleetd::fleet_runtime::adapters::token_file;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
@@ -27,6 +29,7 @@ use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, Work
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use horch_core::fleetd::integration::application::commands::RefTips;
 use horch_core::taskledger::model::{Actor, WorkerKind};
 use horch_core::taskledger::runs::{self, NewRun};
@@ -231,6 +234,31 @@ impl World {
             .unwrap()
     }
 
+    /// 1 raw request line of `kind` with the operator token, sent on the
+    /// channel by this test process: the peer of fleetd is a process of
+    /// the live attempt `a1`. Gives the reason of the refusal.
+    fn raw_request_refusal(&self, kind: Kind, payload: serde_json::Value) -> String {
+        let serde_json::Value::Object(payload) = payload else {
+            panic!("a payload is an object");
+        };
+        let token = token_file::read(&self.fleet()).unwrap();
+        let request = Request {
+            request_id: RequestId::parse("raw-in-attempt").unwrap(),
+            kind,
+            payload,
+            token: Some(token.text().to_string()),
+        };
+        let stream =
+            std::os::unix::net::UnixStream::connect(self.fleet().join("run/fleetd.sock")).unwrap();
+        (&stream).write_all(request.to_line().as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        match parse_reply(reply.as_bytes(), 1 << 20).unwrap().outcome {
+            Outcome::Refused(reason) => reason,
+            Outcome::Applied(result) => panic!("fleetd applied {kind:?}: {result}"),
+        }
+    }
+
     /// A run `r1` with the task T-1 of [`TICKET`].
     fn run_with_task(&self) {
         let run_id = self.run(None);
@@ -357,7 +385,9 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     );
 }
 
-/// A worker can set `HORCH_ROLE`; fleetd knows the worker by its process.
+/// A worker can set `HORCH_ROLE`, but it gets no operator power: the CLI of
+/// a fleet process refuses before it sends 1 request, and fleetd refuses a
+/// raw request from the process of a live attempt.
 #[test]
 fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
     let w = World::up();
@@ -368,10 +398,25 @@ fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
         &[("HORCH_ROLE", "orchestrator")],
     );
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
-    assert!(o.err.contains("refused: "), "{}", o.err);
+    assert!(
+        o.err.contains("refused inside a fleet attempt")
+            && o.err.contains("fleet process of attempt a1"),
+        "{}",
+        o.err
+    );
+    assert!(w.requests().is_empty(), "{:?}", w.requests());
+
+    let reason = w.raw_request_refusal(
+        Kind::TaskCancel,
+        serde_json::json!({ "task": "T-1", "reason": "mine now" }),
+    );
+    assert!(
+        reason.contains("the peer process is a fleet process of attempt a1"),
+        "{reason}"
+    );
     assert_eq!(
-        w.requests().last().unwrap(),
-        &("task_cancel".to_string(), "refused".to_string())
+        w.requests(),
+        vec![("task_cancel".to_string(), "refused".to_string())]
     );
     assert_ne!(w.one("SELECT status FROM tasks WHERE seq = 1"), "cancelled");
 }
@@ -383,11 +428,27 @@ fn worker_that_removes_horch_role_is_refused_by_fleetd() {
     w.attempt_of_this_process();
     let o = w.horch_with(&["ledger", "requeue", "T-1", "again"], &[]);
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
-    assert!(o.err.contains("refused: "), "{}", o.err);
-    assert_eq!(
-        w.requests().last().unwrap(),
-        &("task_requeue".to_string(), "refused".to_string())
+    assert!(
+        o.err.contains("refused inside a fleet attempt")
+            && o.err.contains("fleet process of attempt a1"),
+        "{}",
+        o.err
     );
+    assert!(w.requests().is_empty(), "{:?}", w.requests());
+
+    let reason = w.raw_request_refusal(
+        Kind::TaskRequeue,
+        serde_json::json!({ "task": "T-1", "reason": "again" }),
+    );
+    assert!(
+        reason.contains("the peer process is a fleet process of attempt a1"),
+        "{reason}"
+    );
+    assert_eq!(
+        w.requests(),
+        vec![("task_requeue".to_string(), "refused".to_string())]
+    );
+    assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "ready");
 }
 
 #[test]
