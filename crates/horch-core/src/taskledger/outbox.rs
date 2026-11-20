@@ -500,11 +500,13 @@ mod tests {
     /// A forked child that lives until [`Child::release`]. It holds a copy of
     /// every descriptor of this process, as a child of a concurrent spawn
     /// does between its fork and its exec.
+    #[cfg(unix)]
     struct Child {
         pid: libc::pid_t,
         hold: libc::c_int,
     }
 
+    #[cfg(unix)]
     impl Child {
         fn fork() -> Child {
             let mut fds = [0 as libc::c_int; 2];
@@ -540,6 +542,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn trf_21_a_drain_lock_is_free_while_a_child_process_lives() {
         let (_dir, mut store, run) = ledger();

@@ -3300,6 +3300,7 @@ mod tests {
     }
 
     /// `fleet_dirs` over a codex home holding `files` (name, text).
+    #[cfg(unix)]
     fn fleet_dirs_with(teammate: &Teammate, files: &[(&str, &str)]) -> Vec<String> {
         let tmp = tempfile::tempdir().unwrap();
         if !files.is_empty() {
@@ -3411,6 +3412,7 @@ mod tests {
 
     /// A pane's TMPDIR exists before codex starts, and a role name cannot
     /// leave `<state root>/tmp`.
+    #[cfg(unix)]
     #[test]
     fn the_pane_tmpdir_is_made_and_stays_under_the_state_root() {
         let tmp = tempfile::tempdir().unwrap();

@@ -1443,8 +1443,6 @@ mod tests {
         /// Add `origin`. When `reject` is true, each push writes `marker`
         /// before its hook rejects the push.
         fn remote(&self, reject: bool) -> (PathBuf, PathBuf) {
-            use std::os::unix::fs::PermissionsExt;
-
             let remote = self._tmp.path().join("remote.git");
             let marker = self._tmp.path().join("push-attempted");
             std::fs::create_dir_all(&remote).unwrap();
@@ -1467,9 +1465,14 @@ mod tests {
                     format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
                 )
                 .unwrap();
-                let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
-                permissions.set_mode(0o755);
-                std::fs::set_permissions(hook, permissions).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+
+                    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+                    permissions.set_mode(0o755);
+                    std::fs::set_permissions(hook, permissions).unwrap();
+                }
             }
             (remote, marker)
         }
