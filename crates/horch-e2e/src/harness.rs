@@ -141,10 +141,6 @@ impl Harness {
         let machine = h.root.join("healthy-machine.json");
         std::fs::write(&machine, HEALTHY_MACHINE).expect("writing the machine fixture");
         h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
-        // L3: the task ledger of each test is `<root>/ledger/ledger.sqlite3`,
-        // outside `HORCH_STATE_DIR`, so the seal itself isolates it.
-        // `FLEET_ROOT` stays unset: the fleet root is `fleet` next to it.
-        // A test of the home default calls `unset("HORCH_LEDGER_DB")`.
         let ledger = h.root.join("ledger").join("ledger.sqlite3");
         h.set("HORCH_LEDGER_DB", ledger.to_string_lossy());
         let built = bin_dir();

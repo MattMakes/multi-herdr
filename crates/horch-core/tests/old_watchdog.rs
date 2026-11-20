@@ -1,11 +1,3 @@
-//! The Phase 1 takeover of the old watchdogs stops only the processes that
-//! its own ledger records (A1, `ai_docs/plans/fleetd-finish/plan.md`).
-//!
-//! 2 ledgers share 1 folder, so they also share the lock folder
-//! `<folder>/locks` of `orchestrator::lock_dir`. Real processes stand in for
-//! the watchdogs, and the takeover stops them through the platform
-//! ([`old_watchdog::Os`]).
-
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -22,7 +14,6 @@ use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::store::Store;
 use horch_core::taskledger::{orchestrator, watchdog};
 
-/// The processes of this machine, with a record of each stop.
 #[derive(Default)]
 struct Recording {
     stops: RefCell<Vec<(u32, u64)>>,
@@ -43,7 +34,6 @@ impl Processes for Recording {
     }
 }
 
-/// A process that runs until a signal stops it.
 fn sleeper() -> Child {
     Command::new("sleep")
         .arg("120")
@@ -52,13 +42,10 @@ fn sleeper() -> Child {
         .expect("start sleep")
 }
 
-/// The start time of `pid`, which runs.
 fn started(pid: u32) -> u64 {
     procid::start_time(pid).expect("the start time of a live process")
 }
 
-/// A new active run in `store`, with `pid` and `started` as its recorded
-/// watchdog on the run and in the owner file of its lock folder.
 fn record(store: &mut Store, locks: &Path, slug: &str, pid: u32, started: u64) -> String {
     let new = NewRun {
         slug: slug.into(),
@@ -74,13 +61,11 @@ fn record(store: &mut Store, locks: &Path, slug: &str, pid: u32, started: u64) -
     run.run_id
 }
 
-/// The recorded watchdog columns of `run_id` in `store`.
 fn columns(store: &Store, run_id: &str) -> (Option<i64>, Option<i64>) {
     let run = runs::get(store.conn(), run_id).unwrap();
     (run.watchdog_pid, run.watchdog_started)
 }
 
-/// The exit status of the process that `waiter` reaps, within `wait`.
 fn exited(waiter: &std::thread::JoinHandle<ExitStatus>, wait: Duration) -> bool {
     let until = Instant::now() + wait;
     while Instant::now() < until {
@@ -115,8 +100,6 @@ fn take_over_stops_only_the_watchdog_that_its_own_ledger_records() {
         .unwrap()
         .expect("the fleetd lock of ledger A");
     let run_a = record(&mut a, &locks, "alpha", pid_a, start_a);
-    // Ledger A also names the live PID of ledger B, with another start
-    // time: another program had that PID.
     let run_a_old = record(&mut a, &locks, "alpha-old", pid_b, start_b + 1);
     let run_b = record(&mut b, &locks, "beta", pid_b, start_b);
 

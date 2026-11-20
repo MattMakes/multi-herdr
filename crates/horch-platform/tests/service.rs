@@ -753,9 +753,6 @@ fn restart_of_the_fleetd_label_calls_the_manager() {
     assert!(calls[0].contains(service::LABEL), "{calls:?}");
 }
 
-/// L2: the default ledger keeps `horch-fleetd`. Another ledger gets
-/// `horch-fleetd-<8 hex chars>` of the digest of its path, a valid label
-/// that is not the default label.
 #[test]
 fn a_non_default_ledger_gets_its_own_valid_label() {
     assert_eq!(service::LABEL, "horch-fleetd");
@@ -769,8 +766,6 @@ fn a_non_default_ledger_gets_its_own_valid_label() {
     );
 }
 
-/// L2: the files and the manager calls of a ledger label never name the
-/// default label, so an install never replaces the installed service.
 #[test]
 fn a_ledger_label_names_only_its_own_files_and_manager_calls() {
     let dir = tempfile::tempdir().unwrap();
@@ -799,9 +794,6 @@ fn a_ledger_label_names_only_its_own_files_and_manager_calls() {
     }
 }
 
-/// A label is a file name and a manager argument: `definitions` refuses a
-/// label with a path separator, `..`, a space, a leading `.` or `-`, or
-/// more than 64 bytes.
 #[test]
 fn definitions_refuse_an_invalid_label() {
     let dir = tempfile::tempdir().unwrap();

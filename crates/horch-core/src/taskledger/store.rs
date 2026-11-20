@@ -79,9 +79,6 @@ pub fn migrate_refusal(
     ))
 }
 
-/// Whether a development build `exe` must keep off `ledger`: it is the
-/// shared ledger of `passwd_home`, and `allow` (the value of
-/// [`ALLOW_MIGRATE_ENV`]) is not `1`.
 fn refused(exe: &Path, ledger: &Path, passwd_home: Option<&Path>, allow: Option<&str>) -> bool {
     let shared = passwd_home.is_some_and(|home| is_shared_ledger(ledger, home));
     shared && is_dev_build(exe) && allow != Some("1")
@@ -134,25 +131,16 @@ pub fn canonical(path: &Path) -> PathBuf {
     }
 }
 
-/// The passwd home of this user, not `$HOME`: a test or a fleet can point
-/// `$HOME` anywhere, but the shared ledger stays. Where the OS has no passwd
-/// database, no ledger counts as shared.
 fn passwd_home() -> Option<PathBuf> {
     horch_platform::path::passwd_home().ok().flatten()
 }
 
-/// `passwd_home` when `ledger` is its shared ledger by real path ([`canonical`]),
-/// and the path to show for `ledger`. `is_shared_ledger` checks
-/// `<home>/.horch/ledger.sqlite3`, so the home is passed on only when the
-/// real paths match.
 fn shared<'a>(ledger: &Path, passwd_home: Option<&'a Path>) -> (Option<&'a Path>, PathBuf) {
     let home = passwd_home.filter(|h| canonical(&default_path(h)) == canonical(ledger));
     let shown = home.map_or_else(|| ledger.to_path_buf(), default_path);
     (home, shown)
 }
 
-/// [`write_refusal`] for a `ledger` given by any path: a symlinked or
-/// relative path of the shared ledger is the shared ledger.
 fn open_refusal(
     exe: &Path,
     ledger: &Path,
@@ -163,7 +151,6 @@ fn open_refusal(
     write_refusal(exe, &shown, home, allow)
 }
 
-/// The executable of this process and the value of [`ALLOW_MIGRATE_ENV`].
 fn this_process() -> Option<(PathBuf, Option<String>)> {
     use crate::runtime::{EnvSource, ProcessEnv};
     let exe = ProcessEnv.current_exe()?;
@@ -183,8 +170,6 @@ fn guard(ledger: &Path, from: i64) -> Result<()> {
     }
 }
 
-/// [`write_refusal`] for this process and `ledger`: the first check of
-/// [`Store::open`], before it creates a folder or a file.
 fn guard_open(ledger: &Path) -> Result<()> {
     let Some((exe, allow)) = this_process() else {
         return Ok(());
@@ -277,8 +262,6 @@ impl Store {
         Store::open_checked(path, &guard_open)
     }
 
-    /// [`Store::open`] with `check` as its refusal of the file, which runs
-    /// before the first change on disk. A test passes its own check.
     fn open_checked(path: &Path, check: &dyn Fn(&Path) -> Result<()>) -> Result<Store> {
         assert_fleetd_writer(path);
         check(path)?;
@@ -517,8 +500,6 @@ mod tests {
         .unwrap();
     }
 
-    /// The check of [`guard_open`] for the dev build `exe` and the passwd
-    /// home `home`, with [`ALLOW_MIGRATE_ENV`] as `allow`.
     fn check_as<'a>(
         exe: &'a Path,
         home: &'a Path,
@@ -536,7 +517,6 @@ mod tests {
     fn a_dev_build_refuses_a_same_version_write_of_the_shared_ledger() {
         let home = temp();
         let shared = default_path(home.path());
-        // The shared ledger exists with the current schema: no migration runs.
         drop(Store::open(&shared).unwrap());
         let before = std::fs::read(&shared).unwrap();
         let err = Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), None))

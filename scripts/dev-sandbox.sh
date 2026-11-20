@@ -20,7 +20,6 @@ SHORT=""
 
 cleanup() {
     rm -rf "$RUN"
-    # Another run can still use .dev-sandbox: rmdir removes it only when empty.
     rmdir "$ROOT/.dev-sandbox" 2>/dev/null || true
     if [ -n "$SHORT" ]; then
         rm -rf "$SHORT"

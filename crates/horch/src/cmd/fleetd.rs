@@ -444,10 +444,6 @@ pub(crate) fn service_spec(exe: &Path) -> Result<service::Spec> {
     service_spec_for(exe, &default_path(&home), Some(&home))
 }
 
-/// The service of fleetd on the binary `exe` for `ledger`, with the label
-/// [`service_label`]. The default ledger with no FLEET_ROOT needs no env,
-/// and a Windows task refuses one. Another ledger names itself in
-/// `HORCH_LEDGER_DB`.
 pub(crate) fn service_spec_for(
     exe: &Path,
     ledger: &Path,
@@ -470,10 +466,6 @@ pub(crate) fn service_spec_for(
     })
 }
 
-/// The service label of `ledger` (L2): [`service::LABEL`] only for the
-/// default ledger of the OS user, whose home is `os_home`. Another ledger
-/// gets [`service::ledger_label`] of the SHA-256 of its canonical path, so a
-/// development fleet never replaces or restarts the installed service.
 pub(crate) fn service_label(ledger: &Path, os_home: Option<&Path>) -> String {
     let real = canonical(ledger);
     if os_home.is_some_and(|home| canonical(&default_path(home)) == real) {
@@ -1680,9 +1672,6 @@ mod tests {
         assert_eq!(mode(&p, None), Mode::StandIn);
     }
 
-    /// L2: only the default ledger of the OS user has `horch-fleetd`.
-    /// Another ledger gets `horch-fleetd-<8 hex chars>` of its canonical
-    /// path, and 2 ledgers get 2 labels.
     #[test]
     fn the_service_label_is_horch_fleetd_only_for_the_default_ledger() {
         let dir = tempfile::tempdir().unwrap();
@@ -1702,12 +1691,9 @@ mod tests {
         }
         assert_ne!(label_a, label_b);
         assert_eq!(service_label(&a, Some(&os_home)), label_a, "stable");
-        // No home of the OS user: no ledger is the default ledger.
         assert_ne!(service_label(&default, None), service::LABEL);
     }
 
-    /// The label follows the canonical path: a symlink to the default ledger
-    /// is the default ledger, and a relative path of a ledger is that ledger.
     #[cfg(unix)]
     #[test]
     fn the_service_label_uses_the_canonical_ledger_path() {
@@ -1734,8 +1720,6 @@ mod tests {
         );
     }
 
-    /// The spec of a non-default ledger names that ledger in its env, so its
-    /// service runs fleetd on that ledger and not on the default one.
     #[test]
     fn the_service_spec_of_a_non_default_ledger_names_its_ledger() {
         let dir = tempfile::tempdir().unwrap();
