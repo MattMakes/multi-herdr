@@ -493,13 +493,19 @@ fn text(row: &JobRow) -> String {
     outcome(row).map(|o| o.text).unwrap_or_default()
 }
 
+/// Whether `pid` runs. A zombie (state `Z`) is dead: a killed process stays a
+/// zombie, and `kill -0` still succeeds on it, until its parent or the
+/// subreaper of its sandbox reaps it. On Linux CI that reaper can be slow or
+/// absent, so the state decides, not `kill -0`.
 fn alive(pid: &str) -> bool {
-    Command::new("kill")
-        .args(["-0", pid])
+    let out = Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
         .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+        .output()
+        .unwrap();
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    out.status.success() && !state.is_empty() && !state.starts_with('Z')
 }
 
 // ─── the gate tree ──────────────────────────────────────────────────────
