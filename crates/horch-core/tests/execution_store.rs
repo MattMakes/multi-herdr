@@ -472,12 +472,6 @@ fn reads_a_ledger_written_by_the_bash_version() {
     assert_eq!(l.get("3f2b").unwrap().history.len(), 2);
 }
 
-// ─── RR-8, FM-15: a queued session_records change ──────────────────────────
-
-/// fleetd is down: `update_written` says that the change of `r1` only waits
-/// in a request file. Another writer changes `r1` before fleetd reads the
-/// file, so fleetd refuses it with `SESSION_RECORD_CHANGED`. The refusal
-/// opens 1 needs-you item, and the archived file keeps the change.
 #[test]
 fn queued_session_records_is_not_reported_as_committed_and_is_recoverable_on_conflict() {
     use horch_core::execution::store::{

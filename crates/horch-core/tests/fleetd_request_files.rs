@@ -577,7 +577,6 @@ fn scan_continues_at_its_cursor() {
     assert_eq!(w.count("probe"), 3);
 }
 
-/// The open needs-you items of `kind`: their key and text.
 fn open_items(w: &World, kind: &str) -> Vec<(String, String)> {
     let mut stmt = w
         .conn
@@ -589,8 +588,6 @@ fn open_items(w: &World, kind: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A queued request has no caller that waits for its reply: a refused
-/// request and a rejected file each open 1 needs-you item (RR-8, FM-15).
 #[test]
 fn refused_and_rejected_queued_request_files_open_needs_you_items() {
     let mut w = world();
@@ -640,7 +637,6 @@ fn refused_and_rejected_queued_request_files_open_needs_you_items() {
     assert!(text.contains(&path), "{text}");
     assert!(text.contains(&rejection), "{text}");
 
-    // The next scan reads nothing again and opens no second item.
     assert_eq!(facts(w.scan(&mut Cursor::new(STAMP))), Vec::new());
     assert_eq!(open_items(&w, REQUEST_REFUSED).len(), 1);
     assert_eq!(open_items(&w, FILE_REJECTED).len(), 1);

@@ -360,9 +360,6 @@ fn open_folder_item(tx: &Transaction<'_>, key: &str, dir: &Path, text: &str) -> 
     )
 }
 
-/// Open the needs-you item of the refused `request`, whose file goes to
-/// `archived`. A queued request has no caller that waits for its reply, so
-/// this item is the only report of the refusal (RR-8, FM-15).
 fn open_refused_item(
     tx: &Transaction<'_>,
     request: &Request,
