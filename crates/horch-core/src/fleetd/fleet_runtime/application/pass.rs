@@ -2806,10 +2806,7 @@ fn to_seen(p: Proc) -> Seen {
 /// `exec horch worker`, so the process that herdr shows in the pane is the
 /// wrapper, and its agent runs in its process group. A process that another
 /// attempt records is the old wrapper of a pane that the attempt takes:
-/// the pass waits for the new one. The pane is the pane of the worker of
-/// the attempt when the spawn recorded it: the pane of the attempt row is
-/// the pane that `horch spawn --from-pane` splits, so a relaunch (FM-31)
-/// runs in a new pane.
+/// the pass waits for the new one.
 fn pane_wrapper(
     tx: &Connection,
     a: &AttemptRow,

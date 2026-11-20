@@ -1,17 +1,6 @@
 //! The e2e tests of the dispatcher and the sub-orchestrators through the
 //! binary (`docs/tickets/fleetd-p6/57-e2e-sub-orch.md`;
 //! `docs/specs/fleetd/design.md`: FR-2, FM-16, FM-29 and FM-31).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. The fake idea-lead is `fake-claude`: the persona `idea-lead` has
-//! the agent `claude`, and `HORCH_FAKE_SCENARIO` names its keys.
-//!
-//! The fleet clock moves only through [`Harness::advance_fleet_clock`], and
-//! the calendar clock only through `HORCH_NOW`. Each test waits for an
-//! event of the ledger or of a file, never for a time. Each test sets
-//! `HORCH_TEST_DOCS_FIXTURE` to an empty local folder, so no test uses the
-//! network.
 
 #![cfg(unix)]
 
@@ -24,29 +13,18 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second. The waits use the
-/// defaults of the design: the idle stop after 30 min of fleet clock and
-/// the park after 7 days of calendar time.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The idle stop of the design (FM-29), in seconds of fleet clock.
 const IDLE_STOP_S: i64 = 30 * 60;
 
-/// The calendar time at the start of the FM-29 test, inside the default
-/// working hours (a Monday).
-const START: &str = "2030-01-07T10:00:00Z";
+const MONDAY_IN_WORKING_HOURS: &str = "2030-01-07T10:00:00Z";
 
-/// 8 days after [`START`]: past the park of the design at 7 days.
 const AFTER_PARK: &str = "2030-01-15T10:00:00Z";
 
-/// The interview.md entry of the answer that the fake idea-lead records
-/// before it dies (`die_mid_interview` of `crates/horch-e2e/src/idea_agent.rs`).
 const FIRST_ANSWER: &str = "Which file does the idea change?\n\nAnswer: fake.txt";
 
-/// The interview.md entry of the answer that only the `clarify` key records.
 const SECOND_ANSWER: &str = "How many tasks does it need?\n\nAnswer: 1 task";
 
-/// A ticket of the code kind, for `horch idea add --direct`.
 fn ticket(n: u32, title: &str) -> String {
     format!(
         "# {n:02}: {title}\n\n\
@@ -69,19 +47,13 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A fleet with a test fleetd in the herdr workspace of the project.
 struct World {
     h: Harness,
 }
 
 impl World {
-    /// The fleet with `scenario` as the keys of each fake agent. `before`
-    /// runs before fleetd starts.
     fn new(name: &str, scenario: &str, before: impl FnOnce(&mut Harness)) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is `<root>/ledger.sqlite3`, the file of
-        // `Harness::advance_fleet_clock`. The launch gives the pane worker
-        // the ledger and FLEET_ROOT.
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -99,11 +71,9 @@ impl World {
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
         let ws = h.fleet_workspace();
         h.set("HORCH_WORKSPACE_ID", ws);
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -131,7 +101,6 @@ impl World {
         self.h.fleet_root()
     }
 
-    /// `horch idea add <args>`; the id of the new idea.
     fn add(&self, args: &[&str]) -> String {
         let mut argv = vec!["idea", "add"];
         argv.extend_from_slice(args);
@@ -144,14 +113,11 @@ impl World {
             .unwrap_or_else(|| panic!("no idea id in: {}", text(&o)))
     }
 
-    /// `horch idea add --direct` of the project ticket `tickets/<name>`.
     fn add_direct(&self, name: &str) -> String {
         let ticket = self.h.project.join("tickets").join(name);
         self.add(&["--direct", &ticket.to_string_lossy()])
     }
 
-    /// The rows of `sql`, each row its columns joined with 1 space. No rows
-    /// while the ledger does not exist yet.
     fn rows(&self, sql: &str) -> Vec<String> {
         let Ok(conn) =
             Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -185,15 +151,12 @@ impl World {
         self.rows(sql).into_iter().next()
     }
 
-    /// The fleet clock of the ledger.
     fn fleet_clock(&self) -> i64 {
         self.one("SELECT fleet_clock_s FROM fleetd WHERE id = 1")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0)
     }
 
-    /// Wait for 2 more fleetd passes: the fleet clock grows by the awake
-    /// time of each pass.
     fn two_passes(&self) {
         let from = self.fleet_clock();
         self.wait("2 more fleetd passes", || {
@@ -201,7 +164,6 @@ impl World {
         });
     }
 
-    /// The sub-orchestrator attempts: id, idea, state and outcome.
     fn lead_attempts(&self) -> Vec<String> {
         self.rows(
             "SELECT id, IFNULL(idea_id, '-'), state, IFNULL(outcome, '-') FROM attempts
@@ -209,7 +171,6 @@ impl World {
         )
     }
 
-    /// What a failed wait shows.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -268,7 +229,6 @@ impl World {
         .concat()
     }
 
-    /// The interview.md of each idea folder that has one.
     fn interviews(&self) -> String {
         let mut dirs: Vec<PathBuf> = std::fs::read_dir(self.fleet_root().join("ideas"))
             .map(|d| d.filter_map(Result::ok).map(|e| e.path()).collect())
@@ -283,12 +243,10 @@ impl World {
             .join("\n")
     }
 
-    /// Wait for `what`: `f` gives a value.
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
 
-    /// Wait until the idea `idea` is in `state`.
     fn wait_state(&self, idea: &str, state: &str) {
         self.wait(&format!("idea {idea} in {state}"), || {
             (self
@@ -299,14 +257,12 @@ impl World {
         });
     }
 
-    /// The feature of the idea `idea`.
     fn feature_of(&self, idea: &str) -> String {
         self.wait(&format!("the feature of idea {idea}"), || {
             self.one(&format!("SELECT feature_id FROM ideas WHERE id = '{idea}'"))
         })
     }
 
-    /// Wait for a sub-orchestrator attempt `<idea>/<phase>/<n>` in `live`.
     fn wait_live_lead(&self, idea: &str, phase: &str) -> String {
         self.wait(&format!("a live {phase} attempt of idea {idea}"), || {
             self.one(&format!(
@@ -316,7 +272,6 @@ impl World {
         })
     }
 
-    /// The argv of each call of the fake `claude`.
     fn claude_argvs(&self) -> Vec<Vec<String>> {
         self.h
             .calls_of("claude")
@@ -336,13 +291,8 @@ fn argv(call: &Value) -> Vec<String> {
         .collect()
 }
 
-/// FR-2: the ledger shows 1 idea for each sub-orchestrator attempt. A
-/// second idea of a feature waits in `captured` while the first is in
-/// `clarifying`, and the idea of another feature gets its own process at
-/// the same time.
 #[test]
 fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
-    // `stay`: the fake idea-lead stays, so its idea stays in `clarifying`.
     let w = World::new("p6-fr2", "stay", |_| {});
     let first = w.add(&["Show the queue length in the status bar"]);
     let feature = w.feature_of(&first);
@@ -357,7 +307,6 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
     w.wait_live_lead(&other, "clarifying");
     w.two_passes();
 
-    // 1 process never plans 2 ideas: the second idea of the feature waits.
     assert_eq!(
         w.one(&format!("SELECT state FROM ideas WHERE id = '{second}'"))
             .as_deref(),
@@ -373,7 +322,6 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
         "{}",
         w.context()
     );
-    // 1 live sub-orchestrator for each feature.
     for f in [&feature, &other_feature] {
         let live = w.rows(&format!(
             "SELECT a.id FROM attempts a JOIN ideas i ON i.id = a.idea_id
@@ -381,8 +329,6 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
         ));
         assert_eq!(live.len(), 1, "feature {f}: {live:?}\n{}", w.context());
     }
-    // Each sub-orchestrator attempt names 1 idea, in its id and its row,
-    // and its launch argument names that idea only.
     let attempts = w.lead_attempts();
     assert!(attempts.len() >= 2, "{}", w.context());
     for row in &attempts {
@@ -408,10 +354,6 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
     }
 }
 
-/// FM-16: no orchestrator pane and no orchestrator conversation exist,
-/// and the sub-orchestrator of a feature gets only the questions of its
-/// feature. 2 `--direct` ideas make 2 features; the worker of each task
-/// asks 1 question.
 #[test]
 fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
     horch_e2e::expected::check(
@@ -433,8 +375,6 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
             let features = ideas.clone().map(|i| w.feature_of(&i));
             assert_ne!(features[0], features[1], "{}", w.context());
 
-            // 1 open question in each feature, each owned by the sub-orchestrator
-            // of its feature.
             for f in &features {
                 let owner = w.wait(&format!("a question of feature {f}"), || {
                     w.one(&format!(
@@ -443,8 +383,6 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
                 });
                 assert_eq!(owner, format!("idea-lead:{f}"), "{}", w.context());
             }
-            // The doorbell rings the process of each feature with the questions
-            // of that feature only.
             let rung = |f: &str| {
                 w.rows(&format!(
                     "SELECT e.data_json FROM events e JOIN attempts a ON a.id = e.entity_id
@@ -474,8 +412,6 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
                     }
                 }
             }
-            // No orchestrator: no worker of the persona or the kind, no attempt
-            // of it, and no herdr call names a pane of it.
             let seats = w.rows(
             "SELECT worker_id FROM workers WHERE persona = 'orchestrator' OR kind = 'orchestrator'
                OR worker_id = 'orchestrator'",
@@ -492,20 +428,14 @@ fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
     );
 }
 
-/// FM-29: an idea that waits on you is visible at once. Its idle
-/// sub-orchestrator stops after 30 min of fleet clock, and the idea parks
-/// with a note after 7 days of calendar time.
 #[test]
 fn fm29_idle_stop_and_park() {
-    // `clarify`: the fake idea-lead writes assumptions.md, so the idea
-    // waits for your approval. `stay`: its process stays, idle.
     let mut w = World::new("p6-fm29", "clarify,stay", |h| {
-        h.set("HORCH_NOW", START);
+        h.set("HORCH_NOW", MONDAY_IN_WORKING_HOURS);
     });
     let idea = w.add(&["Show the queue length in the status bar"]);
     w.wait_state(&idea, "awaiting_approval");
     let attempt = w.wait_live_lead(&idea, "clarifying");
-    // Visible at once: the wait is recorded and on the needs-you list.
     w.wait("the waiting needs-you item", || {
         w.one(&format!(
             "SELECT state FROM needs_you WHERE key = '{}' AND state = 'open'",
@@ -519,7 +449,6 @@ fn fm29_idle_stop_and_park() {
         ))
     });
 
-    // 1 min short of the idle stop: the process stays.
     w.h.advance_fleet_clock(IDLE_STOP_S - 60);
     w.two_passes();
     assert_eq!(
@@ -531,7 +460,6 @@ fn fm29_idle_stop_and_park() {
         "{}",
         w.context()
     );
-    // At 30 min of fleet clock, fleetd stops the idle process.
     w.h.advance_fleet_clock(60);
     w.wait("the idle stop of the sub-orchestrator", || {
         w.one(&format!(
@@ -547,7 +475,6 @@ fn fm29_idle_stop_and_park() {
         w.context()
     );
 
-    // 8 days later in calendar time, with no answer: the idea parks.
     w.h.stop_fleetd();
     w.h.set("HORCH_NOW", AFTER_PARK);
     w.h.serve_fleetd();
@@ -569,45 +496,37 @@ fn fm29_idle_stop_and_park() {
     );
 }
 
-/// FM-31: a sub-orchestrator killed mid-interview restarts in the same
-/// phase from its folder, and interview.md keeps each recorded answer.
-/// The first fake idea-lead records 1 answer and dies (exit 137); each
-/// later one clarifies.
+fn claude_dies_on_first_idea_launch(h: &mut Harness) {
+    let real = std::fs::read_link(h.bin.join("claude"))
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_BIN_EXE_fake-claude")));
+    let mark = h.root.join("claude-died");
+    let script = format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+         case \"$*\" in *'/ideas/'*) idea=1 ;; *) idea= ;; esac\n\
+         if [ -n \"$idea\" ] && [ ! -e '{mark}' ]; then\n\
+         : > '{mark}'\n\
+         HORCH_FAKE_SCENARIO=exec,die_mid_interview\n\
+         export HORCH_FAKE_SCENARIO\n\
+         fi\n\
+         exec '{real}' \"$@\"\n",
+        mark = mark.display(),
+        real = real.display()
+    );
+    h.write_warmed("claude", script.as_bytes());
+}
+
 #[test]
 fn fm31_killed_sub_orchestrator_resumes_from_its_folder() {
-    let w = World::new("p6-fm31", "clarify", |h| {
-        // The first idea-lead launch of `claude` dies mid-interview; each
-        // later launch plays the keys of the harness. A launch that names
-        // no idea folder (the `--version` probe, a conformance check) does
-        // not use the mark.
-        let real = std::fs::read_link(h.bin.join("claude"))
-            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_BIN_EXE_fake-claude")));
-        let mark = h.root.join("claude-died");
-        let script = format!(
-            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
-             case \"$*\" in *'/ideas/'*) idea=1 ;; *) idea= ;; esac\n\
-             if [ -n \"$idea\" ] && [ ! -e '{mark}' ]; then\n\
-             : > '{mark}'\n\
-             HORCH_FAKE_SCENARIO=exec,die_mid_interview\n\
-             export HORCH_FAKE_SCENARIO\n\
-             fi\n\
-             exec '{real}' \"$@\"\n",
-            mark = mark.display(),
-            real = real.display()
-        );
-        h.write_warmed("claude", script.as_bytes());
-    });
+    let w = World::new("p6-fm31", "clarify", claude_dies_on_first_idea_launch);
     let idea = w.add(&["Show the queue length in the status bar"]);
     let folder = w.fleet_root().join("ideas").join(&idea);
     let interview = folder.join("interview.md");
 
-    // The first process records 1 answer, then dies with no assumptions.md.
     w.wait("the answer of the first process in interview.md", || {
         std::fs::read_to_string(&interview)
             .ok()
             .filter(|t| t.contains(FIRST_ANSWER))
     });
-    // A fresh process in the same phase finishes the interview.
     w.wait_state(&idea, "awaiting_approval");
     let attempts = w.lead_attempts();
     let phases: Vec<&str> = attempts
@@ -627,21 +546,14 @@ fn fm31_killed_sub_orchestrator_resumes_from_its_folder() {
         "each process of the idea is in the phase clarifying: {phases:?}"
     );
     assert!(folder.join("assumptions.md").is_file(), "{}", w.context());
-    // The fresh process writes assumptions.md before its notes: a later
-    // pass ingests them.
     let text = w.wait("the answer of the fresh process in interview.md", || {
         std::fs::read_to_string(&interview)
             .ok()
             .filter(|t| t.contains(SECOND_ANSWER))
     });
-    // The answer of the dead process stays Q1. The fresh process resumes
-    // from the folder: it asks only the open question, Q2. No answer is
-    // lost or written over, and no question is asked 2 times.
     assert!(text.contains(&format!("## Q1\n{FIRST_ANSWER}")), "{text}");
     assert!(text.contains(&format!("## Q2\n{SECOND_ANSWER}")), "{text}");
     assert_eq!(text.matches("\n## Q").count(), 2, "{text}");
-    // The ingest skips an entry that interview.md holds, so a question
-    // asked 2 times shows only in the note files: 1 file for each question.
     let notes = std::fs::read_dir(folder.join("notes")).unwrap().count();
     assert_eq!(notes, 2, "1 note for each question\n{}", w.context());
 }

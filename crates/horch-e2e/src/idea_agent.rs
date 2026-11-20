@@ -93,13 +93,11 @@ const CONNECT_WAIT: Duration = Duration::from_secs(5);
 pub fn play(call: &mut Call) {
     lead_keys(call);
     if call.fake == "claude" && scenario_has("stay") {
-        // Eager: a `stay` launch is killed, so nothing is written after it.
         call.flush();
         hang();
     }
 }
 
-/// Run the keys of the fake idea-lead.
 fn lead_keys(call: &mut Call) {
     if !IDEA_KEYS.iter().any(|k| scenario_has(k)) {
         return;
@@ -122,8 +120,6 @@ fn lead_keys(call: &mut Call) {
     let open = scenario_has("clarify_open");
     if open || scenario_has("clarify") {
         lead.write("assumptions.md", &lead.assumptions(open));
-        // A fresh process resumes from the idea folder (FM-31): it asks
-        // only the questions that interview.md does not hold.
         let notes: Vec<Value> = [
             ("Which file does the idea change?", "fake.txt"),
             ("How many tasks does it need?", "1 task"),
@@ -222,7 +218,6 @@ impl Lead {
         }
     }
 
-    /// Whether interview.md holds `question` with `answer`.
     fn answered(&self, question: &str, answer: &str) -> bool {
         std::fs::read_to_string(self.folder.join("interview.md"))
             .is_ok_and(|t| t.contains(&format!("\n{question}\n\nAnswer: {answer}\n")))
