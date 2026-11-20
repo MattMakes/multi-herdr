@@ -1,8 +1,11 @@
 # multi-herdr
 
-"horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
+"horch" multi-agent orchestration layouts for [herdr](https://herdr.dev) —
+supporting both the `herdr` TUI server and `herdr-core` (`hc`) plus the Herdr
+desktop app (`herdr-app`) — in Rust.
 
-Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
+Three binaries, no runtime dependencies beyond the pane host (`herdr` or `hc` +
+`herdr-app`) itself. No bash, no jq, no
 Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
 skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
@@ -276,7 +279,11 @@ and keeps state whose owner is live or unknown.
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
 
-Day to day: `just install` once, then `herdr-fleet` from any project.
+Day to day: `just install` once, then run `herdr-fleet` from any project — inside
+either the `herdr` TUI or a Herdr desktop app terminal (`horch` picks the host
+automatically from `HERDR_PANE_ID` or `HC_TERMINAL_ID`). From any other
+terminal, pick the Herdr app explicitly with `horch --backend hc fleet` or
+`HORCH_BACKEND=hc herdr-fleet` (or `HORCH_BACKEND=herdr` for the TUI server).
 To pick up new changes, run `git pull` yourself, then `just install` again.
 
 ## Releases
@@ -307,7 +314,21 @@ horch fleet sol        # Codex on Sol
 ```
 
 `cc` and `claude` still work and mean `opus`. The launcher takes the same words:
-`herdr-fleet sol`.
+`herdr-fleet sol`. Run `herdr-fleet` in a `herdr` TUI pane or a Herdr desktop
+app terminal, or pass `--backend hc` / `HORCH_BACKEND=hc` from any other
+terminal to target the Herdr app (`--backend herdr` / `HORCH_BACKEND=herdr`
+targets the TUI server). Both pane hosts can run fleets side by side on the same
+machine.
+
+### Pane host differences (`hc` vs `herdr`)
+
+| behavior | `herdr` (TUI server) | `hc` (`herdr-core` + `herdr-app`) |
+|---|---|---|
+| layout and tiling | `horch tile` / `horch balance` resize and reflow panes; `horch layout` shows geometry | placed once at spawn (4 workers in 2 columns on tab 1, then overflow tabs `workers 2`, `workers 3`, ... with 6 workers in 3 columns); `tile` and `balance` are no-ops; `layout` prints space, tabs, and terminals without sizes |
+| window closed | headless `herdr server` can start and run fleets | a running fleet continues via `hc` (spawns fall back to labelled `hc run` and are adopted when Herdr reopens); starting a new fleet needs an open Herdr app window |
+| supported worker harnesses | all roster harnesses | harnesses that report OSC 7501 status under `hc` (`claude`, `codex`, `antigravity`, plus `smoke`); others are refused before creating a pane |
+| Codex launch | standard `codex` | adds `--no-daemon` and passes `HORCH_BACKEND` / `HC_*` variables to the channel MCP server |
+| Claude Bash sandbox | allows `$HERDR_SOCKET_PATH` | allows the `herdr-core` and `herdr-app` sockets so `horch` commands work; because `herdr-core` can run programs outside the sandbox, Bash is not contained on `hc` (see [ADR 0003](docs/adr/0003-two-pane-hosts-behind-one-handle.md)) |
 
 To pick up an earlier orchestrator session in a new workspace, pass its session
 id: `horch fleet --resume <session-id>` (or `herdr-fleet --resume <session-id>`).
