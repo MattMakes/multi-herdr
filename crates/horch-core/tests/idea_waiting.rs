@@ -226,8 +226,6 @@ impl World {
         self.store.immediate(|tx| keep_waits(tx, &ctx)).unwrap()
     }
 
-    /// The durable event of an open interview question of [`IDEA`], as the
-    /// ingest of an `ask` note records it, with `amendments` amendments.
     fn ask(&mut self, question: &str, amendments: usize) {
         self.note_event(
             QUESTION_ASKED,
@@ -235,7 +233,6 @@ impl World {
         );
     }
 
-    /// The durable event of an answered interview question of [`IDEA`].
     fn answer(&mut self, question: &str) {
         self.note_event(
             QUESTION_ANSWERED,
@@ -263,7 +260,6 @@ impl World {
             .unwrap();
     }
 
-    /// The text of the needs-you item `key`.
     fn item_text(&self, key: &str) -> String {
         self.conn()
             .query_row("SELECT text FROM needs_you WHERE key = ?1", [key], |r| {
@@ -548,7 +544,6 @@ fn idle_clarifier_without_durable_question_does_not_wait_on_you() {
     let mut w = world(&["clarifying"]);
     w.launch();
 
-    // The pane is idle, but the ledger has no open interview question.
     let waits = w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
     assert!(
         waits.started.is_empty() && waits.idle_stopped.is_empty(),
@@ -579,14 +574,12 @@ fn clarifier_with_durable_open_question_waits_and_shows_question_text() {
     let text = w.item_text(&waiting_key(IDEA));
     assert!(text.contains(QUESTION), "{text}");
 
-    // An amendment after the question closes it, while the pane idles.
     folder.write_amendment(1, "Yes, uploads too.").unwrap();
     let waits = w.wait(1010, "2026-11-16T10:01:00+01:00", &[IDEA], &[P1]);
     assert_eq!(ids(&waits.ended), [IDEA]);
     assert_eq!(w.waiting_since(), None);
     assert_eq!(w.item(&waiting_key(IDEA)).as_deref(), Some("resolved"));
 
-    // A new question waits again; an answer note closes it.
     w.ask("Which upload sizes?", 1);
     let waits = w.wait(1020, "2026-11-16T10:02:00+01:00", &[IDEA], &[P1]);
     assert_eq!(ids(&waits.started), [IDEA]);

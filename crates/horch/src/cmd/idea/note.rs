@@ -92,9 +92,6 @@ pub fn run(ctx: &RuntimeContext, args: NoteArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The note of `args`: a dismiss, an answer to a worker question, an open
-/// interview question, or else 1 question of the interview and its answer
-/// as `<question> - <answer>`.
 fn body(args: &NoteArgs) -> Result<NoteBody> {
     if args.ask {
         return Ok(NoteBody::Ask {

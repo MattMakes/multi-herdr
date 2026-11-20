@@ -164,8 +164,6 @@ fn accept(
     Ok(append_once(ideas_dir, owner, note, question, answer))
 }
 
-/// Record the durable event of an `ask` note or of an `interview` note of
-/// `note`. Other notes record nothing here.
 fn record_question(
     tx: &Connection,
     guard: Option<Generation>,
@@ -204,7 +202,6 @@ fn record_question(
     Ok(())
 }
 
-/// The count of amendments of `idea`. No folder is 0.
 fn amendments(ideas_dir: &Path, owner: &User, idea: &str) -> Result<usize> {
     let folder = IdeaFolder::new(ideas_dir, idea, owner.clone())?;
     match folder.read_amendments() {

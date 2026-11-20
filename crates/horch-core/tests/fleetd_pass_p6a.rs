@@ -269,8 +269,6 @@ impl World {
         id
     }
 
-    /// The `ask` note 1 of the sub-orchestrator `attempt` of `idea`, as
-    /// `horch idea note <idea> --ask <question>` writes it.
     fn ask_note(&self, idea: &str, attempt: &str, question: &str) {
         let notes = self.root().join("ideas").join(idea).join("notes");
         fs::create_dir_all(&notes).unwrap();
@@ -769,7 +767,6 @@ fn pass_never_waits_for_a_sub_orchestrator() {
     let asking = w.add_idea(FEATURE);
     w.move_idea(&asking, "clarifying");
     let sub = w.live_sub_orchestrator(&asking, "clarifying");
-    // R5-F2: the sub-orchestrator records a durable open question first.
     w.ask_note(&asking, &sub, "Do retries apply to uploads?");
     let captured = w.add_idea(FEATURE_2);
     let mut fake = Fake::new(&w);

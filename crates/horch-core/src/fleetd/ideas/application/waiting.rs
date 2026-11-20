@@ -272,9 +272,7 @@ fn keep_idea(
 }
 
 /// Whether `row` waits on you now. `live` is the live attempt of its
-/// sub-orchestrator in [`PHASE`], `tries` each attempt of that phase, and
-/// `question` its open interview question: a clarifying idea waits only
-/// with one.
+/// sub-orchestrator in [`PHASE`], and `tries` each attempt of that phase.
 fn waits(
     tx: &Connection,
     ctx: &Wait<'_>,
@@ -431,8 +429,6 @@ fn park(tx: &Connection, ctx: &Wait<'_>, idea: &str, out: &mut Waits) -> Result<
     Ok(())
 }
 
-/// The text of the waiting item of `idea` in `state`, after `n` reminders,
-/// with its open interview `question`.
 fn waiting_text(state: &str, idea: &str, since: &str, n: u64, question: Option<&str>) -> String {
     let mut text = if state == "awaiting_approval" {
         format!(
@@ -466,9 +462,6 @@ fn phase_attempts(conn: &Connection, idea: &str) -> Result<Vec<(AttemptRow, Opti
         .collect())
 }
 
-/// The text of the open interview question of `idea`: its newest
-/// [`QUESTION_ASKED`] event, when no [`QUESTION_ANSWERED`] event follows it
-/// and no amendment arrived after it.
 fn open_interview_question(
     conn: &Connection,
     ctx: &Wait<'_>,
