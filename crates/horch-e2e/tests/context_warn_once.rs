@@ -1,17 +1,3 @@
-//! The Context warning of a worker in a live fleetd attempt shows 1 time
-//! (T-213, G5).
-//!
-//! A process of a live attempt sends no operator request
-//! (`refuse_fleet_caller`), so it cannot write its session record. The
-//! warning is recorded as a `context-warned` line of `progress.jsonl` of
-//! its attempt, and fleetd ingests the line into the session record.
-//!
-//! The worker is a stand-in: a `sh` process, recorded as the wrapper and
-//! the agent of a live claim attempt. It runs `horch ledger progress` 3
-//! times as its children, so the attempt is in their process chain. Its
-//! session is past the context limit (the transcript fixture of
-//! `crates/horch-core/tests/fixtures/context/home`).
-
 #![cfg(unix)]
 
 use std::io::Write as _;
@@ -24,19 +10,11 @@ use horch_core::taskledger::Store;
 use horch_e2e::harness::{repo_root, wait_for_or, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task, seed_worker};
 
-/// The session record of the worker.
 const RECORD: &str = "r-ctx";
-/// The role of the worker.
 const ROLE: &str = "opus-1";
-/// The session of the transcript fixture that is past the limit.
 const SESSION: &str = "11111111-1111-4111-8111-111111111111";
-/// The progress lines of the worker.
 const LINES: usize = 3;
 
-/// The script of the worker. `$1` is the `horch` binary and `$2` the
-/// folder of the outputs. It waits for 1 line, runs `horch ledger
-/// progress` [`LINES`] times, writes the exit code of each, then waits for
-/// the end of the test.
 const WORKER: &str = r#"read go
 for n in 1 2 3; do
   "$1" ledger progress "step $n" >"$2/progress-$n.out" 2>&1
@@ -45,7 +23,6 @@ done
 read end
 "#;
 
-/// The stand-in worker. Killed at the end of the test.
 struct Worker {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -81,8 +58,6 @@ impl Worker {
         }
     }
 
-    /// Run the progress lines, and wait until each ended. Each must pass.
-    /// Returns the output of each.
     fn run_progress(&mut self) -> Vec<String> {
         let stdin = self.stdin.as_mut().expect("the stdin of the worker");
         stdin.write_all(b"go\n").unwrap();
@@ -112,8 +87,6 @@ impl Drop for Worker {
     }
 }
 
-/// A fleet with its ledger in the state folder, the herdr workspace `w1`,
-/// the transcript fixture, and a test fleetd with 1 pass each second.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set(
@@ -129,8 +102,6 @@ fn world(name: &str) -> Harness {
     h
 }
 
-/// The session record of the worker: live, in `w1`, on the session that
-/// is past the limit.
 fn seed_record(h: &Harness) {
     let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
@@ -155,8 +126,6 @@ fn seed_record(h: &Harness) {
         .unwrap();
 }
 
-/// The task of the run, held by `worker` in the live claim attempt `A1`,
-/// whose wrapper and agent is the stand-in `w`.
 fn seed_attempt(h: &Harness, task: &str, worker_id: &str, w: &Worker) {
     let mut store = Store::open(&h.ledger_db()).unwrap();
     store
@@ -195,7 +164,6 @@ fn seed_attempt(h: &Harness, task: &str, worker_id: &str, w: &Worker) {
     std::fs::set_permissions(&outbox, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-/// The folder of attempt `A1` of `task`.
 fn attempt_dir(h: &Harness, task: &str) -> PathBuf {
     h.fleet_root()
         .join("tasks")
@@ -204,7 +172,6 @@ fn attempt_dir(h: &Harness, task: &str) -> PathBuf {
         .join("A1")
 }
 
-/// The `context-warned` events of the session record.
 fn warned_events(h: &Harness) -> usize {
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .get(RECORD)
@@ -215,8 +182,6 @@ fn warned_events(h: &Harness) -> usize {
         .count()
 }
 
-/// The size of `progress.jsonl` of the attempt and the offset that fleetd
-/// ingested, when the file exists.
 fn ingested(h: &Harness, task: &str) -> Option<(u64, u64)> {
     let conn = rusqlite::Connection::open(h.ledger_db()).unwrap();
     let path: String = conn

@@ -433,8 +433,6 @@ fn attempt_row(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String
         .optional()?)
 }
 
-/// The event of a line. A `context-warned` line never gets here
-/// ([`record_warned`]).
 fn event_kind(kind: LineKind) -> EventKind {
     match kind {
         LineKind::Progress => EventKind::Progress,
@@ -442,9 +440,6 @@ fn event_kind(kind: LineKind) -> EventKind {
     }
 }
 
-/// 1 `context-warned` event with `text` on the session record of `worker`,
-/// at the time of the ingest: the time in the line is the worker's. A
-/// worker with no session record changes nothing.
 fn record_warned(tx: &Connection, worker: &str, text: &str) -> Result<()> {
     let Some(record_id) = workers::find(tx, worker)?.and_then(|w| w.legacy_record_id) else {
         return Ok(());

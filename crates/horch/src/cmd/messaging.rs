@@ -848,11 +848,7 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
 /// built as `horch context` builds it, and the rule is
 /// [`policy::should_warn`]. On a warning it records `context-warned` and
 /// returns the rendered `warning` line, or `warning-orchestrator` for an
-/// orchestrator record. A process of a live attempt cannot write its
-/// session record: it records the warning as a `context-warned` line of
-/// its outbox, which fleetd ingests, and that line counts as an ask of
-/// the cycle until fleetd ingests it (G5, T-213). A failed record is an
-/// error line, and the warning still shows.
+/// orchestrator record.
 pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
     let record = src.ledger.get(record_id)?;
     let Some((row, tokens)) = warn_row(src, record) else {
@@ -897,9 +893,6 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
     Ok(Some(line))
 }
 
-/// Whether a `context-warned` line of the outbox of the own attempt `out`
-/// is an ask of the current cycle of `row` ([`policy::already_asked`]).
-/// An outbox with no log has none.
 fn warned_in_attempt(out: &OutboxWriter, row: &context::Row) -> bool {
     let Ok(log) = std::fs::read_to_string(out.outbox().join(PROGRESS_JSONL)) else {
         return false;

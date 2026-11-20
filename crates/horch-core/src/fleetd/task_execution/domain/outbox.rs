@@ -54,13 +54,10 @@ impl LineKind {
     }
 }
 
-/// The text of a [`LineKind::ContextWarned`] line:
-/// `tokens <n> threshold <n>`.
 pub fn warned_text(tokens: u64, threshold: u64) -> String {
     format!("tokens {tokens} threshold {threshold}")
 }
 
-/// Whether `text` is a [`warned_text`].
 pub fn is_warned_text(text: &str) -> bool {
     let number = |n: &str| !n.is_empty() && n.len() <= 20 && n.bytes().all(|b| b.is_ascii_digit());
     match text.split(' ').collect::<Vec<_>>()[..] {
