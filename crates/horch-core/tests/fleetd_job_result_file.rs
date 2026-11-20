@@ -518,8 +518,6 @@ fn queued_job_has_no_pid_and_gets_no_result_file() {
     assert_eq!(w.row(id).result_json, None);
 }
 
-/// The job `id` has 1 note: it ignored the result file of run `run`, and the
-/// note names the row state `state`.
 fn assert_one_ignored_note(w: &World, id: i64, run: i64, state: &str) {
     let notes = w.events(id, "note");
     assert_eq!(notes.len(), 1, "{notes:?}");
