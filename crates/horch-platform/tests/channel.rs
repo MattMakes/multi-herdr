@@ -225,9 +225,6 @@ fn the_listener_accepts_a_next_client_after_the_first() {
 /// a Windows pipe, a few KiB on a Unix socket.
 const LARGE_REPLY: usize = 128 * 1024;
 
-/// Accept 1 client, read its line, and write a reply of [`LARGE_REPLY`]
-/// bytes and `\n`, with a write timeout of `timeout`. The result is the
-/// line and the result of the write.
 fn serve_large_reply(
     listener: &Listener,
     timeout: Duration,
@@ -248,7 +245,6 @@ fn large_reply_to_non_reading_client_times_out_and_does_not_block() {
     let listener = Listener::bind(&place.name).unwrap();
     let timeout = Duration::from_millis(300);
 
-    // This client sends 1 line, never reads and keeps its handle open.
     let silent = Stream::connect(&place.name, deadline()).unwrap();
     (&silent).write_all(b"silent\n").unwrap();
     let started = Instant::now();
@@ -272,7 +268,6 @@ fn large_reply_to_non_reading_client_times_out_and_does_not_block() {
         closing.elapsed()
     );
 
-    // The next client gets all of its reply.
     let next = std::thread::spawn(move || {
         let stream = Stream::connect(&place.name, deadline()).unwrap();
         (&stream).write_all(b"next\n").unwrap();

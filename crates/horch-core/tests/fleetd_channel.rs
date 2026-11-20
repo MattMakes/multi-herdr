@@ -283,8 +283,6 @@ fn non_reading_client_with_large_reply_does_not_block_next_client_or_server_stop
     let server =
         ChannelServer::start_with(w.root(), w.conn(), Generation(1), handlers, options).unwrap();
 
-    // This client sends 1 valid request, never reads the reply and keeps
-    // its handle open.
     let silent = connect(&w.socket());
     let first = request(Kind::TaskCancel, Some(w.token()));
     (&silent).write_all(first.to_line().as_bytes()).unwrap();

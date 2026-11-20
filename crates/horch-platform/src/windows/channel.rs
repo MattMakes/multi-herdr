@@ -76,8 +76,6 @@ pub(crate) struct Stream {
     /// is not overlapped has no write timeout, so a write with a limit is
     /// cancelled with [`CancelSynchronousIo`] when the limit passes.
     write_timeout: Mutex<Option<Duration>>,
-    /// True after a write was cancelled. The reply is then cut, so the end
-    /// of the connection does not wait for the client to read it.
     cut: AtomicBool,
 }
 
@@ -262,8 +260,7 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
 /// End the connection of the server side, and free the instance for the
 /// next client. `DisconnectNamedPipe` discards the bytes that the client did
 /// not read, so a helper thread first waits with `FlushFileBuffers` until
-/// the client reads them, for at most [`DRAIN_LIMIT`]. A `cut` reply is not
-/// drained: the client cannot use it.
+/// the client reads them, for at most [`DRAIN_LIMIT`].
 fn end_connection(instance: &Arc<Instance>, cut: bool) {
     let (flushed, drained) = mpsc::channel();
     let pipe = instance.pipe.as_raw_handle();
@@ -304,8 +301,6 @@ impl Stream {
         }
     }
 
-    /// Write `buf`. With a write timeout, a watchdog cancels the write when
-    /// it waits longer, and the write fails with `TimedOut`.
     fn write_by(&self, buf: &[u8]) -> io::Result<usize> {
         let timeout = *self
             .write_timeout
@@ -815,11 +810,8 @@ mod tests {
         });
     }
 
-    /// A reply far larger than [`BUFFER`].
     const LARGE_REPLY: usize = 128 * 1024;
 
-    /// Accept 1 client, read its line, and write [`LARGE_REPLY`] bytes and
-    /// `\n` with a write timeout of `timeout`.
     fn serve_large_reply(
         listener: &Listener,
         timeout: Duration,
@@ -840,7 +832,6 @@ mod tests {
         let listener = bind(&name).unwrap();
         let timeout = Duration::from_millis(300);
 
-        // This client sends 1 line, never reads and keeps its handle open.
         let silent = connect(&name, far_deadline()).unwrap();
         (&silent).write_all(b"silent\n").unwrap();
         let started = Instant::now();
@@ -853,7 +844,6 @@ mod tests {
             "the write ends near its timeout: {:?}",
             started.elapsed()
         );
-        // The reply is cut, so the end does not wait DRAIN_LIMIT.
         let closing = Instant::now();
         drop(stream);
         assert!(
@@ -862,7 +852,6 @@ mod tests {
             closing.elapsed()
         );
 
-        // The next client connects and gets all of its reply.
         thread::scope(|scope| {
             let next = scope.spawn(|| {
                 let stream = connect(&name, far_deadline()).unwrap();

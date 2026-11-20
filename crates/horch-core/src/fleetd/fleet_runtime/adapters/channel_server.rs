@@ -69,16 +69,10 @@ pub const NAME_TAKEN_KIND: &str = "channel_name_taken";
 /// stays does not keep 1 core busy.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
-/// The longest wait of 1 connect that wakes the accept at a stop. A
-/// connect that finds the pipe busy on Windows tries again after it.
 const WAKE_WAIT: Duration = Duration::from_millis(100);
 
-/// The time between 2 checks for the end of the thread at a stop.
 const WAKE_POLL: Duration = Duration::from_millis(10);
 
-/// The time at a stop for the work of 1 connection that has no deadline of
-/// its own: the decision, the end of the connection (2 s at most on
-/// Windows), and the connects that wake the accept.
 const STOP_MARGIN: Duration = Duration::from_secs(5);
 
 /// The channel of the fleet at `fleet_root`.
@@ -111,8 +105,6 @@ impl Default for Options {
 #[derive(Debug)]
 pub struct ChannelServer {
     socket: PathBuf,
-    /// The deadline of 1 connection, so the stop knows how long the
-    /// thread can stay in 1 connection.
     read_deadline: Duration,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<()>>>,
@@ -179,12 +171,6 @@ impl ChannelServer {
         self.end()
     }
 
-    /// The read of the line and the write of the reply each stop at the
-    /// deadline of the connection, so the thread comes back to its accept.
-    /// A connect wakes the accept. The stop connects again until the thread
-    /// ends, since a connect can come while the thread still serves a
-    /// connection. A thread that does not end in time is left, and the stop
-    /// fails: a stop never waits for ever (RR-7).
     fn end(&mut self) -> Result<()> {
         let Some(thread) = self.thread.take() else {
             return Ok(());
@@ -195,7 +181,6 @@ impl ChannelServer {
             if Instant::now() >= limit {
                 bail!("the thread of the channel did not end at the stop");
             }
-            // A server that already ended refuses the connect.
             drop(Stream::connect(&self.socket, Instant::now() + WAKE_WAIT));
             // At most 1 connect in each WAKE_WAIT, so the connects do not
             // fill the queue of the socket.
@@ -397,11 +382,6 @@ fn refusal_line(reason: &str) -> String {
     )
 }
 
-/// Write `line` to `stream`, and stop at `timeout` from now in total. A
-/// client that does not read its reply holds the thread for that time at
-/// most. Each failure ends only this connection with no more bytes: a
-/// failed write, and a stream that cannot set a write timeout (PL-3), since
-/// a write with no timeout can wait for ever.
 fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     let mut rest = line.as_bytes();
