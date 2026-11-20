@@ -371,15 +371,10 @@ fn codex_profile_forbids_git_push_and_external_messages_by_default() {
     }
 }
 
-// ─── the external-message boundary of a verifier check ──────────────────
-
 /// An address that no host answers (RFC 5737, TEST-NET-1): a webhook at
 /// this address never gets a message, so the test sends none.
 const OFF_HOST_WEBHOOK: &str = "http://192.0.2.1:9/hook";
 
-/// The `check_launch` of each of `checks` for a worker of a Claude persona,
-/// in a test fleet under `root`. An entry is `None` when this host has no
-/// check sandbox.
 #[cfg(unix)]
 fn check_launches(
     root: &Path,
@@ -422,7 +417,6 @@ fn check_launches(
         .collect()
 }
 
-/// The output of a launched check.
 #[cfg(unix)]
 fn run_check(
     spec: &horch_core::fleetd::worker_profiles::application::ports::LaunchSpec,
@@ -435,11 +429,6 @@ fn run_check(
     cmd.output().unwrap()
 }
 
-/// SR-3: a verifier check sends no message outside the fleet. In its
-/// sandbox a `curl` of a webhook on this host passes (the network rule is
-/// not a full denial), and a `curl` of a webhook on another host is
-/// refused, with a reason on stderr that names SR-3 and the network rule,
-/// and with the exit code of the check kept.
 #[cfg(unix)]
 #[test]
 fn verifier_check_sends_no_message_outside_the_fleet() {
@@ -449,9 +438,13 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
     let tmp = tempfile::tempdir().unwrap();
     let curl = |url: &str| format!("curl --silent --show-error --max-time 5 --data hello {url}");
 
-    // A webhook on this host: the check reaches it.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    let local = curl(&format!("http://127.0.0.1:{port}/"));
+    let launches = check_launches(tmp.path(), &[&local, &curl(OFF_HOST_WEBHOOK)]);
+    let Some(spec) = &launches[0] else {
+        return;
+    };
     let webhook = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0u8; 1024];
@@ -460,15 +453,6 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         String::from_utf8_lossy(&buf[..n]).into_owned()
     });
-    let local = curl(&format!("http://127.0.0.1:{port}/"));
-    let launches = check_launches(tmp.path(), &[&local, &curl(OFF_HOST_WEBHOOK)]);
-    let Some(spec) = &launches[0] else {
-        // No check sandbox on this host: the check never runs (SR-4), so
-        // it sends nothing. Release the listener.
-        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
-        webhook.join().unwrap();
-        return;
-    };
     let out = run_check(spec);
     assert!(ok(&out), "{}", show(&out));
     assert!(webhook.join().unwrap().contains("hello"), "no request");

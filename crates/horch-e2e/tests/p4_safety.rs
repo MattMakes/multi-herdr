@@ -135,8 +135,6 @@ fn world(name: &str, ticket: &str, env: &[(&str, &str)]) -> World {
     }
     declare_gates(&h);
     seed_task(&h, ticket);
-    // The workspace of the fleet has the label of the project folder, so
-    // fleetd launches an attempt with no recorded pane in it (T-890).
     let workspace = h.fleet_workspace();
     assert_eq!(workspace, "w1");
     h.set("HORCH_WORKSPACE_ID", workspace);
@@ -205,8 +203,7 @@ fn seed_task(h: &Harness, ticket: &str) {
 
 /// The call of a fake `claude` that ran in exec mode, with the text of its
 /// `START.md` in `exec_prompt`: the agent of a push attempt, started by
-/// fleetd with no search for work. The conformance check of fleetd also
-/// runs a fake `claude` in exec mode, so the call holds the ticket text.
+/// fleetd with no search for work.
 fn attempt_call(w: &World) -> Value {
     wait_for_or(
         "the fake agent of the attempt to run",
@@ -495,10 +492,6 @@ fn sr3_agent_git_push_is_refused_and_fleetd_push_works() {
     assert_eq!(push_state, "ok");
 }
 
-/// SR-3: no agent messages anyone outside the fleet. fleetd launches the
-/// agent of a push attempt with a profile whose deny list holds each
-/// external-message command: `gh issue comment`, `gh pr comment`,
-/// `gh pr review` and `gh discussion`.
 #[test]
 fn sr3_agent_launch_denies_external_messages() {
     let w = world("p4-sr3-messages", "# T0\nDo the work of T0.\n", &[]);

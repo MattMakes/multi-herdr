@@ -48,9 +48,6 @@ pub const NETWORK_RULE: &str = "SR-3: a task check has no off-host network (loop
 sockets only), so no check messages anyone outside the fleet. A dependency must be in the local \
 cache before the check.";
 
-/// The shell script of a check: it runs the check as `$1` with the shell
-/// `$0`, and prints `$2` to stderr when the check fails. It keeps the exit
-/// code of the check.
 const CHECK_SCRIPT: &str = "\"$0\" -c \"$1\"; status=$?; \
 if [ \"$status\" -ne 0 ]; then echo \"$2\" >&2; fi; exit \"$status\"";
 

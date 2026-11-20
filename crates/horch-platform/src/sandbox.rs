@@ -326,8 +326,6 @@ mod tests {
     const OFF_HOST: &str = "192.0.2.1:9";
     const TARGET: &str = "SANDBOX_CHILD_TARGET";
 
-    /// What a connect to `TARGET` did, printed by the child after
-    /// `RESULT `: `connected`, or `refused <error kind> <os error>`.
     #[test]
     #[ignore = "run by the sandbox tests, inside a sandbox"]
     fn connect_child() {
@@ -338,9 +336,6 @@ mod tests {
         }
     }
 
-    /// The line that the child printed when it connected to `target` in
-    /// the local-network sandbox, or `None` when this host has no sandbox
-    /// (`NotSupported`, never an open network).
     fn connect_in_local_sandbox(target: SocketAddr) -> Option<String> {
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args(["--exact", "sandbox::tests::connect_child", "--ignored"])
@@ -370,8 +365,6 @@ mod tests {
         )
     }
 
-    /// SR-3: with `Network::Local` a command reaches the loopback address
-    /// of this host (a local webhook gets its request) and no other host.
     #[test]
     fn local_network_allows_loopback_and_refuses_an_off_host_address() {
         let webhook = TcpListener::bind("127.0.0.1:0").unwrap();
