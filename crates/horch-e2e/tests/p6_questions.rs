@@ -27,7 +27,7 @@
 use std::cell::RefCell;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use horch_core::fleetd::ideas::application::question_flow::NEEDS_YOU_KIND as QUESTION_KIND;
@@ -58,10 +58,18 @@ const IDEA: &str = "I-0001";
 /// owner.
 const QUESTION_LIMIT_S: i64 = 900;
 
-/// The move of the fleet clock in 1 pass while a test waits for a task to
-/// use its attempts: more than the lease of an attempt (120 s) and than
-/// each backoff of rung 6 (30 s, 120 s), less than `replan_limit_s`.
+/// The move of the fleet clock in 1 pass after a task is escalated, to
+/// show that no attempt starts: more than the lease of an attempt (120 s)
+/// and than each backoff of rung 6 (30 s, 120 s), less than
+/// `replan_limit_s`.
 const STEP_S: i64 = 500;
+
+/// The move of the fleet clock in 1 pass of [`World::drive`]: less than
+/// the start timeout of a launch (90 s), with a margin for the real time
+/// of a launch. fleetd can start a launch between the check of `drive`
+/// and its move, and a move of [`STEP_S`] then ends that launch
+/// `timed_out`.
+const DRIVE_STEP_S: i64 = 60;
 
 /// The most attempts of a task that [`World::drive`] waits through.
 const MAX_ATTEMPTS_SEEN: usize = 20;
@@ -94,6 +102,17 @@ struct World {
 impl World {
     /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
+        World::build(name, scenario, false)
+    }
+
+    /// As [`World::new`], and each sub-orchestrator process answers the
+    /// question that [`World::answer_as_owner`] names, from inside its own
+    /// attempt.
+    fn with_answering_owner(name: &str, scenario: &str) -> World {
+        World::build(name, scenario, true)
+    }
+
+    fn build(name: &str, scenario: &str, answering_owner: bool) -> World {
         let mut h = Harness::new(name).with_git();
         // The ledger and the fleet root are outside the state folder, so the
         // test can move the fleet clock of `<root>/ledger.sqlite3`. The
@@ -117,6 +136,12 @@ impl World {
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
         // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
+        if answering_owner {
+            let folder = fleet.join("ideas").join(IDEA);
+            let wrapper = owner_wrapper(&h.root.join(OWNER_ANSWER), &folder);
+            let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
+            h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
+        }
         h.fleet_workspace();
         let w = World {
             h,
@@ -238,7 +263,7 @@ impl World {
         }
     }
 
-    /// Wait for `f`, and move the fleet clock by [`STEP_S`] in each pass
+    /// Wait for `f`, and move the fleet clock by [`DRIVE_STEP_S`] in each pass
     /// until `f` gives a value. The clock moves only while no attempt of a
     /// task is in `launching`: the move stands in for the lease of a silent
     /// attempt and for the backoff, never for the time of a launch. Each
@@ -262,7 +287,7 @@ impl World {
                     "SELECT id FROM attempts WHERE task_id IS NOT NULL AND state = 'launching'",
                 );
                 if busy.is_none() {
-                    self.step_clock(STEP_S);
+                    self.step_clock(DRIVE_STEP_S);
                 }
                 None
             });
@@ -389,28 +414,15 @@ impl World {
     }
 
     /// The answer of the sub-orchestrator to the question `q`, case
-    /// `own_decision`, as the fake idea-lead gives it.
+    /// `own_decision`: each live sub-orchestrator process of
+    /// [`World::with_answering_owner`] reads `q` from the file
+    /// [`OWNER_ANSWER`] and runs `horch idea note --question` itself, since
+    /// the outbox writer refuses a process outside a live attempt.
     fn answer_as_owner(&self, q: &str) {
-        let o = self
-            .h
-            .horch(&[
-                "idea",
-                "note",
-                IDEA,
-                "--question",
-                q,
-                "--case",
-                "own_decision",
-                "The guide uses the queue length of the status bar.",
-            ])
-            .current_dir(self.idea_folder())
-            .output()
-            .unwrap();
-        assert!(
-            o.status.success(),
-            "horch idea note --question: {}",
-            text(&o)
-        );
+        let file = self.h.root.join(OWNER_ANSWER);
+        let tmp = file.with_extension("tmp");
+        std::fs::write(&tmp, q).unwrap();
+        std::fs::rename(&tmp, &file).unwrap();
     }
 
     /// Drive the task to `escalated`: its attempts end with no result, the
@@ -569,6 +581,41 @@ impl World {
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
+}
+
+/// The file of the question that a sub-orchestrator of
+/// [`World::with_answering_owner`] answers, under the harness root.
+const OWNER_ANSWER: &str = "owner-answer";
+
+fn shell_word(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// A claude wrapper: a sub-orchestrator launch (its argument names the idea
+/// folder) starts a watcher, then each launch runs the fake claude. The
+/// watcher is a child of the launch, so the outbox writer finds its
+/// attempt. When the file `answer` holds a question id, the watcher answers
+/// it with `horch idea note --question` and exits. It also exits when its
+/// launch process is gone.
+fn owner_wrapper(answer: &Path, folder: &Path) -> String {
+    let horch = Harness::horch_bin();
+    let fake = horch.with_file_name("fake-claude");
+    format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+         case \"$*\" in\n*horch-conformance*|*/inbox/START.md*) ;;\n*/ideas/{IDEA}*)\n\
+         launch=$$\n\
+         ( while kill -0 \"$launch\" 2>/dev/null; do\n\
+         if [ -s {answer} ]; then\n\
+         cd {folder} && {horch} idea note {IDEA} --question \"$(cat {answer})\" \
+         --case own_decision {text} >> {answer}.log 2>&1\n\
+         exit 0\nfi\nsleep 0.2\ndone ) &\n;;\nesac\n\
+         exec {fake} \"$@\"\n",
+        answer = shell_word(&answer.to_string_lossy()),
+        folder = shell_word(&folder.to_string_lossy()),
+        horch = shell_word(&horch.to_string_lossy()),
+        text = shell_word("The guide uses the queue length of the status bar."),
+        fake = shell_word(&fake.to_string_lossy()),
+    )
 }
 
 /// The key of the needs-you item of the escalated task `task`.
@@ -774,7 +821,7 @@ fn fm21_one_replan_then_escalation() {
 /// the owner until an answer is recorded, and stops after it.
 #[test]
 fn fm35_delivery_repeats_until_an_answer() {
-    let w = World::new("p6-q-fm35", "stay,ask");
+    let w = World::with_answering_owner("p6-q-fm35", "stay,ask");
     let task = w.task();
     let q = w.asked(&task);
     let (first, pid) = w.wait("a live sub-orchestrator", || w.live_owner());
