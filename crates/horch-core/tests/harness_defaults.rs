@@ -1035,5 +1035,10 @@ fn exec_launch_gives_the_skills_briefing() {
             prompt.ends_with("\n/task/inbox/START.md"),
             "{agent:?}: {prompt}"
         );
+        let label = prompt.lines().rev().nth(1).unwrap_or_default();
+        assert!(
+            label.contains("last line") && label.contains("START.md"),
+            "{agent:?}: {prompt}"
+        );
     }
 }

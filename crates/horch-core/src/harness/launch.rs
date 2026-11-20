@@ -577,8 +577,9 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
 /// adapter's `prepare` and the agent git env of SR-3. The command is the
 /// exec launch of the adapter, with `task_dir` (the attempt folder) and the
 /// workdir as its writable folders, and `req.prompt` as its prompt: the
-/// path of `inbox/START.md`, or the line of a resume. The skills briefing
-/// of the bundle comes first, as in [`command_with_skills_in`]: `START.md`
+/// path of `inbox/START.md`, or the line of a resume. A fresh launch puts
+/// the skills briefing of the bundle first, as [`command_with_skills_in`]
+/// does, and a resumed session has it already. `START.md`
 /// is written before the launch and is never rewritten, and the bundle
 /// exists only from this launch on. `run` starts the command and waits for
 /// it. Only Claude Code has an exec form of a resume.
@@ -617,12 +618,12 @@ pub fn run_exec_flow<T>(
     env.task_dir = Some(task_dir.to_path_buf());
     env.worktree = Some(workdir.clone());
     let prompt = match &launch.skills {
-        Some(bundle) => format!(
-            "{}\n{}",
+        Some(bundle) if !req.session.is_resume() => format!(
+            "{}\n{EXEC_START_LINE}\n{}",
             bundle.briefing_in(&teammate, env.home()),
             req.prompt
         ),
-        None => req.prompt.to_string(),
+        _ => req.prompt.to_string(),
     };
     // The skills of the bundle, as an interactive launch exposes them
     // (`command_with_skills_in`): Claude Code reads them from a
@@ -678,6 +679,11 @@ pub fn run_exec_flow<T>(
     launch.prepared.finish();
     out
 }
+
+/// The line of an exec prompt between the skills briefing and the path of
+/// `START.md`, which is the last line.
+const EXEC_START_LINE: &str =
+    "The last line of this prompt is the path of your task file, START.md. Read it and follow it.";
 
 /// What a launch holds from its preparation until the agent exits.
 struct PreparedLaunch {
