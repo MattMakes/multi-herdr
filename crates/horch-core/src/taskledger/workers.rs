@@ -776,8 +776,6 @@ pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
     )
 }
 
-/// Set the wait `kind` of `worker`: its calendar deadline `seconds` from
-/// now, and its cap `due_at` `max_wait_s` after the fleet clock.
 /// The mode of the newest attempt of `worker`, as its launch fixed it: exec
 /// when its attempt folder holds the exec stream ([`TRANSCRIPT_JSONL`]),
 /// which the wrapper opens before it starts the CLI. The profile of today
@@ -808,6 +806,8 @@ pub fn attempt_mode(conn: &Connection, worker: &str) -> Mode {
     }
 }
 
+/// Set the wait `kind` of `worker`: its calendar deadline `seconds` from
+/// now, and its cap `due_at` `max_wait_s` after the fleet clock.
 pub fn set_wait(
     conn: &Connection,
     worker: &str,
