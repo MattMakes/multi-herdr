@@ -501,7 +501,6 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         },
         done => done,
     };
-    // A next SQLITE_READONLY of a read command names its statement (T-209).
     out.map_err(|e| {
         let command = std::env::args().collect::<Vec<_>>().join(" ");
         horch_core::taskledger::store::read_only_failure(&command, e)

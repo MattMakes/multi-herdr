@@ -1,10 +1,3 @@
-//! T-209: a reader command of `horch ledger` opens the ledger read-only and
-//! writes nothing (RR-5). The tests run the real binary with the read-only
-//! seam (`HORCH_TEST_ASSERT_READ_ONLY`) and the SQL trace of a read-only
-//! connection (`HORCH_TEST_SQL_TRACE`, debug builds): each statement action
-//! that is not a read goes to the trace file. Each test then asserts an
-//! empty trace and unchanged ledger files.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -23,7 +16,6 @@ struct World {
 }
 
 impl World {
-    /// A git project with 1 run `r1` that has 1 task.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -80,9 +72,6 @@ impl World {
         assert!(out.status.success(), "git {args:?}");
     }
 
-    /// Run `horch <args>` as the operator, read-only. The command must exit
-    /// 0 or 1 (a board with work left), print to stdout, and leave the
-    /// trace empty and the ledger files unchanged.
     fn read(&self, args: &[&str]) -> String {
         let before = self.files();
         let root = &self.root;
@@ -151,8 +140,6 @@ fn assert_board(w: &World) {
     assert_eq!(st["tasks"].as_array().map(Vec::len), Some(1), "{st}");
 }
 
-/// A writer connection with WAL frames that are not checkpointed: the
-/// state while fleetd runs.
 fn live_writer(w: &World) -> rusqlite::Connection {
     let c = rusqlite::Connection::open(w.ledger()).unwrap();
     c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
@@ -185,8 +172,6 @@ fn status_writes_nothing_while_a_writer_holds_frames_that_are_not_checkpointed()
 fn status_writes_nothing_with_a_wal_and_no_shm() {
     let w = World::new();
     let writer = live_writer(&w);
-    // Keep the WAL at the close, as a fleetd that ended without a
-    // checkpoint leaves it.
     let mut keep: std::os::raw::c_int = 1;
     // SAFETY: the handle is the open connection of `writer`, and `keep`
     // lives for the call.

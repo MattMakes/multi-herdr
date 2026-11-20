@@ -244,12 +244,8 @@ impl LedgerWriter {
     }
 }
 
-/// The ledger file and the SQL text of the last statement that a read-only
-/// connection of this process started. [`read_only_failure`] names them.
 static LAST_READ_ONLY: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::new(None);
 
-/// Record each statement that the read-only connection `conn` of the ledger
-/// `path` starts, in [`LAST_READ_ONLY`].
 fn record_statements(conn: &Connection, path: &Path) {
     unsafe extern "C" fn on_statement(
         event: std::os::raw::c_uint,
@@ -317,7 +313,6 @@ pub fn read_only_failure(command: &str, err: anyhow::Error) -> anyhow::Error {
 /// appended to that file, 1 line per action.
 pub const SQL_TRACE_ENV: &str = "HORCH_TEST_SQL_TRACE";
 
-/// Install the [`SQL_TRACE_ENV`] hook on `conn`, when the variable is set.
 fn trace_writes(conn: &Connection) {
     #[cfg(debug_assertions)]
     {
@@ -330,7 +325,6 @@ fn trace_writes(conn: &Connection) {
     let _ = conn;
 }
 
-/// Append each statement action of `conn` that is not a read to `file`.
 #[cfg(debug_assertions)]
 fn trace_to(conn: &Connection, file: PathBuf) {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
