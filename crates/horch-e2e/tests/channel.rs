@@ -91,8 +91,6 @@ fn world(name: &str) -> World {
         .tempdir_in("/tmp")
         .expect("creating short state directory");
     h.state = short_state.path().to_path_buf();
-    // The session records live in `<state>/ledger.sqlite3`, and their fleetd
-    // serves the fleet root beside it. A long path overflows a socket path.
     h.set(
         "HORCH_LEDGER_DB",
         h.state.join("ledger.sqlite3").to_string_lossy(),
