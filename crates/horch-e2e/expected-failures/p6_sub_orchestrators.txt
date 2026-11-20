@@ -1,5 +1,1 @@
 # Red tests of crates/horch-e2e/tests/p6_sub_orchestrators.rs.
-# fm16: needs the questions row of T-897; ticket 11 of fleetd-finish removes
-# this entry. Until then a question file ends the attempt and writes no
-# questions row, so the test waits for a question row and times out.
-fm16_no_orchestrator_and_questions_stay_in_their_feature | 6 | waiting for a question of feature
