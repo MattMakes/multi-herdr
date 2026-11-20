@@ -350,7 +350,7 @@ fn production_sources() -> Vec<(String, String)> {
             let text = fs::read_to_string(&path).unwrap();
             let prod: Vec<&str> = text
                 .lines()
-                .take_while(|l| l.trim() != "#[cfg(test)]")
+                .take_while(|l| !matches!(l.trim(), "#[cfg(test)]" | "#[cfg(all(test, unix))]"))
                 .collect();
             let rel = path.strip_prefix(crates).unwrap().display().to_string();
             (rel, prod.join("\n"))
@@ -399,7 +399,12 @@ fn no_code_path_creates_a_task_without_an_idea() {
             inserts.push(file.clone());
         }
         // The release backfill writes the idea of a run: only schema.rs.
-        if flat.contains("run_idea(") && !file.ends_with("taskledger/schema.rs") {
+        // ledger_seed.rs is the fixture of the e2e tests, in place of the
+        // retired `horch ledger run new` (fleetd-p6 ticket 47): no product code.
+        if flat.contains("run_idea(")
+            && !file.ends_with("taskledger/schema.rs")
+            && file != "horch-e2e/src/ledger_seed.rs"
+        {
             ideas.push(file.clone());
         }
     }

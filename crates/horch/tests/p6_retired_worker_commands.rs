@@ -108,8 +108,9 @@ const KEPT: [&str; 7] = [
 /// The kinds that MAP.md does not name and that no ticket of Phase 6
 /// retires: the records of the internal spawn of fleetd (`--attempt` and
 /// the restart on a fallback), and the last direct writers of the CLI
-/// (T-885).
-const RECORDS_OF_TODAY: [&str; 8] = [
+/// (T-885), and the write of the session records through fleetd
+/// (`session_records`, T-884).
+const RECORDS_OF_TODAY: [&str; 9] = [
     "spawn_adopt",
     "spawn_gate_note",
     "worker_launched",
@@ -118,6 +119,7 @@ const RECORDS_OF_TODAY: [&str; 8] = [
     "worker_done",
     "run_adopt",
     "question_answer",
+    "session_records",
 ];
 
 struct Out {
