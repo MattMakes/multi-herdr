@@ -324,9 +324,6 @@ fn serve_fast_fleetd(h: &Harness) {
     h.serve_fleetd();
 }
 
-/// codex-terra runs interactive in `h`, as before exec became the default
-/// mode (fleetd-p7 ticket 19): the agent stays, and its rollout holds the
-/// launch token.
 fn interactive_terra(h: &mut Harness) {
     let teammates = h.root.join("teammates");
     copy_tree(&repo_root().join("teammates"), &teammates);
@@ -337,12 +334,6 @@ fn interactive_terra(h: &mut Harness) {
     h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
 }
 
-/// Seed the run `slug` in the workspace of `h`, with its orchestrator in
-/// the first pane of that workspace, and 1 codex-terra task. Wait until
-/// fleetd launched the worker of the task. Gives the text that its launch
-/// added to `<fleet root>/run/launch.log`, the output of each attempt
-/// spawn. Needs [`commit_gates`], [`interactive_terra`] and a served
-/// fleetd.
 fn launch_attempt(h: &Harness, slug: &str) -> String {
     let log = h.fleet_root().join("run").join("launch.log");
     let before = std::fs::read_to_string(&log).unwrap_or_default().len();
@@ -365,9 +356,6 @@ fn launch_attempt(h: &Harness, slug: &str) -> String {
     std::fs::read_to_string(&log).unwrap()[before..].to_string()
 }
 
-/// Commit the gates of the project of `h` on `main`. fleetd dispatches a
-/// task only when the project has its gates. Call it before
-/// [`seed_run`], which makes the run branch from `main`.
 fn commit_gates(h: &Harness) {
     std::fs::write(
         h.project.join("fleet.toml"),
@@ -380,9 +368,6 @@ fn commit_gates(h: &Harness) {
     }
 }
 
-/// Put the task ledger of `h` under its state folder, beside the session
-/// records, and start its test fleetd. A session record write is an
-/// operator request, so it needs the fleetd of that ledger and its token.
 fn serve_state_fleetd(h: &mut Harness) {
     let db = h.state.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
@@ -416,7 +401,6 @@ fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
             let file = h.project.join("stop.md");
             std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
             seed_task(&h, &run, &file, "codex-terra");
-            // fleetd dispatches the queued task (Phase 4).
             serve_fast_fleetd(&h);
             let (worker, pid, started) = wait("the ingested agent PID", || {
                 let state: serde_json::Value =
@@ -524,8 +508,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     let (h, workers) = two_concurrent_workers("g52-race");
     assert_ne!(workers[0]["session_id"], workers[1]["session_id"]);
     assert_ne!(workers[0]["transcript_path"], workers[1]["transcript_path"]);
-    // Both rollouts name 1 folder, so only the launch token tells them
-    // apart.
     let cwd = |w: &serde_json::Value| -> serde_json::Value {
         let text = std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
         let meta: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
@@ -539,8 +521,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
             .iter()
             .find(|r| Some(r.record_id.as_str()) == w["legacy_record_id"].as_str())
             .unwrap();
-        // fleetd takes the session id from session.json of the attempt into
-        // the worker row; the wrapper writes no session record (T-899).
         let session = w["session_id"].as_str().unwrap();
         let transcript = std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
         assert!(transcript.contains(session), "{transcript}");
@@ -750,8 +730,6 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
         file!(),
         "g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block",
         || {
-            // fleetd launches each attempt (fleetd-p6 ticket 48): its spawn
-            // prints the NOTE that horch spawn printed, to launch.log.
             let mut h = fleet("g50-runs", "exec,stay");
             interactive_terra(&mut h);
             commit_gates(&h);
@@ -787,8 +765,6 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
 
 #[test]
 fn g50_legacy_orchestrator_and_host_load_are_advisory() {
-    // fleetd launches each attempt (fleetd-p6 ticket 48): its spawn
-    // prints the NOTE lines that horch spawn printed, to launch.log.
     let mut h = fleet("g50-legacy", "exec,stay");
     interactive_terra(&mut h);
     commit_gates(&h);
@@ -823,9 +799,6 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
     std::fs::write(&machine, below.to_string()).unwrap();
     h.set("HORCH_WORKSPACE_ID", "w2");
     let log = launch_attempt(&h, "legacy-2");
-    // The legacy orchestrator of w2 is in the own workspace of this launch.
-    // The only other orchestrator is the run legacy-1 of the test. The idea
-    // lead of legacy-2 can spawn in w2 too, with the same line.
     let named: std::collections::BTreeSet<&str> = log
         .lines()
         .filter(|l| l.contains("live orchestrator"))
@@ -847,8 +820,6 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
         || {
             let (mut h, pane) = compact_world("g53-auto", true);
             let run = seed_run(&h, "compact", None, "w1:p1");
-            // A worker with no live attempt sends its lines with horch
-            // note: horch ledger progress needs the outbox of an attempt.
             let worker = seed_worker(&h, &run, "sonnet");
             h.set("HORCH_WORKER_ID", &worker);
             let db = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
@@ -1008,9 +979,6 @@ fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
             "{text}"
         );
     };
-    // fleetd launches each attempt (fleetd-p6 ticket 48): its spawn prints
-    // the warning that horch spawn printed, to launch.log.
-    // The idea lead of the run spawns too, so each spawn warns 1 time.
     serve_fast_fleetd(&h);
     launch_attempt(&h, "stale");
     let log = h.fleet_root().join("run").join("launch.log");
