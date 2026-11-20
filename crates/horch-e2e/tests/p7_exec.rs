@@ -94,6 +94,10 @@ struct Spec<'a> {
     runs: &'a [(Cli, &'a [&'a str])],
 }
 
+fn fleet_root_outside_worker_sandbox(h: &Harness) -> std::path::PathBuf {
+    h.home.join(".horch").join("fleet")
+}
+
 struct World {
     h: Harness,
     task_id: String,
@@ -102,7 +106,7 @@ struct World {
 impl World {
     fn new(name: &str, spec: &Spec<'_>) -> World {
         let mut h = Harness::new(name).with_git();
-        let fleet = h.home.join(".horch").join("fleet");
+        let fleet = fleet_root_outside_worker_sandbox(&h);
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
         skip_agy_conformance(&h);

@@ -206,9 +206,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
 /// it joins a run, a `--resume` spawn too (TRF-33): the line that names
 /// `START.md` of its push attempt. Else none.
 pub(crate) fn worker_task(ledger: Option<&super::taskledger_spawn::LedgerSpawn>) -> String {
-    ledger
-        .and_then(|l| l.first_line.clone())
-        .unwrap_or_default()
+    ledger.map(|l| l.first_line.clone()).unwrap_or_default()
 }
 
 /// Refuse a claiming spawn that its run's plan does not need (gap G-A): the

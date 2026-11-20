@@ -86,7 +86,7 @@ pub enum Prepared {
 pub struct LedgerSpawn {
     pub run: Run,
     pub worker_id: String,
-    pub first_line: Option<String>,
+    pub first_line: String,
     /// The push attempt of the worker, with its files.
     pub push: Option<Pushed>,
     /// The worker is the idea-lead of an idea-lead attempt (T-890).
@@ -152,15 +152,11 @@ pub fn prepare(
     let (id, first_line, push) = match &args.attempt {
         Some(_) if idea_lead.is_some() => {
             let (worker, brief) = idea_lead.clone().expect("an idea-lead attempt");
-            (worker, Some(brief), None)
+            (worker, brief, None)
         }
         Some(attempt) => {
             let (worker, pushed) = push(ctx, &store, attempt, &run, &persona)?;
-            (
-                worker,
-                Some(start_line(&pushed.files.start_md)),
-                Some(pushed),
-            )
+            (worker, start_line(&pushed.files.start_md), Some(pushed))
         }
         None => bail!("{}", retired_line()),
     };
@@ -1208,10 +1204,10 @@ mod push_tests {
         assert!(push.files.task_yaml.is_file() && push.files.start_md.is_file());
         assert_eq!(
             l.first_line,
-            Some(format!(
+            format!(
                 "Read {} and continue.",
                 dir.join("inbox/START.md").display()
-            ))
+            )
         );
     }
     /// 1 attempt `id` with no task, in `state`, of the idea of `r1` and a
@@ -1267,7 +1263,7 @@ mod push_tests {
             panic!("--attempt opens a pane");
         };
         assert!(l.push.is_none() && !l.claims());
-        let first = l.first_line.unwrap();
+        let first = l.first_line;
         assert!(first.contains("phase clarifying"), "{first}");
         assert_eq!(w.count("SELECT COUNT(*) FROM requests"), 0);
     }
