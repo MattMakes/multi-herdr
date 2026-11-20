@@ -631,6 +631,8 @@ fn check_that_swaps_its_output_file_for_a_link_cannot_feed_the_verdict() {
     let mut w = world();
     let secret = w.outside.path().join("secret");
     std::fs::write(&secret, "the-secret-bytes").unwrap();
+    // The check puts a link to `secret` in place of each check output
+    // file, then fails. Only this world sees its fleet root.
     let check = format!(
         "for f in '{dir}'/*.out; do rm -f \"$f\"; ln -s '{secret}' \"$f\"; done; exit 1",
         dir = w.fleet_root.join("run/checks").display(),
