@@ -353,7 +353,6 @@ fn next_of(conn: &Connection, task: &Task) -> Result<Next> {
     Ok(next_step(work_kind_of(conn, task)?.as_deref()))
 }
 
-/// The kind of `task` that [`next_of`] reads.
 fn work_kind_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
     Ok(conn.query_row(
         "SELECT COALESCE(work_kind, json_extract(spec_json, '$.kind')) FROM tasks
