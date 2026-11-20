@@ -8,23 +8,30 @@
 //! `sleep` child of the test is the agent of each worker, and only fleetd
 //! sees that an agent died. The tests make their ledger rows in 2 ways:
 //!
-//! - The RR-4 and RR-7 tests run a plan of 3 tasks. The test binds each
-//!   task to a worker with `horch_e2e::bind` (FR-5), then runs `finish` and
-//!   `done` as the worker.
+//! - The RR-4 and RR-7 tests run a plan of 3 tasks in the push flow of
+//!   phases 4 to 6. The test binds each task to a worker with
+//!   `horch_e2e::bind` (FR-5) and writes the attempt files, as fleetd does
+//!   before a launch. fleetd makes the worktree with its `worktree_add`
+//!   job. The fake worker reads `task.yaml`, commits in the worktree and
+//!   writes `result.json`. Only the verifier of fleetd moves a task to done.
 //! - The FM-11 test binds 1 task with `horch_e2e::bind`, then writes the
-//!   supervisor process of the worker and the agent of the orchestrator in
-//!   the ledger. The scan test writes its 10,000 rows of each kind in the
-//!   ledger directly, with no `horch` command.
+//!   supervisor process of the worker in the ledger. The scan test writes
+//!   its 10,000 rows of each kind in the ledger directly, with no `horch`
+//!   command.
 
 #![cfg(unix)]
 
 use std::fs::File;
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use horch_core::fleetd::fleet_runtime::adapters::scans::outbox_dir;
+use horch_core::fleetd::task_execution::adapters::task_files::{attempt_dir, write_attempt_files};
+use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
 use horch_core::procid;
 use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::taskledger::{util, Store};
@@ -60,22 +67,6 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// Run `horch` as the worker `worker`. It must succeed.
-fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
-    let o = h
-        .horch(args)
-        .env("HORCH_WORKER_ID", worker)
-        .output()
-        .unwrap();
-    assert!(
-        o.status.success(),
-        "horch {} as {worker}: {}",
-        args.join(" "),
-        text(&o)
-    );
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
 fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
@@ -108,15 +99,66 @@ fn fleet_root(h: &Harness) -> PathBuf {
 }
 
 /// Poll `f` every 100 ms for at most `secs` seconds.
-fn wait_until<T>(what: &str, secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
+fn wait_until<T>(what: &str, secs: u64, f: impl FnMut() -> Option<T>) -> T {
+    wait_until_or(what, secs, f, String::new)
+}
+
+/// [`wait_until`] that adds the text of `evidence` to its failure.
+fn wait_until_or<T>(
+    what: &str,
+    secs: u64,
+    mut f: impl FnMut() -> Option<T>,
+    evidence: impl Fn() -> String,
+) -> T {
     let until = Instant::now() + Duration::from_secs(secs);
     loop {
         if let Some(v) = f() {
             return v;
         }
-        assert!(Instant::now() < until, "after {secs} s: {what}");
+        assert!(
+            Instant::now() < until,
+            "after {secs} s: {what}\n{}",
+            evidence()
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The task moves, the attempts and the jobs of the ledger of `h`, and the
+/// output of each fleetd, for a failure message.
+fn evidence(h: &Harness) -> String {
+    let store = Store::open_read_only(&db(h)).unwrap();
+    let rows = |sql: &str| -> Vec<String> {
+        let mut stmt = store.conn().prepare(sql).unwrap();
+        let found = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        found
+    };
+    let moves = rows(
+        "SELECT entity || ' ' || entity_id || ': ' || COALESCE(from_state, '') || ' -> '
+             || COALESCE(to_state, '') || ' (' || COALESCE(cause, '') || ')'
+         FROM events WHERE to_state IS NOT NULL OR entity = 'attempt' ORDER BY event_id",
+    );
+    let attempts =
+        rows("SELECT id || ' ' || state || ' ' || COALESCE(outcome, '') FROM attempts ORDER BY id");
+    let jobs = rows(
+        "SELECT id || ' ' || kind || ' ' || subject || ' ' || state || ' '
+             || COALESCE(result_json, '') FROM jobs ORDER BY id",
+    );
+    let mut out = format!(
+        "moves:\n{}\nattempts: {attempts:?}\njobs: {jobs:?}\n",
+        moves.join("\n")
+    );
+    for n in 0.. {
+        if !h.root.join(format!("fleetd-{n}.stderr")).exists() {
+            break;
+        }
+        out.push_str(&format!("fleetd {n}: {}\n", fleetd_output(h, n)));
+    }
+    out
 }
 
 // ─── fleetd ─────────────────────────────────────────────────────────────
@@ -318,17 +360,42 @@ impl Drop for Agent {
     }
 }
 
-/// 1 worker of persona `opus` whose agent is a live [`Agent`].
+/// 1 worker of persona `opus` whose agent is a live [`Agent`], bound to 1
+/// push attempt of a task.
 struct Worker {
     id: String,
     agent: Agent,
+    task_id: String,
+    /// The name of the attempt, `A<n>`.
+    attempt: String,
+    /// The `worktree_add` job that the bind queued; `None` when the
+    /// worktree of the task exists.
+    add_job: Option<i64>,
+}
+
+impl Worker {
+    fn task_yaml(&self, h: &Harness) -> PathBuf {
+        attempt_dir(&fleet_root(h), &self.task_id, &self.attempt).join("task.yaml")
+    }
 }
 
 /// A new worker of persona `opus` with a live [`Agent`], bound to the next
-/// startable task (FR-5). Returns the worker and the seq of its task.
+/// startable task (FR-5). The bind reserves the worktree and queues its
+/// `worktree_add` job, which fleetd runs. The test writes the attempt
+/// files, as fleetd does before a launch. Returns the worker and the seq of
+/// its task.
 fn bind(h: &Harness) -> (Worker, i64) {
     let agent = Agent::start();
-    let bound = horch_e2e::bind::bind(h, "opus", Some(agent.pid()));
+    // A task whose worktree is orphaned binds after fleetd rescues it.
+    let bound = wait_until_or(
+        "a task of opus binds",
+        60,
+        || horch_e2e::bind::try_bind(h, "opus", Some(agent.pid())).ok(),
+        || {
+            let why = horch_e2e::bind::try_bind(h, "opus", Some(agent.pid())).err();
+            format!("{why:?}\n{}", evidence(h))
+        },
+    );
     let seq = horch_core::taskledger::Store::open_read_only(&db(h))
         .and_then(|store| {
             Ok(store.conn().query_row(
@@ -338,24 +405,68 @@ fn bind(h: &Harness) -> (Worker, i64) {
             )?)
         })
         .unwrap();
+    let tree = bound.worktree.expect("a worktree task binds a worktree");
+    let attempt = format!("A{}", bound.attempt);
+    let facts = TaskFacts {
+        task: format!("t{seq}"),
+        task_id: bound.task_id.clone(),
+        run: "alpha".into(),
+        attempt: attempt.clone(),
+        profile: "opus".into(),
+        worktree: tree.path,
+        branch: tree.branch,
+        read_first: format!("tickets/t{seq}.md"),
+        goal: format!("t{seq}"),
+        check: Some("true".into()),
+        kind: None,
+        ticket_snapshot: format!("# T{seq}\n"),
+        extra: None,
+        handoff: None,
+        idea: None,
+        feature: None,
+        covers: Vec::new(),
+        verdict: None,
+    };
+    write_attempt_files(&fleet_root(h), &facts, &[]).unwrap();
     let w = Worker {
         id: bound.worker_id,
         agent,
+        task_id: bound.task_id,
+        attempt,
+        add_job: tree.add_job,
     };
     (w, seq)
 }
 
-/// The work of `w` on its bound task `seq`: its worktree, 1 commit, the
-/// finish steps and `horch ledger done`. Then its agent exits, as an agent
-/// does after `done`; only fleetd ends the attempt.
+/// The value of the top-level key `key` of the `task.yaml` text `yaml`.
+fn yaml_value(yaml: &str, key: &str) -> String {
+    let prefix = format!("{key}: ");
+    let value = yaml
+        .lines()
+        .find_map(|l| l.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("no {key} in task.yaml: {yaml}"));
+    value.trim_matches('"').to_string()
+}
+
+/// The worktree of `w`, after the `worktree_add` job of fleetd made it.
+fn wait_for_worktree(h: &Harness, w: &Worker) -> PathBuf {
+    let yaml = std::fs::read_to_string(w.task_yaml(h)).unwrap();
+    let path = PathBuf::from(yaml_value(&yaml, "worktree"));
+    wait_until(
+        &format!("the worktree_add job of fleetd makes {}", path.display()),
+        60,
+        || path.join(".git").exists().then_some(()),
+    );
+    path
+}
+
+/// The work of `w` on its bound task `seq` in the push flow: it reads its
+/// `task.yaml`, commits 1 file in the worktree that fleetd made, and writes
+/// `result.json` in the outbox that `report_to` names. Then its agent
+/// exits; only fleetd ends the attempt and moves the task.
 fn complete(h: &Harness, w: &mut Worker, seq: i64) {
     let name = format!("t{seq}");
-    let out = ok_as(h, &w.id, &["ledger", "worktree", "new", &name]);
-    let path = PathBuf::from(
-        out.lines()
-            .find_map(|l| l.strip_prefix("path: "))
-            .unwrap_or_else(|| panic!("no worktree path in: {out}")),
-    );
+    let path = wait_for_worktree(h, w);
     let file = format!("{name}.txt");
     std::fs::write(path.join(&file), "work\n").unwrap();
     for args in [
@@ -365,8 +476,40 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
         let o = h.git_cmd(args).current_dir(&path).output().unwrap();
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
-    ok_as(h, &w.id, &["ledger", "finish"]);
-    ok_as(h, &w.id, &["ledger", "done", &format!("{name} is done")]);
+    let o = h
+        .git_cmd(&["rev-parse", "HEAD"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git rev-parse: {}", text(&o));
+    let commit = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let yaml = std::fs::read_to_string(w.task_yaml(h)).unwrap();
+    let outbox = PathBuf::from(yaml_value(&yaml, "report_to"));
+    let result = serde_json::json!({
+        "task": w.task_id,
+        "attempt": w.attempt,
+        "status": "completed",
+        "summary": format!("{name} is done"),
+        "commits": [commit],
+        "files_changed": [file],
+    });
+    // SR-6: fleetd reads only a file of mode 0600 in a folder of mode 0700.
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&outbox)
+        .unwrap();
+    // Write it whole, so that no scan reads half a file.
+    let tmp = outbox.join("result.json.tmp");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .unwrap()
+        .write_all(result.to_string().as_bytes())
+        .unwrap();
+    std::fs::rename(&tmp, outbox.join("result.json")).unwrap();
     w.agent.kill();
 }
 
@@ -402,12 +545,14 @@ fn task_status(h: &Harness, seq: i64) -> String {
         .unwrap()
 }
 
+/// The attempts of tasks that are not ended. An attempt of a
+/// sub-orchestrator has no task and does not count.
 fn live_attempts(h: &Harness) -> i64 {
     Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
-            "SELECT count(*) FROM attempts WHERE state <> 'ended'",
+            "SELECT count(*) FROM attempts WHERE state <> 'ended' AND task_id IS NOT NULL",
             [],
             |r| r.get(0),
         )
@@ -471,7 +616,17 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     let (mut w2, s2) = bind(h);
     let (mut w3, s3) = bind(h);
     assert_eq!([s1, s2, s3], [1, 2, 3], "each bind takes the next task");
+    // No worktree_add job runs when fleetd gets its kill.
+    for w in [&w1, &w2, &w3] {
+        wait_for_worktree(h, w);
+    }
     complete(h, &mut w1, 1);
+    wait_until_or(
+        "the verifier of fleetd moves task 1 to done",
+        60,
+        || (task_status(h, 1) == "done").then_some(()),
+        || evidence(h),
+    );
     if kill_fleetd {
         fleetds.kill_last();
     }
@@ -495,9 +650,15 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     let (mut w4, s4) = bind(h);
     assert_eq!(s4, 2, "the new worker is bound to task 2");
     complete(h, &mut w4, 2);
-    wait_until("fleetd ends each attempt whose agent exited", 30, || {
-        (live_attempts(h) == 0).then_some(())
-    });
+    wait_until_or(
+        "the verifier moves each task to done, and fleetd ends each attempt",
+        60,
+        || {
+            let done = (1..=3).all(|seq| task_status(h, seq) == "done");
+            (done && live_attempts(h) == 0).then_some(())
+        },
+        || evidence(h),
+    );
     after_a_whole_pass(h, pid);
     let last = fleetds.children.len() - 1;
     assert!(
@@ -509,7 +670,8 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
 }
 
 /// The end state of the plan of [`run_plan`]: each task done once, task 2
-/// after 1 more attempt.
+/// after 1 more attempt. The verifier ends each attempt with a valid
+/// `result.json` as `verified`.
 fn plan_done() -> Vec<TaskOutcome> {
     let done = |seq: i64, ends: &[&str]| -> TaskOutcome {
         let attempts = ends
@@ -524,9 +686,9 @@ fn plan_done() -> Vec<TaskOutcome> {
         }
     };
     vec![
-        done(1, &["done"]),
-        done(2, &["no_result", "done"]),
-        done(3, &["done"]),
+        done(1, &["verified"]),
+        done(2, &["no_result", "verified"]),
+        done(3, &["verified"]),
     ]
 }
 
@@ -756,22 +918,16 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
 /// their cursors.
 #[test]
 fn rr4_tasks_complete_with_all_file_watch_events_dropped() {
-    horch_e2e::expected::check(
-        file!(),
-        "rr4_tasks_complete_with_all_file_watch_events_dropped",
-        || {
-            let h = world("p1-rr4", FAST_PASSES);
-            let end = run_plan(&h, Some(DROP_WATCH_EVENTS), false);
-            assert_eq!(end, plan_done());
-            for kind in FOLDER_SCANS {
-                let after = cursor(&h, kind).and_then(|(after, _, _)| after);
-                assert!(
-                    after.is_some(),
-                    "with no file event, the scan of {kind} read no folder"
-                );
-            }
-        },
-    );
+    let h = world("p1-rr4", FAST_PASSES);
+    let end = run_plan(&h, Some(DROP_WATCH_EVENTS), false);
+    assert_eq!(end, plan_done());
+    for kind in FOLDER_SCANS {
+        let after = cursor(&h, kind).and_then(|(after, _, _)| after);
+        assert!(
+            after.is_some(),
+            "with no file event, the scan of {kind} read no folder"
+        );
+    }
 }
 
 fn settled_heartbeat(h: &Harness, pid: u32) -> u64 {
@@ -866,16 +1022,10 @@ fn rr4_file_request_and_job_events_wake_pass_before_period() {
 /// task done, with the same attempts. No task is lost or done 2 times.
 #[test]
 fn rr7_fleetd_killed_mid_run_ends_as_a_clean_run() {
-    horch_e2e::expected::check(
-        file!(),
-        "rr7_fleetd_killed_mid_run_ends_as_a_clean_run",
-        || {
-            let clean = run_plan(&world("p1-rr7-clean", FAST_PASSES), None, false);
-            let killed = run_plan(&world("p1-rr7-kill", FAST_PASSES), None, true);
-            assert_eq!(clean, plan_done(), "the clean run");
-            assert_eq!(killed, clean, "the run with fleetd killed mid-run");
-        },
-    );
+    let clean = run_plan(&world("p1-rr7-clean", FAST_PASSES), None, false);
+    let killed = run_plan(&world("p1-rr7-kill", FAST_PASSES), None, true);
+    assert_eq!(clean, plan_done(), "the clean run");
+    assert_eq!(killed, clean, "the run with fleetd killed mid-run");
 }
 
 /// A process that appends 1 line to `file` for each polite stop that it
@@ -935,174 +1085,137 @@ fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64
         .unwrap()
 }
 
-/// The attempts of orchestrators: the respawns, which have no task
-/// (MAP.md, Q6).
-fn orchestrator_attempts(h: &Harness) -> Vec<String> {
-    let store = Store::open_read_only(&db(h)).unwrap();
-    let mut stmt = store
-        .conn()
-        .prepare("SELECT id FROM attempts WHERE task_id IS NULL ORDER BY id")
-        .unwrap();
-    let ids = stmt
-        .query_map([], |r| r.get(0))
+/// The state and the run number of the job `id`.
+fn job(h: &Harness, id: i64) -> (String, i64) {
+    Store::open_read_only(&db(h))
         .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    ids
-}
-
-/// The launches of an orchestrator respawn: each `pane run` in the fake
-/// herdr of a command with `HORCH_ORCHESTRATOR_RESPAWN`.
-fn respawn_launches(h: &Harness) -> usize {
-    h.calls_of("herdr")
-        .iter()
-        .filter(|c| c["argv"][0] == "pane" && c["argv"][1] == "run")
-        .filter(|c| {
-            c["argv"][3]
-                .as_str()
-                .is_some_and(|cmd| cmd.contains("HORCH_ORCHESTRATOR_RESPAWN"))
+        .conn()
+        .query_row("SELECT state, run FROM jobs WHERE id = ?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
         })
-        .count()
-}
-
-/// The harness of the FM-11 test: the fake herdr has the workspace `w1`,
-/// and each `horch` command runs in it, so the run records `w1` as the
-/// workspace of its orchestrator.
-fn fleet_world(name: &str) -> Harness {
-    let mut h = world(name, FAST_PASSES);
-    let quota = horch_e2e::harness::fixtures().join("quota/all-ok.json");
-    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
-    let mut create = Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", text(&o));
-    h
+        .unwrap()
 }
 
 /// FM-11: fleetd dies after the commit of part 2 and before its effects.
 /// The pass ended the attempt of a dead agent and queued its task again,
-/// and wrote the respawn of a dead orchestrator as an attempt in
-/// `launching`. It did not stop the supervisor process of the worker and
-/// did not launch the orchestrator. The next fleetd does each effect once:
-/// 1 stop of the supervisor and 1 launch of the orchestrator. It does not
-/// end the attempt, queue the task or write a respawn a second time.
+/// and took the start of the `worktree_add` job that the bind queued as an
+/// effect of part 3. It did not stop the supervisor process of the worker
+/// and did not start the job. The next fleetd does each effect once: 1
+/// stop of the supervisor and 1 start of the job. It does not end the
+/// attempt or queue the task a second time.
 #[test]
 fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
-    horch_e2e::expected::check(
-        file!(),
-        "fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart",
-        || {
-            let h = fleet_world("p1-fm11");
-            plan(&h, 1);
-            let (mut w, seq) = bind(&h);
-            assert_eq!(seq, 1);
-            let stops = h.root.join("stops.txt");
-            let mut supervisor = Polite::start(&stops);
-            let pid = supervisor.0.id();
-            let start = procid::start_time(pid).expect("the start time of the supervisor") as i64;
-            let mut gone = Agent::start();
-            let orch_pid = gone.pid();
-            let orch_start =
-                procid::start_time(orch_pid).expect("the start time of the agent") as i64;
-            gone.kill();
-            let store = Store::open(&db(&h)).unwrap();
-            store
+    let h = world("p1-fm11", FAST_PASSES);
+    plan(&h, 1);
+    let (mut w, seq) = bind(&h);
+    assert_eq!(seq, 1);
+    let add_job = w.add_job.expect("the bind queues the worktree_add job");
+    let job_id = add_job.to_string();
+    let tree = PathBuf::from(yaml_value(
+        &std::fs::read_to_string(w.task_yaml(&h)).unwrap(),
+        "worktree",
+    ));
+    let stops = h.root.join("stops.txt");
+    let mut supervisor = Polite::start(&stops);
+    let pid = supervisor.0.id();
+    let start = procid::start_time(pid).expect("the start time of the supervisor") as i64;
+    let store = Store::open(&db(&h)).unwrap();
+    store
         .conn()
         .execute(
             "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
             (&w.id, pid, start),
         )
         .unwrap();
-            // The orchestrator of the run registered, and its agent is gone.
-            store
-                .conn()
-                .execute(
-                    "UPDATE workers SET agent_pid = ?1, agent_started = ?2
-             WHERE worker_id = (SELECT orchestrator_worker_id FROM runs)",
-                    (orch_pid, orch_start),
-                )
-                .unwrap();
-            let (task, attempt): (String, String) = store
-                .conn()
-                .query_row(
-                    "SELECT task_id, id FROM attempts WHERE task_id IS NOT NULL",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap();
-            drop(store);
-            w.agent.kill();
+    let (task, attempt): (String, String) = store
+        .conn()
+        .query_row(
+            "SELECT task_id, id FROM attempts WHERE task_id IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    drop(store);
+    w.agent.kill();
 
-            let mut fleetds = Fleetds::new(&h);
-            spawn_fleetd(&h, &mut fleetds, Some(ABORT_AFTER_COMMIT));
-            let status = wait_until("the fleetd with the fault exits", 30, || {
-                fleetds.children[0].try_wait().unwrap()
-            });
-            let _ = fleetds.current();
-            assert_eq!(
-                status.code(),
-                Some(ABORT_EXIT_CODE),
-                "{}",
-                fleetd_output(&h, 0)
-            );
-            assert_eq!(
-                (
-                    task_status(&h, 1),
-                    transitions(&h, "attempt", &attempt, "live", "ended")
-                ),
-                ("ready".to_string(), 1),
-                "the pass committed the end of the attempt and the requeue before it died"
-            );
-            let respawn = orchestrator_attempts(&h);
-            assert_eq!(
-                respawn.len(),
-                1,
-                "the pass committed 1 respawn before it died"
-            );
-            std::thread::sleep(Duration::from_millis(500));
-            assert_eq!(lines(&stops), 0, "no stop before the restart");
-            assert!(
-                !supervisor.exited(),
-                "the supervisor runs until the restart"
-            );
-            assert_eq!(respawn_launches(&h), 0, "no launch before the restart");
+    let mut fleetds = Fleetds::new(&h);
+    spawn_fleetd(&h, &mut fleetds, Some(ABORT_AFTER_COMMIT));
+    let status = wait_until("the fleetd with the fault exits", 30, || {
+        fleetds.children[0].try_wait().unwrap()
+    });
+    let _ = fleetds.current();
+    assert_eq!(
+        status.code(),
+        Some(ABORT_EXIT_CODE),
+        "{}",
+        fleetd_output(&h, 0)
+    );
+    assert_eq!(
+        (
+            task_status(&h, 1),
+            transitions(&h, "attempt", &attempt, "live", "ended")
+        ),
+        ("ready".to_string(), 1),
+        "the pass committed the end of the attempt and the requeue before it died"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(lines(&stops), 0, "no stop before the restart");
+    assert!(
+        !supervisor.exited(),
+        "the supervisor runs until the restart"
+    );
+    assert_eq!(
+        (
+            job(&h, add_job),
+            transitions(&h, "job", &job_id, "queued", "running")
+        ),
+        (("queued".to_string(), 1), 0),
+        "no start of the worktree_add job before the restart\n{}",
+        evidence(&h)
+    );
+    assert!(!tree.exists(), "no worktree before the restart");
 
-            let fleetd = start_fleetd(&h, &mut fleetds, None);
-            wait_until("the restarted fleetd stops the supervisor", 30, || {
-                supervisor.exited().then_some(())
-            });
-            wait_until("the restarted fleetd launches the respawn", 30, || {
-                (respawn_launches(&h) > 0).then_some(())
-            });
-            for _ in 0..3 {
-                after_a_whole_pass(&h, fleetd);
-            }
-            assert_eq!(lines(&stops), 1, "1 stop of the supervisor");
-            assert_eq!(respawn_launches(&h), 1, "1 launch of the respawn");
-            assert_eq!(
-                orchestrator_attempts(&h),
-                respawn,
-                "the respawn has 1 attempt"
-            );
-            assert_eq!(
-                transitions(&h, "attempt", &attempt, "live", "ended"),
-                1,
-                "the attempt ended once"
-            );
-            assert_eq!(
-                transitions(&h, "task", &task, "running", "ready"),
-                1,
-                "the task was queued again once"
-            );
-            assert_eq!(
-                (task_status(&h, 1), outcomes(&h)[0].attempts),
-                ("ready".to_string(), 1),
-                "the task waits for its next attempt"
-            );
-        },
+    let fleetd = start_fleetd(&h, &mut fleetds, None);
+    wait_until("the restarted fleetd stops the supervisor", 30, || {
+        supervisor.exited().then_some(())
+    });
+    wait_until_or(
+        "the restarted fleetd starts the worktree_add job, and it passes",
+        60,
+        || (job(&h, add_job).0 == "passed").then_some(()),
+        || evidence(&h),
+    );
+    for _ in 0..3 {
+        after_a_whole_pass(&h, fleetd);
+    }
+    assert_eq!(lines(&stops), 1, "1 stop of the supervisor");
+    assert_eq!(
+        (
+            job(&h, add_job),
+            transitions(&h, "job", &job_id, "queued", "running")
+        ),
+        (("passed".to_string(), 1), 1),
+        "1 start of the worktree_add job, in its first run\n{}",
+        evidence(&h)
+    );
+    assert!(
+        tree.join(".git").exists(),
+        "the job made the worktree {}",
+        tree.display()
+    );
+    assert_eq!(
+        transitions(&h, "attempt", &attempt, "live", "ended"),
+        1,
+        "the attempt ended once"
+    );
+    assert_eq!(
+        transitions(&h, "task", &task, "running", "ready"),
+        1,
+        "the task was queued again once"
+    );
+    assert_eq!(
+        (task_status(&h, 1), outcomes(&h)[0].attempts),
+        ("ready".to_string(), 1),
+        "the task waits for its next attempt"
     );
 }
