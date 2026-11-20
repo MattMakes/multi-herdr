@@ -582,7 +582,7 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
     let covers = ideas_store::covers(conn, &task_id)?;
     let kind = match task.work_kind {
         Some(kind) => Some(kind),
-        None => effective_kind(conn, &task_id)?,
+        None => spec_kind(conn, &task_id)?,
     };
     Ok(TaskFacts {
         task: format!("T{}", task.seq),
@@ -607,14 +607,10 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
     })
 }
 
-/// The kind of the plan of task `task_id` in `spec_json`: the ledger's
-/// `work_kind` holds only the ticket kinds, so a planned `judge`,
-/// `research`, `design` or `creative` task has its kind there only.
-fn effective_kind(conn: &Connection, task_id: &str) -> Result<Option<String>> {
+fn spec_kind(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     Ok(conn
         .query_row(
-            "SELECT COALESCE(work_kind, json_extract(spec_json, '$.kind')) FROM tasks
-         WHERE task_id = ?1",
+            "SELECT json_extract(spec_json, '$.kind') FROM tasks WHERE task_id = ?1",
             [task_id],
             |r| r.get::<_, Option<String>>(0),
         )?

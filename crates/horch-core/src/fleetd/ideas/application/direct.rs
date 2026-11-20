@@ -298,8 +298,6 @@ fn plan_yaml(
     Ok(serde_yaml::to_string(&plan)?)
 }
 
-/// The generated ticket of the judge of the work task `key`, a path in
-/// the idea folder.
 fn judge_ticket_rel(key: &str) -> String {
     format!("{TICKETS}/02-{key}-judge.md")
 }
@@ -337,9 +335,6 @@ pub fn write_judge_ticket(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The text of the ticket of the judge task `title` of the profile
-/// `profile`: it judges the task `judged` and writes the verdict file
-/// `verdict` in the format of the judge pair (RR-3).
 fn judge_ticket(title: &str, judged: &str, profile: &str, verdict: &str) -> String {
     format!(
         "# 02: {title}

@@ -600,8 +600,6 @@ fn plan_with_only_a_council_seat_to_judge_is_refused_with_the_cause() {
     );
 }
 
-/// The committed judge task of a `--direct` `docs` idea: its idea and its
-/// task id.
 fn committed_docs_judge(w: &mut World) -> (String, String) {
     let added = w.add(DOCS_TICKET, None);
     let idea = added.idea.file.id.clone();
@@ -615,7 +613,6 @@ fn committed_docs_judge(w: &mut World) -> (String, String) {
     (idea, judge)
 }
 
-/// Each part of the verdict format that the judge ticket names.
 const VERDICT_FORMAT: [&str; 9] = [
     "docs/sync.review.md",
     "## Verdict",
@@ -671,10 +668,7 @@ fn dispatched_judge_task_renders_kind_judge_and_verdict_instructions_in_task_fil
         clock: CLOCK,
         git: &ledger_git,
     };
-    // The judge tree starts from the branch of the judged task: bind the
-    // judged task first, and make its branch.
-    let mut bound = None;
-    for (task, profile) in [(&work, "coder-claude"), (&judge, "coder-codex")] {
+    let bind_ready = |w: &mut World, task: &str, profile: &str| {
         w.store
             .conn()
             .execute(
@@ -682,17 +676,14 @@ fn dispatched_judge_task_renders_kind_judge_and_verdict_instructions_in_task_fil
                 [task],
             )
             .unwrap();
-        let b = w
-            .store
+        w.store
             .immediate(|tx| bind(tx, &ctx, task, profile, &NewWorker::default()))
-            .unwrap();
-        if bound.is_none() {
-            let branch = b.worktree.clone().unwrap().branch;
-            git(&w.repo, &["branch", &branch, "main"]);
-        }
-        bound = Some(b);
-    }
-    let bound = bound.unwrap();
+            .unwrap()
+    };
+    let work_bound = bind_ready(&mut w, &work, "coder-claude");
+    let work_branch = work_bound.worktree.unwrap().branch;
+    git(&w.repo, &["branch", &work_branch, "main"]);
+    let bound = bind_ready(&mut w, &judge, "coder-codex");
     let fleet_root = w.root.join("fleet");
     let files = write_task_files(w.store.conn(), &fleet_root, &bound.attempt_id, &[]).unwrap();
     let yaml: serde_yaml::Value =
