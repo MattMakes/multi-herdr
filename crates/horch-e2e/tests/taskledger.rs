@@ -274,9 +274,11 @@ fn wait_push<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
 
 /// [`wait_push`] for the verifier pipeline of a task with all its finish
 /// steps: the check, the reviews, 2 more steps and a landing each wait for
-/// a pass, and 16 parallel tests slow each pass, so the limit is longer.
+/// a pass, and 16 parallel tests slow each pass, so the limit is longer. A
+/// test with a fix attempt and a 2nd round of reviews takes 110 s alone, and
+/// it waits at a load average of 30, so the limit is 480 s.
 fn wait_pipeline<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
-    wait_within(Duration::from_secs(240), what, f)
+    wait_within(Duration::from_secs(480), what, f)
 }
 
 fn wait_within<T>(limit: Duration, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
