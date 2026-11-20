@@ -82,7 +82,7 @@ fn exe(name: &str) -> String {
 }
 
 impl Harness {
-    /// On unix the preferred root is `/tmp/horch-e2e-<name>-<pid>-<n>`, with
+    /// On unix the preferred root is `<ROOT_PARENT>/horch-e2e-<name>-<pid>-<n>`, with
     /// `<name>` cut to its first 12 characters and `<n>` in hex. When the
     /// process cannot write there, `TMPDIR` is used only if Prime's longest
     /// daemon socket path stays below macOS's 104-byte limit.
@@ -91,7 +91,7 @@ impl Harness {
         let dir_name = format!("horch-e2e-{short}-{}-{:x}", std::process::id(), unique());
         #[cfg(unix)]
         let root = {
-            let preferred = Path::new("/tmp").join(&dir_name);
+            let preferred = Path::new(ROOT_PARENT).join(&dir_name);
             let _ = std::fs::remove_dir_all(&preferred);
             let preferred_writable = std::fs::create_dir_all(&preferred).is_ok();
             let fallback =
@@ -873,10 +873,19 @@ fn tmpdir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+/// The preferred parent of a harness root. On Linux it is not `/tmp`: the
+/// sandbox (`bwrap`) mounts a new tmpfs on `/tmp`, so the "Sandbox
+/// boundary" write next to a work folder under `/tmp` lands in that tmpfs
+/// and is not refused, and each claude and codex profile is unhealthy.
+#[cfg(target_os = "linux")]
+const ROOT_PARENT: &str = "/var/tmp";
+#[cfg(all(unix, not(target_os = "linux")))]
+const ROOT_PARENT: &str = "/tmp";
+
 /// The dirs that hold harness roots.
 fn harness_parents() -> Vec<PathBuf> {
     #[cfg(unix)]
-    return vec![PathBuf::from("/tmp"), tmpdir()];
+    return vec![PathBuf::from(ROOT_PARENT), tmpdir()];
     #[cfg(not(unix))]
     return vec![std::env::temp_dir()];
 }
