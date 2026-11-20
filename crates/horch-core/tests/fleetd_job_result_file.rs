@@ -518,6 +518,18 @@ fn queued_job_has_no_pid_and_gets_no_result_file() {
     assert_eq!(w.row(id).result_json, None);
 }
 
+/// The job `id` has 1 note: it ignored the result file of run `run`, and the
+/// note names the row state `state`.
+fn assert_one_ignored_note(w: &World, id: i64, run: i64, state: &str) {
+    let notes = w.events(id, "note");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains(&format!("ignored the result file of run {run}"))
+            && notes[0].contains(state),
+        "{notes:?}"
+    );
+}
+
 #[test]
 fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
     let mut w = world();
@@ -547,26 +559,14 @@ fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
     assert_eq!(w.row(queued).result_json, None);
     assert_eq!(w.moves_to(queued, State::Passed), 0);
     assert_eq!(w.moves_to(queued, State::Failed), 0);
-    let queued_notes = w.events(queued, "note");
-    assert_eq!(queued_notes.len(), 1, "{queued_notes:?}");
-    assert!(
-        queued_notes[0].contains("ignored the result file of run 1")
-            && queued_notes[0].contains("queued"),
-        "{queued_notes:?}"
-    );
+    assert_one_ignored_note(&w, queued, 1, "queued");
     assert_eq!(w.ingested(&forged_queued), Some(("accepted".into(), None)));
 
     let row = w.row(done);
     assert_eq!(row.state, State::Passed);
     assert_eq!(outcome(&row).unwrap().text, "real");
     assert_eq!(w.moves_to(done, State::Passed), 1);
-    let done_notes = w.events(done, "note");
-    assert_eq!(done_notes.len(), 1, "{done_notes:?}");
-    assert!(
-        done_notes[0].contains("ignored the result file of run 2")
-            && done_notes[0].contains("passed"),
-        "{done_notes:?}"
-    );
+    assert_one_ignored_note(&w, done, 2, "passed");
     assert!(reads
         .iter()
         .any(|r| r.path == again_first && matches!(r.read, Read::Seen)));
