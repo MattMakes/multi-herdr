@@ -1,22 +1,42 @@
-//! End-to-end: a worker's whole life through the real `horch` binary.
+//! End-to-end: a worker's life through the real `horch fleetd` and its
+//! fake agents. fleetd launches each attempt; `horch spawn` is retired
+//! (FR-5, `docs/tickets/fleetd-p6/47-c6-t908-retire-worker-run-cli.md`).
 //!
-//! - ARC-26: for each of the 6 harnesses, a fresh spawn, the session found
-//!   (minted by horch or discovered from the harness), `horch done`, then
-//!   `horch spawn --resume` reusing that session.
-//! - ARC-16: a failed pane split and a crash after the insert leave no
-//!   live-looking record.
+//! - ARC-26: for each of the 6 harnesses, fleetd launches the agent of a
+//!   seeded task, the wrapper records the session of the agent
+//!   (`session.json`), and the attempt ends when its pane closes.
+//! - ARC-16: a failed pane split launches nothing.
+//! - G3: no child of fleetd holds a forbidden key, and the pane command
+//!   removes the key before horch starts.
 //!
-//! fake-herdr runs in the `exec` scenario, so `horch spawn`'s pane command
-//! really starts `horch worker`, and `pane close` kills it. The harness fakes
-//! run in `stay`, so an agent lives until its pane closes.
+//! fake-herdr runs in the `exec` scenario, so the pane command of an
+//! attempt really starts `horch worker`, and `pane close` kills it. The
+//! fake agents run in `stay` when a test needs a live agent.
+//!
+//! Where a test of the retired `horch spawn` has no form in the fleetd
+//! flow, it is gone: `arc_16_crash_after_insert_not_live` (the fault
+//! `abort-after-execution-insert` belonged to the record that `horch spawn`
+//! wrote; the faults of fleetd are in `p1_pass.rs` and `p4_no_loss.rs`) and
+//! the resume half of each test (`horch spawn --resume`).
+//!
+//! The forbidden key has a dummy value that no test prints. A test names
+//! the key and never shows its value.
 
+#![cfg(unix)]
+
+use std::path::PathBuf;
 use std::process::Output;
-use std::time::{Duration, Instant};
 
-use horch_e2e::harness::{fixtures, repo_root, Harness};
+use horch_core::taskledger::runs::Run;
+use horch_e2e::harness::{fixtures, repo_root, wait_for_or, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-const NOW: &str = "2026-09-28T18:00:00Z";
+/// The forbidden name (`horch_platform::start::FORBIDDEN_ENV`).
+const FORBIDDEN: &str = "ANTHROPIC_API_KEY";
+
+/// The keys that move agy off the operator's Google login.
+const AGY_KEYS: [&str; 3] = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
 
 fn text(o: &Output) -> String {
     format!(
@@ -27,201 +47,57 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with workspace `w1` and its root pane `w1:p1`, as `horch fleet`
-/// leaves it.
-fn fleet(name: &str, scenario: &str) -> Harness {
-    let mut h = Harness::new(name);
-    let quota = fixtures().join("quota/all-ok.json");
-    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
-    h.set("HORCH_NOW", NOW);
+/// A harness in workspace `w1` (root pane `w1:p1`), as `horch fleet` leaves
+/// it, with a git project that declares its gates and a fleet root whose
+/// fleetd passes once each second. The test starts fleetd after it queued
+/// its task.
+fn world(name: &str, scenario: &str) -> Harness {
+    let mut h = Harness::new(name).with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
+    h.set(
+        "HORCH_QUOTA_FILE",
+        fixtures().join("quota/all-ok.json").to_string_lossy(),
+    );
     h.set("HORCH_FAKE_SCENARIO", scenario);
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let out = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", text(&out));
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    // The project declares its gates, so no hold of a missing fast gate
+    // stops the dispatch.
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", text(&o));
+    }
+    let workspace = h.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    h.set("HORCH_WORKSPACE_ID", workspace);
     h
 }
 
-fn records(h: &Harness) -> Vec<Value> {
-    let slug: String = h
-        .project
-        .to_string_lossy()
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                b as char
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    // TRF-45: the session records, not a JSON file.
-    horch_core::execution::store::ExecutionStore::for_project(&h.state, &slug)
-        .stored_json()
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
-}
-
-fn record(h: &Harness, id: &str) -> Value {
-    records(h)
-        .into_iter()
-        .find(|r| r["record_id"] == id)
-        .unwrap_or_else(|| panic!("no record {id}"))
-}
-
-fn wait_for<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
-    wait_for_or(what, f, String::new)
-}
-
-/// [`wait_for`], with `context` in the panic message.
-fn wait_for_or<T>(what: &str, mut f: impl FnMut() -> Option<T>, context: impl Fn() -> String) -> T {
-    let until = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < until {
-        if let Some(v) = f() {
-            return v;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("timed out waiting for {what}\n{}", context());
-}
-
-/// What a worker pane wrote (fake-herdr `exec` saves its output), and the
-/// record, for a failure message.
-fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
-    let mut out = h.log.clone().into_os_string();
-    out.push(format!(".pane-{}.out", pane.replace(':', "_")));
-    format!(
-        "record: {}\npane output:\n{}",
-        record(h, id),
-        std::fs::read_to_string(&out).unwrap_or_else(|e| format!("({e})"))
-    )
-}
-
-/// `horch spawn`, returning the new pane id (the last stdout line).
-fn spawn(h: &Harness, args: &[&str]) -> String {
-    let mut argv = vec!["spawn"];
-    argv.extend_from_slice(args);
-    argv.extend_from_slice(&["--from-pane", "w1:p1", "--no-tile"]);
-    let out = h.run(&argv);
-    assert!(out.status.success(), "{}", text(&out));
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .last()
-        .unwrap()
-        .trim()
-        .to_string()
-}
-
-/// `horch done` as the agent in `pane` runs it: the transport variables say
-/// who it is. Closing the pane kills the worker and its agent.
-fn done(h: &Harness, pane: &str, role: &str, id: &str) {
-    let mut cmd = h.horch(&["done", "finished the work"]);
-    cmd.env("HERDR_PANE_ID", pane)
-        .env("HORCH_ROLE", role)
-        .env("HORCH_RECORD_ID", id);
-    let out = cmd.output().unwrap();
-    assert!(out.status.success(), "{}", text(&out));
-}
-
-/// The last launch of `fake` whose argv names `needle`.
-fn launch_naming(h: &Harness, fake: &str, needle: &str) -> Option<Value> {
-    h.calls_of(fake).into_iter().rev().find(|c| {
-        c["argv"]
-            .as_array()
-            .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(needle)))
-    })
-}
-
-/// Fresh spawn → session known → done → resume on the same session.
-fn lifecycle(harness: &str, teammate: &str, fake: &str) {
-    let h = fleet(&format!("arc26-{harness}"), "exec,stay");
-    lifecycle_in(h, harness, teammate, fake);
-}
-
-/// [`lifecycle`] in a harness the caller has set up.
-fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
-    let pane = spawn(&h, &[teammate]);
-    let fresh = records(&h)
-        .into_iter()
-        .find(|r| r["tier"] == teammate)
-        .expect("the spawn wrote a record");
-    let id = fresh["record_id"].as_str().unwrap().to_string();
-    let role = fresh["role"].as_str().unwrap().to_string();
-    assert_eq!(fresh["agent"], harness);
-
-    // The worker marks itself running, and the session id is known: minted
-    // by horch (claude, pi) or discovered while the agent runs. The claude
-    // and pi fakes exit at once, so their worker may already be done.
-    let session = wait_for_or(
-        "the session id",
-        || {
-            let r = record(&h, &id);
-            let running = ["running", "done"].contains(&r["state"]["state"].as_str().unwrap_or(""));
-            let session = r["session_id"].as_str().filter(|s| !s.is_empty());
-            session.filter(|_| running).map(str::to_owned)
-        },
-        || pane_context(&h, &pane, &id),
-    );
-    assert_eq!(record(&h, &id)["pane_id"], pane.as_str());
-
-    done(&h, &pane, &role, &id);
-    let r = record(&h, &id);
-    assert_eq!(r["status"], "done", "{r}");
-    assert_eq!(r["state"]["state"], "done", "{r}");
-
-    let pane2 = spawn(&h, &["--resume", &id]);
-    let resumed = wait_for("the resumed launch", || launch_naming(&h, fake, &session));
-    assert!(
-        resumed["violations"].as_array().unwrap().is_empty(),
-        "{resumed}"
-    );
-    let r = record(&h, &id);
-    assert_eq!(r["session_id"], session.as_str(), "the session is reused");
-    // The fake may already have exited again, so skip a trailing "exited".
-    let last = r["history"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .rev()
-        .find(|e| e["event"] != "exited")
-        .unwrap();
-    assert_eq!(last["event"], "resumed", "{r}");
-    assert_eq!(r["routing"]["mode"], "resume");
-    assert_eq!(records(&h).len(), 1, "a resume writes no new record");
-
-    // Close the resumed pane too, which stops its agent.
-    let role2 = r["role"].as_str().unwrap().to_string();
-    done(&h, &pane2, &role2, &id);
-}
-
-#[test]
-fn arc_26_e2e_lifecycle_matrix_claude() {
-    lifecycle("claude", "sonnet", "claude");
-}
-
-#[test]
-fn arc_26_e2e_lifecycle_matrix_codex() {
-    lifecycle("codex", "codex-sol", "codex");
-}
-
-#[test]
-fn arc_26_e2e_lifecycle_matrix_opencode() {
-    lifecycle("opencode", "opencode-pickle", "opencode");
-}
-
-#[test]
-fn arc_26_e2e_lifecycle_matrix_pi() {
-    lifecycle("pi", "pi", "pi");
-}
-
-#[test]
-fn arc_26_e2e_lifecycle_matrix_prime() {
-    lifecycle("prime", "prime", "prime");
+/// Queue 1 task for `persona` in a new run, then start the test fleetd.
+fn start(h: &Harness, persona: &str) -> Run {
+    let ticket = h.project.join("t-1.md");
+    std::fs::write(&ticket, "# Lifecycle\n**Check:** `true`\n").unwrap();
+    let run = seed_run(h, "life", Some(1), "w1:p1");
+    seed_task(h, &run, &ticket, persona);
+    h.serve_fleetd();
+    run
 }
 
 /// `fake-antigravity` as `agy` (the harness installs it in `bin/`), named by
@@ -252,59 +128,229 @@ fn with_agy(h: &mut Harness) {
     h.set("HORCH_QUOTA_FILE", path.to_string_lossy());
 }
 
-/// agy mints its own conversation id; horch reads it back from the session
-/// cache and resumes it with `--conversation`.
-#[test]
-fn arc_26_e2e_lifecycle_matrix_antigravity() {
-    let mut h = fleet("arc26-antigravity", "exec,stay");
-    with_agy(&mut h);
-    lifecycle_in(h, "antigravity", "antigravity", "antigravity");
+/// What a failed wait shows: the fake calls without the many herdr calls.
+fn context(h: &Harness) -> String {
+    h.calls()
+        .iter()
+        .filter(|c| c["fake"] != "herdr")
+        .map(|c| format!("{} {}", c["fake"], c["argv"]))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-/// G3: the pane shell holds `ANTHROPIC_API_KEY` (herdr keeps the operator's
+/// The launch of the attempt by `fake`: the call whose argv names the
+/// attempt folder under the fleet root. A probe call of the fake does not.
+fn launch_of(h: &Harness, fake: &str) -> Value {
+    let tasks = h.fleet_root().join("tasks").to_string_lossy().into_owned();
+    wait_for_or(
+        &format!("the launch of {fake}"),
+        || {
+            h.calls_of(fake)
+                .into_iter()
+                .find(|c| c["argv"].to_string().contains(&tasks))
+        },
+        || context(h),
+    )
+}
+
+/// The pane that fleetd opened for the attempt: the argument of its
+/// `pane run`.
+fn pane_of(h: &Harness) -> String {
+    wait_for_or(
+        "the pane run of the attempt",
+        || {
+            h.calls_of("herdr").into_iter().find_map(|c| {
+                let argv = c["argv"].as_array()?;
+                (argv.first()? == "pane" && argv.get(1)? == "run")
+                    .then(|| argv[2].as_str().map(str::to_owned))?
+            })
+        },
+        || context(h),
+    )
+}
+
+/// `herdr pane close`, which kills the worker and its agent.
+fn close_pane(h: &Harness, pane: &str) {
+    let mut cmd = std::process::Command::new(h.bin.join("herdr"));
+    h.seal(&mut cmd);
+    let out = cmd.args(["pane", "close", pane]).output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+/// The state of the 1 attempt of the ledger.
+fn attempt_state(h: &Harness) -> Option<String> {
+    let conn = rusqlite::Connection::open(h.ledger_db()).ok()?;
+    conn.query_row("SELECT state FROM attempts", [], |r| r.get(0))
+        .ok()
+}
+
+/// The rows of the query `sql` in the ledger, 1 text column.
+fn rows(h: &Harness, sql: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(h.ledger_db()).unwrap();
+    let mut stmt = conn.prepare(sql).unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+/// The `session.json` that the wrapper of the attempt wrote, once fleetd
+/// ingested it into the ledger as a session event.
+fn session_of(h: &Harness) -> Value {
+    wait_for_or(
+        "the session of the attempt",
+        || {
+            let recorded = rows(h, "SELECT text FROM events WHERE kind = 'session'");
+            let file = files_named(&h.fleet_root().join("tasks"), "session.json")
+                .into_iter()
+                .next()?;
+            let session: Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+            let id = session["session_id"].as_str().filter(|s| !s.is_empty())?;
+            recorded.iter().any(|t| t.contains(id)).then_some(session)
+        },
+        || {
+            format!(
+                "{}\nevents: {:?}",
+                context(h),
+                rows(h, "SELECT kind || ' ' || text FROM events")
+            )
+        },
+    )
+}
+
+/// Each file named `name` under `dir`, at any depth.
+fn files_named(dir: &std::path::Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else if p.file_name().is_some_and(|n| n == name) {
+                found.push(p);
+            }
+        }
+    }
+    found
+}
+
+/// Launch → session recorded → attempt live → pane closes → attempt ended.
+/// Gives the launch call and the session of the attempt, or null for a
+/// harness whose fake records no session in the exec launch of fleetd
+/// (`records_session` false: codex and antigravity, see the tests).
+fn lifecycle(harness: &str, persona: &str, fake: &str, records_session: bool) -> (Value, Value) {
+    let mut h = world(&format!("arc26-{harness}"), "exec,stay");
+    if fake == "antigravity" {
+        with_agy(&mut h);
+    }
+    start(&h, persona);
+    let launch = launch_of(&h, fake);
+    assert_eq!(launch["violations"], serde_json::json!([]), "{launch}");
+
+    // The session id is known: minted by horch (claude, pi) or discovered
+    // while the agent runs.
+    let session = if records_session {
+        let session = session_of(&h);
+        assert_eq!(session["harness"], harness, "{session}");
+        session
+    } else {
+        Value::Null
+    };
+
+    wait_for_or(
+        "the attempt to be live",
+        || (attempt_state(&h).as_deref() == Some("live")).then_some(()),
+        || context(&h),
+    );
+    close_pane(&h, &pane_of(&h));
+    wait_for_or(
+        "the attempt to end",
+        || (attempt_state(&h).as_deref() == Some("ended")).then_some(()),
+        || context(&h),
+    );
+    (launch, session)
+}
+
+#[test]
+fn arc_26_e2e_lifecycle_matrix_claude() {
+    lifecycle("claude", "sonnet", "claude", true);
+}
+
+#[test]
+fn arc_26_e2e_lifecycle_matrix_codex() {
+    // fake-codex writes a rollout only in its TUI launch, not in the exec
+    // launch of fleetd, so no session is recorded.
+    lifecycle("codex", "codex-sol", "codex", false);
+}
+
+#[test]
+fn arc_26_e2e_lifecycle_matrix_opencode() {
+    lifecycle("opencode", "opencode-pickle", "opencode", true);
+}
+
+#[test]
+fn arc_26_e2e_lifecycle_matrix_pi() {
+    lifecycle("pi", "pi", "pi", true);
+}
+
+#[test]
+fn arc_26_e2e_lifecycle_matrix_prime() {
+    lifecycle("prime", "prime", "prime", true);
+}
+
+/// fake-antigravity records its conversation in the session cache only in
+/// its TUI launch, not in the exec launch of fleetd, so no session is
+/// recorded.
+#[test]
+fn arc_26_e2e_lifecycle_matrix_antigravity() {
+    lifecycle("antigravity", "antigravity", "antigravity", false);
+}
+
+/// G3: the pane shell holds the forbidden key (herdr keeps the operator's
 /// environment), so the pane command removes it before horch starts. The
 /// recorded line runs again in a shell that holds the key, with a probe in
 /// place of horch, and the probe does not see the key.
-#[cfg(unix)]
 #[test]
 fn pane_command_removes_a_forbidden_key_before_horch_starts() {
-    let mut h = fleet("pane-env", "default");
-    h.set("ANTHROPIC_API_KEY", "SENTINEL");
-    let pane = spawn(&h, &["sonnet"]);
-    let ran = h
-        .calls_of("herdr")
-        .into_iter()
-        .find_map(|c| c["ran"].as_str().map(str::to_owned))
-        .expect("horch spawn ran a pane command");
+    let mut h = world("pane-env", "default");
+    h.set(FORBIDDEN, "dummy-forbidden-value");
+    start(&h, "sonnet");
+    let ran = wait_for_or(
+        "a pane command",
+        || {
+            h.calls_of("herdr")
+                .into_iter()
+                .find_map(|c| c["ran"].as_str().map(str::to_owned))
+        },
+        || context(&h),
+    );
     assert!(
-        ran.starts_with("exec /usr/bin/env -u ANTHROPIC_API_KEY '"),
-        "{pane}: {ran}"
+        ran.starts_with(&format!("exec /usr/bin/env -u {FORBIDDEN} ")),
+        "the pane command does not remove {FORBIDDEN}: {ran}"
     );
 
-    // The first quoted word is the horch binary.
-    let start = ran.find('\'').unwrap();
-    let end = start + 1 + ran[start + 1..].find('\'').unwrap();
-    let horch = &ran[start..=end];
+    // The quoted word that is the horch binary.
+    let horch = format!("'{}'", Harness::horch_bin().display());
+    assert!(ran.contains(&horch), "the pane command has no {horch}");
     let out_file = h.tmp.join("pane-probe.env");
     let probe = h.write_warmed(
         "pane-probe",
         b"#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n/usr/bin/env > \"$PANE_PROBE_OUT\"\n",
     );
-    let line = ran.replacen(horch, &format!("'{}'", probe.display()), 1);
+    let line = ran.replacen(&horch, &format!("'{}'", probe.display()), 1);
     let mut shell = std::process::Command::new("/bin/sh");
     h.seal(&mut shell);
     shell.arg("-c").arg(&line).env("PANE_PROBE_OUT", &out_file);
     let out = shell.output().unwrap();
     assert!(out.status.success(), "{line}\n{}", text(&out));
     let env = std::fs::read_to_string(&out_file).unwrap();
-    assert!(
-        env.lines().any(|l| l.starts_with("HORCH_FAKE_LOG=")),
-        "{env}"
-    );
-    assert!(
-        !env.lines().any(|l| l.starts_with("ANTHROPIC_API_KEY=")),
-        "{env}"
-    );
+    let names: Vec<&str> = env
+        .lines()
+        .filter_map(|l| l.split_once('=').map(|(k, _)| k))
+        .collect();
+    assert!(names.contains(&"HORCH_LEDGER_DB"), "{names:?}");
+    assert!(!names.contains(&FORBIDDEN), "the probe has {FORBIDDEN}");
 }
 
 /// F7 (G3): the worker loads the roster in its pane, and an overlay file
@@ -312,7 +358,7 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
 /// launches its agent.
 #[test]
 fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
-    let h = fleet("f7-worker", "default");
+    let h = world("f7-worker", "exec");
     let dir = h.home.join(".config/horch/teammates");
     std::fs::create_dir_all(&dir).unwrap();
     let broken = std::fs::read_to_string(repo_root().join("teammates/opus.md"))
@@ -320,13 +366,20 @@ fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
         .replace("name: opus", "name: newcomer")
         .replacen("\n---\n", "\nrequires: [no-such-tool]\n---\n", 1);
     std::fs::write(dir.join("newcomer.md"), broken).unwrap();
-    let pane = spawn(&h, &["sonnet"]);
-    let role = records(&h)[0]["role"].as_str().unwrap().to_string();
-    let mut worker = h.horch(&["worker", &role]);
-    worker.env("HERDR_PANE_ID", &pane);
-    let out = worker.output().unwrap();
-    assert!(out.status.success(), "{}", text(&out));
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    start(&h, "sonnet");
+    launch_of(&h, "claude");
+    let pane = pane_of(&h);
+    let mut out = h.log.clone().into_os_string();
+    out.push(format!(".pane-{}.out", pane.replace(':', "_")));
+    let stderr = wait_for_or(
+        "the pane output",
+        || {
+            std::fs::read_to_string(&out)
+                .ok()
+                .filter(|t| t.contains("warning: teammate 'newcomer'"))
+        },
+        || context(&h),
+    );
     let warnings: Vec<&str> = stderr
         .lines()
         .filter(|l| l.starts_with("warning: teammate 'newcomer'"))
@@ -336,214 +389,108 @@ fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
         warnings[0].contains("unknown variant `no-such-tool`"),
         "{stderr}"
     );
-    assert_eq!(
-        h.calls_of("claude").len(),
-        1,
-        "the worker launched its agent"
-    );
+}
+
+/// Launch `persona` in a world with the forbidden key, and the keys in
+/// `extra`, in the environment of fleetd. The key has a dummy value, and
+/// no assert shows it.
+fn launch_with_keys(name: &str, persona: &str, fake: &str, extra: &[&str]) -> Value {
+    let mut h = world(name, "exec");
+    if fake == "antigravity" {
+        with_agy(&mut h);
+    }
+    let keys_set: Vec<&str> = std::iter::once(FORBIDDEN)
+        .chain(extra.iter().copied())
+        .collect();
+    for key in &keys_set {
+        h.set(key, "dummy-must-not-leak");
+    }
+    start(&h, persona);
+    let launch = launch_of(&h, fake);
+    let keys: Vec<String> = serde_json::from_value(launch["env_keys"].clone()).unwrap();
+    for key in &keys_set {
+        assert!(
+            !keys.iter().any(|k| k == key),
+            "{key} reached {fake}: {keys:?}"
+        );
+    }
+    // The fake flags a forbidden key in its environment as a violation too.
+    assert_eq!(launch["violations"], serde_json::json!([]), "{launch}");
+    launch
 }
 
 /// The keys that move agy off the operator's Google login never reach an
-/// agy child, even when the worker's own environment holds them.
+/// agy child, even when fleetd's own environment holds them.
 #[test]
 fn antigravity_child_never_receives_a_forbidden_key() {
-    const KEYS: [&str; 4] = [
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "GOOGLE_GEMINI_BASE_URL",
-    ];
-    let mut h = fleet("agy-env", "default");
-    with_agy(&mut h);
-    let pane = spawn(&h, &["antigravity"]);
-    let role = records(&h)[0]["role"].as_str().unwrap().to_string();
-    let mut worker = h.horch(&["worker", &role]);
-    worker.env("HERDR_PANE_ID", &pane);
-    for key in KEYS {
-        worker.env(key, "must-not-leak");
-    }
-    let out = worker.output().unwrap();
-    assert!(out.status.success(), "{}", text(&out));
-
-    let agy = h
-        .calls_of("antigravity")
-        .into_iter()
-        .last()
-        .expect("the worker launched agy");
-    let keys: Vec<String> = serde_json::from_value(agy["env_keys"].clone()).unwrap();
-    for key in KEYS {
-        assert!(
-            !keys.iter().any(|k| k == key),
-            "{key} reached agy: {keys:?}"
-        );
-    }
-    // fake-antigravity flags each of them as a violation too.
-    assert_eq!(agy["violations"], serde_json::json!([]), "{agy}");
-    let argv: Vec<String> = serde_json::from_value(agy["argv"].clone()).unwrap();
-    assert_eq!(&argv[..2], ["--model", "gemini-3.8-flash"], "{argv:?}");
+    let launch = launch_with_keys("agy-env", "antigravity", "antigravity", &AGY_KEYS);
+    let argv: Vec<String> = serde_json::from_value(launch["argv"].clone()).unwrap();
+    assert!(
+        argv.windows(2)
+            .any(|w| w == ["--model", "gemini-3.8-flash"]),
+        "{argv:?}"
+    );
     assert!(
         argv.windows(2).any(|w| w == ["--effort", "medium"]),
         "{argv:?}"
     );
-    assert_eq!(argv[argv.len() - 2], "--prompt-interactive", "{argv:?}");
 }
 
-// ─── ARC-16 ─────────────────────────────────────────────────────────────────
-
-/// An agent that ends within 1 s of launch still gets its session id
-/// recorded: `horch done` runs one last discovery before it closes the pane.
+/// SR-7 for codex. The claude launch has its test in `p7_launcher.rs`
+/// (`no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key`).
 #[test]
-fn tel_session_recorded_when_agent_ends_fast() {
-    let h = fleet("tel-fast-end", "exec,stay");
-    let pane = spawn(&h, &["codex-sol"]);
-    let fresh = records(&h)
-        .into_iter()
-        .find(|r| r["tier"] == "codex-sol")
-        .expect("the spawn wrote a record");
-    let id = fresh["record_id"].as_str().unwrap().to_string();
-    let role = fresh["role"].as_str().unwrap().to_string();
-
-    // The fake has written its rollout; `done` follows at once.
-    let minted = wait_for("the fake's session id", || {
-        h.calls_of("codex")
-            .iter()
-            .find_map(|c| c["session_id"].as_str().map(str::to_owned))
-    });
-    done(&h, &pane, &role, &id);
-
-    let r = record(&h, &id);
-    assert_eq!(r["status"], "done", "{r}");
-    assert_eq!(r["session_id"], minted.as_str(), "{r}");
+fn codex_child_never_receives_a_forbidden_key() {
+    launch_with_keys("codex-env", "codex-sol", "codex", &[]);
 }
 
-/// The same for Prime, whose session file is in a directory only its launch
-/// knows: the launch marker carries that directory to `horch done`.
+/// The model of the persona reaches the claude command line. A seat on
+/// Fable launches `claude --model fable`.
+#[test]
+fn the_model_of_the_persona_reaches_the_claude_command_line() {
+    let h = world("persona-model-fable", "exec");
+    start(&h, "fable-creative");
+    let launch = launch_of(&h, "claude");
+    let argv: Vec<String> = serde_json::from_value(launch["argv"].clone()).unwrap();
+    assert!(
+        argv.windows(2).any(|w| w == ["--model", "fable"]),
+        "{argv:?}"
+    );
+}
+
+/// The session that the ledger records is the session file that the fake
+/// Prime wrote, in a directory only its launch knows.
 #[test]
 fn tel_session_recorded_when_prime_ends_fast() {
-    let h = fleet("tel-fast-end-prime", "exec,stay");
-    let pane = spawn(&h, &["prime"]);
-    let fresh = records(&h)
-        .into_iter()
-        .find(|r| r["tier"] == "prime")
-        .expect("the spawn wrote a record");
-    let id = fresh["record_id"].as_str().unwrap().to_string();
-    let role = fresh["role"].as_str().unwrap().to_string();
-
-    // The fake has written its session file; `done` follows at once.
-    let file = wait_for("the fake's session file", || {
-        h.calls_of("prime")
-            .iter()
-            .find_map(|c| c["session_file"].as_str().map(str::to_owned))
-    });
-    done(&h, &pane, &role, &id);
-
-    let r = record(&h, &id);
-    assert_eq!(r["status"], "done", "{r}");
-    assert_eq!(r["session_id"], file.as_str(), "{r}");
+    let (launch, session) = lifecycle("prime", "prime", "prime", true);
+    assert_eq!(session["session_id"], launch["session_file"], "{session}");
 }
 
+/// A failed pane split launches nothing: the worker is `launch_failed`, and
+/// no pane runs a command.
 #[test]
 fn arc_16_e2e_fail_split() {
-    let h = fleet("arc16-split", "fail_split");
-    let out = h.run(&["spawn", "sonnet", "--from-pane", "w1:p1", "--no-tile"]);
-    assert!(!out.status.success(), "{}", text(&out));
-    assert_ne!(
-        out.status.code(),
-        Some(3),
-        "a launch failure is not a refusal"
+    let h = world("arc16-split", "exec,fail_split");
+    start(&h, "sonnet");
+    wait_for_or(
+        "the worker to be launch_failed",
+        || {
+            rows(&h, "SELECT status FROM workers")
+                .iter()
+                .any(|s| s == "launch_failed")
+                .then_some(())
+        },
+        || context(&h),
     );
-    let all = records(&h);
-    assert_eq!(all.len(), 1, "{all:?}");
-    let r = &all[0];
-    assert_eq!(r["state"]["state"], "launch_failed", "{r}");
-    assert_eq!(r["state"]["stage"], "split", "{r}");
-    assert_eq!(r["status"], "done", "an old reader sees it finished");
-    assert!(r["finished_at"].is_string());
-    let role = r["role"].as_str().unwrap();
-    assert!(!h
-        .state
-        .join("herdr-orchestration-w1")
-        .join(format!("{role}.brief.json"))
-        .exists());
-    let sessions = h.run(&["sessions", "--json"]);
-    assert!(sessions.status.success(), "{}", text(&sessions));
-}
-
-/// A crash right after the insert: the record is `Planned`, which is never
-/// live. The recovery rule closes it on a spawn 5 minutes or more later.
-#[test]
-fn arc_16_crash_after_insert_not_live() {
-    let mut h = fleet("arc16-crash", "default");
-    h.set("HORCH_FAULT", "abort-after-execution-insert");
-    let out = h.run(&["spawn", "sonnet", "--from-pane", "w1:p1", "--no-tile"]);
-    assert_eq!(out.status.code(), Some(86), "{}", text(&out));
-    let r = records(&h).pop().unwrap();
-    assert_eq!(r["state"]["state"], "planned", "{r}");
-    assert!(r.get("pane_id").is_none());
     assert!(
-        !h.calls_of("herdr").iter().any(|c| c["argv"][1] == "split"),
-        "no pane split"
+        !h.calls_of("herdr").iter().any(|c| c["ran"].is_string()),
+        "a pane ran a command after the failed split"
     );
-    let crashed = r["record_id"].as_str().unwrap().to_string();
-
-    // A later spawn recovers it and goes on.
-    h.unset("HORCH_FAULT");
-    h.set("HORCH_NOW", "2026-09-28T18:05:00Z");
-    spawn(&h, &["sonnet"]);
-    let r = record(&h, &crashed);
-    assert_eq!(r["state"]["state"], "launch_failed", "{r}");
-    assert_eq!(r["status"], "done");
-    let live: Vec<Value> = records(&h)
-        .into_iter()
-        .filter(|r| r["state"]["state"] == "starting")
-        .collect();
-    assert_eq!(live.len(), 1, "only the new spawn is live");
-}
-
-/// The operator's `horch spawn <teammate> --model fable` starts an ordinary
-/// Claude teammate on Fable: the real `claude` command line has
-/// `--model fable`, the record keeps the override, and a resume starts
-/// Fable again.
-#[test]
-fn spawn_model_fable_reaches_the_claude_command_line_and_the_resume() {
-    let h = fleet("spawn-model-fable", "exec,stay");
-    let pane = spawn(&h, &["backend-developer", "--model", "fable"]);
-    let fresh = records(&h)
-        .into_iter()
-        .find(|r| r["tier"] == "backend-developer")
-        .expect("the spawn wrote a record");
-    let id = fresh["record_id"].as_str().unwrap().to_string();
-    let role = fresh["role"].as_str().unwrap().to_string();
-    assert_eq!(fresh["model"], "fable", "{fresh}");
-    assert_eq!(fresh["model_override"], true, "{fresh}");
-
-    let has_fable = |c: &Value| {
-        c["argv"]
-            .as_array()
-            .unwrap()
-            .windows(2)
-            .any(|w| w[0] == "--model" && w[1] == "fable")
-    };
-    let launch = wait_for_or(
-        "the claude launch",
-        || h.calls_of("claude").into_iter().last(),
-        || pane_context(&h, &pane, &id),
+    let tasks = h.fleet_root().join("tasks").to_string_lossy().into_owned();
+    assert!(
+        !h.calls_of("claude")
+            .iter()
+            .any(|c| c["argv"].to_string().contains(&tasks)),
+        "an agent launched after the failed split"
     );
-    assert!(has_fable(&launch), "{launch}");
-    let session = wait_for("the session id", || {
-        record(&h, &id)["session_id"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    });
-    done(&h, &pane, &role, &id);
-
-    let pane2 = spawn(&h, &["--resume", &id]);
-    let resumed = wait_for("the resumed launch", || {
-        launch_naming(&h, "claude", &session)
-    });
-    assert!(has_fable(&resumed), "{resumed}");
-    let r = record(&h, &id);
-    assert_eq!(r["model_override"], true, "{r}");
-    done(&h, &pane2, r["role"].as_str().unwrap(), &id);
+    assert_ne!(attempt_state(&h).as_deref(), Some("live"));
 }
