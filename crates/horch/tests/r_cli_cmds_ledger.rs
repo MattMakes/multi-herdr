@@ -1,13 +1,11 @@
 //! `horch ledger legacy`: every subcommand arm of the legacy session ledger,
-//! with a temp state dir. The test process plays fleetd for the
-//! `session_records` requests that the subcommands send.
+//! with a temp state dir.
 
 use std::process::{Command, Output};
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at;
 
-/// `server` is before `tmp`: the server drops first.
 struct World {
     _server: ChannelServer,
     tmp: tempfile::TempDir,
