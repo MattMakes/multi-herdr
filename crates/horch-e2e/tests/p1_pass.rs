@@ -124,7 +124,7 @@ fn wait_until<T>(what: &str, secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
 /// The PID and start time of the fleetd that the `fleetd` row of the ledger
 /// names (design, "Ledger"). `None` while no row exists.
 fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
-    let store = Store::open(db).ok()?;
+    let store = Store::open_read_only(db).ok()?;
     let (pid, started): (i64, i64) = store
         .conn()
         .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
@@ -329,7 +329,7 @@ struct Worker {
 fn bind(h: &Harness) -> (Worker, i64) {
     let agent = Agent::start();
     let bound = horch_e2e::bind::bind(h, "opus", Some(agent.pid()));
-    let seq = horch_core::taskledger::Store::open(&db(h))
+    let seq = horch_core::taskledger::Store::open_read_only(&db(h))
         .and_then(|store| {
             Ok(store.conn().query_row(
                 "SELECT seq FROM tasks WHERE task_id = ?1",
@@ -394,7 +394,7 @@ fn plan(h: &Harness, tasks: usize) {
 
 /// The status of the task `seq`.
 fn task_status(h: &Harness, seq: i64) -> String {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row("SELECT status FROM tasks WHERE seq = ?1", [seq], |r| {
@@ -404,7 +404,7 @@ fn task_status(h: &Harness, seq: i64) -> String {
 }
 
 fn live_attempts(h: &Harness) -> i64 {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
@@ -427,7 +427,7 @@ struct TaskOutcome {
 }
 
 fn outcomes(h: &Harness) -> Vec<TaskOutcome> {
-    let store = Store::open(&db(h)).unwrap();
+    let store = Store::open_read_only(&db(h)).unwrap();
     let conn = store.conn();
     let mut tasks = conn
         .prepare("SELECT task_id, seq, status, attempts FROM tasks ORDER BY seq")
@@ -538,7 +538,7 @@ fn plan_done() -> Vec<TaskOutcome> {
 type CursorRow = (Option<String>, String, Option<String>);
 
 fn cursor(h: &Harness, kind: &str) -> Option<CursorRow> {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
@@ -785,7 +785,7 @@ fn rr4_file_request_and_job_events_wake_pass_before_period() {
     let mut fleetds = Fleetds::new(&h);
     let pid = start_fleetd(&h, &mut fleetds, None);
     let (_w, seq) = bind(&h);
-    let (task, attempt): (String, String) = Store::open(&db(&h))
+    let (task, attempt): (String, String) = Store::open_read_only(&db(&h))
         .unwrap()
         .conn()
         .query_row(
@@ -876,7 +876,7 @@ fn lines(path: &Path) -> usize {
 
 /// The count of events that move `entity` `id` from `from` to `to`.
 fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64 {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
@@ -891,7 +891,7 @@ fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64
 /// The attempts of orchestrators: the respawns, which have no task
 /// (MAP.md, Q6).
 fn orchestrator_attempts(h: &Harness) -> Vec<String> {
-    let store = Store::open(&db(h)).unwrap();
+    let store = Store::open_read_only(&db(h)).unwrap();
     let mut stmt = store
         .conn()
         .prepare("SELECT id FROM attempts WHERE task_id IS NULL ORDER BY id")
