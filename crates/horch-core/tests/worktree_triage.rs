@@ -1,7 +1,3 @@
-//! `horch worktree triage apply` on a detached-HEAD worktree (L14): its
-//! ledger row records the branch `(detached)`, and `ARCHIVE` and `DELETE`
-//! use the commit id of HEAD, never the text `(detached)`, as a git ref.
-
 mod i308_support;
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
@@ -14,14 +10,12 @@ use horch_core::taskledger::triage::{self, reply, Measure, Row};
 use i308_support::{commit, git, World};
 use test_jobs::TestJobs;
 
-/// The branch text that custody records for a detached HEAD.
 const DETACHED: &str = "(detached)";
 
 fn rows(w: &World) -> Vec<Row> {
     triage::collect(w.store.conn(), &w.git, &w.root, Measure::Ids).unwrap()
 }
 
-/// Run `decision` on the row named `name`.
 fn decide(w: &mut World, name: &str, decision: &str) -> Applied {
     let rows = rows(w);
     let row = rows.iter().find(|r| r.name == name).unwrap();
@@ -57,9 +51,6 @@ fn column(w: &World, path: &Path, col: &str) -> Option<String> {
         .unwrap()
 }
 
-/// A worktree `.worktrees/det` with a detached HEAD at the tip of the
-/// branch `keep`, which reaches it (RR-17), and a ledger row whose branch
-/// is `(detached)`. Returns the folder and its HEAD commit id.
 fn detached(w: &mut World) -> (PathBuf, String) {
     git(&w.root, &["branch", "keep"]);
     let path = w.root.join(".worktrees").join("det");
@@ -76,7 +67,6 @@ fn detached(w: &mut World) -> (PathBuf, String) {
     );
     let tip = commit(&path, "d.txt", "detached work\n");
     git(&w.root, &["branch", "-f", "keep", &tip]);
-    // KEEP gives the folder its ledger row; custody records `(detached)`.
     let a = decide(w, "det", "KEEP");
     assert!(a.ok, "{}", a.line());
     w.store

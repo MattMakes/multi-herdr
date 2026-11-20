@@ -147,8 +147,6 @@ fn canonical(p: &str) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
 }
 
-/// Whether a recorded branch names no branch: it is empty, or it is the
-/// text that custody records for a detached HEAD (L14).
 fn has_no_branch(branch: &str) -> bool {
     branch.is_empty() || branch == custody_git::DETACHED
 }
