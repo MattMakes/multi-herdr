@@ -15,8 +15,7 @@
 //! 2. It parses the line. A line over the limit, or a line that does not
 //!    parse, has no `request_id` that fleetd can trust, so fleetd records
 //!    no row and replies `{"state": "refused", "reason"}` with no
-//!    `request_id`. After the reply to a line over the limit, it drops the
-//!    unread bytes of the client before it closes (see [`drain_input`]).
+//!    `request_id`.
 //! 3. It collects the facts: the peer user (SR-5), the token (SR-8) and the
 //!    fleet process fact of the peer process (`fleet_process`, SR-8, FR-10),
 //!    and decides with [`authorize`].
@@ -79,8 +78,6 @@ const WAKE_POLL: Duration = Duration::from_millis(10);
 
 const STOP_MARGIN: Duration = Duration::from_secs(5);
 
-/// The time with no byte from the client after which the drain of an
-/// over-limit line ends.
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 
 /// The channel of the fleet at `fleet_root`.
@@ -469,11 +466,9 @@ fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
     let _ = writer.flush();
 }
 
-/// Read and drop the bytes of the client that the server did not read, until
-/// `DRAIN_QUIET` with no byte, the end of the stream, or `timeout`. A close
-/// of a Unix socket with unread bytes makes the next read of the client fail
-/// with `ECONNRESET` on Linux, after the reply, so the client must not see
-/// that close before it has read the reply.
+/// A close of a Unix socket with unread bytes makes the next read of the
+/// client fail with `ECONNRESET` on Linux, after the reply, so the client must
+/// not see that close before it has read the reply.
 fn drain_input(stream: &Stream, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     let mut chunk = [0u8; 4096];
