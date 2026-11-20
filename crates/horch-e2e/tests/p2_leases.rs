@@ -505,7 +505,10 @@ impl Fleet {
         agent.kill();
         let mut log = self.pass();
         wait_for("the rescue of the tree of the failed attempt", || {
-            let orphaned = self.number("SELECT COUNT(*) FROM worktrees WHERE state = 'orphaned'");
+            let orphaned = self.number(
+                "SELECT COUNT(*) FROM worktrees
+                 WHERE state IN ('reserved', 'created', 'active', 'orphaned')",
+            );
             if orphaned == 0 {
                 return Some(());
             }
