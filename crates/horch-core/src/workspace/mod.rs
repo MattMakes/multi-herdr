@@ -3,6 +3,7 @@
 pub mod arrange;
 pub mod balance;
 pub mod client;
+pub(crate) mod exec;
 pub mod herdr;
 pub mod host;
 pub mod layout;
@@ -16,7 +17,7 @@ pub use host::{Caps, PaneHost};
 
 #[cfg(test)]
 mod tests {
-    const FORBIDDEN: [&str; 9] = [
+    const FORBIDDEN: [&str; 8] = [
         "std::process",
         "Command::new",
         "Herdr",
@@ -24,7 +25,6 @@ mod tests {
         "WorkspaceClient",
         "crate::workspace::herdr",
         "crate::workspace::host",
-        "crate::workspace::herdr",
         "std::env",
     ];
 
