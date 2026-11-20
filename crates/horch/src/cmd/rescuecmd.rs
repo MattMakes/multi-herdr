@@ -146,6 +146,10 @@ fn files_of(git: &CliWorktreeGit, repo: &Path, tip: &str) -> Result<Vec<String>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::fleetd::fleet_runtime::adapters::token_file;
+    use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
     use horch_core::runtime::MapEnv;
     use horch_core::taskledger::runs::{self, NewRun};
     use horch_core::taskledger::workers::NewWorker;
@@ -219,6 +223,28 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// An in-process fleetd on the fleet root of `w`: the channel server
+    /// with only a `rescue_drop` handler, and the `fleetd` row of this
+    /// process, so the channel client accepts it. A test holds the server
+    /// after `w`, so that the server drops first.
+    fn serve_rescue_drop(w: &World) -> ChannelServer {
+        let ctx = w.ctx(&[]);
+        let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
+            rusqlite::params![pid, start as i64, horch_core::taskledger::util::now()],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&ctx.paths.fleet_root).unwrap();
+        token_file::ensure(&ctx.paths.fleet_root).unwrap();
+        let mut handlers = Handlers::new();
+        handlers.insert(Kind::RescueDrop, |_tx, _payload| Ok(json!({})));
+        ChannelServer::start(&ctx.paths.fleet_root, conn, Generation(1), handlers).unwrap()
+    }
+
     impl World {
         /// A context in the project, with the temp ledger and state, and
         /// the environment `extra`.
@@ -286,6 +312,7 @@ mod tests {
     #[test]
     fn drop_deletes_the_ref_and_verifies_it() {
         let w = world();
+        let _fleetd = serve_rescue_drop(&w);
         let (name, tip) = w.unique_ref("b.txt");
         let line = drop_ref(&w.ctx(&[]), &w.project, &name).unwrap();
         assert_eq!(
@@ -310,6 +337,7 @@ mod tests {
     #[test]
     fn worker_caller_is_refused() {
         let w = world();
+        let _fleetd = serve_rescue_drop(&w);
         let (name, tip) = w.unique_ref("b.txt");
         let worker = w.worker(WorkerKind::Worker, "p_7");
         // By HORCH_WORKER_ID.

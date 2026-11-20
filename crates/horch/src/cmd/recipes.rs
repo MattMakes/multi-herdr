@@ -954,12 +954,13 @@ mod tests {
         assert!(text.lines().any(|l| l == "HORCH_WORKSPACE_ID=w0"), "{text}");
     }
 
-    /// TRF-43: the worktree steward's work is a one-off ledger task, and its
-    /// spawn carries no task text, so it claims that task. TRF-34: the spawn
-    /// names the solo run that holds the task.
+    /// TRF-43: the spawn of the worktree steward carries no task text.
+    /// TRF-34: it names the solo run that holds the steward task. Phase 6
+    /// retired `horch ledger task` (FR-12), so [`steward_task`] still names
+    /// the work, `queue_one_off` refuses it with the line of the new command,
+    /// and `start_worktree_steward` prints that line as a warning.
     #[test]
-    fn trf_43_the_steward_task_is_queued_and_its_spawn_has_no_task_text() {
-        use horch_core::taskledger::{runs, tasks, Store};
+    fn trf_43_the_steward_spawn_has_no_task_text_and_its_queue_is_retired() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
@@ -969,23 +970,19 @@ mod tests {
         let mut ctx = RuntimeContext::from_env(&env).unwrap();
         ctx.paths.ledger_db = dir.path().join("ledger.sqlite3");
 
-        let run = super::super::taskledger::queue_one_off(&ctx, steward_task(3).unwrap()).unwrap();
+        let task = steward_task(3).unwrap();
+        let err = super::super::taskledger::queue_one_off(&ctx, task).unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("horch ledger task is retired. Add a ticket that you wrote: horch idea add --direct"),
+            "{err:#}"
+        );
+        assert!(!ctx.paths.ledger_db.exists(), "the refusal wrote a ledger");
 
-        let store = Store::open(&ctx.paths.ledger_db).unwrap();
-        let all = runs::of_project(store.conn(), &root.canonicalize().unwrap()).unwrap();
-        assert_eq!(all.len(), 1, "{all:?}");
-        assert_eq!(all[0].workspace_id.as_deref(), Some("w7"));
-        let queued = tasks::of_run(store.conn(), &all[0].run_id).unwrap();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].title, "parked worktrees: 3");
-        assert_eq!(queued[0].claimable_by.as_deref(), Some(WORKTREE_STEWARD));
-        assert_eq!(queued[0].status, "ready");
-        assert_eq!(run.run_id, all[0].run_id);
-
-        let args = steward_spawn_args("w7:p1", &run.slug);
+        let args = steward_spawn_args("w7:p1", "solo-w7");
         assert_eq!(args.run.as_deref(), Some("solo-w7"));
         assert_eq!(args.teammate.as_deref(), Some(WORKTREE_STEWARD));
         assert_eq!(args.from_pane.as_deref(), Some("w7:p1"));
+        assert!(args.task.is_empty(), "{:?}", args.task);
     }
 
     #[test]

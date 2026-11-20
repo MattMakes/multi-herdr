@@ -397,6 +397,12 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
+                horch_core::taskledger::schema::run_idea(
+                    tx,
+                    &run.run_id,
+                    &horch_core::taskledger::util::now(),
+                    true,
+                )?;
                 let task = tasks::add(
                     tx,
                     &run,
