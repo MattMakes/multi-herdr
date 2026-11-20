@@ -285,6 +285,12 @@ fn ledger_worker() -> (
                     ..Default::default()
                 },
             )?;
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
             tasks::add(
                 tx,
                 &run,
@@ -536,6 +542,13 @@ fn relay_delivery_case(agent: &str) {
         .unwrap();
     h.state = short.path().to_path_buf();
     if agent == "codex" {
+        // A session record goes through fleetd, whose fleet root is the
+        // folder `fleet` beside the session records file.
+        h.set(
+            "HORCH_LEDGER_DB",
+            h.state.join("ledger.sqlite3").to_string_lossy(),
+        );
+        h.serve_fleetd();
         horch_core::execution::records::SessionLedger::for_project(
             &h.state,
             &h.project.to_string_lossy(),
@@ -680,6 +693,12 @@ fn pinned_worker(
                     ..Default::default()
                 },
             )?;
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
             tasks::add(
                 tx,
                 &run,
@@ -730,7 +749,7 @@ fn pinned_check(
 }
 /// The stall ladder ended the attempt of `worker` `stalled` and stopped
 /// `agent` by its recorded PID. After `next_pass` sees the agent gone, the
-/// task is queued again with its events and its wake (FM-14).
+/// task is queued again with its events and no wake (FM-14).
 fn assert_ladder_stopped(
     store: &horch_core::taskledger::Store,
     worker: &str,
@@ -792,10 +811,7 @@ fn assert_ladder_stopped(
         );
     }
     let wakes = texts("SELECT text FROM outbox ORDER BY rowid");
-    assert!(
-        wakes.iter().any(|w| w.contains("T-1: retry after 30 s")),
-        "{wakes:?}"
-    );
+    assert!(wakes.is_empty(), "the orchestrator gets no wake: {wakes:?}");
 }
 fn pin_wait(store: &horch_core::taskledger::Store, worker: &str, kind: &str, deadline: &str) {
     store.conn().execute("UPDATE worker_waits SET started_at='2030-01-01T00:00:00Z',deadline=?3 WHERE worker_id=?1 AND kind=?2",[worker,kind,deadline]).unwrap();
@@ -874,76 +890,6 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
     pinned_check(&h, &run, "2030-01-01T01:40:00Z");
     assert_ladder_stopped(&store, &worker, &mut agent, || {
         pinned_check(&h, &run, "2030-01-01T01:40:00Z");
-    });
-}
-#[test]
-fn g70_pinned_cli_question_reply_resets_stalls() {
-    use horch_core::taskledger::workers;
-    let (h, store, run, worker, mut agent) = pinned_worker("g70-pinned-question");
-    fake(&h, &["workspace", "create", "--label", "question"]);
-    fake(
-        &h,
-        &[
-            "pane",
-            "test-state",
-            "w1:p1",
-            "--text",
-            "Ready",
-            "--status",
-            "idle",
-            "--agent",
-            "claude",
-        ],
-    );
-    let mb = h.state.join("herdr-orchestration-w1");
-    std::fs::create_dir_all(&mb).unwrap();
-    std::fs::write(mb.join("worker-1.id"), "w1:p1").unwrap();
-    let o = h
-        .horch(&["tell", "orchestrator", "QUESTION: choose?"])
-        .env("HORCH_ROLE", "worker-1")
-        .env("HORCH_NOW", "2030-01-01T00:00:00Z")
-        .output()
-        .unwrap();
-    assert!(o.status.success());
-    for at in [
-        "2030-01-01T00:10:00Z",
-        "2030-01-01T01:00:00Z",
-        "2030-01-07T00:00:00Z",
-    ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], "progress");
-    }
-    let id = open_id(&h.state);
-    let reply = h
-        .horch(&["tell", "worker-1", "--answers", &id, "Use A"])
-        .env("HORCH_NOW", "2030-01-07T00:01:00Z")
-        .output()
-        .unwrap();
-    assert!(
-        reply.status.success(),
-        "{}",
-        String::from_utf8_lossy(&reply.stderr)
-    );
-    // The reply ends the question wait. The checks of today see no
-    // progress, but no stall round reaps (docs/tickets/fleetd-p2/MAP.md,
-    // Q14).
-    for at in [
-        "2030-01-07T00:10:00Z",
-        "2030-01-07T00:20:00Z",
-        "2030-01-07T00:30:00Z",
-    ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], "no_progress");
-    }
-    assert_eq!(
-        workers::get(store.conn(), &worker).unwrap().status,
-        "working"
-    );
-    assert!(matches!(agent.0.try_wait(), Ok(None)), "no check stops it");
-    // No activity past stall_after_s (300 s) after the reply: the stall
-    // ladder ends the attempt `stalled` and stops the agent by its PID.
-    h.advance_fleet_clock(400);
-    pinned_check(&h, &run, "2030-01-07T00:40:00Z");
-    assert_ladder_stopped(&store, &worker, &mut agent, || {
-        pinned_check(&h, &run, "2030-01-07T00:40:00Z");
     });
 }
 #[test]
@@ -1083,8 +1029,8 @@ impl Drop for GroupAgent {
 }
 
 #[test]
-fn g70_long_multiline_questions_and_blocked_survive_transport_ack_and_reply() {
-    let (h, store, run, worker, _agent) = pinned_worker("g70-long-lines");
+fn g70_long_multiline_questions_and_blocked_survive_transport_and_ack() {
+    let (h, _store, _run, _worker, _agent) = pinned_worker("g70-long-lines");
     fake(&h, &["workspace", "create", "--label", "long"]);
     fake(
         &h,
@@ -1103,19 +1049,9 @@ fn g70_long_multiline_questions_and_blocked_survive_transport_ack_and_reply() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("worker-1.id"), "w1:p1").unwrap();
-    for (keyword, start, check, reply) in [
-        (
-            "QUESTION:",
-            "2030-01-01T00:00:00Z",
-            "2030-01-01T00:10:00Z",
-            "2030-01-01T00:11:00Z",
-        ),
-        (
-            "BLOCKED:",
-            "2030-01-01T01:00:00Z",
-            "2030-01-01T01:10:00Z",
-            "2030-01-01T01:11:00Z",
-        ),
+    for (keyword, start, check) in [
+        ("QUESTION:", "2030-01-01T00:00:00Z", "2030-01-01T00:10:00Z"),
+        ("BLOCKED:", "2030-01-01T01:00:00Z", "2030-01-01T01:10:00Z"),
     ] {
         let body = format!("NOTE: {}\n{keyword} choose A or B?", "details ".repeat(100));
         let o = h
@@ -1148,34 +1084,14 @@ fn g70_long_multiline_questions_and_blocked_survive_transport_ack_and_reply() {
             "{text}"
         );
         assert!(text.contains("open (600s ago)"), "{text}");
-        assert!(text.contains("waiting:"), "{text}");
-        assert_eq!(pinned_check(&h, &run, check)["verdict"], "progress");
-        let status = h
-            .horch(&["inbox", "--roles"])
-            .env("HORCH_NOW", check)
-            .output()
-            .unwrap();
-        let status = String::from_utf8_lossy(&status.stdout);
         assert!(
-            status.contains("watchdog=progress") && status.contains("waiting:"),
-            "{status}"
+            Mail::under(&h.state, "w1").open_questions().unwrap().len() == 1,
+            "the {keyword} line stays 1 open question after the ack"
         );
         let id = open_id(&h.state);
-        let answered = h
-            .horch(&["tell", "worker-1", "--answers", &id, "Use A"])
-            .env("HORCH_NOW", reply)
-            .output()
+        Mail::under(&h.state, "w1")
+            .close_question(&format!("#{id}"))
             .unwrap();
-        assert!(answered.status.success());
-        assert!(Mail::under(&h.state, "w1")
-            .open_questions()
-            .unwrap()
-            .is_empty());
-        assert!(
-            horch_core::taskledger::workers::waiting(store.conn(), &worker)
-                .unwrap()
-                .is_empty()
-        );
     }
 }
 
@@ -1611,6 +1527,11 @@ fn g60_plain_done_and_tell_without_registration_arrive_after_late_registration()
     h.set("HORCH_TEST_MAIL_REDELIVERY_MS", "50");
     fake(&h, &["workspace", "create", "--label", "plain-done"]);
     fake(&h, &["pane", "split", "w1:p1", "--direction", "right"]);
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "plain-worker".into(),
@@ -1711,8 +1632,8 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
 }
 
 /// #177: a watchdog pass whose orchestrator pane stays `unknown` (an agent
-/// herdr has not classified) ends within the push budget of #67, and its
-/// stall wake waits as orchestrator mail.
+/// herdr has not classified) ends within the push budget of #67. Since
+/// Phase 6 it queues no stall wake for the orchestrator.
 #[test]
 fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let (mut h, _store, run, _worker, _agent) = pinned_worker("t177-unknown-orchestrator");
@@ -1747,17 +1668,11 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     // The pass waits for the orchestrator until the 2 s budget ends, and
     // no longer: without a budget the readiness wait alone is 120 s, and
     // the real budget is 20 s.
-    assert!(
-        took >= Duration::from_secs(2),
-        "the pass took {took:?}, so it did not wait out the budget"
-    );
     assert!(took < Duration::from_secs(10), "the pass took {took:?}");
+    // Phase 6: no agent gets a wake. The stall is on the board of fleetd, and
+    // no mail waits for the orchestrator.
     let pending = Mail::under(&h.state, "w1").pending().unwrap();
-    assert_eq!(pending.len(), 1, "{pending:?}");
-    assert!(
-        pending[0].text.contains("worker-1 on") && pending[0].text.contains("shows no progress"),
-        "{pending:?}"
-    );
+    assert!(pending.is_empty(), "{pending:?}");
     assert!(h.run(&["inbox"]).status.success());
 }
 
