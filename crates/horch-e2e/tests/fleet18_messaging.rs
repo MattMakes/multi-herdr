@@ -542,8 +542,6 @@ fn relay_delivery_case(agent: &str) {
         .unwrap();
     h.state = short.path().to_path_buf();
     if agent == "codex" {
-        // A session record goes through fleetd, whose fleet root is the
-        // folder `fleet` beside the session records file.
         h.set(
             "HORCH_LEDGER_DB",
             h.state.join("ledger.sqlite3").to_string_lossy(),
@@ -747,9 +745,6 @@ fn pinned_check(
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()[0].clone()
 }
-/// The stall ladder ended the attempt of `worker` `stalled` and stopped
-/// `agent` by its recorded PID. After `next_pass` sees the agent gone, the
-/// task is queued again with its events and no wake (FM-14).
 fn assert_ladder_stopped(
     store: &horch_core::taskledger::Store,
     worker: &str,
@@ -1631,9 +1626,6 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
     });
 }
 
-/// #177: a watchdog pass whose orchestrator pane stays `unknown` (an agent
-/// herdr has not classified) ends within the push budget of #67. Since
-/// Phase 6 it queues no stall wake for the orchestrator.
 #[test]
 fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let (mut h, _store, run, _worker, _agent) = pinned_worker("t177-unknown-orchestrator");
@@ -1665,12 +1657,7 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let took = began.elapsed();
 
     assert_eq!(c["verdict"], "no_progress", "{c}");
-    // The pass waits for the orchestrator until the 2 s budget ends, and
-    // no longer: without a budget the readiness wait alone is 120 s, and
-    // the real budget is 20 s.
     assert!(took < Duration::from_secs(10), "the pass took {took:?}");
-    // Phase 6: no agent gets a wake. The stall is on the board of fleetd, and
-    // no mail waits for the orchestrator.
     let pending = Mail::under(&h.state, "w1").pending().unwrap();
     assert!(pending.is_empty(), "{pending:?}");
     assert!(h.run(&["inbox"]).status.success());

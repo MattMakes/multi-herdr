@@ -976,9 +976,6 @@ mod phase4 {
         task_id: String,
         task_yaml: std::path::PathBuf,
         worktree: std::path::PathBuf,
-        /// The stand-in wrapper of the worker: a shell that runs each fake
-        /// as its child, so `horch result` finds the attempt by its parent
-        /// chain. It reads 1 command line for each launch.
         wrapper: std::process::Child,
         launches: usize,
     }
@@ -990,7 +987,6 @@ mod phase4 {
         }
     }
 
-    /// `'text'` for a POSIX shell.
     fn quoted(text: &std::ffi::OsStr) -> String {
         format!("'{}'", text.to_string_lossy().replace('\'', "'\\''"))
     }
@@ -1042,7 +1038,6 @@ mod phase4 {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        // fleetd makes the tree of the bound task; its job ends first.
         let (worktree, branch): (String, String) =
             horch_e2e::harness::wait_for("the worktree of the bound task", || {
                 let row: (String, String, String) = conn
@@ -1109,8 +1104,6 @@ mod phase4 {
             o
         }
 
-        /// Run `cmd` in the worktree as a child of the wrapper: the same
-        /// environment as `cmd`, and its output and status read back.
         fn run_in_wrapper(&mut self, cmd: &Command) -> Output {
             use std::io::Write as _;
             use std::os::unix::process::ExitStatusExt as _;

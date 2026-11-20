@@ -94,8 +94,6 @@ fn worker_ok(h: &Harness, w: &str, args: &[&str]) -> String {
 fn ledger_world(name: &str) -> (Harness, String) {
     ledger_world_with(name, |_| None)
 }
-/// [`ledger_world`], with the attempt of the task bound to the process
-/// pid `wrapper` makes (a stand-in for the wrapper of a worker).
 fn ledger_world_with(
     name: &str,
     wrapper: impl FnOnce(&Harness) -> Option<u32>,
@@ -127,9 +125,6 @@ fn git(h: &Harness, dir: &std::path::Path, args: &[&str]) -> String {
     assert!(o.status.success(), "{o:?}");
     String::from_utf8_lossy(&o.stdout).trim().into()
 }
-/// The worktree that fleetd made for the task of worker `w`: its folder
-/// exists and fleetd saw the end of its `worktree_add` job (the custody
-/// state is no longer `reserved`).
 fn task_tree(h: &Harness, w: &str) -> horch_core::taskledger::finish::WorktreeRow {
     let store = horch_core::taskledger::store::Store::open(&h.ledger_db()).unwrap();
     let task = horch_core::taskledger::workers::get(store.conn(), w)
@@ -152,7 +147,6 @@ fn task_tree(h: &Harness, w: &str) -> horch_core::taskledger::finish::WorktreeRo
             .then_some(tree)
     })
 }
-/// Every `result.json` under `dir`.
 fn result_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -255,8 +249,6 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
             "--keep-branch",
         ],
     );
-    // fleetd removes a dropped tree only through custody: it puts the work
-    // on a verified rescue ref first, so the unpublished commit is kept.
     let rescue_ref = horch_e2e::harness::wait_for("the rescue of the dropped tree", || {
         let conn = rusqlite::Connection::open(h.ledger_db()).unwrap();
         let (state, rescue_ref): (String, Option<String>) = conn
@@ -396,9 +388,6 @@ fn g56_later_spawn_receives_recorded_fact() {
 }
 #[test]
 fn g69_open_scratch_does_not_block_finish_or_done() {
-    // The stand-in wrapper of the worker: it runs `horch ledger finish` as
-    // its child once the test writes a line, so the command finds its
-    // attempt by its parent chain, as the real worker does.
     let mut wrapper = None;
     let (h, w) = ledger_world_with("g69-scratch-done", |h| {
         let mut sh = std::process::Command::new("/bin/sh");
@@ -423,8 +412,6 @@ fn g69_open_scratch_does_not_block_finish_or_done() {
     use std::io::Write as _;
     writeln!(wrapper.stdin.take().unwrap()).unwrap();
     assert!(wrapper.wait().unwrap().success());
-    // fleetd reads this result when the wrapper of the attempt ends, then
-    // runs the finish steps; the open scratch tree must not block it.
     let result = horch_e2e::harness::wait_for("result.json of the attempt", || {
         result_files(&h.fleet_root().join("tasks")).pop()
     });

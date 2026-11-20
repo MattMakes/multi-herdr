@@ -199,9 +199,6 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(worker_pane_closed(&h), "the worker pane closes");
 }
 
-/// The stand-in wrapper of a worker: a shell that runs each command as its
-/// child, since Phase 6 finds the attempt of `horch ledger done` by its
-/// parent chain, not by the environment.
 struct Wrapper {
     sh: std::process::Child,
     runs: usize,
@@ -214,7 +211,6 @@ impl Drop for Wrapper {
     }
 }
 
-/// `'text'` for a POSIX shell.
 fn quoted(text: &std::ffi::OsStr) -> String {
     format!("'{}'", text.to_string_lossy().replace('\'', "'\\''"))
 }
@@ -229,8 +225,6 @@ impl Wrapper {
         Wrapper { sh, runs: 0 }
     }
 
-    /// Run `cmd` with its environment as a child of the wrapper, and read
-    /// its output and status back.
     fn run(&mut self, h: &Harness, cmd: &Command) -> Output {
         use std::io::Write as _;
         use std::os::unix::process::ExitStatusExt as _;
@@ -267,8 +261,6 @@ impl Wrapper {
     }
 }
 
-/// A task-ledger run of 1 task that the test binds to a worker whose
-/// wrapper is a [`Wrapper`] of the test.
 fn bound_task(h: &Harness) -> Wrapper {
     let run = horch_e2e::ledger_seed::seed_run(h, "alpha", None, ORCHESTRATOR);
     let ticket = h.project.join("01-a.md");
@@ -280,7 +272,6 @@ fn bound_task(h: &Harness) -> Wrapper {
     horch_e2e::ledger_seed::seed_task(h, &run, &ticket, "opus");
     let wrapper = Wrapper::start();
     let bound = horch_e2e::bind::bind(h, "opus", Some(wrapper.sh.id()));
-    // fleetd makes the folder of the attempt when it launches it.
     std::fs::create_dir_all(
         h.fleet_root()
             .join("tasks")
@@ -292,7 +283,6 @@ fn bound_task(h: &Harness) -> Wrapper {
     wrapper
 }
 
-/// Every `result.json` of the attempts of the fleet root of `h`.
 fn results(h: &Harness) -> Vec<PathBuf> {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -309,11 +299,6 @@ fn results(h: &Harness) -> Vec<PathBuf> {
     out
 }
 
-/// Acceptance 2, as Phase 6 has it: `horch ledger done` writes the result
-/// of its attempt and returns at once. It pushes no wake and no report to
-/// the orchestrator, so a stuck orchestrator cannot hold it; fleetd runs
-/// the finish steps and reports the result. The retired rule: `ledger done`
-/// pushed its wake and its report, in under 30 s in total.
 #[test]
 fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     let mut h = world("ldone-stuck");
@@ -338,10 +323,6 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(pending(&h).is_empty(), "{:?}", pending(&h));
 }
 
-/// #67, as Phase 6 has it: a second `horch ledger done` of the same
-/// attempt, such as a retry after a kill, is refused: the result is written
-/// 1 time, and no report is queued. The retired rule: a `ledger done` killed during its wake push had
-/// recorded the report, and the retry queued no second report.
 #[test]
 fn ledger_done_killed_during_the_wake_push_has_recorded_the_report() {
     let h = world("ldone-kill");
