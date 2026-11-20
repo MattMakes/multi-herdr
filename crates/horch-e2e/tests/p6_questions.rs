@@ -1,26 +1,6 @@
 //! The e2e tests of questions, replans and the needs-you list
 //! (`docs/specs/fleetd/design.md`: RR-12, OR-3, FM-21, FM-35;
 //! `docs/tickets/fleetd-p6/60-e2e-questions.md`).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. `horch idea add --direct` adds 1 ticket, so the idea `I-0001` has
-//! its folder, its feature and 1 planned task, which fleetd dispatches to
-//! the fake claude.
-//!
-//! - A question comes from a real ask: the fake worker runs `horch tell
-//!   orchestrator "QUESTION: ..."` (key `ask`). The sub-orchestrator of the
-//!   feature is the fake idea-lead; key `answer_own` answers the oldest open
-//!   question of the feature. When a test plays the sub-orchestrator, it
-//!   runs the same `horch idea note --question` in the idea folder.
-//! - A task fails when each attempt ends with no result: the fake exits.
-//!
-//! No test reads the load, the limits or the clock of this machine: the
-//! harness gives the machine facts through `HORCH_MACHINE_FILE`, the test
-//! `fleet.toml` gives the keys, and the test moves the fleet clock in place
-//! of a wait for it, at most 1 time for each pass of fleetd. Each wait is
-//! for an event of the ledger, never for a time. `HORCH_TEST_DOCS_FIXTURE`
-//! keeps the docs sync off the network.
 
 #![cfg(unix)]
 
@@ -30,6 +10,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use horch_core::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
 use horch_core::fleetd::ideas::application::question_flow::NEEDS_YOU_KIND as QUESTION_KIND;
 use horch_core::fleetd::task_execution::application::planned_tasks;
 use horch_core::taskledger::tasks::TASK_ESCALATED;
@@ -38,10 +19,8 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The ticket of each test: 1 task of the code kind for the fake claude.
 const TICKET: &str = "# 01: Write the queue guide\n\n\
 <!-- horch-ticket: 1 -->\n\
 **Persona:** primary `opus` · **Parallel:** yes\n\
@@ -51,31 +30,17 @@ const TICKET: &str = "# 01: Write the queue guide\n\n\
 **Own:** `fake-claude.txt`\n\n\
 ## Goal\n\nThe guide names the queue length.\n";
 
-/// The idea of `horch idea add --direct` in each test.
 const IDEA: &str = "I-0001";
 
-/// `question_limit_s` of the design: 15 min with no answer from a running
-/// owner.
 const QUESTION_LIMIT_S: i64 = 900;
 
-/// The move of the fleet clock in 1 pass after a task is escalated, to
-/// show that no attempt starts: more than the lease of an attempt (120 s)
-/// and than each backoff of rung 6 (30 s, 120 s), less than
-/// `replan_limit_s`.
 const STEP_S: i64 = 500;
 
-/// The move of the fleet clock in 1 pass of [`World::drive`]: less than
-/// the start timeout of a launch (90 s), with a margin for the real time
-/// of a launch. fleetd can start a launch between the check of `drive`
-/// and its move, and a move of [`STEP_S`] then ends that launch
-/// `timed_out`.
 const DRIVE_STEP_S: i64 = 60;
+const _: () = assert!(DRIVE_STEP_S < START_TIMEOUT_S);
 
-/// The most attempts of a task that [`World::drive`] waits through.
 const MAX_ATTEMPTS_SEEN: usize = 20;
 
-/// The passes that a test watches after an event, to see that nothing more
-/// comes.
 const QUIET_PASSES: usize = 3;
 
 fn text(o: &Output) -> String {
@@ -87,36 +52,26 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// SQL text of `s`, in single quotes.
 fn quoted(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// A fleet with a test fleetd and 1 `--direct` idea.
 struct World {
     h: Harness,
-    /// The last pass that moved the fleet clock: `fleetd.clock_ticked_at`.
     moved_at: RefCell<Option<String>>,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
         World::build(name, scenario, false)
     }
 
-    /// As [`World::new`], and each sub-orchestrator process answers the
-    /// question that [`World::answer_as_owner`] names, from inside its own
-    /// attempt.
     fn with_answering_owner(name: &str, scenario: &str) -> World {
         World::build(name, scenario, true)
     }
 
     fn build(name: &str, scenario: &str, answering_owner: bool) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger and the fleet root are outside the state folder, so the
-        // test can move the fleet clock of `<root>/ledger.sqlite3`. The
-        // launch gives each pane the ledger and the fleet root.
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -134,7 +89,6 @@ impl World {
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
         if answering_owner {
             let folder = fleet.join("ideas").join(IDEA);
@@ -147,7 +101,6 @@ impl World {
             h,
             moved_at: RefCell::new(None),
         };
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             w.h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -171,7 +124,6 @@ impl World {
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
 
-    /// The folder of the idea [`IDEA`].
     fn idea_folder(&self) -> PathBuf {
         self.h.fleet_root().join("ideas").join(IDEA)
     }
@@ -180,7 +132,6 @@ impl World {
         Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
     }
 
-    /// Rows of 1 column of the ledger, as text.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -196,12 +147,10 @@ impl World {
             .collect()
     }
 
-    /// The first row of [`World::rows`].
     fn one(&self, sql: &str) -> Option<String> {
         self.rows(sql).into_iter().next()
     }
 
-    /// The 1 planned task of the idea.
     fn task(&self) -> String {
         self.wait("the planned task of the idea", || {
             self.one(&format!(
@@ -226,8 +175,6 @@ impl World {
         ))
     }
 
-    /// The key of the task in the committed plan of its idea: the name of
-    /// its replan file.
     fn plan_key(&self, task: &str) -> String {
         let committed = planned_tasks::committed_task(&self.conn(), task)
             .unwrap()
@@ -239,12 +186,10 @@ impl World {
             .to_string()
     }
 
-    /// The mark of the last pass of fleetd.
     fn pass_mark(&self) -> Option<String> {
         self.one("SELECT clock_ticked_at FROM fleetd WHERE id = 1")
     }
 
-    /// Wait until fleetd ran `n` more passes.
     fn passes(&self, n: usize) {
         for _ in 0..n {
             let before = self.pass_mark();
@@ -254,7 +199,6 @@ impl World {
         }
     }
 
-    /// Move the fleet clock by `seconds`, at most 1 time for each pass.
     fn step_clock(&self, seconds: i64) {
         let mark = self.pass_mark();
         if mark.is_some() && *self.moved_at.borrow() != mark {
@@ -263,12 +207,6 @@ impl World {
         }
     }
 
-    /// Wait for `f`, and move the fleet clock by [`DRIVE_STEP_S`] in each pass
-    /// until `f` gives a value. The clock moves only while no attempt of a
-    /// task is in `launching`: the move stands in for the lease of a silent
-    /// attempt and for the backoff, never for the time of a launch. Each
-    /// new attempt of a task starts the time limit of the wait again, so a
-    /// slow host only makes the chain of attempts slower.
     fn drive<T>(&self, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
         let count = || {
             self.rows("SELECT id FROM attempts WHERE task_id IS NOT NULL")
@@ -301,8 +239,6 @@ impl World {
         );
     }
 
-    /// The sub-orchestrator attempts of the supervising phase, oldest
-    /// first: (id, state, pid).
     fn owners(&self) -> Vec<(String, String, Option<i64>)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -317,14 +253,12 @@ impl World {
             .collect()
     }
 
-    /// The live sub-orchestrator with its process: (attempt, pid).
     fn live_owner(&self) -> Option<(String, i64)> {
         self.owners()
             .into_iter()
             .find_map(|(id, state, pid)| (state == "live").then_some((id, pid?)))
     }
 
-    /// The attempts that a `doorbell` event rang for the question `q`.
     fn rung_for(&self, q: &str) -> Vec<String> {
         self.rows(&format!(
             "SELECT entity_id FROM events WHERE kind = 'doorbell' AND entity = 'attempt'
@@ -341,7 +275,6 @@ impl World {
         .unwrap_or_default()
     }
 
-    /// The 1 question of the worker of the task, from its real ask.
     fn asked(&self, task: &str) -> String {
         self.wait("the question of the worker", || {
             self.one(&format!(
@@ -351,7 +284,6 @@ impl World {
         })
     }
 
-    /// The rows of the needs-you item `key`: (state) for each row.
     fn items(&self, key: &str) -> Vec<String> {
         self.rows(&format!(
             "SELECT state FROM needs_you WHERE key = {}",
@@ -359,8 +291,6 @@ impl World {
         ))
     }
 
-    /// The files of `<fleet root>/needs-you/` of the items of kind `kind`
-    /// (the file name starts with `<kind>-`) whose text names `id`.
     fn needs_you_files(&self, kind: &str, id: &str) -> Vec<PathBuf> {
         let dir = self.h.fleet_root().join("needs-you");
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -381,7 +311,6 @@ impl World {
         out
     }
 
-    /// The keys of the "Needs you" list of `horch ideas --json`.
     fn board_keys(&self) -> Vec<String> {
         let o = self.h.run(&["ideas", "--json"]);
         assert!(o.status.success(), "horch ideas --json: {}", text(&o));
@@ -394,8 +323,6 @@ impl World {
             .collect()
     }
 
-    /// The herdr notifications of the needs-you list: each `blocked`
-    /// report on the pane `fleet-needs-you`.
     fn notifications(&self) -> usize {
         self.h
             .calls_of("herdr")
@@ -413,11 +340,6 @@ impl World {
             .count()
     }
 
-    /// The answer of the sub-orchestrator to the question `q`, case
-    /// `own_decision`: each live sub-orchestrator process of
-    /// [`World::with_answering_owner`] reads `q` from the file
-    /// [`OWNER_ANSWER`] and runs `horch idea note --question` itself, since
-    /// the outbox writer refuses a process outside a live attempt.
     fn answer_as_owner(&self, q: &str) {
         let file = self.h.root.join(OWNER_ANSWER);
         let tmp = file.with_extension("tmp");
@@ -425,9 +347,6 @@ impl World {
         std::fs::rename(&tmp, &file).unwrap();
     }
 
-    /// Drive the task to `escalated`: its attempts end with no result, the
-    /// task fails, the test writes its 1 replan as the sub-orchestrator,
-    /// and the task fails again. Each step asserts its fact on the way.
     fn escalate(&self, task: &str) {
         self.drive("the task fails after its attempts", || {
             (self.status(task) == "failed").then_some(())
@@ -445,11 +364,9 @@ impl World {
             self.context()
         );
 
-        // The sub-orchestrator replans the failed task 1 time: a retry.
         let key = self.plan_key(task);
         let folder = self.idea_folder();
         let tmp = folder.join(format!("replan-{key}.yaml.tmp"));
-        // A file of the sub-orchestrator has mode 0600 (SR-6).
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -467,8 +384,6 @@ impl World {
         });
         assert_eq!(verdict["valid"], true, "{verdict}");
 
-        // The retry starts the attempts again; the second failure is the
-        // end: escalated, and no second replan.
         self.drive("the task is escalated after its replan", || {
             (self.status(task) == "escalated").then_some(())
         });
@@ -482,7 +397,6 @@ impl World {
         );
     }
 
-    /// The count of the attempts of the task.
     fn attempts_of(&self, task: &str) -> usize {
         self.rows(&format!(
             "SELECT id FROM attempts WHERE task_id = {}",
@@ -491,7 +405,6 @@ impl World {
         .len()
     }
 
-    /// What a failed wait shows.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -580,27 +493,17 @@ impl World {
         )
     }
 
-    /// Wait for `f` to give a value, with [`World::context`] on a failure.
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
 }
 
-/// The file of the question that a sub-orchestrator of
-/// [`World::with_answering_owner`] answers, under the harness root.
 const OWNER_ANSWER: &str = "owner-answer";
 
 fn shell_word(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// A claude wrapper: a sub-orchestrator launch (its argument names the idea
-/// folder) starts a watcher, then each launch runs the fake claude. The
-/// watcher is a child of the launch, so the outbox writer finds its
-/// attempt. When the file `answer` holds a question id, the watcher answers
-/// it with `horch idea note --question` and exits. It also exits when its
-/// launch process is gone. The `PATH` of a pane has no `/bin`, so the
-/// watcher uses shell builtins and `/bin/sleep`.
 fn owner_wrapper(answer: &Path, folder: &Path) -> String {
     let horch = Harness::horch_bin();
     let fake = horch.with_file_name("fake-claude");
@@ -623,18 +526,14 @@ fn owner_wrapper(answer: &Path, folder: &Path) -> String {
     )
 }
 
-/// The key of the needs-you item of the escalated task `task`.
 fn escalated_key(task: &str) -> String {
     horch_core::taskledger::tasks::escalated_key(task)
 }
 
-/// The key of the needs-you item of the escalated question `q`.
 fn question_key(q: &str) -> String {
     horch_core::fleetd::ideas::application::question_flow::needs_you_key(q)
 }
 
-/// RR-12: a question whose owner is not running is answered after fleetd
-/// starts it.
 #[test]
 fn rr12_question_owner_is_started_and_answers() {
     let w = World::new("p6-q-started", "stay,ask,answer_own");
@@ -643,8 +542,6 @@ fn rr12_question_owner_is_started_and_answers() {
     w.wait("the answered question", || {
         (w.question_state(&q) == "answered").then_some(())
     });
-    // The owner is the sub-orchestrator of the feature, and fleetd started
-    // it for the question: it answered with its own decision.
     let feature = w
         .one(&format!(
             "SELECT feature_id FROM ideas WHERE id = {}",
@@ -673,16 +570,12 @@ fn rr12_question_owner_is_started_and_answers() {
         case.is_empty() || case == "own_decision",
         "the case of the answer: {case}"
     );
-    // The task waits no more for the answer.
     w.wait("the task leaves blocked_on_user", || {
         (w.status(&task) != "blocked_on_user").then_some(())
     });
     assert!(w.items(&question_key(&q)).is_empty(), "no needs-you item");
 }
 
-/// RR-12: an unanswered question reaches `needs-you/` at its limit, 15 min
-/// of the fleet clock with no answer from a running owner. The wait for you
-/// has no limit.
 #[test]
 fn rr12_unanswered_question_reaches_needs_you_at_its_limit() {
     let w = World::new("p6-q-limit", "stay,ask");
@@ -697,8 +590,6 @@ fn rr12_unanswered_question_reaches_needs_you_at_its_limit() {
     assert_eq!(w.question_state(&q), "open");
     assert!(w.items(&question_key(&q)).is_empty());
 
-    // The owner runs and does not answer: at the limit the question goes to
-    // you.
     w.h.advance_fleet_clock(QUESTION_LIMIT_S);
     w.wait("the escalated question", || {
         (w.question_state(&q) == "escalated").then_some(())
@@ -716,8 +607,6 @@ fn rr12_unanswered_question_reaches_needs_you_at_its_limit() {
         (w.notifications() > 0).then_some(())
     });
 
-    // The wait for you has no limit: 10 more limits of the fleet clock
-    // change nothing.
     for _ in 0..10 {
         w.passes(1);
         w.h.advance_fleet_clock(QUESTION_LIMIT_S);
@@ -728,10 +617,6 @@ fn rr12_unanswered_question_reaches_needs_you_at_its_limit() {
     assert_eq!(w.items(&question_key(&q)), ["open"]);
 }
 
-/// OR-3: the same escalation, seen on each pass after it, gives 1 item: 1
-/// row, 1 file in `needs-you/`, 1 line of `horch ideas`, and a herdr
-/// notification. Its item is `resolved` when its cause ends: your requeue
-/// of the escalated task.
 #[test]
 fn or3_same_escalation_gives_1_item_and_it_resolves() {
     let w = World::new("p6-q-or3", "");
@@ -746,7 +631,6 @@ fn or3_same_escalation_gives_1_item_and_it_resolves() {
         (w.notifications() > 0).then_some(())
     });
 
-    // More passes, with the task still escalated: still 1 item.
     for _ in 0..QUIET_PASSES {
         w.passes(1);
         w.step_clock(STEP_S);
@@ -762,9 +646,6 @@ fn or3_same_escalation_gives_1_item_and_it_resolves() {
     let shown = w.board_keys().iter().filter(|k| **k == key).count();
     assert_eq!(shown, 1, "horch ideas shows the item 1 time");
 
-    // You requeue the task: the cause ends, and so does the item. The run
-    // of the task is the run of its feature (Q5); the fleet can have more
-    // than 1 feature, so the command names it.
     let feature = w
         .one(&format!(
             "SELECT feature_id FROM ideas WHERE id = {}",
@@ -796,8 +677,6 @@ fn or3_same_escalation_gives_1_item_and_it_resolves() {
     assert_ne!(w.status(&task), "escalated");
 }
 
-/// FM-21: bounded attempts and backoff, 1 replan, then escalation with 1
-/// needs-you item.
 #[test]
 fn fm21_one_replan_then_escalation() {
     let w = World::new("p6-q-fm21", "");
@@ -805,8 +684,6 @@ fn fm21_one_replan_then_escalation() {
     w.escalate(&task);
     assert_eq!(w.items(&escalated_key(&task)), ["open"]);
 
-    // Escalated is the end of the retries: the clock moves on and no new
-    // attempt starts.
     let attempts = w.attempts_of(&task);
     for _ in 0..QUIET_PASSES {
         w.passes(1);
@@ -822,8 +699,6 @@ fn fm21_one_replan_then_escalation() {
     assert_eq!(w.replans(&task).as_deref(), Some("1"));
 }
 
-/// FM-35: fleetd repeats the delivery of a question to each new process of
-/// the owner until an answer is recorded, and stops after it.
 #[test]
 fn fm35_delivery_repeats_until_an_answer() {
     let w = World::with_answering_owner("p6-q-fm35", "stay,ask");
@@ -834,8 +709,6 @@ fn fm35_delivery_repeats_until_an_answer() {
         w.rung_for(&q).contains(&first).then_some(())
     });
 
-    // The first process dies with no answer. fleetd starts a new one and
-    // rings it for the same question.
     let pid = libc::pid_t::try_from(pid).unwrap();
     // SAFETY: SIGKILL to the 1 recorded process of the attempt.
     assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
@@ -847,7 +720,6 @@ fn fm35_delivery_repeats_until_an_answer() {
     });
     assert_eq!(w.question_state(&q), "open");
 
-    // The owner answers: the delivery ends.
     w.answer_as_owner(&q);
     w.wait("the answered question", || {
         (w.question_state(&q) == "answered").then_some(())
@@ -861,8 +733,6 @@ fn fm35_delivery_repeats_until_an_answer() {
     assert_eq!(w.owners().len(), owners, "no new process for the question");
 }
 
-/// The owner-note test moved from T-897. It runs a push worker that asks 1
-/// question through `horch ask`, with the setup of `p6_worker_question.rs`.
 mod owner_note {
     use std::path::{Path, PathBuf};
 
@@ -885,15 +755,12 @@ mod owner_note {
 
     const QUESTION: &str = "Which port does the guide name?";
 
-    /// The log of the first launch of the worker, under the harness root.
     const FIRST_LOG: &str = "first-launch.log";
 
     fn shell_word(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
 
-    /// A claude wrapper: the first worker launch runs `first`, and each
-    /// other launch runs the fake claude.
     fn wrapper(root: &Path, first: &str) -> String {
         let fake = Harness::horch_bin().with_file_name("fake-claude");
         format!(
@@ -1002,7 +869,6 @@ mod owner_note {
             .unwrap_or_default()
         }
 
-        /// The attempt ids of `task`, oldest first.
         fn attempts(&self, task: &str) -> Vec<String> {
             self.rows(&format!(
                 "SELECT id FROM attempts WHERE task_id = {} ORDER BY rowid",
@@ -1010,7 +876,6 @@ mod owner_note {
             ))
         }
 
-        /// The states of the question rows of `task`, by id.
         fn question_states(&self, task: &str) -> Vec<String> {
             self.rows(&format!(
                 "SELECT state FROM questions WHERE task_id = {} ORDER BY id",
@@ -1070,9 +935,6 @@ mod owner_note {
         }
     }
 
-    /// RR-12: the answer of the owner (the fake sub-orchestrator answers with
-    /// its own decision) answers the row, the task leaves `blocked_on_user`,
-    /// and `START.md` of the next attempt holds the question and the answer.
     #[test]
     fn answer_of_the_owner_reaches_the_next_attempt() {
         let ask = format!("horch ask {}", shell_word(QUESTION));
@@ -1090,7 +952,6 @@ mod owner_note {
             start.contains(QUESTION),
             "START.md of the next attempt holds the question:\n{start}"
         );
-        // The fake sub-orchestrator answers with this text (crate::idea_agent).
         let answer = w
             .one(&format!(
                 "SELECT json_extract(data_json, '$.text') FROM events
