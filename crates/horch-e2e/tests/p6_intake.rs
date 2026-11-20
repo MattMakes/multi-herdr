@@ -1,18 +1,6 @@
 //! The e2e tests of intake and approval through the binary (ticket 56 of
 //! fleetd-p6; `docs/specs/fleetd/design.md`: FR-1, FR-10, FR-12, FM-30,
 //! FM-32).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. `horch idea add` captures an idea, and fleetd starts the fake
-//! idea-lead of each phase. `HORCH_FAKE_SCENARIO` names its keys; the fake
-//! plays each key at each launch.
-//!
-//! Each test waits for an event of the ledger or of a file, never for a
-//! time. "fleetd did not move the idea" waits for later ticks of the fleet
-//! clock, which fleetd writes at each pass. Each test sets
-//! `HORCH_TEST_DOCS_FIXTURE` to an empty local folder, so no test uses the
-//! network.
 
 #![cfg(unix)]
 
@@ -24,14 +12,10 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The fleet clock ticks that a test waits for to see that fleetd leaves an
-/// idea where it is: each tick is 1 more pass.
 const LATER_TICKS: i64 = 3;
 
-/// A ticket of a code kind.
 const CODE_TICKET: &str = "# 01: Write the queue guide\n\n\
 <!-- horch-ticket: 1 -->\n\
 **Persona:** primary `opus` · **Parallel:** yes\n\
@@ -41,7 +25,6 @@ const CODE_TICKET: &str = "# 01: Write the queue guide\n\n\
 **Own:** `fake-claude.txt`\n\n\
 ## Goal\n\nThe guide names the queue length.\n";
 
-/// A ticket of a judgment kind (`docs`).
 const DOCS_TICKET: &str = "# 01: Write the queue page\n\n\
 <!-- horch-ticket: 1 -->\n\
 **Persona:** primary `opus` · **Parallel:** yes\n\
@@ -60,19 +43,13 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A fleet with a test fleetd, the herdr workspace of the project and a
-/// git project with gates.
 struct World {
     h: Harness,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger and the fleet root are outside the state folder. The
-        // launch gives the pane FLEET_ROOT, so the fake finds the channel
-        // and the request folder of this fleetd.
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -90,11 +67,9 @@ impl World {
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
         h.fleet_workspace();
         let w = World { h };
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             w.h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -124,15 +99,12 @@ impl World {
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
 
-    /// `horch idea add <idea>`; the id of the new idea, found by the text of
-    /// its idea.md (a pass can add other ideas).
     fn add(&self, idea: &str) -> String {
         let o = self.h.run(&["idea", "add", idea]);
         assert!(o.status.success(), "horch idea add: {}", text(&o));
         self.wait("the idea file of the new idea", || self.idea_with(idea))
     }
 
-    /// The idea whose idea.md holds `needle`.
     fn idea_with(&self, needle: &str) -> Option<String> {
         self.rows("SELECT id FROM ideas ORDER BY id")
             .into_iter()
@@ -142,7 +114,6 @@ impl World {
             })
     }
 
-    /// `horch idea add --direct` of the ticket `ticket`; the id of the idea.
     fn add_direct(&self, ticket: &str) -> String {
         let dir = self.h.root.join("tickets");
         std::fs::create_dir_all(&dir).unwrap();
@@ -156,8 +127,6 @@ impl World {
         self.wait("the idea of the --direct ticket", || self.idea_with(title))
     }
 
-    /// The rows of `sql`, each row its columns joined with 1 space. No rows
-    /// while the ledger does not exist yet.
     fn rows(&self, sql: &str) -> Vec<String> {
         let Ok(conn) =
             Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -195,7 +164,6 @@ impl World {
         self.one(&format!("SELECT state FROM ideas WHERE id = '{idea}'"))
     }
 
-    /// The states that the idea entered, in order.
     fn idea_moves(&self, idea: &str) -> Vec<String> {
         self.rows(&format!(
             "SELECT to_state FROM events WHERE entity = 'idea' AND entity_id = '{idea}'
@@ -203,7 +171,6 @@ impl World {
         ))
     }
 
-    /// The tasks of the idea: `<kind> <status>` each.
     fn tasks_of(&self, idea: &str) -> Vec<String> {
         self.rows(&format!(
             "SELECT kind, status FROM tasks WHERE idea_id = '{idea}' ORDER BY rowid"
@@ -216,7 +183,6 @@ impl World {
             .ok()
     }
 
-    /// Wait until fleetd ran [`LATER_TICKS`] more passes.
     fn later_passes(&self) {
         let from = self.wait("the fleet clock", || self.fleet_clock());
         self.wait("later ticks of the fleet clock", || {
@@ -224,8 +190,6 @@ impl World {
         });
     }
 
-    /// The `extra` value `key` of the first call of the fake `claude` that
-    /// has it.
     fn fake_extra(&self, key: &str) -> Value {
         self.wait(&format!("the fake idea-lead to log {key}"), || {
             self.h
@@ -235,7 +199,6 @@ impl World {
         })
     }
 
-    /// What a failed wait shows.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -278,7 +241,6 @@ impl World {
         .concat()
     }
 
-    /// idea.md and plan.verdict.json of each idea folder.
     fn idea_files(&self) -> String {
         let mut out = String::new();
         for id in self.rows("SELECT id FROM ideas ORDER BY id") {
@@ -297,8 +259,6 @@ impl World {
     }
 }
 
-/// FR-1: 2 ideas added back to back produce 2 files and 2 rows, each row
-/// first in `captured`, and each file holds the text of its idea.
 #[test]
 fn fr1_two_ideas_make_two_files_and_two_rows() {
     let w = World::new("p6-intake-fr1", "stay");
@@ -327,16 +287,11 @@ fn fr1_two_ideas_make_two_files_and_two_rows() {
             "{}",
             w.context()
         );
-        // No AI is involved: the idea file exists before any process of
-        // the idea, and no process changes it.
         w.later_passes();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
     }
 }
 
-/// FR-10, FM-32: a sub-orchestrator that writes approval.json
-/// (`forge_approval`) and runs `horch idea approve` (`approve_inside`)
-/// leaves the idea in `awaiting_approval`.
 #[test]
 fn fr10_sub_orchestrator_approval_leaves_awaiting_approval() {
     let w = World::new(
@@ -344,7 +299,6 @@ fn fr10_sub_orchestrator_approval_leaves_awaiting_approval() {
         "clarify,await_approval,forge_approval,approve_inside",
     );
     let idea = w.add("Show the queue length in the status bar");
-    // The dangerous time: the fake acts while the idea waits for you.
     let awaited = w.fake_extra("awaited");
     assert_eq!(awaited, "awaiting_approval", "{}", w.context());
     let approve = w.fake_extra("approve");
@@ -385,7 +339,6 @@ fn fr10_sub_orchestrator_approval_leaves_awaiting_approval() {
     assert!(w.tasks_of(&idea).is_empty(), "{}", w.context());
 }
 
-/// The plan.verdict.json of `idea` once fleetd wrote a valid one.
 fn valid_verdict(w: &World, idea: &str) -> Value {
     w.wait("a valid plan.verdict.json", || {
         let t = std::fs::read_to_string(w.folder(idea).join("plan.verdict.json")).ok()?;
@@ -394,9 +347,6 @@ fn valid_verdict(w: &World, idea: &str) -> Value {
     })
 }
 
-/// FR-12: a `--direct` idea of a code kind produces 1 validated plan with 1
-/// work task and no judge task. The task belongs to the idea and has its
-/// check.
 #[test]
 fn fr12_direct_idea_makes_1_validated_plan() {
     let w = World::new("p6-intake-fr12", "stay");
@@ -425,8 +375,6 @@ fn fr12_direct_idea_makes_1_validated_plan() {
     );
 }
 
-/// FR-12: a `--direct` idea of a judgment kind produces 1 validated plan
-/// with 1 work task and its judge task.
 #[test]
 fn fr12_direct_judgment_idea_gets_its_judge() {
     let w = World::new("p6-intake-fr12-judge", "stay");
@@ -439,7 +387,6 @@ fn fr12_direct_judgment_idea_gets_its_judge() {
     );
     let tasks = w.tasks_of(&idea);
     assert_eq!(tasks.len(), 2, "{tasks:?}\n{}", w.context());
-    // The judge task is the task whose parent is the judged work task.
     let judges = w.rows(&format!(
         "SELECT j.task_id FROM tasks j JOIN tasks t ON t.task_id = j.parent_task_id
          WHERE j.idea_id = '{idea}' AND t.idea_id = '{idea}'"
@@ -452,7 +399,6 @@ fn fr12_direct_judgment_idea_gets_its_judge() {
     );
 }
 
-/// The ids `A<n>` of the items of assumptions.md (`<n>. [...] ...`).
 fn assumption_ids(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|l| {
@@ -462,10 +408,6 @@ fn assumption_ids(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// FM-30: no spec until you approve. The fake writes spec.md and
-/// plan.yaml at once, but fleetd moves the idea past `awaiting_approval`
-/// only after `horch idea approve`, and each requirement cites an
-/// assumption of the approved assumptions.md.
 #[test]
 fn fm30_no_spec_before_approval() {
     let w = World::new("p6-intake-fm30", "clarify,specify,ticket");
@@ -544,16 +486,12 @@ fn fm30_no_spec_before_approval() {
     }
 }
 
-/// FM-32: a raw `idea_approve` request with no token from the
-/// sub-orchestrator, on the channel and as a request file, is refused, and
-/// the idea stays in `awaiting_approval`.
 #[test]
 fn fm32_sub_orchestrator_operator_request_is_refused() {
     let w = World::new("p6-intake-fm32", "clarify,operator_request");
     let idea = w.add("Show the queue length in the status bar");
     let sent = w.fake_extra("operator_request");
 
-    // The channel: the sandbox denies the connect, or fleetd refuses it.
     let channel = &sent["channel"];
     let reply: Value = channel["reply"]
         .as_str()
@@ -567,7 +505,6 @@ fn fm32_sub_orchestrator_operator_request_is_refused() {
         channel["error"].is_string() || reply["state"] == "refused",
         "the channel request is refused: {sent}"
     );
-    // The request file: the sandbox denies the write, or fleetd refuses it.
     if let Some(path) = sent["file"]["path"].as_str() {
         let id = std::path::Path::new(path)
             .file_stem()

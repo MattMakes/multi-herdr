@@ -80,7 +80,6 @@ const VERDICT_FILE: &str = "review.md";
 /// The file mode of each file that the fake writes.
 const FILE_MODE: u32 = 0o600;
 
-/// The longest wait of `await_approval` for the state `awaiting_approval`.
 const AWAIT_APPROVAL: Duration = Duration::from_secs(60);
 
 /// The longest wait for a connect to the channel.
@@ -332,8 +331,6 @@ impl Lead {
     }
 }
 
-/// Wait until `idea` is in `awaiting_approval`, at most [`AWAIT_APPROVAL`];
-/// the last state seen.
 fn await_approval(idea: &str) -> Option<String> {
     let end = Instant::now() + AWAIT_APPROVAL;
     loop {
@@ -345,7 +342,6 @@ fn await_approval(idea: &str) -> Option<String> {
     }
 }
 
-/// The state of `idea` in the ledger.
 fn idea_state(idea: &str) -> Option<String> {
     let store = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db).ok()?;
     store
