@@ -146,7 +146,7 @@ pub fn verify(v: &Verifier<'_>, tx: &Connection) -> Result<Report> {
         }
         let task = tasks::get(tx, &a.task_id)?;
         if task.is_review() {
-            review_task(v, tx, &task, &a, &mut report)?;
+            end_review_by_findings(v, tx, &task, &a, &mut report)?;
             continue;
         }
         let Some(tip) = v.tips.get(&a.task_id) else {
@@ -157,13 +157,7 @@ pub fn verify(v: &Verifier<'_>, tx: &Connection) -> Result<Report> {
     Ok(report)
 }
 
-/// A code-sweep review task of a push attempt has no check, no review steps
-/// and no worktree: its findings file is its result (`finish::complete`
-/// needs the same file). With the file, the task moves to `done` and its
-/// attempt ends [`VERIFIED`]. Then the code-sweep of its parent task sees
-/// 1 open review less. With no file, the attempt ends `rejected` and burns
-/// 1 attempt.
-fn review_task(
+fn end_review_by_findings(
     v: &Verifier<'_>,
     tx: &Connection,
     task: &Task,
@@ -771,9 +765,6 @@ mod tests {
     }
 
     impl World {
-        /// A code-sweep review task of a parent task, in `verifying` after
-        /// its push attempt wrote `result.json`. Gives the task and its
-        /// attempt.
         fn review(&self, findings: &Path) -> (String, String) {
             let parent = tasks::add(
                 &self.conn,
@@ -820,8 +811,6 @@ mod tests {
             (task, attempt)
         }
 
-        /// 1 verifier part of a pass with a tip for each task in
-        /// `verifying`, as the run branch gives a review task its tip.
         fn verify(&mut self, tasks: &[&str]) -> Report {
             let config = FleetConfig::default();
             let ctx = JobCtx {

@@ -167,7 +167,6 @@ fn write(ctx: &RuntimeContext, out: &OutboxWriter, args: ResultArgs) -> Result<P
 }
 
 /// The worktree of `task` and the base that the ledger recorded for it.
-/// `None` for a review task with no worktree.
 fn worktree_of(ctx: &RuntimeContext, task: &str) -> Result<Option<(PathBuf, String)>> {
     let store = horch_core::taskledger::open_existing_read_only(ctx)?
         .context("no task ledger names the worktree; give --commit")?;
@@ -177,9 +176,6 @@ fn worktree_of(ctx: &RuntimeContext, task: &str) -> Result<Option<(PathBuf, Stri
     own_worktree(task, review, wt)
 }
 
-/// The worktree `wt` of `task`. A code-sweep review task works in no
-/// worktree of its own and makes no commit: its findings file is its
-/// result, so it has `None`. Each other task needs its worktree.
 fn own_worktree(
     task: &str,
     review: bool,

@@ -1727,10 +1727,6 @@ fn the_whole_flow_on_the_fake_herdr() {
     });
 }
 
-/// T-900: each code-sweep review task of a push attempt ends `done` by its
-/// findings file, with no worktree of its own and no check job, and the
-/// reviewed task moves to `done` and its branch lands. It does not wait for
-/// the removal of the worktree (ticket 168, T-207).
 #[test]
 fn a_push_review_task_ends_done_by_its_findings_file_and_its_task_lands() {
     let mut h = finish_world("tl-review");
@@ -1759,7 +1755,6 @@ fn a_push_review_task_ends_done_by_its_findings_file_and_its_task_lands() {
     let reviews = rows("SELECT status FROM tasks WHERE kind = 'review'");
     assert!(!reviews.is_empty());
     assert!(reviews.iter().all(|s| s == "done"), "{reviews:?}");
-    // The newest attempt of each review task ended `verified`.
     let outcomes = rows(
         "SELECT COALESCE(a.outcome, '') FROM tasks t JOIN attempts a ON a.task_id = t.task_id
          WHERE t.kind = 'review'
@@ -1767,7 +1762,6 @@ fn a_push_review_task_ends_done_by_its_findings_file_and_its_task_lands() {
     );
     assert_eq!(outcomes.len(), reviews.len(), "{outcomes:?}");
     assert!(outcomes.iter().all(|o| o == "verified"), "{outcomes:?}");
-    // A review task has no worktree and gets no task_check job.
     let trees = rows(
         "SELECT w.worktree_id FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
          WHERE t.kind = 'review'",
