@@ -1,0 +1,2 @@
+# Red tests of crates/horch-e2e/tests/p3_refusals.rs.
+run_gate_folder_is_added_and_removed_through_the_jobs | 7 | fleetd never removes a released gate tree; ticket 164 (T-196) of fleetd-finish removes this entry
