@@ -148,9 +148,7 @@ impl LaunchEnv {
     }
 
     /// The bare program names, no home and no inherited config: what a unit
-    /// test launches with, whatever the process environment holds. The
-    /// `PATH` is 1 folder with fake `bwrap` and `socat`, so a sandboxed
-    /// Claude launch passes the Linux sandbox check on every host.
+    /// test launches with, whatever the process environment holds.
     #[cfg(test)]
     pub(crate) fn for_test() -> LaunchEnv {
         LaunchEnv {
@@ -186,11 +184,6 @@ impl LaunchEnv {
     }
 }
 
-/// The `PATH` of [`LaunchEnv::for_test`]: a folder next to the test binary
-/// with fake `bwrap` and `socat`. A test process fills a folder of its own,
-/// then renames it into place. A child test process (a re-run of the test
-/// binary) can do the same at the same time, and it never sees a fake that
-/// is not yet executable.
 #[cfg(test)]
 fn test_sandbox_tools_path() -> std::ffi::OsString {
     static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
@@ -1621,7 +1614,6 @@ mod tests {
         crate::runtime::process::make_executable(&on_path).unwrap();
         let app = tmp.path().join("Blender");
         std::fs::write(&app, "#!/bin/sh\n").unwrap();
-        // No blender here, but the Linux sandbox tools, so the launch builds.
         let none = super::super::claude::sandbox_tools_path(&tmp.path().join("none"), true);
 
         let r = Roster::builtin().unwrap();

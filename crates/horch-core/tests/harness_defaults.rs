@@ -74,8 +74,6 @@ fn ctx_with(home: &Path, workdir: &Path, vars: &[(&str, &str)]) -> RuntimeContex
     RuntimeContext::from_env(&env).unwrap()
 }
 
-/// Fake Linux sandbox tools `bwrap` and `socat` in `bin`. A sandboxed
-/// Claude launch refuses to start on Linux when they are not on its `PATH`.
 fn stub_sandbox_tools(bin: &Path) {
     std::fs::create_dir_all(bin).unwrap();
     for tool in ["bwrap", "socat"] {

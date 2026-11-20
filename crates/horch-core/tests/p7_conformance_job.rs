@@ -299,8 +299,6 @@ fn conformance_job_of_an_unknown_cli_fails_with_a_result() {
     assert!(suite.ran.borrow().is_empty());
 }
 
-/// Fake Linux sandbox tools `bwrap` and `socat` in `bin`. A sandboxed
-/// Claude launch refuses to start on Linux when they are not on its `PATH`.
 fn stub_sandbox_tools(bin: &Path) {
     std::fs::create_dir_all(bin).unwrap();
     for tool in ["bwrap", "socat"] {
