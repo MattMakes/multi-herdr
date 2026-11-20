@@ -20,7 +20,7 @@ use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{tasks, watchdog, workers, Store};
 use horch_e2e::expected::check;
 use horch_e2e::fleetd::Fleetds;
-use horch_e2e::harness::{fixtures, wait_for, Harness};
+use horch_e2e::harness::{fixtures, wait_for, wait_for_or, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
@@ -50,10 +50,16 @@ fn fleet(name: &str) -> Harness {
     );
     h.set("HORCH_WORKSPACE_ID", "w1");
     herdr(&h, &["workspace", "create", "--label", name]);
-    // 1 pass each second, so that the `worktree_add` job of a bind runs soon.
+    // 1 pass each second, so that the `worktree_add` job of a bind runs soon,
+    // and 1 `worktree_list` job each 5 s, whose result starts the rescue of
+    // an orphaned tree (the default period is 60 s, over CAUGHT_S).
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "pass_period_s = 1\nworktree_list_period_s = 5\n",
+    )
+    .unwrap();
     h
 }
 
@@ -205,6 +211,31 @@ fn rescue_refs(h: &Harness) -> Vec<String> {
     refs.lines().map(str::to_string).collect()
 }
 
+/// The rows of the ledger that tell how far the rescue went, for a failure
+/// message.
+fn evidence(h: &Harness) -> String {
+    let s = Store::open_read_only(&ledger(h)).unwrap();
+    [
+        "SELECT 'tree ' || path || ' ' || state || ' ' || ifnull(rescue_ref, '-') FROM worktrees",
+        "SELECT 'job ' || id || ' ' || kind || ' ' || state || ' ' || substr(ifnull(result_json, '-'), 1, 300) \
+         FROM jobs WHERE kind NOT IN ('docs_sync', 'conformance', 'fetch')",
+        "SELECT 'attempt ' || id || ' ' || state || ' ' || ifnull(outcome, '-') FROM attempts",
+        "SELECT 'task ' || task_id || ' ' || status FROM tasks",
+    ]
+    .iter()
+    .flat_map(|q| {
+        let mut stmt = s.conn().prepare(q).unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        rows
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
 /// The 1 rescue ref, or a panic. The fleetd of the test sees the death in 1
 /// pass and runs the rescue as a job, so the ref exists at most [`CAUGHT_S`]
 /// after the death. No `horch` call runs: fleetd alone must act.
@@ -223,7 +254,8 @@ fn the_rescue_ref(h: &Harness) -> String {
     assert!(
         refs.len() == 1,
         "no ref under refs/horch/rescue/ holds the work {CAUGHT_S} s after the death: \
-         {refs:?}\nall refs:\n{all}"
+         {refs:?}\nall refs:\n{all}\n{}",
+        evidence(h)
     );
     refs[0].split(' ').nth(1).unwrap().to_string()
 }
@@ -341,7 +373,12 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
             // The retry waits for its backoff of 30 s on the fleet clock
             // (rung 6, Phase 2).
             h.advance_fleet_clock(30);
-            let next = horch_e2e::bind::bind(&h, "opus", None);
+            // The bind waits for the pass that marks the tree `rescued`.
+            let next = wait_for_or(
+                "the bind of the next attempt",
+                || horch_e2e::bind::try_bind(&h, "opus", None).ok(),
+                || evidence(&h),
+            );
             // The bind takes the tree of the last attempt.
             let reused = match &next.worktree {
                 Some(tree) => tree.path.clone(),

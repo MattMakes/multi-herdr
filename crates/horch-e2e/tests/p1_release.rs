@@ -180,7 +180,10 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
         remaining.is_empty(),
         "the record of the old watchdog is cleared"
     );
-    assert!(!lock.exists(), "the lock of the old watchdog is removed");
+    // fleetd removes the lock after the transaction that clears the record.
+    wait_for("the lock of the old watchdog to be removed", || {
+        (!lock.exists()).then_some(())
+    });
     let events = texts(
         &h,
         "SELECT data_json FROM events WHERE cause = 'old_watchdog_stopped'",
