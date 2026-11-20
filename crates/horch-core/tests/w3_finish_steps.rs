@@ -2,7 +2,6 @@
 //! complexity-sweep, pr, code-sweep, `finish` and `done` (#137, #138, #141,
 //! #144, #146). Each test pins the outcome text of 1 path, so a refactor
 //! that changes a path fails here.
-// The `pr` tests use a fake `gh` shell script and are Unix only.
 #![cfg_attr(not(unix), allow(dead_code))]
 
 #[path = "common/test_jobs.rs"]

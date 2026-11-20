@@ -1,6 +1,5 @@
 //! A fake executable that is written and warmed, shared by the integration
-//! tests that load it with `#[path = "common/warm.rs"] mod warm;`. The
-//! fake executable is a shell script, so the helper is Unix only.
+//! tests that load it with `#[path = "common/warm.rs"] mod warm;`.
 
 #[cfg(unix)]
 use std::path::Path;

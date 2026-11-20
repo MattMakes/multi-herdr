@@ -8,8 +8,6 @@
 //! starts a `horch` binary: a job runs in the test process (`TestJobs`),
 //! or in a thread that plays `horch job run` beside a fake `horch` that
 //! sleeps.
-// The tests with a fake `horch` or a project hook use shell scripts and are
-// Unix only.
 #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 #[path = "common/test_jobs.rs"]
