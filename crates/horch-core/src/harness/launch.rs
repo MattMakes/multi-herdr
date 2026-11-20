@@ -1621,7 +1621,8 @@ mod tests {
         crate::runtime::process::make_executable(&on_path).unwrap();
         let app = tmp.path().join("Blender");
         std::fs::write(&app, "#!/bin/sh\n").unwrap();
-        let none = std::env::join_paths([tmp.path().join("none")]).unwrap();
+        // No blender here, but the Linux sandbox tools, so the launch builds.
+        let none = super::super::claude::sandbox_tools_path(&tmp.path().join("none"), true);
 
         let r = Roster::builtin().unwrap();
         let artist = r.require("blender-artist").unwrap();
@@ -3338,7 +3339,11 @@ mod tests {
         let ctx = RuntimeContext::from_env(
             &MapEnv::new(&workdir)
                 .with("HOME", &home.to_string_lossy())
-                .with("PATH", "/nonexistent")
+                .with(
+                    "PATH",
+                    &super::super::claude::sandbox_tools_path(&root.join("sandbox-bin"), true)
+                        .to_string_lossy(),
+                )
                 .with("HORCH_CLAUDE_BIN", &claude.to_string_lossy())
                 .with("HORCH_CODEX_BIN", &codex.to_string_lossy())
                 .with(
@@ -3403,6 +3408,7 @@ mod tests {
         for dir in ["home", "work", "task"] {
             std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
         }
+        super::super::claude::sandbox_tools_path(&tmp.path().join("bin"), true);
         let env = crate::runtime::context::MapEnv::new(tmp.path().join("work"))
             .with("HOME", &p("home"))
             .with("PATH", &p("bin"))
