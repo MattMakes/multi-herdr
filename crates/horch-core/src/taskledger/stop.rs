@@ -111,9 +111,6 @@ pub enum Sent<'a> {
     Pane(&'a str),
 }
 
-/// The `stops` row of 1 rung that fleetd sent for worker `worker_id`
-/// (`preservation-04-behavior.md`, S8): `agent` when the process is the
-/// agent of the row, else `supervisor`. No row for a worker that is gone.
 pub(crate) fn record_sent(conn: &Connection, worker_id: &str, sent: Sent<'_>) -> Result<()> {
     let Some(w) = workers::find(conn, worker_id)? else {
         return Ok(());

@@ -1882,8 +1882,6 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// The `stops` row of the close of `pane` of `row`: its own
-    /// transaction after the close, as [`Self::mark_stop`].
     fn mark_pane(&self, conn: &mut Connection, row: &RowRef, pane: &str, report: &mut PassReport) {
         let marked = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2639,8 +2637,6 @@ fn stop_sent(
     stops_row(tx, row, sent)
 }
 
-/// The `stops` row of 1 rung that fleetd sent for the worker of `row`
-/// (`preservation-04-behavior.md`, S8).
 fn stops_row(tx: &Connection, row: &RowRef, sent: stop::Sent<'_>) -> Result<()> {
     let worker = match row {
         RowRef::Worker(id) => Some(id.clone()),

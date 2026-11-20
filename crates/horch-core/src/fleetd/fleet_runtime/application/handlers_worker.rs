@@ -316,10 +316,6 @@ pub struct StopPayload {
     pub reason: String,
 }
 
-/// Record the stop of 1 worker: its live attempt ends `killed`, its row
-/// ends `stopped`, and the task it held is queued again. The pass stops
-/// its processes after the commit and records each signal in `stops`.
-/// This request sends no signal, so its `steps` are empty.
 fn worker_stop(tx: &Transaction<'_>, p: &StopPayload) -> Result<Value> {
     let w = workers::resolve(tx, &p.run_id, &p.worker)?;
     let by = StopRequester::Orchestrator;

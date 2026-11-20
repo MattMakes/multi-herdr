@@ -77,8 +77,6 @@ pub fn end_stopped_attempt(tx: &Connection, worker_id: &str, reason: &str) -> Re
     end_held_attempt(tx, worker_id, Outcome::Killed.as_str(), by)
 }
 
-/// The attempt that worker `worker_id` holds to `ended` with `outcome`,
-/// through `transition()`.
 fn end_held_attempt(tx: &Connection, worker_id: &str, outcome: &str, by: Cause<'_>) -> Result<()> {
     check_open(tx)?;
     let attempts = store::attempts_of_worker(tx, worker_id)?;

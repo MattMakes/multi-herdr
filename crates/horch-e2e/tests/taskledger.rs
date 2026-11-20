@@ -1074,7 +1074,6 @@ fn a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish() {
 fn stopping_one_of_three_workers_leaves_the_others_running() {
     let mut h = push_fleet("tl-stop", "exec,stay", "delta", &["T0", "T1", "T2"]);
     h.set("HORCH_STOP_GRACE_MS", "2000");
-    // fleetd binds each task and launches its attempt.
     let ws = launched(&h, 3);
     let ids: Vec<String> = ws
         .iter()
@@ -1089,10 +1088,8 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
             )
         })
         .collect();
-    // fleetd bound each task to its attempt (FR-5).
     let o = ok(&h, &["ledger", "stop", &ids[0], "the operator dropped it"]);
     assert!(o.contains("Stopped"), "{o}");
-    // The next pass of fleetd stops the processes and closes the pane.
     wait_push("the stopped agent is gone", || {
         (!horch_core::procid::alive(pids[0].0, Some(pids[0].1))).then_some(())
     });
@@ -1119,14 +1116,12 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
             .any(|s| s["target"] == "pane" && s["result"] == "pane_closed"),
         "{shown}"
     );
-    // Its task is queued again; the others still run.
     let st = json_of(&h, &["ledger", "status", "--json"]);
     assert_eq!(
         st["counts"]["queued"], 1,
         "the task of the stopped worker is queued again"
     );
     assert_eq!(st["counts"]["running"], 2);
-    // A second stop finds the processes gone and sends nothing.
     let o = json_of(&h, &["ledger", "stop", &ids[0], "again", "--json"]);
     assert!(
         o["steps"]
@@ -1151,21 +1146,11 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
         w["agent_pid"].as_i64().unwrap() as u32,
         w["agent_started"].as_i64().unwrap() as u64,
     );
-    // fleetd bound T-1 to the attempt (FR-5). The fake agent runs,
-    // but shows no timer and writes nothing more.
     stall_by_the_ladder(&h, &id, pid, started);
     let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
     assert_eq!(shown["worker"]["status"], "incomplete");
     assert_eq!(shown["worker"]["agent_pid"].as_i64(), Some(pid as i64));
     assert_ladder_texts(&shown["events"], "T-1");
-    // The old assert read 2 orchestrator wakes. fleetd has no
-    // orchestrator seat: "Reports go to files and the ledger"
-    // (design, FM-16), and a held run is 1 item of the needs-you
-    // list (design, "The needs-you list has a life cycle"). The
-    // stall itself is on record above: attempt 1 has the outcome
-    // `stalled` (design, stall ladder rung 3) with the event of the
-    // ladder. The design gives no needs-you text for a stall: rung 6
-    // gives an item only at `escalated`.
     let db = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
     let task_id = t_id(&db, &id);
     let stuck: Vec<String> = {
@@ -1184,18 +1169,11 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
     assert_eq!(t["task"]["status"], "queued");
     let tree = worktrees_of(&db, &task_id);
     assert_eq!(tree.len(), 1, "{tree:?}");
-    // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
     h.advance_fleet_clock(30);
-    // The old assert bound a replacement through the retired
-    // plan-workers. fleetd launches attempt 2 of the same task by
-    // push, in the same worktree (design, stall ladder rung 6: "The
-    // new attempt runs in the same worktree"). The design links the
-    // attempts by task and attempt number, not by worker.
     let attempts: Vec<String> = wait_push("the launch of attempt 2 of T-1", || {
         let ids = attempt_ids(&db, &task_id);
         (ids.len() >= 2).then_some(ids)
     });
-    // FM-14: the old agent was stopped by its PID before attempt 2.
     assert!(!horch_core::procid::alive(pid, Some(started)));
     assert_eq!(attempts.len(), 2, "exactly 1 attempt 2: {attempts:?}");
     assert!(attempts[0].ends_with("/A1"), "{attempts:?}");
@@ -1203,7 +1181,6 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
     assert_eq!(worktrees_of(&db, &task_id), tree, "the same worktree");
 }
 
-/// The task of the attempt of `worker`.
 fn t_id(db: &Store, worker: &str) -> String {
     db.conn()
         .query_row(
@@ -1214,7 +1191,6 @@ fn t_id(db: &Store, worker: &str) -> String {
         .unwrap()
 }
 
-/// The id of each attempt of task `task_id`, oldest first.
 fn attempt_ids(db: &Store, task_id: &str) -> Vec<String> {
     let mut stmt = db
         .conn()
@@ -1226,7 +1202,6 @@ fn attempt_ids(db: &Store, task_id: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// The path of each worktree row of task `task_id`.
 fn worktrees_of(db: &Store, task_id: &str) -> Vec<String> {
     let mut stmt = db
         .conn()
@@ -1271,9 +1246,6 @@ fn stall_by_the_ladder(h: &Harness, worker: &str, pid: u32, started: u64) {
             )
             .unwrap()
     };
-    // The clock moves and the status is read while the test fleetd is down,
-    // so the stall pass is this 1 pass, and no later pass of the test
-    // fleetd runs before the read.
     let status = h.without_fleetd(|| {
         assert!(
             horch_core::procid::alive(pid, Some(started)),
