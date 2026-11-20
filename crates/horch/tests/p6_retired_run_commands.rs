@@ -391,6 +391,7 @@ fn no_code_path_creates_a_task_without_an_idea() {
         sources.iter().any(|(f, _)| f.ends_with("planned_tasks.rs")),
         "the scan reads the production code"
     );
+    const E2E_TEST_FIXTURE: &str = "horch-e2e/src/ledger_seed.rs";
     let mut inserts = Vec::new();
     let mut ideas = Vec::new();
     for (file, text) in &sources {
@@ -399,11 +400,9 @@ fn no_code_path_creates_a_task_without_an_idea() {
             inserts.push(file.clone());
         }
         // The release backfill writes the idea of a run: only schema.rs.
-        // ledger_seed.rs is the fixture of the e2e tests, in place of the
-        // retired `horch ledger run new` (fleetd-p6 ticket 47): no product code.
         if flat.contains("run_idea(")
             && !file.ends_with("taskledger/schema.rs")
-            && file != "horch-e2e/src/ledger_seed.rs"
+            && file != E2E_TEST_FIXTURE
         {
             ideas.push(file.clone());
         }

@@ -1,12 +1,3 @@
-//! `horch ledger`: pins the output and exit code of the task-ledger
-//! subcommands (status, show, run list, fallback, cancel, unblock, requeue,
-//! events, import, unfinished, watch), so a refactor of the CLI body keeps
-//! them. Every test runs the binary on a temp git project, with the
-//! watchdog off and no herdr pane. Phase 6 retired `run new`, `add`,
-//! `add-map`, `run close` and `plan-workers` (FR-12), so a test seeds its
-//! run and tasks into the ledger. A test fleetd serves the requests of the
-//! commands, except in a test of `watch --once`, which runs the pass itself.
-
 mod support;
 
 use std::path::PathBuf;
@@ -92,9 +83,6 @@ impl World {
         self.tmp.path().join("home/.horch/ledger.sqlite3")
     }
 
-    /// Run `r1` of the project, in place of the retired `horch ledger run
-    /// new` (fleetd-p6 ticket 47, FR-12): the run branch `fleet/r1` from
-    /// `main`, the run, and its idea in flight, in 1 immediate transaction.
     fn seed_run(&self, thresholds: Thresholds, finish_steps: Vec<StepName>) {
         let git = Command::new("git")
             .args(["branch", "fleet/r1", "main"])
@@ -121,9 +109,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 queued task of run `r1` from the ticket file `ticket` of the
-    /// project, in place of the retired `horch ledger add --file <ticket>
-    /// --primary <primary>`: the title comes from the ticket.
     fn seed_task(&self, ticket: &str, new: impl FnOnce(&mut NewTask)) -> Task {
         let text = std::fs::read_to_string(self.proj().join(ticket)).unwrap();
         let facts = ticket_facts(&text);
@@ -280,8 +265,6 @@ fn the_board_commands_print_their_pinned_text() {
     assert_show_of_t2(&w);
     assert_board_events(&untimed(&w.ok(&["ledger", "events"])));
     assert_refused_requeue(&w);
-    // `ledger run close` is retired (fleetd-p6 ticket 47, FR-12): the run
-    // stays active.
     let line = w.ok(&["ledger", "run", "list"]);
     assert!(line.starts_with("r1 active fleet/r1 -> main ("), "{line}");
     let status = w.run(&["ledger", "status", "--run", "r1"]);
@@ -359,9 +342,6 @@ fn assert_refused_requeue(w: &World) {
 }
 
 fn assert_board_events(events: &[String]) {
-    // The test seeds the run and its tasks, so no orchestrator row exists:
-    // no `agent_started` transition. `unblock` is retired, so T-2 keeps
-    // waiting for T-1: no `dependencies_met` transition.
     assert_eq!(
         events,
         [
@@ -369,12 +349,7 @@ fn assert_board_events(events: &[String]) {
             "orchestrator added         T-1 queued for dev: Ticket One.",
             "orchestrator added         T-2 queued for dev: Ticket Two.",
             "orchestrator fallback      T-1 moves to fallback dev2: because",
-            // The commands write no wake (ticket 22 of fleetd-p5, T-471), so
-            // no wake event follows.
             "orchestrator cancelled     T-2 cancelled: nope",
-            // `cancelled` is terminal: fleetd refuses the requeue and records
-            // it in its request row (see `assert_refused_requeue`), not as an
-            // event.
         ]
     );
 }
