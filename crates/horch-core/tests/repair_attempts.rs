@@ -894,11 +894,6 @@ fn repair_that_cannot_start_fails_only_its_branch() {
     assert_eq!(items(&w), open);
 }
 
-/// FM-38, RR-6: normal triage never lists the worktree of a task branch
-/// that is not settled. The task is `done` and its worker has ended, so only
-/// the `branches` row tells that the worktree is still needed: a resolver
-/// or a fix attempt works in it. Once the branch is `abandoned`, the
-/// worktree is parked and triage lists it.
 #[test]
 fn triage_does_not_list_worktree_of_unsettled_conflicted_or_gate_failed_branch() {
     let mut w = World::new();
@@ -928,7 +923,6 @@ fn triage_does_not_list_worktree_of_unsettled_conflicted_or_gate_failed_branch()
         );
     }
 
-    // The worktree is still there for the repair attempt.
     set_state(&w, "gate_failed");
     let started = w.start(10);
     let s = only(&started);
@@ -939,7 +933,6 @@ fn triage_does_not_list_worktree_of_unsettled_conflicted_or_gate_failed_branch()
     );
     assert!(parked(&w).is_empty(), "the fix attempt holds the worktree");
 
-    // A settled branch frees the worktree for triage.
     set_state(&w, "abandoned");
     let attempt = s.bound.attempt_id.clone();
     w.store
@@ -968,9 +961,6 @@ fn triage_does_not_list_worktree_of_unsettled_conflicted_or_gate_failed_branch()
     assert_eq!(PathBuf::from(&rows[0].path), w.tree);
 }
 
-/// FM-38: the import of an old claim for the path of the worktree of a
-/// `conflicted` or `gate_failed` branch does not touch the live worktree
-/// row (a path has 1 live row), so the repair attempt still binds it.
 #[test]
 fn import_does_not_clean_live_worktree_of_conflicted_or_gate_failed_branch() {
     for gate in [false, true] {

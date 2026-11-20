@@ -192,8 +192,6 @@ fn task_pending(row: &LedgerRow) -> bool {
     })
 }
 
-/// Whether the row's task branch is not settled (`landed` or `abandoned`):
-/// a resolver or fix attempt may still need the worktree (FM-38).
 fn branch_unsettled(conn: &Connection, row: &LedgerRow) -> Result<bool> {
     let by_branch = (!has_no_branch(&row.branch)).then_some(row.branch.as_str());
     let unsettled: bool = conn.query_row(
