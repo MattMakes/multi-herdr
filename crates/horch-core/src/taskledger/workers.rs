@@ -956,7 +956,6 @@ fn behind(conn: &Connection, w: &Worker, row: &WaitRow, task_ids: &[String]) -> 
     })
 }
 
-/// The verdicts on the wait rows of `worker`, with no write.
 fn judged(conn: &Connection, worker: &str) -> Result<Vec<(WaitRow, Vec<String>, Verdict)>> {
     let rows = waits_store::of_worker(conn, worker)?;
     if rows.is_empty() {
@@ -1394,8 +1393,6 @@ mod tests {
         );
     }
 
-    /// T-236: `waits_now` leaves out a wait that must end and writes no
-    /// event and no clear. `waiting` then ends it.
     #[test]
     fn waits_now_leaves_out_an_ended_wait_with_no_write() {
         let dir = tempfile::tempdir().unwrap();

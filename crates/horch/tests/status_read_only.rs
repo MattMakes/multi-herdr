@@ -228,8 +228,6 @@ fn each_reader_command_of_the_ledger_cli_writes_nothing() {
     }
 }
 
-/// A worker bound to T-1 with a reviewers wait of `seconds`. The wait
-/// names T-1 when `on_task` is set, else no task.
 fn waiter(w: &World, seconds: i64, on_task: bool) -> String {
     use horch_core::taskledger::testing::bind_live;
     use horch_core::taskledger::workers::{self, NewWorker, REVIEWS_WAIT};
@@ -238,7 +236,6 @@ fn waiter(w: &World, seconds: i64, on_task: bool) -> String {
         .immediate(|tx| {
             let run = runs::of_project(tx, &w.proj())?.remove(0);
             let task = tasks::of_run(tx, &run.run_id)?.remove(0).task_id;
-            // The run has no run branch: a shared task binds with no tree.
             tx.execute(
                 "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
                 [&task],
@@ -256,7 +253,6 @@ fn waiter(w: &World, seconds: i64, on_task: bool) -> String {
         .unwrap()
 }
 
-/// The fleet clock of the ledger at `clock`.
 fn set_clock(w: &World, clock: i64) {
     let c = rusqlite::Connection::open(w.ledger()).unwrap();
     c.execute(
@@ -268,7 +264,6 @@ fn set_clock(w: &World, clock: i64) {
     .unwrap();
 }
 
-/// The waits that `horch ledger status --json` shows for `worker`.
 fn shown_waits(w: &World, worker: &str) -> Vec<serde_json::Value> {
     let st = w.status_json();
     let line = st["workers"]
@@ -281,8 +276,6 @@ fn shown_waits(w: &World, worker: &str) -> Vec<serde_json::Value> {
     line["waiting"].as_array().unwrap().clone()
 }
 
-/// T-236: a wait past its deadline must end. Status shows no wait and
-/// writes no `wait_ended` event.
 #[test]
 fn status_writes_nothing_for_a_wait_that_must_end() {
     let w = World::new();
@@ -290,8 +283,6 @@ fn status_writes_nothing_for_a_wait_that_must_end() {
     assert_eq!(shown_waits(&w, &worker), Vec::<serde_json::Value>::new());
 }
 
-/// T-236: a live review moves the cap of the wait. Status shows the moved
-/// cap and writes no `due_at`.
 #[test]
 fn status_writes_nothing_for_a_wait_whose_cap_moves() {
     let w = World::new();
