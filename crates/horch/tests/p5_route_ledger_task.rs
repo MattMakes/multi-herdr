@@ -215,10 +215,6 @@ impl World {
             .unwrap()
     }
 
-    /// The run `r1` of the project, made in the ledger as fleetd does (Phase
-    /// 6 retired `horch ledger run new`). It has the idea in flight that a
-    /// task needs (FR-12). The run has the git base `base`, if any. Gives
-    /// the run id.
     fn run(&self, base: Option<&str>) -> String {
         let mut store = Store::open(&self.ledger()).unwrap();
         store

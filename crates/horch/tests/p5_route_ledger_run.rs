@@ -1,7 +1,5 @@
 //! The `import` and `gc` commands of `horch ledger` send 1 request to fleetd
 //! and write no row themselves (RR-5, FM-24; ticket 21 of fleetd-p5).
-//! Phase 6 retired `run new`, `add`, `task` and `add-map`: their tests are in
-//! `p6_retired_run_commands.rs` (FR-12, ticket 47).
 //!
 //! Each test runs the development `horch` with temporary
 //! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root,

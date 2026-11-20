@@ -95,8 +95,6 @@ impl World {
                     ..Default::default()
                 };
                 let run = runs::create(tx, &proj, &new_run)?;
-                // FR-12: `run_idea` makes the feature `F-0001` of the first run, with
-                // the run branch, and the idea in flight that a task needs.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
