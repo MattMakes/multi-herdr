@@ -32,7 +32,6 @@ use serde_json::{json, Value};
 /// The fakes of the exec CLIs.
 const FAKES: [&str; 3] = ["fake-claude", "fake-codex", "fake-antigravity"];
 
-/// The path of the fake `name`, built with the profile of this test.
 fn fake(name: &str) -> PathBuf {
     fakes::fake(&FAKES, name)
 }

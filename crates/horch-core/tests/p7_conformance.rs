@@ -32,7 +32,6 @@ use serde_json::{json, Value};
 /// The fakes that the tests launch.
 const FAKES: [&str; 4] = ["fake-claude", "fake-codex", "fake-antigravity", "fake-pi"];
 
-/// The path of the fake `name`, built with the profile of this test.
 fn fake(name: &str) -> PathBuf {
     fakes::fake(&FAKES, name)
 }

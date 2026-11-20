@@ -48,7 +48,6 @@ const ADAPTERS: [HarnessKind; 6] = [
     HarnessKind::Prime,
 ];
 
-/// The path of the fake `name`, built with the profile of this test.
 fn fake(name: &str) -> PathBuf {
     fakes::fake(&FAKES, name)
 }

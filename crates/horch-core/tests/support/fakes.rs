@@ -1,7 +1,3 @@
-//! The fakes of `crates/horch-e2e` for the tests of `horch-core`. A test
-//! builds them 1 time, into the target folder of the test, with the cargo
-//! profile of the test (T-242).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -18,7 +14,6 @@ const CARGO_RUN_VARS: &[&str] = &[
     "OUT_DIR",
 ];
 
-/// The profile folder `<target>/<profile>` of the test binary `exe`.
 /// cargo 1.100 runs a test from `<profile>/build/<package>/<hash>/out/`,
 /// an older cargo from `<profile>/deps/` (T-59).
 fn built_dir_of(exe: &Path) -> PathBuf {
@@ -37,7 +32,6 @@ fn built_dir_of(exe: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-/// The cargo profile of the profile folder `built`: `debug` is `dev`.
 fn cargo_profile(built: &Path) -> &str {
     match built.file_name().and_then(|n| n.to_str()) {
         Some("debug") | None => "dev",
@@ -45,7 +39,6 @@ fn cargo_profile(built: &Path) -> &str {
     }
 }
 
-/// The cargo command that builds `fakes` into `built`.
 fn build_command(built: &Path, fakes: &[&str]) -> Command {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut cmd = Command::new(cargo);
@@ -74,9 +67,9 @@ fn build_command(built: &Path, fakes: &[&str]) -> Command {
     cmd
 }
 
-/// The path of the fake `name`. The first call builds `fakes` and starts
-/// each 1 time: macOS holds a new binary at its first launch, for
-/// minutes, and no bounded wait of a test counts that hold.
+/// The first call builds `fakes` and starts each 1 time: macOS holds a new
+/// binary at its first launch, for minutes, and no bounded wait of a test
+/// counts that hold.
 pub fn fake(fakes: &[&str], name: &str) -> PathBuf {
     static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let dir = built_dir_of(&std::env::current_exe().unwrap());
@@ -103,10 +96,6 @@ pub fn fake(fakes: &[&str], name: &str) -> PathBuf {
     path(name)
 }
 
-/// T-242: cargo 1.100 runs a test from
-/// `<target>/<profile>/build/<package>/<hash>/out/`, an older cargo from
-/// `<target>/<profile>/deps/`. Both give the profile folder, and the
-/// folder `out` never becomes the profile.
 #[test]
 fn the_fakes_take_the_profile_from_the_target_layout() {
     for (root, want) in [

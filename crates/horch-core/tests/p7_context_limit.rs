@@ -55,7 +55,6 @@ const FAKES: [&str; 2] = ["fake-claude", "fake-antigravity"];
 
 // ─── the fakes ──────────────────────────────────────────────────────────
 
-/// The path of the fake `name`, built with the profile of this test.
 fn fake(name: &str) -> PathBuf {
     fakes::fake(&FAKES, name)
 }
