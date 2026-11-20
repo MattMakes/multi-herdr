@@ -820,12 +820,15 @@ pub(crate) fn private_folder(folder: &Path) -> Result<()> {
 /// no `\n`.
 pub(crate) fn project_program(text: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = text.split('\0').collect();
-    parts.chunks_exact(3).find_map(|rec| {
-        let (scope, origin, pair) = (rec[0], rec[1], rec[2]);
-        let (key, value) = pair.split_once('\n').unwrap_or((pair, "true"));
-        let starts = PROJECT_SCOPES.contains(&scope) && starts_program(key, value);
-        starts.then(|| (key.to_string(), origin.to_string()))
-    })
+    parts
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .find_map(|&[scope, origin, pair]| {
+            let (key, value) = pair.split_once('\n').unwrap_or((pair, "true"));
+            let starts = PROJECT_SCOPES.contains(&scope) && starts_program(key, value);
+            starts.then(|| (key.to_string(), origin.to_string()))
+        })
 }
 
 /// Whether the config key `key` with `value` starts a program.
