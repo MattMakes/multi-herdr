@@ -63,30 +63,36 @@ fn report_stale_state(ctx: &RuntimeContext, clean: bool) {
 
 /// The lines of [`report_stale_state`], and its warnings.
 fn stale_state(ctx: &RuntimeContext, clean: bool) -> (Vec<String>, Vec<String>) {
-    let herdr = PaneHost::of(ctx);
     let per_kind = |counts: &BTreeMap<sweep::Kind, usize>| {
         counts
             .iter()
             .map(|(kind, n)| format!("  {n} {}", kind.label()))
             .collect::<Vec<_>>()
     };
+    let not_checked_line = |b: horch_core::runtime::Backend| {
+        format!("stale state: not checked for {b}, as it does not answer")
+    };
     if clean {
-        let applied = sweep::clean_in(ctx, &herdr, sweep::DOCTOR_BUDGET);
+        let (applied, unreachable) = sweep::clean_all(ctx, sweep::DOCTOR_BUDGET);
         let mut lines = vec![format!("stale state: removed {}", applied.total())];
         lines.extend(per_kind(&applied.removed));
+        lines.extend(unreachable.into_iter().map(not_checked_line));
         return (lines, applied.errors);
     }
-    let (plan, listed) = sweep::plan_in(ctx, &herdr, sweep::DOCTOR_BUDGET);
-    if listed.is_none() {
-        let line = "stale state: not checked, as herdr does not answer".to_string();
-        return (vec![line], Vec::new());
+    let (plan, answered, unreachable) = sweep::plan_all(ctx, sweep::DOCTOR_BUDGET);
+    let mut lines: Vec<String> = unreachable.iter().copied().map(not_checked_line).collect();
+    if answered == 0 {
+        if lines.is_empty() {
+            lines.push("stale state: not checked, as herdr does not answer".to_string());
+        }
+        return (lines, Vec::new());
     }
     let counts = plan.counts();
     let total: usize = counts.values().sum();
-    let mut lines = vec![match total {
+    lines.push(match total {
         0 => "stale state: none".to_string(),
         n => format!("stale state: {n} (`horch doctor --clean` removes it)"),
-    }];
+    });
     lines.extend(per_kind(&counts));
     (lines, Vec::new())
 }

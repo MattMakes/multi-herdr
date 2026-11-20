@@ -16,7 +16,7 @@ pub mod tile;
 
 pub use hc::HcFailed;
 pub use herdr::HerdrFailed;
-pub use host::{Caps, PaneHost, Unsupported};
+pub use host::{is_installed, Caps, Hosts, PaneHost, Unsupported};
 
 #[cfg(test)]
 mod tests {

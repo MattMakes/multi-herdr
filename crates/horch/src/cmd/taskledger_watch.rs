@@ -778,6 +778,64 @@ mod tests {
         w.transcript_path = None;
         assert_eq!(live.observe(&w), Observation::default());
     }
+
+    #[test]
+    fn hcb_10_watchdog_checks_a_worker_on_its_recorded_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let herdr_bin = dir.path().join("herdr");
+        let hc_bin = dir.path().join("hc");
+        let app_bin = dir.path().join("herdr-app");
+        let sock = dir.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+
+        assert!(crate::test_support::write_warmed(
+            &herdr_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho herdr >> \"$(dirname \"$0\")/herdr_called\"\nexit 1\n",
+            &["warm"],
+        )
+        .status
+        .success());
+        assert!(crate::test_support::write_warmed(
+            &hc_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             case \"$1 $3\" in\n\
+             'get t4') printf '{\"address\":\"t4\",\"state\":\"live\",\"labels\":{\"herdr.space\":\"sp1\"},\"status\":{\"app\":\"claude-code\",\"state\":\"working\"},\"status_ms\":77}\\n' ;;\n\
+             'read ') printf 'hc screen text\\n' ;;\n\
+             *) printf 'hc screen text\\n' ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+        assert!(
+            crate::test_support::write_warmed(&app_bin, "#!/bin/sh\nexit 0\n", &["warm"])
+                .status
+                .success()
+        );
+
+        let env = horch_core::runtime::MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with("HORCH_HERDR_BIN", &herdr_bin.to_string_lossy())
+            .with("HORCH_HC_BIN", &hc_bin.to_string_lossy())
+            .with("HORCH_HERDR_APP_BIN", &app_bin.to_string_lossy())
+            .with("HC_TERMINAL_SOCKET", &sock.to_string_lossy());
+        let ctx = horch_core::runtime::RuntimeContext::from_env(&env).unwrap();
+        assert_eq!(ctx.herdr.backend, horch_core::runtime::Backend::Herdr);
+
+        let live = Live::Context(&ctx);
+        let mut w = worker(dir.path());
+        w.backend = horch_core::runtime::Backend::Hc;
+        w.pane_id = Some("t4".into());
+
+        let obs = live.observe(&w);
+        assert_eq!(obs.herdr_status.as_deref(), Some("working"));
+        assert_eq!(obs.herdr_seq, Some(77));
+        assert_eq!(obs.screen.as_deref(), Some("hc screen text\n"));
+        assert!(
+            !dir.path().join("herdr_called").exists(),
+            "watchdog must never ask herdr for an hc worker"
+        );
+    }
 }
 
 #[cfg(test)]

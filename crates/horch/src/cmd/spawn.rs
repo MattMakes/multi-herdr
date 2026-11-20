@@ -850,8 +850,8 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
         eprintln!("horch: {prefix} {warning}");
     }
     let caller = super::sessionscmd::caller_workspace(ctx);
-    let herdr = PaneHost::of(ctx);
-    if let Ok(workspaces) = herdr.workspace_list() {
+    let hosts = horch_core::workspace::Hosts::reachable(ctx);
+    if let Some(workspaces) = hosts.workspace_list_union() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
         // A read only: a scratch fleet must not create the ledger (#199).

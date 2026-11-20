@@ -573,10 +573,12 @@ fn ensure_current(
     start_if_none: bool,
 ) -> Result<()> {
     let root = ctx.paths.state_root.clone();
+    let mut old_location: Option<(Option<String>, Option<String>)> = None;
     let go = match lock::holder(&root) {
         Holder::Live(info)
             if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) =>
         {
+            old_location = Some((info.workspace_id.clone(), info.pane_id.clone()));
             replace_other_binary(&root, &info, exe, quiet)
         }
         Holder::Live(info) => {
@@ -588,7 +590,44 @@ fn ensure_current(
     if !go || start_pending(&root, quiet) {
         return Ok(());
     }
-    start(ctx, herdr, quiet, exe)
+    let target_host = old_location
+        .and_then(|(ws, pane)| host_holding_collector(ctx, herdr, ws.as_deref(), pane.as_deref()))
+        .unwrap_or_else(|| herdr.clone());
+    start(ctx, &target_host, quiet, exe)
+}
+
+fn candidate_hosts(ctx: &RuntimeContext, primary: &PaneHost) -> Vec<PaneHost> {
+    let mut out = vec![primary.clone()];
+    for h in horch_core::workspace::Hosts::reachable(ctx).hosts {
+        if h.backend() != primary.backend() {
+            out.push(h);
+        }
+    }
+    out
+}
+
+fn host_holding_collector(
+    ctx: &RuntimeContext,
+    primary: &PaneHost,
+    workspace_id: Option<&str>,
+    pane_id: Option<&str>,
+) -> Option<PaneHost> {
+    for h in candidate_hosts(ctx, primary) {
+        if let Some(ws) = workspace_id {
+            if h.workspace_list()
+                .ok()
+                .is_some_and(|all| all.iter().any(|w| w.workspace_id == ws))
+            {
+                return Some(h);
+            }
+        }
+        if let Some(pane) = pane_id {
+            if h.pane_get(pane).is_ok() {
+                return Some(h);
+            }
+        }
+    }
+    None
 }
 
 /// Stop a live collector that runs another binary. `false` when it cannot
@@ -728,13 +767,27 @@ fn start(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool, exe: &Path) -> Res
     let root = ctx.paths.state_root.clone();
     let id = start::new_id();
     let command = collector_command(ctx, exe, &id);
-    let old = herdr
-        .workspace_list()
-        .map(|all| old_collector_workspaces(&all, &live_collector_in(herdr, &root)))
-        .unwrap_or_default();
-    let (ws, pane) = match start_in_old(ctx, herdr, &id, &command, &old)? {
+    let mut create_host = herdr.clone();
+    let mut started = None;
+    for host in candidate_hosts(ctx, herdr) {
+        let Ok(all) = host.workspace_list() else {
+            continue;
+        };
+        if all
+            .iter()
+            .any(|w| w.label.as_deref() == Some(WORKSPACE_LABEL))
+        {
+            create_host = host.clone();
+        }
+        let old = old_collector_workspaces(&all, &live_collector_in(&host, &root));
+        if let Some(reused) = start_in_old(ctx, &host, &id, &command, &old)? {
+            started = Some(reused);
+            break;
+        }
+    }
+    let (ws, pane) = match started {
         Some(started) => started,
-        None => start_in_new(ctx, herdr, &id, &command)?,
+        None => start_in_new(ctx, &create_host, &id, &command)?,
     };
     if !quiet {
         output::println(&format!(
@@ -745,14 +798,20 @@ fn start(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool, exe: &Path) -> Res
 }
 
 /// The record of a start in workspace `ws`, pane `pane`.
-fn start_request(ctx: &RuntimeContext, id: &str, ws: &str, pane: &str) -> start::Request {
+fn start_request(
+    ctx: &RuntimeContext,
+    host: &PaneHost,
+    id: &str,
+    ws: &str,
+    pane: &str,
+) -> start::Request {
     start::Request {
         id: id.to_string(),
         requested_at: clock::now_stamp(),
         workspace_id: ws.to_string(),
         pane_id: pane.to_string(),
         herdr: ctx.bins.harness.herdr.clone(),
-        backend: ctx.herdr.backend,
+        backend: host.backend(),
     }
 }
 
@@ -772,7 +831,10 @@ fn start_in_old(
     let Some((ws, pane)) = reusable else {
         return Ok(None);
     };
-    start::record(&ctx.paths.state_root, &start_request(ctx, id, &ws, &pane))?;
+    start::record(
+        &ctx.paths.state_root,
+        &start_request(ctx, herdr, id, &ws, &pane),
+    )?;
     Ok(herdr
         .pane_run(&pane, command)
         .map(|_| (ws.clone(), pane))
@@ -797,7 +859,7 @@ fn start_in_new(
     let ws = ws.context("creating the telemetry workspace")?;
     start::record(
         root,
-        &start_request(ctx, id, &ws.workspace_id, &ws.root_pane_id),
+        &start_request(ctx, herdr, id, &ws.workspace_id, &ws.root_pane_id),
     )?;
     let ran = herdr.pane_run(&ws.root_pane_id, command);
     ran.inspect_err(|_| start::clear(root))?;
@@ -1207,6 +1269,86 @@ mod tests {
             ["w2", "w3"]
         );
         assert!(old_collector_workspaces(&listed, &LiveIn::Unknown).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_10_telemetry_is_not_started_twice_across_hosts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let bin = tmp.path().join("horch");
+        std::fs::write(&bin, b"build").unwrap();
+        let herdr_bin = tmp.path().join("herdr");
+        let hc_bin = tmp.path().join("hc");
+        let app_bin = tmp.path().join("herdr-app");
+        let sock = tmp.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+
+        // herdr ALREADY has an existing `horch telemetry` workspace `w1` with 1 pane `w1:p1`.
+        assert!(crate::test_support::write_warmed(
+            &herdr_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             d=$(dirname \"$0\")\n\
+             printf '%s\\n' \"$*\" >> \"$d/herdr_calls\"\n\
+             case \"$1 $2\" in\n\
+             'workspace list') printf '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"horch telemetry\"}]}}\\n' ;;\n\
+             'pane list') printf '{\"result\":{\"panes\":[{\"pane_id\":\"w1:p1\",\"workspace_id\":\"w1\"}]}}\\n' ;;\n\
+             'pane run') printf '{\"result\":{\"type\":\"ok\"}}\\n' ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+        assert!(crate::test_support::write_warmed(
+            &hc_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             case \"$1\" in\n\
+             server) printf 'running\\n' ;;\n\
+             *) exit 0 ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+        assert!(crate::test_support::write_warmed(
+            &app_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             d=$(dirname \"$0\")\n\
+             printf '%s\\n' \"$*\" >> \"$d/app_calls\"\n\
+             case \"$1\" in\n\
+             ls) printf '{\"spaces\":[]}\\n' ;;\n\
+             status) printf '{\"ok\":true}\\n' ;;\n\
+             do) echo CREATED_ON_HC >> \"$d/hc_created\"; printf '{\"space\":\"sp1\",\"tab\":\"tb1\",\"terminal\":\"t1\"}\\n' ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+
+        // Context resolved to `hc` (e.g. `horch telemetry ensure` run inside an hc terminal),
+        // while `herdr` already has a `horch telemetry` workspace!
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe(&bin)
+                .with("HOME", &tmp.path().to_string_lossy())
+                .with("HORCH_STATE_DIR", &state.to_string_lossy())
+                .with("HORCH_HERDR_BIN", &herdr_bin.to_string_lossy())
+                .with("HORCH_HC_BIN", &hc_bin.to_string_lossy())
+                .with("HORCH_HERDR_APP_BIN", &app_bin.to_string_lossy())
+                .with("HC_TERMINAL_SOCKET", &sock.to_string_lossy())
+                .with("HC_TERMINAL_ID", "t2"),
+        )
+        .unwrap();
+        assert_eq!(ctx.herdr.backend, horch_core::runtime::Backend::Hc);
+
+        ensure(&ctx, &PaneHost::of(&ctx), true).unwrap();
+        assert!(
+            !tmp.path().join("hc_created").exists(),
+            "ensure must reuse the existing horch telemetry workspace on herdr instead of creating a second one on hc"
+        );
+        let herdr_calls = std::fs::read_to_string(tmp.path().join("herdr_calls")).unwrap();
+        assert!(herdr_calls.contains("pane run w1:p1"), "{herdr_calls}");
     }
 
     /// A change in layout is a change to these files.

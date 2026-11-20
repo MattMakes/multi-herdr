@@ -581,9 +581,30 @@ fn choose_flavor(ctx: &RuntimeContext, flavor: FleetFlavor) -> Result<FleetFlavo
 /// list, none is.
 fn open_ledger(ctx: &RuntimeContext, herdr: &PaneHost) -> Result<SessionLedger> {
     let ledger = SessionLedger::open_in(ctx)?;
-    if let Ok(open) = herdr.workspace_list() {
-        let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
-        ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
+    let hosts = horch_core::workspace::Hosts::reachable(ctx);
+    let mut open_by_backend: std::collections::BTreeMap<horch_core::runtime::Backend, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for h in &hosts.hosts {
+        if let Ok(list) = h.workspace_list() {
+            open_by_backend.insert(
+                h.backend(),
+                list.into_iter().map(|w| w.workspace_id).collect(),
+            );
+        }
+    }
+    if let std::collections::btree_map::Entry::Vacant(e) = open_by_backend.entry(herdr.backend()) {
+        if let Ok(list) = herdr.workspace_list() {
+            e.insert(list.into_iter().map(|w| w.workspace_id).collect());
+        }
+    }
+    if !open_by_backend.is_empty() {
+        ledger.supersede_orchestrators_by_record(|r| match r.workspace_id.as_deref() {
+            Some(ws) => match open_by_backend.get(&r.backend) {
+                Some(open) => open.iter().any(|o| o == ws),
+                None => true,
+            },
+            None => false,
+        })?;
     }
     Ok(ledger)
 }

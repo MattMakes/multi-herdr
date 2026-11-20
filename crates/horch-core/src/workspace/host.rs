@@ -38,6 +38,78 @@ impl fmt::Display for Unsupported {
 
 impl std::error::Error for Unsupported {}
 
+/// Reachable pane hosts across the machine, probed without starting a core.
+#[derive(Debug, Clone)]
+pub struct Hosts {
+    pub hosts: Vec<PaneHost>,
+    pub unreachable: Vec<Backend>,
+    pub all_installed_answer: bool,
+}
+
+impl Hosts {
+    pub fn reachable(ctx: &RuntimeContext) -> Self {
+        let mut hosts = Vec::new();
+        let mut unreachable = Vec::new();
+        for backend in [Backend::Herdr, Backend::Hc] {
+            if !is_installed(ctx, backend) {
+                continue;
+            }
+            let host = PaneHost::for_backend(ctx, backend);
+            if host.server_reachable() {
+                hosts.push(host);
+            } else {
+                unreachable.push(backend);
+            }
+        }
+        let all_installed_answer = !hosts.is_empty() && unreachable.is_empty();
+        Self {
+            hosts,
+            unreachable,
+            all_installed_answer,
+        }
+    }
+
+    pub fn get(&self, backend: Backend) -> Option<&PaneHost> {
+        self.hosts.iter().find(|h| h.backend() == backend)
+    }
+
+    pub fn workspace_list_union(&self) -> Option<Vec<Workspace>> {
+        let mut any_ok = false;
+        let mut out = Vec::new();
+        for host in &self.hosts {
+            if let Ok(list) = host.workspace_list() {
+                any_ok = true;
+                out.extend(list);
+            }
+        }
+        any_ok.then_some(out)
+    }
+}
+
+/// True when `backend`'s CLI program is installed (either as an explicit file
+/// override or on `ctx.inherited.path`).
+pub fn is_installed(ctx: &RuntimeContext, backend: Backend) -> bool {
+    let bin = match backend {
+        Backend::Herdr => &ctx.bins.harness.herdr,
+        Backend::Hc => &ctx.bins.harness.hc,
+    };
+    if bin.components().count() > 1 || bin.is_absolute() {
+        return match std::fs::metadata(bin) {
+            Ok(m) => m.is_file(),
+            Err(e) => e.kind() == std::io::ErrorKind::PermissionDenied,
+        };
+    }
+    let Some(name) = bin.to_str() else {
+        return false;
+    };
+    crate::runtime::process::which(
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+        name,
+    )
+    .is_some()
+}
+
 /// Capabilities of the active pane host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
