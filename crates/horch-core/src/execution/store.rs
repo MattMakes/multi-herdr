@@ -4,14 +4,16 @@
 //! (TRF-45, D10), 1 row per [`LedgerRecordV1`], the record as JSON. Only
 //! fleetd writes the ledger (RR-5): a read-modify-write reads the rows
 //! read-only and sends the changed rows to fleetd in 1 `session_records`
-//! request (T-884). The old JSON ledger
+//! request (T-884). The wrapper of a worker sends no request (T-899): its
+//! changed rows stay in its process, and fleetd gets its session from
+//! `session.json` of its attempt. The old JSON ledger
 //! at `<state_root>/<slug>.json` (the path and slug rule of every earlier
 //! version) is read, never written: `horch ledger import` copies it, and a
 //! record only it holds moves into the table at the next write.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::OptionalExtension;
@@ -780,6 +782,18 @@ pub fn read_all_sessions(
         .collect()
 }
 
+/// 1 session record that the wrapper of a worker changed, for the ledger
+/// file `db` and the project slug `slug`.
+struct WrapperRow {
+    db: PathBuf,
+    slug: String,
+    record: LedgerRecordV1,
+}
+
+/// The session records that the wrapper of this process changed. Empty in
+/// each process that is not a wrapper.
+static WRAPPER_ROWS: Mutex<Vec<WrapperRow>> = Mutex::new(Vec::new());
+
 /// A project's executions.
 ///
 /// The records live in the `session_records` table of a task ledger file
@@ -896,7 +910,7 @@ impl ExecutionStore {
     /// The records as stored, without the overlay: what a write starts
     /// from.
     fn read_file(&self) -> Result<Vec<LedgerRecordV1>> {
-        let rows = read_session_rows(&self.db, Some(&self.slug));
+        let rows = self.with_wrapper_rows(read_session_rows(&self.db, Some(&self.slug)));
         Ok(merge_legacy(
             self.read_legacy()?,
             rows.into_iter().map(|r| r.record).collect(),
@@ -952,19 +966,69 @@ impl ExecutionStore {
         out
     }
 
-    /// The stored rows of this project, read-only. A file that does not
+    /// The stored rows of this project, read-only, with the rows that this
+    /// wrapper kept ([`Self::with_wrapper_rows`]). A file that does not
     /// exist has none.
     fn stored_rows(&self) -> Result<Vec<SessionRow>> {
         if !self.db.is_file() {
-            return Ok(Vec::new());
+            return Ok(self.with_wrapper_rows(Vec::new()));
         }
         let store = crate::taskledger::Store::open_read_only(&self.db)
             .with_context(|| format!("reading the session records in {}", self.db.display()))?;
-        session_rows(store.conn(), Some(&self.slug))
+        Ok(self.with_wrapper_rows(session_rows(store.conn(), Some(&self.slug))?))
+    }
+
+    /// `rows` with each row that this wrapper kept for this project laid
+    /// over them. Only the wrapper of a worker keeps rows.
+    fn with_wrapper_rows(&self, mut rows: Vec<SessionRow>) -> Vec<SessionRow> {
+        if !channel_client::is_wrapper_process() {
+            return rows;
+        }
+        let kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+        for k in kept
+            .iter()
+            .filter(|k| k.db == self.db && k.slug == self.slug)
+        {
+            let row = SessionRow {
+                project_root: self.project.clone(),
+                slug: self.slug.clone(),
+                json: serde_json::to_string(&k.record).unwrap_or_default(),
+                record: k.record.clone(),
+            };
+            match rows
+                .iter_mut()
+                .find(|r| r.record.record_id == k.record.record_id)
+            {
+                Some(r) => *r = row,
+                None => rows.push(row),
+            }
+        }
+        rows
+    }
+
+    /// Keep the change `rows` in this wrapper process: the wrapper sends no
+    /// request and reads no operator token (T-899). A later read of this
+    /// process sees them.
+    fn keep_in_wrapper(&self, rows: Vec<SessionRowChange>) {
+        let mut kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+        for change in rows {
+            let same = |k: &WrapperRow| {
+                k.db == self.db && k.slug == self.slug && k.record.record_id == change.record_id
+            };
+            kept.retain(|k| !same(k));
+            if let Some(record) = change.record {
+                kept.push(WrapperRow {
+                    db: self.db.clone(),
+                    slug: self.slug.clone(),
+                    record,
+                });
+            }
+        }
     }
 
     /// Mutate the records and send the change to fleetd, the only writer of
-    /// the ledger (RR-5, T-884): 1 `session_records` request with each
+    /// the ledger (RR-5, T-884). The wrapper of a worker keeps the change
+    /// in its process ([`Self::keep_in_wrapper`]). Else 1 `session_records` request with each
     /// changed row and the hash of each row as it was read. fleetd refuses a
     /// row that changed after the read; then `f` runs again on a new read,
     /// so 2 writers cannot lose a change. When fleetd is down, the request
@@ -983,6 +1047,10 @@ impl ExecutionStore {
             let out = f(&mut records)?;
             let changed = row_changes(&stored, &records)?;
             if changed.is_empty() {
+                return Ok(out);
+            }
+            if channel_client::is_wrapper_process() {
+                self.keep_in_wrapper(changed);
                 return Ok(out);
             }
             if let Some(writer) = &self.writer {

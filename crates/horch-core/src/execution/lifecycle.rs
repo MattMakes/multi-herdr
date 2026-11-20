@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::execution::SessionMode;
+use crate::fleetd::fleet_runtime::adapters::channel_client;
 use crate::fleetd::task_execution::domain::context_limit;
 use crate::fleetd::worker_profiles::domain::profile::Mode;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
@@ -1305,7 +1306,12 @@ impl<'a> PaneWorker<'a> {
 }
 
 impl WorkerSteps for PaneWorker<'_> {
+    /// The first step of the wrapper marks this process as the wrapper
+    /// (T-899): from then on it sends no request and reads no operator
+    /// token. Its session records stay in its process, and its facts go by
+    /// the files of its attempt.
     fn load_brief(&mut self) -> Result<Brief> {
+        channel_client::mark_wrapper_process();
         let mailbox = Mailbox::resolve_in(&self.herdr(), self.ctx)?;
         let brief = mailbox.read_brief(self.role)?;
         self.mailbox = Some(mailbox);

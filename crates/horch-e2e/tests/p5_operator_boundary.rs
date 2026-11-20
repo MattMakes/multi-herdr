@@ -814,60 +814,44 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
 
 // ─── REQUIRED item 3: the operator-only commands ────────────────────────
 
-/// Where an operator-only command run from a worker attempt is refused.
-enum RefusedBy {
-    /// fleetd: the command sends its request, and the peer process check
-    /// refuses it.
-    Fleetd,
-    /// The command itself, before it sends a request, with this line. fleetd
-    /// refuses its kind too: attack 3 of
-    /// [`operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind`].
-    Client(&'static str),
-}
+/// The line of an operator-only command that refuses itself inside a
+/// fleet attempt, before it reads the token or sends a request (T-899).
+/// fleetd refuses each kind too: attack 3 of
+/// [`operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind`]
+/// and [`operator_request_from_a_process_of_a_live_attempt_is_refused`].
+const INSIDE_ATTEMPT: &str = "refused inside a fleet attempt";
 
 /// The task branch of the worker of a test, in the ledger and in git, so
 /// that `horch branch abandon` finds it.
 const TASK_BRANCH: &str = "fleet/F-0001/attack";
 
 /// Each operator-only command, run from a live worker attempt with
-/// `HORCH_ROLE=orchestrator` and with no `HORCH_ROLE`, is refused: its
-/// `requests` rows are refused by fleetd with a null `auth`, and the state
-/// of the ledger does not change. The attacker keeps `HORCH_WORKER_ID` only
+/// `HORCH_ROLE=orchestrator` and with no `HORCH_ROLE`, is refused: the
+/// command refuses itself by the fleet process fact (T-899), it sends no
+/// request, and the state of the ledger does not change. The attacker keeps `HORCH_WORKER_ID` only
 /// for `horch ledger worktree drop`, which needs it. `horch rescue drop`
 /// needs a rescue ref in git: its own test is
-/// [`operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd`].
+/// [`operator_only_rescue_drop_from_a_worker_is_refused`].
 #[test]
 fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_command() {
     let mut w = World::new("p5-sr8-commands");
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let task = a.task.clone().unwrap();
     w.task_branch(&a);
-    let commands: Vec<(Vec<&str>, RefusedBy)> = vec![
-        (vec!["job", "requeue", "1"], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "requeue", &task, "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (vec!["ledger", "cancel", &task, "attack"], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "waive", &task, "F1", "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (vec!["task", "requeue", &task, "attack"], RefusedBy::Fleetd),
-        (vec!["task", "cancel", &task, "attack"], RefusedBy::Fleetd),
-        (vec!["worktree", "restore", TASK_BRANCH], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "worktree", "drop", "attack", "--reason", "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (
-            vec!["feature", "abandon", FEATURE],
-            RefusedBy::Client("refused inside a fleet attempt"),
-        ),
-        (vec!["branch", "abandon", TASK_BRANCH], RefusedBy::Fleetd),
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["job", "requeue", "1"],
+        vec!["ledger", "requeue", &task, "attack"],
+        vec!["ledger", "cancel", &task, "attack"],
+        vec!["ledger", "waive", &task, "F1", "attack"],
+        vec!["task", "requeue", &task, "attack"],
+        vec!["task", "cancel", &task, "attack"],
+        vec!["worktree", "restore", TASK_BRANCH],
+        vec!["ledger", "worktree", "drop", "attack", "--reason", "attack"],
+        vec!["feature", "abandon", FEATURE],
+        vec!["branch", "abandon", TASK_BRANCH],
     ];
     let before = w.state();
-    for (args, refused_by) in &commands {
+    for args in &commands {
         for role in [Some("orchestrator"), None] {
             let shown = format!("horch {} with HORCH_ROLE {role:?}", args.join(" "));
             let seen = w.requests().len();
@@ -875,19 +859,8 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
             let rows = w.requests().split_off(seen);
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(!out.status.success(), "{shown} is refused: {stderr}");
-            match refused_by {
-                RefusedBy::Fleetd => {
-                    assert!(!rows.is_empty(), "{shown} reaches fleetd: {stderr}");
-                    for row in &rows {
-                        assert_refused(row, &peer_reason(&a));
-                    }
-                    assert!(stderr.contains(&peer_reason(&a)), "{shown}: {stderr}");
-                }
-                RefusedBy::Client(line) => {
-                    assert!(rows.is_empty(), "{shown} sends no request: {rows:#?}");
-                    assert!(stderr.contains(line), "{shown}: {stderr}");
-                }
-            }
+            assert!(rows.is_empty(), "{shown} sends no request: {rows:#?}");
+            assert!(stderr.contains(INSIDE_ATTEMPT), "{shown}: {stderr}");
         }
     }
     assert_eq!(
@@ -901,10 +874,11 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
 const RESCUE_REF: &str = "refs/horch/rescue/attack/1";
 
 /// REQUIRED item 3 for `horch rescue drop`: from a live worker attempt,
-/// with `HORCH_ROLE` set or removed, fleetd refuses its `rescue_drop`
-/// request, and the rescue ref stays.
+/// with `HORCH_ROLE` set or removed, the command refuses itself by the
+/// fleet process fact (T-899) and sends no `rescue_drop` request, and the
+/// rescue ref stays.
 #[test]
-fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
+fn operator_only_rescue_drop_from_a_worker_is_refused() {
     let mut w = World::new("p5-sr8-rescue");
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let tip = w.h.head_sha().unwrap();
@@ -926,9 +900,15 @@ fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
             "horch rescue drop is refused: {stderr}"
         );
         let rows = w.requests().split_off(seen);
-        assert_eq!(rows.len(), 1, "horch rescue drop reaches fleetd: {stderr}");
-        assert_eq!(rows[0].kind, "rescue_drop");
-        assert_refused(&rows[0], &peer_reason(&a));
+        assert!(
+            rows.is_empty(),
+            "horch rescue drop sends no request: {rows:#?}"
+        );
+        assert!(stderr.contains(INSIDE_ATTEMPT), "{stderr}");
+        assert!(
+            stderr.contains(&a.id),
+            "the refusal names the attempt: {stderr}"
+        );
         let kept =
             w.h.git_cmd(&["rev-parse", "--verify", RESCUE_REF])
                 .output()
@@ -1359,4 +1339,215 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         "no request file is left"
     );
     assert_eq!(w.state(), before, "the gate changes no state of the ledger");
+}
+
+// ─── T-899: the wrapper never opens the operator token ──────────────────
+
+/// The variable that carries the pane command of the wrapper into its
+/// sandbox in [`sandboxed_herdr`].
+const PANE_COMMAND_ENV: &str = "P5_T899_PANE_COMMAND";
+
+/// The herdr of [`wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read`]:
+/// at `pane run`, which starts the wrapper `horch worker`, it runs the pane
+/// command in the worker sandbox with the 3 operator denials of the fleet
+/// root `fleet` (the token, the channel, each write in `run/`). Only the
+/// wrapper and its agent run in it: fleetd and the spawner read the token
+/// as before. Each other call goes to the fake herdr `fake`.
+fn sandboxed_herdr(fake: &Path, fleet: &Path, writable: &Path) -> String {
+    let run = fleet.join("run");
+    let denied = Denials {
+        read: vec![token_file::path(fleet)],
+        connect: vec![run.join("fleetd.sock")],
+        write: vec![run],
+    };
+    let mut inner = Command::new("/bin/sh");
+    inner.args(["-c", &format!("eval \"${PANE_COMMAND_ENV}\"")]);
+    let cmd = match sandboxed(inner, &[writable.to_path_buf()], &denied) {
+        Ok(cmd) => cmd,
+        Err(gap) => panic!("this host has no worker sandbox: {gap}"),
+    };
+    let mut line = vec![quoted(&cmd.get_program().to_string_lossy())];
+    line.extend(cmd.get_args().map(|a| quoted(&a.to_string_lossy())));
+    format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+         if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
+         {PANE_COMMAND_ENV}=\"$4\"; export {PANE_COMMAND_ENV}\n\
+         exec {fake} pane run \"$3\" {sandboxed}\n\
+         fi\n\
+         exec {fake} \"$@\"\n",
+        fake = quoted(&fake.to_string_lossy()),
+        sandboxed = quoted(&line.join(" ")),
+    )
+}
+
+/// A push attempt of 1 task, with the fake claude of `scenario`, the herdr
+/// [`sandboxed_herdr`] and a served test fleetd.
+fn push_fleet(name: &str, scenario: &str) -> Harness {
+    let mut h = Harness::new(name).with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WAKE", "1");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    let quota = horch_e2e::harness::fixtures().join("quota/all-ok.json");
+    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+    h.set("HORCH_FAKE_SCENARIO", scenario);
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {o:?}");
+    }
+    // The fake agent runs `horch result` from PATH.
+    std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
+    let fake = Harness::horch_bin().with_file_name("fake-herdr");
+    let top = h.root.canonicalize().unwrap();
+    let hook = sandboxed_herdr(&fake, &root.canonicalize().unwrap(), &top);
+    let herdr = h.write_warmed("herdr-sandboxed", hook.as_bytes());
+    let workspace = h.fleet_workspace();
+    h.set("HORCH_WORKSPACE_ID", workspace);
+    h.set("HORCH_HERDR_BIN", herdr.to_string_lossy());
+    let dir = h.project.join("tickets");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ticket = dir.join("t0.md");
+    std::fs::write(&ticket, "# T0\n").unwrap();
+    let run = horch_e2e::ledger_seed::seed_run(&h, "token-lock", Some(1), "w1:p1");
+    horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "opus");
+    h.serve_fleetd();
+    h
+}
+
+/// The first attempt of a task: its id, state and outcome, and the status
+/// of its worker row.
+fn task_attempt(h: &Harness) -> Option<(String, String, Option<String>, String)> {
+    let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).ok()?;
+    store
+        .conn()
+        .query_row(
+            "SELECT a.id, a.state, a.outcome, w.status
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.task_id IS NOT NULL ORDER BY a.rowid LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+}
+
+/// The text of each pane of the fake herdr: the output of the wrapper and
+/// of its agent.
+fn pane_output(h: &Harness) -> String {
+    let name = h.log.file_name().unwrap().to_string_lossy().into_owned();
+    let mut out = String::new();
+    for e in std::fs::read_dir(h.log.parent().unwrap())
+        .unwrap()
+        .flatten()
+    {
+        let file = e.file_name().to_string_lossy().into_owned();
+        if file.starts_with(&format!("{name}.pane-")) && file.ends_with(".out") {
+            out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+        }
+    }
+    out
+}
+
+/// The `requests` rows of the ledger of `h`: (kind, state, reason).
+fn request_rows(h: &Harness) -> Vec<(String, String, Option<String>)> {
+    let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT kind, state, reason FROM requests ORDER BY rowid")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    rows.collect::<rusqlite::Result<_>>().unwrap()
+}
+
+/// The result of the fake claude of the attempt: the record of its
+/// `horch result`. The adapter conformance runs of fleetd have their own
+/// fleet root, and their records do not count.
+fn agent_result(h: &Harness) -> Option<Value> {
+    let tasks = h.fleet_root().join("tasks");
+    let tasks = tasks.to_string_lossy();
+    h.calls_of("claude")
+        .into_iter()
+        .rev()
+        .filter(|c| c["argv"].to_string().contains(tasks.as_ref()))
+        .find_map(|c| c.get("result").cloned())
+}
+
+/// T-899: the wrapper runs a full push attempt with an operator token that
+/// it cannot read: the pane runs the wrapper and its agent in the worker
+/// sandbox, which denies the token read, the channel and each write in
+/// `run/`. Nothing fails: the agent commits and sends its result, the
+/// verifier ends the attempt, and the worker row does not end
+/// `launch_failed`. The output of the wrapper names no read of the token
+/// and no refused request, and no `requests` row names the attempt. So
+/// the wrapper never opens the token and sends no operator request.
+#[test]
+fn wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read() {
+    let h = push_fleet("p5-t899-token", "exec,commit,result");
+    let context = |h: &Harness| {
+        format!(
+            "attempt: {:?}\nrequests: {:?}\nresult: {:?}\npanes:\n{}",
+            task_attempt(h),
+            request_rows(h),
+            agent_result(h),
+            pane_output(h)
+        )
+    };
+    let (id, _, outcome, worker) = wait_for_or(
+        "the verifier to end the attempt",
+        || {
+            std::thread::sleep(Duration::from_secs(1));
+            task_attempt(&h).filter(|a| a.1 == "ended")
+        },
+        || context(&h),
+    );
+    let shown = context(&h);
+    assert!(
+        agent_result(&h).is_some_and(|r| r["exit"] == 0),
+        "the agent sent its result: {shown}"
+    );
+    assert!(
+        matches!(outcome.as_deref(), Some("verified" | "rejected")),
+        "the attempt ends by its result: {shown}"
+    );
+    assert_ne!(worker, "launch_failed", "{shown}");
+    let panes = pane_output(&h);
+    assert!(!panes.is_empty(), "the pane shows the wrapper: {shown}");
+    for word in [
+        "operator token",
+        "operator.token",
+        "refused",
+        "not recorded",
+    ] {
+        assert!(
+            !panes.contains(word),
+            "the wrapper output has {word:?}: {shown}"
+        );
+    }
+    for (kind, state, reason) in request_rows(&h) {
+        let reason = reason.unwrap_or_default();
+        assert!(
+            !reason.contains(&id),
+            "a request names the attempt: {kind} {state} {reason}\n{shown}"
+        );
+    }
 }
