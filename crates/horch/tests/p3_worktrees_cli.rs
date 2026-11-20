@@ -30,13 +30,8 @@ use horch_core::taskledger::{schema, util, Store};
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 
-/// No folder of an installed agent CLI: fleetd probes each CLI that it finds
-/// on `PATH`, and a failed probe adds a drift idea and a second active run.
-const PATH: &str = "/usr/bin:/bin";
+const PATH_WITHOUT_AGENT_CLIS: &str = "/usr/bin:/bin";
 
-/// The run `r1` of the project and its task T1 from `t1.md`, written into
-/// the ledger as fixtures, since Phase 6 retired `horch ledger run new` and
-/// `horch ledger add`. The run branch `fleet/r1` starts from `main`.
 fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
     git(&["branch", "fleet/r1", "main"]);
     let new = NewRun {
@@ -70,9 +65,6 @@ struct Out {
     err: String,
 }
 
-/// The agent process of the worker of T1. A live attempt needs an agent
-/// that is alive, and it must not be an ancestor of the `horch` commands of
-/// the test, which then would be commands of that worker.
 struct Agent(std::process::Child);
 
 impl Drop for Agent {
@@ -94,8 +86,6 @@ struct World {
 }
 
 impl World {
-    /// A project with 1 run `r1`, 1 task T1 bound to the worker `dev1`,
-    /// and its tree `r1-T1-ticket-one` with 1 untracked and 1 changed file.
     fn with_a_tree() -> World {
         let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
@@ -144,8 +134,6 @@ impl World {
         w
     }
 
-    /// Poll until `done` holds. fleetd does the work in its own passes,
-    /// so the test waits for the event, not for a time.
     fn wait_for(&self, what: &str, done: impl Fn(&World) -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         while !done(self) {
@@ -157,8 +145,6 @@ impl World {
         }
     }
 
-    /// Wait for fleetd to make the tree that a restore reserved at `tree`:
-    /// its `worktree_add` job passes and the row is `created`.
     fn wait_restored(&self, tree: &Path) {
         let path = tree.to_string_lossy().into_owned();
         self.wait_for("fleetd to make the restored tree", |w| {
@@ -192,7 +178,7 @@ impl World {
             .args(args)
             .current_dir(dir)
             .env_clear()
-            .env("PATH", PATH)
+            .env("PATH", PATH_WITHOUT_AGENT_CLIS)
             .env("HOME", self.root().join("home"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_AUTHOR_NAME", "n")
@@ -216,7 +202,7 @@ impl World {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
         cmd.current_dir(self.proj())
             .env_clear()
-            .env("PATH", PATH)
+            .env("PATH", PATH_WITHOUT_AGENT_CLIS)
             .env("HOME", root.join("home"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("XDG_DATA_HOME", root.join("data"))
@@ -360,7 +346,7 @@ impl World {
             ])
             .current_dir(self.proj())
             .env_clear()
-            .env("PATH", PATH)
+            .env("PATH", PATH_WITHOUT_AGENT_CLIS)
             .env("HOME", self.root().join("home"))
             .status()
             .unwrap()

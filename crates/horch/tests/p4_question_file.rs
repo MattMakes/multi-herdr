@@ -35,9 +35,6 @@ const ROLE: &str = "dev1";
 /// The starting value of `result_max_bytes` of `fleet.toml`.
 const MAX_BYTES: u64 = 64 * 1024;
 
-/// The run `r1` of the project and its task T1 from `t1.md`, written into
-/// the ledger as fixtures, since Phase 6 retired `horch ledger run new` and
-/// `horch ledger add`. The run branch `fleet/r1` starts from `main`.
 fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
     git(&["branch", "fleet/r1", "main"]);
     let new = NewRun {
@@ -66,8 +63,6 @@ fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
         .unwrap();
 }
 
-/// An agent process that is not the test: its worker is in a live attempt,
-/// but the `horch` commands of the test are not in its parent chain.
 struct Agent(std::process::Child);
 
 impl Drop for Agent {
@@ -93,8 +88,6 @@ impl World {
         World::with_agent(false)
     }
 
-    /// As [`World::new`]; when `outside` is true the agent of the worker is a
-    /// separate process, so the commands of the test run in no attempt.
     fn with_agent(outside: bool) -> World {
         let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
@@ -136,7 +129,6 @@ impl World {
             &proj,
             &w.root.join("ledger.sqlite3"),
         );
-        // The orchestrator of the run: its pane in the mailbox of the workspace.
         let mailbox = w
             .root
             .join("state")
@@ -194,8 +186,6 @@ impl World {
             .join("outbox/questions")
     }
 
-    /// The ids of the `questions` rows, oldest first. The test runs no
-    /// fleetd: it makes the rows with the call that the pass of fleetd makes.
     fn question_rows(&self) -> Vec<String> {
         let store = horch_core::taskledger::Store::open(&self.root.join("ledger.sqlite3")).unwrap();
         horch_core::taskledger::workers::sync_questions(

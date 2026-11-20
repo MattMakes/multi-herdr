@@ -40,9 +40,6 @@ struct Out {
     err: String,
 }
 
-/// The run `r1` of the project and its task T1 from `t1.md`, written into
-/// the ledger as fixtures, since Phase 6 retired `horch ledger run new` and
-/// `horch ledger add`. The run branch `fleet/r1` starts from `main`.
 fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
     git(&["branch", "fleet/r1", "main"]);
     let new = NewRun {
@@ -70,8 +67,6 @@ fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
         .unwrap();
 }
 
-/// An agent process that is not the test: its worker is in a live attempt,
-/// but the `horch` commands of the test are not in its parent chain.
 struct Agent(std::process::Child);
 
 impl Drop for Agent {
@@ -96,8 +91,6 @@ impl World {
         World::with_agent(false)
     }
 
-    /// As [`World::new`]; when `outside` is true the agent of the worker is a
-    /// separate process, so the commands of the test run in no attempt.
     fn with_agent(outside: bool) -> World {
         let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
@@ -136,8 +129,6 @@ impl World {
             role: Some("dev1".into()),
             ..Default::default()
         };
-        // The test runs no fleetd, so the agent of the attempt is the test:
-        // each `horch` command of the test is in its parent chain.
         let agent = outside.then(|| Command::new("sleep").arg("3600").spawn().unwrap());
         let pid = agent.as_ref().map_or_else(std::process::id, |a| a.id());
         support::bind::bind(&w.root.join("ledger.sqlite3"), new, Some(pid));
@@ -418,9 +409,6 @@ fn check_exits_2_with_neither_file_and_0_with_one() {
     );
 }
 
-/// `horch result` finds its attempt by its parent chain, and reads no
-/// `HORCH_TASK_YAML`: a process in no live attempt is refused, also when its
-/// pane names the `task.yaml` of an attempt.
 #[test]
 fn result_outside_a_push_attempt_is_refused() {
     let w = World::with_agent(true);
