@@ -1676,6 +1676,58 @@ fn as_worker(h: &Harness, worker: &str, args: &[&str]) -> Output {
     cmd.output().unwrap()
 }
 
+/// The shell that plays the agent of a live attempt in a test: the `horch`
+/// command that [`AgentShell::run`] gives it runs below its process.
+struct AgentShell {
+    child: std::process::Child,
+    dir: PathBuf,
+    horch: PathBuf,
+}
+
+impl AgentShell {
+    /// Start the shell. It waits for the command file of [`AgentShell::run`].
+    fn start(h: &Harness) -> AgentShell {
+        let dir = h.root.join("agent-shell");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        h.seal(&mut cmd);
+        let child = cmd
+            .arg("-c")
+            .arg("while [ ! -f \"$0/go.sh\" ]; do /bin/sleep 0.05; done; . \"$0/go.sh\"")
+            .arg(&dir)
+            .spawn()
+            .expect("starting the agent shell");
+        AgentShell {
+            child,
+            dir,
+            horch: Harness::horch_bin(),
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Run `horch <args>` in the shell, once. Gives its exit code and its
+    /// output.
+    fn run(mut self, args: &[&str]) -> (i32, String) {
+        let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        let words: Vec<String> = args.iter().map(|a| quote(a)).collect();
+        let script = format!(
+            "{} {} > {dir}/out 2>&1\necho $? > {dir}/code\n",
+            quote(&self.horch.to_string_lossy()),
+            words.join(" "),
+            dir = quote(&self.dir.to_string_lossy()),
+        );
+        std::fs::write(self.dir.join("go.tmp"), script).unwrap();
+        std::fs::rename(self.dir.join("go.tmp"), self.dir.join("go.sh")).unwrap();
+        self.child.wait().unwrap();
+        let code = std::fs::read_to_string(self.dir.join("code")).unwrap();
+        let said = std::fs::read_to_string(self.dir.join("out")).unwrap();
+        (code.trim().parse().unwrap(), said)
+    }
+}
+
 #[test]
 fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
     let h = push_finish_world("tl-shared", "exec,stay");
@@ -1689,9 +1741,11 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
     });
     let project = h.project.clone();
     git_in(&h, &project, &["switch", "--quiet", "fleet/alpha"]);
-    // The test is the agent: its own process is the wrapper of the live
-    // attempt, so the `horch result` that it runs finds the attempt.
-    let bound = bind(&h, "opus", Some(std::process::id()));
+    // A shell of the test is the agent: its process is the agent of the live
+    // attempt, so the `horch result` that it runs finds the attempt. The
+    // test itself is no fleet process, so it can start fleetd (T-171).
+    let agent = AgentShell::start(&h);
+    let bound = bind(&h, "opus", Some(agent.pid()));
     assert!(
         bound.worktree.is_none(),
         "a shared task has no worktree: {bound:?}"
@@ -1706,7 +1760,7 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
     let head = git_in(&h, &project, &["rev-parse", "HEAD"]);
     // A task of the shared checkout has no worktree: the result names its
     // commit and its file.
-    let o = h.run(&[
+    let (code, said) = agent.run(&[
         "result",
         "--status",
         "completed",
@@ -1717,7 +1771,7 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
         "--file",
         "doc.md",
     ]);
-    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(code, 0, "{said}");
     wait_push("T-1 done", || {
         let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
         (t["task"]["status"] == "done").then_some(())
