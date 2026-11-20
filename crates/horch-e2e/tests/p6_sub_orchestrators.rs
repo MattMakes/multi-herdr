@@ -414,75 +414,82 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
 /// asks 1 question.
 #[test]
 fn fm16_no_orchestrator_and_questions_stay_in_their_feature() {
-    let w = World::new("p6-fm16", "commit,ask,stay", |h| {
-        let tickets = h.project.join("tickets");
-        std::fs::create_dir_all(&tickets).unwrap();
-        std::fs::write(
-            tickets.join("01-queue.md"),
-            ticket(1, "Write the queue guide"),
-        )
-        .unwrap();
-        std::fs::write(tickets.join("02-help.md"), ticket(2, "Write the help page")).unwrap();
-    });
-    let ideas = [w.add_direct("01-queue.md"), w.add_direct("02-help.md")];
-    let features = ideas.clone().map(|i| w.feature_of(&i));
-    assert_ne!(features[0], features[1], "{}", w.context());
+    horch_e2e::expected::check(
+        file!(),
+        "fm16_no_orchestrator_and_questions_stay_in_their_feature",
+        || {
+            let w = World::new("p6-fm16", "commit,ask,stay", |h| {
+                let tickets = h.project.join("tickets");
+                std::fs::create_dir_all(&tickets).unwrap();
+                std::fs::write(
+                    tickets.join("01-queue.md"),
+                    ticket(1, "Write the queue guide"),
+                )
+                .unwrap();
+                std::fs::write(tickets.join("02-help.md"), ticket(2, "Write the help page"))
+                    .unwrap();
+            });
+            let ideas = [w.add_direct("01-queue.md"), w.add_direct("02-help.md")];
+            let features = ideas.clone().map(|i| w.feature_of(&i));
+            assert_ne!(features[0], features[1], "{}", w.context());
 
-    // 1 open question in each feature, each owned by the sub-orchestrator
-    // of its feature.
-    for f in &features {
-        let owner = w.wait(&format!("a question of feature {f}"), || {
-            w.one(&format!(
-                "SELECT owner FROM questions WHERE feature_id = '{f}'"
-            ))
-        });
-        assert_eq!(owner, format!("idea-lead:{f}"), "{}", w.context());
-    }
-    // The doorbell rings the process of each feature with the questions
-    // of that feature only.
-    let rung = |f: &str| {
-        w.rows(&format!(
-            "SELECT e.data_json FROM events e JOIN attempts a ON a.id = e.entity_id
-             JOIN ideas i ON i.id = a.idea_id
-             WHERE e.entity = 'attempt' AND e.kind = 'doorbell' AND i.feature_id = '{f}'"
-        ))
-    };
-    for f in &features {
-        w.wait(
-            &format!("a doorbell of the sub-orchestrator of {f}"),
-            || (!rung(f).is_empty()).then_some(()),
-        );
-    }
-    for f in &features {
-        let own: Vec<String> = w.rows(&format!(
-            "SELECT id FROM questions WHERE feature_id = '{f}'"
-        ));
-        for data in rung(f) {
-            let data: Value = serde_json::from_str(&data).unwrap();
-            for q in data["question_ids"].as_array().into_iter().flatten() {
-                let q = q.as_str().unwrap_or_default().to_string();
-                assert!(
-                    own.contains(&q),
-                    "the sub-orchestrator of {f} got question {q} of another feature\n{}",
-                    w.context()
+            // 1 open question in each feature, each owned by the sub-orchestrator
+            // of its feature.
+            for f in &features {
+                let owner = w.wait(&format!("a question of feature {f}"), || {
+                    w.one(&format!(
+                        "SELECT owner FROM questions WHERE feature_id = '{f}'"
+                    ))
+                });
+                assert_eq!(owner, format!("idea-lead:{f}"), "{}", w.context());
+            }
+            // The doorbell rings the process of each feature with the questions
+            // of that feature only.
+            let rung = |f: &str| {
+                w.rows(&format!(
+                    "SELECT e.data_json FROM events e JOIN attempts a ON a.id = e.entity_id
+                 JOIN ideas i ON i.id = a.idea_id
+                 WHERE e.entity = 'attempt' AND e.kind = 'doorbell' AND i.feature_id = '{f}'"
+                ))
+            };
+            for f in &features {
+                w.wait(
+                    &format!("a doorbell of the sub-orchestrator of {f}"),
+                    || (!rung(f).is_empty()).then_some(()),
                 );
             }
-        }
-    }
-    // No orchestrator: no worker of the persona or the kind, no attempt
-    // of it, and no herdr call names a pane of it.
-    let seats = w.rows(
-        "SELECT worker_id FROM workers WHERE persona = 'orchestrator' OR kind = 'orchestrator'
-           OR worker_id = 'orchestrator'",
-    );
-    assert!(seats.is_empty(), "orchestrator workers: {seats:?}");
-    for call in w.h.calls_of("herdr") {
-        let argv = argv(&call);
-        assert!(
-            !argv.iter().any(|a| a == "orchestrator"),
-            "a herdr call names an orchestrator pane: {argv:?}"
+            for f in &features {
+                let own: Vec<String> = w.rows(&format!(
+                    "SELECT id FROM questions WHERE feature_id = '{f}'"
+                ));
+                for data in rung(f) {
+                    let data: Value = serde_json::from_str(&data).unwrap();
+                    for q in data["question_ids"].as_array().into_iter().flatten() {
+                        let q = q.as_str().unwrap_or_default().to_string();
+                        assert!(
+                            own.contains(&q),
+                            "the sub-orchestrator of {f} got question {q} of another feature\n{}",
+                            w.context()
+                        );
+                    }
+                }
+            }
+            // No orchestrator: no worker of the persona or the kind, no attempt
+            // of it, and no herdr call names a pane of it.
+            let seats = w.rows(
+            "SELECT worker_id FROM workers WHERE persona = 'orchestrator' OR kind = 'orchestrator'
+               OR worker_id = 'orchestrator'",
         );
-    }
+            assert!(seats.is_empty(), "orchestrator workers: {seats:?}");
+            for call in w.h.calls_of("herdr") {
+                let argv = argv(&call);
+                assert!(
+                    !argv.iter().any(|a| a == "orchestrator"),
+                    "a herdr call names an orchestrator pane: {argv:?}"
+                );
+            }
+        },
+    );
 }
 
 /// FM-29: an idea that waits on you is visible at once. Its idle
@@ -569,14 +576,17 @@ fn fm29_idle_stop_and_park() {
 #[test]
 fn fm31_killed_sub_orchestrator_resumes_from_its_folder() {
     let w = World::new("p6-fm31", "clarify", |h| {
-        // The first launch of `claude` dies mid-interview; each later
-        // launch plays the keys of the harness.
+        // The first idea-lead launch of `claude` dies mid-interview; each
+        // later launch plays the keys of the harness. A launch that names
+        // no idea folder (the `--version` probe, a conformance check) does
+        // not use the mark.
         let real = std::fs::read_link(h.bin.join("claude"))
             .unwrap_or_else(|_| PathBuf::from(env!("CARGO_BIN_EXE_fake-claude")));
         let mark = h.root.join("claude-died");
         let script = format!(
             "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
-             if [ ! -e '{mark}' ]; then\n\
+             case \"$*\" in *'/ideas/'*) idea=1 ;; *) idea= ;; esac\n\
+             if [ -n \"$idea\" ] && [ ! -e '{mark}' ]; then\n\
              : > '{mark}'\n\
              HORCH_FAKE_SCENARIO=exec,die_mid_interview\n\
              export HORCH_FAKE_SCENARIO\n\
@@ -617,11 +627,21 @@ fn fm31_killed_sub_orchestrator_resumes_from_its_folder() {
         "each process of the idea is in the phase clarifying: {phases:?}"
     );
     assert!(folder.join("assumptions.md").is_file(), "{}", w.context());
-    let text = std::fs::read_to_string(&interview).unwrap();
-    assert!(text.contains(FIRST_ANSWER), "{text}");
-    assert!(text.contains(SECOND_ANSWER), "{text}");
-    // The answer of the dead process is Q1, and the fresh process adds its
-    // 2 answers after it: no answer is lost or written over.
+    // The fresh process writes assumptions.md before its notes: a later
+    // pass ingests them.
+    let text = w.wait("the answer of the fresh process in interview.md", || {
+        std::fs::read_to_string(&interview)
+            .ok()
+            .filter(|t| t.contains(SECOND_ANSWER))
+    });
+    // The answer of the dead process stays Q1. The fresh process resumes
+    // from the folder: it asks only the open question, Q2. No answer is
+    // lost or written over, and no question is asked 2 times.
     assert!(text.contains(&format!("## Q1\n{FIRST_ANSWER}")), "{text}");
-    assert!(text.contains("## Q3\n"), "{text}");
+    assert!(text.contains(&format!("## Q2\n{SECOND_ANSWER}")), "{text}");
+    assert_eq!(text.matches("\n## Q").count(), 2, "{text}");
+    // The ingest skips an entry that interview.md holds, so a question
+    // asked 2 times shows only in the note files: 1 file for each question.
+    let notes = std::fs::read_dir(folder.join("notes")).unwrap().count();
+    assert_eq!(notes, 2, "1 note for each question\n{}", w.context());
 }

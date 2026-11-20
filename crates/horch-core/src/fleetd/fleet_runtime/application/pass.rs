@@ -2806,13 +2806,19 @@ fn to_seen(p: Proc) -> Seen {
 /// `exec horch worker`, so the process that herdr shows in the pane is the
 /// wrapper, and its agent runs in its process group. A process that another
 /// attempt records is the old wrapper of a pane that the attempt takes:
-/// the pass waits for the new one.
+/// the pass waits for the new one. The pane is the pane of the worker of
+/// the attempt when the spawn recorded it: the pane of the attempt row is
+/// the pane that `horch spawn --from-pane` splits, so a relaunch (FM-31)
+/// runs in a new pane.
 fn pane_wrapper(
     tx: &Connection,
     a: &AttemptRow,
     panes: Option<&BTreeMap<String, InPane>>,
 ) -> Result<Option<Recorded>> {
-    let Some(InPane::Runs { pid, pid_start }) = a.pane.as_ref().and_then(|p| panes?.get(p)) else {
+    let pane = workers::find(tx, &a.worker_id)?
+        .and_then(|w| w.pane_id)
+        .or_else(|| a.pane.clone());
+    let Some(InPane::Runs { pid, pid_start }) = pane.as_ref().and_then(|p| panes?.get(p)) else {
         return Ok(None);
     };
     let wrapper = Recorded {

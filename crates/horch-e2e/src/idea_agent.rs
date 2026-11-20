@@ -12,7 +12,8 @@
 //! - `die_mid_interview`: record 1 interview note, then exit 137 with no
 //!   `assumptions.md`.
 //! - `clarify`: write `assumptions.md` with a `feature:` line and record 2
-//!   interview notes (`horch idea note`). Logged as `notes`.
+//!   interview notes (`horch idea note`), except a question that
+//!   interview.md holds already. Logged as `notes`.
 //! - `clarify_open`: as `clarify`, and the file has 1 `[open]` item.
 //! - `specify`: write `spec.md` and `requirements.yaml`; each requirement
 //!   cites an assumption.
@@ -30,6 +31,8 @@
 //! - `approve_inside`: run `horch idea approve <idea>`. Logged as `approve`.
 //! - `operator_request`: send a raw `idea_approve` request with no token,
 //!   on the channel and as a request file. Logged as `operator_request`.
+//! - `stay`: fake-claude only, as `stay` of fake-codex: after the other
+//!   keys, the pane launch blocks until it is killed.
 //!
 //! Keys of the fake judge: `verdict_pass`, `verdict_critical`,
 //! `verdict_high` write `review.md` in the worktree of the attempt and
@@ -50,7 +53,7 @@ use horch_core::taskledger::Store;
 use serde_json::{json, Map, Value};
 
 use crate::agent::{git, horch, worktree};
-use crate::{hash16, scenario_has, Call};
+use crate::{hang, hash16, scenario_has, Call};
 
 /// The idea-lead keys that need the idea folder.
 const IDEA_KEYS: [&str; 12] = [
@@ -86,7 +89,18 @@ const AWAIT_APPROVAL: Duration = Duration::from_secs(60);
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 
 /// Run the Phase 6 keys of `$HORCH_FAKE_SCENARIO` for a pane launch.
+/// With `stay`, fake-claude then blocks until it is killed.
 pub fn play(call: &mut Call) {
+    lead_keys(call);
+    if call.fake == "claude" && scenario_has("stay") {
+        // Eager: a `stay` launch is killed, so nothing is written after it.
+        call.flush();
+        hang();
+    }
+}
+
+/// Run the keys of the fake idea-lead.
+fn lead_keys(call: &mut Call) {
     if !IDEA_KEYS.iter().any(|k| scenario_has(k)) {
         return;
     }
@@ -108,10 +122,16 @@ pub fn play(call: &mut Call) {
     let open = scenario_has("clarify_open");
     if open || scenario_has("clarify") {
         lead.write("assumptions.md", &lead.assumptions(open));
-        let notes = [
-            lead.note("Which file does the idea change?", "fake.txt"),
-            lead.note("How many tasks does it need?", "1 task"),
-        ];
+        // A fresh process resumes from the idea folder (FM-31): it asks
+        // only the questions that interview.md does not hold.
+        let notes: Vec<Value> = [
+            ("Which file does the idea change?", "fake.txt"),
+            ("How many tasks does it need?", "1 task"),
+        ]
+        .into_iter()
+        .filter(|(q, a)| !lead.answered(q, a))
+        .map(|(q, a)| lead.note(q, a))
+        .collect();
         call.extra.insert("notes".into(), json!(notes));
     }
     if scenario_has("specify") {
@@ -200,6 +220,12 @@ impl Lead {
         if let Err(e) = write_file(&path, text) {
             eprintln!("fake idea-lead: {e}");
         }
+    }
+
+    /// Whether interview.md holds `question` with `answer`.
+    fn answered(&self, question: &str, answer: &str) -> bool {
+        std::fs::read_to_string(self.folder.join("interview.md"))
+            .is_ok_and(|t| t.contains(&format!("\n{question}\n\nAnswer: {answer}\n")))
     }
 
     /// Record 1 interview note: `<question> - <answer>`.
