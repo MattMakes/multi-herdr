@@ -511,9 +511,10 @@ fn fm32_sub_orchestrator_operator_request_is_refused() {
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        let row = w.wait("the row of the request file", || {
+        let row = w.wait("the decided row of the request file", || {
             w.one(&format!(
-                "SELECT state, IFNULL(reason, '-') FROM requests WHERE request_id = '{id}'"
+                "SELECT state, IFNULL(reason, '-') FROM requests
+                 WHERE request_id = '{id}' AND state != 'pending'"
             ))
         });
         assert!(row.starts_with("refused "), "{row}");
