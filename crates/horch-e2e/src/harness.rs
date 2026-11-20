@@ -655,7 +655,7 @@ fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bo
 impl Drop for Harness {
     fn drop(&mut self) {
         drop(self.fleetd.get_mut().take());
-        let leaked = match reap(&self.root, &self.log) {
+        let leaked = match reap(&self.root, &self.log, reap_grace()) {
             Ok(leaked) => leaked,
             // A test that passes while its processes cannot be seen can
             // leave one running for hours: fail it, unless it already fails.
@@ -674,7 +674,7 @@ impl Drop for Harness {
                 "the test leaked {} process(es) that outlived teardown by {:?}; \
                  teardown killed them:\n{}",
                 leaked.len(),
-                REAP_GRACE,
+                reap_grace(),
                 leaked.join("\n")
             );
         }
@@ -685,8 +685,18 @@ impl Drop for Harness {
 }
 
 /// How long teardown waits for the harness's processes to end after it
-/// signals them.
-const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+/// signals them: the stop grace of the design (`stop_grace_s`, 20 s), which
+/// fleetd gives a process group between SIGTERM and SIGKILL, plus
+/// [`REAP_MARGIN`]. A process ends on SIGTERM only when its current syscall
+/// returns, and on a loaded host 1 `rename` can block for seconds (T-114).
+fn reap_grace() -> std::time::Duration {
+    let design = horch_core::fleetd::fleet_runtime::domain::config::FleetConfig::default();
+    std::time::Duration::from_secs(design.stop_grace_s) + REAP_MARGIN
+}
+
+/// The time of the `ps` scans of teardown on a loaded host, on top of the
+/// stop grace of the design.
+const REAP_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// End every process this harness started, and return the ones that
 /// leaked.
@@ -700,11 +710,11 @@ const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// the harness root (a fake, a pane whose start was never recorded, the
 /// detached mail courier, which redelivers until `horch inbox`
 /// acknowledges). A process of those groups, or one that names the root,
-/// that still runs after [`REAP_GRACE`] leaked: it gets SIGKILL and is
+/// that still runs after `grace` leaked: it gets SIGKILL and is
 /// returned. The error is that the processes could not be listed within
-/// [`REAP_GRACE`].
+/// `grace`.
 #[cfg(unix)]
-fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
+fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<Vec<String>> {
     use crate::process::{commands_with_environment, signal_groups, try_processes, Process};
     use horch_core::procid::is_same_group;
     let mut state = log.as_os_str().to_owned();
@@ -727,13 +737,8 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         .flatten()
         .filter_map(|(_, pid)| u32::try_from(pid.as_u64()?).ok())
         .collect();
-    let Some(all) = process_list_or_sandbox(
-        try_processes,
-        REAP_GRACE,
-        &recorded,
-        own_group,
-        signal_groups,
-    )?
+    let Some(all) =
+        process_list_or_sandbox(try_processes, grace, &recorded, own_group, signal_groups)?
     else {
         return Ok(Vec::new());
     };
@@ -768,14 +773,14 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
     // can be given it.
     let left = |signalled: &[u32]| -> std::io::Result<Vec<Process>> {
         let environments = commands_with_environment();
-        Ok(listed(try_processes, REAP_GRACE)?
+        Ok(listed(try_processes, grace)?
             .into_iter()
             .filter(|p| {
                 p.pid != me && (signalled.contains(&p.pgid) || names_root(p, &environments))
             })
             .collect())
     };
-    let until = std::time::Instant::now() + REAP_GRACE;
+    let until = std::time::Instant::now() + grace;
     // The pids that ran when the first SIGTERM went out. With its group:
     // every process, in the group it was in, that has had one since.
     let first: Vec<u32> = all.iter().map(|p| p.pid).collect();
@@ -830,7 +835,7 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
 }
 
 #[cfg(not(unix))]
-fn reap(_root: &Path, _log: &Path) -> std::io::Result<Vec<String>> {
+fn reap(_root: &Path, _log: &Path, _grace: std::time::Duration) -> std::io::Result<Vec<String>> {
     Ok(Vec::new())
 }
 
@@ -888,7 +893,7 @@ fn stop_stale_harnesses(parent: &Path) -> Vec<String> {
         if horch_core::procid::alive(pid, started) {
             continue;
         }
-        leaked.extend(reap(&root, &root.join("fake.log")).unwrap_or_default());
+        leaked.extend(reap(&root, &root.join("fake.log"), reap_grace()).unwrap_or_default());
         let _ = std::fs::remove_file(&owner);
     }
     leaked
@@ -1228,7 +1233,7 @@ mod tests {
 
     use super::{
         build_command, built_dir_of, cargo_profile, choose_harness_root, listed,
-        process_list_or_sandbox, stop_stale_harnesses, OWNER_FILE,
+        process_list_or_sandbox, reap, reap_grace, stop_stale_harnesses, OWNER_FILE,
     };
 
     /// T-842: the harness builds `horch` and the fakes before their first
@@ -1488,5 +1493,70 @@ mod tests {
             "the stale root is stopped once, so its owner file goes"
         );
         assert!(live_runs, "the live root's process was stopped");
+    }
+
+    /// A process in its own group whose command line names `root`, with
+    /// `on_term` as its SIGTERM handler in Perl. It is detached, so no test
+    /// process keeps it as a zombie. Returns its pid, once its handler is
+    /// set.
+    fn stopping_in(root: &Path, on_term: &str) -> u32 {
+        std::fs::create_dir_all(root).unwrap();
+        let ready = root.join("ready");
+        let script = format!(
+            "$SIG{{TERM}} = {on_term}; open my $f, '>', $ARGV[0]; print $f $$; close $f; sleep 600;"
+        );
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "perl -e \"$0\" \"$1\" </dev/null >/dev/null 2>&1 &"])
+            .arg(script)
+            .arg(&ready);
+        // Never the test's own group: teardown does not signal that.
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        assert!(cmd.status().unwrap().success());
+        super::wait_for("the process to set its SIGTERM handler", || {
+            std::fs::read_to_string(&ready).ok()?.trim().parse().ok()
+        })
+    }
+
+    /// T-114: a process that ends 8 s after SIGTERM, longer than the old
+    /// fixed wait of 5 s, as a job does whose `rename` blocks on a loaded
+    /// host. Teardown waits for it within the stop grace of the design and
+    /// reports no leak.
+    #[test]
+    fn a_process_that_stops_within_the_stop_grace_is_not_leaked() {
+        let root = super::tmpdir().join(format!("h-slow-{:x}", super::unique()));
+        let pid = stopping_in(&root, "sub { select(undef, undef, undef, 8); exit 0 }");
+        let started = std::time::Instant::now();
+
+        let leaked = reap(&root, &root.join("fake.log"), reap_grace());
+
+        let took = started.elapsed();
+        let runs = horch_core::fsx::pid_alive(pid);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(leaked.unwrap(), Vec::<String>::new());
+        assert!(!runs, "teardown returned while the process ran");
+        assert!(
+            took >= Duration::from_secs(8),
+            "the stop took {took:?}: it must be slower than the old 5 s wait"
+        );
+    }
+
+    /// A process that ignores SIGTERM still leaks: teardown kills it after
+    /// the grace and names it.
+    #[test]
+    fn a_process_that_ignores_sigterm_is_killed_and_reported() {
+        let root = super::tmpdir().join(format!("h-stuck-{:x}", super::unique()));
+        let pid = stopping_in(&root, "'IGNORE'");
+
+        let leaked = reap(&root, &root.join("fake.log"), Duration::from_secs(1)).unwrap();
+
+        super::wait_for("the killed process to end", || {
+            (!horch_core::fsx::pid_alive(pid)).then_some(())
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(leaked.len(), 1, "{leaked:?}");
+        assert!(
+            leaked[0].starts_with(&format!("{pid} ")),
+            "the report names the process: {leaked:?}"
+        );
     }
 }
