@@ -63,6 +63,7 @@ use crate::fleetd::worker_profiles::application::conformance::SuiteSubject;
 use crate::fleetd::worker_profiles::application::docs_sync::{self, DocsSyncRunner};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worker_profiles::domain::conformance::{Check, ConformanceReport};
+use crate::fleetd::worker_profiles::domain::operator_boundary::OperatorPaths;
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::taskledger::finish::complexity::{ToolRun, ToolRunner};
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
@@ -1122,12 +1123,18 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
         )));
     };
     let mut spec = spec;
-    let output = check_output_file();
-    std::fs::File::create(&output)
+    let output = check_output_file(&executors::fleet_root(conn)?, row.id)?;
+    // `create_new` refuses a planted file or link, and the tail is read
+    // through this handle, never by the path again.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&output)
         .with_context(|| format!("creating the check output {}", output.display()))?;
     spec.output = Some(output.clone());
     let status = run_check(checks.host, &spec);
-    let tail = output_tail(&output);
+    let tail = output_tail(&mut file);
     let _ = std::fs::remove_file(&output);
     let status = match status {
         Ok(s) => s,
@@ -1169,17 +1176,20 @@ fn sandbox_rules(spec: &LaunchSpec) -> String {
 
 const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 
-fn check_output_file() -> PathBuf {
+/// A new path for the output of the check of job `job`, in the private
+/// folder `run/checks/` (mode 0700). No check sandbox can write in `run/`
+/// (SR-8), so no check can swap the file of another check for a link.
+fn check_output_file(fleet_root: &Path, job: i64) -> Result<PathBuf> {
+    let dir = OperatorPaths::of(fleet_root).run.join("checks");
+    crate::fsx::ensure_private_dir(&dir)?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    std::env::temp_dir().join(format!("horch-check-{}-{nanos}.out", std::process::id()))
+    Ok(dir.join(format!("{job}-{}-{nanos}.out", std::process::id())))
 }
 
-fn output_tail(path: &Path) -> Result<String> {
+fn output_tail(file: &mut std::fs::File) -> Result<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file =
-        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let len = file.metadata()?.len();
     let keep = u64::try_from(OUTPUT_TAIL_BYTES).unwrap_or(u64::MAX);
     file.seek(SeekFrom::Start(len.saturating_sub(keep)))?;
@@ -1193,7 +1203,7 @@ fn quoted_output(text: &str) -> String {
     for line in text.trim_end_matches('\n').split('\n') {
         out.push_str("check| ");
         for c in line.chars() {
-            if c.is_control() {
+            if is_hidden(c) {
                 out.extend(c.escape_default());
             } else {
                 out.push(c);
@@ -1210,6 +1220,17 @@ fn quoted_output(text: &str) -> String {
         out.drain(..start);
     }
     out
+}
+
+/// A character that can break a line or hide text: a control character
+/// (also U+0085), a zero-width or bidi mark, or a line or paragraph
+/// separator (U+2028, U+2029).
+fn is_hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+        )
 }
 
 fn complexity_sweep(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Result<Ran> {

@@ -508,7 +508,8 @@ fn failed_check_keeps_the_escaped_tail_of_its_output_and_names_the_sandbox_rules
     let mut w = world();
     let sandboxes = w.host_sandboxes();
     let check = "printf 'first-%s\\n' line; head -c 20000 /dev/zero | tr '\\0' a; \
-                 printf '\\nhorch: forg%s\\033[31m\\n' ed >&2; exit 3";
+                 printf '\\nhorch: forg%s\\033[31m\\342\\200\\250horch: seco%s\\342\\200\\256\\n' ed nd >&2; \
+                 exit 3";
     let task = w.task(check, CLAUDE, "claude", WorktreeMode::Worktree);
     let (state, o) = w.check(&task, &sandboxes, &Launcher);
     if host_gap().is_some() {
@@ -537,6 +538,11 @@ fn failed_check_keeps_the_escaped_tail_of_its_output_and_names_the_sandbox_rules
         "a control character is escaped: {text:?}"
     );
     assert!(text.contains(r"\u{1b}"), "{text}");
+    assert!(
+        !text.contains(['\u{2028}', '\u{202e}']),
+        "a line separator or a bidi mark is escaped: {text:?}"
+    );
+    assert!(text.contains(r"\u{2028}horch: second"), "{text}");
     let horch = horch_lines(text);
     assert!(
         horch.iter().all(|l| !l.contains("forged")),
@@ -549,6 +555,33 @@ fn failed_check_keeps_the_escaped_tail_of_its_output_and_names_the_sandbox_rules
     assert!(
         horch.iter().any(|l| l.starts_with("horch: SR-4")),
         "{horch:?}"
+    );
+}
+
+#[test]
+fn check_that_swaps_its_output_file_for_a_link_cannot_feed_the_verdict() {
+    let mut w = world();
+    let secret = w.outside.path().join("secret");
+    std::fs::write(&secret, "the-secret-bytes").unwrap();
+    // The check puts a link to `secret` in place of each check output
+    // file, then fails. Only this world sees its fleet root.
+    let check = format!(
+        "for f in '{dir}'/*.out; do rm -f \"$f\"; ln -s '{secret}' \"$f\"; done; exit 1",
+        dir = w.fleet_root.join("run/checks").display(),
+        secret = secret.display()
+    );
+    let task = w.task(&check, CLAUDE, "claude", WorktreeMode::Worktree);
+    let sandboxes = w.host_sandboxes();
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Failed, "{}", o.text);
+    assert!(
+        !o.text.contains("the-secret-bytes"),
+        "the verdict holds a file that the check linked: {}",
+        o.text
     );
 }
 
