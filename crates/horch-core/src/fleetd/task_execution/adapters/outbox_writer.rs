@@ -173,10 +173,10 @@ fn the_one(found: &[&LiveAttempt]) -> Result<AttemptRef, NoLiveAttempt> {
 
 /// The longest time that a command waits for its attempt to record its
 /// wrapper: the start timeout of a launch.
-const ATTEMPT_WAIT: Duration = Duration::from_secs(START_TIMEOUT_S.unsigned_abs());
+pub const ATTEMPT_WAIT: Duration = Duration::from_secs(START_TIMEOUT_S.unsigned_abs());
 
 /// The time between 2 reads of the ledger while a command waits.
-const ATTEMPT_POLL: Duration = Duration::from_millis(250);
+pub const ATTEMPT_POLL: Duration = Duration::from_millis(250);
 
 /// The own attempt of this process, as [`own_attempt`] finds it. A push
 /// attempt records its wrapper only when fleetd ingests a heartbeat with
@@ -200,12 +200,13 @@ fn wait_own_attempt(
     }
 }
 
-/// Whether the ledger `conn` has an attempt of a task that has no recorded
-/// wrapper yet: `launching`, or `live` with no PID. It only reads.
-fn starting(conn: &Connection) -> Result<bool> {
+/// Whether the ledger `conn` has an attempt that has no recorded wrapper
+/// yet: `launching`, or `live` with no PID. An attempt of a task and an
+/// attempt with no task (a sub-orchestrator) both count. It only reads.
+pub fn starting(conn: &Connection) -> Result<bool> {
     let found: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM attempts WHERE task_id IS NOT NULL
-           AND (state = 'launching' OR (state = 'live' AND pid IS NULL)))",
+        "SELECT EXISTS (SELECT 1 FROM attempts
+           WHERE state = 'launching' OR (state = 'live' AND pid IS NULL))",
         [],
         |r| r.get(0),
     )?;

@@ -24,6 +24,7 @@
 use std::fs::DirBuilder;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use horch_platform::channel::User;
@@ -33,7 +34,9 @@ use serde::{Deserialize, Serialize};
 use crate::fleetd::fleet_runtime::adapters::peer_process::ProcessFacts;
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 use crate::fleetd::ideas::domain::idea_folder::{check_idea_id, is_idea_id, FILE_LIMIT};
-use crate::fleetd::task_execution::adapters::outbox_writer::{own_attempt, LiveAttempt};
+use crate::fleetd::task_execution::adapters::outbox_writer::{
+    own_attempt, starting, LiveAttempt, ATTEMPT_POLL, ATTEMPT_WAIT,
+};
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fsx::{self, Created, FsxError};
@@ -262,7 +265,10 @@ impl NoteWriter {
     /// folder of the fleet root. `ledger` is the ledger, opened read-only
     /// by the caller; `facts` are the process facts. The 1 live attempt in
     /// the parent chain of `pid` must be the sub-orchestrator attempt of
-    /// `idea`, and the idea folder must exist.
+    /// `idea`, and the idea folder must exist. While an attempt has no
+    /// recorded wrapper yet, a process with no own attempt reads the ledger
+    /// again, for at most the start timeout of a launch, as a task command
+    /// does.
     pub fn of_process(
         pid: u32,
         ideas: &Path,
@@ -273,8 +279,17 @@ impl NoteWriter {
         if !is_idea_id(idea) {
             bail!("`{idea}` is not an idea id I-NNNN");
         }
-        let live = live_attempts(ledger)?;
-        let own = own_attempt(pid, &live.attempts, facts)?;
+        let until = Instant::now() + ATTEMPT_WAIT;
+        let (live, own) = loop {
+            let live = live_attempts(ledger)?;
+            match own_attempt(pid, &live.attempts, facts) {
+                Ok(own) => break (live, own),
+                Err(e) if e.detail.is_none() && Instant::now() < until && starting(ledger)? => {
+                    std::thread::sleep(ATTEMPT_POLL);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let of_idea = live
             .ideas
             .iter()
@@ -503,6 +518,59 @@ fn read_note(path: &Path, rule: &Rule<'_>, idea: &str) -> NoteRead {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
+    use crate::taskledger::schema;
+
+    const COMMAND: u32 = 4300;
+    const WRAPPER: u32 = 4200;
+    const WRAPPER_START: i64 = 77;
+
+    /// The chain COMMAND -> WRAPPER -> PID 1.
+    struct Chain;
+
+    impl ProcessFacts for Chain {
+        fn parent(&self, pid: u32) -> Option<u32> {
+            Some(if pid == COMMAND { WRAPPER } else { 1 })
+        }
+
+        fn start_time(&self, pid: u32) -> Option<u64> {
+            (pid == WRAPPER).then_some(WRAPPER_START as u64)
+        }
+
+        fn in_group(&self, _pid: u32, _leader: u32, _leader_start: u64) -> Option<bool> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_note_waits_while_its_sub_orchestrator_attempt_has_no_wrapper() {
+        const IDEA: &str = "I-0007";
+        let temp = tempfile::tempdir().unwrap();
+        let ideas = temp.path().join("ideas");
+        let db = temp.path().join("ledger.sqlite3");
+        let mut conn = Connection::open(&db).unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        IdeaFolder::create(&ideas, IDEA, User::current().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO attempts (id, idea_id, worker_id, state, started_at)
+             VALUES ('I-0007/A1', ?1, 'idea-lead-1', 'launching', '2026-11-20T00:00:00Z')",
+            [IDEA],
+        )
+        .unwrap();
+        let goes_live = std::thread::spawn(move || {
+            std::thread::sleep(ATTEMPT_POLL * 2);
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "UPDATE attempts SET state = 'live', pid = ?1, pid_start = ?2",
+                rusqlite::params![i64::from(WRAPPER), WRAPPER_START],
+            )
+            .unwrap();
+        });
+        let writer = NoteWriter::of_process(COMMAND, &ideas, IDEA, &conn, &Chain);
+        goes_live.join().unwrap();
+        assert_eq!(writer.unwrap().attempt, "I-0007/A1");
+    }
 
     #[test]
     fn a_note_name_is_a_number_and_json() {
