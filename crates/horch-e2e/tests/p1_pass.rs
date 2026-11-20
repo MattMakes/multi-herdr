@@ -624,11 +624,43 @@ fn seed_folders(h: &Harness, agent: &Agent) {
 
 // ─── the tests ──────────────────────────────────────────────────────────
 
+/// The heartbeats that a test saw, for the hang limit between 2 of them.
+#[derive(Default)]
+struct HeartbeatGaps {
+    /// The PID and the awake time of the last heartbeat.
+    last: Option<(u64, u64)>,
+}
+
+impl HeartbeatGaps {
+    /// Read the heartbeat. A new heartbeat of the same fleetd must come
+    /// less than [`HANG_LIMIT_MS`] of awake time after the one before.
+    fn see(&mut self, h: &Harness) {
+        let Some(hb) = heartbeat(h) else { return };
+        let (Some(pid), at) = (hb["pid"].as_u64(), awake_ms(&hb)) else {
+            return;
+        };
+        if let Some((last_pid, before)) = self.last {
+            let gap = at.saturating_sub(before);
+            assert!(
+                last_pid != pid || gap < HANG_LIMIT_MS,
+                "2 heartbeats are {gap} ms of awake time apart with {FOLDERS} folders of each kind"
+            );
+        }
+        self.last = Some((pid, at));
+    }
+}
+
 /// Wait until the `pass_cursors` row of each kind of [`FOLDER_SCANS`]
 /// differs from its row in `before`: a pass stored each folder cursor again.
-/// Returns the new rows.
-fn cursors_moved(h: &Harness, before: &[Option<CursorRow>]) -> Vec<CursorRow> {
+/// Each heartbeat on the way keeps the hang limit (`gaps`). Returns the new
+/// rows.
+fn cursors_moved(
+    h: &Harness,
+    before: &[Option<CursorRow>],
+    gaps: &mut HeartbeatGaps,
+) -> Vec<CursorRow> {
     wait_until("a pass moves the cursor of each folder scan", 120, || {
+        gaps.see(h);
         let now: Vec<Option<CursorRow>> = FOLDER_SCANS.iter().map(|k| cursor(h, k)).collect();
         let moved = now.iter().zip(before).all(|(n, b)| n.is_some() && n != b);
         moved.then(|| now.into_iter().flatten().collect())
@@ -658,9 +690,10 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
     let mut fleetds = Fleetds::new(&h);
     start_fleetd(&h, &mut fleetds, None);
 
+    let mut gaps = HeartbeatGaps::default();
     let mut before = vec![None; FOLDER_SCANS.len()];
     for _ in 0..3 {
-        before = cursors_moved(&h, &before).into_iter().map(Some).collect();
+        before = cursors_moved(&h, &before, &mut gaps).into_iter().map(Some).collect();
     }
     fleetds.kill_last();
     let middle = FOLDERS / 2;
@@ -689,7 +722,11 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
     }
 
     let second = start_fleetd(&h, &mut fleetds, None);
-    let first_pass = cursors_moved(&h, &stored.iter().cloned().map(Some).collect::<Vec<_>>());
+    let first_pass = cursors_moved(
+        &h,
+        &stored.iter().cloned().map(Some).collect::<Vec<_>>(),
+        &mut gaps,
+    );
     for ((kind, (after, lap, _)), (now_after, now_lap, now_prev)) in
         FOLDER_SCANS.iter().zip(&stored).zip(first_pass)
     {
@@ -766,12 +803,20 @@ fn settled_heartbeat(h: &Harness, pid: u32) -> u64 {
     )
 }
 
-/// Wait at most 3 s for a heartbeat of the fleetd `pid` after the one at
-/// `before`: `event` woke a pass long before the period of 30 s.
+/// The pass period of the wake test. No pass of the period comes during
+/// the test, so each new heartbeat comes from a wake.
+const LONG_PERIOD_S: u64 = 300;
+
+/// The longest wait for a woken pass: the poll of 100 ms and 1 pass on a
+/// loaded host, far below [`LONG_PERIOD_S`].
+const WAKE_WAIT_S: u64 = 15;
+
+/// Wait at most [`WAKE_WAIT_S`] for a heartbeat of the fleetd `pid` after
+/// the one at `before`: `event` woke a pass long before the period.
 fn woke_by(h: &Harness, pid: u32, before: u64, event: &str) {
     wait_until(
-        &format!("{event} wakes a pass of fleetd PID {pid} before its period of 30 s"),
-        3,
+        &format!("{event} wakes a pass of fleetd PID {pid} before its period of {LONG_PERIOD_S} s"),
+        WAKE_WAIT_S,
         || {
             let hb = heartbeat(h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
             (awake_ms(&hb) != before).then_some(())
@@ -779,12 +824,13 @@ fn woke_by(h: &Harness, pid: u32, before: u64, event: &str) {
     );
 }
 
-/// RR-4: a file event wakes a pass at once; the period of 30 s is only the
+/// RR-4: a file event wakes a pass at once; the period is only the
 /// fallback. A request file, a `result.json` in the outbox of a live
-/// attempt and a job result file each start a pass within 3 s.
+/// attempt and a job result file each start a pass within [`WAKE_WAIT_S`],
+/// with a period of [`LONG_PERIOD_S`].
 #[test]
 fn rr4_file_request_and_job_events_wake_pass_before_period() {
-    let h = world("p1-rr4-wake", "pass_period_s = 30\n");
+    let h = world("p1-rr4-wake", &format!("pass_period_s = {LONG_PERIOD_S}\n"));
     plan(&h, 1);
     let run = fleet_root(&h).join("run");
     for dir in ["requests", "jobs"] {
@@ -806,11 +852,14 @@ fn rr4_file_request_and_job_events_wake_pass_before_period() {
     let outbox = outbox_dir(&fleet_root(&h), &task, &attempt);
     let before = settled_heartbeat(&h, pid);
     std::fs::create_dir_all(&outbox).unwrap();
-    // A pass after the outbox exists watches it: an event or the period.
-    wait_until("a pass after the outbox exists", 40, || {
-        let hb = heartbeat(&h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
-        (awake_ms(&hb) != before).then_some(())
-    });
+    // A pass after the outbox exists watches it. A commit of the test to
+    // the ledger wakes that pass.
+    Store::open(&db(&h))
+        .unwrap()
+        .conn()
+        .execute("UPDATE runs SET check_every_s = check_every_s", [])
+        .unwrap();
+    woke_by(&h, pid, before, "a commit to the ledger");
     let before = settled_heartbeat(&h, pid);
     std::fs::write(
         run.join("requests").join("wake.json"),
