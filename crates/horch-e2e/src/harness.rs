@@ -170,13 +170,10 @@ impl Harness {
         }
         #[cfg(target_os = "linux")]
         {
-            // The Linux sandbox of fleetd needs the real `bwrap` and
-            // `socat`. Only links to these 2 go on the sealed `PATH`, in a
-            // folder of their own after the fakes, so no other host tool
-            // becomes visible.
+            const FLEETD_SANDBOX_TOOLS: [&str; 2] = ["bwrap", "socat"];
             let host = h.host_bin();
             std::fs::create_dir_all(&host).expect("creating the host tool dir");
-            for tool in ["bwrap", "socat"] {
+            for tool in FLEETD_SANDBOX_TOOLS {
                 if let Some(real) = find_on_real_path(tool) {
                     let _ = std::os::unix::fs::symlink(real, host.join(tool));
                 }
@@ -185,14 +182,11 @@ impl Harness {
         h
     }
 
-    /// Linux: the folder of links to the real `bwrap` and `socat`, on the
-    /// sealed `PATH` after [`Harness::bin`].
     #[cfg(target_os = "linux")]
     fn host_bin(&self) -> PathBuf {
         self.root.join("host-bin")
     }
 
-    /// The sealed `PATH`: the fakes, and on Linux then [`Harness::host_bin`].
     fn sealed_path(&self) -> String {
         #[cfg(target_os = "linux")]
         let dirs = vec![self.bin.clone(), self.host_bin()];
