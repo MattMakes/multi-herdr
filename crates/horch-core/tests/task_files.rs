@@ -4,12 +4,32 @@
 //! docs/tickets/fleetd-p4/07-task-yaml-and-start-md.md).
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
+use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
+use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
+use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::integration::application::new_features::{open_feature, Project};
 use horch_core::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, TaskFilesError,
 };
+use horch_core::fleetd::task_execution::application::dispatch::{
+    bind, write_task_files, DispatchCtx,
+};
+use horch_core::fleetd::task_execution::application::planned_tasks::{
+    add_planned_tasks, PlannedTask,
+};
 use horch_core::fleetd::task_execution::domain::task_files::{Secret, Sr2Rule, TaskFacts};
 use horch_core::harness::launch::FORBIDDEN_ENV;
+use horch_core::taskledger::git::Git;
+use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::runs;
+use horch_core::taskledger::workers::NewWorker;
+use horch_core::taskledger::Store;
+use horch_marketplace::git::scrub_repo_env;
 
 const SNAPSHOT: &str = "# 07: a ticket\n\n**Check:** `cargo test`\n\nDo the work.\n";
 
@@ -325,4 +345,146 @@ fn sr2_forbidden_env_name_in_a_task_file_is_refused() {
     let mut f = facts(root.path());
     f.ticket_snapshot = format!("{SNAPSHOT}Never use {name}.\n");
     write_attempt_files(root.path(), &f, &secrets).unwrap();
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let mut cmd = Command::new("git");
+    scrub_repo_env(&mut cmd);
+    let out = cmd
+        .current_dir(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// The planned task `key` of the plan kind `kind`: `work_kind` is `NULL`
+/// (the ledger knows no legacy kind for it) and the kind lives only in
+/// `spec_json`, as the plan commit writes it.
+fn planned(key: &str, kind: &str) -> PlannedTask {
+    PlannedTask {
+        key: key.into(),
+        title: format!("The {kind} task"),
+        task_file: "/fleet/ideas/plan.yaml".into(),
+        ticket_snapshot: Some(format!("# {key}\n")),
+        work_kind: None,
+        profile: "opus".into(),
+        land_check: Some("true".into()),
+        spec_json: serde_json::json!({"key": key, "kind": kind}).to_string(),
+        after: Vec::new(),
+        judges: None,
+        own: Vec::new(),
+    }
+}
+
+/// FR-4, RR-3, FM-9: the kind of a planned task survives dispatch. Each
+/// non-legacy kind of a plan (`judge`, `research`, `design`, `creative`)
+/// has `tasks.work_kind` of `NULL` and its kind in `tasks.spec_json`. Its
+/// `task.yaml` says `kind: <kind>`, never `kind: null`.
+#[test]
+fn planned_non_legacy_kinds_survive_dispatch_into_task_yaml() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let repo = root.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["commit", "-q", "-m", "first"]);
+    let mut store = Store::open(&root.join("ledger.sqlite3")).unwrap();
+    let config = FleetConfig::default();
+    let jobs = || JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let cause = |text| Cause {
+        actor: Actor::Horch,
+        text,
+    };
+
+    // An idea in flight of a feature with its internal run and run branch.
+    let project = Project {
+        root: &repo,
+        primary_branch: "main",
+    };
+    let feature = store
+        .immediate(|tx| open_feature(tx, &jobs(), &project, cause("idea")))
+        .unwrap();
+    git(
+        &repo,
+        &[
+            "branch",
+            &format!("fleet/{}", feature.to_lowercase()),
+            "main",
+        ],
+    );
+    store
+        .immediate(|tx| {
+            let new = NewIdea {
+                id: "I-1",
+                feature_id: &feature,
+                priority: 0,
+            };
+            ideas_store::insert_idea(tx, None, &new, cause("idea added"))
+        })
+        .unwrap();
+    let run = runs::of_feature(store.conn(), &feature).unwrap().unwrap();
+
+    // Commit 4 planned tasks, 1 for each non-legacy kind.
+    let kinds = ["judge", "research", "design", "creative"];
+    let plan: Vec<PlannedTask> = kinds
+        .iter()
+        .map(|kind| planned(&format!("{kind}-task"), kind))
+        .collect();
+    let added = store
+        .immediate(|tx| add_planned_tasks(tx, None, &run, "I-1", &plan, cause("plan")))
+        .unwrap();
+    assert_eq!(added.len(), kinds.len());
+    for (key, task_id) in &added {
+        let work_kind: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT work_kind FROM tasks WHERE task_id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(work_kind, None, "{key}: the kind lives only in spec_json");
+    }
+
+    // Dispatch binds each task, and fleetd writes its `task.yaml`.
+    let git_port = Git::new("git");
+    let ctx = DispatchCtx {
+        jobs: jobs(),
+        clock: FleetSeconds(1_000),
+        git: &git_port,
+    };
+    let fleet_root = root.join("fleet");
+    for (kind, (key, task_id)) in kinds.iter().zip(&added) {
+        let bound = store
+            .immediate(|tx| bind(tx, &ctx, task_id, "opus", &NewWorker::default()))
+            .unwrap();
+        let files = write_task_files(store.conn(), &fleet_root, &bound.attempt_id, &[]).unwrap();
+        let text = read(&files.task_yaml);
+        let y: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        assert_eq!(y["kind"], *kind, "{key}: {text}");
+        assert!(
+            !text.lines().any(|l| l.trim() == "kind: null"),
+            "{key}: {text}"
+        );
+    }
 }
