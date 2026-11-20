@@ -1,14 +1,3 @@
-//! End-to-end: no caller but fleetd can send a brief (TRF-43 in its new
-//! form, skill-intake T-27, spec 6.1 H-1 and H-6, 6.5).
-//!
-//! Phase 6 retired `horch spawn` (ticket 48 of fleetd-p6): fleetd launches
-//! each attempt, so a controller, a spoofed pane and a plain worker all get
-//! the same refusal. Each test runs the spawn argv of
-//! `scripts/skill-intake/tests/fixtures/spawn-argv.json`, the file
-//! `test_roles.py` (T-21) reads too, and checks that the refusal leaves no
-//! brief file, no pane split and no new worker row. The teammates are
-//! test-only (`agent: none`), so no model session starts.
-
 #![cfg(unix)]
 
 use std::process::Output;
@@ -136,9 +125,6 @@ fn record_agent(h: &Harness, worker_id: &str, pid: u32) {
     .unwrap();
 }
 
-/// 1 queued task for `persona` in a new run, bound to a new worker of that
-/// persona in pane `pane` (FR-5): the worker row of a controller or a plain
-/// worker. Gives the worker id.
 fn worker_in_run(h: &Harness, persona: &str, pane: &str) -> String {
     let run = seed_run(h, "intake-run", None, "w1:p1");
     let file = h.project.join(format!("{persona}-ticket.md"));
@@ -165,8 +151,6 @@ fn worker_rows(h: &Harness) -> i64 {
         .unwrap()
 }
 
-/// The spawn of `teammate` from `pane` is refused as retired, and it
-/// leaves no brief file, no pane split and no new worker row.
 fn assert_refused_and_nothing_left(h: &Harness, pane: &str, teammate: &str) {
     let rows = worker_rows(h);
     let calls = h.calls_of("herdr").len();
@@ -193,8 +177,6 @@ fn assert_refused_and_nothing_left(h: &Harness, pane: &str, teammate: &str) {
     assert_eq!(worker_rows(h), rows, "a refused spawn left a worker row");
 }
 
-/// TRF-43: a controller outside every run has no ledger row, and its
-/// brief is refused.
 #[test]
 fn trf_43_a_controller_outside_every_run_cannot_send_a_brief() {
     let h = roster_harness("intake-outside");
@@ -203,9 +185,6 @@ fn trf_43_a_controller_outside_every_run_cannot_send_a_brief() {
     assert_refused_and_nothing_left(&h, "w1:p1", "intake-smoke");
 }
 
-/// TRF-43: `HERDR_PANE_ID` alone does not make a caller the controller. A
-/// caller outside the process tree of the recorded agent of the controller
-/// is refused.
 #[test]
 fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
     let h = roster_harness("intake-spoof");
@@ -222,8 +201,6 @@ fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
     let _ = other.wait();
 }
 
-/// TRF-43: a worker without `spawn_only` cannot send a brief, also to a
-/// report role.
 #[test]
 fn trf_43_a_worker_without_spawn_only_cannot_send_a_brief() {
     let h = roster_harness("intake-plain");

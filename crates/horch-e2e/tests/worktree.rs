@@ -80,8 +80,6 @@ fn prepare_done(h: &mut Harness) -> String {
     std::fs::write(mailbox.join("orchestrator.id"), &pane).unwrap();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HERDR_PANE_ID", pane.clone());
-    // The record insert is a request to the fleetd of the fleet root beside
-    // the session records file, which makes the operator token.
     h.set(
         "HORCH_LEDGER_DB",
         h.state.join("ledger.sqlite3").to_string_lossy(),
@@ -268,8 +266,6 @@ fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
 
     let run = horch_e2e::ledger_seed::seed_run(&h, "gamma", None, "w1:p1");
     horch_e2e::ledger_seed::seed_task(&h, &run, &h.project.join("tickets/01-t.md"), "sonnet");
-    // fleetd makes the tree of the bind (FR-5): its `worktree_add` job
-    // runs in the next pass.
     h.serve_fleetd();
     let tree = horch_e2e::bind::bind(&h, "sonnet", None)
         .worktree

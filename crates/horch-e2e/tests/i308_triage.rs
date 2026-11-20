@@ -92,10 +92,6 @@ fn triage_json(h: &Harness) -> Value {
     serde_json::from_slice(&o.stdout).unwrap()
 }
 
-/// `horch worktree triage apply <reply>`: fleetd applies `ARCHIVE`,
-/// `DELETE`, `LAND` and `PR` in a `triage_apply` job (T-888), and the
-/// command prints that the job is queued. This waits until the job ended
-/// and gives the text of its result.
 fn applied(h: &Harness, reply: &Path) -> String {
     let last = |h: &Harness| -> i64 {
         let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
@@ -215,9 +211,8 @@ fn archive_restore_and_gc_through_the_cli() {
     assert!(!path.exists());
     let said = ok(&h, &["worktree", "restore", "feat"]);
     assert!(said.starts_with("restored "), "{said}");
-    // A worktree_add job of the next pass makes the tree (ticket 25 of
-    // fleetd-p5, T-474). `git worktree add` creates each file before it
-    // writes it, so the test reads the file after the job ended.
+    // `git worktree add` creates each file before it writes it, so the test
+    // reads the file after the job ended.
     wait_for("the worktree_add job of the restore to pass", || {
         let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
         let state: Option<String> = store

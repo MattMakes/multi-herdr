@@ -69,8 +69,6 @@ fn abandoned_worktree(h: &Harness) -> PathBuf {
     std::fs::create_dir_all(t.parent().unwrap()).unwrap();
     std::fs::write(&t, "# 01: Feature\n").unwrap();
     seed_task(h, &run, &t, "opus");
-    // fleetd makes the tree of the bind (FR-5): its `worktree_add` job
-    // runs in the next pass.
     let tree = horch_e2e::bind::bind(h, "opus", None)
         .worktree
         .expect("a worktree task binds a worktree");
@@ -155,7 +153,6 @@ fn an_exhausted_claude_pool_starts_no_codex_steward() {
                     .join("quota/claude-exhausted-codex-ok.json")
                     .to_string_lossy(),
             );
-            // The fixture's quota is current at this time.
             h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
             abandoned_worktree(&h);
             let cwd = h.project.to_string_lossy().into_owned();
@@ -184,8 +181,6 @@ fn a_fleet_with_no_parked_worktree_spawns_no_steward() {
     let h = harness("i308-no-steward");
     let said = fleet(&h);
     assert!(!said.contains("worktree steward"), "{said}");
-    // FM-16: the fleet starts no orchestrator pane, so it starts no pane
-    // at all when the project has no parked worktree.
     let runs = launches(&h);
     assert!(runs.is_empty(), "no pane starts: {runs:#?}");
 }
@@ -208,9 +203,6 @@ fn triage_lists_rows_from_a_ledger_it_cannot_write() {
     assert_eq!(rows[0]["path"], path.to_string_lossy().as_ref());
 }
 
-/// `horch worktree triage apply <reply>`: fleetd applies `DELETE` in a
-/// `triage_apply` job (T-888), and the command prints that the job is
-/// queued. This waits until the job ended and gives the text of its result.
 fn applied(h: &Harness, reply: &std::path::Path) -> String {
     let last = |h: &Harness| -> i64 {
         let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
@@ -396,7 +388,6 @@ fn the_no_change_steward_task_finishes_without_a_worktree() {
                     .any(|w| w["worker"]["persona"] == "worktree-steward"),
                 "the fleet spawns the steward: {status}"
             );
-            // fleetd binds the steward task (FR-5); the test binds it the same way.
             let worker = &horch_e2e::bind::bind(&h, "worktree-steward", None).worker_id;
             let finished = worker_ok(&h, worker, &["ledger", "finish", "--wait"]);
             assert!(finished.contains("every finish step passed"), "{finished}");

@@ -67,7 +67,6 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     ..Default::default()
                 },
             )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -226,9 +225,6 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
         workers::get(store.conn(), &worker).unwrap().status,
         "incomplete"
     );
-    // FM-16 and ticket 46 of fleetd-p6: no wake goes to an orchestrator.
-    // fleetd queues the task again, and the operator gets the fact as the
-    // needs-you item `stuck:<feature>` of the feature of the run.
     let w = outbox(&store, &run);
     assert!(w.is_empty(), "{w:?}");
     let feature: String = store
@@ -384,8 +380,6 @@ fn a_run_made_outside_herdr_has_no_workspace_and_the_first_pane_status_records_i
             .unwrap()
     };
     assert_eq!(workspace(), None);
-    // A worker pane of another fleet does not claim the run. The status
-    // exits 1 while the run has work left, so only its text counts.
     h.horch(&["ledger", "status"])
         .env("HORCH_WORKSPACE_ID", "w2")
         .env("HERDR_PANE_ID", "p_7")
