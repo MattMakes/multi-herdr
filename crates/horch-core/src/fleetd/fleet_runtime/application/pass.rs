@@ -162,10 +162,12 @@ use crate::fleetd::task_execution::domain::task::{
 use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use crate::fleetd::worker_profiles::application::conformance::read_conformance_json;
 use crate::fleetd::worker_profiles::application::docs_jobs::{
-    binary_id, queue_docs_jobs, scan_cli, CliBinary,
+    binary_id, exec_harness, queue_docs_jobs, scan_cli, CliBinary,
 };
 use crate::fleetd::worker_profiles::application::drift_idea::{add_drift_idea, KIND as DRIFT};
-use crate::fleetd::worker_profiles::application::health::mark_after_conformance;
+use crate::fleetd::worker_profiles::application::health::{
+    mark_after_conformance, mark_cli_unhealthy,
+};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worker_profiles::domain::conformance::ConformanceReport;
 use crate::fleetd::worker_profiles::domain::profile::{Mode, Profile};
@@ -1293,7 +1295,7 @@ impl<'a> Pass<'a> {
         let disk = disk_budget(&self.job_ctx(), &tx, clock)?;
         let mut holds = read.holds;
         holds.extend(disk.hold.map(|cause| Hold::WorktreeDisk { cause }));
-        let (paced, personas) = pacing(read.pools.as_ref());
+        let (paced, mut personas) = pacing(read.pools.as_ref());
         holds.extend(paced);
         {
             let now = RefCell::new(&mut self.now);
@@ -1309,6 +1311,17 @@ impl<'a> Pass<'a> {
             };
             stops.extend(self.ports.duties.run(&tx, &duty)?);
         }
+        // The ended jobs and the conformance results of this pass come
+        // before its dispatch: a profile gets no task in the pass that
+        // reads its failed run (FR-8, FM-19).
+        let ctx = self.job_ctx();
+        let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
+        let p7_failed = self.p7_rows(&tx, &read.p7, read.pools.as_ref(), clock)?;
+        if let Some(p) = read.pools.as_ref() {
+            for (profile, cause) in conformance_pending(&tx, &p.roster)? {
+                personas.entry(profile).or_insert(cause);
+            }
+        }
         let mut work = WorkRows::default();
         if let Some(w) = &self.work {
             // The project holds of this pass come before its dispatch.
@@ -1322,11 +1335,8 @@ impl<'a> Pass<'a> {
             }
             stops.append(&mut work.stops);
         }
-        let ctx = self.job_ctx();
-        let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
         work.failed.extend(limit_failed);
-        work.failed
-            .extend(self.p7_rows(&tx, &read.p7, read.pools.as_ref(), clock)?);
+        work.failed.extend(p7_failed);
         if self.work.is_some() {
             let policy = |t: &tasks::Task| rules.policy(t.primary_persona.as_deref());
             let v = Verifier {
@@ -4299,9 +4309,10 @@ impl Pass<'_> {
     }
 
     /// The health marks and the drift idea of the ended `conformance` run
-    /// `id`, and the note that the pass acted on it. A report that cannot
-    /// be read gives no mark: the note records the run, and the line says
-    /// why. Gives the lines of what failed.
+    /// `id`, and the note that the pass acted on it. A run with no report,
+    /// or with a report that cannot be read, fails closed: it marks each
+    /// profile of its CLI unhealthy, and the line says why (FM-19). Gives
+    /// the lines of what failed.
     fn act_on_conformance(
         &self,
         tx: &Transaction<'_>,
@@ -4312,15 +4323,28 @@ impl Pass<'_> {
         let mut failed = Vec::new();
         let mut note = serde_json::json!({});
         let row = jobs_store::get(tx, id)?.with_context(|| format!("no job {id}"))?;
-        match conformance_report(&row) {
-            Ok(None) => {}
-            Err(e) => failed.push(format!("the report of conformance run {id}: {e:#}")),
+        let no_report = match conformance_report(&row) {
             Ok(Some(report)) => {
                 mark_after_conformance(tx, guard, &report, profiles)?;
                 if report.failure().is_some() {
                     note = self.drift(tx, &report, &mut failed)?;
                 }
+                None
             }
+            Ok(None) => Some(format!(
+                "conformance run {id} of {} produced no report",
+                row.subject
+            )),
+            Err(e) => Some(format!(
+                "conformance run {id} of {} produced an unreadable or invalid report: {e:#}",
+                row.subject
+            )),
+        };
+        if let Some(reason) = no_report {
+            let cli = row.subject.split_whitespace().next().unwrap_or_default();
+            mark_cli_unhealthy(tx, guard, cli, &reason, profiles)?;
+            note = serde_json::json!({ "unhealthy": reason });
+            failed.push(reason);
         }
         let cause = Cause {
             actor: Actor::Horch,
@@ -4532,6 +4556,60 @@ fn pacing(pools: Option<&PoolFacts>) -> (Vec<Hold>, BTreeMap<String, String>) {
         }
     }
     (paced, personas)
+}
+
+/// The hold of each profile of `roster` whose CLI has a changed binary
+/// with no `conformance` run that the pass acted on: its last run is
+/// queued, running or ended with no note of [`CONFORMANCE_ACTED`], and an
+/// earlier run is of another binary. The hold ends when the pass acts on
+/// the run: a passed report keeps the profile healthy, and each other end
+/// marks it unhealthy (FR-8, FM-19, SR-8). The first binary of a CLI is
+/// not held.
+fn conformance_pending(tx: &Connection, roster: &Roster) -> Result<BTreeMap<String, String>> {
+    let sql = "SELECT DISTINCT substr(subject, 1, instr(subject, ' ') - 1) FROM jobs
+         WHERE kind = ?1 AND instr(subject, ' ') > 0";
+    let mut stmt = tx.prepare(sql)?;
+    let clis = stmt
+        .query_map([Kind::Conformance.as_str()], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = BTreeMap::new();
+    for cli in clis {
+        let Some(last) = jobs_store::last_of_word(tx, Kind::Conformance, &cli)? else {
+            continue;
+        };
+        if conformance_acted(tx, last.id)? || !earlier_binary(tx, &cli, &last)? {
+            continue;
+        }
+        let cause = format!("conformance of {} is pending", last.subject);
+        for name in roster.names() {
+            let agent = roster.get(name).map(|t| t.agent);
+            if agent.is_some() && exec_harness(&cli) == agent {
+                out.insert(name.to_string(), cause.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether the pass acted on the `conformance` run `id`.
+fn conformance_acted(tx: &Connection, id: i64) -> Result<bool> {
+    let sql = "SELECT EXISTS (SELECT 1 FROM events WHERE entity = ?1
+         AND entity_id = CAST(?2 AS TEXT) AND kind = ?3 AND cause = ?4)";
+    let params = rusqlite::params![
+        Entity::Job.as_str(),
+        id,
+        EventKind::Note.as_str(),
+        CONFORMANCE_ACTED
+    ];
+    Ok(tx.query_row(sql, params, |r| r.get(0))?)
+}
+
+/// Whether a `conformance` run of `cli` before `last` is of another binary.
+fn earlier_binary(tx: &Connection, cli: &str, last: &JobRow) -> Result<bool> {
+    let sql = "SELECT EXISTS (SELECT 1 FROM jobs WHERE kind = ?1 AND id < ?2
+         AND substr(subject, 1, length(?3) + 1) = ?3 || ' ' AND subject != ?4)";
+    let params = rusqlite::params![Kind::Conformance.as_str(), last.id, cli, last.subject];
+    Ok(tx.query_row(sql, params, |r| r.get(0))?)
 }
 
 /// The ids of the ended runs of `kind` with no note of `cause`, oldest

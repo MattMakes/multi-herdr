@@ -104,6 +104,26 @@ pub fn mark_after_conformance(
     Ok(marks)
 }
 
+/// Mark each profile of `profiles` whose agent is the harness of the CLI
+/// `cli` unhealthy with `reason`, in `tx`: a conformance run of `cli` that
+/// gave no report that can be read fails closed (FM-19).
+pub fn mark_cli_unhealthy(
+    tx: &Connection,
+    guard: Option<Generation>,
+    cli: &str,
+    reason: &str,
+    profiles: &[(&str, HarnessKind)],
+) -> Result<Vec<Mark>> {
+    let mut marks = Vec::new();
+    for (name, _) in profiles
+        .iter()
+        .filter(|(_, agent)| exec_harness(cli) == Some(*agent))
+    {
+        marks.extend(mark_unhealthy(tx, guard, name, reason)?);
+    }
+    Ok(marks)
+}
+
 /// The event of `mark`, with `cause`, in `tx`.
 fn write(
     tx: &Connection,

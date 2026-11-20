@@ -722,6 +722,101 @@ fn pass_adds_1_drift_idea_after_a_crash_and_a_restart() {
     );
 }
 
+/// The pass acts on an ended `conformance` run before its dispatch: a
+/// failed run holds the ready task of its profile in the pass that first
+/// reads the run (FR-8, FM-19).
+#[test]
+fn failed_conformance_blocks_dispatch_in_the_same_pass() {
+    let w = world();
+    w.install_cli("claude", "2.1.0");
+    let fake = Fake::of(&w);
+    run_pass(&w, &fake);
+
+    let t1 = w.ready_task("t1", CLAUDE_PROFILE);
+    let (id, run) = w.last_job("conformance", "claude");
+    w.end_conformance(id, run, &report("claude", true));
+    run_pass(&w, &fake);
+    assert_eq!(w.health_events(CLAUDE_PROFILE), ["profile_unhealthy"]);
+    assert_eq!(w.status(&t1), "ready", "no bind before the mark");
+}
+
+/// How a `conformance` run of a changed CLI ends with no usable report.
+#[derive(Clone, Copy)]
+enum NoReport {
+    /// The result has no report path, as a run whose version command
+    /// failed.
+    Missing,
+    /// The report path holds a `conformance.json` that is not valid.
+    Corrupt,
+}
+
+impl World {
+    /// The `conformance` run `id` ends failed with no usable report.
+    fn end_conformance_with(&self, id: i64, run: i64, how: NoReport) {
+        let data = match how {
+            NoReport::Missing => None,
+            NoReport::Corrupt => {
+                let path = self.dir.join("corrupt-conformance.json");
+                fs::write(&path, "{ not json").unwrap();
+                Some(serde_json::json!({ "cli": "claude", "path": path }))
+            }
+        };
+        let result = JobResult {
+            job_id: id,
+            run,
+            passed: false,
+            verdict: true,
+            text: "conformance of claude: no report".into(),
+            data,
+        };
+        job_result_file::write(&self.root(), &result).unwrap();
+    }
+}
+
+/// A changed CLI binary holds the tasks of its profiles until a report of
+/// its new conformance run passes. A missing or corrupt report marks the
+/// profiles unhealthy, and the tasks stay held (FR-8, FM-19, SR-8).
+#[test]
+fn changed_cli_and_missing_or_corrupt_conformance_report_fail_closed() {
+    for how in [NoReport::Missing, NoReport::Corrupt] {
+        let w = world();
+        w.install_cli("claude", "2.1.0");
+        let fake = Fake::of(&w);
+        run_pass(&w, &fake);
+        let (id, run) = w.last_job("conformance", "claude");
+        w.end_conformance(id, run, &report("claude", false));
+        run_pass(&w, &fake);
+        assert!(w.health_events(CLAUDE_PROFILE).is_empty());
+
+        w.install_cli("claude", "2.2.0");
+        let t1 = w.ready_task("t1", CLAUDE_PROFILE);
+        run_pass(&w, &fake);
+        let (new_id, new_run) = w.last_job("conformance", "claude");
+        assert_ne!(new_id, id, "the changed binary queues a new run");
+        assert_eq!(w.status(&t1), "ready", "held while the run is pending");
+
+        w.end_conformance_with(new_id, new_run, how);
+        run_pass(&w, &fake);
+        assert_eq!(w.health_events(CLAUDE_PROFILE), ["profile_unhealthy"]);
+        assert_eq!(w.status(&t1), "ready", "no report fails closed");
+        run_pass(&w, &fake);
+        assert_eq!(w.status(&t1), "ready", "the next pass holds it too");
+
+        // A next binary passes its conformance run: the task binds.
+        w.install_cli("claude", "2.3.0");
+        run_pass(&w, &fake);
+        assert_eq!(w.status(&t1), "ready", "held while the run is pending");
+        let (id, run) = w.last_job("conformance", "claude");
+        w.end_conformance(id, run, &report("claude", false));
+        run_pass(&w, &fake);
+        assert_eq!(
+            w.health_events(CLAUDE_PROFILE),
+            ["profile_unhealthy", "profile_healthy"]
+        );
+        assert_ne!(w.status(&t1), "ready", "a passed report ends the hold");
+    }
+}
+
 // ─── context_limit ──────────────────────────────────────────────────────
 
 /// The wrapper ended the attempt at the context limit: the pass ends it
