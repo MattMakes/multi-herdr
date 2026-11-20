@@ -474,15 +474,12 @@ enum Effect {
     StopJob(jobs::Stop),
     /// The doorbell of the stall ladder into the pane.
     Doorbell(Bell),
-    /// The launch of an attempt of the run duties.
     Launch(AttemptRow),
     /// The spawn of a push attempt that fleetd bound, by its id.
     PushLaunch(String),
     StartJob(JobRow),
 }
 
-/// The order of part 3 (MAP.md, "Part 3"): each stop, then each doorbell,
-/// then each launch, then each job start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Stop,
@@ -589,8 +586,6 @@ struct ProcessItems {
     jobs: BTreeSet<String>,
 }
 
-/// The attempts to launch in part 3: the attempts in `launching` of the
-/// run duties, and the push attempts by id.
 struct ToLaunch {
     attempts: Vec<AttemptRow>,
     push: Vec<String>,
@@ -1259,10 +1254,6 @@ impl<'a> Pass<'a> {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
-        // After the first heartbeat of this pass, so the task is `running`:
-        // a result, a question or a context limit that the agent and its
-        // wrapper wrote before this pass saw the attempt `live` acts here,
-        // before rung 5 can end the attempt with `no_result`.
         outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
@@ -2978,10 +2969,6 @@ fn dispatch_holds(
     }
 }
 
-/// Rung 5 does not judge a `live` attempt of a task that names no process
-/// and no pane: its wrapper wrote a heartbeat that proves no agent, so the
-/// pass cannot see whether the wrapper lives. Its `exit.json` ends it
-/// ([`exited_by_file`]), else the expiry of its lease does.
 fn keep_unproven(rows: &mut task::Rows, exited: &[String]) {
     rows.attempts.retain(|a| {
         let unproven = a.state == AttemptState::Live
@@ -4166,11 +4153,6 @@ const IDEA_FILE_MODE: u32 = 0o600;
 // `docs/tickets/fleetd-p7/30-pass-wiring.md`. Part 1 scans the CLI
 // binaries within the scan budget from its cursor, and reads the worktree
 // at the end of each attempt that the wrapper ended at the context limit.
-// Part 2 ingests `context_limit` after the first heartbeat of the pass
-// moves a task to `running`, and before rung 5 ends an attempt whose
-// process is gone (`finish_exited`), then, after the job observations, marks the
-// health of the profiles after each ended `conformance` run, adds the
-// drift idea of a failed run, and queues the docs jobs (`queue_due_jobs`).
 // Part 3 starts the queued jobs with the other job starts of the pass, and
 // writes the idea.md of each drift idea. Each mark and each idea is
 // idempotent on the id of its run: a note on the run, in the same
@@ -4389,13 +4371,6 @@ impl Pass<'_> {
     }
 }
 
-/// Part 2 of Phase 7, after the wrapper files and before rung 5: each
-/// attempt that the wrapper ended at the context limit ends with
-/// `context_limit`, burns no attempt, and its task goes to `ready` with a
-/// handoff file, or holds at a loop (FM-20, MAP.md of fleetd-p7, Q2).
-///
-/// A failure keeps the rows of its attempt unchanged, and gives its line:
-/// rung 5 then ends the attempt as an exit with no result.
 fn context_limits(
     tx: &Transaction<'_>,
     guard: Option<Generation>,

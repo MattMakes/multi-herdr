@@ -285,10 +285,6 @@ fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
 
 // ─── the outside ────────────────────────────────────────────────────────
 
-/// The outside of the tests: no herdr snapshot and no observation, so an
-/// attempt earns no activity past its claim. With `claude_used`, the pools
-/// read `claude` at that share and `codex` at 0, and the roster has `dev`
-/// on claude with the fallback `alt` on codex.
 struct Fake {
     claude_used: Option<f64>,
 }
@@ -595,8 +591,6 @@ fn usage_limited_worker_restarts_on_the_fallback_and_burns_no_attempt() {
 
     w.pass_at(10, &worker, &fake);
     let attempts = w.attempts(&task);
-    // This pass has no task work, so no dispatch binds the task:
-    // `fleetd_pass_p7.rs` binds the push attempt of the fallback.
     assert_eq!(attempts.len(), 1, "{attempts:?}");
     assert_eq!(attempts[0].1, "ended");
     assert_eq!(attempts[0].2.as_deref(), Some("quota"));

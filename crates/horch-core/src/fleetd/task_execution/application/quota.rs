@@ -10,11 +10,6 @@
 //! - [`release_reset_pools`]: the pass calls it for the tasks in
 //!   `waiting_quota`. A task whose pool reset goes to `ready`.
 //!
-//! The task goes `ready` for the fallback, and the push dispatch of the
-//! same pass binds it to a push attempt of the fallback persona
-//! (`application/dispatch.rs`). `application/launch.rs` launches that
-//! attempt, as each other attempt.
-//!
 //! The pool reading comes only from the quota file or the probe result
 //! in a [`QuotaView`] (`preservation-06`, row S13).
 
@@ -215,8 +210,6 @@ fn decide(old: &workers::Worker, task: &tasks::Task, pools: &Pools<'_>) -> (Exit
     (decided, own_pool)
 }
 
-/// `running -> ready` for the fallback persona `fb`, with no backoff. The
-/// push dispatch binds the task to a new attempt of `fb` on the same tree.
 fn move_to_fallback(
     tx: &Connection,
     guard: Option<Generation>,
@@ -554,8 +547,6 @@ mod tests {
             )
         );
         assert_eq!(t.not_before, None, "a usage limit sets no backoff");
-        // The push dispatch binds the task: the quota rule writes no worker
-        // row and no attempt.
         let attempts: i64 = f
             .store
             .conn()

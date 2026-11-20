@@ -789,10 +789,6 @@ fn pass_moves_a_context_limit_task_to_ready() {
     );
 }
 
-/// FM-20 and the order of 1 pass: the wrapper of A1 wrote its first
-/// heartbeat and its `exit.json` with the hint `context_limit` before the
-/// pass saw A1 `live`. The pass reads both files, so A1 ends with
-/// `context_limit` and burns no attempt, not with `no_result`.
 #[test]
 fn context_limit_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
     let w = world();
@@ -816,8 +812,6 @@ fn context_limit_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
     );
     fs::create_dir_all(files.dir()).unwrap();
     fs::set_permissions(files.dir(), fs::Permissions::from_mode(0o700)).unwrap();
-    // The agent ran and ended before the pass: the heartbeat names no
-    // agent that a PID check can prove.
     files.write_heartbeat(&AgentFacts::new(None)).unwrap();
     files
         .write_exit_hinted(None, false, Some(OutcomeHint::ContextLimit))
@@ -838,7 +832,6 @@ fn context_limit_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
         "{report:?}"
     );
     let t = tasks::get(&w.conn, &task).unwrap();
-    // The same pass binds A2: only an attempt that is not ended counts.
     let open = w.count(&format!(
         "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}' AND state <> 'ended'"
     ));
@@ -846,11 +839,6 @@ fn context_limit_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
     assert_eq!(t.not_before, None, "a context limit sets no backoff");
 }
 
-/// The wrapper of A1 wrote its first heartbeat, and no agent that a PID
-/// check can prove: the agent ended at once. The wrapper still lives and
-/// writes `exit.json` with the hint `context_limit` after that pass. A1
-/// with no recorded process stays `live` until its `exit.json` comes, and
-/// then ends with `context_limit`.
 #[test]
 fn attempt_with_no_recorded_process_waits_for_its_exit_json() {
     let w = world();
@@ -898,10 +886,6 @@ fn attempt_with_no_recorded_process_waits_for_its_exit_json() {
     );
 }
 
-/// The order of 1 pass: the agent of A1 wrote a valid `result.json`, and
-/// its wrapper wrote its first heartbeat and `exit.json`, before the pass
-/// saw A1 `live`. The result wins: the task goes to `verifying`, and rung
-/// 6 does not requeue it.
 #[test]
 fn result_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
     let w = world();
@@ -946,8 +930,6 @@ fn result_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
     files.write_exit_hinted(Some(0), false, None).unwrap();
 
     let report = run_pass(&w, &fake);
-    // Rule D: the verifier gives A1 its outcome, so the exit of A1 does not
-    // requeue the task.
     let events: Vec<String> = w
         .conn
         .prepare("SELECT kind || ' ' || text FROM events ORDER BY event_id")
@@ -966,9 +948,6 @@ fn result_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
     assert_eq!(t.not_before, None, "no backoff of rung 6");
 }
 
-/// RR-11: a usage limit ends A1 with `quota`, and the same pass binds A2
-/// on the fallback `codex-sol` as a push attempt. A2 has no backoff, no
-/// attempt is burned, and the old claim path writes no row.
 #[test]
 fn quota_outcome_restarts_as_a_push_attempt_of_the_fallback() {
     let w = world();

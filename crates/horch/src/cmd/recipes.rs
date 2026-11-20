@@ -936,9 +936,6 @@ mod tests {
         assert!(format!("{e:#}").contains("no workspace"), "{e:#}");
     }
 
-    /// SR-7: the real detached launch of a push attempt through the
-    /// launcher of fleetd. The child has the workspace of the run, though
-    /// the launcher removes the pane identity of its starter.
     #[cfg(unix)]
     #[test]
     fn detached_push_launch_gives_the_spawn_its_workspace() {

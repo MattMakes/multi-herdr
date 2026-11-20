@@ -102,9 +102,6 @@ struct World {
 impl World {
     fn new(name: &str, spec: &Spec<'_>) -> World {
         let mut h = Harness::new(name).with_git();
-        // The fleet root is in `~/.horch`, outside the state folder. A Codex
-        // worker can write the state folder, so a conformance folder there
-        // fails "Sandbox boundary" and marks codex-sol unhealthy.
         let fleet = h.home.join(".horch").join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();

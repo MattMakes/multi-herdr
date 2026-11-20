@@ -44,7 +44,6 @@ pub(crate) fn retired_line() -> String {
     retired("spawn").expect("spawn is a retired kind").line()
 }
 
-/// Whether fleetd launched this spawn: `--attempt`.
 pub(crate) fn launched_by_fleetd(args: &SpawnArgs) -> bool {
     args.attempt.is_some()
 }
@@ -87,8 +86,6 @@ pub enum Prepared {
 pub struct LedgerSpawn {
     pub run: Run,
     pub worker_id: String,
-    /// The first line of the pane: [`start_line`] of a push attempt. `None`
-    /// for a role, whose brief is its task.
     pub first_line: Option<String>,
     /// The push attempt of the worker, with its files.
     pub push: Option<Pushed>,
