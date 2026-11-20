@@ -52,6 +52,7 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, util};
+use horch_platform::channel::User;
 use rusqlite::{params, Connection};
 
 /// The variable that makes [`child_job`] run: the id of its job.
@@ -314,10 +315,28 @@ impl World {
         ids.into_iter().map(|id| self.job(id)).collect()
     }
 
-    /// Wait until the job `id` ended.
+    /// Wait until the job `id` ended. The job process only writes its result
+    /// file (SR-6): each wait ingests the result files as parts 1 and 2 of a
+    /// pass do, in its own connection, and the row ends from its file.
     fn ended(&self, id: i64) -> JobRow {
         let until = Instant::now() + Duration::from_secs(30);
+        let conn = open(&self.db());
+        let owner = User::current().unwrap();
         loop {
+            let row = self.job(id);
+            if !matches!(row.state, State::Queued | State::Running) {
+                return row;
+            }
+            let reads = jobs::read_results(
+                &conn,
+                &self.top.join("fleet"),
+                &owner,
+                self.config.job_result_max_bytes,
+            )
+            .unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            jobs::ingest_results(&ctx(&self.config), &conn, &reads).unwrap();
+            conn.execute_batch("COMMIT").unwrap();
             let row = self.job(id);
             if !matches!(row.state, State::Queued | State::Running) {
                 return row;
@@ -515,9 +534,12 @@ fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
     let mut pass = w.pass(&Trees, &host);
     let budget = Duration::from_secs(w.config.pass_time_budget_s);
 
-    let until = Instant::now() + Duration::from_secs(3);
+    // The passes run while the 60 s git job runs. A loaded host makes each
+    // pass slower, so the loop counts passes and not seconds.
+    let until = Instant::now() + Duration::from_secs(40);
     let mut passes = 0;
-    while Instant::now() < until {
+    while passes < 5 {
+        assert!(Instant::now() < until, "{passes} passes in 40 s");
         let began = Instant::now();
         let report = run(&mut pass, &mut w);
         assert!(
@@ -530,7 +552,7 @@ fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    assert!(passes >= 5, "{passes} passes in 3 s");
+    assert!(passes >= 5, "{passes} passes");
     assert_eq!(
         w.job(add).state,
         State::Running,

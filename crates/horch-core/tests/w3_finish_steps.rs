@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use test_jobs::TestJobs;
 
+use horch_core::fleetd::task_execution::application::commands;
 use horch_core::taskledger::finish::{
     self, codesweep, land, CodexSandbox, Ctx, FinishReport, Step, Tools, WorktreeRow,
 };
@@ -1519,11 +1520,18 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     assert_eq!(first.status, "open");
     assert!(Path::new(&first.path).ends_with(".worktrees/T2-feat-b"));
     // A replacement worker of the task gets the same worktree. The agent of
-    // the first worker exits: its task is queued again, without its lease.
+    // the first worker exits: its task is queued again, without its lease,
+    // and the pass ends its attempt (I1: 1 live attempt for each task).
     let run = w.run.clone();
     let db = w.root.parent().unwrap().join("ledger.sqlite3");
     let ended = horch_core::taskledger::Store::open(&db)
-        .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &id, Some(1))))
+        .and_then(|mut s| {
+            s.immediate(|tx| {
+                let ended = supervisor::settle(tx, &id, Some(1))?;
+                commands::end_own_attempt(tx, &id, "the agent exited")?;
+                Ok(ended)
+            })
+        })
         .unwrap();
     assert_eq!(
         ended,

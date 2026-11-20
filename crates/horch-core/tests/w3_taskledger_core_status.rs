@@ -136,7 +136,25 @@ fn report_counts_every_status_and_flags_the_unwatched_worker() {
 #[test]
 fn render_prints_each_section() {
     let (_d, store, run) = busy_board();
-    let text = status::render(&status::report(store.conn(), &run).unwrap());
+    let report = status::report(store.conn(), &run).unwrap();
+    // The lease row of T-1 holds a random attempt id and a clock time.
+    assert_eq!(report.leases.len(), 1);
+    let lease = &report.leases[0];
+    assert_eq!(
+        (
+            lease.task.as_str(),
+            lease.worker.as_str(),
+            lease.renew_basis.as_str()
+        ),
+        ("T-1", "dev-x", "claim")
+    );
+    assert_eq!(lease.expires_in_s, None);
+    assert_eq!(lease.last_signal_at, None);
+    let lease_line = format!(
+        "Lease of T-1: attempt {} of dev-x, renewed at {} by claim, no fleet clock; no signal yet.\n",
+        lease.attempt, lease.renewed_at
+    );
+    let text = status::render(&report);
     assert_eq!(
         text,
         "Run r1 (active). Branch: fleet/r1 -> main. PR: none.\n\
@@ -146,8 +164,9 @@ fn render_prints_each_section() {
          T-4   done      dev                -                    delta\n\
          T-5   cancelled dev                -                    eps\n\
          Live workers:\n\
-         \x20 dev-x                working   T-1   checkin - ago, progress - ago  UNWATCHED\n\
-         Worktrees:\n\
+         \x20 dev-x                working   T-1   checkin - ago, progress - ago  UNWATCHED\n".to_string()
+            + &lease_line
+            + "Worktrees:\n\
          \x20 T-1   open           /repo/.worktrees/a (base main)\n\
          Worktree disk: 0 B in 1 worktree; 1 not measured.\n\
          Feature F-0001 (r1) open: not pushed.\n\
@@ -164,6 +183,7 @@ fn an_empty_run_renders_no_tasks_and_is_complete() {
         text,
         "Run r1 (active). Branch: fleet/r1 -> main. PR: none.\n\
          No tasks.\n\
+         Feature F-0001 (r1) open: not pushed.\n\
          0 tasks: 0 done, 0 running, 0 landing, 0 queued, 0 cancelled. Complete.\n"
     );
 }
