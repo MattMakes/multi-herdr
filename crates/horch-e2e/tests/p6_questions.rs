@@ -538,8 +538,11 @@ impl World {
                     .collect()
             })
             .unwrap_or_default();
+        let answer = self.h.root.join(format!("{OWNER_ANSWER}.log"));
+        let answer = std::fs::read_to_string(answer).unwrap_or_default();
         format!(
-            "needs-you/:\n  {}\nidea folder:\n  {}\n{}{}{}{}{}{}calls:\n{}\nfleetd.stderr:\n{}\n",
+            "needs-you/:\n  {}\nidea folder:\n  {}\n{}{}{}{}{}{}calls:\n{}\nfleetd.stderr:\n{}\n\
+             answers of the owner:\n{answer}\n",
             mirror.join("\n  "),
             folder.join("\n  "),
             show(
@@ -596,7 +599,8 @@ fn shell_word(s: &str) -> String {
 /// watcher is a child of the launch, so the outbox writer finds its
 /// attempt. When the file `answer` holds a question id, the watcher answers
 /// it with `horch idea note --question` and exits. It also exits when its
-/// launch process is gone.
+/// launch process is gone. The `PATH` of a pane has no `/bin`, so the
+/// watcher uses shell builtins and `/bin/sleep`.
 fn owner_wrapper(answer: &Path, folder: &Path) -> String {
     let horch = Harness::horch_bin();
     let fake = horch.with_file_name("fake-claude");
@@ -606,9 +610,10 @@ fn owner_wrapper(answer: &Path, folder: &Path) -> String {
          launch=$$\n\
          ( while kill -0 \"$launch\" 2>/dev/null; do\n\
          if [ -s {answer} ]; then\n\
-         cd {folder} && {horch} idea note {IDEA} --question \"$(cat {answer})\" \
+         read -r q < {answer}\n\
+         cd {folder} && {horch} idea note {IDEA} --question \"$q\" \
          --case own_decision {text} >> {answer}.log 2>&1\n\
-         exit 0\nfi\nsleep 0.2\ndone ) &\n;;\nesac\n\
+         exit 0\nfi\n/bin/sleep 0.2\ndone ) &\n;;\nesac\n\
          exec {fake} \"$@\"\n",
         answer = shell_word(&answer.to_string_lossy()),
         folder = shell_word(&folder.to_string_lossy()),
