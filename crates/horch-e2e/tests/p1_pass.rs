@@ -372,8 +372,7 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
 
 /// A run of `tasks` tasks for `opus`, whose check passes. The watchdog
 /// numbers of the run never reap a quiet worker during a test: only a dead
-/// agent ends an attempt. The run and its tasks are fixtures in the ledger
-/// (`horch_e2e::ledger_seed`), since Phase 6 retired `horch ledger run new`.
+/// agent ends an attempt.
 fn plan(h: &Harness, tasks: usize) {
     let run = seed_run(h, "alpha", None, "w1:p1");
     Store::open(&db(h))
@@ -624,16 +623,12 @@ fn seed_folders(h: &Harness, agent: &Agent) {
 
 // ─── the tests ──────────────────────────────────────────────────────────
 
-/// The heartbeats that a test saw, for the hang limit between 2 of them.
 #[derive(Default)]
 struct HeartbeatGaps {
-    /// The PID and the awake time of the last heartbeat.
     last: Option<(u64, u64)>,
 }
 
 impl HeartbeatGaps {
-    /// Read the heartbeat. A new heartbeat of the same fleetd must come
-    /// less than [`HANG_LIMIT_MS`] of awake time after the one before.
     fn see(&mut self, h: &Harness) {
         let Some(hb) = heartbeat(h) else { return };
         let (Some(pid), at) = (hb["pid"].as_u64(), awake_ms(&hb)) else {
@@ -652,8 +647,7 @@ impl HeartbeatGaps {
 
 /// Wait until the `pass_cursors` row of each kind of [`FOLDER_SCANS`]
 /// differs from its row in `before`: a pass stored each folder cursor again.
-/// Each heartbeat on the way keeps the hang limit (`gaps`). Returns the new
-/// rows.
+/// Returns the new rows.
 fn cursors_moved(
     h: &Harness,
     before: &[Option<CursorRow>],
@@ -780,8 +774,6 @@ fn rr4_tasks_complete_with_all_file_watch_events_dropped() {
     );
 }
 
-/// The awake time of the last heartbeat of the fleetd `pid`, after no new
-/// heartbeat came for 2 s: the passes that an earlier event woke ended.
 fn settled_heartbeat(h: &Harness, pid: u32) -> u64 {
     let mut last: Option<(u64, Instant)> = None;
     wait_until(
@@ -803,16 +795,18 @@ fn settled_heartbeat(h: &Harness, pid: u32) -> u64 {
     )
 }
 
-/// The pass period of the wake test. No pass of the period comes during
-/// the test, so each new heartbeat comes from a wake.
 const LONG_PERIOD_S: u64 = 300;
 
-/// The longest wait for a woken pass: the poll of 100 ms and 1 pass on a
-/// loaded host, far below [`LONG_PERIOD_S`].
 const WAKE_WAIT_S: u64 = 15;
 
-/// Wait at most [`WAKE_WAIT_S`] for a heartbeat of the fleetd `pid` after
-/// the one at `before`: `event` woke a pass long before the period.
+fn commit_to_ledger(h: &Harness) {
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute("UPDATE runs SET check_every_s = check_every_s", [])
+        .unwrap();
+}
+
 fn woke_by(h: &Harness, pid: u32, before: u64, event: &str) {
     wait_until(
         &format!("{event} wakes a pass of fleetd PID {pid} before its period of {LONG_PERIOD_S} s"),
@@ -824,10 +818,6 @@ fn woke_by(h: &Harness, pid: u32, before: u64, event: &str) {
     );
 }
 
-/// RR-4: a file event wakes a pass at once; the period is only the
-/// fallback. A request file, a `result.json` in the outbox of a live
-/// attempt and a job result file each start a pass within [`WAKE_WAIT_S`],
-/// with a period of [`LONG_PERIOD_S`].
 #[test]
 fn rr4_file_request_and_job_events_wake_pass_before_period() {
     let h = world("p1-rr4-wake", &format!("pass_period_s = {LONG_PERIOD_S}\n"));
@@ -852,13 +842,7 @@ fn rr4_file_request_and_job_events_wake_pass_before_period() {
     let outbox = outbox_dir(&fleet_root(&h), &task, &attempt);
     let before = settled_heartbeat(&h, pid);
     std::fs::create_dir_all(&outbox).unwrap();
-    // A pass after the outbox exists watches it. A commit of the test to
-    // the ledger wakes that pass.
-    Store::open(&db(&h))
-        .unwrap()
-        .conn()
-        .execute("UPDATE runs SET check_every_s = check_every_s", [])
-        .unwrap();
+    commit_to_ledger(&h);
     woke_by(&h, pid, before, "a commit to the ledger");
     let before = settled_heartbeat(&h, pid);
     std::fs::write(

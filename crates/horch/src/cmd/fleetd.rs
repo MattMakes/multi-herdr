@@ -569,8 +569,6 @@ fn write_start_heartbeat(root: &Path, generation: Generation, exe: &Exe) -> Resu
 /// A SIGTERM came: the loop ends after the pass that runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
-/// Sleep `d`, or less when a SIGTERM comes or `woke` gives true. `woke`
-/// is asked about every 100 ms.
 fn sleep_unless_term(d: Duration, woke: &mut dyn FnMut() -> bool) {
     let until = Instant::now() + d;
     while !TERM.load(Ordering::SeqCst) && Instant::now() < until && !woke() {
@@ -578,19 +576,12 @@ fn sleep_unless_term(d: Duration, woke: &mut dyn FnMut() -> bool) {
     }
 }
 
-/// What wakes the loop of the daemon before its period ends (RR-4): a file
-/// event in the request folder, in the job result folder, or in the folder
-/// or the outbox of a live attempt, and a commit of another connection to
-/// the ledger, such as a request of the channel. A missed event waits for
-/// the next pass of the period.
 struct Wake {
     root: PathBuf,
-    /// The connection that reads `PRAGMA data_version`.
     ledger: Option<Connection>,
     watcher: Option<Watcher>,
     watched: BTreeSet<PathBuf>,
-    /// The `data_version` after the last pass.
-    version: Option<i64>,
+    armed_version: Option<i64>,
 }
 
 impl Wake {
@@ -600,14 +591,10 @@ impl Wake {
             ledger: ledger_conn(ledger).ok(),
             watcher: Watcher::new().ok(),
             watched: BTreeSet::new(),
-            version: None,
+            armed_version: None,
         }
     }
 
-    /// After a pass: watch the folders of now, at most [`WATCH_LIMIT`], and
-    /// forget the events and the commits of the pass, so that a pass never
-    /// wakes the next one. A folder that does not exist yet is tried again
-    /// after the next pass.
     fn arm(&mut self) {
         let dirs = self.folders();
         if let Some(w) = self.watcher.as_mut() {
@@ -627,19 +614,17 @@ impl Wake {
                     self.watched.insert(d.clone());
                 }
             }
-            w.changed();
+            let _events_of_the_pass = w.changed();
         }
-        self.version = self.data_version();
+        self.armed_version = self.data_version();
     }
 
-    /// Whether a watched folder changed, or another connection committed
-    /// to the ledger, since [`Wake::arm`].
     fn woke(&mut self) -> bool {
         let files = self
             .watcher
             .as_mut()
             .is_some_and(|w| !w.changed().is_empty());
-        files || (self.version.is_some() && self.data_version() != self.version)
+        files || (self.armed_version.is_some() && self.data_version() != self.armed_version)
     }
 
     fn data_version(&self) -> Option<i64> {
@@ -647,8 +632,6 @@ impl Wake {
         conn.query_row("PRAGMA data_version", [], |r| r.get(0)).ok()
     }
 
-    /// The request folder, the job result folder, and the folder and the
-    /// outbox of each live attempt of a task.
     fn folders(&self) -> Vec<PathBuf> {
         let mut dirs = vec![requests_dir(&self.root), self.root.join("run").join("jobs")];
         let Some(conn) = self.ledger.as_ref() else {
@@ -731,7 +714,6 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         lock: RefCell::new(Some(started.lock)),
     };
     let handlers = request_handlers(ctx, &settings);
-    // The fault drops each file event: only the period wakes a pass.
     let wake = (!settings.faults.has(DROP_WATCH_EVENTS))
         .then(|| RefCell::new(Wake::new(root, &ctx.paths.ledger_db)));
     with_pass(ctx, &writer, settings, false, |pass, _| {
@@ -1273,8 +1255,8 @@ enum Passed {
     GenerationLost,
 }
 
-/// The loop of the daemon: 1 `pass` every `period`, or sooner when `woke`
-/// gives true (RR-4), until a SIGTERM or a lost generation. When the binary file of fleetd `changed`, the loop
+/// The loop of the daemon: 1 `pass` every `period`, until a SIGTERM or a
+/// lost generation. When the binary file of fleetd `changed`, the loop
 /// calls `restart` once after the pass, and so after its heartbeat, and
 /// ends. A restart never stops a pass (preservation 04 S10, FM-34).
 fn run_loop(
@@ -1855,7 +1837,6 @@ mod tests {
         );
     }
 
-    /// RR-4: a wake starts the next pass at once, long before the period.
     #[test]
     fn rr4_a_wake_runs_the_next_pass_before_the_period() {
         let passes = std::cell::Cell::new(0);
