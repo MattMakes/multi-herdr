@@ -459,8 +459,6 @@ fn operator_boundary_fails_when_the_fleet_root_has_no_token() {
 
 #[test]
 fn operator_boundary_fails_when_the_request_folder_is_not_writable() {
-    // A refused write into a folder that the runner cannot write either
-    // proves nothing.
     let m = Machine::new(Codex::WithNetworkProxy);
     let requests = m.operator_paths().requests;
     std::fs::set_permissions(&requests, PermissionsExt::from_mode(0o500)).unwrap();

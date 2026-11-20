@@ -354,12 +354,6 @@ fn plugin_dir(cmd: &Command) -> Option<PathBuf> {
 /// How long the runner waits for its own connect to the channel.
 const CHANNEL_CONNECT_LIMIT: Duration = Duration::from_secs(5);
 
-/// The operator acts that this process cannot do itself, outside the
-/// sandbox, each with its reason. A token that is missing or empty, a
-/// channel with no listener or a request folder that is missing or not
-/// writable would refuse the act inside the sandbox too. The runner opens
-/// the token but does not read it, and it writes no request file: its
-/// write probe is a dotfile that it removes at once.
 fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
     let token = std::fs::File::open(&operator.token)
         .and_then(|f| f.metadata())
@@ -386,8 +380,6 @@ fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
     .collect()
 }
 
-/// Create and remove a unique probe file in `folder`, outside the sandbox.
-/// The probe is a dotfile, not a `.json` request file.
 fn probe_write(folder: &Path) -> std::result::Result<(), String> {
     let probe = folder.join(format!(
         ".conformance-reach-{}",
