@@ -84,6 +84,9 @@ pub struct SpawnOutcome {
     pub pane: String,
 }
 
+/// Custom pane-creation callback for hosts without geometry.
+pub type OpenPane<'a> = &'a dyn Fn(&ExecutionPlan) -> Result<String>;
+
 /// Applies spawn plans in one project and workspace.
 pub struct ExecutionService<'a> {
     pub ctx: &'a RuntimeContext,
@@ -93,6 +96,9 @@ pub struct ExecutionService<'a> {
     pub mailbox: &'a Mailbox,
     /// Lay the grid out around a new pane. Called last; must not fail.
     pub tile: &'a dyn Fn(&str, TilingMode),
+    /// Open a worker pane on a host without geometry (`Caps { geometry: false }`)
+    /// when `plan.workspace.from_pane` is `None`.
+    pub open_pane: Option<OpenPane<'a>>,
     /// The worker's task ledger row, written into its brief.
     pub ledger_worker: Option<&'a str>,
 }
@@ -252,14 +258,21 @@ impl ExecutionService<'_> {
 
     /// Split the requested pane, or this process's own.
     fn split(&self, plan: &ExecutionPlan) -> Result<String> {
+        if plan.workspace.from_pane.is_none() {
+            if let Some(open) = self.open_pane {
+                if self.ctx.settings.faults.has("fail-pane-split") {
+                    return Err(anyhow!("HORCH_FAULT fail-pane-split"));
+                }
+                return open(plan);
+            }
+        }
         let from = match &plan.workspace.from_pane {
             Some(p) => p.clone(),
             None => {
-                let internal =
-                    self.ctx.herdr.pane.as_ref().context(
-                        "horch spawn needs --from-pane when not run inside a herdr pane",
-                    )?;
-                self.workspace.pane_get(internal.as_str())?.pane_id
+                let internal = self.ctx.herdr.pane.as_ref().context(
+                    "horch spawn needs --from-pane when not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
+                )?;
+                self.workspace.pane_get(internal.as_ref())?.pane_id
             }
         };
         if self.ctx.settings.faults.has("fail-pane-split") {
@@ -279,14 +292,14 @@ impl ExecutionService<'_> {
         let exe = self.ctx.bins.exe()?;
         let data_root = self.ctx.paths.data_root.to_string_lossy();
         let state_root = self.ctx.paths.state_root.to_string_lossy();
-        let command = PaneShell::host().command_line_with_env(
-            &exe,
-            &[
-                ("HORCH_DATA_DIR", data_root.as_ref()),
-                ("HORCH_STATE_DIR", state_root.as_ref()),
-            ],
-            &["worker", role],
-        );
+        let mut env = vec![
+            ("HORCH_DATA_DIR", data_root.as_ref()),
+            ("HORCH_STATE_DIR", state_root.as_ref()),
+        ];
+        if self.ctx.herdr.backend == crate::runtime::Backend::Hc {
+            env.push(("HORCH_BACKEND", "hc"));
+        }
+        let command = PaneShell::host().command_line_with_env(&exe, &env, &["worker", role]);
         self.workspace.pane_run(pane, &command)
     }
 

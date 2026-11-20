@@ -617,8 +617,17 @@ fn agent_shell_env(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Vec<(String
         .filter(|(key, _)| key != "PATH")
         .cloned()
         .collect();
-    if let Some(pane) = &ctx.herdr.pane {
-        shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
+    match ctx.herdr.backend {
+        crate::runtime::Backend::Herdr => {
+            if let Some(pane) = &ctx.herdr.pane {
+                shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
+            }
+        }
+        crate::runtime::Backend::Hc => {
+            if !shell_env.iter().any(|(k, _)| k == "HORCH_BACKEND") {
+                shell_env.push(("HORCH_BACKEND".into(), "hc".into()));
+            }
+        }
     }
     shell_env
 }
@@ -1143,7 +1152,7 @@ pub(crate) fn type_resumed_prompt(
     let result = match pane {
         Some(pane) => delivery::deliver_when_idle(ws, pane, prompt, wait, timing),
         None => Err(anyhow::anyhow!(
-            "HERDR_PANE_ID is not set, so the resumed task cannot be typed"
+            "not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset), so the resumed task cannot be typed"
         )),
     };
     let Err(e) = result else {

@@ -58,7 +58,7 @@ fn thread_id(ctx: &RuntimeContext) -> Result<String> {
         .herdr
         .pane
         .as_ref()
-        .context("HORCH_RECORD_ID and HERDR_PANE_ID are unset")?;
+        .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset) and HORCH_RECORD_ID is unset")?;
     let pane = PaneHost::of(ctx).pane_get(pane.as_str())?;
     pane.agent_session
         .as_ref()

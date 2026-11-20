@@ -649,8 +649,8 @@ pub fn workspace_of(
             .with_context(|| format!("herdr did not say which workspace holds {pane}")),
         (None, None) => Ok(Mailbox::resolve_in(herdr, ctx)
             .context(
-                "horch needs --workspace, or to run inside a herdr pane (HERDR_PANE_ID) or with \
-                 HORCH_WORKSPACE_ID set",
+                "horch needs --workspace, or to run inside a herdr pane or a Herdr app terminal \
+                 (HERDR_PANE_ID and HC_TERMINAL_ID are unset) or with HORCH_WORKSPACE_ID set",
             )?
             .workspace_id()
             .to_string()),

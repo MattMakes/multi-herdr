@@ -204,6 +204,18 @@ fn stale_skill_warnings(home: &Path) -> Vec<String> {
 /// The precondition every recipe shares. Deliberately does NOT validate the
 /// roster: a roster warning must not stop a fleet from launching.
 pub fn check(ctx: &RuntimeContext) -> Result<()> {
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        if !horch_core::workspace::is_installed(ctx, horch_core::runtime::Backend::Hc) {
+            bail!(
+                "hc or herdr-app CLI not found on PATH.\n\
+                 Install the Herdr app, or pass --backend herdr to use the herdr TUI."
+            );
+        }
+        if !PaneHost::of(ctx).server_reachable() {
+            bail!("herdr-core is not running; open the Herdr app");
+        }
+        return Ok(());
+    }
     let herdr_bin = ctx.bins.harness.herdr.clone();
     let found = if herdr_bin.components().count() > 1 {
         herdr_bin.is_file()

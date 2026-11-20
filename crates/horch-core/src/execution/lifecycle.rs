@@ -981,7 +981,7 @@ impl WorkerSteps for PaneWorker<'_> {
             .herdr
             .pane
             .as_ref()
-            .context("HERDR_PANE_ID is not set, so horch spawn cannot be told")?;
+            .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset), so horch spawn cannot be told")?;
         let public = self.herdr().pane_get(pane.as_ref())?.pane_id;
         write_startup_error(&data_root, StartupKey::Pane(&public), error)
     }
@@ -992,7 +992,7 @@ impl WorkerSteps for PaneWorker<'_> {
             .herdr
             .pane
             .as_ref()
-            .context("HERDR_PANE_ID is not set")?;
+            .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)")?;
         // herdr gives the pane its internal id; close it by its public id,
         // the one the ledgers record.
         let herdr = self.herdr();

@@ -285,6 +285,9 @@ fn pane_command_for(
     if let Some(respawn) = respawn.as_deref() {
         env.push((orchestrator::RESPAWN_ENV, respawn));
     }
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        env.push(("HORCH_BACKEND", "hc"));
+    }
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
 }
 
@@ -1396,6 +1399,9 @@ fn child_env(
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
         env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
+    }
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        env.push(("HORCH_BACKEND".into(), "hc".into()));
     }
     // Set explicitly, not inherited: a Codex shell policy can drop it, and
     // the orchestrator's `horch ledger run new` reads it.

@@ -94,7 +94,7 @@ impl Mailbox {
         }
         let Some(pane_id) = pane.filter(|p| !p.is_empty()) else {
             bail!(
-                "not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set"
+                "not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset) and HORCH_WORKSPACE_ID is not set"
             )
         };
         let pane = herdr.pane_get(pane_id)?;
@@ -245,7 +245,7 @@ impl Mailbox {
     ) -> Result<(Self, String)> {
         let internal = pane
             .filter(|s| !s.is_empty())
-            .context("must run inside a herdr pane (HERDR_PANE_ID is unset)")?;
+            .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)")?;
         let pane = herdr.pane_get(internal)?;
         let ws = pane
             .workspace_id
