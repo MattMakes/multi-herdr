@@ -180,7 +180,8 @@ pub(super) fn claude_command(
 /// --include-hook-events`, with `--permission-mode dontAsk`, its explicit
 /// allow rules and `--permission-prompts none`, so no dialog can stop it
 /// (FM-18), and [`EXEC_COMPACT_WINDOW`] in the settings env (FR-9). The
-/// prompt is the path of the attempt's `inbox/START.md`. The rest is the
+/// prompt is the skills briefing, then the path of the attempt's
+/// `inbox/START.md` (`launch::run_exec_flow`). The rest is the
 /// interactive launch of today: the `--settings` overlay and
 /// `--strict-mcp-config`, no `CLAUDE_CONFIG_DIR`. The command is scrubbed;
 /// the caller starts it through the launcher.
