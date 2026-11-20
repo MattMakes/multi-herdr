@@ -100,7 +100,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::fleet_runtime::domain::pass::{
     breaches, observe_launch, stop_step, Breach, Holding, Launch, LaunchStep, Proc, StopStep,
-    TIMED_OUT,
+    START_TIMEOUT_S, TIMED_OUT,
 };
 use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
 use crate::fleetd::ideas::adapters::needs_you_folder::{self, Mirrored};
@@ -1261,8 +1261,14 @@ impl<'a> Pass<'a> {
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
         token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;
-        let launches =
-            self.observe_intents(&tx, &read.launching, read.task.panes.as_ref(), clock)?;
+        let roster = read.pools.as_ref().map(|p| &p.roster);
+        let launches = self.observe_intents(
+            &tx,
+            &read.launching,
+            read.task.panes.as_ref(),
+            roster,
+            clock,
+        )?;
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
         let pools = read.pools.as_ref().map(|p| Pools {
             roster: &p.roster,
@@ -1547,13 +1553,15 @@ impl<'a> Pass<'a> {
 
     /// Each attempt in `launching`: a live process of its attempt id ->
     /// `live`, with the process of its launch on its row; no process past
-    /// the start timeout -> `ended` with `timed_out`; no launch yet -> an
-    /// intended launch, returned.
+    /// the start timeout -> `ended` with `timed_out`, and rung 6 for its
+    /// task with the numbers of its profile in `roster`; no launch yet ->
+    /// an intended launch, returned.
     fn observe_intents(
         &self,
         tx: &Transaction<'_>,
         launching: &[Launching],
         panes: Option<&BTreeMap<String, InPane>>,
+        roster: Option<&Roster>,
         clock: FleetSeconds,
     ) -> Result<Vec<AttemptRow>> {
         let mut launches = Vec::new();
@@ -1598,15 +1606,44 @@ impl<'a> Pass<'a> {
                         cleanup: Default::default(),
                     };
                     commands::end_attempt(tx, &reap)?;
+                    if let Some(task) = &a.task_id {
+                        self.retry_timed_out(tx, task, &a.worker_id, roster)?;
+                    }
                 }
             }
         }
         Ok(launches)
     }
 
+    /// Rung 6 for task `task`, whose attempt of worker `worker` ended at
+    /// its start timeout (FM-21): the task is `ready` again after its
+    /// backoff, or `failed` or `escalated`, with the numbers of its
+    /// profile. A task that is not in flight keeps its own path: a
+    /// `verifying` task waits for its verifier (rule D), and a `done` task
+    /// keeps its resolver or fix attempt out of rung 6.
+    fn retry_timed_out(
+        &self,
+        tx: &Transaction<'_>,
+        task: &str,
+        worker: &str,
+        roster: Option<&Roster>,
+    ) -> Result<()> {
+        let status = tasks::get(tx, task)?.status;
+        let in_flight = [TaskStatus::Leased, TaskStatus::Running, TaskStatus::Stalled];
+        if !in_flight.iter().any(|s| s.as_str() == status) {
+            return Ok(());
+        }
+        let persona = workers::find(tx, worker)?.and_then(|w| w.persona);
+        let policy = retry_policy(roster, &self.settings.config, persona.as_deref());
+        let why = format!("no process started within {START_TIMEOUT_S} s of its launch");
+        retry::burn_attempt(tx, task, Outcome::TimedOut, &policy, &why)?;
+        Ok(())
+    }
+
     /// I1 and I4: a worker or a task with more than 1 attempt that holds
-    /// it gets 1 needs-you item. I6: each breach that the worktree facts
-    /// show gets 1 needs-you item. An item of the last pass whose breach
+    /// it gets 1 needs-you item. I1: a leased or running task whose
+    /// attempts all ended and that has no lease gets 1 needs-you item. I6:
+    /// each breach that the worktree facts show gets 1 needs-you item. An item of the last pass whose breach
     /// ended is resolved. Returns the keys of the open breaches.
     fn check_invariants(
         &self,
@@ -1644,6 +1681,22 @@ impl<'a> Pass<'a> {
                 kind: BREACH,
                 entity,
                 entity_id: id,
+                text: &text,
+            };
+            self.ports.needs_you.open_item(tx, &item)?;
+            keys.insert(key);
+        }
+        for task in lost_tasks(tx)? {
+            let key = format!("{BREACH}:I1:{}:{task}", Entity::Task);
+            let text = format!(
+                "I1: task {task} is leased or running, but each of its attempts ended and it \
+                 has no lease. No pass rule moves it. Requeue or cancel the task."
+            );
+            let item = NewItem {
+                key: &key,
+                kind: BREACH,
+                entity: Entity::Task,
+                entity_id: &task,
                 text: &text,
             };
             self.ports.needs_you.open_item(tx, &item)?;
@@ -3054,6 +3107,22 @@ fn exited_by_file(
 }
 
 /// Whether task `task` is `verifying`.
+/// I1, the other half: each task in `leased` or `running` that had an
+/// attempt, whose attempts all ended, and that has no lease. No pass rule
+/// moves such a task, so its work is lost (T-195).
+fn lost_tasks(tx: &Connection) -> Result<Vec<String>> {
+    let mut stmt = tx.prepare(
+        "SELECT task_id FROM tasks t WHERE status IN ('leased', 'running')
+           AND EXISTS (SELECT 1 FROM attempts a WHERE a.task_id = t.task_id)
+           AND NOT EXISTS (SELECT 1 FROM attempts a
+                           WHERE a.task_id = t.task_id AND a.state != 'ended')
+           AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id = t.task_id)
+         ORDER BY task_id",
+    )?;
+    let ids = stmt.query_map([], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
 fn verifying(tx: &Connection, task: &str) -> Result<bool> {
     Ok(tasks::get(tx, task)?.status == TaskStatus::Verifying.as_str())
 }

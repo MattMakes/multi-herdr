@@ -942,3 +942,114 @@ fn a_doorbell_that_was_not_typed_is_typed_by_the_next_pass() {
     assert_eq!(doorbell_events(&w), 1);
     assert_eq!(w.task(&task).status, "running");
 }
+
+/// Each task that is `running` has an attempt that is not ended, or a
+/// lease. A running task with neither is lost work: no pass rule moves it.
+fn assert_no_lost_task(w: &World) {
+    let lost: Vec<String> = w
+        .conn
+        .prepare(
+            "SELECT task_id FROM tasks t WHERE status = 'running'
+               AND NOT EXISTS (SELECT 1 FROM attempts a
+                               WHERE a.task_id = t.task_id AND a.state != 'ended')
+               AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id = t.task_id)",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "running with no attempt and no lease: {lost:?}"
+    );
+}
+
+/// T-195 (FM-21): an attempt of a task in `launching` whose process never
+/// comes passes the start timeout (90 s). The attempt ends `timed_out`, and
+/// rung 6 gives the task its next state: `ready` again with 1 burned
+/// attempt. After each pass no task is `running` with no attempt and no
+/// lease.
+#[test]
+fn a_launch_timeout_of_a_task_attempt_gives_the_task_a_retry() {
+    use horch_core::fleetd::fleet_runtime::adapters::effects::{write_launch, LaunchRecord};
+    use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    // No process ever starts for the attempt.
+    agent.kill();
+    let attempt = w.attempts(&task)[0].0.clone();
+    // The launch of the attempt recorded no process: it is in `launching`.
+    w.conn
+        .execute(
+            "UPDATE attempts SET state = 'launching', pid = NULL, pid_start = NULL WHERE id = ?1",
+            [&attempt],
+        )
+        .unwrap();
+    let record = LaunchRecord {
+        attempt: attempt.clone(),
+        launched_at: FleetSeconds(0),
+        process: None,
+    };
+    write_launch(&w.root(), &record).unwrap();
+    let fake = Fake::new(&w);
+
+    // Within the start timeout the attempt waits.
+    w.pass_at(30, &worker, &fake);
+    assert_eq!(w.attempts(&task)[0].1, "launching");
+    assert_eq!(w.task(&task).status, "running");
+    assert_no_lost_task(&w);
+
+    // Past the start timeout: the attempt ends and the task is queued again.
+    for clock in [100, 160, 220] {
+        w.pass_at(clock, &worker, &fake);
+        assert_no_lost_task(&w);
+    }
+    let attempts = w.attempts(&task);
+    assert_eq!(attempts[0].1, "ended", "{attempts:?}");
+    assert_eq!(attempts[0].2.as_deref(), Some("timed_out"));
+    let t = w.task(&task);
+    assert_eq!(t.status, "ready", "rung 6 queued it again");
+    assert_eq!(t.attempts, 1, "the timeout burned 1 attempt");
+    assert!(t.not_before.is_some(), "a backoff");
+    assert_eq!(i1_breaches(&w, &task), 0, "no I1 item");
+}
+
+/// The open needs-you items of the I1 breach of `task`.
+fn i1_breaches(w: &World, task: &str) -> i64 {
+    w.conn
+        .query_row(
+            "SELECT count(*) FROM needs_you WHERE key = ?1 AND state = 'open'",
+            [format!("invariant_breach:I1:task:{task}")],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// T-195, the I1 rule of the pass: a running task whose attempts all ended
+/// and that has no lease gets 1 needs-you item.
+#[test]
+fn a_running_task_with_no_attempt_and_no_lease_is_an_i1_breach() {
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    agent.kill();
+    let attempt = w.attempts(&task)[0].0.clone();
+    // A lost task: the attempt ended with no rung 6 and the lease is gone.
+    w.conn
+        .execute(
+            "UPDATE attempts SET state = 'ended', outcome = 'timed_out' WHERE id = ?1",
+            [&attempt],
+        )
+        .unwrap();
+    w.conn
+        .execute("DELETE FROM leases WHERE task_id = ?1", [&task])
+        .unwrap();
+    let fake = Fake::new(&w);
+
+    w.pass_at(10, &worker, &fake);
+    assert_eq!(w.task(&task).status, "running");
+    assert_eq!(i1_breaches(&w, &task), 1, "the pass opened the I1 item");
+}
