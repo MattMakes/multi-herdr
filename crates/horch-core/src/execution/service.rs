@@ -241,6 +241,7 @@ impl ExecutionService<'_> {
             worker_id: None,
             ledger_db: None,
             controller: plan.controller.clone(),
+            backend: ctx.herdr.backend,
         };
         brief.set_overrides(ctx.bins.overrides.clone());
         brief.worker_id = self.ledger_worker.map(str::to_string);

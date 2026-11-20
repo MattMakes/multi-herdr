@@ -531,6 +531,7 @@ mod tests {
             worker_id: None,
             ledger_db: None,
             controller: None,
+            backend: Default::default(),
         }
     }
 

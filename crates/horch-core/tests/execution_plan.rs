@@ -1092,6 +1092,7 @@ fn brief(record_id: &str) -> Brief {
         worker_id: None,
         ledger_db: None,
         controller: None,
+        backend: Default::default(),
     }
 }
 

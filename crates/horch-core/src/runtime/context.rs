@@ -615,7 +615,12 @@ mod tests {
             ctx.bins.harness.sqlite3,
             PathBuf::from("/fake/HORCH_SQLITE3_BIN")
         );
-        assert_eq!(ctx.bins.overrides.env_pairs().len(), 10);
+        assert_eq!(ctx.bins.harness.hc, PathBuf::from("/fake/HORCH_HC_BIN"));
+        assert_eq!(
+            ctx.bins.harness.herdr_app,
+            PathBuf::from("/fake/HORCH_HERDR_APP_BIN")
+        );
+        assert_eq!(ctx.bins.overrides.env_pairs().len(), 12);
 
         let s = &ctx.settings;
         assert_eq!(s.now, crate::clock::parse("2026-09-28T18:00:00Z"));

@@ -874,6 +874,7 @@ impl WorkerSteps for PaneWorker<'_> {
         if let Some(state_dir) = &brief.state_dir {
             self.ctx.paths.set_state_dir(state_dir);
         }
+        self.ctx.herdr.backend = brief.backend;
         self.ctx.apply_overrides(&brief.overrides());
         if !project.is_dir() {
             bail!("project dir '{}' is missing", brief.project_dir);
@@ -1543,6 +1544,7 @@ mod tests {
             worker_id: None,
             ledger_db: None,
             controller: None,
+            backend: Default::default(),
         }
     }
 
@@ -1646,6 +1648,7 @@ mod tests {
             worker_id: None,
             ledger_db: None,
             controller: None,
+            backend: Default::default(),
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {
@@ -2069,6 +2072,7 @@ mod tests {
                     worker_id: None,
                     ledger_db: None,
                     controller: None,
+                    backend: Default::default(),
                 }
             }
         }
