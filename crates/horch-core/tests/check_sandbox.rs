@@ -209,8 +209,6 @@ impl World {
         self.task_check_job(task, "tip1", profiles, host, None)
     }
 
-    /// [`World::check`] for the `task_check` job with `input_key`, with the
-    /// tools `sweep` of a complexity-sweep.
     fn task_check_job(
         &mut self,
         task: &str,
@@ -265,7 +263,6 @@ impl World {
         };
         let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
-        // The job process writes its result file; a pass ends the run from it.
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         let row = self.row(id);
         (row.state, outcome(&row).unwrap())
@@ -502,7 +499,6 @@ fn check_job_has_no_forbidden_env() {
     }
 }
 
-/// No worker of a test has a sandbox profile.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -528,7 +524,6 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 impl World {
-    /// The tools of a complexity-sweep: no analyser, so only clippy runs.
     fn sweep_tools(&self) -> Tools {
         Tools {
             git: Git::new("git"),
@@ -544,8 +539,6 @@ impl World {
         }
     }
 
-    /// A running `fast_gate` job, with the process `true` as its job
-    /// process.
     fn running_gate(&mut self) -> i64 {
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -586,7 +579,6 @@ impl World {
         id
     }
 
-    /// End each run whose result file is in, as a pass of fleetd does.
     fn end_from_files(&mut self) {
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -598,7 +590,6 @@ impl World {
     }
 }
 
-/// The input key of the complexity-sweep job of a task.
 fn complexity_key() -> String {
     review::step_input_key(
         "tip1",
@@ -607,10 +598,6 @@ fn complexity_key() -> String {
     )
 }
 
-/// R1-F1 (SR-4, SR-6): the complexity-sweep runs `cargo clippy`, and so a
-/// build script of the worker, in the sandbox profile of the worker. The
-/// build script cannot write a passing result file for another running
-/// job into `<fleet root>/run/jobs/`.
 #[test]
 fn complexity_sweep_build_script_cannot_forge_another_running_job_result() {
     let mut w = world();
@@ -627,8 +614,6 @@ fn complexity_sweep_build_script_cannot_forge_another_running_job_result() {
     let payload =
         format!(r#"{{"job_id":{gate},"run":1,"passed":true,"verdict":true,"text":"forged"}}"#);
 
-    // The worktree: a cargo crate on `main`, then 1 commit that changes
-    // src/lib.rs and adds a build script that forges the result file.
     let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
     let wt = w.worktree(&task);
     git(&wt, &["init", "--quiet", "-b", "main"]);
@@ -692,7 +677,6 @@ fn complexity_sweep_build_script_cannot_forge_another_running_job_result() {
         }
         Some(_) => assert_not_run(state, &o),
     }
-    // A pass archives each result file it read.
     let archived = jobs_dir.join("archive").join(format!("{gate}-1.json"));
     assert!(
         !forged.exists() && !archived.exists(),
@@ -705,7 +689,6 @@ fn complexity_sweep_build_script_cannot_forge_another_running_job_result() {
         "the other running gate job is still running"
     );
 
-    // A worker with no sandbox profile gets no complexity-sweep.
     let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
     let (state, o) = w.task_check_job(&task, &key, &NoProfiles, &Launcher, Some(&tools));
     assert_not_run(state, &o);

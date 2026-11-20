@@ -1131,13 +1131,6 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
     })
 }
 
-/// The `task_check` run of the complexity-sweep of a task (ticket 20 of
-/// fleetd-p4): today's step `finish::complexity`, for the attempt of the
-/// task's worker. Its step outcome is the `data` of the result. clippy and
-/// the analyser run code of the branch (a build script, for example), so
-/// each runs in the sandbox profile of the worker (SR-4, R1-F1), as the
-/// check of the task runs. A task with no worker, or a worker with no
-/// sandbox profile, gets no complexity-sweep.
 fn complexity_sweep(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Result<Ran> {
     let no_verdict = |text: String| {
         Ran::from(Outcome {
@@ -1193,10 +1186,6 @@ fn complexity_sweep(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -
     })
 }
 
-/// The tools of a complexity-sweep, each started as a check of `worker`:
-/// in its sandbox profile, through [`run_check`] (SR-4). The launcher sends
-/// stdout and stderr to 1 file, so the shell writes stderr after a marker
-/// line, and the runner splits the file there.
 struct WorkerTools<'a> {
     checks: &'a CheckRunner<'a>,
     worker: &'a Worker,
@@ -1219,7 +1208,6 @@ impl ToolRunner for WorkerTools<'_> {
                 self.worker.worker_id
             );
         };
-        // The launcher appends to the file.
         std::fs::File::create(stdout)?;
         spec.output = Some(stdout.to_path_buf());
         let status = run_check(self.checks.host, &spec)?;
@@ -1233,9 +1221,6 @@ impl ToolRunner for WorkerTools<'_> {
     }
 }
 
-/// The POSIX shell script that runs `program` with `args`, then prints a
-/// line with `marker` and the stderr of the program. Its exit code is the
-/// exit code of the program, or 125 when it has no temp file for stderr.
 /// The temp file is in `$TMPDIR`, which each sandbox profile can write:
 /// macOS `mktemp` with no template ignores `$TMPDIR`.
 fn tool_script(program: &Path, args: &[OsString], marker: &str) -> String {
@@ -1250,8 +1235,6 @@ fn tool_script(program: &Path, args: &[OsString], marker: &str) -> String {
     )
 }
 
-/// The stdout and the stderr of the output `all` of [`tool_script`]. With
-/// no marker line, the script did not end, and all of it is stderr.
 fn split_stderr<'b>(all: &'b [u8], marker: &str) -> (&'b [u8], &'b [u8]) {
     let sep = format!("\n{marker}\n");
     match all.windows(sep.len()).position(|w| w == sep.as_bytes()) {

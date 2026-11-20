@@ -389,7 +389,6 @@ fn sources(names: &str) -> Vec<String> {
 /// is excluded by its config (tests, for example).
 const NO_SOURCES: &str = "No source files found matching the provided patterns";
 
-/// The analyser, where it runs, and what starts it.
 struct Analyser<'a> {
     node: &'a Path,
     cli: &'a Path,
@@ -398,8 +397,6 @@ struct Analyser<'a> {
 }
 
 impl Analyser<'_> {
-    /// The program and the args that run the analyser on `files`, with
-    /// `config` when they have one.
     fn command(&self, files: &[String], config: Option<&Path>) -> (&Path, Vec<OsString>) {
         let mut args: Vec<OsString> = Vec::new();
         let program = if self.cli.extension().is_some_and(|e| e == "js") {

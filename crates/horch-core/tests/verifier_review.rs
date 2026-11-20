@@ -105,8 +105,6 @@ fn policy(_: &Task) -> Policy {
     Policy::default()
 }
 
-/// The sandbox profile of a test: each worker gets the plain shell in its
-/// work folder. Only a test uses it.
 struct TestProfile;
 
 impl SandboxProfiles for TestProfile {
