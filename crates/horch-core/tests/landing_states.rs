@@ -598,3 +598,71 @@ fn first_push_bind_writes_the_branch_row_once() {
     tx.commit().unwrap();
     assert_eq!(w.state(&branch), "verifying");
 }
+
+#[test]
+fn invalid_branch_row_between_two_valid_rows_fails_only_its_row_and_advances_both_valid_rows() {
+    use horch_core::fleetd::fleet_runtime::adapters::cursors_store;
+    use horch_core::fleetd::integration::application::landing::FOLLOW_FAILED_KIND;
+
+    let mut w = world();
+    let (t1, b1) = w.task("1");
+    let (t2, b2) = w.task("2");
+    let (t3, b3) = w.task("3");
+    assert!(b1 < b2 && b2 < b3, "the cursor walks the branches by name");
+    for t in [&t1, &t3] {
+        w.attempt(t, "push");
+        w.set_task(t, "verifying");
+    }
+    // The branch row of b2 names a task that the ledger does not have.
+    w.conn.pragma_update(None, "foreign_keys", false).unwrap();
+    w.conn
+        .execute(
+            "UPDATE branches SET task_id = 'T-missing' WHERE name = ?1",
+            [&b2],
+        )
+        .unwrap();
+    w.conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+    w.follow(10);
+    assert_eq!(w.state(&b1), "verifying");
+    assert_eq!(w.state(&b3), "verifying");
+    assert_eq!(w.state(&b2), "building");
+    let cursor = cursors_store::load(&w.conn, landing::CURSOR, &util::now()).unwrap();
+    assert_eq!(cursor.after_key.as_deref(), Some(b3.as_str()));
+    let failed = |w: &World| -> Vec<(String, String)> {
+        open_items(&w.conn)
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.kind == FOLLOW_FAILED_KIND)
+            .map(|i| (i.key, i.entity_id))
+            .collect()
+    };
+    let item = (format!("{FOLLOW_FAILED_KIND}:{b2}"), b2.clone());
+    assert_eq!(failed(&w), vec![item.clone()]);
+
+    // The next pass fails the same row again: the item stays 1 item.
+    w.follow(20);
+    assert_eq!(failed(&w), vec![item]);
+    let opened: i64 = w
+        .conn
+        .query_row(
+            "SELECT count(*) FROM events WHERE entity = 'needs_you' AND entity_id = ?1",
+            [format!("{FOLLOW_FAILED_KIND}:{b2}")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(opened, 1, "1 event opens the item");
+
+    // The row is fixed: the branch follows its task, and the item ends.
+    w.conn
+        .execute(
+            "UPDATE branches SET task_id = ?2 WHERE name = ?1",
+            params![b2, t2],
+        )
+        .unwrap();
+    w.attempt(&t2, "push");
+    w.set_task(&t2, "verifying");
+    w.follow(30);
+    assert_eq!(w.state(&b2), "verifying");
+    assert!(failed(&w).is_empty());
+}
