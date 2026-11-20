@@ -14,8 +14,10 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use horch_core::procid;
+use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::Store;
 use horch_e2e::harness::Harness;
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 const SIGKILL: i32 = 9;
@@ -27,12 +29,6 @@ fn text(o: &Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
-}
-
-fn ok(h: &Harness, args: &[&str]) -> String {
-    let o = h.run(args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
 fn json_of(h: &Harness, args: &[&str]) -> Value {
@@ -201,43 +197,31 @@ fn kill_lock_owner(lock: &Path) {
     }
 }
 
+/// The watchdog timing of `run`: `horch ledger run new --check-every` and
+/// `--stall-rounds` are retired, so the test writes the 2 columns.
+fn set_thresholds(h: &Harness, run: &Run, check_every_s: i64, stall_rounds: i64) {
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE runs SET check_every_s = ?2, stall_rounds = ?3 WHERE run_id = ?1",
+            rusqlite::params![run.run_id, check_every_s, stall_rounds],
+        )
+        .unwrap();
+}
+
 /// In `h`, run `zeta` with task 1 bound to a worker whose agent is a live
 /// `sleep` child of the test (FR-5). Many stall rounds keep a watchdog from
 /// reaping the live worker.
 fn claimed_run(h: &Harness) -> WatchdogTeardown {
-    // The test fleetd applies the routed setup; the test runs its own
-    // fleetd and checks after it.
-    h.serve_fleetd();
-    ok(
-        h,
-        &[
-            "ledger",
-            "run",
-            "new",
-            "zeta",
-            "--check-every",
-            "1",
-            "--stall-rounds",
-            "1000",
-        ],
-    );
+    let run = seed_run(h, "zeta", None, "w1:p1");
+    set_thresholds(h, &run, 1, 1000);
     let p = ticket(h, "t0", "# T0\n");
-    ok(
-        h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &p.to_string_lossy(),
-            "--primary",
-            "opus",
-        ],
-    );
+    seed_task(h, &run, &p, "opus");
     let teardown = WatchdogTeardown {
         agent: Command::new("/bin/sleep").arg("600").spawn().unwrap(),
         locks: h.root.join("locks"),
     };
-    h.stop_fleetd();
     horch_e2e::bind::bind(h, "opus", Some(teardown.agent.id()));
     teardown
 }
