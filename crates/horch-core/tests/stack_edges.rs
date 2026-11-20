@@ -883,7 +883,6 @@ fn both_gates_run_again_after_the_rebase() {
     // The fast gate: a ready task branch is bundled on the new tip, and its
     // fast gate judges the bundle over the new tip.
     w.gate_passed(full[1].id);
-    // FR-12: the idea I-1 is integrating, so the task t3 needs an idea in flight.
     w.idea(&upper, "I-2", "in_progress");
     w.task_branch(&upper, &upper_branch, "fleet/t3", "t3.txt", "ready");
     w.bundles_pass(clock + 2);

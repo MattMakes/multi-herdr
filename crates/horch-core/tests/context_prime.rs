@@ -489,8 +489,6 @@ fn ctx_05_prime_launch_records_the_applied_window() {
     let warm = warm::write_warmed(&w.fake_prime(), "#!/bin/sh\nexit 0\n", &["warm"]);
     assert!(warm.status.success());
     let ctx = w.ctx(&[]);
-    // The session records go to fleetd (RR-5): serve them, and the operator
-    // token, until the test ends.
     let _fleetd = serve_session_records(&ctx.paths).unwrap();
     let (roster, mut t) = prime_teammate();
     // No skills: a resume checks them against the record, which has none.
