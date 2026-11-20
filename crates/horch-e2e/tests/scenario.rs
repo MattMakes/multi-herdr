@@ -214,7 +214,6 @@ fn refused_launch_changes_nothing() {
     stop_fleetd_and_jobs(&g);
 }
 
-/// Step 5: the Claude probe, against today's real state.
 fn claude_probe_reads_exhausted(h: &mut Harness) {
     h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
     h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
@@ -234,7 +233,6 @@ fn claude_probe_reads_exhausted(h: &mut Harness) {
     h.unset("HORCH_FAKE_SCENARIO");
 }
 
-/// Step 10: nothing that must not persist did (TEL-11).
 fn nothing_persists(h: &Harness) {
     for p in h
         .state_files()
@@ -253,17 +251,14 @@ fn nothing_persists(h: &Harness) {
     }
 }
 
-/// Step 11: horch usage agrees with horch cost, record by record (TEL-10).
 fn usage_agrees_with_cost(h: &mut Harness) {
     for project in ["/work/alpha", "/work/beta"] {
         h.set("HORCH_PROJECT_DIR", project);
         let usage: Value =
             serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
                 .unwrap();
-        // A filter makes 1 report on stdout; this one covers every call.
-        let cost: Value =
-            serde_json::from_slice(&h.run(&["cost", "--json", "--since", "2000-01-01"]).stdout)
-                .unwrap();
+        let one_report_of_every_call = ["cost", "--json", "--since", "2000-01-01"];
+        let cost: Value = serde_json::from_slice(&h.run(&one_report_of_every_call).stdout).unwrap();
         for row in cost["rows"].as_array().unwrap() {
             let rec = usage["records"]
                 .as_array()
