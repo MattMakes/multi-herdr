@@ -838,7 +838,6 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     };
     let mut runner = JobRunner::new(&Launcher);
 
-    // The fetch process hangs: it holds the repository.
     let job = w.job(fetch);
     assert!(runner
         .start(
@@ -866,7 +865,6 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     assert!(!waiting, "the rescue waits for the fetch");
     assert_eq!(w.job(rescue).state, State::Queued);
 
-    // Past its deadline plus the grace, the fetch gets a kill of its group.
     let fact = |liveness| {
         vec![ProcessFact {
             key: fetch.to_string(),
@@ -911,13 +909,11 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // The next pass sees the process gone: the run ends `abandoned`.
     let ended = observe(&mut w, Liveness::Dead, 7);
     assert_eq!(ended.ended, vec![(fetch, State::Abandoned)]);
     assert_eq!(w.job(fetch).state, State::Abandoned);
     assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
 
-    // The queued rescue starts and saves the tree.
     let job = w.job(rescue);
     assert!(runner
         .start(

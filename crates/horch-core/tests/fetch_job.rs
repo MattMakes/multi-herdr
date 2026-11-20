@@ -197,8 +197,6 @@ impl World {
             .unwrap()
     }
 
-    /// Start the run `id` at `clock` with a process that ends at once.
-    /// Whether the run started: a git writer waits for the running one.
     fn try_start(&mut self, id: i64, clock: i64) -> bool {
         let config = self.config.clone();
         let job = jobs_store::get(&self.conn, id).unwrap().unwrap();
@@ -221,7 +219,6 @@ impl World {
             .unwrap()
     }
 
-    /// An `orphaned` row `name` of the repository, a tree below it.
     fn orphan(&mut self, name: &str) -> WorktreeRow {
         let new = NewWorktree {
             worktree_id: name.to_string(),
@@ -249,7 +246,6 @@ impl World {
         trees::get(&self.conn, name).unwrap().unwrap()
     }
 
-    /// Queue the `rescue` run of the tree `row` at 0 s. Give its id.
     fn queue_rescue(&mut self, row: &WorktreeRow) -> i64 {
         let config = self.config.clone();
         let input_key = rescue_git::rescue_key(&row.path, "head");
