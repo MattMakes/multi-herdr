@@ -387,7 +387,11 @@ fn shared_write_reaches_outbox_result_json() {
 #[test]
 fn shared_write_fails_when_the_agent_ends_without_the_write() {
     let m = Machine::new();
-    let r = m.check(&claude(), "exit_without_result", Check::SharedWrite);
+    let r = m.check(
+        &claude(),
+        "conformance,exit_without_result",
+        Check::SharedWrite,
+    );
     assert_verdict(&r, Check::SharedWrite, Verdict::Fail);
     assert!(r.evidence.contains("outbox/result.json"), "{r:?}");
 }
@@ -450,7 +454,11 @@ fn hooks_reach_the_wrapper() {
 #[test]
 fn hooks_fire_fails_when_no_stop_reaches_the_wrapper() {
     let m = Machine::new();
-    let r = m.check(&claude(), "exit_without_result", Check::HooksFire);
+    let r = m.check(
+        &claude(),
+        "conformance,exit_without_result",
+        Check::HooksFire,
+    );
     assert_verdict(&r, Check::HooksFire, Verdict::Fail);
     assert!(r.evidence.contains("no stop"), "{r:?}");
 }

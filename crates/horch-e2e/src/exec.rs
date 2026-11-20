@@ -215,10 +215,13 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     // A real agent obeys the prompt of "Stop gate": it ends with no result.
     // The fake acts on the prompt of a check as a real agent does, with any
     // scenario: the production job runs each check with the scenario of
-    // the fleet.
+    // the fleet. The scenario `conformance` marks a world that tests the
+    // checks: there `exit_without_result` ends a check with no result too.
     let conformance = check || scenario_has("conformance");
     let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
-    if (scenario_has("exit_without_result") && !check) || (obeys_stop_gate && conformance) {
+    let ends_with_no_result =
+        scenario_has("exit_without_result") && (!check || scenario_has("conformance"));
+    if ends_with_no_result || (obeys_stop_gate && conformance) {
         call.flush();
         std::process::exit(0);
     }
