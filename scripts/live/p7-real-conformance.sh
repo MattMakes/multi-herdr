@@ -11,6 +11,15 @@
 # check of each report has the verdict "pass". On exit it stops its fleetd
 # and removes the temp fleet.
 #
+# Operator release step:
+#   A worker never runs this gate with the real CLIs. A real run uses the
+#   login and the quota of the operator, and a worker never uses
+#   ANTHROPIC_API_KEY. Before a release, the operator runs in a logged-in
+#   shell:
+#     env -u ANTHROPIC_API_KEY scripts/live/p7-real-conformance.sh --out docs/specs/fleetd/gates/evidence/p7-conformance
+#   and records each conformance.json path that it prints in
+#   docs/specs/fleetd/gates/fleetd-p7.md.
+#
 # Environment:
 #   HORCH_BIN                 the horch binary (default: horch on PATH).
 #   P7_CONFORMANCE_TIMEOUT_S  the wait for the runs, in seconds (default 1800).
