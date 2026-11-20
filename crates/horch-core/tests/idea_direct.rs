@@ -30,10 +30,15 @@ use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterPro
 use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::integration::adapters::sqlite as features;
 use horch_core::fleetd::integration::application::new_features::Project;
+use horch_core::fleetd::task_execution::application::dispatch::{
+    bind, write_task_files, DispatchCtx,
+};
 use horch_core::fleetd::worker_profiles::application::health;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, FileMode};
 use horch_core::taskledger::tasks;
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 use horch_marketplace::git::scrub_repo_env;
 use horch_platform::channel::User;
@@ -593,4 +598,112 @@ fn plan_with_only_a_council_seat_to_judge_is_refused_with_the_cause() {
             .contains("astra-creative: its model gpt-6-astra is of the reserved tier astra")),
         "{problems:?}"
     );
+}
+
+/// The committed judge task of a `--direct` `docs` idea: its idea and its
+/// task id.
+fn committed_docs_judge(w: &mut World) -> (String, String) {
+    let added = w.add(DOCS_TICKET, None);
+    let idea = added.idea.file.id.clone();
+    let started = w.start(&idea);
+    assert!(
+        matches!(started, Started::Committed(Verdict::Committed { .. })),
+        "the plan is not committed: {started:?}"
+    );
+    let judge_key = w.tasks(&idea)[1].3["key"].as_str().unwrap().to_string();
+    let judge = w.task_id(&idea, &judge_key);
+    (idea, judge)
+}
+
+/// Each part of the verdict format that the judge ticket names.
+const VERDICT_FORMAT: [&str; 9] = [
+    "docs/sync.review.md",
+    "## Verdict",
+    "pass",
+    "critical_open",
+    "## Findings",
+    "[CRITICAL]",
+    "[HIGH]",
+    "[MEDIUM]",
+    "[LOW]",
+];
+
+#[test]
+fn direct_judge_task_gets_verdict_output_and_generated_ticket() {
+    let mut w = world();
+    let (idea, judge) = committed_docs_judge(&mut w);
+    let rows = w.tasks(&idea);
+    assert_eq!(
+        tasks::files(w.store.conn(), &judge, FileMode::Own).unwrap(),
+        vec!["docs/sync.review.md".to_string()]
+    );
+    assert_eq!(
+        rows[1].3["outputs"],
+        serde_json::json!(["docs/sync.review.md"])
+    );
+    let rel = "tickets/02-document-the-retries-judge.md";
+    assert_eq!(rows[1].3["ticket"], rel);
+    let file = std::fs::read_to_string(w.folder(&idea).join(rel)).unwrap();
+    let snapshot = tasks::get(w.store.conn(), &judge)
+        .unwrap()
+        .ticket_snapshot
+        .unwrap_or_default();
+    assert_eq!(snapshot, file);
+    for part in VERDICT_FORMAT {
+        assert!(snapshot.contains(part), "{part}: {snapshot}");
+    }
+}
+
+#[test]
+fn dispatched_judge_task_renders_kind_judge_and_verdict_instructions_in_task_files() {
+    let mut w = world();
+    let (idea, judge) = committed_docs_judge(&mut w);
+    let work_key = w.tasks(&idea)[0].3["key"].as_str().unwrap().to_string();
+    let work = w.task_id(&idea, &work_key);
+    let ledger_git = Git::new("git");
+    let config = w.config.clone();
+    let ctx = DispatchCtx {
+        jobs: JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        },
+        clock: CLOCK,
+        git: &ledger_git,
+    };
+    // The judge tree starts from the branch of the judged task: bind the
+    // judged task first, and make its branch.
+    let mut bound = None;
+    for (task, profile) in [(&work, "coder-claude"), (&judge, "coder-codex")] {
+        w.store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'ready' WHERE task_id = ?1",
+                [task],
+            )
+            .unwrap();
+        let b = w
+            .store
+            .immediate(|tx| bind(tx, &ctx, task, profile, &NewWorker::default()))
+            .unwrap();
+        if bound.is_none() {
+            let branch = b.worktree.clone().unwrap().branch;
+            git(&w.repo, &["branch", &branch, "main"]);
+        }
+        bound = Some(b);
+    }
+    let bound = bound.unwrap();
+    let fleet_root = w.root.join("fleet");
+    let files = write_task_files(w.store.conn(), &fleet_root, &bound.attempt_id, &[]).unwrap();
+    let yaml: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&files.task_yaml).unwrap()).unwrap();
+    assert_eq!(yaml["kind"], "judge", "{yaml:?}");
+    let start = std::fs::read_to_string(&files.start_md).unwrap();
+    assert!(
+        start.starts_with("# 02: Judge: Document the retries"),
+        "{start}"
+    );
+    for part in VERDICT_FORMAT {
+        assert!(start.contains(part), "{part}: {start}");
+    }
 }

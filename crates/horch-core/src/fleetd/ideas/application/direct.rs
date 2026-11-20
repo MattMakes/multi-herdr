@@ -18,7 +18,9 @@
 //!   task: kind `judge`, `judges:` the work task, and the first profile of
 //!   another provider of the roster with a sandbox on this OS that can
 //!   judge: healthy, not of a reserved top tier, and accepted by the
-//!   profile rules of the plan validator.
+//!   profile rules of the plan validator. The judge task has 1 output, its
+//!   verdict file, and a generated ticket `tickets/02-<key>-judge.md` with
+//!   the verdict format ([`write_judge_ticket`]).
 //! - [`start_direct`] moves the idea to `ticketing` under the rule of the
 //!   feature, then validates its plan (`ValidatePlan`). A refused plan
 //!   opens 1 needs-you item with the reason, and the idea stays in
@@ -149,6 +151,7 @@ impl DirectAdded {
             FILE_MODE,
         )?;
         fsx::write_atomic(&dir.join(PLAN_YAML), self.plan.as_bytes(), FILE_MODE)?;
+        write_judge_ticket(dir)?;
         self.approval.write(&folder)?;
         if let Some(branch) = &self.branch {
             create_ref(git, branch)?;
@@ -281,6 +284,7 @@ fn plan_yaml(
             "kind": Kind::Judge.as_str(),
             "judges": work.key,
             "profile": judge_profile(&work.profile, roster, unhealthy),
+            "ticket": judge_ticket_rel(&work.key),
             "outputs": [verdict_file(work)],
         }));
     }
@@ -292,6 +296,78 @@ fn plan_yaml(
         "tasks": tasks,
     });
     Ok(serde_yaml::to_string(&plan)?)
+}
+
+/// The generated ticket of the judge of the work task `key`, a path in
+/// the idea folder.
+fn judge_ticket_rel(key: &str) -> String {
+    format!("{TICKETS}/02-{key}-judge.md")
+}
+
+/// Write the generated ticket of the judge task of the plan.yaml in the
+/// idea folder `dir`, from the judge task of the plan. A plan with no judge
+/// task, or a judge task with another ticket, writes nothing. The write
+/// gives the same result when it runs again.
+pub fn write_judge_ticket(dir: &Path) -> Result<()> {
+    let Ok(text) = std::fs::read_to_string(dir.join(PLAN_YAML)) else {
+        return Ok(());
+    };
+    let plan: serde_json::Value = serde_yaml::from_str(&text)?;
+    let tasks = plan["tasks"].as_array().cloned().unwrap_or_default();
+    let field = |t: &serde_json::Value, k: &str| t[k].as_str().unwrap_or("").to_string();
+    let Some(judge) = tasks
+        .iter()
+        .find(|t| field(t, "kind") == Kind::Judge.as_str())
+    else {
+        return Ok(());
+    };
+    let rel = judge_ticket_rel(&field(judge, "judges"));
+    if field(judge, "ticket") != rel {
+        return Ok(());
+    }
+    let verdict = judge["outputs"][0].as_str().unwrap_or("");
+    let ticket = judge_ticket(
+        &field(judge, "title"),
+        &field(judge, "judges"),
+        &field(judge, "profile"),
+        verdict,
+    );
+    fsx::ensure_private_dir(&dir.join(TICKETS))?;
+    fsx::create_immutable(&dir.join(rel), ticket.as_bytes(), FILE_MODE)?;
+    Ok(())
+}
+
+/// The text of the ticket of the judge task `title` of the profile
+/// `profile`: it judges the task `judged` and writes the verdict file
+/// `verdict` in the format of the judge pair (RR-3).
+fn judge_ticket(title: &str, judged: &str, profile: &str, verdict: &str) -> String {
+    format!(
+        "# 02: {title}
+
+<!-- horch-ticket: 1 -->
+**Persona:** primary `{profile}`
+**Kind:** report
+**Check:** none
+**Own:** `{verdict}`
+
+## Goal
+
+Judge the output of the task `{judged}` against its ticket. Write the verdict to `{verdict}`.
+
+## Steps
+
+1. Read the ticket of the task `{judged}` and its output.
+2. Check the output against each requirement of that ticket. Do not change the output.
+3. Write `{verdict}` in the verdict format below.
+
+## Done when
+
+`{verdict}` exists and has these 2 sections:
+
+- `## Verdict`: exactly 1 word, `pass` or `critical_open`. Write `critical_open` when the list of findings has 1 or more `[CRITICAL]` items, else `pass`.
+- `## Findings`: 1 list item for each finding. Each item starts with its rank: `[CRITICAL]`, `[HIGH]`, `[MEDIUM]` or `[LOW]`. With no finding, the section has no list item.
+"
+    )
 }
 
 fn verdict_file(work: &WorkTask<'_>) -> String {
@@ -451,6 +527,8 @@ pub fn start_direct(store: &mut Store, ctx: &PlanCommit<'_>, idea: &str) -> Resu
     if !moved {
         return Ok(Started::Waiting);
     }
+    let folder = IdeaFolder::new(ctx.ideas, idea, ctx.owner.clone())?;
+    write_judge_ticket(folder.dir())?;
     match validate_plan(store, ctx, idea)? {
         Verdict::Refused { mut problems } => {
             problems.extend(judge_gap(store.conn(), ctx, idea)?);
