@@ -371,9 +371,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// The planned task `key` of the plan kind `kind`: `work_kind` is `NULL`
-/// (the ledger knows no legacy kind for it) and the kind lives only in
-/// `spec_json`, as the plan commit writes it.
 fn planned(key: &str, kind: &str) -> PlannedTask {
     PlannedTask {
         key: key.into(),
@@ -390,10 +387,6 @@ fn planned(key: &str, kind: &str) -> PlannedTask {
     }
 }
 
-/// FR-4, RR-3, FM-9: the kind of a planned task survives dispatch. Each
-/// non-legacy kind of a plan (`judge`, `research`, `design`, `creative`)
-/// has `tasks.work_kind` of `NULL` and its kind in `tasks.spec_json`. Its
-/// `task.yaml` says `kind: <kind>`, never `kind: null`.
 #[test]
 fn planned_non_legacy_kinds_survive_dispatch_into_task_yaml() {
     let dir = tempfile::tempdir().unwrap();
@@ -416,7 +409,6 @@ fn planned_non_legacy_kinds_survive_dispatch_into_task_yaml() {
         text,
     };
 
-    // An idea in flight of a feature with its internal run and run branch.
     let project = Project {
         root: &repo,
         primary_branch: "main",
@@ -444,7 +436,6 @@ fn planned_non_legacy_kinds_survive_dispatch_into_task_yaml() {
         .unwrap();
     let run = runs::of_feature(store.conn(), &feature).unwrap().unwrap();
 
-    // Commit 4 planned tasks, 1 for each non-legacy kind.
     let kinds = ["judge", "research", "design", "creative"];
     let plan: Vec<PlannedTask> = kinds
         .iter()
@@ -466,7 +457,6 @@ fn planned_non_legacy_kinds_survive_dispatch_into_task_yaml() {
         assert_eq!(work_kind, None, "{key}: the kind lives only in spec_json");
     }
 
-    // Dispatch binds each task, and fleetd writes its `task.yaml`.
     let git_port = Git::new("git");
     let ctx = DispatchCtx {
         jobs: jobs(),

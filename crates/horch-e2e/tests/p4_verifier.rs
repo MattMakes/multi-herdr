@@ -2,14 +2,6 @@
 //! FM-9 (the part test of Phase 4), RR-3, SR-4;
 //! `docs/tickets/fleetd-p4/51-p4-verifier-e2e.md`).
 //!
-//! Each test queues 1 task in a temp ledger and starts a real `horch fleetd`.
-//! Fleetd dispatches the task by push: it binds the attempt `A1`, makes the
-//! worktree with its `worktree_add` job, writes `task.yaml` and
-//! `inbox/START.md`, and launches the fake agent `claude` in a pane of the
-//! fake herdr. The fake commits in the worktree and runs `horch result`. Only
-//! the verifier of fleetd moves the task, so each test reads the ledger, the
-//! file `verdict-<n>.json` and the files of the check, and never a time.
-//!
 //! Each process runs with temporary `HORCH_DATA_DIR`, `HORCH_STATE_DIR`,
 //! `HORCH_LEDGER_DB` and `FLEET_ROOT`. The load, the limits and the clock of
 //! this machine are not read: the harness gives the machine facts through
@@ -30,8 +22,6 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::Connection;
 use serde_json::Value;
 
-/// The persona of the worker: a Claude persona, so its check runs in the
-/// platform sandbox and the fake agent is `claude`.
 const PERSONA: &str = "opus";
 
 /// The 1 file that the fake agent commits, `fake-<fake>.txt` (`agent.rs`).
@@ -60,21 +50,13 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// What a test gives a task: its check, its kind, its owned files, and the
-/// file that the agent commits before the fake agent runs.
 struct Spec<'a> {
     check: &'a str,
     kind: WorkKind,
     own: &'a [&'a str],
-    /// A file `(path, body)` that the agent writes and commits in its
-    /// worktree, as a docs author does. The fake agent commits only
-    /// `fake-claude.txt`.
     writes: Option<(&'a str, &'a str)>,
 }
 
-/// 1 test: a harness with its own ledger, fleet root and fleet.toml, a run
-/// with its orchestrator in the pane `w1:p1`, and 1 queued task. The fleetd
-/// stops before the harness removes its folder.
 struct World {
     h: Harness,
     task_id: String,
@@ -93,8 +75,6 @@ impl World {
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
         h.set("HORCH_FAKE_SCENARIO", "exec,commit,result");
-        // A pass each second. The load of the build host does not hold
-        // dispatch in this test.
         let fleet = h.fleet_root();
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(
@@ -102,8 +82,6 @@ impl World {
             "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
         )
         .unwrap();
-        // The project declares its gates, so no hold of a missing fast gate
-        // stops the dispatch.
         std::fs::write(
             h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -118,8 +96,6 @@ impl World {
         if let Some((path, body)) = spec.writes {
             World::docs_author(&mut h, path, body);
         }
-        // The workspace of the fleet has the label of the project folder, so
-        // fleetd launches an attempt with no recorded pane in it.
         let workspace = h.fleet_workspace();
         assert_eq!(workspace, "w1");
         h.set("HORCH_WORKSPACE_ID", workspace);
@@ -127,11 +103,6 @@ impl World {
         World { h, task_id }
     }
 
-    /// Name a `claude` that writes and commits `body` as the file `path` in
-    /// the worktree of its attempt, then runs the fake agent. It acts only
-    /// in a pane with a `task.yaml`; each other run goes to the fake agent
-    /// at once. The sealed `PATH` holds no tool, so the script uses only the
-    /// builtins of `sh` and `$HORCH_GIT_BIN`.
     fn docs_author(h: &mut Harness, path: &str, body: &str) {
         let fake = h.bin.join("claude");
         let script = h.root.join("docs-author.sh");
@@ -169,11 +140,6 @@ impl World {
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    /// Write what `horch idea` and `horch ledger add` write: the run (the
-    /// verification profile `minimal`: the check, then land, so no review
-    /// step runs), its idea, its orchestrator in the root pane `w1:p1`, and
-    /// the queued task. Dispatch binds the task, which is not done here.
-    /// Gives the task id.
     fn queue(h: &Harness, spec: &Spec) -> String {
         let dir = h.project.join("tickets");
         std::fs::create_dir_all(&dir).unwrap();
@@ -234,14 +200,10 @@ impl World {
         attempt_dir(&self.h.fleet_root(), &self.task_id, "A1")
     }
 
-    /// Start `horch fleetd` on the ledger. It dispatches the task by push.
-    /// The harness stops it.
     fn start_fleetd(&self) {
         self.h.serve_fleetd();
     }
 
-    /// Wait until fleetd wrote `task.yaml` of attempt `A1`, then give the
-    /// path of the worktree that it names.
     fn worktree(&self) -> PathBuf {
         let yaml = self.attempt_folder().join("task.yaml");
         let found = wait_for_or(
@@ -267,7 +229,6 @@ impl World {
             .unwrap()
     }
 
-    /// The state and the outcome of attempt `A1`, when it exists.
     fn attempt(&self) -> Option<(String, Option<String>)> {
         self.conn()
             .query_row(
@@ -372,7 +333,6 @@ fn passing_code_task_reaches_done_only_through_the_verifier() {
         },
     );
     w.start_fleetd();
-    // The fake agent said "done". Only the verifier moves the task.
     let verdict = w.verdict(1);
     assert_eq!(verdict["decision"], "passed", "{verdict}");
     wait_for_or(
@@ -406,8 +366,6 @@ fn push_dispatched_task_launches_writes_task_files_and_reaches_done_through_veri
             writes: None,
         },
     );
-    // The test binds no attempt and writes no file of the attempt: fleetd
-    // does each step of the chain.
     assert!(w.attempt().is_none(), "{}", w.evidence());
     w.start_fleetd();
     let verdict = w.verdict(1);
@@ -418,7 +376,6 @@ fn push_dispatched_task_launches_writes_task_files_and_reaches_done_through_veri
         || w.evidence(),
     );
 
-    // Dispatch bound the task to attempt A1 by push.
     let moves = w.moves();
     assert!(
         moves
@@ -431,7 +388,6 @@ fn push_dispatched_task_launches_writes_task_files_and_reaches_done_through_veri
     assert_eq!(state, "ended", "{}", w.evidence());
     assert_eq!(outcome.as_deref(), Some("verified"), "{}", w.evidence());
 
-    // The `worktree_add` job made the worktree on the branch of the task.
     let jobs: Vec<String> = w
         .conn()
         .prepare("SELECT state FROM jobs WHERE kind = 'worktree_add'")
@@ -445,7 +401,6 @@ fn push_dispatched_task_launches_writes_task_files_and_reaches_done_through_veri
     assert!(tree.join(".git").exists(), "{}", w.evidence());
     assert!(tree.join(FAKE_FILE).is_file(), "{}", w.evidence());
 
-    // Fleetd wrote the 2 files of the attempt before the launch.
     let dir = w.attempt_folder();
     let yaml = std::fs::read_to_string(dir.join("task.yaml")).unwrap();
     assert!(yaml.lines().any(|l| l.trim() == "attempt: A1"), "{yaml}");
@@ -454,8 +409,6 @@ fn push_dispatched_task_launches_writes_task_files_and_reaches_done_through_veri
     assert!(start.starts_with("# t0\n"), "{start}");
     assert!(start.contains("horch result"), "{start}");
 
-    // The launcher started the fake agent, which committed and wrote
-    // `outbox/result.json` through `horch result`.
     let result: Value =
         serde_json::from_slice(&std::fs::read(dir.join("outbox").join("result.json")).unwrap())
             .unwrap();
@@ -467,8 +420,6 @@ fn push_dispatched_task_launches_writes_task_files_and_reaches_done_through_veri
             .unwrap_or_else(|| panic!("no launch of the fake agent\n{}", w.evidence()));
     assert_eq!(agent["result"]["exit"], 0, "{agent}");
 
-    // The verifier judged the tip: its check ran in the worker sandbox and
-    // `verdict-1.json` names the job. The only move to `done` names it.
     assert!(verdict["job"].is_number(), "{verdict}");
     let to_done: Vec<_> = moves.into_iter().filter(|(to, _)| to == "done").collect();
     assert_eq!(to_done.len(), 1, "{}", w.evidence());
@@ -510,7 +461,6 @@ fn fm9_docs_task_without_its_section_stays_not_done() {
             check: "true",
             kind: WorkKind::Docs,
             own: &["guide.md"],
-            // The guide has text and no section.
             writes: Some(("guide.md", "The guide has text and no section.")),
         },
     );
@@ -602,8 +552,6 @@ fn off_host_ip() -> std::net::IpAddr {
         .unwrap_or(doc)
 }
 
-/// Serve 1 HTTP reply on loopback to each connection until `stop` is set.
-/// Gives the port and the request texts that the server read.
 fn loopback_server(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
@@ -637,9 +585,6 @@ fn loopback_server(
 #[test]
 fn sr3_check_that_connects_off_host_is_refused() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    // A listener on the address of this host that is not loopback: a check
-    // with off-host network would reach it. Without a route the address is
-    // a documentation address that nobody serves.
     let ip = off_host_ip();
     let off_host = std::net::TcpListener::bind((ip, 0))
         .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
@@ -648,15 +593,11 @@ fn sr3_check_that_connects_off_host_is_refused() {
     let off_url = format!("http://{ip}:{}/", off_host.local_addr().unwrap().port());
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let (port, loopback_requests) = loopback_server(std::sync::Arc::clone(&stop));
-    // The sealed `PATH` of the check holds no `curl`.
     let curl = ["/usr/bin/curl", "/bin/curl"]
         .into_iter()
         .find(|p| Path::new(p).is_file())
         .expect("curl on this host");
     let get = |url: &str| format!("{curl} --silent --show-error --max-time 5 --data hello {url}");
-    // The check connects to loopback first and leaves a file when it
-    // reached it. Then it connects off host. The sandbox allows the first
-    // and refuses the second, so the check fails.
     let check = format!(
         "{} && echo reached > loopback-ok.txt; {}",
         get(&format!("http://127.0.0.1:{port}/")),
@@ -672,10 +613,7 @@ fn sr3_check_that_connects_off_host_is_refused() {
         },
     );
     w.start_fleetd();
-    // The sandbox of the check on the `PATH` that fleetd and its jobs get.
     if let Some(gap) = horch_platform::sandbox::host_problem(Some(w.h.bin.as_os_str())) {
-        // A host with no sandbox gives NotSupported, and the check does not
-        // run at all. SR-3 holds by refusal, not by a denied connect.
         wait_for_or(
             "the task_check job to end with no sandbox",
             || w.check_job_ended().then_some(()),
@@ -693,8 +631,6 @@ fn sr3_check_that_connects_off_host_is_refused() {
     let verdict = w.verdict(1);
     stop.store(true, Ordering::SeqCst);
     assert_eq!(verdict["decision"], "failed", "{verdict}");
-    // The check ran in its sandbox: its loopback request stands, and its
-    // off-host request is refused.
     assert!(
         w.worktree().join("loopback-ok.txt").is_file(),
         "the check did not reach loopback, so its refusal proves nothing\n{verdict}\n{}",
