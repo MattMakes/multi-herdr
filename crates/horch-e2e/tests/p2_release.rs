@@ -40,9 +40,6 @@ const PASSES: i64 = 600 / STEP_S;
 /// The wall time of the first checkin of the old supervisor.
 const T0: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
 
-/// The slug of the run of the Phase 1 ledger. A fleetd adds a feature run of
-/// its own (a drift idea of a failed conformance check), so a command names
-/// this run.
 const RUN: &str = "zeta";
 
 const TASK: &str = "T-1";
@@ -108,13 +105,6 @@ impl Drop for Agent {
     }
 }
 
-/// The Phase 1 ledger at `path`: run `r1` of the project `project`, its
-/// task [`TASK`] `running` with the live attempt [`ATTEMPT`] of the worker
-/// [`WORKER`], whose agent is `agent`, whose wrapper is this test process
-/// (the stand-in of the old supervisor, so each `horch` command of the test
-/// is a process of the attempt) and which has an open background
-/// wait, and the `fleetd` row of the Phase 1 fleetd with the fleet clock at
-/// [`CLOCK`].
 fn phase_1_ledger(path: &Path, project: &Path, agent: &Agent) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
@@ -243,10 +233,6 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
         now += STEP_S;
     }
 
-    // The update: the first writable open of the ledger by this branch runs
-    // the migration. Only fleetd writes the ledger, and its first pass would
-    // judge the worker before it records progress, so the test opens the
-    // ledger with the store of this branch and runs no pass.
     let store = Store::open(&db(&h)).unwrap();
     drop(store);
     let conn = Connection::open(db(&h)).unwrap();
@@ -270,7 +256,6 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
         "the open wait gets max_wait_s"
     );
     drop(conn);
-    // A worker command goes to the channel of fleetd.
     h.serve_fleetd();
 
     // 10 min of the fleet clock: the old supervisor checks in, the agent

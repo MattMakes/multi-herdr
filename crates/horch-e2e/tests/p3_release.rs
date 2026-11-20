@@ -43,9 +43,6 @@ const PASSES: i64 = 3 * LIST_PERIOD_S / STEP_S;
 /// The wall time of the first checkin of the old supervisor.
 const T0: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
 
-/// The slug of the run of the Phase 2 ledger. A fleetd adds a feature run of
-/// its own (a drift idea of a failed conformance check), so a pass names
-/// this run.
 const RUN: &str = "zeta";
 
 /// The live task, its attempt, its worker and its tree.
@@ -166,17 +163,6 @@ fn tree_with_1_commit(h: &Harness, name: &str) -> (PathBuf, String) {
     (path, head)
 }
 
-/// The Phase 2 ledger of `h`: run `r1` of its project.
-/// - [`TASK_A`] is `running` with the live attempt [`ATTEMPT_A`] and its
-///   lease. The wrapper of the attempt is this test process (the stand-in
-///   of the old supervisor, so each `horch` command of the test is a
-///   process of the attempt). Its worker [`WORKER_A`] has the agent
-///   `agent`, and its tree
-///   [`TREE_A`] at `tree_a` is `open`.
-/// - [`TASK_B`] is held. Its attempt [`ATTEMPT_B`] ended, its worker
-///   [`WORKER_B`] is dead, and its tree [`TREE_B`] at `tree_b` is `open`.
-/// - The `fleetd` row of the Phase 2 fleetd has the fleet clock at
-///   [`CLOCK`].
 fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) {
     let project = &h.project;
     let base = git_in(h, project, &["rev-parse", "main"]);
@@ -402,10 +388,6 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     std::fs::write(tree_b.join(UNTRACKED), UNTRACKED_TEXT).unwrap();
     phase_2_ledger(&h, &agent, (&tree_a, &tree_b));
 
-    // The update: the first writable open of the ledger by this branch runs
-    // the migration. Only fleetd writes the ledger, and its first pass would
-    // judge the worker before it records progress, so the test opens the
-    // ledger with the store of this branch and runs no pass.
     let mut now = T0 + STEP_S;
     checkin(&h, now);
     drop(Store::open(&db(&h)).unwrap());
@@ -418,8 +400,6 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     assert_eq!(state, "orphaned", "the backfill");
     assert_eq!(owner, None, "the backfill");
     drop(conn);
-    // fleetd makes the outbox of the live attempt at its start. The test
-    // runs the passes itself, so it stops that fleetd.
     h.serve_fleetd();
     h.stop_fleetd();
 

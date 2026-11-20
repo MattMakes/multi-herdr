@@ -32,9 +32,6 @@ use horch_e2e::bind::{bind, try_bind};
 use horch_e2e::harness::{fixtures, wait_for, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task};
 
-/// The slug of the run of each test. A fleetd of the harness adds a feature
-/// run of its own (a drift idea of a failed conformance check), so a
-/// command that needs 1 run names this one.
 const RUN: &str = "p2";
 
 /// The design lease of a profile, in seconds of the fleet clock.
@@ -140,9 +137,6 @@ impl Fleet {
         self.pass()
     }
 
-    /// 1 run with the limit `max_attempts` of attempts (if any) and 1 task
-    /// T-1 of `opus`. 1 pass writes the `fleetd` row, so the fleet clock
-    /// exists before the claim.
     fn run_with_task(&self, max_attempts: Option<i64>) {
         let run = seed_run(&self.h, RUN, None, "w1:p1");
         if let Some(max) = max_attempts {
@@ -504,9 +498,6 @@ impl Fleet {
         self.advance_clocks(nb - self.clock());
     }
 
-    /// 1 attempt that exits with no result, the pass that sees it, and the
-    /// passes until fleetd has rescued its tree: the next bind of the task
-    /// waits for the rescue of an `orphaned` tree. The log of the passes.
     fn failed_attempt(&mut self) -> String {
         self.through_backoff();
         let agent = Agent::start();
@@ -593,8 +584,6 @@ fn cancel_of_a_running_task_stops_its_process_before_the_task_is_cancelled() {
     let agent = Agent::start();
     let w = f.claimed(&agent);
     let (attempt, _) = f.attempt_of(&w);
-    // With a live attempt, the command only asks: the pass stops the
-    // process, and the pass after the end of the process cancels the task.
     let mut o = f.ok(&["task", "cancel", "T-1", "not needed", "--run", RUN]);
     assert!(o.contains("T-1 is not cancelled yet"), "{o}");
     wait_for("the cancel of the task by a pass", || {

@@ -94,8 +94,6 @@ fn tree_path(said: &str) -> PathBuf {
     )
 }
 
-/// 1 forced pass of fleetd on the run `alpha`, while the test fleetd is
-/// down.
 fn pass(h: &Harness) {
     let o = h.without_fleetd(|| {
         h.run(&[
@@ -105,14 +103,10 @@ fn pass(h: &Harness) {
     assert!(o.status.success(), "horch ledger watch: {}", text(&o));
 }
 
-/// The name of the folder of the tree `path`: the name that `horch ledger
-/// worktree drop` takes.
 fn tree_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-/// The run `alpha`, as `horch ledger run new alpha --steps <steps>` made it:
-/// its finish steps are the comma list `steps`.
 fn seed_alpha(h: &Harness, steps: &str) -> Run {
     let run = seed_run(h, "alpha", None, "w1:p1");
     let words: Vec<String> = steps.split(',').map(|s| format!("{s:?}")).collect();
@@ -131,8 +125,6 @@ fn seed_alpha(h: &Harness, steps: &str) -> Run {
 /// worker bound to it, and its worktree `feat`. Gives the worker, the
 /// task id and the path of the tree.
 fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
-    // The landing runs the fast gate of the project in the bundle, and the
-    // gate reads the declaration from the committed fleet.toml at the tip.
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -150,7 +142,6 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
     let ticket = dir.join("01-a.md");
     std::fs::write(&ticket, "# 01: Feature\n\n**Check:** none\n").unwrap();
     let task = seed_task(h, &run, &ticket, "opus");
-    // `**Check:** none` of the ticket: `horch ledger add` recorded it.
     Store::open(&ledger(h))
         .unwrap()
         .conn()
@@ -161,8 +152,6 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
         .unwrap();
     let bound = horch_e2e::bind::bind(h, "opus", None);
     let (w, task) = (bound.worker_id, bound.task_id);
-    // fleetd makes the tree: its `worktree_add` job runs in 1 pass, and a
-    // later pass reads the result and makes the tree `active`.
     let path = wait_for("the active tree of the task", || {
         pass(h);
         query(
@@ -259,7 +248,6 @@ fn git_with_hook(h: &mut Harness, when: &str, mark: &Path, hook: &str) {
     );
     let bin = h.write_bin("git-hooked", script.as_bytes());
     h.set("HORCH_GIT_BIN", bin.to_string_lossy());
-    // The jobs run in fleetd: it starts again with the new environment.
     h.without_fleetd(|| ());
 }
 
@@ -365,9 +353,6 @@ fn rr13_drop_with_a_head_that_moved_during_the_checks_is_refused_and_the_tree_st
             let mut h = world("p3-ref-moved");
             let (w, _, path) = claimed(&h, "land");
             let first = commit_file(&h, &path, "first.txt");
-            // The drop reads the HEAD, then lists the unique commits with
-            // `rev-list`, then reads the HEAD again. A commit between the 2 reads
-            // moves the HEAD.
             let real = h.git_bin().unwrap().to_path_buf();
             let hook = format!(
                 "'{}' -C '{}' commit --quiet --allow-empty --no-gpg-sign -m moved",
@@ -413,10 +398,6 @@ fn rr13_drop_with_a_head_that_moved_during_the_checks_keeps_the_commit_in_the_re
     let mark = h.root.join("git-hook-ran");
     git_with_hook(&mut h, "rev-list", &mark, &hook);
     let o = drop_tree(&h, &w, &tree_name(&path), true);
-    // The drop of a worker is a request: the checks of the command read the
-    // facts, and custody saves the tree as it is when the rescue job runs. The
-    // commit that came during the checks is in the rescue ref, and no
-    // removal runs before the idea is merged.
     assert!(o.status.success(), "{}", text(&o));
     let moved = git_in(&h, &path, &["rev-parse", "HEAD"]);
     assert_ne!(moved, first, "the hook did not move the HEAD");
@@ -469,9 +450,6 @@ fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
             "--keep-branch",
         ],
     );
-    // The drop of a worker moves the tree to custody: the passes of fleetd
-    // run the rescue job, and the tree stays `rescued` until its idea is
-    // merged.
     wait_for_or(
         "the rescue of the dropped tree",
         || {
@@ -529,14 +507,9 @@ fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
     assert_eq!(git_in(&h, &h.project, &["rev-parse", &branch]), head);
 }
 
-/// 2 scratch trees, `gone` and `kept`, dropped by the worker `w`, `kept` with
-/// `--keep-branch`. Gives (path, branch, keep) of each, after fleetd rescued
-/// it.
 fn dropped_scratch_trees(h: &Harness, w: &str) -> Vec<(PathBuf, String, bool)> {
     let mut trees = Vec::new();
     for (name, keep) in [("gone", false), ("kept", true)] {
-        // The scratch tree is a request: fleetd reserves it and its
-        // `worktree_add` job makes the folder in the next passes.
         let said = ok_as(h, w, &["ledger", "worktree", "scratch", name]);
         let path = tree_path(&said);
         wait_for_or(
@@ -593,8 +566,6 @@ fn drop_of_a_merged_branch_deletes_it_and_keep_branch_keeps_it() {
     let h = world("p3-ref-keep");
     let (w, task, _) = claimed(&h, "land");
     let trees = dropped_scratch_trees(&h, &w);
-    // A dropped tree stays `rescued` until its idea is merged, then the
-    // removal job deletes the merged branch, or keeps it with `--keep-branch`.
     merge_idea_of(&h, &task);
     let mut branches = Vec::new();
     for (path, branch, keep) in trees {
@@ -634,10 +605,6 @@ fn drop_of_a_merged_branch_deletes_it_and_keep_branch_keeps_it() {
 
 // ─── the cleanup step ───────────────────────────────────────────────────
 
-/// `horch ledger finish` of the worker `w`. The command is a process of the
-/// attempt: its process is the wrapper of the attempt. The shell waits for
-/// the start of the test, so the test records the process before the exec of
-/// `horch`. The command writes `result.json`: fleetd does the rest.
 fn send_finish(h: &Harness, w: &str) {
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.args(["-c", "read go; exec \"$@\"", "sh"])
@@ -664,7 +631,6 @@ fn send_finish(h: &Harness, w: &str) {
     assert!(o.status.success(), "horch ledger finish: {}", text(&o));
 }
 
-/// The rows and jobs of the ledger, for the text of a timeout.
 fn dump(h: &Harness) -> String {
     let tasks = query(
         h,
@@ -687,10 +653,6 @@ fn dump(h: &Harness) -> String {
     format!("{tasks:#?}\n{trees:#?}\n{branches:#?}\n{ideas:#?}\n{jobs:#?}")
 }
 
-/// The worker `w` finishes its task, and fleetd lands the branch of the task
-/// in a bundle: the tree of the task is orphaned and then rescued, because
-/// its attempt ended. Passes run while the fleet clock advances, as the
-/// rescue needs the result of a `worktree_list` job.
 fn finish_and_rescue(h: &Harness, w: &str, path: &Path) {
     send_finish(h, w);
     wait_for_or(
@@ -709,8 +671,6 @@ fn finish_and_rescue(h: &Harness, w: &str, path: &Path) {
     );
 }
 
-/// The idea of the task is merged: the design moves it when git shows the
-/// changes of its feature in the primary branch.
 fn merge_idea_of(h: &Harness, task: &str) {
     Store::open(&ledger(h))
         .unwrap()
@@ -731,7 +691,6 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     let head = commit_file(&h, &path, "feature.txt");
     let branch = git_in(&h, &path, &["branch", "--show-current"]);
     finish_and_rescue(&h, &w, &path);
-    // The tree of a task that landed stays `rescued` until its idea is merged.
     assert!(path.exists());
     merge_idea_of(&h, &task);
     wait_for_or(
@@ -757,7 +716,6 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     assert_eq!(jobs(&h, "rescue"), ["passed"]);
     assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
     assert_eq!(column(&h, &path, "state"), "removed");
-    // The rescue ref stays, and it holds the work that landed.
     let id = column(&h, &path, "worktree_id");
     assert_eq!(
         refs(&h, &format!("refs/horch/rescue/{id}/")),
@@ -798,8 +756,6 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
         Some("late\n")
     );
     assert_eq!(jobs(&h, "worktree_remove"), ["failed"]);
-    // The tree stays `rescued`, and 1 needs-you item of the failed removal is
-    // open with the cause.
     assert_eq!(column(&h, &path, "state"), "rescued");
     let id = column(&h, &path, "worktree_id");
     let items = query(
@@ -824,8 +780,6 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
 fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
     let h = world("p3-ref-dismiss");
     let (w, task, path) = claimed(&h, "land");
-    // The wrapper of the attempt ended: the ledger records its process, and
-    // the removal of the tree needs the owner attempt to be known not live.
     let mut wrapper = std::process::Command::new("/bin/sleep")
         .arg("60")
         .spawn()
@@ -862,8 +816,6 @@ fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
         &h,
         &["ledger", "cancel", "--run", "alpha", &task, "not needed"],
     );
-    // fleetd stops the attempt and cancels the task in its passes, then
-    // finds the open tree of the cancelled task.
     let finding = wait_for_or(
         "the finding of the tree of the cancelled task",
         || {
@@ -885,9 +837,6 @@ fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
             )
         },
     );
-    // `dismiss --cleanup` queues 1 removal, and custody removes only a landed
-    // or rescued tree: the passes rescue the orphan of the cancelled task
-    // first.
     wait_for_or(
         "the rescue of the tree of the cancelled task",
         || {
@@ -931,12 +880,6 @@ fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
     assert_eq!(column(&h, &path, "state"), "removed");
 }
 
-// ─── the gate folder of a feature ───────────────────────────────────────
-
-/// `horch ledger run gate` is retired: fleetd makes the gate tree of a
-/// feature (`.worktrees/gate-<feature id>`) as a custody row with a
-/// `worktree_add` job, and gives it to custody when the feature ends. The
-/// folder then goes through the same rescue and removal as each orphan.
 #[test]
 fn run_gate_folder_is_added_and_removed_through_the_jobs() {
     horch_e2e::expected::check(
@@ -958,8 +901,6 @@ fn run_gate_folder_is_added_and_removed_through_the_jobs() {
             let gate = gate_tree::path(&repo, &feature);
             let main = git_in(&h, &h.project, &["rev-parse", "main"]);
             let config = FleetConfig::default();
-            // The row and its job are written while fleetd is down, so no pass
-            // runs between the write and the first pass of the test.
             let reserved = h.without_fleetd(|| {
                 let mut store = Store::open(&ledger(&h)).unwrap();
                 store
@@ -1000,8 +941,6 @@ fn run_gate_folder_is_added_and_removed_through_the_jobs() {
             );
             let id = column(&h, &gate, "worktree_id");
 
-            // The feature ends: the tree goes to custody, which rescues it and then
-            // removes it.
             let released = h.without_fleetd(|| {
                 let mut store = Store::open(&ledger(&h)).unwrap();
                 store
@@ -1017,8 +956,6 @@ fn run_gate_folder_is_added_and_removed_through_the_jobs() {
             });
             assert!(released);
             assert_eq!(column(&h, &gate, "state"), "orphaned");
-            // The rescue of an orphan waits for the HEAD of the next `worktree_list`
-            // result, which comes 1 period of the fleet clock after the last one.
             wait_for_or(
         "the removal of the gate tree (fleetd never removes a released gate tree; ticket 164 (T-199) of fleetd-finish removes this entry)",
         || {
