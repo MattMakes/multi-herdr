@@ -44,9 +44,11 @@ use horch_core::fleetd::task_execution::domain::task::Seen;
 use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
 use horch_core::fleetd::worktree_custody::application::create;
 use horch_core::taskledger::git::Git;
+use horch_core::taskledger::import;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::triage;
 use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
@@ -890,4 +892,146 @@ fn repair_that_cannot_start_fails_only_its_branch() {
     // The next start writes no second item.
     assert!(w.start(11).is_empty());
     assert_eq!(items(&w), open);
+}
+
+/// FM-38, RR-6: normal triage never lists the worktree of a task branch
+/// that is not settled. The task is `done` and its worker has ended, so only
+/// the `branches` row tells that the worktree is still needed: a resolver
+/// or a fix attempt works in it. Once the branch is `abandoned`, the
+/// worktree is parked and triage lists it.
+#[test]
+fn triage_does_not_list_worktree_of_unsettled_conflicted_or_gate_failed_branch() {
+    let mut w = World::new();
+    assert_eq!(w.task_status(), "done");
+    let git_bin = Git::new("git");
+    let parked = |w: &World| {
+        triage::collect(w.store.conn(), &git_bin, &w.root, triage::Measure::Ids).unwrap()
+    };
+    let set_state = |w: &World, state: &str| {
+        let n = w
+            .store
+            .conn()
+            .execute(
+                "UPDATE branches SET landing_state = ?2 WHERE name = ?1",
+                params![w.branch, state],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the branch row of the task");
+    };
+
+    for state in ["ready", "in_bundle", "conflicted", "gate_failed"] {
+        set_state(&w, state);
+        let rows = parked(&w);
+        assert!(
+            rows.is_empty(),
+            "triage lists the worktree of a {state} branch: {rows:?}"
+        );
+    }
+
+    // The worktree is still there for the repair attempt.
+    set_state(&w, "gate_failed");
+    let started = w.start(10);
+    let s = only(&started);
+    assert_eq!(s.kind, RepairKind::Fix);
+    assert_eq!(
+        PathBuf::from(&s.bound.worktree.as_ref().unwrap().path),
+        w.tree
+    );
+    assert!(parked(&w).is_empty(), "the fix attempt holds the worktree");
+
+    // A settled branch frees the worktree for triage.
+    set_state(&w, "abandoned");
+    let attempt = s.bound.attempt_id.clone();
+    w.store
+        .conn()
+        .execute(
+            "UPDATE attempts SET state = 'ended', outcome = 'failed', ended_at = ?2
+             WHERE id = ?1",
+            params![attempt, util::now()],
+        )
+        .unwrap();
+    w.store
+        .conn()
+        .execute(
+            "UPDATE workers SET status = 'done' WHERE status NOT IN ('done', 'failed')
+             AND worker_id IN (SELECT worker_id FROM attempts WHERE id = ?1)",
+            [&attempt],
+        )
+        .unwrap();
+    w.store
+        .conn()
+        .execute("DELETE FROM leases WHERE task_id = ?1", [&w.task])
+        .unwrap();
+    assert!(w.tree.exists());
+    let rows = parked(&w);
+    assert_eq!(rows.len(), 1, "an abandoned branch is parked: {rows:?}");
+    assert_eq!(PathBuf::from(&rows[0].path), w.tree);
+}
+
+/// FM-38: the import of an old claim for the path of the worktree of a
+/// `conflicted` or `gate_failed` branch does not touch the live worktree
+/// row (a path has 1 live row), so the repair attempt still binds it.
+#[test]
+fn import_does_not_clean_live_worktree_of_conflicted_or_gate_failed_branch() {
+    for gate in [false, true] {
+        let mut w = World::new();
+        if gate {
+            w.gate_failed("exit 101\n");
+        } else {
+            w.conflicted(&["a.txt"]);
+        }
+        let row_of = |w: &World| -> Vec<(String, String, String)> {
+            let conn = w.store.conn();
+            let mut stmt = conn
+                .prepare("SELECT worktree_id, status, state FROM worktrees WHERE path = ?1")
+                .unwrap();
+            stmt.query_map([w.tree.display().to_string()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+        };
+        let before = row_of(&w);
+        assert_eq!(before.len(), 1, "1 row of the worktree: {before:?}");
+        assert_eq!(before[0].1, "open");
+
+        let state_root = w._tmp.path().join("state");
+        std::fs::create_dir_all(state_root.join("worktrees")).unwrap();
+        let claim = serde_json::json!([{
+            "id": "c1",
+            "path": w.tree.display().to_string(),
+            "branch": w.branch,
+            "base": RUN_BRANCH,
+            "state": "landed",
+        }]);
+        std::fs::write(state_root.join("worktrees/claims.json"), claim.to_string()).unwrap();
+        let report = import::import(&mut w.store, &Git::new("git"), &state_root, false).unwrap();
+        assert_eq!(report.map_errors, 0, "{report:?}");
+
+        assert_eq!(row_of(&w), before, "the import left the live row alone");
+        let rows = triage::collect(
+            w.store.conn(),
+            &Git::new("git"),
+            &w.root,
+            triage::Measure::Ids,
+        )
+        .unwrap();
+        assert!(rows.is_empty(), "triage lists the worktree: {rows:?}");
+
+        let started = w.start(10);
+        let s = only(&started);
+        assert_eq!(
+            s.kind,
+            if gate {
+                RepairKind::Fix
+            } else {
+                RepairKind::Resolver
+            }
+        );
+        assert_eq!(
+            PathBuf::from(&s.bound.worktree.as_ref().unwrap().path),
+            w.tree
+        );
+    }
 }

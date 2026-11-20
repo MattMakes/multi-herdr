@@ -192,6 +192,21 @@ fn task_pending(row: &LedgerRow) -> bool {
     })
 }
 
+/// Whether the row's task branch is not settled (`landed` or `abandoned`):
+/// a resolver or fix attempt may still need the worktree (FM-38).
+fn branch_unsettled(conn: &Connection, row: &LedgerRow) -> Result<bool> {
+    let by_branch = (!has_no_branch(&row.branch)).then_some(row.branch.as_str());
+    let unsettled: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM branches
+             WHERE (task_id = ?1 OR name = ?2)
+               AND landing_state IS NOT NULL
+               AND landing_state NOT IN ('landed', 'abandoned'))",
+        rusqlite::params![row.task_id, by_branch],
+        |r| r.get(0),
+    )?;
+    Ok(unsettled)
+}
+
 /// Whether nothing is left of the row to decide about: no folder, and no
 /// branch (or a row the ledger already marked as cleaned up).
 fn nothing_left(git: &Git, root: &Path, row: &LedgerRow) -> bool {
@@ -211,6 +226,9 @@ fn is_parked(conn: &Connection, git: &Git, root: &Path, row: &LedgerRow) -> Resu
         "unlanded" | "abandoned" | "cleanup_failed"
     ) {
         return Ok(true);
+    }
+    if branch_unsettled(conn, row)? {
+        return Ok(false);
     }
     Ok(!task_pending(row) && !held_by_live_worker(conn, row)?)
 }
