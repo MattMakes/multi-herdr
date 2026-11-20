@@ -295,7 +295,7 @@ fn fleet(name: &str, scenario: &str) -> Harness {
     );
     h.set("HORCH_WORKSPACE_ID", "w1")
         .set("HORCH_FAKE_SCENARIO", scenario);
-    herdr(&h, &["workspace", "create", "--label", name]);
+    assert_eq!(h.fleet_workspace(), "w1");
     h
 }
 fn herdr(h: &Harness, args: &[&str]) -> serde_json::Value {
@@ -316,8 +316,40 @@ fn ok(h: &Harness, args: &[&str]) -> String {
 fn serve_fast_fleetd(h: &Harness) {
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "pass_period_s = 1\nhealth_max_load_per_cpu = 1000000.0\n",
+    )
+    .unwrap();
     h.serve_fleetd();
+}
+
+/// codex-terra runs interactive in `h`, as before exec became the default
+/// mode (fleetd-p7 ticket 19): the agent stays, and its rollout holds the
+/// launch token.
+fn interactive_terra(h: &mut Harness) {
+    let teammates = h.root.join("teammates");
+    copy_tree(&repo_root().join("teammates"), &teammates);
+    let terra = teammates.join("codex-terra.md");
+    let text = std::fs::read_to_string(&terra).unwrap();
+    let text = text.replacen("\nagent: codex\n", "\nagent: codex\nmode: interactive\n", 1);
+    std::fs::write(&terra, text).unwrap();
+    h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
+}
+
+/// Commit the gates of the project of `h` on `main`. fleetd dispatches a
+/// task only when the project has its gates. Call it before
+/// [`seed_run`], which makes the run branch from `main`.
+fn commit_gates(h: &Harness) {
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "gates"][..]] {
+        let o = h.git_cmd(args).current_dir(&h.project).output().unwrap();
+        assert!(o.status.success(), "git {}: {}", args.join(" "), err(&o));
+    }
 }
 
 /// Put the task ledger of `h` under its state folder, beside the session
@@ -349,7 +381,9 @@ fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
         file!(),
         "ledger_stop_stops_a_spawned_worker_by_the_ingested_pid",
         || {
-            let h = fleet("stop-pid", "exec,stay");
+            let mut h = fleet("stop-pid", "exec,stay");
+            interactive_terra(&mut h);
+            commit_gates(&h);
             let run = seed_run(&h, "stop", Some(1), "w1:p1");
             let file = h.project.join("stop.md");
             std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
@@ -391,16 +425,8 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
     // transaction of the exit.json ingest.
     let db = h.state.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
-    // codex-terra runs interactive here, as before exec became the default
-    // mode (fleetd-p7 ticket 19): the agent stays, and its rollout holds
-    // the launch token.
-    let teammates = h.root.join("teammates");
-    copy_tree(&repo_root().join("teammates"), &teammates);
-    let terra = teammates.join("codex-terra.md");
-    let text = std::fs::read_to_string(&terra).unwrap();
-    let text = text.replacen("\nagent: codex\n", "\nagent: codex\nmode: interactive\n", 1);
-    std::fs::write(&terra, text).unwrap();
-    h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
+    interactive_terra(&mut h);
+    commit_gates(&h);
     let run = seed_run(&h, "race", Some(1), "w1:p1");
     for n in 1..=2 {
         let file = h.project.join(format!("race-{n}.md"));
@@ -476,8 +502,11 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
             .iter()
             .find(|r| Some(r.record_id.as_str()) == w["legacy_record_id"].as_str())
             .unwrap();
-        assert_eq!(record.session_id.as_deref(), w["session_id"].as_str());
+        // fleetd takes the session id from session.json of the attempt into
+        // the worker row; the wrapper writes no session record (T-899).
+        let session = w["session_id"].as_str().unwrap();
         let transcript = std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
+        assert!(transcript.contains(session), "{transcript}");
         assert!(transcript.contains(&horch_core::harness::codex::launch_token(&record.record_id)));
     }
     stop_and_wait_for_exit(&h, &workers);
