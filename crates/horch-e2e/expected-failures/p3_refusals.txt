@@ -1,2 +1,3 @@
 # Red tests of crates/horch-e2e/tests/p3_refusals.rs.
 run_gate_folder_is_added_and_removed_through_the_jobs | 7 | fleetd never removes a released gate tree; ticket 164 (T-199) of fleetd-finish removes this entry
+rr13_drop_with_a_head_that_moved_during_the_checks_is_refused_and_the_tree_stays | 3 | RR-13: a drop with a HEAD that moved during the checks is accepted; ticket 166 (T-204) of fleetd-finish removes this entry

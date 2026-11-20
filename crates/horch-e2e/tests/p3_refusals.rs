@@ -358,6 +358,46 @@ fn rr13_drop_of_unpublished_unique_commits_is_refused_and_the_tree_stays() {
 
 #[test]
 fn rr13_drop_with_a_head_that_moved_during_the_checks_is_refused_and_the_tree_stays() {
+    horch_e2e::expected::check(
+        file!(),
+        "rr13_drop_with_a_head_that_moved_during_the_checks_is_refused_and_the_tree_stays",
+        || {
+            let mut h = world("p3-ref-moved");
+            let (w, _, path) = claimed(&h, "land");
+            let first = commit_file(&h, &path, "first.txt");
+            // The drop reads the HEAD, then lists the unique commits with
+            // `rev-list`, then reads the HEAD again. A commit between the 2 reads
+            // moves the HEAD.
+            let real = h.git_bin().unwrap().to_path_buf();
+            let hook = format!(
+                "'{}' -C '{}' commit --quiet --allow-empty --no-gpg-sign -m moved",
+                real.display(),
+                path.display()
+            );
+            let mark = h.root.join("git-hook-ran");
+            git_with_hook(&mut h, "rev-list", &mark, &hook);
+            let o = drop_tree(&h, &w, &tree_name(&path), true);
+            assert!(
+            !o.status.success(),
+            "RR-13: a drop with a HEAD that moved during the checks is accepted; ticket 166 (T-204) of fleetd-finish removes this entry\n{}",
+            text(&o)
+        );
+            assert_refused(
+                &h,
+                &o,
+                &path,
+                "worktree HEAD changed during the drop checks; nothing removed",
+            );
+            let moved = git_in(&h, &path, &["rev-parse", "HEAD"]);
+            assert_ne!(moved, first, "the hook did not move the HEAD");
+            assert_eq!(git_in(&h, &path, &["rev-parse", "HEAD~1"]), first);
+            assert!(path.join("first.txt").is_file());
+        },
+    );
+}
+
+#[test]
+fn rr13_drop_with_a_head_that_moved_during_the_checks_keeps_the_commit_in_the_rescue_ref() {
     let mut h = world("p3-ref-moved");
     let (w, _, path) = claimed(&h, "land");
     let first = commit_file(&h, &path, "first.txt");
