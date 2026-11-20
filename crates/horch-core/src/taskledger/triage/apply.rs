@@ -1687,8 +1687,6 @@ pub fn ingest(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, ran: &Ran) -> Res
     Ok(())
 }
 
-/// Check the fact `fact` of `item`, then settle the row `wt` of its
-/// `decision` from it, in `tx`.
 fn ingest_one(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -1700,8 +1698,6 @@ fn ingest_one(
     check_fact(item, decision, fact)?;
     let id = wt.worktree_id.as_str();
     if !fact.ok {
-        // The run can fail after it rescued or removed the folder: the
-        // rows keep what it did before the failure (T-887).
         match (fact.removed, fact.rescue_ref.as_deref()) {
             (true, r) => settle_removed(ctx, tx, id, r)?,
             (false, Some(r)) => settle_rescued(ctx, tx, id, r)?,

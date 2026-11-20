@@ -218,8 +218,6 @@ impl World {
         self.send_all(&[(name, decision, direction)])
     }
 
-    /// 1 `worktree_triage` request of each `(name, decision, direction)`
-    /// of `items`, in their order.
     fn send_all(&mut self, items: &[(&str, &str, &str)]) -> Outcome {
         let rows = self.rows();
         let decisions: Vec<Value> = items
@@ -287,8 +285,6 @@ impl World {
         self.run_editing(id, |_| {})
     }
 
-    /// [`World::run`], with `edit` applied to the facts of the result file
-    /// before fleetd ends the run from it.
     fn run_editing(&mut self, id: i64, edit: impl FnOnce(&mut Value)) -> JobRow {
         let job = jobs_store::get(&self.conn, id).unwrap().unwrap();
         assert_eq!(job.kind, JobKind::TriageApply);
@@ -600,9 +596,6 @@ fn a_failed_removal_after_the_rescue_keeps_the_rescue_ref() {
     assert_eq!(row[3], None);
 }
 
-/// A refused fact of 1 item fails only its own decision: the completed
-/// rescue, removal and record of another item of the same run stay
-/// (R2-F1; FM-11, RR-16).
 #[test]
 fn refused_second_item_fact_does_not_roll_back_first_item_completed_rescue_and_removal() {
     let mut w = world();
