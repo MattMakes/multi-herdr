@@ -458,6 +458,24 @@ fn operator_boundary_fails_when_the_fleet_root_has_no_token() {
 }
 
 #[test]
+fn operator_boundary_fails_when_the_request_folder_is_not_writable() {
+    // A refused write into a folder that the runner cannot write either
+    // proves nothing.
+    let m = Machine::new(Codex::WithNetworkProxy);
+    let requests = m.operator_paths().requests;
+    std::fs::set_permissions(&requests, PermissionsExt::from_mode(0o500)).unwrap();
+    let r = m.check(&profile(HarnessKind::Claude));
+    std::fs::set_permissions(&requests, PermissionsExt::from_mode(0o700)).unwrap();
+    assert_verdict(&r, Verdict::Fail);
+    assert!(
+        r.evidence.contains(&Act::WriteRequests.to_string()),
+        "{r:?}"
+    );
+    assert!(r.evidence.contains("proves nothing"), "{r:?}");
+    m.assert_clean();
+}
+
+#[test]
 fn operator_boundary_not_supported_is_not_pass() {
     let m = Machine::new(Codex::WithoutNetworkProxy);
     let agy = m.check(&profile(HarnessKind::Antigravity));

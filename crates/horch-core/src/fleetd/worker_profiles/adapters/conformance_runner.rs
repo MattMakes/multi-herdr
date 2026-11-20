@@ -356,9 +356,10 @@ const CHANNEL_CONNECT_LIMIT: Duration = Duration::from_secs(5);
 
 /// The operator acts that this process cannot do itself, outside the
 /// sandbox, each with its reason. A token that is missing or empty, a
-/// channel with no listener or a missing request folder would refuse the
-/// act inside the sandbox too. The runner opens the token but does not
-/// read it, and it writes no request file.
+/// channel with no listener or a request folder that is missing or not
+/// writable would refuse the act inside the sandbox too. The runner opens
+/// the token but does not read it, and it writes no request file: its
+/// write probe is a dotfile that it removes at once.
 fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
     let token = std::fs::File::open(&operator.token)
         .and_then(|f| f.metadata())
@@ -372,7 +373,7 @@ fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
         .map(drop)
         .map_err(|e| e.to_string());
     let requests = match operator.requests.is_dir() {
-        true => Ok(()),
+        true => probe_write(&operator.requests),
         false => Err(format!("{} is not a folder", operator.requests.display())),
     };
     [
@@ -383,6 +384,24 @@ fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
     .into_iter()
     .filter_map(|(act, reach)| reach.err().map(|why| format!("{act}: {why}")))
     .collect()
+}
+
+/// Create and remove a unique probe file in `folder`, outside the sandbox.
+/// The probe is a dotfile, not a `.json` request file.
+fn probe_write(folder: &Path) -> std::result::Result<(), String> {
+    let probe = folder.join(format!(
+        ".conformance-reach-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|f| {
+            drop(f);
+            std::fs::remove_file(&probe)
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// The private config home of the launch `cmd`, with [`MARKER_SKILL`] put
