@@ -127,6 +127,15 @@ impl World {
         for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("HERDR_")) {
             cmd.env_remove(key);
         }
+        for key in [
+            "HERDR_PANE_ID",
+            "HC_TERMINAL_ID",
+            "HC_SCOPE",
+            "HC_TERMINAL_SOCKET",
+            "HORCH_BACKEND",
+        ] {
+            cmd.env_remove(key);
+        }
         let out = cmd
             .args(args)
             .current_dir(&self.root)

@@ -262,6 +262,11 @@ impl World {
             ("HORCH_DATA_DIR", Some(root.join("data"))),
             ("XDG_STATE_HOME", None),
             ("XDG_DATA_HOME", None),
+            ("HERDR_PANE_ID", None),
+            ("HC_TERMINAL_ID", None),
+            ("HC_SCOPE", None),
+            ("HC_TERMINAL_SOCKET", None),
+            ("HORCH_BACKEND", None),
         ];
         for (key, value) in roots {
             saved.push((key, std::env::var_os(key)));

@@ -32,6 +32,9 @@ use horch_core::workspace::model::Direction;
     arg_required_else_help = true
 )]
 struct Cli {
+    /// Pane host backend (`herdr` or `hc`). Overrides `HORCH_BACKEND` and pane detection.
+    #[arg(long, global = true, value_name = "BACKEND")]
+    backend: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -800,7 +803,7 @@ fn run() -> Result<std::process::ExitCode> {
     let cli = Cli::parse();
     // The one read of the process environment. Every command takes its
     // values from this context.
-    let mut ctx = bootstrap::context()?;
+    let mut ctx = bootstrap::context_with_backend(cli.backend.as_deref())?;
     // A `horch_access: report` pane reaches only its report socket.
     if let Some(socket) = ctx.report_socket.clone() {
         return done(cmd::messaging::report_mode(
