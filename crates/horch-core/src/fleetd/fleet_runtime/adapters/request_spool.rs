@@ -27,13 +27,14 @@
 //! the row by its `request_id`, gets the stored result with no second
 //! effect, and only archives the file.
 
-use std::fs::{self, DirBuilder};
+use std::fs;
 use std::io;
 use std::path::Path;
 
 use anyhow::anyhow;
 use horch_platform::channel::User;
 use horch_platform::fs as platform;
+use horch_platform::NotSupported;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::fleetd_row;
@@ -73,10 +74,6 @@ pub const ABORT_BEFORE_REQUEST_ARCHIVE: &str = "abort-before-request-archive";
 
 /// The end of the name of a request file that its writer has not renamed.
 const TMP: &str = ".tmp";
-
-/// The permission bits of group and others. The request folder and
-/// `archive/` are 0700 or narrower.
-const GROUP_AND_OTHERS: u32 = 0o077;
 
 /// What a scan of the request folder needs to know.
 #[derive(Clone, Copy, Debug)]
@@ -295,19 +292,16 @@ fn ready_folders(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Make `folder` and each missing parent with mode 0700. A folder that
-/// exists keeps its mode: the check refuses a wide one.
+/// Make `folder` and each missing parent with access for its owner only
+/// (mode 0700 on unix). A folder that exists keeps its access: the check
+/// refuses a wide one.
 fn make_folder(folder: &Path) -> io::Result<()> {
-    let mut builder = DirBuilder::new();
-    builder.recursive(true);
-    platform::create_dir_mode(&mut builder, 0o700)
-        .map_err(|e| io::Error::new(io::ErrorKind::Unsupported, e.to_string()))?;
-    builder.create(folder)
+    platform::create_dir_owner_only(folder)
 }
 
 /// Check that `folder` is a folder and not a link, that `owner` owns it,
-/// and that its mode is 0700 or narrower. The owner is the user of fleetd,
-/// which makes the folder.
+/// and that only its owner has access to it (mode 0700 or narrower on
+/// unix). The owner is the user of fleetd, which makes the folder.
 fn check_folder(folder: &Path, owner: &User) -> Result<(), String> {
     let handle = platform::open_no_follow(folder)
         .map_err(|e| format!("the open without a link failed: {e}"))?;
@@ -323,11 +317,7 @@ fn check_folder(folder: &Path, owner: &User) -> Result<(), String> {
             user_text(owner)
         ));
     }
-    let mode = platform::mode_of(&meta).map_err(|_| "mode unknown".to_string())? & 0o7777;
-    if mode & GROUP_AND_OTHERS != 0 {
-        return Err(format!("mode {mode:04o} is wider than 0700"));
-    }
-    Ok(())
+    platform::check_owner_only(&handle, &meta, 0o700)
 }
 
 /// The names in `dir` that can be request files: not `archive/` and not a
@@ -386,11 +376,14 @@ fn open_refused_item(
 }
 
 /// Move the request file `from` to `to` in `archive/`, and make the move
-/// durable in both folders.
+/// durable in both folders where the OS can sync a folder.
 fn archive(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)?;
     for folder in [to.parent(), from.parent()].into_iter().flatten() {
-        platform::sync_dir(folder)?;
+        match platform::sync_dir(folder) {
+            Err(e) if e.get_ref().is_some_and(|inner| inner.is::<NotSupported>()) => {}
+            synced => synced?,
+        }
     }
     Ok(())
 }

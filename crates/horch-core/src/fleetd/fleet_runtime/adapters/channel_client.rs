@@ -17,7 +17,6 @@
 //! before the token read, but it is not the boundary. The peer process
 //! check of fleetd and the worker sandbox stay the boundary.
 
-use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +25,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::channel::Stream;
 use horch_platform::fs as platform;
+use horch_platform::NotSupported;
 use serde_json::{Map, Value};
 
 use crate::fleetd::fleet_runtime::adapters::peer_process::{
@@ -308,15 +308,10 @@ fn queue(fleet_root: &Path, id: &RequestId, line: &str) -> Result<Sent> {
     })
 }
 
-/// Make the request folder with mode 0700 when it is missing. A link or a
-/// file at that path is an error.
+/// Make the request folder with access for its owner only (mode 0700 on
+/// unix) when it is missing. A link or a file at that path is an error.
 fn make_request_folder(folder: &Path) -> Result<()> {
-    let mut builder = DirBuilder::new();
-    builder.recursive(true);
-    platform::create_dir_mode(&mut builder, 0o700)
-        .map_err(|e| anyhow!("making {} with mode 0700: {e}", folder.display()))?;
-    builder
-        .create(folder)
+    platform::create_dir_owner_only(folder)
         .with_context(|| format!("making {}", folder.display()))?;
     let meta = std::fs::symlink_metadata(folder)
         .with_context(|| format!("reading {}", folder.display()))?;
@@ -326,18 +321,15 @@ fn make_request_folder(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `bytes` to `path` atomically: write `<path>.tmp` with mode 0600,
-/// fsync it, rename it to `path`, then fsync the folder. A reader never
-/// sees a part of the file at `path`.
+/// Write `bytes` to `path` atomically: write `<path>.tmp` with access for
+/// its owner only (mode 0600 on unix), fsync it, rename it to `path`, then
+/// fsync the folder where the OS can. A reader never sees a part of the
+/// file at `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    platform::create_mode(&mut options, 0o600).map_err(|e| anyhow!("mode 0600: {e}"))?;
-    let mut file = options
-        .open(&tmp)
+    let mut file = platform::create_new_owner_only(&tmp)
         .with_context(|| format!("creating {}", tmp.display()))?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
@@ -346,7 +338,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         return Err(anyhow!(e));
     }
     if let Some(folder) = path.parent() {
-        platform::sync_dir(folder).with_context(|| format!("syncing {}", folder.display()))?;
+        match platform::sync_dir(folder) {
+            Err(e) if e.get_ref().is_some_and(|inner| inner.is::<NotSupported>()) => {}
+            synced => synced.with_context(|| format!("syncing {}", folder.display()))?,
+        }
     }
     Ok(())
 }

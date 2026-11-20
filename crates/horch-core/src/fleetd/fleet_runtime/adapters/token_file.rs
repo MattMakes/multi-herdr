@@ -7,13 +7,13 @@
 //! file that fails a check is an error with its reason.
 
 use std::fmt;
-use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::channel::User;
 use horch_platform::fs as platform;
+use horch_platform::NotSupported;
 
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 
@@ -100,35 +100,34 @@ pub fn read(fleet_root: &Path) -> Result<Token> {
     Ok(Token(text))
 }
 
-/// Make the folder `run/` with mode 0700 when it does not exist, and narrow
-/// the mode of a folder `run/` that exists to 0700. A link or a file at
-/// that path is an error.
+/// Make the folder `run/` with access for its owner only (mode 0700 on
+/// unix) when it does not exist, and narrow the mode of a folder `run/`
+/// that exists to 0700. Where the OS has no mode (Windows), a folder that
+/// exists keeps its access, and the read of the token refuses a wide one.
+/// A link or a file at that path is an error.
 fn make_run_folder(run: &Path) -> Result<()> {
-    let mut builder = DirBuilder::new();
-    builder.recursive(true);
-    platform::create_dir_mode(&mut builder, 0o700)
-        .map_err(|e| anyhow!("making {} with mode 0700: {e}", run.display()))?;
-    builder
-        .create(run)
-        .with_context(|| format!("making {}", run.display()))?;
+    platform::create_dir_owner_only(run).with_context(|| format!("making {}", run.display()))?;
     let meta =
         std::fs::symlink_metadata(run).with_context(|| format!("reading {}", run.display()))?;
     if !meta.is_dir() {
         bail!("{} is not a folder", run.display());
     }
-    platform::set_mode(run, 0o700)
-        .with_context(|| format!("setting mode 0700 on {}", run.display()))
+    match platform::set_mode(run, 0o700) {
+        Err(e) if is_not_supported(&e) => Ok(()),
+        set => set.with_context(|| format!("setting mode 0700 on {}", run.display())),
+    }
+}
+
+fn is_not_supported(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<NotSupported>())
 }
 
 /// Create the token file at `path` only when no file is there (`O_EXCL`),
-/// with mode 0600 at the create, and write a new token to it. A failed
-/// write removes the file, so no part of a token stays.
+/// with access for its owner only at the create (mode 0600 on unix), and
+/// write a new token to it. A failed write removes the file, so no part of
+/// a token stays.
 fn create(path: &Path) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    platform::create_mode(&mut options, 0o600)
-        .map_err(|e| io::Error::new(io::ErrorKind::Unsupported, e.to_string()))?;
-    let mut file = options.open(path)?;
+    let mut file = platform::create_new_owner_only(path)?;
     let written = file
         .write_all(new_token_text().as_bytes())
         .and_then(|()| file.sync_all());
@@ -138,7 +137,10 @@ fn create(path: &Path) -> io::Result<()> {
         return Err(e);
     }
     if let Some(folder) = path.parent() {
-        platform::sync_dir(folder)?;
+        match platform::sync_dir(folder) {
+            Err(e) if is_not_supported(&e) => {}
+            synced => synced?,
+        }
     }
     Ok(())
 }
