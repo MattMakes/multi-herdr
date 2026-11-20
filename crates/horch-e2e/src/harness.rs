@@ -685,18 +685,14 @@ impl Drop for Harness {
 }
 
 /// How long teardown waits for the harness's processes to end after it
-/// signals them: the stop grace of the design (`stop_grace_s`, 20 s), which
-/// fleetd gives a process group between SIGTERM and SIGKILL, plus
-/// [`REAP_MARGIN`]. A process ends on SIGTERM only when its current syscall
+/// signals them. A process ends on SIGTERM only when its current syscall
 /// returns, and on a loaded host 1 `rename` can block for seconds (T-114).
 fn reap_grace() -> std::time::Duration {
     let design = horch_core::fleetd::fleet_runtime::domain::config::FleetConfig::default();
-    std::time::Duration::from_secs(design.stop_grace_s) + REAP_MARGIN
+    std::time::Duration::from_secs(design.stop_grace_s) + PS_SCAN_MARGIN
 }
 
-/// The time of the `ps` scans of teardown on a loaded host, on top of the
-/// stop grace of the design.
-const REAP_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
+const PS_SCAN_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// End every process this harness started, and return the ones that
 /// leaked.
@@ -1495,10 +1491,7 @@ mod tests {
         assert!(live_runs, "the live root's process was stopped");
     }
 
-    /// A process in its own group whose command line names `root`, with
-    /// `on_term` as its SIGTERM handler in Perl. It is detached, so no test
-    /// process keeps it as a zombie. Returns its pid, once its handler is
-    /// set.
+    /// It is detached, so no test process keeps it as a zombie.
     fn stopping_in(root: &Path, on_term: &str) -> u32 {
         std::fs::create_dir_all(root).unwrap();
         let ready = root.join("ready");
@@ -1509,7 +1502,6 @@ mod tests {
         cmd.args(["-c", "perl -e \"$0\" \"$1\" </dev/null >/dev/null 2>&1 &"])
             .arg(script)
             .arg(&ready);
-        // Never the test's own group: teardown does not signal that.
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         assert!(cmd.status().unwrap().success());
         super::wait_for("the process to set its SIGTERM handler", || {
@@ -1517,10 +1509,6 @@ mod tests {
         })
     }
 
-    /// T-114: a process that ends 8 s after SIGTERM, longer than the old
-    /// fixed wait of 5 s, as a job does whose `rename` blocks on a loaded
-    /// host. Teardown waits for it within the stop grace of the design and
-    /// reports no leak.
     #[test]
     fn a_process_that_stops_within_the_stop_grace_is_not_leaked() {
         let root = super::tmpdir().join(format!("h-slow-{:x}", super::unique()));
@@ -1540,8 +1528,6 @@ mod tests {
         );
     }
 
-    /// A process that ignores SIGTERM still leaks: teardown kills it after
-    /// the grace and names it.
     #[test]
     fn a_process_that_ignores_sigterm_is_killed_and_reported() {
         let root = super::tmpdir().join(format!("h-stuck-{:x}", super::unique()));
