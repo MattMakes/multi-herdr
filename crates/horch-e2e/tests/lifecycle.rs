@@ -1,27 +1,3 @@
-//! End-to-end: a worker's life through the real `horch fleetd` and its
-//! fake agents. fleetd launches each attempt; `horch spawn` is retired
-//! (FR-5, `docs/tickets/fleetd-p6/47-c6-t908-retire-worker-run-cli.md`).
-//!
-//! - ARC-26: for each of the 6 harnesses, fleetd launches the agent of a
-//!   seeded task, the wrapper records the session of the agent
-//!   (`session.json`), and the attempt ends when its pane closes.
-//! - ARC-16: a failed pane split launches nothing.
-//! - G3: no child of fleetd holds a forbidden key, and the pane command
-//!   removes the key before horch starts.
-//!
-//! fake-herdr runs in the `exec` scenario, so the pane command of an
-//! attempt really starts `horch worker`, and `pane close` kills it. The
-//! fake agents run in `stay` when a test needs a live agent.
-//!
-//! Where a test of the retired `horch spawn` has no form in the fleetd
-//! flow, it is gone: `arc_16_crash_after_insert_not_live` (the fault
-//! `abort-after-execution-insert` belonged to the record that `horch spawn`
-//! wrote; the faults of fleetd are in `p1_pass.rs` and `p4_no_loss.rs`) and
-//! the resume half of each test (`horch spawn --resume`).
-//!
-//! The forbidden key has a dummy value that no test prints. A test names
-//! the key and never shows its value.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -32,8 +8,7 @@ use horch_e2e::harness::{fixtures, repo_root, wait_for_or, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-/// The forbidden name (`horch_platform::start::FORBIDDEN_ENV`).
-const FORBIDDEN: &str = "ANTHROPIC_API_KEY";
+const FORBIDDEN: &str = horch_platform::start::FORBIDDEN_ENV[0];
 
 /// The keys that move agy off the operator's Google login.
 const AGY_KEYS: [&str; 3] = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
@@ -47,10 +22,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness in workspace `w1` (root pane `w1:p1`), as `horch fleet` leaves
-/// it, with a git project that declares its gates and a fleet root whose
-/// fleetd passes once each second. The test starts fleetd after it queued
-/// its task.
 fn world(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set(
@@ -70,8 +41,6 @@ fn world(name: &str, scenario: &str) -> Harness {
         "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
-    // The project declares its gates, so no hold of a missing fast gate
-    // stops the dispatch.
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -90,7 +59,6 @@ fn world(name: &str, scenario: &str) -> Harness {
     h
 }
 
-/// Queue 1 task for `persona` in a new run, then start the test fleetd.
 fn start(h: &Harness, persona: &str) -> Run {
     let ticket = h.project.join("t-1.md");
     std::fs::write(&ticket, "# Lifecycle\n**Check:** `true`\n").unwrap();
@@ -100,10 +68,6 @@ fn start(h: &Harness, persona: &str) -> Run {
     run
 }
 
-/// `fake-antigravity` as `agy` (the harness installs it in `bin/`), named by
-/// `HORCH_ANTIGRAVITY_BIN`, and an ok google pool reading as `agy /usage`
-/// gives it. `all-ok.json` has no google pool, and an unknown pool runs the
-/// teammate on its fallback.
 fn with_agy(h: &mut Harness) {
     let name = format!("agy{}", std::env::consts::EXE_SUFFIX);
     let bin = h.bin.join(name).to_string_lossy().into_owned();
@@ -128,7 +92,6 @@ fn with_agy(h: &mut Harness) {
     h.set("HORCH_QUOTA_FILE", path.to_string_lossy());
 }
 
-/// What a failed wait shows: the fake calls without the many herdr calls.
 fn context(h: &Harness) -> String {
     h.calls()
         .iter()
@@ -138,8 +101,6 @@ fn context(h: &Harness) -> String {
         .join("\n")
 }
 
-/// The launch of the attempt by `fake`: the call whose argv names the
-/// attempt folder under the fleet root. A probe call of the fake does not.
 fn launch_of(h: &Harness, fake: &str) -> Value {
     let tasks = h.fleet_root().join("tasks").to_string_lossy().into_owned();
     wait_for_or(
@@ -153,8 +114,6 @@ fn launch_of(h: &Harness, fake: &str) -> Value {
     )
 }
 
-/// The pane that fleetd opened for the attempt: the argument of its
-/// `pane run`.
 fn pane_of(h: &Harness) -> String {
     wait_for_or(
         "the pane run of the attempt",
@@ -169,7 +128,6 @@ fn pane_of(h: &Harness) -> String {
     )
 }
 
-/// `herdr pane close`, which kills the worker and its agent.
 fn close_pane(h: &Harness, pane: &str) {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
@@ -177,14 +135,12 @@ fn close_pane(h: &Harness, pane: &str) {
     assert!(out.status.success(), "{}", text(&out));
 }
 
-/// The state of the 1 attempt of the ledger.
 fn attempt_state(h: &Harness) -> Option<String> {
     let conn = rusqlite::Connection::open(h.ledger_db()).ok()?;
     conn.query_row("SELECT state FROM attempts", [], |r| r.get(0))
         .ok()
 }
 
-/// The rows of the query `sql` in the ledger, 1 text column.
 fn rows(h: &Harness, sql: &str) -> Vec<String> {
     let conn = rusqlite::Connection::open(h.ledger_db()).unwrap();
     let mut stmt = conn.prepare(sql).unwrap();
@@ -194,8 +150,6 @@ fn rows(h: &Harness, sql: &str) -> Vec<String> {
         .collect()
 }
 
-/// The `session.json` that the wrapper of the attempt wrote, once fleetd
-/// ingested it into the ledger as a session event.
 fn session_of(h: &Harness) -> Value {
     wait_for_or(
         "the session of the attempt",
@@ -218,7 +172,6 @@ fn session_of(h: &Harness) -> Value {
     )
 }
 
-/// Each file named `name` under `dir`, at any depth.
 fn files_named(dir: &std::path::Path, name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -235,10 +188,6 @@ fn files_named(dir: &std::path::Path, name: &str) -> Vec<PathBuf> {
     found
 }
 
-/// Launch → session recorded → attempt live → pane closes → attempt ended.
-/// Gives the launch call and the session of the attempt, or null for a
-/// harness whose fake records no session in the exec launch of fleetd
-/// (`records_session` false: codex and antigravity, see the tests).
 fn lifecycle(harness: &str, persona: &str, fake: &str, records_session: bool) -> (Value, Value) {
     let mut h = world(&format!("arc26-{harness}"), "exec,stay");
     if fake == "antigravity" {
@@ -248,8 +197,6 @@ fn lifecycle(harness: &str, persona: &str, fake: &str, records_session: bool) ->
     let launch = launch_of(&h, fake);
     assert_eq!(launch["violations"], serde_json::json!([]), "{launch}");
 
-    // The session id is known: minted by horch (claude, pi) or discovered
-    // while the agent runs.
     let session = if records_session {
         let session = session_of(&h);
         assert_eq!(session["harness"], harness, "{session}");
@@ -279,8 +226,6 @@ fn arc_26_e2e_lifecycle_matrix_claude() {
 
 #[test]
 fn arc_26_e2e_lifecycle_matrix_codex() {
-    // fake-codex writes a rollout only in its TUI launch, not in the exec
-    // launch of fleetd, so no session is recorded.
     lifecycle("codex", "codex-sol", "codex", false);
 }
 
@@ -299,18 +244,11 @@ fn arc_26_e2e_lifecycle_matrix_prime() {
     lifecycle("prime", "prime", "prime", true);
 }
 
-/// fake-antigravity records its conversation in the session cache only in
-/// its TUI launch, not in the exec launch of fleetd, so no session is
-/// recorded.
 #[test]
 fn arc_26_e2e_lifecycle_matrix_antigravity() {
     lifecycle("antigravity", "antigravity", "antigravity", false);
 }
 
-/// G3: the pane shell holds the forbidden key (herdr keeps the operator's
-/// environment), so the pane command removes it before horch starts. The
-/// recorded line runs again in a shell that holds the key, with a probe in
-/// place of horch, and the probe does not see the key.
 #[test]
 fn pane_command_removes_a_forbidden_key_before_horch_starts() {
     let mut h = world("pane-env", "default");
@@ -330,7 +268,6 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
         "the pane command does not remove {FORBIDDEN}: {ran}"
     );
 
-    // The quoted word that is the horch binary.
     let horch = format!("'{}'", Harness::horch_bin().display());
     assert!(ran.contains(&horch), "the pane command has no {horch}");
     let out_file = h.tmp.join("pane-probe.env");
@@ -391,9 +328,6 @@ fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
     );
 }
 
-/// Launch `persona` in a world with the forbidden key, and the keys in
-/// `extra`, in the environment of fleetd. The key has a dummy value, and
-/// no assert shows it.
 fn launch_with_keys(name: &str, persona: &str, fake: &str, extra: &[&str]) -> Value {
     let mut h = world(name, "exec");
     if fake == "antigravity" {
@@ -414,13 +348,10 @@ fn launch_with_keys(name: &str, persona: &str, fake: &str, extra: &[&str]) -> Va
             "{key} reached {fake}: {keys:?}"
         );
     }
-    // The fake flags a forbidden key in its environment as a violation too.
     assert_eq!(launch["violations"], serde_json::json!([]), "{launch}");
     launch
 }
 
-/// The keys that move agy off the operator's Google login never reach an
-/// agy child, even when fleetd's own environment holds them.
 #[test]
 fn antigravity_child_never_receives_a_forbidden_key() {
     let launch = launch_with_keys("agy-env", "antigravity", "antigravity", &AGY_KEYS);
@@ -436,15 +367,11 @@ fn antigravity_child_never_receives_a_forbidden_key() {
     );
 }
 
-/// SR-7 for codex. The claude launch has its test in `p7_launcher.rs`
-/// (`no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key`).
 #[test]
 fn codex_child_never_receives_a_forbidden_key() {
     launch_with_keys("codex-env", "codex-sol", "codex", &[]);
 }
 
-/// The model of the persona reaches the claude command line. A seat on
-/// Fable launches `claude --model fable`.
 #[test]
 fn the_model_of_the_persona_reaches_the_claude_command_line() {
     let h = world("persona-model-fable", "exec");
@@ -457,16 +384,12 @@ fn the_model_of_the_persona_reaches_the_claude_command_line() {
     );
 }
 
-/// The session that the ledger records is the session file that the fake
-/// Prime wrote, in a directory only its launch knows.
 #[test]
 fn tel_session_recorded_when_prime_ends_fast() {
     let (launch, session) = lifecycle("prime", "prime", "prime", true);
     assert_eq!(session["session_id"], launch["session_file"], "{session}");
 }
 
-/// A failed pane split launches nothing: the worker is `launch_failed`, and
-/// no pane runs a command.
 #[test]
 fn arc_16_e2e_fail_split() {
     let h = world("arc16-split", "exec,fail_split");
