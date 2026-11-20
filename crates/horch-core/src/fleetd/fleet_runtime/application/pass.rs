@@ -4733,7 +4733,7 @@ impl Pass<'_> {
                 refs: l.rescue,
             })
             .collect();
-        out.rescue_refs = rescue_refs::collect(&ctx, tx, &facts, chrono::Utc::now())?.deletions;
+        out.rescue_refs = rescue_refs::collect(&ctx, tx, &facts, crate::clock::now())?.deletions;
         Ok(out)
     }
 
