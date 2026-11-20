@@ -65,8 +65,7 @@ pub fn migrate_refusal(
     allow: Option<&str>,
     from: i64,
 ) -> Option<String> {
-    let shared = passwd_home.is_some_and(|home| is_shared_ledger(ledger, home));
-    if !shared || !is_dev_build(exe) || allow == Some("1") {
+    if !refused(exe, ledger, passwd_home, allow) {
         return None;
     }
     Some(format!(
@@ -80,26 +79,117 @@ pub fn migrate_refusal(
     ))
 }
 
+/// Whether a development build `exe` must keep off `ledger`: it is the
+/// shared ledger of `passwd_home`, and `allow` (the value of
+/// [`ALLOW_MIGRATE_ENV`]) is not `1`.
+fn refused(exe: &Path, ledger: &Path, passwd_home: Option<&Path>, allow: Option<&str>) -> bool {
+    let shared = passwd_home.is_some_and(|home| is_shared_ledger(ledger, home));
+    shared && is_dev_build(exe) && allow != Some("1")
+}
+
+/// Why this horch must not open `ledger` for a write, or `None` when it
+/// may. A development build refuses each writable open of the shared
+/// ledger, also when its schema version is current, unless `allow` (the
+/// value of [`ALLOW_MIGRATE_ENV`]) is `1`: its rows name live runs and PIDs.
+pub fn write_refusal(
+    exe: &Path,
+    ledger: &Path,
+    passwd_home: Option<&Path>,
+    allow: Option<&str>,
+) -> Option<String> {
+    if !refused(exe, ledger, passwd_home, allow) {
+        return None;
+    }
+    Some(format!(
+        "the development build {exe} refuses to open the shared task ledger {ledger} for a write, \
+         because its rows name the live runs and processes of the installed horch.\n\
+         Set HORCH_LEDGER_DB=<scratch file> to use a scratch ledger, \
+         or set {ALLOW_MIGRATE_ENV}=1 to write the shared ledger.",
+        exe = exe.display(),
+        ledger = ledger.display(),
+    ))
+}
+
+/// The real path of `path`: the canonical path of its nearest ancestor that
+/// exists, with the rest of `path` after it. A ledger that does not exist
+/// yet still matches through a symlinked home.
+pub fn canonical(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// The passwd home of this user, not `$HOME`: a test or a fleet can point
+/// `$HOME` anywhere, but the shared ledger stays. Where the OS has no passwd
+/// database, no ledger counts as shared.
+fn passwd_home() -> Option<PathBuf> {
+    horch_platform::path::passwd_home().ok().flatten()
+}
+
+/// `passwd_home` when `ledger` is its shared ledger by real path ([`canonical`]),
+/// and the path to show for `ledger`. `is_shared_ledger` checks
+/// `<home>/.horch/ledger.sqlite3`, so the home is passed on only when the
+/// real paths match.
+fn shared<'a>(ledger: &Path, passwd_home: Option<&'a Path>) -> (Option<&'a Path>, PathBuf) {
+    let home = passwd_home.filter(|h| canonical(&default_path(h)) == canonical(ledger));
+    let shown = home.map_or_else(|| ledger.to_path_buf(), default_path);
+    (home, shown)
+}
+
+/// [`write_refusal`] for a `ledger` given by any path: a symlinked or
+/// relative path of the shared ledger is the shared ledger.
+fn open_refusal(
+    exe: &Path,
+    ledger: &Path,
+    passwd_home: Option<&Path>,
+    allow: Option<&str>,
+) -> Option<String> {
+    let (home, shown) = shared(ledger, passwd_home);
+    write_refusal(exe, &shown, home, allow)
+}
+
+/// The executable of this process and the value of [`ALLOW_MIGRATE_ENV`].
+fn this_process() -> Option<(PathBuf, Option<String>)> {
+    use crate::runtime::{EnvSource, ProcessEnv};
+    let exe = ProcessEnv.current_exe()?;
+    Some((exe, ProcessEnv.var(ALLOW_MIGRATE_ENV)))
+}
+
 /// [`migrate_refusal`] for this process and `ledger`.
 fn guard(ledger: &Path, from: i64) -> Result<()> {
-    use crate::runtime::{EnvSource, ProcessEnv};
-    let Some(exe) = ProcessEnv.current_exe() else {
+    let Some((exe, allow)) = this_process() else {
         return Ok(());
     };
-    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    // Compare real paths, so a symlinked home or a relative path still matches.
-    // The home of this user in the passwd database, not `$HOME`: a test or a
-    // fleet can point `$HOME` anywhere, but the shared ledger stays. Where
-    // the OS has no passwd database, no ledger counts as shared.
-    let home = horch_platform::path::passwd_home().ok().flatten();
-    let shared = home.as_deref().map(|h| real(&default_path(h)));
-    let ledger = real(ledger);
-    let allow = ProcessEnv.var(ALLOW_MIGRATE_ENV);
-    // `is_shared_ledger` checks `<home>/.horch/ledger.sqlite3`; pass the home
-    // only when the real paths match.
-    let home = home.filter(|_| shared.as_deref() == Some(ledger.as_path()));
-    let shown = home.as_deref().map(default_path).unwrap_or(ledger);
-    match migrate_refusal(&exe, &shown, home.as_deref(), allow.as_deref(), from) {
+    let home = passwd_home();
+    let (home, shown) = shared(ledger, home.as_deref());
+    match migrate_refusal(&exe, &shown, home, allow.as_deref(), from) {
+        Some(text) => anyhow::bail!(text),
+        None => Ok(()),
+    }
+}
+
+/// [`write_refusal`] for this process and `ledger`: the first check of
+/// [`Store::open`], before it creates a folder or a file.
+fn guard_open(ledger: &Path) -> Result<()> {
+    let Some((exe, allow)) = this_process() else {
+        return Ok(());
+    };
+    match open_refusal(&exe, ledger, passwd_home().as_deref(), allow.as_deref()) {
         Some(text) => anyhow::bail!(text),
         None => Ok(()),
     }
@@ -177,13 +267,21 @@ pub struct Store {
 
 impl Store {
     /// Open (and create, and migrate) the ledger at `path`. A development
-    /// build does not migrate the shared ledger ([`migrate_refusal`]).
+    /// build does not open the shared ledger for a write
+    /// ([`write_refusal`]), and does not migrate it ([`migrate_refusal`]).
     ///
     /// A writable open: production code calls it through [`LedgerWriter`],
     /// and under [`ASSERT_READ_ONLY_ENV`] a process that is not fleetd
     /// panics here, before it touches the file.
     pub fn open(path: &Path) -> Result<Store> {
+        Store::open_checked(path, &guard_open)
+    }
+
+    /// [`Store::open`] with `check` as its refusal of the file, which runs
+    /// before the first change on disk. A test passes its own check.
+    fn open_checked(path: &Path, check: &dyn Fn(&Path) -> Result<()>) -> Result<Store> {
         assert_fleetd_writer(path);
+        check(path)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
@@ -417,6 +515,91 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// The check of [`guard_open`] for the dev build `exe` and the passwd
+    /// home `home`, with [`ALLOW_MIGRATE_ENV`] as `allow`.
+    fn check_as<'a>(
+        exe: &'a Path,
+        home: &'a Path,
+        allow: Option<&'a str>,
+    ) -> impl Fn(&Path) -> Result<()> + 'a {
+        move |ledger: &Path| match open_refusal(exe, ledger, Some(home), allow) {
+            Some(text) => anyhow::bail!(text),
+            None => Ok(()),
+        }
+    }
+
+    const DEV: &str = "/w/target/debug/horch";
+
+    #[test]
+    fn a_dev_build_refuses_a_same_version_write_of_the_shared_ledger() {
+        let home = temp();
+        let shared = default_path(home.path());
+        // The shared ledger exists with the current schema: no migration runs.
+        drop(Store::open(&shared).unwrap());
+        let before = std::fs::read(&shared).unwrap();
+        let err = Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), None))
+            .err()
+            .expect("a dev build refuses the shared ledger");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("refuses to open the shared task ledger"),
+            "{text}"
+        );
+        assert!(text.contains(ALLOW_MIGRATE_ENV), "{text}");
+        assert_eq!(
+            std::fs::read(&shared).unwrap(),
+            before,
+            "the file is unchanged"
+        );
+        for opt_out in [Some("0"), Some("")] {
+            assert!(
+                Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), opt_out))
+                    .is_err(),
+                "{opt_out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dev_build_refuses_the_shared_ledger_before_it_touches_the_disk() {
+        let home = temp();
+        let shared = default_path(home.path());
+        let err = Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), None));
+        assert!(err.is_err());
+        assert!(
+            !home.path().join(".horch").exists(),
+            "no folder and no file is created"
+        );
+    }
+
+    #[test]
+    fn a_dev_build_opens_a_scratch_ledger_or_the_shared_one_with_the_opt_in() {
+        let home = temp();
+        let check = check_as(Path::new(DEV), home.path(), None);
+        let scratch = home.path().join("scratch").join("ledger.sqlite3");
+        Store::open_checked(&scratch, &check).expect("a scratch ledger opens");
+        let shared = default_path(home.path());
+        let allowed = check_as(Path::new(DEV), home.path(), Some("1"));
+        Store::open_checked(&shared, &allowed).expect("the opt-in opens the shared ledger");
+        let installed = check_as(Path::new("/usr/local/bin/horch"), home.path(), None);
+        Store::open_checked(&shared, &installed).expect("an installed build opens it");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_home_still_names_the_shared_ledger() {
+        let dir = temp();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let via_link = default_path(&link);
+        assert_eq!(canonical(&via_link), canonical(&default_path(&real)));
+        let err = Store::open_checked(&via_link, &check_as(Path::new(DEV), &real, None));
+        assert!(err.is_err(), "the link names the shared ledger");
+        assert!(!real.join(".horch").exists());
     }
 
     #[test]
