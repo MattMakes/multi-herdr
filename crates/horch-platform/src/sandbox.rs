@@ -61,13 +61,34 @@ pub fn sandboxed<C: Start>(
     writable: &[PathBuf],
     denied: &Denials,
 ) -> Result<C, NotSupported> {
+    sandboxed_on(cmd, writable, denied, Network::Open)
+}
+
+/// [`sandboxed`] with [`Network::Local`]: the command has no off-host
+/// network (SR-3: no agent messages anyone outside the fleet). It gives
+/// [`NotSupported`] on a host where the platform layer cannot hold this
+/// rule, and never opens the network instead.
+pub fn sandboxed_local<C: Start>(
+    cmd: C,
+    writable: &[PathBuf],
+    denied: &Denials,
+) -> Result<C, NotSupported> {
+    sandboxed_on(cmd, writable, denied, Network::Local)
+}
+
+fn sandboxed_on<C: Start>(
+    cmd: C,
+    writable: &[PathBuf],
+    denied: &Denials,
+    network: Network,
+) -> Result<C, NotSupported> {
     let temp = resolved(&std::env::temp_dir());
     let reach = Reach {
         writable,
         readable: &[],
         hidden: &[],
         denied,
-        network: Network::Open,
+        network,
     };
     wrapped(cmd, &reach, Some(&temp))
 }
@@ -82,6 +103,13 @@ pub enum Network {
     /// new network namespace: it has no network and no abstract Unix
     /// socket, but it can connect to a Unix socket file that it can see.
     Denied,
+    /// The command can connect to this host only: loopback and Unix
+    /// sockets. Each connection to another host is refused. On macOS a
+    /// Seatbelt rule denies each outbound IP connection but `localhost`.
+    /// On Linux the command gets a new network namespace, where `bwrap`
+    /// brings up the loopback interface. Windows has no sandbox, so it
+    /// gives [`NotSupported`].
+    Local,
 }
 
 /// What a command of [`sandboxed_hiding`] can reach. Give absolute paths.
@@ -283,5 +311,86 @@ fn resolved(path: &Path) -> PathBuf {
     match (path.parent(), path.file_name()) {
         (Some(parent), Some(name)) if parent != path => resolved(parent).join(name),
         _ => path.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::process::Command;
+    use std::time::Duration;
+
+    /// The address of the child test: an address that no host answers
+    /// (RFC 5737, TEST-NET-1). A connect to it never reaches a webhook.
+    const OFF_HOST: &str = "192.0.2.1:9";
+    const TARGET: &str = "SANDBOX_CHILD_TARGET";
+
+    /// What a connect to `TARGET` did, printed by the child after
+    /// `RESULT `: `connected`, or `refused <error kind> <os error>`.
+    #[test]
+    #[ignore = "run by the sandbox tests, inside a sandbox"]
+    fn connect_child() {
+        let target: SocketAddr = std::env::var(TARGET).expect(TARGET).parse().unwrap();
+        match TcpStream::connect_timeout(&target, Duration::from_secs(3)) {
+            Ok(_) => println!("RESULT connected"),
+            Err(e) => println!("RESULT refused {:?} {:?}", e.kind(), e.raw_os_error()),
+        }
+    }
+
+    /// The line that the child printed when it connected to `target` in
+    /// the local-network sandbox, or `None` when this host has no sandbox
+    /// (`NotSupported`, never an open network).
+    fn connect_in_local_sandbox(target: SocketAddr) -> Option<String> {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "sandbox::tests::connect_child", "--ignored"])
+            .args(["--nocapture", "--test-threads=1"])
+            .env(TARGET, target.to_string());
+        let mut cmd = match sandboxed_local(cmd, &[], &Denials::default()) {
+            Ok(cmd) => cmd,
+            Err(_) => {
+                assert!(
+                    host_problem(None).is_some(),
+                    "no sandbox on a host with one"
+                );
+                return None;
+            }
+        };
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let line = text.split("RESULT ").nth(1).and_then(|r| r.lines().next());
+        Some(
+            line.unwrap_or_else(|| panic!("the child printed no result: {text}"))
+                .to_string(),
+        )
+    }
+
+    /// SR-3: with `Network::Local` a command reaches the loopback address
+    /// of this host (a local webhook gets its request) and no other host.
+    #[test]
+    fn local_network_allows_loopback_and_refuses_an_off_host_address() {
+        let webhook = TcpListener::bind("127.0.0.1:0").unwrap();
+        let Some(line) = connect_in_local_sandbox(webhook.local_addr().unwrap()) else {
+            return;
+        };
+        assert_eq!(line, "connected");
+        assert!(webhook.accept().is_ok(), "the webhook got no connection");
+
+        let line = connect_in_local_sandbox(OFF_HOST.parse().unwrap()).unwrap();
+        assert!(line.starts_with("refused"), "{line}");
+        assert!(
+            !line.contains("TimedOut"),
+            "a timeout is no refusal: {line}"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            line.contains("PermissionDenied"),
+            "Seatbelt gives EPERM: {line}"
+        );
     }
 }

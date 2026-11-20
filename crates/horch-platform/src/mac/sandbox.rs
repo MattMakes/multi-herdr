@@ -67,8 +67,13 @@ pub(crate) fn args(rules: &[Rule<'_>], _temp: bool, network: Network) -> Vec<OsS
         value.push(folder);
         args.extend([OsString::from("-D"), value]);
     }
-    if network == Network::Denied {
-        profile.push_str("(deny network*)");
+    match network {
+        Network::Open => {}
+        Network::Denied => profile.push_str("(deny network*)"),
+        Network::Local => profile.push_str(
+            "(deny network-outbound (remote ip))\
+             (allow network-outbound (remote ip \"localhost:*\"))",
+        ),
     }
     args.extend([OsString::from("-p"), OsString::from(profile)]);
     args

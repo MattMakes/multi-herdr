@@ -43,7 +43,7 @@ pub(crate) fn args(rules: &[Rule<'_>], temp: bool, network: Network) -> Vec<OsSt
     ]
     .map(OsString::from)
     .to_vec();
-    if network == Network::Denied {
+    if network != Network::Open {
         args.push("--unshare-net".into());
     }
     if temp {
