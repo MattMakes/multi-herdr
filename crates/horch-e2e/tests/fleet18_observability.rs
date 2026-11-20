@@ -1,7 +1,7 @@
 //! Behavioral coverage for fleet pitfalls #49–55.
 use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness};
-use horch_e2e::ledger_seed::{seed_run, seed_task};
+use horch_e2e::ledger_seed::{seed_run, seed_task, seed_worker};
 use serde_json::json;
 
 fn out(o: &std::process::Output) -> String {
@@ -51,7 +51,8 @@ fn g50_machine_fixture_accepts_pinned_load() {
 
 #[test]
 fn g51_sessions_filter_workspace_live_role_and_indent_summary() {
-    let mut h = Harness::new("g51-sessions");
+    let mut h = Harness::new("g51-sessions").with_git();
+    serve_state_fleetd(&mut h);
     let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     for (id, role, workspace) in [("r1", "sonnet-1", "w1"), ("r2", "sonnet-2", "w2")] {
         ledger
@@ -118,8 +119,7 @@ fn g51_sessions_points_to_ledger_status_only_for_the_callers_active_run() {
             h.set("HORCH_WORKSPACE_ID", "w1");
             assert!(!out(&h.run(&["sessions"])).contains("horch ledger status"));
             h.serve_fleetd();
-            let o = h.run(&["ledger", "run", "new", "review"]);
-            assert!(o.status.success(), "{}", err(&o));
+            seed_run(&h, "review", None, "w1:p1");
             let text = out(&h.run(&["sessions"]));
             assert_eq!(
                 text.lines().last(),
@@ -320,6 +320,15 @@ fn serve_fast_fleetd(h: &Harness) {
     h.serve_fleetd();
 }
 
+/// Put the task ledger of `h` under its state folder, beside the session
+/// records, and start its test fleetd. A session record write is an
+/// operator request, so it needs the fleetd of that ledger and its token.
+fn serve_state_fleetd(h: &mut Harness) {
+    let db = h.state.join("ledger.sqlite3");
+    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+    h.serve_fleetd();
+}
+
 fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
@@ -341,31 +350,12 @@ fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
         "ledger_stop_stops_a_spawned_worker_by_the_ingested_pid",
         || {
             let h = fleet("stop-pid", "exec,stay");
-            serve_fast_fleetd(&h);
-            ok(
-                &h,
-                &["ledger", "run", "new", "stop", "--heartbeat-every", "1"],
-            );
+            let run = seed_run(&h, "stop", Some(1), "w1:p1");
             let file = h.project.join("stop.md");
             std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
-            let file = file.to_string_lossy().into_owned();
-            ok(
-                &h,
-                &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
-            );
-            ok(
-                &h,
-                &[
-                    "spawn",
-                    "codex-terra",
-                    "--from-pane",
-                    "w1:p1",
-                    "--no-tile",
-                    "--force",
-                    "--role",
-                    "codex-terra-1",
-                ],
-            );
+            seed_task(&h, &run, &file, "codex-terra");
+            // fleetd dispatches the queued task (Phase 4).
+            serve_fast_fleetd(&h);
             let (worker, pid, started) = wait("the ingested agent PID", || {
                 let state: serde_json::Value =
                     serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
@@ -619,6 +609,7 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
 
 fn compact_world(name: &str, over: bool) -> (Harness, String) {
     let mut h = fleet(name, "");
+    serve_state_fleetd(&mut h);
     let sid = if over {
         "11111111-1111-4111-8111-111111111111"
     } else {
@@ -729,13 +720,12 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
         file!(),
         "g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block",
         || {
-            let h = fleet("g50-runs", "");
+            let mut h = fleet("g50-runs", "");
             h.serve_fleetd();
             herdr(&h, &["workspace", "create", "--label", "other"]);
-            let mut new = h.horch(&["ledger", "run", "new", "foreign"]);
-            new.env("HORCH_WORKSPACE_ID", "w2");
-            let o = new.output().unwrap();
-            assert!(o.status.success(), "{}", err(&o));
+            h.set("HORCH_WORKSPACE_ID", "w2");
+            seed_run(&h, "foreign", None, "w2:p1");
+            h.set("HORCH_WORKSPACE_ID", "w1");
             let o = h.run(&[
                 "spawn",
                 "sonnet",
@@ -838,22 +828,21 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
         "g53_ledger_handoff_compacts_resumes_and_records_progress_once",
         || {
             let (mut h, pane) = compact_world("g53-auto", true);
-            h.serve_fleetd();
-            ok(&h, &["ledger", "run", "new", "compact"]);
-            let worker = ok(&h, &["ledger", "worker", "new", "--persona", "sonnet"])
-                .trim()
-                .to_string();
+            let run = seed_run(&h, "compact", None, "w1:p1");
+            // A worker with no live attempt sends its lines with horch
+            // note: horch ledger progress needs the outbox of an attempt.
+            let worker = seed_worker(&h, &run, "sonnet");
             h.set("HORCH_WORKER_ID", &worker);
-            let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+            let db = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
             db.conn()
             .execute(
                 "UPDATE workers SET legacy_record_id='r-compact', status='working' WHERE worker_id=?1",
                 [&worker],
             )
             .unwrap();
-            let warning = ok(&h, &["ledger", "progress", "starting work"]);
+            let warning = ok(&h, &["note", "starting work"]);
             assert!(warning.contains("Context warning"), "{warning}");
-            assert!(!ok(&h, &["ledger", "progress", "still working"]).contains("Context warning"));
+            assert!(!ok(&h, &["note", "still working"]).contains("Context warning"));
             let transcript = horch_core::usage::Locations::from_context(
                 &horch_core::runtime::RuntimeContext::from_env(
                     &horch_core::runtime::MapEnv::new(&h.project)
@@ -890,11 +879,7 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
             );
             let scheduled = ok(
                 &h,
-                &[
-                    "ledger",
-                    "progress",
-                    "handoff: ai_docs/handoffs/sonnet-1-whats-next.md",
-                ],
+                &["note", "handoff: ai_docs/handoffs/sonnet-1-whats-next.md"],
             );
             assert!(scheduled.contains("scheduled"), "{scheduled}");
             let again = ok(&h, &["compact", "sonnet-1"]);
@@ -1023,6 +1008,7 @@ fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
 #[test]
 fn g51_pane_gone_context_filters_and_completed_summaries() {
     let mut h = fleet("g51-context", "");
+    serve_state_fleetd(&mut h);
     let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     for (id, role, ws) in [
         ("a", "sonnet-1", "w1"),

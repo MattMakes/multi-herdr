@@ -9,7 +9,3 @@ g52_resume_uses_own_session | 5 | horch spawn refused: no ready task for persona
 # these tests to crates/horch-e2e/src/ledger_seed.rs. A spawned worker of
 # ledger_stop_stops_a_spawned_worker_by_the_ingested_pid also needs the
 # push dispatch flow of g52.
-g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block | 6 | horch ledger run new is retired
-g51_sessions_points_to_ledger_status_only_for_the_callers_active_run | 6 | horch ledger run new is retired
-g53_ledger_handoff_compacts_resumes_and_records_progress_once | 6 | horch ledger run new is retired
-ledger_stop_stops_a_spawned_worker_by_the_ingested_pid | 6 | horch ledger run new is retired
