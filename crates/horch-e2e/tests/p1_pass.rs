@@ -650,6 +650,7 @@ fn cursors_moved(h: &Harness, before: &[Option<CursorRow>]) -> Vec<CursorRow> {
 #[test]
 fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart()
 {
+    horch_e2e::expected::check(file!(), "scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart", || {
     let h = world("p1-scan", &format!("{FAST_PASSES}scan_budget_ms = 1\n"));
     plan(&h, 0);
     let agent = Agent::start();
@@ -715,6 +716,7 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
         )),
         "{check}"
     );
+    });
 }
 
 /// RR-4: the watcher reports no file event, and the plan still ends with
@@ -723,16 +725,22 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
 /// their cursors.
 #[test]
 fn rr4_tasks_complete_with_all_file_watch_events_dropped() {
-    let h = world("p1-rr4", FAST_PASSES);
-    let end = run_plan(&h, Some(DROP_WATCH_EVENTS), false);
-    assert_eq!(end, plan_done());
-    for kind in FOLDER_SCANS {
-        let after = cursor(&h, kind).and_then(|(after, _, _)| after);
-        assert!(
-            after.is_some(),
-            "with no file event, the scan of {kind} read no folder"
-        );
-    }
+    horch_e2e::expected::check(
+        file!(),
+        "rr4_tasks_complete_with_all_file_watch_events_dropped",
+        || {
+            let h = world("p1-rr4", FAST_PASSES);
+            let end = run_plan(&h, Some(DROP_WATCH_EVENTS), false);
+            assert_eq!(end, plan_done());
+            for kind in FOLDER_SCANS {
+                let after = cursor(&h, kind).and_then(|(after, _, _)| after);
+                assert!(
+                    after.is_some(),
+                    "with no file event, the scan of {kind} read no folder"
+                );
+            }
+        },
+    );
 }
 
 /// The awake time of the last heartbeat of the fleetd `pid`, after no new
@@ -825,10 +833,16 @@ fn rr4_file_request_and_job_events_wake_pass_before_period() {
 /// task done, with the same attempts. No task is lost or done 2 times.
 #[test]
 fn rr7_fleetd_killed_mid_run_ends_as_a_clean_run() {
-    let clean = run_plan(&world("p1-rr7-clean", FAST_PASSES), None, false);
-    let killed = run_plan(&world("p1-rr7-kill", FAST_PASSES), None, true);
-    assert_eq!(clean, plan_done(), "the clean run");
-    assert_eq!(killed, clean, "the run with fleetd killed mid-run");
+    horch_e2e::expected::check(
+        file!(),
+        "rr7_fleetd_killed_mid_run_ends_as_a_clean_run",
+        || {
+            let clean = run_plan(&world("p1-rr7-clean", FAST_PASSES), None, false);
+            let killed = run_plan(&world("p1-rr7-kill", FAST_PASSES), None, true);
+            assert_eq!(clean, plan_done(), "the clean run");
+            assert_eq!(killed, clean, "the run with fleetd killed mid-run");
+        },
+    );
 }
 
 /// A process that appends 1 line to `file` for each polite stop that it
@@ -945,110 +959,117 @@ fn fleet_world(name: &str) -> Harness {
 /// end the attempt, queue the task or write a respawn a second time.
 #[test]
 fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
-    let h = fleet_world("p1-fm11");
-    plan(&h, 1);
-    let (mut w, seq) = bind(&h);
-    assert_eq!(seq, 1);
-    let stops = h.root.join("stops.txt");
-    let mut supervisor = Polite::start(&stops);
-    let pid = supervisor.0.id();
-    let start = procid::start_time(pid).expect("the start time of the supervisor") as i64;
-    let mut gone = Agent::start();
-    let orch_pid = gone.pid();
-    let orch_start = procid::start_time(orch_pid).expect("the start time of the agent") as i64;
-    gone.kill();
-    let store = Store::open(&db(&h)).unwrap();
-    store
+    horch_e2e::expected::check(
+        file!(),
+        "fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart",
+        || {
+            let h = fleet_world("p1-fm11");
+            plan(&h, 1);
+            let (mut w, seq) = bind(&h);
+            assert_eq!(seq, 1);
+            let stops = h.root.join("stops.txt");
+            let mut supervisor = Polite::start(&stops);
+            let pid = supervisor.0.id();
+            let start = procid::start_time(pid).expect("the start time of the supervisor") as i64;
+            let mut gone = Agent::start();
+            let orch_pid = gone.pid();
+            let orch_start =
+                procid::start_time(orch_pid).expect("the start time of the agent") as i64;
+            gone.kill();
+            let store = Store::open(&db(&h)).unwrap();
+            store
         .conn()
         .execute(
             "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
             (&w.id, pid, start),
         )
         .unwrap();
-    // The orchestrator of the run registered, and its agent is gone.
-    store
-        .conn()
-        .execute(
-            "UPDATE workers SET agent_pid = ?1, agent_started = ?2
+            // The orchestrator of the run registered, and its agent is gone.
+            store
+                .conn()
+                .execute(
+                    "UPDATE workers SET agent_pid = ?1, agent_started = ?2
              WHERE worker_id = (SELECT orchestrator_worker_id FROM runs)",
-            (orch_pid, orch_start),
-        )
-        .unwrap();
-    let (task, attempt): (String, String) = store
-        .conn()
-        .query_row(
-            "SELECT task_id, id FROM attempts WHERE task_id IS NOT NULL",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    drop(store);
-    w.agent.kill();
+                    (orch_pid, orch_start),
+                )
+                .unwrap();
+            let (task, attempt): (String, String) = store
+                .conn()
+                .query_row(
+                    "SELECT task_id, id FROM attempts WHERE task_id IS NOT NULL",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            drop(store);
+            w.agent.kill();
 
-    let mut fleetds = Fleetds::new(&h);
-    spawn_fleetd(&h, &mut fleetds, Some(ABORT_AFTER_COMMIT));
-    let status = wait_until("the fleetd with the fault exits", 30, || {
-        fleetds.children[0].try_wait().unwrap()
-    });
-    let _ = fleetds.current();
-    assert_eq!(
-        status.code(),
-        Some(ABORT_EXIT_CODE),
-        "{}",
-        fleetd_output(&h, 0)
-    );
-    assert_eq!(
-        (
-            task_status(&h, 1),
-            transitions(&h, "attempt", &attempt, "live", "ended")
-        ),
-        ("ready".to_string(), 1),
-        "the pass committed the end of the attempt and the requeue before it died"
-    );
-    let respawn = orchestrator_attempts(&h);
-    assert_eq!(
-        respawn.len(),
-        1,
-        "the pass committed 1 respawn before it died"
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(lines(&stops), 0, "no stop before the restart");
-    assert!(
-        !supervisor.exited(),
-        "the supervisor runs until the restart"
-    );
-    assert_eq!(respawn_launches(&h), 0, "no launch before the restart");
+            let mut fleetds = Fleetds::new(&h);
+            spawn_fleetd(&h, &mut fleetds, Some(ABORT_AFTER_COMMIT));
+            let status = wait_until("the fleetd with the fault exits", 30, || {
+                fleetds.children[0].try_wait().unwrap()
+            });
+            let _ = fleetds.current();
+            assert_eq!(
+                status.code(),
+                Some(ABORT_EXIT_CODE),
+                "{}",
+                fleetd_output(&h, 0)
+            );
+            assert_eq!(
+                (
+                    task_status(&h, 1),
+                    transitions(&h, "attempt", &attempt, "live", "ended")
+                ),
+                ("ready".to_string(), 1),
+                "the pass committed the end of the attempt and the requeue before it died"
+            );
+            let respawn = orchestrator_attempts(&h);
+            assert_eq!(
+                respawn.len(),
+                1,
+                "the pass committed 1 respawn before it died"
+            );
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(lines(&stops), 0, "no stop before the restart");
+            assert!(
+                !supervisor.exited(),
+                "the supervisor runs until the restart"
+            );
+            assert_eq!(respawn_launches(&h), 0, "no launch before the restart");
 
-    let fleetd = start_fleetd(&h, &mut fleetds, None);
-    wait_until("the restarted fleetd stops the supervisor", 30, || {
-        supervisor.exited().then_some(())
-    });
-    wait_until("the restarted fleetd launches the respawn", 30, || {
-        (respawn_launches(&h) > 0).then_some(())
-    });
-    for _ in 0..3 {
-        after_a_whole_pass(&h, fleetd);
-    }
-    assert_eq!(lines(&stops), 1, "1 stop of the supervisor");
-    assert_eq!(respawn_launches(&h), 1, "1 launch of the respawn");
-    assert_eq!(
-        orchestrator_attempts(&h),
-        respawn,
-        "the respawn has 1 attempt"
-    );
-    assert_eq!(
-        transitions(&h, "attempt", &attempt, "live", "ended"),
-        1,
-        "the attempt ended once"
-    );
-    assert_eq!(
-        transitions(&h, "task", &task, "running", "ready"),
-        1,
-        "the task was queued again once"
-    );
-    assert_eq!(
-        (task_status(&h, 1), outcomes(&h)[0].attempts),
-        ("ready".to_string(), 1),
-        "the task waits for its next attempt"
+            let fleetd = start_fleetd(&h, &mut fleetds, None);
+            wait_until("the restarted fleetd stops the supervisor", 30, || {
+                supervisor.exited().then_some(())
+            });
+            wait_until("the restarted fleetd launches the respawn", 30, || {
+                (respawn_launches(&h) > 0).then_some(())
+            });
+            for _ in 0..3 {
+                after_a_whole_pass(&h, fleetd);
+            }
+            assert_eq!(lines(&stops), 1, "1 stop of the supervisor");
+            assert_eq!(respawn_launches(&h), 1, "1 launch of the respawn");
+            assert_eq!(
+                orchestrator_attempts(&h),
+                respawn,
+                "the respawn has 1 attempt"
+            );
+            assert_eq!(
+                transitions(&h, "attempt", &attempt, "live", "ended"),
+                1,
+                "the attempt ended once"
+            );
+            assert_eq!(
+                transitions(&h, "task", &task, "running", "ready"),
+                1,
+                "the task was queued again once"
+            );
+            assert_eq!(
+                (task_status(&h, 1), outcomes(&h)[0].attempts),
+                ("ready".to_string(), 1),
+                "the task waits for its next attempt"
+            );
+        },
     );
 }
