@@ -782,16 +782,12 @@ pub fn read_all_sessions(
         .collect()
 }
 
-/// 1 session record that the wrapper of a worker changed, for the ledger
-/// file `db` and the project slug `slug`.
 struct WrapperRow {
     db: PathBuf,
     slug: String,
     record: LedgerRecordV1,
 }
 
-/// The session records that the wrapper of this process changed. Empty in
-/// each process that is not a wrapper.
 static WRAPPER_ROWS: Mutex<Vec<WrapperRow>> = Mutex::new(Vec::new());
 
 /// A project's executions.
@@ -966,9 +962,6 @@ impl ExecutionStore {
         out
     }
 
-    /// The stored rows of this project, read-only, with the rows that this
-    /// wrapper kept ([`Self::with_wrapper_rows`]). A file that does not
-    /// exist has none.
     fn stored_rows(&self) -> Result<Vec<SessionRow>> {
         if !self.db.is_file() {
             return Ok(self.with_wrapper_rows(Vec::new()));
@@ -978,8 +971,6 @@ impl ExecutionStore {
         Ok(self.with_wrapper_rows(session_rows(store.conn(), Some(&self.slug))?))
     }
 
-    /// `rows` with each row that this wrapper kept for this project laid
-    /// over them. Only the wrapper of a worker keeps rows.
     fn with_wrapper_rows(&self, mut rows: Vec<SessionRow>) -> Vec<SessionRow> {
         if !channel_client::is_wrapper_process() {
             return rows;
@@ -1006,9 +997,6 @@ impl ExecutionStore {
         rows
     }
 
-    /// Keep the change `rows` in this wrapper process: the wrapper sends no
-    /// request and reads no operator token (T-899). A later read of this
-    /// process sees them.
     fn keep_in_wrapper(&self, rows: Vec<SessionRowChange>) {
         let mut kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
         for change in rows {

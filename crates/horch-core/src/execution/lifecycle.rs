@@ -1306,10 +1306,6 @@ impl<'a> PaneWorker<'a> {
 }
 
 impl WorkerSteps for PaneWorker<'_> {
-    /// The first step of the wrapper marks this process as the wrapper
-    /// (T-899): from then on it sends no request and reads no operator
-    /// token. Its session records stay in its process, and its facts go by
-    /// the files of its attempt.
     fn load_brief(&mut self) -> Result<Brief> {
         channel_client::mark_wrapper_process();
         let mailbox = Mailbox::resolve_in(&self.herdr(), self.ctx)?;

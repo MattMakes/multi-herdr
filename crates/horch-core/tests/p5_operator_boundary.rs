@@ -1,18 +1,6 @@
 //! The wrapper of a worker reads no operator token and sends no request of
 //! class operator (T-899, SR-8; ticket 61 of fleetd-build).
 //!
-//! - The wrapper path never reads `<fleet root>/run/operator.token`: in a
-//!   process that is the wrapper, the client of the channel refuses each
-//!   operator kind before the token read, and a write of a session record
-//!   stays in the process and sends nothing.
-//! - A request of class operator from a process of a live attempt, which
-//!   the client does not stop (a raw line with a copy of the token), is
-//!   refused by fleetd, and its `requests` row records the refusal.
-//!
-//! Each test marks this test process as the wrapper, as `horch worker`
-//! does. The client refusal is not the boundary: the peer process check of
-//! fleetd and the worker sandbox are.
-//!
 //! Unix only: the channel is a Unix socket, and the tests use unix modes.
 
 #![cfg(unix)]
@@ -38,13 +26,10 @@ use horch_platform::channel::Stream;
 use serde_json::{json, Map, Value};
 use tempfile::TempDir;
 
-/// The start of the refusal of the client in the wrapper.
 const WRAPPER_REFUSED: &str = "the wrapper of a worker sends no operator request";
 
-/// The context of the token read of the client: a read error names it.
 const TOKEN_READ: &str = "reading the operator token";
 
-/// A fleet in a short temporary folder: its ledger and its fleet root.
 struct Fleet {
     dir: TempDir,
 }
@@ -87,8 +72,6 @@ impl Fleet {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// Each entry of `run/` of the fleet root but the token file: a
-    /// channel or a request file of the client.
     fn run_entries(&self) -> Vec<PathBuf> {
         let mut found = Vec::new();
         let mut todo = vec![self.root().join("run")];
@@ -107,12 +90,10 @@ impl Fleet {
     }
 }
 
-/// Set the mode of `path` to `mode`.
 fn chmod(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// The payload of `session_records` that the wrapper sent before T-899.
 fn session_payload(record_id: &str) -> Map<String, Value> {
     json!({
         "project_root": "/p",
@@ -123,10 +104,6 @@ fn session_payload(record_id: &str) -> Map<String, Value> {
     .clone()
 }
 
-/// The wrapper path never reads the operator token: with a token file that
-/// no process can read, each operator kind that the wrapper sent before
-/// T-899 gets the refusal of the wrapper, not a read error of the token.
-/// The client makes no channel and no request file.
 #[test]
 fn wrapper_refuses_each_operator_kind_before_the_token_read() {
     channel_client::mark_wrapper_process();
@@ -154,11 +131,6 @@ fn wrapper_refuses_each_operator_kind_before_the_token_read() {
     assert_eq!(fleet.run_entries(), Vec::<PathBuf>::new());
 }
 
-/// A session record that the wrapper writes (the session id that the
-/// launch finds, the window decision) stays in the wrapper process: a
-/// later read of the process sees it, the ledger has no row of it, and the
-/// client sends no request and reads no token. fleetd gets the session id
-/// from `session.json` of the attempt.
 #[test]
 fn wrapper_session_record_stays_in_its_process() {
     channel_client::mark_wrapper_process();
@@ -175,7 +147,6 @@ fn wrapper_session_record_stays_in_its_process() {
             ..Default::default()
         })
         .unwrap();
-    // What the session discovery of the launch writes.
     store
         .update(|records| {
             for r in records.iter_mut().filter(|r| r.record_id == "rec-ob-1") {
@@ -198,8 +169,6 @@ fn wrapper_session_record_stays_in_its_process() {
     assert_eq!(fleet.run_entries(), Vec::<PathBuf>::new());
 }
 
-/// Record this test process as the wrapper of a live attempt with no task
-/// in the ledger `db`, and give the attempt id.
 fn record_this_process_as_wrapper(db: &Path) -> String {
     let pid = std::process::id();
     let start = horch_platform::process::start_time(pid).unwrap();
@@ -227,7 +196,6 @@ fn record_this_process_as_wrapper(db: &Path) -> String {
         .unwrap()
 }
 
-/// Send `line` on the channel `channel` and give the reply line.
 fn exchange(channel: &Path, line: &str) -> Value {
     let stream = Stream::connect(channel, Instant::now() + Duration::from_secs(5)).unwrap();
     stream.set_read_timeout(Duration::from_secs(30)).unwrap();
@@ -239,10 +207,6 @@ fn exchange(channel: &Path, line: &str) -> Value {
     serde_json::from_str(&reply).unwrap()
 }
 
-/// A wrapper request of class operator that does not go through the
-/// client (a raw `session_records` line with a copy of the valid token,
-/// from the recorded wrapper process) is refused by fleetd. Its `requests`
-/// row records the refusal and the attempt.
 #[test]
 fn raw_wrapper_request_of_class_operator_is_refused_and_recorded() {
     let fleet = Fleet::new();

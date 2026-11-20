@@ -50,7 +50,6 @@ const REPLY_WAIT: Duration = Duration::from_secs(30);
 /// lost reply, when the `requests` row is missing or `pending`.
 const MAX_SENDS: usize = 3;
 
-/// This process is the wrapper of a worker ([`mark_wrapper_process`]).
 static WRAPPER: AtomicBool = AtomicBool::new(false);
 
 /// Mark this process as the wrapper of a worker (`horch worker`). From
@@ -128,10 +127,6 @@ pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Re
     )
 }
 
-/// Refuse the `operator` request `kind` of the wrapper of a worker, or of
-/// a process that the ledger of `ctx` shows in a live attempt
-/// ([`fleet_process`]). An unknown fact does not refuse here: fleetd
-/// refuses it at the channel.
 fn refuse_fleet_caller(ctx: &RuntimeContext, kind: Kind) -> Result<()> {
     let kind = kind.as_str();
     if is_wrapper_process() {
@@ -148,9 +143,6 @@ fn refuse_fleet_caller(ctx: &RuntimeContext, kind: Kind) -> Result<()> {
     Ok(())
 }
 
-/// The fleet process fact of this process in the ledger of `ctx`. A
-/// missing ledger or a fact that fails to read is [`Fact::Unknown`] or
-/// [`Fact::No`], and neither refuses.
 fn own_fact(ctx: &RuntimeContext) -> Fact {
     let Ok(Some(store)) = crate::taskledger::open_existing_read_only(ctx) else {
         return Fact::No;

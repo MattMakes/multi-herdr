@@ -814,24 +814,12 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
 
 // ─── REQUIRED item 3: the operator-only commands ────────────────────────
 
-/// The line of an operator-only command that refuses itself inside a
-/// fleet attempt, before it reads the token or sends a request (T-899).
-/// fleetd refuses each kind too: attack 3 of
-/// [`operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind`]
-/// and [`operator_request_from_a_process_of_a_live_attempt_is_refused`].
 const INSIDE_ATTEMPT: &str = "refused inside a fleet attempt";
 
 /// The task branch of the worker of a test, in the ledger and in git, so
 /// that `horch branch abandon` finds it.
 const TASK_BRANCH: &str = "fleet/F-0001/attack";
 
-/// Each operator-only command, run from a live worker attempt with
-/// `HORCH_ROLE=orchestrator` and with no `HORCH_ROLE`, is refused: the
-/// command refuses itself by the fleet process fact (T-899), it sends no
-/// request, and the state of the ledger does not change. The attacker keeps `HORCH_WORKER_ID` only
-/// for `horch ledger worktree drop`, which needs it. `horch rescue drop`
-/// needs a rescue ref in git: its own test is
-/// [`operator_only_rescue_drop_from_a_worker_is_refused`].
 #[test]
 fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_command() {
     let mut w = World::new("p5-sr8-commands");
@@ -873,10 +861,6 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
 /// The rescue ref that the attacker tries to drop.
 const RESCUE_REF: &str = "refs/horch/rescue/attack/1";
 
-/// REQUIRED item 3 for `horch rescue drop`: from a live worker attempt,
-/// with `HORCH_ROLE` set or removed, the command refuses itself by the
-/// fleet process fact (T-899) and sends no `rescue_drop` request, and the
-/// rescue ref stays.
 #[test]
 fn operator_only_rescue_drop_from_a_worker_is_refused() {
     let mut w = World::new("p5-sr8-rescue");
@@ -1341,18 +1325,8 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
     assert_eq!(w.state(), before, "the gate changes no state of the ledger");
 }
 
-// ─── T-899: the wrapper never opens the operator token ──────────────────
-
-/// The variable that carries the pane command of the wrapper into its
-/// sandbox in [`sandboxed_herdr`].
 const PANE_COMMAND_ENV: &str = "P5_T899_PANE_COMMAND";
 
-/// The herdr of [`wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read`]:
-/// at `pane run`, which starts the wrapper `horch worker`, it runs the pane
-/// command in the worker sandbox with the 3 operator denials of the fleet
-/// root `fleet` (the token, the channel, each write in `run/`). Only the
-/// wrapper and its agent run in it: fleetd and the spawner read the token
-/// as before. Each other call goes to the fake herdr `fake`.
 fn sandboxed_herdr(fake: &Path, fleet: &Path, writable: &Path) -> String {
     let run = fleet.join("run");
     let denied = Denials {
@@ -1380,8 +1354,6 @@ fn sandboxed_herdr(fake: &Path, fleet: &Path, writable: &Path) -> String {
     )
 }
 
-/// A push attempt of 1 task, with the fake claude of `scenario`, the herdr
-/// [`sandboxed_herdr`] and a served test fleetd.
 fn push_fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set(
@@ -1412,7 +1384,6 @@ fn push_fleet(name: &str, scenario: &str) -> Harness {
         let o = h.git_cmd(args).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {o:?}");
     }
-    // The fake agent runs `horch result` from PATH.
     std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
     let fake = Harness::horch_bin().with_file_name("fake-herdr");
     let top = h.root.canonicalize().unwrap();
@@ -1431,8 +1402,6 @@ fn push_fleet(name: &str, scenario: &str) -> Harness {
     h
 }
 
-/// The first attempt of a task: its id, state and outcome, and the status
-/// of its worker row.
 fn task_attempt(h: &Harness) -> Option<(String, String, Option<String>, String)> {
     let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).ok()?;
     store
@@ -1449,8 +1418,6 @@ fn task_attempt(h: &Harness) -> Option<(String, String, Option<String>, String)>
         .flatten()
 }
 
-/// The text of each pane of the fake herdr: the output of the wrapper and
-/// of its agent.
 fn pane_output(h: &Harness) -> String {
     let name = h.log.file_name().unwrap().to_string_lossy().into_owned();
     let mut out = String::new();
@@ -1466,7 +1433,6 @@ fn pane_output(h: &Harness) -> String {
     out
 }
 
-/// The `requests` rows of the ledger of `h`: (kind, state, reason).
 fn request_rows(h: &Harness) -> Vec<(String, String, Option<String>)> {
     let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).unwrap();
     let mut stmt = store
@@ -1479,9 +1445,6 @@ fn request_rows(h: &Harness) -> Vec<(String, String, Option<String>)> {
     rows.collect::<rusqlite::Result<_>>().unwrap()
 }
 
-/// The result of the fake claude of the attempt: the record of its
-/// `horch result`. The adapter conformance runs of fleetd have their own
-/// fleet root, and their records do not count.
 fn agent_result(h: &Harness) -> Option<Value> {
     let tasks = h.fleet_root().join("tasks");
     let tasks = tasks.to_string_lossy();
@@ -1492,14 +1455,6 @@ fn agent_result(h: &Harness) -> Option<Value> {
         .find_map(|c| c.get("result").cloned())
 }
 
-/// T-899: the wrapper runs a full push attempt with an operator token that
-/// it cannot read: the pane runs the wrapper and its agent in the worker
-/// sandbox, which denies the token read, the channel and each write in
-/// `run/`. Nothing fails: the agent commits and sends its result, the
-/// verifier ends the attempt, and the worker row does not end
-/// `launch_failed`. The output of the wrapper names no read of the token
-/// and no refused request, and no `requests` row names the attempt. So
-/// the wrapper never opens the token and sends no operator request.
 #[test]
 fn wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read() {
     let h = push_fleet("p5-t899-token", "exec,commit,result");

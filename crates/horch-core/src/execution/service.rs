@@ -277,14 +277,6 @@ impl ExecutionService<'_> {
         self.workspace.pane_split(&from, plan.workspace.direction)
     }
 
-    /// Run `horch worker <role>` in the new pane, with this process's skill
-    /// store as `HORCH_DATA_DIR`, state folder as `HORCH_STATE_DIR` and
-    /// task ledger as `HORCH_LEDGER_DB`: a pane does not inherit this
-    /// environment, and the worker finds its brief in the state folder.
-    /// The pane gets no `FLEET_ROOT` (T-899): the wrapper reads no operator
-    /// token and sends no request. It finds the folder of its attempt by
-    /// the fleet root of its brief, and its agent gets `FLEET_ROOT` from the
-    /// brief too. The worker never guesses its fleet from its state folder.
     fn run(&self, pane: &str, role: &str) -> Result<()> {
         if self.ctx.settings.faults.has("fail-pane-run") {
             return Err(anyhow!("HORCH_FAULT fail-pane-run"));
