@@ -26,8 +26,8 @@ use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
 use horch_core::fleetd::task_execution::application::outbox_ingest;
-use horch_platform::channel::User;
 use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
+use horch_platform::channel::User;
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 

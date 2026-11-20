@@ -370,7 +370,7 @@ fn unfinished_reads_only_and_lists_what_the_pass_wrote() {
 }
 
 #[test]
-fn triage_archive_is_refused_with_a_later_task() {
+fn triage_delete_queues_1_triage_apply_job() {
     let w = World::new();
     let proj = w.proj();
     let tree = proj.join(".worktrees").join("feat");
@@ -391,21 +391,33 @@ fn triage_archive_is_refused_with_a_later_task() {
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n| W1 | feat | | DELETE | |\n",
     )
     .unwrap();
-    let o = w.horch(
+    // T-888 moved DELETE into 1 triage_apply job of fleetd. The CLI queues
+    // the job and removes nothing itself. The tests of the job are in
+    // crates/horch-core/tests/triage_apply_job.rs.
+    let o = w.ok(
         &["worktree", "triage", "apply", reply.to_str().unwrap()],
         &[],
     );
-    assert_eq!(o.code, 1, "{}{}", o.out, o.err);
     assert!(
-        o.err
-            .contains("the decisions DELETE in this version, and nothing ran")
-            && o.err
-                .contains("They return in a later task as a fleetd job"),
-        "{}",
+        o.out
+            .contains("W1 feat DELETE: queued in the triage_apply job 1"),
+        "{}{}",
+        o.out,
         o.err
     );
-    assert!(w.requests().is_empty());
+    assert_eq!(
+        w.count("SELECT COUNT(*) FROM jobs WHERE kind = 'triage_apply' AND state = 'queued'"),
+        1
+    );
+    assert_eq!(
+        w.requests()
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>(),
+        vec!["worktree_triage".to_string()]
+    );
     assert!(tree.exists());
+    git(&proj, &["rev-parse", "--verify", "refs/heads/feat"]);
     // The listing reads the ledger read-only.
     let o = w.ok(&["worktree", "triage", "--json"], &[]);
     assert!(o.out.contains("feat"), "{}", o.out);
