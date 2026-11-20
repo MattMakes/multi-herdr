@@ -193,7 +193,12 @@ fn verify_one(
         None
     };
     let hash = check_hash(check.as_deref());
-    let judge = judged_task(&task.kind, task.parent_task_id.as_deref()).is_some();
+    let work_kind = work_kind_of(tx, &task)?;
+    let kind = if judged_task(&task.kind, task.parent_task_id.as_deref()).is_some() {
+        Some("judge")
+    } else {
+        work_kind.as_deref()
+    };
     let facts = Facts {
         task_id: &task.task_id,
         attempt: &a.id,
@@ -202,8 +207,9 @@ fn verify_one(
         check: check.as_deref(),
         check_hash: &hash,
         check_none: task.check_none,
+        kind,
     };
-    let next = next_of(tx, &task)?;
+    let next = next_step(work_kind.as_deref());
     // The verdict of this attempt, tip and check stands: decide no more.
     if let Some(last) = verdict_file::newest(tx, &task.task_id)? {
         if last.judged(&facts) {
@@ -213,12 +219,7 @@ fn verify_one(
             return Ok(());
         }
     }
-    let planned = if judge {
-        verification::plan_judge(&facts)
-    } else {
-        verification::plan(&facts)
-    };
-    let verdict = match planned {
+    let verdict = match verification::plan(&facts) {
         Plan::Decided(verdict) => verdict,
         Plan::Check { input_key } => {
             let key = JobKey {
@@ -349,13 +350,17 @@ fn cause(text: &str) -> Cause<'_> {
 /// `research`, `design` or `creative` task has its kind in `spec_json`
 /// only.
 fn next_of(conn: &Connection, task: &Task) -> Result<Next> {
-    let kind: Option<String> = conn.query_row(
+    Ok(next_step(work_kind_of(conn, task)?.as_deref()))
+}
+
+/// The kind of `task` that [`next_of`] reads.
+fn work_kind_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
+    Ok(conn.query_row(
         "SELECT COALESCE(work_kind, json_extract(spec_json, '$.kind')) FROM tasks
          WHERE task_id = ?1",
         [&task.task_id],
         |r| r.get(0),
-    )?;
-    Ok(next_step(kind.as_deref()))
+    )?)
 }
 
 /// Whether `verified` still stands for `task` in `verifying`: its verdict
