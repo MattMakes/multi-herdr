@@ -5438,3 +5438,100 @@ fn queue_remote(
     integration::remote::queue_push(ctx, tx, root, feature, &settings.remote, false, clock)?;
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::schema;
+
+    const REPO: &str = "/repo";
+
+    fn ledger() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        conn
+    }
+
+    /// Queue a run of `kind` of the repository [`REPO`] with the subject
+    /// `subject`. Gives its id.
+    fn queue(conn: &Connection, kind: Kind, subject: &str) -> i64 {
+        let new = jobs_store::NewRun {
+            kind,
+            subject,
+            repo: Some(REPO),
+            input_key: "k",
+            run: 1,
+            abandoned_runs: 0,
+            not_before: None,
+            time_limit_s: 60,
+        };
+        jobs_store::insert(conn, &new).unwrap()
+    }
+
+    /// The job starts of 1 pass: the ids of the runs that start, which
+    /// become `running`.
+    fn starts(conn: &mut Connection) -> Vec<i64> {
+        let tx = conn.transaction().unwrap();
+        let due = jobs::due_to_start(&tx, FleetSeconds(0)).unwrap();
+        let ids: Vec<String> = due.iter().map(|j| job_cursor_key(j.id)).collect();
+        let budget = PassBudget::new(10);
+        let ok = startable(&tx, &due, &ids, budget, "t").unwrap();
+        let started: Vec<i64> = take(&tx, JOB_STARTS, &ok, budget, "t")
+            .unwrap()
+            .iter()
+            .map(|k| due[ids.iter().position(|i| i == k).unwrap()].id)
+            .collect();
+        for id in &started {
+            tx.execute("UPDATE jobs SET state = 'running' WHERE id = ?1", [id])
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        started
+    }
+
+    fn end(conn: &Connection, id: i64) {
+        conn.execute("UPDATE jobs SET state = 'passed' WHERE id = ?1", [id])
+            .unwrap();
+    }
+
+    /// A rescue that waits behind a running fetch starts before a newer
+    /// fetch, also when a job that is no git writer moved the cursor past
+    /// the rescue.
+    #[test]
+    fn rescue_queued_while_a_fetch_runs_starts_before_a_newer_fetch() {
+        let mut conn = ledger();
+        let first = queue(&conn, Kind::Fetch, "fetch-1");
+        assert_eq!(starts(&mut conn), [first]);
+        let rescue = queue(&conn, Kind::Rescue, "tree-1");
+        let list = queue(&conn, Kind::WorktreeList, "list-1");
+        assert_eq!(starts(&mut conn), [list], "the rescue waits for the fetch");
+        end(&conn, first);
+        let newer = queue(&conn, Kind::Fetch, "fetch-2");
+        assert_eq!(starts(&mut conn), [rescue]);
+        end(&conn, rescue);
+        assert_eq!(starts(&mut conn), [newer]);
+    }
+
+    /// A fetch that waits behind a running git writer starts before the
+    /// newer writers that come after it.
+    #[test]
+    fn fetch_is_not_starved_by_a_row_of_writers() {
+        let mut conn = ledger();
+        let mut writer = queue(&conn, Kind::WorktreeAdd, "tree-0");
+        assert_eq!(starts(&mut conn), [writer]);
+        let fetch = queue(&conn, Kind::Fetch, "fetch-1");
+        for i in 1..=3 {
+            let list = queue(&conn, Kind::WorktreeList, &format!("list-{i}"));
+            assert_eq!(starts(&mut conn), [list], "the fetch waits for the writer");
+            end(&conn, list);
+            let newer = queue(&conn, Kind::WorktreeAdd, &format!("tree-{i}"));
+            if i == 1 {
+                end(&conn, writer);
+                assert_eq!(starts(&mut conn), [fetch]);
+                end(&conn, fetch);
+            }
+            assert_eq!(starts(&mut conn), [newer]);
+            writer = newer;
+        }
+    }
+}
