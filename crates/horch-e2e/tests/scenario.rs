@@ -90,11 +90,6 @@ fn check_golden(name: &str, frame: &str) {
     assert_eq!(frame, want, "{name}");
 }
 
-/// Stop the test fleetd of `h`, then the jobs that it started: a job
-/// outlives its fleetd, fleetd runs a docs and a conformance job for each
-/// fake CLI at its first pass, and the teardown fails a test whose job
-/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
-/// names the PID and the start time.
 fn stop_fleetd_and_jobs(h: &Harness) {
     use horch_core::procid::{signal_same, start_time};
     h.stop_fleetd();
@@ -140,12 +135,6 @@ fn the_hermetic_story_with_an_ollama_that_starts_in_7_s() {
     story(true);
 }
 
-/// Step 8: fleetd launches the attempt of a task for opus while every pool
-/// is exhausted. The gate of the launch refuses it before any side effect:
-/// the worker row ends `launch_failed` with the REFUSED line, no session
-/// record is written, no brief is written and no pane is split or run.
-/// (`horch spawn opus` gave exit 3 and the REFUSED line on stdout before
-/// Phase 6 retired it, FR-5.)
 fn refused_launch_changes_nothing() {
     let mut g = Harness::new("story-refused").with_git();
     g.set(

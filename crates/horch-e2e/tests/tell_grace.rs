@@ -33,7 +33,6 @@ fn herdr(h: &Harness, args: &[&str]) -> Output {
     cmd.args(args).output().unwrap()
 }
 
-/// The session records of the project, as the session ledger holds them.
 fn records(h: &Harness) -> Vec<Value> {
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .read()
@@ -45,11 +44,6 @@ fn records(h: &Harness) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// The pane of a `smoke-1` worker that `horch worker smoke-1` runs in, as
-/// `horch spawn` left it: its brief and its session record. `horch spawn`
-/// no longer starts a worker outside a run, and fleetd cannot launch the
-/// `smoke` teammate (`agent: none`). The test fleetd of the harness writes
-/// the records that the worker changes.
 fn smoke_pane(h: &Harness) -> String {
     let split = herdr(h, &["pane", "split", "w1:p1", "--direction", "right"]);
     assert!(split.status.success(), "{}", text(&split));
@@ -131,11 +125,6 @@ fn polls_before_line(h: &Harness, pane: &str, marker: &str) -> Option<usize> {
     Some(polls)
 }
 
-/// Stop the test fleetd of `h`, then the jobs that it started: a job
-/// outlives its fleetd, fleetd runs a docs and a conformance job for each
-/// fake CLI at its first pass, and the teardown fails a test whose job
-/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
-/// names the PID and the start time.
 fn stop_fleetd_and_jobs(h: &Harness) {
     use horch_core::procid::{signal_same, start_time};
     h.stop_fleetd();
@@ -177,8 +166,6 @@ fn stop_fleetd_and_jobs(h: &Harness) {
 #[test]
 fn worker_done_reports_without_the_default_tell_grace() {
     let mut h = Harness::new("tell-grace");
-    // The session records and the task ledger share 1 file below the state
-    // folder, as in production.
     h.set(
         "HORCH_LEDGER_DB",
         h.state.join("ledger.sqlite3").to_string_lossy(),

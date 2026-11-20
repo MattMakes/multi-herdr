@@ -22,7 +22,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The brief files of the mailbox of workspace `w1`.
 fn briefs(h: &Harness) -> Vec<PathBuf> {
     std::fs::read_dir(h.state.join("herdr-orchestration-w1"))
         .into_iter()
@@ -33,11 +32,6 @@ fn briefs(h: &Harness) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Stop the test fleetd of `h`, then the jobs that it started: a job
-/// outlives its fleetd, fleetd runs a docs and a conformance job for each
-/// fake CLI at its first pass, and the teardown fails a test whose job
-/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
-/// names the PID and the start time.
 fn stop_fleetd_and_jobs(h: &Harness) {
     use horch_core::procid::{signal_same, start_time};
     h.stop_fleetd();
@@ -127,8 +121,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         .as_bytes(),
     );
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
-    // The workspace of the fleet has the label of the project folder, so
-    // fleetd launches the attempt in it.
     let workspace = h.fleet_workspace();
     assert_eq!(workspace, "w1");
     h.set("HORCH_WORKSPACE_ID", workspace);
@@ -167,8 +159,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
     );
 
     // The agent the worker launched received them from the transport env.
-    // Not a probe of the quota or of the conformance suite: its prompt names
-    // a task folder of the fleet root.
     let tasks = h.fleet_root().join("tasks").to_string_lossy().into_owned();
     let claude = wait_for_or(
         "the worker launched claude",

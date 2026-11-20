@@ -1,17 +1,5 @@
 //! End-to-end: a worker that dies before it registers still shows its error
 //! (W13 C4).
-//!
-//! A pane line starts with `exec`, so a real pane closes when `horch worker`
-//! exits and takes the worker's stderr with it. The worker writes its startup
-//! error to a file, and fleetd, which launches the attempt and waits for the
-//! worker to register, reads that file and ends the attempt with the text.
-//! (`horch spawn` did that before Phase 6, FR-5.)
-//!
-//! fake-herdr runs in the `exec` scenario, so the pane really runs
-//! `horch worker`. For the missing brief, a herdr wrapper gives that pane
-//! another `HORCH_WORKSPACE_ID`, so the worker looks for its brief in a
-//! mailbox that does not have it. For the late worker, a wrapper holds the
-//! pane line until the test opens a gate.
 
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -30,7 +18,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The session records of the project, as the session ledger holds them.
 fn records(h: &Harness) -> Vec<Value> {
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .read()
@@ -42,17 +29,11 @@ fn records(h: &Harness) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// `horch ledger show <task> --json`, as text.
 fn shown(h: &Harness, task: &str) -> String {
     let o = h.run(&["ledger", "show", task, "--json"]);
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A harness whose pane `w1:p1` runs its commands (fake-herdr `exec`), with
-/// a git repository, a ledger file below the state folder (the session
-/// records and the task ledger share it) and a fleet.toml. No fleetd serves
-/// it yet: [`queue_one`] seeds the run and serves it.
-/// The launch of an attempt waits `wait_ms` for its worker to register.
 fn workspace(name: &str, wait_ms: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set(
@@ -89,8 +70,6 @@ fn workspace(name: &str, wait_ms: &str) -> Harness {
     h
 }
 
-/// Seed the run with 1 task for `sonnet`, and serve the test fleetd that
-/// launches its attempt.
 fn queue_one(h: &Harness) {
     let ticket = h.project.join("startup-1.md");
     std::fs::write(&ticket, "# Startup\n**Check:** `true`\n").unwrap();
@@ -99,32 +78,23 @@ fn queue_one(h: &Harness) {
     h.serve_fleetd();
 }
 
-/// The worker row of the attempt of `T-1`, as `horch ledger show` gives it.
 fn worker_row(h: &Harness) -> Value {
     serde_json::from_str::<Value>(&shown(h, "T-1"))
         .map_or(Value::Null, |v| v["attempts"][0].clone())
 }
 
-/// Whether the role `sonnet-1` registered its pane in the workspace mailbox.
 fn registered(h: &Harness) -> bool {
     horch_core::messaging::mailbox::Mailbox::under(&h.state, "w1")
         .pane_for("sonnet-1")
         .is_some()
 }
 
-/// The error files that a worker left for its launch, with the files of
-/// `horch spawn` before Phase 6 under the same folder.
 fn startup_errors(h: &Harness) -> Vec<std::path::PathBuf> {
     std::fs::read_dir(h.home.join(".local/share/horch/startup-errors"))
         .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect())
         .unwrap_or_default()
 }
 
-/// Stop the test fleetd of `h`, then the jobs that it started: a job
-/// outlives its fleetd, fleetd runs a docs and a conformance job for each
-/// fake CLI at its first pass, and the teardown fails a test whose job
-/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
-/// names the PID and the start time.
 fn stop_fleetd_and_jobs(h: &Harness) {
     use horch_core::procid::{signal_same, start_time};
     h.stop_fleetd();
@@ -157,7 +127,6 @@ fn stop_fleetd_and_jobs(h: &Harness) {
     });
 }
 
-/// A worker that registers: fleetd launches it, and its launch does not fail.
 #[cfg(unix)]
 #[test]
 fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
@@ -175,15 +144,10 @@ fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
     stop_fleetd_and_jobs(&h);
 }
 
-/// A worker that registers after the wait: the launch does not fail, and
-/// the worker still runs to its end.
 #[cfg(unix)]
 #[test]
 fn a_worker_that_registers_after_the_wait_still_works() {
     let mut h = workspace("startup-late", "300");
-    // The pane holds its line until the gate file exists, for at most 30 s.
-    // The test makes it after the launch waited, so the worker registers
-    // after the wait.
     let fake = h.bin.join("herdr");
     let gate = h.root.join("gate");
     let wrapper = h.write_warmed(
@@ -202,7 +166,6 @@ fn a_worker_that_registers_after_the_wait_still_works() {
     );
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
     queue_one(&h);
-    // The launch has its pane and waited its 300 ms: no worker registered.
     let waited = Instant::now();
     wait_for_or(
         "the launch of the pane",
@@ -231,10 +194,6 @@ fn a_worker_that_registers_after_the_wait_still_works() {
 #[cfg(unix)]
 #[test]
 fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
-    // A launch that waits out its wait leaves the worker `spawning`. So a
-    // failure with the worker's error shows that the launch read the error
-    // while it waited, with no wall-clock bound: a loaded machine took over
-    // 15 s for this launch. The wait only bounds a broken run.
     let mut h = workspace("startup-error", "60000");
     let fake = h.bin.join("herdr");
     let wrapper = h.write_warmed(
@@ -267,7 +226,6 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
     assert!(reason.contains("herdr-orchestration-elsewhere"), "{row}");
     assert!(!reason.contains("has not registered"), "{row}");
 
-    // The launch deletes the error file after it reads it.
     let errors = h.home.join(".local/share/horch/startup-errors");
     assert!(
         errors.is_dir(),

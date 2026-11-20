@@ -27,9 +27,6 @@ fn text(o: &Output) -> String {
 /// Workspace `w1` with its root pane `w1:p1`, as `horch fleet` leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name);
-    // The session records and the task ledger share 1 file below the state
-    // folder, as in production: the test writes the records of the worker
-    // through the test fleetd of that file.
     h.set(
         "HORCH_LEDGER_DB",
         h.state.join("ledger.sqlite3").to_string_lossy(),
@@ -53,7 +50,6 @@ fn herdr(h: &Harness, args: &[&str]) {
     assert!(o.status.success(), "{}", text(&o));
 }
 
-/// The session record of the worker, as the session ledger holds it.
 fn record(h: &Harness, id: &str) -> Value {
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .get(id)
@@ -61,11 +57,6 @@ fn record(h: &Harness, id: &str) -> Value {
         .unwrap()
 }
 
-/// A registered codex worker, as `(pane, role, record id)`: the pane
-/// beside the root pane, the registry entry of its role, its brief and
-/// its session record. `horch spawn` no longer starts a worker outside a
-/// run, so the test writes what a spawn left, and the test fleetd of the
-/// harness writes the records that the commands change.
 fn running_worker(h: &Harness) -> (String, String, String) {
     let (role, id) = ("codex-sol-1", "r-restored");
     let mut split = std::process::Command::new(h.bin.join("herdr"));
@@ -129,11 +120,6 @@ fn pending(h: &Harness) -> Vec<horch_core::messaging::mail::Message> {
     Mail::under(&h.state, "w1").pending().unwrap_or_default()
 }
 
-/// Stop the test fleetd of `h`, then the jobs that it started: a job
-/// outlives its fleetd, fleetd runs a docs and a conformance job for each
-/// fake CLI at its first pass, and the teardown fails a test whose job
-/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
-/// names the PID and the start time.
 fn stop_fleetd_and_jobs(h: &Harness) {
     use horch_core::procid::{signal_same, start_time};
     h.stop_fleetd();
