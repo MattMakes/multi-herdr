@@ -70,15 +70,10 @@ impl World {
         World::build(name, scenario, Some(answering_owner))
     }
 
-    /// The first launch of a task attempt starts no process
-    /// ([`dead_first_launch`]), so the attempt stays in `launching` until
-    /// its start timeout.
     fn with_dead_first_launch(name: &str, scenario: &str) -> World {
         World::build(name, scenario, Some(dead_first_launch))
     }
 
-    /// `setup` changes the harness before fleetd starts. It gets the fleet
-    /// root.
     fn build(name: &str, scenario: &str, setup: Option<fn(&mut Harness, &Path)>) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
@@ -541,9 +536,6 @@ fn answering_owner(h: &mut Harness, fleet: &Path) {
 
 const DEAD_LAUNCH_LOG: &str = "dead-launch.log";
 
-/// The first `pane run` of a task worker fails, as the fake herdr does in
-/// the scenario `fail_run`. No process of the first attempt ever runs, so
-/// only the start timeout ends it. Each later call goes to the fake herdr.
 fn dead_first_launch(h: &mut Harness, _fleet: &Path) {
     let herdr = h.bin.join("herdr");
     let wrapper = format!(
@@ -734,9 +726,6 @@ fn fm21_one_replan_then_escalation() {
     assert_eq!(w.replans(&task).as_deref(), Some("1"));
 }
 
-/// T-195 (FM-21): the first attempt of the task starts no process. It ends
-/// `timed_out` at the start timeout, and rung 6 gives the task a second
-/// attempt.
 #[test]
 fn fm21_launch_timeout_gives_the_task_a_retry() {
     let w = World::with_dead_first_launch("p6-q-launch-timeout", "");

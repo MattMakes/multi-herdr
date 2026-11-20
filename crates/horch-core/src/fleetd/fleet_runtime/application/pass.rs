@@ -1553,9 +1553,8 @@ impl<'a> Pass<'a> {
 
     /// Each attempt in `launching`: a live process of its attempt id ->
     /// `live`, with the process of its launch on its row; no process past
-    /// the start timeout -> `ended` with `timed_out`, and rung 6 for its
-    /// task with the numbers of its profile in `roster`; no launch yet ->
-    /// an intended launch, returned.
+    /// the start timeout -> `ended` with `timed_out`; no launch yet -> an
+    /// intended launch, returned.
     fn observe_intents(
         &self,
         tx: &Transaction<'_>,
@@ -1615,9 +1614,6 @@ impl<'a> Pass<'a> {
         Ok(launches)
     }
 
-    /// Rung 6 for task `task`, whose attempt of worker `worker` ended at
-    /// its start timeout (FM-21), with the numbers of its profile in
-    /// `roster` ([`rung6_if_lost`]).
     fn retry_timed_out(
         &self,
         tx: &Transaction<'_>,
@@ -1632,10 +1628,8 @@ impl<'a> Pass<'a> {
     }
 
     /// I1 and I4: a worker or a task with more than 1 attempt that holds
-    /// it gets 1 needs-you item. I1: a leased or running task whose
-    /// attempts all ended and that has no lease gets 1 needs-you item. I6:
-    /// each breach that the worktree facts show gets 1 needs-you item. An
-    /// item of the last pass whose breach
+    /// it gets 1 needs-you item. I6: each breach that the worktree facts
+    /// show gets 1 needs-you item. An item of the last pass whose breach
     /// ended is resolved. Returns the keys of the open breaches.
     fn check_invariants(
         &self,
@@ -2247,8 +2241,6 @@ impl Rules<'_> {
             let why = format!("the process of attempt {} is gone", reap.attempt);
             let Some((task_id, _)) = reap.task.clone() else {
                 stops.extend(commands::end_attempt(self.tx, &reap)?);
-                // The worker did not hold the task yet: a `leased` task
-                // whose attempt died before its first heartbeat (T-195).
                 if let Some(task_id) = task_of(&rows, &reap.attempt) {
                     let persona = self.persona_of(&reap.worker)?;
                     let policy = self.policy(persona.as_deref());
@@ -3105,13 +3097,6 @@ fn exited_by_file(
     Ok(())
 }
 
-/// Whether task `task` is `verifying`.
-/// Rung 6 for task `task`, whose attempt ended with `outcome`, when no
-/// other path moves it: the task is `leased`, `running` or `stalled`, and
-/// each of its attempts ended. The task is `ready` again after its
-/// backoff, or `failed` or `escalated`. A `verifying` task waits for its
-/// verifier (rule D), a `done` task keeps its resolver or fix attempt out
-/// of rung 6, and a task with another attempt keeps it (T-195).
 fn rung6_if_lost(
     tx: &Connection,
     task: &str,
@@ -3131,7 +3116,6 @@ fn rung6_if_lost(
     Ok(())
 }
 
-/// The task of the attempt `attempt` in `rows`.
 fn task_of<'a>(rows: &'a Rows, attempt: &str) -> Option<&'a str> {
     rows.attempts
         .iter()
@@ -3139,9 +3123,6 @@ fn task_of<'a>(rows: &'a Rows, attempt: &str) -> Option<&'a str> {
         .and_then(|a| a.task_id.as_deref())
 }
 
-/// I1, the other half: each task in `leased` or `running` that had an
-/// attempt, whose attempts all ended, and that has no lease. No pass rule
-/// moves such a task, so its work is lost (T-195).
 fn lost_tasks(tx: &Connection) -> Result<Vec<String>> {
     let (held, open) = leases_store::i1_rows(tx)?;
     let in_flight = [TaskStatus::Leased.as_str(), TaskStatus::Running.as_str()];
@@ -3159,6 +3140,7 @@ fn lost_tasks(tx: &Connection) -> Result<Vec<String>> {
     Ok(lost)
 }
 
+/// Whether task `task` is `verifying`.
 fn verifying(tx: &Connection, task: &str) -> Result<bool> {
     Ok(tasks::get(tx, task)?.status == TaskStatus::Verifying.as_str())
 }
