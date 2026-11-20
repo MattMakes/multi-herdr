@@ -30,7 +30,7 @@ use crate::execution::model::{
 };
 use crate::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use crate::fleetd::fleet_runtime::adapters::request_wire::Outcome;
-use crate::fleetd::fleet_runtime::domain::requests::Kind;
+use crate::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use crate::ids::{IdError, PaneId, WorkspaceId};
 use crate::runtime::{Paths, RuntimeContext};
 use crate::skills::activation::ResolvedSkillRef;
@@ -595,6 +595,20 @@ fn put_row(
     Ok(())
 }
 
+/// What became of the change of 1 [`ExecutionStore::update_written`].
+#[derive(Debug, PartialEq)]
+pub enum SessionWrite {
+    /// The change is in the ledger, or no row changed. The wrapper of a
+    /// worker keeps its change in its process.
+    Committed,
+    /// fleetd is down: the change waits in the request file `path` and is
+    /// not in the ledger.
+    Queued {
+        request_id: RequestId,
+        path: PathBuf,
+    },
+}
+
 /// The most reads of 1 [`ExecutionStore::update`] whose change fleetd
 /// refuses with [`SESSION_RECORD_CHANGED`].
 const UPDATE_TRIES: usize = 3;
@@ -1020,8 +1034,30 @@ impl ExecutionStore {
     /// changed row and the hash of each row as it was read. fleetd refuses a
     /// row that changed after the read; then `f` runs again on a new read,
     /// so 2 writers cannot lose a change. When fleetd is down, the request
-    /// waits in a request file, and fleetd applies it at its start.
-    pub fn update<T>(&self, mut f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
+    /// waits in a request file and is not committed: this prints so on
+    /// stderr. A caller that needs the committed rows uses
+    /// [`Self::update_written`].
+    pub fn update<T>(&self, f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
+        let (out, written) = self.update_written(f)?;
+        if let SessionWrite::Queued { request_id, path } = written {
+            eprintln!(
+                "the session records of {} are not committed: request {request_id} waits in {}. \
+                 When fleetd refuses it at start, 1 needs-you item names it.",
+                self.project,
+                path.display()
+            );
+        }
+        Ok(out)
+    }
+
+    /// [`Self::update`], and whether the change is committed or only
+    /// queued in a request file. fleetd applies a queued change at its
+    /// start, or refuses it with 1 needs-you item when a row changed after
+    /// the read (RR-8, FM-15).
+    pub fn update_written<T>(
+        &self,
+        mut f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>,
+    ) -> Result<(T, SessionWrite)> {
         for _ in 0..UPDATE_TRIES {
             let rows = self.stored_rows()?;
             let stored: HashMap<String, String> = rows
@@ -1035,23 +1071,25 @@ impl ExecutionStore {
             let out = f(&mut records)?;
             let changed = row_changes(&stored, &records)?;
             if changed.is_empty() {
-                return Ok(out);
+                return Ok((out, SessionWrite::Committed));
             }
             if channel_client::is_wrapper_process() {
                 self.keep_in_wrapper(changed);
-                return Ok(out);
+                return Ok((out, SessionWrite::Committed));
             }
             if let Some(writer) = &self.writer {
                 match self.apply(writer, changed) {
-                    Ok(()) => return Ok(out),
+                    Ok(()) => return Ok((out, SessionWrite::Committed)),
                     Err(e) if e.downcast_ref::<SessionRecordChanged>().is_some() => continue,
                     Err(e) => return Err(e),
                 }
             }
             match self.send(changed)? {
-                Sent::Queued { .. } => return Ok(out),
+                Sent::Queued { request_id, path } => {
+                    return Ok((out, SessionWrite::Queued { request_id, path }))
+                }
                 Sent::Replied(reply) => match reply.outcome {
-                    Outcome::Applied(_) => return Ok(out),
+                    Outcome::Applied(_) => return Ok((out, SessionWrite::Committed)),
                     Outcome::Refused(reason) if reason.contains(SESSION_RECORD_CHANGED) => {}
                     Outcome::Refused(reason) => bail!(
                         "fleetd refused the session records of {}: {reason}",

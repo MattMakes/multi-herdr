@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::fleetd::fleet_runtime::adapters::cursors_store;
 use horch_core::fleetd::fleet_runtime::adapters::request_spool::{
-    scan, FileFact, Handled, ScanOutcome, Spool, FOLDER_REFUSED,
+    scan, FileFact, Handled, ScanOutcome, Spool, FILE_REJECTED, FOLDER_REFUSED, REQUEST_REFUSED,
 };
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{requests_dir, ScanClock};
@@ -575,4 +575,73 @@ fn scan_continues_at_its_cursor() {
     assert_eq!(read, want);
     assert!(!second.stopped_at_budget);
     assert_eq!(w.count("probe"), 3);
+}
+
+/// The open needs-you items of `kind`: their key and text.
+fn open_items(w: &World, kind: &str) -> Vec<(String, String)> {
+    let mut stmt = w
+        .conn
+        .prepare("SELECT key, text FROM needs_you WHERE state = 'open' AND kind = ?1")
+        .unwrap();
+    stmt.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A queued request has no caller that waits for its reply: a refused
+/// request and a rejected file each open 1 needs-you item (RR-8, FM-15).
+#[test]
+fn refused_and_rejected_queued_request_files_open_needs_you_items() {
+    let mut w = world();
+    let mut handlers = Handlers::new();
+    handlers.insert(Kind::TaskCancel, |_tx, _payload| {
+        Err(anyhow::anyhow!("the task T-1 is not running"))
+    });
+    w.handlers = handlers;
+    let refused_id = &names(2)[0];
+    let rejected_id = &names(2)[1];
+    w.put(refused_id);
+    let rejected = w.put(rejected_id);
+    fs::set_permissions(&rejected, Permissions::from_mode(0o644)).unwrap();
+
+    let read = facts(w.scan(&mut Cursor::new(STAMP)));
+
+    let refusal = match &read[0] {
+        FileFact {
+            handled: Handled::Archived(Outcome::Refused(reason)),
+            ..
+        } => reason.clone(),
+        other => panic!("expected a refused request, got {other:?}"),
+    };
+    assert!(refusal.contains("is not running"), "{refusal}");
+    let rejection = "mode 0644 is wider than 0600".to_string();
+    assert_eq!(read[1].handled, Handled::Rejected(rejection.clone()));
+    assert_eq!(
+        w.ingested(&rejected),
+        Some(("rejected".into(), Some(rejection.clone())))
+    );
+
+    let refused_items = open_items(&w, REQUEST_REFUSED);
+    assert_eq!(refused_items.len(), 1, "{refused_items:?}");
+    let (key, text) = &refused_items[0];
+    assert_eq!(key, &format!("{REQUEST_REFUSED}:{refused_id}"));
+    let archived = w.archived(refused_id).display().to_string();
+    for part in [refused_id.as_str(), "task_cancel", &archived, &refusal] {
+        assert!(text.contains(part), "{text:?} names {part:?}");
+    }
+    assert!(w.archived(refused_id).is_file(), "the request is kept");
+
+    let rejected_items = open_items(&w, FILE_REJECTED);
+    let path = rejected.display().to_string();
+    assert_eq!(rejected_items.len(), 1, "{rejected_items:?}");
+    let (key, text) = &rejected_items[0];
+    assert_eq!(key, &format!("{FILE_REJECTED}:{path}"));
+    assert!(text.contains(&path), "{text}");
+    assert!(text.contains(&rejection), "{text}");
+
+    // The next scan reads nothing again and opens no second item.
+    assert_eq!(facts(w.scan(&mut Cursor::new(STAMP))), Vec::new());
+    assert_eq!(open_items(&w, REQUEST_REFUSED).len(), 1);
+    assert_eq!(open_items(&w, FILE_REJECTED).len(), 1);
 }

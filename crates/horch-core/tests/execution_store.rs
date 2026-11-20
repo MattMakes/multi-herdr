@@ -471,3 +471,137 @@ fn reads_a_ledger_written_by_the_bash_version() {
     l.note("3f2b", "still going").unwrap();
     assert_eq!(l.get("3f2b").unwrap().history.len(), 2);
 }
+
+// ─── RR-8, FM-15: a queued session_records change ──────────────────────────
+
+/// fleetd is down: `update_written` says that the change of `r1` only waits
+/// in a request file. Another writer changes `r1` before fleetd reads the
+/// file, so fleetd refuses it with `SESSION_RECORD_CHANGED`. The refusal
+/// opens 1 needs-you item, and the archived file keeps the change.
+#[test]
+fn queued_session_records_is_not_reported_as_committed_and_is_recoverable_on_conflict() {
+    use horch_core::execution::store::{
+        apply_session_records, SessionWrite, SESSION_RECORD_CHANGED, STATE_DB,
+    };
+    use horch_core::fleetd::fleet_runtime::adapters::request_spool::{
+        scan, FileFact, Handled, ScanOutcome, Spool, REQUEST_REFUSED,
+    };
+    use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
+    use horch_core::fleetd::fleet_runtime::adapters::scans::ScanClock;
+    use horch_core::fleetd::fleet_runtime::adapters::{test_fleetd, token_file};
+    use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+    use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline};
+    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+    use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
+    use horch_platform::channel::User;
+    use std::time::Instant;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join(STATE_DB);
+    let fleet_root = tmp.path().join("fleet");
+    let store = ExecutionStore::for_project(tmp.path(), "/repo");
+    let server = test_fleetd::serve_session_records_at(&db, &fleet_root).unwrap();
+    store
+        .insert(LedgerRecordV1 {
+            record_id: "r1".into(),
+            role: "opus-1".into(),
+            status: STATUS_WORKING.into(),
+            ..LedgerRecordV1::default()
+        })
+        .unwrap();
+    drop(server);
+
+    let ((), written) = store
+        .update_written(|records| {
+            records[0].pane_id = Some("w1:p2".into());
+            Ok(())
+        })
+        .unwrap();
+    let SessionWrite::Queued { request_id, path } = written else {
+        panic!("expected a queued change, got {written:?}");
+    };
+    assert!(path.is_file(), "the change waits in {}", path.display());
+    assert_eq!(
+        store.get("r1").unwrap().pane_id,
+        None,
+        "a queued change is not in the ledger"
+    );
+
+    let other = ExecutionStore::for_project(tmp.path(), "/repo").with_writer(writer());
+    other
+        .update(|records| {
+            records[0].effort = Some("other".into());
+            Ok(())
+        })
+        .unwrap();
+
+    let mut conn = rusqlite::Connection::open(&db).unwrap();
+    conn.busy_timeout(Duration::from_secs(10)).unwrap();
+    let owner = User::current().unwrap();
+    let token = token_file::read(&fleet_root).unwrap();
+    let spool = Spool {
+        fleet_root: &fleet_root,
+        owner: &owner,
+        token: Some(&token),
+        max_bytes: 64 * 1024,
+        guard: Generation(1),
+    };
+    let mut handlers = Handlers::new();
+    handlers.insert(Kind::SessionRecords, |tx, p| apply_session_records(tx, p));
+    let stamp = "2026-11-18T00:00:00Z";
+    let start = Instant::now();
+    let mut now = move || start;
+    let mut clock = ScanClock {
+        deadline: Deadline::pass(start, 3600),
+        now: &mut now,
+        stamp,
+    };
+    let outcome = scan(
+        &mut conn,
+        &spool,
+        &mut Cursor::new(stamp),
+        &mut clock,
+        &handlers,
+    )
+    .unwrap();
+
+    let ScanOutcome::Read(read) = outcome else {
+        panic!("expected a scan of the folder, got {outcome:?}");
+    };
+    let id = request_id.as_str();
+    let [FileFact {
+        name,
+        handled: Handled::Archived(Outcome::Refused(reason)),
+    }] = read.facts.as_slice()
+    else {
+        panic!("expected 1 refused request, got {:?}", read.facts);
+    };
+    assert_eq!(name, &format!("{id}.json"));
+    assert!(reason.contains(SESSION_RECORD_CHANGED), "{reason}");
+
+    let archived = path.parent().unwrap().join("archive").join(name);
+    let (kind, text): (String, String) = conn
+        .query_row(
+            "SELECT kind, text FROM needs_you WHERE key = ?1 AND state = 'open'",
+            [format!("{REQUEST_REFUSED}:{id}")],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, REQUEST_REFUSED);
+    for part in [
+        id,
+        "session_records",
+        &archived.display().to_string(),
+        reason,
+    ] {
+        assert!(text.contains(part), "{text:?} names {part:?}");
+    }
+    let kept = std::fs::read_to_string(&archived).unwrap();
+    assert!(
+        kept.contains("w1:p2"),
+        "the archive keeps the change: {kept}"
+    );
+    let r1 = store.get("r1").unwrap();
+    assert_eq!(r1.effort.as_deref(), Some("other"));
+    assert_eq!(r1.pane_id, None);
+}

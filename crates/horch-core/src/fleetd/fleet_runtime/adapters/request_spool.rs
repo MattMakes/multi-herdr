@@ -15,10 +15,12 @@
 //!    `ingested` records.
 //! 3. It reads the file through the protected file reader, and parses it.
 //!    A file that fails is recorded in `ingested` as rejected, with its
-//!    reason, and stays where it is.
+//!    reason, and stays where it is. 1 needs-you item names it.
 //! 4. It authorizes the request as a request file of the owner of the
 //!    file, and gives it to [`handle`], which commits its `requests` row.
-//! 5. Only then it moves the file to `archive/`.
+//! 5. When fleetd refused the request, 1 needs-you item names it, because
+//!    no caller waits for its reply. Only then it moves the file to
+//!    `archive/`.
 //!
 //! A crash before the commit leaves the file, and the next scan reads it
 //! again. A crash after the commit leaves the file too: the next scan finds
@@ -52,6 +54,14 @@ use crate::taskledger::util;
 /// The kind of the needs-you item of a request folder that fleetd does not
 /// read.
 pub const FOLDER_REFUSED: &str = "request_folder_refused";
+
+/// The kind of the needs-you item of a request file that failed a check of
+/// the protected file reader or of its parse. The file stays where it is.
+pub const FILE_REJECTED: &str = "request_file_rejected";
+
+/// The kind of the needs-you item of a request file whose request fleetd
+/// refused. The file stays in `archive/` for its recovery.
+pub const REQUEST_REFUSED: &str = "request_file_refused";
 
 /// The folder of the request files whose row is committed, inside the
 /// request folder.
@@ -196,6 +206,10 @@ fn read_file(
     let request = match parsed {
         Ok(request) => request,
         Err(reason) => {
+            let text = format!(
+                "fleetd did not read the request file {path_text}: {reason}. The file stays \
+                 where it is. Correct it and write it again with a new request_id, or remove it."
+            );
             write(conn, spool.guard, |tx| {
                 ingested_store::record_message(
                     tx,
@@ -204,6 +218,16 @@ fn read_file(
                     ingested_store::REJECTED,
                     Some(&reason),
                     &util::now(),
+                )?;
+                needs_you::open_item(
+                    tx,
+                    &Write {
+                        key: &format!("{FILE_REJECTED}:{path_text}"),
+                        kind: FILE_REJECTED,
+                        entity: "request_file",
+                        entity_id: &path_text,
+                        text: &text,
+                    },
                 )
             })?;
             return Ok(Some(Handled::Rejected(reason)));
@@ -225,9 +249,14 @@ fn read_file(
         &decision,
         handlers,
     )?;
+    let archived = dir.join(ARCHIVE).join(name);
+    if let Outcome::Refused(reason) = &reply.outcome {
+        write(conn, spool.guard, |tx| {
+            open_refused_item(tx, &request, &archived, reason)
+        })?;
+    }
     handlers.faults().abort_if(ABORT_BEFORE_REQUEST_ARCHIVE);
-    archive(&path, &dir.join(ARCHIVE).join(name))
-        .map_err(|e| anyhow!(e).context(format!("archiving {path_text}")))?;
+    archive(&path, &archived).map_err(|e| anyhow!(e).context(format!("archiving {path_text}")))?;
     Ok(Some(Handled::Archived(reply.outcome)))
 }
 
@@ -327,6 +356,34 @@ fn open_folder_item(tx: &Transaction<'_>, key: &str, dir: &Path, text: &str) -> 
             entity: "request_folder",
             entity_id: &id,
             text,
+        },
+    )
+}
+
+/// Open the needs-you item of the refused `request`, whose file goes to
+/// `archived`. A queued request has no caller that waits for its reply, so
+/// this item is the only report of the refusal (RR-8, FM-15).
+fn open_refused_item(
+    tx: &Transaction<'_>,
+    request: &Request,
+    archived: &Path,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let id = request.request_id.as_str();
+    let text = format!(
+        "fleetd refused the queued request {id} of kind {}: {reason}. Its file is {}. \
+         Read the request in that file and send it again.",
+        request.kind.as_str(),
+        archived.display()
+    );
+    needs_you::open_item(
+        tx,
+        &Write {
+            key: &format!("{REQUEST_REFUSED}:{id}"),
+            kind: REQUEST_REFUSED,
+            entity: "request",
+            entity_id: id,
+            text: &text,
         },
     )
 }
