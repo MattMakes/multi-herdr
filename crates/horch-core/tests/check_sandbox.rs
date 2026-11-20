@@ -288,14 +288,10 @@ impl ProcessHost for Recording {
     }
 }
 
-/// Why this host has no platform sandbox, or `None` when it has one:
-/// the rule of fleetd, which looks on the `PATH` of its own process.
 fn host_gap() -> Option<NotSupported> {
     horch_platform::sandbox::host_problem(std::env::var_os("PATH").as_deref())
 }
 
-/// A `PATH` of the folder `dir`: with fake `bwrap` and `socat` when
-/// `tools` is true, else empty. A fake tool exits 0.
 fn tools_path(dir: &Path, tools: bool) -> std::ffi::OsString {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).unwrap();
@@ -309,8 +305,6 @@ fn tools_path(dir: &Path, tools: bool) -> std::ffi::OsString {
     std::env::join_paths([dir]).unwrap()
 }
 
-/// fleetd finds the check sandbox on the `PATH` of its own process, the
-/// `PATH` of the operator at its start. A worker cannot change it.
 #[test]
 fn the_check_sandbox_looks_on_the_path_of_fleetd() {
     let w = world();
@@ -319,10 +313,6 @@ fn the_check_sandbox_looks_on_the_path_of_fleetd() {
     assert_eq!(sandboxes.gap, host_gap());
 }
 
-/// With `bwrap` on the given path, the host has a check sandbox, and the
-/// check starts that `bwrap`: 1 path finds the tool for the probe and
-/// for the launch. With no `bwrap` there, the persona is held. macOS
-/// ignores the path: `sandbox-exec` has an absolute path.
 #[test]
 fn the_check_sandbox_finds_its_tool_on_the_given_path() {
     let mut w = world();

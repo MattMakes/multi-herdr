@@ -503,8 +503,6 @@ mod tests {
 
         super::once_report(&ctx, &run, true, true).unwrap();
 
-        // A host with no check sandbox holds the persona (SR-4). fleetd
-        // looks for the sandbox tool on the PATH of its own process.
         let path = std::env::var_os("PATH");
         if horch_platform::sandbox::host_problem(path.as_deref()).is_some() {
             let status: String = store

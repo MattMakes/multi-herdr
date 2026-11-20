@@ -244,9 +244,6 @@ impl WorkerSandboxes {
             check,
             NETWORK_RULE,
         ]);
-        // The platform layer finds its tool on the PATH of `cmd`. Only the
-        // program and the args go to the launch spec, so this PATH selects
-        // the tool and does not reach the check.
         match &self.path {
             Some(path) => cmd.env("PATH", path),
             None => cmd.env_remove("PATH"),
