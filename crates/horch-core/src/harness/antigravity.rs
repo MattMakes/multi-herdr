@@ -102,8 +102,9 @@ fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The Stop hook serves FM-6. It helps the agent and is not a security
-/// boundary: the worker can edit it.
-fn seed_stop_hook(worktree: &Path, horch_exe: &Path) -> Result<()> {
+/// boundary: the worker can edit it. A push launch and an exec attempt
+/// (`run_exec_flow`) both seed it.
+pub fn seed_stop_hook(worktree: &Path, horch_exe: &Path) -> Result<()> {
     if git_out(worktree, &["ls-files", "--error-unmatch", HOOKS_FILE]).is_some() {
         return Ok(());
     }

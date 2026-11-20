@@ -637,6 +637,7 @@ pub(crate) fn run_exec_flow<T>(
                 .model
                 .as_deref()
                 .with_context(|| format!("teammate '{}' has no model", teammate.name))?;
+            super::antigravity::seed_stop_hook(&workdir, &env.horch_exe)?;
             super::antigravity::exec_command(&super::antigravity::ExecLaunch {
                 bin: &env.bins.antigravity,
                 model,

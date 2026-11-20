@@ -7,7 +7,9 @@
 
 use std::path::Path;
 
-use horch_core::harness::antigravity::{exec_command, read_event, Event, ExecLaunch};
+use horch_core::harness::antigravity::{
+    exec_command, read_event, seed_stop_hook, Event, ExecLaunch,
+};
 
 const FIXTURE: &str = include_str!("fixtures/streams/agy-exec.jsonl");
 
@@ -144,4 +146,50 @@ fn agy_stream_usage_limit_is_quota() {
         }
     );
     assert_eq!(read_event("not json"), Event::Other);
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// R3-F2 (FM-6): an exec attempt seeds the same `Stop` hook as a push
+/// launch, so `agy -p` cannot end its turn without `result.json`.
+#[test]
+fn agy_exec_launch_seeds_stop_hook_in_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let worktree = dir.path().join("wt");
+    std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+    git(&worktree, &["init", "-q"]);
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    let mine = serde_json::json!({"mine": {"Stop": [{"type": "command", "command": "mine"}]}});
+    std::fs::write(worktree.join(".agents/hooks.json"), mine.to_string()).unwrap();
+
+    let horch = Path::new("/opt/horch/bin/horch");
+    seed_stop_hook(&worktree, horch).unwrap();
+
+    let text = std::fs::read_to_string(worktree.join(".agents/hooks.json")).unwrap();
+    let hooks: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(hooks["mine"], mine["mine"], "{text}");
+    let gate = &hooks["horch-result-gate"]["Stop"][0];
+    assert_eq!(gate["type"], "command", "{text}");
+    let command = gate["command"].as_str().unwrap();
+    assert!(
+        command.starts_with("'/opt/horch/bin/horch' result --check"),
+        "{command}"
+    );
+    assert!(command.contains("if [ $? -eq 2 ]"), "{command}");
+    assert!(command.contains(r#""decision":"continue""#), "{command}");
+
+    let status = git(
+        &worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(status.is_empty(), "{status}");
 }
