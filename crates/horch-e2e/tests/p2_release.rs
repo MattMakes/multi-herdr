@@ -105,10 +105,92 @@ impl Drop for Agent {
     }
 }
 
-fn phase_1_ledger(path: &Path, project: &Path, agent: &Agent) {
+/// The wrapper of the attempt: a process of its own that runs each worker
+/// command as its child. The test is never the wrapper, since a fleet
+/// process starts no fleetd (T-171) and the test starts fleetd. Killed and
+/// waited on drop.
+struct Wrapper {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    replies: std::io::BufReader<std::process::ChildStdout>,
+    dir: PathBuf,
+    runs: u32,
+}
+
+impl Wrapper {
+    fn start(h: &Harness) -> Wrapper {
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"while read -r s; do /bin/sh "$s" >"$s.out" 2>"$s.err"; echo $?; done"#,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let replies = std::io::BufReader::new(child.stdout.take().unwrap());
+        Wrapper {
+            child,
+            stdin,
+            replies,
+            dir: h.root.clone(),
+            runs: 0,
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Run `cmd` as a child of the wrapper, with the program, arguments,
+    /// environment and folder of `cmd`.
+    fn run(&mut self, cmd: &Command) -> Output {
+        use std::io::{BufRead, Write};
+        use std::os::unix::process::ExitStatusExt;
+        self.runs += 1;
+        let script = self.dir.join(format!("worker-{}.sh", self.runs));
+        let quote =
+            |s: &std::ffi::OsStr| format!("'{}'", s.to_string_lossy().replace('\'', r"'\''"));
+        let mut text = String::new();
+        if let Some(dir) = cmd.get_current_dir() {
+            text += &format!("cd {}\n", quote(dir.as_os_str()));
+        }
+        text += "exec /usr/bin/env -i";
+        for (key, value) in cmd.get_envs() {
+            if let Some(value) = value {
+                text += &format!(" {}={}", quote(key), quote(value));
+            }
+        }
+        text += &format!(" {}", quote(cmd.get_program()));
+        for arg in cmd.get_args() {
+            text += &format!(" {}", quote(arg));
+        }
+        std::fs::write(&script, text + "\n").unwrap();
+        writeln!(self.stdin, "{}", script.display()).unwrap();
+        let mut reply = String::new();
+        self.replies.read_line(&mut reply).unwrap();
+        let code: i32 = reply.trim().parse().unwrap();
+        let read = |ext: &str| std::fs::read(format!("{}.{ext}", script.display())).unwrap();
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: read("out"),
+            stderr: read("err"),
+        }
+    }
+}
+
+impl Drop for Wrapper {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn phase_1_ledger(path: &Path, project: &Path, agent: &Agent, wrapper: &Wrapper) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
-    let wrapper = std::process::id();
+    let wrapper = wrapper.pid();
     let t0 = rfc3339(T0);
     conn.execute(
         "INSERT INTO projects (project_id, root, created_at) VALUES ('p', ?1, ?2)",
@@ -150,7 +232,7 @@ fn phase_1_ledger(path: &Path, project: &Path, agent: &Agent) {
             TASK,
             WORKER,
             wrapper,
-            procid::start_time(wrapper).expect("the start time of the test process"),
+            procid::start_time(wrapper).expect("the start time of the wrapper"),
             &t0,
         ),
     )
@@ -193,10 +275,13 @@ fn horch_at(h: &Harness, at: i64, args: &[&str]) -> Output {
 }
 
 /// Run `horch` at the wall time `at` as the worker [`WORKER`].
-fn worker_at(h: &Harness, at: i64, args: &[&str]) -> Output {
+fn worker_at(h: &Harness, wrapper: &mut Wrapper, at: i64, args: &[&str]) -> Output {
     let mut cmd = h.horch(args);
     cmd.env("HORCH_WORKER_ID", WORKER);
-    run_at(cmd, at, args)
+    cmd.env("HORCH_NOW", rfc3339(at));
+    let o = wrapper.run(&cmd);
+    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
+    o
 }
 
 fn run_at(mut cmd: Command, at: i64, args: &[&str]) -> Output {
@@ -224,7 +309,8 @@ fn scalar_text(conn: &Connection, sql: &str) -> String {
 fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_has_1_lease() {
     let h = world("p2-release");
     let agent = Agent::start();
-    phase_1_ledger(&db(&h), &h.project, &agent);
+    let mut wrapper = Wrapper::start(&h);
+    phase_1_ledger(&db(&h), &h.project, &agent, &wrapper);
 
     // Phase 1: the old supervisor checks in each 30 s.
     let mut now = T0;
@@ -265,7 +351,7 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
         now += STEP_S;
         h.advance_fleet_clock(STEP_S);
         checkin(&h, now);
-        worker_at(&h, now, &["ledger", "progress", "building"]);
+        worker_at(&h, &mut wrapper, now, &["ledger", "progress", "building"]);
         let o = h.without_fleetd(|| {
             horch_at(
                 &h,
