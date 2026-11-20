@@ -1394,6 +1394,7 @@ mod tests {
 
     /// A context in herdr pane p2 of workspace w1, with a fake herdr and a
     /// scratch ledger. The second value is the folder of the workspace locks.
+    #[cfg(unix)]
     fn register_ctx(dir: &std::path::Path) -> (RuntimeContext, std::path::PathBuf) {
         let bin = dir.join("herdr");
         let warm = crate::test_support::write_warmed(
@@ -1425,6 +1426,7 @@ mod tests {
     /// TRF-39: `horch register orchestrator` while a live orchestrator holds
     /// the workspace lock refuses with the holder's PID and keeps the route.
     /// Other roles register as before.
+    #[cfg(unix)]
     #[test]
     fn trf_39_register_refuses_the_orchestrator_role_while_another_holds_the_lock() {
         use horch_core::taskledger::orchestrator;
@@ -1453,6 +1455,7 @@ mod tests {
 
     /// TRF-39: with the workspace lock free, `horch register orchestrator`
     /// takes the lock, writes the route, and frees the lock when it ends.
+    #[cfg(unix)]
     #[test]
     fn trf_39_register_takes_the_orchestrator_role_when_the_lock_is_free() {
         use horch_core::taskledger::orchestrator;
