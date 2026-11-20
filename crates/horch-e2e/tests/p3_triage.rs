@@ -100,9 +100,6 @@ fn apply(h: &Harness, name: &str, decision: &str) -> String {
     apply_many(h, &[("W1", name, decision)])
 }
 
-/// `horch worktree triage apply` of the decisions `rows` (`(id, name,
-/// decision)`) in 1 reply file: the result lines, 1 for each row. The
-/// `triage_apply` job gets all the rows, so this waits until the job ended.
 fn apply_many(h: &Harness, rows: &[(&str, &str, &str)]) -> String {
     let mut body =
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n"
@@ -521,11 +518,6 @@ fn a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_re
     assert!(jobs(&h, "worktree_remove").is_empty());
 }
 
-/// R2 (FM-11, RR-16, RR-17): 1 `triage_apply` job with 3 decisions. W1
-/// completes its rescue ref, trash ref, removal and branch delete. W2 is
-/// refused (a unique detached HEAD, RR-17) and W3 is refused (an archive
-/// ref with other work, RR-16). The later refusals do not erase the effects
-/// of W1 and each fails only its own row.
 #[test]
 fn multi_item_triage_apply_preserves_completed_first_item_when_second_item_fails() {
     let h = world("p3-triage-multi");
@@ -571,7 +563,6 @@ fn multi_item_triage_apply_preserves_completed_first_item_when_second_item_fails
         "{said}"
     );
 
-    // W1: its effects stay committed.
     assert!(!path_a.exists());
     let trash = refs(&h, "refs/horch/trash/feat-a/");
     assert_eq!(trash.len(), 1, "{trash:?}");
@@ -599,7 +590,6 @@ fn multi_item_triage_apply_preserves_completed_first_item_when_second_item_fails
     assert_eq!(row(&path_a, "status"), ["trashed"]);
     assert_eq!(row(&path_a, "rescue_ref"), [rescue[0].clone()]);
 
-    // W2 and W3: their folders stay and only their own rows fail.
     for (path, file) in [(&path_b, "only-b.txt"), (&path_c, "feat-c.txt")] {
         assert!(path.join(file).exists(), "{}", path.display());
         assert_eq!(
@@ -615,12 +605,6 @@ fn multi_item_triage_apply_preserves_completed_first_item_when_second_item_fails
     assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
 }
 
-/// R2 (FM-11): the job of W1 and W2 ends, and its result file carries a
-/// forged rescue ref in the fact of W2. fleetd refuses that fact and fails
-/// only W2: the ingest keeps the removal, the refs and the row of W1. A
-/// `git` that waits for a hold file at its first `commit` keeps the job
-/// from its result file until fleetd is down, so the test edits the file
-/// before any fleetd reads it.
 #[test]
 fn multi_item_triage_apply_ingest_keeps_the_first_item_when_the_fact_of_the_second_is_refused() {
     let mut h = world("p3-triage-multi-ingest");
@@ -665,7 +649,6 @@ fn multi_item_triage_apply_ingest_keeps_the_first_item_when_the_fact_of_the_seco
     .split_once(' ')
     .map(|(j, r)| (j.parse::<i64>().unwrap(), r.parse::<i64>().unwrap()))
     .unwrap();
-    // The job waits at its first commit: it has done nothing yet.
     assert!(refs(&h, "refs/horch/rescue/").is_empty());
     assert!(path_a.exists());
 
@@ -686,7 +669,6 @@ fn multi_item_triage_apply_ingest_keeps_the_first_item_when_the_fact_of_the_seco
         (jobs(&h, "triage_apply") == ["passed"]).then_some(())
     });
 
-    // W1: removal, refs and row stay.
     assert!(!path_a.exists());
     let trash = refs(&h, "refs/horch/trash/feat-a/");
     assert_eq!(trash.len(), 1, "{trash:?}");
@@ -714,7 +696,6 @@ fn multi_item_triage_apply_ingest_keeps_the_first_item_when_the_fact_of_the_seco
     assert_eq!(row(&path_a, "status"), ["trashed"]);
     assert_eq!(row(&path_a, "rescue_ref"), [rescue[0].clone()]);
 
-    // W2: its fact is refused, it stays, and only its row fails.
     assert!(path_b.join("only-b.txt").exists());
     assert_eq!(row(&path_b, "status"), ["cleanup_failed"]);
     assert_ne!(states(&h, &path_b), ["removed"]);
