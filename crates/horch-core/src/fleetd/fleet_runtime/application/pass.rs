@@ -4253,6 +4253,7 @@ fn write_idea_effects(
     }
     if let Some(plan) = effects.get("plan_yaml").and_then(serde_json::Value::as_str) {
         crate::fsx::write_atomic(&dir.join(PLAN_YAML), plan.as_bytes(), IDEA_FILE_MODE)?;
+        crate::fleetd::ideas::application::direct::write_judge_ticket(&dir)?;
     }
     if let Some(a) = effects.get("approval_json") {
         folder.write_approval(&text(a, "text")?)?;
