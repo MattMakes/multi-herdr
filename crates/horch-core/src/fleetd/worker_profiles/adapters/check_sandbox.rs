@@ -21,6 +21,7 @@
 //! task.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -65,6 +66,9 @@ pub struct WorkerSandboxes {
     pub fleet_root: PathBuf,
     /// Why this host has no platform sandbox, or `None` when it has one.
     pub gap: Option<NotSupported>,
+    /// The `PATH` where the platform sandbox tool is found (`bwrap` on
+    /// Linux), for [`WorkerSandboxes::gap`] and for each check launch.
+    pub path: Option<OsString>,
     /// The worker profiles that profile validation refuses on this host,
     /// with the reason of each (SR-8, A37; `sandbox_rules.rs`).
     pub refused: BTreeMap<String, String>,
@@ -74,12 +78,25 @@ pub struct WorkerSandboxes {
 }
 
 impl WorkerSandboxes {
-    /// The check sandboxes of the fleet at `fleet_root` on this host.
+    /// The check sandboxes of the fleet at `fleet_root` on this host. The
+    /// sandbox tool is found on the `PATH` of this process: the `PATH` of
+    /// the operator at the start of fleetd. No worker can change it, so no
+    /// worker can put its own `bwrap` in place of the sandbox (SR-4).
     pub fn new(codex: CodexSandbox, fleet_root: PathBuf) -> WorkerSandboxes {
+        WorkerSandboxes::on_path(codex, fleet_root, std::env::var_os("PATH"))
+    }
+
+    /// [`WorkerSandboxes::new`] with the sandbox tool found on `path`.
+    pub fn on_path(
+        codex: CodexSandbox,
+        fleet_root: PathBuf,
+        path: Option<OsString>,
+    ) -> WorkerSandboxes {
         WorkerSandboxes {
             codex,
             fleet_root,
-            gap: horch_platform::sandbox::host_problem(None),
+            gap: horch_platform::sandbox::host_problem(path.as_deref()),
+            path,
             refused: BTreeMap::new(),
             fallbacks: BTreeMap::new(),
         }
@@ -227,6 +244,13 @@ impl WorkerSandboxes {
             check,
             NETWORK_RULE,
         ]);
+        // The platform layer finds its tool on the PATH of `cmd`. Only the
+        // program and the args go to the launch spec, so this PATH selects
+        // the tool and does not reach the check.
+        match &self.path {
+            Some(path) => cmd.env("PATH", path),
+            None => cmd.env_remove("PATH"),
+        };
         let cmd = sandboxed_local(cmd, &writable, &denied).ok()?;
         Some(LaunchSpec {
             program: cmd.get_program().into(),

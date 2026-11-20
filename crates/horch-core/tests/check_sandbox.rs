@@ -106,6 +106,7 @@ impl World {
             codex,
             fleet_root: self.fleet_root.clone(),
             gap,
+            path: std::env::var_os("PATH"),
             refused: Default::default(),
             fallbacks: Default::default(),
         }
@@ -287,9 +288,86 @@ impl ProcessHost for Recording {
     }
 }
 
-/// Why this host has no platform sandbox, or `None` when it has one.
+/// Why this host has no platform sandbox, or `None` when it has one:
+/// the rule of fleetd, which looks on the `PATH` of its own process.
 fn host_gap() -> Option<NotSupported> {
-    horch_platform::sandbox::host_problem(None)
+    horch_platform::sandbox::host_problem(std::env::var_os("PATH").as_deref())
+}
+
+/// A `PATH` of the folder `dir`: with fake `bwrap` and `socat` when
+/// `tools` is true, else empty. A fake tool exits 0.
+fn tools_path(dir: &Path, tools: bool) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    if tools {
+        for bin in ["bwrap", "socat"] {
+            let file = dir.join(bin);
+            std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    std::env::join_paths([dir]).unwrap()
+}
+
+/// fleetd finds the check sandbox on the `PATH` of its own process, the
+/// `PATH` of the operator at its start. A worker cannot change it.
+#[test]
+fn the_check_sandbox_looks_on_the_path_of_fleetd() {
+    let w = world();
+    let sandboxes = w.host_sandboxes();
+    assert_eq!(sandboxes.path, std::env::var_os("PATH"));
+    assert_eq!(sandboxes.gap, host_gap());
+}
+
+/// With `bwrap` on the given path, the host has a check sandbox, and the
+/// check starts that `bwrap`: 1 path finds the tool for the probe and
+/// for the launch. With no `bwrap` there, the persona is held. macOS
+/// ignores the path: `sandbox-exec` has an absolute path.
+#[test]
+fn the_check_sandbox_finds_its_tool_on_the_given_path() {
+    let mut w = world();
+    let tools = w.dir.path().canonicalize().unwrap().join("tools");
+    let with = WorkerSandboxes::on_path(
+        w.codex(Path::new("/no/codex")),
+        w.fleet_root.clone(),
+        Some(tools_path(&tools, true)),
+    );
+    let without = WorkerSandboxes::on_path(
+        w.codex(Path::new("/no/codex")),
+        w.fleet_root.clone(),
+        Some(tools_path(&w.dir.path().join("none"), false)),
+    );
+    assert!(without.supported(CODEX), "codex keeps its own sandbox");
+    match std::env::consts::OS {
+        "linux" => {
+            assert_eq!(with.gap, None);
+            assert!(with.supported(CLAUDE));
+            let gap = without.gap.as_ref().expect("no bwrap: a host problem");
+            assert!(gap.to_string().contains("bwrap is not on PATH"), "{gap}");
+            assert!(!without.supported(CLAUDE), "no bwrap: the persona is held");
+            let a = w.ready("a", CLAUDE);
+            let chosen = choices(&w.conn, &Holds::default(), &without, None).unwrap();
+            assert!(
+                chosen.iter().any(|c| matches!(c,
+                    Choice::Held { task_id, hold: Hold::Persona { cause, .. } }
+                        if *task_id == a && cause == NO_CHECK_SANDBOX)),
+                "{chosen:?}"
+            );
+            let task = w.task("true", CLAUDE, "claude", WorktreeMode::Shared);
+            let host = Recording::default();
+            let (state, o) = w.check(&task, &with, &host);
+            assert_eq!(state, State::Passed, "{}", o.text);
+            let specs = host.specs.borrow();
+            assert_eq!(specs.len(), 1, "1 check started through the host");
+            assert_eq!(specs[0].program, tools.join("bwrap"));
+        }
+        "macos" => {
+            assert_eq!(with.gap, None);
+            assert_eq!(without.gap, None, "macOS ignores the path");
+            assert!(without.supported(CLAUDE));
+        }
+        _ => {}
+    }
 }
 
 /// The outcome of a check that did not run: no verdict, and the SR-4
