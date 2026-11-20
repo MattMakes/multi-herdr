@@ -430,8 +430,6 @@ fn old_socket_file_is_replaced_but_a_regular_file_is_not() {
     assert_eq!(open, 1, "1 needs-you item names the file");
 }
 
-/// End `server` with `end` on another thread, and give the result of `end`
-/// if it comes in 1 second.
 fn ends_in_time<F>(server: ChannelServer, end: F) -> Option<anyhow::Result<()>>
 where
     F: FnOnce(ChannelServer) -> anyhow::Result<()> + Send + 'static,
@@ -443,13 +441,11 @@ where
     rx.recv_timeout(Duration::from_secs(1)).ok()
 }
 
-/// A removed socket folder does not hang the stop or the drop (R4-F2,
-/// RR-8, FM-15). On Windows the channel is a pipe, and the path is no file.
+/// On Windows the channel is a pipe, and the path is no file.
 #[cfg(unix)]
 #[test]
 fn stop_completes_when_socket_folder_is_removed_before_stop() {
     for explicit_stop in [true, false] {
-        // The run folder holds the token too, so each end gets a new world.
         let w = World::new();
         let server = w.start(Options::default()).unwrap();
         let req = request(Kind::TaskCancel, Some(w.token()));

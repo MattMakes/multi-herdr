@@ -27,13 +27,6 @@
 //! it with no reply, and the client asks for the result of its
 //! `request_id`. A lost generation ends the server, because each later
 //! write of this fleetd is refused too.
-//!
-//! A second thread, `fleetd-channel-accept`, waits in `accept` and gives
-//! each connection to the server thread. The server thread reads the stop
-//! flag at least each [`ACCEPT_RETRY`], so the stop never needs a connect
-//! to the socket path (R4-F2). The stop connects to the path only to wake
-//! the accept thread. When the path is gone, no client can reach the
-//! listener, and the accept thread stays in `accept` until fleetd exits.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -74,9 +67,10 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(5);
 pub const NAME_TAKEN_KIND: &str = "channel_name_taken";
 
 /// The time between 2 accepts after an accept fails, so that an error that
-/// stays does not keep 1 core busy. It is also the longest wait of the
-/// server thread before it reads the stop flag again.
+/// stays does not keep 1 core busy.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
+
+const STOP_POLL: Duration = Duration::from_millis(50);
 
 const WAKE_WAIT: Duration = Duration::from_millis(100);
 
@@ -160,8 +154,6 @@ impl ChannelServer {
             ledger_user: ledger_user.to_string(),
         };
         let stop = Arc::new(AtomicBool::new(false));
-        // A rendezvous channel: the accept thread holds at most 1
-        // connection that the server thread did not take.
         let (accepted, connections) = mpsc::sync_channel(0);
         let acceptor = {
             let stop = Arc::clone(&stop);
@@ -205,8 +197,6 @@ impl ChannelServer {
             return Ok(());
         };
         self.stop.store(true, Ordering::SeqCst);
-        // The server thread reads the stop flag at least each ACCEPT_RETRY,
-        // or at the end of the connection that it serves.
         let limit = Instant::now() + self.read_deadline * 2 + STOP_MARGIN;
         while !thread.is_finished() {
             if Instant::now() >= limit {
@@ -222,8 +212,7 @@ impl ChannelServer {
         ended?
     }
 
-    /// Wake the accept thread with a connect to the socket path, and join
-    /// it. When the path is gone, no connect can reach the listener: the
+    /// When the path is gone, no connect can reach the listener: the
     /// accept thread stays in `accept`, and the stop does not wait for it.
     fn wake_acceptor(&mut self) {
         let Some(acceptor) = self.acceptor.take() else {
@@ -299,9 +288,6 @@ fn open_name_taken_item(
     Ok(())
 }
 
-/// The accept thread: wait for each connection and give it to the server
-/// thread. It ends at the first accept after the stop, or when the server
-/// thread is gone.
 fn accept_loop(listener: &Listener, stop: &AtomicBool, accepted: &SyncSender<(Stream, Peer)>) {
     loop {
         let connection = listener.accept();
@@ -336,7 +322,7 @@ impl Server {
             if stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let (stream, peer) = match connections.recv_timeout(ACCEPT_RETRY) {
+            let (stream, peer) = match connections.recv_timeout(STOP_POLL) {
                 Ok(connection) => connection,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
