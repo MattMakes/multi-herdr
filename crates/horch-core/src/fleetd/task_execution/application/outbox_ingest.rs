@@ -15,6 +15,8 @@
 //! - A progress line becomes the rows of `horch ledger progress`: the
 //!   progress of the worker, its event, and the activity of a live attempt
 //!   on the fleet clock. A line that fails is skipped with 1 event.
+//! - A `context-warned` line becomes 1 `context-warned` event of the session
+//!   record of the worker (G5): a process of the attempt cannot write it.
 //! - The handoff result (Q4) ends its attempt with the outcome
 //!   `handed_off`, burns no attempt, and moves the task to `ready`. The
 //!   handoff path is kept only when its real path is inside the worktree or
@@ -27,6 +29,8 @@ use anyhow::Result;
 use horch_platform::channel::User;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::compaction::policy::EVENT_WARNED;
+use crate::execution::legacy::{HistoryEntry, Record};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::task_execution::adapters::ingested_store as store;
@@ -369,6 +373,10 @@ fn ingest_progress(
             let live = state != AttemptState::Ended.as_str();
             for line in lines {
                 match &line.read {
+                    Ok(l) if l.kind == LineKind::ContextWarned => {
+                        record_warned(tx, &worker, &l.text)?;
+                        report.progress_lines += 1;
+                    }
                     Ok(l) => {
                         record_line(tx, a, &worker, live, l.kind, &l.text)?;
                         report.progress_lines += 1;
@@ -425,11 +433,45 @@ fn attempt_row(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String
         .optional()?)
 }
 
+/// The event of a line. A `context-warned` line never gets here
+/// ([`record_warned`]).
 fn event_kind(kind: LineKind) -> EventKind {
     match kind {
         LineKind::Progress => EventKind::Progress,
-        LineKind::Note => EventKind::Note,
+        LineKind::Note | LineKind::ContextWarned => EventKind::Note,
     }
+}
+
+/// 1 `context-warned` event with `text` on the session record of `worker`,
+/// at the time of the ingest: the time in the line is the worker's. A
+/// worker with no session record changes nothing.
+fn record_warned(tx: &Connection, worker: &str, text: &str) -> Result<()> {
+    let Some(record_id) = workers::find(tx, worker)?.and_then(|w| w.legacy_record_id) else {
+        return Ok(());
+    };
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT record_json FROM session_records WHERE record_id = ?1",
+            [&record_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(json) = json else {
+        return Ok(());
+    };
+    let mut record: Record = serde_json::from_str(&json)?;
+    let at = util::now();
+    record.updated_at = at.clone();
+    record.history.push(HistoryEntry {
+        at: at.clone(),
+        event: EVENT_WARNED.to_string(),
+        text: text.to_string(),
+    });
+    tx.execute(
+        "UPDATE session_records SET record_json = ?2, updated_at = ?3 WHERE record_id = ?1",
+        params![record_id, serde_json::to_string(&record)?, at],
+    )?;
+    Ok(())
 }
 
 /// The rows of `horch ledger progress` for 1 line: the progress of the

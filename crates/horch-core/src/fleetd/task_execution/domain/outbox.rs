@@ -38,6 +38,10 @@ pub enum LineKind {
     Progress,
     /// `horch ledger note`.
     Note,
+    /// The Context warning of `horch ledger progress` (G5): fleetd appends
+    /// the `context-warned` event to the session record of the worker. Its
+    /// text is [`warned_text`].
+    ContextWarned,
 }
 
 impl LineKind {
@@ -45,7 +49,23 @@ impl LineKind {
         match self {
             LineKind::Progress => "progress",
             LineKind::Note => "note",
+            LineKind::ContextWarned => "context-warned",
         }
+    }
+}
+
+/// The text of a [`LineKind::ContextWarned`] line:
+/// `tokens <n> threshold <n>`.
+pub fn warned_text(tokens: u64, threshold: u64) -> String {
+    format!("tokens {tokens} threshold {threshold}")
+}
+
+/// Whether `text` is a [`warned_text`].
+pub fn is_warned_text(text: &str) -> bool {
+    let number = |n: &str| !n.is_empty() && n.len() <= 20 && n.bytes().all(|b| b.is_ascii_digit());
+    match text.split(' ').collect::<Vec<_>>()[..] {
+        ["tokens", tokens, "threshold", threshold] => number(tokens) && number(threshold),
+        _ => false,
     }
 }
 

@@ -11,12 +11,14 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
+use horch_core::execution::legacy::HistoryEntry;
 use horch_core::execution::lifecycle::{
     self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
 };
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
+use horch_core::fleetd::task_execution::domain::outbox::{warned_text, LineKind, PROGRESS_JSONL};
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery::{self, TypedLine};
@@ -844,14 +846,26 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
 
 /// The `horch note` warning of record `record_id`, if it warns: the row is
 /// built as `horch context` builds it, and the rule is
-/// [`policy::should_warn`]. On a warning it records `context-warned`
-/// (its error ignored) and returns the rendered `warning` line, or
-/// `warning-orchestrator` for an orchestrator record.
+/// [`policy::should_warn`]. On a warning it records `context-warned` and
+/// returns the rendered `warning` line, or `warning-orchestrator` for an
+/// orchestrator record. A process of a live attempt cannot write its
+/// session record: it records the warning as a `context-warned` line of
+/// its outbox, which fleetd ingests, and that line counts as an ask of
+/// the cycle until fleetd ingests it (G5, T-213). A failed record is an
+/// error line, and the warning still shows.
 pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
     let record = src.ledger.get(record_id)?;
     let Some((row, tokens)) = warn_row(src, record) else {
         return Ok(None);
     };
+    let outbox = super::askcmd::own_writer(src.ctx).ok().and_then(Result::ok);
+    if outbox
+        .as_ref()
+        .is_some_and(|out| warned_in_attempt(out, &row))
+    {
+        return Ok(None);
+    }
+    let text = warned_text(tokens, row.threshold);
     let key = if row.record.is_orchestrator() {
         "warning-orchestrator"
     } else {
@@ -867,12 +881,39 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
         ("handoff", handoff.as_str()),
     ]);
     let line = prompts::context_message(src.roster, key, &vars)?;
-    let _ = src.ledger.record_event(
-        record_id,
-        policy::EVENT_WARNED,
-        &format!("tokens {tokens} threshold {threshold}"),
-    );
+    let recorded = match &outbox {
+        Some(out) => out.append(
+            LineKind::ContextWarned,
+            &horch_core::clock::now_stamp(),
+            &text,
+        ),
+        None => src
+            .ledger
+            .record_event(record_id, policy::EVENT_WARNED, &text),
+    };
+    if let Err(e) = recorded {
+        eprintln!("horch: the context warning of {record_id} is not recorded: {e:#}");
+    }
     Ok(Some(line))
+}
+
+/// Whether a `context-warned` line of the outbox of the own attempt `out`
+/// is an ask of the current cycle of `row` ([`policy::already_asked`]).
+/// An outbox with no log has none.
+fn warned_in_attempt(out: &OutboxWriter, row: &context::Row) -> bool {
+    let Ok(log) = std::fs::read_to_string(out.outbox().join(PROGRESS_JSONL)) else {
+        return false;
+    };
+    let mut history = row.record.history.clone();
+    history.extend(log.lines().filter_map(|l| {
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        (v["kind"] == LineKind::ContextWarned.as_str()).then(|| HistoryEntry {
+            at: v["at"].as_str().unwrap_or_default().to_string(),
+            event: policy::EVENT_WARNED.to_string(),
+            text: v["text"].as_str().unwrap_or_default().to_string(),
+        })
+    }));
+    policy::already_asked(&history, row.last_compaction())
 }
 
 /// The context row of a live `record` and its tokens, when the rule warns.
