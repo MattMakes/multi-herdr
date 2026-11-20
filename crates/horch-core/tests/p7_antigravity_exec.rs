@@ -159,8 +159,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// R3-F2 (FM-6): an exec attempt seeds the same `Stop` hook as a push
-/// launch, so `agy -p` cannot end its turn without `result.json`.
 #[test]
 fn agy_exec_launch_seeds_stop_hook_in_worktree() {
     let dir = tempfile::tempdir().unwrap();
