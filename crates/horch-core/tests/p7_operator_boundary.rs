@@ -221,8 +221,6 @@ impl Machine {
         self.check_in(teammate, "conformance")
     }
 
-    /// The verdict of "Operator boundary" for `teammate`, with the fake
-    /// scenario `scenario`.
     fn check_in(&self, teammate: &Teammate, scenario: &str) -> CheckResult {
         let ctx = self.ctx();
         let mut runner = ConformanceRunner {
@@ -336,8 +334,6 @@ fn assert_verdict(r: &CheckResult, verdict: Verdict) {
     assert!(!r.evidence.is_empty(), "{r:?}");
 }
 
-/// The check fails, and its evidence names `act` as the only allowed act,
-/// of the agent and of its double-fork orphan under the same rules.
 #[track_caller]
 fn assert_only_allowed(r: &CheckResult, act: Act) {
     assert_verdict(r, Verdict::Fail);
@@ -384,8 +380,6 @@ fn conformance_operator_boundary_check_runs_for_each_adapter() {
 
 #[test]
 fn operator_boundary_passes_when_the_double_fork_orphan_is_refused_each_act() {
-    // FR-10: the orphan leaves the process tree, the group and the session
-    // of the agent, so only the sandbox stops it.
     let m = Machine::new(Codex::WithNetworkProxy);
     for agent in [HarnessKind::Claude, HarnessKind::Codex] {
         let r = m.check(&profile(agent));

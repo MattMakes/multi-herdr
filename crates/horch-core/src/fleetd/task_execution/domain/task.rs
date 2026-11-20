@@ -591,9 +591,6 @@ pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
     out
 }
 
-/// The group that the gone process `s` left (FR-10: no agent outlives its
-/// attempt). Members: the stop ladder goes on for the group by its id. A
-/// new leader with the pid: the group is kept, and the row says so.
 fn group_left(named: &[Named], owned: &Owned, s: &Stopped) -> Cleanup {
     let mut out = Cleanup::default();
     let (Some(pid_start), false) = (s.process.pid_start, owned.has(s.process)) else {
@@ -1255,8 +1252,6 @@ mod tests {
         (r, f)
     }
 
-    /// The facts of [`after_stop`] with no pane, whose gone supervisor left
-    /// `group`.
     fn group_after_stop(group: GroupLeft) -> (Rows, Facts) {
         let (r, mut f) = after_stop(PaneProof::None, InPane::Unknown);
         f.stopped[0].group = group;

@@ -36,18 +36,12 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second, and a short grace
-/// before the kill of a stopped process group.
 const FLEET_TOML: &str = "pass_period_s = 1\nstop_grace_s = 5\n";
 
-/// The fleet clock ticks that a test waits for to see that fleetd leaves an
-/// idea where it is.
 const LATER_TICKS: i64 = 3;
 
-/// What the reason of each refusal names.
 const FLEET_PROCESS: &str = "fleet process";
 
-/// The text of the idea that waits for the operator.
 const WAITING_IDEA: &str = "Show the queue length in the status bar";
 
 fn text(o: &Output) -> String {
@@ -59,14 +53,11 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A fleet with a test fleetd, the herdr workspace of the project and a
-/// git project with gates.
 struct World {
     h: Harness,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
@@ -86,11 +77,9 @@ impl World {
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
         h.fleet_workspace();
         let w = World { h };
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             w.h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -116,7 +105,6 @@ impl World {
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
 
-    /// `horch idea add <idea>`; the id of the new idea.
     fn add(&self, idea: &str) -> String {
         let o = self.h.run(&["idea", "add", idea]);
         assert!(o.status.success(), "horch idea add: {}", text(&o));
@@ -130,7 +118,6 @@ impl World {
         })
     }
 
-    /// The rows of `sql`, each row its columns joined with 1 space.
     fn rows(&self, sql: &str) -> Vec<String> {
         let path = self.h.root.join("ledger.sqlite3");
         let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
@@ -173,7 +160,6 @@ impl World {
             .ok()
     }
 
-    /// Wait until fleetd ran [`LATER_TICKS`] more passes.
     fn later_passes(&self) {
         let from = self.wait("the fleet clock", || self.fleet_clock());
         self.wait("later ticks of the fleet clock", || {
@@ -181,7 +167,6 @@ impl World {
         });
     }
 
-    /// The first call of the fake `claude` that logged `key`, once it did.
     fn fake_call(&self, key: &str) -> Value {
         self.wait(&format!("the fake idea-lead to log {key}"), || {
             self.h
@@ -191,8 +176,6 @@ impl World {
         })
     }
 
-    /// FR-10: the idea stays in `awaiting_approval` with no approval, and no
-    /// `idea_approve` request of it is applied.
     fn assert_still_waiting(&self, idea: &str) {
         self.wait("the idea in awaiting_approval", || {
             (self.idea_state(idea).as_deref() == Some("awaiting_approval")).then_some(())
@@ -225,7 +208,6 @@ impl World {
         assert!(applied.is_empty(), "{applied:?}\n{}", self.context());
     }
 
-    /// A try of the CLI is refused, and its reason names a fleet process.
     fn assert_cli_refused(&self, name: &str, tried: &Value) {
         assert_ne!(tried["exit"], 0, "{name}: {tried}\n{}", self.context());
         let err = tried["stderr"].as_str().unwrap_or_default();
@@ -235,8 +217,6 @@ impl World {
         );
     }
 
-    /// A raw request with the operator token is refused by fleetd: the
-    /// reply and the `requests` row name a fleet process.
     fn assert_raw_refused(&self, tried: &Value) {
         let reply: Value = tried["reply"]
             .as_str()
@@ -257,7 +237,6 @@ impl World {
         );
     }
 
-    /// What a failed wait shows.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -302,15 +281,11 @@ impl World {
     }
 }
 
-/// Whether process `pid` exists.
 fn alive(pid: i64) -> bool {
     // SAFETY: signal 0 sends nothing; `pid` is a pid that a fake logged.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
-/// Step 1a: the agent of a live attempt runs `horch idea approve` of an
-/// idea in `awaiting_approval`, and sends a raw `idea_approve` with the
-/// operator token. Both are refused.
 #[test]
 fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     let w = World::new("p6-fr10-a", "clarify");
@@ -328,10 +303,6 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
-/// Fix A, result 1: the idea-lead attempt goes live on the wrapper in its
-/// pane, not on the `horch spawn` process that exits when the pane runs.
-/// While its agent runs, the attempt stays live: fleetd does not end it
-/// `no_result` and does not launch it again.
 #[test]
 fn fix_a_idea_lead_attempt_stays_live_while_its_agent_runs() {
     let w = World::new("p6-fr10-fa", "");
@@ -357,8 +328,6 @@ fn fix_a_idea_lead_attempt_stays_live_while_its_agent_runs() {
     assert_eq!(launches, 1, "1 launch of the agent\n{}", w.context());
 }
 
-/// Fix A, result 2: `horch idea note` of the agent of a live idea-lead
-/// attempt is accepted (it found no live attempt of its process before).
 #[test]
 fn fix_a_idea_note_of_the_idea_lead_is_accepted() {
     let w = World::new("p6-fr10-fb", "");
@@ -372,12 +341,6 @@ fn fix_a_idea_note_of_the_idea_lead_is_accepted() {
     assert_eq!(notes, 1, "the note file\n{}", w.context());
 }
 
-/// Step 1b: fleetd ended the attempt of the agent, and the agent still
-/// runs: it ignores the polite stop. The operator approves the own idea of
-/// the agent, so fleetd ends its `clarifying` attempt (an old phase) and
-/// stops its process group. Within the grace, the agent tries to approve
-/// another idea in `awaiting_approval`: both tries are refused. Then the
-/// stop ladder kills it: no agent outlives its attempt.
 #[test]
 fn fr10_b_agent_after_its_attempt_ended_cannot_approve_and_is_stopped() {
     let w = World::new("p6-fr10-b", "clarify");
@@ -388,7 +351,6 @@ fn fr10_b_agent_after_its_attempt_ended_cannot_approve_and_is_stopped() {
             (w.idea_state(idea).as_deref() == Some("awaiting_approval")).then_some(())
         });
     }
-    // The operator approves from outside the fleet: not refused.
     let o = w.h.run(&["idea", "approve", &own]);
     assert!(o.status.success(), "the operator approves: {}", text(&o));
     let call = w.fake_call("tries");
@@ -408,9 +370,6 @@ fn fr10_b_agent_after_its_attempt_ended_cannot_approve_and_is_stopped() {
     });
 }
 
-/// Step 1c: a child shell of the agent, and a detached child of the agent
-/// (a new session and a new process group, whose parent waits), each run
-/// `horch idea approve`. Both are refused.
 #[test]
 fn fr10_c_child_shell_and_detached_child_cannot_approve() {
     let w = World::new("p6-fr10-c", "clarify");
@@ -422,9 +381,6 @@ fn fr10_c_child_shell_and_detached_child_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
-/// Step 1d: the agent writes `approval.json` itself, with the sha256 of
-/// its `assumptions.md`. fleetd ignores it, and 1 event of the idea records
-/// it.
 #[test]
 fn fr10_d_agent_written_approval_is_not_accepted() {
     let w = World::new("p6-fr10-d", "");

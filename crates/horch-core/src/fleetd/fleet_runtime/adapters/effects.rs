@@ -90,8 +90,6 @@ pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -
     stop_each(members, how)
 }
 
-/// Stop each process of `members` that has a start time, by its pid and
-/// that start time. Whether a stop was sent.
 fn stop_each(members: Vec<u32>, how: How) -> bool {
     let mut sent = false;
     for member in members {
@@ -128,8 +126,6 @@ pub fn group_left(p: Recorded) -> GroupLeft {
     if !process::alive(p.pid) {
         return GroupLeft::Members;
     }
-    // The leader itself lives: not a gone leader. A start time that
-    // cannot be read counts as another process: no stop.
     if p.pid_start.is_some() && process::start_time(p.pid) == p.pid_start {
         GroupLeft::None
     } else {

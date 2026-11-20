@@ -34,7 +34,6 @@ use crate::taskledger::{tasks, util};
 /// The kind of the needs-you item of a pane that is not closed.
 const PANE_KEPT: &str = "pane_kept";
 
-/// The kind of the needs-you item of a process group that is not stopped.
 const GROUP_KEPT: &str = "group_kept";
 
 /// The commands write rows and events together: refuse a connection with

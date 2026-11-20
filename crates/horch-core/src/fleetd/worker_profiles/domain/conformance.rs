@@ -518,9 +518,6 @@ pub fn operator_unreachable(unreachable: &[String]) -> CheckResult {
     )
 }
 
-/// Each operator act is refused inside the sandbox (SR-8), for the agent
-/// and for its double-fork orphan (FR-10). An act with no result, or with a
-/// result that is not a refusal, does not hold.
 fn operator_boundary(o: &Observation) -> CheckResult {
     let c = Check::OperatorBoundary;
     let r = match report_of(c, o) {

@@ -28,8 +28,6 @@ use crate::{scenarios, Call};
 /// The first argument of the probe child: the fake does 1 act and exits.
 const CHILD: &str = "__horch_probe_act";
 
-/// The first argument of the probe orphan: a double fork, whose grandchild
-/// does 1 act and writes its result in a file.
 const ORPHAN: &str = "__horch_probe_orphan";
 
 /// The text of the scenario key `version:<text>`, else `default`.
@@ -102,7 +100,6 @@ fn orphan_entry(_act: &str, _path: &Path, _out: &Path) -> ! {
     std::process::exit(1);
 }
 
-/// Do 1 act of the probe on `path`.
 fn do_act(act: &str, path: &Path) -> Result<(), String> {
     match act {
         "write" => std::fs::write(path, "horch probe\n").map_err(|e| e.to_string()),
@@ -480,9 +477,6 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
             let _ = std::fs::remove_file(&path);
         }
         if matches!(name, "read_token" | "connect_channel" | "write_requests") {
-            // With the key `orphan_escapes`, the orphan runs with no
-            // sandbox: a sandbox that does not hold for a process that
-            // left the tree of the agent.
             let escapes = crate::scenario_has("orphan_escapes");
             let out = cwd.join(format!("{tag}-orphan-{name}"));
             let result = in_orphan(rules.filter(|_| !escapes), act, &path, &out);
@@ -497,8 +491,6 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
     Value::Object(report)
 }
 
-/// Do `act` on `path` in a double-fork orphan of a child under `rules`,
-/// and give its result, which the orphan writes in `out`.
 fn in_orphan(rules: Option<&Rules>, act: &str, path: &Path, out: &Path) -> String {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,

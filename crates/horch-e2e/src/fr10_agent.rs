@@ -42,14 +42,10 @@ use serde_json::{json, Map, Value};
 use crate::idea_agent::{idea_folder, send_on_channel};
 use crate::{hash16, Call};
 
-/// The longest wait for an idea state.
 const STATE_WAIT: Duration = Duration::from_secs(60);
 
-/// The longest wait of `outlive` for its stop: longer than each wait of
-/// the test, so only a stop of fleetd ends it in time.
 const STOP_WAIT: Duration = Duration::from_secs(600);
 
-/// The state of an idea that waits for the operator.
 const AWAITING: &str = "awaiting_approval";
 
 /// Play the FR-10 keys of the idea of this launch. False when the idea has
@@ -128,7 +124,6 @@ pub fn play(call: &mut Call) -> bool {
     false
 }
 
-/// The fake idea-lead of 1 idea folder.
 struct Lead {
     folder: PathBuf,
     idea: String,
@@ -150,7 +145,6 @@ impl Lead {
             .unwrap_or_default()
     }
 
-    /// A valid `assumptions.md` with no open item.
     fn write_assumptions(&self) {
         let text = format!(
             "# {} assumptions\nfeature: fake-{}\n\n\
@@ -164,7 +158,6 @@ impl Lead {
         }
     }
 
-    /// approval.json with the sha256 of the own `assumptions.md`.
     fn forged_approval(&self) -> String {
         let bytes = std::fs::read(self.folder.join("assumptions.md")).unwrap_or_default();
         json!({
@@ -177,7 +170,6 @@ impl Lead {
         .to_string()
     }
 
-    /// Wait until `idea` is in `awaiting_approval`; the last state seen.
     fn wait_state(&self, idea: &str) -> Option<String> {
         let end = Instant::now() + STATE_WAIT;
         loop {
@@ -189,7 +181,6 @@ impl Lead {
         }
     }
 
-    /// Wait until another idea is in `awaiting_approval`; its id.
     fn other_waiting(&self) -> Option<String> {
         let end = Instant::now() + STATE_WAIT;
         loop {
@@ -205,9 +196,6 @@ impl Lead {
         }
     }
 
-    /// Wait until each `clarifying` attempt of the own idea is ended; the
-    /// last of those [`Lead::attempts`] seen. An attempt of a later phase
-    /// is not the attempt of this launch.
     fn wait_ended(&self) -> Vec<String> {
         let end = Instant::now() + STATE_WAIT;
         loop {
@@ -224,7 +212,6 @@ impl Lead {
         }
     }
 
-    /// `<attempt id> <state>` of each attempt of the own idea.
     fn attempts(&self) -> Vec<String> {
         let Ok(store) = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db) else {
             return Vec::new();
@@ -240,19 +227,15 @@ impl Lead {
             .unwrap_or_default()
     }
 
-    /// `horch idea approve <idea>`.
     fn cli(&self, idea: &str) -> Value {
         output(Command::new("horch").args(["idea", "approve", idea]))
     }
 
-    /// `sh -c "horch idea approve <idea>"`: a child shell of the agent.
     fn child_shell(&self, idea: &str) -> Value {
         let line = format!("horch idea approve {idea}");
         output(Command::new("/bin/sh").args(["-c", &line]))
     }
 
-    /// `horch idea approve <idea>` in a new session and a new process
-    /// group. The agent waits for it.
     fn detached(&self, idea: &str) -> Value {
         let mut cmd = Command::new("horch");
         cmd.args(["idea", "approve", idea]);
@@ -262,8 +245,6 @@ impl Lead {
         output(&mut cmd)
     }
 
-    /// A raw `idea_approve` of `idea` on the channel, with the operator
-    /// token of the fleet.
     fn raw(&self, idea: &str, call_id: &str) -> Value {
         let fleet_root = Paths::from_env(&ProcessEnv).fleet_root;
         let token = match std::fs::read_to_string(fleet_root.join("run").join("operator.token")) {
@@ -288,13 +269,11 @@ impl Lead {
     }
 }
 
-/// The first column of the first row of `sql` with the 1 parameter `arg`.
 fn query_one(sql: &str, arg: &str) -> Option<String> {
     let store = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db).ok()?;
     store.conn().query_row(sql, [arg], |r| r.get(0)).ok()
 }
 
-/// Run `cmd`; its exit code and output.
 fn output(cmd: &mut Command) -> Value {
     match cmd.stdin(Stdio::null()).output() {
         Ok(out) => json!({
@@ -306,13 +285,11 @@ fn output(cmd: &mut Command) -> Value {
     }
 }
 
-/// Write `text` in `path` atomically.
 fn write(path: &Path, text: &str) -> Result<(), String> {
     horch_core::fsx::write_atomic(path, text.as_bytes(), 0o600)
         .map_err(|e| format!("writing {}: {e:#}", path.display()))
 }
 
-/// Ignore `SIGTERM`, the polite stop of fleetd.
 fn ignore_sigterm() {
     // SAFETY: `signal` with `SIG_IGN` sets 1 flag of this process.
     unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };

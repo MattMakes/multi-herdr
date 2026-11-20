@@ -108,8 +108,6 @@ fn check_caller(facts: &RequestFacts) -> Result<(), String> {
     }
 }
 
-/// SR-8, FR-10: only a peer that is not a fleet process. A fleet process is
-/// refused, whatever its task or persona.
 fn check_peer(peer: &PeerProcess) -> Result<String, String> {
     match peer {
         PeerProcess::Outside => Ok("token; peer outside each live attempt".into()),

@@ -1,6 +1,3 @@
-//! The fleet process fact (ticket 11 of fleetd-p5, SR-8; FR-10) with real
-//! child processes: is the peer a fleet process, by the group or by the
-//! parent chain of its wrapper.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader};
@@ -163,9 +160,6 @@ fn unreadable_parent_is_unknown() {
 
 #[test]
 fn orphan_in_the_group_of_an_ended_wrapper_is_a_fleet_process() {
-    // The wrapper starts `sleep` in its group and exits: `sleep` lives on
-    // with no parent chain to the wrapper, as an agent that outlives its
-    // attempt.
     let mut w = Wrapper::start("sleep 30 & echo $!; read _", "");
     let attempt = w.attempt("A-6");
     drop(w.child.stdin.take());

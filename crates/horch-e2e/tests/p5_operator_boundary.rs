@@ -1278,10 +1278,6 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         ],
     );
     let bundle = w.bundle(&main).to_string();
-    // The landing pass of fleetd moves the branch of a done task from
-    // `building` to `ready`, and the bundle pass drops the bundle. These
-    // moves do not come from the gate. The test waits for them before it
-    // reads the state that the gate must not change.
     wait_for_or(
         "fleetd to move the bundled branch to ready and to drop its bundle",
         || {

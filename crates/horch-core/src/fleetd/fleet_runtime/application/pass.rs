@@ -1054,9 +1054,6 @@ impl<'a> Pass<'a> {
         let panes = self.ports.outside.panes();
         let mut stopped =
             polite_stops_store::stopped(conn, |pid, start| !may_stop.contains(&(pid, start)))?;
-        // FR-10: a gone leader can leave members in its group (an agent
-        // that ignores the polite stop). The record of its polite stop
-        // stays, so the grace goes on and the hard stop comes.
         for s in &mut stopped {
             s.group = effects::group_left(s.process);
             if s.group == GroupLeft::Members {
@@ -1574,7 +1571,6 @@ impl<'a> Pass<'a> {
                         commands::attempt_live(tx, guard, &a.id, Some(wrapper))?;
                         continue;
                     }
-                    // The launch process is `horch spawn`, not the wrapper.
                     None if step == LaunchStep::Live => step = LaunchStep::Wait,
                     None => {}
                 }

@@ -380,9 +380,6 @@ fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
         .and_then(|()| writer.flush());
 }
 
-/// Is the process of `peer` a fleet process ([`fleet_process`], FR-10). A
-/// fact that is not supported or that fails to read is
-/// [`PeerProcess::Unknown`].
 fn peer_process(conn: &Connection, peer: &Peer) -> PeerProcess {
     let Ok(pid) = peer.pid else {
         return PeerProcess::Unknown;

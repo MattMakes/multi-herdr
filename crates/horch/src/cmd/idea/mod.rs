@@ -124,8 +124,6 @@ pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -
     Some(ExitCode::from(1))
 }
 
-/// Is this process a fleet process ([`fleet_process`], FR-10), from the
-/// ledger, read-only.
 fn attempt_fact(ctx: &RuntimeContext) -> Fact {
     let Ok(store) = taskledger::open_existing_read_only(ctx) else {
         return Fact::Unknown;
