@@ -28,7 +28,9 @@ use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::integration::application::commands::RefTips;
-use horch_core::taskledger::model::WorkerKind;
+use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
@@ -213,11 +215,39 @@ impl World {
             .unwrap()
     }
 
+    /// The run `r1` of the project, made in the ledger as fleetd does (Phase
+    /// 6 retired `horch ledger run new`). It has the idea in flight that a
+    /// task needs (FR-12). The run has the git base `base`, if any. Gives
+    /// the run id.
+    fn run(&self, base: Option<&str>) -> String {
+        let mut store = Store::open(&self.ledger()).unwrap();
+        store
+            .immediate(|tx| {
+                let new = NewRun {
+                    slug: "r1".into(),
+                    base_branch: base.map(Into::into),
+                    ..Default::default()
+                };
+                let run = runs::create(tx, &self.proj(), &new)?;
+                horch_core::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+                Ok(run.run_id)
+            })
+            .unwrap()
+    }
+
     /// A run `r1` with the task T-1 of [`TICKET`].
     fn run_with_task(&self) {
-        std::fs::write(self.proj().join("t1.md"), TICKET).unwrap();
-        self.ok(&["ledger", "run", "new", "r1"]);
-        self.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+        let run_id = self.run(None);
+        let mut store = Store::open(&self.ledger()).unwrap();
+        store
+            .immediate(|tx| {
+                let run = runs::get(tx, &run_id)?;
+                let mut new = NewTask::work("Alpha task", "t1.md", "dev");
+                new.ticket_snapshot = Some(TICKET.to_string());
+                tasks::add(tx, &run, &new, Actor::Orchestrator)?;
+                Ok(())
+            })
+            .unwrap();
     }
 
     /// A worker of the run that holds T-1 and has a live attempt whose
@@ -327,13 +357,7 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "cancelled");
     assert_eq!(
         w.requests(),
-        applied(&[
-            "run_new",
-            "task_add",
-            "task_requeue",
-            "ledger_waive",
-            "task_cancel"
-        ])
+        applied(&["task_requeue", "ledger_waive", "task_cancel"])
     );
 }
 
@@ -380,17 +404,18 @@ fn worktree_drop_sends_worktree_drop() {
     std::fs::write(proj.join("t1.md"), TICKET).unwrap();
     git(&proj, &["add", "t1.md"]);
     git(&proj, &["commit", "-q", "-m", "first"]);
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let id = w.ok(&[
-        "ledger",
-        "worker",
-        "new",
-        "--persona",
-        "dev",
-        "--role",
-        "dev-1",
-    ]);
-    let id = id.out.trim().to_string();
+    let run_id = w.run(Some("main"));
+    let id = workers::insert(
+        &w.conn(),
+        &NewWorker {
+            run_id,
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            role: Some("dev-1".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let env = [("HORCH_WORKER_ID", id.as_str())];
 
     let o = w.ok_with(&["ledger", "worktree", "scratch", "try"], &env);
@@ -418,7 +443,7 @@ fn worktree_drop_sends_worktree_drop() {
     assert_eq!(w.one("SELECT status FROM worktrees"), "abandoned");
     assert_eq!(
         w.requests(),
-        applied(&["run_new", "worker_new", "worktree_scratch", "worktree_drop"])
+        applied(&["worktree_scratch", "worktree_drop"])
     );
 }
 
