@@ -484,10 +484,6 @@ impl World {
         })
     }
 
-    /// A drift: a new Claude Code binary whose agent does not obey the
-    /// prompt of the check "Stop gate" (it leaves a result), after a first
-    /// round that passed. Gives the failed `conformance` run of the new
-    /// binary.
     fn drift(&self) -> Job {
         let first = self.first_round();
         let last = first.iter().map(|j| j.id).max().unwrap();
