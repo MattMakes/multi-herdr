@@ -8,9 +8,17 @@
 //! temp copy of `crates/horch-core/tests/fixtures/context/home`, the state
 //! dir is temp, the project is `/fixture` (the fixture transcripts' slug),
 //! and the managed-settings path points at a file that does not exist.
+//!
+//! `horch note` sends its session record writes to fleetd (RR-5). A test
+//! that runs it starts a test fleetd (`World::start_fleetd`) on a ledger and a
+//! fleet root of a short temporary folder.
+
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use support::fleetd::{short_tempdir, TestFleetd};
 
 /// The project the fixture transcripts are under (`~/.claude/projects/-fixture`).
 const PROJECT: &str = "/fixture";
@@ -50,8 +58,12 @@ fn record(id: &str, role: &str, agent: &str, tier: &str, sid: &str) -> serde_jso
     })
 }
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     _tmp: tempfile::TempDir,
+    /// The ledger and the fleet root: a short folder, for the socket path.
+    short: tempfile::TempDir,
     root: PathBuf,
 }
 
@@ -101,22 +113,49 @@ impl World {
                 .path()
                 .to_path_buf();
         std::fs::write(path, serde_json::to_string_pretty(&ledger).unwrap()).unwrap();
-        World { _tmp: tmp, root }
+        World {
+            _fleetd: None,
+            _tmp: tmp,
+            short: short_tempdir(),
+            root,
+        }
     }
 
-    fn horch(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_horch"))
-            .args(args)
-            .current_dir(&self.root)
+    /// Serve the channel of the fleet of this world with a test fleetd.
+    fn start_fleetd(&mut self) {
+        self._fleetd = Some(TestFleetd::start(self.command(), &self.fleet_root()));
+    }
+
+    fn fleet_root(&self) -> PathBuf {
+        self.short.path().join("fleet")
+    }
+
+    fn ledger_db(&self) -> PathBuf {
+        self.short.path().join("ledger.sqlite3")
+    }
+
+    /// The `horch` binary with the environment of the test.
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
+        cmd.current_dir(&self.root)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.join("home"))
             .env("HORCH_STATE_DIR", self.root.join("state"))
+            .env("HORCH_LEDGER_DB", self.ledger_db())
+            .env("FLEET_ROOT", self.fleet_root())
+            .env("HORCH_NO_WATCHDOG", "1")
             .env("HORCH_PROJECT_DIR", PROJECT)
             .env(
                 "HORCH_CLAUDE_MANAGED_SETTINGS",
                 self.root.join("managed-settings.json"),
-            )
+            );
+        cmd
+    }
+
+    fn horch(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.command()
+            .args(args)
             .envs(env.iter().copied())
             .output()
             .unwrap()
@@ -132,8 +171,9 @@ impl World {
     }
 
     fn history(&self, id: &str) -> Vec<(String, String)> {
-        let ledger = horch_core::execution::records::SessionLedger::for_project(
-            self.root.join("state"),
+        let ledger = horch_core::execution::store::ExecutionStore::in_db(
+            &self.root.join("state"),
+            &self.ledger_db(),
             PROJECT,
         );
         ledger
@@ -150,7 +190,8 @@ impl World {
 /// `horch context --over` and the `horch note` warning on the fixture home.
 #[test]
 fn ctx_01_cli_table_from_fixture_home() {
-    let w = World::new();
+    let mut w = World::new();
+    w.start_fleetd();
     let table = w.stdout(&["context"], &[]);
     let want = "\
 ROLE          HARNESS  MODEL             CONTEXT     WINDOW   NATIVE  SOURCE          THRESHOLD  LAST COMPACT              COMPACTIONS  STATE
@@ -724,7 +765,8 @@ fn cell(table: &str, role: &str, column: &str) -> String {
 /// row with 1 function.
 #[test]
 fn ctx_21_compact_at_sets_base() {
-    let w = World::new();
+    let mut w = World::new();
+    w.start_fleetd();
     let dir = w.root.join("home/.config/horch/teammates");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -783,7 +825,8 @@ fn ctx_21_compact_at_sets_base() {
 /// before routing provenance names it in `via` only.
 #[test]
 fn ctx_21_substituted_launch_takes_the_fallback_compact_at() {
-    let w = World::new();
+    let mut w = World::new();
+    w.start_fleetd();
     let dir = w.root.join("home/.config/horch/teammates");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
