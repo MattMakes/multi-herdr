@@ -105,12 +105,20 @@ fn policy(_: &Task) -> Policy {
     Policy::default()
 }
 
-/// No worker of a test has a sandbox profile.
-struct NoProfiles;
+/// The sandbox profile of a test: each worker gets the plain shell in its
+/// work folder. Only a test uses it.
+struct TestProfile;
 
-impl SandboxProfiles for NoProfiles {
-    fn check_launch(&self, _: &Worker, _: &Path, _: &str) -> Result<Option<LaunchSpec>> {
-        Ok(None)
+impl SandboxProfiles for TestProfile {
+    fn check_launch(&self, _: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>> {
+        Ok(Some(LaunchSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), check.into()],
+            cwd: Some(dir.to_path_buf()),
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        }))
     }
 }
 
@@ -400,7 +408,7 @@ impl World {
         };
         let checks = CheckRunner {
             host: &Launcher,
-            profiles: &NoProfiles,
+            profiles: &TestProfile,
             sweep: Some(&self.tools),
         };
         let o = jobs::run_job(&ctx, &mut conn, row.id, me, &checks)

@@ -29,6 +29,7 @@
 //!
 //! Each state change goes through `transition()`.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -62,6 +63,7 @@ use crate::fleetd::worker_profiles::application::docs_sync::{self, DocsSyncRunne
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worker_profiles::domain::conformance::{Check, ConformanceReport};
 use crate::fleetd::worktree_custody::adapters::executors;
+use crate::taskledger::finish::complexity::{ToolRun, ToolRunner};
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::runs;
@@ -734,7 +736,7 @@ pub fn run_job_with(
     };
     let ran = match row.kind {
         Kind::TaskCheck if review::is_complexity_key(&row.input_key) => {
-            complexity_sweep(conn, &row, runners.checks.sweep)?
+            complexity_sweep(conn, &row, runners.checks)?
         }
         Kind::TaskCheck => task_check(conn, &row, runners.checks)?.into(),
         Kind::DocsSync => match runners.docs {
@@ -1130,12 +1132,13 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
 }
 
 /// The `task_check` run of the complexity-sweep of a task (ticket 20 of
-/// fleetd-p4): today's step `finish::complexity`, called in this job
-/// process for the attempt of the task's worker. Its step outcome is the
-/// `data` of the result. It runs clippy and the analyser with the rights of
-/// this process, not in the sandbox of the worker, as today's finish runs
-/// it.
-fn complexity_sweep(conn: &Connection, row: &JobRow, tools: Option<&finish::Tools>) -> Result<Ran> {
+/// fleetd-p4): today's step `finish::complexity`, for the attempt of the
+/// task's worker. Its step outcome is the `data` of the result. clippy and
+/// the analyser run code of the branch (a build script, for example), so
+/// each runs in the sandbox profile of the worker (SR-4, R1-F1), as the
+/// check of the task runs. A task with no worker, or a worker with no
+/// sandbox profile, gets no complexity-sweep.
+fn complexity_sweep(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Result<Ran> {
     let no_verdict = |text: String| {
         Ran::from(Outcome {
             passed: false,
@@ -1143,18 +1146,40 @@ fn complexity_sweep(conn: &Connection, row: &JobRow, tools: Option<&finish::Tool
             text,
         })
     };
-    let Some(tools) = tools else {
+    let Some(tools) = checks.sweep else {
         return Ok(no_verdict(
             "this job process has no tools of the finish steps".into(),
         ));
     };
     let task = tasks::get(conn, &row.subject)?;
     let Some(worker_id) = task.current_worker_id.as_deref() else {
-        return Ok(no_verdict(format!("{} has no worker", task.short())));
+        return Ok(no_verdict(format!(
+            "SR-4: {} has no worker, so its complexity-sweep has no sandbox profile; \
+             a check never runs with the rights of fleetd",
+            task.short()
+        )));
     };
-    let o = match finish::VerifierAttempt::open(conn, tools, &task.task_id, worker_id)
-        .and_then(|a| a.complexity_sweep(conn))
+    let worker = workers::get(conn, worker_id)?;
+    let att = match finish::VerifierAttempt::open(conn, tools, &task.task_id, worker_id) {
+        Ok(a) => a,
+        Err(e) => return Ok(no_verdict(format!("complexity-sweep: {e:#}"))),
+    };
+    if checks
+        .profiles
+        .check_launch(&worker, att.dir(), "true")?
+        .is_none()
     {
+        return Ok(no_verdict(format!(
+            "SR-4: worker {worker_id} of {} has no sandbox profile; \
+             a check never runs with the rights of fleetd",
+            task.short()
+        )));
+    }
+    let runner = WorkerTools {
+        checks,
+        worker: &worker,
+    };
+    let o = match att.complexity_sweep(conn, &runner) {
         Ok(o) => o,
         Err(e) => return Ok(no_verdict(format!("complexity-sweep: {e:#}"))),
     };
@@ -1166,6 +1191,73 @@ fn complexity_sweep(conn: &Connection, row: &JobRow, tools: Option<&finish::Tool
         },
         data: Some(review::step_data(&o)),
     })
+}
+
+/// The tools of a complexity-sweep, each started as a check of `worker`:
+/// in its sandbox profile, through [`run_check`] (SR-4). The launcher sends
+/// stdout and stderr to 1 file, so the shell writes stderr after a marker
+/// line, and the runner splits the file there.
+struct WorkerTools<'a> {
+    checks: &'a CheckRunner<'a>,
+    worker: &'a Worker,
+}
+
+impl ToolRunner for WorkerTools<'_> {
+    fn run(&self, program: &Path, args: &[OsString], dir: &Path, stdout: &Path) -> Result<ToolRun> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let marker = format!("horch-stderr-{}-{nanos}", std::process::id());
+        let script = tool_script(program, args, &marker);
+        let Some(mut spec) = self
+            .checks
+            .profiles
+            .check_launch(self.worker, dir, &script)?
+        else {
+            bail!(
+                "SR-4: worker {} has no sandbox profile; a check never runs with the rights of fleetd",
+                self.worker.worker_id
+            );
+        };
+        // The launcher appends to the file.
+        std::fs::File::create(stdout)?;
+        spec.output = Some(stdout.to_path_buf());
+        let status = run_check(self.checks.host, &spec)?;
+        let all = std::fs::read(stdout)?;
+        let (out, err) = split_stderr(&all, &marker);
+        std::fs::write(stdout, out)?;
+        Ok(ToolRun {
+            success: status.success(),
+            stderr: String::from_utf8_lossy(err).into_owned(),
+        })
+    }
+}
+
+/// The POSIX shell script that runs `program` with `args`, then prints a
+/// line with `marker` and the stderr of the program. Its exit code is the
+/// exit code of the program, or 125 when it has no temp file for stderr.
+/// The temp file is in `$TMPDIR`, which each sandbox profile can write:
+/// macOS `mktemp` with no template ignores `$TMPDIR`.
+fn tool_script(program: &Path, args: &[OsString], marker: &str) -> String {
+    let quote = |w: &std::ffi::OsStr| format!("'{}'", w.to_string_lossy().replace('\'', r"'\''"));
+    let words: Vec<String> = std::iter::once(program.as_os_str())
+        .chain(args.iter().map(OsString::as_os_str))
+        .map(quote)
+        .collect();
+    format!(
+        "e=$(mktemp \"${{TMPDIR:-/tmp}}/horch-stderr.XXXXXX\") || exit 125\n{} 2>\"$e\"\ns=$?\nprintf '\\n%s\\n' '{marker}'\ncat \"$e\"\nrm -f \"$e\"\nexit \"$s\"\n",
+        words.join(" ")
+    )
+}
+
+/// The stdout and the stderr of the output `all` of [`tool_script`]. With
+/// no marker line, the script did not end, and all of it is stderr.
+fn split_stderr<'b>(all: &'b [u8], marker: &str) -> (&'b [u8], &'b [u8]) {
+    let sep = format!("\n{marker}\n");
+    match all.windows(sep.len()).position(|w| w == sep.as_bytes()) {
+        Some(i) => (&all[..i], &all[i + sep.len()..]),
+        None => (&[], all),
+    }
 }
 
 /// The sandbox profiles of workers, as the check of a task needs them

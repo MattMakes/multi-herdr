@@ -25,6 +25,7 @@ use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::dispatch::{
     choices, CheckSandboxes, NO_CHECK_SANDBOX,
 };
+use horch_core::fleetd::task_execution::application::review;
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::{
     WorkerSandboxes, NO_CHECK_SANDBOX_KIND,
@@ -34,11 +35,12 @@ use horch_core::fleetd::worker_profiles::application::ports::{
     LaunchError, LaunchSpec, Launched, ProcessHost,
 };
 use horch_core::harness::launch::FORBIDDEN_ENV;
-use horch_core::taskledger::finish::CodexSandbox;
-use horch_core::taskledger::model::{Actor, WorktreeMode};
+use horch_core::taskledger::finish::{CodexSandbox, Tools};
+use horch_core::taskledger::git::Git;
+use horch_core::taskledger::model::{Actor, StepName, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use horch_core::taskledger::{schema, util};
 use horch_platform::NotSupported;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -204,10 +206,23 @@ impl World {
         profiles: &dyn SandboxProfiles,
         host: &dyn ProcessHost,
     ) -> (State, Outcome) {
+        self.task_check_job(task, "tip1", profiles, host, None)
+    }
+
+    /// [`World::check`] for the `task_check` job with `input_key`, with the
+    /// tools `sweep` of a complexity-sweep.
+    fn task_check_job(
+        &mut self,
+        task: &str,
+        input_key: &str,
+        profiles: &dyn SandboxProfiles,
+        host: &dyn ProcessHost,
+        sweep: Option<&Tools>,
+    ) -> (State, Outcome) {
         let key = JobKey {
             kind: Kind::TaskCheck,
             subject: task,
-            input_key: "tip1",
+            input_key,
         };
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -246,10 +261,12 @@ impl World {
         let checks = CheckRunner {
             host,
             profiles,
-            sweep: None,
+            sweep,
         };
         let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
+        // The job process writes its result file; a pass ends the run from it.
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         let row = self.row(id);
         (row.state, outcome(&row).unwrap())
     }
@@ -483,4 +500,213 @@ fn check_job_has_no_forbidden_env() {
             "{key} reached the check"
         );
     }
+}
+
+/// No worker of a test has a sandbox profile.
+struct NoProfiles;
+
+impl SandboxProfiles for NoProfiles {
+    fn check_launch(&self, _: &Worker, _: &Path, _: &str) -> anyhow::Result<Option<LaunchSpec>> {
+        Ok(None)
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "git {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+impl World {
+    /// The tools of a complexity-sweep: no analyser, so only clippy runs.
+    fn sweep_tools(&self) -> Tools {
+        Tools {
+            git: Git::new("git"),
+            gh: "gh".into(),
+            node: "node".into(),
+            complexity_cli: None,
+            code_sweep_dir: None,
+            evidence_root: self.dir.path().join("evidence"),
+            shell: "/bin/sh".into(),
+            reviewers_down: Vec::new(),
+            codex: CodexSandbox::default(),
+            jobs: None,
+        }
+    }
+
+    /// A running `fast_gate` job, with the process `true` as its job
+    /// process.
+    fn running_gate(&mut self) -> i64 {
+        let config = self.config.clone();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        let key = JobKey {
+            kind: Kind::FastGate,
+            subject: "feature-1",
+            input_key: "gate1",
+        };
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let q = jobs::queue(&ctx, &tx, &key, Some("/repo"), FleetSeconds(0)).unwrap();
+        tx.commit().unwrap();
+        let Queued::New(id) = q else {
+            panic!("expected a new run, got {q:?}");
+        };
+        let launcher = Launcher;
+        let mut runner = JobRunner::new(&launcher);
+        let spec = LaunchSpec {
+            program: "true".into(),
+            args: Vec::new(),
+            cwd: None,
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        };
+        for job in jobs::due_to_start(&self.conn, FleetSeconds(0)).unwrap() {
+            assert!(runner
+                .start(&ctx, &mut self.conn, &job, &spec, FleetSeconds(0))
+                .unwrap());
+        }
+        assert_eq!(self.row(id).state, State::Running);
+        id
+    }
+
+    /// End each run whose result file is in, as a pass of fleetd does.
+    fn end_from_files(&mut self) {
+        let config = self.config.clone();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
+    }
+}
+
+/// The input key of the complexity-sweep job of a task.
+fn complexity_key() -> String {
+    review::step_input_key(
+        "tip1",
+        StepName::ComplexitySweep,
+        review::COMPLEXITY_COMMAND,
+    )
+}
+
+/// R1-F1 (SR-4, SR-6): the complexity-sweep runs `cargo clippy`, and so a
+/// build script of the worker, in the sandbox profile of the worker. The
+/// build script cannot write a passing result file for another running
+/// job into `<fleet root>/run/jobs/`.
+#[test]
+fn complexity_sweep_build_script_cannot_forge_another_running_job_result() {
+    let mut w = world();
+    w.conn
+        .execute(
+            "UPDATE runs SET base_branch = 'main' WHERE run_id = ?1",
+            [&w.run.run_id],
+        )
+        .unwrap();
+    let gate = w.running_gate();
+    let jobs_dir = w.fleet_root.join("run").join("jobs");
+    std::fs::create_dir_all(&jobs_dir).unwrap();
+    let forged = jobs_dir.join(format!("{gate}-1.json"));
+    let payload =
+        format!(r#"{{"job_id":{gate},"run":1,"passed":true,"verdict":true,"text":"forged"}}"#);
+
+    // The worktree: a cargo crate on `main`, then 1 commit that changes
+    // src/lib.rs and adds a build script that forges the result file.
+    let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
+    let wt = w.worktree(&task);
+    git(&wt, &["init", "--quiet", "-b", "main"]);
+    for (k, v) in [
+        ("user.name", "t"),
+        ("user.email", "t@example.com"),
+        ("commit.gpgsign", "false"),
+    ] {
+        git(&wt, &["config", k, v]);
+    }
+    std::fs::create_dir_all(wt.join("src")).unwrap();
+    std::fs::write(
+        wt.join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(wt.join(".gitignore"), "target/\nbuild-ran\n").unwrap();
+    std::fs::write(wt.join("src/lib.rs"), "pub fn a() -> u32 {\n    1\n}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "--quiet", "-m", "base"]);
+    git(&wt, &["checkout", "--quiet", "-b", "fleet/t"]);
+    std::fs::write(wt.join("src/lib.rs"), "pub fn a() -> u32 {\n    2\n}\n").unwrap();
+    let build = format!(
+        "fn main() {{\n    let dir = std::env::var(\"CARGO_MANIFEST_DIR\").unwrap();\n    \
+         std::fs::write(format!(\"{{dir}}/build-ran\"), \"1\").unwrap();\n    \
+         use std::io::Write;\n    use std::os::unix::fs::OpenOptionsExt;\n    \
+         let f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open({forged:?});\n    \
+         if let Ok(mut f) = f {{\n        let _ = f.write_all({payload:?}.as_bytes());\n    }}\n}}\n"
+    );
+    std::fs::write(wt.join("build.rs"), build).unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "--quiet", "-m", "work"]);
+
+    let tools = w.sweep_tools();
+    let sandboxes = w.host_sandboxes();
+    let key = complexity_key();
+    let (state, o) = w.task_check_job(&task, &key, &sandboxes, &Launcher, Some(&tools));
+    match host_gap() {
+        None => {
+            assert_eq!(state, State::Passed, "{}", o.text);
+            assert!(o.verdict, "{}", o.text);
+            assert!(
+                wt.join("build-ran").exists(),
+                "the build script ran: {}",
+                o.text
+            );
+            let evidence = tools.evidence_root.join(&task);
+            let clippy: Vec<String> = std::fs::read_dir(&evidence)
+                .unwrap()
+                .flat_map(|d| std::fs::read_dir(d.unwrap().path()).unwrap())
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.to_string_lossy().ends_with("-clippy.json"))
+                .map(|p| std::fs::read_to_string(p).unwrap())
+                .collect();
+            assert_eq!(clippy.len(), 1, "1 clippy report");
+            assert!(
+                clippy[0].contains("\"reason\":\"build-finished\""),
+                "the report holds the stdout of clippy: {}",
+                clippy[0]
+            );
+        }
+        Some(_) => assert_not_run(state, &o),
+    }
+    // A pass archives each result file it read.
+    let archived = jobs_dir.join("archive").join(format!("{gate}-1.json"));
+    assert!(
+        !forged.exists() && !archived.exists(),
+        "the build script wrote a result file for job {gate}"
+    );
+    w.end_from_files();
+    assert_eq!(
+        w.row(gate).state,
+        State::Running,
+        "the other running gate job is still running"
+    );
+
+    // A worker with no sandbox profile gets no complexity-sweep.
+    let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
+    let (state, o) = w.task_check_job(&task, &key, &NoProfiles, &Launcher, Some(&tools));
+    assert_not_run(state, &o);
 }
