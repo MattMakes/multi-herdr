@@ -2757,8 +2757,10 @@ mod tests {
 
         let read = |d: &Path| std::fs::read_to_string(d.join("rules/horch.rules")).unwrap();
         assert!(read(&worker).contains(r#"pattern = ["horch", "done"]"#));
-        assert!(!read(&worker).contains(r#"pattern = ["horch", "spawn"]"#));
-        assert!(read(&orchestrator).contains(r#"pattern = ["horch", "spawn"]"#));
+        // Phase 6 retired the `horch spawn` rule; `horch sessions` is an
+        // orchestrator-only command now.
+        assert!(!read(&worker).contains(r#"pattern = ["horch", "sessions"]"#));
+        assert!(read(&orchestrator).contains(r#"pattern = ["horch", "sessions"]"#));
         assert!(!read(&orchestrator).contains(r#"pattern = ["horch", "done"]"#));
 
         // And the shared file the operator owns was never touched.
