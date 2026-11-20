@@ -44,6 +44,9 @@ use horch_core::fleetd::fleet_runtime::adapters::effects::{
 };
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
+use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
+    fleet_process, recorded_processes, Fact, PlatformFacts,
+};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{
     outbox_dir, requests_dir, CliPath, FolderItem,
 };
@@ -351,10 +354,52 @@ pub(crate) fn restart_older(fleet: &Fleet<'_>, installed: &Path) -> Result<Optio
 /// `exe`, and wait for the new fleetd in the row.
 fn restart(fleet: &Fleet<'_>, old: Fleetd, found: Found, exe: &Path) -> Result<Option<Fleetd>> {
     if fleet.mode == Mode::StandIn {
+        refuse_fleet_caller(fleet.ledger)?;
         stop(fleet, old, found)?;
     }
     (fleet.start)(exe)?;
     Ok(wait_for_new(fleet.ledger, old))
+}
+
+/// Refuse a stand-in restart when this process is a fleet process, or when
+/// that fact is unknown (SR-8, FR-10). A stand-in fleetd gets the env of
+/// the process that starts it, and a worker can set each variable that
+/// fleetd reads, `HORCH_FAULT` too. So only an operator process stops and
+/// starts a stand-in fleetd. The check refuses before it stops the old
+/// fleetd, so a refusal never leaves the fleet with none.
+///
+/// Windows gap: there each fact is unknown while the ledger records a
+/// fleet process (`peer_process`), so the operator starts `horch fleetd`
+/// by hand there.
+fn refuse_fleet_caller(ledger: &Path) -> Result<()> {
+    let reason = match own_fact(ledger) {
+        Fact::No => return Ok(()),
+        Fact::Yes(attempts) => format!(
+            "this process is a fleet process of attempt {}",
+            attempts.join(", ")
+        ),
+        Fact::Unknown => {
+            "horch cannot prove that this process runs outside a fleet attempt, because a process fact is unknown".into()
+        }
+    };
+    bail!(
+        "a fleet process stops and starts no fleetd: {reason}. Run `horch fleetd check` yourself from a terminal outside the fleet"
+    )
+}
+
+/// The fleet process fact of this process on `ledger`. A ledger that does
+/// not exist records no fleet process.
+fn own_fact(ledger: &Path) -> Fact {
+    if !ledger.is_file() {
+        return Fact::No;
+    }
+    let Ok(store) = Store::open_read_only(ledger) else {
+        return Fact::Unknown;
+    };
+    match recorded_processes(store.conn()) {
+        Ok(Some((recorded, _))) => fleet_process(std::process::id(), &recorded, &PlatformFacts),
+        Ok(None) | Err(_) => Fact::Unknown,
+    }
 }
 
 /// Stop the old fleetd `old` by its PID and start time, then wait until
@@ -684,6 +729,15 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     // fleetd row: an install after the row is then a new binary.
     let own_exe = this_exe();
     let horch = std::env::current_exe().context("finding the horch binary")?;
+    // SR-8: a fleet process runs no fleetd, so a worker cannot give fleetd
+    // its env (`HORCH_FAULT` too). An unknown fact does not refuse: on
+    // Windows each fact is unknown, also for the service.
+    if let Fact::Yes(attempts) = own_fact(&ctx.paths.ledger_db) {
+        bail!(
+            "horch fleetd: refused inside a fleet attempt: this process is a fleet process of attempt {}. Only an operator process or the service manager starts fleetd",
+            attempts.join(", ")
+        );
+    }
     let root = &ctx.paths.fleet_root;
     let writer = LedgerWriter::fleetd();
     let mut store = writer.open(&ctx.paths.ledger_db)?;
@@ -1681,6 +1735,89 @@ mod tests {
             "the new fleetd runs the new binary"
         );
         assert!(checked.new.is_some_and(alive));
+    }
+
+    /// Record a live attempt of the ledger of `w` whose wrapper is this
+    /// test process, as fleetd records a launch: this process is then a
+    /// fleet process by the rule `fleet_process`.
+    fn record_this_process_as_an_attempt(w: &World) {
+        use horch_core::taskledger::workers::{self, NewWorker};
+        let pid = std::process::id();
+        let start = horch_core::procid::start_time(pid).unwrap();
+        let store = Store::open(&w.ledger).unwrap();
+        let conn = store.conn();
+        let run = runs::create(conn, w.dir.path(), &runs::solo_new_run("w1")).unwrap();
+        let worker = workers::insert(
+            conn,
+            &NewWorker {
+                run_id: run.run_id,
+                persona: "dev".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attempts (id, worker_id, pid, pid_start, state, started_at)
+             VALUES ('A-1', ?1, ?2, ?3, 'live', '2026-11-18T12:00:00Z')",
+            rusqlite::params![worker, pid, i64::try_from(start).unwrap()],
+        )
+        .unwrap();
+    }
+
+    /// SR-8: a fleet process that runs a `horch` command with
+    /// `HORCH_FAULT=hang-pass` in its env, while the fleetd of a stand-in
+    /// fleet is dead or hung, starts no fleetd. So no fleetd gets its fault
+    /// or any other variable of its env. It also stops no fleetd, so a
+    /// refused restart never leaves the fleet with none.
+    #[cfg(unix)]
+    #[test]
+    fn a_stand_in_start_from_a_fleet_process_gives_fleetd_no_fault_and_no_caller_env() {
+        let w = World::new();
+        record_this_process_as_an_attempt(&w);
+        let hung = w.process();
+        w.record(hung);
+        w.heartbeat(hung, 31);
+        let dead = Fleetd {
+            pid_start: hung.pid_start + 1,
+            ..hung
+        };
+        for (old, found) in [(hung, "hung"), (dead, "dead")] {
+            w.record(old);
+            let (checked, starts) = w.run(Mode::StandIn, check_with);
+            let err = format!("{:#}", checked.expect_err(found));
+            assert!(
+                err.contains("fleet process of attempt A-1"),
+                "{found}: {err}"
+            );
+            assert!(
+                starts.is_empty(),
+                "{found}: a fleet process started {starts:?}"
+            );
+            assert_eq!(w.row(), Some(old), "{found}: the fleetd row changed");
+            assert!(alive(hung), "{found}: a fleet process stopped the fleetd");
+        }
+    }
+
+    /// SR-8: a fleet process that runs `horch fleetd` itself, with
+    /// `HORCH_FAULT=hang-pass`, gets no fleetd: the daemon refuses before it
+    /// takes the lock or writes the `fleetd` row.
+    #[cfg(unix)]
+    #[test]
+    fn a_fleet_process_runs_no_fleetd_daemon() {
+        let w = World::new();
+        record_this_process_as_an_attempt(&w);
+        let env = MapEnv::new(w.root.parent().unwrap())
+            .with("HOME", &w.root.to_string_lossy())
+            .with("HORCH_LEDGER_DB", &w.ledger.to_string_lossy())
+            .with("FLEET_ROOT", &w.root.to_string_lossy())
+            .with("HORCH_FAULT", "hang-pass");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = format!(
+            "{:#}",
+            daemon(&ctx).expect_err("a fleet process ran fleetd")
+        );
+        assert!(err.contains("fleet process of attempt A-1"), "{err}");
+        assert_eq!(w.row(), None, "the refused fleetd wrote the fleetd row");
     }
 
     #[cfg(unix)]
