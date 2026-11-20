@@ -168,7 +168,40 @@ impl Harness {
             #[cfg(not(unix))]
             let _ = std::fs::copy(sqlite, h.bin.join(exe("sqlite3")));
         }
+        #[cfg(target_os = "linux")]
+        {
+            // The Linux sandbox of fleetd needs the real `bwrap` and
+            // `socat`. Only links to these 2 go on the sealed `PATH`, in a
+            // folder of their own after the fakes, so no other host tool
+            // becomes visible.
+            let host = h.host_bin();
+            std::fs::create_dir_all(&host).expect("creating the host tool dir");
+            for tool in ["bwrap", "socat"] {
+                if let Some(real) = find_on_real_path(tool) {
+                    let _ = std::os::unix::fs::symlink(real, host.join(tool));
+                }
+            }
+        }
         h
+    }
+
+    /// Linux: the folder of links to the real `bwrap` and `socat`, on the
+    /// sealed `PATH` after [`Harness::bin`].
+    #[cfg(target_os = "linux")]
+    fn host_bin(&self) -> PathBuf {
+        self.root.join("host-bin")
+    }
+
+    /// The sealed `PATH`: the fakes, and on Linux then [`Harness::host_bin`].
+    fn sealed_path(&self) -> String {
+        #[cfg(target_os = "linux")]
+        let dirs = vec![self.bin.clone(), self.host_bin()];
+        #[cfg(not(target_os = "linux"))]
+        let dirs = vec![self.bin.clone()];
+        std::env::join_paths(dirs)
+            .expect("the harness folders hold no PATH separator")
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Give this harness a real git repository: 2 files and 1 commit on branch
@@ -372,7 +405,7 @@ impl Harness {
         cmd.current_dir(&self.project);
         let tmp = self.tmp.to_string_lossy().into_owned();
         let mut env: BTreeMap<String, String> = BTreeMap::new();
-        env.insert("PATH".into(), self.bin.to_string_lossy().into_owned());
+        env.insert("PATH".into(), self.sealed_path());
         env.insert("HOME".into(), self.home.to_string_lossy().into_owned());
         env.insert(
             "USERPROFILE".into(),
