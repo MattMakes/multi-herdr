@@ -61,12 +61,7 @@ fn fleet(name: &str) -> (Harness, Store, String) {
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_FAKE_SCENARIO", "exec");
-    // No agent CLI on the PATH of fleetd, so it queues no conformance job.
-    // Its operator boundary probe writes a request file of mode 0644, and a
-    // pass that reads it opens a needs-you item at a random time (T-268).
-    for cli in ["claude", "codex", "agy"] {
-        std::fs::remove_file(h.bin.join(cli)).unwrap();
-    }
+    remove_agent_clis_so_fleetd_queues_no_conformance_job(&h);
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     let root = h.root.join("fleet");
@@ -93,6 +88,12 @@ fn fleet(name: &str) -> (Harness, Store, String) {
         })
         .unwrap();
     (h, store, run.run_id)
+}
+
+fn remove_agent_clis_so_fleetd_queues_no_conformance_job(h: &Harness) {
+    for cli in ["claude", "codex", "agy"] {
+        std::fs::remove_file(h.bin.join(cli)).unwrap();
+    }
 }
 
 /// Call the fake herdr of `h`; gives its stdout.
