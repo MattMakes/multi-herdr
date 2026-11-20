@@ -151,10 +151,6 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
         !default_ledger(&h).exists(),
         "doctor created the default ledger"
     );
-    // The launch of an attempt gives the note. `horch spawn` without
-    // `--attempt` is retired. The launch needs 2 fleetds: 1 on the default
-    // task ledger, which makes that ledger in the sealed home, and 1 for the
-    // session records, which a moved state dir keeps in `<state>/ledger.sqlite3`.
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
     let sessions = h.state.join("ledger.sqlite3");

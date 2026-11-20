@@ -15,8 +15,6 @@ use serde_json::Value;
 mod attempt;
 use attempt::spawn_attempt;
 
-/// The reason of the 2 tests that expect the skills briefing in the agent
-/// prompt (`crates/horch-e2e/expected-failures/skills_exposure.txt`).
 const NO_BRIEFING: &str = "the exec launch gives no skills briefing";
 
 /// Set A, sorted.
@@ -57,8 +55,6 @@ fn world(test: &str, name: &str, agent: &str, model: &str, skills: &[&str]) -> H
     );
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", "inspect_skills");
-    // `horch spawn --attempt` records its launch through fleetd, so each
-    // test has its own ledger and a test fleetd (see `spawn_attempt`).
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
@@ -101,16 +97,14 @@ fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
     report(h)
 }
 
-/// The calls of fake `fake` that launched an agent: not a `--version` or
-/// quota probe, which the test fleetd and `horch spawn` also make.
+const PROBE_FLAGS: [&str; 2] = ["--version", "--input-format"];
+
 fn agent_calls(h: &Harness, fake: &str) -> Vec<Value> {
     h.calls_of(fake)
         .into_iter()
         .filter(|c| {
             let argv = strings(&c["argv"]);
-            !argv
-                .iter()
-                .any(|a| a == "--version" || a == "--input-format")
+            !argv.iter().any(|a| PROBE_FLAGS.contains(&a.as_str()))
         })
         .collect()
 }
@@ -469,7 +463,6 @@ fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
     } else {
         ""
     };
-    // `--check` insists that a Claude worker persona has a `sandbox:` block.
     let sandbox = if agent == "claude" {
         "sandbox:\n  network:\n    allowedDomains: [\"*\"]\n"
     } else {
@@ -718,8 +711,6 @@ fn plugin_world(test: &str, name: &str) -> Harness {
     h
 }
 
-/// The session records of the project, as JSON. They live in the task
-/// ledger of the harness, since `HORCH_LEDGER_DB` names it.
 fn stored_records(h: &Harness) -> String {
     ExecutionStore::in_db(&h.state, &h.ledger_db(), &h.project.to_string_lossy())
         .stored_json()

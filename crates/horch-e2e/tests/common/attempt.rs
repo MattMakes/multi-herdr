@@ -1,7 +1,3 @@
-//! The launch of fleetd for one teammate, for the e2e tests that need a
-//! launched worker: a seeded attempt and `horch spawn <name> --attempt <id>`.
-//! `horch spawn` without `--attempt` is retired (Phase 6). A test crate that
-//! uses part of it leaves the rest unused.
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -17,20 +13,14 @@ use horch_core::taskledger::{util, Store};
 use horch_e2e::harness::{wait_for_or, Harness};
 use horch_e2e::ledger_seed::seed_run;
 
-/// A fleetd pass queues the docs and conformance jobs of each CLI, and a job
-/// ignores SIGTERM for more than a few seconds. Short limits keep each job
-/// from outliving the test.
-const FLEET_TOML: &str =
+const SHORT_JOB_LIMITS_TOML: &str =
     "pass_period_s = 1\nstop_grace_s = 1\n[job_limit_s]\ndocs_sync = 1\nconformance = 1\n";
 
-/// Short job limits for the fleetd of the fleet root `root`.
 pub fn limit_jobs(root: &Path) {
     std::fs::create_dir_all(root).unwrap();
-    std::fs::write(root.join("fleet.toml"), FLEET_TOML).unwrap();
+    std::fs::write(root.join("fleet.toml"), SHORT_JOB_LIMITS_TOML).unwrap();
 }
 
-/// The jobs of the fleetd on the ledger `db`: each ended, and no job came
-/// for 3 seconds.
 pub fn wait_for_quiet_jobs(db: &Path) {
     let mut quiet = None;
     wait_for_or(
@@ -78,10 +68,6 @@ pub fn wait_for_quiet_jobs(db: &Path) {
     );
 }
 
-/// The launch of fleetd for teammate `name`: a run, a task for `name`, its
-/// worker `<name>-1` and a `launching` attempt in the ledger of `h`, then
-/// `horch spawn <name> --attempt <id>`, as fleetd runs it. It serves the
-/// test fleetd of `h` first, so the spawn has a fleetd to talk to.
 pub fn spawn_attempt(h: &Harness, name: &str) -> Output {
     limit_jobs(&h.fleet_root());
     h.serve_fleetd();
@@ -89,14 +75,11 @@ pub fn spawn_attempt(h: &Harness, name: &str) -> Output {
     spawn_served_attempt(h, name)
 }
 
-/// [`spawn_attempt`] for a test that serves its own fleetd on the ledger of
-/// `h`, with its jobs quiet.
 pub fn spawn_served_attempt(h: &Harness, name: &str) -> Output {
     let run = seed_run(h, "skl", Some(1), "w1:p1");
     let ticket = h.project.join("skl-1.md");
     std::fs::write(&ticket, "# Probe\n\n**Check:** `true`\n").unwrap();
     let mut store = Store::open(&h.ledger_db()).unwrap();
-    // The task has no worktree row, so it runs in the shared checkout.
     let new = NewTask {
         worktree_mode: WorktreeMode::Shared,
         ..NewTask::work("Probe", &ticket.to_string_lossy(), name)
@@ -127,7 +110,6 @@ pub fn spawn_served_attempt(h: &Harness, name: &str) -> Output {
                  VALUES (?1, ?2, ?3, 'launching', 'push', ?4)",
                 rusqlite::params![attempt, task.task_id, worker, util::now()],
             )?;
-            // The task is bound, so no pass of the test fleetd dispatches it.
             tx.execute(
                 "UPDATE tasks SET status = 'running', attempts = 1, current_worker_id = ?2
                  WHERE task_id = ?1",
@@ -136,9 +118,6 @@ pub fn spawn_served_attempt(h: &Harness, name: &str) -> Output {
             Ok(())
         })
         .unwrap();
-    // fleetd writes the launch record of an attempt, then runs `horch spawn
-    // --attempt`. The record makes each pass wait for this spawn, so no
-    // pass launches the attempt a second time.
     write_launch(
         &h.fleet_root(),
         &LaunchRecord {
