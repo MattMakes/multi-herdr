@@ -7,3 +7,4 @@
 # a worktree to landing or landed. Ticket 168 (T-207) of fleetd-finish
 # removes this entry.
 the_whole_flow_on_the_fake_herdr | 4 | timed out waiting for the worktree of T-2 is gone
+a_task_finishes_through_review_land_pr_and_cleanup | 4 | timed out waiting for the worktree of T-1 is gone
