@@ -26,6 +26,7 @@ use std::time::Duration;
 use horch_core::execution::legacy::STATUS_WORKING;
 use horch_core::execution::records::{NewRecord, SessionLedger};
 use horch_core::execution::{ExecutionStatus, FailureKind};
+use horch_core::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::task_execution::adapters::attempt_files::{
     self, Found, OsProcesses, ProcessFacts, WrapperRead,
@@ -147,6 +148,15 @@ impl World {
         self.store
             .immediate(|tx| attempt_files::ingest(tx, None, reads, FleetSeconds(100), at, procs))
             .unwrap();
+    }
+
+    /// Read and apply the wrapper files at time `at`, and give the report.
+    fn ingest_report(&mut self, at: &str, procs: &dyn ProcessFacts) -> attempt_files::Report {
+        let read = self.read();
+        let reads = std::slice::from_ref(&read);
+        self.store
+            .immediate(|tx| attempt_files::ingest(tx, None, reads, FleetSeconds(100), at, procs))
+            .unwrap()
     }
 
     /// Read and apply the wrapper files at time `at`.
@@ -684,4 +694,139 @@ fn horch_ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
         "{report:?}"
     );
     assert_eq!(w.worker_row().status().unwrap(), WorkerStatus::Stopped);
+}
+
+// ─── SR-8: the wrapper is recorded before its agent starts ──────────────
+
+/// The pid and the start time of the wrapper of the wrapper-only tests.
+const WRAPPER: (u32, u64) = (5004241, 66);
+
+impl World {
+    /// The attempt goes back to `launching`, and fleetd launched it: its
+    /// launch record exists.
+    fn launched(&self) {
+        self.launching();
+        effects::write_launch(
+            &self.fleet_root,
+            &LaunchRecord {
+                attempt: self.attempt.attempt_id.clone(),
+                launched_at: FleetSeconds(90),
+                process: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// The attempt goes back to `launching`, with no launch record.
+    fn launching(&self) {
+        self.store
+            .conn()
+            .execute(
+                "UPDATE attempts SET state = 'launching' WHERE id = ?1",
+                [&self.attempt.attempt_id],
+            )
+            .unwrap();
+    }
+
+    /// A heartbeat of the wrapper `wrapper` before its agent starts.
+    fn wrapper_only(&self, seq: u64, wrapper: u32) {
+        let mut hb = self.heartbeat_json(seq, 0, "starting");
+        hb["pid"] = serde_json::Value::Null;
+        hb["proc_state"] = serde_json::Value::Null;
+        hb["wrapper"] = wrapper.into();
+        self.write_raw(HEARTBEAT_JSON, hb.to_string().as_bytes());
+    }
+
+    fn supervisor(&self) -> (Option<i64>, Option<i64>) {
+        let row = self.worker_row();
+        (row.supervisor_pid, row.supervisor_started)
+    }
+}
+
+fn recorded(p: (u32, u64)) -> (Option<i64>, Option<i64>) {
+    (Some(i64::from(p.0)), Some(p.1 as i64))
+}
+
+/// The wrapper writes its heartbeat before its agent starts: the file
+/// names the wrapper and no agent, and fleetd records the wrapper of the
+/// launched attempt on its worker row.
+#[test]
+fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
+    let mut w = World::new();
+    w.launched();
+    let me = std::process::id();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(me, (55, Some(1)));
+    w.files().write_heartbeat(&AgentFacts::new(None)).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(w.dir().join(HEARTBEAT_JSON)).unwrap()).unwrap();
+    assert_eq!(written["pid"], serde_json::Value::Null, "{written}");
+    assert_eq!(written["wrapper"], me, "{written}");
+
+    let report = w.ingest_report(T1, &procs);
+    assert_eq!(w.supervisor(), recorded((me, 55)));
+    assert_eq!(w.worker_row().agent_pid, None);
+    assert_eq!(
+        report.wrappers.get(&w.attempt.attempt_id).map(|r| r.pid),
+        Some(me),
+        "{report:?}"
+    );
+}
+
+/// A second wrapper-only heartbeat with another pid does not replace a
+/// recorded wrapper that still runs.
+#[test]
+fn wrapper_only_heartbeat_does_not_replace_a_recorded_wrapper_that_runs() {
+    let mut w = World::new();
+    w.launched();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    procs.0.insert(5004243, (88, Some(1)));
+    w.wrapper_only(1, WRAPPER.0);
+    w.pass(T1, &procs);
+    assert_eq!(w.supervisor(), recorded(WRAPPER));
+
+    w.wrapper_only(2, 5004243);
+    let report = w.ingest_report(T2, &procs);
+    assert_eq!(w.supervisor(), recorded(WRAPPER));
+    assert!(report.wrappers.is_empty(), "{report:?}");
+}
+
+/// fleetd records a wrapper only for an attempt that it launched.
+#[test]
+fn wrapper_only_heartbeat_of_an_attempt_with_no_launch_is_not_used() {
+    let mut w = World::new();
+    w.launching();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    w.wrapper_only(1, WRAPPER.0);
+    let report = w.ingest_report(T1, &procs);
+    assert_eq!(w.supervisor(), (None, None));
+    assert!(report.wrappers.is_empty(), "{report:?}");
+}
+
+/// A heartbeat in the folder of an attempt that the ledger does not have
+/// is refused: no row changes.
+#[test]
+fn heartbeat_of_an_unknown_attempt_is_refused() {
+    let mut w = World::new();
+    let unknown = AttemptRef {
+        task_id: w.attempt.task_id.clone(),
+        attempt_id: format!("{}/A9", w.attempt.task_id),
+    };
+    w.attempt = unknown.clone();
+    w.launched();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    let mut hb = w.heartbeat_json(1, 0, "starting");
+    hb["attempt"] = "A9".into();
+    hb["pid"] = serde_json::Value::Null;
+    hb["wrapper"] = WRAPPER.0.into();
+    w.write_raw(HEARTBEAT_JSON, hb.to_string().as_bytes());
+    let report = w.ingest_report(T1, &procs);
+    assert!(report.checkins.is_empty() && report.wrappers.is_empty(), "{report:?}");
+    assert_eq!(
+        w.count("SELECT count(*) FROM workers WHERE supervisor_pid IS NOT NULL"),
+        0
+    );
 }

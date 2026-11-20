@@ -1039,4 +1039,65 @@ mod tests {
             Some("horch worker: checkin failed: a")
         );
     }
+
+    /// The pid and a start time of the wrapper of the gate tests.
+    const ME: (u32, u64) = (5004241, 66);
+
+    fn set_supervisor(db: &Path, worker: &str, p: (u32, u64)) {
+        Store::open(db)
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
+                params![worker, p.0, p.1 as i64],
+            )
+            .unwrap();
+    }
+
+    /// SR-8: the wrapper starts its agent only after fleetd recorded the
+    /// wrapper on its worker row.
+    #[test]
+    fn wrapper_waits_until_fleetd_records_it_on_its_worker_row() {
+        let f = fixture("working");
+        let (db, worker) = (f.db.clone(), f.worker.clone());
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            set_supervisor(&db, &worker, ME);
+        });
+        let begin = Instant::now();
+        wait_recorded(&f.db, &f.worker, ME, Duration::from_secs(30)).unwrap();
+        assert!(begin.elapsed() >= Duration::from_millis(300));
+        later.join().unwrap();
+    }
+
+    /// An idea-lead wrapper is recorded on its attempt row by the pane read
+    /// of the pass.
+    #[test]
+    fn wrapper_recorded_on_its_attempt_row_is_recorded() {
+        let f = fixture("working");
+        f.store
+            .conn()
+            .execute(
+                "UPDATE attempts SET pid = ?2, pid_start = ?3 WHERE worker_id = ?1",
+                params![f.worker, ME.0, ME.1 as i64],
+            )
+            .unwrap();
+        wait_recorded(&f.db, &f.worker, ME, Duration::from_secs(30)).unwrap();
+    }
+
+    /// Fail closed: with no record of this wrapper in the limit, the wait
+    /// fails, and the caller starts no agent. A record of another process,
+    /// or of this pid with another start time, is not a record of it.
+    #[test]
+    fn wrapper_with_no_record_in_the_limit_fails() {
+        let f = fixture("working");
+        set_supervisor(&f.db, &f.worker, (ME.0, ME.1 + 1));
+        let limit = Duration::from_millis(600);
+        let begin = Instant::now();
+        let err = wait_recorded(&f.db, &f.worker, ME, limit).unwrap_err();
+        assert!(begin.elapsed() >= limit);
+        let text = format!("{err:#}");
+        assert!(text.contains("fleetd did not record this wrapper"), "{text}");
+        assert!(text.contains("the agent does not start"), "{text}");
+    }
 }

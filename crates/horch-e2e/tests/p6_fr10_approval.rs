@@ -33,6 +33,7 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::time::Duration;
 
+use horch_core::fleetd::fleet_runtime::domain::requests::{Class, Kind};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -42,8 +43,6 @@ const FLEET_TOML: &str = "pass_period_s = 1\nstop_grace_s = 5\n";
 const LATER_TICKS: i64 = 3;
 
 const FLEET_PROCESS: &str = "fleet process";
-
-const TRY_AGAIN: &str = "Try again in some seconds";
 
 const WAITING_IDEA: &str = "Show the queue length in the status bar";
 
@@ -329,8 +328,14 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
+/// SR-8, FM-32 (T-172): no agent code runs before fleetd has recorded the
+/// wrapper of its attempt. The fault point `hold-launching` stops the pass
+/// from recording the pane wrapper of each lead attempt, so its wrapper
+/// waits and never starts its agent, and the start timeout ends the
+/// attempt. While the lead attempt launches, the operator approves the
+/// waiting idea: no request of the operator waits for a launch.
 #[test]
-fn fr10_e_agent_of_a_launching_attempt_with_no_recorded_process_cannot_approve() {
+fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
     let w = World::start("p6-fr10-e", "clarify", Some("hold-launching:I-0002"));
     let waiting = w.add(WAITING_IDEA);
     assert_eq!(waiting, "I-0001", "{}", w.context());
@@ -339,19 +344,76 @@ fn fr10_e_agent_of_a_launching_attempt_with_no_recorded_process_cannot_approve()
     });
     let lead = w.add(&lead_of("approve_launching", &waiting));
     assert_eq!(lead, "I-0002", "{}", w.context());
-    let call = w.fake_call("tries");
+    let attempt = format!("{lead}/clarifying/1");
+    w.wait("the pane of the held lead attempt", || {
+        w.one(&format!(
+            "SELECT w.pane_id FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+               WHERE a.id = '{attempt}' AND a.state = 'launching' AND a.pid IS NULL
+                 AND w.pane_id IS NOT NULL"
+        ))
+    });
+    let o = w.h.run(&["idea", "approve", &waiting]);
+    assert!(
+        o.status.success(),
+        "the operator approves while {attempt} launches: {}\n{}",
+        text(&o),
+        w.context()
+    );
+    let end = w.wait("the end of the held attempt", || {
+        w.one(&format!(
+            "SELECT outcome FROM attempts WHERE id = '{attempt}' AND state = 'ended'"
+        ))
+    });
+    assert_eq!(end, "timed_out", "{}", w.context());
+    let ran: Vec<Value> =
+        w.h.calls_of("claude")
+            .into_iter()
+            .filter(|c| c.get("attempts").is_some() || c.get("kinds").is_some())
+            .collect();
+    assert!(
+        ran.is_empty(),
+        "an agent of {lead} ran before fleetd recorded its wrapper: {ran:?}\n{}",
+        w.context()
+    );
+}
+
+/// SR-8, FM-32 (T-172): at its first instruction the agent of an attempt
+/// that just launched finds the process of its attempt recorded. So each
+/// `operator` kind that it sends raw on the channel with the operator
+/// token is refused as a fleet process, and its `requests` row records the
+/// refusal.
+#[test]
+fn fr10_f_agent_at_its_first_instruction_is_refused_for_each_operator_kind() {
+    let w = World::new("p6-fr10-f", "clarify");
+    let waiting = w.add(WAITING_IDEA);
+    w.wait("the idea in awaiting_approval", || {
+        (w.idea_state(&waiting).as_deref() == Some("awaiting_approval")).then_some(())
+    });
+    w.add(&lead_of("approve_launching", &waiting));
+    let call = w.fake_call("kinds");
     assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
     let attempts: Vec<String> = serde_json::from_value(call["attempts"].clone()).unwrap();
-    assert_eq!(
-        attempts,
-        [format!("{lead}/clarifying/1 launching -")],
-        "the own attempt launches with no pid\n{}",
+    assert!(
+        attempts.len() == 1 && !attempts[0].ends_with(" -"),
+        "the own attempt has a recorded process at the first instruction: {attempts:?}\n{}",
         w.context()
     );
     w.assert_cli_refused("cli", &call["tries"]["cli"]);
-    let err = call["tries"]["cli"]["stderr"].as_str().unwrap_or_default();
-    assert!(err.contains(TRY_AGAIN), "{err}");
-    w.assert_raw_refused_with(&call["tries"]["raw"], TRY_AGAIN);
+    w.assert_raw_refused(&call["tries"]["raw"]);
+    let kinds = call["kinds"].as_object().cloned().unwrap_or_default();
+    let operator: Vec<&str> = Kind::ALL
+        .iter()
+        .filter(|k| k.class() == Class::Operator)
+        .map(|k| k.as_str())
+        .collect();
+    let sent: Vec<&str> = kinds.keys().map(String::as_str).collect();
+    let mut want = operator.clone();
+    want.sort_unstable();
+    assert_eq!(sent, want, "{}", w.context());
+    for (kind, tried) in &kinds {
+        assert!(tried.get("reply").is_some(), "{kind}: {tried}");
+        w.assert_raw_refused(tried);
+    }
     w.assert_still_waiting(&waiting);
 }
 

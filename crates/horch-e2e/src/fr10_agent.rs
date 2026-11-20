@@ -18,8 +18,10 @@
 //!   token). Then write a valid `assumptions.md`.
 //! - `approve_launching`: at the first instruction, with no wait for
 //!   `live`, log `attempts` with the pid of each own attempt, then try
-//!   `cli` and `raw` on the target in `awaiting_approval`. The test holds
-//!   the own attempt in `launching` with the fault point `hold-launching`.
+//!   `cli` and `raw` on the target in `awaiting_approval`, then send each
+//!   `operator` kind raw on the channel with the operator token, logged
+//!   under `kinds`. With the fault point `hold-launching` the test proves
+//!   that this agent never starts.
 //! - `stay`: run `horch idea note` of the own idea (logged as `note`),
 //!   then keep running, as an agent in its interview, until fleetd stops
 //!   it (fix A: the attempt stays live while its agent runs).
@@ -43,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::digest::sha256_bytes;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::Request;
-use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
+use horch_core::fleetd::fleet_runtime::domain::requests::{Class, Kind, RequestId};
 use horch_core::runtime::{Paths, ProcessEnv};
 use horch_core::taskledger::Store;
 use serde_json::{json, Map, Value};
@@ -104,6 +106,12 @@ pub fn play(call: &mut Call) -> bool {
         tries.insert("cli".into(), lead.cli(&target));
         tries.insert("raw".into(), lead.raw(&target, &call.call_id));
         call.extra.insert("tries".into(), Value::Object(tries));
+        let kinds: Map<String, Value> = Kind::ALL
+            .into_iter()
+            .filter(|k| k.class() == Class::Operator)
+            .map(|k| (k.as_str().to_string(), lead.raw_kind(k, &call.call_id)))
+            .collect();
+        call.extra.insert("kinds".into(), Value::Object(kinds));
         call.flush();
         return true;
     }
@@ -316,6 +324,26 @@ impl Lead {
             request_id: RequestId::parse(&request_id).expect("16 hex digits are a request id"),
             kind: Kind::IdeaApprove,
             payload,
+            token: Some(token),
+        };
+        let mut sent = send_on_channel(&fleet_root, &request);
+        sent["request_id"] = json!(request_id);
+        sent
+    }
+
+    /// A raw request of `kind` with an empty payload and the operator
+    /// token on the channel.
+    fn raw_kind(&self, kind: Kind, call_id: &str) -> Value {
+        let fleet_root = Paths::from_env(&ProcessEnv).fleet_root;
+        let token = match std::fs::read_to_string(fleet_root.join("run").join("operator.token")) {
+            Ok(t) => t.trim().to_string(),
+            Err(e) => return json!({"error": format!("read the operator token: {}", e.kind())}),
+        };
+        let request_id = hash16(&format!("{call_id}-kind-{}", kind.as_str()));
+        let request = Request {
+            request_id: RequestId::parse(&request_id).expect("16 hex digits are a request id"),
+            kind,
+            payload: Map::new(),
             token: Some(token),
         };
         let mut sent = send_on_channel(&fleet_root, &request);
