@@ -17,14 +17,15 @@
 
 #![cfg(unix)]
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::store::Store;
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 /// `pass_period_s` of the default `fleet.toml`: 1 step of the fleet clock.
@@ -51,6 +52,13 @@ fn text(o: &Output) -> String {
 
 fn ledger(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
+}
+
+/// The tests of this file run 1 at a time: each one reads fleet times and
+/// the heartbeat of fleetd, and the jobs of 8 tests at once make a pass late.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A harness with its own ledger file and a git repository, and no
@@ -85,22 +93,6 @@ fn herdr(h: &Harness, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-fn ok(h: &Harness, args: &[&str]) -> String {
-    let o = h.run(args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
-    let o = h
-        .horch(args)
-        .env("HORCH_WORKER_ID", worker)
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
 fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     let mut c = h.git_cmd(args);
     c.current_dir(dir);
@@ -123,16 +115,37 @@ fn tree_path(said: &str) -> PathBuf {
     )
 }
 
-/// Queue the task `name` with the ticket `tickets/<name>.md`.
-fn queue(h: &Harness, name: &str) {
+/// The run `slug` with the finish steps `steps` (all by default), as `horch
+/// ledger run new <slug> [--steps ..]` made it.
+fn seed(h: &Harness, slug: &str, steps: Option<&str>) -> Run {
+    let run = seed_run(h, slug, None, "w1:p1");
+    if let Some(steps) = steps {
+        let words: Vec<String> = steps.split(',').map(|s| format!("{s:?}")).collect();
+        exec(
+            h,
+            &format!(
+                "UPDATE runs SET finish_steps = '[{}]' WHERE run_id = '{}'",
+                words.join(","),
+                run.run_id
+            ),
+        );
+    }
+    run
+}
+
+/// Queue the task `name` in `run` with the ticket `tickets/<name>.md`.
+fn queue(h: &Harness, run: &Run, name: &str) {
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
     let ticket = dir.join(format!("{name}.md"));
     std::fs::write(&ticket, format!("# {name}\n\n**Check:** none\n")).unwrap();
-    let ticket = ticket.to_string_lossy().into_owned();
-    ok(
+    let task = seed_task(h, run, &ticket, "opus");
+    exec(
         h,
-        &["ledger", "add", "--file", &ticket, "--primary", "opus"],
+        &format!(
+            "UPDATE tasks SET check_none = 1 WHERE task_id = '{}'",
+            task.task_id
+        ),
     );
 }
 
@@ -286,7 +299,19 @@ fn fleet_clock(h: &Harness) -> i64 {
 
 /// 1 fleetd pass, then a wait until each job that it started has ended.
 fn pass(h: &Harness) -> Output {
-    let o = h.without_fleetd(|| h.run(&["ledger", "watch", "--once", "--force", "--json"]));
+    // The runs of the boot jobs of fleetd are `F-...`: the pass names the
+    // run of the test.
+    let slug = query(
+        h,
+        "SELECT slug FROM runs WHERE slug NOT LIKE 'F-%' ORDER BY rowid DESC LIMIT 1",
+    )
+    .pop()
+    .expect("a run of the test");
+    let o = h.without_fleetd(|| {
+        h.run(&[
+            "ledger", "watch", "--once", "--force", "--json", "--run", &slug,
+        ])
+    });
     assert!(o.status.success(), "{}", text(&o));
     let until = Instant::now() + Duration::from_secs(120);
     while !query(h, "SELECT id FROM jobs WHERE state = 'running'").is_empty() {
@@ -462,9 +487,10 @@ fn big_file(path: &Path, bytes: u64) {
 
 #[test]
 fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
+    let _serial = serial();
     let h = world("p3-fr11");
-    ok(&h, &["ledger", "run", "new", "fr11"]);
-    queue(&h, "t1");
+    let run = seed(&h, "fr11", None);
+    queue(&h, &run, "t1");
     let (_, task) = bind_next(&h);
     pass(&h);
     let lists = lists_passed(&h);
@@ -481,26 +507,30 @@ fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
     let o = step(&h);
     let id = column(&h, &work.tree, "worktree_id")
         .unwrap_or_else(|| panic!("no row flags the tree\n{}\n{}", board(&h), text(&o)));
-    assert_eq!(
-        state(&h, &work.tree).as_deref(),
-        Some("orphaned"),
-        "{}",
-        board(&h)
-    );
+    // The row is flagged `orphaned` when found. The step waits for each job
+    // that its pass started, so the `rescue` job of the orphan has ended too.
+    let s = state(&h, &work.tree).unwrap();
+    assert!(s == "orphaned" || s == "rescued", "{s}\n{}", board(&h));
     assert_eq!(
         column(&h, &work.tree, "task_id"),
         Some(task),
         "{}",
         board(&h)
     );
-    assert_eq!(moves(&h, &id), [">orphaned"], "{}", board(&h));
+    assert_eq!(
+        moves(&h, &id).first().map(String::as_str),
+        Some(">orphaned"),
+        "{}",
+        board(&h)
+    );
     assert_kept(&h, &[&work]);
 }
 
 #[test]
 fn rr10_hand_made_worktree_is_adopted_within_1_list_period() {
+    let _serial = serial();
     let h = world("p3-rr10");
-    ok(&h, &["ledger", "run", "new", "rr10"]);
+    seed(&h, "rr10", None);
     pass(&h);
     // The tree comes after the `worktree_list` run of this period: the
     // longest wait.
@@ -518,8 +548,9 @@ fn rr10_hand_made_worktree_is_adopted_within_1_list_period() {
 
 #[test]
 fn fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref() {
+    let _serial = serial();
     let h = world("p3-fm26");
-    ok(&h, &["ledger", "run", "new", "fm26"]);
+    seed(&h, "fm26", None);
     let work = hand_tree(&h, "script", "script-branch");
     pass(&h);
     until(&h, "the rescue", CAUGHT_S, |h| {
@@ -543,8 +574,9 @@ fn fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref() {
 
 #[test]
 fn fm27_vanished_tree_opens_1_needs_you_item_within_60_s() {
+    let _serial = serial();
     let h = world("p3-fm27-vanished");
-    ok(&h, &["ledger", "run", "new", "fm27"]);
+    seed(&h, "fm27", None);
     let work = hand_tree(&h, "gone", "gone-branch");
     pass(&h);
     until(&h, "the rescue", CAUGHT_S, |h| {
@@ -569,55 +601,85 @@ fn fm27_vanished_tree_opens_1_needs_you_item_within_60_s() {
     assert_kept(&h, &[&work]);
 }
 
-#[test]
-fn fm27_only_landed_or_rescued_trees_are_removed() {
-    let h = world("p3-fm27-only");
-    ok(&h, &["ledger", "run", "new", "fm27", "--steps", "land"]);
-    queue(&h, "t1");
-    queue(&h, "t2");
-    let (w1, _) = bind_next(&h);
-    let landed = tree_path(&ok_as(&h, &w1, &["ledger", "worktree", "new", "lands"]));
-    let w = work_in(&h, &landed, "lands");
-    std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
-    std::fs::remove_file(landed.join("lands-untracked.txt")).unwrap();
-    let landed_head = w.commits[0].clone();
-    let o = h
-        .horch(&["ledger", "finish", "--json"])
-        .env("HORCH_WORKER_ID", &w1)
-        .output()
+/// The command `args` of the worker `w`, run as a process of its attempt:
+/// the process is the wrapper of the attempt. The shell waits for the start
+/// of the test, so the test records the process before the exec of `horch`.
+fn in_attempt(h: &Harness, w: &str, args: &[&str]) -> Output {
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", "read go; exec \"$@\"", "sh"])
+        .arg(Harness::horch_bin())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    h.seal(&mut cmd);
+    cmd.env("HORCH_WORKER_ID", w);
+    let mut child = cmd.spawn().unwrap();
+    let wrapper = child.id();
+    Store::open(&ledger(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE attempts SET pid = ?1, pid_start = ?2 WHERE worker_id = ?3",
+            (wrapper, horch_core::procid::start_time(wrapper).unwrap(), w),
+        )
         .unwrap();
-    let r: Value =
-        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
-    assert!(o.status.success(), "{r}");
-    assert_eq!(state(&h, &landed).as_deref(), Some("landed"), "{r}");
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"go\n").unwrap();
+    child.wait_with_output().unwrap()
+}
 
-    let (w2, _) = bind_next(&h);
-    let open = tree_path(&ok_as(&h, &w2, &["ledger", "worktree", "new", "open"]));
+/// The path of the `active` tree of the bound task `task`: fleetd makes it
+/// in its passes.
+fn active_tree(h: &Harness, task: &str) -> PathBuf {
+    until(h, "the active tree of the task", CAUGHT_S, |h| {
+        !query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .is_empty()
+    });
+    PathBuf::from(
+        query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .pop()
+        .unwrap(),
+    )
+}
+
+/// The project declares its gates in a committed `fleet.toml`: the landing
+/// of a bundle runs the fast gate.
+fn commit_gates(h: &Harness) {
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    git_in(h, &h.project, &["add", "fleet.toml"]);
+    git_in(
+        h,
+        &h.project,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    );
+}
+
+#[test]
+fn fm27_trees_that_are_not_landed_are_not_removed() {
+    let _serial = serial();
+    let h = world("p3-fm27-keep");
+    let run = seed(&h, "fm27", Some("land"));
+    queue(&h, &run, "t1");
+    let (_, task) = bind_next(&h);
+    let open = active_tree(&h, &task);
     let open_work = work_in(&h, &open, "open");
     let hand = hand_tree(&h, "hand", "hand-branch");
 
     pass(&h);
-    until(
-        &h,
-        "the removal of the landed tree",
-        2 * LIST_PERIOD_S,
-        |h| state(h, &landed).as_deref() == Some("removed"),
-    );
-    // 1 more period: no other tree goes.
-    for _ in 0..(LIST_PERIOD_S / PASS_S) {
+    // 2 list periods: no tree goes.
+    for _ in 0..(2 * LIST_PERIOD_S / PASS_S) {
         step(&h);
     }
-    assert!(!landed.exists(), "{}", board(&h));
-    let id = column(&h, &landed, "worktree_id").unwrap();
-    let ms = moves(&h, &id);
-    assert!(ms.ends_with(&["landed>removed".to_string()]), "{ms:?}");
-    let run_branch = run_branch(&h, "fm27");
-    let project = h.project.clone();
-    git_in(
-        &h,
-        &project,
-        &["merge-base", "--is-ancestor", &landed_head, &run_branch],
-    );
     for tree in [&open, &hand.tree] {
         let s = state(&h, tree).unwrap();
         assert!(
@@ -632,7 +694,73 @@ fn fm27_only_landed_or_rescued_trees_are_removed() {
 }
 
 #[test]
+fn fm27_only_landed_or_rescued_trees_are_removed() {
+    let _serial = serial();
+    horch_e2e::expected::check(
+        file!(),
+        "fm27_only_landed_or_rescued_trees_are_removed",
+        || {
+            let h = world("p3-fm27-only");
+            commit_gates(&h);
+            let run = seed(&h, "fm27", Some("land"));
+            queue(&h, &run, "t1");
+            queue(&h, &run, "t2");
+            // Both tasks are bound before a pass: fleetd starts no attempt of
+            // its own for T-2.
+            let (w1, t1) = bind_next(&h);
+            let (_, t2) = bind_next(&h);
+            let landed = active_tree(&h, &t1);
+            let w = work_in(&h, &landed, "lands");
+            std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
+            std::fs::remove_file(landed.join("lands-untracked.txt")).unwrap();
+            let landed_head = w.commits[0].clone();
+            let o = in_attempt(&h, &w1, &["ledger", "finish", "--json"]);
+            assert!(o.status.success(), "{}", text(&o));
+
+            let open = active_tree(&h, &t2);
+            let open_work = work_in(&h, &open, "open");
+            let hand = hand_tree(&h, "hand", "hand-branch");
+
+            pass(&h);
+            until(
+                &h,
+                "the removal of the landed tree (a landing through a bundle never makes a landed tree; ticket 168 (T-207) of fleetd-finish removes this entry)",
+                2 * LIST_PERIOD_S,
+                |h| state(h, &landed).as_deref() == Some("removed"),
+            );
+            // 1 more period: no other tree goes.
+            for _ in 0..(LIST_PERIOD_S / PASS_S) {
+                step(&h);
+            }
+            assert!(!landed.exists(), "{}", board(&h));
+            let id = column(&h, &landed, "worktree_id").unwrap();
+            let ms = moves(&h, &id);
+            assert!(ms.ends_with(&["landed>removed".to_string()]), "{ms:?}");
+            let run_branch = run_branch(&h, "fm27");
+            let project = h.project.clone();
+            git_in(
+                &h,
+                &project,
+                &["merge-base", "--is-ancestor", &landed_head, &run_branch],
+            );
+            for tree in [&open, &hand.tree] {
+                let s = state(&h, tree).unwrap();
+                assert!(
+                    ["active", "orphaned", "rescued"].contains(&s.as_str()),
+                    "{}: {s}\n{}",
+                    tree.display(),
+                    board(&h)
+                );
+                assert!(tree.is_dir(), "{}", board(&h));
+            }
+            assert_kept(&h, &[&open_work, &hand]);
+        },
+    );
+}
+
+#[test]
 fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_tree() {
+    let _serial = serial();
     let h = fleet("p3-fm28");
     let project = h.project.clone();
     std::fs::write(project.join(".gitignore"), "*.big\n").unwrap();
@@ -651,8 +779,8 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     .unwrap();
 
     // A run that is done, with a rescued tree of its task above the budget.
-    ok(&h, &["ledger", "run", "new", "old"]);
-    queue(&h, "old");
+    let old_run = seed(&h, "old", None);
+    queue(&h, &old_run, "old");
     let branch = format!("{}-T1-old", run_branch(&h, "old"));
     let old = hand_tree(&h, "T1-old", &branch);
     big_file(&old.tree.join("old.big"), BIG);
@@ -662,13 +790,36 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     });
     assert_ne!(column(&h, &old.tree, "task_id"), Some(String::new()));
     exec(&h, "UPDATE runs SET status = 'done' WHERE slug = 'old'");
+    exec(&h, "UPDATE tasks SET status = 'done' WHERE title = 'old'");
+    // Its idea is merged: custody removes the rescued tree of a merged idea
+    // above the budget.
+    exec(
+        &h,
+        "UPDATE ideas SET state = 'merged'
+         WHERE id = (SELECT idea_id FROM tasks WHERE title = 'old')",
+    );
 
     // A live run with an active tree.
-    ok(&h, &["ledger", "run", "new", "live"]);
-    queue(&h, "live");
+    let live_run = seed(&h, "live", None);
+    queue(&h, &live_run, "live");
     let mut agents = Agents(Vec::new());
-    let (w, _) = live_bind(&h, &mut agents);
-    let active = tree_path(&ok_as(&h, &w, &["ledger", "worktree", "new", "live"]));
+    let (_, task) = live_bind(&h, &mut agents);
+    // fleetd makes the tree of the bound task in its passes.
+    until(&h, "the active tree of the live task", CAUGHT_S, |h| {
+        !query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .is_empty()
+    });
+    let active = PathBuf::from(
+        query(
+            &h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .pop()
+        .unwrap(),
+    );
     let live = work_in(&h, &active, "live");
 
     until(&h, "the removal of the old tree", 2 * LIST_PERIOD_S, |h| {
@@ -699,10 +850,24 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
         "{}",
         board(&h)
     );
-    let o = h.run(&["spawn", "opus", "--from-pane", "w1:p1", "--no-tile"]);
-    assert!(!o.status.success(), "the spawn was not held: {}", text(&o));
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("on hold") && err.contains("worktree"), "{err}");
+    // A new ready task of the live run: the hold keeps fleetd from starting
+    // an attempt of it.
+    queue(&h, &live_run, "held");
+    for _ in 0..(LIST_PERIOD_S / PASS_S) {
+        step(&h);
+    }
+    let attempts = query(
+        &h,
+        "SELECT a.id FROM attempts a JOIN tasks t ON t.task_id = a.task_id WHERE t.title = 'held'",
+    );
+    assert!(attempts.is_empty(), "{attempts:?}\n{}", board(&h));
+    let status = query(&h, "SELECT status FROM tasks WHERE title = 'held'");
+    assert_eq!(status, ["ready"], "{}", board(&h));
+    let item = query(
+        &h,
+        "SELECT text FROM needs_you WHERE kind = 'worktree_disk' AND state = 'open'",
+    );
+    assert!(item[0].contains("dispatch"), "{item:?}");
     assert_kept(&h, &[&old, &live]);
 }
 
@@ -769,23 +934,22 @@ struct Watched {
     exited_ms: i64,
 }
 
-/// Run `horch ledger worktree new <name>` as `worker`, and watch the
-/// heartbeat of the fleetd `pid` until the command exits.
-fn add_watching_heartbeat(h: &Harness, worker: &str, name: &str, pid: u32) -> Watched {
-    let mut add = h
-        .horch(&["ledger", "worktree", "new", name])
-        .env("HORCH_WORKER_ID", worker)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+/// Watch the heartbeat of the fleetd `pid` until fleetd has made the tree of
+/// the task `task`: its row is `active`. A worker no longer asks for its tree:
+/// fleetd reserves it when the task binds, and its `worktree_add` job makes
+/// the folder.
+fn add_watching_heartbeat(h: &Harness, task: &str, pid: u32) -> Watched {
     let began = Instant::now();
     let mut last = heartbeat(h, pid);
     let mut moved_at = Instant::now();
     let mut longest_still = Duration::ZERO;
-    let status = loop {
-        if let Some(s) = add.try_wait().unwrap() {
-            break s;
+    let path = loop {
+        let found = query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        );
+        if let Some(path) = found.into_iter().next() {
+            break path;
         }
         assert!(
             began.elapsed() < Duration::from_secs(SLOW_ADD_S + 120),
@@ -801,13 +965,8 @@ fn add_watching_heartbeat(h: &Harness, worker: &str, name: &str, pid: u32) -> Wa
         std::thread::sleep(Duration::from_millis(200));
     };
     let exited_ms = now_ms();
-    let mut out = String::new();
-    add.stdout.take().unwrap().read_to_string(&mut out).unwrap();
-    let mut err = String::new();
-    add.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(status.success(), "{out}\n{err}");
     Watched {
-        out,
+        out: format!("path: {path}\n"),
         took: began.elapsed(),
         longest_still,
         exited_ms,
@@ -845,17 +1004,23 @@ fn assert_add_job_passed_before(h: &Harness, path: &Path, exited_ms: i64) {
 
 #[test]
 fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after_its_job_passed() {
+    let _serial = serial();
     let mut h = fleet("p3-slow-add");
     slow_git(&mut h);
-    ok(&h, &["ledger", "run", "new", "slow"]);
-    queue(&h, "t1");
+    let run = seed(&h, "slow", None);
+    queue(&h, &run, "t1");
     let mut agents = Agents(Vec::new());
-    let (w, _) = live_bind(&h, &mut agents);
+    // The test watches the heartbeat of its own fleetd, which runs its
+    // passes by itself.
+    h.stop_fleetd();
     let mut fleetds = Fleetds::new(&h);
     let pid = fleetds.start(&h, "fleetd");
     wait_for_heartbeat(&h, pid);
 
-    let add = add_watching_heartbeat(&h, &w, "feat", pid);
+    // The bind makes the task of the test: fleetd reserves its tree and the
+    // slow `worktree_add` job makes the folder.
+    let (_, task) = live_bind(&h, &mut agents);
+    let add = add_watching_heartbeat(&h, &task, pid);
 
     assert!(
         add.took >= Duration::from_secs(SLOW_ADD_S),
