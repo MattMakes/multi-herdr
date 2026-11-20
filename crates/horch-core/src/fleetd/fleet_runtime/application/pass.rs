@@ -3124,12 +3124,8 @@ fn rung6_if_lost(
     if !in_flight.iter().any(|s| s.as_str() == status) {
         return Ok(());
     }
-    let open: i64 = tx.query_row(
-        "SELECT count(*) FROM attempts WHERE task_id = ?1 AND state != 'ended'",
-        [task],
-        |r| r.get(0),
-    )?;
-    if open == 0 {
+    let (_, open) = leases_store::i1_rows(tx)?;
+    if !open.iter().any(|a| a.task_id == task) {
         retry::burn_attempt(tx, task, outcome, policy, why)?;
     }
     Ok(())
@@ -3147,16 +3143,20 @@ fn task_of<'a>(rows: &'a Rows, attempt: &str) -> Option<&'a str> {
 /// attempt, whose attempts all ended, and that has no lease. No pass rule
 /// moves such a task, so its work is lost (T-195).
 fn lost_tasks(tx: &Connection) -> Result<Vec<String>> {
-    let mut stmt = tx.prepare(
-        "SELECT task_id FROM tasks t WHERE status IN ('leased', 'running')
-           AND EXISTS (SELECT 1 FROM attempts a WHERE a.task_id = t.task_id)
-           AND NOT EXISTS (SELECT 1 FROM attempts a
-                           WHERE a.task_id = t.task_id AND a.state != 'ended')
-           AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id = t.task_id)
-         ORDER BY task_id",
-    )?;
-    let ids = stmt.query_map([], |r| r.get(0))?;
-    Ok(ids.collect::<rusqlite::Result<_>>()?)
+    let (held, open) = leases_store::i1_rows(tx)?;
+    let in_flight = [TaskStatus::Leased.as_str(), TaskStatus::Running.as_str()];
+    let mut lost = Vec::new();
+    for t in held {
+        if !in_flight.contains(&t.status.as_str())
+            || t.lease_attempt.is_some()
+            || open.iter().any(|a| a.task_id == t.task_id)
+            || tasks::get(tx, &t.task_id)?.attempts == 0
+        {
+            continue;
+        }
+        lost.push(t.task_id);
+    }
+    Ok(lost)
 }
 
 fn verifying(tx: &Connection, task: &str) -> Result<bool> {
