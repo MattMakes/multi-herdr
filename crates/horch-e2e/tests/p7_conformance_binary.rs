@@ -159,9 +159,9 @@ fn docs_fixture(h: &Harness, fixture: &Path) {
     }
 }
 
-/// The script `<bin>/<cli>` that starts `fake` with the version text
+/// The script `<dir>/<cli>` that starts `fake` with the version text
 /// `version` and the scenario `conformance`.
-fn install(h: &Harness, cli: &str, fake: &str, version: &str) {
+fn install(dir: &Path, cli: &str, fake: &str, version: &str) {
     let built = horch_e2e::bin_dir().join(fake);
     // Codex answers `codex features list` with the `network_proxy` feature,
     // which denies the connect to the command channel.
@@ -176,7 +176,7 @@ fn install(h: &Harness, cli: &str, fake: &str, version: &str) {
     );
     // `<bin>/<cli>` is a link to the built fake: remove the link, so the
     // write does not change the fake.
-    let path = h.bin.join(cli);
+    let path = dir.join(cli);
     let _ = std::fs::remove_file(&path);
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -212,7 +212,7 @@ fn fleetd(name: &str) -> Harness {
     let git = h.git_bin().expect("the git of with_git").to_path_buf();
     std::os::unix::fs::symlink(git, h.bin.join("git")).unwrap();
     for (cli, fake, version, _) in EXEC_CLIS {
-        install(&h, cli, fake, version);
+        install(&h.bin, cli, fake, version);
     }
     seed_run(&h);
     let mut create = std::process::Command::new(h.bin.join("herdr"));
@@ -391,5 +391,136 @@ fn conformance_passes_for_claude_and_codex_and_agy_fails_only_by_design() {
         let profiles = profiles_of(*agent);
         let sick: Vec<_> = unhealthy().intersection(&profiles).cloned().collect();
         assert!(sick.is_empty(), "unhealthy profiles of {cli}: {sick:?}");
+    }
+}
+
+/// The release gate of real CLIs (R6-F4).
+const GATE: &str = "scripts/live/p7-real-conformance.sh";
+
+/// A folder with the fake of each CLI of `clis`, `git` and `sqlite3`, for
+/// the `PATH` of the gate script.
+fn fake_bin(h: &Harness, name: &str, clis: &[&str]) -> PathBuf {
+    let dir = h.root.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (cli, fake, version, _) in EXEC_CLIS.iter().filter(|c| clis.contains(&c.0)) {
+        install(&dir, cli, fake, version);
+    }
+    let git = h.git_bin().expect("the git of with_git").to_path_buf();
+    std::os::unix::fs::symlink(git, dir.join("git")).unwrap();
+    assert!(
+        h.has_sqlite3(),
+        "the gate script reads the ledger with sqlite3"
+    );
+    let sqlite3 = std::fs::canonicalize(h.bin.join("sqlite3")).unwrap();
+    std::os::unix::fs::symlink(sqlite3, dir.join("sqlite3")).unwrap();
+    dir
+}
+
+/// The value of the line `<key>: <value>` of the output of the gate.
+fn printed(out: &str, key: &str) -> String {
+    out.lines()
+        .find_map(|l| l.strip_prefix(&format!("{key}: ")))
+        .unwrap_or_else(|| panic!("no line {key:?} in:\n{out}"))
+        .trim()
+        .to_string()
+}
+
+/// Run the gate with the fakes of `bin` and `args`. The variables of an
+/// outer fleet name folders that do not exist: the gate must never use
+/// them. `ANTHROPIC_API_KEY` is not set.
+fn run_gate(h: &Harness, bin: &Path, args: &[&str]) -> (Output, String) {
+    let mut cmd = std::process::Command::new(repo_root().join(GATE));
+    cmd.env_clear()
+        .current_dir(&h.project)
+        .args(args)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("HOME", &h.home)
+        .env("TMPDIR", &h.tmp)
+        .env("HORCH_BIN", Harness::horch_bin())
+        .env("HORCH_TEST_DOCS_FIXTURE", h.root.join("docs-fixture"))
+        .env("P7_CONFORMANCE_TIMEOUT_S", "300");
+    for key in [
+        "FLEET_ROOT",
+        "HORCH_LEDGER_DB",
+        "HORCH_STATE_DIR",
+        "HORCH_DATA_DIR",
+    ] {
+        cmd.env(key, h.root.join("outer").join(key));
+    }
+    let o = cmd.output().unwrap();
+    let out = text(&o);
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    // The temp fleet of the gate is gone, its fleetd is stopped, and the
+    // outer fleet is untouched.
+    let fleet = PathBuf::from(printed(&stdout, "fleet root"));
+    assert!(!fleet.starts_with(h.root.join("outer")), "{out}");
+    assert!(!fleet.exists(), "the temp fleet stays: {out}");
+    let pid: u32 = printed(&stdout, "fleetd pid").parse().unwrap();
+    assert!(!horch_core::procid::alive(pid, None), "fleetd {pid} runs");
+    assert!(
+        !h.root.join("outer").exists(),
+        "the gate used the outer fleet"
+    );
+    (o, out)
+}
+
+/// R6-F4: the gate runs the production conformance suite of each CLI in
+/// a temp fleet, keeps `<out>/<cli>/<version>/conformance.json`, and
+/// passes only when each check passes. The fakes of Claude Code and Codex
+/// pass each check. The fake of Antigravity fails the checks of
+/// [`AGY_FAILS`], so the gate fails and names them.
+#[test]
+fn real_conformance_gate_script_runs_isolated_and_retains_reports() {
+    let h = Harness::new("p7-gate").with_git();
+    docs_fixture(&h, &h.root.join("docs-fixture"));
+    let evidence = h.root.join("evidence");
+    let out_arg = evidence.to_string_lossy().into_owned();
+
+    let bin = fake_bin(&h, "fakes", &["claude", "codex"]);
+    let (o, out) = run_gate(&h, &bin, &["--out", &out_arg]);
+    assert!(o.status.success(), "{out}");
+    for (cli, _, version, _) in &EXEC_CLIS[..2] {
+        let path = evidence.join(cli).join(version).join("conformance.json");
+        let report = read_conformance_json(&read(&path))
+            .unwrap_or_else(|e| panic!("{}: {e}\n{out}", path.display()));
+        assert!(!report.checks.is_empty(), "{out}");
+        let names: Vec<&str> = report.checks.iter().map(|r| r.check.name()).collect();
+        assert!(names.contains(&"Operator boundary"), "{cli}: {names:?}");
+        let failed: Vec<_> = report
+            .checks
+            .iter()
+            .filter(|r| r.verdict != Verdict::Pass)
+            .map(|r| r.check.name())
+            .collect();
+        assert!(failed.is_empty(), "{cli}: {failed:?}");
+        assert!(out.contains(&path.display().to_string()), "{out}");
+    }
+
+    let bin = fake_bin(&h, "fakes-agy", &["agy"]);
+    let (o, out) = run_gate(&h, &bin, &["--out", &out_arg, "--clis", "agy"]);
+    assert!(!o.status.success(), "{out}");
+    // The gate names each check that does not pass: each "fail" and each
+    // "not supported".
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    let path = evidence
+        .join("agy")
+        .join(EXEC_CLIS[2].2)
+        .join("conformance.json");
+    let report = read_conformance_json(&read(&path))
+        .unwrap_or_else(|e| panic!("{}: {e}\n{out}", path.display()));
+    let named: Vec<String> = report
+        .checks
+        .iter()
+        .filter(|r| r.verdict != Verdict::Pass)
+        .map(|r| format!("{:<28} {}", r.check.name(), r.verdict.word()))
+        .collect();
+    for check in AGY_FAILS {
+        assert!(named.iter().any(|n| n.starts_with(check)), "{named:?}");
+    }
+    for line in &named {
+        assert!(
+            stderr.contains(line.as_str()),
+            "the gate does not name {line:?}: {out}"
+        );
     }
 }
