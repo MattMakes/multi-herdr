@@ -11,22 +11,12 @@
 # check of each report has the verdict "pass". On exit it stops its fleetd
 # and removes the temp fleet.
 #
-# Operator release step:
-#   A worker never runs this gate with the real CLIs. A real run uses the
-#   login and the quota of the operator, and a worker never uses
-#   ANTHROPIC_API_KEY. Before a release, the operator runs in a logged-in
-#   shell:
-#     env -u ANTHROPIC_API_KEY scripts/live/p7-real-conformance.sh --out docs/specs/fleetd/gates/evidence/p7-conformance
-#   and records each conformance.json path that it prints in
-#   docs/specs/fleetd/gates/fleetd-p7.md.
-#
 # Environment:
 #   HORCH_BIN                 the horch binary (default: horch on PATH).
 #   P7_CONFORMANCE_TIMEOUT_S  the wait for the runs, in seconds (default 1800).
 #   HORCH_TEST_DOCS_FIXTURE   tests only: the docs sync reads a local folder.
 set -eu
 
-# The gate never reads, sets or passes these keys.
 unset ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_BASE_URL
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -108,10 +98,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# fleetd queues a docs sync and a conformance run for each docs source
-# whose binary is on its PATH. The PATH of fleetd has only the requested
-# CLIs and the folders that hold no other docs source binary, so no other
-# CLI runs.
 BIN="$TMP/bin"
 mkdir -p "$BIN"
 for cli in $CLIS; do
@@ -123,14 +109,14 @@ ln -s "$SQLITE3" "$BIN/sqlite3"
 if [ -n "$GIT" ]; then
     ln -s "$GIT" "$BIN/git"
 fi
-SOURCES="$(awk -F'"' '/^version_cmd/ { split($2, w, " "); print w[1] }' \
+DOCS_SOURCE_BINS="$(awk -F'"' '/^version_cmd/ { split($2, w, " "); print w[1] }' \
     "$ROOT/crates/agent-docs-sync/docs-sources.toml")"
 FLEET_PATH="$BIN"
 old_ifs="$IFS"
 IFS=:
 for dir in $PATH; do
     keep=1
-    for tool in $SOURCES; do
+    for tool in $DOCS_SOURCE_BINS; do
         if [ -x "$dir/$tool" ]; then
             keep=0
         fi
@@ -146,7 +132,6 @@ HORCH_LEDGER_DB="$TMP/ledger.sqlite3"
 HORCH_STATE_DIR="$TMP/state"
 HORCH_DATA_DIR="$TMP/data"
 export FLEET_ROOT HORCH_LEDGER_DB HORCH_STATE_DIR HORCH_DATA_DIR
-# No orchestrator wake, no watchdog start and no CLI update in the gate.
 export HORCH_NO_WAKE=1 HORCH_NO_WATCHDOG=1 HORCH_NO_UPDATE=1
 mkdir -p "$FLEET_ROOT" "$HORCH_STATE_DIR" "$HORCH_DATA_DIR"
 echo "pass_period_s = 1" >"$FLEET_ROOT/fleet.toml"
@@ -167,8 +152,6 @@ diagnostics() {
     tail -n 40 "$TMP/fleetd.stderr"
 }
 
-# Wait until `$1` (a shell test) holds, for at most TIMEOUT seconds.
-# Fail when fleetd exits.
 wait_until() {
     what="$1"
     shift
@@ -192,7 +175,6 @@ serving() {
 }
 wait_until "command channel" serving
 
-# SR-8: the token file is 0600 and the request folder is 0700.
 mode() {
     stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"
 }
@@ -209,7 +191,6 @@ ended() {
 }
 wait_until "ended conformance run of each CLI ($CLIS)" ended
 
-# No job process stays alive after the gate.
 idle() {
     [ "$(sql "SELECT count(*) FROM jobs WHERE state IN ('queued', 'running')")" = 0 ]
 }
@@ -219,7 +200,6 @@ kill -TERM "$FLEETD_PID" 2>/dev/null || true
 wait "$FLEETD_PID" 2>/dev/null || true
 FLEETD_PID=""
 
-# Keep each report, and list each check that does not pass.
 status=0
 summary=""
 for cli in $CLIS; do
@@ -231,8 +211,6 @@ for cli in $CLIS; do
         mkdir -p "$OUT/$cli/$version"
         cp "$report" "$OUT/$cli/$version/conformance.json"
         echo "retained: $OUT/$cli/$version/conformance.json"
-        # conformance.json is pretty JSON: "name" and then "verdict" on
-        # their own lines for each check.
         rows="$(awk -F'"' -v cli="$cli" -v version="$version" '
             $2 == "name" { name = $4 }
             $2 == "verdict" { printf "%-8s %-24s %-28s %s\n", cli, version, name, $4 }

@@ -159,8 +159,6 @@ fn docs_fixture(h: &Harness, fixture: &Path) {
     }
 }
 
-/// The script `<dir>/<cli>` that starts `fake` with the version text
-/// `version` and the scenario `conformance`.
 fn install(dir: &Path, cli: &str, fake: &str, version: &str) {
     let built = horch_e2e::bin_dir().join(fake);
     // Codex answers `codex features list` with the `network_proxy` feature,
@@ -394,11 +392,8 @@ fn conformance_passes_for_claude_and_codex_and_agy_fails_only_by_design() {
     }
 }
 
-/// The release gate of real CLIs (R6-F4).
 const GATE: &str = "scripts/live/p7-real-conformance.sh";
 
-/// A folder with the fake of each CLI of `clis`, `git` and `sqlite3`, for
-/// the `PATH` of the gate script.
 fn fake_bin(h: &Harness, name: &str, clis: &[&str]) -> PathBuf {
     let dir = h.root.join(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -416,7 +411,6 @@ fn fake_bin(h: &Harness, name: &str, clis: &[&str]) -> PathBuf {
     dir
 }
 
-/// The value of the line `<key>: <value>` of the output of the gate.
 fn printed(out: &str, key: &str) -> String {
     out.lines()
         .find_map(|l| l.strip_prefix(&format!("{key}: ")))
@@ -425,9 +419,6 @@ fn printed(out: &str, key: &str) -> String {
         .to_string()
 }
 
-/// Run the gate with the fakes of `bin` and `args`. The variables of an
-/// outer fleet name folders that do not exist: the gate must never use
-/// them. `ANTHROPIC_API_KEY` is not set.
 fn run_gate(h: &Harness, bin: &Path, args: &[&str]) -> (Output, String) {
     let mut cmd = std::process::Command::new(repo_root().join(GATE));
     cmd.env_clear()
@@ -450,8 +441,6 @@ fn run_gate(h: &Harness, bin: &Path, args: &[&str]) -> (Output, String) {
     let o = cmd.output().unwrap();
     let out = text(&o);
     let stdout = String::from_utf8_lossy(&o.stdout);
-    // The temp fleet of the gate is gone, its fleetd is stopped, and the
-    // outer fleet is untouched.
     let fleet = PathBuf::from(printed(&stdout, "fleet root"));
     assert!(!fleet.starts_with(h.root.join("outer")), "{out}");
     assert!(!fleet.exists(), "the temp fleet stays: {out}");
@@ -464,11 +453,6 @@ fn run_gate(h: &Harness, bin: &Path, args: &[&str]) -> (Output, String) {
     (o, out)
 }
 
-/// R6-F4: the gate runs the production conformance suite of each CLI in
-/// a temp fleet, keeps `<out>/<cli>/<version>/conformance.json`, and
-/// passes only when each check passes. The fakes of Claude Code and Codex
-/// pass each check. The fake of Antigravity fails the checks of
-/// [`AGY_FAILS`], so the gate fails and names them.
 #[test]
 fn real_conformance_gate_script_runs_isolated_and_retains_reports() {
     let h = Harness::new("p7-gate").with_git();
@@ -499,8 +483,6 @@ fn real_conformance_gate_script_runs_isolated_and_retains_reports() {
     let bin = fake_bin(&h, "fakes-agy", &["agy"]);
     let (o, out) = run_gate(&h, &bin, &["--out", &out_arg, "--clis", "agy"]);
     assert!(!o.status.success(), "{out}");
-    // The gate names each check that does not pass: each "fail" and each
-    // "not supported".
     let stderr = String::from_utf8_lossy(&o.stderr);
     let path = evidence
         .join("agy")
