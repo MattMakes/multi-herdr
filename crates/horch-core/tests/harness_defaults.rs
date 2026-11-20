@@ -730,12 +730,7 @@ fn hdf_05_every_claude_launch_turns_attribution_off() {
     // A sandboxed teammate refuses to launch on Linux unless bwrap and socat
     // are on PATH. Stubs let the builder run on every host.
     let bin = home.path().join("bin");
-    for tool in ["bwrap", "socat"] {
-        let path = bin.join(tool);
-        write(&path, "#!/bin/sh\nexit 0\n");
-        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
-    }
+    stub_sandbox_tools(&bin);
     let env = LaunchEnv::from_context(&ctx_with(
         home.path(),
         home.path(),
