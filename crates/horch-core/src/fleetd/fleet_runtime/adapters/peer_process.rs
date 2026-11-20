@@ -18,7 +18,8 @@
 //!   fact read, and no fact matches.
 //! - Unknown: a parent, a group, a session or a start time fails to read
 //!   for a process that did not end, or the chain is longer than
-//!   [`MAX_CHAIN`]. The caller refuses. A process of the chain that ends
+//!   [`MAX_CHAIN`], and no process read before it matches. The caller
+//!   refuses. A process of the chain that ends
 //!   during the walk is not unknown: the walk goes on from the new parent
 //!   of its child.
 //!
@@ -179,6 +180,9 @@ impl ProcessFacts for PlatformFacts {
 /// the process ended, and the walk goes on from the new parent, as a later
 /// walk would. When the child ended too, the walk goes 1 more step back.
 /// The same parent, or a peer whose read fails, gives [`Fact::Unknown`].
+/// A read adds a match and never removes one. So a fact that cannot be read
+/// after a match does not change the answer: it is [`Fact::Yes`] with the
+/// matches found.
 /// With no recorded process, no process can be a fleet process.
 pub fn fleet_process(peer: u32, recorded: &[FleetProcess], facts: &dyn ProcessFacts) -> Fact {
     if recorded.is_empty() {
@@ -188,10 +192,10 @@ pub fn fleet_process(peer: u32, recorded: &[FleetProcess], facts: &dyn ProcessFa
     let mut chain = vec![peer];
     for _ in 0..4 * MAX_CHAIN {
         if chain.len() > MAX_CHAIN {
-            return Fact::Unknown;
+            return unknown_unless_found(found);
         }
         let Some(&pid) = chain.last() else {
-            return Fact::Unknown;
+            return unknown_unless_found(found);
         };
         if pid <= 1 {
             return verdict(found);
@@ -200,12 +204,22 @@ pub fn fleet_process(peer: u32, recorded: &[FleetProcess], facts: &dyn ProcessFa
             Some(parent) => chain.push(parent),
             None => {
                 if !step_back(&mut chain, facts) {
-                    return Fact::Unknown;
+                    return unknown_unless_found(found);
                 }
             }
         }
     }
-    Fact::Unknown
+    unknown_unless_found(found)
+}
+
+/// The answer of a walk that cannot read on: [`Fact::Yes`] when a match is
+/// found, else [`Fact::Unknown`].
+fn unknown_unless_found(found: Vec<String>) -> Fact {
+    if found.is_empty() {
+        Fact::Unknown
+    } else {
+        Fact::Yes(found)
+    }
 }
 
 /// Read the facts of `pid` of the chain, add each attempt that they match

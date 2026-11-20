@@ -236,12 +236,24 @@ fn parents_that_end_during_the_walk_give_the_answer_of_the_new_chain() {
 fn failed_read_of_a_parent_that_did_not_end_is_unknown() {
     let attempts = [ended_wrapper("A-8")];
     let facts = EndsInWalk {
-        group_of_peer: 30,
+        group_of_peer: 10,
         parents: [(10, (Some(20), Some(20))), (20, (Some(25), Some(25)))].into(),
         ended: vec![25],
         read: Default::default(),
     };
     assert_eq!(fleet_process(10, &attempts, &facts), Fact::Unknown);
+}
+
+#[test]
+fn failed_read_after_a_match_keeps_the_match() {
+    let attempts = [ended_wrapper("A-10")];
+    let facts = EndsInWalk {
+        group_of_peer: 30,
+        parents: [(10, (Some(20), Some(20))), (20, (Some(25), Some(25)))].into(),
+        ended: vec![25],
+        read: Default::default(),
+    };
+    assert_eq!(fleet_process(10, &attempts, &facts), yes("A-10"));
 }
 
 #[test]
