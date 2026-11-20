@@ -474,7 +474,6 @@ fn ask_with_a_line_separator_or_a_bidi_character_is_refused() {
             "{err}"
         );
 
-        // A raw writer can skip the writer check: the reader rejects the note.
         let path = write_raw(
             &w,
             IDEA,

@@ -444,8 +444,6 @@ fn waiting_text(state: &str, idea: &str, since: &str, n: u64, question: Option<&
         )
     };
     if let Some(q) = question {
-        // The ingest checks the question; the debug format escapes a quote
-        // and each control character here too.
         text.push_str(&format!(" The question of its sub-orchestrator: {q:?}"));
     }
     if n > 0 {

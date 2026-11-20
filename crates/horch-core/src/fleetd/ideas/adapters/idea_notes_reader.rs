@@ -271,9 +271,6 @@ fn check(note: &Note) -> Result<(), String> {
 /// in 1 needs-you item.
 pub const ASK_LIMIT: usize = 1000;
 
-/// The question of an `ask` note is 1 line of at most [`ASK_LIMIT`]
-/// characters with no control character, line separator or bidi character,
-/// so the needs-you item that shows it holds only that line in its order.
 fn check_ask(question: &str) -> Result<(), String> {
     if question.chars().any(char::is_control) {
         return Err("the question has a line break or a control character".into());
