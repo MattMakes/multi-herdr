@@ -974,7 +974,6 @@ fn gated(name: &str, fixture: &str) -> Harness {
 
 #[test]
 fn bal_04_exit_code_3() {
-    // `horch spawn` is retired (FR-5): `horch route` keeps the exit code.
     let h = gated("bal04b", "all-exhausted");
     assert_eq!(h.run(&["route", "opus"]).status.code(), Some(3));
     let mut forced = gated("bal04c", "all-exhausted");
@@ -988,9 +987,6 @@ fn bal_04_exit_code_3() {
 
 #[test]
 fn bal_06_route_matches_gate() {
-    // `horch spawn` is retired (FR-5), so the gate line of a spawn has no
-    // form. `horch route` is the gate now: its exit code, its line and its
-    // decision must agree on each fixture.
     for fixture in [
         "all-ok",
         "all-exhausted",
