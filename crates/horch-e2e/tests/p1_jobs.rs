@@ -183,9 +183,6 @@ fn start_fleetd(h: &Harness, fleetds: &mut Fleetds) -> u32 {
     }
 }
 
-/// A run with the default check `check`, and its task 1 bound to a Codex
-/// worker in the shared checkout. The agent of the worker is a live `sleep` child
-/// of the test, kept in `fleetds` for the teardown. Returns the task id.
 fn checked_task(h: &Harness, fleetds: &mut Fleetds, check: &str) -> String {
     let run = seed_run(h, "jobs", None, "w1:p1");
     finish::set_default_check(Store::open(&db(h)).unwrap().conn(), &run.run_id, check).unwrap();
@@ -194,17 +191,7 @@ fn checked_task(h: &Harness, fleetds: &mut Fleetds, check: &str) -> String {
     let p = dir.join("t1.md");
     std::fs::write(&p, "# T1\n").unwrap();
     let seeded = seed_task(h, &run, &p, CODEX_PERSONA);
-    // `horch ledger worktree new` is not for a worker since Phase 4: fleetd
-    // makes each worktree. So the task is of the shared checkout, and its
-    // check runs in the project root.
-    Store::open(&db(h))
-        .unwrap()
-        .conn()
-        .execute(
-            "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
-            [&seeded.task_id],
-        )
-        .unwrap();
+    run_check_in_shared_checkout(h, &seeded.task_id);
     let agent = Command::new("sleep").arg("3600").spawn().unwrap();
     let agent_pid = agent.id();
     fleetds.children.push(agent);
@@ -214,6 +201,17 @@ fn checked_task(h: &Harness, fleetds: &mut Fleetds, check: &str) -> String {
         .conn()
         .query_row("SELECT task_id FROM tasks WHERE seq = 1", [], |r| r.get(0))
         .unwrap()
+}
+
+fn run_check_in_shared_checkout(h: &Harness, task_id: &str) {
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+            [task_id],
+        )
+        .unwrap();
 }
 
 /// Queue 1 `task_check` job of `task` at the fleet clock, through the jobs
@@ -472,9 +470,6 @@ fn assert_each_run_waited_for_its_backoff(ended: &[jobs_store::JobRow]) {
     }
 }
 
-/// No 4th run starts: wait until the fleet clock is 2 s past the longest
-/// backoff after the end of run 3, a time in which a pass starts run 4 when
-/// the rule is broken. The wait is on the fleet clock, not on the wall clock.
 fn assert_no_4th_run_starts(h: &Harness, third: &jobs_store::JobRow) {
     let until = third.deadline.expect("the deadline of run 3").0 + BACKOFF_S[2] as i64 + 2;
     wait_for(
@@ -509,9 +504,7 @@ fn assert_requeue_starts_run_4(h: &Harness, last: i64) {
     assert_eq!(needs_you(&db(h), "resolved"), 1);
 }
 
-/// The request of a worker kind with no token: fleetd answers it with a
-/// reply line and changes nothing.
-fn request_line(id: &str) -> String {
+fn tokenless_request_line(id: &str) -> String {
     Request {
         request_id: RequestId::parse(id).unwrap(),
         kind: RequestKind::SpawnGateNote,
@@ -521,12 +514,11 @@ fn request_line(id: &str) -> String {
     .to_line()
 }
 
-/// Connect to the channel and send the request `id`.
 fn connect_and_send(channel: &Path, id: &str) -> Stream {
     let stream = Stream::connect(channel, Instant::now() + Duration::from_secs(5)).unwrap();
     let mut writer = &stream;
     writer
-        .write_all(request_line(id).as_bytes())
+        .write_all(tokenless_request_line(id).as_bytes())
         .and_then(|()| writer.flush())
         .unwrap();
     stream
@@ -554,28 +546,24 @@ fn running_job_and_non_reading_channel_client_do_not_block_passes_or_bounded_fle
         || (job(&db(&h)).state == State::Running && channel.exists()).then_some(()),
     );
 
-    // This client sends 1 valid request and never reads the reply. It stays
-    // open to the end of the test.
     let stalled = connect_and_send(&channel, "00000000-0000-4000-8000-000000000001");
     let hb0 = read_heartbeat(&fleet_root(&h))
         .unwrap()
         .expect("the heartbeat of fleetd");
 
-    // The passes go on: the end of the last pass on the awake clock moves
-    // forward by 2 pass periods (`pass_period_s = 1`), and it is not hung.
+    let two_pass_periods_ms = 2_000;
     wait_for(
         &h,
         "the heartbeat to advance while a client does not read",
         Duration::from_secs(15),
         || {
             let hb = read_heartbeat(&fleet_root(&h)).unwrap()?;
-            let advanced = hb.awake.awake_ms >= hb0.awake.awake_ms + 2_000;
+            let advanced = hb.awake.awake_ms >= hb0.awake.awake_ms + two_pass_periods_ms;
             (advanced && !is_hung(&hb, &awake_now().unwrap(), HANG_LIMIT_S)).then_some(())
         },
     );
     assert_eq!(job(&db(&h)).state, State::Running);
 
-    // Another client gets its reply on the channel, and the commands work.
     let second = connect_and_send(&channel, "00000000-0000-4000-8000-000000000002");
     second.set_read_timeout(Duration::from_secs(10)).unwrap();
     let mut line = Vec::new();
@@ -588,8 +576,6 @@ fn running_job_and_non_reading_channel_client_do_not_block_passes_or_bounded_fle
         "00000000-0000-4000-8000-000000000002"
     );
     ok(&h, &["fleetd", "check"]);
-    // `horch ledger status` exits 1 while the run is not complete: it must
-    // print the board of the run, with no error text.
     let board = h.run(&["ledger", "status"]);
     let (out, err) = (
         String::from_utf8_lossy(&board.stdout),
@@ -599,7 +585,7 @@ fn running_job_and_non_reading_channel_client_do_not_block_passes_or_bounded_fle
         out.starts_with("Run jobs (active).")
             && out.trim_end().ends_with("Not complete.")
             && err.is_empty(),
-        "horch ledger status: {}",
+        "horch ledger status exits 1 on an incomplete run, and must print only the board: {}",
         text(&board)
     );
     assert_eq!(
@@ -608,7 +594,6 @@ fn running_job_and_non_reading_channel_client_do_not_block_passes_or_bounded_fle
         "the check restarted fleetd while a client did not read"
     );
 
-    // SIGTERM ends fleetd in a bounded time, with the first client open.
     stop(fleetd.0, fleetd.1, SIGTERM);
     let child = fleetds
         .children
