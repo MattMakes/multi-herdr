@@ -395,3 +395,56 @@ fn hc_fleet_start_with_the_window_closed_fails_clearly() {
         "no space should exist when window is closed: {state:#?}"
     );
 }
+
+#[test]
+fn hcb_12_e2e_spawn_refuses_opencode_on_hc_before_any_pane_and_channel_refuses_without_record() {
+    let mut h = harness("hc-spawn-gate");
+    let o = h.run(&[
+        "--backend",
+        "hc",
+        "fleet",
+        "opus",
+        "--no-update",
+        "--cwd",
+        &cwd(&h),
+    ]);
+    assert!(o.status.success(), "{}{}", out(&o), err(&o));
+
+    let space = fleet_space(&h);
+    let sp_id = space["id"].as_str().unwrap().to_string();
+    let root_term = space["tabs"][0]["terminals"][0]["terminal"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let terms_before = h.hc_state()["terminals"].as_array().unwrap().len();
+
+    let mailbox = Mailbox::under(&h.state, &sp_id);
+    std::fs::create_dir_all(mailbox.dir()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(mailbox.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    mailbox.register_role("orchestrator", &root_term).unwrap();
+
+    h.set("HC_TERMINAL_ID", &root_term);
+    let refused = h.run(&["spawn", "opencode-ultra", "--force"]);
+    assert!(
+        !refused.status.success(),
+        "{}{}",
+        out(&refused),
+        err(&refused)
+    );
+    assert!(
+        err(&refused).contains(
+            "opencode does not report its status under hc, so horch cannot deliver to it there; run this fleet in the herdr TUI"
+        ),
+        "unexpected refusal message: {}",
+        err(&refused)
+    );
+    let terms_after = h.hc_state()["terminals"].as_array().unwrap().len();
+    assert_eq!(
+        terms_after, terms_before,
+        "no terminal may be created on a refused harness"
+    );
+}

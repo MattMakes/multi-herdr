@@ -593,6 +593,11 @@ fn plan_request(
         project: &sc.project,
     };
     let plan = plan(req, &inputs)?;
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        if let Some(why) = horch_core::harness::launch::refusal_on_hc(plan.launch.teammate.agent) {
+            bail!(why);
+        }
+    }
     if let Some(line) = &plan.gate_line {
         crate::output::println(line);
     }

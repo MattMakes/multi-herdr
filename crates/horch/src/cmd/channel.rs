@@ -54,6 +54,10 @@ fn thread_id(ctx: &RuntimeContext) -> Result<String> {
             .context("the ledger record has no session id");
     }
 
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        anyhow::bail!("hc reports no agent session; HORCH_RECORD_ID is needed");
+    }
+
     let pane = ctx
         .herdr
         .pane
@@ -76,5 +80,25 @@ fn agent_session_id(value: &serde_json::Value) -> Option<String> {
             .find(|id| !id.is_empty())
             .map(str::to_owned),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horch_core::runtime::MapEnv;
+
+    #[test]
+    fn hcb_11_channel_thread_id_on_hc_requires_record_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = MapEnv::new(tmp.path())
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("HC_TERMINAL_ID", "t1");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = thread_id(&ctx).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "hc reports no agent session; HORCH_RECORD_ID is needed"
+        );
     }
 }

@@ -34,6 +34,25 @@ use crate::workspace::host::PaneHost;
 
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest, WindowInputs};
 
+/// Harnesses measured in Task 1 (Q3) to report OSC 7501 status transitions
+/// (`idle` -> `working` -> `idle`/`done`) under `hc`.
+pub const HC_STATUS_HARNESSES: &[HarnessKind] = &[
+    HarnessKind::Claude,
+    HarnessKind::Codex,
+    HarnessKind::Antigravity,
+];
+
+/// Return the spawn refusal reason when `kind` cannot report status on `hc`.
+pub fn refusal_on_hc(kind: HarnessKind) -> Option<String> {
+    if kind == HarnessKind::None || HC_STATUS_HARNESSES.contains(&kind) {
+        None
+    } else {
+        Some(format!(
+            "{kind} does not report its status under hc, so horch cannot deliver to it there; run this fleet in the herdr TUI"
+        ))
+    }
+}
+
 /// What a launch reads from its environment: the programs to run, the home
 /// the operator's Claude settings live under, the inherited OpenCode config,
 /// and where the host tools are. Built from a [`RuntimeContext`].
@@ -68,9 +87,12 @@ pub struct LaunchEnv {
     /// The folder of the task ledger database (`Paths::ledger_db`). A
     /// sandboxed Claude launch opens it, and the state root, to Bash.
     pub ledger_dir: Option<PathBuf>,
-    /// `$HERDR_SOCKET_PATH`. A sandboxed Claude launch allows Bash to
-    /// connect to it.
-    pub herdr_socket: Option<PathBuf>,
+    /// Resolved pane host backend for this launch.
+    pub backend: crate::runtime::Backend,
+    /// Host Unix sockets a sandboxed `horch_access: full` Claude launch allows
+    /// Bash to connect to: `[$HERDR_SOCKET_PATH]` on `herdr`, and
+    /// `[<core socket>, <app socket>]` on `hc`.
+    pub host_sockets: Vec<PathBuf>,
     /// The pane's report socket (`messaging::report::socket_path`), for a
     /// `horch_access: report` launch with a ledger record. Such a launch
     /// opens only this socket to Bash, and gets no state root, ledger
@@ -101,6 +123,29 @@ pub struct LaunchEnv {
 
 impl LaunchEnv {
     pub fn from_context(ctx: &RuntimeContext) -> LaunchEnv {
+        let host_sockets = match ctx.herdr.backend {
+            crate::runtime::Backend::Herdr => {
+                ctx.inherited.herdr_socket_path.iter().cloned().collect()
+            }
+            crate::runtime::Backend::Hc => {
+                let core_socket = ctx.inherited.hc_terminal_socket.clone().unwrap_or_else(|| {
+                    ctx.paths
+                        .default_state_root
+                        .parent()
+                        .unwrap_or(ctx.paths.home.as_path())
+                        .join("herdr-core")
+                        .join("default")
+                        .join("default.sock")
+                });
+                let app_socket = ctx
+                    .inherited
+                    .herdr_app_home
+                    .clone()
+                    .unwrap_or_else(|| ctx.paths.home.join(".config").join("herdr-app"))
+                    .join("herdr-app.sock");
+                vec![core_socket, app_socket]
+            }
+        };
         LaunchEnv {
             bins: ctx.bins.harness.clone(),
             horch_exe: ctx.bins.horch_exe.clone(),
@@ -117,7 +162,8 @@ impl LaunchEnv {
             codex_home: ctx.inherited.codex_home.clone(),
             state_root: Some(ctx.paths.state_root.clone()),
             ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
-            herdr_socket: ctx.inherited.herdr_socket_path.clone(),
+            backend: ctx.herdr.backend,
+            host_sockets,
             report_socket: None,
             skill_bundle: None,
             roster_dir: ctx.bins.roster_override.clone(),
@@ -145,7 +191,8 @@ impl LaunchEnv {
             codex_home: None,
             state_root: None,
             ledger_dir: None,
-            herdr_socket: None,
+            backend: crate::runtime::Backend::Herdr,
+            host_sockets: Vec::new(),
             report_socket: None,
             skill_bundle: None,
             roster_dir: None,
@@ -973,7 +1020,7 @@ fn discover_once(search: &Search<'_>, record_id: &str) -> Option<String> {
         since,
         sessions_dir,
     } = *search;
-    (!pane.is_empty())
+    (herdr.backend() != crate::runtime::Backend::Hc && !pane.is_empty())
         .then(|| herdr.pane_get(pane).ok())
         .flatten()
         .and_then(|p| p.agent_session_id())
@@ -3035,5 +3082,34 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
                 .unwrap();
         assert_eq!(kept["numStartups"], 3);
+    }
+
+    #[test]
+    fn hcb_12_spawn_refuses_a_harness_without_status_on_hc() {
+        assert_eq!(
+            super::HC_STATUS_HARNESSES,
+            &[
+                HarnessKind::Claude,
+                HarnessKind::Codex,
+                HarnessKind::Antigravity,
+            ]
+        );
+        for ok in [
+            HarnessKind::Claude,
+            HarnessKind::Codex,
+            HarnessKind::Antigravity,
+            HarnessKind::None,
+        ] {
+            assert_eq!(super::refusal_on_hc(ok), None, "{ok:?}");
+        }
+        for bad in [HarnessKind::OpenCode, HarnessKind::Pi, HarnessKind::Prime] {
+            let msg = super::refusal_on_hc(bad).expect("refused on hc");
+            assert_eq!(
+                msg,
+                format!(
+                    "{bad} does not report its status under hc, so horch cannot deliver to it there; run this fleet in the herdr TUI"
+                )
+            );
+        }
     }
 }
