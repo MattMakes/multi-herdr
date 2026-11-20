@@ -722,9 +722,6 @@ fn pass_adds_1_drift_idea_after_a_crash_and_a_restart() {
     );
 }
 
-/// The pass acts on an ended `conformance` run before its dispatch: a
-/// failed run holds the ready task of its profile in the pass that first
-/// reads the run (FR-8, FM-19).
 #[test]
 fn failed_conformance_blocks_dispatch_in_the_same_pass() {
     let w = world();
@@ -740,18 +737,13 @@ fn failed_conformance_blocks_dispatch_in_the_same_pass() {
     assert_eq!(w.status(&t1), "ready", "no bind before the mark");
 }
 
-/// How a `conformance` run of a changed CLI ends with no usable report.
 #[derive(Clone, Copy)]
 enum NoReport {
-    /// The result has no report path, as a run whose version command
-    /// failed.
     Missing,
-    /// The report path holds a `conformance.json` that is not valid.
     Corrupt,
 }
 
 impl World {
-    /// The `conformance` run `id` ends failed with no usable report.
     fn end_conformance_with(&self, id: i64, run: i64, how: NoReport) {
         let data = match how {
             NoReport::Missing => None,
@@ -773,9 +765,6 @@ impl World {
     }
 }
 
-/// A changed CLI binary holds the tasks of its profiles until a report of
-/// its new conformance run passes. A missing or corrupt report marks the
-/// profiles unhealthy, and the tasks stay held (FR-8, FM-19, SR-8).
 #[test]
 fn changed_cli_and_missing_or_corrupt_conformance_report_fail_closed() {
     for how in [NoReport::Missing, NoReport::Corrupt] {
@@ -802,7 +791,6 @@ fn changed_cli_and_missing_or_corrupt_conformance_report_fail_closed() {
         run_pass(&w, &fake);
         assert_eq!(w.status(&t1), "ready", "the next pass holds it too");
 
-        // A next binary passes its conformance run: the task binds.
         w.install_cli("claude", "2.3.0");
         run_pass(&w, &fake);
         assert_eq!(w.status(&t1), "ready", "held while the run is pending");

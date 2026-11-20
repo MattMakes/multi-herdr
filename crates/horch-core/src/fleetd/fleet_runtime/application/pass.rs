@@ -1311,9 +1311,6 @@ impl<'a> Pass<'a> {
             };
             stops.extend(self.ports.duties.run(&tx, &duty)?);
         }
-        // The ended jobs and the conformance results of this pass come
-        // before its dispatch: a profile gets no task in the pass that
-        // reads its failed run (FR-8, FM-19).
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
         let p7_failed = self.p7_rows(&tx, &read.p7, read.pools.as_ref(), clock)?;
@@ -4308,11 +4305,6 @@ impl Pass<'_> {
         Ok(failed)
     }
 
-    /// The health marks and the drift idea of the ended `conformance` run
-    /// `id`, and the note that the pass acted on it. A run with no report,
-    /// or with a report that cannot be read, fails closed: it marks each
-    /// profile of its CLI unhealthy, and the line says why (FM-19). Gives
-    /// the lines of what failed.
     fn act_on_conformance(
         &self,
         tx: &Transaction<'_>,
@@ -4558,13 +4550,6 @@ fn pacing(pools: Option<&PoolFacts>) -> (Vec<Hold>, BTreeMap<String, String>) {
     (paced, personas)
 }
 
-/// The hold of each profile of `roster` whose CLI has a changed binary
-/// with no `conformance` run that the pass acted on: its last run is
-/// queued, running or ended with no note of [`CONFORMANCE_ACTED`], and an
-/// earlier run is of another binary. The hold ends when the pass acts on
-/// the run: a passed report keeps the profile healthy, and each other end
-/// marks it unhealthy (FR-8, FM-19, SR-8). The first binary of a CLI is
-/// not held.
 fn conformance_pending(tx: &Connection, roster: &Roster) -> Result<BTreeMap<String, String>> {
     let sql = "SELECT DISTINCT substr(subject, 1, instr(subject, ' ') - 1) FROM jobs
          WHERE kind = ?1 AND instr(subject, ' ') > 0";
@@ -4591,7 +4576,6 @@ fn conformance_pending(tx: &Connection, roster: &Roster) -> Result<BTreeMap<Stri
     Ok(out)
 }
 
-/// Whether the pass acted on the `conformance` run `id`.
 fn conformance_acted(tx: &Connection, id: i64) -> Result<bool> {
     let sql = "SELECT EXISTS (SELECT 1 FROM events WHERE entity = ?1
          AND entity_id = CAST(?2 AS TEXT) AND kind = ?3 AND cause = ?4)";
@@ -4604,7 +4588,6 @@ fn conformance_acted(tx: &Connection, id: i64) -> Result<bool> {
     Ok(tx.query_row(sql, params, |r| r.get(0))?)
 }
 
-/// Whether a `conformance` run of `cli` before `last` is of another binary.
 fn earlier_binary(tx: &Connection, cli: &str, last: &JobRow) -> Result<bool> {
     let sql = "SELECT EXISTS (SELECT 1 FROM jobs WHERE kind = ?1 AND id < ?2
          AND substr(subject, 1, length(?3) + 1) = ?3 || ' ' AND subject != ?4)";
