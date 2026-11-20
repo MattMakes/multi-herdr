@@ -208,6 +208,17 @@ const PROMPT: &str = "ORACLE PROMPT: do the task.";
 const FRESH_ID: &str = "00000000-0000-4000-8000-000000000001";
 const RESUME_ID: &str = "00000000-0000-4000-8000-000000000002";
 
+/// Fake Linux sandbox tools `bwrap` and `socat` in `bin`. A sandboxed
+/// Claude launch refuses to start on Linux when they are not on its `PATH`.
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 /// A temp world with the environment pinned. Restores it on drop.
 struct World {
     _guard: MutexGuard<'static, ()>,
@@ -229,7 +240,7 @@ impl World {
         let state = root.join("state");
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
         std::fs::create_dir_all(&state).unwrap();
-        std::fs::create_dir_all(root.join("bin")).unwrap();
+        stub_sandbox_tools(&root.join("bin"));
         std::fs::write(home.join(".claude/settings.json"), SETTINGS_JSON).unwrap();
         std::fs::write(
             home.join(".claude/plugins/installed_plugins.json"),

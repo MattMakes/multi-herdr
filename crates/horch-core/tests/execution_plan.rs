@@ -1399,10 +1399,24 @@ fn with_model(mut r: SpawnRequest, model: &str) -> SpawnRequest {
     r
 }
 
+/// Fake Linux sandbox tools `bwrap` and `socat` in `bin`. A sandboxed
+/// Claude launch refuses to start on Linux when they are not on its `PATH`.
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 /// The `claude` command line the plan's launch teammate builds.
 fn launch_args(p: &ExecutionPlan) -> Vec<String> {
     let w = world(None);
-    let env = horch_core::harness::launch::LaunchEnv::from_context(&w.ctx);
+    let mut env = horch_core::harness::launch::LaunchEnv::from_context(&w.ctx);
+    let bin = tempfile::tempdir().unwrap();
+    stub_sandbox_tools(bin.path());
+    env.path = Some(bin.path().as_os_str().to_owned());
     let session = horch_core::harness::launch::session_for(
         p.launch.teammate.agent.capabilities(),
         &p.launch.session,

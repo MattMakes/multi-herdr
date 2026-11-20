@@ -148,7 +148,9 @@ impl LaunchEnv {
     }
 
     /// The bare program names, no home and no inherited config: what a unit
-    /// test launches with, whatever the process environment holds.
+    /// test launches with, whatever the process environment holds. The
+    /// `PATH` is 1 folder with fake `bwrap` and `socat`, so a sandboxed
+    /// Claude launch passes the Linux sandbox check on every host.
     #[cfg(test)]
     pub(crate) fn for_test() -> LaunchEnv {
         LaunchEnv {
@@ -156,7 +158,7 @@ impl LaunchEnv {
             horch_exe: PathBuf::from("horch"),
             home: None,
             opencode_config_content: None,
-            path: None,
+            path: Some(test_sandbox_tools_path()),
             pathext: None,
             blender_path: None,
             blender_app: None,
@@ -182,7 +184,33 @@ impl LaunchEnv {
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()
     }
+}
 
+/// The `PATH` of [`LaunchEnv::for_test`]: a folder next to the test binary
+/// with fake `bwrap` and `socat`. A test process fills a folder of its own,
+/// then renames it into place. A child test process (a re-run of the test
+/// binary) can do the same at the same time, and it never sees a fake that
+/// is not yet executable.
+#[cfg(test)]
+fn test_sandbox_tools_path() -> std::ffi::OsString {
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.with_file_name("horch-test-sandbox-tools");
+        if !dir.is_dir() {
+            let own =
+                exe.with_file_name(format!("horch-test-sandbox-tools.{}", std::process::id()));
+            super::claude::sandbox_tools_path(&own, true);
+            if std::fs::rename(&own, &dir).is_err() {
+                std::fs::remove_dir_all(&own).unwrap();
+            }
+        }
+        std::env::join_paths([&dir]).unwrap()
+    })
+    .clone()
+}
+
+impl LaunchEnv {
     /// `~/` in a teammate path, expanded against [`LaunchEnv::home`].
     pub(crate) fn expand_home(&self, path: &str) -> PathBuf {
         crate::roster::expand_home(path, self.home())

@@ -19,6 +19,17 @@ use serde_json::{json, Value};
 const WINDOW_KEY: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 const CODEX_KEY: &str = "model_auto_compact_token_limit";
 
+/// Fake Linux sandbox tools `bwrap` and `socat` in `bin`. A sandboxed
+/// Claude launch refuses to start on Linux when they are not on its `PATH`.
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 /// A temp home, a workdir under it and a managed-settings path in it.
 struct World {
     _tmp: tempfile::TempDir,
@@ -35,6 +46,7 @@ impl World {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&workdir).unwrap();
         let managed = tmp.path().join("managed-settings.json");
+        stub_sandbox_tools(&tmp.path().join("bin"));
         World {
             _tmp: tmp,
             home,
@@ -46,7 +58,7 @@ impl World {
     fn ctx(&self, vars: &[(&str, &str)]) -> RuntimeContext {
         let mut env = MapEnv::new(&self.workdir)
             .with("HOME", &self.home.to_string_lossy())
-            .with("PATH", "/nonexistent")
+            .with("PATH", &self.home.with_file_name("bin").to_string_lossy())
             .with(
                 "HORCH_CLAUDE_MANAGED_SETTINGS",
                 &self.managed.to_string_lossy(),

@@ -74,8 +74,21 @@ fn ctx_with(home: &Path, workdir: &Path, vars: &[(&str, &str)]) -> RuntimeContex
     RuntimeContext::from_env(&env).unwrap()
 }
 
+/// Fake Linux sandbox tools `bwrap` and `socat` in `bin`. A sandboxed
+/// Claude launch refuses to start on Linux when they are not on its `PATH`.
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 fn launch_env(home: &Path) -> LaunchEnv {
-    LaunchEnv::from_context(&ctx_with(home, home, &[]))
+    let bin = home.join("bin");
+    stub_sandbox_tools(&bin);
+    LaunchEnv::from_context(&ctx_with(home, home, &[("PATH", &bin.to_string_lossy())]))
 }
 
 fn build(env: &LaunchEnv, t: &Teammate) -> Command {
@@ -968,10 +981,12 @@ fn exec_prompt(agent: HarnessKind) -> String {
         std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
     }
     let p = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+    stub_sandbox_tools(&tmp.path().join("bin"));
     let ctx = ctx_with(
         &home,
         &tmp.path().join("work"),
         &[
+            ("PATH", &p("bin")),
             ("HORCH_STATE_DIR", &p("state")),
             ("HORCH_DATA_DIR", &p("data")),
         ],
