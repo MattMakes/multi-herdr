@@ -798,7 +798,6 @@ fn second_git_writing_job_of_1_repo_waits_for_the_first() {
     kill(&ended);
 }
 
-/// A job process that sleeps `seconds`, in its own process group.
 #[cfg(unix)]
 fn sleeping(seconds: &str) -> LaunchSpec {
     LaunchSpec {
@@ -811,8 +810,6 @@ fn sleeping(seconds: &str) -> LaunchSpec {
     }
 }
 
-/// Start the queued run `id` through `runner` at `clock`, with a process
-/// that sleeps `seconds`. Whether it started.
 #[cfg(unix)]
 fn start_sleeping(
     w: &mut World,
@@ -834,8 +831,6 @@ fn start_sleeping(
         .unwrap()
 }
 
-/// [`jobs::observe`] of a pass at `clock`, with the process of the run
-/// `id` `liveness`, in 1 transaction.
 #[cfg(unix)]
 fn observe_run(
     w: &mut World,
@@ -880,9 +875,6 @@ fn wait_gone(runner: &mut JobRunner<'_>, pid: u32) {
     }
 }
 
-/// The rescue of the tree `row` as its executor runs it: the result file,
-/// its ingest, and the observation of the passed run `rescue`. Give the
-/// verified rescue ref.
 #[cfg(unix)]
 fn rescue_and_observe(w: &mut World, row: &WorktreeRow, rescue: i64) -> String {
     use horch_core::fleetd::fleet_runtime::adapters::job_result_file::{self, JobResult};
