@@ -340,7 +340,6 @@ fn fm34_daemon_restart_on_a_new_binary_keeps_the_run() {
                 );
                 std::thread::sleep(Duration::from_millis(100));
             };
-            // The row names the new fleetd before the old one ends.
             let old_child = fleetds.children.first_mut().unwrap();
             let until = Instant::now() + Duration::from_secs(10);
             while old_child.try_wait().unwrap().is_none() {
