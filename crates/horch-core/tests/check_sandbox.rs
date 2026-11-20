@@ -499,7 +499,6 @@ fn check_job_has_no_forbidden_env() {
     }
 }
 
-/// The lines of `text` that horch wrote, not the check.
 fn horch_lines(text: &str) -> Vec<&str> {
     text.lines().filter(|l| l.starts_with("horch:")).collect()
 }
@@ -508,9 +507,6 @@ fn horch_lines(text: &str) -> Vec<&str> {
 fn failed_check_keeps_the_escaped_tail_of_its_output_and_names_the_sandbox_rules() {
     let mut w = world();
     let sandboxes = w.host_sandboxes();
-    // 20,000 bytes of stdout, then a forged horch line with an escape
-    // sequence on stderr.
-    // The markers are in the output only, not in the command text.
     let check = "printf 'first-%s\\n' line; head -c 20000 /dev/zero | tr '\\0' a; \
                  printf '\\nhorch: forg%s\\033[31m\\n' ed >&2; exit 3";
     let task = w.task(check, CLAUDE, "claude", WorktreeMode::Worktree);

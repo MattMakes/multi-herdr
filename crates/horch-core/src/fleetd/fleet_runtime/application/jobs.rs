@@ -1149,13 +1149,8 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
     })
 }
 
-/// The horch lines of a failed check: the rules of its sandbox. The job
-/// cannot tell a refusal from another failure in each case (`curl` under
-/// Seatbelt prints no `EPERM`), so a failed check always names them.
-/// Seatbelt refuses with `EPERM` ("Operation not permitted"); `bwrap`
-/// refuses a write with `EROFS` ("Read-only file system") and a connect
-/// with `ENETUNREACH` ("Network is unreachable"). Only the platform
-/// sandbox (`sandbox-exec`, `bwrap`) has the network rule of SR-3.
+/// The job cannot tell a refusal from another failure in each case (`curl`
+/// under Seatbelt prints no `EPERM`), so a failed check always names the rules.
 fn sandbox_rules(spec: &LaunchSpec) -> String {
     let host = spec.program.file_name().and_then(|n| n.to_str());
     let mut lines = String::new();
@@ -1172,13 +1167,8 @@ fn sandbox_rules(spec: &LaunchSpec) -> String {
     lines
 }
 
-/// The number of bytes of the end of the check output that the verdict
-/// keeps, before and after [`quoted_output`]. The job result has a limit
-/// of 64 KiB (`job_result_max_bytes`) for all of its text.
 const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 
-/// A new path in the temp folder of this job process for the output of 1
-/// check. The launcher opens it outside the sandbox.
 fn check_output_file() -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1186,7 +1176,6 @@ fn check_output_file() -> PathBuf {
     std::env::temp_dir().join(format!("horch-check-{}-{nanos}.out", std::process::id()))
 }
 
-/// The last [`OUTPUT_TAIL_BYTES`] bytes of the file `path`, as text.
 fn output_tail(path: &Path) -> Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file =
@@ -1199,10 +1188,6 @@ fn output_tail(path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The untrusted output of a check (SR-6), safe to show: each control
-/// character is escaped, each line starts with `check| ` so that no line
-/// reads as a horch line, and at most [`OUTPUT_TAIL_BYTES`] bytes of the
-/// end are kept.
 fn quoted_output(text: &str) -> String {
     let mut out = String::new();
     for line in text.trim_end_matches('\n').split('\n') {
@@ -1221,7 +1206,6 @@ fn quoted_output(text: &str) -> String {
         while !out.is_char_boundary(cut) {
             cut += 1;
         }
-        // Start at a whole line, so each kept line has its prefix.
         let start = out[cut..].find('\n').map_or(out.len(), |i| cut + i + 1);
         out.drain(..start);
     }
