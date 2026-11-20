@@ -454,12 +454,25 @@ fn teammate(agent: &str, mode: Option<&str>) -> Teammate {
 fn interactive_attempt_is_unchanged() {
     // The mode of the profile decides the launch (FR-6).
     for agent in ["claude", "codex", "antigravity"] {
-        assert_eq!(ExecCli::of(&teammate(agent, None)), None, "{agent}");
         assert_eq!(
             ExecCli::of(&teammate(agent, Some("interactive"))),
             None,
             "{agent}"
         );
+    }
+    // A profile with no mode runs in exec mode on a CLI with an exec
+    // adapter, and stays interactive on any other CLI.
+    assert_eq!(
+        ExecCli::of(&teammate("claude", None)),
+        Some(ExecCli::Claude)
+    );
+    assert_eq!(ExecCli::of(&teammate("codex", None)), Some(ExecCli::Codex));
+    assert_eq!(
+        ExecCli::of(&teammate("antigravity", None)),
+        Some(ExecCli::Antigravity)
+    );
+    for agent in ["opencode", "pi", "prime", "none"] {
+        assert_eq!(ExecCli::of(&teammate(agent, None)), None, "{agent}");
     }
     assert_eq!(
         ExecCli::of(&teammate("claude", Some("exec"))),

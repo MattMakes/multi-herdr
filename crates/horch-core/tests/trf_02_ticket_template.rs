@@ -1,8 +1,9 @@
-//! TRF-02: the ticket-writer template's example ticket and MAP parse under
-//! the C1 rules (`docs/specs/ticket-format.md`) with no error.
+//! TRF-02: the ticket-writer template's example ticket and plan.yaml parse
+//! under the C1 rules (`docs/specs/ticket-format.md`) with no error.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use horch_core::fleetd::ideas::adapters::plan_yaml;
 use horch_core::taskledger::map;
 
 fn template() -> String {
@@ -24,27 +25,6 @@ fn fenced_after(text: &str, marker: &str) -> String {
         .collect();
     assert!(!body.is_empty(), "the block after '{marker}' is empty");
     body.join("\n") + "\n"
-}
-
-/// Write the example MAP into `dir`, and the example ticket at every ticket
-/// file the MAP links.
-fn lay_out(dir: &Path, ticket: &str, map_text: &str) -> PathBuf {
-    let tickets = dir.join("docs/tickets/example");
-    std::fs::create_dir_all(&tickets).unwrap();
-    let mut linked = 0;
-    for (_, target) in map::links(map_text) {
-        if target.ends_with(".md") {
-            std::fs::write(tickets.join(&target), ticket).unwrap();
-            linked += 1;
-        }
-    }
-    assert!(
-        linked >= 2,
-        "the example MAP links {linked} ticket files; want 2 or more"
-    );
-    let map_path = tickets.join("MAP.md");
-    std::fs::write(&map_path, map_text).unwrap();
-    map_path
 }
 
 #[test]
@@ -76,33 +56,33 @@ fn trf_02_template_example_ticket_has_the_c1_field_block() {
 fn trf_02_template_example_map_parses_with_the_ticket() {
     let text = template();
     let ticket = fenced_after(&text, "== Example ticket ==");
-    let map_text = fenced_after(&text, "== Example MAP.md ==");
-    assert!(
-        !map_text.to_lowercase().contains("| areas"),
-        "the example MAP has an Areas column"
-    );
+    let plan_text = fenced_after(&text, "== Example plan.yaml ==");
     let dir = tempfile::tempdir().unwrap();
-    let map_path = lay_out(dir.path(), &ticket, &map_text);
+    // The example plan names each ticket relative to its own folder.
+    let named = plan_yaml::parse(&plan_text).expect("the example plan.yaml parses");
+    for task in &named.tasks {
+        let ticket_path = task.ticket.as_ref().expect("a task names its ticket");
+        std::fs::write(dir.path().join(&ticket_path.path), &ticket).unwrap();
+    }
+    let plan_path = dir.path().join("plan.yaml");
+    std::fs::write(&plan_path, &plan_text).unwrap();
 
-    let parsed = map::read(&map_path, dir.path()).expect("the example MAP parses");
-    assert!(parsed
-        .spec_ref
-        .as_deref()
-        .is_some_and(|s| s.starts_with("docs/specs/")));
-    assert!(parsed.items.len() >= 2);
-    for item in &parsed.items {
-        let t = &item.task;
+    let plan = plan_yaml::read(&plan_path).expect("the example plan.yaml reads");
+    assert!(plan.tasks.len() >= 2);
+    for t in &plan.tasks {
+        assert!(!t.profile.is_empty(), "task {} has no profile", t.key);
+        assert!(!t.covers.is_empty(), "task {} covers nothing", t.key);
+        assert!(!t.acceptance.is_empty(), "task {} has no acceptance", t.key);
+        let file = t.ticket.as_ref().expect("a task names its ticket");
         assert!(
-            !t.primary.is_empty(),
-            "ticket {} has no primary persona",
-            item.key
+            file.problems.is_empty(),
+            "ticket of {} breaks the C1 rules: {:?}",
+            t.key,
+            file.problems
         );
-        assert!(t.land_check.is_some(), "ticket {} has no Check", item.key);
-        assert!(!t.own.is_empty(), "ticket {} has no Own paths", item.key);
-        assert!(t.task_file.starts_with("docs/tickets/"), "{}", t.task_file);
     }
     assert!(
-        parsed.items.iter().any(|i| !i.task.blocked_by.is_empty()),
-        "the example MAP shows no blocking edge"
+        plan.tasks.iter().any(|t| !t.after.is_empty()),
+        "the example plan shows no blocking edge"
     );
 }

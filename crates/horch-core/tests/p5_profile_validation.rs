@@ -21,10 +21,11 @@ use horch_core::fleetd::worker_profiles::adapters::check_sandbox::{
     WorkerSandboxes, NO_CHECK_SANDBOX_KIND,
 };
 use horch_core::fleetd::worker_profiles::adapters::sandbox_rules::{
-    refusal, refusal_of, refused, NO_SANDBOX,
+    refusal, refusal_of, NO_SANDBOX,
 };
 use horch_core::fleetd::worker_profiles::domain::operator_boundary::{Act, Boundary};
 use horch_core::harness::claude::operator_boundary_on;
+use horch_core::harness::codex::{self, CodexFacts, OPERATOR_BOUNDARY_SINCE};
 use horch_core::harness::HarnessKind;
 use horch_core::roster::{Roster, Teammate};
 use horch_core::taskledger::finish::CodexSandbox;
@@ -310,6 +311,34 @@ fn fallback_with_a_sandbox_takes_the_task() {
     }
     let task = tasks::get(&w.conn, &a).unwrap();
     assert_eq!(task.claimable_by.as_deref(), Some(PI));
+}
+
+/// [`refusal`] for each profile of `roster`, with the facts of a Codex at
+/// the lowest version that the operator boundary needs, with `network_proxy`.
+/// The Codex of this machine is not probed: its version would decide the
+/// result.
+fn refused(roster: &Roster, fleet_root: &Path) -> BTreeMap<String, String> {
+    let facts = CodexFacts {
+        version: Some(format!("codex-cli {OPERATOR_BOUNDARY_SINCE}")),
+        network_proxy: true,
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter_map(|name| {
+            let t = roster.get(name)?;
+            let why = match t.agent {
+                HarnessKind::Codex => refusal_of(&codex::operator_boundary_on(
+                    std::env::consts::OS,
+                    &facts,
+                    t,
+                    fleet_root,
+                )),
+                _ => refusal(t, fleet_root),
+            };
+            why.map(|why| (name.to_string(), why))
+        })
+        .collect()
 }
 
 /// Each worker teammate of `teammates/` has a sandbox that denies the 3

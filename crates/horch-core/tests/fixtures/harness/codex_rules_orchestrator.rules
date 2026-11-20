@@ -1,9 +1,4 @@
 prefix_rule(
-    pattern = ["horch", "spawn"],
-    decision = "allow",
-    justification = "herdr-fleet: create a worker pane, fresh or resumed",
-)
-prefix_rule(
     pattern = ["horch", "tell"],
     decision = "allow",
     justification = "herdr-fleet: message any worker in the fleet",
@@ -16,7 +11,7 @@ prefix_rule(
 prefix_rule(
     pattern = ["horch", "sessions"],
     decision = "allow",
-    justification = "herdr-fleet: read the project session ledger before spawning",
+    justification = "herdr-fleet: read the project session ledger",
 )
 prefix_rule(
     pattern = ["horch", "layout"],
@@ -26,12 +21,12 @@ prefix_rule(
 prefix_rule(
     pattern = ["horch", "quota"],
     decision = "allow",
-    justification = "herdr-fleet: read the usage pools before spawning a batch",
+    justification = "herdr-fleet: read the usage pools",
 )
 prefix_rule(
     pattern = ["horch", "route"],
     decision = "allow",
-    justification = "herdr-fleet: see what the usage-limit gate would do with a spawn",
+    justification = "herdr-fleet: see what the usage-limit gate decides for a persona",
 )
 prefix_rule(
     pattern = ["horch", "context"],
@@ -51,10 +46,25 @@ prefix_rule(
 prefix_rule(
     pattern = ["horch", "ledger"],
     decision = "allow",
-    justification = "herdr-fleet: queue, plan, stop and reap tasks through the task ledger",
+    justification = "herdr-fleet: read the task ledger, and stop, fall back or waive for the operator",
 )
 prefix_rule(
-    pattern = ["horch", "fleet"],
+    pattern = ["horch", "ideas"],
     decision = "allow",
-    justification = "herdr-fleet: record a deliberate orchestrator stop with horch fleet stop",
+    justification = "herdr-fleet: read each idea and the needs-you list",
+)
+prefix_rule(
+    pattern = ["horch", "idea"],
+    decision = "allow",
+    justification = "herdr-fleet: show an idea, or add, amend, revise, park or cancel one for the operator",
+)
+prefix_rule(
+    pattern = ["horch", "task"],
+    decision = "allow",
+    justification = "herdr-fleet: requeue or cancel a task for the operator",
+)
+prefix_rule(
+    pattern = ["horch", "feature"],
+    decision = "allow",
+    justification = "herdr-fleet: abandon a feature for the operator",
 )
