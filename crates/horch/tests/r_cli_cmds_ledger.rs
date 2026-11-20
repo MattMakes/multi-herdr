@@ -1,13 +1,34 @@
 //! `horch ledger legacy`: every subcommand arm of the legacy session ledger,
-//! with a temp state dir.
+//! with a temp state dir. The test process plays fleetd for the
+//! `session_records` requests that the subcommands send.
 
 use std::process::{Command, Output};
 
+use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at;
+
+/// `server` is before `tmp`: the server drops first.
 struct World {
+    _server: ChannelServer,
     tmp: tempfile::TempDir,
 }
 
 impl World {
+    /// A short folder under `/tmp`: `sun_path` holds about 104 bytes on macOS.
+    fn new() -> World {
+        let tmp = tempfile::Builder::new()
+            .prefix("rl")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let state = tmp.path().join("state");
+        let server =
+            serve_session_records_at(&state.join("ledger.sqlite3"), &state.join("fleet")).unwrap();
+        World {
+            _server: server,
+            tmp,
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         let root = self.tmp.path();
         Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -33,9 +54,7 @@ impl World {
 
 #[test]
 fn the_legacy_subcommands_write_read_and_report_a_session() {
-    let w = World {
-        tmp: tempfile::tempdir().unwrap(),
-    };
+    let w = World::new();
     w.ok(&[
         "add",
         "--record-id",
@@ -89,9 +108,7 @@ fn the_legacy_subcommands_write_read_and_report_a_session() {
 
 #[test]
 fn the_legacy_resume_and_assign_arms_run() {
-    let w = World {
-        tmp: tempfile::tempdir().unwrap(),
-    };
+    let w = World::new();
     w.ok(&[
         "add",
         "--record-id",
