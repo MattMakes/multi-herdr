@@ -1436,10 +1436,6 @@ mod tests {
         );
     }
 
-    /// An in-process fleetd for the ledger of `ctx`: the handler of
-    /// `session_records` and the handlers of the CLI writers, with
-    /// `worker_progress`. A worker with no outbox sends its progress line
-    /// there.
     fn serve_session_records_and_progress(
         ctx: &RuntimeContext,
     ) -> horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer {
@@ -1531,8 +1527,6 @@ mod tests {
             RuntimeContext::from_env(&env).unwrap()
         };
         let both = ctx(Some("r-1"), Some(&wid));
-        // The fleetd of the session records (T-884) and of the progress line
-        // of a worker that has no outbox (T-885).
         let _fleetd = serve_session_records_and_progress(&both);
         SessionLedger::open_in(&both)
             .unwrap()

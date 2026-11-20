@@ -1269,8 +1269,6 @@ mod tests {
             "{}",
             row("codex-sol")
         );
-        // A codex teammate with no compact_window has the window of its
-        // `windows` key of the context policy.
         assert!(
             row("astra-creative").contains("256,000  fleet"),
             "{}",
@@ -1281,8 +1279,6 @@ mod tests {
             "{}",
             row("astra-creative")
         );
-        // A teammate with no compact_window and no `windows` key has the
-        // window of its harness.
         assert!(
             row("opencode-pickle").contains("harness"),
             "{}",
