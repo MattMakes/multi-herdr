@@ -129,21 +129,18 @@ fn world(name: &str, ticket: &str, env: &[(&str, &str)]) -> World {
         "HORCH_QUOTA_FILE",
         fixtures().join("quota/all-ok.json").to_string_lossy(),
     );
-    h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", "exec,stay");
     for (key, value) in env {
         h.set(key, *value);
     }
     declare_gates(&h);
     seed_task(&h, ticket);
+    // The workspace of the fleet has the label of the project folder, so
+    // fleetd launches an attempt with no recorded pane in it (T-890).
+    let workspace = h.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    h.set("HORCH_WORKSPACE_ID", workspace);
     h.serve_fleetd();
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", text(&o));
     World { h }
 }
 
@@ -208,14 +205,17 @@ fn seed_task(h: &Harness, ticket: &str) {
 
 /// The call of a fake `claude` that ran in exec mode, with the text of its
 /// `START.md` in `exec_prompt`: the agent of a push attempt, started by
-/// fleetd with no search for work.
+/// fleetd with no search for work. The conformance check of fleetd also
+/// runs a fake `claude` in exec mode, so the call holds the ticket text.
 fn attempt_call(w: &World) -> Value {
     wait_for_or(
         "the fake agent of the attempt to run",
         || {
-            w.h.calls_of("claude")
-                .into_iter()
-                .find(|c| c.get("exec_prompt").is_some())
+            w.h.calls_of("claude").into_iter().find(|c| {
+                c["exec_prompt"]
+                    .as_str()
+                    .is_some_and(|p| p.contains("Do the work of T0."))
+            })
         },
         || w.diagnostics(),
     )
@@ -493,6 +493,41 @@ fn sr3_agent_git_push_is_refused_and_fleetd_push_works() {
         )
         .unwrap();
     assert_eq!(push_state, "ok");
+}
+
+/// SR-3: no agent messages anyone outside the fleet. fleetd launches the
+/// agent of a push attempt with a profile whose deny list holds each
+/// external-message command: `gh issue comment`, `gh pr comment`,
+/// `gh pr review` and `gh discussion`.
+#[test]
+fn sr3_agent_launch_denies_external_messages() {
+    let w = world("p4-sr3-messages", "# T0\nDo the work of T0.\n", &[]);
+    let call = attempt_call(&w);
+    let argv = call["argv"].as_array().unwrap();
+    let settings = argv
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|a| serde_json::from_str::<Value>(a).ok())
+        .find(|v| v.get("permissions").is_some())
+        .unwrap_or_else(|| panic!("no --settings in {argv:?}"));
+    let deny: Vec<&str> = settings["permissions"]["deny"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for words in launch_env::DENIED_COMMANDS {
+        let rule = launch_env::claude_deny_rule(words);
+        assert!(deny.contains(&rule.as_str()), "{rule} not in {deny:?}");
+    }
+    for rule in [
+        "Bash(gh issue comment:*)",
+        "Bash(gh pr comment:*)",
+        "Bash(gh pr review:*)",
+        "Bash(gh discussion:*)",
+    ] {
+        assert!(deny.contains(&rule), "{rule} not in {deny:?}");
+    }
 }
 
 /// A fleet with 1 feature whose branch is 1 commit past `main`, a remote

@@ -370,3 +370,119 @@ fn codex_profile_forbids_git_push_and_external_messages_by_default() {
         assert!(forbidden, "no forbidden rule for [{pattern}] in:\n{rules}");
     }
 }
+
+// ─── the external-message boundary of a verifier check ──────────────────
+
+/// An address that no host answers (RFC 5737, TEST-NET-1): a webhook at
+/// this address never gets a message, so the test sends none.
+const OFF_HOST_WEBHOOK: &str = "http://192.0.2.1:9/hook";
+
+/// The `check_launch` of each of `checks` for a worker of a Claude persona,
+/// in a test fleet under `root`. An entry is `None` when this host has no
+/// check sandbox.
+#[cfg(unix)]
+fn check_launches(
+    root: &Path,
+    checks: &[&str],
+) -> Vec<Option<horch_core::fleetd::worker_profiles::application::ports::LaunchSpec>> {
+    use horch_core::fleetd::fleet_runtime::application::jobs::SandboxProfiles;
+    use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::workers::{self, NewWorker};
+    use horch_core::taskledger::{finish::CodexSandbox, schema};
+
+    let mut conn = rusqlite::Connection::open(root.join("ledger.sqlite3")).unwrap();
+    schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+    let project = root.join("repo");
+    std::fs::create_dir_all(&project).unwrap();
+    let run = runs::create(
+        &conn,
+        &project,
+        &NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let worker = workers::insert(
+        &conn,
+        &NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "opus".into(),
+            harness: Some("claude".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let worker = workers::get(&conn, &worker).unwrap();
+    let sandboxes = WorkerSandboxes::new(CodexSandbox::default(), root.join("fleet"));
+    checks
+        .iter()
+        .map(|check| sandboxes.check_launch(&worker, &project, check).unwrap())
+        .collect()
+}
+
+/// The output of a launched check.
+#[cfg(unix)]
+fn run_check(
+    spec: &horch_core::fleetd::worker_profiles::application::ports::LaunchSpec,
+) -> std::process::Output {
+    let mut cmd = std::process::Command::new(&spec.program);
+    cmd.args(&spec.args);
+    if let Some(dir) = &spec.cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.output().unwrap()
+}
+
+/// SR-3: a verifier check sends no message outside the fleet. In its
+/// sandbox a `curl` of a webhook on this host passes (the network rule is
+/// not a full denial), and a `curl` of a webhook on another host is
+/// refused, with a reason on stderr that names SR-3 and the network rule,
+/// and with the exit code of the check kept.
+#[cfg(unix)]
+#[test]
+fn verifier_check_sends_no_message_outside_the_fleet() {
+    use horch_core::fleetd::worker_profiles::adapters::check_sandbox::NETWORK_RULE;
+    use std::io::{Read, Write};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let curl = |url: &str| format!("curl --silent --show-error --max-time 5 --data hello {url}");
+
+    // A webhook on this host: the check reaches it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let webhook = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).unwrap();
+        let _ =
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    });
+    let local = curl(&format!("http://127.0.0.1:{port}/"));
+    let launches = check_launches(tmp.path(), &[&local, &curl(OFF_HOST_WEBHOOK)]);
+    let Some(spec) = &launches[0] else {
+        // No check sandbox on this host: the check never runs (SR-4), so
+        // it sends nothing. Release the listener.
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+        webhook.join().unwrap();
+        return;
+    };
+    let out = run_check(spec);
+    assert!(ok(&out), "{}", show(&out));
+    assert!(webhook.join().unwrap().contains("hello"), "no request");
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("SR-3"),
+        "a passing check prints no refusal: {}",
+        show(&out)
+    );
+
+    // A webhook on another host: the check fails with exit 7 (curl could
+    // not connect), never with a timeout, and says why.
+    let out = run_check(launches[1].as_ref().unwrap());
+    assert_eq!(out.status.code(), Some(7), "{}", show(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(NETWORK_RULE), "{}", show(&out));
+    assert!(stderr.contains("SR-3") && stderr.contains("off-host network"));
+}

@@ -6,10 +6,10 @@
 //! - A Codex worker keeps `codex sandbox` with its `fleet_write` profile
 //!   and the TMPDIR of its pane (F10, #181).
 //! - Each other worker gets the check sandbox of the platform layer
-//!   (`horch_platform::sandbox::sandboxed`). It can write only its worktree
+//!   (`horch_platform::sandbox::sandboxed_local`). It can write only its worktree
 //!   (the project root for a task of the shared checkout), the folder of
-//!   its attempt and its temp folder, and it cannot do the 3 operator acts
-//!   (SR-8).
+//!   its attempt and its temp folder, it cannot do the 3 operator acts
+//!   (SR-8), and it has no off-host network (SR-3, [`NETWORK_RULE`]).
 //!
 //! On a host with no platform sandbox, a persona of another CLI has no
 //! check sandbox: fleetd does not dispatch it, and 1 needs-you item for
@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use horch_platform::sandbox::{sandboxed, Denials};
+use horch_platform::sandbox::{sandboxed_local, Denials};
 use horch_platform::NotSupported;
 use rusqlite::Connection;
 
@@ -40,6 +40,19 @@ use crate::roster::Roster;
 use crate::taskledger::finish::CodexSandbox;
 use crate::taskledger::tasks;
 use crate::taskledger::workers::Worker;
+
+/// What a failed check of the platform sandbox says on its stderr: the
+/// network rule (SR-3). A check has no off-host network, so a check that
+/// downloads a dependency fails, and this line tells why.
+pub const NETWORK_RULE: &str = "SR-3: a task check has no off-host network (loopback and Unix \
+sockets only), so no check messages anyone outside the fleet. A dependency must be in the local \
+cache before the check.";
+
+/// The shell script of a check: it runs the check as `$1` with the shell
+/// `$0`, and prints `$2` to stderr when the check fails. It keeps the exit
+/// code of the check.
+const CHECK_SCRIPT: &str = "\"$0\" -c \"$1\"; status=$?; \
+if [ \"$status\" -ne 0 ]; then echo \"$2\" >&2; fi; exit \"$status\"";
 
 /// The kind of the needs-you item of a persona with no check sandbox. Its
 /// key is `no_check_sandbox:<persona>`.
@@ -210,8 +223,14 @@ impl WorkerSandboxes {
             write: vec![paths.run],
         };
         let mut cmd = horch_platform::start::command(horch_platform::shell::CHECK_SHELL);
-        cmd.arg("-c").arg(check);
-        let cmd = sandboxed(cmd, &writable, &denied).ok()?;
+        cmd.args([
+            "-c",
+            CHECK_SCRIPT,
+            horch_platform::shell::CHECK_SHELL,
+            check,
+            NETWORK_RULE,
+        ]);
+        let cmd = sandboxed_local(cmd, &writable, &denied).ok()?;
         Some(LaunchSpec {
             program: cmd.get_program().into(),
             args: cmd.get_args().map(Into::into).collect(),
