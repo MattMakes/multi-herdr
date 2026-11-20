@@ -25,6 +25,7 @@ use super::git::Git;
 use super::model::{FindingStatus, TaskStatus, WorkerStatus, WorktreeStatus};
 use super::sql_words::{self, word};
 use super::store::optional;
+use crate::fleetd::integration::domain::task_branch::LandingState;
 use crate::fleetd::worktree_custody::adapters::git as custody_git;
 
 pub use facts::{Age, Diff, Disk, Uncommitted};
@@ -198,8 +199,13 @@ fn branch_unsettled(conn: &Connection, row: &LedgerRow) -> Result<bool> {
         "SELECT EXISTS (SELECT 1 FROM branches
              WHERE (task_id = ?1 OR name = ?2)
                AND landing_state IS NOT NULL
-               AND landing_state NOT IN ('landed', 'abandoned'))",
-        rusqlite::params![row.task_id, by_branch],
+               AND landing_state NOT IN (?3, ?4))",
+        rusqlite::params![
+            row.task_id,
+            by_branch,
+            LandingState::Landed.as_str(),
+            LandingState::Abandoned.as_str()
+        ],
         |r| r.get(0),
     )?;
     Ok(unsettled)
