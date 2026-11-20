@@ -458,7 +458,6 @@ fn crash_after_the_commit_only_archives_the_file() {
     jobs::archive_results(&w.root(), &reads).unwrap();
 }
 
-/// The job process `me` of the run `id`, as `horch job run <id>` runs it.
 fn run_job_as(w: &mut World, id: i64, me: u32) -> Option<Outcome> {
     let ctx = JobCtx {
         guard: None,
@@ -484,8 +483,6 @@ fn unrecorded_or_mismatched_pid_process_cannot_write_job_result_file() {
     let before = w.row(id);
     let changes = w.conn.total_changes();
 
-    // A process whose pid is not the recorded pid of the `running` row gets
-    // no file and changes no row.
     assert!(run_job_as(&mut w, id, wrong_pid).is_none());
     assert!(!files::path(&w.root(), id, 1).exists());
     assert!(!files::folder(&w.root()).exists() || names(&files::folder(&w.root())).is_empty());
@@ -494,13 +491,9 @@ fn unrecorded_or_mismatched_pid_process_cannot_write_job_result_file() {
     assert_eq!(w.row(id), before);
     assert_eq!(w.conn.total_changes(), changes, "run_job wrote the ledger");
 
-    // The recorded pid still writes its file: the guard is the pid only.
     assert!(run_job_as(&mut w, id, recorded_pid).is_some());
     assert!(files::path(&w.root(), id, 1).is_file());
 
-    // A row that is not started has no pid: no process writes its file. The
-    // process waits for the row to start until its limit, so a run that
-    // ended gives the same answer at once.
     let ended = w.running(&mut runner, Kind::Push);
     let ended_pid = w.row(ended).pid.unwrap();
     let gone = ProcessFact {
@@ -519,7 +512,6 @@ fn queued_job_has_no_pid_and_gets_no_result_file() {
     let mut w = world();
     let id = w.queue(Kind::DocsSync, "F-2", 0);
     assert_eq!(w.row(id).pid, None);
-    // The process waits for the start of the row until its limit.
     assert!(run_job_as(&mut w, id, 4242).is_none());
     assert!(!files::path(&w.root(), id, 1).exists());
     assert_eq!(w.row(id).state, State::Queued);
@@ -532,7 +524,6 @@ fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
     let launcher = Launcher;
     let mut runner = JobRunner::new(&launcher);
 
-    // A job that passed from its file, and its file archived.
     let done = w.running(&mut runner, Kind::DocsSync);
     let first = files::write(&w.root(), &passed(done, 1, "real")).unwrap();
     let (reads, ended) = w.pass_no_archive();
@@ -540,12 +531,9 @@ fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
     jobs::archive_results(&w.root(), &reads).unwrap();
     assert!(!first.exists());
 
-    // A job that no process started: queued, with no pid.
     let queued = w.queue(Kind::Push, "F-1", 0);
     assert_eq!(w.row(queued).state, State::Queued);
 
-    // Forged files: run 1 of the queued job, run 2 of the passed job (the
-    // path of its run 1 is in `ingested` and is read no more).
     let forged_queued = files::write(&w.root(), &passed(queued, 1, "forged while queued")).unwrap();
     let forged_done = files::write(&w.root(), &passed(done, 2, "forged after pass")).unwrap();
     let again_first = files::write(&w.root(), &passed(done, 1, "forged again")).unwrap();
@@ -555,7 +543,6 @@ fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
     assert_eq!(reads.len(), 3);
     assert_eq!(ended, vec![]);
 
-    // The queued row stays queued, with 1 note.
     assert_eq!(w.row(queued).state, State::Queued);
     assert_eq!(w.row(queued).result_json, None);
     assert_eq!(w.moves_to(queued, State::Passed), 0);
@@ -569,8 +556,6 @@ fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
     );
     assert_eq!(w.ingested(&forged_queued), Some(("accepted".into(), None)));
 
-    // The passed row stays passed with its real result, with 1 note for the
-    // file of run 2. The file of its run 1 is not read again: no note.
     let row = w.row(done);
     assert_eq!(row.state, State::Passed);
     assert_eq!(outcome(&row).unwrap().text, "real");
@@ -587,7 +572,6 @@ fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
         .any(|r| r.path == again_first && matches!(r.read, Read::Seen)));
     assert_eq!(w.ingested(&forged_done), Some(("accepted".into(), None)));
 
-    // A second read marks each path seen, and adds no event.
     let again = w.read(w.config.job_result_max_bytes);
     assert_eq!(again.len(), 3);
     assert!(again.iter().all(|r| matches!(r.read, Read::Seen)));
