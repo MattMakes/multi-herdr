@@ -11,11 +11,12 @@ use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
 use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
+use crate::fleetd::worker_profiles::domain::stop_gate;
 use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 
@@ -67,6 +68,96 @@ pub(crate) fn find_session(cache: &Path, workdir: &Path, since: SystemTime) -> O
     parse_last_conversations(&std::fs::read_to_string(cache).ok()?, workdir)
 }
 
+/// The workspace hooks file of `agy`, below the worktree. `agy` loads hooks
+/// only from this file, `~/.gemini/config/hooks.json` or a plugin, and not
+/// from `--settings` (antigravity.google/docs/hooks?tab=cli).
+const HOOKS_FILE: &str = ".agents/hooks.json";
+
+/// The name of the horch entry in [`HOOKS_FILE`].
+const STOP_HOOK_NAME: &str = "horch-result-gate";
+
+/// The command of the `agy` Stop hook. `agy` keeps the agent working only
+/// on the stdout JSON `{"decision":"continue"}`, so exit 2 of
+/// `horch result --check` maps to it. Each other exit lets the turn end, as
+/// in Claude Code.
+pub(crate) fn stop_hook_command(horch_exe: &Path) -> String {
+    let keep = serde_json::json!({"decision": "continue", "reason": stop_gate::RESULT_FIRST})
+        .to_string()
+        .replace('\'', r"'\''");
+    format!(
+        "{} >/dev/null 2>&1; if [ $? -eq 2 ]; then printf '%s\\n' '{keep}'; else printf '%s\\n' '{{\"decision\":\"stop\"}}'; fi",
+        stop_gate::hook_command(horch_exe)
+    )
+}
+
+/// The trimmed stdout of `git -C <dir> <args>`, or `None` when git fails.
+fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = horch_platform::start::command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// A push attempt gets 1 Stop hook that runs `horch result --check` (FM-6)
+/// in `<worktree>/.agents/hooks.json`, with the other entries of that file.
+/// The hook helps the agent and is not a security boundary: the worker can edit it.
+/// A file that the project tracks stays as it is, and the repair pass covers
+/// the attempt. The git exclude file keeps the hook file out of each commit.
+fn seed_stop_hook(worktree: &Path, horch_exe: &Path) -> Result<()> {
+    if git_out(worktree, &["ls-files", "--error-unmatch", HOOKS_FILE]).is_some() {
+        return Ok(());
+    }
+    if let Some(common) = git_out(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        exclude_hooks_file(&Path::new(&common).join("info/exclude"))?;
+    }
+    let path = worktree.join(HOOKS_FILE);
+    let mut hooks = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
+            .with_context(|| format!("{} must be a JSON object", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    hooks.insert(
+        STOP_HOOK_NAME.to_owned(),
+        serde_json::json!({"Stop": [{"type": "command", "command": stop_hook_command(horch_exe)}]}),
+    );
+    std::fs::create_dir_all(worktree.join(".agents"))?;
+    std::fs::write(&path, serde_json::to_string_pretty(&hooks)?)
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// Add the line `/.agents/hooks.json` to the git exclude file `exclude`,
+/// once.
+fn exclude_hooks_file(exclude: &Path) -> Result<()> {
+    let line = format!("/{HOOKS_FILE}");
+    let text = match std::fs::read_to_string(exclude) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", exclude.display())),
+    };
+    if text.lines().any(|l| l == line) {
+        return Ok(());
+    }
+    let sep = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    if let Some(dir) = exclude.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(exclude, format!("{text}{sep}{line}\n"))
+        .with_context(|| format!("write {}", exclude.display()))
+}
+
 /// The Antigravity adapter.
 pub struct Antigravity;
 
@@ -110,6 +201,10 @@ impl Harness for Antigravity {
         // teammate env and the child env layers cannot add it back.
         for key in ANTIGRAVITY_FORBIDDEN_ENV {
             cmd.env_remove(key);
+        }
+        // A claim attempt has no task folder and gets no Stop hook.
+        if let (Some(_), Some(worktree)) = (&env.task_dir, &env.worktree) {
+            seed_stop_hook(worktree, &env.horch_exe)?;
         }
         Ok(cmd)
     }
@@ -468,6 +563,30 @@ mod tests {
         assert_eq!(find_session(&cache, &dir, before).as_deref(), Some("c-1"));
         let after = SystemTime::now() + Duration::from_secs(60);
         assert_eq!(find_session(&cache, &dir, after), None);
+    }
+
+    /// agy reads the stdout JSON of the Stop hook: only exit 2 of
+    /// `horch result --check` keeps the agent working.
+    #[cfg(unix)]
+    #[test]
+    fn the_stop_hook_maps_exit_2_to_continue() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let horch = tmp.path().join("my horch");
+        for (code, want) in [("2", "continue"), ("0", "stop"), ("1", "stop")] {
+            std::fs::write(&horch, format!("#!/bin/sh\necho noise\nexit {code}\n")).unwrap();
+            std::fs::set_permissions(&horch, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let out = horch_platform::start::command("sh")
+                .arg("-c")
+                .arg(stop_hook_command(&horch))
+                .output()
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(v["decision"], want, "exit {code}");
+            if want == "continue" {
+                assert_eq!(v["reason"], stop_gate::RESULT_FIRST);
+            }
+        }
     }
 
     #[test]

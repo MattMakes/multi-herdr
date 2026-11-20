@@ -831,11 +831,103 @@ fn codex_toml_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Run git in `dir` and return its stdout. It fails the test on an error.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// A push env whose worktree is a new git repository with 1 commit.
+fn agy_push_env(home: &Path) -> (LaunchEnv, PathBuf) {
+    let worktree = home.join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    git(&worktree, &["init", "-q"]);
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    let mut env = push_env(home);
+    env.worktree = Some(worktree.clone());
+    (env, worktree)
+}
+
+/// The commands of the `Stop` hooks of `<worktree>/.agents/hooks.json`,
+/// the workspace hooks file of agy.
+fn agy_stop_commands(worktree: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(worktree.join(".agents/hooks.json")) else {
+        return Vec::new();
+    };
+    let hooks: Value = serde_json::from_str(&text).unwrap();
+    hooks
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|h| h["Stop"].as_array().cloned().unwrap_or_default())
+        .map(|h| {
+            assert_eq!(h["type"], "command");
+            h["command"].as_str().unwrap().to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn antigravity_push_launch_has_a_stop_hook_that_runs_result_check() {
+    let home = tempfile::tempdir().unwrap();
+    let (env, worktree) = agy_push_env(home.path());
+    // An untracked hook of the project stays.
+    std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+    std::fs::write(
+        worktree.join(".agents/hooks.json"),
+        json!({"mine": {"Stop": [{"type": "command", "command": "mine"}]}}).to_string(),
+    )
+    .unwrap();
+    build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+    let commands = agy_stop_commands(&worktree);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands.iter().any(|c| c == "mine"), "{commands:?}");
+    assert!(
+        commands.iter().any(|c| c.starts_with(STOP_HOOK)),
+        "{commands:?}"
+    );
+    // The hook file never reaches a commit.
+    let status = git(
+        &worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(status.is_empty(), "{status}");
+}
+
+#[test]
+fn antigravity_push_launch_keeps_a_tracked_hooks_file() {
+    let home = tempfile::tempdir().unwrap();
+    let (env, worktree) = agy_push_env(home.path());
+    let tracked = json!({"project": {"Stop": [{"type": "command", "command": "p"}]}}).to_string();
+    std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+    std::fs::write(worktree.join(".agents/hooks.json"), &tracked).unwrap();
+    git(&worktree, &["add", ".agents/hooks.json"]);
+    git(&worktree, &["commit", "-q", "-m", "hooks"]);
+    build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".agents/hooks.json")).unwrap(),
+        tracked
+    );
+    let status = git(
+        &worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(status.is_empty(), "{status}");
+}
+
 #[test]
 fn claim_attempt_has_no_stop_hook() {
     let home = tempfile::tempdir().unwrap();
-    let mut env = push_env(home.path());
+    let (mut env, worktree) = agy_push_env(home.path());
     env.task_dir = None;
+    build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+    assert!(!worktree.join(".agents/hooks.json").exists());
     let claude = argv(&build(&env, &teammate("w", HarnessKind::Claude, vec![])));
     if claude.iter().any(|a| a == "--settings") {
         assert!(claude_stop_commands(&settings_arg(&claude)).is_empty());
