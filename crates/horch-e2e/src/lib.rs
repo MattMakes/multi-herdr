@@ -227,11 +227,5 @@ pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
 
 /// The directory the fake binaries were built into (next to `horch`).
 pub fn bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().expect("current exe");
-    // target/<profile>/deps/<test>-<hash> -> target/<profile>
-    let mut dir = exe.parent().expect("exe dir").to_path_buf();
-    if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-        dir.pop();
-    }
-    dir
+    harness::built_dir_of(&std::env::current_exe().expect("current exe"))
 }

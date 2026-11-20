@@ -980,6 +980,35 @@ const CARGO_RUN_VARS: &[&str] = &[
     "OUT_DIR",
 ];
 
+/// The profile folder of the test binary `exe`: `<target>/<profile>` or
+/// `<target>/<triple>/<profile>`, where cargo also puts `horch` and the
+/// fakes. cargo 1.100 runs a test from
+/// `<profile>/build/<package>/<hash>/out/`, an older cargo from
+/// `<profile>/deps/` (T-59).
+pub(crate) fn built_dir_of(exe: &Path) -> PathBuf {
+    let dir = exe.parent().expect("exe dir");
+    let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+    if name(dir).as_deref() == Some("deps") {
+        return dir.parent().expect("profile dir").to_path_buf();
+    }
+    let build = dir.ancestors().nth(3);
+    if name(dir).as_deref() == Some("out") && build.and_then(name).as_deref() == Some("build") {
+        return build
+            .and_then(Path::parent)
+            .expect("profile dir")
+            .to_path_buf();
+    }
+    dir.to_path_buf()
+}
+
+/// The cargo profile of the profile folder `built`: `debug` is `dev`.
+fn cargo_profile(built: &Path) -> &str {
+    match built.file_name().and_then(|n| n.to_str()) {
+        Some("debug") | None => "dev",
+        Some(profile) => profile,
+    }
+}
+
 /// The cargo command that builds `horch` and the fakes into `built`, with
 /// the profile, the target triple and the target folder of this test
 /// process. `built` is `<root>/<profile>` for a host build, and
@@ -1006,12 +1035,12 @@ fn build_command(built: &Path, triple: &str) -> Command {
         "horch-e2e",
         "--bins",
     ]);
-    match built.file_name().and_then(|n| n.to_str()) {
-        Some("debug") | None => {}
-        Some("release") => {
+    match cargo_profile(built) {
+        "dev" => {}
+        "release" => {
             cmd.arg("--release");
         }
-        Some(profile) => {
+        profile => {
             cmd.args(["--profile", profile]);
         }
     }
@@ -1199,8 +1228,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        build_command, choose_harness_root, listed, process_list_or_sandbox, stop_stale_harnesses,
-        OWNER_FILE,
+        build_command, built_dir_of, cargo_profile, choose_harness_root, listed,
+        process_list_or_sandbox, stop_stale_harnesses, OWNER_FILE,
     };
 
     /// T-842: the harness builds `horch` and the fakes before their first
@@ -1263,6 +1292,44 @@ mod tests {
             args("/w/target/ci"),
             with(&["--profile", "ci", "--target-dir", "/w/target"])
         );
+    }
+
+    /// T-59: cargo 1.100 runs a test from
+    /// `<target>/<profile>/build/<package>/<hash>/out/`, an older cargo
+    /// from `<target>/<profile>/deps/`. Both give the profile folder.
+    #[test]
+    fn profile_comes_from_the_target_layout_of_old_and_new_cargo() {
+        let profile = |exe: &str| {
+            let built = built_dir_of(Path::new(exe));
+            (cargo_profile(&built).to_string(), built)
+        };
+        let triple = "/w/target/x86_64-unknown-linux-gnu";
+        for (root, want) in [
+            ("/w/target/debug", "dev"),
+            ("/w/target/release", "release"),
+            ("/w/target/ci", "ci"),
+            (&format!("{triple}/debug")[..], "dev"),
+        ] {
+            for exe in [
+                format!("{root}/build/horch-e2e/ce99708c1aeeb00b/out/mail-ce99708c1aeeb00b"),
+                format!("{root}/deps/mail-ce99708c1aeeb00b"),
+            ] {
+                assert_eq!(
+                    profile(&exe),
+                    (want.to_string(), PathBuf::from(root)),
+                    "{exe}"
+                );
+            }
+        }
+        // The folder of the new layout never becomes the profile.
+        let new = "/w/target/debug/build/horch-e2e/ce99708c1aeeb00b/out/mail-ce99708c1aeeb00b";
+        let args: Vec<String> =
+            build_command(&built_dir_of(Path::new(new)), "aarch64-apple-darwin")
+                .get_args()
+                .skip(7)
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+        assert_eq!(args, ["--target-dir", "/w/target"]);
     }
 
     /// T-842 F1: a test built with `--target <triple>` or with
