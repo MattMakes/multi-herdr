@@ -505,6 +505,9 @@ pub fn run(
     newcomer: Option<&str>,
     plan_only: bool,
 ) -> Result<String> {
+    if !herdr.caps().geometry {
+        return Ok("the Herdr app arranges its own panes; nothing to tile\n".to_string());
+    }
     let snapshot = gather(ctx, herdr, workspace_id)?;
     let plan = tile::plan(&snapshot.fleet(newcomer));
     if plan_only {
@@ -666,6 +669,9 @@ pub fn after_change(
     workspace_id: &str,
     newcomer: Option<&str>,
 ) {
+    if !herdr.caps().geometry {
+        return;
+    }
     if ctx.settings.tiling == TilingMode::Disabled {
         // The operator asked for the old behaviour: even the columns and nothing
         // else.
@@ -688,6 +694,9 @@ pub fn after_change(
 /// outlives the pane, which fills the hole and lets herdr close an emptied
 /// overflow tab.
 pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
+    if !PaneHost::for_workspace(ctx, workspace_id).caps().geometry {
+        return;
+    }
     let Some(exe) = ctx.bins.current_exe.clone() else {
         return;
     };
@@ -720,6 +729,9 @@ pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
 /// others every pane is a worker, and the positional guess - leftmost full-height
 /// pane - would quietly drop a worker column from the report.
 pub fn report(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<String> {
+    if !herdr.caps().geometry {
+        return report_without_geometry(ctx, herdr, workspace_id);
+    }
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
 
@@ -769,6 +781,50 @@ pub fn report(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Res
     Ok(layout::render_all(&analyses, &notes, &roles))
 }
 
+fn report_without_geometry(
+    ctx: &RuntimeContext,
+    herdr: &PaneHost,
+    workspace_id: &str,
+) -> Result<String> {
+    let tabs = herdr.tab_list(workspace_id)?;
+    let mut panes = herdr.pane_list(workspace_id)?;
+    panes.sort_by(|a, b| {
+        crate::workspace::place::address_key(&a.pane_id)
+            .cmp(&crate::workspace::place::address_key(&b.pane_id))
+    });
+    let roles: HashMap<String, String> = Mailbox::in_context(ctx, workspace_id)
+        .panes_to_roles()
+        .into_iter()
+        .collect();
+
+    let mut out = format!("space {workspace_id}\n");
+    for tab in &tabs {
+        let label_suffix = tab
+            .label
+            .as_deref()
+            .filter(|l| !l.is_empty())
+            .map(|l| format!(" ({l})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  tab {} {}{label_suffix}\n",
+            tab.number, tab.tab_id
+        ));
+        for pane in panes
+            .iter()
+            .filter(|p| p.tab_id.as_deref() == Some(tab.tab_id.as_str()))
+        {
+            let role = roles
+                .get(&pane.pane_id)
+                .map(|r| format!(" [{r}]"))
+                .unwrap_or_default();
+            let agent = pane.agent.as_deref().unwrap_or("shell");
+            let status = pane.agent_status.as_deref().unwrap_or("none");
+            out.push_str(&format!("    {}{role}: {agent} ({status})\n", pane.pane_id));
+        }
+    }
+    Ok(out)
+}
+
 fn holds(layout: &Layout, pane_id: &str) -> bool {
     layout.panes.iter().any(|p| p.pane_id == pane_id)
 }
@@ -813,6 +869,9 @@ pub fn orchestrator_of(ctx: &RuntimeContext, layout: &Layout) -> Option<String> 
 /// is how the minimum pane width announces itself, and a divider that is asked
 /// to move from the same place twice, which means the previous op did not land.
 pub fn equalize(ctx: &RuntimeContext, herdr: &PaneHost, mut layout: Layout) -> Result<usize> {
+    if !herdr.caps().geometry {
+        return Ok(0);
+    }
     let orch = orchestrator_of(ctx, &layout);
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
@@ -930,5 +989,96 @@ mod tests {
         assert!(path.exists(), "and the new holder now owns it");
         drop(taken);
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_09_tilers_do_nothing_without_geometry() {
+        use crate::runtime::MapEnv;
+        use crate::workspace::hc::HcApp;
+        use crate::workspace::model::{LayoutPane, Rect};
+
+        let dir = tempfile::tempdir().unwrap();
+        let hc_bin = dir.path().join("hc");
+        let app_bin = dir.path().join("herdr-app");
+        let sock = dir.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let hc_body = r#"if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf 'hc %s\n' "$*" >> "$d/calls"
+case "$1" in
+ls) printf '{"hidden_finished":0,"terminals":[{"address":"t1"},{"address":"t2"}]}\n';;
+get)
+  case "$3" in
+  t1) printf '{"address":"t1","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"claude-code","state":"idle"},"status_ms":10}\n';;
+  t2) printf '{"address":"t2","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"codex","state":"working"},"status_ms":20}\n';;
+  esac;;
+esac"#;
+        let app_body = r#"if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf 'app %s\n' "$*" >> "$d/calls"
+case "$1" in
+ls) printf '{"spaces":[{"id":"sp1","name":"fleet","folder":"/w","active":true,"tabs":[{"id":"tb1","name":"1","active":true,"settled":false,"terminals":[{"terminal":"t1","pane":"p1"},{"terminal":"t2","pane":"p2"}]}]}]}\n';;
+*) exit 1;;
+esac"#;
+        assert!(
+            crate::test_support::write_warmed(&hc_bin, hc_body, &["warm"])
+                .status
+                .success()
+        );
+        assert!(
+            crate::test_support::write_warmed(&app_bin, app_body, &["warm"])
+                .status
+                .success()
+        );
+
+        let state = dir.path().join("state");
+        let env = MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &state.to_string_lossy())
+            .with("HC_TERMINAL_ID", "t1");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let host = PaneHost::hc_app(HcApp::new(&hc_bin, &app_bin, &sock));
+
+        after_change(&ctx, &host, "sp1", Some("t2"));
+        settle_after_close(&ctx, "sp1");
+        let tile_out = run(&ctx, &host, "sp1", None, false).unwrap();
+        assert_eq!(
+            tile_out.trim(),
+            "the Herdr app arranges its own panes; nothing to tile"
+        );
+
+        let dummy_layout = Layout {
+            workspace_id: "sp1".into(),
+            tab_id: "tb1".into(),
+            area: Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 60,
+            },
+            panes: vec![LayoutPane {
+                pane_id: "t1".into(),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 60,
+                },
+            }],
+            focused_pane_id: None,
+            zoomed: false,
+        };
+        assert_eq!(equalize(&ctx, &host, dummy_layout).unwrap(), 0);
+        assert!(
+            !dir.path().join("calls").exists(),
+            "after_change, settle_after_close, run and equalize must make zero host calls without geometry"
+        );
+
+        let rep = report(&ctx, &host, "sp1").unwrap();
+        assert!(rep.contains("sp1"), "{rep}");
+        assert!(rep.contains("tb1"), "{rep}");
+        assert!(rep.contains("t1") && rep.contains("idle"), "{rep}");
+        assert!(rep.contains("t2") && rep.contains("working"), "{rep}");
     }
 }

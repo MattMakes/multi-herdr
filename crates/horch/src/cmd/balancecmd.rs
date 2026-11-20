@@ -31,6 +31,10 @@ pub fn balance(
         Some(ws) => PaneHost::for_workspace(ctx, ws),
         None => PaneHost::of(ctx),
     };
+    if !herdr.caps().geometry {
+        output::print("the Herdr app arranges its own panes; nothing to balance\n");
+        return Ok(());
+    }
 
     let layout = arrange::balance_target(ctx, &herdr, pane, workspace)?;
     let orch = arrange::orchestrator_of(ctx, &layout);

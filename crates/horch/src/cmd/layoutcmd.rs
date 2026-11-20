@@ -17,6 +17,7 @@ pub fn layout(ctx: &RuntimeContext, pane: Option<&str>, workspace: Option<&str>)
         None => PaneHost::of(ctx),
     };
     let workspace_id = arrange::workspace_of(ctx, &herdr, pane, workspace)?;
+    let herdr = PaneHost::for_workspace(ctx, &workspace_id);
     output::print(&arrange::report(ctx, &herdr, &workspace_id)?);
     Ok(())
 }

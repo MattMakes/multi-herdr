@@ -10,6 +10,7 @@ pub mod host;
 pub mod layout;
 pub mod model;
 pub mod paneshell;
+pub mod place;
 pub mod testing;
 pub mod tile;
 
@@ -49,6 +50,7 @@ mod tests {
             ("layout.rs", include_str!("layout.rs")),
             ("tile.rs", include_str!("tile.rs")),
             ("balance.rs", include_str!("balance.rs")),
+            ("place.rs", include_str!("place.rs")),
         ];
         for (name, source) in sources {
             assert_eq!(

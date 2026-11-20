@@ -26,7 +26,12 @@ pub fn tile(
         Some(ws) => PaneHost::for_workspace(ctx, ws),
         None => PaneHost::of(ctx),
     };
+    if !herdr.caps().geometry {
+        output::print("the Herdr app arranges its own panes; nothing to tile\n");
+        return Ok(());
+    }
     let workspace_id = arrange::workspace_of(ctx, &herdr, pane, workspace)?;
+    let herdr = PaneHost::for_workspace(ctx, &workspace_id);
     let out = arrange::run(ctx, &herdr, &workspace_id, None, plan_only)?;
     output::print(&out);
     Ok(())
