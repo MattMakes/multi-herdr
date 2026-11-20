@@ -15,6 +15,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::process::{Child, Stdio};
+use std::time::{Duration, Instant};
 
 use horch_platform::group;
 use horch_platform::start::{self, Command};
@@ -50,25 +51,55 @@ impl ProcessHost for Launcher {
             cmd.spawn()?
         };
         let pid = child.id();
-        let pid_start = horch_platform::process::start_time(pid);
-        if pid_start.is_none() {
-            let unreadable = match group::exited_without_reap(&mut child) {
-                Ok(true) => None,
-                Ok(false) => Some(std::io::Error::other(format!(
-                    "the start time of process {pid} is unreadable"
-                ))),
-                Err(e) => Some(e),
-            };
-            if let Some(e) = unreadable {
+        let read = || horch_platform::process::start_time(pid);
+        let pid_start = match start_or_exit(pid, read, || group::exited_without_reap(&mut child)) {
+            Ok(start) => start,
+            Err(e) => {
                 discard(child);
                 return Err(LaunchError::Io(e));
             }
-        }
+        };
         Ok(Launched {
             pid,
             pid_start,
             child,
         })
+    }
+}
+
+/// The longest time that the launcher waits for a child in its exit. The
+/// design gives 1 s as the limit of the work that a pass does itself
+/// ("Each piece of work that can take more than 1 s is a job").
+const EXIT_WINDOW: Duration = Duration::from_secs(1);
+
+/// The start time of the unreaped child `pid`, or `None` when it exited.
+///
+/// A child in its exit is in neither state for a short time: on macOS the
+/// kernel marks the exit (`P_LEXIT`) before the child is a zombie, and
+/// `proc_pidinfo` fails while `waitid` does not yet report it. Under load
+/// this window is long. The pid stays ours because the child is not
+/// reaped, so the launcher reads again until 1 of the 2 facts is known.
+/// After [`EXIT_WINDOW`] the child counts as a live process with an
+/// unreadable start time, and this gives an error.
+fn start_or_exit(
+    pid: u32,
+    mut read: impl FnMut() -> Option<u64>,
+    mut exited: impl FnMut() -> std::io::Result<bool>,
+) -> std::io::Result<Option<u64>> {
+    let deadline = Instant::now() + EXIT_WINDOW;
+    loop {
+        if let Some(start) = read() {
+            return Ok(Some(start));
+        }
+        if exited()? {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(format!(
+                "the start time of process {pid} is unreadable"
+            )));
+        }
+        std::thread::yield_now();
     }
 }
 
@@ -252,6 +283,54 @@ mod tests {
         assert_eq!(pid, child_id);
         assert!(start.is_some());
         assert_eq!(start, now);
+    }
+
+    /// The fault of T-157: the first read fails while the child is in its
+    /// exit and `waitid` does not yet report it.
+    #[test]
+    fn a_child_in_its_exit_window_is_not_a_failed_launch() {
+        let mut reads = 0;
+        let mut checks = vec![false, true].into_iter();
+        let start = start_or_exit(
+            7,
+            || {
+                reads += 1;
+                None
+            },
+            || Ok(checks.next().unwrap()),
+        );
+        assert_eq!(start.unwrap(), None);
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn a_second_read_gives_the_start_time() {
+        let mut reads = vec![None, Some(42)].into_iter();
+        let start = start_or_exit(7, || reads.next().unwrap(), || Ok(false));
+        assert_eq!(start.unwrap(), Some(42));
+    }
+
+    #[test]
+    fn a_live_child_with_no_start_time_fails_after_the_exit_window() {
+        let begin = Instant::now();
+        let err = start_or_exit(7, || None, || Ok(false)).unwrap_err();
+        assert!(begin.elapsed() >= EXIT_WINDOW);
+        assert_eq!(err.to_string(), "the start time of process 7 is unreadable");
+    }
+
+    #[test]
+    fn a_failed_exit_check_fails_the_read() {
+        let err = start_or_exit(7, || None, || Err(std::io::Error::other("x"))).unwrap_err();
+        assert_eq!(err.to_string(), "x");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_exits_at_once_is_launched() {
+        for _ in 0..50 {
+            let mut launched = Launcher.launch(&spec("/usr/bin/true", &[])).unwrap();
+            assert!(launched.child.wait().unwrap().success());
+        }
     }
 
     #[test]
