@@ -70,15 +70,16 @@ impl World {
         World::build(name, scenario, Some(answering_owner))
     }
 
-    /// The first launch of a task attempt starts no process: it exits at
-    /// once, so the attempt stays in `launching` until its start timeout.
+    /// The first launch of a task attempt starts no process
+    /// ([`dead_first_launch`]), so the attempt stays in `launching` until
+    /// its start timeout.
     fn with_dead_first_launch(name: &str, scenario: &str) -> World {
         World::build(name, scenario, Some(dead_first_launch))
     }
 
-    /// `wrapper` gives the claude wrapper from the harness root and the
-    /// fleet root.
-    fn build(name: &str, scenario: &str, wrapper: Option<fn(&Path, &Path) -> String>) -> World {
+    /// `setup` changes the harness before fleetd starts. It gets the fleet
+    /// root.
+    fn build(name: &str, scenario: &str, setup: Option<fn(&mut Harness, &Path)>) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
@@ -98,10 +99,8 @@ impl World {
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
-        if let Some(wrapper) = wrapper {
-            let wrapper = wrapper(&h.root, &fleet);
-            let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
-            h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
+        if let Some(setup) = setup {
+            setup(&mut h, &fleet);
         }
         h.fleet_workspace();
         let w = World {
@@ -533,25 +532,33 @@ fn owner_wrapper(answer: &Path, folder: &Path) -> String {
     )
 }
 
-fn answering_owner(root: &Path, fleet: &Path) -> String {
-    owner_wrapper(&root.join(OWNER_ANSWER), &fleet.join("ideas").join(IDEA))
+fn answering_owner(h: &mut Harness, fleet: &Path) {
+    let folder = fleet.join("ideas").join(IDEA);
+    let wrapper = owner_wrapper(&h.root.join(OWNER_ANSWER), &folder);
+    let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
+    h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
 }
 
 const DEAD_LAUNCH_LOG: &str = "dead-launch.log";
 
-/// The first task launch kills its parent, the wrapper of horch, and
-/// exits. No `exit.json` and no process of the attempt remain, so only the
-/// start timeout ends the attempt.
-fn dead_first_launch(root: &Path, _fleet: &Path) -> String {
-    let fake = Harness::horch_bin().with_file_name("fake-claude");
-    format!(
-        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
-         case \"$*\" in\n*horch-conformance*) ;;\n*/inbox/START.md*)\n\
-         if [ ! -e {log} ]; then ps -o command= -p \"$PPID\" > {log}; kill -9 \"$PPID\"; exit 0; fi ;;\nesac\n\
-         exec {fake} \"$@\"\n",
-        log = shell_word(&root.join(DEAD_LAUNCH_LOG).to_string_lossy()),
-        fake = shell_word(&fake.to_string_lossy()),
-    )
+/// The first `pane run` of a task worker fails, as the fake herdr does in
+/// the scenario `fail_run`. No process of the first attempt ever runs, so
+/// only the start timeout ends it. Each later call goes to the fake herdr.
+fn dead_first_launch(h: &mut Harness, _fleet: &Path) {
+    let herdr = h.bin.join("herdr");
+    let wrapper = format!(
+        "#!/bin/sh\n\
+         case \"$*\" in\n\
+         \"pane run \"*\"'worker' 'opus-\"*)\n\
+         if [ ! -e {log} ]; then echo \"$*\" > {log}; \
+         echo 'fake-herdr: pane run refused once' >&2; exit 1; fi ;;\n\
+         esac\n\
+         exec {herdr} \"$@\"\n",
+        log = shell_word(&h.root.join(DEAD_LAUNCH_LOG).to_string_lossy()),
+        herdr = shell_word(&herdr.to_string_lossy()),
+    );
+    let path = h.write_bin("herdr-wrapper", wrapper.as_bytes());
+    h.set("HORCH_HERDR_BIN", path.to_string_lossy());
 }
 
 fn escalated_key(task: &str) -> String {
@@ -740,7 +747,7 @@ fn fm21_launch_timeout_gives_the_task_a_retry() {
             quoted(&task)
         ))
     });
-    w.wait("the first launch, which exits at once", || {
+    w.wait("the first launch, which herdr refuses", || {
         w.h.root.join(DEAD_LAUNCH_LOG).exists().then_some(())
     });
     w.passes(1);
