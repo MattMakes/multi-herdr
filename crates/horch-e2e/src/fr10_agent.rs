@@ -130,7 +130,6 @@ pub fn play(call: &mut Call) -> bool {
     false
 }
 
-/// The id of the word `[fr10:target=<idea id>]` in the text of an idea.
 fn target_of(text: &str) -> Option<String> {
     let (_, rest) = text.split_once("[fr10:target=")?;
     let (id, _) = rest.split_once(']')?;

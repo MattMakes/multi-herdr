@@ -414,12 +414,7 @@ fn fr10_d_agent_written_approval_is_not_accepted() {
 
 #[test]
 fn a_system_idea_in_awaiting_approval_does_not_change_which_idea_the_agent_tries_to_approve() {
-    // `ignore_stop_gate` fails the conformance check "Stop gate", so the
-    // boot conformance job adds a system idea, as on the loaded host of the
-    // T-6 land run.
     let w = World::new("p6-fr10-sys", "clarify,ignore_stop_gate");
-    // The run of this idea gives the fleet its project, so the job can add
-    // its system idea. The idea stays in `clarifying`.
     w.add("Show the disk use [fr10:stay]");
     let system = w.wait("the system idea of the failed conformance job", || {
         w.one(
