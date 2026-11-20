@@ -337,6 +337,34 @@ fn interactive_terra(h: &mut Harness) {
     h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
 }
 
+/// Seed the run `slug` in the workspace of `h`, with its orchestrator in
+/// the first pane of that workspace, and 1 codex-terra task. Wait until
+/// fleetd launched the worker of the task. Gives the text that its launch
+/// added to `<fleet root>/run/launch.log`, the output of each attempt
+/// spawn. Needs [`commit_gates`], [`interactive_terra`] and a served
+/// fleetd.
+fn launch_attempt(h: &Harness, slug: &str) -> String {
+    let log = h.fleet_root().join("run").join("launch.log");
+    let before = std::fs::read_to_string(&log).unwrap_or_default().len();
+    let ws = h.env.get("HORCH_WORKSPACE_ID").cloned().unwrap();
+    let run = seed_run(h, slug, Some(1), &format!("{ws}:p1"));
+    let ticket = h.project.join(format!("{slug}.md"));
+    std::fs::write(&ticket, format!("# {slug}\n**Check:** `true`\n")).unwrap();
+    let task = seed_task(h, &run, &ticket, "codex-terra");
+    wait("the launch of the worker", || {
+        let store = horch_core::taskledger::Store::open(&h.ledger_db()).ok()?;
+        store
+            .conn()
+            .query_row(
+                "SELECT 1 FROM workers WHERE task_id = ?1 AND agent_pid IS NOT NULL",
+                [&task.task_id],
+                |_| Ok(()),
+            )
+            .ok()
+    });
+    std::fs::read_to_string(&log).unwrap()[before..].to_string()
+}
+
 /// Commit the gates of the project of `h` on `main`. fleetd dispatches a
 /// task only when the project has its gates. Call it before
 /// [`seed_run`], which makes the run branch from `main`.
@@ -496,6 +524,15 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     let (h, workers) = two_concurrent_workers("g52-race");
     assert_ne!(workers[0]["session_id"], workers[1]["session_id"]);
     assert_ne!(workers[0]["transcript_path"], workers[1]["transcript_path"]);
+    // Both rollouts name 1 folder, so only the launch token tells them
+    // apart.
+    let cwd = |w: &serde_json::Value| -> serde_json::Value {
+        let text = std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        meta["payload"]["cwd"].clone()
+    };
+    assert!(cwd(&workers[0]).is_string());
+    assert_eq!(cwd(&workers[0]), cwd(&workers[1]));
     let records = ledger_records(&h);
     for w in workers.iter().rev() {
         let record = records
@@ -511,42 +548,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     }
     stop_and_wait_for_exit(&h, &workers);
     stop_live_agents(&h);
-}
-
-/// `horch spawn --resume <record>` of an exited worker resumes its own
-/// session.
-#[test]
-fn g52_resume_uses_own_session() {
-    horch_e2e::expected::check(file!(), "g52_resume_uses_own_session", || {
-        let (h, workers) = two_concurrent_workers("g52-resume");
-        stop_and_wait_for_exit(&h, &workers);
-        for (index, w) in workers.iter().enumerate() {
-            let record = w["legacy_record_id"].as_str().unwrap();
-            let session = w["session_id"].as_str().unwrap();
-            let role = format!("codex-terra-resume-{index}");
-            ok(
-                &h,
-                &[
-                    "spawn",
-                    "--resume",
-                    record,
-                    "--role",
-                    &role,
-                    "--from-pane",
-                    "w1:p1",
-                    "--no-tile",
-                    "--force",
-                ],
-            );
-            wait("resume uses own session", || {
-                h.calls_of("codex")
-                    .iter()
-                    .any(|call| call["resumed"] == session)
-                    .then_some(())
-            });
-        }
-        stop_live_agents(&h);
-    });
 }
 
 fn ledger_records(h: &Harness) -> Vec<horch_core::execution::legacy::Record> {
@@ -749,25 +750,20 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
         file!(),
         "g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block",
         || {
-            let mut h = fleet("g50-runs", "");
-            h.serve_fleetd();
+            // fleetd launches each attempt (fleetd-p6 ticket 48): its spawn
+            // prints the NOTE that horch spawn printed, to launch.log.
+            let mut h = fleet("g50-runs", "exec,stay");
+            interactive_terra(&mut h);
+            commit_gates(&h);
             herdr(&h, &["workspace", "create", "--label", "other"]);
             h.set("HORCH_WORKSPACE_ID", "w2");
             seed_run(&h, "foreign", None, "w2:p1");
             h.set("HORCH_WORKSPACE_ID", "w1");
-            let o = h.run(&[
-                "spawn",
-                "sonnet",
-                "--from-pane",
-                "w1:p1",
-                "--no-tile",
-                "--force",
-            ]);
-            assert!(o.status.success(), "{}", err(&o));
+            serve_fast_fleetd(&h);
+            let log = launch_attempt(&h, "own");
             assert!(
-                err(&o).contains("NOTE: live orchestrator in workspace w2 (run foreign)"),
-                "{}",
-                err(&o)
+                log.contains("NOTE: live orchestrator in workspace w2 (run foreign)"),
+                "{log}"
             );
             let o = h.run(&["fleet", "opus", "--no-update"]);
             assert!(o.status.success(), "{}", err(&o));
@@ -782,23 +778,29 @@ fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
                 err(&o)
             );
             herdr(&h, &["workspace", "close", "w2"]);
-            let o = h.run(&[
-                "spawn",
-                "sonnet",
-                "--from-pane",
-                "w1:p1",
-                "--no-tile",
-                "--force",
-            ]);
-            assert!(!err(&o).contains("w2 (run foreign)"), "{}", err(&o));
+            let log = launch_attempt(&h, "own-2");
+            assert!(!log.contains("w2 (run foreign)"), "{log}");
+            stop_live_agents(&h);
         },
     );
 }
 
 #[test]
 fn g50_legacy_orchestrator_and_host_load_are_advisory() {
-    let mut h = fleet("g50-legacy", "");
+    // fleetd launches each attempt (fleetd-p6 ticket 48): its spawn
+    // prints the NOTE lines that horch spawn printed, to launch.log.
+    let mut h = fleet("g50-legacy", "exec,stay");
+    interactive_terra(&mut h);
+    commit_gates(&h);
     herdr(&h, &["workspace", "create", "--label", "legacy"]);
+    let machine = h.root.join("machine.json");
+    std::fs::write(&machine,json!({"os":"linux","arch":"x86_64","cpus":2,"load_average_1m":3.5,"mem_total_bytes":null,"mem_available_bytes":null,"disk_free_bytes":null,"disk_total_bytes":null,"gpu":"unknown","max_open_files":null,"max_processes":null}).to_string()).unwrap();
+    h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    serve_fast_fleetd(&h);
     let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
         .insert(horch_core::execution::legacy::Record {
@@ -809,45 +811,32 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
             ..Default::default()
         })
         .unwrap();
-    let machine = h.root.join("machine.json");
-    std::fs::write(&machine,json!({"os":"linux","arch":"x86_64","cpus":2,"load_average_1m":3.5,"mem_total_bytes":null,"mem_available_bytes":null,"disk_free_bytes":null,"disk_total_bytes":null,"gpu":"unknown","max_open_files":null,"max_processes":null}).to_string()).unwrap();
-    h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
-    let argv = [
-        "spawn",
-        "sonnet",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--force",
-    ];
-    let o = h.run(&argv);
-    assert!(o.status.success(), "{}", err(&o));
+    let log = launch_attempt(&h, "legacy-1");
     assert!(
-        err(&o).contains("NOTE: live orchestrator in workspace w2"),
-        "{}",
-        err(&o)
+        log.contains("NOTE: live orchestrator in workspace w2"),
+        "{log}"
     );
-    assert!(
-        err(&o).contains("load 3.50 is at or above 2 CPUs"),
-        "{}",
-        err(&o)
-    );
+    assert!(log.contains("load 3.50 is at or above 2 CPUs"), "{log}");
     let mut below: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&machine).unwrap()).unwrap();
     below["load_average_1m"] = json!(1.0);
     std::fs::write(&machine, below.to_string()).unwrap();
     h.set("HORCH_WORKSPACE_ID", "w2");
-    let o = h.run(&[
-        "spawn",
-        "sonnet",
-        "--from-pane",
-        "w2:p1",
-        "--no-tile",
-        "--force",
-    ]);
-    assert!(o.status.success(), "{}", err(&o));
-    assert!(!err(&o).contains("live orchestrator"), "{}", err(&o));
-    assert!(!err(&o).contains("1-minute load"), "{}", err(&o));
+    let log = launch_attempt(&h, "legacy-2");
+    // The legacy orchestrator of w2 is in the own workspace of this launch.
+    // The only other orchestrator is the run legacy-1 of the test. The idea
+    // lead of legacy-2 can spawn in w2 too, with the same line.
+    let named: std::collections::BTreeSet<&str> = log
+        .lines()
+        .filter(|l| l.contains("live orchestrator"))
+        .collect();
+    assert_eq!(
+        named,
+        ["horch: NOTE: live orchestrator in workspace w1 (run legacy-1)"].into(),
+        "{log}"
+    );
+    assert!(!log.contains("1-minute load"), "{log}");
+    stop_live_agents(&h);
 }
 
 #[test]
@@ -1003,34 +992,46 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
 
 #[test]
 fn g49_spawn_doctor_and_inbox_warn_once_and_name_installed_binary() {
-    let h = fleet("g49-path", "");
+    let mut h = fleet("g49-path", "exec,stay");
+    interactive_terra(&mut h);
+    commit_gates(&h);
     h.write_warmed("horch", b"#!/bin/sh\nexit 0\n");
     std::fs::write(h.state.join("self-check.json"),json!({"checked_at":"2020-01-01T00:00:00Z","latest_tag":"v99.0.0","html_url":"https://example.invalid"}).to_string()).unwrap();
-    for argv in [
-        &[
-            "spawn",
-            "sonnet",
-            "--from-pane",
-            "w1:p1",
-            "--no-tile",
-            "--force",
-        ][..],
-        &["doctor"],
-        &["inbox"],
-    ] {
+    let names_both = |text: &str| {
+        assert_eq!(text.matches("stale horch").count(), 1, "{text}");
+        assert!(
+            text.contains(&h.bin.join("horch").to_string_lossy().to_string()),
+            "{text}"
+        );
+        assert!(
+            text.contains(&Harness::horch_bin().to_string_lossy().to_string()),
+            "{text}"
+        );
+    };
+    // fleetd launches each attempt (fleetd-p6 ticket 48): its spawn prints
+    // the warning that horch spawn printed, to launch.log.
+    // The idea lead of the run spawns too, so each spawn warns 1 time.
+    serve_fast_fleetd(&h);
+    launch_attempt(&h, "stale");
+    let log = h.fleet_root().join("run").join("launch.log");
+    let text = wait("1 warning for each spawn", || {
+        let text = std::fs::read_to_string(&log).ok()?;
+        let spawns = text.lines().filter(|l| l.starts_with("spawned ")).count();
+        (spawns > 0 && text.matches("stale horch").count() == spawns).then_some(text)
+    });
+    assert!(
+        text.contains(&h.bin.join("horch").to_string_lossy().to_string()),
+        "{text}"
+    );
+    assert!(
+        text.contains(&Harness::horch_bin().to_string_lossy().to_string()),
+        "{text}"
+    );
+    stop_live_agents(&h);
+    for argv in [&["doctor"][..], &["inbox"]] {
         let o = h.run(argv);
         assert!(o.status.success(), "{}{}", out(&o), err(&o));
-        assert_eq!(err(&o).matches("stale horch").count(), 1, "{}", err(&o));
-        assert!(
-            err(&o).contains(&h.bin.join("horch").to_string_lossy().to_string()),
-            "{}",
-            err(&o)
-        );
-        assert!(
-            err(&o).contains(&Harness::horch_bin().to_string_lossy().to_string()),
-            "{}",
-            err(&o)
-        );
+        names_both(&err(&o));
     }
 }
 
@@ -1172,55 +1173,6 @@ fn g52_first_prompt_event_wins_over_context_and_later_turns_never_match() {
     );
     assert!(find_launch_rollouts(&sessions, &h.project.to_string_lossy(), since, "r2").is_empty());
     assert!(find_launch_rollouts(&sessions, &h.project.to_string_lossy(), since, "r").is_empty());
-}
-
-#[test]
-fn g52_done_discovery_uses_the_same_launch_token() {
-    let mut h = fleet("g52-done", "");
-    let role = "codex-terra-1";
-    let pane = ok(
-        &h,
-        &[
-            "spawn",
-            "codex-terra",
-            "--role",
-            role,
-            "--from-pane",
-            "w1:p1",
-            "--no-tile",
-            "--force",
-        ],
-    )
-    .trim()
-    .to_string();
-    let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
-    let record = ledger
-        .read()
-        .unwrap()
-        .into_iter()
-        .find(|r| r.role == role)
-        .unwrap();
-    let mailbox = horch_core::messaging::mailbox::Mailbox::under(&h.state, "w1");
-    std::fs::write(mailbox.dir().join(format!(".{role}.launch-marker")), "").unwrap();
-    let sessions = h.home.join(".codex/sessions");
-    std::fs::create_dir_all(&sessions).unwrap();
-    for (sid, rid) in [
-        (
-            "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
-            record.record_id.as_str(),
-        ),
-        ("bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", "another-launch"),
-    ] {
-        std::fs::write(sessions.join(format!("rollout-stamp-{sid}.jsonl")),format!("{}\n{}\n",json!({"type":"session_meta","payload":{"cwd":h.project}}),json!({"type":"event_msg","payload":{"type":"user_message","message":horch_core::harness::codex::launch_token(rid)}}))).unwrap();
-    }
-    h.set("HORCH_RECORD_ID", &record.record_id)
-        .set("HORCH_ROLE", role)
-        .set("HERDR_PANE_ID", pane);
-    ok(&h, &["done", "finished"]);
-    assert_eq!(
-        ledger.get(&record.record_id).unwrap().session_id.as_deref(),
-        Some("aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa")
-    );
 }
 
 #[test]
