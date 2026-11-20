@@ -3353,9 +3353,10 @@ fn take(
 
 /// The keys of the `due` jobs (with the keys `ids`) that part 3 may start,
 /// in the turn order of the cursor of the job starts, at most `budget`: a
-/// git writer only when no git writer of its repository runs and none is
-/// taken before it in this pass (MAP.md of fleetd-p3, Q12). A writer that
-/// waits keeps its turn.
+/// git writer only when it is the oldest due git writer of its repository
+/// and no git writer of its repository runs (MAP.md of fleetd-p3, Q12). A
+/// writer that waits keeps its turn: the git writers of 1 repository start
+/// first in, first out, so newer writers do not pass it.
 fn startable(
     tx: &Transaction<'_>,
     due: &[JobRow],
@@ -3364,17 +3365,22 @@ fn startable(
     stamp: &str,
 ) -> Result<Vec<String>> {
     let cursor = cursors_store::load(tx, JOB_STARTS, stamp)?;
-    let mut writing = BTreeSet::new();
+    let mut oldest: BTreeMap<&str, i64> = BTreeMap::new();
+    for job in due {
+        if let (true, Some(repo)) = (jobs::is_git_writer(job.kind), job.repo.as_deref()) {
+            let id = oldest.entry(repo).or_insert(job.id);
+            *id = (*id).min(job.id);
+        }
+    }
     let mut out = Vec::new();
     for (job, id) in cursor.turns(&due.iter().zip(ids).collect::<Vec<_>>(), |(_, id)| id) {
         if out.len() == budget.rows() {
             break;
         }
         if let (true, Some(repo)) = (jobs::is_git_writer(job.kind), job.repo.as_deref()) {
-            if writing.contains(repo) || jobs::git_writer_busy(tx, repo)? {
+            if oldest.get(repo) != Some(&job.id) || jobs::git_writer_busy(tx, repo)? {
                 continue;
             }
-            writing.insert(repo);
         }
         out.push((*id).clone());
     }
@@ -5517,21 +5523,23 @@ mod tests {
     #[test]
     fn fetch_is_not_starved_by_a_row_of_writers() {
         let mut conn = ledger();
-        let mut writer = queue(&conn, Kind::WorktreeAdd, "tree-0");
-        assert_eq!(starts(&mut conn), [writer]);
+        let first = queue(&conn, Kind::WorktreeAdd, "tree-0");
+        assert_eq!(starts(&mut conn), [first]);
         let fetch = queue(&conn, Kind::Fetch, "fetch-1");
+        let mut newer = Vec::new();
         for i in 1..=3 {
             let list = queue(&conn, Kind::WorktreeList, &format!("list-{i}"));
             assert_eq!(starts(&mut conn), [list], "the fetch waits for the writer");
             end(&conn, list);
-            let newer = queue(&conn, Kind::WorktreeAdd, &format!("tree-{i}"));
-            if i == 1 {
-                end(&conn, writer);
-                assert_eq!(starts(&mut conn), [fetch]);
-                end(&conn, fetch);
-            }
-            assert_eq!(starts(&mut conn), [newer]);
-            writer = newer;
+            newer.push(queue(&conn, Kind::WorktreeAdd, &format!("tree-{i}")));
+        }
+        end(&conn, first);
+        assert_eq!(starts(&mut conn), [fetch]);
+        let mut running = fetch;
+        for writer in newer {
+            end(&conn, running);
+            assert_eq!(starts(&mut conn), [writer]);
+            running = writer;
         }
     }
 }
