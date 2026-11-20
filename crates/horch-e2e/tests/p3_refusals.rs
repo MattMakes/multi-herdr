@@ -131,6 +131,19 @@ fn seed_alpha(h: &Harness, steps: &str) -> Run {
 /// worker bound to it, and its worktree `feat`. Gives the worker, the
 /// task id and the path of the tree.
 fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
+    // The landing runs the fast gate of the project in the bundle, and the
+    // gate reads the declaration from the committed fleet.toml at the tip.
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    git_in(h, &h.project, &["add", "fleet.toml"]);
+    git_in(
+        h,
+        &h.project,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    );
     let run = seed_alpha(h, steps);
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
@@ -517,7 +530,7 @@ fn finish_json(h: &Harness, w: &str) -> Value {
                 "SELECT id || ' ' || state || ' ' || coalesce(outcome, '') FROM attempts",
             );
             let jobs = query(h, "SELECT kind || ' ' || state FROM jobs WHERE kind NOT IN ('docs_sync', 'conformance', 'fetch', 'worktree_list')");
-            let trees = query(h, "SELECT text FROM events WHERE text LIKE '%reject%' OR text LIKE '%attempt%' ORDER BY event_id DESC LIMIT 8");
+            let trees = query(h, "SELECT 'bundle ' || state || ' ' || coalesce(result, '') FROM bundles UNION ALL SELECT 'branch ' || name || ' ' || coalesce(landing_state, '') FROM branches UNION ALL SELECT 'tree ' || state || ' ' || path FROM worktrees");
             format!(
                 "{:#}\n{tasks:?}\n{attempts:?}\n{jobs:?}\n{trees:?}",
                 steps_json(h)
