@@ -35,6 +35,7 @@ use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
+use horch_core::fleetd::task_execution::domain::result::{ResultFile, ResultStatus};
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::docs_dir;
@@ -50,7 +51,7 @@ use horch_core::taskledger::finish::{CodexSandbox, Tools};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, StepName, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::supervisor::{AttemptFiles, OutcomeHint};
+use horch_core::taskledger::supervisor::{AgentFacts, AttemptFiles, OutcomeHint};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, testing, util};
@@ -786,6 +787,254 @@ fn pass_moves_a_context_limit_task_to_ready() {
         handoff.is_some_and(|p| Path::new(&p).exists()),
         "a handoff file"
     );
+}
+
+/// FM-20 and the order of 1 pass: the wrapper of A1 wrote its first
+/// heartbeat and its `exit.json` with the hint `context_limit` before the
+/// pass saw A1 `live`. The pass reads both files, so A1 ends with
+/// `context_limit` and burns no attempt, not with `no_result`.
+#[test]
+fn context_limit_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
+    let w = world();
+    let task = w.ready_task("t1", "agy");
+    let fake = Fake::of(&w);
+    run_pass(&w, &fake);
+    let attempt: String = w
+        .conn
+        .query_row(
+            "SELECT id FROM attempts WHERE task_id = ?1 AND state = 'launching' AND via = 'push'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let files = AttemptFiles::new(
+        &w.root(),
+        AttemptRef {
+            task_id: task.clone(),
+            attempt_id: attempt.clone(),
+        },
+    );
+    fs::create_dir_all(files.dir()).unwrap();
+    fs::set_permissions(files.dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    // The agent ran and ended before the pass: the heartbeat names no
+    // agent that a PID check can prove.
+    files.write_heartbeat(&AgentFacts::new(None)).unwrap();
+    files
+        .write_exit_hinted(None, false, Some(OutcomeHint::ContextLimit))
+        .unwrap();
+
+    let report = run_pass(&w, &fake);
+    let (state, outcome): (String, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE id = ?1",
+            [&attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), outcome.as_deref()),
+        ("ended", Some("context_limit")),
+        "{report:?}"
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    // The same pass binds A2: only an attempt that is not ended counts.
+    let open = w.count(&format!(
+        "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}' AND state <> 'ended'"
+    ));
+    assert_eq!(t.attempts - t.attempt_floor, open, "no attempt is burned");
+    assert_eq!(t.not_before, None, "a context limit sets no backoff");
+}
+
+/// The wrapper of A1 wrote its first heartbeat, and no agent that a PID
+/// check can prove: the agent ended at once. The wrapper still lives and
+/// writes `exit.json` with the hint `context_limit` after that pass. A1
+/// with no recorded process stays `live` until its `exit.json` comes, and
+/// then ends with `context_limit`.
+#[test]
+fn attempt_with_no_recorded_process_waits_for_its_exit_json() {
+    let w = world();
+    let task = w.ready_task("t1", "agy");
+    let fake = Fake::of(&w);
+    run_pass(&w, &fake);
+    let attempt: String = w
+        .conn
+        .query_row(
+            "SELECT id FROM attempts WHERE task_id = ?1 AND state = 'launching' AND via = 'push'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let files = AttemptFiles::new(
+        &w.root(),
+        AttemptRef {
+            task_id: task.clone(),
+            attempt_id: attempt.clone(),
+        },
+    );
+    fs::create_dir_all(files.dir()).unwrap();
+    fs::set_permissions(files.dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    files.write_heartbeat(&AgentFacts::new(None)).unwrap();
+    let state = |w: &World| -> (String, Option<String>) {
+        w.conn
+            .query_row(
+                "SELECT state, outcome FROM attempts WHERE id = ?1",
+                [&attempt],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+
+    let report = run_pass(&w, &fake);
+    assert_eq!(state(&w), ("live".into(), None), "{report:?}");
+    files
+        .write_exit_hinted(None, false, Some(OutcomeHint::ContextLimit))
+        .unwrap();
+    let report = run_pass(&w, &fake);
+    assert_eq!(
+        state(&w),
+        ("ended".into(), Some("context_limit".into())),
+        "{report:?}"
+    );
+}
+
+/// The order of 1 pass: the agent of A1 wrote a valid `result.json`, and
+/// its wrapper wrote its first heartbeat and `exit.json`, before the pass
+/// saw A1 `live`. The result wins: the task goes to `verifying`, and rung
+/// 6 does not requeue it.
+#[test]
+fn result_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
+    let w = world();
+    let task = w.ready_task("t1", CLAUDE_PROFILE);
+    let fake = Fake::of(&w);
+    run_pass(&w, &fake);
+    let attempt: String = w
+        .conn
+        .query_row(
+            "SELECT id FROM attempts WHERE task_id = ?1 AND state = 'launching' AND via = 'push'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let files = AttemptFiles::new(
+        &w.root(),
+        AttemptRef {
+            task_id: task.clone(),
+            attempt_id: attempt.clone(),
+        },
+    );
+    let outbox = files.dir().join("outbox");
+    fs::create_dir_all(&outbox).unwrap();
+    for d in [files.dir(), outbox.as_path()] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let result = ResultFile {
+        task: task.clone(),
+        attempt: "A1".into(),
+        status: ResultStatus::Completed,
+        summary: "done".into(),
+        commits: Vec::new(),
+        files_changed: Vec::new(),
+        acceptance_self_check: Vec::new(),
+        notes_for_next: None,
+        handoff: None,
+    };
+    let path = outbox.join("result.json");
+    fs::write(&path, result.to_json()).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    files.write_heartbeat(&AgentFacts::new(None)).unwrap();
+    files.write_exit_hinted(Some(0), false, None).unwrap();
+
+    let report = run_pass(&w, &fake);
+    // Rule D: the verifier gives A1 its outcome, so the exit of A1 does not
+    // requeue the task.
+    let events: Vec<String> = w
+        .conn
+        .prepare("SELECT kind || ' ' || text FROM events ORDER BY event_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        w.status(&task),
+        "verifying",
+        "{report:?}\n{}",
+        events.join("\n")
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(t.not_before, None, "no backoff of rung 6");
+}
+
+/// RR-11: a usage limit ends A1 with `quota`, and the same pass binds A2
+/// on the fallback `codex-sol` as a push attempt. A2 has no backoff, no
+/// attempt is burned, and the old claim path writes no row.
+#[test]
+fn quota_outcome_restarts_as_a_push_attempt_of_the_fallback() {
+    let w = world();
+    let task = w.ready_task("t1", CLAUDE_PROFILE);
+    let worker = NewWorker {
+        run_id: w.run.run_id.clone(),
+        kind: Some(WorkerKind::Worker),
+        persona: CLAUDE_PROFILE.into(),
+        ..Default::default()
+    };
+    let bound = testing::bind_live(&w.conn, &task, &worker, None).unwrap();
+    let before = tasks::get(&w.conn, &task).unwrap();
+    let files = AttemptFiles::new(
+        &w.root(),
+        AttemptRef {
+            task_id: task.clone(),
+            attempt_id: bound.attempt_id.clone(),
+        },
+    );
+    fs::create_dir_all(files.dir()).unwrap();
+    fs::set_permissions(files.dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    files
+        .write_exit_hinted(Some(1), false, Some(OutcomeHint::Quota))
+        .unwrap();
+    let fake = Fake::of(&w);
+    fake.used.set(1.0);
+
+    let report = run_pass(&w, &fake);
+    let mut stmt = w
+        .conn
+        .prepare(
+            "SELECT a.id, a.state, a.outcome, a.via, w.persona FROM attempts a
+             JOIN workers w ON w.worker_id = a.worker_id WHERE a.task_id = ?1 ORDER BY a.rowid",
+        )
+        .unwrap();
+    let rows: Vec<(String, String, Option<String>, String, Option<String>)> = stmt
+        .query_map([&task], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2, "A1 and 1 restart attempt: {rows:?}");
+    assert_eq!(rows[0].0, bound.attempt_id);
+    assert_eq!(rows[0].2.as_deref(), Some("quota"), "{rows:?}");
+    let (id, state, _, via, persona) = &rows[1];
+    assert_eq!(id, &format!("{task}/A2"), "{rows:?}");
+    assert_eq!(
+        (state.as_str(), via.as_str(), persona.as_deref()),
+        ("launching", "push", Some("codex-sol")),
+        "the restart is a push attempt of the fallback: {report:?}"
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(t.status, "leased");
+    assert_eq!(t.not_before, None, "a quota outcome sets no backoff");
+    assert_eq!(
+        t.attempts - t.attempt_floor,
+        before.attempts - before.attempt_floor,
+        "no attempt is burned"
+    );
+    let claim_rows = w.count(&format!(
+        "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}' AND via = 'claim'
+         AND id <> '{}'",
+        bound.attempt_id
+    ));
+    assert_eq!(claim_rows, 0, "the old claim path writes no row");
 }
 
 // ─── pacing ─────────────────────────────────────────────────────────────

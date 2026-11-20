@@ -425,9 +425,8 @@ mod tests {
     use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
     use crate::fleetd::ideas::application::needs_you::NeedsYouList;
-    use crate::fleetd::task_execution::adapters::sqlite as store;
+    use crate::fleetd::task_execution::application::commands;
     use crate::fleetd::task_execution::application::dispatch::{bind, Bound, DispatchCtx};
-    use crate::fleetd::task_execution::application::{commands, quota};
     use crate::fleetd::task_execution::domain::task::{ProcessScope, Reap, RowRef, Target};
     use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
     use crate::fleetd::worker_profiles::application::ports::{EnvRule, LaunchError};
@@ -697,11 +696,6 @@ mod tests {
     fn launching_attempt_is_launched_once_after_the_commit() {
         let mut w = World::new();
         let b = bound_with_tree(&mut w, "once");
-        let row = store::attempts_of_worker(w.store.conn(), &b.worker_id).unwrap();
-        assert!(
-            !quota::is_restart(&row[0]),
-            "a push attempt is not a restart on a fallback"
-        );
         let f = Fake::default();
         let plan = w.plan(&f.alive_fn());
         assert_eq!(plan.launches, std::slice::from_ref(&b.attempt_id));

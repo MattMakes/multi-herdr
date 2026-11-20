@@ -102,15 +102,19 @@ struct World {
 impl World {
     fn new(name: &str, spec: &Spec<'_>) -> World {
         let mut h = Harness::new(name).with_git();
-        let fleet = h.state.join("fleet");
+        // The fleet root is in `~/.horch`, outside the state folder. A Codex
+        // worker can write the state folder, so a conformance folder there
+        // fails "Sandbox boundary" and marks codex-sol unhealthy.
+        let fleet = h.home.join(".horch").join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
         skip_agy_conformance(&h);
         std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
         h.set(
             "HORCH_LEDGER_DB",
-            h.state.join("ledger.sqlite3").to_string_lossy(),
+            h.home.join(".horch/ledger.sqlite3").to_string_lossy(),
         );
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
         h.set(
@@ -486,7 +490,6 @@ fn agy_long_context_ends_with_context_limit_and_the_next_attempt_has_the_handoff
 }
 
 #[test]
-#[ignore = "flaky until T-895: the A2 agent can end by a signal with no_result"]
 fn context_limit_loop_with_no_commit_opens_1_needs_you_item() {
     let w = World::new(
         "p7-exec-agy-loop",

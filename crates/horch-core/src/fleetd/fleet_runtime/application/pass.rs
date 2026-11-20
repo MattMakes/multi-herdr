@@ -144,9 +144,7 @@ use crate::fleetd::task_execution::application::judge_pair::{self, Settled};
 use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::planned_tasks;
-use crate::fleetd::task_execution::application::quota::{
-    self, Pools, Restart, Restarted, Restarts,
-};
+use crate::fleetd::task_execution::application::quota::{self, Pools};
 use crate::fleetd::task_execution::application::stall as ladder;
 use crate::fleetd::task_execution::application::verifier::{self, Passed, Verifier};
 use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
@@ -289,11 +287,6 @@ pub trait Outside {
         anyhow::bail!("this fleetd sends no doorbell to pane {pane}")
     }
 
-    /// The launch of the fallback worker of the restart `r` (RR-11).
-    fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
-        anyhow::bail!("this fleetd starts no fallback worker for {}", r.task_id)
-    }
-
     /// Each CLI of the docs sources and the path of its binary, for the
     /// scan of the CLI binaries of Phase 7. An `Outside` with no CLIs, as a
     /// fake of a test, has none.
@@ -306,15 +299,6 @@ pub trait Outside {
 pub struct PoolFacts {
     pub roster: Roster,
     pub quota: QuotaView,
-}
-
-/// The restarts of part 3, through the [`Outside`] of the pass.
-struct OutsideRestarts<'a>(&'a dyn Outside);
-
-impl Restarts for OutsideRestarts<'_> {
-    fn spec(&self, r: &Restart) -> Result<LaunchSpec> {
-        self.0.restart_spec(r)
-    }
 }
 
 /// The work budget of the run duties in 1 pass (PL-5, A32).
@@ -490,7 +474,7 @@ enum Effect {
     StopJob(jobs::Stop),
     /// The doorbell of the stall ladder into the pane.
     Doorbell(Bell),
-    /// The launch of an attempt, or the restart of a task on its fallback.
+    /// The launch of an attempt of the run duties.
     Launch(AttemptRow),
     /// The spawn of a push attempt that fleetd bound, by its id.
     PushLaunch(String),
@@ -498,7 +482,7 @@ enum Effect {
 }
 
 /// The order of part 3 (MAP.md, "Part 3"): each stop, then each doorbell,
-/// then each launch and restart, then each job start.
+/// then each launch, then each job start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Stop,
@@ -606,7 +590,7 @@ struct ProcessItems {
 }
 
 /// The attempts to launch in part 3: the attempts in `launching` of the
-/// run duties and of the restarts, and the push attempts by id.
+/// run duties, and the push attempts by id.
 struct ToLaunch {
     attempts: Vec<AttemptRow>,
     push: Vec<String>,
@@ -1269,14 +1253,18 @@ impl<'a> Pass<'a> {
         // the job observations: a result of this pass wins over an expiry
         // of this pass ("Order inside 1 pass").
         let guard = Some(self.settings.generation);
-        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
-        let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
         start_running(&tx, guard, clock, &wrappers, |persona| {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
+        // After the first heartbeat of this pass, so the task is `running`:
+        // a result, a question or a context limit that the agent and its
+        // wrapper wrote before this pass saw the attempt `live` acts here,
+        // before rung 5 can end the attempt with `no_result`.
+        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
+        let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
         token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;
         let launches =
@@ -1778,9 +1766,6 @@ impl<'a> Pass<'a> {
                 Effect::Stop(s) => self.stop(conn, &s, clock, &mut stops, &mut report),
                 Effect::StopJob(s) => jobs::stop(&s).then_some(Done::StopJob(s.job_id)),
                 Effect::Doorbell(bell) => self.doorbell(bell, &mut sent, &mut report),
-                Effect::Launch(a) if quota::is_restart(&a) => {
-                    self.restart(conn, &a, clock, &mut report)
-                }
                 Effect::Launch(a) => self.launch(&a, clock, &mut report),
                 Effect::PushLaunch(id) => self.push_launch(conn, &id, clock, &mut report),
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
@@ -2006,31 +1991,6 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// Start the fallback worker of the restart attempt `a` (RR-11), once,
-    /// and only when each process of an older attempt of its task is gone
-    /// (FM-14).
-    fn restart(
-        &mut self,
-        conn: &Connection,
-        a: &AttemptRow,
-        clock: FleetSeconds,
-        report: &mut PassReport,
-    ) -> Option<Done> {
-        let root = &self.settings.fleet_root;
-        let ports = OutsideRestarts(self.ports.outside);
-        match quota::restart(conn, root, clock, &a.id, self.ports.host, &ports) {
-            Ok(Restarted::Launched(l)) => {
-                self.launched.push(l.child);
-                Some(Done::Launch(a.id.clone()))
-            }
-            Ok(Restarted::Done | Restarted::Waiting { .. }) => None,
-            Err(e) => {
-                report.failed.push(format!("{e:#}"));
-                None
-            }
-        }
-    }
-
     fn start_job(
         &mut self,
         conn: &mut Connection,
@@ -2217,6 +2177,7 @@ impl Rules<'_> {
     /// the path of Phase 1.
     fn finish_exited(&self, facts: &Facts) -> Result<Vec<Stop>> {
         let mut rows = attempts_store::rows(self.tx, &util::host_name())?;
+        keep_unproven(&mut rows, self.exited);
         exited_by_file(self.tx, self.guard, self.exited, &mut rows)?;
         let mut stops = Vec::new();
         for mut reap in task::dead_attempts(&rows, facts) {
@@ -3015,6 +2976,20 @@ fn dispatch_holds(
         projects,
         ..DispatchHolds::default()
     }
+}
+
+/// Rung 5 does not judge a `live` attempt of a task that names no process
+/// and no pane: its wrapper wrote a heartbeat that proves no agent, so the
+/// pass cannot see whether the wrapper lives. Its `exit.json` ends it
+/// ([`exited_by_file`]), else the expiry of its lease does.
+fn keep_unproven(rows: &mut task::Rows, exited: &[String]) {
+    rows.attempts.retain(|a| {
+        let unproven = a.state == AttemptState::Live
+            && a.task_id.is_some()
+            && a.process.is_none()
+            && a.pane.is_none();
+        !unproven || exited.contains(&a.id)
+    });
 }
 
 /// Each attempt of `exited`, whose wrapper wrote `exit.json` in this
@@ -4191,8 +4166,9 @@ const IDEA_FILE_MODE: u32 = 0o600;
 // `docs/tickets/fleetd-p7/30-pass-wiring.md`. Part 1 scans the CLI
 // binaries within the scan budget from its cursor, and reads the worktree
 // at the end of each attempt that the wrapper ended at the context limit.
-// Part 2 ingests `context_limit` before the wrapper files settle the
-// worker (`finish_exited`), then, after the job observations, marks the
+// Part 2 ingests `context_limit` after the first heartbeat of the pass
+// moves a task to `running`, and before rung 5 ends an attempt whose
+// process is gone (`finish_exited`), then, after the job observations, marks the
 // health of the profiles after each ended `conformance` run, adds the
 // drift idea of a failed run, and queues the docs jobs (`queue_due_jobs`).
 // Part 3 starts the queued jobs with the other job starts of the pass, and
@@ -4413,13 +4389,13 @@ impl Pass<'_> {
     }
 }
 
-/// Part 2 of Phase 7, before the wrapper files settle the worker: each
+/// Part 2 of Phase 7, after the wrapper files and before rung 5: each
 /// attempt that the wrapper ended at the context limit ends with
 /// `context_limit`, burns no attempt, and its task goes to `ready` with a
 /// handoff file, or holds at a loop (FM-20, MAP.md of fleetd-p7, Q2).
 ///
 /// A failure keeps the rows of its attempt unchanged, and gives its line:
-/// the wrapper files then settle the worker as an exit with no result.
+/// rung 5 then ends the attempt as an exit with no result.
 fn context_limits(
     tx: &Transaction<'_>,
     guard: Option<Generation>,

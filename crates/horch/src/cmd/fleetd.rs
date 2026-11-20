@@ -76,7 +76,6 @@ use horch_core::fleetd::integration::application::commands::GitRefTips;
 use horch_core::fleetd::integration::application::ports::IntegrationGitGateway;
 use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
-use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
@@ -1425,10 +1424,6 @@ impl Outside for Live<'_> {
 
     fn doorbell(&self, pane: &str) -> Result<()> {
         delivery::send_line(&self.herdr, pane, TypedLine::Doorbell)
-    }
-
-    fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
-        super::recipes::restart_spec(self.ctx, r)
     }
 
     /// Each tool of `docs-sources.toml` whose version command names a
