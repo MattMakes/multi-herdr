@@ -1,6 +1,5 @@
 //! The protected file reader (ticket 07 of fleetd-p5): SR-5, SR-6, FM-23.
-//! Each rejected case asserts its reason text. The cases of a link, a
-//! FIFO and a unix mode run only on unix.
+//! Each rejected case asserts its reason text.
 
 #[cfg(unix)]
 use std::fs::Permissions;
@@ -14,8 +13,6 @@ use horch_core::fleetd::fleet_runtime::adapters::protected_files::{read_protecte
 use horch_platform::channel::User;
 use horch_platform::fs as platform;
 
-/// A temporary folder with the root `outbox/` in it, that only its owner
-/// can open.
 struct Setup {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -53,7 +50,6 @@ fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
 }
 
-/// Write `bytes` to the new file `path`, that only its owner can open.
 fn write_file(path: &Path, bytes: &[u8]) {
     let mut file = platform::create_new_owner_only(path).unwrap();
     file.write_all(bytes).unwrap();
@@ -214,7 +210,6 @@ fn valid_owner_only_file_and_request_spool_succeed_on_host_platform() {
         b"{\"status\":\"done\"}"
     );
 
-    // A ledger owner that does not own the file.
     let other = match &s.owner {
         User::Uid(uid) => User::Uid(uid + 1),
         User::Sid(sid) => User::Sid(format!("{sid}-1")),
@@ -230,7 +225,6 @@ fn valid_owner_only_file_and_request_spool_succeed_on_host_platform() {
         reason(&path, &rule)
     );
 
-    // Another user gets access to the file.
     grant_others(&path);
     let wide = reason(&path, &s.rule(1024));
     assert!(
@@ -240,9 +234,6 @@ fn valid_owner_only_file_and_request_spool_succeed_on_host_platform() {
     );
 }
 
-/// Give the users that are not the owner read access to `path`: mode
-/// bit 0004 on unix, and an allow rule for `Everyone` (`S-1-1-0`) on
-/// Windows.
 #[cfg(unix)]
 fn grant_others(path: &Path) {
     set_mode(path, 0o604);

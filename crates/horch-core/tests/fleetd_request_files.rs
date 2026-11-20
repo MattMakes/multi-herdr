@@ -6,8 +6,7 @@
 //! Each test uses a temp fleet root, a temp ledger at generation 1, the
 //! operator token of the fleet root, and a handler of `task_cancel` that
 //! counts its calls and writes 1 row of the table `probe` for each call.
-//! The time of a scan comes from a test clock, never from the host. The
-//! cases of a link and of a unix mode or uid run only on unix.
+//! The time of a scan comes from a test clock, never from the host.
 
 use std::fs;
 #[cfg(unix)]
@@ -111,7 +110,6 @@ impl World {
         requests_dir(&self.root)
     }
 
-    /// The context of a `horch` command of this fleet.
     fn ctx(&self) -> RuntimeContext {
         let dir = self._temp.path();
         let text = |p: PathBuf| p.to_string_lossy().into_owned();
@@ -160,9 +158,6 @@ impl World {
         self.scan_with(owner, cursor, &mut clock)
     }
 
-    /// The request file of `id` with the token of the fleet, as the client
-    /// writes it: `<id>.json.tmp`, then a rename, that only its owner can
-    /// open.
     fn put(&self, id: &str) -> PathBuf {
         platform::create_dir_owner_only(&self.dir()).unwrap();
         let line = request(id, Some(self.token.text())).to_line();
@@ -686,7 +681,6 @@ fn valid_owner_only_file_and_request_spool_succeed_on_host_platform() {
     let Value::Object(payload) = json!({ "task": "T-1" }) else {
         unreachable!()
     };
-    // No fleetd listens: the client writes the request file.
     let sent = channel_client::send(&w.ctx(), Kind::TaskCancel, payload).unwrap();
     let Sent::Queued { request_id, path } = sent else {
         panic!("expected a request file, got {sent:?}")

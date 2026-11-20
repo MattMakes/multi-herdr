@@ -32,9 +32,7 @@ use crate::fs::OwnerAndMode;
 use crate::windows::channel::{current_user, sid_text};
 use crate::NotSupported;
 
-/// The `AceType` of an allow rule of a DACL.
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-/// The `AceType` of a deny rule of a DACL.
 const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 
 const NOT_SUPPORTED: NotSupported = NotSupported::new("fs", "windows");
@@ -102,12 +100,10 @@ impl Drop for OwnerOnly {
     }
 }
 
-/// `text` as UTF-16 with a NUL at the end.
 fn wide_text(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
 }
 
-/// `path` as UTF-16 with a NUL at the end.
 fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain([0]).collect()
 }
@@ -126,7 +122,6 @@ pub(crate) fn create_dir_owner_only(path: &Path) -> io::Result<()> {
     // that it points to live until the call returns.
     if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
         let e = io::Error::last_os_error();
-        // Another process made the folder after the check above.
         if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() {
             return Ok(());
         }
