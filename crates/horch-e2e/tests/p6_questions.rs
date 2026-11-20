@@ -808,3 +808,247 @@ fn fm35_delivery_repeats_until_an_answer() {
     assert_eq!(w.rung_for(&q), rung, "no doorbell after the answer");
     assert_eq!(w.owners().len(), owners, "no new process for the question");
 }
+
+/// The owner-note test moved from T-897. It runs a push worker that asks 1
+/// question through `horch ask`, with the setup of `p6_worker_question.rs`.
+mod owner_note {
+    use std::path::{Path, PathBuf};
+
+    use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+    use rusqlite::types::Value as SqlValue;
+    use rusqlite::{Connection, OpenFlags};
+
+    use super::{quoted, text, FLEET_TOML};
+
+    const TICKET: &str = "# 01: Write the port guide\n\n\
+<!-- horch-ticket: 1 -->\n\
+**Persona:** primary `opus` · **Parallel:** yes\n\
+**Kind:** feature\n\
+**Review:** none\n\
+**Check:** `true`\n\
+**Own:** `fake-claude.txt`\n\n\
+## Goal\n\nThe guide names the port.\n";
+
+    const IDEA: &str = "I-0001";
+
+    const QUESTION: &str = "Which port does the guide name?";
+
+    /// The log of the first launch of the worker, under the harness root.
+    const FIRST_LOG: &str = "first-launch.log";
+
+    fn shell_word(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+
+    /// A claude wrapper: the first worker launch runs `first`, and each
+    /// other launch runs the fake claude.
+    fn wrapper(root: &Path, first: &str) -> String {
+        let fake = Harness::horch_bin().with_file_name("fake-claude");
+        format!(
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+             case \"$*\" in\n*horch-conformance*) ;;\n*/inbox/START.md*)\n\
+             if [ ! -e {log} ]; then {{ {first}\n}} > {log} 2>&1; exit 0; fi ;;\nesac\n\
+             exec {fake} \"$@\"\n",
+            log = shell_word(&root.join(FIRST_LOG).to_string_lossy()),
+            fake = shell_word(&fake.to_string_lossy()),
+        )
+    }
+
+    struct World {
+        h: Harness,
+    }
+
+    impl World {
+        fn new(name: &str, scenario: &str, first: &str) -> World {
+            let mut h = Harness::new(name).with_git();
+            let fleet = h.root.join("fleet");
+            std::fs::create_dir_all(&fleet).unwrap();
+            std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
+            h.set(
+                "HORCH_LEDGER_DB",
+                h.root.join("ledger.sqlite3").to_string_lossy(),
+            );
+            h.set("FLEET_ROOT", fleet.to_string_lossy());
+            h.set("HORCH_NO_WAKE", "1");
+            h.set("HORCH_NO_WATCHDOG", "1");
+            h.set(
+                "HORCH_QUOTA_FILE",
+                fixtures().join("quota/all-ok.json").to_string_lossy(),
+            );
+            let docs = h.root.join("docs-fixture");
+            std::fs::create_dir_all(&docs).unwrap();
+            h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
+            h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
+            let horch = h.bin.join("horch");
+            if !horch.exists() {
+                std::os::unix::fs::symlink(Harness::horch_bin(), horch).unwrap();
+            }
+            let wrapper = wrapper(&h.root, first);
+            let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
+            h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
+            let workspace = h.fleet_workspace();
+            h.set("HORCH_WORKSPACE_ID", workspace);
+            let w = World { h };
+            std::fs::write(
+                w.h.project.join("fleet.toml"),
+                "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+            )
+            .unwrap();
+            let tickets = w.h.project.join("tickets");
+            std::fs::create_dir_all(&tickets).unwrap();
+            let ticket = tickets.join("01-port-guide.md");
+            std::fs::write(&ticket, TICKET).unwrap();
+            w.git(&["add", "-A"]);
+            w.git(&["commit", "-q", "-m", "base"]);
+            w.h.serve_fleetd();
+            let o =
+                w.h.run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
+            assert!(o.status.success(), "horch idea add --direct: {}", text(&o));
+            w
+        }
+
+        fn git(&self, args: &[&str]) {
+            let o = self.h.git_cmd(args).output().unwrap();
+            assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
+        }
+
+        fn rows(&self, sql: &str) -> Vec<String> {
+            let conn =
+                Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .unwrap();
+            let mut stmt = conn.prepare(sql).unwrap();
+            stmt.query_map([], |r| r.get::<_, SqlValue>(0))
+                .unwrap()
+                .map(|r| match r.unwrap() {
+                    SqlValue::Null => String::new(),
+                    SqlValue::Integer(n) => n.to_string(),
+                    SqlValue::Real(x) => x.to_string(),
+                    SqlValue::Text(t) => t,
+                    SqlValue::Blob(b) => String::from_utf8_lossy(&b).into_owned(),
+                })
+                .collect()
+        }
+
+        fn one(&self, sql: &str) -> Option<String> {
+            self.rows(sql).into_iter().next()
+        }
+
+        fn task(&self) -> String {
+            self.wait("the planned task of the idea", || {
+                self.one(&format!(
+                    "SELECT task_id FROM tasks WHERE idea_id = {}",
+                    quoted(IDEA)
+                ))
+            })
+        }
+
+        fn status(&self, task: &str) -> String {
+            self.one(&format!(
+                "SELECT status FROM tasks WHERE task_id = {}",
+                quoted(task)
+            ))
+            .unwrap_or_default()
+        }
+
+        /// The attempt ids of `task`, oldest first.
+        fn attempts(&self, task: &str) -> Vec<String> {
+            self.rows(&format!(
+                "SELECT id FROM attempts WHERE task_id = {} ORDER BY rowid",
+                quoted(task)
+            ))
+        }
+
+        /// The states of the question rows of `task`, by id.
+        fn question_states(&self, task: &str) -> Vec<String> {
+            self.rows(&format!(
+                "SELECT state FROM questions WHERE task_id = {} ORDER BY id",
+                quoted(task)
+            ))
+        }
+
+        fn start_md(&self, attempt: &str) -> Option<String> {
+            let (task, n) = attempt
+                .rsplit_once('/')
+                .expect("an attempt id names its task");
+            let dir = self
+                .h
+                .fleet_root()
+                .join("tasks")
+                .join(task)
+                .join("attempts")
+                .join(n);
+            std::fs::read_to_string(dir.join("inbox/START.md")).ok()
+        }
+
+        fn context(&self) -> String {
+            let show =
+                |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
+            let stderr: PathBuf = self.h.root.join("fleetd.stderr");
+            let stderr = std::fs::read_to_string(stderr).unwrap_or_default();
+            let mut tail: Vec<&str> = stderr.lines().rev().take(40).collect();
+            tail.reverse();
+            let first = std::fs::read_to_string(self.h.root.join(FIRST_LOG)).unwrap_or_default();
+            format!(
+                "first launch of the worker:\n{first}\n{}{}{}{}{}fleetd.stderr:\n{}\n",
+                show("tasks", "SELECT task_id || ' ' || status FROM tasks"),
+                show(
+                    "attempts",
+                    "SELECT id || ' ' || state || ' ' || IFNULL(outcome, '-') FROM attempts"
+                ),
+                show(
+                    "questions",
+                    "SELECT id || ' ' || state || ' ' || owner FROM questions"
+                ),
+                show(
+                    "needs-you",
+                    "SELECT key || ' ' || state || ' ' || text FROM needs_you"
+                ),
+                show(
+                    "the last events",
+                    "SELECT IFNULL(entity, '-') || ' ' || IFNULL(entity_id, '-') || ' ' || kind \
+                     || ' ' || IFNULL(to_state, '-') || ' ' || text FROM events \
+                     ORDER BY event_id DESC LIMIT 30"
+                ),
+                tail.join("\n"),
+            )
+        }
+
+        fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
+            wait_for_or(what, f, || self.context())
+        }
+    }
+
+    /// RR-12: the answer of the owner (the fake sub-orchestrator answers with
+    /// its own decision) answers the row, the task leaves `blocked_on_user`,
+    /// and `START.md` of the next attempt holds the question and the answer.
+    #[test]
+    fn answer_of_the_owner_reaches_the_next_attempt() {
+        let ask = format!("horch ask {}", shell_word(QUESTION));
+        let w = World::new("p6-q-owner-note", "stay,answer_own", &ask);
+        let task = w.task();
+        w.wait("the answered question", || {
+            (w.question_states(&task) == ["answered"]).then_some(())
+        });
+        let next = w.wait("the next attempt of the task", || {
+            w.attempts(&task).get(1).cloned()
+        });
+        assert_ne!(w.status(&task), "blocked_on_user", "{}", w.context());
+        let start = w.wait("START.md of the next attempt", || w.start_md(&next));
+        assert!(
+            start.contains(QUESTION),
+            "START.md of the next attempt holds the question:\n{start}"
+        );
+        // The fake sub-orchestrator answers with this text (crate::idea_agent).
+        let answer = w
+            .one(&format!(
+                "SELECT json_extract(data_json, '$.text') FROM events
+                 WHERE kind = 'answered' AND entity_id = {}",
+                quoted(&task)
+            ))
+            .expect("the answered event holds the answer");
+        assert!(
+            !answer.is_empty() && start.contains(&answer),
+            "START.md of the next attempt holds the answer {answer:?}:\n{start}"
+        );
+    }
+}
