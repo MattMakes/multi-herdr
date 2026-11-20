@@ -915,6 +915,25 @@ fn antigravity_push_launch_keeps_a_tracked_hooks_file() {
     assert!(status.is_empty(), "{status}");
 }
 
+#[cfg(unix)]
+#[test]
+fn antigravity_push_launch_writes_through_no_symlink() {
+    let home = tempfile::tempdir().unwrap();
+    let outside = home.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    for link in [".agents", ".agents/hooks.json"] {
+        let (env, worktree) = agy_push_env(&home.path().join(link.replace('/', "-")));
+        if link == ".agents/hooks.json" {
+            std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+            std::os::unix::fs::symlink(outside.join("hooks.json"), worktree.join(link)).unwrap();
+        } else {
+            std::os::unix::fs::symlink(&outside, worktree.join(link)).unwrap();
+        }
+        build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+        assert!(!outside.join("hooks.json").exists(), "{link}");
+    }
+}
+
 #[test]
 fn claim_attempt_has_no_stop_hook() {
     let home = tempfile::tempdir().unwrap();
