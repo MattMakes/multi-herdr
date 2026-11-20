@@ -831,7 +831,6 @@ fn codex_toml_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Run git in `dir` and return its stdout. It fails the test on an error.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
@@ -843,7 +842,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// A push env whose worktree is a new git repository with 1 commit.
 fn agy_push_env(home: &Path) -> (LaunchEnv, PathBuf) {
     let worktree = home.join("wt");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -854,8 +852,6 @@ fn agy_push_env(home: &Path) -> (LaunchEnv, PathBuf) {
     (env, worktree)
 }
 
-/// The commands of the `Stop` hooks of `<worktree>/.agents/hooks.json`,
-/// the workspace hooks file of agy.
 fn agy_stop_commands(worktree: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(worktree.join(".agents/hooks.json")) else {
         return Vec::new();
@@ -877,7 +873,6 @@ fn agy_stop_commands(worktree: &Path) -> Vec<String> {
 fn antigravity_push_launch_has_a_stop_hook_that_runs_result_check() {
     let home = tempfile::tempdir().unwrap();
     let (env, worktree) = agy_push_env(home.path());
-    // An untracked hook of the project stays.
     std::fs::create_dir_all(worktree.join(".agents")).unwrap();
     std::fs::write(
         worktree.join(".agents/hooks.json"),
@@ -892,7 +887,6 @@ fn antigravity_push_launch_has_a_stop_hook_that_runs_result_check() {
         commands.iter().any(|c| c.starts_with(STOP_HOOK)),
         "{commands:?}"
     );
-    // The hook file never reaches a commit.
     let status = git(
         &worktree,
         &["status", "--porcelain", "--untracked-files=all"],

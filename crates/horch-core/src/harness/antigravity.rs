@@ -73,7 +73,6 @@ pub(crate) fn find_session(cache: &Path, workdir: &Path, since: SystemTime) -> O
 /// from `--settings` (antigravity.google/docs/hooks?tab=cli).
 const HOOKS_FILE: &str = ".agents/hooks.json";
 
-/// The name of the horch entry in [`HOOKS_FILE`].
 const STOP_HOOK_NAME: &str = "horch-result-gate";
 
 /// The command of the `agy` Stop hook. `agy` keeps the agent working only
@@ -90,7 +89,6 @@ pub(crate) fn stop_hook_command(horch_exe: &Path) -> String {
     )
 }
 
-/// The trimmed stdout of `git -C <dir> <args>`, or `None` when git fails.
 fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
     let out = horch_platform::start::command("git")
         .arg("-C")
@@ -103,11 +101,8 @@ fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// A push attempt gets 1 Stop hook that runs `horch result --check` (FM-6)
-/// in `<worktree>/.agents/hooks.json`, with the other entries of that file.
-/// The hook helps the agent and is not a security boundary: the worker can edit it.
-/// A file that the project tracks stays as it is, and the repair pass covers
-/// the attempt. The git exclude file keeps the hook file out of each commit.
+/// The Stop hook serves FM-6. It helps the agent and is not a security
+/// boundary: the worker can edit it.
 fn seed_stop_hook(worktree: &Path, horch_exe: &Path) -> Result<()> {
     if git_out(worktree, &["ls-files", "--error-unmatch", HOOKS_FILE]).is_some() {
         return Ok(());
@@ -134,8 +129,6 @@ fn seed_stop_hook(worktree: &Path, horch_exe: &Path) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// Add the line `/.agents/hooks.json` to the git exclude file `exclude`,
-/// once.
 fn exclude_hooks_file(exclude: &Path) -> Result<()> {
     let line = format!("/{HOOKS_FILE}");
     let text = match std::fs::read_to_string(exclude) {
@@ -202,7 +195,6 @@ impl Harness for Antigravity {
         for key in ANTIGRAVITY_FORBIDDEN_ENV {
             cmd.env_remove(key);
         }
-        // A claim attempt has no task folder and gets no Stop hook.
         if let (Some(_), Some(worktree)) = (&env.task_dir, &env.worktree) {
             seed_stop_hook(worktree, &env.horch_exe)?;
         }
@@ -565,8 +557,6 @@ mod tests {
         assert_eq!(find_session(&cache, &dir, after), None);
     }
 
-    /// agy reads the stdout JSON of the Stop hook: only exit 2 of
-    /// `horch result --check` keeps the agent working.
     #[cfg(unix)]
     #[test]
     fn the_stop_hook_maps_exit_2_to_continue() {
