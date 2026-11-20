@@ -1,9 +1,3 @@
-//! `**Check:** none` in a ticket stores "no check", and never the shell
-//! command `none`. `horch ledger add` and `horch ledger run new` are retired
-//! (FR-12: every task belongs to an idea), so the test reads the ticket files
-//! with the map reader that fleetd uses and queues each task with
-//! `tasks::add` on a temporary ledger.
-
 use std::path::Path;
 
 use horch_core::taskledger::model::Actor;
@@ -39,7 +33,6 @@ fn check_none_in_ticket_stores_no_check() {
                 ..Default::default()
             };
             let run = runs::create(tx, dir.path(), &new_run)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             schema::run_idea(tx, &run.run_id, &util::now(), true)?;
             Ok(run)
         })

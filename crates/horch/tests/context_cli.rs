@@ -8,10 +8,6 @@
 //! temp copy of `crates/horch-core/tests/fixtures/context/home`, the state
 //! dir is temp, the project is `/fixture` (the fixture transcripts' slug),
 //! and the managed-settings path points at a file that does not exist.
-//!
-//! `horch note` sends its session record writes to fleetd (RR-5). A test
-//! that runs it starts a test fleetd (`World::start_fleetd`) on a ledger and a
-//! fleet root of a short temporary folder.
 
 mod support;
 
@@ -62,7 +58,6 @@ fn record(id: &str, role: &str, agent: &str, tier: &str, sid: &str) -> serde_jso
 struct World {
     _fleetd: Option<TestFleetd>,
     _tmp: tempfile::TempDir,
-    /// The ledger and the fleet root: a short folder, for the socket path.
     short: tempfile::TempDir,
     root: PathBuf,
 }
@@ -121,7 +116,6 @@ impl World {
         }
     }
 
-    /// Serve the channel of the fleet of this world with a test fleetd.
     fn start_fleetd(&mut self) {
         self._fleetd = Some(TestFleetd::start(self.command(), &self.fleet_root()));
     }
@@ -134,7 +128,6 @@ impl World {
         self.short.path().join("ledger.sqlite3")
     }
 
-    /// The `horch` binary with the environment of the test.
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
         cmd.current_dir(&self.root)

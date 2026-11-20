@@ -1,12 +1,3 @@
-//! `horch ledger add-map --dry-run` as the strict consumer of the ticket
-//! contract C1 (trace-fixes ticket 10, TRF-11): it names each problem and
-//! queues nothing. `add-map` without `--dry-run` and `--again` are retired
-//! (FR-12: a task belongs to an idea; Phase 6 ticket 47), so the tests of
-//! TRF-13 and TRF-14 are the unit tests of `taskledger::tasks` and
-//! `taskledger::map`. Every test runs the binary on a temp git project, with
-//! the watchdog off and no herdr pane. A test fleetd serves the requests of
-//! the commands.
-
 mod support;
 
 use std::path::PathBuf;
@@ -114,8 +105,6 @@ impl World {
         o.out
     }
 
-    /// The rows of the table `tasks` in the ledger. `horch ledger status`
-    /// needs a run, and a dry run makes none.
     fn task_count(&self) -> i64 {
         let ledger = PathBuf::from(self.ok(&["ledger", "path"]).trim());
         let store = Store::open_read_only(&ledger).unwrap();
