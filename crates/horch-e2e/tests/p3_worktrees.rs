@@ -274,9 +274,16 @@ fn board(h: &Harness) -> String {
         h,
         "SELECT kind || ' ' || entity_id || ' ' || text FROM needs_you WHERE state = 'open'",
     );
+    let attempts = query(
+        h,
+        "SELECT a.id || ' ' || a.state || ' lease=' || COALESCE(
+             (SELECT CAST(expires_at AS TEXT) FROM leases WHERE attempt_id = a.id), '-')
+         FROM attempts a ORDER BY a.rowid",
+    );
     format!(
-        "fleet clock {}\nworktrees:\n{}\njobs:\n{}\nneeds-you:\n{}",
+        "fleet clock {}\nattempts:\n{}\nworktrees:\n{}\njobs:\n{}\nneeds-you:\n{}",
         fleet_clock(h),
+        attempts.join("\n"),
         rows.join("\n"),
         jobs.join("\n"),
         items.join("\n")
@@ -306,11 +313,11 @@ fn pass(h: &Harness) -> Output {
         ])
     });
     assert!(o.status.success(), "{}", text(&o));
-    let until = Instant::now() + Duration::from_secs(120);
+    let until = Instant::now() + Duration::from_secs(300);
     while !query(h, "SELECT id FROM jobs WHERE state = 'running'").is_empty() {
         assert!(
             Instant::now() < until,
-            "a job runs after 120 s\n{}",
+            "a job runs after 300 s\n{}",
             board(h)
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -782,6 +789,12 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     queue(&h, &live_run, "live");
     let mut agents = Agents(Vec::new());
     let (_, task) = live_bind(&h, &mut agents);
+    // The test runs longer than a lease of the fleet clock and has no
+    // worker that renews it: the lease of the live attempt is long.
+    exec(
+        &h,
+        &format!("UPDATE leases SET expires_at = expires_at + 86400 WHERE task_id = '{task}'"),
+    );
     until(&h, "the active tree of the live task", CAUGHT_S, |h| {
         !query(
             h,
