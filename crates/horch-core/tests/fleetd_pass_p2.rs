@@ -943,13 +943,13 @@ fn a_doorbell_that_was_not_typed_is_typed_by_the_next_pass() {
     assert_eq!(w.task(&task).status, "running");
 }
 
-/// Each task that is `running` has an attempt that is not ended, or a
-/// lease. A running task with neither is lost work: no pass rule moves it.
+/// Each task that is `leased` or `running` has an attempt that is not
+/// ended, or a lease. A task with neither is lost work: no pass rule moves it.
 fn assert_no_lost_task(w: &World) {
     let lost: Vec<String> = w
         .conn
         .prepare(
-            "SELECT task_id FROM tasks t WHERE status = 'running'
+            "SELECT task_id FROM tasks t WHERE status IN ('leased', 'running')
                AND NOT EXISTS (SELECT 1 FROM attempts a
                                WHERE a.task_id = t.task_id AND a.state != 'ended')
                AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id = t.task_id)",
@@ -1052,4 +1052,32 @@ fn a_running_task_with_no_attempt_and_no_lease_is_an_i1_breach() {
     w.pass_at(10, &worker, &fake);
     assert_eq!(w.task(&task).status, "running");
     assert_eq!(i1_breaches(&w, &task), 1, "the pass opened the I1 item");
+}
+
+/// T-195: the attempt of a `leased` task goes live, and its process dies
+/// before the first heartbeat. The worker does not hold a `leased` task, so
+/// the reap names no task. Rung 6 still gives the task its next state.
+#[test]
+fn a_dead_attempt_of_a_leased_task_gives_the_task_a_retry() {
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    w.conn
+        .execute(
+            "UPDATE tasks SET status = 'leased' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
+    agent.kill();
+    let fake = Fake::new(&w);
+
+    for clock in [10, 20] {
+        w.pass_at(clock, &worker, &fake);
+        assert_no_lost_task(&w);
+    }
+    let attempts = w.attempts(&task);
+    assert_eq!(attempts[0].1, "ended", "{attempts:?}");
+    let t = w.task(&task);
+    assert_eq!(t.status, "ready", "rung 6 queued it again");
+    assert_eq!(i1_breaches(&w, &task), 0, "no I1 item");
 }

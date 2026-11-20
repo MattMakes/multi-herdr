@@ -63,14 +63,22 @@ struct World {
 
 impl World {
     fn new(name: &str, scenario: &str) -> World {
-        World::build(name, scenario, false)
+        World::build(name, scenario, None)
     }
 
     fn with_answering_owner(name: &str, scenario: &str) -> World {
-        World::build(name, scenario, true)
+        World::build(name, scenario, Some(answering_owner))
     }
 
-    fn build(name: &str, scenario: &str, answering_owner: bool) -> World {
+    /// The first launch of a task attempt starts no process: it exits at
+    /// once, so the attempt stays in `launching` until its start timeout.
+    fn with_dead_first_launch(name: &str, scenario: &str) -> World {
+        World::build(name, scenario, Some(dead_first_launch))
+    }
+
+    /// `wrapper` gives the claude wrapper from the harness root and the
+    /// fleet root.
+    fn build(name: &str, scenario: &str, wrapper: Option<fn(&Path, &Path) -> String>) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
@@ -90,9 +98,8 @@ impl World {
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
-        if answering_owner {
-            let folder = fleet.join("ideas").join(IDEA);
-            let wrapper = owner_wrapper(&h.root.join(OWNER_ANSWER), &folder);
+        if let Some(wrapper) = wrapper {
+            let wrapper = wrapper(&h.root, &fleet);
             let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
             h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
         }
@@ -526,6 +533,27 @@ fn owner_wrapper(answer: &Path, folder: &Path) -> String {
     )
 }
 
+fn answering_owner(root: &Path, fleet: &Path) -> String {
+    owner_wrapper(&root.join(OWNER_ANSWER), &fleet.join("ideas").join(IDEA))
+}
+
+const DEAD_LAUNCH_LOG: &str = "dead-launch.log";
+
+/// The first task launch kills its parent, the wrapper of horch, and
+/// exits. No `exit.json` and no process of the attempt remain, so only the
+/// start timeout ends the attempt.
+fn dead_first_launch(root: &Path, _fleet: &Path) -> String {
+    let fake = Harness::horch_bin().with_file_name("fake-claude");
+    format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+         case \"$*\" in\n*horch-conformance*) ;;\n*/inbox/START.md*)\n\
+         if [ ! -e {log} ]; then ps -o command= -p \"$PPID\" > {log}; kill -9 \"$PPID\"; exit 0; fi ;;\nesac\n\
+         exec {fake} \"$@\"\n",
+        log = shell_word(&root.join(DEAD_LAUNCH_LOG).to_string_lossy()),
+        fake = shell_word(&fake.to_string_lossy()),
+    )
+}
+
 fn escalated_key(task: &str) -> String {
     horch_core::taskledger::tasks::escalated_key(task)
 }
@@ -697,6 +725,43 @@ fn fm21_one_replan_then_escalation() {
         "no attempt after escalation"
     );
     assert_eq!(w.replans(&task).as_deref(), Some("1"));
+}
+
+/// T-195 (FM-21): the first attempt of the task starts no process. It ends
+/// `timed_out` at the start timeout, and rung 6 gives the task a second
+/// attempt.
+#[test]
+fn fm21_launch_timeout_gives_the_task_a_retry() {
+    let w = World::with_dead_first_launch("p6-q-launch-timeout", "");
+    let task = w.task();
+    let first = w.wait("the first attempt in launching", || {
+        w.one(&format!(
+            "SELECT id FROM attempts WHERE task_id = {} AND state = 'launching'",
+            quoted(&task)
+        ))
+    });
+    w.wait("the first launch, which exits at once", || {
+        w.h.root.join(DEAD_LAUNCH_LOG).exists().then_some(())
+    });
+    w.passes(1);
+    w.h.advance_fleet_clock(START_TIMEOUT_S);
+    let outcome = w.wait("the end of the first attempt", || {
+        w.one(&format!(
+            "SELECT outcome FROM attempts WHERE id = {} AND state = 'ended'",
+            quoted(&first)
+        ))
+    });
+    assert_eq!(outcome, "timed_out", "{}", w.context());
+    w.drive("a second attempt of the task", || {
+        (w.attempts_of(&task) >= 2).then_some(())
+    });
+    let lost = w.rows(
+        "SELECT task_id FROM tasks t WHERE status IN ('leased', 'running')
+           AND NOT EXISTS (SELECT 1 FROM attempts a
+                           WHERE a.task_id = t.task_id AND a.state != 'ended')
+           AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id = t.task_id)",
+    );
+    assert!(lost.is_empty(), "lost tasks: {lost:?}\n{}", w.context());
 }
 
 #[test]
