@@ -586,6 +586,52 @@ impl World {
         }
         out
     }
+
+    /// [`World::state`] of the feature [`FEATURE`] and its run only. fleetd
+    /// opens a feature, a run and an attempt of its own for an idea that
+    /// its own conformance and docs sync jobs add, when the jobs end; those
+    /// rows are not a change of an operator request.
+    fn feature_state(&self) -> Vec<String> {
+        let conn = self.conn();
+        let run = self.run.run_id.as_str();
+        let mut out = Vec::new();
+        let mut rows = |sql: &str, params: &[&str]| {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let found = stmt
+                .query_map(rusqlite::params_from_iter(params), |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap();
+            out.extend(found.map(Result::unwrap));
+        };
+        rows(
+            "SELECT 'task ' || task_id || ' ' || status FROM tasks WHERE run_id = ?1 ORDER BY task_id",
+            &[run],
+        );
+        rows(
+            "SELECT 'worker ' || worker_id || ' ' || status FROM workers WHERE run_id = ?1 ORDER BY worker_id",
+            &[run],
+        );
+        rows(
+            "SELECT 'attempt ' || a.id || ' ' || a.state FROM attempts a
+              JOIN workers w ON w.worker_id = a.worker_id WHERE w.run_id = ?1 ORDER BY a.id",
+            &[run],
+        );
+        rows(
+            "SELECT 'feature ' || id || ' ' || state FROM features WHERE id = ?1",
+            &[FEATURE],
+        );
+        rows(
+            "SELECT 'branch ' || name || ' ' || COALESCE(landing_state, '-') FROM branches
+              WHERE name = ?1 OR name LIKE ?1 || '/%' ORDER BY name",
+            &[FEATURE_BRANCH],
+        );
+        rows(
+            "SELECT 'run ' || run_id || ' ' || status FROM runs WHERE run_id = ?1",
+            &[run],
+        );
+        out
+    }
 }
 
 /// The feature [`FEATURE`] of the project `project` and its internal run,
@@ -1258,7 +1304,7 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         },
         || w.fleetd_output(),
     );
-    let before = w.state();
+    let before = w.feature_state();
     let req = GateRequest {
         kind: JobKind::FastGate,
         subject: &bundle,
@@ -1317,12 +1363,35 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         Vec::new(),
         "no request of the gate reaches fleetd"
     );
+    // A conformance job that fleetd queued at its start runs the fake agent
+    // CLIs, and the probe of a fake with no sandbox writes a request file for
+    // a moment and removes it. Only the files of the gate are in question.
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
         w.request_files(),
         BTreeSet::new(),
         "no request file is left"
     );
-    assert_eq!(w.state(), before, "the gate changes no state of the ledger");
+    assert_eq!(
+        w.feature_state(),
+        before,
+        "the gate changes no state of the ledger"
+    );
 }
 
 const PANE_COMMAND_ENV: &str = "P5_T899_PANE_COMMAND";
@@ -1505,4 +1574,99 @@ fn wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read() {
             "a request names the attempt: {kind} {state} {reason}\n{shown}"
         );
     }
+}
+
+// ─── RR-5: a test harness never touches an inherited live ledger ────────
+
+/// The environment that a command gets after `Harness::seal`, as a map. The
+/// command is `/usr/bin/env`, started with the canary ledger and fleet root
+/// in its own environment first, as a shell of the operator that exports
+/// them. `seal` must remove both.
+fn sealed_env_of(h: &Harness, canary_ledger: &Path, canary_fleet: &Path) -> Vec<(String, String)> {
+    let mut cmd = Command::new("/usr/bin/env");
+    cmd.env("HORCH_LEDGER_DB", canary_ledger)
+        .env("FLEET_ROOT", canary_fleet);
+    h.seal(&mut cmd);
+    let out = cmd.output().expect("running env");
+    assert!(out.status.success(), "env failed: {out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// RR-5, `trf_45_session_db_is_the_task_ledger_unless_the_state_dir_moved`
+/// (review of Phase 5, "Tests that do not prove their rule"): that test
+/// uses a synthetic environment. This one proves it for the real harness:
+/// a command sealed by `Harness::seal` does not get a `HORCH_LEDGER_DB` or a
+/// `FLEET_ROOT` of its parent, whether the harness names its own ledger or
+/// not, `RuntimeContext::from_env` resolves the ledger of the harness from
+/// what it gets, and a real `horch` never opens or creates the canary.
+#[test]
+fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
+    let outer = tempfile::tempdir().unwrap();
+    let canary_ledger = outer.path().join("canary_ledger.sqlite3");
+    let canary_fleet = outer.path().join("canary_fleet");
+    let canary_text = outer.path().to_string_lossy().into_owned();
+
+    // The harness names its own ledger: the canary never replaces it.
+    let named = Harness::new("p5-rr5-named");
+    let env = sealed_env_of(&named, &canary_ledger, &canary_fleet);
+    let get = |env: &[(String, String)], key: &str| {
+        env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get(&env, "HORCH_LEDGER_DB").map(PathBuf::from),
+        Some(named.ledger_db()),
+        "a harness that names its ledger gives that ledger, not the canary"
+    );
+    assert_eq!(get(&env, "FLEET_ROOT"), None, "{env:?}");
+    for (k, v) in &env {
+        assert!(!v.contains(&canary_text), "{k}={v} names the canary");
+    }
+
+    // The harness names no ledger: the ledger is `<home>/.horch/`, still
+    // not the canary, and no `FLEET_ROOT` comes from the parent.
+    let mut bare = Harness::new("p5-rr5-bare");
+    bare.unset("HORCH_LEDGER_DB");
+    let env = sealed_env_of(&bare, &canary_ledger, &canary_fleet);
+    assert_eq!(get(&env, "HORCH_LEDGER_DB"), None, "{env:?}");
+    assert_eq!(get(&env, "FLEET_ROOT"), None, "{env:?}");
+    for (k, v) in &env {
+        assert!(!v.contains(&canary_text), "{k}={v} names the canary");
+    }
+    let mut map = horch_core::runtime::MapEnv::new(&bare.project);
+    for (k, v) in &env {
+        map = map.with(k, v);
+    }
+    let ctx = horch_core::runtime::RuntimeContext::from_env(&map).unwrap();
+    assert_eq!(ctx.paths.ledger_db, bare.home.join(".horch/ledger.sqlite3"));
+    assert_eq!(ctx.paths.ledger_db, bare.ledger_db());
+    assert_eq!(ctx.paths.fleet_root, bare.home.join(".horch/fleet"));
+    assert_eq!(ctx.paths.fleet_root, bare.fleet_root());
+    assert_eq!(ctx.paths.ledger_override, None);
+
+    // A real `horch` of the bare harness, with the canary on its command
+    // before the seal, looks for the ledger of the harness (only fleetd
+    // creates it) and never touches the canary.
+    let mut cmd = Command::new(Harness::horch_bin());
+    cmd.env("HORCH_LEDGER_DB", &canary_ledger)
+        .env("FLEET_ROOT", &canary_fleet)
+        .args(["ledger", "status"]);
+    bare.seal(&mut cmd);
+    let out = cmd.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&bare.ledger_db().to_string_lossy().into_owned()),
+        "horch ledger status looks for the ledger of the harness: {stderr}"
+    );
+    assert!(!stderr.contains(&canary_text), "{stderr}");
+    assert!(!canary_ledger.exists(), "the canary ledger was created");
+    assert!(!canary_fleet.exists(), "the canary fleet root was created");
+    assert_eq!(
+        std::fs::read_dir(outer.path()).unwrap().count(),
+        0,
+        "nothing was written beside the canary"
+    );
 }

@@ -27,6 +27,7 @@ use horch_core::fleetd::worker_profiles::domain::conformance::{
     Check, CheckResult, ConformanceReport, Verdict, CONTEXT_LIMIT, FIRST_EVENT_LIMIT,
 };
 use horch_core::fleetd::worker_profiles::domain::operator_boundary::{Act, OperatorPaths};
+use horch_core::harness::codex::OPERATOR_BOUNDARY_SINCE;
 use horch_core::harness::HarnessKind;
 use horch_core::roster::{PermissionMode, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -116,6 +117,9 @@ fn executable(path: &Path, text: &str) {
 /// features that the operator boundary of Codex reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Codex {
+    /// Codex 0.165.0, below `OPERATOR_BOUNDARY_SINCE`, with the
+    /// `network_proxy` feature.
+    BelowBoundaryVersion,
     /// Codex 0.167.0 with the `network_proxy` feature.
     WithNetworkProxy,
     /// Codex 0.167.0 with no `network_proxy` feature.
@@ -165,14 +169,20 @@ impl Machine {
             ),
         );
         let features = match codex {
-            Codex::WithNetworkProxy => "network_proxy  experimental  true",
+            Codex::BelowBoundaryVersion | Codex::WithNetworkProxy => {
+                "network_proxy  experimental  true"
+            }
             Codex::WithoutNetworkProxy => "shell_tool  stable  true",
+        };
+        let version = match codex {
+            Codex::BelowBoundaryVersion => "0.165.0",
+            Codex::WithNetworkProxy | Codex::WithoutNetworkProxy => OPERATOR_BOUNDARY_SINCE,
         };
         let codex_bin = tmp.path().join("bin/codex");
         executable(
             &codex_bin,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'codex-cli 0.167.0'; exit 0 ;;\n  features) echo '{features}'; exit 0 ;;\nesac\nexec '{}' \"$@\"\n",
+                "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'codex-cli {version}'; exit 0 ;;\n  features) echo '{features}'; exit 0 ;;\nesac\nexec '{}' \"$@\"\n",
                 fake("fake-codex").display()
             ),
         );
@@ -504,4 +514,81 @@ fn operator_boundary_not_supported_is_not_pass() {
     let v: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["checks"][0]["verdict"], "not supported", "{text}");
     assert_eq!(read_conformance_json(&text).unwrap(), report);
+}
+
+/// The launches of the fake Codex that the log of the machine holds.
+fn logged_boundary(m: &Machine) -> Vec<Value> {
+    std::fs::read_to_string(m.log())
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|call| call["fake"] == "codex")
+        .collect()
+}
+
+/// SR-8, FM-32 (review of Phase 5, "Tests that do not prove their rule"): a
+/// Codex that is older than `OPERATOR_BOUNDARY_SINCE`, or has no
+/// `network_proxy` feature after an update, gives `not supported` and is
+/// never launched. A Codex that holds both is launched, and the 3 acts run
+/// inside the platform sandbox: the check passes only when each is refused.
+#[test]
+fn codex_operator_boundary_conformance_refuses_unproven_version_and_probes_sandbox_acts() {
+    let codex = profile(HarnessKind::Codex);
+
+    let old = Machine::new(Codex::BelowBoundaryVersion);
+    let r = old.check(&codex);
+    assert_verdict(&r, Verdict::NotSupported);
+    assert!(
+        r.evidence
+            .contains(&format!("older than {OPERATOR_BOUNDARY_SINCE}")),
+        "{r:?}"
+    );
+    assert!(
+        logged_boundary(&old).is_empty(),
+        "an unproven Codex version was launched"
+    );
+
+    let no_proxy = Machine::new(Codex::WithoutNetworkProxy);
+    let r = no_proxy.check(&codex);
+    assert_verdict(&r, Verdict::NotSupported);
+    assert!(r.evidence.contains("network_proxy"), "{r:?}");
+    assert!(
+        logged_boundary(&no_proxy).is_empty(),
+        "a Codex with no network_proxy was launched"
+    );
+
+    let proven = Machine::new(Codex::WithNetworkProxy);
+    let r = proven.check(&codex);
+    assert_verdict(&r, Verdict::Pass);
+    let calls = logged_boundary(&proven);
+    assert_eq!(
+        calls.len(),
+        1,
+        "1 launch of the real sandbox probe: {calls:?}"
+    );
+    let argv = calls[0]["argv"].to_string();
+    assert!(argv.contains("features.network_proxy=true"), "{argv}");
+    let probe = &calls[0]["conformance"]["operator_boundary"];
+    assert_eq!(probe["sandbox"], "on", "{probe}");
+    let refused = |v: &Value| v.as_str().is_some_and(|s| s.starts_with("refused:"));
+    for act in ["read_token", "connect_channel", "write_requests"] {
+        assert!(refused(&probe[act]), "{act} is not refused: {probe}");
+        assert!(
+            refused(&probe["orphan"][act]),
+            "the orphan {act} is not refused: {probe}"
+        );
+    }
+    // The sandbox is real: it still lets the agent write in its own folder
+    // and refuses a write beside it.
+    assert_eq!(probe["write_inside"], "allowed", "{probe}");
+    assert!(refused(&probe["write_outside"]), "{probe}");
+    proven.assert_no_violation();
+    proven.assert_clean();
+
+    // A Codex whose rendered launch has no deny rules does not pass, even
+    // on a proven version: the check needs each act refused.
+    let mut open = codex.clone();
+    open.args = vec!["--sandbox".into(), "danger-full-access".into()];
+    let r = proven.check(&open);
+    assert_verdict(&r, Verdict::Fail);
 }
