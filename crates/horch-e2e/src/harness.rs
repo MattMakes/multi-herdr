@@ -1001,7 +1001,6 @@ pub(crate) fn built_dir_of(exe: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-/// The cargo profile of the profile folder `built`: `debug` is `dev`.
 fn cargo_profile(built: &Path) -> &str {
     match built.file_name().and_then(|n| n.to_str()) {
         Some("debug") | None => "dev",
@@ -1294,9 +1293,6 @@ mod tests {
         );
     }
 
-    /// T-59: cargo 1.100 runs a test from
-    /// `<target>/<profile>/build/<package>/<hash>/out/`, an older cargo
-    /// from `<target>/<profile>/deps/`. Both give the profile folder.
     #[test]
     fn profile_comes_from_the_target_layout_of_old_and_new_cargo() {
         let profile = |exe: &str| {
@@ -1321,7 +1317,6 @@ mod tests {
                 );
             }
         }
-        // The folder of the new layout never becomes the profile.
         let new = "/w/target/debug/build/horch-e2e/ce99708c1aeeb00b/out/mail-ce99708c1aeeb00b";
         let args: Vec<String> =
             build_command(&built_dir_of(Path::new(new)), "aarch64-apple-darwin")
