@@ -313,13 +313,15 @@ impl OutboxWriter {
     }
 
     /// Write the next question file `questions/<n>.json` with `text` at the
-    /// time `at`. Returns its path.
-    pub fn write_question(&self, at: &str, text: &str) -> Result<PathBuf> {
+    /// time `at`, and the id `mail_id` of the mail of a QUESTION line.
+    /// Returns its path.
+    pub fn write_question(&self, at: &str, text: &str, mail_id: Option<&str>) -> Result<PathBuf> {
         let bytes = Question {
             task: self.attempt.task_id.clone(),
             attempt: self.attempt.attempt().to_string(),
             at: at.to_string(),
             text: text.to_string(),
+            mail_id: mail_id.map(str::to_string),
         }
         .to_json(self.question_max_bytes)?
         .into_bytes();

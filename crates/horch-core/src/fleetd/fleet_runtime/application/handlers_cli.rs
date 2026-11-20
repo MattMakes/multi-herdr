@@ -9,9 +9,6 @@
 //! that its command wrote, through the same functions of `taskledger/` and
 //! `fleetd/`, in the transaction of its request. It does no effect.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
@@ -30,16 +27,8 @@ pub const TEXT_MAX_BYTES: usize = 16 * 1024;
 /// The most bytes of a workspace id or a mail id.
 const ID_MAX_BYTES: usize = 128;
 
-/// What the handlers of this module read outside their payload.
-pub struct CliHandlers {
-    /// The state folder of this fleetd: the mail of each workspace. A
-    /// payload never names a path.
-    pub state_root: PathBuf,
-}
-
 /// Register the handler of each kind of this module in `handlers`.
-pub fn register(handlers: &mut Handlers, deps: CliHandlers) {
-    let deps = Arc::new(deps);
+pub fn register(handlers: &mut Handlers) {
     handlers.insert(Kind::WorkerProgress, |tx, p| {
         worker_progress(tx, &parse(Kind::WorkerProgress, p)?)
     });
@@ -49,8 +38,8 @@ pub fn register(handlers: &mut Handlers, deps: CliHandlers) {
     handlers.insert(Kind::RunAdopt, |tx, p| {
         run_adopt(tx, &parse(Kind::RunAdopt, p)?)
     });
-    handlers.insert(Kind::QuestionAnswer, move |tx, p| {
-        question_answer(tx, &deps, &parse(Kind::QuestionAnswer, p)?)
+    handlers.insert(Kind::QuestionAnswer, |tx, p| {
+        question_answer(tx, &parse(Kind::QuestionAnswer, p)?)
     });
 }
 
@@ -173,15 +162,19 @@ pub struct QuestionAnswer {
     pub text: String,
 }
 
-/// Sync the question waits of `workspace` from its mail first, so that a
-/// question that no pass saw yet has its row. Then the row of the mail
-/// question goes to `answered`. `question_id` is `null` when no row asked
-/// it.
-fn question_answer(tx: &Connection, deps: &CliHandlers, p: &QuestionAnswer) -> Result<Value> {
+/// The row of the mail question goes to `answered`. The ingest of the
+/// question file of the QUESTION line made the row. A mail id with no row
+/// that waits for an answer is refused.
+fn question_answer(tx: &Connection, p: &QuestionAnswer) -> Result<Value> {
     check_id("workspace", &p.workspace)?;
     check_id("mail id", &p.mail_id)?;
     check_text("answer", &p.text)?;
-    workers::sync_questions(tx, &deps.state_root, &p.workspace)?;
-    let id = questions::answer_mail(tx, &p.mail_id, &p.text)?;
+    let Some(id) = questions::answer_mail(tx, &p.mail_id, &p.text)? else {
+        bail!(
+            "no question row waits for an answer to mail {}: fleetd did not ingest its question \
+             file yet, the question has its answer, or the sender is in no attempt",
+            p.mail_id
+        );
+    };
     Ok(json!({ "question_id": id }))
 }

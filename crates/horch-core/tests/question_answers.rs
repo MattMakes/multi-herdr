@@ -381,7 +381,7 @@ impl World {
         let a = Ask {
             task_id: &task,
             attempt_id: &attempt,
-            mail_id: &mail,
+            mail_id: Some(&mail),
             text: "QUESTION: how many retries?",
             asked_at: "2026-11-18T00:00:00Z",
         };

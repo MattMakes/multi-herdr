@@ -303,7 +303,7 @@ fn old_orchestrator_gets_no_more_questions() {
     let ask = Ask {
         task_id: "t1",
         attempt_id: "t1/A1",
-        mail_id: "m-2",
+        mail_id: Some("m-2"),
         text: "Which file?",
         asked_at: "2026-11-18T00:00:00Z",
     };

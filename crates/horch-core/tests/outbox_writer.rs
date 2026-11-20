@@ -420,8 +420,8 @@ fn question_files_are_numbered_from_1_with_mode_0600() {
     let w = world();
     w.live("T-1", parent_of_this_process());
     let writer = w.writer(&FleetConfig::default()).unwrap();
-    let first = writer.write_question(AT, "which file?").unwrap();
-    let second = writer.write_question(AT, "which test?").unwrap();
+    let first = writer.write_question(AT, "which file?", None).unwrap();
+    let second = writer.write_question(AT, "which test?", None).unwrap();
     let dir = w.outbox("T-1").join(QUESTIONS);
     assert_eq!(first, dir.join("1.json"));
     assert_eq!(second, dir.join("2.json"));

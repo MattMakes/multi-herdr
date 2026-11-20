@@ -50,7 +50,7 @@ use horch_core::fleetd::fleet_runtime::adapters::scans::{
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
     idea_lead_launch, HerdrObserver, WatchdogDuties,
 };
-use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
@@ -790,12 +790,7 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     );
     let worker = WorkerDeps { guard };
     handlers_worker::register(&mut handlers, &worker);
-    handlers_cli::register(
-        &mut handlers,
-        CliHandlers {
-            state_root: ctx.paths.state_root.clone(),
-        },
-    );
+    handlers_cli::register(&mut handlers);
     let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root);
     handlers_custody::register(
         &mut handlers,
@@ -1120,7 +1115,7 @@ fn with_pass<T>(
     };
     let observer = HerdrObserver { herdr: herdr() };
     let effects = LiveEffects { ctx, writer };
-    let duties = WatchdogDuties::new(&observer, &effects, ctx.paths.state_root.clone());
+    let duties = WatchdogDuties::new(&observer, &effects);
     let duties = if force { duties.forced() } else { duties };
     let ports = Ports {
         outside: &outside,

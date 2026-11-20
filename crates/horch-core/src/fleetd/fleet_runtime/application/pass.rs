@@ -1254,7 +1254,8 @@ impl<'a> Pass<'a> {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
-        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
+        let question_limit_s = self.settings.config.question_limit_s;
+        outbox_ingest::ingest(&tx, guard, &read.outboxes, question_limit_s)?;
         let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
         token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;

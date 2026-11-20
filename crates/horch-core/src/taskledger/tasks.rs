@@ -1878,7 +1878,7 @@ mod tests {
         let a = Ask {
             task_id: &task,
             attempt_id: "A1",
-            mail_id: "m1",
+            mail_id: Some("m1"),
             text: "QUESTION: which file?\u{1b}[2J",
             asked_at: "2026-11-17T00:00:00Z",
         };

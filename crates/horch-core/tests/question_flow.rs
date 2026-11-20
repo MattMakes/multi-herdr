@@ -160,7 +160,7 @@ impl World {
         let a = Ask {
             task_id: &self.task,
             attempt_id: &format!("{}/A1", self.task),
-            mail_id: mail,
+            mail_id: Some(mail),
             text: "QUESTION: which store?",
             asked_at: "2026-11-18T00:00:00Z",
         };

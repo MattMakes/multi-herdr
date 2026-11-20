@@ -17,21 +17,22 @@ use crate::fleetd::ideas::domain::questions::{next_n, row_id, Question, State};
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{tasks, util};
 
-/// 1 open mail question of the worker of an attempt. Its feature is the
-/// feature of the idea of its task, and its owner is the sub-orchestrator
-/// of that feature ([`owner_of`]; fleetd-p6 MAP.md, Q11).
+/// 1 question of the worker of an attempt, from its question file. Its
+/// feature is the feature of the idea of its task, and its owner is the
+/// sub-orchestrator of that feature ([`owner_of`]; fleetd-p6 MAP.md, Q11).
 #[derive(Debug, Clone, Copy)]
 pub struct Ask<'a> {
     pub task_id: &'a str,
     pub attempt_id: &'a str,
-    /// The id of the mail question.
-    pub mail_id: &'a str,
+    /// The id of the mail of a QUESTION line, so that `horch tell <role>
+    /// --answers <id>` finds the row. `None` for `horch ask`.
+    pub mail_id: Option<&'a str>,
     pub text: &'a str,
     pub asked_at: &'a str,
 }
 
-/// The `questions` row of the mail question of `a`: the row that exists,
-/// else a new `open` row of the feature of its task, owned by the
+/// The `questions` row of the question of `a`: the row of its mail that
+/// exists, else a new `open` row of the feature of its task, owned by the
 /// sub-orchestrator of that feature, with the time limit `question_limit_s`
 /// after `clock`, and 1 `question` event that holds the mail id and the
 /// text. The question flow counts the limit only while the owner runs
@@ -45,7 +46,7 @@ pub fn ask(
     util::atomic(conn, |tx| {
         let asked = facts(tx, a.task_id, EventKind::Question)?
             .into_iter()
-            .find(|f| f.mail_id.as_deref() == Some(a.mail_id));
+            .find(|f| a.mail_id.is_some() && f.mail_id.as_deref() == a.mail_id);
         if let Some(q) = asked.and_then(|f| store::get(tx, &f.question_id).transpose()) {
             return q;
         }
@@ -248,7 +249,7 @@ mod tests {
         Ask {
             task_id: &f.task,
             attempt_id: "A1",
-            mail_id,
+            mail_id: Some(mail_id),
             text: "QUESTION: which?",
             asked_at: "2026-11-17T00:00:00Z",
         }
