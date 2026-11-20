@@ -16,8 +16,11 @@
 //!   after its attempt ended are each a fleet process.
 //! - No: the chain reaches PID 1, or a process with no parent, with each
 //!   fact read, and no fact matches.
-//! - Unknown: a parent, a group, a session or a start time fails to read,
-//!   or the chain is longer than [`MAX_CHAIN`]. The caller refuses.
+//! - Unknown: a parent, a group, a session or a start time fails to read
+//!   for a process that did not end, or the chain is longer than
+//!   [`MAX_CHAIN`]. The caller refuses. A process of the chain that ends
+//!   during the walk is not unknown: the walk goes on from the new parent
+//!   of its child.
 //!
 //! A PID can go to a later process. Each compare uses the PID and the start
 //! time, also for an ended attempt.
@@ -169,48 +172,96 @@ impl ProcessFacts for PlatformFacts {
 ///   [`still_names`]).
 ///
 /// A fact that cannot be read is [`Fact::Unknown`]: the caller refuses.
+/// A process of the chain can end during the walk (the stop ladder stops
+/// its group), and then a read of it fails. The OS gives the children of a
+/// process that ends to another parent at once. So when a read fails, the
+/// walk reads the parent of the child again: another parent proves that
+/// the process ended, and the walk goes on from the new parent, as a later
+/// walk would. When the child ended too, the walk goes 1 more step back.
+/// The same parent, or a peer whose read fails, gives [`Fact::Unknown`].
 /// With no recorded process, no process can be a fleet process.
 pub fn fleet_process(peer: u32, recorded: &[FleetProcess], facts: &dyn ProcessFacts) -> Fact {
     if recorded.is_empty() {
         return Fact::No;
     }
     let mut found: Vec<String> = Vec::new();
+    let mut chain = vec![peer];
+    for _ in 0..4 * MAX_CHAIN {
+        if chain.len() > MAX_CHAIN {
+            return Fact::Unknown;
+        }
+        let Some(&pid) = chain.last() else {
+            return Fact::Unknown;
+        };
+        if pid <= 1 {
+            return verdict(found);
+        }
+        match read_one(pid, recorded, facts, &mut found) {
+            Some(parent) => chain.push(parent),
+            None => {
+                if !step_back(&mut chain, facts) {
+                    return Fact::Unknown;
+                }
+            }
+        }
+    }
+    Fact::Unknown
+}
+
+/// Read the facts of `pid` of the chain, add each attempt that they match
+/// to `found`, and give the parent of `pid` (0 when it has none). `None`
+/// when a fact fails to read.
+fn read_one(
+    pid: u32,
+    recorded: &[FleetProcess],
+    facts: &dyn ProcessFacts,
+    found: &mut Vec<String>,
+) -> Option<u32> {
     let mut add = |id: &str| {
         if !found.iter().any(|f| f == id) {
             found.push(id.to_string());
         }
     };
-    let mut pid = peer;
-    for _ in 0..MAX_CHAIN {
-        if pid == 1 {
-            return verdict(found);
-        }
-        for r in recorded.iter().filter(|r| r.pid == pid) {
-            let Some(start) = facts.start_time(pid) else {
-                return Fact::Unknown;
-            };
-            if r.start == start {
-                add(&r.attempt);
-            }
-        }
-        let (Some(group), Some(session)) = (facts.group_of(pid), facts.session_of(pid)) else {
-            return Fact::Unknown;
-        };
-        for r in recorded
-            .iter()
-            .filter(|r| r.pid == group || r.pid == session)
-        {
-            if still_names(r, facts) {
-                add(&r.attempt);
-            }
-        }
-        match facts.parent(pid) {
-            None => return Fact::Unknown,
-            Some(0) => return verdict(found),
-            Some(parent) => pid = parent,
+    for r in recorded.iter().filter(|r| r.pid == pid) {
+        if r.start == facts.start_time(pid)? {
+            add(&r.attempt);
         }
     }
-    Fact::Unknown
+    let group = facts.group_of(pid)?;
+    let session = facts.session_of(pid)?;
+    for r in recorded
+        .iter()
+        .filter(|r| r.pid == group || r.pid == session)
+    {
+        if still_names(r, facts) {
+            add(&r.attempt);
+        }
+    }
+    facts.parent(pid)
+}
+
+/// The last process of `chain` failed to read. Remove it, and each process
+/// before it that ended too, and push the new parent of the first child
+/// that still runs. False when no process proves that it ended: the read
+/// failed for another cause, or the peer itself failed to read.
+fn step_back(chain: &mut Vec<u32>, facts: &dyn ProcessFacts) -> bool {
+    let Some(mut failed) = chain.pop() else {
+        return false;
+    };
+    while let Some(&child) = chain.last() {
+        match facts.parent(child) {
+            Some(parent) if parent != failed => {
+                chain.push(parent);
+                return true;
+            }
+            Some(_) => return false,
+            None => {
+                failed = child;
+                chain.pop();
+            }
+        }
+    }
+    false
 }
 
 /// Whether the group or the session with the id `r.pid`, which holds a

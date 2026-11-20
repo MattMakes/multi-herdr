@@ -91,6 +91,71 @@ impl ProcessFacts for UnreadableParent {
     }
 }
 
+/// Fixed facts with no real process: the peer 10 runs, and the chain
+/// above it ends during the walk. The first read of a parent gives the
+/// value before the end, each later read the value after it. A process in
+/// `ended` fails each read of its group, as an ended process does.
+struct EndsInWalk {
+    group_of_peer: u32,
+    parents: std::collections::HashMap<u32, (Option<u32>, Option<u32>)>,
+    ended: Vec<u32>,
+    read: std::cell::RefCell<Vec<u32>>,
+}
+
+impl EndsInWalk {
+    /// The chain 10 -> 20 -> 25: 20 and 25 end during the walk, so 10 goes
+    /// to PID 1.
+    fn two_parents_end(group_of_peer: u32) -> EndsInWalk {
+        EndsInWalk {
+            group_of_peer,
+            parents: [(10, (Some(20), Some(1))), (20, (Some(25), None))].into(),
+            ended: vec![25],
+            read: Default::default(),
+        }
+    }
+}
+
+impl ProcessFacts for EndsInWalk {
+    fn parent(&self, pid: u32) -> Option<u32> {
+        let (before, after) = *self.parents.get(&pid)?;
+        let mut read = self.read.borrow_mut();
+        if read.contains(&pid) {
+            after
+        } else {
+            read.push(pid);
+            before
+        }
+    }
+
+    fn start_time(&self, _pid: u32) -> Option<u64> {
+        None
+    }
+
+    fn in_group(&self, _pid: u32, _leader: u32, _leader_start: u64) -> Option<bool> {
+        None
+    }
+
+    fn group_of(&self, pid: u32) -> Option<u32> {
+        if self.ended.contains(&pid) {
+            return None;
+        }
+        Some(if pid == 10 { self.group_of_peer } else { pid })
+    }
+
+    fn session_of(&self, pid: u32) -> Option<u32> {
+        self.group_of(pid)
+    }
+}
+
+/// The recorded wrapper 30 of the attempt `id`, which has ended.
+fn ended_wrapper(id: &str) -> FleetProcess {
+    FleetProcess {
+        attempt: id.to_string(),
+        pid: 30,
+        start: 5,
+    }
+}
+
 fn yes(id: &str) -> Fact {
     Fact::Yes(vec![id.to_string()])
 }
@@ -156,6 +221,35 @@ fn unreadable_parent_is_unknown() {
         fleet_process(outside.printed, &attempts, &facts),
         Fact::Unknown
     );
+}
+
+#[test]
+fn parents_that_end_during_the_walk_give_the_answer_of_the_new_chain() {
+    let attempts = [ended_wrapper("A-7")];
+    let facts = EndsInWalk::two_parents_end(30);
+    assert_eq!(fleet_process(10, &attempts, &facts), yes("A-7"));
+    let facts = EndsInWalk::two_parents_end(10);
+    assert_eq!(fleet_process(10, &attempts, &facts), Fact::No);
+}
+
+#[test]
+fn failed_read_of_a_parent_that_did_not_end_is_unknown() {
+    let attempts = [ended_wrapper("A-8")];
+    let facts = EndsInWalk {
+        group_of_peer: 30,
+        parents: [(10, (Some(20), Some(20))), (20, (Some(25), Some(25)))].into(),
+        ended: vec![25],
+        read: Default::default(),
+    };
+    assert_eq!(fleet_process(10, &attempts, &facts), Fact::Unknown);
+}
+
+#[test]
+fn failed_read_of_the_peer_is_unknown() {
+    let attempts = [ended_wrapper("A-9")];
+    let mut facts = EndsInWalk::two_parents_end(30);
+    facts.ended.push(10);
+    assert_eq!(fleet_process(10, &attempts, &facts), Fact::Unknown);
 }
 
 #[test]
