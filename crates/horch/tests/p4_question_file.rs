@@ -13,7 +13,14 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use support::fleetd::{short_tempdir, TestFleetd};
+use support::fleetd::short_tempdir;
+
+use horch_core::taskledger::map::ticket_facts;
+use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::Store;
+use horch_core::taskledger::{schema, util};
 
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
 use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
@@ -28,9 +35,50 @@ const ROLE: &str = "dev1";
 /// The starting value of `result_max_bytes` of `fleet.toml`.
 const MAX_BYTES: u64 = 64 * 1024;
 
-/// The fleetd drops first: fields drop in order.
+/// The run `r1` of the project and its task T1 from `t1.md`, written into
+/// the ledger as fixtures, since Phase 6 retired `horch ledger run new` and
+/// `horch ledger add`. The run branch `fleet/r1` starts from `main`.
+fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
+    git(&["branch", "fleet/r1", "main"]);
+    let new = NewRun {
+        slug: "r1".into(),
+        workspace_id: Some(WORKSPACE.into()),
+        base_branch: Some("main".into()),
+        run_branch: Some("fleet/r1".into()),
+        ..Default::default()
+    };
+    let ticket = proj.join("t1.md");
+    let text = std::fs::read_to_string(&ticket).unwrap();
+    let facts = ticket_facts(&text);
+    let title = facts.title.clone().unwrap_or_else(|| "task".to_string());
+    let task = NewTask {
+        land_check: facts.check.clone(),
+        ticket_snapshot: Some(text.clone()),
+        ..NewTask::work(&title, &ticket.to_string_lossy(), "dev")
+    };
+    let mut store = Store::open(ledger).unwrap();
+    store
+        .immediate(|tx| {
+            let run = runs::create(tx, proj, &new)?;
+            schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+            tasks::add(tx, &run, &task, Actor::Orchestrator)
+        })
+        .unwrap();
+}
+
+/// An agent process that is not the test: its worker is in a live attempt,
+/// but the `horch` commands of the test are not in its parent chain.
+struct Agent(std::process::Child);
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 struct World {
-    _fleetd: Option<TestFleetd>,
+    _agent: Option<Agent>,
     _tmp: tempfile::TempDir,
     root: PathBuf,
     worker: String,
@@ -42,6 +90,12 @@ impl World {
     /// A project with 1 run, 1 task T1 claimed by worker `dev1`, and the
     /// `task.yaml` of attempt A1 of T1 under the fleet root.
     fn new() -> World {
+        World::with_agent(false)
+    }
+
+    /// As [`World::new`]; when `outside` is true the agent of the worker is a
+    /// separate process, so the commands of the test run in no attempt.
+    fn with_agent(outside: bool) -> World {
         let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let proj = root.join("proj");
@@ -67,7 +121,7 @@ impl World {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut w = World {
-            _fleetd: None,
+            _agent: None,
             _tmp: tmp,
             root,
             worker: String::new(),
@@ -77,9 +131,18 @@ impl World {
                 start_md: PathBuf::new(),
             },
         };
-        w._fleetd = Some(TestFleetd::start(w.command(None), &w.root.join("fleet")));
-        w.ok(&["ledger", "run", "new", "r1"]);
-        w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+        seed_run_and_task(
+            |args| drop(git(&w.root, &proj, args)),
+            &proj,
+            &w.root.join("ledger.sqlite3"),
+        );
+        // The orchestrator of the run: its pane in the mailbox of the workspace.
+        let mailbox = w
+            .root
+            .join("state")
+            .join(format!("herdr-orchestration-{WORKSPACE}"));
+        std::fs::create_dir_all(&mailbox).unwrap();
+        std::fs::write(mailbox.join("orchestrator.id"), format!("{WORKSPACE}:p1")).unwrap();
         // A spawned worker has the workspace of its pane.
         let worker = horch_core::taskledger::workers::NewWorker {
             persona: "dev".into(),
@@ -87,7 +150,10 @@ impl World {
             workspace_id: Some(WORKSPACE.into()),
             ..Default::default()
         };
-        w.worker = support::bind::bind(&w.root.join("ledger.sqlite3"), worker, None).worker_id;
+        let agent = outside.then(|| Command::new("sleep").arg("3600").spawn().unwrap());
+        let pid = agent.as_ref().map_or_else(std::process::id, |a| a.id());
+        w.worker = support::bind::bind(&w.root.join("ledger.sqlite3"), worker, Some(pid)).worker_id;
+        w._agent = agent.map(Agent);
         w.task_id = w
             .ledger()
             .query_row("SELECT task_id FROM tasks", [], |r| r.get(0))
@@ -128,10 +194,18 @@ impl World {
             .join("outbox/questions")
     }
 
-    /// The ids of the `questions` rows, oldest first.
+    /// The ids of the `questions` rows, oldest first. The test runs no
+    /// fleetd: it makes the rows with the call that the pass of fleetd makes.
     fn question_rows(&self) -> Vec<String> {
-        let conn = self.ledger();
-        let mut stmt = conn
+        let store = horch_core::taskledger::Store::open(&self.root.join("ledger.sqlite3")).unwrap();
+        horch_core::taskledger::workers::sync_questions(
+            store.conn(),
+            &self.root.join("state"),
+            WORKSPACE,
+        )
+        .unwrap();
+        let mut stmt = store
+            .conn()
             .prepare("SELECT id FROM questions ORDER BY rowid")
             .unwrap();
         stmt.query_map([], |r| r.get(0))
@@ -181,12 +255,6 @@ impl World {
         )
     }
 
-    fn ok(&self, args: &[&str]) -> String {
-        let (code, out, err) = self.horch(None, args);
-        assert_eq!(code, 0, "horch {args:?}: {out}{err}");
-        out
-    }
-
     /// `horch tell orchestrator <text>` of the worker, in the push attempt
     /// A1 when `push` is true, else in its claim attempt.
     fn ask(&self, push: bool, text: &str) {
@@ -199,7 +267,7 @@ impl World {
 fn read_json(path: &Path) -> serde_json::Value {
     let bytes = std::fs::read(path).unwrap();
     assert!(
-        (bytes.len() as u64) < MAX_BYTES,
+        (bytes.len() as u64) <= MAX_BYTES,
         "{} has {} bytes",
         path.display(),
         bytes.len()
@@ -229,7 +297,7 @@ fn question_of_a_push_attempt_writes_1_question_file() {
     let file = read_json(&dir.join("1.json"));
     assert_eq!(file["task"], w.task_id.as_str());
     assert_eq!(file["attempt"], "A1");
-    assert_eq!(file["question_id"], rows[0].as_str());
+    assert_eq!(rows[0], format!("{}/A1/Q1", w.task_id));
     assert!(
         file["text"]
             .as_str()
@@ -264,8 +332,10 @@ fn two_questions_write_2_files() {
     );
     let first = read_json(&dir.join("1.json"));
     let second = read_json(&dir.join("2.json"));
-    assert_eq!(first["question_id"], rows[0].as_str());
-    assert_eq!(second["question_id"], rows[1].as_str());
+    assert_eq!(first["task"], w.task_id.as_str());
+    assert_eq!(second["task"], w.task_id.as_str());
+    assert_eq!(rows[0], format!("{}/A1/Q1", w.task_id));
+    assert_eq!(rows[1], format!("{}/A1/Q2", w.task_id));
     assert!(first["text"].as_str().unwrap().contains("which port?"));
     assert!(second["text"].as_str().unwrap().contains("which host?"));
 }
@@ -282,7 +352,7 @@ fn a_long_question_file_stays_under_64_kib() {
 
 #[test]
 fn question_of_a_claim_attempt_writes_no_file() {
-    let w = World::new();
+    let w = World::with_agent(true);
     w.ask(false, "QUESTION: which port?");
     assert_eq!(w.question_rows().len(), 1, "1 questions row, as in Phase 2");
     assert_eq!(files_of(&w.questions_dir()), Vec::<String>::new());

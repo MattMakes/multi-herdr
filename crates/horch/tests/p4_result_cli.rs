@@ -12,7 +12,14 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use support::fleetd::{short_tempdir, TestFleetd};
+use support::fleetd::short_tempdir;
+
+use horch_core::taskledger::map::ticket_facts;
+use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::Store;
+use horch_core::taskledger::{schema, util};
 
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
 use horch_core::fleetd::task_execution::domain::result::{validate, ResultStatus};
@@ -33,9 +40,49 @@ struct Out {
     err: String,
 }
 
-/// The fleetd drops first: fields drop in order.
+/// The run `r1` of the project and its task T1 from `t1.md`, written into
+/// the ledger as fixtures, since Phase 6 retired `horch ledger run new` and
+/// `horch ledger add`. The run branch `fleet/r1` starts from `main`.
+fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
+    git(&["branch", "fleet/r1", "main"]);
+    let new = NewRun {
+        slug: "r1".into(),
+        base_branch: Some("main".into()),
+        run_branch: Some("fleet/r1".into()),
+        ..Default::default()
+    };
+    let ticket = proj.join("t1.md");
+    let text = std::fs::read_to_string(&ticket).unwrap();
+    let facts = ticket_facts(&text);
+    let title = facts.title.clone().unwrap_or_else(|| "task".to_string());
+    let task = NewTask {
+        land_check: facts.check.clone(),
+        ticket_snapshot: Some(text.clone()),
+        ..NewTask::work(&title, &ticket.to_string_lossy(), "dev")
+    };
+    let mut store = Store::open(ledger).unwrap();
+    store
+        .immediate(|tx| {
+            let run = runs::create(tx, proj, &new)?;
+            schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+            tasks::add(tx, &run, &task, Actor::Orchestrator)
+        })
+        .unwrap();
+}
+
+/// An agent process that is not the test: its worker is in a live attempt,
+/// but the `horch` commands of the test are not in its parent chain.
+struct Agent(std::process::Child);
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 struct World {
-    _fleetd: Option<TestFleetd>,
+    _agent: Option<Agent>,
     _tmp: tempfile::TempDir,
     root: PathBuf,
     task_id: String,
@@ -46,6 +93,12 @@ impl World {
     /// A project with 1 run, 1 task T1 claimed by a worker, its tree, and
     /// the `task.yaml` of attempt A1 of T1 under the fleet root.
     fn new() -> World {
+        World::with_agent(false)
+    }
+
+    /// As [`World::new`]; when `outside` is true the agent of the worker is a
+    /// separate process, so the commands of the test run in no attempt.
+    fn with_agent(outside: bool) -> World {
         let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let proj = root.join("proj");
@@ -64,7 +117,7 @@ impl World {
         )
         .unwrap();
         let mut w = World {
-            _fleetd: None,
+            _agent: None,
             _tmp: tmp,
             root,
             task_id: String::new(),
@@ -73,22 +126,35 @@ impl World {
                 start_md: PathBuf::new(),
             },
         };
-        w._fleetd = Some(TestFleetd::start(
-            w.command(None, None),
-            &w.root.join("fleet"),
-        ));
-        w.ok(None, &["ledger", "run", "new", "r1"]);
-        w.ok(
-            None,
-            &["ledger", "add", "--file", "t1.md", "--primary", "dev"],
+        seed_run_and_task(
+            |args| drop(git(&w.root, &proj, args)),
+            &proj,
+            &w.root.join("ledger.sqlite3"),
         );
         let new = horch_core::taskledger::workers::NewWorker {
             persona: "dev".into(),
             role: Some("dev1".into()),
             ..Default::default()
         };
-        let worker = support::bind::bind(&w.root.join("ledger.sqlite3"), new, None).worker_id;
-        w.ok(Some(&worker), &["ledger", "worktree", "new", "feat"]);
+        // The test runs no fleetd, so the agent of the attempt is the test:
+        // each `horch` command of the test is in its parent chain.
+        let agent = outside.then(|| Command::new("sleep").arg("3600").spawn().unwrap());
+        let pid = agent.as_ref().map_or_else(std::process::id, |a| a.id());
+        support::bind::bind(&w.root.join("ledger.sqlite3"), new, Some(pid));
+        w._agent = agent.map(Agent);
+        git(
+            &w.root,
+            &proj,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fleet/r1-T1-ticket-one",
+                ".worktrees/r1-T1-ticket-one",
+                "fleet/r1",
+            ],
+        );
         let conn = rusqlite::Connection::open(w.root.join("ledger.sqlite3")).unwrap();
         w.task_id = conn
             .query_row("SELECT task_id FROM tasks", [], |r| r.get(0))
@@ -100,7 +166,7 @@ impl World {
             attempt: "A1".into(),
             profile: "dev".into(),
             worktree: w.tree().display().to_string(),
-            branch: "fleet/r1-T1-feat".into(),
+            branch: "fleet/r1-T1-ticket-one".into(),
             read_first: "t1.md".into(),
             goal: "Ticket One".into(),
             check: None,
@@ -118,7 +184,7 @@ impl World {
     }
 
     fn tree(&self) -> PathBuf {
-        self.root.join("proj/.worktrees/T1-feat")
+        self.root.join("proj/.worktrees/r1-T1-ticket-one")
     }
 
     fn outbox(&self) -> PathBuf {
@@ -187,12 +253,6 @@ impl World {
                 .map(|l| format!("{l}\n"))
                 .collect(),
         }
-    }
-
-    fn ok(&self, worker: Option<&str>, args: &[&str]) -> String {
-        let out = self.horch(None, worker, args);
-        assert_eq!(out.code, 0, "horch {args:?}: {}{}", out.out, out.err);
-        out.out
     }
 
     /// `horch result <args>` in the push attempt A1 of T1.
@@ -358,16 +418,18 @@ fn check_exits_2_with_neither_file_and_0_with_one() {
     );
 }
 
+/// `horch result` finds its attempt by its parent chain, and reads no
+/// `HORCH_TASK_YAML`: a process in no live attempt is refused, also when its
+/// pane names the `task.yaml` of an attempt.
 #[test]
 fn result_outside_a_push_attempt_is_refused() {
-    let w = World::new();
+    let w = World::with_agent(true);
     w.commit("one.txt");
     let write = ["result", "--status", "completed", "--summary", "s"];
 
-    // No task.yaml in the pane.
     let out = w.horch(None, None, &write);
     assert_eq!(out.code, 1, "{}{}", out.out, out.err);
-    assert!(out.err.contains("HORCH_TASK_YAML"), "{}", out.err);
+    assert!(out.err.contains("no live attempt"), "{}", out.err);
     let out = w.horch(None, None, &["result", "--check"]);
     assert_eq!(
         out.code, 1,
@@ -375,30 +437,10 @@ fn result_outside_a_push_attempt_is_refused() {
         out.err
     );
 
-    // A task.yaml outside the fleet root.
-    let stray = w.root.join("tasks/T9/attempts/A1/task.yaml");
-    std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
-    std::fs::copy(&w.files.task_yaml, &stray).unwrap();
-    let out = w.horch(Some(&stray), None, &write);
+    let out = w.horch(Some(&w.files.task_yaml), None, &write);
     assert_eq!(out.code, 1, "{}{}", out.out, out.err);
-    assert!(out.err.contains("fleet root"), "{}", out.err);
+    assert!(out.err.contains("no live attempt"), "{}", out.err);
 
-    // A task.yaml whose ids are not those of its folder.
-    let other = w.root.join("fleet/tasks/T-other/attempts/A2/task.yaml");
-    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-    std::fs::copy(&w.files.task_yaml, &other).unwrap();
-    let out = w.horch(Some(&other), None, &write);
-    assert_eq!(out.code, 1, "{}{}", out.out, out.err);
-    assert!(out.err.contains("T-other"), "{}", out.err);
-
-    // A missing task.yaml.
-    let gone = w.root.join("fleet/tasks/x/attempts/A1/task.yaml");
-    let out = w.horch(Some(&gone), None, &write);
-    assert_eq!(out.code, 1, "{}{}", out.out, out.err);
-
-    for dir in [stray.parent().unwrap(), other.parent().unwrap()] {
-        assert_eq!(names(dir), ["task.yaml"], "nothing is written");
-    }
     assert!(!w.result_json().exists());
 }
 
