@@ -2427,18 +2427,12 @@ fn run_env(h: &Harness, env: &[(&str, &str)], args: &[&str]) -> Output {
     cmd.output().unwrap()
 }
 
-/// The 1 active run of the project of `h`, as a command with no `--run`
-/// means it.
 fn the_run(h: &Harness) -> Run {
     let root = h.project.canonicalize().unwrap();
     let store = Store::open(&h.ledger_db()).unwrap();
     runs::resolve(store.conn(), &root, None, None).unwrap().0
 }
 
-/// 1 queued task of `persona` in the 1 active run, from a ticket that
-/// `name` names, as `horch ledger add --file <ticket> --primary <persona>
-/// <extra>` made it. `extra` holds `--blocked-by <task>` and `--check
-/// <command>` only.
 fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
     let p = ticket(h, name, &format!("# {name}\n"));
     seed_task_with(h, &the_run(h), &p, persona, |new| {
@@ -2540,17 +2534,12 @@ fn a_command_from_another_workspace_says_whose_run_it_uses() {
     }
 }
 
-/// `runs::close_run` of `run` as the settled close of fleetd does it
-/// (`taskledger_wake`), with `abandon` as `--abandon <reason>` was.
 fn close_run(h: &Harness, run: &Run, abandon: Option<&str>) -> anyhow::Result<runs::Closed> {
     let git = horch_core::taskledger::git::Git::new("git");
     let mut store = Store::open(&h.ledger_db()).unwrap();
     store.immediate(|tx| runs::close_run(tx, &git, run, abandon))
 }
 
-/// Phase 6 retired `horch ledger run close` and `run gate` (MAP.md of
-/// fleetd-p6, ticket 47): fleetd closes a settled run. The rule of the
-/// close stays in `runs::close_run`.
 #[test]
 fn a_closed_run_frees_the_project_for_the_next_run() {
     let h = world("tl-close");
@@ -2623,10 +2612,6 @@ fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     v
 }
 
-/// Phase 6 retired `horch spawn` (ticket 48 of fleetd-p6, FR-5): fleetd
-/// launches each attempt, and the run of an attempt is the run of its task.
-/// The old command refuses with the line of its new command, with task text
-/// or without, and adds no worker row.
 #[test]
 fn a_spawn_is_refused_as_retired_and_adds_no_worker() {
     let h = fleet("tl-spawn-text", "default");
@@ -2713,10 +2698,6 @@ fn plan_line(h: &Harness) -> String {
     ok(h, &["ledger", "plan-workers"]).trim().to_string()
 }
 
-/// Phase 6 retired `horch spawn` (ticket 48 of fleetd-p6, FR-5): fleetd
-/// binds a task to each attempt and launches it. A launch that cannot go on
-/// ends its worker row `launch_failed` with the reason, and no row stays
-/// live.
 #[test]
 fn a_launch_of_an_unknown_teammate_leaves_no_live_row() {
     let mut h = world_without_fleetd("tl-unknown");
@@ -2761,9 +2742,6 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
     assert!(why.contains("supervisor is gone"), "{why}");
     assert_eq!(worker_status(&h, &ghost).0, "spawning");
 
-    // Past the grace, ghost never had a supervisor: status marks it STALE,
-    // and 1 watchdog pass ends it launch_failed. The pre-claim wake goes to
-    // fleetd and writes nothing (FM-16, taskledger/wakes.rs).
     let o = run_env(&h, &[("HORCH_NOW", &later(200))], &["ledger", "status"]);
     let line = out(&o)
         .lines()
