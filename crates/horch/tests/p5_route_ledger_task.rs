@@ -234,9 +234,6 @@ impl World {
             .unwrap()
     }
 
-    /// 1 raw request line of `kind` with the operator token, sent on the
-    /// channel by this test process: the peer of fleetd is a process of
-    /// the live attempt `a1`. Gives the reason of the refusal.
     fn raw_request_refusal(&self, kind: Kind, payload: serde_json::Value) -> String {
         let serde_json::Value::Object(payload) = payload else {
             panic!("a payload is an object");
@@ -385,9 +382,6 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     );
 }
 
-/// A worker can set `HORCH_ROLE`, but it gets no operator power: the CLI of
-/// a fleet process refuses before it sends 1 request, and fleetd refuses a
-/// raw request from the process of a live attempt.
 #[test]
 fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
     let w = World::up();
