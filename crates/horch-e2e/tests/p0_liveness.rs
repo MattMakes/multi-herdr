@@ -124,14 +124,17 @@ fn bind(h: &Harness, persona: &str, agent: &Agent) -> String {
     horch_e2e::bind::bind(h, persona, Some(agent.pid())).worker_id
 }
 
-/// The status and the attempt count of the only task of the ledger.
+/// The status and the attempts used (the attempts minus the floor that a
+/// usage-limit move raises) of the only task of the ledger.
 fn task_row(h: &Harness) -> (String, i64) {
     let store = Store::open(&db(h)).unwrap();
     store
         .conn()
-        .query_row("SELECT status, attempts FROM tasks", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT status, attempts - attempt_floor FROM tasks",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap()
 }
 
@@ -252,6 +255,9 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
         "fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt",
         || {
             let mut h = fleet("p0-fm5");
+            let workspace = h.fleet_workspace();
+            h.set("HORCH_WORKSPACE_ID", workspace);
+            declare_gates(&h);
             let quota = fixtures().join("quota/claude-exhausted-codex-ok.json");
             h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
             // The wall clock of the fixture, before its 7 d window resets, so
@@ -298,11 +304,12 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             let (status, now) = task_row(&h);
             assert_eq!(now, attempts, "the usage limit burned an attempt\n{shown}");
             let persona = shown["task"]["claimable_by"].as_str().unwrap_or_default();
-            // The codex pool of the fixture is not limited, so the task
-            // restarts on the fallback, with 1 new worker and 1 attempt.
+            // The codex pool of the fixture is not limited, so the pass
+            // dispatches the task to the fallback, with 1 new worker and 1
+            // attempt.
             assert_eq!(
                 (status.as_str(), persona),
-                ("ready", "codex-sol"),
+                ("leased", "codex-sol"),
                 "the design moves the task to its fallback codex-sol\n{shown}"
             );
             let restart: Vec<String> = store
@@ -322,6 +329,23 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             );
         },
     );
+}
+
+/// Declare the gates of the project in `fleet.toml` and commit it: without
+/// a fast gate fleetd holds the dispatch of the tasks of the project.
+fn declare_gates(h: &Harness) {
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", text(&o));
+    }
 }
 
 /// The wall clock after the sleep. The bind writes the wall clock of the

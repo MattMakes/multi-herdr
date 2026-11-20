@@ -84,6 +84,17 @@ fn abandoned_worktree(h: &Harness) -> PathBuf {
             .then_some(())
     });
     ok(h, &["ledger", "cancel", "T-1", "not needed now"]);
+    // fleetd applies the cancel on its next pass: the tree is `abandoned`
+    // only then, and a listing before it names no parked row.
+    wait_for("the cancel to abandon the tree", || {
+        let v: serde_json::Value = serde_json::from_str(&ok(h, &["worktrees", "--json"])).unwrap();
+        let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
+        rows.iter()
+            .any(|r| {
+                r["path"].as_str().is_some_and(|p| p.ends_with(&name)) && r["status"] == "abandoned"
+            })
+            .then_some(())
+    });
     path
 }
 
