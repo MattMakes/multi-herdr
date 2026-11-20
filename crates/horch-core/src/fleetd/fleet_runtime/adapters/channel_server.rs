@@ -27,11 +27,19 @@
 //! it with no reply, and the client asks for the result of its
 //! `request_id`. A lost generation ends the server, because each later
 //! write of this fleetd is refused too.
+//!
+//! A second thread, `fleetd-channel-accept`, waits in `accept` and gives
+//! each connection to the server thread. The server thread reads the stop
+//! flag at least each [`ACCEPT_RETRY`], so the stop never needs a connect
+//! to the socket path (R4-F2). The stop connects to the path only to wake
+//! the accept thread. When the path is gone, no client can reach the
+//! listener, and the accept thread stays in `accept` until fleetd exits.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -66,7 +74,8 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(5);
 pub const NAME_TAKEN_KIND: &str = "channel_name_taken";
 
 /// The time between 2 accepts after an accept fails, so that an error that
-/// stays does not keep 1 core busy.
+/// stays does not keep 1 core busy. It is also the longest wait of the
+/// server thread before it reads the stop flag again.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
 const WAKE_WAIT: Duration = Duration::from_millis(100);
@@ -108,6 +117,7 @@ pub struct ChannelServer {
     read_deadline: Duration,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<()>>>,
+    acceptor: Option<JoinHandle<()>>,
 }
 
 impl ChannelServer {
@@ -150,19 +160,38 @@ impl ChannelServer {
             ledger_user: ledger_user.to_string(),
         };
         let stop = Arc::new(AtomicBool::new(false));
+        // A rendezvous channel: the accept thread holds at most 1
+        // connection that the server thread did not take.
+        let (accepted, connections) = mpsc::sync_channel(0);
+        let acceptor = {
+            let stop = Arc::clone(&stop);
+            thread::Builder::new()
+                .name("fleetd-channel-accept".into())
+                .spawn(move || accept_loop(&listener, &stop, &accepted))
+                .context("starting the accept thread of the channel")?
+        };
         let thread = {
             let stop = Arc::clone(&stop);
             thread::Builder::new()
                 .name("fleetd-channel".into())
-                .spawn(move || server.run(&listener, &stop))
-                .context("starting the thread of the channel")?
+                .spawn(move || server.run(&connections, &stop))
         };
-        Ok(ChannelServer {
+        let mut server = ChannelServer {
             socket,
             read_deadline: options.read_deadline,
             stop,
-            thread: Some(thread),
-        })
+            thread: None,
+            acceptor: Some(acceptor),
+        };
+        match thread {
+            Ok(thread) => server.thread = Some(thread),
+            Err(e) => {
+                server.stop.store(true, Ordering::SeqCst);
+                server.wake_acceptor();
+                return Err(e).context("starting the thread of the channel");
+            }
+        }
+        Ok(server)
     }
 
     /// End the server: it serves no new connection. The error is the end
@@ -176,22 +205,47 @@ impl ChannelServer {
             return Ok(());
         };
         self.stop.store(true, Ordering::SeqCst);
+        // The server thread reads the stop flag at least each ACCEPT_RETRY,
+        // or at the end of the connection that it serves.
         let limit = Instant::now() + self.read_deadline * 2 + STOP_MARGIN;
         while !thread.is_finished() {
             if Instant::now() >= limit {
+                self.wake_acceptor();
                 bail!("the thread of the channel did not end at the stop");
             }
-            drop(Stream::connect(&self.socket, Instant::now() + WAKE_WAIT));
+            thread::sleep(WAKE_POLL);
+        }
+        let ended = thread
+            .join()
+            .map_err(|_| anyhow!("the thread of the channel panicked"));
+        self.wake_acceptor();
+        ended?
+    }
+
+    /// Wake the accept thread with a connect to the socket path, and join
+    /// it. When the path is gone, no connect can reach the listener: the
+    /// accept thread stays in `accept`, and the stop does not wait for it.
+    fn wake_acceptor(&mut self) {
+        let Some(acceptor) = self.acceptor.take() else {
+            return;
+        };
+        let limit = Instant::now() + STOP_MARGIN;
+        while !acceptor.is_finished() {
+            if Instant::now() >= limit {
+                return;
+            }
+            match Stream::connect(&self.socket, Instant::now() + WAKE_WAIT) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+                other => drop(other),
+            }
             // At most 1 connect in each WAKE_WAIT, so the connects do not
             // fill the queue of the socket.
             let next = Instant::now() + WAKE_WAIT;
-            while !thread.is_finished() && Instant::now() < next {
+            while !acceptor.is_finished() && Instant::now() < next {
                 thread::sleep(WAKE_POLL);
             }
         }
-        thread
-            .join()
-            .map_err(|_| anyhow!("the thread of the channel panicked"))?
+        let _ = acceptor.join();
     }
 }
 
@@ -245,6 +299,26 @@ fn open_name_taken_item(
     Ok(())
 }
 
+/// The accept thread: wait for each connection and give it to the server
+/// thread. It ends at the first accept after the stop, or when the server
+/// thread is gone.
+fn accept_loop(listener: &Listener, stop: &AtomicBool, accepted: &SyncSender<(Stream, Peer)>) {
+    loop {
+        let connection = listener.accept();
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        match connection {
+            Ok(connection) => {
+                if accepted.send(connection).is_err() {
+                    return;
+                }
+            }
+            Err(_) => thread::sleep(ACCEPT_RETRY),
+        }
+    }
+}
+
 /// The state of the thread of the channel.
 struct Server {
     fleet_root: PathBuf,
@@ -257,15 +331,17 @@ struct Server {
 }
 
 impl Server {
-    fn run(mut self, listener: &Listener, stop: &AtomicBool) -> Result<()> {
+    fn run(mut self, connections: &Receiver<(Stream, Peer)>, stop: &AtomicBool) -> Result<()> {
         loop {
-            let accepted = listener.accept();
             if stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let Ok((stream, peer)) = accepted else {
-                thread::sleep(ACCEPT_RETRY);
-                continue;
+            let (stream, peer) = match connections.recv_timeout(ACCEPT_RETRY) {
+                Ok(connection) => connection,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!("the accept thread of the channel ended")
+                }
             };
             // Each other error ends only this connection.
             if let Err(lost @ DoorError::GenerationLost { .. }) = self.serve(&stream, &peer) {
