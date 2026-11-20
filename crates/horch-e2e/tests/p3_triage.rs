@@ -96,10 +96,19 @@ fn commit_all(h: &Harness, dir: &Path, message: &str) {
 /// a `triage_apply` job (T-888): the command prints that the job is queued,
 /// so this waits until the job ended and gives the line of its result.
 fn apply(h: &Harness, name: &str, decision: &str) -> String {
-    let body = format!(
-        "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n\
-         | W1 | {name} | | {decision} | |\n"
-    );
+    apply_many(h, &[("W1", name, decision)])
+}
+
+/// `horch worktree triage apply` of the decisions `rows` (`(id, name,
+/// decision)`) in 1 reply file: the result lines, 1 for each row. The
+/// `triage_apply` job gets all the rows, so this waits until the job ended.
+fn apply_many(h: &Harness, rows: &[(&str, &str, &str)]) -> String {
+    let mut body =
+        "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n"
+            .to_string();
+    for (id, name, decision) in rows {
+        body.push_str(&format!("| {id} | {name} | | {decision} | |\n"));
+    }
     let p = h.root.join("reply.md");
     std::fs::write(&p, body).unwrap();
     let last = "SELECT CAST(COALESCE(MAX(id), 0) AS TEXT) FROM jobs WHERE kind = 'triage_apply'";
@@ -107,7 +116,7 @@ fn apply(h: &Harness, name: &str, decision: &str) -> String {
     let before = last(h);
     let o = h.run(&["worktree", "triage", "apply", &p.to_string_lossy()]);
     let said = out(&o);
-    assert!(said.starts_with("W1 "), "{}", text(&o));
+    assert!(said.starts_with(&format!("{} ", rows[0].0)), "{}", text(&o));
     let job = last(h);
     if job == before {
         return said;
@@ -509,4 +518,98 @@ fn a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_re
     // removal adapter, in the job (T-888): no worktree_remove job ran.
     assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
     assert!(jobs(&h, "worktree_remove").is_empty());
+}
+
+/// R2 (FM-11, RR-16, RR-17): 1 `triage_apply` job with 3 decisions. W1
+/// completes its rescue ref, trash ref, removal and branch delete. W2 is
+/// refused (a unique detached HEAD, RR-17) and W3 is refused (an archive
+/// ref with other work, RR-16). The later refusals do not erase the effects
+/// of W1 and each fails only its own row.
+#[test]
+fn multi_item_triage_apply_preserves_completed_first_item_when_second_item_fails() {
+    let h = world("p3-triage-multi");
+    let path_a = folder(&h, "feat-a");
+    std::fs::write(path_a.join("feat-a.txt"), "changed\n").unwrap();
+    std::fs::write(path_a.join("new-a.txt"), "untracked\n").unwrap();
+    let path_b = folder(&h, "feat-b");
+    git_in(&h, &path_b, &["checkout", "--quiet", "--detach"]);
+    std::fs::write(path_b.join("only-b.txt"), "unique\n").unwrap();
+    commit_all(&h, &path_b, "unique");
+    let unique = git_in(&h, &path_b, &["rev-parse", "HEAD"]);
+    let path_c = folder(&h, "feat-c");
+    git_in(
+        &h,
+        &h.project,
+        &["update-ref", "refs/horch/archive/feat-c", &unique],
+    );
+
+    let said = apply_many(
+        &h,
+        &[
+            ("W1", "feat-a", "DELETE"),
+            ("W2", "feat-b", "DELETE"),
+            ("W3", "feat-c", "ARCHIVE"),
+        ],
+    );
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 3, "{said}");
+    assert!(
+        lines[0].starts_with("W1 feat-a DELETE: trashed at refs/horch/trash/feat-a/"),
+        "{said}"
+    );
+    assert!(
+        lines[1].starts_with(
+            "W2 feat-b DELETE FAILED: the worktree HEAD is detached at a unique commit; nothing removed"
+        ),
+        "{said}"
+    );
+    assert!(
+        lines[2].starts_with(&format!(
+            "W3 feat-c ARCHIVE FAILED: refs/horch/archive/feat-c holds other work ({unique}); nothing removed"
+        )),
+        "{said}"
+    );
+
+    // W1: its effects stay committed.
+    assert!(!path_a.exists());
+    let trash = refs(&h, "refs/horch/trash/feat-a/");
+    assert_eq!(trash.len(), 1, "{trash:?}");
+    let rescue = refs(&h, "refs/horch/rescue/");
+    assert_eq!(rescue.len(), 1, "{rescue:?}");
+    for r in [&trash[0], &rescue[0]] {
+        assert_eq!(show(&h, r, "feat-a.txt"), "changed", "{r}");
+        assert_eq!(show(&h, r, "new-a.txt"), "untracked", "{r}");
+    }
+    assert!(!git_ok(
+        &h,
+        &h.project,
+        &["rev-parse", "--verify", "refs/heads/feat-a"]
+    ));
+    assert_eq!(states(&h, &path_a), ["removed"]);
+    let row = |path: &Path, column: &str| {
+        query(
+            &h,
+            &format!(
+                "SELECT {column} FROM worktrees WHERE path = '{}'",
+                stored(&h, path)
+            ),
+        )
+    };
+    assert_eq!(row(&path_a, "status"), ["trashed"]);
+    assert_eq!(row(&path_a, "rescue_ref"), [rescue[0].clone()]);
+
+    // W2 and W3: their folders stay and only their own rows fail.
+    for (path, file) in [(&path_b, "only-b.txt"), (&path_c, "feat-c.txt")] {
+        assert!(path.join(file).exists(), "{}", path.display());
+        assert_eq!(
+            row(path, "status"),
+            ["cleanup_failed"],
+            "{}",
+            path.display()
+        );
+        assert_ne!(states(&h, path), ["removed"], "{}", path.display());
+    }
+    assert_eq!(git_in(&h, &path_b, &["rev-parse", "HEAD"]), unique);
+    assert_eq!(rev(&h, "refs/horch/archive/feat-c"), unique);
+    assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
 }
