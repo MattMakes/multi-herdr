@@ -1265,16 +1265,28 @@ mod tests {
         }
         assert!(claude > 0);
         assert!(
-            row("codex-sol").contains("200,000  fleet"),
+            row("codex-sol").contains("256,000  fleet"),
             "{}",
             row("codex-sol")
         );
         // A codex teammate with no compact_window has the window of its
-        // harness.
+        // `windows` key of the context policy.
         assert!(
-            row("astra-creative").contains("harness"),
+            row("astra-creative").contains("256,000  fleet"),
             "{}",
             row("astra-creative")
+        );
+        assert!(
+            row("astra-creative").contains("context-policy windows codex/gpt-6-astra"),
+            "{}",
+            row("astra-creative")
+        );
+        // A teammate with no compact_window and no `windows` key has the
+        // window of its harness.
+        assert!(
+            row("opencode-pickle").contains("harness"),
+            "{}",
+            row("opencode-pickle")
         );
         assert!(
             row("orchestrator").ends_with("~/.claude/settings.json"),

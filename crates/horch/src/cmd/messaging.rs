@@ -1436,6 +1436,42 @@ mod tests {
         );
     }
 
+    /// An in-process fleetd for the ledger of `ctx`: the handler of
+    /// `session_records` and the handlers of the CLI writers, with
+    /// `worker_progress`. A worker with no outbox sends its progress line
+    /// there.
+    fn serve_session_records_and_progress(
+        ctx: &RuntimeContext,
+    ) -> horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer {
+        use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+        use horch_core::fleetd::fleet_runtime::adapters::token_file;
+        use horch_core::fleetd::fleet_runtime::application::handlers_cli;
+        use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+        use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+        let db = horch_core::execution::store::session_db(&ctx.paths);
+        let root = horch_core::execution::store::session_fleet_root(&ctx.paths, &db);
+        drop(horch_core::taskledger::Store::open(&db).unwrap());
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
+            rusqlite::params![pid, start as i64, horch_core::taskledger::util::now()],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        token_file::ensure(&root).unwrap();
+        let mut handlers = Handlers::new();
+        handlers.insert(Kind::SessionRecords, |tx, p| {
+            horch_core::execution::store::apply_session_records(tx, p)
+        });
+        handlers_cli::register(&mut handlers);
+        ChannelServer::start(&root, conn, Generation(1), handlers).unwrap()
+    }
+
     /// TRF-45: `horch note`, `horch ledger progress` and `horch ledger note`
     /// are 1 command. With a record and a worker row, each writes the
     /// session record's history and the worker row's progress. Without a
@@ -1449,6 +1485,7 @@ mod tests {
         let root = dir.path().join("repo");
         let state = dir.path().join("state");
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
         let db = dir.path().join("ledger.sqlite3");
         let mut store = horch_core::taskledger::Store::open(&db).unwrap();
         let wid = store
@@ -1494,12 +1531,9 @@ mod tests {
             RuntimeContext::from_env(&env).unwrap()
         };
         let both = ctx(Some("r-1"), Some(&wid));
-        // The fleetd of the session records (T-884).
-        let _fleetd =
-            horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(
-                &both.paths,
-            )
-            .unwrap();
+        // The fleetd of the session records (T-884) and of the progress line
+        // of a worker that has no outbox (T-885).
+        let _fleetd = serve_session_records_and_progress(&both);
         SessionLedger::open_in(&both)
             .unwrap()
             .add(horch_core::execution::records::NewRecord {

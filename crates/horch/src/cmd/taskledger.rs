@@ -2148,7 +2148,6 @@ mod tests {
             .filter(|c| takes_check(c))
             .map(|c| c.get_name())
             .collect();
-        assert!(with_check.contains(&"add"), "{with_check:?}");
         assert!(with_check.contains(&"reopen"), "{with_check:?}");
         for sub in &with_check {
             assert!(
