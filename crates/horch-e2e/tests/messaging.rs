@@ -7,9 +7,7 @@
 //!   live record, exits non-zero, and a retry finishes once.
 //!
 //! fake-herdr runs in the `exec` scenario, so a pane runs `horch worker`, and
-//! `pane close` kills it. The codex fake runs in `stay`. A worker pane comes
-//! from `launch_worker`: the test writes the brief and the record, and fleetd
-//! serves the ledger.
+//! `pane close` kills it. The codex fake runs in `stay`.
 
 use std::process::Output;
 
@@ -54,17 +52,12 @@ fn fleet(name: &str, scenario: &str) -> Harness {
     h
 }
 
-/// [`fleet`] with its own ledger and a test fleetd: a worker pane writes its
-/// session record and reads the operator token through the fleet root.
 fn worker_fleet(name: &str, scenario: &str) -> Harness {
     worker_fleet_with(name, scenario, |_| {})
 }
 
-/// [`worker_fleet`], with `prepare` run on the harness before fleetd starts.
 fn worker_fleet_with(name: &str, scenario: &str, prepare: impl FnOnce(&mut Harness)) -> Harness {
     let mut h = fleet(name, scenario);
-    // The session records of the state folder are the task ledger, so the
-    // test and the worker write 1 file, and 1 fleetd owns it.
     h.set(
         "HORCH_LEDGER_DB",
         h.state.join("ledger.sqlite3").to_string_lossy(),
@@ -140,8 +133,6 @@ fn as_worker(h: &Harness, args: &[&str], pane: &str, role: &str, id: &str) -> Ou
     cmd.output().unwrap()
 }
 
-/// The skills that the plan of a spawn of `teammate` records in the session
-/// record, and that the launch of the worker checks again (SKL-04).
 fn recorded_skills(h: &Harness, teammate: &str) -> Vec<ResolvedSkillRef> {
     let roster = Roster::builtin().unwrap();
     let launching = roster.for_launch(roster.get(teammate).unwrap().clone());
@@ -157,11 +148,6 @@ fn recorded_skills(h: &Harness, teammate: &str) -> Vec<ResolvedSkillRef> {
     .activated
 }
 
-/// A codex worker pane as `horch spawn` left it before fleetd launched every
-/// attempt: the brief, the session record and the pane that runs `horch
-/// worker`, as `(pane, role, record id)`. The test writes the first 2 and
-/// opens the pane in the fake herdr, so the real `horch worker` registers the
-/// role and starts the fake codex.
 fn launch_worker(h: &Harness) -> (String, String, String) {
     let split = herdr(
         h,
@@ -232,9 +218,6 @@ fn launch_worker(h: &Harness) -> (String, String, String) {
     (pane, role, id)
 }
 
-/// [`launch_worker`], then wait until the worker runs its agent and the
-/// record holds its session. `horch spawn` marked the record running; the
-/// worker no longer does, so [`launch_worker`] writes it running.
 fn running_worker(h: &Harness) -> (String, String, String) {
     let (pane, role, id) = launch_worker(h);
     wait_for_or(
