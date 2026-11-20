@@ -74,6 +74,12 @@ fn main() {
     }
     if let Some((cli, prompt)) = horch_e2e::exec::Cli::of_argv("codex", &call.argv) {
         let prompt = prompt.to_owned();
+        // A conformance check of fleetd is no launch of the test agent.
+        let check = std::fs::read_to_string(&prompt)
+            .is_ok_and(|t| t.starts_with("This is a conformance check of horch."));
+        if scenario_has("inspect_skills") && !check {
+            inspect_skills();
+        }
         horch_e2e::exec::run(call, cli, &prompt);
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
