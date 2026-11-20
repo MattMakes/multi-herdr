@@ -1,3 +1,0 @@
-# Ticket 147 of fleetd-finish: the exec launch gives the skills briefing. It removes these entries.
-operator_skills_e2e_exposure_claude | 7 | the exec launch gives no skills briefing
-operator_skills_e2e_check_warns_on_a_missing_name | 7 | the exec launch gives no skills briefing

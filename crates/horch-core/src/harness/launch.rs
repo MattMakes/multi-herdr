@@ -577,9 +577,12 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
 /// adapter's `prepare` and the agent git env of SR-3. The command is the
 /// exec launch of the adapter, with `task_dir` (the attempt folder) and the
 /// workdir as its writable folders, and `req.prompt` as its prompt: the
-/// path of `inbox/START.md`, or the line of a resume. `run` starts the
-/// command and waits for it. Only Claude Code has an exec form of a resume.
-pub(crate) fn run_exec_flow<T>(
+/// path of `inbox/START.md`, or the line of a resume. The skills briefing
+/// of the bundle comes first, as in [`command_with_skills_in`]: `START.md`
+/// is written before the launch and is never rewritten, and the bundle
+/// exists only from this launch on. `run` starts the command and waits for
+/// it. Only Claude Code has an exec form of a resume.
+pub fn run_exec_flow<T>(
     ctx: &RuntimeContext,
     req: LaunchRequest<'_>,
     task_dir: &Path,
@@ -613,6 +616,14 @@ pub(crate) fn run_exec_flow<T>(
     }
     env.task_dir = Some(task_dir.to_path_buf());
     env.worktree = Some(workdir.clone());
+    let prompt = match &launch.skills {
+        Some(bundle) => format!(
+            "{}\n{}",
+            bundle.briefing_in(&teammate, env.home()),
+            req.prompt
+        ),
+        None => req.prompt.to_string(),
+    };
     // The skills of the bundle, as an interactive launch exposes them
     // (`command_with_skills_in`): Claude Code reads them from a
     // `--plugin-dir`. Codex has them in its private home already.
@@ -629,9 +640,9 @@ pub(crate) fn run_exec_flow<T>(
     let mut cmd = match kind {
         HarnessKind::Claude => {
             let session = session_for(kind.adapter().capabilities(), req.session);
-            super::claude::exec_command(&env, &teammate, session, Path::new(req.prompt))?
+            super::claude::exec_command(&env, &teammate, session, Path::new(&prompt))?
         }
-        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, req.prompt)?,
+        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, &prompt)?,
         HarnessKind::Antigravity => {
             let model = teammate
                 .model
@@ -644,7 +655,7 @@ pub(crate) fn run_exec_flow<T>(
                 effort: teammate.effort.as_deref(),
                 home: &ctx.paths.home,
                 workdir: &workdir,
-                prompt: req.prompt,
+                prompt: &prompt,
             })
         }
         other => bail!("{other:?} has no exec adapter"),

@@ -951,3 +951,89 @@ fn claim_attempt_has_no_stop_hook() {
         "{codex:?}"
     );
 }
+
+// ─── exec launch: the skills briefing ───────────────────────────────────────
+
+/// The last argument of the exec launch of `agent` (its prompt), for a
+/// worker with 1 installed operator skill and 1 that is not installed.
+fn exec_prompt(agent: HarnessKind) -> String {
+    use horch_core::execution::SessionMode;
+    use horch_core::harness::launch::LaunchRequest;
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let skill = home.join(".agents/skills/present");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: present\ndescription: An installed operator skill.\n---\nbody\n",
+    )
+    .unwrap();
+    for dir in ["work", "task"] {
+        std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+    }
+    let p = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+    let ctx = ctx_with(
+        &home,
+        &tmp.path().join("work"),
+        &[
+            ("HORCH_STATE_DIR", &p("state")),
+            ("HORCH_DATA_DIR", &p("data")),
+        ],
+    );
+    let mut v = serde_json::to_value(Teammate {
+        name: "exec-skills".into(),
+        agent,
+        model: Some("m".into()),
+        sandbox: Some(serde_json::Map::new()),
+        ..Teammate::default()
+    })
+    .unwrap();
+    v["mode"] = json!("exec");
+    v["phase"] = json!("implementation");
+    v["operator_skills"] = json!({"dir": "~/.agents/skills", "names": ["present", "missing"]});
+    let teammate: Teammate = serde_json::from_value(v).unwrap();
+    let session = SessionMode::Fresh(None);
+    let req = LaunchRequest {
+        role: "exec-skills",
+        teammate: &teammate,
+        session: &session,
+        prompt: "/task/inbox/START.md",
+        model_override: None,
+        exec_rules: &[],
+        child_env: Vec::new(),
+        record: None,
+        fleet_window: None,
+        briefing_skill: None,
+    };
+    let args =
+        launch::run_exec_flow(&ctx, req, &tmp.path().join("task"), |cmd| Ok(argv(&cmd))).unwrap();
+    args.last().cloned().unwrap_or_default()
+}
+
+/// An exec launch of fleetd gives the agent the skills briefing of an
+/// interactive launch, before the path of `START.md`.
+#[test]
+fn exec_launch_gives_the_skills_briefing() {
+    // Claude Code names a bundle skill with the plugin prefix `horch:`.
+    for (agent, line) in [
+        (
+            HarnessKind::Claude,
+            "- horch:present: An installed operator skill.",
+        ),
+        (
+            HarnessKind::Codex,
+            "- present: An installed operator skill.",
+        ),
+    ] {
+        let prompt = exec_prompt(agent);
+        assert!(prompt.contains(line), "{agent:?}: {prompt}");
+        assert!(
+            prompt.contains("Skipped: operator skill missing is not installed on this host"),
+            "{agent:?}: {prompt}"
+        );
+        assert!(
+            prompt.ends_with("\n/task/inbox/START.md"),
+            "{agent:?}: {prompt}"
+        );
+    }
+}
