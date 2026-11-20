@@ -304,10 +304,6 @@ fn config_file(cli: ExecCli, cmd: &Command) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-/// The text of the launch `cmd`: 1 line for each argv word, then the config
-/// file of the adapter. The path of the throwaway folder `dir`, of the
-/// private home and of each skills bundle under `bundles` become fixed
-/// words.
 fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path, bundles: &Path) -> Result<String> {
     let mut text = String::new();
     text.push_str(&cmd.get_program().to_string_lossy());
@@ -323,8 +319,6 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path, bundles: &Path) -> R
         }
         homes.push(home);
     }
-    // The skills bundle: a new folder for each launch. Claude Code names it
-    // in `--plugin-dir`, and the skills briefing of the prompt names it.
     if let Some(bundle) = plugin_dir(cmd) {
         homes.push(bundle);
     }

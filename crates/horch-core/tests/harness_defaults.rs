@@ -952,10 +952,6 @@ fn claim_attempt_has_no_stop_hook() {
     );
 }
 
-// ─── exec launch: the skills briefing ───────────────────────────────────────
-
-/// The last argument of the exec launch of `agent` (its prompt), for a
-/// worker with 1 installed operator skill and 1 that is not installed.
 fn exec_prompt(agent: HarnessKind) -> String {
     use horch_core::execution::SessionMode;
     use horch_core::harness::launch::LaunchRequest;
@@ -1010,8 +1006,6 @@ fn exec_prompt(agent: HarnessKind) -> String {
     args.last().cloned().unwrap_or_default()
 }
 
-/// An exec launch of fleetd gives the agent the skills briefing of an
-/// interactive launch, before the path of `START.md`.
 #[test]
 fn exec_launch_gives_the_skills_briefing() {
     // Claude Code names a bundle skill with the plugin prefix `horch:`.

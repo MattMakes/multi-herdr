@@ -346,8 +346,6 @@ fn hash_of(
     runner.adapter_hash().unwrap()
 }
 
-/// The codex reference profile with the operator skills `names`, each one
-/// installed in the home of `render_ctx`.
 fn codex_with_operator_skills(tmp: &Path, names: &[&str]) -> horch_core::roster::Teammate {
     for name in names {
         let dir = tmp.join("home/.agents/skills").join(name);
@@ -366,8 +364,6 @@ fn codex_with_operator_skills(tmp: &Path, names: &[&str]) -> horch_core::roster:
     t
 }
 
-/// The skills briefing of a codex exec prompt names the bundle folder, and
-/// each render installs a new one. 2 renders still give 1 hash.
 #[test]
 fn codex_adapter_hash_hides_the_skills_bundle_folder() {
     let tmp = tempfile::tempdir_in("/tmp").unwrap();
@@ -378,8 +374,6 @@ fn codex_adapter_hash_hides_the_skills_bundle_folder() {
     assert_eq!(hash_of(&ctx, &profile, &scratch), first);
 }
 
-/// A change of the briefing text (1 more skill) changes the codex hash:
-/// the render hides only the bundle folder.
 #[test]
 fn codex_adapter_hash_changes_when_the_briefing_changes() {
     let tmp = tempfile::tempdir_in("/tmp").unwrap();

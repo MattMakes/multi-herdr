@@ -579,9 +579,7 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
 /// workdir as its writable folders, and `req.prompt` as its prompt: the
 /// path of `inbox/START.md`, or the line of a resume. A fresh launch puts
 /// the skills briefing of the bundle first, as [`command_with_skills_in`]
-/// does, and a resumed session has it already. `START.md`
-/// is written before the launch and is never rewritten, and the bundle
-/// exists only from this launch on. `run` starts the command and waits for
+/// does, and a resumed session has it already. `run` starts the command and waits for
 /// it. Only Claude Code has an exec form of a resume.
 pub fn run_exec_flow<T>(
     ctx: &RuntimeContext,
@@ -680,8 +678,6 @@ pub fn run_exec_flow<T>(
     out
 }
 
-/// The line of an exec prompt between the skills briefing and the path of
-/// `START.md`, which is the last line.
 const EXEC_START_LINE: &str =
     "The last line of this prompt is the path of your task file, START.md. Read it and follow it.";
 
