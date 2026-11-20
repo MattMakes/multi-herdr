@@ -22,7 +22,11 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::Store;
 use horch_core::taskledger::{schema, util};
 
+use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+use horch_core::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
+use horch_core::fleetd::task_execution::application::outbox_ingest;
+use horch_platform::channel::User;
 use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
@@ -187,15 +191,24 @@ impl World {
     }
 
     fn question_rows(&self) -> Vec<String> {
-        let store = horch_core::taskledger::Store::open(&self.root.join("ledger.sqlite3")).unwrap();
-        horch_core::taskledger::workers::sync_questions(
-            store.conn(),
-            &self.root.join("state"),
-            WORKSPACE,
+        let mut conn = self.ledger();
+        let attempt = AttemptRef {
+            task_id: self.task_id.clone(),
+            attempt_id: format!("{}/A1", self.task_id),
+        };
+        let config = FleetConfig::default();
+        let reads = outbox_ingest::read(
+            &conn,
+            &self.root.join("fleet"),
+            &[attempt],
+            &User::current().unwrap(),
+            &outbox_ingest::Limits::of(&config),
         )
         .unwrap();
-        let mut stmt = store
-            .conn()
+        let tx = conn.transaction().unwrap();
+        outbox_ingest::ingest(&tx, None, &reads, config.question_limit_s).unwrap();
+        tx.commit().unwrap();
+        let mut stmt = conn
             .prepare("SELECT id FROM questions ORDER BY rowid")
             .unwrap();
         stmt.query_map([], |r| r.get(0))
@@ -280,6 +293,10 @@ fn files_of(dir: &Path) -> Vec<String> {
 fn question_of_a_push_attempt_writes_1_question_file() {
     let w = World::new();
     w.ask(true, "QUESTION: which port? I recommend 8080.");
+    // The Stop hook runs before the ingest of fleetd, and it accepts the
+    // question file in place of result.json.
+    let (code, out, err) = w.horch(Some(&w.files.task_yaml), &["result", "--check"]);
+    assert_eq!(code, 0, "horch result --check: {out}{err}");
     let rows = w.question_rows();
     assert_eq!(rows.len(), 1, "1 questions row, as in Phase 2");
     let dir = w.questions_dir();
@@ -303,9 +320,6 @@ fn question_of_a_push_attempt_writes_1_question_file() {
         &std::fs::metadata(dir.join("1.json")).unwrap().permissions(),
     );
     assert_eq!(mode & 0o777, 0o600);
-    // The Stop hook test accepts the question file in place of result.json.
-    let (code, out, err) = w.horch(Some(&w.files.task_yaml), &["result", "--check"]);
-    assert_eq!(code, 0, "horch result --check: {out}{err}");
 }
 
 #[test]
@@ -344,7 +358,11 @@ fn a_long_question_file_stays_under_64_kib() {
 fn question_of_a_claim_attempt_writes_no_file() {
     let w = World::with_agent(true);
     w.ask(false, "QUESTION: which port?");
-    assert_eq!(w.question_rows().len(), 1, "1 questions row, as in Phase 2");
+    assert_eq!(
+        w.question_rows().len(),
+        0,
+        "only the ingest of a question file writes a questions row (T-897)"
+    );
     assert_eq!(files_of(&w.questions_dir()), Vec::<String>::new());
     let tasks = w.root.join("fleet/tasks");
     let outbox = w.files.task_yaml.parent().unwrap().join("outbox");
