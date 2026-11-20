@@ -23,9 +23,26 @@ use horch_core::workspace::PaneHost;
 
 pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     check(ctx)?;
-    println!("herdr is installed and its server is reachable.");
-    super::delivery_probe::doctor(ctx);
-    super::restore::warn_if_resume_on(ctx);
+    println!("{} is installed and reachable.", ctx.herdr.backend);
+    println!("{}", other_backend_line(ctx));
+    match ctx.herdr.backend {
+        horch_core::runtime::Backend::Herdr => {
+            super::delivery_probe::doctor(ctx);
+            super::restore::warn_if_resume_on(ctx);
+        }
+        horch_core::runtime::Backend::Hc => {
+            if PaneHost::of(ctx).window_open() == Some(true) {
+                super::delivery_probe::doctor(ctx);
+            } else {
+                eprintln!(
+                    "warning: the Herdr app window is closed: a new fleet cannot start, a running one continues"
+                );
+            }
+            println!(
+                "note: on hc, a sandboxed agent can reach the herdr-core socket, which can run programs outside the sandbox"
+            );
+        }
+    }
     let mut roster = super::load_roster_unwarned(ctx, None)?;
     // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
@@ -201,16 +218,115 @@ fn stale_skill_warnings(home: &Path) -> Vec<String> {
         .collect()
 }
 
+const MIN_HC_VERSION: (u32, u32, u32) = (0, 1, 21);
+const MIN_HERDR_APP_VERSION: (u32, u32, u32) = (0, 1, 16);
+
+fn other_backend_line(ctx: &RuntimeContext) -> String {
+    let other = match ctx.herdr.backend {
+        horch_core::runtime::Backend::Herdr => horch_core::runtime::Backend::Hc,
+        horch_core::runtime::Backend::Hc => horch_core::runtime::Backend::Herdr,
+    };
+    if !horch_core::workspace::is_installed(ctx, other) {
+        return format!("not found: {other}");
+    }
+    if PaneHost::for_backend(ctx, other).server_reachable() {
+        format!("also found: {other} (reachable)")
+    } else {
+        format!("also found: {other} (not running)")
+    }
+}
+
+fn parse_semver(text: &str) -> Option<(u32, u32, u32)> {
+    text.split_whitespace().find_map(|tok| {
+        let tok = tok.trim_start_matches('v');
+        let core = tok.split('-').next().unwrap_or(tok);
+        let core = core.split('+').next().unwrap_or(core);
+        let mut parts = core.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((major, minor, patch))
+    })
+}
+
+fn check_min_version(
+    ctx: &RuntimeContext,
+    label: &str,
+    bin: &Path,
+    min: (u32, u32, u32),
+) -> Result<()> {
+    let exe = if bin.components().count() > 1 {
+        bin.is_file().then(|| bin.to_path_buf())
+    } else {
+        process::which(
+            ctx.inherited.path.as_deref(),
+            ctx.inherited.pathext.as_deref(),
+            &bin.to_string_lossy(),
+        )
+    };
+    let Some(exe) = exe else {
+        bail!(
+            "{label} CLI not found on PATH.\n\
+             Install the Herdr app, or pass --backend herdr to use the herdr TUI."
+        );
+    };
+    let mut cmd = Command::new(&exe);
+    cmd.arg("--version");
+    for key in horch_core::harness::launch::FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("running `{label} --version`: {e}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if !out.status.success() {
+        bail!(
+            "`{label} --version` exited with {}{}",
+            out.status,
+            said(label, &combined)
+        );
+    }
+    let Some(found) = parse_semver(&combined) else {
+        bail!(
+            "`{label} --version` did not report a version (needed {}.{}.{} or newer){}",
+            min.0,
+            min.1,
+            min.2,
+            said(label, &combined)
+        );
+    };
+    if found < min {
+        bail!(
+            "{label} {}.{}.{} is too old; horch needs {label} {}.{}.{} or newer",
+            found.0,
+            found.1,
+            found.2,
+            min.0,
+            min.1,
+            min.2
+        );
+    }
+    Ok(())
+}
+
 /// The precondition every recipe shares. Deliberately does NOT validate the
 /// roster: a roster warning must not stop a fleet from launching.
 pub fn check(ctx: &RuntimeContext) -> Result<()> {
     if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
-        if !horch_core::workspace::is_installed(ctx, horch_core::runtime::Backend::Hc) {
-            bail!(
-                "hc or herdr-app CLI not found on PATH.\n\
-                 Install the Herdr app, or pass --backend herdr to use the herdr TUI."
-            );
-        }
+        check_min_version(ctx, "hc", &ctx.bins.harness.hc, MIN_HC_VERSION)?;
+        check_min_version(
+            ctx,
+            "herdr-app",
+            &ctx.bins.harness.herdr_app,
+            MIN_HERDR_APP_VERSION,
+        )?;
         if !PaneHost::of(ctx).server_reachable() {
             bail!("herdr-core is not running; open the Herdr app");
         }
@@ -1939,6 +2055,35 @@ mod tests {
             .execution_status()
             .is_terminal());
         assert_eq!(stale_state(&ctx, false).0, ["stale state: none"]);
+    }
+
+    #[test]
+    fn hcb_13_unit_version_floor_checks_hc_and_app() {
+        assert_eq!(parse_semver("hc 0.1.21\n"), Some((0, 1, 21)));
+        assert_eq!(
+            parse_semver("herdr-app v0.1.16-preview.1\n"),
+            Some((0, 1, 16))
+        );
+        assert_eq!(parse_semver("no version here"), None);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let old_hc = bin_dir.join("hc");
+        std::fs::write(&old_hc, "#!/bin/sh\necho 'hc 0.1.20'\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&old_hc, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let env = horch_core::runtime::MapEnv::new(tmp.path())
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("PATH", &bin_dir.to_string_lossy())
+            .with("HORCH_BACKEND", "hc");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = check(&ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("0.1.20") && err.contains("0.1.21"),
+            "unexpected error: {err}"
+        );
     }
 }
 
