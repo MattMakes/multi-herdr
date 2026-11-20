@@ -91,10 +91,6 @@ impl ProcessFacts for UnreadableParent {
     }
 }
 
-/// Fixed facts with no real process: the peer 10 runs, and the chain
-/// above it ends during the walk. The first read of a parent gives the
-/// value before the end, each later read the value after it. A process in
-/// `ended` fails each read of its group, as an ended process does.
 struct EndsInWalk {
     group_of_peer: u32,
     parents: std::collections::HashMap<u32, (Option<u32>, Option<u32>)>,
@@ -103,8 +99,6 @@ struct EndsInWalk {
 }
 
 impl EndsInWalk {
-    /// The chain 10 -> 20 -> 25: 20 and 25 end during the walk, so 10 goes
-    /// to PID 1.
     fn two_parents_end(group_of_peer: u32) -> EndsInWalk {
         EndsInWalk {
             group_of_peer,
@@ -147,7 +141,6 @@ impl ProcessFacts for EndsInWalk {
     }
 }
 
-/// The recorded wrapper 30 of the attempt `id`, which has ended.
 fn ended_wrapper(id: &str) -> FleetProcess {
     FleetProcess {
         attempt: id.to_string(),

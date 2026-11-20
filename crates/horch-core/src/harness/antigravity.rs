@@ -107,7 +107,6 @@ pub fn seed_stop_hook(worktree: &Path, horch_exe: &Path) -> Result<()> {
     if git_out(worktree, &["ls-files", "--error-unmatch", HOOKS_FILE]).is_some() {
         return Ok(());
     }
-    // A symlink could send the write outside the worktree.
     for part in [".agents", HOOKS_FILE] {
         if std::fs::symlink_metadata(worktree.join(part)).is_ok_and(|m| m.file_type().is_symlink())
         {

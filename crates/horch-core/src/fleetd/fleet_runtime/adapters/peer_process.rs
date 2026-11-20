@@ -212,8 +212,6 @@ pub fn fleet_process(peer: u32, recorded: &[FleetProcess], facts: &dyn ProcessFa
     unknown_unless_found(found)
 }
 
-/// The answer of a walk that cannot read on: [`Fact::Yes`] when a match is
-/// found, else [`Fact::Unknown`].
 fn unknown_unless_found(found: Vec<String>) -> Fact {
     if found.is_empty() {
         Fact::Unknown
@@ -222,9 +220,6 @@ fn unknown_unless_found(found: Vec<String>) -> Fact {
     }
 }
 
-/// Read the facts of `pid` of the chain, add each attempt that they match
-/// to `found`, and give the parent of `pid` (0 when it has none). `None`
-/// when a fact fails to read.
 fn read_one(
     pid: u32,
     recorded: &[FleetProcess],
@@ -254,10 +249,6 @@ fn read_one(
     facts.parent(pid)
 }
 
-/// The last process of `chain` failed to read. Remove it, and each process
-/// before it that ended too, and push the new parent of the first child
-/// that still runs. False when no process proves that it ended: the read
-/// failed for another cause, or the peer itself failed to read.
 fn step_back(chain: &mut Vec<u32>, facts: &dyn ProcessFacts) -> bool {
     let Some(mut failed) = chain.pop() else {
         return false;

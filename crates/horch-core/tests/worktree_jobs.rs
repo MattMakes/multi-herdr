@@ -854,8 +854,6 @@ fn observe_run(
     seen
 }
 
-/// Reap the processes of `runner` until the process `pid` is gone, not a
-/// zombie.
 #[cfg(unix)]
 fn wait_gone(runner: &mut JobRunner<'_>, pid: u32) {
     let until = Instant::now() + Duration::from_secs(10);
@@ -909,10 +907,6 @@ fn rescue_and_observe(w: &mut World, row: &WorktreeRow, rescue: i64) -> String {
     }
 }
 
-/// FM-12, FM-25, R2: a `fetch` run of the repository that hangs past its
-/// deadline is stopped by its process group and ends `abandoned`. Only then
-/// does the queued `rescue` run of an orphaned tree of the same repository
-/// start. It saves the tree on a verified ref, and the row is `rescued`.
 #[cfg(unix)]
 #[test]
 fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued_rescue() {

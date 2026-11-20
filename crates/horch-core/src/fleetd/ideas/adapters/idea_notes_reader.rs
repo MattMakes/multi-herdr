@@ -525,7 +525,6 @@ mod tests {
     const WRAPPER: u32 = 4200;
     const WRAPPER_START: i64 = 77;
 
-    /// The chain COMMAND -> WRAPPER -> PID 1.
     struct Chain;
 
     impl ProcessFacts for Chain {

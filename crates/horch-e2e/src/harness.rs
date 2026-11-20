@@ -1491,7 +1491,6 @@ mod tests {
         assert!(live_runs, "the live root's process was stopped");
     }
 
-    /// It is detached, so no test process keeps it as a zombie.
     fn stopping_in(root: &Path, on_term: &str) -> u32 {
         std::fs::create_dir_all(root).unwrap();
         let ready = root.join("ready");

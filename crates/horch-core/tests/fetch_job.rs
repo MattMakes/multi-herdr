@@ -613,10 +613,6 @@ fn fetch_job_process_writes_no_row_and_a_second_ingest_changes_nothing() {
     assert_eq!(snapshot(&w.conn), after);
 }
 
-/// FM-12, FM-25, R2: a fetch of a project with no `origin` remote fails at
-/// once, its result is ingested, and it releases the git writer of the
-/// repository, so a queued `rescue` run of an orphaned tree of the same
-/// repository starts. While the fetch runs, the rescue waits.
 #[test]
 fn fetch_on_project_with_no_origin_fails_promptly_and_releases_git_writer_for_rescue() {
     let mut w = world();
