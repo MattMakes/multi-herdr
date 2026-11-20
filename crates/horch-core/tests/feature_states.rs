@@ -748,7 +748,6 @@ fn invalid_feature_row_between_two_valid_rows_fails_only_its_row_and_advances_bo
     use horch_core::fleetd::integration::application::features::FOLLOW_FAILED_KIND;
 
     let w = bare_world();
-    // 2 more runs, each with its feature F-<run rowid> on its own branch.
     for n in [2, 3] {
         let branch = format!("fleet/r{n}");
         git(&w.repo, &["branch", &branch]);
@@ -773,8 +772,6 @@ fn invalid_feature_row_between_two_valid_rows_fails_only_its_row_and_advances_bo
         tx.commit().unwrap();
     }
     w.fetched_main(&w.tip("main"));
-    // Each feature is `ready`, and its idea is in flight: it goes back to
-    // `open`. The branch of F-0002 is not a ref name, so git cannot read it.
     w.conn
         .execute("UPDATE features SET state = 'ready'", [])
         .unwrap();
@@ -811,11 +808,9 @@ fn invalid_feature_row_between_two_valid_rows_fails_only_its_row_and_advances_bo
     let item = (format!("{FOLLOW_FAILED_KIND}:F-0002"), "F-0002".to_string());
     assert_eq!(failed(), vec![item.clone()]);
 
-    // The next pass fails the same row again: the item stays 1 item.
     w.follow();
     assert_eq!(failed(), vec![item]);
 
-    // The row is fixed: the feature moves, and the item ends.
     w.conn
         .execute(
             "UPDATE features SET branch = 'fleet/r2' WHERE id = 'F-0002'",

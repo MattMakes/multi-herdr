@@ -244,9 +244,6 @@ pub fn follow(
         .take(budget)
     {
         cursor.step(name, &now);
-        // 1 branch that fails never stops the pass (Three rules, rule 1):
-        // its rows roll back, it gets 1 needs-you item, and the cursor
-        // steps past it.
         tx.execute_batch("SAVEPOINT landing_branch")?;
         match follow_one(l, tx, clock, name) {
             Ok(effect) => {
@@ -268,14 +265,10 @@ pub fn follow(
     Ok(effects)
 }
 
-/// The key of the needs-you item of the branch `branch` that [`follow`]
-/// cannot follow.
 fn follow_failed_key(branch: &str) -> String {
     format!("{FOLLOW_FAILED_KIND}:{branch}")
 }
 
-/// Open the 1 needs-you item of the branch `branch` that [`follow`] cannot
-/// follow because of `e`.
 fn open_follow_failed(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -298,8 +291,6 @@ fn open_follow_failed(
     )
 }
 
-/// End each open item of [`FOLLOW_FAILED_KIND`] whose branch is not in
-/// `open`: it is terminal, or its row is gone.
 fn end_follow_failed(ctx: &JobCtx<'_>, tx: &Connection, open: &[String]) -> Result<()> {
     for key in needs_you::open_keys(tx, FOLLOW_FAILED_KIND)? {
         let Some(branch) = key.strip_prefix(&format!("{FOLLOW_FAILED_KIND}:")) else {

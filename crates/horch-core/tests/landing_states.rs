@@ -613,7 +613,6 @@ fn invalid_branch_row_between_two_valid_rows_fails_only_its_row_and_advances_bot
         w.attempt(t, "push");
         w.set_task(t, "verifying");
     }
-    // The branch row of b2 names a task that the ledger does not have.
     w.conn.pragma_update(None, "foreign_keys", false).unwrap();
     w.conn
         .execute(
@@ -640,7 +639,6 @@ fn invalid_branch_row_between_two_valid_rows_fails_only_its_row_and_advances_bot
     let item = (format!("{FOLLOW_FAILED_KIND}:{b2}"), b2.clone());
     assert_eq!(failed(&w), vec![item.clone()]);
 
-    // The next pass fails the same row again: the item stays 1 item.
     w.follow(20);
     assert_eq!(failed(&w), vec![item]);
     let opened: i64 = w
@@ -653,7 +651,6 @@ fn invalid_branch_row_between_two_valid_rows_fails_only_its_row_and_advances_bot
         .unwrap();
     assert_eq!(opened, 1, "1 event opens the item");
 
-    // The row is fixed: the branch follows its task, and the item ends.
     w.conn
         .execute(
             "UPDATE branches SET task_id = ?2 WHERE name = ?1",

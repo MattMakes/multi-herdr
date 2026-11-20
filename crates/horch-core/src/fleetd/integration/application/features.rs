@@ -114,8 +114,6 @@ pub fn follow_in(
         if features.is_some_and(|ids| !ids.contains(&id)) {
             continue;
         }
-        // 1 feature that fails never stops the pass (Three rules, rule 1):
-        // its rows roll back, and it gets 1 needs-you item.
         tx.execute_batch("SAVEPOINT feature_follow")?;
         let step = match follow_one(f, tx, &id, clock) {
             Ok(step) => {
@@ -135,14 +133,10 @@ pub fn follow_in(
     Ok(steps)
 }
 
-/// The key of the needs-you item of the feature `id` that [`follow`]
-/// cannot follow.
 fn follow_failed_key(id: &str) -> String {
     format!("{FOLLOW_FAILED_KIND}:{id}")
 }
 
-/// Open the 1 needs-you item of the feature `id` that [`follow`] cannot
-/// follow because of `e`.
 fn open_follow_failed(
     f: &Features<'_>,
     tx: &Connection,
@@ -163,8 +157,6 @@ fn open_follow_failed(
     )
 }
 
-/// End each open item of [`FOLLOW_FAILED_KIND`] whose feature is no longer
-/// `open` or `ready`: it is terminal, or its row is gone.
 fn end_follow_failed(f: &Features<'_>, tx: &Connection) -> Result<()> {
     let live = live_features(tx)?;
     for key in needs_you::open_keys(tx, FOLLOW_FAILED_KIND)? {
