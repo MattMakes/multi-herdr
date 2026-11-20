@@ -29,6 +29,7 @@ use horch_core::procid;
 use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::taskledger::{util, Store};
 use horch_e2e::harness::{Harness, DELIVERY_PROBE_FAULT};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 const SIGKILL: i32 = 9;
@@ -371,43 +372,24 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
 
 /// A run of `tasks` tasks for `opus`, whose check passes. The watchdog
 /// numbers of the run never reap a quiet worker during a test: only a dead
-/// agent ends an attempt.
+/// agent ends an attempt. The run and its tasks are fixtures in the ledger
+/// (`horch_e2e::ledger_seed`), since Phase 6 retired `horch ledger run new`.
 fn plan(h: &Harness, tasks: usize) {
-    // The test fleetd applies the routed plan; the test then runs its own
-    // fleetd.
-    h.serve_fleetd();
-    ok(
-        h,
-        &[
-            "ledger",
-            "run",
-            "new",
-            "alpha",
-            "--steps",
-            "check",
-            "--check",
-            "true",
-            "--check-every",
-            "3600",
-            "--stall-rounds",
-            "1000",
-        ],
-    );
+    let run = seed_run(h, "alpha", None, "w1:p1");
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE runs SET finish_steps = '[\"check\"]', check_every_s = 3600,
+                 stall_rounds = 1000
+             WHERE run_id = ?1",
+            [&run.run_id],
+        )
+        .unwrap();
     for n in 1..=tasks {
-        let p = ticket(h, &format!("t{n}"), &format!("# T{n}\n"));
-        ok(
-            h,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                &p.to_string_lossy(),
-                "--primary",
-                "opus",
-            ],
-        );
+        let p = ticket(h, &format!("t{n}"), &format!("# T{n}\n**Check:** `true`\n"));
+        seed_task(h, &run, &p, "opus");
     }
-    h.stop_fleetd();
 }
 
 /// The status of the task `seq`.
@@ -751,6 +733,91 @@ fn rr4_tasks_complete_with_all_file_watch_events_dropped() {
             "with no file event, the scan of {kind} read no folder"
         );
     }
+}
+
+/// The awake time of the last heartbeat of the fleetd `pid`, after no new
+/// heartbeat came for 2 s: the passes that an earlier event woke ended.
+fn settled_heartbeat(h: &Harness, pid: u32) -> u64 {
+    let mut last: Option<(u64, Instant)> = None;
+    wait_until(
+        &format!("the heartbeat of fleetd PID {pid} settles"),
+        30,
+        || {
+            let hb = heartbeat(h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
+            let at = awake_ms(&hb);
+            match last {
+                Some((before, since)) if before == at => {
+                    (since.elapsed() >= Duration::from_secs(2)).then_some(at)
+                }
+                _ => {
+                    last = Some((at, Instant::now()));
+                    None
+                }
+            }
+        },
+    )
+}
+
+/// Wait at most 3 s for a heartbeat of the fleetd `pid` after the one at
+/// `before`: `event` woke a pass long before the period of 30 s.
+fn woke_by(h: &Harness, pid: u32, before: u64, event: &str) {
+    wait_until(
+        &format!("{event} wakes a pass of fleetd PID {pid} before its period of 30 s"),
+        3,
+        || {
+            let hb = heartbeat(h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
+            (awake_ms(&hb) != before).then_some(())
+        },
+    );
+}
+
+/// RR-4: a file event wakes a pass at once; the period of 30 s is only the
+/// fallback. A request file, a `result.json` in the outbox of a live
+/// attempt and a job result file each start a pass within 3 s.
+#[test]
+fn rr4_file_request_and_job_events_wake_pass_before_period() {
+    let h = world("p1-rr4-wake", "pass_period_s = 30\n");
+    plan(&h, 1);
+    let run = fleet_root(&h).join("run");
+    for dir in ["requests", "jobs"] {
+        std::fs::create_dir_all(run.join(dir)).unwrap();
+    }
+    let mut fleetds = Fleetds::new(&h);
+    let pid = start_fleetd(&h, &mut fleetds, None);
+    let (_w, seq) = bind(&h);
+    let (task, attempt): (String, String) = Store::open(&db(&h))
+        .unwrap()
+        .conn()
+        .query_row(
+            "SELECT a.task_id, a.id FROM attempts a JOIN tasks t ON t.task_id = a.task_id
+             WHERE t.seq = ?1",
+            [seq],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let outbox = outbox_dir(&fleet_root(&h), &task, &attempt);
+    let before = settled_heartbeat(&h, pid);
+    std::fs::create_dir_all(&outbox).unwrap();
+    // A pass after the outbox exists watches it: an event or the period.
+    wait_until("a pass after the outbox exists", 40, || {
+        let hb = heartbeat(&h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
+        (awake_ms(&hb) != before).then_some(())
+    });
+    let before = settled_heartbeat(&h, pid);
+    std::fs::write(
+        run.join("requests").join("wake.json"),
+        "{\"kind\": \"wake\"}\n",
+    )
+    .unwrap();
+    woke_by(&h, pid, before, "a request file");
+
+    let before = settled_heartbeat(&h, pid);
+    std::fs::write(outbox.join("result.json"), "{}\n").unwrap();
+    woke_by(&h, pid, before, "a result.json in the outbox");
+
+    let before = settled_heartbeat(&h, pid);
+    std::fs::write(run.join("jobs").join("J-1-1.json"), "{}\n").unwrap();
+    woke_by(&h, pid, before, "a job result file");
 }
 
 /// RR-7: the same plan, once with 1 fleetd and once with fleetd killed by

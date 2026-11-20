@@ -26,7 +26,7 @@
 //! launcher.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,11 +40,13 @@ use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use horch_core::fleetd::fleet_runtime::adapters::clock_store::awake_now;
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::adapters::effects::{
-    exe_of, read_heartbeat, this_exe, write_heartbeat,
+    exe_of, read_heartbeat, this_exe, write_heartbeat, WATCH_LIMIT,
 };
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
-use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
+use horch_core::fleetd::fleet_runtime::adapters::scans::{
+    outbox_dir, requests_dir, CliPath, FolderItem,
+};
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
     idea_lead_launch, HerdrObserver, WatchdogDuties,
 };
@@ -54,7 +56,8 @@ use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHa
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    IdeaPorts, Outside, Pass, PassError, PoolFacts, Ports, Primary, Settings, TaskWork, IDEAS_DIR,
+    IdeaPorts, Outside, Pass, PassError, PoolFacts, Ports, Primary, Settings, TaskWork,
+    DROP_WATCH_EVENTS, IDEAS_DIR,
 };
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::application::{handlers_run, holds};
@@ -97,6 +100,7 @@ use horch_core::workspace::herdr::Herdr;
 use horch_platform::channel::User;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
+use horch_platform::watch::Watcher;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -565,11 +569,111 @@ fn write_start_heartbeat(root: &Path, generation: Generation, exe: &Exe) -> Resu
 /// A SIGTERM came: the loop ends after the pass that runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
-/// Sleep `d`, or less when a SIGTERM comes.
-fn sleep_unless_term(d: Duration) {
+/// Sleep `d`, or less when a SIGTERM comes or `woke` gives true. `woke`
+/// is asked about every 100 ms.
+fn sleep_unless_term(d: Duration, woke: &mut dyn FnMut() -> bool) {
     let until = Instant::now() + d;
-    while !TERM.load(Ordering::SeqCst) && Instant::now() < until {
+    while !TERM.load(Ordering::SeqCst) && Instant::now() < until && !woke() {
         std::thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
+    }
+}
+
+/// What wakes the loop of the daemon before its period ends (RR-4): a file
+/// event in the request folder, in the job result folder, or in the folder
+/// or the outbox of a live attempt, and a commit of another connection to
+/// the ledger, such as a request of the channel. A missed event waits for
+/// the next pass of the period.
+struct Wake {
+    root: PathBuf,
+    /// The connection that reads `PRAGMA data_version`.
+    ledger: Option<Connection>,
+    watcher: Option<Watcher>,
+    watched: BTreeSet<PathBuf>,
+    /// The `data_version` after the last pass.
+    version: Option<i64>,
+}
+
+impl Wake {
+    fn new(root: &Path, ledger: &Path) -> Wake {
+        Wake {
+            root: root.to_path_buf(),
+            ledger: ledger_conn(ledger).ok(),
+            watcher: Watcher::new().ok(),
+            watched: BTreeSet::new(),
+            version: None,
+        }
+    }
+
+    /// After a pass: watch the folders of now, at most [`WATCH_LIMIT`], and
+    /// forget the events and the commits of the pass, so that a pass never
+    /// wakes the next one. A folder that does not exist yet is tried again
+    /// after the next pass.
+    fn arm(&mut self) {
+        let dirs = self.folders();
+        if let Some(w) = self.watcher.as_mut() {
+            let wanted: BTreeSet<&PathBuf> = dirs.iter().collect();
+            self.watched.retain(|d| {
+                let keep = wanted.contains(d);
+                if !keep {
+                    w.remove(d);
+                }
+                keep
+            });
+            for d in &dirs {
+                if self.watched.len() >= WATCH_LIMIT {
+                    break;
+                }
+                if !self.watched.contains(d) && w.add(d).is_ok() {
+                    self.watched.insert(d.clone());
+                }
+            }
+            w.changed();
+        }
+        self.version = self.data_version();
+    }
+
+    /// Whether a watched folder changed, or another connection committed
+    /// to the ledger, since [`Wake::arm`].
+    fn woke(&mut self) -> bool {
+        let files = self
+            .watcher
+            .as_mut()
+            .is_some_and(|w| !w.changed().is_empty());
+        files || (self.version.is_some() && self.data_version() != self.version)
+    }
+
+    fn data_version(&self) -> Option<i64> {
+        let conn = self.ledger.as_ref()?;
+        conn.query_row("PRAGMA data_version", [], |r| r.get(0)).ok()
+    }
+
+    /// The request folder, the job result folder, and the folder and the
+    /// outbox of each live attempt of a task.
+    fn folders(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![requests_dir(&self.root), self.root.join("run").join("jobs")];
+        let Some(conn) = self.ledger.as_ref() else {
+            return dirs;
+        };
+        let attempts = conn
+            .prepare(
+                "SELECT task_id, id FROM attempts
+                 WHERE state <> 'ended' AND task_id IS NOT NULL ORDER BY id LIMIT ?1",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([WATCH_LIMIT / 2], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default();
+        for (task, attempt) in attempts {
+            let outbox = outbox_dir(&self.root, &task, &attempt);
+            if let Some(dir) = outbox.parent() {
+                dirs.push(dir.to_path_buf());
+            }
+            dirs.push(outbox);
+        }
+        dirs
     }
 }
 
@@ -627,13 +731,23 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         lock: RefCell::new(Some(started.lock)),
     };
     let handlers = request_handlers(ctx, &settings);
+    // The fault drops each file event: only the period wakes a pass.
+    let wake = (!settings.faults.has(DROP_WATCH_EVENTS))
+        .then(|| RefCell::new(Wake::new(root, &ctx.paths.ledger_db)));
     with_pass(ctx, &writer, settings, false, |pass, _| {
         let Some(_channel) = start_channel(ctx, pass, &mut conn, handlers) else {
             return;
         };
         run_loop(
             period,
-            &mut || one_pass(pass, &mut conn),
+            &mut || {
+                let passed = one_pass(pass, &mut conn);
+                if let Some(w) = &wake {
+                    w.borrow_mut().arm();
+                }
+                passed
+            },
+            &mut || wake.as_ref().is_some_and(|w| w.borrow_mut().woke()),
             &|| self_restart.changed(),
             &mut || self_restart.restart(),
         )
@@ -1159,13 +1273,14 @@ enum Passed {
     GenerationLost,
 }
 
-/// The loop of the daemon: 1 `pass` every `period`, until a SIGTERM or a
-/// lost generation. When the binary file of fleetd `changed`, the loop
+/// The loop of the daemon: 1 `pass` every `period`, or sooner when `woke`
+/// gives true (RR-4), until a SIGTERM or a lost generation. When the binary file of fleetd `changed`, the loop
 /// calls `restart` once after the pass, and so after its heartbeat, and
 /// ends. A restart never stops a pass (preservation 04 S10, FM-34).
 fn run_loop(
     period: Duration,
     pass: &mut dyn FnMut() -> Passed,
+    woke: &mut dyn FnMut() -> bool,
     changed: &dyn Fn() -> bool,
     restart: &mut dyn FnMut(),
 ) {
@@ -1178,7 +1293,7 @@ fn run_loop(
             restart();
             return;
         }
-        sleep_unless_term(period.saturating_sub(began.elapsed()));
+        sleep_unless_term(period.saturating_sub(began.elapsed()), woke);
     }
 }
 
@@ -1740,6 +1855,32 @@ mod tests {
         );
     }
 
+    /// RR-4: a wake starts the next pass at once, long before the period.
+    #[test]
+    fn rr4_a_wake_runs_the_next_pass_before_the_period() {
+        let passes = std::cell::Cell::new(0);
+        let mut pass = || {
+            passes.set(passes.get() + 1);
+            Passed::Ran
+        };
+        let mut woke = || passes.get() == 1;
+        let changed = || passes.get() == 2;
+        let began = Instant::now();
+        run_loop(
+            Duration::from_secs(60),
+            &mut pass,
+            &mut woke,
+            &changed,
+            &mut || {},
+        );
+        assert_eq!(passes.get(), 2, "the wake ran a 2nd pass");
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the 2nd pass waited {:?} of the period of 60 s",
+            began.elapsed()
+        );
+    }
+
     /// Preservation 04 S10: a fleetd whose binary file changed starts the
     /// new binary once, after the heartbeat of its pass, and ends its loop.
     /// It never stops a pass.
@@ -1764,7 +1905,13 @@ mod tests {
         };
         let changed = || binary_changed(&started);
         let mut restart = || events.borrow_mut().push("restart");
-        run_loop(Duration::ZERO, &mut pass, &changed, &mut restart);
+        run_loop(
+            Duration::ZERO,
+            &mut pass,
+            &mut || false,
+            &changed,
+            &mut restart,
+        );
         assert_eq!(
             *events.borrow(),
             ["pass", "heartbeat", "pass", "heartbeat", "restart"]
