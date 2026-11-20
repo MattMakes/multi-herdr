@@ -218,9 +218,6 @@ fn launch_worker(h: &Harness) -> (String, String, String) {
     (pane, role, id)
 }
 
-/// The worker wrapper keeps its session records in its process (T-899), so the
-/// ledger record never gets a session id: the fake codex call that logs 1 is
-/// the sign that the agent runs.
 fn running_worker(h: &Harness) -> (String, String, String) {
     let (pane, role, id) = launch_worker(h);
     wait_for_or(
