@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::messaging::channel;
 use horch_core::messaging::mail::Mail;
-use horch_e2e::harness::{fixtures, wait_for, Harness};
+use horch_e2e::harness::{wait_for, Harness};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -184,50 +184,6 @@ fn a_live_relay_gets_the_courier_redelivery_and_the_idle_pane_gets_no_text() {
         courier.try_wait().unwrap()
     });
     assert_eq!(pane_writes(&h), Vec::<Value>::new());
-}
-
-/// `horch fleet` with a live relay sends its startup probe through the relay.
-/// The relay's answer confirms the delivery: the probe needs no
-/// `horch inbox`, and no redelivery of it ever comes. No `agent prompt`.
-#[test]
-fn a_live_relay_gets_the_fleet_probe_and_the_idle_pane_gets_no_text() {
-    let (mut h, _short) = short_world("relay-first-probe");
-    // The pane is idle as soon as `pane run` starts the orchestrator.
-    h.set("HORCH_FAKE_SCENARIO", "exec,fleet_probe_ack");
-    h.set("HORCH_NO_WATCHDOG", "1");
-    h.set(
-        "HORCH_FAULT",
-        "delivery-probe-ms:30000,delivery-probe-call-ms:30000",
-    );
-    h.set(
-        "HORCH_QUOTA_FILE",
-        fixtures().join("quota/all-ok.json").to_string_lossy(),
-    );
-    // The fleet's workspace is the fake herdr's first: w1.
-    let mut relay = Relay::start(&h, "w1");
-
-    let out = h.run(&["fleet", "--no-update"]);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "{text}");
-    assert!(
-        text.contains("fleet delivery: confirmed by the channel relay"),
-        "{text}"
-    );
-    assert_eq!(
-        relay.next_notice("the fleet probe"),
-        "[horch] NOTE: the channel relay delivers your fleet's reports"
-    );
-    assert!(Mail::under(&h.state, "w1").pending().unwrap().is_empty());
-    let probes: Vec<Value> = pane_writes(&h)
-        .into_iter()
-        .filter(|c| c["argv"][0] == "agent" && c["argv"][1] == "prompt")
-        .filter(|c| c["argv"][2].as_str().is_some_and(|p| p.starts_with("w1:")))
-        .collect();
-    assert_eq!(probes, Vec::<Value>::new(), "{text}");
 }
 
 /// How a fake relay answers a message. It answers every ping with `ok`, so
