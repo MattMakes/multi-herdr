@@ -48,9 +48,6 @@ fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()))
 }
 
-/// The awake time since the last heartbeat of the fleetd `pid` in the fleet
-/// root `root`. `None` while it has no heartbeat, or when the clock is of
-/// another boot.
 fn heartbeat_age(root: &Path, pid: u32) -> Option<Duration> {
     let hb = read_heartbeat(root)
         .ok()
@@ -141,10 +138,6 @@ fn fm12_hung_fleetd_is_restarted_on_each_os() {
             );
             std::thread::sleep(Duration::from_millis(100));
         }
-        // `hang-pass` holds the 2nd pass, so the last heartbeat is the one
-        // at the end of the 1st full pass, not the one at the row. Wait
-        // until that heartbeat is older than the hang limit, by the awake
-        // clock that the check reads.
         let root = h.fleet_root();
         let stale = HANG_LIMIT + Duration::from_secs(2);
         let until = Instant::now() + stale + Duration::from_secs(60);
