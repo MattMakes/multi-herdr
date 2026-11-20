@@ -223,10 +223,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// An in-process fleetd on the fleet root of `w`: the channel server
-    /// with only a `rescue_drop` handler, and the `fleetd` row of this
-    /// process, so the channel client accepts it. A test holds the server
-    /// after `w`, so that the server drops first.
     fn serve_rescue_drop(w: &World) -> ChannelServer {
         let ctx = w.ctx(&[]);
         let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();

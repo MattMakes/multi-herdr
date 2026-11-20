@@ -954,11 +954,6 @@ mod tests {
         assert!(text.lines().any(|l| l == "HORCH_WORKSPACE_ID=w0"), "{text}");
     }
 
-    /// TRF-43: the spawn of the worktree steward carries no task text.
-    /// TRF-34: it names the solo run that holds the steward task. Phase 6
-    /// retired `horch ledger task` (FR-12), so [`steward_task`] still names
-    /// the work, `queue_one_off` refuses it with the line of the new command,
-    /// and `start_worktree_steward` prints that line as a warning.
     #[test]
     fn trf_43_the_steward_spawn_has_no_task_text_and_its_queue_is_retired() {
         let dir = tempfile::tempdir().unwrap();
