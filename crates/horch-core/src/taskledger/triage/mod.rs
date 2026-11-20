@@ -25,6 +25,7 @@ use super::git::Git;
 use super::model::{FindingStatus, TaskStatus, WorkerStatus, WorktreeStatus};
 use super::sql_words::{self, word};
 use super::store::optional;
+use crate::fleetd::worktree_custody::adapters::git as custody_git;
 
 pub use facts::{Age, Diff, Disk, Uncommitted};
 
@@ -144,6 +145,12 @@ fn ledger_rows(conn: &Connection) -> Result<Vec<LedgerRow>> {
 
 fn canonical(p: &str) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
+}
+
+/// Whether a recorded branch names no branch: it is empty, or it is the
+/// text that custody records for a detached HEAD (L14).
+fn has_no_branch(branch: &str) -> bool {
+    branch.is_empty() || branch == custody_git::DETACHED
 }
 
 /// Whether a live worker holds the row: its own worker, or its task's.
@@ -351,7 +358,7 @@ fn ledger_row_of(conn: &Connection, root: &Path, l: &LedgerRow) -> Result<Row> {
     row.task_id = l.task_id.clone();
     row.run_id = l.run_id.clone();
     row.findings = findings_of(conn, Some(&l.worktree_id), &l.path)?;
-    row.branch = (!l.branch.is_empty()).then(|| l.branch.clone());
+    row.branch = (!has_no_branch(&l.branch)).then(|| l.branch.clone());
     row.age.created_at = Some(l.created_at.clone());
     row.last_check = last_check(conn, l.task_id.as_deref())?;
     row.why_parked = why_parked(conn, l)?;

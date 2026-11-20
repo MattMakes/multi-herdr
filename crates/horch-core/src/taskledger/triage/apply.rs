@@ -23,7 +23,7 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use super::reply::Decided;
-use super::{human_bytes, listed_worktrees, refs, Row};
+use super::{has_no_branch, human_bytes, listed_worktrees, refs, Row};
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, JobCtx, JobKey, Queued as JobQueued, Ran,
@@ -350,7 +350,7 @@ fn check_identity(git: &Git, wt: &WorktreeRow) -> Result<()> {
         return Ok(());
     }
     match git.current_branch(dir) {
-        Some(_) if wt.branch.is_empty() => Ok(()),
+        Some(_) if has_no_branch(&wt.branch) => Ok(()),
         Some(b) if b == wt.branch => Ok(()),
         Some(b) => bail!(
             "the worktree is on {b}, not its recorded branch {}; nothing removed",
@@ -425,7 +425,7 @@ fn prepare(git: &Git, root: &Path, row: &Row, wt: &WorktreeRow) -> Result<String
 /// `unsafe_to_remove` against `holder`, a ref that holds the work.
 fn must_be_safe(git: &Git, root: &Path, wt: &WorktreeRow, holder: &str, tip: &str) -> Result<()> {
     let mut w = wt.clone();
-    if w.branch.is_empty() {
+    if has_no_branch(&w.branch) {
         w.branch = tip.to_string();
     }
     if let Some(why) = land::unsafe_to_remove(git, root, &w, holder, None)? {
@@ -483,7 +483,7 @@ fn settle_gone(store: &mut Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) 
     } else {
         Folder::Missing
     };
-    let holds_tip = if wt.branch.is_empty() {
+    let holds_tip = if has_no_branch(&wt.branch) {
         None
     } else {
         let tip = env.git.rev(env.root, &wt.branch).ok();
@@ -670,7 +670,7 @@ fn archive_at(fx: &mut dyn Folders, env: &Env<'_>, f: &Freeing<'_>, before: &str
     refs::write(env.git, env.root, &r, &f.tip)?;
     must_be_safe(env.git, env.root, wt, &r, &f.tip)?;
     let bytes = fx.free(env, f, &r)?;
-    let branch = if wt.branch.is_empty() {
+    let branch = if has_no_branch(&wt.branch) {
         String::new()
     } else {
         format!("; the branch {} stays", wt.branch)
@@ -726,7 +726,7 @@ fn delete_branch(
     tip: &str,
 ) -> Result<String> {
     let b = &wt.branch;
-    if b.is_empty() || !git.branch_exists(root, b) {
+    if has_no_branch(b) || !git.branch_exists(root, b) {
         return Ok("no branch to delete".into());
     }
     if refs::read(git, root, trash).as_deref() != Some(tip) {
@@ -1618,7 +1618,7 @@ impl Folders for InJob<'_> {
         }
         // The folder is gone: the rows may go to `removed` only when
         // `holder` holds the tip of the branch and git lists no folder.
-        let holds_tip = if wt.branch.is_empty() {
+        let holds_tip = if has_no_branch(&wt.branch) {
             None
         } else {
             let tip = env.git.rev(env.root, &wt.branch).ok();
