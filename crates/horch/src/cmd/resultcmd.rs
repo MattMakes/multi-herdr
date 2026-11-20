@@ -20,6 +20,7 @@ use horch_core::fleetd::task_execution::domain::result::{self as schema, ResultF
 use horch_core::fleetd::worktree_custody::adapters::sqlite as custody;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::git::Git;
+use horch_core::taskledger::tasks;
 
 /// The line of `--check` while the attempt has no result and no question.
 pub const RESULT_FIRST: &str = "run `horch result` first";
@@ -136,17 +137,21 @@ fn write(ctx: &RuntimeContext, out: &OutboxWriter, args: ResultArgs) -> Result<P
     };
     let attempt = out.attempt();
     let git = Git::new(&ctx.bins.harness.git);
-    let worktree = || worktree_of(ctx, &attempt.task_id);
-    let commits = if args.commit.is_empty() {
-        let (worktree, base) = worktree()?;
-        commits_since_base(&git, &worktree, &base)?
+    let need = args.commit.is_empty() || args.file.is_empty();
+    let wt = if need {
+        worktree_of(ctx, &attempt.task_id)?
     } else {
-        args.commit
+        None
     };
-    let files_changed = if args.file.is_empty() {
-        files_of(&git, &worktree()?.0, &commits)?
-    } else {
-        args.file
+    let commits = match (&wt, args.commit.is_empty()) {
+        (_, false) => args.commit,
+        (Some((worktree, base)), true) => commits_since_base(&git, worktree, base)?,
+        (None, true) => Vec::new(),
+    };
+    let files_changed = match (&wt, args.file.is_empty()) {
+        (_, false) => args.file,
+        (Some((worktree, _)), true) => files_of(&git, worktree, &commits)?,
+        (None, true) => Vec::new(),
     };
     out.write_result(&ResultFile {
         task: attempt.task_id.clone(),
@@ -162,12 +167,29 @@ fn write(ctx: &RuntimeContext, out: &OutboxWriter, args: ResultArgs) -> Result<P
 }
 
 /// The worktree of `task` and the base that the ledger recorded for it.
-fn worktree_of(ctx: &RuntimeContext, task: &str) -> Result<(PathBuf, String)> {
+/// `None` for a review task with no worktree.
+fn worktree_of(ctx: &RuntimeContext, task: &str) -> Result<Option<(PathBuf, String)>> {
     let store = horch_core::taskledger::open_existing_read_only(ctx)?
         .context("no task ledger names the worktree; give --commit")?;
-    let row = custody::of_task(store.conn(), task)?
-        .with_context(|| format!("the task ledger has no worktree of {task}; give --commit"))?;
-    Ok((PathBuf::from(row.path), row.base_commit.unwrap_or(row.base)))
+    let review = tasks::get(store.conn(), task)?.is_review();
+    let row = custody::of_task(store.conn(), task)?;
+    let wt = row.map(|r| (PathBuf::from(r.path), r.base_commit.unwrap_or(r.base)));
+    own_worktree(task, review, wt)
+}
+
+/// The worktree `wt` of `task`. A code-sweep review task works in no
+/// worktree of its own and makes no commit: its findings file is its
+/// result, so it has `None`. Each other task needs its worktree.
+fn own_worktree(
+    task: &str,
+    review: bool,
+    wt: Option<(PathBuf, String)>,
+) -> Result<Option<(PathBuf, String)>> {
+    match wt {
+        Some(wt) => Ok(Some(wt)),
+        None if review => Ok(None),
+        None => bail!("the task ledger has no worktree of {task}; give --commit"),
+    }
 }
 
 /// The commits of the branch of `worktree` since `base`, oldest first.
@@ -194,4 +216,30 @@ fn files_of(git: &Git, worktree: &Path, commits: &[String]) -> Result<Vec<String
         files.extend(out.lines().filter(|l| !l.is_empty()).map(str::to_string));
     }
     Ok(files.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_review_task_with_no_worktree_has_no_commits_to_read() {
+        assert_eq!(own_worktree("T-1", true, None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_work_task_with_no_worktree_needs_its_commits() {
+        let e = own_worktree("T-1", false, None).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "the task ledger has no worktree of T-1; give --commit"
+        );
+    }
+
+    #[test]
+    fn a_task_with_a_worktree_reads_it() {
+        let wt = Some((PathBuf::from("/w"), "base".to_string()));
+        assert_eq!(own_worktree("T-1", true, wt.clone()).unwrap(), wt);
+        assert_eq!(own_worktree("T-1", false, wt.clone()).unwrap(), wt);
+    }
 }

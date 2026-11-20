@@ -84,6 +84,8 @@ pub struct Report {
     pub rejected: Vec<String>,
     /// The tasks whose verdict did not fail, with their next step.
     pub passed: Vec<Passed>,
+    /// The review tasks that their findings file moved to `done`.
+    pub reviews_done: Vec<String>,
 }
 
 /// A task whose verdict did not fail.
@@ -142,12 +144,65 @@ pub fn verify(v: &Verifier<'_>, tx: &Connection) -> Result<Report> {
         if a.via != "push" || tasks::cancel_requested(tx, &a.task_id)?.is_some() {
             continue;
         }
+        let task = tasks::get(tx, &a.task_id)?;
+        if task.is_review() {
+            review_task(v, tx, &task, &a, &mut report)?;
+            continue;
+        }
         let Some(tip) = v.tips.get(&a.task_id) else {
             continue;
         };
         verify_one(v, tx, &a, tip, &mut report)?;
     }
     Ok(report)
+}
+
+/// A code-sweep review task of a push attempt has no check, no review steps
+/// and no worktree: its findings file is its result (`finish::complete`
+/// needs the same file). With the file, the task moves to `done` and its
+/// attempt ends [`VERIFIED`]. Then the code-sweep of its parent task sees
+/// 1 open review less. With no file, the attempt ends `rejected` and burns
+/// 1 attempt.
+fn review_task(
+    v: &Verifier<'_>,
+    tx: &Connection,
+    task: &Task,
+    a: &Attempt,
+    report: &mut Report,
+) -> Result<()> {
+    let guard = v.jobs.guard;
+    let findings = task.spec_ref.as_deref().unwrap_or_default();
+    if findings.is_empty() || !Path::new(findings).is_file() {
+        let why = format!("the review task wrote no findings file {findings}");
+        end_with(tx, guard, a, Outcome::Rejected, &why)?;
+        retry::burn_attempt(
+            tx,
+            &task.task_id,
+            Outcome::Rejected,
+            &(v.policy)(task),
+            &why,
+        )?;
+        report.rejected.push(task.task_id.clone());
+        return Ok(());
+    }
+    let text = format!("the verifier: the findings file {findings} is in");
+    match transition(
+        tx,
+        guard,
+        Entity::Task,
+        &task.task_id,
+        TaskStatus::Done.as_str(),
+        cause(&text),
+        &NeedsYouList,
+    ) {
+        Ok(_) => {
+            end_as(tx, guard, a, VERIFIED, WorkerStatus::Done, &text)?;
+            report.reviews_done.push(task.task_id.clone());
+            Ok(())
+        }
+        Err(DoorError::Refused { .. }) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// The newest attempt of each task in `verifying`.
@@ -677,4 +732,186 @@ fn outputs_of(
 /// verdict that has none. Gives the files.
 pub fn write_verdicts(conn: &mut Connection, fleet_root: &Path) -> Result<Vec<PathBuf>> {
     verdict_file::write_unwritten(conn, fleet_root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use crate::taskledger::model::{TaskKind, WorkerKind, WorktreeMode};
+    use crate::taskledger::runs::{self, NewRun, Run};
+    use crate::taskledger::schema;
+    use crate::taskledger::tasks::NewTask;
+    use crate::taskledger::workers::NewWorker;
+    use rusqlite::{params, TransactionBehavior};
+
+    struct World {
+        dir: tempfile::TempDir,
+        conn: Connection,
+        run: Run,
+    }
+
+    fn world() -> World {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        let project = dir.path().join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let run = runs::create(
+            &conn,
+            &project,
+            &NewRun {
+                slug: "r1".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
+        World { dir, conn, run }
+    }
+
+    impl World {
+        /// A code-sweep review task of a parent task, in `verifying` after
+        /// its push attempt wrote `result.json`. Gives the task and its
+        /// attempt.
+        fn review(&self, findings: &Path) -> (String, String) {
+            let parent = tasks::add(
+                &self.conn,
+                &self.run,
+                &NewTask::work("p", "p.md", "opus-dev"),
+                Actor::Orchestrator,
+            )
+            .unwrap()
+            .task_id;
+            let mut new = NewTask::work("Review p", "review.md", "opus-reviewer");
+            new.kind = TaskKind::Review;
+            new.parent_task_id = Some(parent);
+            new.worktree_mode = WorktreeMode::Shared;
+            new.spec_ref = Some(findings.to_string_lossy().into_owned());
+            let task = tasks::add(&self.conn, &self.run, &new, Actor::Horch)
+                .unwrap()
+                .task_id;
+            let worker = workers::insert(
+                &self.conn,
+                &NewWorker {
+                    run_id: self.run.run_id.clone(),
+                    kind: Some(WorkerKind::Worker),
+                    persona: "opus-reviewer".into(),
+                    target_task_id: Some(task.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let attempt = format!("{task}-a1");
+            self.conn
+                .execute(
+                    "UPDATE tasks SET status = 'verifying', attempts = 1, current_worker_id = ?2
+                     WHERE task_id = ?1",
+                    params![task, worker],
+                )
+                .unwrap();
+            self.conn
+                .execute(
+                    "INSERT INTO attempts (id, task_id, worker_id, state, started_at, via)
+                     VALUES (?1, ?2, ?3, 'live', ?4, 'push')",
+                    params![attempt, task, worker, util::now()],
+                )
+                .unwrap();
+            (task, attempt)
+        }
+
+        /// 1 verifier part of a pass with a tip for each task in
+        /// `verifying`, as the run branch gives a review task its tip.
+        fn verify(&mut self, tasks: &[&str]) -> Report {
+            let config = FleetConfig::default();
+            let ctx = JobCtx {
+                guard: None,
+                config: &config,
+                needs_you: &NeedsYouList,
+            };
+            let tips: BTreeMap<String, String> = tasks
+                .iter()
+                .map(|t| (t.to_string(), "1".repeat(40)))
+                .collect();
+            let policy = |_: &Task| Policy::default();
+            let v = Verifier {
+                jobs: &ctx,
+                clock: FleetSeconds(100),
+                tips: &tips,
+                policy: &policy,
+            };
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            let report = verify(&v, &tx).unwrap();
+            tx.commit().unwrap();
+            report
+        }
+
+        fn attempt_row(&self, id: &str) -> (String, Option<String>) {
+            self.conn
+                .query_row(
+                    "SELECT state, outcome FROM attempts WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        }
+
+        fn check_jobs(&self) -> i64 {
+            self.conn
+                .query_row(
+                    "SELECT count(*) FROM jobs WHERE kind = 'task_check'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn a_push_review_task_with_its_findings_file_ends_done_with_no_check_job() {
+        let mut w = world();
+        let findings = w.dir.path().join("findings.md");
+        std::fs::write(&findings, "No findings.\n").unwrap();
+        let (task, attempt) = w.review(&findings);
+        let parent = tasks::get(&w.conn, &task).unwrap().parent_task_id.unwrap();
+        assert_eq!(finish::open_reviews(&w.conn, &parent).unwrap(), 1);
+
+        let report = w.verify(&[&task]);
+
+        assert_eq!(report.reviews_done, vec![task.clone()]);
+        assert!(report.queued.is_empty() && report.passed.is_empty());
+        assert_eq!(w.check_jobs(), 0, "a review task gets no task_check job");
+        assert_eq!(
+            tasks::get(&w.conn, &task).unwrap().status,
+            TaskStatus::Done.as_str()
+        );
+        assert_eq!(
+            w.attempt_row(&attempt),
+            ("ended".into(), Some(VERIFIED.into()))
+        );
+        assert_eq!(finish::open_reviews(&w.conn, &parent).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_push_review_task_with_no_findings_file_is_rejected() {
+        let mut w = world();
+        let findings = w.dir.path().join("missing.md");
+        let (task, attempt) = w.review(&findings);
+
+        let report = w.verify(&[&task]);
+
+        assert_eq!(report.rejected, vec![task.clone()]);
+        assert_eq!(w.check_jobs(), 0);
+        assert_ne!(
+            tasks::get(&w.conn, &task).unwrap().status,
+            TaskStatus::Done.as_str()
+        );
+        assert_eq!(
+            w.attempt_row(&attempt),
+            ("ended".into(), Some(Outcome::Rejected.as_str().into()))
+        );
+    }
 }
