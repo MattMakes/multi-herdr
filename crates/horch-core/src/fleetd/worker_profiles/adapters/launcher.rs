@@ -67,20 +67,12 @@ impl ProcessHost for Launcher {
     }
 }
 
-/// The longest time that the launcher waits for a child in its exit. The
-/// design gives 1 s as the limit of the work that a pass does itself
-/// ("Each piece of work that can take more than 1 s is a job").
 const EXIT_WINDOW: Duration = Duration::from_secs(1);
 
-/// The start time of the unreaped child `pid`, or `None` when it exited.
-///
 /// A child in its exit is in neither state for a short time: on macOS the
 /// kernel marks the exit (`P_LEXIT`) before the child is a zombie, and
 /// `proc_pidinfo` fails while `waitid` does not yet report it. Under load
-/// this window is long. The pid stays ours because the child is not
-/// reaped, so the launcher reads again until 1 of the 2 facts is known.
-/// After [`EXIT_WINDOW`] the child counts as a live process with an
-/// unreadable start time, and this gives an error.
+/// this window is long.
 fn start_or_exit(
     pid: u32,
     mut read: impl FnMut() -> Option<u64>,
@@ -285,8 +277,6 @@ mod tests {
         assert_eq!(start, now);
     }
 
-    /// The fault of T-157: the first read fails while the child is in its
-    /// exit and `waitid` does not yet report it.
     #[test]
     fn a_child_in_its_exit_window_is_not_a_failed_launch() {
         let mut reads = 0;
