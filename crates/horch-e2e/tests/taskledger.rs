@@ -14,12 +14,12 @@ use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::taskledger::model::{StepName, WorktreeMode};
 use horch_core::taskledger::runs::{self, Run};
 use horch_core::taskledger::tasks::{self, Task};
-use horch_core::taskledger::workers::NewWorker;
+use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 use horch_e2e::bind::{bind, bind_worker, try_bind};
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness};
-use horch_e2e::ledger_seed::{seed_run, seed_task};
+use horch_e2e::ledger_seed::{seed_run, seed_task, seed_worker};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -2427,12 +2427,29 @@ fn run_env(h: &Harness, env: &[(&str, &str)], args: &[&str]) -> Output {
     cmd.output().unwrap()
 }
 
+/// The 1 active run of the project of `h`, as a command with no `--run`
+/// means it.
+fn the_run(h: &Harness) -> Run {
+    let root = h.project.canonicalize().unwrap();
+    let store = Store::open(&h.ledger_db()).unwrap();
+    runs::resolve(store.conn(), &root, None, None).unwrap().0
+}
+
+/// 1 queued task of `persona` in the 1 active run, from a ticket that
+/// `name` names, as `horch ledger add --file <ticket> --primary <persona>
+/// <extra>` made it. `extra` holds `--blocked-by <task>` and `--check
+/// <command>` only.
 fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
     let p = ticket(h, name, &format!("# {name}\n"));
-    let p = p.to_string_lossy().into_owned();
-    let mut args = vec!["ledger", "add", "--file", &p, "--primary", persona];
-    args.extend_from_slice(extra);
-    ok(h, &args);
+    seed_task_with(h, &the_run(h), &p, persona, |new| {
+        for pair in extra.chunks(2) {
+            match pair {
+                ["--blocked-by", task] => new.blocked_by.push(task.to_string()),
+                ["--check", command] => new.land_check = Some(command.to_string()),
+                _ => panic!("queue takes no {pair:?}"),
+            }
+        }
+    });
 }
 
 /// Whether `ledger status` printed the board of run `slug`.
@@ -2445,14 +2462,9 @@ fn shows_run(o: &Output, slug: &str) -> bool {
 #[test]
 fn a_command_means_the_run_it_names_before_the_run_of_its_worker() {
     let h = world("tl-which-run");
-    ok(&h, &["ledger", "run", "new", "a"]);
-    ok(&h, &["ledger", "run", "new", "b"]);
-    let in_b = ok(
-        &h,
-        &["ledger", "worker", "new", "--persona", "opus", "--run", "b"],
-    )
-    .trim()
-    .to_string();
+    seed_run(&h, "a", None, "w1:p1");
+    let run_b = seed_run(&h, "b", None, "w1:p2");
+    let in_b = seed_worker(&h, &run_b, "opus");
 
     // Nothing names a run, and 2 are active: the command refuses.
     let o = h.run(&["ledger", "status"]);
@@ -2500,8 +2512,9 @@ fn a_command_means_the_run_it_names_before_the_run_of_its_worker() {
 
 #[test]
 fn a_command_from_another_workspace_says_whose_run_it_uses() {
-    let h = fleet("tl-which-ws", "default");
-    ok(&h, &["ledger", "run", "new", "a"]);
+    let mut h = fleet("tl-which-ws", "default");
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    seed_run(&h, "a", None, "w1:p1");
     let note = "horch: NOTE: this command uses run a of workspace w1, not of this workspace w2. \
                 Name a run with --run <slug>.";
     let o = run_env(&h, &[("HORCH_WORKSPACE_ID", "w2")], &["ledger", "status"]);
@@ -2527,37 +2540,39 @@ fn a_command_from_another_workspace_says_whose_run_it_uses() {
     }
 }
 
+/// `runs::close_run` of `run` as the settled close of fleetd does it
+/// (`taskledger_wake`), with `abandon` as `--abandon <reason>` was.
+fn close_run(h: &Harness, run: &Run, abandon: Option<&str>) -> anyhow::Result<runs::Closed> {
+    let git = horch_core::taskledger::git::Git::new("git");
+    let mut store = Store::open(&h.ledger_db()).unwrap();
+    store.immediate(|tx| runs::close_run(tx, &git, run, abandon))
+}
+
+/// Phase 6 retired `horch ledger run close` and `run gate` (MAP.md of
+/// fleetd-p6, ticket 47): fleetd closes a settled run. The rule of the
+/// close stays in `runs::close_run`.
 #[test]
 fn a_closed_run_frees_the_project_for_the_next_run() {
     let h = world("tl-close");
-    ok(&h, &["ledger", "run", "new", "a"]);
+    let run_a = seed_run(&h, "a", None, "w1:p1");
     queue(&h, "01-a", "opus", &[]);
 
     // A queued task holds the run open, and the refusal names it.
-    let o = h.run(&["ledger", "run", "close"]);
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("T-1 (queued)"), "{}", text(&o));
+    let err = close_run(&h, &run_a, None).unwrap_err();
+    assert!(format!("{err:#}").contains("T-1 (queued)"), "{err:#}");
 
     ok(&h, &["ledger", "cancel", "T-1", "not needed"]);
-    // A settled run still needs a passing gate on its tip (TRF-20).
-    let o = h.run(&["ledger", "run", "close"]);
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("has no gate on its tip"), "{}", text(&o));
-    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
-    let closed = ok(&h, &["ledger", "run", "close"]);
-    assert!(closed.contains("Run a closed as done."), "{closed}");
-    ok(&h, &["ledger", "run", "new", "b"]);
+    let closed = close_run(&h, &run_a, None).unwrap();
+    assert_eq!(closed.status, "done", "{closed:?}");
+    let run_b = seed_run(&h, "b", None, "w1:p1");
     let o = h.run(&["ledger", "status"]);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o));
     assert!(out(&o).starts_with("Run b (active)."), "{}", text(&o));
 
     // The slug of a closed run can be used again.
-    ok(
-        &h,
-        &["ledger", "run", "gate", "--run", "b", "--check", "true"],
-    );
-    ok(&h, &["ledger", "run", "close", "--run", "b"]);
-    ok(&h, &["ledger", "run", "new", "a"]);
+    close_run(&h, &run_b, None).unwrap();
+    git_in(&h, &h.project, &["branch", "-D", "fleet/a"]);
+    seed_run(&h, "a", None, "w1:p1");
     let runs = json_of(&h, &["ledger", "run", "list", "--json"]);
     let status: Vec<(&str, &str)> = runs
         .as_array()
@@ -2571,29 +2586,14 @@ fn a_closed_run_frees_the_project_for_the_next_run() {
 #[test]
 fn close_abandon_cancels_the_open_tasks() {
     let h = world("tl-abandon");
-    ok(&h, &["ledger", "run", "new", "a"]);
+    let run = seed_run(&h, "a", None, "w1:p1");
     queue(&h, "01-a", "opus", &[]);
-    let o = ok(
-        &h,
-        &["ledger", "run", "close", "--abandon", "operator dropped it"],
-    );
-    assert!(o.contains("T-1 cancelled."), "{o}");
-    assert!(o.contains("Run a closed as abandoned."), "{o}");
+    let closed = close_run(&h, &run, Some("operator dropped it")).unwrap();
+    assert_eq!(closed.status, "abandoned", "{closed:?}");
+    let cancelled: Vec<&str> = closed.cancelled.iter().map(|c| c.0.as_str()).collect();
+    assert_eq!(cancelled, ["T-1"], "{closed:?}");
     let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
     assert_eq!(t["task"]["status"], "cancelled", "{t}");
-}
-
-#[test]
-fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
-    let h = world("tl-oldbranch");
-    ok(&h, &["ledger", "run", "new", "a"]);
-    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
-    ok(&h, &["ledger", "run", "close"]);
-    project_file(&h, "new.txt", "x");
-    git_commit_all(&h, "main moves on");
-    let o = h.run(&["ledger", "run", "new", "a"]);
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("branch fleet/a exists"), "{}", text(&o));
 }
 
 /// Phase 1: `horch ledger watch` starts no loop. It says that fleetd does
@@ -2601,7 +2601,7 @@ fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
 #[test]
 fn ledger_watch_points_at_fleetd() {
     let h = world("tl-watch-fleetd");
-    ok(&h, &["ledger", "run", "new", "a", "--check-every", "10"]);
+    seed_run_with(&h, "a", &StepName::ALL, Some(10));
     let said = ok(&h, &["ledger", "watch", "--run", "a"]);
     assert!(said.contains("fleetd does the watch of each run"), "{said}");
 }
@@ -2616,42 +2616,6 @@ fn run_of_worker(h: &Harness, run: &str, persona: &str) -> usize {
         .count()
 }
 
-fn second_workspace(h: &Harness) {
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", "second"])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", text(&o));
-}
-
-/// Queue 1 task for `persona` in `run`, so a claiming spawn of it passes
-/// the spawn guard (TRF-31: a task-less spawn needs a startable task).
-fn queue_for(h: &Harness, env: &[(&str, &str)], run: &str, persona: &str) {
-    let file = ticket(
-        h,
-        &format!("{run}-{persona}"),
-        "# Work\n**Check:** `true`\n",
-    );
-    let file = file.to_string_lossy().into_owned();
-    let o = run_env(
-        h,
-        env,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &file,
-            "--primary",
-            persona,
-            "--run",
-            run,
-        ],
-    );
-    assert!(o.status.success(), "{}", text(&o));
-}
-
 fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     let mut v = vec!["spawn"];
     v.extend_from_slice(extra);
@@ -2659,90 +2623,27 @@ fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     v
 }
 
+/// Phase 6 retired `horch spawn` (ticket 48 of fleetd-p6, FR-5): fleetd
+/// launches each attempt, and the run of an attempt is the run of its task.
+/// The old command refuses with the line of its new command, with task text
+/// or without, and adds no worker row.
 #[test]
-fn spawn_run_names_the_run_the_worker_joins() {
-    let h = fleet("tl-spawn-run", "default");
-    // A workspace holds 1 planned run (TRF-34): run a is of workspace w2.
-    let o = run_env(
-        &h,
-        &[("HORCH_WORKSPACE_ID", "w2")],
-        &["ledger", "run", "new", "a"],
-    );
-    assert!(o.status.success(), "{}", text(&o));
-    ok(&h, &["ledger", "run", "new", "b"]);
-    // Without --run, 2 active runs in no workspace of theirs: the spawn joins
-    // no run (TRF-34), and its NOTE names the flag that joins one.
-    let o = run_env(
-        &h,
-        &[("HORCH_WORKSPACE_ID", "w9")],
-        &spawn_args("w1:p1", &["codex-terra"]),
-    );
-    assert!(o.status.success(), "{}", text(&o));
-    assert!(
-        text(&o).contains("NOTE: this spawn joins no task-ledger run."),
-        "{}",
-        text(&o)
-    );
-    assert!(text(&o).contains("Give --run <slug>"), "{}", text(&o));
-    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
-    assert_eq!(run_of_worker(&h, "b", "codex-terra"), 0);
-    queue_for(&h, &[], "b", "codex-terra");
-    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--run", "b"]));
-    assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(run_of_worker(&h, "b", "codex-terra"), 1);
-    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
-}
-
-#[test]
-fn a_spawn_joins_the_run_of_its_own_workspace() {
-    let h = fleet("tl-spawn-ws", "default");
-    second_workspace(&h);
-    ok(&h, &["ledger", "run", "new", "a"]);
-    // Only W1 owns a run: a task-less spawn from W2 joins no run (TRF-34),
-    // and its NOTE names that run and the flag that joins it.
-    let w2 = [("HORCH_WORKSPACE_ID", "w2")];
-    queue_for(&h, &[], "a", "codex-terra");
-    let o = run_env(&h, &w2, &spawn_args("w2:p1", &["codex-terra"]));
-    assert!(o.status.success(), "{}", text(&o));
-    assert!(
-        text(&o).contains(
-            "NOTE: this spawn joins no task-ledger run. Run a (workspace w1) is not of this workspace w2. Give --run <slug> to join it."
-        ),
-        "{}",
-        text(&o)
-    );
-    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
-    // --run reaches the run of another workspace.
-    let o = run_env(
-        &h,
-        &w2,
-        &spawn_args("w2:p1", &["codex-terra", "--run", "a"]),
-    );
-    assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 1);
-
-    // W2 owns a run of its own now: the spawn goes there.
-    let o = run_env(&h, &w2, &["ledger", "run", "new", "b"]);
-    assert!(o.status.success(), "{}", text(&o));
-    queue_for(&h, &w2, "b", "opus");
-    let o = run_env(&h, &w2, &spawn_args("w2:p1", &["opus"]));
-    assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(run_of_worker(&h, "b", "opus"), 1);
-    assert_eq!(run_of_worker(&h, "a", "opus"), 0);
-}
-
-#[test]
-fn trf_43_a_spawn_with_task_text_refuses_with_the_ledger_task_command() {
+fn a_spawn_is_refused_as_retired_and_adds_no_worker() {
     let h = fleet("tl-spawn-text", "default");
-    ok(&h, &["ledger", "run", "new", "a"]);
-    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "Review src/x.rs"]));
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(
-        text(&o).contains("horch ledger task 'Review src/x.rs' --persona codex-terra"),
-        "{}",
-        text(&o)
-    );
-    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+    seed_run(&h, "a", None, "w1:p1");
+    for extra in [
+        &["codex-terra", "Review src/x.rs"][..],
+        &["codex-terra"][..],
+    ] {
+        let o = h.run(&spawn_args("w1:p1", extra));
+        assert!(!o.status.success(), "{}", text(&o));
+        assert!(
+            text(&o).contains("horch spawn is retired. fleetd launches each attempt."),
+            "{}",
+            text(&o)
+        );
+        assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+    }
 }
 
 // ─── #190: no pre-claim row outlives its process ─────────────────────────────
@@ -2812,85 +2713,46 @@ fn plan_line(h: &Harness) -> String {
     ok(h, &["ledger", "plan-workers"]).trim().to_string()
 }
 
+/// Phase 6 retired `horch spawn` (ticket 48 of fleetd-p6, FR-5): fleetd
+/// binds a task to each attempt and launches it. A launch that cannot go on
+/// ends its worker row `launch_failed` with the reason, and no row stays
+/// live.
 #[test]
-fn a_refused_spawn_ends_its_worker_row() {
-    let mut h = fleet("tl-refused", "default");
-    h.set(
-        "HORCH_QUOTA_FILE",
-        fixtures()
-            .join("quota/all-exhausted.json")
-            .to_string_lossy(),
-    );
-    // The fixture's 7-day window is exhausted at its own time.
-    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
-    ok(&h, &["ledger", "run", "new", "a"]);
-    queue(&h, "01-a", "opus", &[]);
-    let o = h.run(&["spawn", "opus", "--from-pane", "w1:p1", "--no-tile"]);
-    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    let rows: Vec<&Value> = st["workers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|w| w["worker"]["kind"] == "worker")
-        .collect();
-    assert_eq!(rows.len(), 1, "{st}");
-    assert_eq!(rows[0]["worker"]["status"], "launch_failed", "{st}");
-    let reason = rows[0]["worker"]["end_reason"].as_str().unwrap();
+fn a_launch_of_an_unknown_teammate_leaves_no_live_row() {
+    let mut h = world_without_fleetd("tl-unknown");
+    push_env(&mut h, "default");
+    let run = seed_run(&h, "a", Some(1), "w1:p1");
+    let p = ticket(&h, "01-a", "# 01-a\n");
+    seed_task(&h, &run, &p, "no-such-teammate");
+    h.serve_fleetd();
+    let rows = wait_push("a worker row that is not live", || {
+        let ws = worker_rows(&h);
+        (!ws.is_empty() && ws.iter().all(|w| w["status"] != "spawning")).then_some(ws)
+    });
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["status"], "launch_failed", "{rows:?}");
+    let reason = rows[0]["end_reason"].as_str().unwrap();
     assert!(
-        reason.starts_with("REFUSED: opus cannot start."),
+        reason.starts_with("unknown teammate 'no-such-teammate'."),
         "{reason}"
     );
-    assert_eq!(plan_line(&h), "opus: spawn 1 (1 can start, 0 on the way).");
-}
-
-#[test]
-fn a_spawn_of_an_unknown_teammate_leaves_no_live_row() {
-    let h = fleet("tl-unknown", "default");
-    ok(&h, &["ledger", "run", "new", "a"]);
-    let o = h.run(&[
-        "spawn",
-        "no-such-teammate",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
-    assert!(!o.status.success(), "{}", text(&o));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    for w in st["workers"].as_array().unwrap() {
-        if w["worker"]["kind"] == "worker" {
-            assert_eq!(w["worker"]["status"], "launch_failed", "{st}");
-        }
-    }
 }
 
 #[test]
 fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
     let h = world("tl-ghosts");
-    ok(&h, &["ledger", "run", "new", "a"]);
+    let run = seed_run(&h, "a", None, "w1:p1");
     queue(&h, "01-a", "sonnet-x", &[]);
-    let ghost = worker_new(&h, "sonnet-x");
-    let ghost2 = worker_new(&h, "sonnet-x");
+    let ghost = seed_worker(&h, &run, "sonnet-x");
+    let ghost2 = seed_worker(&h, &run, "sonnet-x");
     // PIDs far above any pid_max: never a live process.
-    ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "pid",
-            &ghost2,
-            "--supervisor",
-            "99999991",
-        ],
-    );
-    ok(
-        &h,
-        &["ledger", "worker", "pid", &ghost2, "--agent", "99999992"],
-    );
-    assert_eq!(
-        plan_line(&h),
-        "sonnet-x: spawn 0 (1 can start, 2 on the way)."
-    );
+    let mut store = Store::open(&h.ledger_db()).unwrap();
+    store
+        .immediate(|tx| {
+            workers::supervisor_started(tx, &ghost2, 99999991, None)?;
+            workers::agent_started(tx, &ghost2, 99999992, None)
+        })
+        .unwrap();
 
     // 1 pass now: ghost2's supervisor is gone; ghost is in its launch grace.
     h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
@@ -2898,13 +2760,10 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
     assert_eq!(st, "no_task", "{why}");
     assert!(why.contains("supervisor is gone"), "{why}");
     assert_eq!(worker_status(&h, &ghost).0, "spawning");
-    assert_eq!(
-        plan_line(&h),
-        "sonnet-x: spawn 0 (1 can start, 1 on the way)."
-    );
 
     // Past the grace, ghost never had a supervisor: status marks it STALE,
-    // and 1 watchdog pass ends it launch_failed with 1 wake.
+    // and 1 watchdog pass ends it launch_failed. The pre-claim wake goes to
+    // fleetd and writes nothing (FM-16, taskledger/wakes.rs).
     let o = run_env(&h, &[("HORCH_NOW", &later(200))], &["ledger", "status"]);
     let line = out(&o)
         .lines()
@@ -2921,18 +2780,10 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         )
     });
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(worker_status(&h, &ghost).0, "launch_failed");
-    let new: Vec<String> = outbox(&h).split_off(before);
-    assert_eq!(new.len(), 1, "{new:?}");
-    assert!(
-        new[0].contains("ended before they claimed a task"),
-        "{new:?}"
-    );
-    assert!(new[0].contains("Spawn: sonnet-x x1"), "{new:?}");
-    assert_eq!(
-        plan_line(&h),
-        "sonnet-x: spawn 1 (1 can start, 0 on the way)."
-    );
+    let (st, why) = worker_status(&h, &ghost);
+    assert_eq!(st, "launch_failed", "{why}");
+    assert!(why.contains("no horch worker checked in"), "{why}");
+    assert_eq!(outbox(&h).len(), before, "{:?}", outbox(&h));
 }
 
 #[test]
