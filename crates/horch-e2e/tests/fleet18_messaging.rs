@@ -713,7 +713,7 @@ fn pinned_worker(
                     ..Default::default()
                 },
                 horch_core::fleetd::task_execution::domain::task::Recorded {
-                    pid: pid,
+                    pid,
                     pid_start: Some(started),
                 },
             )?;

@@ -856,7 +856,7 @@ fn gate_result_file_with_another_job_id_changes_nothing() {
 /// ledger and the run of [`JOB_CHILD`].
 fn job_child(value: &str) {
     let (db, id) = value.rsplit_once('|').unwrap();
-    let mut conn = open(Path::new(db));
+    let conn = open(Path::new(db));
     let config = FleetConfig::default();
     let ctx = JobCtx {
         guard: None,
@@ -870,7 +870,7 @@ fn job_child(value: &str) {
     };
     let _ = jobs::run_job(
         &ctx,
-        &mut conn,
+        &conn,
         id.parse().unwrap(),
         std::process::id(),
         &checks,

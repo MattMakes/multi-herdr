@@ -117,7 +117,7 @@ fn idea_lead_sandbox_denies_the_operator_path() {
     let fs = &own["filesystem"];
     assert_eq!(
         strings(&fs["allowWrite"]),
-        [ideas.clone()],
+        std::slice::from_ref(&ideas),
         "its idea folders only"
     );
     assert!(

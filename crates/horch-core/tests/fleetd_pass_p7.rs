@@ -1066,7 +1066,8 @@ fn quota_outcome_restarts_as_a_push_attempt_of_the_fallback() {
              JOIN workers w ON w.worker_id = a.worker_id WHERE a.task_id = ?1 ORDER BY a.rowid",
         )
         .unwrap();
-    let rows: Vec<(String, String, Option<String>, String, Option<String>)> = stmt
+    type Row = (String, String, Option<String>, String, Option<String>);
+    let rows: Vec<Row> = stmt
         .query_map([&task], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })

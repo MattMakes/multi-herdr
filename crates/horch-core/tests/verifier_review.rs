@@ -393,7 +393,7 @@ impl World {
             row.input_key
         );
         let me = std::process::id();
-        let mut conn = Connection::open(&self.ledger).unwrap();
+        let conn = Connection::open(&self.ledger).unwrap();
         conn.execute(
             "UPDATE jobs SET state = 'running', pid = ?2, started_at = ?3 WHERE id = ?1",
             params![row.id, me, util::now()],
@@ -409,7 +409,7 @@ impl World {
             profiles: &TestProfile,
             sweep: Some(&self.tools),
         };
-        let o = jobs::run_job(&ctx, &mut conn, row.id, me, &checks)
+        let o = jobs::run_job(&ctx, &conn, row.id, me, &checks)
             .unwrap()
             .expect("the job process wrote its result");
         let file = job_result_file::path(&self.top().join("fleet"), row.id, row.run);

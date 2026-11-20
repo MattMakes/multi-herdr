@@ -234,10 +234,6 @@ impl World {
         }
     }
 
-    fn as_worker(&self, args: &[&str]) -> Out {
-        self.horch(Some(&self.worker), args)
-    }
-
     /// Run `args` as the operator, require exit 0, return stdout.
     fn ok(&self, args: &[&str]) -> String {
         let o = self.horch(None, args);

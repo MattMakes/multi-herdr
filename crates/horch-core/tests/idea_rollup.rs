@@ -432,7 +432,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx(&config), &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
         let tx = self

@@ -192,7 +192,7 @@ impl World {
             docs: None,
             conformance: Some(suite),
         };
-        jobs::run_job_with(&ctx, &mut self.conn, id, pid, &runners)
+        jobs::run_job_with(&ctx, &self.conn, id, pid, &runners)
             .unwrap()
             .expect("the job process runs its row");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();

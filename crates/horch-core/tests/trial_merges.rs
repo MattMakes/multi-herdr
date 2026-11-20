@@ -206,7 +206,7 @@ impl World {
             config: &config,
             needs_you: &NeedsYouList,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "the job process wrote its result");
         self.ingest_results();
         self.job(id).state

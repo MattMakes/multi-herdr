@@ -79,7 +79,7 @@ pub enum Prepared {
     /// The spawn joins no task-ledger run.
     NoRun,
     /// The spawn opens the pane of this worker row.
-    Pane(LedgerSpawn),
+    Pane(Box<LedgerSpawn>),
 }
 
 /// A spawn's worker row.
@@ -160,13 +160,13 @@ pub fn prepare(
         }
         None => bail!("{}", retired_line()),
     };
-    Ok(Prepared::Pane(LedgerSpawn {
+    Ok(Prepared::Pane(Box::new(LedgerSpawn {
         run,
         worker_id: id,
         first_line,
         push,
         idea_lead: idea_lead.is_some(),
-    }))
+    })))
 }
 
 /// The idea-lead attempt `attempt` that fleetd started (T-890): an attempt

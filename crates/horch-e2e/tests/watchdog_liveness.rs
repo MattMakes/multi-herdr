@@ -90,7 +90,7 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     ..Default::default()
                 },
                 horch_core::fleetd::task_execution::domain::task::Recorded {
-                    pid: pid,
+                    pid,
                     pid_start: Some(started),
                 },
             )?;

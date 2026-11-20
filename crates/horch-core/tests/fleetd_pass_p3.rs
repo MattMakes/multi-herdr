@@ -505,7 +505,7 @@ fn child_job() {
     };
     let id: i64 = id.to_str().unwrap().parse().unwrap();
     let db = PathBuf::from(std::env::var_os(CHILD_DB).unwrap());
-    let mut conn = open(&db);
+    let conn = open(&db);
     let config = FleetConfig::default();
     let profiles = CodexSandbox::default();
     let checks = CheckRunner {
@@ -513,7 +513,7 @@ fn child_job() {
         profiles: &profiles,
         sweep: None,
     };
-    jobs::run_job(&ctx(&config), &mut conn, id, std::process::id(), &checks).unwrap();
+    jobs::run_job(&ctx(&config), &conn, id, std::process::id(), &checks).unwrap();
 }
 
 // ─── the tests ──────────────────────────────────────────────────────────

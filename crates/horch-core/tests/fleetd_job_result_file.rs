@@ -134,7 +134,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap()
+        jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap()
     }
 
     /// Part 1: read the result files with the size limit `max_bytes`.

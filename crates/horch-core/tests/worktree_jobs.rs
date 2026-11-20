@@ -264,7 +264,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         self.job(id)
@@ -290,7 +290,7 @@ fn make_executable(path: &Path) {
 /// waits until the run is `running`, then runs the executor with the
 /// recorded pid, on its own connection.
 fn job_process(db: &Path, config: &FleetConfig, id: i64) -> Option<State> {
-    let mut conn = open(db);
+    let conn = open(db);
     let until = Instant::now() + Duration::from_secs(20);
     let pid = loop {
         let row = jobs_store::get(&conn, id).unwrap().unwrap();
@@ -310,7 +310,7 @@ fn job_process(db: &Path, config: &FleetConfig, id: i64) -> Option<State> {
         profiles: &NoProfiles,
         sweep: None,
     };
-    jobs::run_job(&ctx, &mut conn, id, pid, &checks)
+    jobs::run_job(&ctx, &conn, id, pid, &checks)
         .unwrap()
         .map(|o| o.state())
 }

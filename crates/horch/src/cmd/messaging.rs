@@ -238,13 +238,11 @@ fn queue_as<'a>(
         let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
-        if role == "orchestrator" {
-            if from != HORCH && asks_a_question(text) {
-                if let Err(error) = write_question_file(ctx, text, id.as_str()) {
-                    eprintln!(
-                        "horch tell: the question file of the attempt is not written ({error:#}); mail remains durable"
-                    );
-                }
+        if role == "orchestrator" && from != HORCH && asks_a_question(text) {
+            if let Err(error) = write_question_file(ctx, text, id.as_str()) {
+                eprintln!(
+                    "horch tell: the question file of the attempt is not written ({error:#}); mail remains durable"
+                );
             }
         }
         queued = Some(id);

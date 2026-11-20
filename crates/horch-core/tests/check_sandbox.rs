@@ -261,7 +261,7 @@ impl World {
             profiles,
             sweep,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         let row = self.row(id);

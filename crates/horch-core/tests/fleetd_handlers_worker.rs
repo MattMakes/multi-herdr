@@ -471,13 +471,8 @@ fn worker_launched_records_the_pane_and_the_launch() {
             "harness": "claude", "model": "m1", "effort": "high",
         }),
     );
-    let row: (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = w
+    type Cols = Option<String>;
+    let row: (Cols, Cols, Cols, Cols, Cols) = w
         .conn
         .query_row(
             "SELECT pane_id, role, harness, model, effort FROM workers WHERE worker_id = ?1",

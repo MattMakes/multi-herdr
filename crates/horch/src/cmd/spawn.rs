@@ -182,7 +182,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         .and_then(|c| c.worker_id.as_deref());
     let ledger = match super::taskledger_spawn::prepare(ctx, &args, controller_row)? {
         Prepared::NoRun => None,
-        Prepared::Pane(l) => Some(l),
+        Prepared::Pane(l) => Some(*l),
     };
     // A push attempt is bound to a ready task, and an idea-lead attempt has
     // its idea, so neither is over the plan.
