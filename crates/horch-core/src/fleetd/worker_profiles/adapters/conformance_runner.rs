@@ -245,8 +245,9 @@ impl ConformanceRunner<'_> {
         let setup = self.setup(dir, Check::LaunchHeadless)?;
         let session = SessionMode::Fresh(None);
         let req = setup.request(self, &session);
+        let bundles = setup.ctx.paths.state_root.join("skill-bundles");
         launch::run_exec_flow(&setup.ctx, req, setup.files.dir(), |cmd| {
-            rendered_launch(cli, &cmd, dir)
+            rendered_launch(cli, &cmd, dir, &bundles)
         })
     }
 }
@@ -304,9 +305,10 @@ fn config_file(cli: ExecCli, cmd: &Command) -> Option<(PathBuf, PathBuf)> {
 }
 
 /// The text of the launch `cmd`: 1 line for each argv word, then the config
-/// file of the adapter. The path of the throwaway folder `dir` and of the
-/// private home become fixed words.
-fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
+/// file of the adapter. The path of the throwaway folder `dir`, of the
+/// private home and of each skills bundle under `bundles` become fixed
+/// words.
+fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path, bundles: &Path) -> Result<String> {
     let mut text = String::new();
     text.push_str(&cmd.get_program().to_string_lossy());
     for arg in cmd.get_args() {
@@ -321,9 +323,13 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
         }
         homes.push(home);
     }
-    // The skills bundle of Claude Code: a new folder for each launch.
+    // The skills bundle: a new folder for each launch. Claude Code names it
+    // in `--plugin-dir`, and the skills briefing of the prompt names it.
     if let Some(bundle) = plugin_dir(cmd) {
         homes.push(bundle);
+    }
+    if let Ok(entries) = std::fs::read_dir(bundles) {
+        homes.extend(entries.filter_map(|e| e.ok()).map(|e| e.path()));
     }
     homes.push(dir.to_path_buf());
     // The longest path first, so a folder inside another becomes its word.

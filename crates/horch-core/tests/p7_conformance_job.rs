@@ -346,6 +346,50 @@ fn hash_of(
     runner.adapter_hash().unwrap()
 }
 
+/// The codex reference profile with the operator skills `names`, each one
+/// installed in the home of `render_ctx`.
+fn codex_with_operator_skills(tmp: &Path, names: &[&str]) -> horch_core::roster::Teammate {
+    for name in names {
+        let dir = tmp.join("home/.agents/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Operator skill {name}.\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+    let mut t = reference_profile(ExecCli::Codex);
+    t.operator_skills = Some(horch_core::roster::OperatorSkills {
+        dir: "~/.agents/skills".into(),
+        names: names.iter().map(|n| n.to_string()).collect(),
+    });
+    t
+}
+
+/// The skills briefing of a codex exec prompt names the bundle folder, and
+/// each render installs a new one. 2 renders still give 1 hash.
+#[test]
+fn codex_adapter_hash_hides_the_skills_bundle_folder() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let ctx = render_ctx(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    let profile = codex_with_operator_skills(tmp.path(), &["probe-a"]);
+    let first = hash_of(&ctx, &profile, &scratch);
+    assert_eq!(hash_of(&ctx, &profile, &scratch), first);
+}
+
+/// A change of the briefing text (1 more skill) changes the codex hash:
+/// the render hides only the bundle folder.
+#[test]
+fn codex_adapter_hash_changes_when_the_briefing_changes() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let ctx = render_ctx(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    let one = codex_with_operator_skills(tmp.path(), &["probe-a"]);
+    let two = codex_with_operator_skills(tmp.path(), &["probe-a", "probe-b"]);
+    assert_ne!(hash_of(&ctx, &one, &scratch), hash_of(&ctx, &two, &scratch));
+}
+
 #[test]
 fn adapter_hash_changes_when_the_rendered_launch_changes() {
     let tmp = tempfile::tempdir_in("/tmp").unwrap();
