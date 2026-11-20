@@ -54,6 +54,11 @@ pub struct HeartbeatFile {
     /// The PID of the agent, once it started.
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
+    /// The PID of the wrapper that wrote the file. Before its agent starts,
+    /// fleetd records the wrapper of a launched attempt from it (SR-8). A
+    /// wrapper of an older version writes none.
+    #[serde(default)]
+    pub wrapper: Option<u32>,
     /// The pane of the wrapper.
     pub mux_pane: Option<String>,
     /// `running` while the agent process lives, then `exited`.
@@ -226,6 +231,7 @@ impl AttemptFiles {
             attempt: self.attempt(),
             pid,
             pgid: None,
+            wrapper: Some(std::process::id()),
             mux_pane: facts.mux_pane.clone(),
             proc_state: pid.map(|p| {
                 let state = if horch_platform::process::alive(p) {
@@ -530,7 +536,9 @@ pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkin
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
         let tick = Duration::from_millis(100).min(every);
-        let mut since = Duration::ZERO;
+        // The first beat is at once: it names the wrapper before its agent
+        // starts, so that fleetd can record the wrapper (SR-8).
+        let mut since = every;
         let mut log = CheckinLog::default();
         loop {
             if flag.load(Ordering::SeqCst) {
@@ -551,6 +559,57 @@ pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkin
         stop,
         thread: Some(thread),
     }
+}
+
+/// The time between 2 reads of the ledger while a wrapper waits for its
+/// record.
+pub const RECORD_POLL: Duration = Duration::from_millis(250);
+
+/// SR-8, FM-32: wait until fleetd has recorded the wrapper `me` (its PID
+/// and start time) of the worker `worker_id`, on the worker row or on an
+/// attempt of the worker that is not ended. The wrapper starts its agent
+/// only after this, so no agent code runs while its attempt has no
+/// recorded process. The wait opens the ledger `db` read-only for each
+/// read. `limit` counts with [`Instant`], which does not count a sleep of
+/// the machine on macOS and Linux. With no record in `limit`, the wait
+/// fails, and the caller starts no agent.
+pub fn wait_recorded(db: &Path, worker_id: &str, me: (u32, u64), limit: Duration) -> Result<()> {
+    let until = Instant::now() + limit;
+    loop {
+        if is_recorded(db, worker_id, me) {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            bail!(
+                "fleetd did not record this wrapper (pid {}) of worker {worker_id} in {} s, so the agent does not start",
+                me.0,
+                limit.as_secs()
+            );
+        }
+        std::thread::sleep(RECORD_POLL);
+    }
+}
+
+fn is_recorded(db: &Path, worker_id: &str, me: (u32, u64)) -> bool {
+    let Ok(store) = Store::open_read_only(db) else {
+        return false;
+    };
+    let Ok(start) = i64::try_from(me.1) else {
+        return false;
+    };
+    store
+        .conn()
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM workers
+                  WHERE worker_id = ?1 AND supervisor_pid = ?2 AND supervisor_started = ?3
+                 UNION ALL
+                 SELECT 1 FROM attempts
+                  WHERE worker_id = ?1 AND state != 'ended' AND pid = ?2 AND pid_start = ?3)",
+            rusqlite::params![worker_id, me.0, start],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
 }
 
 /// The longest time 1 repeated checkin error stays silent.
@@ -1097,7 +1156,10 @@ mod tests {
         let err = wait_recorded(&f.db, &f.worker, ME, limit).unwrap_err();
         assert!(begin.elapsed() >= limit);
         let text = format!("{err:#}");
-        assert!(text.contains("fleetd did not record this wrapper"), "{text}");
+        assert!(
+            text.contains("fleetd did not record this wrapper"),
+            "{text}"
+        );
         assert!(text.contains("the agent does not start"), "{text}");
     }
 }

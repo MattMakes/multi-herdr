@@ -281,6 +281,7 @@ impl World {
             attempt: attempt.into(),
             pid: None,
             pgid: None,
+            wrapper: None,
             mux_pane: None,
             proc_state: None,
             agent_state: None,

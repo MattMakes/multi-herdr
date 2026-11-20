@@ -749,7 +749,8 @@ fn recorded(p: (u32, u64)) -> (Option<i64>, Option<i64>) {
 
 /// The wrapper writes its heartbeat before its agent starts: the file
 /// names the wrapper and no agent, and fleetd records the wrapper of the
-/// launched attempt on its worker row.
+/// launched attempt on its worker row. The test process is fleetd here, so
+/// the file that it writes names fleetd, which is never a wrapper.
 #[test]
 fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
     let mut w = World::new();
@@ -757,18 +758,23 @@ fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
     let me = std::process::id();
     let mut procs = FakeProcesses::default();
     procs.0.insert(me, (55, Some(1)));
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
     w.files().write_heartbeat(&AgentFacts::new(None)).unwrap();
     let written: serde_json::Value =
         serde_json::from_slice(&std::fs::read(w.dir().join(HEARTBEAT_JSON)).unwrap()).unwrap();
     assert_eq!(written["pid"], serde_json::Value::Null, "{written}");
     assert_eq!(written["wrapper"], me, "{written}");
-
     let report = w.ingest_report(T1, &procs);
-    assert_eq!(w.supervisor(), recorded((me, 55)));
+    assert_eq!(w.supervisor(), (None, None), "fleetd is never a wrapper");
+    assert!(report.wrappers.is_empty(), "{report:?}");
+
+    w.wrapper_only(2, WRAPPER.0);
+    let report = w.ingest_report(T2, &procs);
+    assert_eq!(w.supervisor(), recorded(WRAPPER));
     assert_eq!(w.worker_row().agent_pid, None);
     assert_eq!(
         report.wrappers.get(&w.attempt.attempt_id).map(|r| r.pid),
-        Some(me),
+        Some(WRAPPER.0),
         "{report:?}"
     );
 }
@@ -824,7 +830,10 @@ fn heartbeat_of_an_unknown_attempt_is_refused() {
     hb["wrapper"] = WRAPPER.0.into();
     w.write_raw(HEARTBEAT_JSON, hb.to_string().as_bytes());
     let report = w.ingest_report(T1, &procs);
-    assert!(report.checkins.is_empty() && report.wrappers.is_empty(), "{report:?}");
+    assert!(
+        report.checkins.is_empty() && report.wrappers.is_empty(),
+        "{report:?}"
+    );
     assert_eq!(
         w.count("SELECT count(*) FROM workers WHERE supervisor_pid IS NOT NULL"),
         0

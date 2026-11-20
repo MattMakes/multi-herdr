@@ -111,14 +111,6 @@ pub fn processes_of(rows: &[AttemptProcesses]) -> Option<Vec<FleetProcess>> {
     Some(out)
 }
 
-/// FR-10: the first attempt of `rows` that is not ended and has no recorded
-/// process.
-pub fn launching_attempt(rows: &[AttemptProcesses]) -> Option<&str> {
-    rows.iter()
-        .find(|r| !r.ended && r.processes.is_empty())
-        .map(|r| r.attempt.as_str())
-}
-
 /// The process facts that the answer reads. `None` is a fact that is
 /// `NotSupported` or that fails to read.
 pub trait ProcessFacts {

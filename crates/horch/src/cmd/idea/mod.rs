@@ -19,7 +19,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
-    fleet_process, launching_attempt, recorded_processes, Fact, PlatformFacts,
+    fleet_process, recorded_processes, Fact, PlatformFacts,
 };
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
@@ -105,21 +105,16 @@ fn text<'a>(result: &'a Value, key: &str) -> &'a str {
 /// `horch feature abandon` (SR-5, FR-10): `Some(exit 1)` when this process
 /// is a fleet process: the rule [`fleet_process`] of the channel server,
 /// never an environment variable. A fact that is unknown refuses too: a
-/// guard whose fact is unknown does not hold. While an attempt launches
-/// with no recorded process ([`launching_attempt`]), a process that is not
-/// proven inside an attempt is refused too, and told to try again. This
-/// guard only gives an early message. The checks of fleetd at the server stay the wall.
+/// guard whose fact is unknown does not hold. This guard only gives an
+/// early message. The checks of fleetd at the server stay the wall.
 pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -> Option<ExitCode> {
     let reason = match attempt_fact(ctx) {
-        AttemptFact::Launching(attempt) => format!(
-            "attempt {attempt} launches and fleetd has not recorded its process yet, so horch cannot prove that this process is not a fleet process of it. Try again in some seconds"
-        ),
-        AttemptFact::Known(Fact::No) => return None,
-        AttemptFact::Known(Fact::Yes(attempts)) => format!(
+        Fact::No => return None,
+        Fact::Yes(attempts) => format!(
             "this process is a fleet process of attempt {}",
             attempts.join(", ")
         ),
-        AttemptFact::Known(Fact::Unknown) => {
+        Fact::Unknown => {
             "horch cannot prove that this process runs outside a fleet attempt, because a process fact is unknown".to_string()
         }
     };
@@ -129,25 +124,15 @@ pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -
     Some(ExitCode::from(1))
 }
 
-enum AttemptFact {
-    Known(Fact),
-    Launching(String),
-}
-
-fn attempt_fact(ctx: &RuntimeContext) -> AttemptFact {
+fn attempt_fact(ctx: &RuntimeContext) -> Fact {
     let Ok(store) = taskledger::open_existing_read_only(ctx) else {
-        return AttemptFact::Known(Fact::Unknown);
+        return Fact::Unknown;
     };
     let Some(store) = store else {
-        return AttemptFact::Known(Fact::No);
+        return Fact::No;
     };
-    let Ok(Some((recorded, rows))) = recorded_processes(store.conn()) else {
-        return AttemptFact::Known(Fact::Unknown);
-    };
-    match fleet_process(std::process::id(), &recorded, &PlatformFacts) {
-        Fact::No => launching_attempt(&rows).map_or(AttemptFact::Known(Fact::No), |a| {
-            AttemptFact::Launching(a.to_string())
-        }),
-        fact => AttemptFact::Known(fact),
+    match recorded_processes(store.conn()) {
+        Ok(Some((recorded, _))) => fleet_process(std::process::id(), &recorded, &PlatformFacts),
+        Ok(None) | Err(_) => Fact::Unknown,
     }
 }

@@ -517,6 +517,7 @@ fn pass_ingests_progress_result_and_heartbeat() {
         attempt: short(&attempt).into(),
         pid: None,
         pgid: None,
+        wrapper: None,
         mux_pane: None,
         proc_state: None,
         agent_state: None,

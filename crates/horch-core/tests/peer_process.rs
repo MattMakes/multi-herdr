@@ -4,10 +4,8 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 
 use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
-    fleet_process, launching_attempt, processes_of, Fact, FleetProcess, PlatformFacts, ProcessFacts,
+    fleet_process, Fact, FleetProcess, PlatformFacts, ProcessFacts,
 };
-use horch_core::fleetd::task_execution::adapters::sqlite::AttemptProcesses;
-use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_platform::{group, process};
 
 /// A wrapper `sh` that leads its own group, as the launcher starts it, with
@@ -283,62 +281,4 @@ fn no_recorded_process_is_no_fleet_process() {
         fleet_process(outside.printed, &[], &PlatformFacts),
         Fact::No
     );
-}
-
-struct OutsideChain;
-
-impl ProcessFacts for OutsideChain {
-    fn parent(&self, pid: u32) -> Option<u32> {
-        Some(if pid == 10 { 20 } else { 1 })
-    }
-
-    fn start_time(&self, _pid: u32) -> Option<u64> {
-        Some(5)
-    }
-
-    fn in_group(&self, _pid: u32, _leader: u32, _leader_start: u64) -> Option<bool> {
-        Some(false)
-    }
-
-    fn group_of(&self, pid: u32) -> Option<u32> {
-        Some(pid)
-    }
-
-    fn session_of(&self, pid: u32) -> Option<u32> {
-        Some(pid)
-    }
-}
-
-fn row(attempt: &str, ended: bool, processes: Vec<Recorded>) -> AttemptProcesses {
-    AttemptProcesses {
-        attempt: attempt.to_string(),
-        task: None,
-        persona: Some("idea-lead".to_string()),
-        ended,
-        processes,
-    }
-}
-
-#[test]
-fn agent_of_a_launching_attempt_with_no_recorded_process_is_not_outside() {
-    let live = row(
-        "I-0001/clarifying/1",
-        false,
-        vec![Recorded {
-            pid: 30,
-            pid_start: Some(5),
-        }],
-    );
-    let launching = row("I-0005/clarifying/1", false, Vec::new());
-    let rows = [live, launching];
-    let recorded = processes_of(&rows).unwrap();
-    assert_eq!(fleet_process(10, &recorded, &OutsideChain), Fact::No);
-    assert_eq!(launching_attempt(&rows), Some("I-0005/clarifying/1"));
-    assert_eq!(launching_attempt(&rows[..1]), None);
-}
-
-#[test]
-fn ended_attempt_with_no_recorded_process_does_not_count() {
-    let ended = row("I-0005/clarifying/1", true, Vec::new());
-    assert_eq!(launching_attempt(&[ended]), None);
 }

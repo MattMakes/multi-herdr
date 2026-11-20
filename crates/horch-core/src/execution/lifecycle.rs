@@ -13,6 +13,7 @@ use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::execution::SessionMode;
 use crate::fleetd::fleet_runtime::adapters::channel_client;
+use crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
 use crate::fleetd::task_execution::domain::context_limit;
 use crate::fleetd::worker_profiles::domain::profile::Mode;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
@@ -1195,6 +1196,25 @@ impl<'a> PaneWorker<'a> {
         ))
     }
 
+    /// SR-8, FM-32: wait until fleetd has recorded this wrapper, so that no
+    /// agent code runs while its attempt has no recorded process. The first
+    /// heartbeat names this wrapper for a push attempt; the pass records the
+    /// pane wrapper of an idea-lead attempt. The wait reads the ledger of
+    /// the brief read-only, in this process, outside the sandbox of the
+    /// agent. With no record in [`START_TIMEOUT_S`], the launch fails and
+    /// no agent starts. A wrapper with no task ledger is in no fleet
+    /// attempt, and does not wait.
+    fn wait_recorded(&self) -> Result<()> {
+        let Some((db, id)) = &self.ledger else {
+            return Ok(());
+        };
+        let me = std::process::id();
+        let start = crate::procid::start_time(me)
+            .context("the start time of this wrapper is unreadable, so the agent does not start")?;
+        let limit = Duration::from_secs(START_TIMEOUT_S.unsigned_abs());
+        crate::taskledger::supervisor::wait_recorded(db, id, (me, start), limit)
+    }
+
     /// A teammate with no harness: only a note, as a smoke test of the pane.
     fn run_smoke_agent(
         &self,
@@ -1266,6 +1286,10 @@ impl<'a> PaneWorker<'a> {
         // Held until the agent exits; dropping it removes the socket.
         let _report = start_report_server(ctx, brief, &teammate, &env)?;
         let checkins = self.start_checkins(brief, facts.clone());
+        // The smoke agent runs in this process: it is no agent code.
+        if teammate.agent != HarnessKind::None {
+            self.wait_recorded()?;
+        }
         if teammate.agent == HarnessKind::None {
             self.run_smoke_agent(&env, checkins)
         } else if let Some((cli, files)) = exec {

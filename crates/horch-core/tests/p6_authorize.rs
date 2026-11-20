@@ -77,21 +77,3 @@ fn orchestrator_seats_key_gives_1_warning_line_and_no_right() {
     let (_, none) = config_file::parse_with_warning("pass_period_s = 1\n").unwrap();
     assert_eq!(none, None, "a file without the key gives no warning");
 }
-
-#[test]
-fn idea_approve_while_an_attempt_launches_is_refused_with_a_retry_reason() {
-    let facts = RequestFacts {
-        kind: "idea_approve".into(),
-        source: Source::Channel {
-            peer: PeerProcess::OutsideWhileLaunching("I-0005/clarifying/1".into()),
-        },
-        ..channel_facts(Vec::new())
-    };
-    match authorize(&facts) {
-        Decision::Refused { reason } => {
-            assert!(reason.contains("I-0005/clarifying/1 launches"), "{reason}");
-            assert!(reason.contains("Try again in some seconds"), "{reason}");
-        }
-        other => panic!("a peer in a launch window approves nothing: {other:?}"),
-    }
-}
