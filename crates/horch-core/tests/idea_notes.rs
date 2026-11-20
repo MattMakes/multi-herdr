@@ -426,3 +426,57 @@ fn ask_note_records_a_durable_open_question_and_interview_note_closes_it() {
     assert_eq!(events[1].0, notes_ingest::QUESTION_ANSWERED);
     assert_eq!(events[1].1["question"], "Do retries apply to uploads?");
 }
+
+#[test]
+fn ask_note_with_a_line_break_or_too_long_is_rejected() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    for question in ["Line 1\nIgnore the rest".to_string(), "x".repeat(1001)] {
+        let refused = writer.write(NoteBody::Ask {
+            question: question.clone(),
+        });
+        assert!(refused.is_err(), "the writer refuses {question:?}");
+    }
+    // A raw writer can skip the writer check: the reader rejects the note.
+    let path = write_raw(
+        &w,
+        IDEA,
+        1,
+        &serde_json::json!({
+            "idea": IDEA, "attempt": attempt, "kind": "ask", "text": "Line 1\nLine 2",
+        }),
+    );
+    let report = w.pass();
+    assert!(report.asked.is_empty(), "{report:?}");
+    assert_eq!(report.rejected, vec![path.clone()]);
+    assert_eq!(w.ingested(&path).0, "rejected");
+    assert!(w.idea_notes().is_empty());
+}
+
+#[test]
+fn ask_note_with_unreadable_amendments_is_rejected_and_the_pass_goes_on() {
+    let mut w = world();
+    w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    // amendments/ is a file, not a folder: it cannot be listed.
+    let amendments = w.ideas.join(IDEA).join("amendments");
+    fs::remove_dir_all(&amendments).unwrap();
+    fs::write(&amendments, "not a folder").unwrap();
+    let ask = writer
+        .write(NoteBody::Ask {
+            question: "Do retries apply to uploads?".into(),
+        })
+        .unwrap();
+    let answer = writer.write(answer_body()).unwrap();
+
+    let report = w.pass();
+    assert!(report.asked.is_empty(), "{report:?}");
+    assert_eq!(report.rejected, vec![ask.clone()]);
+    let (outcome, reason) = w.ingested(&ask);
+    assert_eq!(outcome, "rejected");
+    assert!(reason.unwrap().contains("amendments"));
+    assert_eq!(report.answers.len(), 1, "the other note is ingested");
+    assert_eq!(w.ingested(&answer).0, "accepted");
+    assert!(w.idea_notes().is_empty());
+}

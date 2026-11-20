@@ -444,7 +444,12 @@ fn waiting_text(state: &str, idea: &str, since: &str, n: u64, question: Option<&
         )
     };
     if let Some(q) = question {
-        text.push_str(&format!(" The question: {q}"));
+        // The ingest checks the question; a control character is a space here too.
+        let q: String = q
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        text.push_str(&format!(" The question of its sub-orchestrator: \"{q}\""));
     }
     if n > 0 {
         text.push_str(&format!(" Reminder {n}."));

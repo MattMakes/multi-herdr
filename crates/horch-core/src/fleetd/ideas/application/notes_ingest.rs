@@ -121,7 +121,7 @@ pub fn ingest(
         }
         let accepted = match &file.read {
             NoteRead::Rejected { sha256, reason } => Err((sha256.as_deref(), reason.clone())),
-            NoteRead::Valid { sha256, note } => match accept(tx, ideas_dir, owner, note)? {
+            NoteRead::Valid { sha256, note } => match accept(tx, guard, ideas_dir, owner, note)? {
                 Ok(()) => Ok((sha256.as_str(), note)),
                 Err(reason) => Err((Some(sha256.as_str()), reason)),
             },
@@ -129,7 +129,6 @@ pub fn ingest(
         match accepted {
             Ok((sha256, note)) => {
                 store::record_message(tx, &path, Some(sha256), store::ACCEPTED, None, &at)?;
-                record_question(tx, guard, ideas_dir, owner, note)?;
                 let to = match note.body {
                     NoteBody::Interview { .. } => &mut report.interview,
                     NoteBody::Ask { .. } => &mut report.asked,
@@ -147,10 +146,12 @@ pub fn ingest(
     Ok(report)
 }
 
-/// Check the attempt of `note`, and append an interview note to
-/// interview.md. The inner error is the reason of the rejection.
+/// Check the attempt of `note`, append an interview note to interview.md,
+/// and record the question event of an `ask` or an `interview` note. The
+/// inner error is the reason of the rejection.
 fn accept(
     tx: &Connection,
+    guard: Option<Generation>,
     ideas_dir: &Path,
     owner: &User,
     note: &Note,
@@ -158,33 +159,25 @@ fn accept(
     if let Err(reason) = check_attempt(tx, note)? {
         return Ok(Err(reason));
     }
-    let NoteBody::Interview { question, answer } = &note.body else {
-        return Ok(Ok(()));
-    };
-    Ok(append_once(ideas_dir, owner, note, question, answer))
-}
-
-fn record_question(
-    tx: &Connection,
-    guard: Option<Generation>,
-    ideas_dir: &Path,
-    owner: &User,
-    note: &Note,
-) -> Result<()> {
     let (cause, data) = match &note.body {
-        NoteBody::Ask { question } => (
-            QUESTION_ASKED,
-            json!({
-                "attempt": note.attempt,
-                "question": question,
-                "amendments": amendments(ideas_dir, owner, &note.idea)?,
-            }),
-        ),
-        NoteBody::Interview { question, .. } => (
-            QUESTION_ANSWERED,
-            json!({ "attempt": note.attempt, "question": question }),
-        ),
-        NoteBody::Answer { .. } | NoteBody::Dismiss { .. } => return Ok(()),
+        NoteBody::Ask { question } => {
+            // An unreadable amendments/ rejects this note only: the pass goes on.
+            let count = match amendments(ideas_dir, owner, &note.idea) {
+                Ok(count) => count,
+                Err(reason) => return Ok(Err(reason)),
+            };
+            let data =
+                json!({ "attempt": note.attempt, "question": question, "amendments": count });
+            (QUESTION_ASKED, data)
+        }
+        NoteBody::Interview { question, answer } => {
+            if let Err(reason) = append_once(ideas_dir, owner, note, question, answer) {
+                return Ok(Err(reason));
+            }
+            let data = json!({ "attempt": note.attempt, "question": question });
+            (QUESTION_ANSWERED, data)
+        }
+        NoteBody::Answer { .. } | NoteBody::Dismiss { .. } => return Ok(Ok(())),
     };
     let by = Cause {
         actor: Actor::Horch,
@@ -199,15 +192,17 @@ fn record_question(
         by,
         &data,
     )?;
-    Ok(())
+    Ok(Ok(()))
 }
 
-fn amendments(ideas_dir: &Path, owner: &User, idea: &str) -> Result<usize> {
-    let folder = IdeaFolder::new(ideas_dir, idea, owner.clone())?;
+/// The count of amendments of `idea`. The error is the reason of the
+/// rejection.
+fn amendments(ideas_dir: &Path, owner: &User, idea: &str) -> Result<usize, String> {
+    let folder = IdeaFolder::new(ideas_dir, idea, owner.clone()).map_err(|e| e.to_string())?;
     match folder.read_amendments() {
         Ok(texts) => Ok(texts.len()),
         Err(FolderError::Missing { .. }) => Ok(0),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(format!("the amendments of idea {idea} are unreadable: {e}")),
     }
 }
 

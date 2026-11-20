@@ -241,7 +241,10 @@ fn check(note: &Note) -> Result<(), String> {
             filled("the question", question)?;
             filled("the answer", answer)
         }
-        NoteBody::Ask { question } => filled("the question", question),
+        NoteBody::Ask { question } => {
+            filled("the question", question)?;
+            check_ask(question)
+        }
         NoteBody::Answer {
             question,
             case,
@@ -262,6 +265,25 @@ fn check(note: &Note) -> Result<(), String> {
             filled("the reason", reason)
         }
     }
+}
+
+/// The most characters of the question of an `ask` note. fleetd shows it
+/// in 1 needs-you item.
+pub const ASK_LIMIT: usize = 1000;
+
+/// The question of an `ask` note is 1 line of at most [`ASK_LIMIT`]
+/// characters with no control character, so the needs-you item that shows
+/// it holds only that line.
+fn check_ask(question: &str) -> Result<(), String> {
+    if question.chars().any(char::is_control) {
+        return Err("the question has a line break or a control character".into());
+    }
+    if question.chars().count() > ASK_LIMIT {
+        return Err(format!(
+            "the question is longer than {ASK_LIMIT} characters"
+        ));
+    }
+    Ok(())
 }
 
 /// The writer of the notes of the sub-orchestrator of 1 idea.
