@@ -1215,10 +1215,12 @@ fn deny_git_worktree(
     )
 }
 
-/// SR-3: no agent pushes, merges a PR or makes a release, so a worker's
-/// Bash may not run `git push`, `gh pr merge` or `gh release`. The agent
-/// hooks path also refuses a push; this rule also stops `--no-verify`. A
-/// fleet orchestrator gets no such rule.
+/// SR-3: no agent pushes, merges a PR, makes a release or messages anyone
+/// outside the fleet, so a worker's Bash may not run a command of
+/// [`launch_env::DENIED_COMMANDS`] (`git push`, `gh pr merge`,
+/// `gh release`, `gh issue comment`, `gh pr comment`, `gh pr review`,
+/// `gh discussion`). The agent hooks path also refuses a push; this rule
+/// also stops `--no-verify`. A fleet orchestrator gets no such rule.
 fn deny_agent_push(
     teammate: &Teammate,
     settings: &mut serde_json::Map<String, Value>,
@@ -1226,14 +1228,10 @@ fn deny_agent_push(
     if !is_worker(teammate) {
         return Ok(false);
     }
-    let [push, merge, release] = launch_env::DENIED_COMMANDS.map(launch_env::claude_deny_rule);
     add_entries(
         settings,
-        [
-            (PERMS, "deny", push),
-            (PERMS, "deny", merge),
-            (PERMS, "deny", release),
-        ],
+        launch_env::DENIED_COMMANDS
+            .map(|words| (PERMS, "deny", launch_env::claude_deny_rule(words))),
     )
 }
 
@@ -2885,6 +2883,10 @@ mod tests {
             "Bash(git push:*)",
             "Bash(gh pr merge:*)",
             "Bash(gh release:*)",
+            "Bash(gh issue comment:*)",
+            "Bash(gh pr comment:*)",
+            "Bash(gh pr review:*)",
+            "Bash(gh discussion:*)",
             "Read(//fleet/run/**)",
             "Edit(//fleet/run/**)"
         ]);
@@ -2904,7 +2906,7 @@ mod tests {
         let cmd = claude_command(&env, &own, Session::Unmanaged, "", None).unwrap();
         assert_eq!(
             settings_arg(&cmd)["permissions"]["deny"],
-            json!(want.as_array().unwrap()[..7])
+            json!(want.as_array().unwrap()[..11])
         );
     }
 
@@ -2925,7 +2927,11 @@ mod tests {
                 "Bash(git worktree prune:*)",
                 "Bash(git push:*)",
                 "Bash(gh pr merge:*)",
-                "Bash(gh release:*)"
+                "Bash(gh release:*)",
+                "Bash(gh issue comment:*)",
+                "Bash(gh pr comment:*)",
+                "Bash(gh pr review:*)",
+                "Bash(gh discussion:*)"
             ]})
         );
     }

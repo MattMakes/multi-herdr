@@ -1,6 +1,8 @@
 //! SR-3 (ticket 22 of fleetd-p4): no agent pushes. Each worker gets a git
 //! hooks path whose `pre-push` hook refuses, and the profiles of Claude Code
-//! and Codex deny `git push`, `gh pr merge` and `gh release`. horch's own
+//! and Codex deny `git push`, `gh pr merge` and `gh release`. They also deny
+//! the external messages: `gh issue comment`, `gh pr comment`,
+//! `gh pr review` and `gh discussion`. horch's own
 //! git calls set `-c core.hooksPath=/dev/null`, and a `-c` value wins over
 //! the `GIT_CONFIG_*` values of the environment, so the old finish path
 //! still pushes. The other hooks of the repository still run for an agent.
@@ -287,7 +289,7 @@ fn claude_deny(root: &Path, teammate: &Teammate) -> Vec<String> {
 }
 
 #[test]
-fn claude_profile_denies_git_push_by_default() {
+fn claude_profile_denies_git_push_and_external_messages_by_default() {
     let tmp = tempfile::tempdir().unwrap();
     let worker = Teammate {
         name: "plain-worker".into(),
@@ -299,10 +301,14 @@ fn claude_profile_denies_git_push_by_default() {
         "Bash(git push:*)",
         "Bash(gh pr merge:*)",
         "Bash(gh release:*)",
+        "Bash(gh issue comment:*)",
+        "Bash(gh pr comment:*)",
+        "Bash(gh pr review:*)",
+        "Bash(gh discussion:*)",
     ] {
         assert!(deny.iter().any(|d| d == rule), "{rule} not in {deny:?}");
     }
-    assert_eq!(DENIED_COMMANDS.len(), 3);
+    assert_eq!(DENIED_COMMANDS.len(), 7);
 }
 
 /// The rendered rules of a Codex worker launch: its private `CODEX_HOME`
@@ -310,7 +316,7 @@ fn claude_profile_denies_git_push_by_default() {
 /// `prefix_rule`. Windows shares 1 rules file and gets no forbidden rule.
 #[cfg(unix)]
 #[test]
-fn codex_profile_forbids_git_push_by_default() {
+fn codex_profile_forbids_git_push_and_external_messages_by_default() {
     use horch_core::harness::PrepareRequest;
     use horch_core::roster::Roster;
 

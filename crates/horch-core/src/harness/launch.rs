@@ -1796,7 +1796,7 @@ mod tests {
                 "--settings",
                 // The sandbox of each worker (fleetd-p5 39) and its operator
                 // boundary of the fleet root.
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Bash(gh issue comment:*)","Bash(gh pr comment:*)","Bash(gh pr review:*)","Bash(gh discussion:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -2914,7 +2914,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -2979,7 +2983,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -3026,7 +3034,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"skill-creator@claude-plugins-official": false},
