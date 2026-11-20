@@ -214,6 +214,84 @@ fn refused_launch_changes_nothing() {
     stop_fleetd_and_jobs(&g);
 }
 
+/// Step 5: the Claude probe, against today's real state.
+fn claude_probe_reads_exhausted(h: &mut Harness) {
+    h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
+    h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
+    let q: Value =
+        serde_json::from_slice(&h.run(&["quota", "--refresh", "--json"]).stdout).unwrap();
+    assert_eq!(q["pools"]["claude"]["state"], "exhausted");
+    let seven = q["pools"]["claude"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "7d" && w["scope_model"].is_null())
+        .unwrap()
+        .clone();
+    assert_eq!(seven["used"].as_f64(), Some(1.0));
+    assert_eq!(seven["resets_at"], "2026-10-02T13:59:59Z");
+    assert!(h.violations().is_empty(), "{:?}", h.violations());
+    h.unset("HORCH_FAKE_SCENARIO");
+}
+
+/// Step 10: nothing that must not persist did (TEL-11).
+fn nothing_persists(h: &Harness) {
+    for p in h
+        .state_files()
+        .into_iter()
+        .filter(|p| p.starts_with(h.state.join("telemetry")))
+    {
+        let text = std::fs::read_to_string(&p).unwrap_or_default();
+        for s in [
+            "SENTINEL-CONTENT",
+            "sentinel@example.invalid",
+            "acct_",
+            "user.email",
+        ] {
+            assert!(!text.contains(s), "{s} in {}", p.display());
+        }
+    }
+}
+
+/// Step 11: horch usage agrees with horch cost, record by record (TEL-10).
+fn usage_agrees_with_cost(h: &mut Harness) {
+    for project in ["/work/alpha", "/work/beta"] {
+        h.set("HORCH_PROJECT_DIR", project);
+        let usage: Value =
+            serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
+                .unwrap();
+        // A filter makes 1 report on stdout; this one covers every call.
+        let cost: Value =
+            serde_json::from_slice(&h.run(&["cost", "--json", "--since", "2000-01-01"]).stdout)
+                .unwrap();
+        for row in cost["rows"].as_array().unwrap() {
+            let rec = usage["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["record_id"] == row["record_id"])
+                .unwrap();
+            for class in [
+                "input",
+                "cache_write_5m",
+                "cache_write_1h",
+                "cache_read",
+                "output",
+            ] {
+                assert_eq!(
+                    rec["tokens"][class], row["tokens"][class],
+                    "{} {class}",
+                    row["record_id"]
+                );
+            }
+            assert!(close(
+                rec["cost_usd"].as_f64().unwrap(),
+                row["cost"].as_f64().unwrap()
+            ));
+        }
+    }
+}
+
 /// The story of the module doc. `slow_ollama` delays every `ollama` call by
 /// 7 s and keeps the `PASS` lines quiet.
 fn story(slow_ollama: bool) {
@@ -308,23 +386,7 @@ fn story(slow_ollama: bool) {
     pass("3 stage 2 totals equal EXPECTED.md, no duplicate key");
     pass("4 a collector killed mid-tick loses and repeats nothing");
 
-    // 5. The Claude probe, against today's real state.
-    h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
-    h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
-    let q: Value =
-        serde_json::from_slice(&h.run(&["quota", "--refresh", "--json"]).stdout).unwrap();
-    assert_eq!(q["pools"]["claude"]["state"], "exhausted");
-    let seven = q["pools"]["claude"]["windows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["name"] == "7d" && w["scope_model"].is_null())
-        .unwrap()
-        .clone();
-    assert_eq!(seven["used"].as_f64(), Some(1.0));
-    assert_eq!(seven["resets_at"], "2026-10-02T13:59:59Z");
-    assert!(h.violations().is_empty(), "{:?}", h.violations());
-    h.unset("HORCH_FAKE_SCENARIO");
+    claude_probe_reads_exhausted(&mut h);
     pass("5 quota --refresh: claude exhausted, 7d 1.00, no fake violation");
 
     // 6-8. The gate, on quota fixtures.
@@ -369,59 +431,9 @@ fn story(slow_ollama: bool) {
     );
     pass("9 render 120x40 equals golden/telemetry-e2e.txt");
 
-    // 10. Nothing that must not persist did (TEL-11).
-    for p in h
-        .state_files()
-        .into_iter()
-        .filter(|p| p.starts_with(h.state.join("telemetry")))
-    {
-        let text = std::fs::read_to_string(&p).unwrap_or_default();
-        for s in [
-            "SENTINEL-CONTENT",
-            "sentinel@example.invalid",
-            "acct_",
-            "user.email",
-        ] {
-            assert!(!text.contains(s), "{s} in {}", p.display());
-        }
-    }
+    nothing_persists(&h);
     pass("10 no content or identity in the state dir");
 
-    // 11. horch usage agrees with horch cost, record by record (TEL-10).
-    for project in ["/work/alpha", "/work/beta"] {
-        h.set("HORCH_PROJECT_DIR", project);
-        let usage: Value =
-            serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
-                .unwrap();
-        // A filter makes 1 report on stdout; this one covers every call.
-        let cost: Value =
-            serde_json::from_slice(&h.run(&["cost", "--json", "--since", "2000-01-01"]).stdout)
-                .unwrap();
-        for row in cost["rows"].as_array().unwrap() {
-            let rec = usage["records"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["record_id"] == row["record_id"])
-                .unwrap();
-            for class in [
-                "input",
-                "cache_write_5m",
-                "cache_write_1h",
-                "cache_read",
-                "output",
-            ] {
-                assert_eq!(
-                    rec["tokens"][class], row["tokens"][class],
-                    "{} {class}",
-                    row["record_id"]
-                );
-            }
-            assert!(close(
-                rec["cost_usd"].as_f64().unwrap(),
-                row["cost"].as_f64().unwrap()
-            ));
-        }
-    }
+    usage_agrees_with_cost(&mut h);
     pass("11 usage --json equals cost --json per record");
 }
