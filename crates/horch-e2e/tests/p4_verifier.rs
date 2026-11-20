@@ -549,18 +549,9 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
     assert_not_done(&w);
 }
 
-/// The address of this host that is not loopback, found by the route to a
-/// documentation address (no packet is sent), or that documentation address
-/// when the host has no route.
-fn off_host_ip() -> std::net::IpAddr {
-    let doc: std::net::IpAddr = [192, 0, 2, 1].into();
-    std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| s.connect((doc, 9)).and_then(|()| s.local_addr()))
-        .map(|a| a.ip())
-        .ok()
-        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
-        .unwrap_or(doc)
-}
+/// An off-host address (TEST-NET-1). The own LAN address of this host is on
+/// the host, as loopback is, and the macOS sandbox lets a check connect to it.
+const OFF_HOST_URL: &str = "http://192.0.2.1:9/";
 
 fn loopback_server(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -595,12 +586,6 @@ fn loopback_server(
 #[test]
 fn sr3_check_that_connects_off_host_is_refused() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let ip = off_host_ip();
-    let off_host = std::net::TcpListener::bind((ip, 0))
-        .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
-        .unwrap();
-    off_host.set_nonblocking(true).unwrap();
-    let off_url = format!("http://{ip}:{}/", off_host.local_addr().unwrap().port());
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let (port, loopback_requests) = loopback_server(std::sync::Arc::clone(&stop));
     let curl = ["/usr/bin/curl", "/bin/curl"]
@@ -611,7 +596,7 @@ fn sr3_check_that_connects_off_host_is_refused() {
     let check = format!(
         "{} && echo reached > loopback-ok.txt; {}",
         get(&format!("http://127.0.0.1:{port}/")),
-        get(&off_url)
+        get(OFF_HOST_URL)
     );
     let w = World::new(
         "p4v-sr3",
@@ -631,7 +616,7 @@ fn sr3_check_that_connects_off_host_is_refused() {
         );
         stop.store(true, Ordering::SeqCst);
         assert!(
-            off_host.accept().is_err() && loopback_requests.lock().unwrap().is_empty(),
+            loopback_requests.lock().unwrap().is_empty(),
             "SR-3 on a host with NotSupported ({gap:?}): the check ran with no sandbox\n{}",
             w.evidence()
         );
@@ -655,12 +640,6 @@ fn sr3_check_that_connects_off_host_is_refused() {
         "{}",
         w.evidence()
     );
-    assert!(
-        off_host.accept().is_err(),
-        "SR-3: the check reached the listener at {off_url}\n{}",
-        w.evidence()
-    );
-    // The curl code depends on the host (7: refused at once, 28: timed out).
     let reason = verdict["reason"].as_str().unwrap();
     assert!(
         reason
@@ -669,8 +648,8 @@ fn sr3_check_that_connects_off_host_is_refused() {
         "the verdict names no SR-3 network rule\n{verdict}"
     );
     assert!(
-        reason.contains("\ncheck| curl: ("),
-        "the verdict holds no output of the refused connect\n{verdict}"
+        reason.contains("\ncheck| curl: (7)"),
+        "SR-3: the connect to {OFF_HOST_URL} was not refused\n{verdict}"
     );
     assert_not_done(&w);
 }
