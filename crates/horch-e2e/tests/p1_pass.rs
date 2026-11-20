@@ -6,18 +6,7 @@
 //! Each test runs the `horch` binary with a real fleetd in stand-in mode
 //! (`docs/tickets/fleetd-p1/MAP.md`, Q8) on the ledger of its harness. A
 //! `sleep` child of the test is the agent of each worker, and only fleetd
-//! sees that an agent died. The tests make their ledger rows in 2 ways:
-//!
-//! - The RR-4 and RR-7 tests run a plan of 3 tasks in the push flow of
-//!   phases 4 to 6. The test binds each task to a worker with
-//!   `horch_e2e::bind` (FR-5) and writes the attempt files, as fleetd does
-//!   before a launch. fleetd makes the worktree with its `worktree_add`
-//!   job. The fake worker reads `task.yaml`, commits in the worktree and
-//!   writes `result.json`. Only the verifier of fleetd moves a task to done.
-//! - The FM-11 test binds 1 task with `horch_e2e::bind`, then writes the
-//!   supervisor process of the worker in the ledger. The scan test writes
-//!   its 10,000 rows of each kind in the ledger directly, with no `horch`
-//!   command.
+//! sees that an agent died.
 
 #![cfg(unix)]
 
@@ -103,7 +92,6 @@ fn wait_until<T>(what: &str, secs: u64, f: impl FnMut() -> Option<T>) -> T {
     wait_until_or(what, secs, f, String::new)
 }
 
-/// [`wait_until`] that adds the text of `evidence` to its failure.
 fn wait_until_or<T>(
     what: &str,
     secs: u64,
@@ -124,8 +112,6 @@ fn wait_until_or<T>(
     }
 }
 
-/// The task moves, the attempts and the jobs of the ledger of `h`, and the
-/// output of each fleetd, for a failure message.
 fn evidence(h: &Harness) -> String {
     let store = Store::open_read_only(&db(h)).unwrap();
     let rows = |sql: &str| -> Vec<String> {
@@ -360,16 +346,11 @@ impl Drop for Agent {
     }
 }
 
-/// 1 worker of persona `opus` whose agent is a live [`Agent`], bound to 1
-/// push attempt of a task.
 struct Worker {
     id: String,
     agent: Agent,
     task_id: String,
-    /// The name of the attempt, `A<n>`.
     attempt: String,
-    /// The `worktree_add` job that the bind queued; `None` when the
-    /// worktree of the task exists.
     add_job: Option<i64>,
 }
 
@@ -379,16 +360,10 @@ impl Worker {
     }
 }
 
-/// A new worker of persona `opus` with a live [`Agent`], bound to the next
-/// startable task (FR-5). The bind reserves the worktree and queues its
-/// `worktree_add` job, which fleetd runs. The test writes the attempt
-/// files, as fleetd does before a launch. Returns the worker and the seq of
-/// its task.
 fn bind(h: &Harness) -> (Worker, i64) {
     let agent = Agent::start();
-    // A task whose worktree is orphaned binds after fleetd rescues it.
     let bound = wait_until_or(
-        "a task of opus binds",
+        "a task of opus binds, also one whose orphaned worktree fleetd rescues first",
         60,
         || horch_e2e::bind::try_bind(h, "opus", Some(agent.pid())).ok(),
         || {
@@ -438,7 +413,6 @@ fn bind(h: &Harness) -> (Worker, i64) {
     (w, seq)
 }
 
-/// The value of the top-level key `key` of the `task.yaml` text `yaml`.
 fn yaml_value(yaml: &str, key: &str) -> String {
     let prefix = format!("{key}: ");
     let value = yaml
@@ -448,7 +422,6 @@ fn yaml_value(yaml: &str, key: &str) -> String {
     value.trim_matches('"').to_string()
 }
 
-/// The worktree of `w`, after the `worktree_add` job of fleetd made it.
 fn wait_for_worktree(h: &Harness, w: &Worker) -> PathBuf {
     let yaml = std::fs::read_to_string(w.task_yaml(h)).unwrap();
     let path = PathBuf::from(yaml_value(&yaml, "worktree"));
@@ -460,10 +433,6 @@ fn wait_for_worktree(h: &Harness, w: &Worker) -> PathBuf {
     path
 }
 
-/// The work of `w` on its bound task `seq` in the push flow: it reads its
-/// `task.yaml`, commits 1 file in the worktree that fleetd made, and writes
-/// `result.json` in the outbox that `report_to` names. Then its agent
-/// exits; only fleetd ends the attempt and moves the task.
 fn complete(h: &Harness, w: &mut Worker, seq: i64) {
     let name = format!("t{seq}");
     let path = wait_for_worktree(h, w);
@@ -493,13 +462,11 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
         "commits": [commit],
         "files_changed": [file],
     });
-    // SR-6: fleetd reads only a file of mode 0600 in a folder of mode 0700.
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(&outbox)
         .unwrap();
-    // Write it whole, so that no scan reads half a file.
     let tmp = outbox.join("result.json.tmp");
     std::fs::OpenOptions::new()
         .write(true)
@@ -545,8 +512,6 @@ fn task_status(h: &Harness, seq: i64) -> String {
         .unwrap()
 }
 
-/// The attempts of tasks that are not ended. An attempt of a
-/// sub-orchestrator has no task and does not count.
 fn live_attempts(h: &Harness) -> i64 {
     Store::open_read_only(&db(h))
         .unwrap()
@@ -616,7 +581,6 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     let (mut w2, s2) = bind(h);
     let (mut w3, s3) = bind(h);
     assert_eq!([s1, s2, s3], [1, 2, 3], "each bind takes the next task");
-    // No worktree_add job runs when fleetd gets its kill.
     for w in [&w1, &w2, &w3] {
         wait_for_worktree(h, w);
     }
@@ -669,9 +633,6 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     outcomes(h)
 }
 
-/// The end state of the plan of [`run_plan`]: each task done once, task 2
-/// after 1 more attempt. The verifier ends each attempt with a valid
-/// `result.json` as `verified`.
 fn plan_done() -> Vec<TaskOutcome> {
     let done = |seq: i64, ends: &[&str]| -> TaskOutcome {
         let attempts = ends
@@ -1096,13 +1057,6 @@ fn job(h: &Harness, id: i64) -> (String, i64) {
         .unwrap()
 }
 
-/// FM-11: fleetd dies after the commit of part 2 and before its effects.
-/// The pass ended the attempt of a dead agent and queued its task again,
-/// and took the start of the `worktree_add` job that the bind queued as an
-/// effect of part 3. It did not stop the supervisor process of the worker
-/// and did not start the job. The next fleetd does each effect once: 1
-/// stop of the supervisor and 1 start of the job. It does not end the
-/// attempt or queue the task a second time.
 #[test]
 fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
     let h = world("p1-fm11", FAST_PASSES);
