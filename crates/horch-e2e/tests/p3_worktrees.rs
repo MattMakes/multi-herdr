@@ -490,8 +490,10 @@ fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
     let _serial = serial();
     let h = world("p3-fr11");
     let run = seed(&h, "fr11", None);
-    queue(&h, &run, "t1");
-    let (_, task) = bind_next(&h);
+    let (_, task) = h.without_fleetd(|| {
+        queue(&h, &run, "t1");
+        bind_next(&h)
+    });
     pass(&h);
     let lists = lists_passed(&h);
     let branch = format!("{}-T1-own", run_branch(&h, "fr11"));
@@ -660,8 +662,10 @@ fn fm27_trees_that_are_not_landed_are_not_removed() {
     let _serial = serial();
     let h = world("p3-fm27-keep");
     let run = seed(&h, "fm27", Some("land"));
-    queue(&h, &run, "t1");
-    let (_, task) = bind_next(&h);
+    let (_, task) = h.without_fleetd(|| {
+        queue(&h, &run, "t1");
+        bind_next(&h)
+    });
     let open = active_tree(&h, &task);
     let open_work = work_in(&h, &open, "open");
     let hand = hand_tree(&h, "hand", "hand-branch");
@@ -693,10 +697,11 @@ fn fm27_only_landed_or_rescued_trees_are_removed() {
             let h = world("p3-fm27-only");
             commit_gates(&h);
             let run = seed(&h, "fm27", Some("land"));
-            queue(&h, &run, "t1");
-            queue(&h, &run, "t2");
-            let (w1, t1) = bind_next(&h);
-            let (_, t2) = bind_next(&h);
+            let ((w1, t1), (_, t2)) = h.without_fleetd(|| {
+                queue(&h, &run, "t1");
+                queue(&h, &run, "t2");
+                (bind_next(&h), bind_next(&h))
+            });
             let landed = active_tree(&h, &t1);
             let w = work_in(&h, &landed, "lands");
             std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
@@ -786,9 +791,11 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
 
     // A live run with an active tree.
     let live_run = seed(&h, "live", None);
-    queue(&h, &live_run, "live");
     let mut agents = Agents(Vec::new());
-    let (_, task) = live_bind(&h, &mut agents);
+    let (_, task) = h.without_fleetd(|| {
+        queue(&h, &live_run, "live");
+        live_bind(&h, &mut agents)
+    });
     // The test runs longer than a lease of the fleet clock and has no
     // worker that renews it: the lease of the live attempt is long.
     exec(
@@ -991,15 +998,18 @@ fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after
     let _serial = serial();
     let mut h = fleet("p3-slow-add");
     slow_git(&mut h);
-    let run = seed(&h, "slow", None);
-    queue(&h, &run, "t1");
     let mut agents = Agents(Vec::new());
-    h.stop_fleetd();
-    let mut fleetds = Fleetds::new(&h);
-    let pid = fleetds.start(&h, "fleetd");
+    // No pass dispatches the task before the bind. The fleetd that starts
+    // again has the slow git of the test in its environment.
+    let (_, task) = h.without_fleetd(|| {
+        let run = seed(&h, "slow", None);
+        queue(&h, &run, "t1");
+        live_bind(&h, &mut agents)
+    });
+    let fleetds = Fleetds::new(&h);
+    let pid = fleetds.row().expect("the row of the test fleetd").0;
     wait_for_heartbeat(&h, pid);
 
-    let (_, task) = live_bind(&h, &mut agents);
     let add = add_watching_heartbeat(&h, &task, pid);
 
     assert!(
