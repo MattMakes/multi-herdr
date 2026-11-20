@@ -94,9 +94,6 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     pid_start: Some(started),
                 },
             )?;
-            // Not PID 1: a process of another user has no readable start
-            // time, so PID 1 matches each process whose session is 1 (a
-            // terminal that launchd starts), and fleetd refuses the test.
             horch_core::taskledger::testing::record_supervisor(tx, &w, pid, Some(started))?;
             Ok((run, w))
         })
