@@ -499,6 +499,104 @@ fn check_job_has_no_forbidden_env() {
     }
 }
 
+/// The lines of `text` that horch wrote, not the check.
+fn horch_lines(text: &str) -> Vec<&str> {
+    text.lines().filter(|l| l.starts_with("horch:")).collect()
+}
+
+#[test]
+fn failed_check_keeps_the_escaped_tail_of_its_output_and_names_the_sandbox_rules() {
+    let mut w = world();
+    let sandboxes = w.host_sandboxes();
+    // 20,000 bytes of stdout, then a forged horch line with an escape
+    // sequence on stderr.
+    // The markers are in the output only, not in the command text.
+    let check = "printf 'first-%s\\n' line; head -c 20000 /dev/zero | tr '\\0' a; \
+                 printf '\\nhorch: forg%s\\033[31m\\n' ed >&2; exit 3";
+    let task = w.task(check, CLAUDE, "claude", WorktreeMode::Worktree);
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Failed, "{}", o.text);
+    assert!(o.verdict, "{}", o.text);
+    let text = &o.text;
+    assert!(text.contains("exit Some(3)"), "{text}");
+    assert!(
+        text.contains("forged"),
+        "the stderr of the check is kept: {text}"
+    );
+    assert!(
+        !text.contains("first-line"),
+        "only the tail of the output is kept: {text}"
+    );
+    assert!(
+        text.len() < 10 * 1024,
+        "the output is bounded: {} bytes",
+        text.len()
+    );
+    assert!(
+        !text.contains('\u{1b}'),
+        "a control character is escaped: {text:?}"
+    );
+    assert!(text.contains(r"\u{1b}"), "{text}");
+    let horch = horch_lines(text);
+    assert!(
+        horch.iter().all(|l| !l.contains("forged")),
+        "a line of the check reads as a horch line: {horch:?}"
+    );
+    assert!(
+        horch.iter().any(|l| l.starts_with("horch: SR-3")),
+        "{horch:?}"
+    );
+    assert!(
+        horch.iter().any(|l| l.starts_with("horch: SR-4")),
+        "{horch:?}"
+    );
+}
+
+#[test]
+fn check_that_writes_outside_its_paths_names_sr4_and_the_refusal() {
+    let mut w = world();
+    let escaped = w.outside.path().join("escaped");
+    let check = format!("echo outside > '{}'", escaped.display());
+    let task = w.task(&check, CLAUDE, "claude", WorktreeMode::Worktree);
+    let sandboxes = w.host_sandboxes();
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Failed, "{}", o.text);
+    assert!(
+        o.text.contains("Operation not permitted") || o.text.contains("Read-only file system"),
+        "the refusal of the sandbox is in the verdict: {}",
+        o.text
+    );
+    assert!(
+        horch_lines(&o.text)
+            .iter()
+            .any(|l| l.starts_with("horch: SR-4")),
+        "{}",
+        o.text
+    );
+}
+
+#[test]
+fn passed_check_names_no_sandbox_rule() {
+    let mut w = world();
+    let sandboxes = w.host_sandboxes();
+    let task = w.task("echo fine", CLAUDE, "claude", WorktreeMode::Worktree);
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Passed, "{}", o.text);
+    assert!(horch_lines(&o.text).is_empty(), "{}", o.text);
+}
+
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {

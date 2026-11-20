@@ -57,6 +57,7 @@ use crate::fleetd::task_execution::adapters::ingested_store::{
     self as ingested, ACCEPTED, REJECTED,
 };
 use crate::fleetd::task_execution::application::review;
+use crate::fleetd::worker_profiles::adapters::check_sandbox::NETWORK_RULE;
 use crate::fleetd::worker_profiles::adapters::docs_dir;
 use crate::fleetd::worker_profiles::application::conformance::SuiteSubject;
 use crate::fleetd::worker_profiles::application::docs_sync::{self, DocsSyncRunner};
@@ -1120,15 +1121,111 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
             task.short()
         )));
     };
-    let status = match run_check(checks.host, &spec) {
+    let mut spec = spec;
+    let output = check_output_file();
+    std::fs::File::create(&output)
+        .with_context(|| format!("creating the check output {}", output.display()))?;
+    spec.output = Some(output.clone());
+    let status = run_check(checks.host, &spec);
+    let tail = output_tail(&output);
+    let _ = std::fs::remove_file(&output);
+    let status = match status {
         Ok(s) => s,
         Err(e) => return Ok(no_verdict(format!("`{check}` did not start: {e:#}"))),
     };
+    let mut text = format!("`{check}` in {}: exit {:?}", dir.display(), status.code());
+    if !status.success() {
+        text.push_str(&sandbox_rules(&spec));
+    }
+    let tail = tail?;
+    if !tail.is_empty() {
+        text.push_str("\nthe end of the check output (stdout and stderr):\n");
+        text.push_str(&quoted_output(&tail));
+    }
     Ok(Outcome {
         passed: status.success(),
         verdict: true,
-        text: format!("`{check}` in {}: exit {:?}", dir.display(), status.code()),
+        text,
     })
+}
+
+/// The horch lines of a failed check: the rules of its sandbox. The job
+/// cannot tell a refusal from another failure in each case (`curl` under
+/// Seatbelt prints no `EPERM`), so a failed check always names them.
+/// Seatbelt refuses with `EPERM` ("Operation not permitted"); `bwrap`
+/// refuses a write with `EROFS` ("Read-only file system") and a connect
+/// with `ENETUNREACH` ("Network is unreachable"). Only the platform
+/// sandbox (`sandbox-exec`, `bwrap`) has the network rule of SR-3.
+fn sandbox_rules(spec: &LaunchSpec) -> String {
+    let host = spec.program.file_name().and_then(|n| n.to_str());
+    let mut lines = String::new();
+    if matches!(host, Some("sandbox-exec" | "bwrap")) {
+        lines.push_str(&format!(
+            "\nhorch: {NETWORK_RULE} The sandbox refuses each connect to another host."
+        ));
+    }
+    lines.push_str(
+        "\nhorch: SR-4: a task check writes only in the writable paths of its sandbox \
+         (its worktree or project root, its attempt folder, its temp folder). \
+         The sandbox refuses each other write.",
+    );
+    lines
+}
+
+/// The number of bytes of the end of the check output that the verdict
+/// keeps, before and after [`quoted_output`]. The job result has a limit
+/// of 64 KiB (`job_result_max_bytes`) for all of its text.
+const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
+
+/// A new path in the temp folder of this job process for the output of 1
+/// check. The launcher opens it outside the sandbox.
+fn check_output_file() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    std::env::temp_dir().join(format!("horch-check-{}-{nanos}.out", std::process::id()))
+}
+
+/// The last [`OUTPUT_TAIL_BYTES`] bytes of the file `path`, as text.
+fn output_tail(path: &Path) -> Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let len = file.metadata()?.len();
+    let keep = u64::try_from(OUTPUT_TAIL_BYTES).unwrap_or(u64::MAX);
+    file.seek(SeekFrom::Start(len.saturating_sub(keep)))?;
+    let mut bytes = Vec::new();
+    file.take(keep).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The untrusted output of a check (SR-6), safe to show: each control
+/// character is escaped, each line starts with `check| ` so that no line
+/// reads as a horch line, and at most [`OUTPUT_TAIL_BYTES`] bytes of the
+/// end are kept.
+fn quoted_output(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.trim_end_matches('\n').split('\n') {
+        out.push_str("check| ");
+        for c in line.chars() {
+            if c.is_control() {
+                out.extend(c.escape_default());
+            } else {
+                out.push(c);
+            }
+        }
+        out.push('\n');
+    }
+    if out.len() > OUTPUT_TAIL_BYTES {
+        let mut cut = out.len() - OUTPUT_TAIL_BYTES;
+        while !out.is_char_boundary(cut) {
+            cut += 1;
+        }
+        // Start at a whole line, so each kept line has its prefix.
+        let start = out[cut..].find('\n').map_or(out.len(), |i| cut + i + 1);
+        out.drain(..start);
+    }
+    out
 }
 
 fn complexity_sweep(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Result<Ran> {

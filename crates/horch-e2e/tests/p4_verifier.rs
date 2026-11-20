@@ -536,6 +536,17 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
         escaped.display(),
         w.evidence()
     );
+    // The verdict says why: the horch line of the rule, and the refusal
+    // of the sandbox in the check output (EPERM on macOS, EROFS on Linux).
+    let reason = verdict["reason"].as_str().unwrap();
+    assert!(
+        reason.lines().any(|l| l.starts_with("horch: SR-4")),
+        "the verdict names no SR-4 rule\n{verdict}"
+    );
+    assert!(
+        reason.contains("Operation not permitted") || reason.contains("Read-only file system"),
+        "the verdict holds no refusal of the sandbox\n{verdict}"
+    );
     assert_not_done(&w);
 }
 
@@ -649,6 +660,20 @@ fn sr3_check_that_connects_off_host_is_refused() {
         off_host.accept().is_err(),
         "SR-3: the check reached the listener at {off_url}\n{}",
         w.evidence()
+    );
+    // The verdict says why: the horch line of the network rule, and the
+    // error of the refused connect in the check output. Its curl code
+    // depends on the host (7: refused at once, 28: timed out).
+    let reason = verdict["reason"].as_str().unwrap();
+    assert!(
+        reason
+            .lines()
+            .any(|l| l.starts_with("horch: SR-3") && l.contains("off-host network")),
+        "the verdict names no SR-3 network rule\n{verdict}"
+    );
+    assert!(
+        reason.contains("\ncheck| curl: ("),
+        "the verdict holds no output of the refused connect\n{verdict}"
     );
     assert_not_done(&w);
 }
