@@ -227,3 +227,85 @@ fn each_reader_command_of_the_ledger_cli_writes_nothing() {
         w.read(args);
     }
 }
+
+/// A worker bound to T-1 with a reviewers wait of `seconds`. The wait
+/// names T-1 when `on_task` is set, else no task.
+fn waiter(w: &World, seconds: i64, on_task: bool) -> String {
+    use horch_core::taskledger::testing::bind_live;
+    use horch_core::taskledger::workers::{self, NewWorker, REVIEWS_WAIT};
+    let mut store = Store::open(&w.ledger()).unwrap();
+    store
+        .immediate(|tx| {
+            let run = runs::of_project(tx, &w.proj())?.remove(0);
+            let task = tasks::of_run(tx, &run.run_id)?.remove(0).task_id;
+            // The run has no run branch: a shared task binds with no tree.
+            tx.execute(
+                "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+                [&task],
+            )?;
+            let new = NewWorker {
+                run_id: run.run_id.clone(),
+                persona: "dev".into(),
+                ..Default::default()
+            };
+            let worker = bind_live(tx, &task, &new, None)?.worker_id;
+            let ids = if on_task { vec![task] } else { Vec::new() };
+            workers::set_wait(tx, &worker, REVIEWS_WAIT, "reviews", &ids, seconds)?;
+            Ok(worker)
+        })
+        .unwrap()
+}
+
+/// The fleet clock of the ledger at `clock`.
+fn set_clock(w: &World, clock: i64) {
+    let c = rusqlite::Connection::open(w.ledger()).unwrap();
+    c.execute(
+        "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+         VALUES (1, 1, 1, 1, 'then', ?1, 'then')
+         ON CONFLICT (id) DO UPDATE SET fleet_clock_s = excluded.fleet_clock_s",
+        [clock],
+    )
+    .unwrap();
+}
+
+/// The waits that `horch ledger status --json` shows for `worker`.
+fn shown_waits(w: &World, worker: &str) -> Vec<serde_json::Value> {
+    let st = w.status_json();
+    let line = st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["worker"]["worker_id"] == worker)
+        .unwrap_or_else(|| panic!("no line of {worker}: {st}"))
+        .clone();
+    line["waiting"].as_array().unwrap().clone()
+}
+
+/// T-236: a wait past its deadline must end. Status shows no wait and
+/// writes no `wait_ended` event.
+#[test]
+fn status_writes_nothing_for_a_wait_that_must_end() {
+    let w = World::new();
+    let worker = waiter(&w, -60, false);
+    assert_eq!(shown_waits(&w, &worker), Vec::<serde_json::Value>::new());
+}
+
+/// T-236: a live review moves the cap of the wait. Status shows the moved
+/// cap and writes no `due_at`.
+#[test]
+fn status_writes_nothing_for_a_wait_whose_cap_moves() {
+    let w = World::new();
+    let worker = waiter(&w, 7 * 24 * 3600, true);
+    let before: i64 = rusqlite::Connection::open(w.ledger())
+        .unwrap()
+        .query_row(
+            "SELECT due_at FROM worker_waits WHERE worker_id = ?1",
+            [&worker],
+            |r| r.get(0),
+        )
+        .unwrap();
+    set_clock(&w, 1_000);
+    let waits = shown_waits(&w, &worker);
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(waits[0]["due_at"], serde_json::json!(before + 1_000));
+}

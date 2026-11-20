@@ -404,7 +404,7 @@ fn worker_line(
     Ok(WorkerLine {
         stale: !launch_pending && workers::is_stale(&w, run.heartbeat_stale_s, now),
         launch_pending,
-        waiting: workers::waiting(conn, &w.worker_id)?,
+        waiting: workers::waits_now(conn, &w.worker_id)?,
         unwatched: is_unwatched(conn, run, &w, now)?,
         worker: w,
         task,

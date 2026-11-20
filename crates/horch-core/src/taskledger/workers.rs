@@ -956,11 +956,8 @@ fn behind(conn: &Connection, w: &Worker, row: &WaitRow, task_ids: &[String]) -> 
     })
 }
 
-/// The waits of `worker` that count as activity now. A wait past its
-/// deadline or its cap `due_at`, or with no live row behind it, ends with a
-/// `wait_ended` event. A wait with a proof of work gets its cap moved
-/// ([`waits::judge`]).
-pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+/// The verdicts on the wait rows of `worker`, with no write.
+fn judged(conn: &Connection, worker: &str) -> Result<Vec<(WaitRow, Vec<String>, Verdict)>> {
     let rows = waits_store::of_worker(conn, worker)?;
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -982,21 +979,56 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
             due_at,
             deadline_passed: row.deadline <= now,
         };
-        match waits::judge(&wait, &facts) {
+        let verdict = waits::judge(&wait, &facts);
+        out.push((row, task_ids, verdict));
+    }
+    Ok(out)
+}
+
+fn held(row: WaitRow, task_ids: Vec<String>, until: i64) -> Wait {
+    Wait {
+        kind: row.kind,
+        reason: row.reason,
+        started_at: row.started_at,
+        deadline: row.deadline,
+        task_ids,
+        due_at: until,
+        question_id: row.question_id,
+    }
+}
+
+/// The waits of `worker` that count as activity now, with no write: the
+/// view of a read-only command. A wait that [`waiting`] would end is left
+/// out, and a held wait shows its moved cap.
+pub fn waits_now(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+    Ok(judged(conn, worker)?
+        .into_iter()
+        .filter_map(|(row, task_ids, verdict)| match verdict {
+            Verdict::Ends(_) => None,
+            Verdict::Holds { due_at } => Some(held(row, task_ids, due_at)),
+        })
+        .collect())
+}
+
+/// The waits of `worker` that count as activity now. A wait past its
+/// deadline or its cap `due_at`, or with no live row behind it, ends with a
+/// `wait_ended` event. A wait with a proof of work gets its cap moved
+/// ([`waits::judge`]). A read-only command calls [`waits_now`].
+pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+    let verdicts = judged(conn, worker)?;
+    if verdicts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let w = get(conn, worker)?;
+    let mut out = Vec::new();
+    for (row, task_ids, verdict) in verdicts {
+        match verdict {
             Verdict::Ends(cause) => end_wait(conn, &w, &row.kind, &row.reason, cause)?,
             Verdict::Holds { due_at: until } => {
                 if row.due_at != Some(until) {
                     waits_store::set_due_at(conn, worker, &row.kind, until)?;
                 }
-                out.push(Wait {
-                    kind: row.kind,
-                    reason: row.reason,
-                    started_at: row.started_at,
-                    deadline: row.deadline,
-                    task_ids,
-                    due_at: until,
-                    question_id: row.question_id,
-                });
+                out.push(held(row, task_ids, until));
             }
         }
     }
@@ -1027,7 +1059,7 @@ pub fn role_state(conn: &Connection, workspace: &str, role: &str) -> Result<Stri
         [&w.worker_id],
         |r| r.get(0),
     ))?;
-    let waits = waiting(conn, &w.worker_id)?;
+    let waits = waits_now(conn, &w.worker_id)?;
     Ok(format!(
         " watchdog={}{}",
         verdict.as_deref().unwrap_or("unchecked"),
@@ -1360,6 +1392,22 @@ mod tests {
             ended(s.conn(), &worker),
             ["max_wait_reached: the background wait ended (build)"]
         );
+    }
+
+    /// T-236: `waits_now` leaves out a wait that must end and writes no
+    /// event and no clear. `waiting` then ends it.
+    #[test]
+    fn waits_now_leaves_out_an_ended_wait_with_no_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        set_wait(s.conn(), &worker, BACKGROUND_WAIT, "build", &[], 24 * 3600).unwrap();
+        set_clock(s.conn(), 4_600);
+        assert!(waits_now(s.conn(), &worker).unwrap().is_empty());
+        assert!(row(s.conn(), &worker, BACKGROUND_WAIT).is_some());
+        assert!(ended(s.conn(), &worker).is_empty());
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(ended(s.conn(), &worker).len(), 1);
     }
 
     #[test]
