@@ -695,6 +695,18 @@ fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<S
         .collect())
 }
 
+/// True when the ledger has its `session_records` table. The first writer
+/// creates the file before its migration commits the tables, so a reader
+/// that opens the file in between finds a ledger with no table and no rows.
+fn has_session_records_table(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'session_records')",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
 /// The session records in `db` when the file exists, without creating it.
 /// A ledger that does not open or read gives none: a read never fails on it.
 fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
@@ -982,6 +994,9 @@ impl ExecutionStore {
         }
         let store = crate::taskledger::Store::open_read_only(&self.db)
             .with_context(|| format!("reading the session records in {}", self.db.display()))?;
+        if !has_session_records_table(store.conn())? {
+            return Ok(self.with_wrapper_rows(Vec::new()));
+        }
         Ok(self.with_wrapper_rows(session_rows(store.conn(), Some(&self.slug))?))
     }
 

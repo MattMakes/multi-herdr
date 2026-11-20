@@ -599,3 +599,49 @@ fn queued_session_records_is_not_reported_as_committed_and_is_recoverable_on_con
     assert_eq!(r1.effort.as_deref(), Some("other"));
     assert_eq!(r1.pane_id, None);
 }
+
+#[test]
+fn store_first_writes_race_on_a_fresh_ledger() {
+    for round in 0..60 {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writers: Vec<_> = (0..2)
+            .map(|w| {
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let store = ExecutionStore::for_project(&root, "/p").with_writer(writer());
+                    barrier.wait();
+                    store
+                        .insert(LedgerRecordV1 {
+                            record_id: format!("w{w}"),
+                            ..LedgerRecordV1::default()
+                        })
+                        .map_err(|e| format!("{e:#}"))
+                })
+            })
+            .collect();
+        let errors: Vec<_> = writers
+            .into_iter()
+            .filter_map(|w| w.join().unwrap().err())
+            .collect();
+        assert!(errors.is_empty(), "round {round}: {errors:#?}");
+    }
+}
+
+#[test]
+fn store_writes_and_reads_a_ledger_file_the_first_writer_has_not_migrated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    std::fs::write(root.join("ledger.sqlite3"), b"").unwrap();
+    let store = ExecutionStore::for_project(&root, "/p").with_writer(writer());
+    assert!(store.read().unwrap().is_empty());
+    store
+        .insert(LedgerRecordV1 {
+            record_id: "r1".into(),
+            ..LedgerRecordV1::default()
+        })
+        .unwrap();
+    assert_eq!(store.read().unwrap().len(), 1);
+}
