@@ -14,7 +14,11 @@
 //! - An `interview` note appends `Q<n>` and its answer to interview.md
 //!   before its row is written. The append is skipped when interview.md
 //!   holds the entry already, so a pass whose transaction does not commit
-//!   appends nothing again.
+//!   appends nothing again. It records the durable event
+//!   [`QUESTION_ANSWERED`], which closes the open interview question.
+//! - An `ask` note records the durable event [`QUESTION_ASKED`] with the
+//!   question and the count of amendments. Only this event lets a
+//!   clarifying idea wait on you (FM-29): an idle pane alone does not.
 //! - An `answer` note and a `dismiss` note are in the [`Report`] of the 1
 //!   pass that accepts them: the caller gives each answer to the question
 //!   flow (ticket 32) and each dismiss to the judge pair (ticket 41), in the
@@ -27,19 +31,30 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use horch_platform::channel::User;
 use rusqlite::Connection;
+use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
-use crate::fleetd::fleet_runtime::application::ledger::DoorError;
-use crate::fleetd::fleet_runtime::domain::ledger::Generation;
-use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
+use crate::fleetd::fleet_runtime::application::ledger::{record, Cause, DoorError};
+use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::ideas::adapters::idea_folder_files::{FolderError, IdeaFolder};
 use crate::fleetd::ideas::adapters::idea_notes_reader::{
     read_notes, Note, NoteBody, NoteFileRead, NoteRead,
 };
 use crate::fleetd::ideas::domain::idea_folder::{interview_entry, FILE_LIMIT, INTERVIEW_MD};
 use crate::fleetd::task_execution::adapters::ingested_store as store;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::util;
+
+/// The cause of the note event of an open interview question. Its data
+/// holds `attempt`, `question` and `amendments`, the count of amendments
+/// when the question was asked.
+pub const QUESTION_ASKED: &str = "interview question asked";
+
+/// The cause of the note event of an answered interview question. Its data
+/// holds `attempt` and `question`.
+pub const QUESTION_ANSWERED: &str = "interview question answered";
 
 /// The notes that part 1 read from the folder of 1 idea.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +68,8 @@ pub struct IdeaNotes {
 pub struct Report {
     /// The interview notes that are in interview.md now.
     pub interview: Vec<Note>,
+    /// The open interview questions that this ingest recorded.
+    pub asked: Vec<Note>,
     /// The answer notes, for the question flow.
     pub answers: Vec<Note>,
     /// The dismiss notes, for the judge pair.
@@ -112,8 +129,10 @@ pub fn ingest(
         match accepted {
             Ok((sha256, note)) => {
                 store::record_message(tx, &path, Some(sha256), store::ACCEPTED, None, &at)?;
+                record_question(tx, guard, ideas_dir, owner, note)?;
                 let to = match note.body {
                     NoteBody::Interview { .. } => &mut report.interview,
+                    NoteBody::Ask { .. } => &mut report.asked,
                     NoteBody::Answer { .. } => &mut report.answers,
                     NoteBody::Dismiss { .. } => &mut report.dismissals,
                 };
@@ -143,6 +162,56 @@ fn accept(
         return Ok(Ok(()));
     };
     Ok(append_once(ideas_dir, owner, note, question, answer))
+}
+
+/// Record the durable event of an `ask` note or of an `interview` note of
+/// `note`. Other notes record nothing here.
+fn record_question(
+    tx: &Connection,
+    guard: Option<Generation>,
+    ideas_dir: &Path,
+    owner: &User,
+    note: &Note,
+) -> Result<()> {
+    let (cause, data) = match &note.body {
+        NoteBody::Ask { question } => (
+            QUESTION_ASKED,
+            json!({
+                "attempt": note.attempt,
+                "question": question,
+                "amendments": amendments(ideas_dir, owner, &note.idea)?,
+            }),
+        ),
+        NoteBody::Interview { question, .. } => (
+            QUESTION_ANSWERED,
+            json!({ "attempt": note.attempt, "question": question }),
+        ),
+        NoteBody::Answer { .. } | NoteBody::Dismiss { .. } => return Ok(()),
+    };
+    let by = Cause {
+        actor: Actor::Horch,
+        text: cause,
+    };
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Idea,
+        &note.idea,
+        by,
+        &data,
+    )?;
+    Ok(())
+}
+
+/// The count of amendments of `idea`. No folder is 0.
+fn amendments(ideas_dir: &Path, owner: &User, idea: &str) -> Result<usize> {
+    let folder = IdeaFolder::new(ideas_dir, idea, owner.clone())?;
+    match folder.read_amendments() {
+        Ok(texts) => Ok(texts.len()),
+        Err(FolderError::Missing { .. }) => Ok(0),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Append `question` and `answer` to interview.md of the idea of `note`,

@@ -67,8 +67,8 @@ impl ProcessFacts for Chain {
     }
 }
 
-/// A temp ledger with the schema of today and a fleet root with the folder
-/// of [`IDEA`].
+/// A temp ledger with the schema of today, the row of [`IDEA`] in
+/// `clarifying`, and a fleet root with the folder of [`IDEA`].
 struct World {
     _temp: tempfile::TempDir,
     ideas: PathBuf,
@@ -81,6 +81,13 @@ fn world() -> World {
     let mut conn = Connection::open(temp.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    // The ingest of an `ask` or an `interview` note records an idea event.
+    conn.execute(
+        "INSERT INTO ideas (id, feature_id, state, priority, created_at, updated_at)
+         VALUES (?1, 'F-0001', 'clarifying', 0, ?2, ?2)",
+        params![IDEA, AT],
+    )
+    .unwrap();
     IdeaFolder::create(&ideas, IDEA, owner()).unwrap();
     World {
         _temp: temp,
@@ -140,6 +147,24 @@ impl World {
 
     fn read(&self) -> Vec<IdeaNotes> {
         notes_ingest::read(&self.conn, &self.ideas, &[IDEA.to_string()], &owner()).unwrap()
+    }
+
+    /// The cause and the data of each note event of [`IDEA`], oldest first.
+    fn idea_notes(&self) -> Vec<(String, serde_json::Value)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT cause, data_json FROM events
+                 WHERE entity = 'idea' AND entity_id = ?1 AND kind = 'note' ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([IDEA], |r| {
+            let data: String = r.get(1)?;
+            Ok((r.get(0)?, serde_json::from_str(&data).unwrap()))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
     }
 
     /// The `ingested` row of `path`: its outcome and its reason.
@@ -365,4 +390,44 @@ fn idea_note_outside_a_sub_orchestrator_attempt_is_refused() {
 
     // No note file is written.
     assert!(!w.notes(IDEA).exists());
+}
+
+#[test]
+fn ask_note_records_a_durable_open_question_and_interview_note_closes_it() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let ask = NoteBody::Ask {
+        question: "Do retries apply to uploads?".into(),
+    };
+    let path = writer.write(ask.clone()).unwrap();
+    let file: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(file["kind"], "ask");
+    assert_eq!(file["text"], "Do retries apply to uploads?");
+
+    let report = w.pass();
+    assert_eq!(
+        report.asked,
+        vec![Note {
+            idea: IDEA.into(),
+            attempt: attempt.clone(),
+            body: ask,
+        }]
+    );
+    assert!(report.interview.is_empty());
+    // An open question does not touch interview.md.
+    assert!(!w.ideas.join(IDEA).join("interview.md").exists());
+    let events = w.idea_notes();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, notes_ingest::QUESTION_ASKED);
+    assert_eq!(events[0].1["question"], "Do retries apply to uploads?");
+    assert_eq!(events[0].1["attempt"], attempt.as_str());
+    assert_eq!(events[0].1["amendments"], 0);
+
+    writer.write(interview_body()).unwrap();
+    w.pass();
+    let events = w.idea_notes();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1].0, notes_ingest::QUESTION_ANSWERED);
+    assert_eq!(events[1].1["question"], "Do retries apply to uploads?");
 }

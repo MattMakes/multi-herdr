@@ -1,5 +1,5 @@
 //! `horch idea note <id> [--question <qid> --case <case> [--cite <file:line>]]
-//! [--dismiss <finding>] <text>`: the sub-orchestrator records 1 note in the
+//! [--dismiss <finding>] [--ask] <text>`: the sub-orchestrator records 1 note in the
 //! idea folder (`docs/specs/fleetd/design.md`, "Ideas"; protocol rule 5;
 //! A35).
 //!
@@ -8,6 +8,9 @@
 //! no ledger row. Only the live sub-orchestrator attempt of the idea, found
 //! by the parent chain of this process, may write it. fleetd ingests each
 //! note 1 time.
+//!
+//! `--ask` records 1 open interview question before you answer it: fleetd
+//! lets a clarifying idea wait on you only while such a question is open.
 
 use std::process::ExitCode;
 
@@ -40,7 +43,8 @@ pub enum AnswerCase {
 pub struct NoteArgs {
     /// The idea id.
     pub id: String,
-    /// The note: a question and its answer, or the reason of a dismiss.
+    /// The note: a question and its answer, an open question with --ask, or
+    /// the reason of a dismiss.
     pub text: String,
     /// The id of the question that this note answers.
     #[arg(long, value_name = "QID", requires = "case")]
@@ -54,6 +58,9 @@ pub struct NoteArgs {
     /// Dismiss this judge finding.
     #[arg(long, value_name = "FINDING")]
     pub dismiss: Option<String>,
+    /// Record <TEXT> as an open interview question that waits for your answer.
+    #[arg(long, conflicts_with_all = ["question", "dismiss"])]
+    pub ask: bool,
 }
 
 impl From<AnswerCase> for notes::AnswerCase {
@@ -85,9 +92,15 @@ pub fn run(ctx: &RuntimeContext, args: NoteArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The note of `args`: a dismiss, an answer to a worker question, or else
-/// 1 question of the interview and its answer as `<question> - <answer>`.
+/// The note of `args`: a dismiss, an answer to a worker question, an open
+/// interview question, or else 1 question of the interview and its answer
+/// as `<question> - <answer>`.
 fn body(args: &NoteArgs) -> Result<NoteBody> {
+    if args.ask {
+        return Ok(NoteBody::Ask {
+            question: args.text.clone(),
+        });
+    }
     if let Some(finding) = &args.dismiss {
         if args.question.is_some() {
             bail!("--dismiss and --question cannot be used together");

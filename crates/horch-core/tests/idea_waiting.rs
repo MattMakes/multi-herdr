@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset};
-use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use horch_core::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use horch_core::fleetd::fleet_runtime::domain::budget::PassBudget;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -18,6 +18,7 @@ use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
 use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use horch_core::fleetd::ideas::application::notes_ingest::{QUESTION_ANSWERED, QUESTION_ASKED};
 use horch_core::fleetd::ideas::application::sub_orchestrators::{
     keep_sub_orchestrators, Keep, Kept, IDLE_STOP,
 };
@@ -26,7 +27,7 @@ use horch_core::fleetd::ideas::application::waiting::{
 };
 use horch_core::fleetd::task_execution::application::commands;
 use horch_core::fleetd::task_execution::domain::task::{Facts, InPane, Recorded, Seen, Target};
-use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::model::{Actor, EventKind};
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::Store;
@@ -225,6 +226,52 @@ impl World {
         self.store.immediate(|tx| keep_waits(tx, &ctx)).unwrap()
     }
 
+    /// The durable event of an open interview question of [`IDEA`], as the
+    /// ingest of an `ask` note records it, with `amendments` amendments.
+    fn ask(&mut self, question: &str, amendments: usize) {
+        self.note_event(
+            QUESTION_ASKED,
+            serde_json::json!({ "attempt": ATTEMPT, "question": question, "amendments": amendments }),
+        );
+    }
+
+    /// The durable event of an answered interview question of [`IDEA`].
+    fn answer(&mut self, question: &str) {
+        self.note_event(
+            QUESTION_ANSWERED,
+            serde_json::json!({ "attempt": ATTEMPT, "question": question }),
+        );
+    }
+
+    fn note_event(&mut self, why: &str, data: serde_json::Value) {
+        self.store
+            .immediate(|tx| {
+                record(
+                    tx,
+                    None,
+                    EventKind::Note,
+                    Entity::Idea,
+                    IDEA,
+                    Cause {
+                        actor: Actor::Horch,
+                        text: why,
+                    },
+                    &data,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// The text of the needs-you item `key`.
+    fn item_text(&self, key: &str) -> String {
+        self.conn()
+            .query_row("SELECT text FROM needs_you WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+
     fn idea_state(&self) -> String {
         ideas_store::idea(self.conn(), IDEA).unwrap().unwrap().state
     }
@@ -275,6 +322,7 @@ fn ids(v: &[String]) -> Vec<&str> {
 fn waiting_idea_pauses_the_lease() {
     let mut w = world(&["clarifying"]);
     w.launch();
+    w.ask("Do retries apply to uploads?", 0);
 
     let waits = w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
     assert_eq!(ids(&waits.started), [IDEA]);
@@ -314,6 +362,7 @@ fn waiting_idea_pauses_the_lease() {
 fn idle_sub_orchestrator_stops_after_30_min_of_fleet_clock() {
     let mut w = world(&["clarifying"]);
     w.launch();
+    w.ask("Do retries apply to uploads?", 0);
     w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
 
     let waits = w.wait(2800, "2026-11-16T10:30:00+01:00", &[IDEA], &[P1]);
@@ -344,6 +393,7 @@ fn idle_sub_orchestrator_stops_after_30_min_of_fleet_clock() {
 fn a_sleep_does_not_count_for_the_idle_stop() {
     let mut w = world(&["clarifying"]);
     w.launch();
+    w.ask("Do retries apply to uploads?", 0);
     w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
 
     // 8 h of calendar time, of which the machine slept all but 60 s.
@@ -472,6 +522,7 @@ fn an_amendment_ends_the_wait_after_the_idle_stop() {
     let mut w = world(&["clarifying"]);
     let folder = IdeaFolder::create(&w.ideas(), IDEA, User::current().unwrap()).unwrap();
     w.launch();
+    w.ask("Do retries apply to uploads?", 0);
     w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
     let waits = w.wait(2800, "2026-11-16T10:30:00+01:00", &[IDEA], &[P1]);
     assert_eq!(ids(&waits.idle_stopped), [ATTEMPT]);
@@ -490,4 +541,57 @@ fn an_amendment_ends_the_wait_after_the_idle_stop() {
     let kept = w.keep(&facts(&[]));
     let started: Vec<&str> = kept.started.iter().map(|s| s.attempt.as_str()).collect();
     assert_eq!(started, ["I-0002/clarifying/2"]);
+}
+
+#[test]
+fn idle_clarifier_without_durable_question_does_not_wait_on_you() {
+    let mut w = world(&["clarifying"]);
+    w.launch();
+
+    // The pane is idle, but the ledger has no open interview question.
+    let waits = w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
+    assert!(
+        waits.started.is_empty() && waits.idle_stopped.is_empty(),
+        "{waits:?}"
+    );
+    let waits = w.wait(2800, "2026-11-16T10:30:00+01:00", &[IDEA], &[P1]);
+    assert!(
+        waits.started.is_empty() && waits.idle_stopped.is_empty(),
+        "{waits:?}"
+    );
+    assert_eq!(w.waiting_since(), None);
+    assert_eq!(w.item(&waiting_key(IDEA)), None, "no waiting_on_you item");
+    assert_eq!(w.attempt().0, "live", "the stall rules apply");
+}
+
+#[test]
+fn clarifier_with_durable_open_question_waits_and_shows_question_text() {
+    const QUESTION: &str = "Do retries apply to uploads?";
+    let mut w = world(&["clarifying"]);
+    let folder = IdeaFolder::create(&w.ideas(), IDEA, User::current().unwrap()).unwrap();
+    w.launch();
+    w.ask(QUESTION, 0);
+
+    let waits = w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
+    assert_eq!(ids(&waits.started), [IDEA]);
+    assert!(w.waiting_since().is_some());
+    assert_eq!(w.item(&waiting_key(IDEA)).as_deref(), Some("open"));
+    let text = w.item_text(&waiting_key(IDEA));
+    assert!(text.contains(QUESTION), "{text}");
+
+    // An amendment after the question closes it, while the pane idles.
+    folder.write_amendment(1, "Yes, uploads too.").unwrap();
+    let waits = w.wait(1010, "2026-11-16T10:01:00+01:00", &[IDEA], &[P1]);
+    assert_eq!(ids(&waits.ended), [IDEA]);
+    assert_eq!(w.waiting_since(), None);
+    assert_eq!(w.item(&waiting_key(IDEA)).as_deref(), Some("resolved"));
+
+    // A new question waits again; an answer note closes it.
+    w.ask("Which upload sizes?", 1);
+    let waits = w.wait(1020, "2026-11-16T10:02:00+01:00", &[IDEA], &[P1]);
+    assert_eq!(ids(&waits.started), [IDEA]);
+    w.answer("Which upload sizes?");
+    let waits = w.wait(1030, "2026-11-16T10:03:00+01:00", &[IDEA], &[P1]);
+    assert_eq!(ids(&waits.ended), [IDEA]);
+    assert_eq!(w.waiting_since(), None);
 }

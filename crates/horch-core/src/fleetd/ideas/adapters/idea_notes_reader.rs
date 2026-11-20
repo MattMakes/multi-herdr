@@ -78,6 +78,10 @@ pub enum NoteBody {
     /// 1 question of the interview and the answer of the operator. fleetd
     /// appends it to interview.md as `Q<n>`.
     Interview { question: String, answer: String },
+    /// 1 open question of the interview that the operator has not answered
+    /// yet. fleetd records it as a durable event before the idea waits on
+    /// you (FM-29).
+    Ask { question: String },
     /// The answer to the worker question `question`.
     Answer {
         question: String,
@@ -105,13 +109,14 @@ pub struct Note {
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Interview,
+    Ask,
     Answer,
     Dismiss,
 }
 
 /// The JSON form of a note. `question` is the interview question of an
 /// `interview` note and the question id of an `answer` note; `text` is the
-/// answer, or the reason of a `dismiss` note.
+/// answer, the question of an `ask` note, or the reason of a `dismiss` note.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NoteFile {
@@ -146,6 +151,10 @@ impl From<&Note> for NoteFile {
                 file.question = Some(question.clone());
                 file.text = answer.clone();
             }
+            NoteBody::Ask { question } => {
+                file.kind = Kind::Ask;
+                file.text = question.clone();
+            }
             NoteBody::Answer {
                 question,
                 case,
@@ -177,6 +186,7 @@ impl TryFrom<NoteFile> for Note {
                 question,
                 answer: f.text,
             },
+            (Kind::Ask, None, None, None, None) => NoteBody::Ask { question: f.text },
             (Kind::Answer, Some(question), Some(case), cite, None) => NoteBody::Answer {
                 question,
                 case,
@@ -207,6 +217,7 @@ impl TryFrom<NoteFile> for Note {
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
         Kind::Interview => "interview",
+        Kind::Ask => "ask",
         Kind::Answer => "answer",
         Kind::Dismiss => "dismiss",
     }
@@ -230,6 +241,7 @@ fn check(note: &Note) -> Result<(), String> {
             filled("the question", question)?;
             filled("the answer", answer)
         }
+        NoteBody::Ask { question } => filled("the question", question),
         NoteBody::Answer {
             question,
             case,
