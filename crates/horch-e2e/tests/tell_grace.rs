@@ -131,6 +131,43 @@ fn polls_before_line(h: &Harness, pane: &str, marker: &str) -> Option<usize> {
     Some(polls)
 }
 
+/// Stop the test fleetd of `h`, then the jobs that it started: a job
+/// outlives its fleetd, fleetd runs a docs and a conformance job for each
+/// fake CLI at its first pass, and the teardown fails a test whose job
+/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
+/// names the PID and the start time.
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 /// U-70: with the default grace, the smoke worker's `horch done` reports to
 /// the orchestrator without the grace wait: it looks at the orchestrator's
 /// pane once and types the report. A grace wait polls that pane until an
@@ -200,4 +237,5 @@ fn worker_done_reports_without_the_default_tell_grace() {
         "done looked at the orchestrator pane {polls} times before its report: \
          tell waited for its grace"
     );
+    stop_fleetd_and_jobs(&h);
 }

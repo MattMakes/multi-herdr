@@ -85,6 +85,43 @@ fn record_of(h: &Harness, requested: &str) -> Option<Value> {
         .find(|r| r["routing"]["requested"] == requested)
 }
 
+/// Stop the test fleetd of `h`, then the jobs that it started: a job
+/// outlives its fleetd, fleetd runs a docs and a conformance job for each
+/// fake CLI at its first pass, and the teardown fails a test whose job
+/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
+/// names the PID and the start time.
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 /// A launch of fleetd runs its persona exactly (mode `exact`): the gate of
 /// the launch refuses a persona whose pool is closed, and a task moves to
 /// its fallback persona only when its worker hits a usage limit.
@@ -128,4 +165,5 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
         || shown(&h, "T-2"),
     );
     assert!(record_of(&h, "researcher").is_none(), "{:?}", records(&h));
+    stop_fleetd_and_jobs(&h);
 }

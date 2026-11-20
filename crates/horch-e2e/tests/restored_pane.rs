@@ -129,6 +129,43 @@ fn pending(h: &Harness) -> Vec<horch_core::messaging::mail::Message> {
     Mail::under(&h.state, "w1").pending().unwrap_or_default()
 }
 
+/// Stop the test fleetd of `h`, then the jobs that it started: a job
+/// outlives its fleetd, fleetd runs a docs and a conformance job for each
+/// fake CLI at its first pass, and the teardown fails a test whose job
+/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
+/// names the PID and the start time.
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 #[test]
 fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
     let h = fleet("r125-restored", "exec,stay");
@@ -187,6 +224,7 @@ fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
     let r = record(&h, &id);
     assert_eq!(r["status"], "done", "{r}");
     assert!(r.to_string().contains("finished the work"), "{r}");
+    stop_fleetd_and_jobs(&h);
 }
 
 #[test]

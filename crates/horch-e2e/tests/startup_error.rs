@@ -120,6 +120,43 @@ fn startup_errors(h: &Harness) -> Vec<std::path::PathBuf> {
         .unwrap_or_default()
 }
 
+/// Stop the test fleetd of `h`, then the jobs that it started: a job
+/// outlives its fleetd, fleetd runs a docs and a conformance job for each
+/// fake CLI at its first pass, and the teardown fails a test whose job
+/// still runs. A job gets SIGTERM, and SIGKILL after 10 s. Each signal
+/// names the PID and the start time.
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 /// A worker that registers: fleetd launches it, and its launch does not fail.
 #[cfg(unix)]
 #[test]
@@ -135,6 +172,7 @@ fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
     assert_ne!(row["status"], "launch_failed", "{row}");
     assert!(!shown(&h, "T-1").contains("launch_failed"), "{row}");
     assert_eq!(startup_errors(&h), Vec::<std::path::PathBuf>::new());
+    stop_fleetd_and_jobs(&h);
 }
 
 /// A worker that registers after the wait: the launch does not fail, and
@@ -187,6 +225,7 @@ fn a_worker_that_registers_after_the_wait_still_works() {
         || format!("{}\n{:?}", shown(&h, "T-1"), records(&h)),
     );
     assert_ne!(row["status"], "launch_failed", "{row}");
+    stop_fleetd_and_jobs(&h);
 }
 
 #[cfg(unix)]
@@ -247,4 +286,5 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
     assert_eq!(r["state"]["stage"], "run", "{r}");
     let reason = r["state"]["reason"].as_str().unwrap_or_default();
     assert!(reason.starts_with("no brief at "), "{r}");
+    stop_fleetd_and_jobs(&h);
 }
