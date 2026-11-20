@@ -16,6 +16,10 @@
 //!   child in a new session and a new process group, whose parent waits),
 //!   and `raw` (a raw `idea_approve` on the channel with the operator
 //!   token). Then write a valid `assumptions.md`.
+//! - `approve_launching`: at the first instruction, with no wait for
+//!   `live`, log `attempts` with the pid of each own attempt, then try
+//!   `cli` and `raw` on the target in `awaiting_approval`. The test holds
+//!   the own attempt in `launching` with the fault point `hold-launching`.
 //! - `stay`: run `horch idea note` of the own idea (logged as `note`),
 //!   then keep running, as an agent in its interview, until fleetd stops
 //!   it (fix A: the attempt stays live while its agent runs).
@@ -85,6 +89,22 @@ pub fn play(call: &mut Call) -> bool {
         call.extra.insert("tries".into(), Value::Object(tries));
         call.flush();
         lead.write_assumptions();
+        return true;
+    }
+    if has("approve_launching") {
+        call.extra
+            .insert("attempts".into(), json!(lead.attempts_with_pid()));
+        let Some(target) = lead.waiting_target() else {
+            call.extra
+                .insert("fr10".into(), json!({"error": "the target does not wait"}));
+            return true;
+        };
+        call.extra.insert("target".into(), json!(target));
+        let mut tries = Map::new();
+        tries.insert("cli".into(), lead.cli(&target));
+        tries.insert("raw".into(), lead.raw(&target, &call.call_id));
+        call.extra.insert("tries".into(), Value::Object(tries));
+        call.flush();
         return true;
     }
     if has("stay") {
@@ -228,13 +248,21 @@ impl Lead {
     }
 
     fn attempts(&self) -> Vec<String> {
+        self.attempts_as("id || ' ' || state")
+    }
+
+    /// The id, the state and the pid (`-` for none) of each own attempt.
+    fn attempts_with_pid(&self) -> Vec<String> {
+        self.attempts_as("id || ' ' || state || ' ' || IFNULL(pid, '-')")
+    }
+
+    fn attempts_as(&self, columns: &str) -> Vec<String> {
         let Ok(store) = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db) else {
             return Vec::new();
         };
         let conn = store.conn();
-        let Ok(mut stmt) = conn
-            .prepare("SELECT id || ' ' || state FROM attempts WHERE idea_id = ?1 ORDER BY rowid")
-        else {
+        let sql = format!("SELECT {columns} FROM attempts WHERE idea_id = ?1 ORDER BY rowid");
+        let Ok(mut stmt) = conn.prepare(&sql) else {
             return Vec::new();
         };
         stmt.query_map([&self.idea], |r| r.get(0))

@@ -11,7 +11,8 @@
 //! 4. An `operator` kind with no valid token is refused (SR-8).
 //! 5. On the channel, a peer that is a fleet process (FR-10: a process of
 //!    an attempt that is live or that ended a short time ago), or a peer
-//!    whose fact is unknown, is refused (SR-8). No attempt has operator rights: Phase 6
+//!    whose fact is unknown, is refused (SR-8). An `idea_approve` is also
+//!    refused while an attempt launches with no recorded process (FR-10). No attempt has operator rights: Phase 6
 //!    removed the orchestrator seat (FM-32; ticket 44 of fleetd-p6).
 //!
 //! Else the request is authorized. A guard whose fact is unknown does not
@@ -52,6 +53,10 @@ pub enum Source {
 pub enum PeerProcess {
     /// The peer is not a fleet process.
     Outside,
+    /// The peer is outside each recorded attempt, but this attempt is not
+    /// ended and has no recorded process yet. Its agent can run before
+    /// fleetd records it, so the peer may be that agent (FR-10).
+    OutsideWhileLaunching(String),
     /// The peer is a process of each of these attempts, as the ledger
     /// records them.
     Inside(Vec<AttemptFacts>),
@@ -90,7 +95,7 @@ fn decide(facts: &RequestFacts) -> Result<String, String> {
     }
     match &facts.source {
         Source::RequestFile => Ok("token; request file".into()),
-        Source::Channel { peer } => check_peer(peer),
+        Source::Channel { peer } => check_peer(kind, peer),
     }
 }
 
@@ -108,9 +113,16 @@ fn check_caller(facts: &RequestFacts) -> Result<(), String> {
     }
 }
 
-fn check_peer(peer: &PeerProcess) -> Result<String, String> {
+fn check_peer(kind: Kind, peer: &PeerProcess) -> Result<String, String> {
     match peer {
-        PeerProcess::Outside => Ok("token; peer outside each live attempt".into()),
+        PeerProcess::OutsideWhileLaunching(attempt) if kind == Kind::IdeaApprove => Err(format!(
+            "attempt {attempt} launches and fleetd has not recorded its process yet, \
+             so fleetd cannot prove that the peer process is not a fleet process of it. \
+             Try again in some seconds"
+        )),
+        PeerProcess::Outside | PeerProcess::OutsideWhileLaunching(_) => {
+            Ok("token; peer outside each live attempt".into())
+        }
         PeerProcess::Unknown => {
             Err("the peer process is unknown, so the peer process check does not hold".into())
         }
@@ -303,6 +315,28 @@ mod tests {
         };
         let reason = refusal(&facts);
         assert!(reason.contains("peer process is unknown"), "{reason}");
+    }
+
+    #[test]
+    fn idea_approve_while_an_attempt_launches_is_refused() {
+        let launching = Source::Channel {
+            peer: PeerProcess::OutsideWhileLaunching("I-0005/clarifying/1".into()),
+        };
+        let facts = RequestFacts {
+            kind: "idea_approve".to_string(),
+            source: launching.clone(),
+            ..channel()
+        };
+        let reason = refusal(&facts);
+        assert!(reason.contains("I-0005/clarifying/1 launches"), "{reason}");
+        assert!(reason.contains("Try again in some seconds"), "{reason}");
+        // The launch helper of the attempt sends other operator kinds.
+        let facts = RequestFacts {
+            kind: "worker_launch_failed".to_string(),
+            source: launching,
+            ..channel()
+        };
+        assert_eq!(auth(&facts), "token; peer outside each live attempt");
     }
 
     #[test]

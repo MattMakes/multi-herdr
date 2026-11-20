@@ -206,6 +206,9 @@ pub const ABORT_AFTER_COMMIT: &str = "abort-after-commit";
 pub const ABORT_BEFORE_COMMIT: &str = "abort-before-commit";
 /// The file watching reports nothing.
 pub const DROP_WATCH_EVENTS: &str = "drop-watch-events";
+/// `hold-launching:<idea>`: each sub-orchestrator attempt of the idea stays
+/// in `launching`, with no recorded wrapper (`p6_fr10_approval.rs`).
+pub const HOLD_LAUNCHING: &str = "hold-launching";
 
 /// The cursor of the launches of part 3 in `pass_cursors`.
 const LAUNCHES: &str = "launches";
@@ -1565,7 +1568,9 @@ impl<'a> Pass<'a> {
             }
             let mut step = observe_launch(l.row_process, l.launch, clock);
             if a.task_id.is_none() {
-                match pane_wrapper(tx, a, panes)? {
+                let held = self.settings.faults.indexed(HOLD_LAUNCHING);
+                let held = sub_orchestrator_of(a).is_some_and(|(i, _)| held.as_deref() == Some(i));
+                match pane_wrapper(tx, a, panes)?.filter(|_| !held) {
                     Some(wrapper) => {
                         let guard = Some(self.settings.generation);
                         commands::attempt_live(tx, guard, &a.id, Some(wrapper))?;

@@ -43,6 +43,8 @@ const LATER_TICKS: i64 = 3;
 
 const FLEET_PROCESS: &str = "fleet process";
 
+const TRY_AGAIN: &str = "Try again in some seconds";
+
 const WAITING_IDEA: &str = "Show the queue length in the status bar";
 
 fn lead_of(key: &str, target: &str) -> String {
@@ -64,7 +66,14 @@ struct World {
 
 impl World {
     fn new(name: &str, scenario: &str) -> World {
+        World::start(name, scenario, None)
+    }
+
+    fn start(name: &str, scenario: &str, fault: Option<&str>) -> World {
         let mut h = Harness::new(name).with_git();
+        if let Some(fault) = fault {
+            h.set("HORCH_FAULT", fault);
+        }
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -223,23 +232,24 @@ impl World {
     }
 
     fn assert_raw_refused(&self, tried: &Value) {
+        self.assert_raw_refused_with(tried, FLEET_PROCESS);
+    }
+
+    fn assert_raw_refused_with(&self, tried: &Value, want: &str) {
         let reply: Value = tried["reply"]
             .as_str()
             .and_then(|r| serde_json::from_str(r).ok())
             .unwrap_or(Value::Null);
         assert_eq!(reply["state"], "refused", "{tried}\n{}", self.context());
         let reason = reply["reason"].as_str().unwrap_or_default();
-        assert!(reason.contains(FLEET_PROCESS), "{tried}");
+        assert!(reason.contains(want), "{tried}");
         let id = tried["request_id"].as_str().unwrap();
         let row = self.wait("the row of the raw request", || {
             self.one(&format!(
                 "SELECT state || ' ' || IFNULL(reason, '-') FROM requests WHERE request_id = '{id}'"
             ))
         });
-        assert!(
-            row.starts_with("refused ") && row.contains(FLEET_PROCESS),
-            "{row}"
-        );
+        assert!(row.starts_with("refused ") && row.contains(want), "{row}");
     }
 
     fn context(&self) -> String {
@@ -316,6 +326,36 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     );
     w.assert_cli_refused("cli", &call["tries"]["cli"]);
     w.assert_raw_refused(&call["tries"]["raw"]);
+    w.assert_still_waiting(&waiting);
+}
+
+/// T-160: the agent of an attempt in `launching` with no recorded process
+/// tries at its first instruction. The fault point `hold-launching` keeps
+/// the attempt of I-0002 in `launching`, so the window does not depend on
+/// the time of a pass.
+#[test]
+fn fr10_e_agent_of_a_launching_attempt_with_no_recorded_process_cannot_approve() {
+    let w = World::start("p6-fr10-e", "clarify", Some("hold-launching:I-0002"));
+    let waiting = w.add(WAITING_IDEA);
+    assert_eq!(waiting, "I-0001", "{}", w.context());
+    w.wait("the idea in awaiting_approval", || {
+        (w.idea_state(&waiting).as_deref() == Some("awaiting_approval")).then_some(())
+    });
+    let lead = w.add(&lead_of("approve_launching", &waiting));
+    assert_eq!(lead, "I-0002", "{}", w.context());
+    let call = w.fake_call("tries");
+    assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
+    let attempts: Vec<String> = serde_json::from_value(call["attempts"].clone()).unwrap();
+    assert_eq!(
+        attempts,
+        [format!("{lead}/clarifying/1 launching -")],
+        "the own attempt launches with no pid\n{}",
+        w.context()
+    );
+    w.assert_cli_refused("cli", &call["tries"]["cli"]);
+    let err = call["tries"]["cli"]["stderr"].as_str().unwrap_or_default();
+    assert!(err.contains(TRY_AGAIN), "{err}");
+    w.assert_raw_refused_with(&call["tries"]["raw"], TRY_AGAIN);
     w.assert_still_waiting(&waiting);
 }
 

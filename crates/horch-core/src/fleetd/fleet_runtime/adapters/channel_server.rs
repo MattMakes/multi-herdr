@@ -43,7 +43,7 @@ use horch_platform::NotSupported;
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::peer_process::{
-    fleet_process, recorded_processes, Fact, PlatformFacts,
+    fleet_process, launching_attempt, recorded_processes, Fact, PlatformFacts,
 };
 use crate::fleetd::fleet_runtime::adapters::request_wire::{parse_request, Request};
 use crate::fleetd::fleet_runtime::adapters::{config_file, fleetd_row, token_file};
@@ -495,7 +495,10 @@ fn peer_process(conn: &Connection, peer: &Peer) -> PeerProcess {
         return PeerProcess::Unknown;
     };
     match fleet_process(pid, &recorded, &PlatformFacts) {
-        Fact::No => PeerProcess::Outside,
+        Fact::No => match launching_attempt(&rows) {
+            Some(attempt) => PeerProcess::OutsideWhileLaunching(attempt.to_string()),
+            None => PeerProcess::Outside,
+        },
         Fact::Unknown => PeerProcess::Unknown,
         Fact::Yes(ids) => PeerProcess::Inside(
             ids.iter()

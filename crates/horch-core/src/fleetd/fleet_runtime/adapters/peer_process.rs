@@ -79,17 +79,23 @@ pub struct FleetProcess {
 }
 
 /// The recorded processes of the fleet for [`fleet_process`], read now,
-/// with the rows that hold them. `None` when an
-/// attempt that is not ended has a process with no start time: its fact is
-/// unknown. A process of an ended attempt with no start time cannot be
-/// compared, so it does not count.
+/// with the rows that hold them. `None` when an attempt that is not ended
+/// has a process with no start time: its fact is unknown.
 pub fn recorded_processes(
     conn: &Connection,
 ) -> Result<Option<(Vec<FleetProcess>, Vec<AttemptProcesses>)>> {
     let since = crate::clock::now() - chrono::Duration::seconds(ENDED_COUNTS_S);
     let rows = attempts_store::fleet_processes(conn, &crate::clock::stamp(since))?;
+    Ok(processes_of(&rows).map(|out| (out, rows)))
+}
+
+/// The recorded processes of `rows` for [`fleet_process`]. `None` when an
+/// attempt that is not ended has a process with no start time. A process
+/// of an ended attempt with no start time cannot be compared, so it does
+/// not count.
+pub fn processes_of(rows: &[AttemptProcesses]) -> Option<Vec<FleetProcess>> {
     let mut out = Vec::new();
-    for row in &rows {
+    for row in rows {
         for p in &row.processes {
             match p.pid_start {
                 Some(start) => out.push(FleetProcess {
@@ -97,12 +103,25 @@ pub fn recorded_processes(
                     pid: p.pid,
                     start,
                 }),
-                None if !row.ended => return Ok(None),
+                None if !row.ended => return None,
                 None => {}
             }
         }
     }
-    Ok(Some((out, rows)))
+    Some(out)
+}
+
+/// FR-10: the first attempt of `rows` that is not ended and has no recorded
+/// process. Its agent can run before fleetd records its wrapper, and then
+/// no fact ties the agent to its attempt: [`fleet_process`] gives `No` for
+/// it. So an approval from a peer that is not proven inside an attempt is
+/// refused while this gives `Some`. The start timeout
+/// [`START_TIMEOUT_S`](crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S)
+/// ends a launch with no process.
+pub fn launching_attempt(rows: &[AttemptProcesses]) -> Option<&str> {
+    rows.iter()
+        .find(|r| !r.ended && r.processes.is_empty())
+        .map(|r| r.attempt.as_str())
 }
 
 /// The process facts that the answer reads. `None` is a fact that is
