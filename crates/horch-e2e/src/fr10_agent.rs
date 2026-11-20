@@ -231,7 +231,19 @@ impl Lead {
         }
     }
 
+    /// The wait for the end starts at the approval of the own idea. The
+    /// operator approves only after the target waits too, which can take
+    /// minutes under load.
     fn wait_ended(&self) -> Vec<String> {
+        let approved = Instant::now() + STOP_WAIT;
+        while Instant::now() < approved
+            && matches!(
+                query_one("SELECT state FROM ideas WHERE id = ?1", &self.idea).as_deref(),
+                Some("clarifying" | AWAITING)
+            )
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let end = Instant::now() + STATE_WAIT;
         loop {
             let seen: Vec<String> = self
