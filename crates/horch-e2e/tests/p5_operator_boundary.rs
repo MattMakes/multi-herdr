@@ -587,10 +587,6 @@ impl World {
         out
     }
 
-    /// [`World::state`] of the feature [`FEATURE`] and its run only. fleetd
-    /// opens a feature, a run and an attempt of its own for an idea that
-    /// its own conformance and docs sync jobs add, when the jobs end; those
-    /// rows are not a change of an operator request.
     fn feature_state(&self) -> Vec<String> {
         let conn = self.conn();
         let run = self.run.run_id.as_str();
@@ -1363,9 +1359,6 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         Vec::new(),
         "no request of the gate reaches fleetd"
     );
-    // A conformance job that fleetd queued at its start runs the fake agent
-    // CLIs, and the probe of a fake with no sandbox writes a request file for
-    // a moment and removes it. Only the files of the gate are in question.
     wait_for_or(
         "fleetd to end its conformance and docs sync jobs",
         || {
@@ -1576,12 +1569,6 @@ fn wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read() {
     }
 }
 
-// ─── RR-5: a test harness never touches an inherited live ledger ────────
-
-/// The environment that a command gets after `Harness::seal`, as a map. The
-/// command is `/usr/bin/env`, started with the canary ledger and fleet root
-/// in its own environment first, as a shell of the operator that exports
-/// them. `seal` must remove both.
 fn sealed_env_of(h: &Harness, canary_ledger: &Path, canary_fleet: &Path) -> Vec<(String, String)> {
     let mut cmd = Command::new("/usr/bin/env");
     cmd.env("HORCH_LEDGER_DB", canary_ledger)
@@ -1596,13 +1583,6 @@ fn sealed_env_of(h: &Harness, canary_ledger: &Path, canary_fleet: &Path) -> Vec<
         .collect()
 }
 
-/// RR-5, `trf_45_session_db_is_the_task_ledger_unless_the_state_dir_moved`
-/// (review of Phase 5, "Tests that do not prove their rule"): that test
-/// uses a synthetic environment. This one proves it for the real harness:
-/// a command sealed by `Harness::seal` does not get a `HORCH_LEDGER_DB` or a
-/// `FLEET_ROOT` of its parent, whether the harness names its own ledger or
-/// not, `RuntimeContext::from_env` resolves the ledger of the harness from
-/// what it gets, and a real `horch` never opens or creates the canary.
 #[test]
 fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
     let outer = tempfile::tempdir().unwrap();
@@ -1610,7 +1590,6 @@ fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
     let canary_fleet = outer.path().join("canary_fleet");
     let canary_text = outer.path().to_string_lossy().into_owned();
 
-    // The harness names its own ledger: the canary never replaces it.
     let named = Harness::new("p5-rr5-named");
     let env = sealed_env_of(&named, &canary_ledger, &canary_fleet);
     let get = |env: &[(String, String)], key: &str| {
@@ -1626,8 +1605,6 @@ fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
         assert!(!v.contains(&canary_text), "{k}={v} names the canary");
     }
 
-    // The harness names no ledger: the ledger is `<home>/.horch/`, still
-    // not the canary, and no `FLEET_ROOT` comes from the parent.
     let mut bare = Harness::new("p5-rr5-bare");
     bare.unset("HORCH_LEDGER_DB");
     let env = sealed_env_of(&bare, &canary_ledger, &canary_fleet);
@@ -1647,9 +1624,6 @@ fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
     assert_eq!(ctx.paths.fleet_root, bare.fleet_root());
     assert_eq!(ctx.paths.ledger_override, None);
 
-    // A real `horch` of the bare harness, with the canary on its command
-    // before the seal, looks for the ledger of the harness (only fleetd
-    // creates it) and never touches the canary.
     let mut cmd = Command::new(Harness::horch_bin());
     cmd.env("HORCH_LEDGER_DB", &canary_ledger)
         .env("FLEET_ROOT", &canary_fleet)
