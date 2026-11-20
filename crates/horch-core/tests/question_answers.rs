@@ -662,7 +662,6 @@ fn own_decision_is_appended_as_an_assumption() {
     assert_eq!(w.status("a"), "ready");
 }
 
-/// The `own_decision` note of the sub-orchestrator for question `q`.
 fn own_note(q: &Question, text: &str) -> Note {
     Note {
         idea: IDEA.into(),
@@ -694,11 +693,9 @@ fn own_decision_rollback_before_commit_leaves_assumptions_md_unchanged() {
     let tx = w.conn().unchecked_transaction().unwrap();
     let answered = answer_question(&tx, &ctx, &note).unwrap();
     assert!(matches!(answered, Answered::Recorded(_)), "{answered:?}");
-    // No file write inside the transaction (RR-8).
     assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
     drop(tx);
 
-    // The rollback leaves the files and the approval as they were.
     assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
     assert_eq!(w.decisions(), None);
     assert_eq!(w.question(&q.id).state, State::Open);
@@ -712,7 +709,6 @@ fn own_decision_crash_after_commit_before_effect_recovers_assumptions_and_approv
     let approval_before = w.read("approval.json");
     let q = w.ask("a", 1);
 
-    // fleetd commits the answer and exits before it writes the files.
     let Answered::Recorded(lost) = w.answer(
         &q,
         AnswerCase::OwnDecision,
@@ -725,7 +721,6 @@ fn own_decision_crash_after_commit_before_effect_recovers_assumptions_and_approv
     assert_eq!(w.read("approval.json"), approval_before);
     assert_eq!(w.decisions(), None);
 
-    // The next fleetd writes the files from the committed ledger rows.
     let pending = pending_answer_files(w.conn(), &w.root(), &owner()).unwrap();
     assert_eq!(pending, vec![lost]);
     for r in &pending {
@@ -741,8 +736,6 @@ fn own_decision_crash_after_commit_before_effect_recovers_assumptions_and_approv
     let log = w.decisions().expect("decisions.md of the feature");
     assert!(log.contains(&format!("## {}: own_decision", q.id)), "{log}");
 
-    // Each file holds the decision, so nothing is pending, and a second
-    // write changes nothing.
     assert!(pending_answer_files(w.conn(), &w.root(), &owner())
         .unwrap()
         .is_empty());

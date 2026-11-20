@@ -131,7 +131,6 @@ impl Recorded {
         self.decision.write(root, owner)
     }
 
-    /// The intended files, as the `question` event holds them.
     fn effects(&self, idea: &str) -> Value {
         json!({
             "idea": idea,
@@ -149,8 +148,6 @@ impl Recorded {
         })
     }
 
-    /// The answer of the `question` event `data`, when it holds its
-    /// intended files.
     fn of_event(data: &Value) -> Option<Recorded> {
         let effects = &data["effects"];
         let s = |v: &Value| v.as_str().map(str::to_string);
@@ -253,8 +250,6 @@ impl DecisionLog {
         )?)
     }
 
-    /// The decision log with the entry, or `None` when the log holds it
-    /// already.
     fn with_entry(&self, root: &Path, owner: &User) -> Result<Option<String>> {
         let path = self.path(root);
         let file = match std::fs::symlink_metadata(&path) {
@@ -317,9 +312,11 @@ pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Res
     }
     let idea = task_idea(tx, &q)?;
     let checked = match case {
-        Case::Covered => covered(tx, ctx, &q, &idea, cite.as_deref())?.map(|()| Own::default()),
-        Case::Revise => revise(tx, ctx, &q, &idea, text)?.map(|()| Own::default()),
-        Case::Replan => replan(tx, &q)?.map(|()| Own::default()),
+        Case::Covered => {
+            covered(tx, ctx, &q, &idea, cite.as_deref())?.map(|()| OwnDecisionFiles::default())
+        }
+        Case::Revise => revise(tx, ctx, &q, &idea, text)?.map(|()| OwnDecisionFiles::default()),
+        Case::Replan => replan(tx, &q)?.map(|()| OwnDecisionFiles::default()),
         Case::OwnDecision => own(tx, ctx, &q, &idea, text)?,
     };
     let own = match checked {
@@ -390,9 +387,7 @@ pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Res
         rusqlite::params![EventKind::Question.as_str(), Entity::Task.as_str()],
         |r| r.get::<_, String>(0),
     )?;
-    // The sha256 of assumptions.md of each idea after the pending writes
-    // before it.
-    let mut assumed: HashMap<String, Option<String>> = HashMap::new();
+    let mut sha_after_pending: HashMap<String, Option<String>> = HashMap::new();
     let mut out = Vec::new();
     for raw in rows {
         let data: Value = serde_json::from_str(&raw?)?;
@@ -402,7 +397,7 @@ pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Res
         let decision = r.decision.with_entry(root, owner)?.is_some();
         r.assumptions = match r.assumptions.take() {
             Some(a) => {
-                let sha = match assumed.get(&a.idea) {
+                let sha = match sha_after_pending.get(&a.idea) {
                     Some(sha) => sha.clone(),
                     None => assumptions_sha(&IdeaFolder::new(
                         &root.join(IDEAS),
@@ -416,7 +411,7 @@ pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Res
                 } else {
                     sha
                 };
-                assumed.insert(a.idea.clone(), after);
+                sha_after_pending.insert(a.idea.clone(), after);
                 pending.then_some(a)
             }
             None => None,
@@ -434,8 +429,6 @@ pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Res
     Ok(out)
 }
 
-/// Whether `file` is the approval.json that the ledger holds for `idea`,
-/// and the folder does not hold it yet.
 fn approval_pending(
     conn: &Connection,
     root: &Path,
@@ -454,7 +447,6 @@ fn approval_pending(
     }
 }
 
-/// The sha256 of assumptions.md of `folder`, or `None` when it has none.
 fn assumptions_sha(folder: &IdeaFolder) -> Result<Option<String>> {
     match folder.sha256_of(ASSUMPTIONS_MD) {
         Ok(sha) => Ok(Some(sha)),
@@ -463,9 +455,8 @@ fn assumptions_sha(folder: &IdeaFolder) -> Result<Option<String>> {
     }
 }
 
-/// The files that an own decision intends.
 #[derive(Default)]
-struct Own {
+struct OwnDecisionFiles {
     approval: Option<ApprovalFile>,
     assumptions: Option<AssumptionsWrite>,
 }
@@ -619,15 +610,13 @@ fn replan(tx: &Connection, q: &Question) -> Result<Checked<()>> {
     Ok(Ok(()))
 }
 
-/// `own_decision`: the assumptions.md of `idea` with the decision, and
-/// the approval that follows it. fleetd writes both after the commit.
 fn own(
     tx: &Connection,
     ctx: &Answering<'_>,
     q: &Question,
     idea: &IdeaRow,
     text: &str,
-) -> Result<Checked<Own>> {
+) -> Result<Checked<OwnDecisionFiles>> {
     let folder = folder(ctx, &idea.id)?;
     let disk = match folder.read_text(ASSUMPTIONS_MD) {
         Ok(file) => Some(file),
@@ -656,14 +645,12 @@ fn own(
         base_sha256: before.map(|b| sha256_bytes(b.as_bytes()).hex()),
         text: new,
     });
-    Ok(Ok(Own {
+    Ok(Ok(OwnDecisionFiles {
         approval,
         assumptions,
     }))
 }
 
-/// assumptions.md of `idea` as the committed own decisions intend it:
-/// `disk`, with each own decision that is not written yet, oldest first.
 fn intended_assumptions(
     conn: &Connection,
     idea: &str,
