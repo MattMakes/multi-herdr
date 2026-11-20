@@ -14,7 +14,10 @@
 //! test reads the clock of this machine or waits for a time: each waits
 //! for the end of the fake or for a line of its stream.
 
-use std::path::{Path, PathBuf};
+#[path = "support/fakes.rs"]
+mod fakes;
+
+use std::path::PathBuf;
 use std::process::Command as StdCommand;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -52,80 +55,9 @@ const FAKES: [&str; 2] = ["fake-claude", "fake-antigravity"];
 
 // ─── the fakes ──────────────────────────────────────────────────────────
 
-/// The folder of the built fakes: `target/<profile>`, beside this test.
-fn bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let mut dir = exe.parent().unwrap().to_path_buf();
-    if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-        dir.pop();
-    }
-    dir
-}
-
-/// The variables cargo sets for a test process. A nested build that sees
-/// them has another fingerprint, and builds each crate again.
-const CARGO_RUN_VARS: &[&str] = &[
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_CRATE_NAME",
-    "CARGO_BIN_NAME",
-    "CARGO_PRIMARY_PACKAGE",
-    "CARGO_TARGET_TMPDIR",
-    "CARGO_RUSTC_CURRENT_DIR",
-    "OUT_DIR",
-];
-
-/// Build the fakes 1 time in this test process, into the target folder
-/// of this test. `cargo test -p horch-core` does not build them.
+/// The path of the fake `name`, built with the profile of this test.
 fn fake(name: &str) -> PathBuf {
-    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let dir = bin_dir();
-    BUILT.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut cmd = StdCommand::new(cargo);
-        for (key, _) in std::env::vars_os() {
-            let key = key.to_string_lossy();
-            if key.starts_with("CARGO_PKG_") || CARGO_RUN_VARS.contains(&key.as_ref()) {
-                cmd.env_remove(key.as_ref());
-            }
-        }
-        cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .args(["build", "--locked", "-p", "horch-e2e"]);
-        for bin in FAKES {
-            cmd.args(["--bin", bin]);
-        }
-        match dir.file_name().and_then(|n| n.to_str()) {
-            Some("debug") | None => {}
-            Some("release") => {
-                cmd.arg("--release");
-            }
-            Some(profile) => {
-                cmd.args(["--profile", profile]);
-            }
-        }
-        cmd.arg("--target-dir").arg(dir.parent().unwrap());
-        let out = cmd.output().unwrap();
-        assert!(
-            out.status.success(),
-            "the build of the fakes failed: {cmd:?}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        // macOS holds a new binary at its first launch, for minutes. Take
-        // that hold here, with no bound, so no bounded wait of a test
-        // counts it.
-        for bin in FAKES {
-            let path = dir.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-            let status = StdCommand::new(&path)
-                .arg("--version")
-                .env_remove("HORCH_FAKE_LOG")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            assert!(status.success(), "{bin} --version: {status}");
-        }
-    });
-    dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    fakes::fake(&FAKES, name)
 }
 
 /// A pane that sends each complete line that it gets to the test.
