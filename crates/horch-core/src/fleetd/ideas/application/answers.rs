@@ -24,24 +24,28 @@
 //!   [`super::replan::replan_task`]). The time limit of the question bounds
 //!   the wait: past it the question flow escalates it to you.
 //! - `own_decision`: fleetd appends `<n>. [assumed, own decision] <text>
-//!   (<question id>)` to assumptions.md of the idea of the task, before
-//!   the commit and 1 time only (D13). It needs no new approval: when you
-//!   approved assumptions.md as it was before the decision, the approval
-//!   follows the new hash, so I7 still holds. Then the question is
-//!   answered.
+//!   (<question id>)` to assumptions.md of the idea of the task, 1 time
+//!   only (D13). It needs no new approval: when you approved assumptions.md
+//!   as it was before the decision, the approval follows the new hash, so
+//!   I7 still holds. Then the question is answered.
 //!
-//! An accepted answer records 1 `question` event of its task with the case,
-//! and gives 1 entry of `features/F-NNNN/decisions.md` to write after the
-//! commit ([`Recorded::write`]). A refused answer leaves the question as it
+//! An accepted answer records 1 `question` event of its task with the case
+//! and the files it intends (RR-8): the entry of
+//! `features/F-NNNN/decisions.md`, and for an own decision the new
+//! assumptions.md and approval.json. fleetd writes no file in the
+//! transaction. It writes them after the commit ([`Recorded::write`]).
+//! After a crash between the commit and the writes,
+//! [`pending_answer_files`] gives the writes again from the ledger (FM-11). A refused answer leaves the question as it
 //! was, records 1 `note` event of the task with the reason, and rings the
 //! live process of the feature again with the reason.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use horch_platform::channel::User;
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::digest::sha256_bytes;
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
@@ -109,16 +113,102 @@ pub struct Recorded {
     /// The approval.json of the idea that follows an own decision: (idea,
     /// file).
     pub approval: Option<(String, ApprovalFile)>,
+    /// The assumptions.md of the idea with the own decision.
+    pub assumptions: Option<AssumptionsWrite>,
 }
 
 impl Recorded {
     /// Write the files of the answer under the fleet root `root`:
-    /// approval.json, then the entry of the decision log.
+    /// assumptions.md, approval.json, then the entry of the decision log.
+    /// Each write is safe to repeat.
     pub fn write(&self, root: &Path, owner: &User) -> Result<()> {
+        if let Some(a) = &self.assumptions {
+            a.write(root, owner)?;
+        }
         if let Some((idea, file)) = &self.approval {
             file.write(&IdeaFolder::new(&root.join(IDEAS), idea, owner.clone())?)?;
         }
         self.decision.write(root, owner)
+    }
+
+    /// The intended files, as the `question` event holds them.
+    fn effects(&self, idea: &str) -> Value {
+        json!({
+            "idea": idea,
+            "feature": self.decision.feature,
+            "heading": self.decision.heading,
+            "entry": self.decision.text,
+            "assumptions": self.assumptions.as_ref().map(|a| json!({
+                "base_sha256": a.base_sha256,
+                "text": a.text,
+            })),
+            "approval": self.approval.as_ref().map(|(_, f)| json!({
+                "text": f.text,
+                "sha256": f.sha256,
+            })),
+        })
+    }
+
+    /// The answer of the `question` event `data`, when it holds its
+    /// intended files.
+    fn of_event(data: &Value) -> Option<Recorded> {
+        let effects = &data["effects"];
+        let s = |v: &Value| v.as_str().map(str::to_string);
+        let idea = s(&effects["idea"])?;
+        let assumptions = match &effects["assumptions"] {
+            Value::Null => None,
+            a => Some(AssumptionsWrite {
+                idea: idea.clone(),
+                base_sha256: s(&a["base_sha256"]),
+                text: s(&a["text"])?,
+            }),
+        };
+        let approval = match &effects["approval"] {
+            Value::Null => None,
+            a => Some((
+                idea.clone(),
+                ApprovalFile {
+                    text: s(&a["text"])?,
+                    sha256: s(&a["sha256"])?,
+                },
+            )),
+        };
+        Some(Recorded {
+            question: s(&data["question_id"])?,
+            case: data["case"].as_str().and_then(Case::parse)?,
+            decision: DecisionLog {
+                feature: s(&effects["feature"])?,
+                heading: s(&effects["heading"])?,
+                text: s(&effects["entry"])?,
+            },
+            approval,
+            assumptions,
+        })
+    }
+}
+
+/// The assumptions.md that an own decision intends, to write after the
+/// commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssumptionsWrite {
+    pub idea: String,
+    /// The sha256 of the assumptions.md that the decision appends to, or
+    /// `None` when the idea had no assumptions.md.
+    pub base_sha256: Option<String>,
+    /// The new assumptions.md.
+    pub text: String,
+}
+
+impl AssumptionsWrite {
+    /// Replace assumptions.md with the new text when it is still the file
+    /// that the decision appends to. Otherwise the file holds the decision
+    /// already, or it changed since, and this write does nothing.
+    pub fn write(&self, root: &Path, owner: &User) -> Result<()> {
+        let folder = IdeaFolder::new(&root.join(IDEAS), &self.idea, owner.clone())?;
+        if assumptions_sha(&folder)? == self.base_sha256 {
+            folder.write_assumptions(&self.text)?;
+        }
+        Ok(())
     }
 }
 
@@ -151,15 +241,27 @@ impl DecisionLog {
     /// holds it already. The log is read with the checks of SR-6.
     pub fn write(&self, root: &Path, owner: &User) -> Result<()> {
         let features = root.join(FEATURES);
-        let dir = features.join(&self.feature);
         fsx::ensure_private_dir(&features)?;
-        fsx::ensure_private_dir(&dir)?;
+        fsx::ensure_private_dir(&features.join(&self.feature))?;
+        let Some(new) = self.with_entry(root, owner)? else {
+            return Ok(());
+        };
+        Ok(fsx::write_atomic(
+            &self.path(root),
+            new.as_bytes(),
+            DECISIONS_MODE,
+        )?)
+    }
+
+    /// The decision log with the entry, or `None` when the log holds it
+    /// already.
+    fn with_entry(&self, root: &Path, owner: &User) -> Result<Option<String>> {
         let path = self.path(root);
         let file = match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             _ => {
                 let rule = Rule {
-                    root: &dir,
+                    root: &root.join(FEATURES).join(&self.feature),
                     owner,
                     limit: DECISIONS_LIMIT,
                 };
@@ -168,11 +270,12 @@ impl DecisionLog {
                 Some(String::from_utf8(bytes).context("the decision log is not UTF-8 text")?)
             }
         };
-        let Some(new) = with_entry(file.as_deref(), &self.feature, &self.heading, &self.text)
-        else {
-            return Ok(());
-        };
-        Ok(fsx::write_atomic(&path, new.as_bytes(), DECISIONS_MODE)?)
+        Ok(with_entry(
+            file.as_deref(),
+            &self.feature,
+            &self.heading,
+            &self.text,
+        ))
     }
 }
 
@@ -214,14 +317,35 @@ pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Res
     }
     let idea = task_idea(tx, &q)?;
     let checked = match case {
-        Case::Covered => covered(tx, ctx, &q, &idea, cite.as_deref())?.map(|()| None),
-        Case::Revise => revise(tx, ctx, &q, &idea, text)?.map(|()| None),
-        Case::Replan => replan(tx, &q)?.map(|()| None),
+        Case::Covered => covered(tx, ctx, &q, &idea, cite.as_deref())?.map(|()| Own::default()),
+        Case::Revise => revise(tx, ctx, &q, &idea, text)?.map(|()| Own::default()),
+        Case::Replan => replan(tx, &q)?.map(|()| Own::default()),
         Case::OwnDecision => own(tx, ctx, &q, &idea, text)?,
     };
-    let approval = match checked {
-        Ok(approval) => approval,
+    let own = match checked {
+        Ok(own) => own,
         Err(reason) => return refuse(tx, ctx, &q, reason),
+    };
+    let asked = asked_text(tx, &q)?;
+    let entry = Entry {
+        question_id: &q.id,
+        case,
+        task_id: &q.task_id,
+        idea_id: &idea.id,
+        question: asked.as_deref(),
+        answer: text,
+        cite: cite.as_deref(),
+    };
+    let recorded = Recorded {
+        question: q.id.clone(),
+        case,
+        decision: DecisionLog {
+            feature: q.feature_id.clone(),
+            heading: entry_heading(&q.id, case),
+            text: entry_text(&entry),
+        },
+        approval: own.approval.map(|file| (idea.id.clone(), file)),
+        assumptions: own.assumptions,
     };
     let why = format!(
         "question {} is answered by its owner {}: {}",
@@ -229,7 +353,13 @@ pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Res
         q.owner,
         case.as_str()
     );
-    let data = json!({ "question_id": q.id, "case": case.as_str(), "cite": cite, "answer": text });
+    let data = json!({
+        "question_id": q.id,
+        "case": case.as_str(),
+        "cite": cite,
+        "answer": text,
+        "effects": recorded.effects(&idea.id),
+    });
     record(
         tx,
         ctx.guard,
@@ -242,26 +372,102 @@ pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Res
     if matches!(case, Case::Covered | Case::OwnDecision) {
         questions::answered(tx, &q, Some(text))?;
     }
-    let asked = asked_text(tx, &q)?;
-    let entry = Entry {
-        question_id: &q.id,
-        case,
-        task_id: &q.task_id,
-        idea_id: &idea.id,
-        question: asked.as_deref(),
-        answer: text,
-        cite: cite.as_deref(),
-    };
-    Ok(Answered::Recorded(Recorded {
-        question: q.id.clone(),
-        case,
-        decision: DecisionLog {
-            feature: q.feature_id.clone(),
-            heading: entry_heading(&q.id, case),
-            text: entry_text(&entry),
-        },
-        approval: approval.map(|file| (idea.id.clone(), file)),
-    }))
+    Ok(Answered::Recorded(recorded))
+}
+
+/// The files of each committed answer that are not written yet, from the
+/// `question` events of the ledger, oldest first (RR-8, FM-11). Each
+/// [`Recorded`] holds only the writes that are still pending: write them in
+/// this order after a crash between the commit of an answer and its
+/// [`Recorded::write`].
+pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Result<Vec<Recorded>> {
+    let mut stmt = conn.prepare(
+        "SELECT data_json FROM events WHERE kind = ?1 AND entity = ?2
+           AND json_extract(data_json, '$.effects') IS NOT NULL
+         ORDER BY event_id",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![EventKind::Question.as_str(), Entity::Task.as_str()],
+        |r| r.get::<_, String>(0),
+    )?;
+    // The sha256 of assumptions.md of each idea after the pending writes
+    // before it.
+    let mut assumed: HashMap<String, Option<String>> = HashMap::new();
+    let mut out = Vec::new();
+    for raw in rows {
+        let data: Value = serde_json::from_str(&raw?)?;
+        let Some(mut r) = Recorded::of_event(&data) else {
+            continue;
+        };
+        let decision = r.decision.with_entry(root, owner)?.is_some();
+        r.assumptions = match r.assumptions.take() {
+            Some(a) => {
+                let sha = match assumed.get(&a.idea) {
+                    Some(sha) => sha.clone(),
+                    None => assumptions_sha(&IdeaFolder::new(
+                        &root.join(IDEAS),
+                        &a.idea,
+                        owner.clone(),
+                    )?)?,
+                };
+                let pending = sha == a.base_sha256;
+                let after = if pending {
+                    Some(sha256_bytes(a.text.as_bytes()).hex())
+                } else {
+                    sha
+                };
+                assumed.insert(a.idea.clone(), after);
+                pending.then_some(a)
+            }
+            None => None,
+        };
+        r.approval = match r.approval.take() {
+            Some((idea, file)) if approval_pending(conn, root, owner, &idea, &file)? => {
+                Some((idea, file))
+            }
+            _ => None,
+        };
+        if decision || r.assumptions.is_some() || r.approval.is_some() {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `file` is the approval.json that the ledger holds for `idea`,
+/// and the folder does not hold it yet.
+fn approval_pending(
+    conn: &Connection,
+    root: &Path,
+    owner: &User,
+    idea: &str,
+    file: &ApprovalFile,
+) -> Result<bool> {
+    if idea_row(conn, idea)?.approval_sha256.as_deref() != Some(file.sha256.as_str()) {
+        return Ok(false);
+    }
+    let folder = IdeaFolder::new(&root.join(IDEAS), idea, owner.clone())?;
+    match folder.read_approval() {
+        Ok(text) => Ok(text != file.text),
+        Err(FolderError::Missing { .. }) => Ok(true),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The sha256 of assumptions.md of `folder`, or `None` when it has none.
+fn assumptions_sha(folder: &IdeaFolder) -> Result<Option<String>> {
+    match folder.sha256_of(ASSUMPTIONS_MD) {
+        Ok(sha) => Ok(Some(sha)),
+        Err(FolderError::Missing { .. }) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The files that an own decision intends.
+#[derive(Default)]
+struct Own {
+    approval: Option<ApprovalFile>,
+    assumptions: Option<AssumptionsWrite>,
 }
 
 /// Each question that went to you with a `revise` answer and whose idea you
@@ -413,22 +619,22 @@ fn replan(tx: &Connection, q: &Question) -> Result<Checked<()>> {
     Ok(Ok(()))
 }
 
-/// `own_decision`: append the decision to assumptions.md of `idea` before
-/// the commit, and let its approval follow. The approval.json to write
-/// after the commit, when the idea has one.
+/// `own_decision`: the assumptions.md of `idea` with the decision, and
+/// the approval that follows it. fleetd writes both after the commit.
 fn own(
     tx: &Connection,
     ctx: &Answering<'_>,
     q: &Question,
     idea: &IdeaRow,
     text: &str,
-) -> Result<Checked<Option<ApprovalFile>>> {
+) -> Result<Checked<Own>> {
     let folder = folder(ctx, &idea.id)?;
-    let before = match folder.read_text(ASSUMPTIONS_MD) {
+    let disk = match folder.read_text(ASSUMPTIONS_MD) {
         Ok(file) => Some(file),
         Err(FolderError::Missing { .. }) => None,
         Err(e) => return Ok(Err(e.to_string())),
     };
+    let before = intended_assumptions(tx, &idea.id, disk)?;
     let (base, new) = match own_decision(before.as_deref(), &idea.id, text, &q.id) {
         Ok(files) => files,
         Err(e) => {
@@ -445,10 +651,45 @@ fn own(
         )));
     }
     let approval = follow_approval(tx, ctx, &folder, idea, q, &base, &new)?;
-    if before.as_deref() != Some(new.as_str()) {
-        folder.write_assumptions(&new)?;
+    let assumptions = (before.as_deref() != Some(new.as_str())).then(|| AssumptionsWrite {
+        idea: idea.id.clone(),
+        base_sha256: before.map(|b| sha256_bytes(b.as_bytes()).hex()),
+        text: new,
+    });
+    Ok(Ok(Own {
+        approval,
+        assumptions,
+    }))
+}
+
+/// assumptions.md of `idea` as the committed own decisions intend it:
+/// `disk`, with each own decision that is not written yet, oldest first.
+fn intended_assumptions(
+    conn: &Connection,
+    idea: &str,
+    disk: Option<String>,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT data_json FROM events WHERE kind = ?1 AND entity = ?2
+           AND json_extract(data_json, '$.effects.idea') = ?3
+           AND json_extract(data_json, '$.effects.assumptions') IS NOT NULL
+         ORDER BY event_id",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![EventKind::Question.as_str(), Entity::Task.as_str(), idea],
+        |r| r.get::<_, String>(0),
+    )?;
+    let mut file = disk;
+    for raw in rows {
+        let data: Value = serde_json::from_str(&raw?)?;
+        let Some(a) = Recorded::of_event(&data).and_then(|r| r.assumptions) else {
+            continue;
+        };
+        if file.as_ref().map(|f| sha256_bytes(f.as_bytes()).hex()) == a.base_sha256 {
+            file = Some(a.text);
+        }
     }
-    Ok(Ok(approval))
+    Ok(file)
 }
 
 /// When you approved assumptions.md of `idea` as `base`, record the same

@@ -28,7 +28,8 @@ use horch_core::fleetd::ideas::adapters::idea_notes_reader::{AnswerCase, Note, N
 use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::adapters::questions_store;
 use horch_core::fleetd::ideas::application::answers::{
-    answer_question, pending_replans, settle_revisions, Answered, Answering, Recorded,
+    answer_question, pending_answer_files, pending_replans, settle_revisions, Answered, Answering,
+    Recorded,
 };
 use horch_core::fleetd::ideas::application::approval::{self, record_approval, Approved};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
@@ -659,6 +660,101 @@ fn own_decision_is_appended_as_an_assumption() {
     assert_eq!(w.idea_state(), "in_progress");
     assert_eq!(w.question(&q.id).state, State::Answered);
     assert_eq!(w.status("a"), "ready");
+}
+
+/// The `own_decision` note of the sub-orchestrator for question `q`.
+fn own_note(q: &Question, text: &str) -> Note {
+    Note {
+        idea: IDEA.into(),
+        attempt: OWNER.into(),
+        body: NoteBody::Answer {
+            question: q.id.clone(),
+            case: AnswerCase::OwnDecision,
+            cite: None,
+            text: text.into(),
+        },
+    }
+}
+
+#[test]
+fn own_decision_rollback_before_commit_leaves_assumptions_md_unchanged() {
+    let mut w = world();
+    w.approved();
+    let q = w.ask("a", 1);
+    let note = own_note(&q, "Use the backoff helper of src/net.rs.");
+    let root = w.root();
+    let owner = owner();
+    let ctx = Answering {
+        guard: None,
+        clock: FleetSeconds(START + 10),
+        root: &root,
+        owner: &owner,
+    };
+
+    let tx = w.conn().unchecked_transaction().unwrap();
+    let answered = answer_question(&tx, &ctx, &note).unwrap();
+    assert!(matches!(answered, Answered::Recorded(_)), "{answered:?}");
+    // No file write inside the transaction (RR-8).
+    assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
+    drop(tx);
+
+    // The rollback leaves the files and the approval as they were.
+    assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
+    assert_eq!(w.decisions(), None);
+    assert_eq!(w.question(&q.id).state, State::Open);
+    assert!(w.i7_holds());
+}
+
+#[test]
+fn own_decision_crash_after_commit_before_effect_recovers_assumptions_and_approval() {
+    let mut w = world();
+    w.approved();
+    let approval_before = w.read("approval.json");
+    let q = w.ask("a", 1);
+
+    // fleetd commits the answer and exits before it writes the files.
+    let Answered::Recorded(lost) = w.answer(
+        &q,
+        AnswerCase::OwnDecision,
+        None,
+        "Use the backoff helper of src/net.rs.",
+    ) else {
+        panic!("the own decision of {} is refused", q.id);
+    };
+    assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
+    assert_eq!(w.read("approval.json"), approval_before);
+    assert_eq!(w.decisions(), None);
+
+    // The next fleetd writes the files from the committed ledger rows.
+    let pending = pending_answer_files(w.conn(), &w.root(), &owner()).unwrap();
+    assert_eq!(pending, vec![lost]);
+    for r in &pending {
+        r.write(&w.root(), &owner()).unwrap();
+    }
+    let line = format!(
+        "3. [assumed, own decision] Use the backoff helper of src/net.rs. ({})",
+        q.id
+    );
+    let text = w.read("assumptions.md");
+    assert_eq!(text, format!("{ASSUMPTIONS}{line}\n"));
+    assert_ne!(w.read("approval.json"), approval_before);
+    let log = w.decisions().expect("decisions.md of the feature");
+    assert!(log.contains(&format!("## {}: own_decision", q.id)), "{log}");
+
+    // Each file holds the decision, so nothing is pending, and a second
+    // write changes nothing.
+    assert!(pending_answer_files(w.conn(), &w.root(), &owner())
+        .unwrap()
+        .is_empty());
+    let approval = w.read("approval.json");
+    for r in &pending {
+        r.write(&w.root(), &owner()).unwrap();
+    }
+    assert_eq!(w.read("assumptions.md"), text);
+    assert_eq!(w.read("approval.json"), approval);
+    assert_eq!(w.decisions().unwrap(), log);
+    assert!(w.i7_holds());
+    assert_eq!(w.idea_state(), "in_progress");
 }
 
 // ─── the decision log ───────────────────────────────────────────────────
