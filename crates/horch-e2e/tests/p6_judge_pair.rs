@@ -1,18 +1,3 @@
-//! The e2e tests of the judge pair (`docs/specs/fleetd/design.md`: RR-3,
-//! FM-9, FM-33, "A cancel"; `docs/tickets/fleetd-p6/59-e2e-judge.md`).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. `horch idea add --direct` adds 1 ticket of the judgment kind
-//! `docs`, so fleetd plans 1 judged task and its judge task (MAP.md, Q8).
-//! fleetd launches each attempt. The fake worker commits 1 file and says
-//! done with `horch result`. The fake judge commits `review.md` with the
-//! verdict of its scenario key (`verdict_pass`, `verdict_critical`).
-//!
-//! Each test reads the ledger and waits for an event, never for a time. No
-//! test reads the load, the limits or the clock of this machine: the
-//! harness gives the machine facts through `HORCH_MACHINE_FILE`.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -21,13 +6,10 @@ use std::process::Output;
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The `fleet.toml` of the project: a fast gate and a full gate that pass.
 const PROJECT_FLEET_TOML: &str = "[gates]\nfast = \"true\"\nfull = \"true\"\n";
 
-/// The ticket of each test: 1 task of the judgment kind `docs`.
 const TICKET: &str = "# 01: Write the queue guide\n\n\
 <!-- horch-ticket: 1 -->\n\
 **Persona:** primary `opus` · **Parallel:** yes\n\
@@ -37,10 +19,8 @@ const TICKET: &str = "# 01: Write the queue guide\n\n\
 **Own:** `fake-claude.txt`\n\n\
 ## Goal\n\nThe guide names the queue length.\n";
 
-/// The kind of the needs-you item of a judged task past its fix rounds.
 const ESCALATED_KIND: &str = "judge_escalated";
 
-/// The reason of a refused cancel of a judge task.
 const JUDGE_CANCEL_REFUSED: &str = "its judge follows";
 
 fn text(o: &Output) -> String {
@@ -52,30 +32,22 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The 2 tasks of the judge pair.
 #[derive(Debug, Clone)]
 struct Pair {
     judged: String,
-    /// The short name of the judged task, `T-<seq>`, as a reason names it.
     judged_short: String,
     judge: String,
     run: String,
     idea: String,
 }
 
-/// A fleet with a test fleetd and 1 `--direct` idea of the kind `docs`.
 struct World {
     h: Harness,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger and the fleet root are outside the state folder, as
-        // in production: a worker can write the state folder, and the
-        // throwaway folders of the conformance job are under the fleet
-        // root. The pane command gets both paths (T-890).
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -90,13 +62,10 @@ impl World {
             "HORCH_QUOTA_FILE",
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
-        // No test uses the network for the docs sync of fleetd.
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
-        // The herdr workspace of the fleet, as `horch fleet` makes it.
         let ws = h.fleet_workspace();
         h.set("HORCH_WORKSPACE_ID", ws);
 
@@ -104,16 +73,12 @@ impl World {
         std::fs::create_dir_all(&tickets).unwrap();
         let ticket = tickets.join("01-queue-guide.md");
         std::fs::write(&ticket, TICKET).unwrap();
-        // The plan validator needs a fast gate and a full gate.
         std::fs::write(h.project.join("fleet.toml"), PROJECT_FLEET_TOML).unwrap();
         let w = World { h };
         w.git(&["add", "-A"]);
         w.git(&["commit", "-q", "-m", "base"]);
 
         w.h.serve_fleetd();
-        // The health of each profile is known before the plan: the judge
-        // task gets a healthy profile at the plan time. A profile that
-        // becomes unhealthy later holds its task by the design.
         for cli in ["claude", "codex", "agy"] {
             wait_for_or(
                 &format!("an ended conformance run of {cli}"),
@@ -148,8 +113,6 @@ impl World {
         self.h.ledger_db()
     }
 
-    /// The rows of `sql`, each row its columns joined with 1 space. No rows
-    /// while the ledger does not exist yet.
     fn rows(&self, sql: &str) -> Vec<String> {
         let Ok(conn) = Connection::open_with_flags(self.ledger(), OpenFlags::SQLITE_OPEN_READ_ONLY)
         else {
@@ -182,8 +145,6 @@ impl World {
         self.rows(sql).into_iter().next()
     }
 
-    /// What a failed wait shows: the tasks, the attempts, the verdicts, the
-    /// needs-you items and the task moves.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -241,7 +202,6 @@ impl World {
         .concat()
     }
 
-    /// The refs of the project repository.
     fn refs(&self) -> String {
         let o = self
             .h
@@ -252,8 +212,6 @@ impl World {
         String::from_utf8_lossy(&o.stdout).into_owned()
     }
 
-    /// The files of the folder of the first idea, with the text of
-    /// `plan.verdict.json`.
     fn idea_files(&self) -> String {
         let dir = self.h.fleet_root().join("ideas/I-0001");
         let mut out = Vec::new();
@@ -276,7 +234,6 @@ impl World {
         format!("  {}\nplan.verdict.json: {verdict}", out.join("\n  "))
     }
 
-    /// The lines of the fleetd stderr, each 1 time, in order.
     fn fleetd_stderr(&self) -> String {
         let all = std::fs::read_to_string(self.h.root.join("fleetd.stderr")).unwrap_or_default();
         let mut seen = std::collections::BTreeSet::new();
@@ -286,12 +243,10 @@ impl World {
             .join("\n")
     }
 
-    /// Wait for `what`: `f` gives a value.
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
 
-    /// The judge pair that fleetd planned for the idea.
     fn pair(&self) -> Pair {
         self.wait("the judged task and its judge task", || {
             let row = self.one(
@@ -317,14 +272,12 @@ impl World {
         .unwrap_or_default()
     }
 
-    /// Wait until `task` is in `status`.
     fn wait_status(&self, task: &str, status: &str) {
         self.wait(&format!("task {task} in {status}"), || {
             (self.status(task) == status).then_some(())
         });
     }
 
-    /// The event id of the first move of `task` to `to`.
     fn moved_at(&self, task: &str, to: &str) -> Option<i64> {
         self.one(&format!(
             "SELECT MIN(event_id) FROM events WHERE kind = 'transition' \
@@ -333,7 +286,6 @@ impl World {
         .and_then(|v| v.parse().ok())
     }
 
-    /// The attempts of `task` with the outcome `outcome`.
     fn attempts_with(&self, task: &str, outcome: &str) -> usize {
         self.one(&format!(
             "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}' AND outcome = '{outcome}'"
@@ -342,7 +294,6 @@ impl World {
         .unwrap_or(0)
     }
 
-    /// The plan of the idea of `pair`: its plan sha256 and its task ids.
     fn plan(&self, pair: &Pair) -> (String, Vec<String>) {
         let idea = &pair.idea;
         let sha = self
@@ -356,7 +307,6 @@ impl World {
         (sha, tasks)
     }
 
-    /// True when `task` moved from `from` to `to`.
     fn moved(&self, task: &str, from: &str, to: &str) -> bool {
         self.one(&format!(
             "SELECT 1 FROM events WHERE kind = 'transition' AND entity = 'task' \
@@ -365,15 +315,12 @@ impl World {
         .is_some()
     }
 
-    /// `horch task cancel <task> <reason> --run <run>`, the real client.
     fn cancel(&self, task: &str, run: &str) -> Output {
         self.h
             .run(&["task", "cancel", task, "the test cancels it", "--run", run])
     }
 }
 
-/// RR-3: a judgment task and its judge task both reach `done`, and the plan
-/// does not change.
 #[test]
 fn rr3_judgment_and_judge_reach_done_with_no_plan_change() {
     let w = World::new("p6-judge-done", "commit,result,verdict_pass");
@@ -394,8 +341,6 @@ fn rr3_judgment_and_judge_reach_done_with_no_plan_change() {
     assert_eq!(fix_rounds.as_deref(), Some("0"), "{}", w.context());
 }
 
-/// RR-3: a CRITICAL item gives 1 fix round. The fix attempt takes no
-/// attempt of `max_attempts`, and the judge task waits in `pending`.
 #[test]
 fn rr3_critical_gives_1_fix_round() {
     let w = World::new("p6-judge-critical", "commit,result,verdict_critical");
@@ -437,8 +382,6 @@ fn rr3_critical_gives_1_fix_round() {
     assert_ne!(w.status(&pair.judge), "done", "{}", w.context());
 }
 
-/// FM-9: a judgment task is `done` only after its judge task is `done`, and
-/// it waits in `verifying` while its judge runs.
 #[test]
 fn fm9_judgment_task_is_done_only_after_its_judge() {
     let w = World::new("p6-judge-fm9", "commit,result,verdict_pass");
@@ -452,7 +395,6 @@ fn fm9_judgment_task_is_done_only_after_its_judge() {
         w.context()
     );
     let verifying = w.moved_at(&pair.judged, "verifying").unwrap();
-    // The judge task is `pending` until its judged task is in `verifying`.
     let judge_ready = w.moved_at(&pair.judge, "ready").unwrap_or(i64::MAX);
     assert!(
         verifying < judge_ready,
@@ -472,14 +414,10 @@ fn fm9_judgment_task_is_done_only_after_its_judge() {
     );
 }
 
-/// FM-33: after 2 fix rounds with an open CRITICAL item, both tasks are
-/// `escalated` with 1 needs-you item, and neither one is `done`.
 #[test]
 fn fm33_two_fix_rounds_escalate() {
     let w = World::new("p6-judge-fm33", "commit,result,verdict_critical");
     let pair = w.pair();
-    // 6 attempts run 1 after the other. Each judge verdict is 1 step of
-    // the flow, and each step has its own deadline.
     let attempts = |task: &str| {
         w.one(&format!(
             "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}'"
@@ -525,10 +463,8 @@ fn fm33_two_fix_rounds_escalate() {
     );
 }
 
-/// "A cancel": the cancel of a judged task cancels its judge task.
 #[test]
 fn cancel_of_a_judged_task_cancels_its_judge_task() {
-    // `stay`: the fake worker stays, so the judged task is not done first.
     let w = World::new("p6-judge-cancel", "stay");
     let pair = w.pair();
     let o = w.cancel(&pair.judged, &pair.run);
@@ -537,8 +473,6 @@ fn cancel_of_a_judged_task_cancels_its_judge_task() {
     w.wait_status(&pair.judge, "cancelled");
 }
 
-/// "A cancel": the cancel of a judge task alone is refused, and both tasks
-/// stay.
 #[test]
 fn cancel_of_a_judge_task_alone_is_refused() {
     let w = World::new("p6-judge-refused", "stay");

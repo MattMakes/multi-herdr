@@ -77,8 +77,6 @@ const FEATURE_LINE: &str = "The feature of your idea is ";
 /// The keys of the fake judge.
 pub(crate) const VERDICT_KEYS: [&str; 3] = ["verdict_pass", "verdict_critical", "verdict_high"];
 
-/// The verdict file of the fake judge, in its worktree, when the ledger
-/// names no Own path of its task.
 pub(crate) const VERDICT_FILE: &str = "review.md";
 
 /// The file mode of each file that the fake writes.
@@ -440,8 +438,6 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("writing {}: {e:#}", path.display()))
 }
 
-/// The fake judge: write the verdict of its key in `file`, a path of its
-/// worktree, and commit it.
 pub(crate) fn judge(call: &mut Call, file: &str) {
     let verdict = if scenario_has("verdict_critical") {
         (

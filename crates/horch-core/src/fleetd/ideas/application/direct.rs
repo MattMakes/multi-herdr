@@ -251,7 +251,6 @@ struct WorkTask<'a> {
     kind: &'a str,
     profile: String,
     check: Option<String>,
-    /// The first `**Own:**` path of the ticket.
     first_own: Option<String>,
 }
 
@@ -295,10 +294,6 @@ fn plan_yaml(
     Ok(serde_yaml::to_string(&plan)?)
 }
 
-/// The verdict file of the judge of `work`, its 1 output: the first Own
-/// path of the ticket with the extension `review.md` (`docs/sync.md` gives
-/// `docs/sync.review.md`, as in ticket 39 of fleetd-p6), else
-/// `<task key>.review.md`. The design names no file name (MAP.md, Q18).
 fn verdict_file(work: &WorkTask<'_>) -> String {
     match &work.first_own {
         Some(own) => Path::new(own)
@@ -311,9 +306,6 @@ fn verdict_file(work: &WorkTask<'_>) -> String {
 
 /// The profile of the judge of a task of the profile `author` (MAP.md, Q8):
 /// the first profile of the roster of another provider with a sandbox on
-/// this OS that can judge at the plan time ([`cannot_judge`]). An empty
-/// name when the roster has none, so the plan validator refuses the plan,
-/// and [`start_direct`] names the cause.
 fn judge_profile(
     author: &str,
     roster: &[RosterProfile],
@@ -325,11 +317,6 @@ fn judge_profile(
         .unwrap_or_default()
 }
 
-/// Why the profile `p` cannot judge, or `None` when it can: it is
-/// unhealthy, its model is of a reserved top tier (a council seat, never
-/// picked by a planner), or the profile rules of the plan validator refuse
-/// it for a judge task. The rules are the functions of the validator, so
-/// the pick and the validator cannot differ.
 fn cannot_judge(
     p: &RosterProfile,
     roster: &[RosterProfile],
@@ -365,8 +352,6 @@ fn cannot_judge(
     (!refused.is_empty()).then(|| refused.join("; "))
 }
 
-/// The profiles of the roster that can judge a task of the profile
-/// `author`: another provider, with a sandbox on this OS.
 fn judge_candidates<'a>(
     author: &str,
     roster: &'a [RosterProfile],
@@ -382,10 +367,6 @@ fn judge_candidates<'a>(
     })
 }
 
-/// The problem of a judge task of the plan of `idea` that has no profile
-/// because [`cannot_judge`] skips each profile of another provider with a
-/// sandbox: it names each of them and its cause. `None` for each other
-/// plan.
 fn judge_gap(conn: &Connection, ctx: &PlanCommit<'_>, idea: &str) -> Result<Option<Problem>> {
     let Ok(text) = std::fs::read_to_string(ctx.ideas.join(idea).join(PLAN_YAML)) else {
         return Ok(None);

@@ -56,7 +56,6 @@ fn check_judged(plan: &Plan, task: &PlannedTask, out: &mut Vec<Problem>) {
 }
 
 /// A judge task judges 1 task of a judgment kind, on another provider when
-/// the roster has one, and writes 1 verdict file: its 1 `.md` output.
 fn check_judge(plan: &Plan, facts: &PlanFacts, judge: &PlannedTask, out: &mut Vec<Problem>) {
     let verdict_files = judge.outputs.iter().filter(|o| o.ends_with(".md")).count();
     if judge.outputs.len() != 1 || verdict_files != 1 {

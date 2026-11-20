@@ -1287,7 +1287,6 @@ impl<'a> Pass<'a> {
             quota: &p.quota,
             full_use: self.settings.config.pool_full_use,
         });
-        // The judge branches of a fix round, for I2 (judge pair, step 6).
         let judge_git = effects::integration_git(&self.settings.fleet_root, &feature_repos(&tx)?);
         let judge_gw = CliGitGateway::new(judge_git.clone());
         let judge_refs = GitJudgeBranchRefs::new(
@@ -2092,11 +2091,9 @@ struct Rules<'a> {
     sent: &'a BTreeMap<String, BTreeSet<i64>>,
     /// The push attempts whose `exit.json` this pass ingested.
     exited: &'a [String],
-    /// The git of the judge branches, for I2 of a judge task.
     judge_branches: JudgeGit<'a>,
 }
 
-/// The git that reads whether a judge branch holds its judged tip.
 #[derive(Clone, Copy)]
 struct JudgeGit<'a> {
     git: &'a dyn IntegrationGitGateway,
@@ -5189,10 +5186,6 @@ fn judge_deps(
     Ok((deps, passed))
 }
 
-/// Whether the judge task `judge` of `judged` may run its next attempt: in
-/// the first round, yes; in a fix round, only when its judge branch holds
-/// the new judged tip, so fleetd moves the branch first (judge pair, step
-/// 6). The rule is the one of [`judge_branch::follow`].
 fn judge_branch_ready(
     tx: &Connection,
     judge: &tasks::Task,

@@ -242,10 +242,6 @@ pub fn follow(j: &JudgeBranches<'_>, tx: &Connection) -> Result<Vec<Effect>> {
     Ok(effects)
 }
 
-/// The judged tip that a judge branch must hold (step 6), and the tip of
-/// each passed check of `judged`, oldest first. The newest verdict of
-/// `judged` must be a passed check: its tip is the judged tip. `None`
-/// for each other verdict.
 fn judged_passes(tx: &Connection, judged: &str) -> Result<Option<(String, Vec<String>)>> {
     let verdicts = verdict_file::recorded(tx, judged)?;
     let Some(onto) = verdicts

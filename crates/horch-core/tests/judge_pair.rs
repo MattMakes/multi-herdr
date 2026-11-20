@@ -770,10 +770,6 @@ fn high_item_does_not_block() {
     assert_eq!(bells, 1);
 }
 
-/// A planned judge task has no check command: the plan validator gives it
-/// none on purpose. The verifier runs its structural check and its verdict
-/// with no `task_check` job, and the pair reaches `done` (fault 7 of
-/// T-561).
 #[test]
 fn planned_judge_task_with_no_check_passes_on_its_verdict() {
     let mut w = World::new();
@@ -798,7 +794,6 @@ fn planned_judge_task_with_no_check_passes_on_its_verdict() {
         (w.status(&judge), w.status(&judged)),
         ("done".into(), "done".into())
     );
-    // The check step of the judge gives a true reason, and runs no job.
     let reasons: Vec<String> = verdict_file::recorded(w.conn(), &judge)
         .unwrap()
         .into_iter()
@@ -810,8 +805,6 @@ fn planned_judge_task_with_no_check_passes_on_its_verdict() {
     );
 }
 
-/// A task that is not a judge task, with no check command and no default
-/// check of its run, is still refused.
 #[test]
 fn task_with_no_check_that_is_not_a_judge_is_still_refused() {
     let mut w = World::new();

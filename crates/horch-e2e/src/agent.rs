@@ -75,7 +75,6 @@ pub fn play(call: &mut Call) {
         call.extra.insert("ask".into(), out);
     }
     if role != Role::Worker {
-        // The verdict file is the 1 Own path of the judge task.
         judge(call, own.first().map_or(VERDICT_FILE, String::as_str));
     }
     if scenario_has("result") && !scenario_has("noresult") {
@@ -95,8 +94,6 @@ enum Role {
     Any,
 }
 
-/// The role of the task of the attempt, and its Own paths: the `task_id` of
-/// `task_yaml`, else the task that the ledger binds to the worker.
 fn role(task_yaml: Option<&Path>, binding: Option<&(String, i64)>) -> (Role, Vec<String>) {
     let task_id = task_yaml
         .and_then(|p| std::fs::read_to_string(p).ok())

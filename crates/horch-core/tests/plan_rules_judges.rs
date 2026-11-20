@@ -41,7 +41,6 @@ fn task(key: &str, kind: Kind, profile: &str) -> PlannedTask {
     }
 }
 
-/// A judge task with its 1 output, its verdict file.
 fn judge(key: &str, judges: &str, profile: &str) -> PlannedTask {
     PlannedTask {
         judges: Some(judges.into()),
@@ -195,8 +194,6 @@ fn replan_that_leaves_a_judgment_task_without_judge_is_refused() {
     assert_eq!(problems[0].task.as_deref(), Some("doc"));
 }
 
-/// A judge task writes exactly 1 verdict file: its 1 `.md` output (fault 8
-/// of T-561; ticket 39 of fleetd-p6).
 #[test]
 fn judge_without_exactly_1_md_output_is_refused() {
     for outputs in [

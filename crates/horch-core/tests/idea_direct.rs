@@ -452,10 +452,6 @@ fn idea_with_approved_assumptions_and_no_requirements_yaml_is_refused() {
     assert!(w.tasks(&idea).is_empty());
 }
 
-/// The judge task of a `--direct` plan has 1 Own row: its verdict file, the
-/// first Own path of the judged ticket with the extension `review.md`
-/// (ticket 39 of fleetd-p6; fault 8 of T-561). The work task keeps the Own
-/// paths of its ticket.
 #[test]
 fn committed_judge_task_has_its_verdict_file_as_own() {
     let mut w = world();
@@ -480,7 +476,6 @@ fn committed_judge_task_has_its_verdict_file_as_own() {
 }
 
 impl World {
-    /// Mark `profile` unhealthy, as the conformance job of fleetd does.
     fn unhealthy(&mut self, profile: &str) {
         self.store
             .immediate(|tx| {
@@ -490,9 +485,6 @@ impl World {
     }
 }
 
-/// The judge task gets no unhealthy profile at the plan time: it takes the
-/// next healthy profile of another provider with a sandbox (fault 9 of
-/// T-561).
 #[test]
 fn judge_task_skips_an_unhealthy_profile() {
     let mut w = world();
@@ -510,9 +502,6 @@ fn judge_task_skips_an_unhealthy_profile() {
     assert_eq!(rows[1].1, "coder-agy");
 }
 
-/// With no profile of another provider with a sandbox that can judge, the
-/// plan is refused, and the reason names each skipped profile and its cause
-/// (fault 9 of T-561).
 #[test]
 fn plan_with_no_healthy_judge_profile_is_refused_with_the_cause() {
     let mut w = world();
@@ -537,10 +526,6 @@ fn plan_with_no_healthy_judge_profile_is_refused_with_the_cause() {
     assert!(named(&item.text), "{}", item.text);
 }
 
-/// The judge pick never gives a council seat, and never a profile that
-/// the profile rules of the plan validator refuse: each seat of the roster
-/// is before a profile that can judge, and the pick skips it (fault 10 of
-/// T-561). The seats are as in their teammate files.
 #[test]
 fn judge_task_never_gets_a_council_seat() {
     let seat = |name: &str, provider: &str, model: &str, fallback: Option<&str>| RosterProfile {
@@ -552,16 +537,13 @@ fn judge_task_never_gets_a_council_seat() {
         sandbox_here: true,
     };
     let seats = [
-        // A reserved top tier, and at effort high.
         seat("fable-creative", "claude", "fable", Some("coder-claude")),
-        // A reserved top tier, and at effort high.
         seat(
             "astra-creative",
             "codex",
             "gpt-6-astra",
             Some("coder-codex"),
         ),
-        // No fallback, and at effort high.
         seat("opus-creative", "claude", "opus", None),
     ];
     for s in seats {
@@ -586,8 +568,6 @@ fn judge_task_never_gets_a_council_seat() {
     }
 }
 
-/// With only a council seat to judge, the refused plan names the seat and
-/// why the pick skips it (fault 10 of T-561).
 #[test]
 fn plan_with_only_a_council_seat_to_judge_is_refused_with_the_cause() {
     let mut w = world();
@@ -600,7 +580,6 @@ fn plan_with_only_a_council_seat_to_judge_is_refused_with_the_cause() {
         fallback: None,
         sandbox_here: true,
     });
-    // The work task keeps a fallback in the roster.
     w.roster[0].fallback = Some("coder-claude".into());
     let added = w.add(DOCS_TICKET, None);
     let idea = added.idea.file.id.clone();

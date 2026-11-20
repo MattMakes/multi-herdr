@@ -209,8 +209,6 @@ pub fn schema(plan: &Plan, _facts: &PlanFacts) -> Vec<Problem> {
     out
 }
 
-/// Why the output path `path` of plan.yaml, an untrusted input, is not a
-/// relative path inside the repository. `None`: it is.
 fn unsafe_output(path: &str) -> Option<&'static str> {
     if path.trim().is_empty() {
         return Some("is empty");
