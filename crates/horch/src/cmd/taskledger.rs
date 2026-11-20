@@ -489,7 +489,7 @@ fn group_of(command: &LedgerCommand) -> Group {
 }
 
 pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
-    match run_command(ctx, command) {
+    let out = match run_command(ctx, command) {
         Err(e) => match e.downcast_ref::<NotApplied>() {
             Some(NotApplied::Refused(reason)) => {
                 eprintln!("refused: {reason}");
@@ -500,7 +500,12 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             None => Err(e),
         },
         done => done,
-    }
+    };
+    // A next SQLITE_READONLY of a read command names its statement (T-209).
+    out.map_err(|e| {
+        let command = std::env::args().collect::<Vec<_>>().join(" ");
+        horch_core::taskledger::store::read_only_failure(&command, e)
+    })
 }
 
 /// The retired kind of `command` when it is a retired command (tickets 47
