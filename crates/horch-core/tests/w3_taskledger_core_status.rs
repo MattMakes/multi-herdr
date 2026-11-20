@@ -137,7 +137,6 @@ fn report_counts_every_status_and_flags_the_unwatched_worker() {
 fn render_prints_each_section() {
     let (_d, store, run) = busy_board();
     let report = status::report(store.conn(), &run).unwrap();
-    // The lease row of T-1 holds a random attempt id and a clock time.
     assert_eq!(report.leases.len(), 1);
     let lease = &report.leases[0];
     assert_eq!(

@@ -495,8 +495,6 @@ fn worktree_triage_queues_its_jobs() {
         })
     };
 
-    // ARCHIVE, DELETE, LAND and PR run git or gh: they go to 1 triage_apply
-    // job, and no task is made. The root has 1 open run at a time.
     let queued = w.applied(Kind::WorktreeTriage, triage("ARCHIVE", &sha));
     let job = queued["job"]
         .as_i64()

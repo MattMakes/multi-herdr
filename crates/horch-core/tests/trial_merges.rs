@@ -212,8 +212,6 @@ impl World {
         self.job(id).state
     }
 
-    /// Parts 1 and 2 of a pass: read the result files under the fleet root
-    /// and end each run from its file (SR-6).
     fn ingest_results(&self) {
         let owner = User::current().unwrap();
         let reads = jobs::read_results(

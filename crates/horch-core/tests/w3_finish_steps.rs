@@ -1520,8 +1520,7 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     assert_eq!(first.status, "open");
     assert!(Path::new(&first.path).ends_with(".worktrees/T2-feat-b"));
     // A replacement worker of the task gets the same worktree. The agent of
-    // the first worker exits: its task is queued again, without its lease,
-    // and the pass ends its attempt (I1: 1 live attempt for each task).
+    // the first worker exits: its task is queued again, without its lease.
     let run = w.run.clone();
     let db = w.root.parent().unwrap().join("ledger.sqlite3");
     let ended = horch_core::taskledger::Store::open(&db)

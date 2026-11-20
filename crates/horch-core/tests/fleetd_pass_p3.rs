@@ -315,9 +315,7 @@ impl World {
         ids.into_iter().map(|id| self.job(id)).collect()
     }
 
-    /// Wait until the job `id` ended. The job process only writes its result
-    /// file (SR-6): each wait ingests the result files as parts 1 and 2 of a
-    /// pass do, in its own connection, and the row ends from its file.
+    /// Wait until the job `id` ended.
     fn ended(&self, id: i64) -> JobRow {
         let until = Instant::now() + Duration::from_secs(30);
         let conn = open(&self.db());
@@ -534,8 +532,6 @@ fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
     let mut pass = w.pass(&Trees, &host);
     let budget = Duration::from_secs(w.config.pass_time_budget_s);
 
-    // The passes run while the 60 s git job runs. A loaded host makes each
-    // pass slower, so the loop counts passes and not seconds.
     let until = Instant::now() + Duration::from_secs(40);
     let mut passes = 0;
     while passes < 5 {
