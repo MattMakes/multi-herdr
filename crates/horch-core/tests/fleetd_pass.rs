@@ -50,7 +50,6 @@ const CHILD_MODE: &str = "FLEETD_PASS_TEST_MODE";
 
 /// The id of the attempt in `launching` of the tests.
 const LAUNCHING: &str = "orchestrator/A2";
-/// The herdr pane of the worker of [`LAUNCHING`].
 const PANE: &str = "w1:p1";
 
 // ─── the world ──────────────────────────────────────────────────────────
@@ -192,8 +191,6 @@ impl World {
         attempts::insert_attempt(&self.conn, &row, &util::now()).unwrap();
     }
 
-    /// [`World::launching_attempt`], whose worker runs in the pane
-    /// [`PANE`]: the attempt goes `live` on its pane wrapper (FR-10).
     fn launching_attempt_in_pane(&self) {
         self.launching_attempt();
         self.conn
@@ -285,8 +282,6 @@ impl World {
 
 /// The outside of the tests: no herdr snapshot, no health hold, and a
 /// launch spec that appends 1 line to `launches.txt`, then runs `then`.
-/// With `pane_root`, herdr shows the process of the launch record of
-/// [`LAUNCHING`] in the pane [`PANE`] (FR-10).
 struct Fake {
     launches: PathBuf,
     then: &'static str,
@@ -310,7 +305,6 @@ impl Fake {
         }
     }
 
-    /// [`Fake::new`] with the launched process of [`LAUNCHING`] in its pane.
     fn in_pane(w: &World) -> Fake {
         Fake {
             pane_root: Some(w.root()),

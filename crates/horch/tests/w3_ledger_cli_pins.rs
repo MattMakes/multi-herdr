@@ -426,10 +426,6 @@ fn watch_once_reports_in_text_and_json() {
         "No worker was due for a check.\n"
     );
     assert_eq!(w.ok(&["ledger", "watch", "--once", "--json"]), "[]\n");
-    // Forced: the worker has no agent process. Its live attempt has no
-    // recorded process and no pane, so the pass does not end it: its
-    // exit.json or its lease expiry ends it. The duty check finds the
-    // agent gone, and the task stays running.
     let forced = w.run(&["ledger", "watch", "--once", "--force"]);
     assert_eq!(forced.code, 0, "{}", forced.err);
     assert_eq!(
