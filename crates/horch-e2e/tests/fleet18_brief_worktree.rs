@@ -682,7 +682,7 @@ fn g58_claude_workers_share_read_only_preapprovals() {
             names.push(name);
         }
     }
-    assert_eq!(names.len(), 88);
+    assert_eq!(names.len(), 89);
     assert!(names.contains(&"sound-engineer"), "{names:?}");
     assert!(!names.contains(&"audio-reviewer"), "{names:?}");
     for pattern in expected {

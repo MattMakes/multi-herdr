@@ -29,6 +29,11 @@ no_spec_todo() {
   fi
 }
 
+comment_ban() {
+  python3 -m unittest discover -s scripts/comments/tests
+  python3 scripts/comments/comment_lint.py check
+}
+
 godot_skills() {
   python3 -m unittest discover -s scripts/godot/tests
   local dirs=(skills/godot-*/)
@@ -43,6 +48,7 @@ godot_skills() {
 }
 
 step no_spec_todo
+step comment_ban
 step cargo fmt --all --check
 step cargo build --workspace --all-targets
 step cargo build --workspace --bins

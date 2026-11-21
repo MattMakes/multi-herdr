@@ -349,7 +349,7 @@ fn ctx_17_live_check_covers_slice_two_harnesses() {
         "the first pi and Prime turn plants a canary"
     );
     assert!(
-        c3.contains(r#"{"type":"compact"}"#),
+        c3.contains(r#"json.dumps({"type": "compact"})"#),
         "compacts with no argument"
     );
     assert!(

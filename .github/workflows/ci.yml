@@ -26,6 +26,13 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --workspace --locked --no-fail-fast
 
+  comments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: python3 -m unittest discover -s scripts/comments/tests
+      - run: python3 scripts/comments/comment_lint.py check
+
   docs:
     runs-on: ubuntu-latest
     steps:
