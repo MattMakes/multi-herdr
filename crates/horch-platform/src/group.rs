@@ -111,6 +111,17 @@ pub fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupported> {
     os::is_same_group(pgid, started)
 }
 
+/// Whether the leader of process group `pgid` runs with the start time
+/// `started` and still leads the group. Only a live leader proves that the
+/// group is the one it started: with the leader gone, the id can name a
+/// group of another process by reuse (D242-F1). False for 0 and for a
+/// value above `i32::MAX`.
+///
+/// Windows gives [`NotSupported`]: it has no process groups.
+pub fn is_group_leader(pgid: u32, started: u64) -> Result<bool, NotSupported> {
+    os::is_group_leader(pgid, started)
+}
+
 /// A child and every process that it starts, held so that 1 call kills them
 /// all. On Windows it is a job object that kills its processes when it is
 /// terminated or dropped. On macOS and Linux it is the process group of the

@@ -367,14 +367,9 @@ struct Member {
 /// when the member ends, and past the time limit of the run and the stop
 /// grace the operator gets 1 needs-you item ([`tell_group_left`]).
 ///
-/// The `SIGTERM` of [`stop`] keeps its form with the leader gone: it goes
-/// to the group id while the group has a member. The OS does not give a
-/// pid out while it is the id of a group with a member (Linux frees a pid
-/// number only when no process uses it as its pid, group id or session id;
-/// the macOS fork skips a pid that names a process, a group or a session).
-/// So the group gets a wrong process only when every member of the group
-/// ends, and the id goes to a new process that then makes its own group
-/// (`setsid` or `setpgid`).
+/// [`stop`] also sends no signal with the leader gone (D242-F1): when every
+/// member of the group ends, the id can go to a new process that makes its
+/// own group (`setsid` or `setpgid`) and leaves a member in it.
 fn note_group_left(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -985,9 +980,11 @@ fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
 }
 
 /// Stop the process group of a run past its deadline (part 3 of a pass),
-/// only while its leader, or a member of its group, holds the recorded
-/// start. Before the kill, each process of the group gets a stop that it
-/// can catch. Whether a stop was sent.
+/// only while its leader runs with the recorded start and leads the group
+/// (D242-F1). With the leader gone, no signal goes out: the next pass sees
+/// the job process gone, and [`note_group_left`] records the members.
+/// Before the kill, each process of the group gets a stop that it can
+/// catch. Whether a stop was sent.
 ///
 /// Windows has no process groups: there the stop reaches the job process
 /// only, and the processes that it started live on
@@ -1010,7 +1007,7 @@ pub fn stop(s: &Stop) -> bool {
         return false;
     };
     let how = if s.kill { How::Kill } else { How::Term };
-    match group::is_same_group(s.pid, start) {
+    match group::is_group_leader(s.pid, start) {
         Ok(false) => false,
         Err(_) => stop_same(s.pid, start, how),
         Ok(true) if s.kill => group::kill_group_id(s.pid).unwrap_or(false),

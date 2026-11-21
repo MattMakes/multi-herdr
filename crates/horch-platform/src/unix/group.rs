@@ -89,6 +89,15 @@ pub(crate) fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupporte
     })
 }
 
+pub(crate) fn is_group_leader(pgid: u32, started: u64) -> Result<bool, NotSupported> {
+    let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
+        return Ok(false);
+    };
+    // SAFETY: plain syscall; a pid that has gone answers -1.
+    Ok(crate::process::start_time(pgid) == Some(started)
+        && (unsafe { libc::getpgid(group) }) == group)
+}
+
 /// The process group of the child holds it: nothing to set up or to end
 /// here. `kill_child_group` kills the group.
 pub(crate) struct Contained;

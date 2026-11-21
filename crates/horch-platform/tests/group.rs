@@ -89,6 +89,44 @@ fn is_same_group_is_false_for_a_wrong_start_time() {
     assert_eq!(wrong, Ok(false));
 }
 
+/// Only a leader that runs with its start time proves the group: a group
+/// whose leader is gone and that still has a member is not proved, though
+/// `is_same_group` holds it the same (D242-F1).
+#[cfg(unix)]
+#[test]
+fn is_group_leader_needs_the_leader_with_its_start_time() {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "read line; sleep 60 >/dev/null & echo $!"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    group::new_group(&mut cmd);
+    let mut leader = cmd.spawn().expect("start sh");
+    let pgid = leader.id();
+    let started = horch_platform::process::start_time(pgid).expect("sh runs");
+    let live = group::is_group_leader(pgid, started);
+    let wrong = group::is_group_leader(pgid, started.wrapping_add(1));
+    use std::io::{Read, Write};
+    leader.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let mut out = String::new();
+    leader
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    leader.wait().unwrap();
+    let member: i32 = out.trim().parse().unwrap();
+    let gone = group::is_group_leader(pgid, started);
+    let same = group::is_same_group(pgid, started);
+    // SAFETY: the test started the member; a gone pid answers -1.
+    unsafe { libc::kill(member, libc::SIGKILL) };
+    assert_eq!(live, Ok(true));
+    assert_eq!(wrong, Ok(false));
+    assert_eq!(gone, Ok(false), "a gone leader proves nothing");
+    assert_eq!(same, Ok(true), "the member keeps the group id");
+    assert_eq!(group::is_group_leader(0, started), Ok(false));
+}
+
 /// Set in the child process of
 /// `kill_group_id_refuses_an_id_that_names_no_group_it_started`.
 #[cfg(unix)]

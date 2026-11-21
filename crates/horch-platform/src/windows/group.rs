@@ -162,6 +162,10 @@ pub(crate) fn is_same_group(_pgid: u32, _started: u64) -> Result<bool, NotSuppor
     Err(NOT_SUPPORTED)
 }
 
+pub(crate) fn is_group_leader(_pgid: u32, _started: u64) -> Result<bool, NotSupported> {
+    Err(NOT_SUPPORTED)
+}
+
 /// The process tree of a child. The job kills every process in it when the
 /// last handle closes, so a descendant that holds a pipe cannot outlive the
 /// child on any path.

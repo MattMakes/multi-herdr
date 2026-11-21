@@ -528,6 +528,80 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
     );
 }
 
+/// A group with no leader takes the place of the recorded group of a run:
+/// the recorded leader is gone, and a process holds its id as its group
+/// id. With the leader gone, nothing proves that the process is of the
+/// job: the id can be of a group of another process by reuse. So neither
+/// the TERM nor the KILL of [`jobs::stop`] sends it a signal (D242-F1).
+#[test]
+fn a_leaderless_group_in_the_place_of_the_recorded_group_gets_no_signal() {
+    let mut w = world();
+    let id = w.queue_add();
+    let member_file = w.dir.path().join("member");
+    let spec = LaunchSpec {
+        program: "sh".into(),
+        args: vec![
+            "-c".into(),
+            format!("sleep 60 & echo $! > '{}'", member_file.display()).into(),
+        ],
+        cwd: None,
+        env_rule: EnvRule::default(),
+        detach: false,
+        output: None,
+    };
+    let job = w.job(id);
+    let config = w.config.clone();
+    let ctx = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let mut runner = JobRunner::new(&Launcher);
+    assert!(runner
+        .start(&ctx, &mut w.conn, &job, &spec, FleetSeconds(0))
+        .unwrap());
+    w.wait_gone(&mut runner, id);
+    let member: u32 = std::fs::read_to_string(&member_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = |pid: u32| {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let row = w.job(id);
+    let leader = row.pid.unwrap();
+    assert_eq!(
+        horch_platform::process::group_of(member).unwrap(),
+        Some(leader),
+        "the process holds the id of the recorded group"
+    );
+    for kill in [false, true] {
+        let stop = Stop {
+            job_id: id,
+            pid: leader,
+            pid_start: row.pid_start,
+            kill,
+        };
+        assert!(!jobs::stop(&stop), "no signal goes out (kill: {kill})");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let lives = alive(member);
+
+    // The test started the process, so the test ends it.
+    let ended = Command::new("kill")
+        .args(["-KILL", &member.to_string()])
+        .status()
+        .unwrap();
+    assert!(ended.success());
+    assert!(lives, "the process of the group got no signal");
+}
+
 /// A job process that ignores TERM: it gets the TERM at its deadline,
 /// nothing in the grace after the recorded TERM, then the KILL. The record
 /// is in the ledger, so a new connection (a restarted fleetd) counts the
