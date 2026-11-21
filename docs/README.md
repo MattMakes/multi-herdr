@@ -50,6 +50,14 @@ Each recipe names every file to change and the check for each step.
 - [`specs/telemetry.md`](specs/telemetry.md): telemetry, usage
   limits and routing.
 
+## Decisions
+
+- [`adr/README.md`](adr/README.md): the architecture decision records, by
+  subsystem. A decision that the code cannot state by itself is recorded
+  there, because code here carries no comments
+  ([ADR 0004](adr/0004-no-comments-in-code.md)). The `/delete-comment` skill
+  removes old comments and moves what they knew into an ADR or an issue.
+
 ## One rule above all
 
 Never use `ANTHROPIC_API_KEY`. Every `claude` run uses the operator's

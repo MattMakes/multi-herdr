@@ -1,7 +1,3 @@
-//! Branches of the context readers that `context_readers.rs` leaves to the
-//! fixture home: the lines a tail scan skips, the Codex model look-back, the
-//! marker kinds of each agent, and marker lines longer than a read step.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::runtime::Inherited;
@@ -100,8 +96,6 @@ fn pi_tail_takes_the_newest_assistant_response_that_did_not_fail() {
     }
 }
 
-/// What the tail scan takes from a file that holds only `lines` of `agent`:
-/// the tokens, the model and the offset of its usable line, if it has one.
 fn usable_in(agent: &str, lines: &[String]) -> Option<(u64, Option<String>, u64)> {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "u.jsonl", lines);
@@ -109,7 +103,6 @@ fn usable_in(agent: &str, lines: &[String]) -> Option<(u64, Option<String>, u64)
     usable.map(|u| (u.tokens, u.model, u.offset))
 }
 
-/// A pi line of type `kind` whose `message` is `message`.
 fn pi_line(kind: &str, message: &str) -> String {
     format!(r#"{{"type":"{kind}","message":{message}}}"#)
 }
@@ -119,10 +112,8 @@ fn pi_tail_takes_only_assistant_message_lines_with_tokens() {
     let assistant = |usage: &str| format!(r#"{{"role":"assistant","usage":{usage}}}"#);
     for agent in ["pi", "prime"] {
         for line in [
-            // Not a `message` line, or no type at all.
             pi_line("custom", &assistant(r#"{"totalTokens":5}"#)),
             format!(r#"{{"message":{}}}"#, assistant(r#"{"totalTokens":5}"#)),
-            // No message, no role, no usage, no tokens.
             r#"{"type":"message"}"#.to_string(),
             pi_line("message", r#"{"usage":{"totalTokens":5}}"#),
             pi_line("message", r#"{"role":"assistant"}"#),
@@ -226,7 +217,6 @@ fn each_agent_reads_its_own_marker_fields() {
         "cccccccc-0000-4000-8000-0000000000cc.jsonl",
         &[
             claude("a", "", 10),
-            // Nested objects and other types that hold the needle do not count.
             r#"{"type":"user","subtype":"compact_boundary"}"#.into(),
             r#"{"type":"system","subtype":"compact_boundary","timestamp":"T2","compactMetadata":{"trigger":"auto","preTokens":500,"postTokens":50}}"#.into(),
         ],

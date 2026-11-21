@@ -16,7 +16,6 @@ SR = 48000
 TARGET = "a knock on a wooden block"
 ALTS = ["a door knock", "a mouse click", "a hand clap", "a bubble pop", "a metal clank"]
 
-# Mode tables: (ratio to f1, amplitude, decay multiplier).
 MATERIALS: dict[str, tuple[tuple[float, float, float], ...]] = {
     "block": ((1.0, 1.0, 1.0), (1.48, 0.55, 0.6), (2.15, 0.45, 0.45), (3.4, 0.25, 0.3), (4.6, 0.12, 0.2)),
     "shell": ((1.0, 0.7, 1.0), (1.31, 1.0, 0.8), (1.77, 0.8, 0.6), (2.43, 0.6, 0.5), (3.1, 0.4, 0.35),
@@ -25,7 +24,6 @@ MATERIALS: dict[str, tuple[tuple[float, float, float], ...]] = {
     "desk": ((1.0, 1.0, 1.0), (1.9, 0.6, 0.5), (2.8, 0.5, 0.4), (4.4, 0.3, 0.25), (6.3, 0.15, 0.15)),
 }
 
-# key: (range, default)
 _TABLE: dict[str, tuple[Any, Any]] = {
     "mat": (["block", "shell", "tok", "desk"], "block"),
     "f1": ((250.0, 2600.0, "log"), 620.0),
@@ -102,7 +100,6 @@ FAMILY: dict[str, list[dict]] = {
     "knock": [{**DEFAULTS, **{k: row[i] for k, row in _ROWS.items()}} for i in range(5)],
 }
 
-# T15 targets: key -> (lo, hi, scale), measured with tonal.measure.
 STUDY: dict[str, tuple[float, float, float]] = {
     "dur_s": (0.11, 0.26, 0.08),
     "attack_ms": (10, 28, 10),

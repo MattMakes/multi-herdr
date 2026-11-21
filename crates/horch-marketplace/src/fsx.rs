@@ -1,5 +1,3 @@
-//! Small filesystem helpers: atomic replace, random names, recursive copy.
-
 use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
@@ -11,8 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::error::{MarketplaceError, Result};
 use crate::integrity::{classify, read_entries, Kind};
 
-/// 32 random hex characters. `RandomState` is seeded from the OS; the time,
-/// pid and a counter keep two calls in one process distinct.
 pub fn random_hex() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
@@ -31,8 +27,6 @@ pub fn random_hex() -> String {
     out
 }
 
-/// Replace `path` with `bytes`: write a temp file in the same directory,
-/// fsync it, rename it over `path`, then fsync the directory.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
@@ -72,8 +66,6 @@ pub fn remove_dir_if_exists(dir: &Path) -> Result<()> {
     }
 }
 
-/// Copy the regular files and directories under `from` into `to`. A symlink
-/// or any other file type is rejected; no link is ever followed.
 pub fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     copy_tree_at(from, to, "")
 }
@@ -101,7 +93,6 @@ fn copy_file(from: &Path, to: &Path, child_rel: &str) -> Result<()> {
         .map_err(|e| MarketplaceError::io(format!("copy {child_rel}"), e))
 }
 
-/// The current UTC time as RFC 3339 with second precision.
 pub fn now_rfc3339() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -117,7 +108,6 @@ pub fn now_rfc3339() -> String {
     )
 }
 
-/// Howard Hinnant's days-to-civil algorithm.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);

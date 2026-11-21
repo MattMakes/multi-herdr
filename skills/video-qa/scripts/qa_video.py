@@ -69,7 +69,6 @@ CHECKS = (
 )
 
 DURATION_TOL_SEC = 0.05
-# Master length range of each meta.format, from docs/specs/video-formats.md.
 FORMAT_RANGES_SEC = {"short": (15.0, 90.0), "long": (180.0, 900.0)}
 PSNR_MIN_DB = 45.0
 FRAME0_YAVG_RANGE = (18.0, 240.0)
@@ -94,29 +93,27 @@ CONTACT_FPS = 2
 HOOK_FPS = 4
 SKILL_MD_MAX_BYTES = 12288
 
-# Motion and cut analysis: grey frames, 96 px on the long side, every frame.
-# A frame difference is the mean absolute pixel difference in [0, 1].
 MOTION_LONG_SIDE = 96
-POP_MIN_DIFF = 0.08          # a 1-frame pop jumps away and back by at least this
-POP_RETURN_RATIO = 0.5       # frame before vs frame after differ by at most this x the jump
+POP_MIN_DIFF = 0.08
+POP_RETURN_RATIO = 0.5
 CUT_MIN_DIFF = 0.10
-CUT_MEDIAN_RATIO = 3.0       # a cut is this many times the local median difference
-CUT_MEDIAN_RADIUS = 8        # frames on each side for the local median
-CUT_MATCH_SEC = 0.5          # a cut within this of a scene boundary is planned
-DEAD_DIFF = 0.002            # below this a frame step counts as no motion
+CUT_MEDIAN_RATIO = 3.0
+CUT_MEDIAN_RADIUS = 8
+CUT_MATCH_SEC = 0.5
+DEAD_DIFF = 0.002
 DEAD_MAX_SEC = 2.0
 OPENING_SEC = 5.0
-OPENING_MIN_RATIO = 0.5      # opening motion per second vs the rest of the film
+OPENING_MIN_RATIO = 0.5
 OPENING_MIN_REST_SEC = 2.0
-CONTRAST_MIN_SECONDS = 6     # whole seconds needed to judge motion contrast
-CONTRAST_MIN_RATIO = 1.5     # 90th / 10th percentile of motion per second
+CONTRAST_MIN_SECONDS = 6
+CONTRAST_MIN_RATIO = 1.5
 LOOP_SEAM_FACTOR = 3.0
 LOOP_SEAM_FLOOR = 0.02
 RASTER_WARN_SCALE = 1.12
 RASTER_WARN_SEC = 0.5
 RASTER_FAIL_SCALE = 1.2
 RASTER_DEFAULT_STEP_SEC = 0.1
-RASTER_INTEGER_TOL = 0.02    # a nearest-neighbour draw within this of a whole-number scale is pixel art
+RASTER_INTEGER_TOL = 0.02
 PHONE_TILE_W = 360
 CUT_LUMA_DELTA = 0.06
 PHONE_FRAME_H = 360
@@ -162,8 +159,6 @@ class Caught:
         self.error = error if kind is not None and issubclass(kind, self.kinds) else None
         return self.error is not None
 
-
-# ---------------------------------------------------------------- helpers
 
 def run(cmd, binary=False):
     return subprocess.run(cmd, capture_output=True, text=not binary)
@@ -255,8 +250,6 @@ def load_timeline(path):
     return meta, scenes
 
 
-# ---------------------------------------------------------------- analysis pass
-
 def _summary_levels(text):
     """Read integrated loudness and true peak from ebur128 summary lines.
 
@@ -344,12 +337,6 @@ def motion_frames(video, meta):
     diffs = [0.0] + [frame_diff(a, b) for a, b in zip(frames, frames[1:])]
     return types.SimpleNamespace(frames=frames, diffs=diffs, fps=float(meta["fps"]))
 
-
-# ---------------------------------------------------------------- checks
-# Each check returns (details: dict, errors: list of (message, time_sec or None)).
-# A details dict with "skipped": True means the check did not run. With "applies": False
-# the check does not apply to this input (state skip). A check that applies but did not
-# run also returns an error, so its state is fail.
 
 def skip(reason, **extra):
     """The check does not apply to this input."""
@@ -1222,9 +1209,7 @@ CHECK_FUNCS = {
 }
 
 
-# ---------------------------------------------------------------- sheets
-
-FONT = {  # 5x7 glyphs, one hex byte per row, bit 4 is the left column.
+FONT = {
     "0": "0E11131519110E", "1": "040C040404040E", "2": "0E11010204081F", "3": "1F02040201110E",
     "4": "02060A121F0202", "5": "1F101E0101110E", "6": "0608101E11110E", "7": "1F010204080808",
     "8": "0E11110E11110E", "9": "0E11110F01020C", "A": "0E11111F111111", "B": "1E11111E11111E",
@@ -1343,8 +1328,6 @@ def make_phone_frames(ctx):
     files = [write_phone_frame(ctx, pick) for pick in phone_frame_times(ctx)]
     return {"directory": str(ctx.phone_frames), "height_px": PHONE_FRAME_H, "frames": files}
 
-
-# ---------------------------------------------------------------- driver
 
 def path_or(value, default):
     return Path(value) if value else default
@@ -1475,8 +1458,6 @@ def require_tools():
         raise InputError(f"missing on PATH: {', '.join(missing)}")
 
 
-# ---------------------------------------------------------------- self-test
-
 SCENE_OK = """<!doctype html><html><head><style>.dot { transform: translateX(0); }</style></head>
 <body><div class="dot"></div><script>
 // Pure function of (frameIndex, fps). No clocks, no timers, no random numbers.
@@ -1502,8 +1483,8 @@ def sh(*args):
         raise RuntimeError(f"ffmpeg fixture failed: {' '.join(args)}\n{proc.stderr}")
 
 
-FIXTURE_SEC = 15.0   # the shortest short film
-CALM_FROM_SEC = 8.0  # a plate covers most of the frame from here, so motion_contrast sees a calm stretch
+FIXTURE_SEC = 15.0
+CALM_FROM_SEC = 8.0
 
 
 def make_fixture_video(path, vf="null", tone_db=None, clip=False, width=320, height=180, fps=30, dur=FIXTURE_SEC):
@@ -1643,12 +1624,12 @@ def assert_png(path, width, height):
     assert (w, h) == (width, height), f"{path} is {w}x{h}, expected {width}x{height}"
 
 
-GATE_CASES = [  # (name, make_project options, failed checks, text that 1 error message must hold)
+GATE_CASES = [
     ("pass", {}, set(), None),
     ("black-frame", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1.2,1.7)'"},
      {"black_frames", "cuts_vs_plan"}, None),
     ("dark-background", {"video_vf": "drawbox=x=0:y=0:w=iw:h=ih:color=0x0B1020:t=fill:enable='between(t,1.2,1.7)'"},
-     {"cuts_vs_plan"}, None),  # the jump to the dark plate is a cut, but not black
+     {"cuts_vs_plan"}, None),
     ("frozen", {"video_vf": "trim=end=2,tpad=stop_mode=clone:stop_duration=13"},
      {"dead_time", "freeze_frames"}, None),
     ("raf-scene", {"scene_html": SCENE_RAF}, {"scene_determinism"}, None),
@@ -1692,8 +1673,6 @@ def assert_gate_report(root, case):
     return failed
 
 
-# The pass fixture is a 15 s short film with no loop and no raster: loop_seam and
-# raster_upscale do not apply.
 PASS_COUNTS = {"pass": len(CHECKS) - 2, "skip": 2, "fail": 0}
 
 
@@ -1924,7 +1903,6 @@ def fake_probe(seconds):
 
 def self_test_format_fit(tmp):
     short_pass, short_fail = format_clip(tmp / "format-20s.mp4", 20), format_clip(tmp / "format-10s.mp4", 10)
-    # The long cases fake the master length with fake_probe instead of encoding 3 min or more.
     cases = [("short 20 s", "short", short_pass, "pass"), ("short 10 s", "short", short_fail, "fail"),
              ("long 300 s", "long", fake_probe(300.0), "pass"), ("long 74 s", "long", fake_probe(74.0), "fail"),
              ("no format", None, short_pass, "fail"), ("bad format", "medium", short_pass, "fail")]
@@ -2003,7 +1981,7 @@ def self_test_motion(tmp):
         ("flat-motion", {"amp": "50"}, False, {"motion_contrast"}),
         ("loop-clean", {"amp": AMP_BUSY_THEN_CALM}, True, set()),
         ("loop-seam", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, True, {"loop_seam"}),
-        ("loop-seam-long", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, True, set()),  # loop_seam is short only
+        ("loop-seam-long", {"amp": AMP_BUSY_THEN_CALM, "cut_at": 4.0}, True, set()),
     ]
     for name, clip, loop, expected in cases:
         path = tmp / f"motion-{name}.mp4"
@@ -2014,7 +1992,7 @@ def self_test_motion(tmp):
         print(f"ok motion {name}: failed={sorted(failed)}")
 
 
-def raster_result(tmp, name, samples):  # samples may set "sampling": "nearest"
+def raster_result(tmp, name, samples):
     path = tmp / f"raster-{name}.json"
     path.write_text(json.dumps({"step_sec": 0.1, "samples": samples}))
     ctx = types.SimpleNamespace(raster_sizes=path, warnings=[])

@@ -1,8 +1,3 @@
-//! The wake outbox (trace-fixes C3, D7). A wake is a row first and a send
-//! second: [`write()`] adds the row inside a ledger transaction, and [`drain`]
-//! gives each undelivered row to a sender and sets `delivered_at` only when
-//! the send took it. A failed send leaves the row for the next drain.
-
 use std::fs::{OpenOptions, TryLockError};
 
 use anyhow::{Context, Result};
@@ -13,16 +8,11 @@ use super::model::OutboxEvent;
 use super::store::Store;
 use super::util;
 
-/// 1 wake to write: what happened, what it is about, and its line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wake {
     pub event: OutboxEvent,
-    /// The task, worker or other thing the wake is about.
     pub subject: String,
-    /// The board state the wake answers ([`board`]), hashed into the key.
-    /// The same subject in a new board state is a new wake.
     pub board: Option<String>,
-    /// The line for the orchestrator.
     pub text: String,
 }
 
@@ -36,7 +26,6 @@ impl Wake {
         }
     }
 
-    /// The same wake, for the board state `board`.
     pub fn on_board(self, board: String) -> Self {
         Wake {
             board: Some(board),
@@ -45,7 +34,6 @@ impl Wake {
     }
 }
 
-/// The dedup key of a wake: `<run>:<event>:<subject>[:<board-hash>]`.
 pub fn key(run_id: &str, wake: &Wake) -> String {
     let base = format!("{run_id}:{}:{}", wake.event.as_str(), wake.subject);
     match &wake.board {
@@ -54,15 +42,11 @@ pub fn key(run_id: &str, wake: &Wake) -> String {
     }
 }
 
-/// The first 16 hex characters of the sha256 of `text`.
 fn short_hash(text: &str) -> String {
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-/// Write `wake` in `tx`, the transaction of the ledger change that causes
-/// it. Do not send inside the transaction: [`drain`] sends after the commit.
-/// `Some(id)`: a new row. `None`: a row with the same key exists already.
 pub fn write(tx: &Transaction, run_id: &str, wake: &Wake) -> Result<Option<String>> {
     let id = util::new_id();
     let n = tx.execute(
@@ -80,21 +64,13 @@ pub fn write(tx: &Transaction, run_id: &str, wake: &Wake) -> Result<Option<Strin
     Ok((n == 1).then_some(id))
 }
 
-/// What [`write_now`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Written {
-    /// No wake applies to the board.
     Nothing,
-    /// The wake applies, and a row with its key exists already.
     Exists,
-    /// A new row with this id.
     New(String),
 }
 
-/// Decide and write 1 wake in 1 immediate transaction of its own: `decide`
-/// reads the board and returns the wake, or `None`. A caller with only a
-/// `&Store` calls it right after its ledger commit and before any send.
-/// A crash between that commit and this transaction loses the wake.
 pub fn write_now(
     store: &Store,
     run_id: &str,
@@ -112,7 +88,6 @@ pub fn write_now(
     Ok(written)
 }
 
-/// 1 outbox row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub id: String,
@@ -124,16 +99,12 @@ pub struct Row {
     pub delivered_at: Option<String>,
 }
 
-/// Which undelivered rows a drain takes.
 #[derive(Debug, Clone, Copy)]
 pub enum Scope<'a> {
-    /// The rows of 1 run.
     Run(&'a str),
-    /// The rows of the runs that belong to 1 herdr workspace.
     Workspace(&'a str),
 }
 
-/// The undelivered rows of `scope`, oldest first.
 pub fn undelivered(conn: &Connection, scope: Scope) -> Result<Vec<Row>> {
     let (filter, value) = match scope {
         Scope::Run(run) => ("o.run_id = ?1", run),
@@ -162,7 +133,6 @@ pub fn undelivered(conn: &Connection, scope: Scope) -> Result<Vec<Row>> {
     Ok(rows)
 }
 
-/// The text of the newest row of `run` whose key starts with `prefix`.
 pub fn last_text(conn: &Connection, run_id: &str, prefix: &str) -> Result<Option<String>> {
     let text = conn.query_row(
         "SELECT text FROM outbox WHERE run_id = ?1 AND substr(key, 1, length(?2)) = ?2
@@ -173,9 +143,6 @@ pub fn last_text(conn: &Connection, run_id: &str, prefix: &str) -> Result<Option
     super::store::optional(text)
 }
 
-/// The board state of a run as 1 line: every task with its status, hold and
-/// attempts, and every worktree with its status. With `workers`, every
-/// worker with its status too. 2 equal lines are 1 board state.
 pub fn board(conn: &Connection, run_id: &str, workers: bool) -> Result<String> {
     let tasks: String = conn.query_row(
         "SELECT coalesce(group_concat(x, ','), '') FROM (
@@ -206,7 +173,6 @@ pub fn board(conn: &Connection, run_id: &str, workers: bool) -> Result<String> {
     Ok(line)
 }
 
-/// Set `delivered_at` of row `id`. `false`: another drain set it first.
 pub fn mark_delivered(conn: &Connection, id: &str) -> Result<bool> {
     let n = conn.execute(
         "UPDATE outbox SET delivered_at = ?2 WHERE id = ?1 AND delivered_at IS NULL",
@@ -215,21 +181,13 @@ pub fn mark_delivered(conn: &Connection, id: &str) -> Result<bool> {
     Ok(n == 1)
 }
 
-/// What 1 drain did.
 #[derive(Debug, Default)]
 pub struct Drained {
-    /// The ids of the rows that the sender took.
     pub delivered: Vec<String>,
-    /// The ids of the rows that the sender refused, with the error.
     pub failed: Vec<(String, String)>,
-    /// Another process drained the outbox at the same time, and this drain
-    /// sent nothing. That process sends the rows.
     pub busy: bool,
 }
 
-/// Give each undelivered row of `scope` to `send`, oldest first. A row that
-/// `send` takes gets `delivered_at`; a row that it refuses stays. 1 drain
-/// runs at a time per ledger file: 2 drains would send the same row twice.
 pub fn drain(
     store: &Store,
     scope: Scope,
@@ -272,9 +230,6 @@ pub fn drain(
     Ok(out)
 }
 
-/// The held drain lock. Its drop unlocks explicitly: a flock belongs to the
-/// open file description, and a child forked by another thread holds a copy
-/// of it until its exec. Only an unlock, not a close, frees it at once.
 struct Held(std::fs::File);
 
 impl Drop for Held {
@@ -324,7 +279,6 @@ mod tests {
     #[test]
     fn trf_21_the_wake_row_commits_and_rolls_back_with_its_ledger_change() {
         let (_dir, mut store, run) = ledger();
-        // The ledger change fails after the row is written: neither stays.
         let failed: Result<()> = store.immediate(|tx| {
             tasks::add(
                 tx,
@@ -339,7 +293,6 @@ mod tests {
         assert_eq!(count(&store), 0, "the wake rolled back with the change");
         assert!(tasks::of_run(store.conn(), &run.run_id).unwrap().is_empty());
 
-        // The same change commits: the task and the row are both there.
         store
             .immediate(|tx| {
                 tasks::add(
@@ -365,7 +318,6 @@ mod tests {
         assert!(matches!(first, Written::New(_)), "{first:?}");
         let again = write_now(&store, &run.run_id, |_| Ok(Some(wake("T-1", "a")))).unwrap();
         assert_eq!(again, Written::Exists);
-        // A decision that fails writes nothing.
         assert!(write_now(&store, &run.run_id, |_| anyhow::bail!("no board")).is_err());
         assert_eq!(count(&store), 1);
     }
@@ -382,7 +334,6 @@ mod tests {
         assert!(first.is_some());
         assert_eq!(again, None);
         assert_eq!(count(&store), 1);
-        // A new board state is a new key.
         let board = wake("T-1", "c").on_board("tasks T-1=queued".into());
         assert!(store
             .immediate(|tx| write(tx, &run.run_id, &board))
@@ -432,7 +383,6 @@ mod tests {
             .unwrap();
         assert!(delivered.is_some());
 
-        // A third drain sends nothing again.
         let third = drain(&store, Scope::Run(&run.run_id), |_| {
             panic!("no row is left")
         })
@@ -456,7 +406,6 @@ mod tests {
         let other = drain(&store, Scope::Workspace("w2"), |_| panic!("not w2")).unwrap();
         assert!(other.delivered.is_empty());
 
-        // A drain that runs while another holds the lock sends nothing.
         let nested = drain(&store, Scope::Workspace("w1"), |_| {
             let inner = drain(&store, Scope::Workspace("w1"), |_| panic!("busy")).unwrap();
             assert!(inner.busy);
@@ -466,9 +415,6 @@ mod tests {
         assert_eq!(nested.delivered.len(), 1);
     }
 
-    /// A forked child that lives until [`Child::release`]. It holds a copy of
-    /// every descriptor of this process, as a child of a concurrent spawn
-    /// does between its fork and its exec.
     struct Child {
         pid: libc::pid_t,
         hold: libc::c_int,
@@ -523,7 +469,6 @@ mod tests {
         .unwrap();
         assert_eq!(first.failed.len(), 1);
 
-        // The child still holds a copy of the lock descriptor.
         let second = drain(&store, Scope::Run(&run.run_id), |_| Ok(()));
         child.expect("the send forked").release();
         let second = second.unwrap();

@@ -505,6 +505,14 @@ must run the skill digests that the ledger recorded.
 
 It carries `comment-pruning`, written clean-room with `skill-intake` (see [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/)). It is hidden: horch spawns it for the finish step `comment-sweep` (see [docs/specs/comment-sweep.md](../docs/specs/comment-sweep.md)), and the orchestrator never picks it.
 
+## The comment-purger teammate
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `comment-purger` | implementation | claude, opus, high | `codex-sol` | A whole-repository comment purge: every comment sorted, deleted, and its knowledge kept in an issue or an ADR, plus a ratchet lint and a `/delete-comment` skill. |
+
+Its persona holds the operator's brief word for word, so `horch spawn comment-purger` with no further task runs that brief on the project the fleet is in. A task may narrow the scope to named paths. It works in any repository: it uses a comment lint, a skill and an ADR folder where they exist, and builds them where they do not. In this repository they exist (`scripts/comments/comment_lint.py`, `.claude/skills/delete-comment/`, [ADR 0004](../docs/adr/0004-no-comments-in-code.md)). It differs from `comment-remover`, which sweeps only the lines of 1 task's diff and is never offered.
+
 ## The effort-matrix personas
 
 Eight more Claude specialists split the work by model tier and effort level
@@ -570,7 +578,7 @@ Each teammate's `effort:` follows its role, not its model
 | role | teammates | effort |
 |---|---|---|
 | orchestrator | `orchestrator`, `orchestrator-codex` | medium |
-| reviewers and planners | `architect-reviewer`, `root-cause-auditor`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
+| reviewers and planners | `architect-reviewer`, `root-cause-auditor`, `comment-purger`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime`, `spec-writer`, `ticket-writer` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
 | effort-matrix personas | `sonnet-*`, `opus-*` (effort is the role; see above) | low to max |

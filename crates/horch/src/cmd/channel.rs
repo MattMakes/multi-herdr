@@ -1,5 +1,3 @@
-//! The worker-report channel relay exposed as an MCP stdio server.
-
 use anyhow::{Context, Result};
 use horch_core::execution::records::SessionLedger;
 use horch_core::harness::HarnessKind;
@@ -7,7 +5,6 @@ use horch_core::messaging::channel::{self, ServeOptions};
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::PaneHost;
 
-/// Run the channel relay until its MCP input reaches EOF.
 pub fn serve(ctx: &RuntimeContext, agent: HarnessKind) -> Result<()> {
     let workspace = ctx
         .herdr
@@ -40,7 +37,6 @@ pub fn serve(ctx: &RuntimeContext, agent: HarnessKind) -> Result<()> {
     )
 }
 
-/// Resolve the current orchestrator thread for one Codex queue delivery.
 fn thread_id(ctx: &RuntimeContext) -> Result<String> {
     if let Some(record_id) = ctx
         .worker
@@ -70,7 +66,6 @@ fn thread_id(ctx: &RuntimeContext) -> Result<String> {
         .context("herdr did not report an agent session for HERDR_PANE_ID")
 }
 
-/// Read the session id shapes supported by herdr's pane protocol.
 fn agent_session_id(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(id) if !id.is_empty() => Some(id.clone()),

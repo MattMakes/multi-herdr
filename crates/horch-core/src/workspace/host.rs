@@ -1,8 +1,3 @@
-//! One handle for the pane host (`herdr` or `hc`).
-//!
-//! Domain and CLI code outside `crate::workspace` reaches the host exclusively
-//! through [`PaneHost`].
-
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -17,7 +12,6 @@ use crate::workspace::model::{
     Direction, Focus, FocusDir, Layout, Move, NewWorkspace, Pane, Resize, Tab, Workspace,
 };
 
-/// A host operation that the selected [`Backend`] does not support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unsupported {
     pub call: &'static str,
@@ -38,7 +32,6 @@ impl fmt::Display for Unsupported {
 
 impl std::error::Error for Unsupported {}
 
-/// Reachable pane hosts across the machine, probed without starting a core.
 #[derive(Debug, Clone)]
 pub struct Hosts {
     pub hosts: Vec<PaneHost>,
@@ -86,8 +79,6 @@ impl Hosts {
     }
 }
 
-/// True when `backend`'s CLI program is installed (either as an explicit file
-/// override or on `ctx.inherited.path`).
 pub fn is_installed(ctx: &RuntimeContext, backend: Backend) -> bool {
     let bin = match backend {
         Backend::Herdr => &ctx.bins.harness.herdr,
@@ -110,7 +101,6 @@ pub fn is_installed(ctx: &RuntimeContext, backend: Backend) -> bool {
     .is_some()
 }
 
-/// Capabilities of the active pane host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
     pub geometry: bool,
@@ -122,7 +112,6 @@ enum Inner {
     Hc(HcApp),
 }
 
-/// Handle to the pane host that owns a pane or workspace.
 #[derive(Debug, Clone)]
 pub struct PaneHost {
     backend: Backend,
@@ -130,12 +119,10 @@ pub struct PaneHost {
 }
 
 impl PaneHost {
-    /// Host for the pane this process runs in (`ctx.herdr.backend`).
     pub fn of(ctx: &RuntimeContext) -> Self {
         Self::for_backend(ctx, ctx.herdr.backend)
     }
 
-    /// Host for a known [`Backend`] (from a worker row or execution record).
     pub fn for_backend(ctx: &RuntimeContext, b: Backend) -> Self {
         let inner = match b {
             Backend::Herdr => Inner::Herdr(Herdr::with_bin(&ctx.bins.harness.herdr)),
@@ -144,8 +131,6 @@ impl PaneHost {
         Self { backend: b, inner }
     }
 
-    /// Host for a workspace id: the backend recorded for `workspace` in
-    /// [`ExecutionStore`], else `ctx.herdr.backend`.
     pub fn for_workspace(ctx: &RuntimeContext, workspace: &str) -> Self {
         let recorded = ExecutionStore::open_in(ctx)
             .ok()
@@ -154,7 +139,6 @@ impl PaneHost {
         Self::for_backend(ctx, recorded.unwrap_or(ctx.herdr.backend))
     }
 
-    /// Test helper: a `herdr` host backed by `bin`.
     pub fn herdr_bin(bin: impl Into<PathBuf>) -> Self {
         Self {
             backend: Backend::Herdr,
@@ -162,7 +146,6 @@ impl PaneHost {
         }
     }
 
-    /// Crate-internal helper: an `hc` host backed by `hc`.
     #[cfg(test)]
     pub(crate) fn hc_app(hc: HcApp) -> Self {
         Self {
@@ -530,7 +513,6 @@ mod tests {
             Backend::Herdr
         );
 
-        // Detached courier case: no project_dir and cwd outside the project.
         let detached_env = MapEnv::new("/")
             .with("HOME", &tmp.path().to_string_lossy())
             .with("HORCH_STATE_DIR", &state.to_string_lossy());

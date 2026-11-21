@@ -1,6 +1,4 @@
 extends SceneTree
-## godot-combat-system scenarios: the "Checks" lists of references/real-time.md
-## and references/turn-based.md, on the skill's own blocks in res://skill/.
 
 const Expect = preload("res://expect.gd")
 
@@ -9,7 +7,6 @@ var e := Expect.new()
 
 func _initialize() -> void:
 	e.watch(self)
-	# The root enters the tree after _initialize starts; _ready needs it.
 	await process_frame
 	_damage()
 	_swing()
@@ -95,14 +92,12 @@ func _turn_order() -> void:
 	for i: int in 3:
 		order.append(queue.next_turn().id)
 	e.check(order == [2, 3, 1], "speeds 10, 30, 30 (ids 1, 2, 3): order 2, 3, 1")
-	# Round 2: actor 3 dies after actor 2 acts.
 	var first: TurnActor = queue.next_turn()
 	a3.alive = false
 	var second: TurnActor = queue.next_turn()
 	var third: TurnActor = queue.next_turn()
 	e.check(first.id == 2 and second.id == 1 and third.id == 2 and rounds == [1, 2, 3],
 		"an actor that dies mid-round does not act; the round still ends")
-	# Round 3: actor 2 has acted; actor 1 gets faster than nobody left: re-sort keeps the rest.
 	a1.speed = 50
 	queue.resort_remaining()
 	e.check(queue.next_turn().id == 1, "resort_remaining orders the actors who have not acted")
@@ -175,7 +170,6 @@ func _knockback_and_death() -> void:
 	body.add_child(shape)
 	root.add_child(body)
 	body.apply_knockback(Vector3(6, 0, 0))
-	# 6 m/s decays at 12 m/s per second: zero after 0.5 s (30 frames at 60 Hz).
 	for i: int in 40:
 		await physics_frame
 	e.check(body.position.x > 1.0 and body.velocity.length() < 0.01,
@@ -206,7 +200,6 @@ func _hit_stop() -> void:
 	var slowed: bool = is_equal_approx(Engine.time_scale, 0.05)
 	await create_timer(0.3, true, false, true).timeout
 	e.check(slowed and Engine.time_scale == 1.0, "hit_stop slows time, then restores 1.0 on a real-time timer")
-	# Overlap: a longer stop during a short one; only the last timer restores.
 	stopper.hit_stop(0.05)
 	stopper.hit_stop(0.4)
 	await create_timer(0.2, true, false, true).timeout

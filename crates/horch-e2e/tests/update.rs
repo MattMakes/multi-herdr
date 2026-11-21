@@ -1,9 +1,3 @@
-//! The agent CLI update step (ARC-32 to ARC-35): `horch fleet` and
-//! `horch orchestration` run each CLI's own update command once before the
-//! first pane starts, and `horch update` does the same on demand. Each
-//! updater runs only once its CLI's newest release is past the release
-//! cooldown (ARC-36), whose dates come from a local fake npm registry.
-
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Command, Output};
@@ -20,9 +14,6 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// Each agent fake with an npm package as its log names it, its program
-/// name, and the update command horch must run, in the order of the result
-/// lines. The cooldown can pass for these, so their updaters run.
 const UPDATERS: [(&str, &str, &[&str]); 4] = [
     ("claude", "claude", &["update"]),
     ("codex", "codex", &["update"]),
@@ -30,14 +21,11 @@ const UPDATERS: [(&str, &str, &[&str]); 4] = [
     ("pi", "pi", &["update", "--self"]),
 ];
 
-/// The agent fakes whose release dates horch cannot read: the cooldown
-/// holds them back, and their updaters never run while it is on.
 const UNDATED: [(&str, &str, &[&str]); 2] = [
     ("antigravity", "agy", &["update"]),
     ("prime", "prime-agent", &["update"]),
 ];
 
-/// The npm package of each fake in [`UPDATERS`].
 const PACKAGES: [&str; 4] = [
     "@anthropic-ai/claude-code",
     "@openai/codex",
@@ -45,10 +33,8 @@ const PACKAGES: [&str; 4] = [
     "@earendil-works/pi-coding-agent",
 ];
 
-/// A publish time far past any cooldown.
 const LONG_AGO: &str = "2020-01-01T00:00:00.000Z";
 
-/// The variables that carry the cooldown to the package managers.
 const COOLDOWN_ENV: [&str; 5] = [
     "npm_config_before",
     "PNPM_CONFIG_MINIMUM_RELEASE_AGE",
@@ -57,8 +43,6 @@ const COOLDOWN_ENV: [&str; 5] = [
     "PIP_UPLOADED_PRIOR_TO",
 ];
 
-/// The result lines of a run where every dated fake updates and nothing
-/// changes, and the undated ones are held back.
 const NO_CHANGE: [&str; 6] = [
     "update: claude: 2.1.284 (Claude Code) (no change)",
     "update: codex: codex-cli 0.158.0 (no change)",
@@ -70,17 +54,12 @@ const NO_CHANGE: [&str; 6] = [
 
 const HEADER: &str = "Updating agent CLIs (horch fleet --no-update skips this)...";
 
-/// A harness that lets the fleet update, with every fake warmed: macOS scans
-/// each new executable at its first exec, and that takes 14 to 35 s. Every
-/// npm package's newest release is long past the cooldown.
 fn harness(name: &str) -> Harness {
     let releases: Vec<(&str, &str, &str)> =
         PACKAGES.iter().map(|p| (*p, "9.9.9", LONG_AGO)).collect();
     harness_with(name, &releases)
 }
 
-/// [`harness`], with a fake registry that offers `releases`: (package,
-/// newest version, its publish time).
 fn harness_with(name: &str, releases: &[(&str, &str, &str)]) -> Harness {
     let mut h = Harness::new(name);
     h.allow_updates();
@@ -96,8 +75,6 @@ fn warm(h: &Harness) {
     run_fake(h, "herdr", &["--version"]);
 }
 
-/// Serve 1 registry document per package of `releases` until the test ends,
-/// and 404 for any other. Returns the registry URL.
 fn serve_registry(releases: &[(&str, &str, &str)]) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -156,7 +133,6 @@ fn argv(call: &Value) -> Vec<String> {
     serde_json::from_value(call["argv"].clone()).unwrap_or_default()
 }
 
-/// The update calls `fake` recorded, 1 per process.
 fn update_calls(h: &Harness, fake: &str, args: &[&str]) -> Vec<Value> {
     h.calls_of(fake)
         .into_iter()
@@ -171,7 +147,6 @@ fn fleet(h: &Harness, extra: &[&str]) -> Output {
     h.run(&args)
 }
 
-/// The fleet started: herdr created its workspace.
 fn workspace_created(h: &Harness) -> bool {
     h.calls_of("herdr")
         .iter()
@@ -206,8 +181,6 @@ fn arc_32_fleet_updates_each_cli_once_before_the_orchestrator_pane() {
     for (fake, _, args) in UNDATED {
         assert!(update_calls(&h, fake, args).is_empty(), "{fake} updated");
     }
-    // Every updater ran before herdr created the workspace of the
-    // orchestrator pane.
     let calls = h.calls();
     let created = calls
         .iter()
@@ -250,8 +223,6 @@ fn arc_32_orchestration_updates_before_its_panes() {
     assert!(workspace_created(&h));
 }
 
-/// `cpx` launches `claude` and has no `update` command: with `cpx` on PATH,
-/// the update runs `claude`.
 #[cfg(unix)]
 #[test]
 fn arc_32_a_cpx_launch_updates_claude_not_cpx() {
@@ -290,15 +261,12 @@ fn arc_33_a_failed_updater_gives_one_note_and_the_fleet_starts() {
         "{}",
         stderr(&out)
     );
-    // The other 5 still report.
     let lines = result_lines(&out);
     assert_eq!(lines.len(), 5, "{lines:?}");
     assert!(!lines.iter().any(|l| l.starts_with("update: codex:")));
     assert!(workspace_created(&h));
 }
 
-/// #205: an updater that passes the time limit is not killed, so a package
-/// manager can finish its own install. The fleet does not wait for it.
 #[test]
 fn arc_33_a_hung_updater_is_left_running_at_the_timeout() {
     let mut h = harness("arc33-hang");
@@ -314,16 +282,13 @@ fn arc_33_a_hung_updater_is_left_running_at_the_timeout() {
         "{}",
         stderr(&out)
     );
-    // The fake sleeps 60 s; the fleet did not wait for it.
     assert!(took < Duration::from_secs(50), "the fleet took {took:?}");
     assert!(workspace_created(&h));
 
-    // The updater outlived the fleet start: horch did not kill it.
     #[cfg(unix)]
     {
         let call = update_calls(&h, "opencode", &["upgrade"]);
         let pid = call[0]["pid"].as_u64().unwrap().to_string();
-        // Made before the assert, so a failed assert still stops the group.
         let _kill = KillGroup(pid.clone());
         let alive = Command::new("kill")
             .args(["-0", &pid])
@@ -333,8 +298,6 @@ fn arc_33_a_hung_updater_is_left_running_at_the_timeout() {
     }
 }
 
-/// Kills the process group `-<pid>` when dropped: horch starts each updater
-/// as the leader of its own group.
 #[cfg(unix)]
 struct KillGroup(String);
 
@@ -347,8 +310,6 @@ impl Drop for KillGroup {
     }
 }
 
-/// #205: a second fleet start within 24 h runs no updater and says so for
-/// each CLI; the operator's `horch update` still runs every updater.
 #[test]
 fn arc_33_a_second_fleet_within_24_h_skips_the_updated_clis() {
     let h = harness("arc33-fresh");
@@ -382,8 +343,6 @@ fn arc_33_a_second_fleet_within_24_h_skips_the_updated_clis() {
     }
 }
 
-/// ARC-35: `horch update` exits 1 when an updater still runs at the time
-/// limit, and when another updater of the CLI still runs.
 #[test]
 fn arc_35_horch_update_exits_1_on_a_detached_or_busy_cli() {
     let mut h = harness("arc35-busy");
@@ -430,8 +389,6 @@ fn arc_33_no_updater_gets_anthropic_api_key() {
     }
 }
 
-/// A CLI whose newest release is younger than the cooldown keeps its build:
-/// its updater does not run, its line says why, and the step still passes.
 #[test]
 fn arc_36_a_release_younger_than_the_cooldown_is_held_back() {
     let mut h = harness_with(
@@ -447,7 +404,6 @@ fn arc_36_a_release_younger_than_the_cooldown_is_held_back() {
     let out = h.run(&["update"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
 
-    // 2 days old: held. Exactly 7 days old: past the cooldown.
     assert!(update_calls(&h, "claude", &["update"]).is_empty());
     assert_eq!(update_calls(&h, "opencode", &["upgrade"]).len(), 1);
     assert_eq!(update_calls(&h, "codex", &["update"]).len(), 1);
@@ -459,7 +415,6 @@ fn arc_36_a_release_younger_than_the_cooldown_is_held_back() {
     assert_eq!(lines[1..], NO_CHANGE[1..], "{lines:?}");
     assert!(notes(&out).is_empty(), "{}", stderr(&out));
 
-    // A longer cooldown holds opencode back too.
     h.set("HORCH_UPDATE_COOLDOWN_DAYS", "30");
     let out = h.run(&["update", "opencode"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
@@ -472,8 +427,6 @@ fn arc_36_a_release_younger_than_the_cooldown_is_held_back() {
     assert_eq!(update_calls(&h, "opencode", &["upgrade"]).len(), 1);
 }
 
-/// Every updater that runs gets the cooldown for the package managers it
-/// may call.
 #[test]
 fn arc_36_each_updater_gets_the_package_manager_cooldown() {
     let h = harness("arc36-env");
@@ -492,8 +445,6 @@ fn arc_36_each_updater_gets_the_package_manager_cooldown() {
     }
 }
 
-/// A registry horch cannot reach updates nothing: each dated CLI gets 1
-/// NOTE, `horch update` exits 1, and a fleet still starts.
 #[test]
 fn arc_36_an_unreachable_registry_updates_nothing() {
     let mut h = harness("arc36-down");
@@ -523,8 +474,6 @@ fn arc_36_an_unreachable_registry_updates_nothing() {
     assert!(workspace_created(&h));
 }
 
-/// `HORCH_UPDATE_COOLDOWN_DAYS=0` turns the cooldown off: no registry
-/// lookup, every updater runs, and none gets the cooldown variables.
 #[test]
 fn arc_36_a_zero_day_cooldown_runs_every_updater() {
     let mut h = harness("arc36-off");
@@ -617,7 +566,6 @@ fn arc_35_horch_update_runs_herdr_only_on_request() {
         "{}",
         stderr(&out)
     );
-    // Only herdr: no agent CLI updated again.
     assert_eq!(update_calls(&h, "claude", &["update"]).len(), 1);
     assert!(result_lines(&out).is_empty(), "{}", stdout(&out));
 

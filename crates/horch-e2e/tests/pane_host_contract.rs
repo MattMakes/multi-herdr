@@ -1,7 +1,3 @@
-//! Shared `PaneHost` contract suite run against both `fake-herdr` and
-//! `fake-hc` + `fake-herdr-app`, plus an opt-in run against a real isolated
-//! `herdr-core` (`HORCH_LIVE_HC=1`) (HCB-14).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -11,9 +7,6 @@ use horch_core::workspace::model::Direction;
 use horch_core::workspace::PaneHost;
 use horch_e2e::harness::Harness;
 
-/// Wrap a fake binary in `<h.bin>/<name>` so direct `PaneHost` calls from this
-/// test process inherit the harness's isolated `HORCH_STATE_DIR`, `HOME`, and
-/// `HORCH_FAKE_SCENARIO` without mutating process-global environment variables.
 #[cfg(unix)]
 fn install_sealed_wrapper(h: &Harness, name: &str, scenario: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -67,18 +60,13 @@ fn wait_for_visible(host: &PaneHost, pane: &str, needle: &str) {
     }
 }
 
-/// Shared scenarios over an already-created workspace and its root pane.
-/// Needs no GUI window once the root pane exists, so the opt-in real-core run
-/// executes the exact same assertions.
 fn run_scenarios_in_workspace(host: &PaneHost, workspace_id: &str, root_pane: &str) {
     assert!(host.server_reachable(), "host should be reachable");
 
-    // Root pane's workspace_id matches the workspace that made it.
     let root_info = host.pane_get(root_pane).expect("pane_get root");
     assert_eq!(root_info.pane_id, root_pane);
     assert_eq!(root_info.workspace_id.as_deref(), Some(workspace_id));
 
-    // Split right, then down, and list 3 panes in that workspace.
     let right_pane = host
         .pane_split(root_pane, Direction::Right)
         .expect("pane_split right");
@@ -95,13 +83,10 @@ fn run_scenarios_in_workspace(host: &PaneHost, workspace_id: &str, root_pane: &s
         assert_eq!(found.workspace_id.as_deref(), Some(workspace_id));
     }
 
-    // Run a command and read its evaluated output back with pane_read(.., "visible").
     host.pane_run(&right_pane, "echo CONTRACT_RUN_$((40+2))")
         .expect("pane_run");
     wait_for_visible(host, &right_pane, "CONTRACT_RUN_42");
 
-    // Prompt via the shared delivery path, see the evaluated output on screen,
-    // then press enter.
     let timing = horch_core::messaging::delivery::Timing {
         tail_timeout: Duration::from_millis(250),
         poll_start: Duration::from_millis(20),
@@ -121,7 +106,6 @@ fn run_scenarios_in_workspace(host: &PaneHost, workspace_id: &str, root_pane: &s
     host.pane_send_keys(&down_pane, "enter")
         .expect("pane_send_keys enter");
 
-    // Closing a pane makes pane_get fail while server_reachable stays true.
     host.pane_close(&down_pane).expect("pane_close");
     assert!(
         host.pane_get(&down_pane).is_err(),
@@ -132,7 +116,6 @@ fn run_scenarios_in_workspace(host: &PaneHost, workspace_id: &str, root_pane: &s
         "server_reachable must stay true after closing one pane"
     );
 
-    // Closing the workspace removes it from workspace_list.
     host.workspace_close(workspace_id).expect("workspace_close");
     let workspaces = host.workspace_list().expect("workspace_list");
     assert!(
@@ -219,7 +202,6 @@ fn core_pid_from_status(line: &str) -> Option<u32> {
             return Some(pid);
         }
     }
-    // TTY format: `core <host> (<hash>) running, pid 23875, up 21188s`
     let (_, after) = line.split_once("pid ")?;
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
@@ -282,8 +264,6 @@ fn hcb_14_contract_on_a_real_hc_core() {
     let operator_pid = before_operator.as_deref().and_then(core_pid_from_status);
 
     let pid = std::process::id();
-    // Keep scratch path short so Unix domain sockets stay well below macOS's
-    // 104-byte sun_path limit.
     let scratch = PathBuf::from(format!("/tmp/hc-c-{pid}"));
     let _ = std::fs::remove_dir_all(&scratch);
     let state_home = scratch.join("s");
@@ -313,8 +293,6 @@ fn hcb_14_contract_on_a_real_hc_core() {
     std::fs::write(&wrapper_hc, hc_script).unwrap();
     std::fs::set_permissions(&wrapper_hc, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    // Windowless `herdr-app` stand-in: exits 1 so `HcApp` exercises its
-    // windowless labelled `hc` paths without touching the operator's window.
     let wrapper_app = bin_dir.join("herdr-app");
     std::fs::write(
         &wrapper_app,
@@ -330,7 +308,6 @@ fn hcb_14_contract_on_a_real_hc_core() {
         operator_pid,
     };
 
-    // Start the isolated core and confirm its pid differs from the operator's.
     let started = Command::new(&wrapper_hc)
         .args(["server", "status"])
         .output()
@@ -354,7 +331,6 @@ fn hcb_14_contract_on_a_real_hc_core() {
     let sock = find_socket_under(&scratch)
         .unwrap_or_else(|| panic!("no .sock file created under {}", scratch.display()));
 
-    // Seed the windowless workspace's root terminal via a labelled `hc run`.
     let ws_id = "spcontract0000000000000000000001";
     let tb_id = "tbcontract0000000000000000000001";
     let seeded = Command::new(&wrapper_hc)
@@ -380,7 +356,6 @@ fn hcb_14_contract_on_a_real_hc_core() {
     );
     let seeded_json: serde_json::Value = serde_json::from_slice(&seeded.stdout).unwrap();
     let root_term = seeded_json["address"].as_str().unwrap().to_string();
-    // Give the login shell inside the new PTY a brief moment to print its prompt.
     std::thread::sleep(Duration::from_millis(400));
 
     let env = MapEnv::new(&work_dir)

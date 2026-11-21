@@ -1,9 +1,3 @@
-//! `horch ledger`: pins the output and exit code of the task-ledger
-//! subcommands (status, show, run, add, plan-workers, fallback, cancel,
-//! unblock, requeue, events, claim, worktree, steps, finish, done, import,
-//! unfinished), so a refactor of the CLI body keeps them. Every test runs the
-//! binary on a temp git project, with the watchdog off and no herdr pane.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -53,7 +47,6 @@ impl World {
         self.run_env(worker, true, args)
     }
 
-    /// `watchdog_off` sets `HORCH_NO_WATCHDOG=1`.
     fn run_env(&self, worker: Option<&str>, watchdog_off: bool, args: &[&str]) -> Out {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -83,7 +76,6 @@ impl World {
         self.run_as(None, args)
     }
 
-    /// Run `args`, require exit 0, return stdout.
     fn ok(&self, args: &[&str]) -> String {
         let o = self.run(args);
         assert_eq!(o.code, 0, "{args:?}: {}", o.err);
@@ -91,7 +83,6 @@ impl World {
     }
 }
 
-/// An event line without its leading timestamp.
 fn untimed(text: &str) -> Vec<String> {
     text.lines()
         .map(|l| l.trim_start().split_once(' ').unwrap().1.to_string())
@@ -282,8 +273,6 @@ fn the_board_commands_print_their_pinned_text() {
         events[4],
         "orchestrator note          T-2 no longer waits for T-1."
     );
-    // 1 undelivered wake stays in the outbox. The requeue brings the board
-    // back to the same state, so it writes no second wake (TRF-21).
     assert!(
         events[5].ends_with(
             "; it stays in the outbox: [horch] NOTE: Tasks can start: T-1, T-2. Spawn: dev x1, dev2 x1."
@@ -322,7 +311,6 @@ fn the_board_commands_print_their_pinned_text() {
 #[test]
 fn a_worker_claims_makes_a_worktree_and_finishes() {
     let w = World::new();
-    // A task with no check lands only when its ticket says so (TRF-17).
     std::fs::write(w.proj().join("t1.md"), "# Ticket One\n\n**Check:** none\n").unwrap();
     w.ok(&["ledger", "run", "new", "r1", "--verify", "full"]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
@@ -353,7 +341,6 @@ fn a_worker_claims_makes_a_worktree_and_finishes() {
     assert!(worker_json["stops"].is_array());
 }
 
-/// A claim needs HORCH_WORKER_ID and prints the ticket and the next steps.
 fn assert_claim_prints_the_ticket(w: &World, id: &str) {
     let as_worker = |args: &[&str]| w.run_as(Some(id), args);
     let none = w.run(&["ledger", "claim"]);
@@ -385,7 +372,6 @@ fn assert_claim_prints_the_ticket(w: &World, id: &str) {
     );
 }
 
-/// Finish refuses without a worktree. A scratch worktree drops cleanly.
 fn make_and_drop_worktrees(w: &World, id: &str) {
     let as_worker = |args: &[&str]| w.run_as(Some(id), args);
     assert_eq!(as_worker(&["ledger", "steps"]).out, "");
@@ -415,7 +401,6 @@ fn make_and_drop_worktrees(w: &World, id: &str) {
     );
 }
 
-/// Finish reports all 7 steps, and ledger steps prints the same steps.
 fn assert_finish_steps(w: &World, id: &str) {
     let as_worker = |args: &[&str]| w.run_as(Some(id), args);
     let report = json(&as_worker(&["ledger", "finish", "--json"]).out);
@@ -434,8 +419,6 @@ fn assert_finish_steps(w: &World, id: &str) {
             ("code-sweep", "not_applicable"),
             ("complexity-sweep", "not_applicable"),
             ("recheck", "not_applicable"),
-            // The worktree has no commit, so nothing lands and nothing is
-            // pushed (video-lessons T-15).
             ("land", "not_applicable"),
             ("pr", "not_applicable"),
             ("cleanup", "passed"),
@@ -482,7 +465,6 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     assert_eq!(pid.err, "horch: no worker nobody in the task ledger\n");
 }
 
-/// A world with run `r1` (checks every 10 s) and 1 claimed task.
 fn world_with_a_claimed_task() -> (World, String) {
     let w = World::new();
     w.ok(&["ledger", "run", "new", "r1", "--check-every", "10"]);
@@ -506,13 +488,11 @@ fn world_with_a_claimed_task() -> (World, String) {
 #[test]
 fn watch_once_reports_in_text_and_json() {
     let (w, _) = world_with_a_claimed_task();
-    // Not due yet: nothing is checked, in either form.
     assert_eq!(
         w.ok(&["ledger", "watch", "--once"]),
         "No worker was due for a check.\n"
     );
     assert_eq!(w.ok(&["ledger", "watch", "--once", "--json"]), "[]\n");
-    // Forced: the worker has no agent process, so it is dead and reaped.
     let forced = w.run(&["ledger", "watch", "--once", "--force"]);
     assert_eq!(forced.code, 0, "{}", forced.err);
     assert_eq!(
@@ -542,7 +522,6 @@ fn watch_once_json_lists_each_checked_worker() {
 #[test]
 fn ensure_starts_a_quiet_watchdog_once() {
     let (w, _) = world_with_a_claimed_task();
-    // The first command that runs with the watchdog on starts one.
     let started = w.run_env(None, false, &["ledger", "status"]);
     assert_eq!(started.code, 1, "{}", started.err);
     assert!(
@@ -552,10 +531,8 @@ fn ensure_starts_a_quiet_watchdog_once() {
         "{}",
         started.err
     );
-    // A second command finds a live watchdog and starts none.
     let again = w.run_env(None, false, &["ledger", "status"]);
     assert!(!again.err.contains("started it"), "{}", again.err);
-    // Closing the run ends the watchdog loop at its next tick.
     w.ok(&["ledger", "run", "close", "--abandon", "test over"]);
 }
 
@@ -628,8 +605,6 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
     );
 }
 
-/// `ledger claim`: the line a worker sends when nothing is meant for it, the
-/// ticket path in text and in JSON, and the project facts after the text.
 #[test]
 fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
     let w = World::new();
@@ -658,8 +633,6 @@ fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
         format!("horch tell orchestrator \"[{json_id}] NOTE: No task for another. I exit. PID unknown.\"")
     );
 
-    // t1.md is not committed, so a worktree would not hold it: both forms
-    // name it by its absolute path.
     let dev = new_worker("dev");
     let claimed = w.run_as(Some(&dev), &["ledger", "claim", "--json"]);
     assert_eq!(claimed.code, 0, "{}", claimed.err);
@@ -696,8 +669,6 @@ fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
 const TICKET_WITH_FACTS: &str =
     "# 03: From the ticket\n**Check:** `true`\n**Own:** `src/a`, `src/b`\n**Do not touch:** `src/c`\n";
 
-/// `ledger add`: what a ticket says about itself fills in what no flag says,
-/// and a flag beats the ticket.
 #[test]
 fn add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them() {
     let w = World::new();
@@ -769,7 +740,6 @@ fn add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them(
     assert_eq!(task["issue_url"], "http://i/1");
     assert_eq!(task["spec_ref"], "http://s/1");
     assert_eq!(task["priority"], 7);
-    // The timeout sits in the evidence folder beside the ledger file.
     let task_id = task["task_id"].as_str().unwrap();
     let timeout = w
         .tmp
@@ -788,8 +758,6 @@ fn add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them(
     assert_eq!(shown["own"], serde_json::json!(["src/a", "src/b"]));
 }
 
-/// A check timeout is set after the task is queued: a refused one leaves the
-/// task queued.
 #[test]
 fn add_refuses_a_check_timeout_of_zero_after_it_queued_the_task() {
     let w = World::new();
@@ -812,8 +780,6 @@ fn add_refuses_a_check_timeout_of_zero_after_it_queued_the_task() {
         .starts_with("T-1 queued: Ticket One\n"));
 }
 
-/// `ledger add-map`: each queued task, then the map path it read, relative to
-/// the current directory or as given.
 #[test]
 fn add_map_prints_each_task_and_the_path_of_the_map_it_read() {
     let map = "# Map: x\nSpec: [#28](https://example/28)\n\n| # | Issue | Title | Blocked by | Wave |\n|---|---|---|---|---|\n\
@@ -838,7 +804,6 @@ fn add_map_prints_each_task_and_the_path_of_the_map_it_read() {
         std::fs::write(w.proj().join("MAP.md"), map).unwrap();
         let given = as_given(&w);
         let out = w.ok(&["ledger", "add-map", &given.to_string_lossy()]);
-        // `status` exits 1 while work remains.
         let status = json(&w.run(&["ledger", "status", "--json"]).out);
         assert_eq!(status["tasks"].as_array().unwrap().len(), 2, "{status}");
         (out, std::fs::canonicalize(w.proj()).unwrap())

@@ -228,9 +228,6 @@ def test_kind_counts():
     assert r["test"]["texture"]["either"] == 1 and r["test"]["texture"]["wrong"] == []
 
 
-# ---------------------------------------------------------------- a tiny labelled library, stub CLAP
-
-
 @pytest.fixture
 def assets(tmp_path, write, monkeypatch):
     rng = np.random.default_rng(4)
@@ -282,9 +279,6 @@ def test_analyze_and_heldout_run(assets, tmp_path, fake_clap, capsys):
     assert set(held["vocabularies"]) == {"shipped", "raw"} and held["mood"]["n"] == 4
     assert str(tmp_path) not in (out / "heldout.json").read_text()
     assert len(capsys.readouterr().out.splitlines()) >= 18
-
-
-# ---------------------------------------------------------------- [model] checks
 
 
 @pytest.mark.ml

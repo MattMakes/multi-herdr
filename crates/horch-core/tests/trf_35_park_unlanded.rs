@@ -1,7 +1,3 @@
-//! TRF-35: `done --unlanded` parks the task with its worktree; dependents
-//! stay blocked on it; `requeue` and triage `FINISH` resume it on the same
-//! worktree (trace-fixes D16, ticket 21).
-
 mod i308_support;
 
 use std::path::{Path, PathBuf};
@@ -15,8 +11,6 @@ use horch_core::taskledger::triage::{self, reply, Measure};
 use horch_core::taskledger::workers::{self, NewWorker};
 use i308_support::{commit, World};
 
-/// A run on `main` with T-1 and T-2 (blocked by T-1), and a worker that
-/// claimed T-1 and committed 1 file in its worktree `feat`.
 fn parked_world() -> (World, Run, String, PathBuf) {
     let mut w = World::new();
     let root = w.root.clone();
@@ -80,7 +74,6 @@ fn t1(w: &World, run: &Run) -> tasks::Task {
     tasks::resolve(w.store.conn(), &run.run_id, "T-1").unwrap()
 }
 
-/// The status, task and worker of the worktree at `path`.
 fn worktree(w: &World, path: &Path) -> (String, Option<String>) {
     w.store
         .conn()
@@ -113,7 +106,6 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     let c = finish::complete(&mut w.store, &worker, "tried", Some("a red check")).unwrap();
     assert!(c.unlanded);
 
-    // Parked: queued and held, no worker, not finished; the worktree stays.
     let t = t1(&w, &run);
     assert!(t.is_parked(), "{t:?}");
     assert_eq!(t.status, "queued");
@@ -127,11 +119,9 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     );
     assert!(path.exists());
 
-    // A retried done reports the same park.
     let again = finish::complete(&mut w.store, &worker, "tried", Some("a red check")).unwrap();
     assert!(again.already && again.unlanded);
 
-    // Nothing starts: T-1 is held, and T-2 stays blocked on it.
     assert!(tasks::startable(w.store.conn(), &run.run_id)
         .unwrap()
         .is_empty());
@@ -142,7 +132,6 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
         "T-1 is parked unlanded. Run horch ledger requeue T-1 to resume it"
     );
 
-    // requeue resumes T-1 on the same worktree; T-2 still waits for it.
     let back = w
         .store
         .immediate(|tx| tasks::requeue_by_operator(tx, &t, "fixed the check"))

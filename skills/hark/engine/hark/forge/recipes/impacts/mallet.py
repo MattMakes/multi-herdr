@@ -20,7 +20,6 @@ SR = cm.SR
 TARGET = "a short glockenspiel note"
 ALTS = ["a wine glass clink", "a phone notification", "a xylophone note", "a triangle", "a music box"]
 
-# Each bar: pairs of (frequency over f0, level).
 BARS: dict[str, tuple[tuple[float, float], ...]] = {
     "glock": ((1.0, 1.0), (2.756, 0.35), (5.404, 0.12), (8.933, 0.05)),
     "celesta": ((1.0, 1.0), (2.0, 0.05), (3.98, 0.22), (6.9, 0.05)),
@@ -94,7 +93,6 @@ FAMILY: dict[str, list[dict]] = {
     "mallet": [{**DEFAULTS, **{k: row[i] for k, row in _MEMBER_ROWS.items()}} for i in range(4)],
 }
 
-# Study ranges (T15) as lo, hi and scale per key of tonal.measure.
 STUDY: dict[str, tuple[float, float, float]] = cm.space_table("""
     dur_s 0.28 0.44 0.1
     attack_ms 16 45 12
@@ -232,8 +230,6 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     return tonal.finish(out, rng, hp=p["hp"], lp=p["lp"], room_wet=p["room"], rt60=p["rt"], width=p["width"],
                         cut=500, pan=p["pan"], size=0.3)
 
-
-# ------------------------------------------------------------ chime runs
 
 SCALES: dict[str, tuple[int, ...]] = {
     "penta": (0, 2, 4, 7, 9),

@@ -38,9 +38,6 @@ def sine1(wav, tone) -> str:
     return wav(tone(freq=440.0, dur=1.0, amp=0.5), name="sine.wav")
 
 
-# ---------------------------------------------------------------- tool list
-
-
 def test_m_t1_tool_list(capsys):
     rows = ms.tool_list()["tools"]
     assert [r["name"] for r in rows] == TOOL_ORDER
@@ -63,8 +60,6 @@ def test_m_t1_tools_text():
     assert lines[1].startswith("measure      ") and lines[1].endswith(".")
     assert all("  " not in ms.description(t) for t in TOOL_ORDER)
 
-
-# ---------------------------------------------------------------- stdio
 
 BOOT = """
 import os, sys, types
@@ -154,9 +149,6 @@ def test_m_t16_stdout_goes_to_stderr(fake_module, capsys):
     assert res.text.startswith("doctor ok")
 
 
-# ---------------------------------------------------------------- measure
-
-
 def test_m_t3_measure_in_process(sine1):
     text = ms.call_tool("measure", path=sine1).text
     assert text.splitlines()[0].startswith("1.000 s")
@@ -182,9 +174,6 @@ def test_measure_summary_sentence():
     assert "20.0% exact digital zeros" in text
     assert ms.measure_summary({"duration": 0.01, "error": "too short"}) == "0.010 s: too short."
     assert "too short for LUFS" in ms.measure_summary({"duration": 0.1, "peak_dbfs": -6, "rms_dbfs": -12})
-
-
-# ---------------------------------------------------------------- arguments
 
 
 def test_m_t5_relative_missing_path(sine1, monkeypatch, tmp_path):
@@ -220,9 +209,6 @@ def test_m_t7_find_bad_kind(sine1):
     assert all(k in str(err.value) for k in ("auto", "event", "texture"))
     with pytest.raises(ms.ToolError, match="low, normal, high"):
         ms.call_tool("timeline", path=sine1, detail="max")
-
-
-# ---------------------------------------------------------------- result shaping
 
 
 def test_m_t8_compact_and_cut(sine1, fake_module):
@@ -266,9 +252,6 @@ def test_nan_becomes_null(sine1, fake_module):
     assert js["v"] is None and js["a"] == [1.0, None]
 
 
-# ---------------------------------------------------------------- sheet
-
-
 def _fake_sheet(fake_module, width=3000, height=1000, write=True):
     from PIL import Image
     seen = {}
@@ -309,9 +292,6 @@ def test_sheet_without_png(sine1, fake_module, hark_home):
     assert "(no PNG found at " in res.text and res.image is None
 
 
-# ---------------------------------------------------------------- realness
-
-
 def test_m_t13_realness_folder(wav, tone, fake_module, tmp_path):
     a = wav(tone(), name="set/a.wav")
     b = wav(tone(freq=880), name="set/b.wav")
@@ -340,9 +320,6 @@ def test_realness_model_missing(sine1, fake_module, tmp_path):
         ms.call_tool("realness", path=sine1)
 
 
-# ---------------------------------------------------------------- timeline arguments
-
-
 def test_m_t14_video_default(fake_module, tmp_path):
     film = tmp_path / "film.mp4"
     film.write_bytes(b"film")
@@ -359,9 +336,6 @@ def test_m_t15_cues(sine1, fake_module):
     assert got["cues"] == "1.2,3.4"
     with pytest.raises(ms.ToolError, match="no such file /abs/cues.json"):
         ms.call_tool("timeline", path=sine1, cues="/abs/cues.json")
-
-
-# ---------------------------------------------------------------- missing and failing backing
 
 
 def test_backing_absent_lists_present(sine1, monkeypatch):
@@ -417,9 +391,6 @@ def test_mcp_extra_missing_exits(monkeypatch, capsys):
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "mcp" else real(name, *a))
     assert ms.serve() == 3
     assert "mcp" in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------- match (unit listen)
 
 
 def _vocabulary():
@@ -485,7 +456,6 @@ def test_m_t22_match_cli(wav, tone, capsys, monkeypatch):
     import hark.models
 
     match = pytest.importorskip("hark.listen.match", reason="needs unit listen (T-14)")
-    # the bad --start fails at decode, before any model loads; let it run without the ML extras too
     monkeypatch.setattr(hark.models, "require_ml", lambda feature: None)
     path = wav(tone(dur=2.0), name="two.wav")
     parser = argparse.ArgumentParser(prog="hark")

@@ -77,7 +77,6 @@ class RatchetTest(unittest.TestCase):
         code, _ = self.apply(self.fail(self.c, 4), [self.a, self.c], update=True)
         self.assertEqual(code, 0)
         data = json.loads(self.baseline.read_text())
-        # godot-a was scanned with 0 failures: dropped. godot-b was not scanned: kept.
         self.assertEqual(data, {"chk": {"godot-b": 1, "godot-c": 4}})
 
 

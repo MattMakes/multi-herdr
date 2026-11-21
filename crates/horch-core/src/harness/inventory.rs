@@ -1,10 +1,3 @@
-//! The agent inventory behind `horch agent-list`: every harness horch can
-//! drive, whether its binary is there, and who uses it.
-//!
-//! A pure function of the roster, what the caller found out about each
-//! binary, and the cached quota view. The caller gathers the facts (a path
-//! lookup, a `--version` probe); nothing here touches the machine.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -14,30 +7,21 @@ use crate::harness::HarnessKind;
 use crate::roster::Teammate;
 use crate::routing::quota::{pool_for, QuotaView, State};
 
-/// What the caller found out about one harness's binary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BinaryFacts {
-    /// Where the binary is, when it was found.
     pub path: Option<PathBuf>,
-    /// The first line of `--version`. `None` when not probed, broken or no
-    /// answer.
     pub version: Option<String>,
-    /// `--version` ran and failed: why, with the first error line.
     pub broken: Option<String>,
 }
 
-/// A teammate that uses a model, with its effort.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TeammateUse {
     pub name: String,
-    /// `None`: the teammate sets no effort, so the harness default applies.
     pub effort: Option<String>,
 }
 
-/// One model the roster runs on a harness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelUse {
-    /// `None`: the teammate sets no model.
     pub model: Option<String>,
     pub teammates: Vec<TeammateUse>,
 }
@@ -46,7 +30,6 @@ pub struct ModelUse {
 pub struct CapabilitySummary {
     pub resume: bool,
     pub headless: bool,
-    /// How the CLI finds skills (`plugin-dir`, `skill-flag`, `none`, ...).
     pub skills: String,
 }
 
@@ -56,30 +39,17 @@ pub struct AgentRow {
     pub found: bool,
     pub path: Option<String>,
     pub version: Option<String>,
-    /// Why the binary is broken: its `--version` failed now, or at the last
-    /// quota probe.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broken: Option<String>,
-    /// `available`, `unavailable` or `broken`.
     pub status: String,
     pub efforts: Vec<String>,
     pub capabilities: CapabilitySummary,
     pub models: Vec<ModelUse>,
-    /// The usage pools the models draw from, sorted.
     pub pools: Vec<String>,
-    /// The worst state of those pools in the cached view; `unknown` with
-    /// no view.
     pub pool_state: String,
-    /// Routing may choose it: the binary is found, it is not broken, and
-    /// its pool does not block a spawn (not broken, exhausted or cooling).
     pub available: bool,
 }
 
-/// One row per real harness (never `None`), in [`HarnessKind::ALL`] order.
-///
-/// A harness whose live `--version` answered in `facts` is not broken,
-/// whatever the cached view says: the view's harness error is only as new
-/// as the last quota probe (U-67).
 pub fn inventory(
     teammates: &[&Teammate],
     facts: &BTreeMap<&'static str, BinaryFacts>,
@@ -128,7 +98,6 @@ fn row(
         })
         .collect();
 
-    // A harness the roster does not use is judged by its default pool.
     let model_names: Vec<&str> = if models.is_empty() {
         vec![""]
     } else {
@@ -155,7 +124,6 @@ fn row(
     let state = worst.map_or(State::Unknown, |a| a.state);
 
     let found = facts.is_some_and(|f| f.path.is_some());
-    // The live probe first; else the quota view's reason when it says broken.
     let broken = facts
         .and_then(|f| f.broken.clone())
         .or_else(|| {
@@ -224,7 +192,6 @@ mod tests {
         }
     }
 
-    /// A view whose codex pool has one 7d window, `used` full.
     fn view_with_codex(used: f64) -> QuotaView {
         let mut file = QuotaFile::default();
         file.pools.insert(
@@ -276,7 +243,6 @@ mod tests {
         facts.insert("claude", found("/bin/claude", Some("2.1.0")));
         facts.insert("codex", found("/bin/codex", None));
 
-        // (state of the codex pool, codex available)
         for (used, state, available) in [(0.1, "ok", true), (1.0, "exhausted", false)] {
             let view = view_with_codex(used);
             let rows = inventory(&refs, &facts, Some(&view));
@@ -286,7 +252,6 @@ mod tests {
             assert_eq!(claude.version.as_deref(), Some("2.1.0"));
             assert_eq!(claude.efforts, ["low", "medium", "high", "xhigh", "max"]);
             assert_eq!(claude.pools, ["claude"]);
-            // (model, [(teammate, effort)])
             type ModelRow<'a> = (Option<&'a str>, Vec<(&'a str, Option<&'a str>)>);
             let models: Vec<ModelRow> = claude
                 .models
@@ -329,9 +294,6 @@ mod tests {
         assert!(pi.models.is_empty());
     }
 
-    /// A binary whose `--version` crashed is found but broken: not
-    /// available, with the error line. A broken reading in the quota view
-    /// does the same when the live probe did not run.
     #[test]
     fn agent_list_inventory_broken_binary_is_not_available() {
         let why = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module";
@@ -374,8 +336,6 @@ mod tests {
         assert_eq!(claude.broken, None);
     }
 
-    /// U-67: a harness that recovered is not `broken` until the next quota
-    /// probe. Its own live `--version` answer wins over the cached error.
     #[test]
     fn agent_list_live_probe_wins_over_a_cached_broken() {
         let mut file = QuotaFile::default();
@@ -399,7 +359,6 @@ mod tests {
         assert_ne!(codex.status, "broken");
         assert_ne!(codex.pool_state, "broken");
 
-        // Not probed: the cached error still stands.
         let facts = BTreeMap::from([("codex", found("/bin/codex", None))]);
         let rows = inventory(&[], &facts, Some(&view));
         let codex = rows.iter().find(|r| r.agent == "codex").unwrap();

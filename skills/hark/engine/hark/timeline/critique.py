@@ -16,7 +16,6 @@ from hark.timeline._dsp import ascii_safe, runs
 
 __all__ = ["critique", "scorecard", "real_thresholds", "SPEC", "add_cli"]
 
-# key -> (weight, tolerance, sides, practice window (lo, hi) or None, why)
 SPEC: dict[str, tuple[int, float, str, tuple | None, str]] = {
     "lufs_i": (3, 1.0, "both", (-16.0, -9.0), "social and site players do not normalise, and a major video site "
                "turns masters above -14 LUFS down"),
@@ -97,15 +96,12 @@ def _error(msg: str) -> Exception:
     return ProfileError(msg)
 
 
-# ---------------------------------------------------------------- listen metric table
-
 def metric_info(mkey: str) -> dict:
     """{group, label, unit, decimals} of a metric from the listen table; p_real is ours."""
     if mkey == "p_real":
         return {"group": "realness", "label": "realness (p_real)", "unit": "p", "decimals": 2}
     from hark.listen.profile import METRICS
 
-    # listen rows are (key, group, unit, decimals, label)
     entry = next((m for m in METRICS if m[0] == mkey), None)
     if entry is None:
         return {"group": "", "label": mkey, "unit": "", "decimals": 2}
@@ -118,8 +114,6 @@ def fmt_value(mkey: str, val) -> str:
 
     return listen_fmt(mkey, val)
 
-
-# ---------------------------------------------------------------- realness thresholds
 
 @functools.lru_cache(maxsize=2)
 def real_thresholds(file: bool = True) -> dict:
@@ -141,8 +135,6 @@ def fmt_p(val: float) -> str:
             return f"{val:.3f}"
     return sv
 
-
-# ---------------------------------------------------------------- scorecard
 
 def _fixed_window(mkey: str, practice, lossy: bool):
     """(lo, hi, basis) when the range does not come from the references, else None."""
@@ -248,8 +240,6 @@ def scorecard(values: dict, profile: dict, chance: dict | None = None, lossy: bo
             "critical_issues": crit, "major_issues": _issues(scored, "major")}
 
 
-# ---------------------------------------------------------------- profile, match, leave-one-out
-
 def _read_profile(fpath: str) -> dict:
     if not os.path.isfile(fpath):
         raise _error(f"profile not found: {fpath}")
@@ -304,8 +294,6 @@ def leave_one_out(prof_: dict, match: str) -> dict:
     loo.update(n=len(others), films=others, loo_of=match, n_full=prof_.get("n"))
     return loo
 
-
-# ---------------------------------------------------------------- measurement context
 
 @dataclass
 class Film:
@@ -382,8 +370,6 @@ def _realness(fpath: str) -> dict:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
-# ---------------------------------------------------------------- fix text helpers
-
 def _rng(film: Film, mkey: str) -> str:
     st = film.profile.get("metrics", {}).get(mkey) or {}
     if not st.get("n"):
@@ -442,8 +428,6 @@ def music_holes(film: Film) -> list[tuple[float, float]]:
                 spans.append([lhs, b])
     return [(lhs, b) for lhs, b in spans[:6]]
 
-
-# ---------------------------------------------------------------- actions per metric
 
 def act_lufs(film: Film, mkey: str, val: float, state: str) -> str:
     if state == "low":
@@ -609,8 +593,6 @@ NO_ACTION = {("true_peak", "low"), ("music_frac", "high"), ("cuts_with_sound", "
              ("end_silence_s", "low"), ("max_gap_s", "low")}
 
 
-# ---------------------------------------------------------------- realness action
-
 def _segments(film: Film) -> list[dict]:
     return [sv for sv in (film.realness or {}).get("segments") or [] if sv.get("p_real") is not None]
 
@@ -689,8 +671,6 @@ def build_actions(film: Film, rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda lhs: (-lhs["w"], -lhs["dist"]))
 
 
-# ---------------------------------------------------------------- tips and not measured
-
 def _cut_tip(film: Film, acted: set) -> str | None:
     nos, peaks = film.nosound(), film.peak_only()
     if not nos or film.values.get("cuts_with_sound") is None or "cuts_with_sound" in acted:
@@ -756,8 +736,6 @@ def not_measured(film: Film, rows: list[dict]) -> dict:
             out.setdefault(not_measured_reason(film, entry["metric"]), []).append(entry["metric"])
     return out
 
-
-# ---------------------------------------------------------------- text
 
 def range_text(entry: dict) -> str:
     if entry["weight"] == "info":
@@ -879,8 +857,6 @@ def critique_text(outcome: dict) -> str:
     return ascii_safe("\n".join(line for line in lines if line is not None))
 
 
-# ---------------------------------------------------------------- the run
-
 def _check_video(vid_path: str) -> None:
     from hark.core.audio import probe
     from hark.timeline.timeline import is_picture
@@ -995,8 +971,6 @@ def critique(path, profile=None, video=None, use_ast=True, use_realness=True) ->
     card = scorecard(film.values, film.profile, film.fm.get("chance"), bool(film.fm.get("lossy")))
     return _result(film, card, label, t_start)
 
-
-# ---------------------------------------------------------------- CLI
 
 def _handler(args: argparse.Namespace) -> int:
     from hark.core.audio import AudioError

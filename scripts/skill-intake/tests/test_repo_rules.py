@@ -9,7 +9,6 @@ from base import SKILL, TESTS, IntakeTestCase
 
 import fixtures
 
-# Built from 2 parts so that this file does not hold the full literal.
 KEY_NAME = "ANTHROPIC" + "_API_KEY"
 
 

@@ -1,5 +1,3 @@
-//! Bounded delivery checks. A successful push alone never confirms receipt.
-
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -8,19 +6,13 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::{model::Direction, paneshell::PaneShell, PaneHost};
 
 const PROBE: &str = "[horch] NOTE: run horch inbox to confirm delivery";
-/// The probe through a live relay. The relay's answer confirms it, so the
-/// line asks the orchestrator for nothing.
 const RELAY_PROBE: &str = "[horch] NOTE: the channel relay delivers your fleet's reports";
 const MARKER: &str = "HORCH_DELIVERY_73";
 
 fn budget(ctx: &RuntimeContext) -> Duration {
-    // Fault injection makes timeout behavior testable without a real-time wait.
     fault_ms(ctx, "delivery-probe-ms").unwrap_or(Duration::from_secs(5))
 }
 
-/// The bound of each herdr call of a probe, and of its cleanup: `default`,
-/// or the `delivery-probe-call-ms` fault point. A test's fake herdr keeps
-/// its state in files, and on a loaded machine one call can take seconds.
 fn call_timeout(ctx: &RuntimeContext, default: Duration) -> Duration {
     fault_ms(ctx, "delivery-probe-call-ms").unwrap_or(default)
 }
@@ -33,8 +25,6 @@ fn fault_ms(ctx: &RuntimeContext, point: &str) -> Option<Duration> {
         .map(|ms| Duration::from_millis(ms.clamp(1, 30_000)))
 }
 
-/// Confirm shell execution in a private two-pane workspace, cleaning it up on
-/// both success and failure. The arithmetic result is absent from the input.
 pub fn doctor(ctx: &RuntimeContext) {
     match doctor_check(ctx) {
         Ok(()) => println!("delivery: confirmed (typed echo executed)."),
@@ -75,7 +65,6 @@ fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
             std::thread::sleep(Duration::from_millis(25));
         }
     })();
-    // Use a separate short cleanup budget even when the probe spent its own.
     let cleanup = PaneHost::of(ctx)
         .with_timeout(call_timeout(ctx, Duration::from_secs(2)))
         .workspace_close(&ws.workspace_id);
@@ -90,10 +79,6 @@ fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
     }
 }
 
-/// Queue a startup probe and confirm it. A live relay gets the probe, and
-/// its answer confirms it. Only with no relay is the probe typed into the
-/// pane, and then only `horch inbox` confirms it. A deadline or failed push
-/// leaves the probe durable for the normal courier.
 pub fn fleet(ctx: &RuntimeContext, workspace: &str, pane: &str) {
     match fleet_check(ctx, workspace, pane) {
         Ok(by) => println!("fleet delivery: confirmed by {by}."),
@@ -101,7 +86,6 @@ pub fn fleet(ctx: &RuntimeContext, workspace: &str, pane: &str) {
     }
 }
 
-/// Returns what confirmed the delivery.
 fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<&'static str> {
     let mail = Mail::under(&ctx.paths.state_root, workspace);
     let id = mail.enqueue("horch", PROBE)?;
@@ -123,8 +107,6 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<&'st
             bail!("{reason}");
         }
         if !attempted && channel::is_live(&socket) {
-            // An idle pane can hold the operator's draft: never type
-            // while a relay answers.
             let left = deadline.saturating_duration_since(Instant::now());
             return match channel::send(&socket, "horch", RELAY_PROBE, left) {
                 Ok(()) => {
@@ -137,9 +119,6 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<&'st
         if !attempted {
             match herdr.pane_get(pane) {
                 Ok(state) if state.at_prompt() => {
-                    // An atomic prompt includes Enter. Never fall back to
-                    // separate writes in a live TUI: a deadline between
-                    // them could leave text attached to the next prompt.
                     attempted = true;
                     if herdr.agent_prompt(pane, PROBE).is_ok() {
                         reason = "not acknowledged";

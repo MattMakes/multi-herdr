@@ -1,6 +1,3 @@
-//! `horch update`, and the update step of `horch fleet` and
-//! `horch orchestration` (ARC-32 to ARC-36).
-
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
@@ -11,7 +8,6 @@ use horch_core::harness::update::{self, Outcome, UpdateResult};
 use horch_core::harness::HarnessKind;
 use horch_core::runtime::RuntimeContext;
 
-/// The names `horch update` takes: the 6 agent CLIs, then herdr.
 pub const NAMES: [&str; 7] = [
     "claude",
     "codex",
@@ -22,25 +18,16 @@ pub const NAMES: [&str; 7] = [
     "herdr",
 ];
 
-/// The time limit of 1 registry lookup of the release cooldown.
 const REGISTRY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The most bytes horch reads of 1 registry document, before and after
-/// gzip. The largest today, `opencode-ai`'s, is 25 MB.
 const MAX_PACKUMENT_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The warning `horch update herdr` prints before herdr runs.
 const HERDR_WARNING: &str = "horch: NOTE: herdr update can stop the herdr server. \
                              That closes every pane, a running fleet included.";
 
-/// Update `harnesses` and print 1 line per result. With `skip_fresh`, skip
-/// a harness updated less than [`update::FRESH_FOR`] ago. Returns whether 1
-/// harness is not known to be updated: its updater failed, still runs, or
-/// another horch updates it.
 pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind], skip_fresh: bool) -> bool {
     println!("Updating agent CLIs (horch fleet --no-update skips this)...");
     let results = update::update_all(ctx, harnesses, &npm_packument, skip_fresh);
-    // A NOTE goes to stderr, as every other `horch: NOTE:` line does.
     for result in &results {
         if result.is_note() {
             eprintln!("{}", line(result));
@@ -51,11 +38,6 @@ pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind], skip_fresh: boo
     results.iter().any(UpdateResult::unfinished)
 }
 
-/// The update step of `horch fleet` and `horch orchestration`: a newer
-/// horch release is installed and the command restarts on it, then every
-/// agent CLI is updated, unless `--no-update` or `HORCH_NO_UPDATE=1`. A
-/// CLI updated less than [`update::FRESH_FOR`] ago is skipped (#205). A
-/// failed updater never fails the command.
 pub fn before_fleet(ctx: &RuntimeContext, no_update: bool) {
     super::selfupdate::update_before_fleet(ctx, no_update);
     if no_update || ctx.settings.no_update {
@@ -64,10 +46,6 @@ pub fn before_fleet(ctx: &RuntimeContext, no_update: bool) {
     run_step(ctx, &update::ORDER, true);
 }
 
-/// `horch update [NAME...]`: exit 1 when 1 updater failed or still runs,
-/// or another horch updates 1 of the CLIs. The operator asked, so a recent
-/// update does not skip a CLI.
-/// `herdr` runs last, attached to the terminal, and its exit code wins.
 pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::ExitCode> {
     let herdr = names.iter().any(|n| n == "herdr");
     let agents: Vec<HarnessKind> = if names.is_empty() {
@@ -98,8 +76,6 @@ pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::Ex
     })
 }
 
-/// `HORCH_NPM_REGISTRY` replaces [`cooldown::NPM_REGISTRY`]. It is for tests
-/// only, which point it at a local server.
 fn npm_registry() -> String {
     std::env::var("HORCH_NPM_REGISTRY")
         .ok()
@@ -107,8 +83,6 @@ fn npm_registry() -> String {
         .unwrap_or_else(|| cooldown::NPM_REGISTRY.to_string())
 }
 
-/// Read `package`'s registry document, which holds the publish time of each
-/// release. It asks for gzip: the largest document shrinks from 25 MB to 4.
 pub fn npm_packument(package: &str) -> Result<Packument, String> {
     let url = cooldown::packument_url(&npm_registry(), package);
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -129,9 +103,6 @@ pub fn npm_packument(package: &str) -> Result<Packument, String> {
     read_packument(raw).map_err(|e| format!("reading {url}: {e}"))
 }
 
-/// Parse a registry document, gzipped or plain. The gzip magic bytes decide,
-/// not a header, as JSON never starts with them. The decoded stream stops at
-/// [`MAX_PACKUMENT_BYTES`] too.
 pub fn read_packument(raw: impl Read) -> std::io::Result<Packument> {
     let mut raw = BufReader::new(raw);
     let gzipped = raw.fill_buf()?.starts_with(&[0x1f, 0x8b]);
@@ -144,7 +115,6 @@ pub fn read_packument(raw: impl Read) -> std::io::Result<Packument> {
     doc.map_err(std::io::Error::other)
 }
 
-/// The line that reports 1 result.
 pub fn line(result: &UpdateResult) -> String {
     let name = result.harness.as_str();
     match &result.outcome {

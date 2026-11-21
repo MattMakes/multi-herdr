@@ -207,7 +207,6 @@ class RepoInstallTest(RepoCase):
         self.assertEqual(log.count("`pdf-specialist`"), 1)
         self.assertEqual(read_json(t.c / "task.json")["phase"], "installed")
 
-        # A second run with the same answer changes nothing.
         snap = {p: self.read(p) for p in self.changed() if (self.repo / p).is_file()}
         self.install(t, {"option": 1, "teammate": "pdf-specialist",
                          "brief_description": "PDF edits: pages, forms, text."})
@@ -277,11 +276,11 @@ class RepoInstallTest(RepoCase):
     def test_persona_needs_a_matching_gate2_record(self):
         t = self.verified()
         mapping = {"option": 1, "teammate": "ok", "brief_description": "x"}
-        (t.k / "persona.md").write_text(PERSONA + "2. Push every change.\n")  # plain text, changed after GATE 2
+        (t.k / "persona.md").write_text(PERSONA + "2. Push every change.\n")
         self.install(t, mapping, expect=2)
         (t.k / "persona.md").write_text(PERSONA)
         doc = read_json(t.c / "verify.json")
-        write_json(t.c / "verify.json", {**doc, "persona": None})  # GATE 2 did not cover a persona
+        write_json(t.c / "verify.json", {**doc, "persona": None})
         self.install(t, mapping, expect=2)
         self.assertEqual(self.changed(), set())
         write_json(t.c / "verify.json", doc)
@@ -318,7 +317,6 @@ class BranchAndRerunTest(RepoCase):
         self.assertIn("default branch", r.stderr)
         self.assertEqual(self.changed(), set())
         self.assertFalse((t.c / repo_install.STATE).exists())
-        # The branch origin/HEAD names is the default branch too.
         fixtures.git(self.repo, "checkout", "-q", "-B", "trunk")
         self.assertEqual(self.run_intake(*args).returncode, 0)
         fixtures.git(self.repo, "update-ref", "refs/remotes/origin/trunk", "HEAD")
@@ -342,7 +340,6 @@ class BranchAndRerunTest(RepoCase):
                              rust_list(before[p], "SKIP_NEW_TEAMMATES"))
         self.assertEqual(self.read("teammates/README.md"), before["teammates/README.md"])
         self.assertNotIn("pdf-specialist", self.read("docs/skills-and-teams.md"))
-        # Option 3 again to another teammate: the first edit is reverted, a file the tool did not create stays.
         self.install(t, {"option": 3, "existing": ["web-dev"]})
         self.assertEqual(self.read("teammates/godot-ui.md"), before["teammates/godot-ui.md"])
         self.assertIn(f"available_skills: [{SKILL}]", self.read("teammates/web-dev.md"))

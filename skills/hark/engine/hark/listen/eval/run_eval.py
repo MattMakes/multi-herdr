@@ -29,9 +29,6 @@ SPLITS = ("all", "dev", "test")
 TEMPLATE_SETS = ("t1", "t3", "t5")
 
 
-# ---------------------------------------------------------------- output
-
-
 def write_result(out: Path, name: str, result: Mapping, rows: Sequence[str]) -> Path:
     """Write the result JSON and print one line per row."""
     out.mkdir(parents=True, exist_ok=True)
@@ -54,9 +51,6 @@ def _r(v: float | None, n: int = 3) -> float | None:
     return None if v is None else round(float(v), n)
 
 
-# ---------------------------------------------------------------- queries and templates
-
-
 def templates_of(name: str) -> list[str]:
     """t1 = the phrase alone, t3 = the phrase plus 2 templates, t5 = the shipped 5 templates."""
     shipped = voc.read_vocab()["templates"]
@@ -77,9 +71,6 @@ def query_columns(queries: Mapping) -> tuple[list[str], dict[str, slice]]:
 
 def class_ids(queries: Mapping) -> list[str]:
     return [c["id"] for c in queries["classes"]]
-
-
-# ---------------------------------------------------------------- metrics of one scored library
 
 
 def pooled_tagging(lib: ds.Library, U: np.ndarray, parts: Mapping[str, slice], classes: list[str]) -> dict:
@@ -142,9 +133,6 @@ def bands_of(lib: ds.Library, Z: np.ndarray, parts: Mapping[str, slice], classes
     return out
 
 
-# ---------------------------------------------------------------- embedding
-
-
 def embed_set(paths: Sequence[str], pad: str, max_win: int | None = None) -> np.ndarray:
     return voc.embed_files(list(paths), pad=pad, max_win=max_win)
 
@@ -168,9 +156,6 @@ def music_like(path: str) -> bool:
     """A video file, a music folder, a mix or a synth stem (the 'without music-like refs' variant)."""
     p = path.lower()
     return audio.probe(path).get("has_video", False) or any(k in p for k in ("music", "mix", "synth"))
-
-
-# ---------------------------------------------------------------- commands
 
 
 def cmd_embed(args, out: Path) -> None:
@@ -399,9 +384,6 @@ def fresh_copy(path: str, folder: Path) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     d = Path(tempfile.mkdtemp(dir=folder))
     return shutil.copy(path, d / Path(path).name)
-
-
-# ---------------------------------------------------------------- CLI
 
 
 COMMANDS = {"embed": cmd_embed, "stats": cmd_stats, "analyze": cmd_analyze, "heldout": cmd_heldout,

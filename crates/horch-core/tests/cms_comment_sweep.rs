@@ -1,7 +1,3 @@
-//! CMS-01..CMS-06 (docs/specs/comment-sweep.md): the comment-sweep finish
-//! step queues 1 task for the `comment-remover` teammate, waits for it, and
-//! passes when it ended.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -39,8 +35,6 @@ fn commit(dir: &Path, file: &str) -> String {
     git(dir, &["rev-parse", "HEAD"])
 }
 
-/// A repository on its run branch, with 1 claimed shared-checkout task
-/// that ran the shared claim, then 1 commit of `file` on the run branch.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -143,7 +137,6 @@ fn step<'a>(r: &'a FinishReport, name: &str) -> &'a Step {
 }
 
 impl World {
-    /// The comment-sweep task of the worker's task: (task id, title, persona, ticket path, report path).
     fn sweeps(&self) -> Vec<(String, String, String, String, String)> {
         let mut stmt = self
             .store
@@ -198,7 +191,6 @@ fn cms_01_the_step_queues_1_sweep_for_the_comment_remover_and_the_author_waits()
         1,
         "the author waits, so the watchdog leaves it"
     );
-    // A second finish queues nothing more.
     let r = w.finish();
     assert_eq!(step(&r, "comment-sweep").status, "running");
     assert_eq!(w.sweeps().len(), 1);
@@ -215,7 +207,6 @@ fn cms_02_a_done_sweep_passes_and_its_commit_runs_the_check_again() {
     assert_eq!(step(&r, "check").status, "passed", "{r:?}");
     assert_eq!(step(&r, "check").rounds, 1);
     let (id, _, _, _, report) = w.sweeps().remove(0);
-    // The sweep commits in the author's work folder.
     commit(&w.root, "lib2.rs");
     std::fs::write(&report, "removed 3, kept 0\n").unwrap();
     w.end_sweep(&id, "done");
@@ -263,7 +254,6 @@ fn cms_05_a_later_commit_gets_1_more_sweep_from_the_swept_tree_then_no_more() {
     let (first, ..) = w.sweeps().remove(0);
     w.end_sweep(&first, "done");
     assert!(w.finish().complete);
-    // The author commits a fix after the sweep.
     commit(&w.root, "fix.rs");
     let r = w.finish();
     assert_eq!(step(&r, "comment-sweep").status, "running", "{r:?}");

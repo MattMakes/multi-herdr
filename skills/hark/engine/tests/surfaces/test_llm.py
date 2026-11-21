@@ -55,9 +55,6 @@ def wav_info(data: bytes) -> sf._SoundFileInfo:
     return sf.info(io.BytesIO(data))
 
 
-# ---------------------------------------------------------------- gating
-
-
 def test_c_t1_no_consent(clip10, fake_agy, capsys):
     res = llm.critique(clip10, consent=False)
     assert res["enabled"] is False and res["ok"] is False
@@ -90,9 +87,6 @@ def test_c_t3_does_not_hear_exits_2(clip10, fake_agy, monkeypatch, capsys):
     assert fake_agy.calls() == []
 
 
-# ---------------------------------------------------------------- clip
-
-
 def test_c_t4_encode_range(clip10):
     data, mime, info = llm.encode(clip10, start=2, end=5)
     assert data[:4] == b"RIFF" and mime == "audio/wav"
@@ -122,9 +116,6 @@ def test_c_t6_empty_range(clip10, fake_agy):
     assert fake_agy.calls() == []
 
 
-# ---------------------------------------------------------------- prompt
-
-
 def test_c_t7_prompt_with_question_and_intent():
     text = llm.build_prompt("CTX LINE", question="Is the hit late?", synth_intended=True)
     assert "\n\nContext:\nCTX LINE" in text
@@ -137,9 +128,6 @@ def test_c_t8_prompt_plain():
     text = llm.build_prompt("CTX LINE")
     assert '"answer"' not in text and llm._INTENT not in text
     assert text.rstrip().endswith("CTX LINE")
-
-
-# ---------------------------------------------------------------- answer
 
 
 def test_c_t9_parse_fenced_prose_trailing_comma():
@@ -215,9 +203,6 @@ def test_c_t15_agy_failure_is_a_result(clip10, fake_agy):
     assert res["ok"] is False and res["enabled"] is True and "agy stopped" in res["error"]
 
 
-# ---------------------------------------------------------------- context
-
-
 def test_c_t16_cut_line(wav, tone, fake_module, tmp_path):
     film = tmp_path / "film.mp4"
     film.write_bytes(b"not really a film")
@@ -248,9 +233,6 @@ def test_c_t17_timeline_transcript_sent(clip10, fake_agy, fake_module):
     fake_agy.reply(json.dumps(FULL_ANSWER))
     res = llm.critique(clip10, consent=True, with_timeline=True, start=1.0)
     assert "0.50 s hit" in res["context_sent"] and "clip starts at file second 1" in res["context_sent"]
-
-
-# ---------------------------------------------------------------- MCP and keys
 
 
 def test_c_t18_mcp_without_consent(clip10, fake_agy):
@@ -305,9 +287,6 @@ def test_c_t19_no_key_read(clip10, fake_agy, monkeypatch):
 
 def test_c_t19_secret_scrubbed():
     assert "***" in llm.scrub("failed with key AIzaSyA1234567890abcdefghijklmn")
-
-
-# ---------------------------------------------------------------- live
 
 
 @pytest.mark.live

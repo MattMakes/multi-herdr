@@ -51,8 +51,6 @@ def _is_plain_int(field_val: Any) -> bool:
     return isinstance(field_val, int) and not isinstance(field_val, bool)
 
 
-# Building and reading blocks.
-
 def _lookup(mod_path: str, fn_attr: str) -> Any:
     try:
         mod_obj = __import__(mod_path, fromlist=[fn_attr])
@@ -86,7 +84,6 @@ def resolve(block: dict) -> Callable:
 
 
 def _keyed(*block_vals: Any) -> dict:
-    # BLOCK_KEYS lists the fields in block order. Only "gain" is optional.
     return dict(zip(BLOCK_KEYS, block_vals))
 
 
@@ -196,8 +193,6 @@ def block(report: dict, pick: dict) -> dict:
     return legacy_block(report, pick)
 
 
-# Rendering a block.
-
 def raw(b: dict) -> np.ndarray | None:
     """Return the float64 output of the render function. Return None if it fails or is silent."""
     render_fn: Callable = resolve(b)
@@ -248,8 +243,6 @@ def compare(x: np.ndarray, y: np.ndarray) -> float:
         return 0.0
     return float(np.max(np.abs(got_arr.astype(np.float64) - wav_arr.astype(np.float64))))
 
-
-# Checking a delivered folder.
 
 def _open_report(rep_json: Any, out_dir: Any) -> tuple[dict, Path]:
     if isinstance(rep_json, dict):
@@ -323,8 +316,6 @@ def check_final(report: Any, folder: Any = None, tol: float = TOL, workers: int 
     with ThreadPoolExecutor(n_pool) as executor:
         return list(executor.map(check_one, pick_list))
 
-
-# Completing params and upgrading old reports.
 
 def _default_tables(blk_in: dict, render_fn: Callable) -> list[dict]:
     recipe_mod = registry.load(blk_in["recipe"])
@@ -427,8 +418,6 @@ def upgrade(report: Any, write: bool = False, tol: float = TOL, folder: Any = No
         _save_upgrade(rep_json, result_rows, rep_dir, log)
     return rep_json, result_rows
 
-
-# Command line.
 
 def _output_dirs(cli_arg: str) -> set[str]:
     """Return the forge output folders (each with a report.json) that 1 argument names."""

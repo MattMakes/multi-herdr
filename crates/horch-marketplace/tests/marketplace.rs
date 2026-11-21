@@ -1,7 +1,3 @@
-//! MKT-01..08, MKT-10 and NFR-07 for the marketplace crate. Git tests build
-//! a bare repository fixture in a tempdir with real git. Without git on
-//! PATH they skip, unless `HORCH_REQUIRE_GIT=1`.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,8 +8,6 @@ use horch_marketplace::{
 };
 use tempfile::TempDir;
 
-/// The only code in this file that starts a process. Every fixture repo is
-/// built through it, and it refuses a directory outside the temp dir.
 mod fixture {
     use std::path::Path;
     use std::process::Command;
@@ -36,8 +30,6 @@ mod fixture {
             .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
             .env("GIT_COMMITTER_NAME", "fixture")
             .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid");
-        // `GIT_DIR` from a hook or `git rebase -x` would aim this at the
-        // real repository.
         horch_marketplace::git::scrub_repo_env(&mut cmd);
         let out = cmd.output().ok()?;
         assert!(
@@ -55,8 +47,6 @@ struct Repo {
 }
 
 impl Repo {
-    /// A work repo at `<tmp>/work` that pushes to the bare `<tmp>/remote.git`.
-    /// `None` when git is missing and not required.
     fn new() -> Option<Self> {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("gitconfig");
@@ -97,7 +87,6 @@ impl Repo {
         fs::write(path, text).unwrap();
     }
 
-    /// Commit everything, push `main` and tags, and return the commit.
     fn commit(&self, msg: &str) -> String {
         self.git(&self.work(), &["add", "-A"]);
         self.git(&self.work(), &["commit", "--quiet", "-m", msg]);
@@ -131,7 +120,6 @@ fn installer_at(tmp: &Path, git: GitRunner) -> Installer {
     Installer::new(tmp.join("store"), git)
 }
 
-/// `skills/<id>/<version>/` of a lock entry.
 fn entry_dir(store: &Store, entry: &LockEntry) -> PathBuf {
     store.version_dir(
         &SkillId::parse(&entry.id).unwrap(),
@@ -139,7 +127,6 @@ fn entry_dir(store: &Store, entry: &LockEntry) -> PathBuf {
     )
 }
 
-/// A runner whose binary does not exist: any git call fails to spawn.
 fn no_git() -> GitRunner {
     GitRunner::new("/nonexistent/horch-test-git")
 }
@@ -169,7 +156,6 @@ fn lock(store: &Store) -> Lockfile {
     Lockfile::read(&store.lock_path()).unwrap()
 }
 
-/// After a failed install: no lock entry and nothing left in staging.
 fn assert_nothing_installed(store: &Store) {
     assert!(lock(store).skills.is_empty());
     let staging = store.staging_dir();
@@ -244,7 +230,6 @@ fn mkt_02_branch_resolves_to_sha() {
     assert_eq!(entry.resolved_commit.as_deref(), Some(first.as_str()));
     assert_eq!(entry.requested_revision.as_deref(), Some("HEAD"));
 
-    // Move the branch. The installed entry and its files do not change.
     let installed = installer
         .install(&repo.source("main"), &opts(), None)
         .unwrap();
@@ -257,7 +242,6 @@ fn mkt_02_branch_resolves_to_sha() {
     assert!(dir.is_dir() && !dir.join("extra.md").exists());
     assert_eq!(installer.reinstall_from_lock().unwrap(), vec![installed]);
 
-    // An update resolves the moved branch; a pinned commit still works.
     let moved = installer.update(Some("demo")).unwrap();
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].resolved_commit.as_deref(), Some(second.as_str()));
@@ -346,7 +330,6 @@ fn mkt_04_lock_entry_fields() {
     assert!(entry["version"].as_str().unwrap().starts_with("local+"));
     assert!(entry["installed_at"].as_str().unwrap().ends_with('Z'));
 
-    // Entries are sorted by id.
     installer
         .install(&local(&local_skill(tmp.path(), "alpha")), &opts(), None)
         .unwrap();
@@ -370,7 +353,6 @@ fn mkt_05_install_is_transactional() {
     let err = installer.install(&local(&dir), &faulted, None).unwrap_err();
     assert!(matches!(err, MarketplaceError::Fault(_)), "{err}");
     assert_nothing_installed(installer.store());
-    // The orphan version dir exists, but readers ignore it.
     assert_eq!(
         fs::read_dir(installer.store().skills_dir().join("demo"))
             .unwrap()
@@ -427,7 +409,6 @@ fn mkt_06_rejects_traversal() {
     assert!(!tmp.path().join("store/escape.md").exists());
     assert!(!tmp.path().join("escape.md").exists());
 
-    // A git subdir is checked before git runs.
     let installer = installer_at(tmp.path(), no_git());
     let source = SkillSource::parse("file:///nowhere/r.git@main")
         .unwrap()
@@ -453,7 +434,6 @@ fn mkt_06_rejects_symlink() {
     );
     assert_nothing_installed(installer.store());
 
-    // A symlink committed to git is rejected before the checkout.
     let Some(repo) = Repo::new() else { return };
     repo.write("skills/demo/SKILL.md", &skill_md("demo"));
     std::os::unix::fs::symlink("/etc/hosts", repo.work().join("skills/demo/hosts")).unwrap();
@@ -500,7 +480,6 @@ fn mkt_06_rejects_oversize() {
     ));
     assert_nothing_installed(installer.store());
 
-    // A git tree is checked from its listing, before the checkout.
     let Some(repo) = Repo::new() else { return };
     repo.write("skills/demo/SKILL.md", &skill_md("demo"));
     fs::write(
@@ -590,8 +569,6 @@ fn mkt_07_rejects_credentials_in_url() {
         let shown = err.to_string();
         assert!(!shown.contains("hunter2") && !shown.contains("ghp_secret"));
     }
-    // A source built directly is checked before git runs: the runner here
-    // cannot spawn, so any git call would give a different error.
     let tmp = tempfile::tempdir().unwrap();
     let installer = installer_at(tmp.path(), no_git());
     for url in secrets {
@@ -618,7 +595,6 @@ fn mkt_08_offline_reinstall_from_lock() {
         .unwrap();
     let dir = entry_dir(&repo.store(), &entry);
 
-    // A missing version dir is rebuilt from the pinned commit.
     fs::remove_dir_all(&dir).unwrap();
     assert_eq!(
         repo.installer().reinstall_from_lock().unwrap(),
@@ -629,7 +605,6 @@ fn mkt_08_offline_reinstall_from_lock() {
         "reference"
     );
 
-    // With the repo gone and no git at all, the existing dir verifies.
     fs::remove_dir_all(repo.tmp.path().join("remote.git")).unwrap();
     fs::remove_dir_all(repo.work()).unwrap();
     let offline = installer_at(repo.tmp.path(), no_git());
@@ -647,8 +622,6 @@ fn mkt_08_offline_reinstall_from_lock() {
     assert_eq!(lock(&repo.store()).skills, vec![entry]);
 }
 
-/// A locked skill whose version directory is gone is rebuilt from its
-/// source, and the rebuild must match the lock's id and digest.
 #[test]
 fn mkt_08_rebuild_checks_id_and_digest() {
     let tmp = tempfile::tempdir().unwrap();
@@ -658,7 +631,6 @@ fn mkt_08_rebuild_checks_id_and_digest() {
     let store = installer.store();
     let installed = entry_dir(store, &entry);
 
-    // A missing local copy is rebuilt from its current files.
     fs::remove_dir_all(&installed).unwrap();
     assert_eq!(
         installer.reinstall_from_lock().unwrap(),
@@ -666,7 +638,6 @@ fn mkt_08_rebuild_checks_id_and_digest() {
     );
     assert!(installed.join("SKILL.md").is_file());
 
-    // The rebuilt files must hash to the locked digest.
     fs::remove_dir_all(&installed).unwrap();
     fs::write(dir.join("extra.md"), "changed since the lock").unwrap();
     let r = installer.reinstall_from_lock();
@@ -677,7 +648,6 @@ fn mkt_08_rebuild_checks_id_and_digest() {
     assert!(!installed.exists(), "a mismatch must not materialize");
     fs::remove_file(dir.join("extra.md")).unwrap();
 
-    // The rebuilt SKILL.md name must equal the locked id.
     let mut wrong = lock(store);
     wrong.skills[0].id = "other".to_owned();
     wrong.write(&store.lock_path()).unwrap();
@@ -691,8 +661,6 @@ fn mkt_08_rebuild_checks_id_and_digest() {
     );
 }
 
-/// The lock is input: a version that is not one clean path component is
-/// refused before any directory is looked at.
 #[test]
 fn mkt_08_reinstall_refuses_an_unclean_locked_version() {
     let tmp = tempfile::tempdir().unwrap();
@@ -712,8 +680,6 @@ fn mkt_08_reinstall_refuses_an_unclean_locked_version() {
     }
 }
 
-/// A pattern position: what follows a `Type::Variant` (after its braces or
-/// parens) is `=>`, `|`, `if`, or a single `=` (in `if let` / `let else`).
 fn is_pattern(after: &str) -> bool {
     let mut rest = after.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
     rest = rest.trim_start();
@@ -770,10 +736,6 @@ fn mkt_10_source_dispatch_localized() {
     assert!(!is_pattern("Git {\n url,\n })"));
 }
 
-/// D20 item 5: `GIT_DIR` and `GIT_WORK_TREE` that point at another
-/// repository (a decoy) do not reach a git child. `git init --bare`,
-/// `symbolic-ref` and a commit, the steps that rewrote the real repository
-/// under `git rebase -x`, change only their own directory.
 #[test]
 fn git_env_cannot_reach_another_repository() {
     let Some(repo) = Repo::new() else { return };
@@ -823,8 +785,6 @@ fn git_env_cannot_reach_another_repository() {
     );
 }
 
-/// `REPO_ENV` holds every variable that the host git lists as local to a
-/// repository.
 #[test]
 fn repo_env_holds_every_local_env_var() {
     let Some(repo) = Repo::new() else { return };
@@ -841,8 +801,6 @@ fn repo_env_holds_every_local_env_var() {
     assert!(missing.is_empty(), "not in REPO_ENV: {missing:?}");
 }
 
-/// Config from the environment (`GIT_CONFIG_PARAMETERS`, and
-/// `GIT_CONFIG_COUNT` with its numbered pairs) does not reach a git child.
 #[test]
 fn git_config_env_does_not_reach_git() {
     let Some(repo) = Repo::new() else { return };
@@ -901,8 +859,6 @@ fn nfr_07_git_only_on_temp_repos() {
     assert!(matches!(r, Err(GitError::NoDir)), "{r:?}");
 }
 
-/// U-10: installs that race on one store each keep their lock entry. Without
-/// the store lock, two installs read the same old lock and one entry is lost.
 #[test]
 fn mkt_11_concurrent_installs_keep_every_lock_entry() {
     const SKILLS: usize = 8;
@@ -932,8 +888,6 @@ fn mkt_11_concurrent_installs_keep_every_lock_entry() {
     }
 }
 
-/// Wait until a caller on another thread is blocked on the held store lock.
-/// The thread finishing first means the lock did not block it.
 fn wait_until_blocked<T>(store: &Store, handle: &std::thread::ScopedJoinHandle<'_, T>, what: &str) {
     while store.lock_contentions() == 0 {
         assert!(!handle.is_finished(), "{what} ignored the store lock");
@@ -941,8 +895,6 @@ fn wait_until_blocked<T>(store: &Store, handle: &std::thread::ScopedJoinHandle<'
     }
 }
 
-/// U-10: an install waits while another process holds the store lock, and
-/// writes its entry once the lock is free.
 #[test]
 fn mkt_11_install_waits_for_the_store_lock() {
     let tmp = tempfile::tempdir().unwrap();
@@ -963,8 +915,6 @@ fn mkt_11_install_waits_for_the_store_lock() {
     );
 }
 
-/// U-10: a held lock times out with a clear error; a stale one is broken; a
-/// faulted install releases it.
 #[test]
 fn mkt_11_store_lock_timeout_stale_and_release() {
     use std::time::Duration;
@@ -979,7 +929,6 @@ fn mkt_11_store_lock_timeout_stale_and_release() {
         matches!(&err, MarketplaceError::Io(e) if e.kind() == std::io::ErrorKind::TimedOut),
         "{err:?}"
     );
-    // A lock whose holder died is older than the stale limit.
     std::thread::sleep(Duration::from_millis(60));
     let broken = store
         .lock_within(Duration::from_secs(5), Duration::from_millis(20))
@@ -997,8 +946,6 @@ fn mkt_11_store_lock_timeout_stale_and_release() {
     assert!(installer.store().lock().is_ok(), "a fault kept the lock");
 }
 
-/// The lock fails at once, without waiting, on an I/O error other than
-/// "the guard exists".
 #[cfg(unix)]
 #[test]
 fn mkt_11_store_lock_io_error_is_not_retried() {
@@ -1012,7 +959,7 @@ fn mkt_11_store_lock_io_error_is_not_retried() {
     let result = Store::new(&root).lock_within(Duration::from_secs(30), Duration::from_secs(30));
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
     let Err(err) = result else {
-        return; // running as a user that ignores directory modes
+        return;
     };
     assert!(
         matches!(&err, MarketplaceError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
@@ -1021,8 +968,6 @@ fn mkt_11_store_lock_io_error_is_not_retried() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
-/// U-10: a reinstall that rebuilds a missing version directory waits while
-/// another process holds the store lock, as an install does.
 #[test]
 fn mkt_11_reinstall_waits_for_the_store_lock() {
     let tmp = tempfile::tempdir().unwrap();

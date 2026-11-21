@@ -1,24 +1,11 @@
-//! Fault injection points for the end-to-end tests: `HORCH_FAULT`.
-//!
-//! The variable holds one point name or a comma-separated list, for example
-//! `abort-after-append`. A point that is not armed costs nothing.
-//!
-//! An `abort-*` point ends the process where it stands, through
-//! [`Faults::abort_if`]. A `fail-*` point makes its step return an error; the
-//! step checks [`Faults::has`] itself.
-
-/// The exit code of a process that [`Faults::abort_if`] stopped. A design
-/// choice: no spec names one.
 pub const ABORT_EXIT_CODE: i32 = 86;
 
 use std::collections::BTreeSet;
 
-/// The armed fault points.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Faults(BTreeSet<String>);
 
 impl Faults {
-    /// Parse a `HORCH_FAULT` value. Blank entries are ignored.
     pub fn parse(raw: Option<&str>) -> Faults {
         Faults(
             raw.unwrap_or_default()
@@ -30,7 +17,6 @@ impl Faults {
         )
     }
 
-    /// Is `point` armed? An exact match.
     pub fn has(&self, point: &str) -> bool {
         self.0.contains(point)
     }
@@ -39,14 +25,10 @@ impl Faults {
         self.0.is_empty()
     }
 
-    /// Every armed point. `CommandValidator` takes the set, for its
-    /// `fail-gate:<name>` points.
     pub fn points(&self) -> &BTreeSet<String> {
         &self.0
     }
 
-    /// The index of an armed `<prefix>:<n>` point, for example `Some("2")`
-    /// for `abort-after-worktree:2` and the prefix `abort-after-worktree`.
     pub fn indexed(&self, prefix: &str) -> Option<String> {
         self.0.iter().find_map(|p| {
             p.strip_prefix(prefix)
@@ -55,8 +37,6 @@ impl Faults {
         })
     }
 
-    /// Stop the process here, with [`ABORT_EXIT_CODE`] and a line on stderr,
-    /// when `point` is armed. This simulates a crash: nothing is cleaned up.
     pub fn abort_if(&self, point: &str) {
         if self.has(point) {
             eprintln!("horch: HORCH_FAULT {point}: aborting");
@@ -92,7 +72,6 @@ mod tests {
         assert_eq!(f.indexed("abort-after-freeze").as_deref(), Some("B"));
         assert_eq!(f.indexed("abort-after-worktre"), None);
         assert_eq!(f.indexed("abort-after-validation"), None);
-        // An unarmed point never aborts.
         f.abort_if("abort-after-execution-insert");
     }
 }

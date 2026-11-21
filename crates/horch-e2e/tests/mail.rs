@@ -1,5 +1,3 @@
-//! MAIL-U1 durable delivery through the detached courier.
-
 use std::fs::File;
 use std::path::Path;
 use std::process::Output;
@@ -16,11 +14,6 @@ fn text(output: &Output) -> String {
     )
 }
 
-/// Whether a courier holds the lock at `path`; `None` before the file exists.
-/// A probe that takes the lock unlocks it before the close: a process that
-/// another test thread spawns at the close holds a copy of the file until it
-/// execs, the flock stays held while any copy is open, and a courier that
-/// starts then exits at once.
 fn courier_holds(path: &Path) -> Option<bool> {
     let lock = File::options().read(true).write(true).open(path).ok()?;
     if lock.try_lock().is_err() {
@@ -49,8 +42,6 @@ fn fleet() -> Harness {
     harness
 }
 
-/// The first push is lost (`mail_drop`). The courier then names the unread
-/// DONE in 1 digest line, without its text, until `horch inbox` acks it.
 #[test]
 fn mail_u1_courier_digests_unread_mail_to_an_idle_orchestrator_until_inbox_acks() {
     let harness = fleet();
@@ -85,7 +76,6 @@ fn mail_u1_courier_digests_unread_mail_to_an_idle_orchestrator_until_inbox_acks(
 
     let inbox = harness.run(&["inbox"]);
     assert!(inbox.status.success(), "{}", text(&inbox));
-    // TRF-03: the inbox shows the mail id of the message.
     assert!(String::from_utf8_lossy(&inbox.stdout)
         .contains(&format!("[sonnet-1 #{id}] DONE: do not lose this")));
     wait_for_or(
@@ -95,13 +85,9 @@ fn mail_u1_courier_digests_unread_mail_to_an_idle_orchestrator_until_inbox_acks(
     );
 }
 
-/// TRF-04: a pane id file can outlive its pane. The courier counts a pane
-/// herdr does not know as no target, and it stays while the mail is pending:
-/// only `horch inbox`, which acknowledges the mail, lets it exit.
 #[test]
 fn trf_04_courier_stays_while_mail_is_pending_and_the_pane_is_gone() {
     let harness = fleet();
-    // The limit of an earlier release: it no longer ends the courier.
     let mailbox = harness.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p9").unwrap();
     let mut tell = harness.horch(&["tell", "orchestrator", "NOTE: still here"]);
@@ -116,7 +102,6 @@ fn trf_04_courier_stays_while_mail_is_pending_and_the_pane_is_gone() {
         || courier_holds(&lock_path)?.then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
-    // 10 times the old limit: the courier still holds the lock.
     std::thread::sleep(std::time::Duration::from_millis(1000));
     assert_eq!(courier_holds(&lock_path), Some(true), "the courier stays");
     let pending = std::fs::read_dir(harness.state.join("mail/w1/pending")).unwrap();

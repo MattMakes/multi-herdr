@@ -29,7 +29,6 @@ MANIFEST = REPO / "out" / "refs" / "manifest.json"
 OUT_DEFAULT = REPO / "out" / "showcase" / "blind_v2"
 PAD_S = 0.25
 
-# (category, answer-sheet name, trials at N = 20, tier)
 PLAN = [("whoosh_big", "big whoosh", 2, "strong"), ("whoosh_fast", "fast whoosh", 2, "strong"),
         ("click", "UI click", 2, "strong"), ("typing_key", "key press", 2, "strong"),
         ("shimmer", "shimmer", 2, "strong"), ("pop", "pop", 2, "strong"), ("swipe", "cloth swipe", 1, "strong"),
@@ -48,8 +47,6 @@ NOTES = {"impact": "the bench ref is a library cinematic hit, designed by a pers
          "whoosh_fast": "three of its bench refs are also swish bench refs; the test uses each file once",
          "swish": "three of its bench refs are also whoosh_fast bench refs; the test uses each file once"}
 
-
-# ---------------------------------------------------------------- inputs
 
 def finals(cat: str) -> list[str]:
     """The category's delivered finals <cat>_NN.wav."""
@@ -109,8 +106,6 @@ def allocate(n: int) -> dict[str, int]:
             raise SystemExit(f"cannot build {n} trials: not enough finals / bench refs")
     return {c: k for c, k in alloc.items() if k}
 
-
-# ---------------------------------------------------------------- picks
 
 class _Picker:
     """The trial picks: length and edge facts only, never a score."""
@@ -212,8 +207,6 @@ def pick_trials(n: int, seed: int) -> list[dict]:
     return trials
 
 
-# ---------------------------------------------------------------- one pair
-
 def _analyse_pair(t: dict, real: np.ndarray, made: np.ndarray, cls: str) -> tuple[dict, dict, tuple]:
     ir = bt.analyse(real, cls, bt.end_fade_s(t["real"]), bt.source_floor(t["real"]), cut_file=True)
     im = bt.analyse(made, cls, bt.MADE_FADE_GUARD, None, cut_file=False)
@@ -292,8 +285,6 @@ def _key_entry(i: int, t: dict, pr: dict, a: tuple, b: tuple) -> dict:
 def _round(d: dict) -> dict:
     return {k: round(v, 3) if isinstance(v, float) else v for k, v in d.items()}
 
-
-# ---------------------------------------------------------------- build
 
 def _fingerprint() -> dict:
     files = [p for c, *_ in PLAN for p in finals(c) + bench_refs(c)]
@@ -484,8 +475,6 @@ def _write(out: Path, parts: tuple, summary: dict, run: tuple) -> None:
     if not run[2]:
         print(sheet)
 
-
-# ---------------------------------------------------------------- CLI
 
 def _path(p: str) -> Path:
     q = Path(p)

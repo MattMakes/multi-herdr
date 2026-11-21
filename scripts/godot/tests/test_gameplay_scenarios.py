@@ -26,7 +26,6 @@ CLASS_BLOCKS = (
     "```gdscript\nfunc not_a_class() -> void:\n\tpass\n```\n"
 )
 
-# What `Godot --headless --import` (4.7.2) writes for CLASS_BLOCKS.
 EDITOR_CLASSES = """list=[{
 "base": &"Node2D",
 "class": &"Alpha",
@@ -80,7 +79,6 @@ class LayoutTest(unittest.TestCase):
                 gs.write_blocks(skill, Path(tmp) / "out")
 
     def test_the_class_list_is_the_one_import_writes(self):
-        # C5: the runner writes the class list; `--import` started the editor.
         with tempfile.TemporaryDirectory() as tmp:
             skill = Path(tmp) / "skill"
             skill.mkdir()

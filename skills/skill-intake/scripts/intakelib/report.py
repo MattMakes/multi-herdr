@@ -83,8 +83,6 @@ def sweep_report(summary: dict, findings: list[dict], entries: list[dict]) -> st
 
 
 
-# ---- inputs the report reads ---------------------------------------------------------
-
 def _json(path: Path, default):
     return task.read_json(path) if path.is_file() else default
 
@@ -214,8 +212,6 @@ def repo_lines(t: task.Task, state: dict, ev: list[str]) -> list[str]:
     return lines
 
 
-# ---- outcome -------------------------------------------------------------------------
-
 def flags_of(summary: dict, vdoc: dict, incs: list[dict], state: dict | None, mapping_missing: bool) -> list[str]:
     flags = []
     lic = summary["licence"].get("flag")
@@ -247,8 +243,6 @@ def outcome_of(t: task.Task, summary: dict, vdoc: dict, flags: list[str], lost: 
     return "stopped before install (GATE 1 passed; GATE 2 has not run)" if not t.manifest.get("gate2") else \
         "stopped before install (GATE 2 passed)"
 
-
-# ---- the report ---------------------------------------------------------------------------
 
 def write(t: task.Task) -> tuple[Path, str]:
     """Write C/report.md. Returns its path and a one-paragraph summary (no source text)."""

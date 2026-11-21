@@ -83,9 +83,7 @@ MAC_GODOT = "/Applications/Godot.app/Contents/MacOS/Godot"
 GD_LANGS = {"gdscript", "gd"}
 CS_LANGS = {"csharp", "cs", "c#"}
 
-# Names every script class answers to that the dump does not list.
 GD_ALWAYS = {"new"}
-# C# bindings: generated nested classes and helpers with no doctool entry.
 CS_ALWAYS = {
     "SignalName", "PropertyName", "MethodName", "From", "Create", "CreateFrom",
     "Singleton", "IsInstanceValid",
@@ -97,9 +95,7 @@ ALLOW = re.compile(r"api-check:\s*allow\s+([A-Za-z0-9_@.,\s]+)")
 ALLOW_LINE = re.compile(r"^\s*(#+|//)\s*api-check:\s*allow\b")
 KNOWN_CLASSES = Path(__file__).resolve().parent / "known_classes.txt"
 
-# GDScript type names that have no class XML.
 GD_TYPES = {"void", "Variant", "Self"}
-# Places where a GDScript line names a class.
 CLASS_USES = [
     re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:class_name\s+\w+\s+)?extends\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*class\s+\w+\s+extends\s+([A-Za-z_]\w*)"),
@@ -127,14 +123,12 @@ class EngineClass:
     name: str
     inherits: str | None = None
     names: set[str] = field(default_factory=set)
-    # True for a global enum (Key, MouseButton): it has no class XML.
     enum_only: bool = True
 
 
 class Api:
     def __init__(self, classes: dict[str, EngineClass], deprecated: dict[str, dict[str, str]] | None = None):
         self.classes = classes
-        # deprecated[Class][member] = message; member "" is the class itself.
         self.deprecated = deprecated or {}
         self._everywhere: dict[str, tuple[str, str]] | None = None
 
@@ -173,7 +167,6 @@ class Api:
                     if enum:
                         owner, _, enum_name = enum.rpartition(".")
                         if root.get("name") == "@GlobalScope":
-                            # Global enums: `Key.KEY_A`; `Variant.Type` (owner Variant).
                             if owner:
                                 get(owner).names.add(enum_name)
                             else:
@@ -269,7 +262,6 @@ class Unknown:
     path: Path
     line: int
     name: str
-    # "unknown" or "deprecated"
     kind: str = "unknown"
     message: str = ""
 
@@ -384,7 +376,6 @@ def check_file(api: Api, path: Path, known: dict[str, set[str]] | None = None) -
         allow |= block_allow.get(block, set())
         seen: set[str] = set()
 
-        # seen and n are defaults so each line keeps its own: the loop rebinds both (ruff B023).
         def deprecated(name: str, msg: str, seen: set[str] = seen, n: int = n) -> None:
             if name not in seen:
                 seen.add(name)
@@ -521,7 +512,6 @@ def pin_deprecations(godot: str, version: str, out: Path) -> int:
             env=env, capture_output=True, timeout=300, check=False,
         )
         marks = json.loads((project / "deprecated.json").read_text())
-    # One class per line, so a new Godot version diffs by class.
     lines = [
         f"{json.dumps(c)}:{json.dumps(marks[c], sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
         for c in sorted(marks)

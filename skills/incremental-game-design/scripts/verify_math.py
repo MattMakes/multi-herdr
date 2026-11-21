@@ -20,10 +20,6 @@ HOUR = 3600.0
 DAY = 24 * HOUR
 
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
 class Line:
     """A purchase line. Level k costs a * b**k.
 
@@ -46,14 +42,13 @@ class Line:
         return math.log(self.v) / math.log(self.b) if self.kind == "mult" else 0.0
 
 
-# The keyword options of Game and their defaults.
 GAME_OPTIONS = dict(
-    spine=None,         # (h, w, N)
-    reset=None,         # dict c, p, q, floor
+    spine=None,
+    reset=None,
     f_open=1.0,
     f_closed=1.0,
     cap_closed=None,
-    time_mult=None,     # function of run time: a second clock (L7)
+    time_mult=None,
 )
 
 
@@ -92,19 +87,18 @@ class Sim:
         self.g = game
         self.lv = [0] * len(game.lines)
         self.cash = 0.0
-        self.E = 0.0        # run earnings
-        self.S = 0.0        # run spend
-        self.L = 0.0        # lifetime reset currency
-        self.t = 0.0        # game time
+        self.E = 0.0
+        self.S = 0.0
+        self.L = 0.0
+        self.t = 0.0
         self.run_t0 = 0.0
-        self.hi = 0         # highest stage
-        self.vhi = 0.0      # highest stage as a real number, no cap
-        self.unlocks = []   # (time, stage)
-        self.resets = []    # (time, gain, L after)
+        self.hi = 0
+        self.vhi = 0.0
+        self.unlocks = []
+        self.resets = []
         self.active_s = 0.0
         self.P = self._power(self.lv)
 
-    # -- power and spine --------------------------------------------------
     def mult(self):
         r = self.g.reset
         return (1.0 + self.L) ** r["q"] if r else 1.0
@@ -137,7 +131,6 @@ class Sim:
             self.hi += 1
             self.unlocks.append((self.t, self.hi))
 
-    # -- buying -----------------------------------------------------------
     def best(self):
         best = (None, 0.0, 0.0)
         lines = self.g.lines
@@ -178,7 +171,6 @@ class Sim:
         self._spine()
         return True
 
-    # -- time -------------------------------------------------------------
     def earn(self, dt, f=1.0):
         if self.g.time_mult:
             return self._earn_steps(dt, f)
@@ -197,7 +189,6 @@ class Sim:
         self.E += x
         self.t += dt
 
-    # -- reset ------------------------------------------------------------
     def gain(self):
         r = self.g.reset
         if not r:
@@ -222,7 +213,6 @@ class Sim:
     def reset_target(self, X, gmin=1.0):
         return max(X * self.L, gmin)
 
-    # -- players ----------------------------------------------------------
     def play(self, until, dt=1.0, X=None, gmin=1.0, count_active=True, max_resets=None, f=1.0):
         """Active greedy play to game time `until`. Decision each dt seconds.
 
@@ -272,10 +262,6 @@ class Sim:
         self.earn(eff, g.f_closed)
         self.t += T - eff
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 RESULTS = []
 
@@ -373,18 +359,12 @@ def visit(sim, X, v=120.0):
     sim.play(sim.t + v, X=X)
 
 
-# ---------------------------------------------------------------------------
-# L1 to L9
-# ---------------------------------------------------------------------------
-
 def check_l1():
-    # 2 groups. Group b has 2 lines: the larger exponent counts.
     lines = [mline(0.45, b=1.5, group="a"), mline(0.38, b=2.0, group="b"), mline(0.24, b=3.0, group="b")]
     game = Game(lines, {"a": 1.0, "b": 1.0})
     pred = 0.45 + 0.38
     meas = spend_slope(game, 1e8, 1e16)
     ok1 = rel(meas, pred) < 0.03
-    # Additive line: level = floor(log_b(S (b - 1) / a + 1)) (bulk-buy formula).
     a, b, S = 10.0, 1.15, 1e9
     sim = Sim(Game([Line(a, b, "add", 1.0, "g")], {"g": 1.0}))
     sim.cash = S
@@ -470,7 +450,6 @@ def l3_run_time(game, alpha, X, p=1.0, c=1e3):
 
 
 def l4_state():
-    # Fine lines (b = 1.1): the law is continuous, and a coarse line adds a step error.
     lines = [mline(0.25, b=1.1, group="g0"), mline(0.25, b=1.1, group="g1", a=20.0)]
     sim = Sim(Game(lines, {"g0": 1.0, "g1": 1.0}, spine=(1.0, 2.0, 10 ** 9)))
     sim.play(HOUR)
@@ -885,7 +864,6 @@ L9_A, L9_D = 1.0, 1.001
 
 
 def check_l9():
-    # Decision interval D: income grows by ln(1 + g D) for each D, so time scales by g D / ln(1 + g D).
     g = (L9_D - 1) / L9_A
     rates = {D: l9_rate(D) for D in (1.0, 100.0, 1000.0, 3000.0)}
     graded = [l9_row(g, D, rates) for D in (100.0, 1000.0, 3000.0)]
@@ -917,17 +895,11 @@ def l9_row(g, D, rates):
     return rel(meas, pred), "gD=%.1f %.3f/%.3f" % (g * D, pred, meas)
 
 
-# ---------------------------------------------------------------------------
-# Worked example 1: Moss Works data
-# ---------------------------------------------------------------------------
-
 def print_lines(lines):
     """Print each line, as print() does. Print nothing for an empty list."""
     sys.stdout.write("".join(line + "\n" for line in lines))
 
 
-# The copy of the built game Moss Works: assets/fixtures/moss-works-built/. A copy of the skill can be
-# without that folder (the bundled copy is). Worked example 1 is then left out, with 1 printed line.
 MOSS_FIXTURE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "assets", "fixtures", "moss-works-built")
 
@@ -938,7 +910,7 @@ def example_moss(root):
     spores, grow = moss_lines(ups + garden["tonics"])
     print_lines(moss_r_lines(spores, grow))
     p = stages["prestige_exponent"]
-    q = 1.0  # Root Memory: r = ln 2 / ln 2, no cap.
+    q = 1.0
     print_lines(moss_lambda_lines(p, q))
     print(moss_trellis_line(grow, stages["hp_growth"]))
     print(moss_p1_line(p, q))
@@ -999,10 +971,6 @@ def moss_p1_line(p, q, t_ratio=1 / 7.0):
             % (ratio_L, e, alpha, p * q * alpha))
 
 
-# ---------------------------------------------------------------------------
-# Worked example 2: a corrected small game
-# ---------------------------------------------------------------------------
-
 EX2 = dict(R=0.2, p=3.0, X=1.0, X_patient=10.0, T_X=900.0, f_idle=0.5, f_closed=0.5, cap_closed=12 * HOUR,
            visit=120.0, hours=20.0, unlocks_first_hour=6, unlocks_per_hour=5.0,
            first_times_min=(0.5, 2.0, 5.0, 10.0, 25.0, 45.0))
@@ -1022,7 +990,6 @@ def ex2_design():
     P = dict(EX2)
     ex2_reset_params(P)
     ex2_wall_params(P)
-    # First unlocks: power of the trajectory at the target times (no spine yet).
     trial = Game(ex2_lines(P["R"]), dict(EX2_GROUPS), reset=dict(c=P["c"], p=P["p"], q=P["q"]))
     hs = ex2_first_powers(trial, P)
     p1h = ex2_peak_1h(trial, P["X"])
@@ -1035,7 +1002,7 @@ def ex2_reset_params(P):
     R = P["R"]
     alpha = 1 / (1 - R)
     P["alpha"] = alpha
-    P["q"] = (1 - R) / P["p"]                      # lambda = p q alpha = 1
+    P["q"] = (1 - R) / P["p"]
     P["s"] = P["p"] * alpha
     A = traj_A(Game(ex2_lines(R), dict(EX2_GROUPS)), alpha, x=1e6)
     P["A"] = A
@@ -1043,7 +1010,7 @@ def ex2_reset_params(P):
 
 
 def ex2_wall_params(P):
-    ldot = P["q"] * math.log(1 + P["X"]) / P["T_X"] * HOUR      # ln M for each active hour
+    ldot = P["q"] * math.log(1 + P["X"]) / P["T_X"] * HOUR
     P["ldot"] = ldot
     P["w"] = math.exp(P["alpha"] * ldot / P["unlocks_per_hour"])
 

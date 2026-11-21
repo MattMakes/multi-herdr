@@ -1,6 +1,3 @@
-//! The readers against the fixture corpus. Every expected number comes from
-//! `tests/fixtures/telemetry/EXPECTED.md`, computed by hand.
-
 mod common;
 
 use std::collections::BTreeMap;
@@ -59,8 +56,6 @@ fn tel_03_classes_per_agent() {
         sum(&whole(&w, "prime", &prime_sid(&w.state))),
         t(70, 200, 0, 2200, 70, 0)
     );
-    // pi: cacheWrite1h is split out of cacheWrite, and the provider prefixes
-    // the model so the price table can find it.
     let pi = whole(&w, "pi", B1);
     let m4 = pi.iter().find(|e| e.event_id == "m4").unwrap();
     assert_eq!(
@@ -87,7 +82,6 @@ fn tel_04_claude_dedupes_message_id() {
     let a = main[0];
     assert_eq!(a.tokens, t(10, 0, 2000, 50000, 300, 120));
     assert_eq!(a.ts, "2026-09-28T17:00:01Z");
-    // No cache_creation object: every written token is 5m.
     assert_eq!(main[2].tokens.cache_write_5m, 400);
 }
 
@@ -143,7 +137,6 @@ fn tel_05_codex_counts_final_response() {
     let ids: Vec<&str> = ev.iter().map(|e| e.event_id.as_str()).collect();
     assert_eq!(ids, vec!["resp_1", "resp_2"]);
     let s = sum(&ev);
-    // input + cached + output, as Codex counts total_tokens.
     let records_total = s.input + s.cache_read + s.output;
     assert_eq!(records_total, 1800, "the last thread_token_usage");
     assert!(records_total > 1200, "more than the last token_count total");
@@ -201,7 +194,6 @@ fn tel_06_opencode_update_emits_delta() {
     let mut cursors = Cursors::new();
     let first = poll_record(&w.loc, "opencode", Some("ses_beta1"), &mut cursors).unwrap();
     assert_eq!(first.observations.len(), 2);
-    // Nothing new: nothing emitted.
     let again = poll_record(&w.loc, "opencode", Some("ses_beta1"), &mut cursors).unwrap();
     assert!(again.observations.is_empty(), "{:?}", again.observations);
     let db = &w.loc.opencode_db;
@@ -245,7 +237,6 @@ fn tel_01_unread_has_reason() {
             .to_string(),
         "agent none is not read"
     );
-    // opencode without a database file.
     let empty = locations(&w.home.join("nowhere"));
     assert!(matches!(
         poll_record(&empty, "opencode", Some("ses_beta1"), &mut c).unwrap_err(),
@@ -253,7 +244,6 @@ fn tel_01_unread_has_reason() {
     ));
 }
 
-/// Every input file of the corpus, with the record it belongs to.
 fn inputs(w: &World) -> Vec<(&'static str, String, std::path::PathBuf)> {
     let claude = w.home.join(".claude/projects/-work-alpha");
     let codex = w.home.join(".codex/sessions/2026");
@@ -300,7 +290,6 @@ fn inputs(w: &World) -> Vec<(&'static str, String, std::path::PathBuf)> {
     ]
 }
 
-/// The events of `obs`, deduplicated the way the store does, as a map.
 fn keyed(obs: Vec<Observation>, into: &mut BTreeMap<String, RawUsage>) {
     for o in obs {
         if let Observation::Usage(u) = o {
@@ -317,7 +306,6 @@ fn tel_07_append_in_stages_equals_whole() {
         let mut expected = BTreeMap::new();
         keyed(observations(&w.loc, agent, &sid), &mut expected);
 
-        // Cut points: every line boundary, and 3 offsets inside lines.
         let mut cuts: Vec<usize> = full
             .iter()
             .enumerate()
@@ -360,9 +348,7 @@ fn tel_07_restart_resumes() {
         observations_with(&half.loc, "claude", O1, &mut cursors),
         &mut got,
     );
-    // Serialize the cursors, as the collector does between runs.
     let saved = serde_json::to_string(&cursors).unwrap();
-    // Grow every file to its whole content, then resume.
     for (from, to) in targets(&half.home, &half.state) {
         copy(&from, &to, Part::Whole);
     }

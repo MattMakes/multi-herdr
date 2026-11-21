@@ -1,5 +1,3 @@
-//! ARC-14: every record a spawn writes says how routing chose it.
-
 use std::process::Output;
 
 use horch_e2e::harness::{fixtures, Harness};
@@ -64,7 +62,6 @@ fn spawn(h: &Harness, args: &[&str]) -> Output {
 fn arc_14_provenance_on_spawn_substitute_resume() {
     let mut h = gated("arc14", "claude-exhausted-codex-ok");
 
-    // A normal spawn: codex is ok, so codex-sol runs as itself.
     spawn(&h, &["codex-sol"]);
     let plain = record(&h, "codex-sol-1");
     let p = &plain["routing"];
@@ -76,8 +73,6 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
     assert!(p["fallback_index"].is_null());
     assert!(plain.get("via").is_none(), "no via on a plain spawn");
 
-    // A substituted spawn: claude is exhausted, so researcher runs on its
-    // fallback. `via` and `substitution_reason` are still written.
     let out = spawn(&h, &["researcher"]);
     assert!(stdout(&out).starts_with("SUBSTITUTED: researcher runs on codex-sol."));
     let sub = record(&h, "researcher-1");
@@ -95,8 +90,6 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
         "claude 7d 100%, resets 2026-10-02T14:00Z"
     );
 
-    // A resume keeps the record's routing, with mode `resume`, even when the
-    // pools have changed since.
     let id = sub["record_id"].as_str().unwrap().to_string();
     assert!(h
         .run(&[

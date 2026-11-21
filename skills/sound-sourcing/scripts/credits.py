@@ -117,7 +117,7 @@ def stretched(design: dict | None) -> bool:
 def load_design(fpath: str | None, base_dir: str):
     if not fpath:
         return None
-    import mix  # the mixer's own loader, so fragments merge the same way
+    import mix
     return mix.load_design(fpath, base_dir)
 
 

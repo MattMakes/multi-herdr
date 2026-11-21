@@ -1,5 +1,3 @@
-//! Writing an activation plan's skills to disk for one execution.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -7,17 +5,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use super::activation::{ResolvedSkillRef, SkillActivationPlan};
 use super::catalog::{CatalogEntry, CatalogSource, SkillCatalog};
 
-/// An owned directory `<state_root>/skill-bundles/<execution_id>/`.
-/// Dropping it deletes that directory, which only this value created.
 #[derive(Debug)]
 pub struct MaterializedSkills {
     pub root: PathBuf,
 }
 
 impl MaterializedSkills {
-    /// Write every activated skill's files under `<root>/skills/<id>/`.
-    /// `None` when the plan activates nothing. Fails if the directory
-    /// exists, so two executions never share one.
     pub fn materialize(
         plan: &SkillActivationPlan,
         catalog: &SkillCatalog,
@@ -53,8 +46,6 @@ fn check_execution_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write one activated skill under `skills_dir`, from its directory or from
-/// the files compiled into the catalog.
 fn materialize_skill(
     catalog: &SkillCatalog,
     skill: &ResolvedSkillRef,
@@ -71,9 +62,6 @@ fn materialize_skill(
             entry.version
         );
     }
-    // A plugin skill loads from the harness's filtered copy of its plugin,
-    // which checks that copy's bytes; the bundle's own skills directory
-    // never holds it.
     if entry.is_plugin() {
         return Ok(());
     }
@@ -84,11 +72,8 @@ fn materialize_skill(
     }
 }
 
-/// The directory a skill is copied from. `None` for a skill whose files are
-/// compiled in (bundled) or that the harness loads itself (plugin).
 fn source_dir(catalog: &SkillCatalog, entry: &CatalogEntry) -> Result<Option<PathBuf>> {
     match &entry.source {
-        // The store path validates the lock's id and version.
         CatalogSource::Marketplace { .. } => catalog
             .store_dir(entry)?
             .with_context(|| {
@@ -103,7 +88,6 @@ fn source_dir(catalog: &SkillCatalog, entry: &CatalogEntry) -> Result<Option<Pat
     }
 }
 
-/// Copy `from` to `target` and check the copy against the pinned digest.
 fn copy_verified(entry: &CatalogEntry, from: &Path, target: &Path) -> Result<()> {
     let operator = entry.is_operator();
     if !from.is_dir() {
@@ -125,8 +109,6 @@ fn copy_verified(entry: &CatalogEntry, from: &Path, target: &Path) -> Result<()>
         bail!("{msg}");
     }
     copy_tree(from, target)?;
-    // Check the copy, not the source, so what launch reads is what the lock
-    // (or, for an operator skill, the plan) pinned.
     let actual = horch_marketplace::integrity::tree_digest(target)
         .map_err(|e| anyhow!("skill '{}': {e}", entry.id))?;
     if actual != entry.digest.to_string() {
@@ -147,13 +129,11 @@ fn copy_verified(entry: &CatalogEntry, from: &Path, target: &Path) -> Result<()>
     Ok(())
 }
 
-/// Write the files compiled into a bundled skill under `target`.
 pub(super) fn write_embedded(entry: &CatalogEntry, target: &Path) -> Result<()> {
     for (rel, bytes) in &entry.files {
         let target = target.join(rel);
         std::fs::create_dir_all(target.parent().expect("skill path has parent"))?;
         std::fs::write(&target, bytes)?;
-        // The digest covers the execute bit, so the bundle keeps it.
         #[cfg(unix)]
         if entry.executable.contains(rel) {
             use std::os::unix::fs::PermissionsExt as _;
@@ -163,8 +143,6 @@ pub(super) fn write_embedded(entry: &CatalogEntry, target: &Path) -> Result<()> 
     Ok(())
 }
 
-/// Copy the regular files and directories under `from` to `to`. A symlink
-/// or any other file type fails: the store never holds one.
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to)?;
     for item in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
@@ -173,7 +151,6 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copy one directory entry into `to`.
 fn copy_item(item: std::fs::DirEntry, to: &Path) -> Result<()> {
     let kind = item.file_type()?;
     let target = to.join(item.file_name());

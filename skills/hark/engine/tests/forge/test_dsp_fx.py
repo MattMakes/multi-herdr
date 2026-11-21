@@ -129,7 +129,6 @@ def test_d12_limiter_ceiling_and_passthrough():
 
 
 def test_d13_split_sums_flat():
-    # An impulse gives the exact response: no edge effects of a finite noise take.
     x = np.zeros(SR)
     x[0] = 1.0
     bands = fx.split(x, [200, 3000])

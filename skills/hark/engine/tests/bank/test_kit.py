@@ -24,9 +24,6 @@ def _kit(**roles) -> dict:
     return {"kit": 1, "name": "t", "sr": 48000, "roles": base, "off": {"riser": "test"}}
 
 
-# ---------------------------------------------------------------- init (AT-18, AT-19)
-
-
 def test_at_18_init_writes_calm_then_needs_force(tmp_path, monkeypatch, cli, capsys):
     monkeypatch.chdir(tmp_path)
     assert cli(["kit", "init"]) == 0
@@ -49,9 +46,6 @@ def test_at_19_unknown_preset_lists_presets(tmp_path, cli):
 
 def test_kit_without_subcommand_exits_2(cli):
     assert cli(["kit"]) == 2
-
-
-# ---------------------------------------------------------------- render and cache (AT-20 .. AT-22)
 
 
 def test_at_20_calm_renders_64_then_caches_shipped(shipped, tmp_path, hark_home):
@@ -156,9 +150,6 @@ def test_reroll_picks_first_clean_seed(fixture_bank, monkeypatch):
     assert audit["ok"] and used == take["seed"] + 2000
 
 
-# ---------------------------------------------------------------- validation (AT-23, AT-24)
-
-
 def test_at_23_one_pitch_twice(fixture_bank):
     found = kit.problems(_kit(bell={"sound": "notify/low", "pitches": ["C#5", "Db5"]}))
     assert any("are one pitch" in p and "list each pitch once" in p for p in found)
@@ -205,9 +196,6 @@ def test_kit_level_problems(fixture_bank, tmp_path):
         kit.load(_kit(tick={"sound": "nope/x"}))
 
 
-# ---------------------------------------------------------------- check (AT-25)
-
-
 def test_at_25_riser_role_note(fixture_bank):
     result = kit.check(_kit(riser={"sound": "whoosh_big/deep", "align": "end"}))
     notes = " | ".join(result["notes"])
@@ -244,9 +232,6 @@ def test_check_reports_render_error_and_problems(fixture_bank, tmp_path, monkeyp
     path = tmp_path / "broken.json"
     path.write_text("{", encoding="utf-8")
     assert kit.check(str(path))["summary"].startswith("kit unreadable: ")
-
-
-# ---------------------------------------------------------------- mix helpers (AT-26 .. AT-30)
 
 
 def test_at_26_gain_db():
@@ -294,9 +279,6 @@ def test_loudness_helpers(rng):
     assert kit.corr(noise) == 1.0
 
 
-# ---------------------------------------------------------------- audition (AT-31)
-
-
 def test_at_31_audition_writes_wav_and_index(fixture_bank, tmp_path, cli, capsys):
     path = tmp_path / "kit.json"
     path.write_text(json.dumps(_kit()), encoding="utf-8")
@@ -319,9 +301,6 @@ def test_audition_default_folder_under_hark_home(fixture_bank, hark_home, tmp_pa
     assert result["takes_dir"].startswith(str(hark_home).replace("\\", "/")) and "/kits/t_" in result["takes_dir"]
 
 
-# ---------------------------------------------------------------- presets (AT-33, AT-34)
-
-
 def test_at_33_presets_validate_shipped(shipped):
     for name, count in PRESET_TAKES.items():
         doc = kit.preset(name)
@@ -330,7 +309,6 @@ def test_at_33_presets_validate_shipped(shipped):
 
 
 def test_launch_swap_logged_and_clean(shipped, open_ids):
-    # T-41: the text role swaps the refused mallet/pluck for the closest passing bank sound, and logs why
     doc = kit.preset("launch")
     swap = doc["swaps"]["text"]
     assert swap["from"] == "mallet/pluck" and swap["from"] in open_ids["forge04"]

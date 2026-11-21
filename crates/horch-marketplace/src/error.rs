@@ -1,5 +1,3 @@
-//! The one error type of the marketplace. Each message sits on its variant.
-
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
@@ -12,35 +10,24 @@ pub type Result<T> = std::result::Result<T, MarketplaceError>;
 
 #[derive(Debug, Error)]
 pub enum MarketplaceError {
-    /// The source spec, skill id or revision is not usable, or the
-    /// catalog does not know the skill.
     #[error("invalid skill source: {0}")]
     BadSource(String),
-    /// The URL carried userinfo or a token. The text says which, and never
-    /// holds the URL, so the secret cannot reach a log.
     #[error("skill source URL carries credentials ({0}); remove them")]
     Credentials(String),
     #[error("{0}")]
     Git(#[source] GitError),
-    /// A branch or tag is not on the remote, or a commit could not be
-    /// fetched.
     #[error("revision '{revision}' not found in {url}")]
     RevisionNotFound { url: String, revision: String },
-    /// SKILL.md is missing, not UTF-8, has no frontmatter, or has an
-    /// unknown key.
     #[error("invalid SKILL.md: {0}")]
     Manifest(String),
-    /// The SKILL.md name or description breaks a rule.
     #[error("invalid SKILL.md: {0}")]
     SkillMd(String),
-    /// A `..`, empty or otherwise unclean relative path.
     #[error("path '{}' is not a clean relative path", .0.display())]
     Traversal(PathBuf),
     #[error("absolute path '{}'", .0.display())]
     AbsolutePath(PathBuf),
     #[error("'{}' is a symlink", .0.display())]
     Symlink(PathBuf),
-    /// A device, socket, fifo or git submodule.
     #[error("'{}' is not a regular file", .0.display())]
     NotRegularFile(PathBuf),
     #[error("skill has more than {0} files")]
@@ -51,18 +38,15 @@ pub enum MarketplaceError {
     TotalTooLarge(u64),
     #[error("digest {actual} does not match the locked {expected}")]
     DigestMismatch { expected: String, actual: String },
-    /// `marketplace.lock` cannot be parsed or has another version.
     #[error("marketplace.lock: {0}")]
     Lock(String),
     #[error("{0}")]
     Io(#[source] io::Error),
-    /// A `FaultPoint` fired. Only tests and crash drills set one.
     #[error("fault injected at {0}")]
     Fault(&'static str),
 }
 
 impl MarketplaceError {
-    /// An I/O error with the path or action in its message.
     pub(crate) fn io(context: impl fmt::Display, e: io::Error) -> Self {
         Self::Io(io::Error::new(e.kind(), format!("{context}: {e}")))
     }

@@ -235,7 +235,6 @@ def parse_aligned_json(data):
         start, end = item.get("start"), item.get("end")
         numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (start, end))
         if not _norm(text) or not numbers:
-            # An aligner leaves a word without times when it cannot place it.
             return []
         out.append((text, float(start), float(end)))
     return out
@@ -375,8 +374,6 @@ def main(argv=None):
     return 0
 
 
-# ---------------------------------------------------------------- self-test
-
 def _tone(path, expr, seconds):
     proc = _run(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i",
                  f"aevalsrc=exprs='{expr}':s=48000:d={seconds}", "-c:a", "pcm_s16le", path])
@@ -432,7 +429,6 @@ def self_test():
     with tempfile.TemporaryDirectory(prefix="sync-sheet-test-") as tmp:
         audio = os.path.join(tmp, "audio")
         os.makedirs(audio)
-        # 2 phrases with a known gap: 0.05-1.00 s and 1.60-2.50 s.
         voice = "if(between(t,0.05,1.0)+between(t,1.6,2.5),0.4*sin(2*PI*220*t),0)"
         _tone(os.path.join(audio, "vo-s01.wav"), voice, 2.55)
         timeline = {"meta": {"duration_sec": 6.0}, "scenes": [

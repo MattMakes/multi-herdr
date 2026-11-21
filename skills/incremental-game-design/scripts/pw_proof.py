@@ -32,61 +32,60 @@ from pw_sim import Sim, step_amount, upkeep_factor, upkeep_lines  # noqa: E402
 
 SCHEMA_VERSION = 1
 HOUR = 3600.0
-X_E, X_P, DG_DEFAULT = 1.0, 10.0, 2.0          # the reset rules of the players and the default gap (systems.json T5)
-D_H = pw_players.HUMAN_DECISION                # seconds of real time for each human decision (L9)
-SPEED_FACTOR = 10.0                            # PO13: T_X >= 10 x k x D_h
+X_E, X_P, DG_DEFAULT = 1.0, 10.0, 2.0
+D_H = pw_players.HUMAN_DECISION
+SPEED_FACTOR = 10.0
 DEFAULT_SPEED = pw_players.DEFAULT_PLAY_TEST_SPEED
-DIFF_LIMIT = 0.20                              # a larger difference of math and simulation is a finding
-TX_TOLERANCE = 0.20                            # PO5
-LENGTH_TOLERANCE = 0.15                        # PO12
-LAMBDA_ONE = 0.05                              # L4b needs |lambda - 1| <= this
+DIFF_LIMIT = 0.20
+TX_TOLERANCE = 0.20
+LENGTH_TOLERANCE = 0.15
+LAMBDA_ONE = 0.05
 EPS = 1e-6
-FIRST_COST_SECONDS = 15.0                      # PO11: a_1 <= 15 x I_0
-FIRST_WINDOW = 300.0                           # PO11: the first 5 minutes
+FIRST_COST_SECONDS = 15.0
+FIRST_WINDOW = 300.0
 FIRST_UNLOCKS = 3
-LARGEST_GAP_RATIO = 20.0 / 15.0                # PO10: largest gap after hour 1 <= 20 min for 15 min sessions (T2)
-ABSENCE_HOURS = 24.0                           # PO9: the shortest "longest absence that must pay" (L5)
-A_SECONDS = 1e6                                # length of the no-reset run that measures A (L2 trajectory)
-LONG_STEP_TOL = 0.05                           # 1 long run with a generator carrier: |R + 1 / (k_mid ln b) - 1| <= this
-LONG_R_TOL = 0.01                              # 1 long run: |R after the caps - 1| <= this (BM L2 with R = 1)
-GROWTH_FROM_HOURS = 1.0                        # 1 long run: the fit of g starts at hour 1, after the first stages
-SPEED_GD = 0.1                                 # L9 property: g k D_h <= 0.1 keeps the slow-down near 1.05
+LARGEST_GAP_RATIO = 20.0 / 15.0
+ABSENCE_HOURS = 24.0
+A_SECONDS = 1e6
+LONG_STEP_TOL = 0.05
+LONG_R_TOL = 0.01
+GROWTH_FROM_HOURS = 1.0
+SPEED_GD = 0.1
 IDLE_HOURS = pw_players.IDLE_HOURS
 IDLE_STATES = ("open", "closed")
 IDLE_PLAYERS = tuple(f"{s}_{h}h" for s in IDLE_STATES for h in IDLE_HOURS)
 PLAYERS = ("active_greedy", "early_reset", "patient_reset") + IDLE_PLAYERS
 SYSTEMS_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "systems.json")
 UNCOVERED = "not covered by L1"
-IN_RANGE = "pass (in range)"                   # a target row past its limit and inside the range of the target
+IN_RANGE = "pass (in range)"
 READY_STATUSES = ("pass", IN_RANGE, "not applicable")
-TOLERANCE = {"no source": 0.20, "sourced": 0.05}     # the range of a target limit, by the source of the target
-TARGET_SOURCE = {      # the source class of each target limit that has a range (references/proof-sheet.md)
+TOLERANCE = {"no source": 0.20, "sourced": 0.05}
+TARGET_SOURCE = {
     "largest_purchase_gap_minutes": "sourced", "first_purchase_minutes": "sourced",
     "largest_unlock_gap_minutes": "no source", "first_hour_unlock_gap_minutes": "no source",
     "ending_unlock_gap_minutes": "no source", "purchase_rate_max_per_minute": "no source",
     "purchase_value": "no source", "content_gap": "no source"}
-SIMULATED = "simulated, not proved"            # a row whose law does not cover the model: the simulation meets the limit
-STUB = "stub: fill by hand"                    # a part of simulation_path that the model does not hold yet
-NOT_MODELLED = "not modelled"                  # a part of simulation_path with no effect on the economy of the model
-RESULTS = ("ready", "simulated", "not ready")  # the result of the sheet (references/proof-sheet.md, "The result")
+SIMULATED = "simulated, not proved"
+STUB = "stub: fill by hand"
+NOT_MODELLED = "not modelled"
+RESULTS = ("ready", "simulated", "not ready")
 EXIT_CODES = {"ready": 0, "not ready": 1, "simulated": 3}
 RESULT_TEXT = {
     "ready": "each row that decides the verdict passes by a law or inside its target: the design can go to a build",
     "simulated": "each row passes or is simulated, not proved, and no part is a stub: the design can go to a build, "
                  "and a play test must confirm the simulated rows",
     "not ready": "a row fails, a row is not computed, or a part is a stub: do not build from this design"}
-READY_KINDS = ("obligation", "pattern", "purchase", "upkeep", "content")   # the row kinds that decide the verdict
-LINE_LIFE_SHARE = 0.5                          # row CL: a generator line lives to this share of the length; a designer
-                                               # rule with no source
+READY_KINDS = ("obligation", "pattern", "purchase", "upkeep", "content")
+LINE_LIFE_SHARE = 0.5
 NO_OFFLINE = "no offline gain by design"
-NO_RESET = "the model has no reset layer"     # PO2 to PO5: the rows of the reset loop (not applicable)
-CLOSED_PARTS = ("PO6", "PO7", "PO8", "PO9")    # the obligations with a closed-game part
-PURCHASE_GAP_MINUTES = 2.0                     # PC2: CT3 of assets/systems.json (SG:181), single source
-FIRST_PURCHASE_MINUTES = 2.0                   # PC2: CT2 of assets/systems.json (SG:180)
-UNLOCK_GAP_MINUTES = 10.0                      # PC4: the whole length; designer target, no source (CT6)
-UNLOCK_GAP_FIRST_HOUR_MINUTES = 5.0            # PC4: the first hour; designer target, no source (CT6)
-PART_HOURS = 1.0                               # PC3: the length of 1 part past the demo; no source, a sheet default
-PURCHASE_FLOOR = 0.10                          # PV: designer target; the low end of the proven S02 step (d 1.1)
+NO_RESET = "the model has no reset layer"
+CLOSED_PARTS = ("PO6", "PO7", "PO8", "PO9")
+PURCHASE_GAP_MINUTES = 2.0
+FIRST_PURCHASE_MINUTES = 2.0
+UNLOCK_GAP_MINUTES = 10.0
+UNLOCK_GAP_FIRST_HOUR_MINUTES = 5.0
+PART_HOURS = 1.0
+PURCHASE_FLOOR = 0.10
 PURCHASE_FLOOR_SOURCE = "designer target; default 10%: the low end of the proven step d 1.1 to 2 of " \
                         "S02.levelled_factor (assets/systems.json, O:188, D:195)"
 PATTERN_ROWS = (
@@ -101,8 +100,8 @@ PATTERN_ROWS = (
     ("PC6", "purchase rate", "The purchases of the active player in each minute stay at or below the purchase rate "
                              "target; the automation of the model (S24 auto-buy) takes the rest"),
 )
-PURCHASE_RATE_MAX = 30                         # PC6: designer target; the most purchases in 1 minute with no automation
-RATE_MARGIN = 0.2       # PC6: the automation plan stops at (1 - margin) x the target, so the game has room (33 > 30)
+PURCHASE_RATE_MAX = 30
+RATE_MARGIN = 0.2
 
 OBLIGATIONS = (
     ("PO1", "L2", "law", "R < 1 in each run phase that has a reset layer. R = 1 only with no uncapped additive line"),
@@ -140,7 +139,6 @@ USAGE_ERRORS = ("--R needs --systems", "--speed needs a model, not --systems",
                 "--pattern needs --systems: a model has game.play_pattern")
 
 
-# ----------------------------------------------------------------------------- small helpers
 def fmt(v, nd=3):
     if v is None:
         return "n/a"
@@ -223,7 +221,6 @@ def range_note(variant, name, value):
     return f" (outside the proven {name} range {fmt(rng[0])} to {fmt(rng[1])} of {variant})"
 
 
-# ----------------------------------------------------------------------------- target ranges
 def tolerance_of(x, key):
     """(tolerance, source class) of a target limit: game.targets.tolerances[key], else the default of its source
     class (TOLERANCE). A target that the model marks unsupported is no source."""
@@ -273,7 +270,6 @@ def zone_of(x, key, num, limit, low=False):
     return zone(num, limit, tolerance_of(x, key)[0], low)
 
 
-# ----------------------------------------------------------------------------- model inputs
 def econ_of(m):
     """The economy currency: the basis currency of the reset, else game.main_currency (the main currency of the
     content file), else the cost currency with the most purchases."""
@@ -535,7 +531,6 @@ def model_inputs(m):
     return x
 
 
-# ----------------------------------------------------------------------------- derived law values
 def derive(x):
     """alpha, s, lambda, s after the caps, T_X, kappa, ldot and u from the inputs (D12, L6, L4b, L8)."""
     R = x.get("R_max")
@@ -567,7 +562,7 @@ def idle_terms(x):
         return
     try:
         shape = x["alpha"] * (x["V"] / x["T_X"]) ** (x["alpha"] - 1.0)
-    except OverflowError:       # a solver candidate with a very short run: the idle share is not known
+    except OverflowError:
         return
     x["kappa"], x["kappa_closed"] = x["f_open"] * shape, x["f_closed"] * shape
 
@@ -712,7 +707,6 @@ def rho_at(x, state, hours):
     return rho_open(x, x["kappa"], hours) if state == "open" else rho_closed(x, hours)
 
 
-# ----------------------------------------------------------------------------- the simulation
 def trajectory_A(m, econ, alpha):
     """A of E_1(x) = A x^alpha: the run earnings of a run with no reset after A_SECONDS (L2, L6)."""
     return trajectory_A_F(m, econ, alpha)[0]
@@ -957,7 +951,6 @@ def measure_spine(ms, x, base):
     ms["P1h"] = peak_first_hour(base, x.get("spine_cur")) if ax else None
 
 
-# ----------------------------------------------------------------------------- the 13 obligations
 def po1(x, ms):
     if not x.get("has_reset"):
         return po1_no_reset(x), None, growth_clauses(x)
@@ -1681,7 +1674,6 @@ def speed_part(ms, lim):
     return part(f"median run {fmt(t, 4)} s, slow-down at the play-test speed {fmt(slow)}", t, ok)
 
 
-# ----------------------------------------------------------------------------- the rows of continuous play
 def end_time(cm, mark):
     """The real seconds of active_greedy to a mark: {"axis_step": n} or {"purchase": id}, else the hard end event
     that the simulator records ({"resets": k} or {"milestone": id}). None when not reached."""
@@ -1715,7 +1707,7 @@ def others_text(cm, band, x=None):
     """The end of the axis for each other active player (a reset rule); BAND OUT marks an end outside the length
     band, with its cause. The row tests the active player only: the length target is the length of active play."""
     ends = {n: h for n, h in (cm.get("player_ends") or {}).items() if "reset" in n and h is not None}
-    ends = ends if (x or {}).get("has_reset") else {}        # a game with no reset layer has no reset player
+    ends = ends if (x or {}).get("has_reset") else {}
     marks = [f"{n} {h:.2f} h" + ("" if band[0] - EPS <= h <= band[1] + EPS else f" (BAND OUT: {band_cause(n, x)})")
              for n, h in ends.items()]
     return "; other players: " + ", ".join(marks) if marks else ""
@@ -1989,7 +1981,7 @@ def pc6(x, cm):
     a person can do (designer target). The simulator buys with the automation of the model (S24) from its start, and
     those purchases do not count. A failed row gives a plan that goes down to (1 - RATE_MARGIN) x the target."""
     t_end, given = rate_end(x, cm), list(x.get("automation") or [])
-    auto = {a["line"]: a["from_minutes"] for a in given}     # a purchase by hand after the auto-buy opens does not count
+    auto = {a["line"]: a["from_minutes"] for a in given}
     human = minute_counts(cm["bought"], t_end, auto)
     lim = x.get("rate_max", PURCHASE_RATE_MAX)
     row = dict(rate_zone(x, max(human.values(), default=0), lim), value=rate_text(cm, t_end, human, len(given)))
@@ -2044,11 +2036,10 @@ def largest_gap(marks):
     return max([b - a for a, b in zip(marks, marks[1:])], default=0.0) / 60.0
 
 
-# ----------------------------------------------------------------------------- the purchase value row
 PV_STATEMENT = ("At the time when the active player buys it, 1 level of each line raises the income, or the stat "
                 "that the line affects, by the floor or more")
 PV_LAW = "S02, L1"
-PV_WINDOW = 600.0                              # the windows of the table "What the player buys": 10 minutes
+PV_WINDOW = 600.0
 
 
 def pv_floor(m):
@@ -2431,7 +2422,6 @@ CHECKS = {"PO1": po1, "PO2": po2, "PO3": po3, "PO4": po4, "PO5": po5, "PO6": po6
           "PO9": po9, "PO10": po10, "PO11": po11, "PO12": po12, "PO13": po13}
 
 
-# ----------------------------------------------------------------------------- the status rules
 def base_row(pid):
     law, kind, text = STATEMENT[pid]
     return dict(id=pid, kind="obligation", statement=text, law=law, value="", limit="", status="", source="",
@@ -2476,13 +2466,13 @@ def compare(r, f, s):
     r["status"] = "model and math differ" if r["status"] == "pass" else r["status"]
 
 
-FLOOR_MARGIN = 0.05                     # a median later run within 5% of min_run_seconds ends at the run floor
-RUN_ROWS = ("PO5", "PO10", "PO12", "PO13")      # the rows whose formula uses the run length T_X of L6
+FLOOR_MARGIN = 0.05
+RUN_ROWS = ("PO5", "PO10", "PO12", "PO13")
 RUN_FLOOR = ("formula not valid here (the later runs of early_reset end at the run floor min_run_seconds, so L6 "
              "does not set their length); simulated value used")
 
 
-FACTOR_TOL = 0.20                       # L6 holds while the persistent factors change T by 20% or less (PO5)
+FACTOR_TOL = 0.20
 
 
 def factor_bound(x):
@@ -2507,8 +2497,7 @@ def run_floor_bound(x, ms):
     return bool(x.get("has_reset") and T and floor > 0 and T <= floor * (1.0 + FLOOR_MARGIN))
 
 
-WALL_ROWS = ("PO4", "PO10", "PO12")      # the rows whose simulation half reads the axis steps, and whose formula
-                                         # needs 1 wall ratio w of L8 (the axis linear in ln P)
+WALL_ROWS = ("PO4", "PO10", "PO12")
 WALL_DOMAIN = ("formula not valid here (the walls of the stages come from the timing fit by simulation, 1 wall for "
                "each stage, not from 1 ratio w of L8); simulated value used")
 
@@ -2617,10 +2606,8 @@ def _fix_of(r, f, s):
     return f["fix"] or (s or {}).get("fix", "") or "fix the obligations above it first"
 
 
-# ----------------------------------------------------------------------------- the character row
-# ----------------------------------------------------------------------------- S30 upkeep (references/balance-math.md 3b)
-UPKEEP_BAND_SHARE = 0.90       # PU1: u inside its band for 90% or more of the play time; designer default, no source
-UPKEEP_SWITCHES = 4            # PU4: the default count of switches; designer default, no source
+UPKEEP_BAND_SHARE = 0.90
+UPKEEP_SWITCHES = 4
 UPKEEP_ROWS = (
     ("PU1", "BM 3b", "The upkeep factor u of the active player stays inside its band for 90% or more of the play time"),
     ("PU2", "BM 3b", "No death spiral: the income of the active player never stops rising for longer than the unlock "
@@ -2810,7 +2797,6 @@ def structure_value(st):
         for c in st) + ")"
 
 
-# ----------------------------------------------------------------------------- the wall table row
 WS_STATEMENT = ("Each step of the wall table of the axis after the first is a wall: the ratio of each wall to the wall "
                 "before it is inside the g range of S03.exponential; the first step is the start of the game")
 WS_LAW = "S03.exponential g (assets/systems.json)"
@@ -2852,7 +2838,6 @@ def ratio_text(rs, out):
                    f"{' ...' if len(out) > 8 else ''})" if out else "; each later step inside the range")
 
 
-# ----------------------------------------------------------------------------- the content gap row
 CG_STATEMENT = ("The largest gap with no new content element of the active player (a first purchase of a line, a "
                 "first milestone or the first reset; an axis step is not one) is inside the FM-1 band of the fun "
                 "sheet, in the first hour and over the whole length")
@@ -2946,7 +2931,6 @@ def content_fix(gaps):
         f"{n} more from minute {a:.1f} to minute {b:.1f}" for a, b, _, n, _ in gaps)
 
 
-# ----------------------------------------------------------------------------- extra rows
 def extra_row(rid, kind, statement, value, status, law="", fix="", uses=""):
     r = base_row("PO1")
     r.update(id=rid, kind=kind, statement=statement, value=value, status=status, law=law, fix=fix, uses=uses,
@@ -3055,7 +3039,6 @@ def _range_row(name, value, variants, line, use, rngs):
     return r
 
 
-# ----------------------------------------------------------------------------- systems mode
 def systems_inputs(mp, r_given, pattern):
     reset = mp.get("reset") or {}
     x = dict(mode="systems", pattern=pattern, X_e=X_E, X_p=X_P, Dg=DG_DEFAULT, k=DEFAULT_SPEED, has_reset=bool(reset.get("found")),
@@ -3204,7 +3187,6 @@ def map_use(o, econ_ids):
     return {"p": "p", "g": "g", "f_closed": "f_closed", "T_cap_h": "T_cap_h"}.get(o["name"], "other")
 
 
-# ----------------------------------------------------------------------------- the sheet
 class Sheet:
     """The rows, the inputs, and the verdict of 1 proof sheet."""
 
@@ -3246,7 +3228,7 @@ class Sheet:
 INPUT_KEYS = ("econ", "R_max", "R_end", "R_source", "p", "q", "c", "A", "alpha", "s", "s_end", "lam", "X_e", "X_p",
               "Dg", "sigma", "T_X", "f_open", "f_closed", "kappa", "kappa_closed", "V", "open_cap_h", "closed_cap_h",
               "absence_h", "I0", "a1", "w", "N", "k", "H", "ldot", "u_model")
-LONG_KEYS = ("g_run", "T_e", "k_mid", "R_count", "R_content")                  # the inputs of 1 long run, only when it has them
+LONG_KEYS = ("g_run", "T_e", "k_mid", "R_count", "R_content")
 
 
 def public_inputs(x):
@@ -3341,7 +3323,7 @@ def speed_block(x, ms):
     out = dict(human_decision_seconds=D_H, rule="T_X >= 10 x k x D_h", T_X=_clean(tx),
                largest_speed_formula=formula_speed(x, tx),
                largest_speed_simulation=st.get("largest_speed"), simulation_rows=st.get("rows"))
-    below = 1 if st.get("rows") and st.get("largest_speed") is None else None   # no tested speed is under the limit
+    below = 1 if st.get("rows") and st.get("largest_speed") is None else None
     out["play_test_speed"] = _smaller(out["largest_speed_formula"], out["largest_speed_simulation"] or below)
     return out
 
@@ -3369,7 +3351,6 @@ def systems_sheet(path, r_given, strict, pattern):
     return sheet
 
 
-# ----------------------------------------------------------------------------- output
 def cell(v):
     return str(v).replace("|", "/").replace("\n", " ")
 
@@ -3432,7 +3413,6 @@ def print_lines(lines):
         out.write(line + "\n")
 
 
-# ----------------------------------------------------------------------------- entry point
 ARGS = (
     (("model",), dict(nargs="?", help="the model JSON")),
     (("--systems",), dict(metavar="FILE", help="the catalog map of scan_godot.py --systems-out")),

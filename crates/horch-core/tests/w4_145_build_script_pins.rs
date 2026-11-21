@@ -1,13 +1,3 @@
-//! `build.rs`: `skill_digests`, the tree digest of each bundled skill.
-//!
-//! Cargo never runs the tests of a build script, so this file compiles
-//! `build.rs` again as a module and calls the function on a small skill tree
-//! in a temp dir. `build_time_digests_equal_the_run_time_digest` (in
-//! `skills/catalog.rs`) holds the real `skills/` tree to the run-time rule;
-//! this file holds the cases that tree may not have: a `SKILL.md` below the
-//! top level, a skill whose name begins another's, a folder with no skill
-//! file, and the execute bit.
-
 #[allow(dead_code)]
 #[path = "../build.rs"]
 mod build_script;
@@ -20,8 +10,6 @@ fn hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Write `files` under `root` and return the sorted `(relative, absolute)`
-/// pairs that `build.rs` gives `skill_digests`.
 fn tree(root: &Path, files: &[(&str, &str)]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (relative, body) in files {
@@ -44,10 +32,6 @@ const SKILLS: &[(&str, &str)] = &[
     ("loose.md", "a file outside every skill\n"),
 ];
 
-/// A skill is a top-level `<name>/SKILL.md`, and its digest is the
-/// marketplace tree digest of the files below `<name>/`. Skills come out in
-/// the order of their `SKILL.md` in the sorted list, and a name that begins
-/// another's does not take that skill's files.
 #[test]
 fn each_top_level_skill_has_the_marketplace_digest_of_its_own_files() {
     let tmp = tempfile::tempdir().unwrap();
@@ -63,8 +47,6 @@ fn each_top_level_skill_has_the_marketplace_digest_of_its_own_files() {
     }
 }
 
-/// A `SKILL.md` that is not top level, and files with no `SKILL.md` above
-/// them, make no skill.
 #[test]
 fn a_tree_without_a_top_level_skill_file_has_no_digest() {
     let tmp = tempfile::tempdir().unwrap();
@@ -81,8 +63,6 @@ fn a_tree_without_a_top_level_skill_file_has_no_digest() {
     assert!(skill_digests(&[], &[]).is_empty());
 }
 
-/// The execute bit of a file changes the digest of its own skill and no
-/// other. A skill with no executable file keeps the marketplace digest.
 #[test]
 fn the_execute_bit_is_part_of_the_digest_of_its_own_skill() {
     let tmp = tempfile::tempdir().unwrap();
@@ -101,7 +81,6 @@ fn the_execute_bit_is_part_of_the_digest_of_its_own_skill() {
         digest_of(&plain, "alpha-two"),
         digest_of(&exec, "alpha-two")
     );
-    // The bit is on the file, not on its name: another path does not match.
     assert_eq!(skill_digests(&files, &["scripts/run.sh"]), plain);
     assert_eq!(skill_digests(&files, &["beta/run.sh"]), plain);
     assert_eq!(

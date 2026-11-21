@@ -1,16 +1,3 @@
-//! Herdr's release manifests.
-//!
-//! Two channels with two different asset shapes, both of which must be handled:
-//!
-//! * `https://herdr.dev/latest.json` (stable) - `{"version": "0.8.0",
-//!   "assets": {"macos-aarch64": "<url>"}}`
-//! * `https://herdr.dev/preview.json` (preview) - `{"base_version": "0.8.0",
-//!   "build_id": "...", "assets": {"windows-x86_64": {"url": ..., "sha256": ...,
-//!   "format": "zip"}}}`
-//!
-//! Using the same manifests as `herdr update` means installs and updates agree on
-//! what "latest" is.
-
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
@@ -40,10 +27,6 @@ impl Channel {
         }
     }
 
-    /// Windows builds are published only on preview prereleases while native
-    /// Windows support is in beta, so that is the only channel that can serve it.
-    /// The official PowerShell installer refuses `-Channel stable` for the same
-    /// reason.
     pub fn default_for(os: Os) -> Self {
         match os {
             Os::Windows => Channel::Preview,
@@ -67,7 +50,6 @@ impl std::str::FromStr for Channel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// `MacOs` is the platform's name, not a repeat of the enum's.
 #[allow(clippy::enum_variant_names)]
 pub enum Os {
     MacOs,
@@ -81,7 +63,6 @@ pub enum Arch {
     Aarch64,
 }
 
-/// A platform, as keyed in a manifest's `assets` map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub os: Os,
@@ -89,7 +70,6 @@ pub struct Target {
 }
 
 impl Target {
-    /// The platform this binary is running on.
     pub fn detect() -> Result<Self> {
         let os = match std::env::consts::OS {
             "macos" => Os::MacOs,
@@ -105,10 +85,6 @@ impl Target {
         Ok(Self { os, arch })
     }
 
-    /// The manifest asset key for this target.
-    ///
-    /// Windows on ARM64 maps to the x86_64 build, which runs under emulation -
-    /// there is no native ARM64 Windows asset.
     pub fn asset_key(self) -> &'static str {
         match (self.os, self.arch) {
             (Os::MacOs, Arch::X86_64) => "macos-x86_64",
@@ -119,8 +95,6 @@ impl Target {
         }
     }
 
-    /// The Rust target triple, used to name Windows release directories the same
-    /// way the official installer does.
     pub fn triple(self) -> &'static str {
         match (self.os, self.arch) {
             (Os::MacOs, Arch::X86_64) => "x86_64-apple-darwin",
@@ -145,25 +119,19 @@ impl Target {
     }
 }
 
-/// How an asset is packaged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// A bare executable.
     Binary,
-    /// A zip holding `herdr.exe` plus its ConPTY runtime.
     Zip,
 }
 
-/// One downloadable build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
     pub url: String,
-    /// Present on preview manifests only.
     pub sha256: Option<String>,
     pub format: Format,
 }
 
-/// An `assets` entry: a bare URL on stable, an object on preview.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RawAsset {
@@ -179,10 +147,8 @@ enum RawAsset {
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
-    /// Stable channel version.
     #[serde(default)]
     version: Option<String>,
-    /// Preview channel version parts.
     #[serde(default)]
     base_version: Option<String>,
     #[serde(default)]
@@ -195,8 +161,6 @@ impl Manifest {
         Ok(serde_json::from_str(raw)?)
     }
 
-    /// The version string to report and, on Windows, to name the release
-    /// directory with.
     pub fn version_identity(&self, channel: Channel) -> Result<String> {
         match channel {
             Channel::Stable => self
@@ -205,8 +169,6 @@ impl Manifest {
                 .ok_or_else(|| anyhow::anyhow!("stable manifest has no version field")),
             Channel::Preview => match (&self.base_version, &self.build_id) {
                 (Some(base), Some(build)) => Ok(format!("{base}-preview.{build}")),
-                // Fall back to whatever the manifest does carry rather than
-                // failing an otherwise valid install.
                 _ => self
                     .version
                     .clone()
@@ -215,7 +177,6 @@ impl Manifest {
         }
     }
 
-    /// The asset for `target`, or an error naming what the manifest does offer.
     pub fn asset(&self, target: Target) -> Result<Asset> {
         let key = target.asset_key();
         let Some(raw) = self.assets.get(key) else {
@@ -247,7 +208,6 @@ impl Manifest {
     }
 }
 
-/// Manifests do not always carry `format`, so fall back to the URL's extension.
 fn infer_format(url: &str) -> Format {
     if url.ends_with(".zip") {
         Format::Zip
@@ -256,7 +216,6 @@ fn infer_format(url: &str) -> Format {
     }
 }
 
-/// Sanitise a version for use in a directory name, as the official installer does.
 pub fn safe_version(version: &str) -> String {
     version
         .chars()
@@ -274,7 +233,6 @@ pub fn safe_version(version: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The real shape of https://herdr.dev/latest.json.
     const STABLE: &str = r####"{
       "version": "0.8.0",
       "protocol": 19,
@@ -288,7 +246,6 @@ mod tests {
       "releases": {"0.8.0": {"notes": "..."}}
     }"####;
 
-    /// The real shape of https://herdr.dev/preview.json.
     const PREVIEW: &str = r####"{
       "schema_version": 1,
       "channel": "preview",
@@ -338,7 +295,6 @@ mod tests {
         assert!(asset.sha256.is_some());
     }
 
-    /// The Windows asset is a zip carrying the ConPTY runtime alongside herdr.exe.
     #[test]
     fn windows_asset_is_a_zip_with_a_digest() {
         let m = Manifest::parse(PREVIEW).unwrap();
@@ -350,7 +306,6 @@ mod tests {
         );
     }
 
-    /// Windows ARM64 runs the x86_64 build under emulation.
     #[test]
     fn windows_arm64_maps_to_the_x86_64_asset() {
         assert_eq!(
@@ -363,8 +318,6 @@ mod tests {
         );
     }
 
-    /// Stable has no Windows build, so asking for one must say so clearly rather
-    /// than panicking or installing the wrong thing.
     #[test]
     fn a_missing_target_lists_what_is_available() {
         let m = Manifest::parse(STABLE).unwrap();
@@ -407,8 +360,6 @@ mod tests {
         );
     }
 
-    /// Real version identities must survive untouched, and anything that could
-    /// act as a path separator must not.
     #[test]
     fn safe_version_keeps_real_versions_and_removes_separators() {
         assert_eq!(safe_version("0.8.0"), "0.8.0");
@@ -417,10 +368,6 @@ mod tests {
             "0.8.0-preview.2026-08-04-d78e3d3b5126"
         );
 
-        // Dots are legal in a version, so they are kept - as the official
-        // installer's [^0-9A-Za-z._-] rule also does. What must go is every
-        // separator, which is what stops the result being more than one path
-        // component.
         for hostile in ["0.8.0/../evil", r"0.8.0\..\evil", "a:b", "a b", "a\0b"] {
             let safe = safe_version(hostile);
             assert!(!safe.contains('/'), "{safe}");
@@ -434,8 +381,6 @@ mod tests {
         }
     }
 
-    /// `detect` names the host's own OS and architecture. Windows keys to the
-    /// x86_64 asset on every architecture.
     #[test]
     fn the_running_platform_is_supported() {
         let t = Target::detect().expect("this platform should be supported");

@@ -1,18 +1,3 @@
-//! The 1 way horch runs a git command that talks to a remote (`fetch`,
-//! `ls-remote`, `push`, `pull`). A stalled connection must not hang a
-//! finish step: on 2026-11-08 2 finish runs hung for more than 1 h 50 min in
-//! a `fetch` and an `ls-remote` over ssh.
-//!
-//! [`output`] gives the child ssh and http stall limits and kills the
-//! child's process group by its PID when the wall-clock bound passes. It
-//! never retries.
-//!
-//! The limits go in as `-c` config, not as environment variables, because
-//! core code never reads the process environment (`arc_05`). Git ranks the
-//! operator's `GIT_SSH_COMMAND`, `GIT_HTTP_LOW_SPEED_LIMIT` and
-//! `GIT_HTTP_LOW_SPEED_TIME` above `-c`, so those still win. A key the
-//! operator's git config sets (for example `core.sshCommand`) is not passed.
-
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
@@ -23,24 +8,18 @@ use horch_marketplace::git::{scrub_repo_env, GitOutput, GitRunner};
 
 use crate::runtime::process;
 
-/// The ssh command for a git child when the operator has none.
 pub const SSH_COMMAND: &str =
     "ssh -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4";
 
-/// The stall limits, as git config keys. The http pair ends a transfer that
-/// stays below 1000 bytes/s for 60 s.
 const STALL_CONFIG: [(&str, &str); 3] = [
     ("core.sshCommand", SSH_COMMAND),
     ("http.lowSpeedLimit", "1000"),
     ("http.lowSpeedTime", "60"),
 ];
 
-/// The wall-clock bound of a push.
 pub const PUSH_BOUND: Duration = Duration::from_secs(10 * 60);
-/// The wall-clock bound of every other network command.
 pub const OTHER_BOUND: Duration = Duration::from_secs(3 * 60);
 
-/// The same environment and config as [`GitRunner::output`] sets.
 const FIXED_ENV: [(&str, &str); 3] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("LC_ALL", "C"),
@@ -49,7 +28,6 @@ const FIXED_ENV: [(&str, &str); 3] = [
 const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 const FIXED_CONFIG: &str = "core.hooksPath=/dev/null";
 
-/// A git network command ran past its bound and horch killed it.
 #[derive(Debug)]
 pub struct Timeout {
     pub command: String,
@@ -83,11 +61,9 @@ fn show(d: Duration) -> String {
     }
 }
 
-/// A debug build lets a test shorten every bound (0: no override).
 #[cfg(debug_assertions)]
 static TEST_BOUND_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Set the bound of every network command in a debug build, for a test.
 #[cfg(debug_assertions)]
 pub fn set_test_bound(bound: Duration) {
     TEST_BOUND_MS.store(
@@ -96,7 +72,6 @@ pub fn set_test_bound(bound: Duration) {
     );
 }
 
-/// The bound of `git <args>`.
 pub fn bound(args: &[&str]) -> Duration {
     #[cfg(debug_assertions)]
     match TEST_BOUND_MS.load(std::sync::atomic::Ordering::SeqCst) {
@@ -110,8 +85,6 @@ pub fn bound(args: &[&str]) -> Duration {
     }
 }
 
-/// The `-c` values to pass, given the keys the operator's config sets
-/// (`git config --get-regexp` prints them in lower case).
 fn stall_config(configured: &str) -> Vec<String> {
     let set: Vec<String> = configured
         .lines()
@@ -125,8 +98,6 @@ fn stall_config(configured: &str) -> Vec<String> {
         .collect()
 }
 
-/// Run `git <args>` in `dir` with the stall limits and the wall-clock bound.
-/// A non-zero exit is an `Ok` output; a passed bound is a [`Timeout`] error.
 pub fn output(bin: &Path, dir: &Path, args: &[&str]) -> anyhow::Result<GitOutput> {
     let configured = GitRunner::new(bin)
         .output(
@@ -151,7 +122,6 @@ pub fn output(bin: &Path, dir: &Path, args: &[&str]) -> anyhow::Result<GitOutput
         cmd.env_remove(k);
     }
     scrub_repo_env(&mut cmd);
-    // Its own group, so a kill also ends the ssh child that holds the pipes.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     cmd.arg("-C")

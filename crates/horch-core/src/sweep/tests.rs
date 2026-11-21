@@ -6,8 +6,6 @@ use crate::workspace::testing::FakeWorkspace;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// A state root and a temp root in one temp dir, and a fake herdr with 1
-/// workspace (`w1`) and 1 pane (`p1`) in it.
 struct World {
     tmp: tempfile::TempDir,
     herdr: FakeWorkspace,
@@ -39,7 +37,6 @@ impl World {
         SessionLedger::for_project(self.state(), "/proj")
     }
 
-    /// A working record of `role` in `ws`, in pane `pane`.
     fn record(&self, id: &str, role: &str, ws: &str, pane: &str) {
         self.ledger()
             .insert(Record {
@@ -64,7 +61,6 @@ impl World {
         self.ledger().get(id).unwrap().execution_status()
     }
 
-    /// Sweep with herdr's real answer, as if `ahead` had passed.
     fn sweep(&self, ahead: Duration) -> Applied {
         let listed = self.herdr.server_reachable().then(|| self.listed());
         self.sweep_with(listed, ahead)
@@ -86,8 +82,6 @@ impl World {
     }
 
     fn listed(&self) -> BTreeSet<String> {
-        // The fake has no workspace list: its open workspaces are the ones
-        // that still have a pane.
         let mut listed = BTreeSet::new();
         for ws in ["w1", "w2", "w3"] {
             if !self.herdr.pane_list(ws).unwrap().is_empty() {
@@ -109,7 +103,6 @@ fn set_age(path: &Path, age: Duration) {
     file.set_modified(SystemTime::now() - age).unwrap();
 }
 
-/// A pid that no process has: a child that ran and was reaped.
 fn dead_pid() -> u32 {
     let mut child = std::process::Command::new("true").spawn().unwrap();
     let pid = child.id();
@@ -254,8 +247,6 @@ fn the_bundle_of_a_done_record_goes_and_a_live_or_unknown_one_stays() {
     assert_eq!(applied.removed.get(&Kind::Bundle), Some(&1));
 }
 
-/// A private codex home as the codex harness leaves it: links, `rules/`,
-/// and the cache codex writes at its top.
 #[cfg(unix)]
 fn codex_home(state: &Path, role: &str, target: &Path) -> PathBuf {
     let dir = state
@@ -472,12 +463,9 @@ fn temp_names_give_their_pid() {
     );
 }
 
-/// A context whose state root is `<dir>/state` and whose herdr is a warmed
-/// script that lists workspace `w1` with pane `p1`.
 #[cfg(unix)]
 fn script_ctx(dir: &Path) -> RuntimeContext {
     let herdr = dir.join("herdr");
-    // macOS scans a new executable at its first exec: warm it.
     let warm = crate::test_support::write_warmed(
         &herdr,
         "#!/bin/sh\ncase \"$1 $2\" in\n\
@@ -495,9 +483,6 @@ fn script_ctx(dir: &Path) -> RuntimeContext {
     RuntimeContext::from_env(&env).unwrap()
 }
 
-/// What `horch fleet` and `horch spawn` run: on old state, 1 run leaves
-/// bundles only for live records, and a 2nd run within the hour reads
-/// nothing.
 #[cfg(unix)]
 #[test]
 fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
@@ -535,9 +520,6 @@ fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
     );
 }
 
-/// TRF-45: the sweep reads the session records, not a JSON ledger. A
-/// working record in the table whose pane closed ends there, an old JSON
-/// ledger's record ends in the table, and no JSON file is written.
 #[test]
 fn trf_45_the_sweep_ends_session_records_and_writes_no_json() {
     let w = World::new();
@@ -639,7 +621,6 @@ fn hcb_10_sweep_keeps_an_hc_workspace_when_only_herdr_answers() {
     assert!(reg.exists());
     assert_eq!(w.status("hc-rec-1"), ExecutionStatus::Running);
 
-    // Meanwhile a stale herdr workspace IS detected on that same sweep!
     record_with_backend(
         &w.state(),
         "herdr-dead-1",

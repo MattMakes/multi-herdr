@@ -1,6 +1,3 @@
-//! `horch worktree triage apply`: each decision on a real git repository in
-//! a temp dir, with a git that records every call (#308, sections 3 and 5).
-
 mod i308_support;
 #[path = "common/warm.rs"]
 mod warm;
@@ -14,8 +11,6 @@ use horch_core::taskledger::triage::apply::{self, Applied, Env};
 use horch_core::taskledger::triage::{self, refs, reply, Measure, Row};
 use i308_support::{commit, git, write, World};
 
-/// A git that writes each call to `<top>/git.log`, then runs the host git.
-/// With `fail_trash`, a write of a trash ref fails.
 fn recording_git(top: &Path, fail_trash: bool) -> (Git, PathBuf) {
     let log = top.join("git.log");
     let bin = top.join("fake-git");
@@ -28,7 +23,6 @@ fn recording_git(top: &Path, fail_trash: bool) -> (Git, PathBuf) {
         "#!/bin/sh\necho \"$*\" >> '{}'\n{fail}exec git \"$@\"\n",
         log.display()
     );
-    // macOS scans a new executable at its first exec: warm it here.
     let warm = warm::write_warmed(&bin, &script, &["--version"]);
     assert!(warm.status.success());
     std::fs::write(&log, "").unwrap();
@@ -39,7 +33,6 @@ fn rows(w: &World, git: &Git) -> Vec<Row> {
     triage::collect(w.store.conn(), git, &w.root, Measure::Ids).unwrap()
 }
 
-/// Run `decision` (with `direction`) on the row named `name`.
 fn decide(w: &mut World, git: &Git, name: &str, decision: &str, direction: &str) -> Applied {
     decide_with(w, git, name, decision, direction, None)
 }
@@ -83,7 +76,6 @@ fn column(w: &World, path: &Path, col: &str) -> Option<String> {
         .unwrap()
 }
 
-/// A worktree `feat` with 1 commit of `f.txt`.
 fn feat(w: &World) -> PathBuf {
     let base = w.rev("main");
     let path = w.worktree("feat", "feat", &base);
@@ -103,7 +95,6 @@ fn land_on_main_makes_land_branch_at_the_rebased_tip_and_main_does_not_move() {
     assert!(a.ok, "{}", a.line());
     assert_eq!(w.rev("main"), main_before);
     let landed = w.rev("land/feat");
-    // Rebased onto main, with the commit and the uncommitted file.
     assert!(git_ok(
         &w.root,
         &["merge-base", "--is-ancestor", &main_before, &landed]
@@ -200,7 +191,6 @@ fn archive_keeps_the_branch_and_an_untracked_file_and_restore_brings_it_back() {
         git(&w.root, &["show", &format!("{archived}:notes.txt")]),
         "keep me"
     );
-    // Ignored build output is never committed.
     assert!(!git_ok(
         &w.root,
         &["cat-file", "-e", &format!("{archived}:target/build.bin")]
@@ -210,7 +200,6 @@ fn archive_keeps_the_branch_and_an_untracked_file_and_restore_brings_it_back() {
         column(&w, &path, "archive_ref").as_deref(),
         Some("refs/horch/archive/feat")
     );
-    // Archived rows are settled: the next triage does not list them.
     assert!(rows(&w, &g).is_empty());
 
     let said = apply::restore(&w.store, &g, &w.root, "feat").unwrap();
@@ -379,7 +368,6 @@ fn finish_queues_a_task_that_inherits_the_worktree() {
     );
     let brief = std::fs::read_to_string(w.root.join(&file)).unwrap();
     assert!(brief.contains("Fix the flaky test, then land"), "{brief}");
-    // The queued task's worktree is not parked: a worker is coming.
     assert!(rows(&w, &g).is_empty());
 }
 
@@ -451,9 +439,7 @@ fn pr_is_not_offered_without_gh_or_without_a_remote() {
     assert!(warm::write_warmed(&gh, "#!/bin/sh\nexit 0\n", &["warm"])
         .status
         .success());
-    // A gh, but no remote.
     assert_eq!(apply::pr_remote(&w.git, &w.root, &gh), None);
-    // A remote, but no gh.
     git(&w.root, &["remote", "add", "origin", "/nowhere.git"]);
     assert_eq!(
         apply::pr_remote(&w.git, &w.root, &w.top.join("no-gh")),

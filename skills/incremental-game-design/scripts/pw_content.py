@@ -36,9 +36,8 @@ EPS = 1e-9
 HOUR_MIN = pw_proof.HOUR / 60.0
 SLOT_NAME = re.compile(r"^(content|element|slot)[_ -]?\d*$|the designer names it", re.I)
 TIME_KEY = "opens_min"
-MAIN = "coin"                                   # the id of the main currency in each model of the solver
-# What the solver writes for a selected system with no content file: pd.SOLVER_WRITES. S02 is in s02_lines().
-NOT_WRITTEN = ("S04.none",)                     # a variant that gives no element
+MAIN = "coin"
+NOT_WRITTEN = ("S04.none",)
 USAGE = ("need <targets.json> [--selection FILE] [--content FILE [--model FILE]] [--json FILE]\n"
          "template <targets.json> [--count N] [--selection FILE] [--out FILE]")
 ARGS = {
@@ -55,7 +54,6 @@ ARGS = {
 }
 
 
-# ----------------------------------------------------------------------------- the limits and the need
 def limits(tg):
     """The limits of the rows CG, PC4 and PC3 from the targets file, in minutes."""
     tv = pd.target_values(tg)
@@ -101,7 +99,6 @@ def need_of(lim):
                 unlock_first_hour=count_h1(unlock), unlock_whole=len(unlock))
 
 
-# ----------------------------------------------------------------------------- what the selection gives
 def s02_lines(entries):
     """1 line for each S02 entry that is not care. With 1 entry or none, the solver writes 2 groups."""
     groups = [e for e in entries if e["system"] == "S02" and e.get("role") != "care"]
@@ -129,7 +126,6 @@ def given_selection(path, lim):
     return dict(source="selection", elements=els, times=start, note=note)
 
 
-# ----------------------------------------------------------------------------- what the content file gives
 def name_fault(e):
     name = e.get("name")
     bad = not isinstance(name, str) or not name.strip() or name.strip() == e.get("id") or SLOT_NAME.search(name)
@@ -174,8 +170,7 @@ def given_content(path, lim):
     return dict(source="content", elements=out, times=[e["opens_min"] for e in out], note="")
 
 
-# ----------------------------------------------------------------------------- the content file of a built game
-BUILT_KINDS = ("line", "reward", "system")      # a grant and the stages (S03) are not content elements (row CG)
+BUILT_KINDS = ("line", "reward", "system")
 NO_TIME_TEXT = ("the content file of the scan has no opening times: add --model with the model as built "
                 "(pw_design.py --as-built), so that the times come from its active player")
 
@@ -221,7 +216,6 @@ def given_of(a, lim):
     return dict(source="none", elements=[], times=[], note="")
 
 
-# ----------------------------------------------------------------------------- the shortfall
 def demo_parts(times, lim):
     """Row PC3: the parts past the demo end, each with the count of elements that open in it."""
     if lim["demo"] is None or lim["demo"] >= lim["end"]:
@@ -248,7 +242,6 @@ def result_of(a):
     return dict(limits=lim, need=need_of(lim), given=given, shortfall=shortfall_of(times, lim))
 
 
-# ----------------------------------------------------------------------------- the printed lines
 def need_lines(r):
     lim, n = r["limits"], r["need"]
     out = [f"content need (row CG: no gap above {lim['content_h1']:g} min in hour 1 and {lim['content']:g} min "
@@ -292,7 +285,6 @@ def run_need(a):
     return 1 if r["shortfall"]["whole"] or r["shortfall"]["empty_parts"] else 0
 
 
-# ----------------------------------------------------------------------------- the template
 def spread(times, end, count):
     """Add times in the middle of the largest gap until there are count times."""
     for _ in range(count - len(times)):
@@ -338,7 +330,6 @@ def run_template(a):
     return 0
 
 
-# ----------------------------------------------------------------------------- main
 def parse(argv):
     ap = argparse.ArgumentParser(description="The content step: the count of content elements that the targets "
                                              "need (rows CG, PC3 and PC4), and the frame of a content file.",

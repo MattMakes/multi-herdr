@@ -1,23 +1,7 @@
-//! Fleet grid analysis: report the worker grid and the next split that keeps it
-//! 2 rows tall by N columns wide.
-//!
-//! Compares the top row's column boundaries against the bottom row's. The
-//! orchestrator pane is excluded from the grid: it is the full-height pane at the
-//! far left, or whatever the mailbox registered as `orchestrator`.
-//!
-//! Three states drive the suggestion:
-//!   * `unpaired` - a worker owns a full-height column, so split DOWN to pair it.
-//!   * `ragged`   - one row has a pane spanning a boundary the other row has, so
-//!     split RIGHT from that pane to subdivide it.
-//!   * `complete` - every column is 2 tall, so split RIGHT from the top-rightmost
-//!     pane to start a new column, then RIGHT from the bottom-rightmost to
-//!     finish it (adding a column always takes two splits).
-
 use std::collections::HashMap;
 
 use crate::workspace::model::{Direction, Layout, Rect};
 
-/// A pane reduced to the geometry the grid analysis needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Slot {
     id: String,
@@ -28,36 +12,27 @@ struct Slot {
 }
 
 impl Slot {
-    /// True when this pane covers the whole column slice `[x0, x1]`.
     fn covers(&self, x0: i64, x1: i64) -> bool {
         self.x <= x0 && self.x + self.w >= x1
     }
 }
 
-/// One column slice of the grid, and what occupies each of its two rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
     pub x0: i64,
     pub x1: i64,
     pub top: Option<String>,
     pub bottom: Option<String>,
-    /// How many panes are stacked over this slice. 3+ means this is not a 2-row
-    /// grid. Counting panes rather than comparing heights keeps this correct when
-    /// a column was split with an uneven ratio.
     pub depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridState {
-    /// A column has 3+ panes stacked in it: not a 2-row grid at all.
     Offgrid,
-    /// No worker panes yet.
     Empty,
-    /// A worker owns a full-height column.
     Unpaired,
     RaggedBottom,
     RaggedTop,
-    /// Every column is 2 tall. This is the shape you want.
     Complete,
     Ragged,
 }
@@ -75,7 +50,6 @@ impl GridState {
         }
     }
 
-    /// The one-line explanation printed under the grid summary.
     fn explanation(self) -> Option<&'static str> {
         match self {
             GridState::Complete => Some("every column is 2 tall - this is the shape you want."),
@@ -92,13 +66,11 @@ impl GridState {
     }
 }
 
-/// The split to make next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextSplit {
     pub direction: Direction,
     pub from: String,
     pub why: &'static str,
-    /// Adding a whole column takes two splits; this is the second one.
     pub followup: Option<String>,
 }
 
@@ -116,28 +88,13 @@ pub struct Analysis {
     pub next: Option<NextSplit>,
 }
 
-/// Who the orchestrator is on the tab being analysed.
-///
-/// A fleet spreads over several tabs and only one of them holds the
-/// orchestrator. On the others every pane is a worker, and a lone full-height
-/// pane there is a worker column - so those tabs must be analysed with
-/// [`Orchestrator::Absent`] rather than with the positional guess, which would
-/// silently drop a worker from the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orchestrator<'a> {
-    /// The pane id the mailbox registered for the role.
     Pane(&'a str),
-    /// Guess: the leftmost full-height pane.
     Infer,
-    /// This tab has none. Every pane is a worker.
     Absent,
 }
 
-/// Analyse a tab layout into a worker grid.
-///
-/// `orchestrator` is the pane id the mailbox registered for the orchestrator role.
-/// When absent, the leftmost full-height pane is assumed to be it. Only the
-/// tests call it; the crate calls [`analyze_with`].
 #[cfg(test)]
 pub(crate) fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
     analyze_with(
@@ -149,7 +106,6 @@ pub(crate) fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
     )
 }
 
-/// Analyse a tab layout, saying explicitly whether the orchestrator is on it.
 pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
     let area = layout.area;
     let all: Vec<Slot> = layout
@@ -164,8 +120,6 @@ pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analy
         })
         .collect();
 
-    // A column is "full" when it spans the tab height, "half" when it is one of
-    // two stacked rows. The 1-cell tolerance absorbs border rows.
     let is_full = |s: &Slot| s.h >= area.height - 1;
 
     let orch_id = pick_orchestrator(&all, orchestrator, area.height);
@@ -218,8 +172,6 @@ pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analy
     }
 }
 
-/// The orchestrator's pane id: the registered one, else the leftmost
-/// full-height pane, else none.
 fn pick_orchestrator(all: &[Slot], orchestrator: Orchestrator, height: i64) -> Option<String> {
     match orchestrator {
         Orchestrator::Pane(id) if !id.is_empty() => Some(id.to_string()),
@@ -232,7 +184,6 @@ fn pick_orchestrator(all: &[Slot], orchestrator: Orchestrator, height: i64) -> O
     }
 }
 
-/// Column boundaries: every distinct pane edge across both rows.
 fn column_edges(top: &[&Slot], bottom: &[&Slot]) -> Vec<i64> {
     let mut edges: Vec<i64> = top
         .iter()
@@ -244,7 +195,6 @@ fn column_edges(top: &[&Slot], bottom: &[&Slot]) -> Vec<i64> {
     edges
 }
 
-/// One cell per slice between 2 neighbouring edges.
 fn cells(edges: &[i64], top: &[&Slot], bottom: &[&Slot], half: &[&Slot]) -> Vec<Cell> {
     let occupant =
         |row: &[&Slot], x0, x1| row.iter().find(|s| s.covers(x0, x1)).map(|s| s.id.clone());
@@ -263,8 +213,6 @@ fn cells(edges: &[i64], top: &[&Slot], bottom: &[&Slot], half: &[&Slot]) -> Vec<
         .collect()
 }
 
-/// A row is ragged where one of its panes swallows a boundary the other row
-/// has. That pane is the one to split RIGHT.
 fn ragged_in(edges: &[i64], row: &[&Slot]) -> Option<String> {
     row.iter()
         .filter(|p| edges.iter().any(|e| *e > p.x && *e < p.x + p.w))
@@ -276,7 +224,6 @@ fn rightmost(row: &[&Slot]) -> Option<String> {
     row.iter().max_by_key(|s| s.x).map(|s| s.id.clone())
 }
 
-/// The counts that decide a tab's [`GridState`].
 struct Shape {
     offgrid: bool,
     workers: usize,
@@ -305,7 +252,6 @@ fn grid_state(shape: &Shape) -> GridState {
     }
 }
 
-/// The panes the next split can start from.
 struct Rows<'a> {
     full: &'a [&'a Slot],
     top: &'a [&'a Slot],
@@ -357,15 +303,6 @@ fn next_split(state: GridState, rows: &Rows) -> Option<NextSplit> {
     })
 }
 
-/// Render every tab of a workspace, one block per tab in tab-strip order.
-///
-/// The same per-tab renderer as [`render`]; what is new is that a fleet is no
-/// longer assumed to fit in one tab.
-///
-/// `notes` is one line per tab, appended to its header. The states this renderer
-/// prints describe one tab of a 2xN grid on its own, so an overflow tab whose last
-/// bottom slot is still free reads as `ragged-bottom` when it is in fact exactly
-/// right; the note is where `horch tile`'s verdict on the tab goes.
 pub(crate) fn render_all(
     analyses: &[Analysis],
     notes: &[String],
@@ -393,7 +330,6 @@ pub(crate) fn render_all(
         .join("\n")
 }
 
-/// Render an analysis the way `horch-layout` printed it.
 pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
     let a = analysis;
     let mut out = format!(
@@ -424,7 +360,6 @@ pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
     out
 }
 
-/// A pane as the report names it: `role(id)` when the mailbox knows its role.
 fn role_label(roles: &HashMap<String, String>, id: Option<&str>) -> String {
     match id {
         None => "-".to_string(),
@@ -435,7 +370,6 @@ fn role_label(roles: &HashMap<String, String>, id: Option<&str>) -> String {
     }
 }
 
-/// `label` with a star when its pane also covers the neighbouring column.
 fn marked(label: String, shared: bool) -> String {
     if shared {
         label + "*"
@@ -444,13 +378,10 @@ fn marked(label: String, shared: bool) -> String {
     }
 }
 
-/// Whether the pane `id` fills more than one cell of the row `pick` reads.
 fn spans_columns(cells: &[Cell], id: &Option<String>, pick: fn(&Cell) -> &Option<String>) -> bool {
     id.is_some() && cells.iter().filter(|c| pick(c) == id).count() > 1
 }
 
-/// The cell table, its legend when a pane spans columns, and a blank line;
-/// nothing when there are no cells.
 fn render_cells(a: &Analysis, roles: &HashMap<String, String>) -> String {
     if a.cells.is_empty() {
         return String::new();
@@ -485,7 +416,6 @@ fn render_cells(a: &Analysis, roles: &HashMap<String, String>) -> String {
     format!("{hdr}\n{top_line}\n{bot_line}\n{legend}\n")
 }
 
-/// The advice for the next split, or the line saying there is none.
 fn render_next(next: Option<&NextSplit>, roles: &HashMap<String, String>) -> String {
     let Some(next) = next else {
         return "no suggestion for this shape.\n".to_string();
@@ -516,7 +446,6 @@ mod tests {
     use super::*;
     use crate::workspace::model::LayoutPane;
 
-    /// Build a layout from `(id, x, y, w, h)` tuples in a 200x50 tab.
     fn layout(panes: &[(&str, i64, i64, i64, i64)]) -> Layout {
         Layout {
             workspace_id: "w1".into(),
@@ -544,7 +473,6 @@ mod tests {
         }
     }
 
-    /// Orchestrator alone: no workers yet, so the first split goes right off it.
     #[test]
     fn empty_grid_suggests_splitting_off_the_orchestrator() {
         let l = layout(&[("orch", 0, 0, 200, 50)]);
@@ -557,7 +485,6 @@ mod tests {
         assert!(next.followup.is_none());
     }
 
-    /// One full-height worker column wants a DOWN split to pair it.
     #[test]
     fn a_full_height_worker_is_unpaired() {
         let l = layout(&[("orch", 0, 0, 100, 50), ("w1", 100, 0, 100, 50)]);
@@ -569,7 +496,6 @@ mod tests {
         assert_eq!(next.from, "w1");
     }
 
-    /// The canonical 2x2: two stacked rows over two equal columns.
     #[test]
     fn a_2x2_grid_is_complete_and_needs_two_splits_for_a_new_column() {
         let l = layout(&[
@@ -590,8 +516,6 @@ mod tests {
         assert_eq!(next.followup.as_deref(), Some("br"));
     }
 
-    /// Top row subdivided further than the bottom: the bottom pane swallowing
-    /// the extra boundary is the one to split.
     #[test]
     fn bottom_row_spanning_an_extra_boundary_is_ragged_bottom() {
         let l = layout(&[
@@ -620,7 +544,6 @@ mod tests {
         assert_eq!(a.next.unwrap().from, "wide");
     }
 
-    /// Three panes stacked in one column is not a 2-row grid; refuse to advise.
     #[test]
     fn three_stacked_panes_are_offgrid_with_no_suggestion() {
         let l = layout(&[
@@ -635,8 +558,6 @@ mod tests {
         assert!(render(&a, &HashMap::new()).contains("no suggestion for this shape."));
     }
 
-    /// With no registered orchestrator, the leftmost full-height pane is assumed
-    /// to be it - and is excluded from the grid.
     #[test]
     fn orchestrator_is_inferred_as_the_leftmost_full_height_pane() {
         let l = layout(&[("right-full", 100, 0, 100, 50), ("orch", 0, 0, 100, 50)]);
@@ -646,8 +567,6 @@ mod tests {
         assert_eq!(a.next.unwrap().from, "right-full");
     }
 
-    /// A registered orchestrator wins over the leftmost-full-height guess, even
-    /// when it is not leftmost.
     #[test]
     fn registered_orchestrator_overrides_the_positional_guess() {
         let l = layout(&[("orch", 100, 0, 100, 50), ("worker", 0, 0, 100, 50)]);
@@ -656,7 +575,6 @@ mod tests {
         assert_eq!(a.next.unwrap().from, "worker");
     }
 
-    /// Uneven ratios must not be mistaken for a third row: depth counts panes.
     #[test]
     fn uneven_split_ratios_still_read_as_two_rows() {
         let l = layout(&[
@@ -688,10 +606,8 @@ mod tests {
 
         assert!(out.contains("orchestrator: orchestrator(orch) (excluded from the grid)"));
         assert!(out.contains("sonnet-1(tl)"));
-        // `wide` covers both columns, so it is starred and the legend appears.
         assert!(out.contains("opus-1(wide)*"), "{out}");
         assert!(out.contains("(* pane spans more than one column)"));
-        // Unregistered panes fall back to the bare id.
         assert!(out.contains("tr"));
         assert!(out.contains("horch spawn <teammate> --from-pane wide --direction right"));
     }
@@ -711,9 +627,6 @@ mod tests {
         assert!(out.contains("--from-pane br --direction right"));
     }
 
-    /// An overflow tab holds no orchestrator, so a lone full-height pane there is
-    /// a worker column. Inferring an orchestrator would drop it from the grid and
-    /// report an empty tab.
     #[test]
     fn a_worker_tab_keeps_its_lone_full_height_pane_as_a_worker() {
         let l = layout(&[("w", 0, 0, 200, 50)]);
@@ -727,8 +640,6 @@ mod tests {
         assert_eq!(a.columns, 1);
     }
 
-    /// `analyze` keeps its old contract: a registered id wins, and no id means
-    /// guess.
     #[test]
     fn analyze_still_means_infer_when_no_orchestrator_is_registered() {
         let l = layout(&[
@@ -750,8 +661,6 @@ mod tests {
         );
     }
 
-    /// One block per tab, in order, each one the block a single tab printed
-    /// before.
     #[test]
     fn render_all_prints_one_block_per_tab_in_order() {
         let roles = HashMap::new();
@@ -780,7 +689,6 @@ mod tests {
         );
         assert_eq!(render_all(&[], &[], &roles), "no tabs in this workspace\n");
 
-        // A note per tab rides on the header rather than changing the block.
         let noted = render_all(
             &[tab1, tab2],
             &["matches the fleet grid".to_string(), String::new()],
@@ -803,8 +711,6 @@ mod tests {
         assert!(out.contains("next split: VERTICAL (down) from w1"), "{out}");
     }
 
-    /// The whole render of a ragged-bottom tab, byte for byte: the header, the
-    /// cell table with its span mark, the state line and the advice.
     #[test]
     fn render_prints_the_whole_report_of_a_ragged_bottom_tab() {
         let l = layout(&[
@@ -836,8 +742,6 @@ mod tests {
 
     #[test]
     fn rows_of_unequal_length_with_no_spanning_pane_are_ragged_without_advice() {
-        // Top holds 2 panes, bottom 1 pane that spans nothing the top has: the
-        // bottom pane starts at the first edge and ends at the last.
         let l = layout(&[
             ("orch", 0, 0, 60, 50),
             ("t1", 60, 0, 70, 25),

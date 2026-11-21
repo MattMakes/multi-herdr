@@ -60,17 +60,11 @@ _CACHE: dict[tuple, _Bank] = {}
 _CATALOG: dict[str, Any] = {}
 
 
-# ---------------------------------------------------------------- catalogue
-
-
 def catalog() -> dict[str, Any]:
     """The built-in catalogue: categories, forge04 members and target rows."""
     if not _CATALOG:
         _CATALOG.update(json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
     return _CATALOG
-
-
-# ---------------------------------------------------------------- loading
 
 
 def _package_files() -> tuple[str, ...]:
@@ -140,9 +134,6 @@ def __getattr__(name: str) -> Any:
     if name == "VERSION":
         return "+".join(_bank().versions)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-# ---------------------------------------------------------------- lookups
 
 
 def ids() -> list[str]:
@@ -226,9 +217,6 @@ def list_sounds(category: str | None = None, kind: str | None = None) -> list[di
     return rows
 
 
-# ---------------------------------------------------------------- level and rate
-
-
 def _is_number(v: Any) -> bool:
     return isinstance(v, numbers.Real) and not isinstance(v, bool) and math.isfinite(float(v))
 
@@ -292,9 +280,6 @@ def add_warning(checks: dict | None, warning: dict | None, msg: str | None = Non
     msgs = "; ".join(w["msg"] for w in checks["warnings"])
     checks["summary"] = f"{name}: {n} warning{'' if n == 1 else 's'}: {msgs}"
     return checks
-
-
-# ---------------------------------------------------------------- rendering
 
 
 def _validated(x: Any, sound_id: str) -> np.ndarray:
@@ -422,9 +407,6 @@ def render_final(sound: str | dict) -> np.ndarray:
         return schema.rerender(block)
     except ValueError as exc:
         raise BankError(f"{entry.get('id')}: {exc}") from None
-
-
-# ---------------------------------------------------------------- builds and checks (hark.forge.bank._build)
 
 
 def write_bank(path: str | os.PathLike, doc: dict) -> str:

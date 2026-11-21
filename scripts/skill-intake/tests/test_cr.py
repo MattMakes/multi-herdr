@@ -82,7 +82,6 @@ class Base(IntakeTestCase):
     def setUp(self):
         super().setUp()
         self.task = tasklib.create(str(self.tmp / "base"))
-        # Later stages need GATE 1 pass (intake triage); these tests start after it.
         self.task.manifest["gate1"] = "pass"
         tasklib.set_phase(self.task, "triaged")
         self.src = index.source_root(self.task)
@@ -134,7 +133,7 @@ class SchemaTests(Base):
             "audit-line", "behavior-spec", "findings", "handoff", "incident", "mitigation", "preflight", "provenance",
             "report", "verify", "fixes"})
         for k in schema.kinds():
-            schema.validate({}, schema.load_schema(k))  # must not raise on keywords
+            schema.validate({}, schema.load_schema(k))
 
     def test_behavior_spec_6_9_fields(self):
         bs = schema.load_schema("behavior-spec")
@@ -148,7 +147,7 @@ class SchemaTests(Base):
         del bad["replace_or_remove"][0]["behavior"]
         self.assertTrue(schema.validate(bad, bs))
         bad = copy.deepcopy(GOOD_SPEC)
-        bad["replace_or_remove"][0]["finding"] = "INJ-01#1"  # INJ findings never appear in a spec
+        bad["replace_or_remove"][0]["finding"] = "INJ-01#1"
         self.assertTrue(schema.validate(bad, bs))
         bad = copy.deepcopy(GOOD_SPEC)
         bad["capabilities"]["shell"] = ["anything"]
@@ -451,7 +450,7 @@ class GuardTests(Base):
     def test_clean_roles_read_clean(self):
         self.assertIsNone(self.decide("writer", "Read", file_path=str(self.task.k / "context.json")))
         self.assertIsNone(self.decide("reviewer", "Glob", path=str(self.task.k / "out")))
-        self.assertIsNone(self.decide("writer", "Read", file_path="notes.md"))  # relative to K/out cwd
+        self.assertIsNone(self.decide("writer", "Read", file_path="notes.md"))
 
     def test_write_domains(self):
         self.assertIsNotNone(self.decide("analyst", "Write", file_path=str(self.task.k / "x.json")))

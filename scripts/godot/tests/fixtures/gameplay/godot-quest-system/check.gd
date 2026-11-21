@@ -1,7 +1,4 @@
 extends SceneTree
-## godot-quest-system scenarios: "Prove it" in SKILL.md and the "Checks"
-## lists of references/branching-and-timing.md and references/ui-and-world.md,
-## on the skill's own blocks in res://skill/.
 
 const Expect = preload("res://expect.gd")
 
@@ -10,7 +7,6 @@ var e := Expect.new()
 
 func _initialize() -> void:
 	e.watch(self)
-	# The root enters the tree after _initialize starts; _ready needs it.
 	await process_frame
 	_chain_and_save()
 	_rewards()
@@ -125,7 +121,6 @@ func _escort() -> void:
 func _burst() -> void:
 	var log := _new_log()
 	log.register(_quest(&"cull", [_objective(&"kills", &"kill", &"rat", 10)]))
-	# A lambda captures a local int by value: count in an array.
 	var completions: Array[StringName] = []
 	log.quest_completed.connect(func(id: StringName, _def: QuestDef) -> void: completions.append(id))
 	log.accept(&"cull")

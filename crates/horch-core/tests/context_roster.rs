@@ -1,8 +1,3 @@
-//! Context-policy data in the roster: the 2 bases `_base/context-windows.md`
-//! and `_base/context-messages.md`, the teammate `compact_window`, and the
-//! roster check rules of design `ai_docs/plans/wave2/w1/design.md` section
-//! 6.3 (CTX-08, CTX-17). No harness and no herdr: each test loads a roster.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -26,15 +21,12 @@ fn teammates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates")
 }
 
-/// The shipped file `rel`, with `extra` frontmatter lines added after the
-/// opening `---`.
 fn shipped_with(rel: &str, extra: &str) -> String {
     let text = std::fs::read_to_string(teammates_dir().join(rel)).unwrap();
     let rest = text.strip_prefix("---\n").expect("frontmatter");
     format!("---\n{extra}{rest}")
 }
 
-/// A teammates dir holding `files` (relative paths, `_base/` included).
 fn roster_dir(files: &[(&str, String)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("_base")).unwrap();
@@ -58,7 +50,6 @@ fn teammate_file(name: &str, agent: &str, extra: &str) -> String {
     )
 }
 
-/// The problems of `roster` that contain every one of `parts`.
 fn problems_with(roster: &Roster, parts: &[&str]) -> Vec<String> {
     roster
         .check()
@@ -67,8 +58,6 @@ fn problems_with(roster: &Roster, parts: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// A `context-messages` base with every key in `keys`, each a valid line,
-/// plus `extra` frontmatter lines.
 fn messages_base(keys: &[&str], extra: &str) -> String {
     let lines: String = keys
         .iter()
@@ -102,7 +91,6 @@ fn ctx_08_roster_check_fails_headroom_below_floor() {
 #[test]
 fn ctx_17_in_place_only_for_listed_harnesses() {
     let roster = builtin();
-    // OpenCode passed its live round trip (docs/live-checks/context.md part C).
     for kind in [
         HarnessKind::Claude,
         HarnessKind::Codex,
@@ -120,7 +108,6 @@ fn ctx_17_in_place_only_for_listed_harnesses() {
         assert!(!roster.compacts_in_place(kind), "{kind:?}");
     }
 
-    // Finding 9: an overlay of the windows file freezes no message.
     let dir = roster_dir(&[(
         "_base/context-windows.md",
         "---\nname: context-windows\nwindows:\n  claude/opus: 200000\nin_place: []\n---\nbody\n"
@@ -148,7 +135,6 @@ fn ctx_17_in_place_only_for_listed_harnesses() {
 #[test]
 fn fleet_window_takes_teammate_then_model_key() {
     let roster = builtin();
-    // The keys alone: the built-in files state the same values (below).
     let window = |name: &str, model: &str| {
         let mut t = roster.get(name).unwrap().clone();
         t.compact_window = None;
@@ -172,8 +158,6 @@ fn fleet_window_takes_teammate_then_model_key() {
     );
     assert_eq!(window("codex-luna", "gpt-5.6-luna"), None);
 
-    // X1: a built-in file's `compact_window` equals the key it replaces, so
-    // the launch is the same.
     for (name, model) in [
         ("orchestrator", "fable"),
         ("opus", "opus"),
@@ -441,18 +425,14 @@ fn check_names_a_missing_context_base() {
     }
 }
 
-// ─── u3 review findings (ai_docs/plans/wave2/w1/u3-review.md) ───────────────
-
 fn shipped(rel: &str) -> String {
     std::fs::read_to_string(teammates_dir().join(rel)).unwrap()
 }
 
-/// The shipped `_base/context-windows.md` with `extra` lines under `windows:`.
 fn windows_with(extra: &str) -> String {
     shipped("_base/context-windows.md").replace("windows:\n", &format!("windows:\n{extra}"))
 }
 
-/// The shipped `_base/context-messages.md` with message `key` set to `value`.
 fn messages_with(key: &str, value: &str) -> String {
     let text = shipped("_base/context-messages.md");
     let old = text
@@ -481,8 +461,6 @@ fn warnings(roster: &Roster) -> Vec<String> {
     horch_core::roster::validation::context_policy_warnings(roster)
 }
 
-/// Finding 1 (R5, R4): every `windows` key is held to the floor by itself,
-/// also a `<fallback harness>/<teammate>` key and a model no teammate runs.
 #[test]
 fn ctx_08_check_holds_every_windows_key_to_the_floor() {
     let dir = roster_dir(&[(
@@ -503,7 +481,6 @@ fn ctx_08_check_holds_every_windows_key_to_the_floor() {
     );
 }
 
-/// Finding 2a (R1): a blank message fails the check.
 #[test]
 fn check_refuses_a_blank_context_message() {
     for (key, value) in [("failed", "\"\""), ("resume", "\"   \"")] {
@@ -516,8 +493,6 @@ fn check_refuses_a_blank_context_message() {
     }
 }
 
-/// Finding 2b (R2): a copy of the messages base that differs from the
-/// built-in one is a warning, not a problem. The shipped file is quiet.
 #[test]
 fn context_policy_warnings_name_a_copied_messages_base() {
     let text = messages_with(
@@ -545,8 +520,6 @@ fn context_policy_warnings_name_a_copied_messages_base() {
     assert!(warnings(&load(&teammates_dir())).is_empty());
 }
 
-/// Finding 3 (R6): a windows key that is both a teammate (on another model)
-/// and a model fails the check.
 #[test]
 fn check_refuses_a_windows_key_with_two_readings() {
     let opus = shipped("opus.md").replace("\nmodel: opus\n", "\nmodel: sonnet\n");
@@ -563,8 +536,6 @@ fn check_refuses_a_windows_key_with_two_readings() {
     assert!(problems_with(&builtin(), &["windows key"]).is_empty());
 }
 
-/// Finding 4 (R8): a key on a harness with no window setting, or with an
-/// empty name, fails; a key that names no teammate and no model warns.
 #[test]
 fn check_refuses_dead_windows_keys() {
     let dir = roster_dir(&[(
@@ -599,8 +570,6 @@ fn check_refuses_dead_windows_keys() {
     assert!(warnings(&builtin()).is_empty());
 }
 
-/// Finding 5 (R7): `in_place` refuses a harness without a compact command,
-/// and the accessor never routes it in place.
 #[test]
 fn check_refuses_in_place_without_a_compact_command() {
     let text = shipped("_base/context-windows.md").replace(
@@ -625,7 +594,6 @@ fn check_refuses_in_place_without_a_compact_command() {
     }
 }
 
-/// Finding 6 (R9): a newline in a value never reaches the rendered line.
 #[test]
 fn context_message_renders_one_line_whatever_the_values() {
     let mut vars = all_vars();
@@ -637,8 +605,6 @@ fn context_message_renders_one_line_whatever_the_values() {
     );
 }
 
-/// Finding 7 (R3): a windows base that leaves out a key fails the check; an
-/// explicit empty value stays valid.
 #[test]
 fn check_refuses_a_windows_base_without_both_keys() {
     let dir = roster_dir(&[(
@@ -672,7 +638,6 @@ fn check_refuses_a_windows_base_without_both_keys() {
     assert!(problems_with(&load(dir.path()), &[]).is_empty());
 }
 
-/// Finding 8 (R10, R15): rule 2 reads a settings file and every window key.
 #[test]
 fn check_refuses_every_window_key_in_env_and_a_settings_file() {
     let settings_dir = tempfile::tempdir().unwrap();
@@ -724,7 +689,6 @@ fn check_refuses_every_window_key_in_env_and_a_settings_file() {
     );
 }
 
-/// Nit 9 (R14): after a substitution the detail names the fallback's file.
 #[test]
 fn fleet_window_names_the_fallback_after_a_substitution() {
     let opus = shipped("opus.md").replace("compact_window: 200000\n", "compact_window: 180000\n");
@@ -746,8 +710,6 @@ fn fleet_window_names_the_fallback_after_a_substitution() {
     );
 }
 
-/// Inline settings JSON (outside the review): a JSON object passes the
-/// settings check, a broken one fails, a missing file still fails.
 #[test]
 fn check_accepts_inline_settings_json() {
     let dir = roster_dir(&[
@@ -795,8 +757,6 @@ fn check_accepts_inline_settings_json() {
     );
 }
 
-/// Q1 (R13): `horch fleet sol` runs orchestrator-codex on gpt-5.6-sol, and
-/// it takes that model's window; Codex has no orchestrator key.
 #[test]
 fn sol_orchestrator_takes_its_model_window() {
     let roster = builtin();
@@ -808,8 +768,6 @@ fn sol_orchestrator_takes_its_model_window() {
     );
 }
 
-/// CTX-21: `compact_at` is the teammate's watch base. The check refuses a
-/// value outside 50,000 to 1,000,000 and names the range.
 #[test]
 fn ctx_21_compact_at_range_checked() {
     let dir = roster_dir(&[(
@@ -844,8 +802,6 @@ fn ctx_21_compact_at_range_checked() {
     }
 }
 
-/// X1: every built-in teammate on a harness horch watches states its
-/// `compact_at`; a harness horch does not watch (antigravity, none) has none.
 #[test]
 fn ctx_21_every_watched_builtin_teammate_sets_compact_at() {
     let roster = builtin();
@@ -866,8 +822,6 @@ fn ctx_21_every_watched_builtin_teammate_sets_compact_at() {
         .all(|w| !w.contains("compact_at is missing")));
 }
 
-/// X1: an overlay teammate on a watched harness without `compact_at` gets a
-/// warning, not a check problem; one with it, or on antigravity, gets none.
 #[test]
 fn ctx_21_overlay_without_compact_at_warns() {
     let dir = roster_dir(&[
@@ -894,8 +848,6 @@ fn ctx_21_overlay_without_compact_at_warns() {
     );
 }
 
-/// X1: an overlay copy of a built-in teammate that drops `compact_at` warns;
-/// the built-in file still has it, so the check passes.
 #[test]
 fn ctx_21_overlay_copy_without_compact_at_warns() {
     let text: String = shipped("sonnet.md")
@@ -916,8 +868,6 @@ fn ctx_21_overlay_copy_without_compact_at_warns() {
     );
 }
 
-/// Sanctioned orchestrator-compaction keep-list (#57): the actual compact
-/// argument must preserve run identity and decisions, then rebuild ledger state.
 #[test]
 fn orchestrator_compact_instructions_preserve_run_and_decisions() {
     let vars = BTreeMap::from([("role", "orchestrator"), ("handoff", "handoff.md")]);

@@ -1,14 +1,3 @@
-//! Spawn planning: a [`SpawnRequest`] and what the shell read become an
-//! [`ExecutionPlan`], with no I/O.
-//!
-//! [`plan_launch`] holds every rule `horch spawn` applies before it touches
-//! the ledger or a pane: the resume rules, the usage-limit gate, the
-//! reserved-tier check, effort and skill support. The shell reads the
-//! roster, the quota view and the record to resume, mints the ids, and passes
-//! them in [`PlanInputs`]. The same inputs always give the same plan (ARC-15).
-//! [`finish_plan`] adds the role once the service allocated it under the
-//! ledger lock.
-
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -29,70 +18,49 @@ use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
 use crate::skills::{SkillActivationPlan, SkillResolution};
 
-/// The task a worker spawned without one records. The same text as the
-/// placeholder in `execution::records`.
 pub const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
-/// The usage-limit gate's inputs: read by the shell, only for a gated spawn
-/// ([`needs_gate`]).
 #[derive(Debug, Clone, Copy)]
 pub struct GateInputs<'a> {
     pub view: &'a QuotaView,
     pub balance: BalanceMode,
 }
 
-/// Ids the shell minted for this spawn. A resume uses neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintedIds {
     pub execution: ExecutionId,
-    /// Used only when the harness accepts a caller-minted session id.
     pub session: SessionId,
 }
 
-/// Everything [`plan_launch`] reads. Pure data.
 #[derive(Debug, Clone, Copy)]
 pub struct PlanInputs<'a> {
     pub roster: &'a Roster,
-    /// The launching teammate's skills: the roster's catalog
-    /// (`Roster::skill_catalog`, bundled skills plus the installed
-    /// marketplace lock) with its operator and plugin skills, which the
-    /// shell read (`SkillResolution::read`), so the record lists them;
-    /// planning itself reads no files.
     pub skills: &'a SkillResolution,
-    /// `Some` when [`needs_gate`] said so.
     pub gate: Option<GateInputs<'a>>,
-    /// The newest record the resume key matches, if any.
     pub existing: Option<&'a LedgerRecordV1>,
     pub now: DateTime<Utc>,
     pub ids: &'a MintedIds,
     pub project: &'a Path,
 }
 
-/// Why a spawn cannot be planned. Each message is the one `horch spawn`
-/// printed before A6.
 #[derive(Debug)]
 pub enum PlanError {
     NothingToSpawn,
-    /// The gate refused. `line` is the REFUSED line for stdout.
     Refused {
         decision: RoutingDecision,
         line: String,
     },
     UnknownTeammate(String),
-    /// A reserved model tier.
     Unspawnable(String),
     NotResumable {
         id: String,
         reason: String,
     },
     BadEffort(String),
-    /// `--model` names a model the teammate's agent cannot run.
     BadModel(String),
     SkillUnsupported(String),
-    /// A gated spawn was planned without [`GateInputs`]: a caller bug.
     MissingGate,
     BadId(IdError),
-    /// The role is registered, briefed or planned in this workspace already.
     RoleTaken(String),
 }
 
@@ -134,9 +102,6 @@ fn require<'r>(roster: &'r Roster, name: &str) -> Result<&'r Teammate, PlanError
         .map_err(|e| PlanError::UnknownTeammate(format!("{e:#}")))
 }
 
-/// Whether the spawn passes the usage-limit gate, so the shell must read the
-/// quota view first. Only a fresh, unpinned spawn of a spawnable teammate
-/// that spends something is gated; a resume keeps the harness it ran on.
 pub fn needs_gate(req: &SpawnRequest, roster: &Roster) -> bool {
     let teammate = req.teammate.as_ref().and_then(|n| roster.get(n.as_str()));
     !req.pinned && req.resume.is_none() && teammate.is_some_and(spends)
@@ -146,7 +111,6 @@ fn spends(t: &Teammate) -> bool {
     t.agent != HarnessKind::None && Roster::is_spawnable(t).is_ok()
 }
 
-/// Explicit task selection wins over the recorded phase and roster default.
 pub(crate) fn resolve_phase(
     explicit: Option<Phase>,
     recorded: Option<Phase>,
@@ -155,8 +119,6 @@ pub(crate) fn resolve_phase(
     explicit.or(recorded).or(default)
 }
 
-/// A fresh session: the minted id when the harness accepts one, else `None`
-/// (codex and OpenCode reveal theirs after launch; the worker discovers it).
 fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
     SessionMode::Fresh(
         agent
@@ -166,17 +128,14 @@ fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
     )
 }
 
-/// The launch as decided so far, before the gate.
 struct Draft {
     teammate: Teammate,
     model: String,
-    /// Where `model` came from: the reserved-tier check reads it.
     model_source: ModelSource,
     session: SessionMode,
     via: Option<String>,
     substitution_reason: Option<String>,
     routing: RoutingProvenance,
-    /// The record a resume reopens.
     resumed: Option<Execution>,
 }
 
@@ -187,7 +146,6 @@ fn refusal(record: &LedgerRecordV1, reason: String) -> PlanError {
     }
 }
 
-/// The three refusals of a resume; returns the session id to resume.
 fn check_resumable(record: &LedgerRecordV1) -> Result<String, PlanError> {
     if record.is_orchestrator() {
         return Err(refusal(
@@ -208,10 +166,6 @@ fn check_resumable(record: &LedgerRecordV1) -> Result<String, PlanError> {
             ),
         ));
     }
-    // The legacy status: a `Planned` record is not live, but its spawner
-    // may still be on its way to a pane. The shell has already ended a
-    // record whose pane is gone (`ExecutionStore::end_if_pane_closed`), so
-    // this pane is open, or its state is unknown, or the record names none.
     if record.status == STATUS_WORKING {
         let pane = record
             .pane_id
@@ -231,7 +185,6 @@ fn check_resumable(record: &LedgerRecordV1) -> Result<String, PlanError> {
     Ok(session_id)
 }
 
-/// A record from before A5 has no routing; rebuild it from `via`.
 fn resume_routing(
     record: &LedgerRecordV1,
     roster: &Roster,
@@ -256,13 +209,10 @@ fn resume_teammate(
     roster: &Roster,
 ) -> Result<Teammate, PlanError> {
     let mut teammate = require(roster, &record.tier)?.clone();
-    // A substituted session resumes on the harness it ran on (BAL-05): the
-    // same fallback's launch settings, never a new gate decision.
     if let Some(via) = &record.via {
         teammate = decision::merge(&teammate, require(roster, via)?);
     }
     teammate.phase = resolve_phase(req.phase, record.phase, teammate.phase);
-    // A resume keeps the level it ran at, as it keeps its model.
     if record.effort.is_some() {
         teammate.effort = record.effort.clone();
     }
@@ -274,7 +224,6 @@ fn resume_teammate(
     Ok(teammate)
 }
 
-/// Resume: teammate, model and session all come from the record.
 fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Draft, PlanError> {
     let record = inputs.existing.ok_or_else(|| PlanError::NotResumable {
         id: key.to_string(),
@@ -300,8 +249,6 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     })
 }
 
-/// The operator's `--model` replaces the teammate's model, if the agent can
-/// run it. The reserved-tier check then sees [`ModelSource::Operator`].
 fn apply_model(teammate: &mut Teammate, req: &SpawnRequest) -> Result<ModelSource, PlanError> {
     let Some(model) = &req.model else {
         return Ok(ModelSource::Teammate);
@@ -336,9 +283,6 @@ fn draft_fresh(name: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     })
 }
 
-/// The usage-limit gate (design 13.5): after the top-tier gate, before any
-/// role, ledger or pane side effect. Returns the gate's NOTE or SUBSTITUTED
-/// line.
 fn gate(
     draft: &mut Draft,
     req: &SpawnRequest,
@@ -346,7 +290,6 @@ fn gate(
 ) -> Result<Option<String>, PlanError> {
     let g = inputs.gate.ok_or(PlanError::MissingGate)?;
     let roster = inputs.roster;
-    // The operator chose the model: never substitute a fallback for it.
     let mut flags = req.flags;
     flags.exact |= draft.model_source == ModelSource::Operator;
     let decision = decision::decide(&draft.teammate, roster, g.view, g.balance, flags);
@@ -406,20 +349,13 @@ fn gate_if_needed(
 }
 
 fn launch_skills(draft: &mut Draft, inputs: &PlanInputs) -> Result<SkillActivationPlan, PlanError> {
-    // `skills_when` skills of this project join `skills:` here, so the
-    // record, the brief's resolved teammate and the launch bundle agree.
     draft.teammate = inputs.roster.for_launch(draft.teammate.clone());
-    // Unusable catalogs fail before a role or a record exists, by the rule
-    // the launch applies (SKL-12).
     inputs
         .skills
         .plan(&draft.teammate)
         .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))
 }
 
-/// The request's effort wins; what will launch must be able to take it, so a
-/// `--effort` typo or a level this agent and model cannot take fails here, not
-/// in an unwatched pane.
 fn apply_effort(draft: &mut Draft, req: &SpawnRequest) -> Result<(), PlanError> {
     draft.teammate.effort = req.effort.clone().or(draft.teammate.effort.take());
     let Some(effort) = &draft.teammate.effort else {
@@ -434,7 +370,6 @@ fn apply_effort(draft: &mut Draft, req: &SpawnRequest) -> Result<(), PlanError> 
     }
 }
 
-/// The record a resume reopens, back to `Planned`.
 fn resumed_execution(
     mut e: Execution,
     draft: &Draft,
@@ -464,7 +399,6 @@ fn resumed_execution(
     e
 }
 
-/// The record of a fresh spawn, `Planned`.
 fn fresh_execution(
     draft: &Draft,
     req: &SpawnRequest,
@@ -481,7 +415,6 @@ fn fresh_execution(
         model_override: draft.model_source == ModelSource::Operator,
         effort: draft.teammate.effort.clone(),
         phase: draft.teammate.phase,
-        // A placeholder until `finish_plan`.
         role: draft.teammate.name.parse()?,
         task: Task {
             id: None,
@@ -519,20 +452,9 @@ fn fresh_execution(
     })
 }
 
-/// Plan a spawn. Pure: the same request and inputs give an equal plan.
-///
-/// The order is the one `horch spawn` always had: the resume rules or the
-/// roster lookup, the reserved-tier check on what will actually launch, the
-/// gate (fresh spawns only), effort, then skill support. The plan's record is
-/// `Planned`; [`finish_plan`] adds the role.
 pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan, PlanError> {
     let mut draft = draft_for(req, inputs)?;
 
-    // The last gate before launch, and the only one that sees what will
-    // ACTUALLY start: a resume takes its model from the ledger record, so a
-    // stale or hand-edited record could otherwise start a second top-tier
-    // session behind an ordinary tier name. Only the operator's `--model`
-    // (or the resume of a record it started) may name a reserved tier here.
     Roster::model_is_spawnable(&draft.model, &draft.teammate.name, draft.model_source)
         .map_err(unspawnable)?;
 
@@ -569,11 +491,6 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
     })
 }
 
-/// Complete a plan once its role is allocated. Pure.
-///
-/// A fresh record takes the workspace; a resumed one keeps the workspace it
-/// was spawned in, as it always did. An empty history text becomes
-/// `spawned idle as <role>` or `resumed as <role>`.
 pub fn finish_plan(
     mut plan: ExecutionPlan,
     role: RoleName,
@@ -601,7 +518,6 @@ mod tests {
     use super::*;
     use crate::skills::{harness_support, SkillCatalog};
 
-    /// The bundled catalog, no host skills read.
     fn bundled_skills() -> SkillResolution {
         SkillResolution::read(
             SkillCatalog::bundled().unwrap(),
@@ -633,8 +549,6 @@ mod tests {
         assert_eq!(resolve_phase(None, None, None), None);
     }
 
-    /// G5: a resume of a record still marked working names its pane and the
-    /// exact command that ends the record when the pane is known to be gone.
     #[test]
     fn working_refusal_names_the_fix() {
         let roster = Roster::builtin().unwrap();
@@ -672,10 +586,6 @@ mod tests {
         );
     }
 
-    /// GW11: in a project whose facts match a `skills_when` glob, the plan
-    /// lists those skills as Explicit, and the launch teammate carries them,
-    /// so the launch bundle plans the same skills as the record (SKL-04).
-    /// Without facts, or without a match, nothing is added.
     #[test]
     fn skills_when_reaches_the_record_and_the_launch_teammate() {
         use crate::roster::ProjectFacts;
@@ -738,9 +648,6 @@ mod tests {
         }
     }
 
-    /// Planning is pure (Spec A §3): outside this test module, `plan.rs`
-    /// reads no file, starts no process, reads no environment, calls no
-    /// workspace and reads no clock. The shell passes `now` in.
     #[test]
     fn arc_15_plan_is_pure() {
         let source = include_str!("plan.rs");

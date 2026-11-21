@@ -90,7 +90,7 @@ def test_c8_holdout_cache(tmp_path, stub_listen, monkeypatch):
     x = _ping(700, 1)
     a = c.holdout([x])
     assert stub_listen.tag_calls == 1
-    monkeypatch.setattr(critic, "_HOLD", {})  # force the file cache
+    monkeypatch.setattr(critic, "_HOLD", {})
     b = c.holdout([x])
     assert stub_listen.tag_calls == 1 and a == b
     assert isinstance(b[0]["audioset_top"][0], tuple)

@@ -1,37 +1,4 @@
 extends SceneTree
-## The command line of the tuning bench. Godot runs it headless:
-##
-##   godot --headless --path <project> -s res://addons/tuning_bench/bench_cli.gd -- <mode> --out <file> [options]
-##
-## Modes: --run, --selfcheck, --rank, --fit <control>, --replay, --view-texts.
-## Options: --bench <file>, --setting <file>, --k <control>=<k>, --set <number id>=<value>, --player <id>,
-## --check <self-check result>, --no-check, --partial-out <file>, --target-h <hours>, --no-child,
-## --only <glob on a number id>, --jobs <count of child processes>, --profile, --against <replay record>,
-## --scene <res path>, --state <state>, --frames <count>, --visible-only.
-## Exit code 0: it ran. 1: a meter fails or a check fails. 2: bad input or an adapter error.
-##
-## --selfcheck with no --out writes `res://bench/selfcheck.json`. --run with no --check reads that file when it
-## exists (--no-check: do not read it). --only tries only the numbers whose id matches the glob and merges the
-## result into the result file that is there. --jobs N tries the numbers in N child processes; with no --jobs the
-## count is min(4, processors - 1), at least 1 (and 1 with --no-child).
-## --partial-out <file>: --run writes the result of the main player alone to this file before the other players run.
-## --run --profile prints the real time of each contract function for each player. The result file is the same.
-## The mode --probe is for the child processes of --jobs only.
-##
-## --replay --out <file> (a game with a core): run the main player, write the record (the list of commands, the
-## seed, the values k, the hash of the end state and 19 hashes on the way), do the record again and compare.
-## --replay --against <record> --out <file>: do the commands of an older record on the core of now and compare
-## the hash of the end state. Exit code 1 when it differs. This is the golden master of a refactor.
-##
-## --view-texts --out <file>: start the main scene (or --scene <res path>), wait --frames frames (default 3) and
-## write each text of the scene tree, 1 line each, sorted by the node path. A line is
-## `<node path> TAB <property> TAB <the text as a JSON string>`, with ` TAB hidden` when the node is not visible
-## (--visible-only: no line for such a node). --state selects the state, and can repeat (1 part of the file for
-## each): `start` (the state of the session at the start, a new game; the default; give it first), `bot:<hours>` (the state of the main player of the bench after this
-## game time; a game with a core) or a JSON file with a state or a save. Each state but `start` needs a session
-## autoload with `use_state(state: Dictionary)`. The session must not load or write the save file and must not
-## move the clock in this run (see sample_game/session/game_session.gd). Exit code 1 when the run made or
-## changed a file in `user://`.
 
 const BenchJson := preload("res://addons/tuning_bench/bench_json.gd")
 const Knobs := preload("res://addons/tuning_bench/bench_knobs.gd")
@@ -39,10 +6,8 @@ const Runner := preload("res://addons/tuning_bench/bench_runner.gd")
 const SelfCheck := preload("res://addons/tuning_bench/bench_selfcheck.gd")
 
 const MODES: Array[String] = ["--run", "--selfcheck", "--rank", "--fit", "--replay", "--probe", "--view-texts"]
-## The count of hashes of the state that a replay record has between the start and the end.
 const REPLAY_CHECKPOINTS := 19
 const DEFAULT_FRAMES := 3
-## `_main` returns this value when the mode goes on in the next frames and ends the program itself.
 const LATER := -1
 
 var _started: bool = false
@@ -50,9 +15,7 @@ var _out: String = ""
 
 
 func _process(_delta: float) -> bool:
-	# The work starts in the first frame. Each autoload of the game is then ready.
 	if _started:
-		# A mode that needs frames (--view-texts) is at work. It ends the program itself.
 		return false
 	_started = true
 	var code: int = _main(OS.get_cmdline_user_args())
@@ -168,7 +131,6 @@ func _main(args: PackedStringArray) -> int:
 		return _fail(ctx["error"])
 
 	if jobs == 0:
-		# No --jobs: the dead-number check uses some of the processors. --no-child asks for 1 process.
 		jobs = SelfCheck.default_jobs() if child else 1
 
 	if not only.is_empty() and SelfCheck.select_numbers(ctx, only).is_empty():
@@ -206,7 +168,6 @@ func _main(args: PackedStringArray) -> int:
 			return _fail("the self-check result %s does not load" % check_path)
 		check = read["value"]
 	elif read_check and mode == "--run" and FileAccess.file_exists(Knobs.DEFAULT_SELFCHECK):
-		# The default place of the self-check result. A file that does not load is the same as no file.
 		var found: Dictionary = BenchJson.read_file(Knobs.DEFAULT_SELFCHECK)
 		if found["ok"] and found["value"] is Dictionary and str((found["value"] as Dictionary).get("format", "")) == "tuning-bench-check":
 			check = found["value"]
@@ -266,7 +227,6 @@ func _selfcheck(ctx: Dictionary, child: bool, only: Array, jobs: int) -> int:
 		return _fail(out["error"])
 	var result: Dictionary = out["result"]
 	if not only.is_empty() and FileAccess.file_exists(_out):
-		# A check of some numbers goes into the result that is there.
 		var old: Dictionary = BenchJson.read_file(_out)
 		if old["ok"] and old["value"] is Dictionary:
 			result = SelfCheck.merge(ctx, old["value"], result)
@@ -285,7 +245,6 @@ func _selfcheck(ctx: Dictionary, child: bool, only: Array, jobs: int) -> int:
 	return 0 if result["ok"] else 1
 
 
-## The work of 1 child process of `--selfcheck --jobs N`: try a part of the numbers.
 func _probe(ctx: Dictionary, only: Array, part: String) -> int:
 	var pieces: PackedStringArray = part.split("/")
 	if pieces.size() != 2 or not pieces[0].is_valid_int() or not pieces[1].is_valid_int() or pieces[1].to_int() < 1:
@@ -312,7 +271,6 @@ static func _meter_status(result: Dictionary) -> Dictionary:
 	return out
 
 
-## Move each control of the bench file by 25 percent and list the change of each meter.
 func _rank(ctx: Dictionary, k: Dictionary, target_changes: Dictionary) -> int:
 	var made: Dictionary = Runner.make_adapter(ctx)
 	if not made["ok"]:
@@ -366,7 +324,6 @@ func _rank(ctx: Dictionary, k: Dictionary, target_changes: Dictionary) -> int:
 	return 0
 
 
-## Find the k of 1 control that gives the target length. The search is a bisection.
 func _fit(ctx: Dictionary, k: Dictionary, target_changes: Dictionary, control_id: String, target_h: float) -> int:
 	if not (ctx["by_id"] as Dictionary).has(control_id):
 		return _fail("--fit needs a control of the bench file, not \"%s\"" % control_id)
@@ -392,7 +349,6 @@ func _fit(ctx: Dictionary, k: Dictionary, target_changes: Dictionary, control_id
 		var info: Dictionary = out["result"]["players"][main_id]
 		var hours: float = float(info["length_s"]) / 3600.0
 		if not info["ended"]:
-			# A run that did not end counts as very long, also when the stall rule stopped it early.
 			hours = Runner._sim(ctx, "max_hours", 18.0) * 2.0
 		steps.append([BenchJson.sig(value), BenchJson.sig(hours)])
 		return hours
@@ -436,8 +392,6 @@ func _fit(ctx: Dictionary, k: Dictionary, target_changes: Dictionary, control_id
 	return 0 if reached else 1
 
 
-## Run the active player, record its actions, do the record again, and compare the 2 final states.
-## The result file is the record: `--replay --against <this file>` does its commands again on a later core.
 func _replay(ctx: Dictionary, k: Dictionary) -> int:
 	var made: Dictionary = Runner.make_adapter(ctx)
 	if not made["ok"]:
@@ -479,9 +433,6 @@ static func _checkpoint_times(length_s: float) -> Array:
 	return out
 
 
-## Do the commands of a replay record on the core of now, and compare the hash of the end state with the record.
-## The record gives the seed, the 2 values of the player and the values k. `own_k` is true when the command
-## line gave values k: these then replace the values of the record.
 func _replay_against(ctx: Dictionary, k: Dictionary, record_path: String, own_k: bool) -> int:
 	var read: Dictionary = BenchJson.read_file(record_path)
 	if not read["ok"] or not read["value"] is Dictionary:
@@ -514,7 +465,6 @@ func _replay_against(ctx: Dictionary, k: Dictionary, record_path: String, own_k:
 		return _fail("adapter error: " + "; ".join(PackedStringArray(trace["errors"])))
 	var hash_now: String = adapter.call("state_hash")
 	var same: bool = hash_now == str(record["hash"])
-	# The first hash on the way that differs says where the 2 cores part.
 	var first_difference: Variant = null
 	var new_marks: Array = trace["checkpoints"]
 	var before_s: float = 0.0
@@ -541,9 +491,6 @@ func _replay_against(ctx: Dictionary, k: Dictionary, record_path: String, own_k:
 	return 0 if same else 1
 
 
-# ------------------------------------------------------------------------------------------ view texts
-
-## Write each text of the scene, for each state. The work needs frames, so it goes on after `_main` returns.
 func _view_texts(ctx: Dictionary, k: Dictionary, scene_path: String, states: Array, frames: int, visible_only: bool) -> int:
 	if scene_path == "":
 		scene_path = str(ProjectSettings.get_setting("application/run/main_scene", ""))
@@ -556,12 +503,10 @@ func _view_texts(ctx: Dictionary, k: Dictionary, scene_path: String, states: Arr
 		states = ["start"]
 	var session_name: String = str((ctx["bench"] as Dictionary).get("session", "Session"))
 	var session: Node = root.get_node_or_null(NodePath(session_name))
-	# Make each state before the first frame of the view: an error is then an error with exit code 2.
 	var made_states: Array = []
 	for entry: Variant in states:
 		var name: String = str(entry)
 		if name == "start":
-			# `start` is the state that the session has when the program starts. No tool can make it again later.
 			if not made_states.is_empty():
 				return _fail("give --state start before each other state: it is the state of the session at the start of the run")
 			made_states.append({"name": name, "state": null})
@@ -586,7 +531,6 @@ func _view_texts(ctx: Dictionary, k: Dictionary, scene_path: String, states: Arr
 	return LATER
 
 
-## Return {"ok", "error", "state"}: the state of the main player of the bench after `seconds` of game time.
 func _bot_state(ctx: Dictionary, k: Dictionary, seconds: float) -> Dictionary:
 	var made: Dictionary = Runner.make_adapter(ctx)
 	if not made["ok"]:
@@ -645,8 +589,6 @@ func _view_texts_run(packed: PackedScene, scene_path: String, session: Node, sta
 	quit(1 if not written.is_empty() else 0)
 
 
-## Return the name of a node for the path of a text. A node with a name that the engine made ("@Label@12") gets
-## "<class>#<index below its parent>": that name is the same in each run.
 static func _path_name(node: Node) -> String:
 	var name: String = str(node.name)
 	if name.contains("@"):
@@ -658,10 +600,6 @@ static func _text_line(path: String, property: String, text: String, hidden: boo
 	return "%s\t%s\t%s%s" % [path, property, JSON.stringify(text), "\thidden" if hidden else ""]
 
 
-## Add 1 line to `out` for each text of `node` and of each node below it.
-## The texts: the properties `text`, `tooltip_text`, `placeholder_text` (and `title`, `dialog_text` of a window),
-## each item of an ItemList, an OptionButton or a PopupMenu, each tab title of a TabContainer or a TabBar, and
-## each cell of a Tree.
 static func _collect_texts(node: Node, path: String, out: Array, visible_only: bool) -> void:
 	var hidden: bool = false
 	if node is CanvasItem:

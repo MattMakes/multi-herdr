@@ -1,4 +1,3 @@
-//! Registered alternate-base, scratch and abandonment operations. Never force git.
 use super::{
     finish::{self, WorktreeRow},
     git::Git,
@@ -23,7 +22,6 @@ fn valid_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Make a normal worktree from an explicit ref, or a scratch tree detached from task completion.
 pub fn create(
     store: &mut Store,
     git: &Git,
@@ -100,7 +98,6 @@ pub fn create(
     }
     let id = util::new_id();
     let path_text = path.to_string_lossy().into_owned();
-    // The SQLite writer lock serializes concurrent creations of the same name.
     store.immediate(|tx| {
         git.run(root,&["worktree","add","-b",&branch,&path_text,&commit])?;
         let persisted=(|| -> Result<()> {
@@ -118,7 +115,6 @@ pub fn create(
     finish::worktree(store.conn(), &id)
 }
 
-/// Resolve one registered tree by id, exact mode name or final directory component in this run.
 pub fn find(store: &Store, run_id: &str, name: &str) -> Result<WorktreeRow> {
     let mut stmt=store.conn().prepare(&format!("SELECT w.worktree_id,w.path,m.name FROM worktrees w LEFT JOIN tasks t ON t.task_id=w.task_id LEFT JOIN worktree_modes m ON m.worktree_id=w.worktree_id WHERE (t.run_id=?1 OR m.run_id=?1) AND w.status NOT IN ({gone})",gone=sql_words::list(sql_words::WORKTREES_GONE)))?;
     let rows = stmt
@@ -148,9 +144,6 @@ pub fn find(store: &Store, run_id: &str, name: &str) -> Result<WorktreeRow> {
     finish::worktree(store.conn(), &ids[0])
 }
 
-// The ledger records a branch, but the live checkout can be detached or switched
-// by ordinary git commands. Never remove it while that identity differs: keeping
-// the recorded branch would not preserve the actual checkout's commit.
 fn verified_head(git: &Git, root: &Path, wt: &WorktreeRow) -> Result<String> {
     let path = Path::new(&wt.path);
     let recorded = git.rev(root, &wt.branch)?;
@@ -173,7 +166,6 @@ fn verified_head(git: &Git, root: &Path, wt: &WorktreeRow) -> Result<String> {
     Ok(actual)
 }
 
-/// Drop only a clean tree. Keep the branch explicitly if it contains unique work.
 pub fn drop_worktree(
     store: &mut Store,
     git: &Git,
@@ -194,8 +186,6 @@ pub fn drop_worktree(
     if !git.stashes_on(&root, &wt.branch)?.is_empty() {
         bail!("worktree branch has a stash; nothing removed");
     }
-    // Exclude this branch from every durable ref: a reflog or a linked HEAD is
-    // not another published copy. A local branch/tag or remote ref is a copy.
     let refs = git.run(
         &root,
         &[
@@ -215,16 +205,12 @@ pub fn drop_worktree(
         bail!("worktree has unpublished commits that exist nowhere else; use --keep-branch; nothing removed");
     }
     store.immediate(|tx| {
-        // Repeat the identity check after the ref/commit safety checks, directly
-        // before removal, so a checkout changed during those reads stays intact.
         if verified_head(git, &root, &wt)? != head {
             bail!("worktree HEAD changed during the drop checks; nothing removed");
         }
         if path.exists() {
             git.run(&root, &["worktree", "remove", &wt.path])?;
         }
-        // Keeping a redundant branch is preferable to force deletion; -d has
-        // its own upstream check and may conservatively refuse. The folder is gone.
         if !keep_branch && git.branch_exists(&root, &wt.branch) {
             let _ = git.try_run(&root, &["branch", "-d", &wt.branch]);
         }
@@ -237,7 +223,6 @@ pub fn drop_worktree(
     finish::worktree(store.conn(), &wt.worktree_id)
 }
 
-/// Whether a row is scratch. Scratch rows have no task and never enter finish.
 pub fn is_scratch(store: &Store, id: &str) -> Result<bool> {
     Ok(optional(store.conn().query_row(
         "SELECT scratch FROM worktree_modes WHERE worktree_id=?1",

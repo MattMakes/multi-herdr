@@ -156,7 +156,6 @@ def test_t9_full_run(six_s_clicks, stub_models, hark_home):
     r = timeline(six_s_clicks, cues=[1.5, 2.52, 5.0], detail="low")
     assert r["text"].startswith(r["summary"])
     r["text"].encode("ascii")
-    # The bed makes the file start with sound, so the lead event (starts_file, analysis 2.2 step 7) comes first.
     clicks = [e for e in r["events"] if e["shape"] == "hit" and e["prominence_db"] > 10 and not e.get("starts_file")]
     assert len(clicks) == 6
     st = r["sync"]["cues"]["stats"]
@@ -279,8 +278,6 @@ def test_t19_real_models(six_s_clicks, hark_home):
     assert r["sections"] and all(s.get("label") for s in r["sections"])
     assert r["model_calls"]["clap_event_windows"] >= len(tagged)
 
-
-# ---------------------------------------------------------------- errors (analysis 4) and the package contract
 
 def test_errors_detail_window_and_files(six_s_clicks, wav, stub_models, hark_home, tmp_path):
     from hark.timeline._dsp import TimelineError

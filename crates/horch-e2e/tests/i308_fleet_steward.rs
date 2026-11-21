@@ -1,7 +1,3 @@
-//! `horch fleet` starts the worktree steward beside the orchestrator when
-//! the project has parked worktrees, and no steward when it has none (#308).
-//! The real `horch` binary on the fake herdr.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -59,8 +55,6 @@ fn git(h: &Harness, dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// A run whose task T-1 was cancelled with its worktree on disk: the
-/// worktree is `abandoned`.
 fn abandoned_worktree(h: &Harness) -> PathBuf {
     ok(h, &["ledger", "run", "new", "alpha"]);
     let t = h.project.join("tickets").join("01-f.md");
@@ -86,8 +80,6 @@ fn abandoned_worktree(h: &Harness) -> PathBuf {
     PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap())
 }
 
-/// The command lines the fake herdr was asked to run in a pane of the fleet
-/// workspace `w1`.
 fn launches(h: &Harness) -> Vec<String> {
     h.calls_of("herdr")
         .iter()
@@ -130,9 +122,6 @@ fn a_fleet_with_an_abandoned_worktree_spawns_the_worktree_steward() {
     );
 }
 
-/// Fix B (T-5): the codex sandbox cannot write the ledger, so the steward
-/// has no codex fallback. An exhausted claude pool starts no steward, and
-/// `horch fleet` says why.
 #[test]
 fn an_exhausted_claude_pool_starts_no_codex_steward() {
     let mut h = harness("i308-no-codex-steward");
@@ -142,7 +131,6 @@ fn an_exhausted_claude_pool_starts_no_codex_steward() {
             .join("quota/claude-exhausted-codex-ok.json")
             .to_string_lossy(),
     );
-    // The fixture's quota is current at this time.
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
     abandoned_worktree(&h);
     let cwd = h.project.to_string_lossy().into_owned();
@@ -172,8 +160,6 @@ fn a_fleet_with_no_parked_worktree_spawns_no_steward() {
     assert!(!runs[0].contains("worktree-steward"), "{runs:#?}");
 }
 
-/// Fix B keeps the read-only listing (T-5): a caller that cannot write the
-/// ledger still lists the parked rows. The full listing skips its bytes cache.
 #[test]
 fn triage_lists_rows_from_a_ledger_it_cannot_write() {
     use std::os::unix::fs::PermissionsExt;
@@ -246,8 +232,6 @@ fn triage_delete_refuses_a_detached_unique_commit() {
     assert!(path.exists());
 }
 
-/// Bug 3: a steward in its solo run drops a clean scratch worktree of
-/// another run when it names that run with `--run`.
 #[test]
 fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     let h = harness("i308-cross-run-drop");
@@ -290,15 +274,11 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     assert!(!path.exists());
 }
 
-/// The `ledger status --json` board of `run`. Status exits 1 while the run
-/// is not complete, so only its JSON counts.
 fn board(h: &Harness, run: &str) -> serde_json::Value {
     let o = h.run(&["ledger", "status", "--run", run, "--json"]);
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
-/// Bug 4: the steward task changes no file and makes no worktree. Its
-/// finish passes and its done records the task as done, not UNLANDED.
 #[test]
 fn the_no_change_steward_task_finishes_without_a_worktree() {
     let h = harness("i308-no-worktree-finish");

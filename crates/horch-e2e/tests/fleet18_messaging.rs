@@ -1,4 +1,3 @@
-//! Fleet acceptance at the durable messaging / ledger seam.
 use horch_core::messaging::mail::{redelivery_offset, Mail};
 use horch_e2e::harness::Harness;
 use std::time::Duration;
@@ -15,7 +14,6 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     h
 }
-/// The short id of the oldest open question in workspace `w1`.
 fn open_id(state: &std::path::Path) -> String {
     Mail::under(state, "w1").open_questions().unwrap()[0]
         .id
@@ -70,14 +68,12 @@ fn g70_question_survives_ack_without_a_task_run() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("worker-1.id"), "w1:p1").unwrap();
-    // TRF-25: a plain tell closes no question.
     assert!(h
         .run(&["tell", "worker-1", "Choose option A"])
         .status
         .success());
     let inbox = h.run(&["inbox", "--roles"]);
     assert!(String::from_utf8_lossy(&inbox.stdout).contains("QUESTION: which option?"));
-    // An answer by id closes it.
     let id = open_id(&h.state);
     assert!(h
         .run(&["tell", "worker-1", "--answers", &id, "Choose option A"])
@@ -363,7 +359,6 @@ fn g70_reviewer_wait_holds_sixty_minutes_then_three_idle_checks_reap() {
         7 * 86400,
     )
     .unwrap();
-    // Six ten-minute checks, sixty minutes from the original wait, with no proxy progress.
     for _ in 0..6 {
         store.conn().execute("UPDATE worker_waits SET started_at=strftime('%Y-%m-%dT%H:%M:%SZ', started_at, '-600 seconds')",[]).unwrap();
         assert_eq!(check(&mut store, &run, &worker, true), "progress");
@@ -520,8 +515,6 @@ fn relay_delivery_case(agent: &str) {
         })
         .unwrap();
         h.set("HORCH_RECORD_ID", "relay-orchestrator");
-        // macOS may scan a freshly linked executable longer than the relay's
-        // real ten-second queue budget. Warm this exact sealed fake first.
         let mut command = std::process::Command::new(h.bin.join("codex"));
         h.seal(&mut command);
         let mut warm = Agent(
@@ -731,10 +724,6 @@ fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
     assert!(String::from_utf8_lossy(&inbox.stdout).contains("All tasks are done"));
 }
 
-/// #77: a registry that exists only in the old temp location, owned by
-/// this user and mode 0700, is copied once into the state folder. A ledger
-/// worker's `horch ledger done` then finds the orchestrator through the
-/// copy, types its report there, and frees its role in both places.
 #[cfg(unix)]
 #[test]
 fn ledger_done_finds_the_orchestrator_in_a_copied_old_registry() {
@@ -1254,8 +1243,6 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    // A closed question takes no second answer, and an older reply does not
-    // reopen it.
     for (args, ok) in [
         (
             vec!["tell", "worker-1", "--answers", id.as_str(), "again"],
@@ -1277,7 +1264,6 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
             "an older reply {args:?} reopened the question"
         );
     }
-    // Older replies also overlap each other across independent CLI processes.
     let mut replies: Vec<_> = (0..8)
         .map(|minute| {
             Agent(
@@ -1387,10 +1373,6 @@ fn wait_for_pass_after_last_prompt(h: &Harness) {
     });
 }
 
-/// A world for a courier that runs under a pinned clock. The orchestrator
-/// exists, so the courier must live until its mail is acknowledged. The
-/// 20 ms no-orchestrator limit of [`world`] would stop it after 2 failed
-/// `pane get` calls in a row, which a loaded machine produces.
 fn pinned_clock_world(name: &str) -> (Harness, std::path::PathBuf) {
     let mut h = world(name);
     h.set("HORCH_NOW", "2030-01-01T00:00:00Z");
@@ -1433,8 +1415,6 @@ fn g60_pinned_courier_survives_a_herdr_outage() {
             .unwrap(),
     );
     wait_for_pane_state_observed(&h);
-    // The fake herdr answers `pane get` with an error while its state file
-    // is away: the courier sees its orchestrator vanish for a moment.
     let state = std::path::PathBuf::from(format!("{}.state.json", h.log.display()));
     let away = state.with_extension("away");
     std::fs::rename(&state, &away).unwrap();
@@ -1667,8 +1647,6 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
             String::from_utf8_lossy(&done.stderr)
         );
     }
-    // #177: the reviews are in, and the author has not run finish. It keeps
-    // waiting, with the original deadline, and is not reaped before it.
     let waits = workers::waiting(store.conn(), &worker).unwrap();
     assert_eq!(waits.len(), 1, "{waits:?}");
     assert_eq!(waits[0].kind, "reviewers");
@@ -1694,7 +1672,6 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
         "incomplete"
     );
 
-    // The background entry point is exercised independently of injected waits.
     let (h, store, run, worker, _agent) = pinned_worker("g70-progress-cli");
     let progress = h
         .horch(&["ledger", "progress", "waiting: background command"])
@@ -1943,10 +1920,6 @@ fn g62_ledger_wake_uses_run_workspace_and_records_login_queue_cause() {
         note.contains("queued, not yet acknowledged") && note.contains("needs /login"),
         "{note}"
     );
-    // `done` starts the courier before it pushes, so the courier and the
-    // push race for the login marker. The winner shows the notification: the
-    // courier shows it after `done` returned. Wait for the call, then check
-    // that the marker allowed exactly 1.
     let notifications = horch_e2e::harness::wait_for("login notification", || {
         let found: Vec<_> = h
             .calls_of("herdr")
@@ -1986,14 +1959,10 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
     });
 }
 
-/// #177: a watchdog pass whose orchestrator pane stays `unknown` (an agent
-/// herdr has not classified) ends within the push budget of #67, and its
-/// stall wake waits as orchestrator mail.
 #[test]
 fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let (mut h, _store, run, _worker, _agent) = pinned_worker("t177-unknown-orchestrator");
     h.set("HORCH_NO_WAKE", "0");
-    // A 2 s budget in place of the real 20 s.
     h.set("HORCH_FAULT", "done-push-budget-ms:2000");
     fake(&h, &["workspace", "create", "--label", "orchestrator"]);
     fake(
@@ -2011,8 +1980,6 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("orchestrator.id"), "w1:p1").unwrap();
-    // macOS scans a new executable at its first exec: keep that out of the
-    // timed pass.
     assert!(h.run(&["--version"]).status.success());
 
     let began = std::time::Instant::now();
@@ -2020,9 +1987,6 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let took = began.elapsed();
 
     assert_eq!(c["verdict"], "no_progress", "{c}");
-    // The pass waits for the orchestrator until the 2 s budget ends, and
-    // no longer: without a budget the readiness wait alone is 120 s, and
-    // the real budget is 20 s.
     assert!(
         took >= Duration::from_secs(2),
         "the pass took {took:?}, so it did not wait out the budget"

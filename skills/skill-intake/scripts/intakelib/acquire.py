@@ -73,7 +73,7 @@ class Caps:
 
 @dataclass
 class Source:
-    kind: str  # github | local | archive
+    kind: str
     input: str
     url: str | None = None
     ref: str | None = None
@@ -87,7 +87,7 @@ class Source:
 class Skipped:
     """Files a copy skipped: ACQ-02 symlinks and ACQ-03 special files."""
 
-    items: list[tuple[str, str, str]] = field(default_factory=list)  # (rule, relpath, detail)
+    items: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 def _check_ref(ref: str) -> str:
@@ -154,10 +154,6 @@ def _github(text: str, owner: str, repo: str, ref: str | None, sub: str) -> Sour
     )
 
 
-# ---- GitHub ---------------------------------------------------------------
-
-# The Claude sandbox routes network through a proxy it sets in these variables.
-# git keeps them and nothing else, so a sandboxed pane can clone from GitHub.
 _NET_ENV = (
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
@@ -177,9 +173,6 @@ def _git_config(file_allowed: bool) -> list[str]:
         "-c", "core.symlinks=false",
         "-c", f"protocol.file.allow={'always' if file_allowed else 'never'}",
         "-c", "submodule.recurse=false",
-        # The sandbox proxy closes a CONNECT without credentials and sends no
-        # 407, so git must send the proxy URL's credentials at once (T-33).
-        # The sandbox sets this in GIT_CONFIG_PARAMETERS, which _git_env drops.
         "-c", "http.proxyAuthMethod=basic",
     ]
 
@@ -218,8 +211,6 @@ def clone(src: Source, dest: Path) -> str:
         _git(["checkout", "--quiet", "--detach", sha], cfg, cwd=dest)
     return _git(["rev-parse", "HEAD"], cfg, cwd=dest)
 
-
-# ---- copy with caps -------------------------------------------------------
 
 class _Budget:
     def __init__(self, caps: Caps):
@@ -284,7 +275,6 @@ def _kind(mode: int) -> str:
 
 
 def _copy_file(src: Path, dst: Path, limit: int) -> None:
-    # O_NOFOLLOW: the file was a regular file at lstat; never follow a swap.
     fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(fd, "rb") as fin, open(dst, "xb") as fout:
         _stream(fin, fout, limit, str(src.name))
@@ -302,8 +292,6 @@ def _stream(fin, fout, limit: int, rel: str) -> int:
             raise Refused("ACQ-04", f"file over {limit} bytes", rel)
         fout.write(chunk)
 
-
-# ---- archives -------------------------------------------------------------
 
 def check_archive(zf: zipfile.ZipFile, caps: Caps) -> list[zipfile.ZipInfo]:
     """Refuse the whole archive on any bad entry (ACQ-01) or cap (ACQ-04)."""
@@ -350,14 +338,11 @@ def extract(archive: Path, dest: Path, caps: Caps) -> None:
                 with zf.open(info) as fin, open(target, "xb") as fout:
                     written += _stream(fin, fout, min(caps.file_bytes, info.file_size), info.filename)
             except (OSError, zipfile.BadZipFile) as e:
-                # A duplicate or clashing entry name, or a corrupt entry.
                 raise Refused("ACQ-01", f"an entry cannot be extracted ({type(e).__name__})", info.filename)
             if written > caps.total_bytes:
                 raise Refused("ACQ-01", f"uncompressed size over {caps.total_bytes} bytes")
             os.chmod(target, 0o644)
 
-
-# ---- a source that is itself a skill -------------------------------------
 
 def source_name(src: Source) -> str:
     """The folder name of the source: the subfolder, the repo, the folder or the archive stem."""
@@ -381,8 +366,6 @@ def wrap_root_skill(q: Path, name: str) -> str | None:
     os.replace(tmp, q / name)
     return name
 
-
-# ---- hashes and read-only -------------------------------------------------
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()

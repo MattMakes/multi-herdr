@@ -1,22 +1,4 @@
 #!/usr/bin/env node
-// Deterministic frame-stepping renderer and publish packager for the video pipeline.
-// Node built-ins only. Chrome is driven over the Chrome DevTools Protocol; ffmpeg and
-// ffprobe run as subprocesses.
-//
-//   render_frames.mjs --scene <path-or-url> --out <mp4-or-frames-dir> [--fps 60]
-//                     [--width 1920] [--height 1080] [--duration <sec>]
-//                     [--frames <count> | --frames <i,j,k>] [--reverse] [--transparent]
-//                     [--subframes 1|2|4|8] [--raster-sizes <json>]
-//   render_frames.mjs --scenes <timeline.json> --out-dir <dir> [--workers <n>]
-//                     [--subframes 1|2|4|8] [--sample]
-//   render_frames.mjs --scope-check <timeline.json> --before <dir> --after <dir> --fix <id,id>
-//   render_frames.mjs --self-notes <qa/self-notes.md> [--timeline <timeline.json>]
-//   render_frames.mjs --package <timeline.json> --master <render/master.mp4>
-//                     --out-dir <render/> [--aspects 16x9,9x16,1x1] [--cover-sec <sec>]
-//                     [--scene-clips <dir>]
-//   render_frames.mjs --self-test
-//
-// Exit codes: 0 success, 1 render or package failure, 2 usage error.
 
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -58,8 +40,6 @@ const ignore = () => undefined;
 const pusher = (list) => (item) => list.push(item);
 const callWith = (arg) => (fn) => fn(arg);
 
-// ---------------------------------------------------------------- subprocesses
-
 const joiner = (chunks) => () => Buffer.concat(chunks).toString();
 
 function collect(stream) {
@@ -96,8 +76,6 @@ export async function probeFrameCount(file) {
   return count;
 }
 
-// The master and every export share these H.264 settings: CFR, High profile at level 4.2,
-// a 1 s GOP and 2 B-frames, with the moov atom at the front for streaming.
 export function h264Args(fps) {
   return [
     "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
@@ -106,8 +84,6 @@ export function h264Args(fps) {
   ];
 }
 
-// Native ffmpeg aac raised the true peak by up to 4 dB; AudioToolbox aac_at (macOS) did not.
-// Use aac_at when this ffmpeg lists it, else native aac. Gate loudness on the encoded MP4.
 let aacEncoder;
 const listsAacAt = () => /^\s*A\S*\s+aac_at\s/m.test(spawnSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8" }).stdout ?? "");
 export function aacArgs() {
@@ -119,8 +95,6 @@ export function encodeFrames(framesDir, fps, outFile) {
   const input = ["-framerate", String(fps), "-start_number", "0", "-i", join(framesDir, "frame_%06d.png")];
   return ffmpeg([...input, ...h264Args(fps), outFile]);
 }
-
-// ---------------------------------------------------------------- CDP client
 
 const timeoutError = (what) => new Error(`${what}: no reply in ${CDP_TIMEOUT_MS / 1000} s`);
 const eventKey = (method, sessionId) => `${sessionId ?? ""}|${method}`;
@@ -137,8 +111,6 @@ function withTimeout(promise, what) {
   return Promise.race([promise, deadline.promise]).finally(deadline.cancel);
 }
 
-// Chrome can deadlock in its own start-up fork before it prints the DevTools URL.
-// Each start gets CHROME_START_MS. A stuck Chrome is killed and started again, CHROME_TRIES in all.
 class ChromeStartTimeout extends Error {}
 
 function chromeStartDeadline() {
@@ -203,15 +175,6 @@ class Cdp {
   }
 }
 
-// Flags that remove the main sources of pixel drift between runs: software raster,
-// fixed device scale, sRGB output, grayscale font antialiasing, no background throttling.
-// A window below Chrome's minimum size can stall Page.captureScreenshot for good, so the
-// window never goes below WINDOW_MIN; Emulation.setDeviceMetricsOverride sets the viewport.
-// --allow-file-access-from-files lets a file:// scene read its own image pixels. Without it
-// the canvas is tainted and the pre-upscale check cannot run. It has no effect on http pages.
-// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
-// during its start leaves that copy on the disk, and macOS records each copy as one more
-// "Google Chrome" in its privacy lists. NO_CODE_SIGN_CLONE stops the copy.
 const NO_CODE_SIGN_CLONE = "--disable-features=MacAppCodeSignClone";
 const WINDOW_MIN = { width: 800, height: 600 };
 
@@ -276,7 +239,6 @@ const childPids = (pid) => pidList(spawnSync("pgrep", ["-P", String(pid)], { enc
 const livePids = (pids) => (pids.length ? pidList(spawnSync("ps", ["-o", "pid=", "-p", pids.join(",")], { encoding: "utf8" }).stdout ?? "") : []);
 const forceKill = (pids) => pids.length && spawnSync("kill", ["-KILL", ...pids]);
 
-// Poll for up to 5 s of real time, then SIGKILL the helpers that are still alive.
 async function helpersGone(pids, tries = 500) {
   const alive = livePids(pids);
   if (!alive.length || tries === 0) return forceKill(alive);
@@ -284,8 +246,6 @@ async function helpersGone(pids, tries = 500) {
   return helpersGone(alive, tries - 1);
 }
 
-// The Chrome helpers (network service, GPU, renderers) outlive the main process for some ms,
-// and the network service writes into userDataDir as it exits. Wait for them, then remove the dir.
 async function stopChrome(browser) {
   browser.ws?.close();
   const helpers = childPids(browser.proc.pid);
@@ -295,7 +255,7 @@ async function stopChrome(browser) {
 }
 
 function killChildren(proc) {
-  spawnSync("pkill", ["-KILL", "-P", String(proc.pid)]); // only the children of this stuck Chrome, never by name
+  spawnSync("pkill", ["-KILL", "-P", String(proc.pid)]);
 }
 
 const isStartTimeout = (error) => error instanceof ChromeStartTimeout;
@@ -335,8 +295,6 @@ async function evaluate(cdp, sessionId, expression) {
   return d ? fail(`page script failed: ${d.exception?.description ?? d.text}`) : res.result.value;
 }
 
-// ---------------------------------------------------------------- scene render mode
-
 export function sceneUrl(target) {
   const q = target.indexOf("?");
   const path = q < 0 ? target : target.slice(0, q);
@@ -359,8 +317,6 @@ function framesFromTime(duration, metaDuration, fps) {
   return range(Math.round(sec * fps));
 }
 
-// "--frames 30" is a count (frames 0..29). "--frames 0,15,30" is a list. Write a single
-// frame index as "30," so it is not read as a count.
 export function frameList({ frames, duration, fps, metaDuration, reverse }) {
   const raw = frames === undefined ? framesFromTime(duration, metaDuration, fps) : parseFrames(frames);
   check(raw.length > 0, "no frames to render", UsageError);
@@ -392,8 +348,6 @@ function renderTarget({ out, width, height, transparent }) {
   return { toMp4, framesDir, out: resolve(out) };
 }
 
-// Use the tab Chrome opened at launch. A tab from Target.createTarget can stay in the
-// background, where it stops producing frames and Page.captureScreenshot never returns.
 async function openPage(cdp, { width, height, transparent }) {
   const { targetInfos } = await cdp.send("Target.getTargets");
   const page = targetInfos.find((t) => t.type === "page") ?? fail("Chrome opened no page target");
@@ -431,18 +385,12 @@ async function captureAt(page, time, file) {
 
 const captureFrame = (page, f) => captureAt(page, f, join(page.framesDir, frameName(f)));
 
-// ---------------------------------------------------------------- subframe motion blur
-
 export const SUBFRAME_COUNTS = [1, 2, 4, 8];
 export const subName = (i) => `sub_${String(i).padStart(6, "0")}.png`;
 const avgName = (i) => `avg_${String(i).padStart(6, "0")}.png`;
 
-// The shutter of frame k opens at k and spans 1 frame: subframe j seeks k + j / n.
-// n is a power of 2, so every seek time is exact in binary.
 export const subframeTimes = (f, n) => range(n).map((j) => f + j / n);
 
-// Subframe file of frame f: by its rank in the sorted frame list, so a --reverse
-// capture writes the same files.
 const shotAt = (page, base) => (t, j) => [t, join(page.subDir, subName(base + j))];
 const takeShot = (page) => ([t, file]) => captureAt(page, t, file);
 
@@ -451,8 +399,6 @@ function captureSubframes(page, sorted, f) {
   return inSequence(shots, takeShot(page));
 }
 
-// ffmpeg tmix averages each window of n subframes; select keeps the last frame of each
-// window, the first one with a full window. Output frame i belongs to sorted[i].
 export async function averageSubframes(subDir, n, sorted, framesDir) {
   const filter = `tmix=frames=${n},select='eq(mod(n,${n}),${n - 1})'`;
   const input = ["-framerate", String(n), "-start_number", "0", "-i", join(subDir, "sub_%06d.png")];
@@ -526,17 +472,10 @@ export async function renderScene(opts) {
   return launchAndRender(opts, target).finally(frameDropper(target));
 }
 
-// ---------------------------------------------------------------- raster size report
-
-// video-qa check raster_upscale reads natural vs drawn pixel sizes of every raster image.
-// Format and rules: skills/video-qa/references/motion-checks.md, check 18. How the
-// render samples them: references/raster-sizes.md.
 export const RASTER_STEP_SEC = 0.1;
 export const PRE_UPSCALE_FACTOR = 2;
 export const PRE_UPSCALE_PSNR_DB = 40;
 
-// The probe runs in the page before the scene scripts. It keeps the <img> draws of every 2D
-// canvas for the current seek: the first drawImage or clearRect after a seek drops older draws.
 function canvasDraws(probe, canvas) {
   const entry = probe.canvases.get(canvas);
   if (entry?.gen === probe.gen) return entry.draws;
@@ -545,7 +484,6 @@ function canvasDraws(probe, canvas) {
   return fresh.draws;
 }
 
-// The pixel size of an <img> or a <video> frame.
 function sourceSize(img) {
   return img instanceof HTMLVideoElement ? [img.videoWidth, img.videoHeight] : [img.naturalWidth, img.naturalHeight];
 }
@@ -554,7 +492,6 @@ function isDrawable(img) {
   return (img instanceof HTMLImageElement || img instanceof HTMLVideoElement) && sourceSize(img)[0] > 0;
 }
 
-// drawImage(img, dx, dy), (img, dx, dy, dw, dh) or (img, sx, sy, sw, sh, dx, dy, dw, dh).
 function drawSource(img, rest) {
   return rest.length === 8 ? [rest[2], rest[3]] : sourceSize(img);
 }
@@ -597,8 +534,6 @@ const PROBE_FUNCTIONS = [canvasDraws, sourceSize, isDrawable, drawSource, drawDe
 const PROBE_SCRIPT = `(() => {\n${PROBE_FUNCTIONS.map(String).join("\n")}\nrasterProbe();\n})();`;
 const installRasterProbe = (cdp, sessionId) => cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE_SCRIPT }, sessionId);
 
-// The functions below run in the page (measureScript sends their source). They use only
-// browser globals and each other. A sample is [url, natural size, drawn CSS size], or null.
 function rasterName(url) {
   const base = new URL(".", location.href).href;
   const other = url.startsWith("data:") ? `${url.slice(0, 40)}...` : url;
@@ -630,7 +565,6 @@ async function loadNatural(url) {
   return img ? [img.naturalWidth, img.naturalHeight] : null;
 }
 
-// The pixel size of the image file, decoded once per url.
 function naturalSize(url) {
   const cache = (window.__rasterNatural ??= new Map());
   return cache.get(url) ?? cache.set(url, loadNatural(url)).get(url);
@@ -644,7 +578,6 @@ function pixelsOf(canvas) {
   return canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
 }
 
-// Page functions are sent as source text, so each one is a named function declaration.
 function channelError(a, b, i) {
   return (a[i] - b[i]) ** 2;
 }
@@ -685,7 +618,6 @@ async function detectDetail(url, natural, factor, threshold) {
   return psnr > threshold ? { real_px: real, detail_scale: factor, detail_psnr_db: Math.round(psnr * 10) / 10 } : null;
 }
 
-// A check that cannot run must not read as a pass: the report keeps the error.
 function detailError(e) {
   return { detail_error: String(e?.message ?? e) };
 }
@@ -705,7 +637,6 @@ function fitScales(box, n) {
   return { contain, cover: Math.max(box[0] / n[0], box[1] / n[1]), none: 1, "scale-down": Math.min(1, contain) };
 }
 
-// The drawn size of an image of natural size n in a box, by object-fit rules.
 function fitSize(mode, box, n) {
   const k = fitScales(box, n)[mode];
   return k === undefined ? box : [n[0] * k, n[1] * k];
@@ -715,7 +646,6 @@ function trimmed(text) {
   return text.trim();
 }
 
-// Split a computed CSS list at the commas that are not inside parentheses.
 function splitLayers(text) {
   return text.split(/,(?![^(]*\))/).map(trimmed);
 }
@@ -745,7 +675,6 @@ function backgroundSize(text, box, n) {
   return text === "cover" || text === "contain" ? fitSize(text, box, n) : lengthSize(text, box, n);
 }
 
-// An element box that shows the image at url with the fit mode.
 async function boxSample(el, url, mode) {
   const r = el.getBoundingClientRect();
   const n = isRaster(url) && isShown(el, r) ? await naturalSize(url) : null;
@@ -766,19 +695,16 @@ function svgImageSample(el) {
   return el instanceof SVGImageElement ? boxSample(el, new URL(el.href.baseVal, document.baseURI).href, svgFit(el)) : null;
 }
 
-// A poster shows until the video has a frame, or while it is paused at 0 and never played.
 function posterSample(v) {
   const posterUp = v.readyState < 2 || (v.paused && v.played.length === 0 && v.currentTime === 0);
   return posterUp ? boxSample(v, v.poster, getComputedStyle(v).objectFit) : null;
 }
 
-// "nearest" when the context or the canvas CSS turns smoothing off.
 function drawFacts(d, pixelated) {
   const sampling = d.smooth && !pixelated ? "smooth" : "nearest";
   return d.video ? { source: "video", sampling } : { sampling };
 }
 
-// `this` is the canvas: its scale in CSS px per canvas px, and its CSS image-rendering.
 function scaledDraw(d) {
   const size = [d.size[0] * this.scale[0], d.size[1] * this.scale[1]];
   return [d.src, d.natural, size, drawFacts(d, this.pixelated)];
@@ -792,7 +718,6 @@ function canvasSamples([canvas, entry]) {
   return drawn ? entry.draws.map(scaledDraw, { scale, pixelated }) : [];
 }
 
-// `this` is the background box of 1 element.
 async function layerSample(layer, i) {
   const url = layerUrl(layer);
   const n = isRaster(url) ? await naturalSize(url) : null;
@@ -828,7 +753,6 @@ function usableSample(s) {
   return Boolean(s) && s[1][0] > 0 && s[1][1] > 0;
 }
 
-// A video frame has no file to decode, so it gets no pre-upscale check.
 async function enrichSample([url, n, size, facts]) {
   const detail = facts?.source === "video" ? null : await detailFacts(url, n, 2, 40);
   return [url, n, size, { ...facts, ...detail }];
@@ -866,7 +790,6 @@ return measureRasters();
 const gridFrame = (fps) => (k) => Math.round(k * RASTER_STEP_SEC * fps);
 const below = (count) => (f) => f < count;
 
-// The frames nearest the RASTER_STEP_SEC grid, inside frames 0..count-1.
 export function rasterFrames(count, fps) {
   const steps = Math.ceil(count / fps / RASTER_STEP_SEC - 1e-9);
   return [...new Set(range(steps).map(gridFrame(fps)))].filter(below(count));
@@ -883,13 +806,11 @@ function keepLargest(best, s) {
   return best;
 }
 
-// 1 sample per image per time, the largest scale, so 2 copies of 1 image do not double a run.
 export const largestPerSource = (samples) => [...samples.reduce(keepLargest, new Map()).values()].sort(byTimeThenSrc);
 
 const sampleLine = (s) => `    ${JSON.stringify(s)}`;
 const samplesBlock = (lines) => (lines ? `\n${lines}\n  ` : "");
 
-// 1 sample a line, so a long film stays readable and small.
 function writeRasterReport(file, samples) {
   const lines = largestPerSource(samples).map(sampleLine).join(",\n");
   mkdirSync(dirname(file), { recursive: true });
@@ -905,16 +826,12 @@ async function measureFrame(page, f) {
 
 const measureInto = (page, samples) => async (f) => samples.push(...(await measureFrame(page, f)));
 
-// After the capture, the same page seeks the grid frames again and reads sizes only, with
-// no screenshot, so the report costs about 1 seek per 0.1 s of scene.
 async function measureRasterSizes(page, order, file) {
   const samples = [];
   await inSequence(rasterFrames(Math.max(...order) + 1, page.fps), measureInto(page, samples));
   writeRasterReport(file, samples);
 }
 
-// Scene samples move to film time. Samples in the tail handle are dropped: the next
-// scene covers that time.
 const inScene = (s) => (x) => x.t_sec < s.duration_sec - 1e-9;
 const toFilm = (s) => (x) => ({ ...x, t_sec: roundTime(s.start_sec + x.t_sec) });
 const readSamples = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).samples : []);
@@ -925,8 +842,6 @@ function writeFilmRaster(timelineFile, dir) {
   writeRasterReport(file, loadTimeline(timelineFile).scenes.flatMap(filmSamples(dir)));
   return file;
 }
-
-// ---------------------------------------------------------------- timeline helpers
 
 function checkScene(file, s) {
   check(typeof s.id === "string" && s.id, `${file}: a scene has no "id"`);
@@ -951,7 +866,6 @@ function addWord(lines, word, maxChars) {
   return fits ? [...lines.slice(0, -1), `${last} ${word}`] : [...lines, word];
 }
 
-// Greedy wrap into lines of at most maxChars. A word longer than maxChars gets its own line.
 const addWordUpTo = (maxChars) => (lines, word) => addWord(lines, word, maxChars);
 export const wrapLines = (words, maxChars) => words.reduce(addWordUpTo(maxChars), []);
 
@@ -969,8 +883,6 @@ function sceneCues(s, maxChars, maxLines) {
 
 const cuesWithin = (maxChars, maxLines) => (s) => sceneCues(s, maxChars, maxLines);
 
-// One or more cues per scene: narration (or caption) text, at most 2 lines of 42 chars
-// per cue. A scene's time span is shared between its cues in proportion to word count.
 export function captionCues(timeline, { maxChars = 42, maxLines = 2 } = {}) {
   return timeline.scenes.flatMap(cuesWithin(maxChars, maxLines));
 }
@@ -1014,9 +926,6 @@ function chapterWarnings(list, total) {
   return [...few, ...short];
 }
 
-// A chapter starts at scene 0 and at every scene with a "title". When no scene has a
-// title, every scene starts a chapter. Times are floored to whole seconds.
-// A "long" timeline lists its chapters in meta.chapters; each start_sec is floored.
 const isLong = (meta) => meta.format === "long";
 const declaredChapter = (c) => ({ sec: Math.floor(c.start_sec), title: String(c.title).trim() });
 const chapterListFor = (timeline) => (isLong(timeline.meta) && Array.isArray(timeline.meta.chapters)
@@ -1029,15 +938,11 @@ export function chapters(timeline) {
   return { text: list.map((c) => `${stamp(c.sec)} ${c.title}\n`).join(""), warnings: chapterWarnings(list, total) };
 }
 
-// ---------------------------------------------------------------- parallel scenes and scope samples
-
-// About 60 % of the CPUs, at least 1 and at most 8. Each worker runs its own Chrome.
 export const defaultWorkers = (cpus = availableParallelism()) => Math.max(1, Math.min(8, Math.floor(cpus * 0.6)));
 
 const isHtml = (path) => /\.html?(\?|$)/i.test(path);
 const platePath = (s) => (typeof s.plate === "string" && s.plate ? s.plate : null);
 
-// The source of a scene: an HTML page that renders frames, or a file that is compared as bytes.
 export function sceneSource(root, s) {
   const plate = platePath(s);
   const html = plate && isHtml(plate) ? plate : `scenes/${s.id}/index.html`;
@@ -1045,7 +950,6 @@ export function sceneSource(root, s) {
   return page ? { kind: "html", path: join(root, html) } : { kind: "file", path: join(root, plate ?? `captures/${s.id}.mp4`) };
 }
 
-// 5 frames per scene: first, quarters and last, inside the scene's own frames.
 export const sampleFrames = (count) => [...new Set([0, Math.floor(count / 4), Math.floor(count / 2), Math.floor((3 * count) / 4), count - 1])];
 
 function sceneJob(root, plan, s, opts) {
@@ -1073,7 +977,6 @@ function hashPlate(job) {
 const runJob = (plan, opts) => (job) =>
   job.source.kind === "html" ? run(process.execPath, workerArgs(job, plan, opts)) : hashPlate(job);
 
-// A lane takes the next job when its last one ends. Jobs keep their timeline order in the report.
 async function lane(queue, fn, settled) {
   const job = queue.shift();
   if (!job) return;
@@ -1112,9 +1015,6 @@ async function scenesWithRaster(opts) {
   return opts.rasterDir ? { ...report, raster_sizes: writeFilmRaster(opts.timelineFile, opts.rasterDir) } : report;
 }
 
-// --scenes renders every HTML scene to <out-dir>/<id>.mp4 with its tail handle, and writes
-// render/raster-sizes.json next to timeline.json. With --sample it writes 5 sampled frames
-// per HTML scene and a plate hash per file scene to <out-dir>/<id>/, and no raster report.
 export async function renderScenes(opts) {
   const rasterDir = opts.sample ? null : mkdtempSync(join(tmpdir(), "video-render-raster-"));
   return scenesWithRaster({ ...opts, rasterDir }).finally(rasterDir ? removeDir(rasterDir) : ignore);
@@ -1132,7 +1032,6 @@ function sampleChange(before, after, id, names) {
 
 const isHit = ([hit]) => hit;
 
-// The first problem with the 2 sample lists of a scene, or null when they match by name.
 function listProblem(before, after, a, b) {
   const rules = [
     [!hasFiles(a), `no samples in ${before}`],
@@ -1152,7 +1051,6 @@ const notIn = (list) => (id) => !list.includes(id);
 const changeOf = (before, after) => (id) => ({ id, reason: sceneChange(before, after, id) });
 const hasReason = (c) => Boolean(c.reason);
 
-// Revision scope check: every scene outside the fix must keep byte-identical samples.
 export function scopeCheck({ timelineFile, before, after, fix }) {
   const ids = loadTimeline(timelineFile).scenes.map(sceneId);
   const unknown = fix.filter(notIn(ids));
@@ -1162,10 +1060,7 @@ export function scopeCheck({ timelineFile, before, after, fix }) {
   return { passed: changed.length === 0, fix, checked, changed };
 }
 
-// ---------------------------------------------------------------- self-notes gate
-
 export const SELF_NOTES_MIN = 3;
-// A note is a list item that starts with a film time, M:SS or M:SS.s, bare or in brackets.
 const NOTE_LINE = /^\s*(?:[-*]|\d+\.)\s+\[?(\d+):([0-5]\d(?:\.\d+)?)\]?\s+\S/;
 
 const noteTime = (line) => {
@@ -1184,8 +1079,6 @@ export function selfNotes(text, durationSec) {
   const errors = [...tooFew(times.length), ...late];
   return { passed: errors.length === 0, notes: times.length, times, errors };
 }
-
-// ---------------------------------------------------------------- reframing
 
 const even = (v) => Math.max(2, Math.floor(v / 2) * 2);
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
@@ -1212,9 +1105,6 @@ function axisStart(center, len, span, srcLen) {
 
 const spanFits = (span, len) => !span || span[1] - span[0] <= len;
 
-// The largest crop of the target aspect that fits the source, centred on the focal point
-// and then shifted so the union of critical regions stays inside. When the union cannot
-// fit in the crop, the result is "fit": the whole frame is scaled and padded.
 export function cropWindow(src, out, focal, regions = []) {
   const size = cropSize(src, out.width / out.height);
   const spans = regions.length ? [regionSpan(regions, 0, src.width), regionSpan(regions, 1, src.height)] : [null, null];
@@ -1268,7 +1158,6 @@ const addFrames = (n, p) => n + p.frames;
 const clipFileFor = (ctx) => (s) => sceneClip(ctx.sceneClips, s.id, ctx.aspect);
 const planFor = (ctx) => (s, i) => planScene(s, i, ctx);
 
-// Pad (or cut) the audio to the exact video length. A mux that stops at the first stream end cut 3 frames.
 function padAudio(plans, fps) {
   const samples = Math.round((plans.reduce(addFrames, 0) / fps) * 48000);
   return `[0:a:0]aresample=48000,apad,atrim=end_sample=${samples}[a]`;
@@ -1289,8 +1178,6 @@ async function exportAspect(ctx) {
   await ffmpeg([...args, ...audioArgs(ctx.info), ...h264Args(ctx.info.fps), ctx.outFile]);
   return plans.map(modeOf);
 }
-
-// ---------------------------------------------------------------- package mode
 
 const GIF_FILTER = "fps=15,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5";
 const PREVIEW_MP4_ARGS = ["-vf", "scale=1280:-2:flags=lanczos", "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"];
@@ -1316,7 +1203,6 @@ async function writeCover({ master, outDir, coverSec, report }) {
   report.outputs.push(file);
 }
 
-// preview.mp4 is the full film, so it keeps the master frame count.
 async function writePreviewMp4({ master, outDir, report }) {
   const mp4 = join(outDir, "preview.mp4");
   await ffmpeg(["-i", master, "-an", ...PREVIEW_MP4_ARGS, mp4]);
@@ -1336,7 +1222,6 @@ async function writePreviews(ctx) {
   await writePreviewGif(ctx);
 }
 
-// [name, path] of master.mp4 first, then of every derived MP4.
 function encodedFiles({ master, outDir, aspects }) {
   const files = [["master.mp4", master]];
   for (const name of ["preview", ...aspects]) {
@@ -1349,7 +1234,6 @@ async function probeEntry([name, file]) {
   return [name, await probeFrameCount(file)];
 }
 
-// "<name>=<count>" for each derived entry whose count differs from the first (master) entry.
 function frameMismatches([[, master], ...derived]) {
   const bad = [];
   for (const [name, count] of derived) {
@@ -1358,7 +1242,6 @@ function frameMismatches([[, master], ...derived]) {
   return bad;
 }
 
-// Every derived MP4 must decode to the master frame count: a packaging step never cuts the film.
 async function encodedFrameCounts(ctx) {
   const entries = await Promise.all(encodedFiles(ctx).map(probeEntry));
   const mismatches = frameMismatches(entries);
@@ -1374,10 +1257,8 @@ async function writeAspect(ctx, aspect) {
   ctx.report.warnings.push(...modes.filter((m) => m.mode === "fit").map((m) => fitWarning(aspect, m.scene)));
 }
 
-// A "long" film ships 16x9 only. A short cut is a separate "short" production.
 export const publishAspects = (meta, aspects) => (isLong(meta) ? aspects.filter((a) => a === "16x9") : aspects);
 
-// The cover of a "long" film comes from the hero chapter, the last one: 75 % into it.
 const hookCover = (hook) => hook.start_sec + hook.duration_sec * 0.75;
 const heroCover = (last, total) => last.start_sec + (total - last.start_sec) * 0.75;
 const heroChapter = (meta) => (isLong(meta) ? meta.chapters?.at(-1) : undefined);
@@ -1404,8 +1285,6 @@ export async function packagePublish(opts) {
   ctx.report.frame_counts = await encodedFrameCounts(ctx);
   return ctx.report;
 }
-
-// ---------------------------------------------------------------- self-test
 
 const json = (v) => JSON.stringify(v);
 const assertEq = (actual, expected, what) => check(json(actual) === json(expected), `${what}: expected ${json(expected)}, got ${json(actual)}`);
@@ -1447,7 +1326,6 @@ window.__seekToFrame = function (frameIndex, fps) {
 </script></body></html>`;
 const SCENE_HTML = sceneHtml();
 
-// 2 HTML scenes and 1 capture plate. Scene a has a 0.3 s crossfade tail handle.
 const SCOPE_TIMELINE = {
   meta: { id: "scope", fps: 10, width: 64, height: 48, duration_sec: 1.5 },
   scenes: [
@@ -1664,13 +1542,11 @@ const testSamples = () => {
 const pick = (r) => ({ passed: r.passed, notes: r.notes });
 const testSelfNotes = () => NOTE_CASES.forEach(([args, want, what]) => assertEq(pick(selfNotes(...args)), want, what));
 
-// A raw row of a PNG, as bytes: gray by default, or 3 bytes a pixel for rgb24.
 function grayRow(png, y, width, format = "gray") {
   const args = ["-v", "error", "-i", png, "-vf", `crop=${width}:1:0:${y},format=${format}`, "-f", "rawvideo", "-"];
   return [...spawnSync("ffmpeg", args).stdout];
 }
 
-// Subframe i is a flat grey of value 30 x i.
 const greyPlate = (sub) => (i) =>
   ffmpeg(["-f", "lavfi", "-i", `color=c=0x${pad((i * 30).toString(16)).repeat(3)}:s=4x4,format=rgb24`, "-frames:v", "1", join(sub, subName(i))]);
 const redOf = (dir) => (f) => grayRow(join(dir, frameName(f)), 0, 1, "rgb24")[0];
@@ -1684,7 +1560,6 @@ async function testAverage(root) {
   assertEq([3, 9].map(redOf(out)), [45, 165], "window means");
 }
 
-// Pixels between the background (22) and the box (180) on the row through the box.
 const blurWidth = (png) => grayRow(png, 18, 64).filter((v) => v > 32 && v < 170).length;
 
 const renderBlur = (root) => (n) => renderScene({ ...sceneBase(root), out: join(root, `blur${n}`), frames: "2,", subframes: n });
@@ -1733,8 +1608,6 @@ async function testParallelScenes(root) {
 
 const sampleInto = (timelineFile, outDir) => renderScenes({ timelineFile, outDir, workers: 2, subframes: 1, sample: true });
 
-// Recolour the box of scene `id`, sample every scene into <dir>/<round>, and check
-// the samples against <dir>/before with a fix in scene a.
 async function recolourRound({ dir, timelineFile }, id, colour, round) {
   writeFileSync(join(dir, `scenes/${id}/index.html`), sceneHtml(colour));
   await sampleInto(timelineFile, join(dir, round));
@@ -1764,7 +1637,6 @@ const testLargestPerSource = () => {
   assertEq(got, [rasterSample(0, "a.png", 100), rasterSample(0.1, "a.png", 130), rasterSample(0.1, "b.png", 100)], "largest scale per image and time");
 };
 
-// Each fixture draws a 100 px PNG. One <img> scene, and one scene with every other image kind.
 const imgHtml = (px, file = "img.png") => `<!doctype html><html><body style="margin:0;background:#111">
 <img src="${file}" style="width:${px}px;height:${px}px"><script>
 window.__videoMeta = { duration: 0.5 };
@@ -1808,7 +1680,6 @@ const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
 const rasterRender = (scene, out, rasterSizes) => renderScene({ scene, out, fps: 10, width: 720, height: 160, rasterSizes });
 const sizeLine = (s) => `${s.src} ${s.natural_px.join("x")} -> ${s.drawn_px.join("x")}`;
 
-// Every image kind, a vector SVG that is skipped, and a 100 px video clip for a canvas draw.
 async function rasterKindsDir(root) {
   const dir = await rasterDir(root, "raster-kinds", ["bg.png", "canvas.png", "poster.png", "svg.png"]);
   writeFileSync(join(dir, "vector.svg"), VECTOR_SVG);
@@ -1831,7 +1702,6 @@ async function testRasterKinds(root) {
 const KIND_FILES = ["bg.png", "canvas.png", "clip.mp4", "poster.png", "svg.png"];
 const drawFactsOf = (samples, src) => samples.filter((s) => s.src === src).map((s) => [s.source, s.sampling, s.real_px])[0];
 
-// A canvas video draw is marked as video and nearest (smoothing off); an image draw is smooth.
 function checkDrawFacts(samples) {
   assertEq(drawFactsOf(samples, "clip.mp4"), ["video", "nearest", undefined], "canvas video draw");
   assertEq(drawFactsOf(samples, "canvas.png"), [undefined, "smooth", undefined], "canvas image draw");
@@ -1846,7 +1716,6 @@ detail, errors = qa_video.check_raster_upscale(ctx)
 print(detail, errors)
 sys.exit(1 if errors or detail.get("skipped") else 0)`;
 
-// The video-qa check itself, run on a report: true when it passes.
 function qaRasterPasses(file) {
   const r = spawnSync("python3", ["-I", "-B", "-c", RASTER_QA, QA_SCRIPTS, file], { encoding: "utf8" });
   check(r.status === 0 || r.status === 1, `qa_video raster_upscale exited ${r.status}: ${r.stderr}`);
@@ -1864,7 +1733,6 @@ const RASTER_TIMELINE = {
 const noQa = () => !existsSync(join(QA_SCRIPTS, "qa_video.py"));
 const NO_QA = "qa_video.py is not next to this skill; report format checked only";
 
-// --scene with a 100 px image drawn at 100 px passes raster_upscale.
 async function testRasterClean(root) {
   const dir = await rasterDir(root, "raster-clean", ["img.png"]);
   writeFileSync(join(dir, "clean.html"), imgHtml(100));
@@ -1901,7 +1769,6 @@ async function rasterProject(root) {
 const timeAndWidth = (x) => `${x.t_sec} ${x.drawn_px[0]}`;
 const FILM_SAMPLES = ["0 100", "0.1 100", "0.2 100", "0.3 100", "0.4 100", "0.5 130", "0.6 130", "0.7 130", "0.8 130", "0.9 130"];
 
-// --scenes with a 100 px image drawn at 130 px in scene b fails raster_upscale.
 async function testRasterScenes(root) {
   const dir = await rasterProject(root);
   const report = await renderScenes({ timelineFile: join(dir, "timeline.json"), outDir: join(dir, "render/scenes"), workers: 2, subframes: 1, sample: false });
@@ -1972,8 +1839,6 @@ async function selfTest() {
   console.log(`${passed} of ${results.length} tests passed`);
   return passed === results.length;
 }
-
-// ---------------------------------------------------------------- CLI
 
 const OPTIONS = {
   scene: { type: "string" }, out: { type: "string" }, fps: { type: "string" },
@@ -2084,6 +1949,5 @@ function die(e) {
   process.exit(e instanceof UsageError || String(e.code).startsWith("ERR_PARSE_ARGS") ? 2 : 1);
 }
 
-// Run the CLI only when this file is the entry point, so assemble_master.mjs can import it.
 const isEntry = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isEntry) Promise.resolve().then(main).then((code) => process.exit(code), die);

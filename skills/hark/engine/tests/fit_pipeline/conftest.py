@@ -12,9 +12,6 @@ from scipy import signal
 SR = 48000
 
 
-# ---------------------------------------------------------------- synthetic recordings (fit.md S1 .. S5)
-
-
 def _s1(rng: np.random.Generator) -> np.ndarray:
     n = int(0.8 * SR)
     t = np.arange(n) / SR
@@ -62,7 +59,6 @@ def _s4() -> np.ndarray:
     return y
 
 
-# fit.md places S1 at 200 ms, but bed detection only finds an onset under 120 ms (fit-auto.md); see the report.
 BED_LEAD_S = 0.1
 
 

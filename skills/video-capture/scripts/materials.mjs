@@ -1,11 +1,3 @@
-// materials.mjs - capture the brand materials of 1 product page. Node built-ins and Chrome over CDP.
-// Usage: node "<skill-dir>/scripts/materials.mjs" <project-dir> <url> [--allow-network]
-//        node "<skill-dir>/scripts/materials.mjs" --check <project-dir>
-//        node "<skill-dir>/scripts/materials.mjs" --self-test
-// Writes <project-dir>/materials/: first-screen.png, full-page.png, colors.json, fonts.json,
-// wording.md, logo-<n>.<ext> and materials.md, the list of every file with its source URL.
-// A local URL (file:, data:, localhost, 127.0.0.1, ::1) needs no flag. Any other URL, and any
-// request to another host, needs --allow-network, which only the operator may pass.
 import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,19 +5,19 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const MAX_SHOT_HEIGHT = 16384; // Chrome cannot capture a taller image
+const MAX_SHOT_HEIGHT = 16384;
 const LOCAL_PROTOCOLS = ['file:', 'data:', 'about:', 'blob:'];
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 const MIME_EXT = { 'image/svg+xml': 'svg', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
   'image/gif': 'gif', 'image/avif': 'avif', 'image/x-icon': 'ico', 'image/vnd.microsoft.icon': 'ico' };
-const ARG_RULES = [ // first match is the usage error
+const ARG_RULES = [
   [(o) => !o.projectDir || !o.url, () => 'materials.mjs needs a project folder and a URL.'],
   [(o) => !URL.canParse(o.url), (o) => `${o.url} is not a URL.`],
   [(o) => !isLocalUrl(o.url) && !o.allowNetwork,
     (o) => `${o.url} is not a local URL. Pass --allow-network only when the operator agrees to read this site.`],
   [() => !existsSync(CHROME), () => `Chrome not found at ${CHROME}. Set CHROME_PATH or install Google Chrome.`],
 ];
-const LOGO_SOURCES = [ // first match reads the logo bytes
+const LOGO_SOURCES = [
   [(logo) => logo.kind === 'svg', (logo) => ({ bytes: Buffer.from(svgFile(logo.markup)), ext: 'svg' })],
   [(logo) => logo.url.startsWith('data:'), (logo) => dataUrlBytes(logo.url)],
   [() => true, urlBytes],
@@ -38,7 +30,6 @@ const fetchBase64 = (url) => `fetch(${JSON.stringify(url)}).then((r) => r.ok ? r
 
 process.exitCode = await (MODES[process.argv[2]] || captureMode)(process.argv.slice(2));
 
-// ---- arguments and the network rule ----
 function usage(message) {
   console.error(`${message}\nUsage: node materials.mjs <project-dir> <url> [--allow-network] | --check <project-dir> | --self-test`);
   return 2;
@@ -71,18 +62,17 @@ function timelineMeta(file) {
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).meta || {} : {};
 }
 
-function viewport(projectDir) { // the timeline size, so a rebuilt interface matches the film frame
+function viewport(projectDir) {
   const meta = timelineMeta(join(projectDir, 'timeline.json'));
   return { width: meta.width || 1920, height: meta.height || 1080 };
 }
 
-// ---- capture mode ----
 function captureMode(args) {
   const opts = parseArgs(args), error = argError(opts);
   return error ? usage(error) : runCapture(opts);
 }
 
-function freshDir(dir) { // the folder is this script's output: replace it whole
+function freshDir(dir) {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -154,7 +144,6 @@ async function shootFullPage(page, rows) {
   addRow(rows, 'full-page.png', `full page at ${rows.size.width}x${height} CSS px${cutNote(height, full)}`);
 }
 
-// ---- logos ----
 async function saveLogos(page, rows, logos) {
   const types = await resourceTypes(page);
   await inOrder(uniqueLogos(logos).map(numbered), saveLogo.bind(null, page, rows, types));
@@ -193,7 +182,7 @@ function urlAndType(resource) {
   return [resource.url, resource.mimeType];
 }
 
-async function resourceTypes(page) { // url -> mimeType of every resource the page loaded
+async function resourceTypes(page) {
   const { frameTree } = await page.send('Page.getResourceTree');
   page.frameId = frameTree.frame.id;
   return new Map(frameTree.resources.map(urlAndType));
@@ -203,7 +192,7 @@ async function logoBytes(page, logo, types) {
   return LOGO_SOURCES.find(ruleHits.bind(null, logo))[1](logo, page, types);
 }
 
-async function urlBytes(logo, page, types) { // the copy Chrome holds, the local file, then a fetch by the page
+async function urlBytes(logo, page, types) {
   const bytes = (await loadedBytes(page, logo.url)) || fileBytes(logo.url) || (await fetchedBytes(page, logo.url));
   return { bytes, ext: MIME_EXT[types.get(logo.url)] || urlExt(logo.url) };
 }
@@ -230,7 +219,7 @@ function nothing() {
   return undefined;
 }
 
-function loadedBytes(page, url) { // undefined when the page did not load this URL
+function loadedBytes(page, url) {
   return page.send('Page.getResourceContent', { frameId: page.frameId, url }).then(resourceBuffer, nothing);
 }
 
@@ -238,7 +227,7 @@ function fileBytes(url) {
   return url.startsWith('file:') ? readFileSync(fileURLToPath(url)) : undefined;
 }
 
-async function fetchedBytes(page, url) { // the request goes through the same network rule as the page
+async function fetchedBytes(page, url) {
   return Buffer.from(await page.evaluate(fetchBase64(url)), 'base64');
 }
 
@@ -247,7 +236,6 @@ function urlExt(url) {
   return m ? m[1].toLowerCase().replace('jpeg', 'jpg') : 'bin';
 }
 
-// ---- in-page collection: these functions run inside the page, so each one uses only the others ----
 function pageScript() {
   const fns = [collectPage, metaContent, shownElements, isShown, ownText, isTextNode, nodeText, toHex, hex2, addColor,
     colorsOf, colorOf, byWeight, roundColor, cssVars, readRules, isRootRule, addVars, isCustomProp, addVar, fontsOf,
@@ -287,7 +275,7 @@ function ownText(el) {
   return [...el.childNodes].filter(isTextNode).map(nodeText).join('').trim();
 }
 
-function toHex(css) { // rgb() or rgba() to #rrggbb; '' when fully transparent
+function toHex(css) {
   const m = css.match(/rgba?\(([^)]+)\)/), v = m ? m[1].split(/[\s,/]+/).filter(Boolean) : [];
   return v.length >= 3 && +(v[3] ?? 1) > 0 ? '#' + v.slice(0, 3).map(hex2).join('') : '';
 }
@@ -304,7 +292,7 @@ function addColor(map, hex, role, weight) {
   map.set(hex, e);
 }
 
-function colorsOf(shown) { // weight: painted CSS px^2 of background, text and border
+function colorsOf(shown) {
   const map = new Map();
   shown.forEach(colorOf.bind(null, map));
   return [...map.values()].sort(byWeight).slice(0, 24).map(roundColor);
@@ -325,7 +313,7 @@ function roundColor(e) {
   return { hex: e.hex, weight: Math.round(e.weight), roles: Object.keys(e.roles) };
 }
 
-function cssVars() { // custom properties set on :root or html in the readable style sheets
+function cssVars() {
   const out = {};
   [...document.styleSheets].flatMap(readRules).filter(isRootRule).forEach(addVars.bind(null, out));
   return out;
@@ -336,7 +324,6 @@ function readRules(sheet) {
   try {
     rules = [...sheet.cssRules];
   } catch {
-    // a cross-origin sheet throws on cssRules: it has no readable rules
   }
   return rules;
 }
@@ -408,7 +395,7 @@ function addWord(out, seen, el) {
   fresh && seen.add(text) && out.push({ tag: el.tagName.toLowerCase(), text });
 }
 
-function logosOf() { // images and inline SVG marked logo or brand, and the page icons
+function logosOf() {
   const mark = '[class*=logo i],[id*=logo i],[class*=brand i],[id*=brand i],[alt*=logo i],[aria-label*=logo i],[src*=logo i]';
   const imgs = [...document.querySelectorAll('img')].filter(isMarked.bind(null, mark)).map(imgLogo);
   const svgs = [...document.querySelectorAll('svg')].filter(isOuterSvg.bind(null, mark)).map(svgLogo);
@@ -432,7 +419,7 @@ function iconLogo(el) {
   return urlLogo('page icon', el.href);
 }
 
-function urlLogo(what, url) { // the source of a data: asset is the page that holds it
+function urlLogo(what, url) {
   return { kind: 'url', url, key: url, source: url.startsWith('data:') ? location.href : url, what };
 }
 
@@ -441,7 +428,6 @@ function svgLogo(el, i) {
   return { kind: 'svg', markup: el.outerHTML, key: el.outerHTML, url: `${page} inline svg ${i + 1}`, source: page, what: 'inline SVG logo' };
 }
 
-// ---- Markdown files ----
 function hasValue([, v]) {
   return !!v;
 }
@@ -486,7 +472,6 @@ function materialsMd(opts, rows) {
   return mdHead(opts, rows.size) + table + mdList('Blocked requests (not loaded)', rows.blocked) + mdList('Logos not saved', rows.notSaved);
 }
 
-// ---- check mode: materials.md lists every file in materials/, and each row has a source URL ----
 function checkMode(args) {
   return args[1] ? runCheck(args[1]) : usage('--check needs a project folder.');
 }
@@ -546,22 +531,18 @@ function rowFails(dir, row) {
   return [...missing, ...noUrl];
 }
 
-// ---- Chrome and CDP ----
 async function withChrome(fn) {
   const chrome = await startChrome(mkdtempSync(join(tmpdir(), 'materials-chrome-')), 3);
   return openPage(chrome).then(fn).finally(closeChrome.bind(null, chrome));
 }
 
-// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
-// during its start leaves that copy on the disk, and macOS records each copy as one more
-// "Google Chrome" in its privacy lists. --disable-features=MacAppCodeSignClone stops the copy.
 function chromeArgs(userDir) {
   return ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDir}`, '--hide-scrollbars',
     '--mute-audio', '--no-first-run', '--no-default-browser-check', '--force-color-profile=srgb',
     '--disable-features=MacAppCodeSignClone', 'about:blank'];
 }
 
-function onChromeLog(log, ok, chunk) { // resolve with the DevTools URL once Chrome prints it
+function onChromeLog(log, ok, chunk) {
   log.text += chunk;
   const m = log.text.match(/DevTools listening on (ws:\/\/\S+)/);
   return m && ok(m[1]);
@@ -571,7 +552,7 @@ function onChromeExit(fail, code) {
   fail(new Error(`chrome exited ${code}`));
 }
 
-function watchChrome(p, ok, fail) { // resolves '' when Chrome does not print its DevTools URL in 15 s
+function watchChrome(p, ok, fail) {
   p.stderr.on('data', onChromeLog.bind(null, { text: '' }, ok));
   p.on('exit', onChromeExit.bind(null, fail));
   setTimeout(ok, 15000, '').unref();
@@ -583,8 +564,8 @@ async function startChrome(userDir, tries) {
   return url ? { p, url, userDir } : retryChrome(p, userDir, tries);
 }
 
-function retryChrome(p, userDir, tries) { // Chrome can hang in its start-up fork: kill it and start again
-  spawnSync('pkill', ['-KILL', '-P', String(p.pid)]); // only the children of this stuck Chrome
+function retryChrome(p, userDir, tries) {
+  spawnSync('pkill', ['-KILL', '-P', String(p.pid)]);
   p.kill('SIGKILL');
   return tries > 1 ? startChrome(userDir, tries - 1) : Promise.reject(new Error('chrome did not print its DevTools URL in 15 s, 3 tries'));
 }
@@ -600,7 +581,7 @@ async function closeChrome(chrome) {
   rmSync(chrome.userDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
-function settle(cdp, m) { // a reply: resolve or reject the send that waits for it
+function settle(cdp, m) {
   const p = cdp.pending.get(m.id);
   cdp.pending.delete(m.id);
   return m.error ? p.fail(new Error(m.error.message)) : p.ok(m.result);
@@ -654,7 +635,7 @@ function block(cdp, requestId, url) {
   return cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
 }
 
-function route(cdp, allowNetwork, { requestId, request }) { // local requests pass; others need --allow-network
+function route(cdp, allowNetwork, { requestId, request }) {
   const pass = allowNetwork || isLocalUrl(request.url);
   return pass ? cdp.send('Fetch.continueRequest', { requestId }) : block(cdp, requestId, request.url);
 }
@@ -667,19 +648,17 @@ async function openUrl(cdp, opts, size) {
   await cdp.send('Page.navigate', { url: opts.url });
   await waitLoaded(cdp, 300);
   await cdp.evaluate('document.fonts.ready.then(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))))');
-  await pause(300); // late layout after fonts swap in
+  await pause(300);
 }
 
 async function isLoaded(cdp) {
   return (await cdp.evaluate('document.readyState')) === 'complete';
 }
 
-async function waitLoaded(cdp, tries) { // poll document.readyState for up to 15 s of real time
+async function waitLoaded(cdp, tries) {
   return tries === 0 || (await isLoaded(cdp)) ? undefined : pause(50).then(waitLoaded.bind(null, cdp, tries - 1));
 }
 
-// ---- self-test: a local fixture page, no network ----
-// Function declarations only: the mode dispatch at the top runs before a constant down here is set.
 function fixtureLogo() {
   return '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#ff5a1f"/></svg>';
 }
@@ -702,7 +681,7 @@ header{display:flex;gap:12px;padding:12px}button{background:#ff5a1f;color:#fff;b
 
 function selfTest() {
   const dir = mkdtempSync(join(tmpdir(), 'materials-selftest-'));
-  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true })); // remove the temp dir on every exit
+  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true }));
   const results = [...testRefusals(dir), ...testCapture(dir), ...testCheck(dir)];
   const passed = results.filter(Boolean).length;
   console.log(`materials self-test: ${passed} of ${results.length} checks pass`);
@@ -761,7 +740,7 @@ function testCapture(dir) {
   return [outcome(r.status === 0, `a local page captures with exit 0${exitNote(r)}`), ...testShots(out), ...testData(out), ...testLists(out, project)];
 }
 
-function pngSize(file) { // width and height from the IHDR chunk; 0 x 0 when the file is missing
+function pngSize(file) {
   const b = existsSync(file) ? readFileSync(file) : Buffer.alloc(24);
   return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
 }
@@ -806,7 +785,7 @@ function testLists(out, project) {
   ];
 }
 
-function checkFixture(dir, name, change) { // a copy of the captured folder with 1 defect
+function checkFixture(dir, name, change) {
   const p = join(dir, name);
   cpSync(join(dir, 'site', 'materials'), join(p, 'materials'), { recursive: true });
   change(join(p, 'materials'));

@@ -1,18 +1,3 @@
-//! End-to-end: the spawn path that `intake spawn` uses works from inside a
-//! worker (skill-intake T-27, spec 6.1 H-1 and H-6, 6.5).
-//!
-//! The argv is read from `scripts/skill-intake/tests/fixtures/spawn-argv.json`,
-//! the file `test_roles.py` (T-21) reads too, so a change to its shape on the
-//! Python side fails here. The teammates are test-only (`agent: none`), so
-//! no model session starts.
-//!
-//! TRF-43: `horch spawn` refuses task text, except a `spawn_only`
-//! controller's brief to a `horch_access: report` role (T-56). The caller
-//! must run in the agent process that horch recorded on the controller's
-//! ledger row (T-58). No pane here runs an agent, so a test records this
-//! test process as the controller's agent: each `horch spawn` it runs is a
-//! child of it.
-
 #![cfg(unix)]
 
 use std::process::Output;
@@ -34,8 +19,6 @@ fn json_of(h: &Harness, args: &[&str]) -> Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
-/// The spawn argv of the shared fixture, with `{teammate}` and `{brief}`
-/// replaced as `intake spawn` replaces them.
 fn fixture_argv(teammate: &str, brief: &str) -> Vec<String> {
     let path = repo_root().join("scripts/skill-intake/tests/fixtures/spawn-argv.json");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -53,10 +36,6 @@ fn fixture_argv(teammate: &str, brief: &str) -> Vec<String> {
         .collect()
 }
 
-/// A ledger harness with 1 workspace (`w1`, root pane `w1:p1`) and its own
-/// roster: `ctl` may spawn only `intake-*`, `intake-smoke` is a report
-/// role, and none of them starts an agent. No pane runs a command, so every spawned worker stays as the
-/// spawn left it: its role registered, its brief on disk.
 fn roster_harness(label: &str) -> Harness {
     let mut h = Harness::new(label).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -92,7 +71,6 @@ fn roster_harness(label: &str) -> Harness {
     h
 }
 
-/// Spawn `args` from the operator pane `w1:p1`; return the new pane id.
 fn spawn_pane(h: &Harness, args: &[&str]) -> String {
     let mut all = vec!["spawn"];
     all.extend_from_slice(args);
@@ -107,8 +85,6 @@ fn spawn_pane(h: &Harness, args: &[&str]) -> String {
         .to_string()
 }
 
-/// Register `role` on `pane`, as its `horch worker` does when the pane
-/// starts (no pane runs a command here).
 fn register(h: &Harness, role: &str, pane: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -122,13 +98,10 @@ fn register(h: &Harness, role: &str, pane: &str) {
     f.write_all(pane.as_bytes()).unwrap();
 }
 
-/// Run the `intake spawn` argv for `teammate` from inside pane `pane`, the
-/// way a worker in that pane runs it. No `HORCH_RUN_ID` is set.
 fn spawn_from(h: &Harness, pane: &str, teammate: &str) -> Output {
     spawn_from_with(h, pane, teammate, &[])
 }
 
-/// [`spawn_from`] with extra variables for the spawn (and its fake herdr).
 fn spawn_from_with(h: &Harness, pane: &str, teammate: &str, env: &[(&str, &str)]) -> Output {
     let brief = h.project.join("brief.md");
     std::fs::write(&brief, "# brief\n").unwrap();
@@ -140,8 +113,6 @@ fn spawn_from_with(h: &Harness, pane: &str, teammate: &str, env: &[(&str, &str)]
     cmd.output().expect("running horch spawn")
 }
 
-/// Record `pid` as the agent process of ledger row `worker_id`, as the
-/// row's `horch worker` does when its agent starts.
 fn record_agent(h: &Harness, worker_id: &str, pid: u32) {
     let db = h.root.join("ledger.sqlite3");
     let store = horch_core::taskledger::Store::open(&db).unwrap();
@@ -154,8 +125,6 @@ fn record_agent(h: &Harness, worker_id: &str, pid: u32) {
     .unwrap();
 }
 
-/// A controller `ctl-1` in a new run, with its worker row. Its agent is
-/// not recorded yet.
 fn controller_in_run(h: &Harness) -> (String, String, Value) {
     let run = run_id(h);
     queue_for(h, "ctl");
@@ -179,7 +148,6 @@ fn run_id(h: &Harness) -> String {
     run["run"]["run_id"].as_str().expect("a run id").to_string()
 }
 
-/// The ledger worker rows (kind `worker`) of the active run.
 fn ledger_workers(h: &Harness) -> Vec<Value> {
     let st = json_of(h, &["ledger", "status", "--json"]);
     st["workers"]
@@ -199,8 +167,6 @@ fn brief_of(h: &Harness, role: &str) -> Value {
     serde_json::from_str(&raw).expect("the brief is JSON")
 }
 
-/// Queue 1 startable task for `persona` in the active run: a task-less
-/// spawn into a run needs one (TRF-31).
 fn queue_for(h: &Harness, persona: &str) {
     let file = h.project.join(format!("{persona}-ticket.md"));
     std::fs::write(&file, format!("# {persona}\n**Check:** `true`\n")).unwrap();
@@ -209,11 +175,6 @@ fn queue_for(h: &Harness, persona: &str) {
     assert!(o.status.success(), "{}", text(&o));
 }
 
-/// T-38: a `spawn_only` controller that is a worker of a ledger run spawns
-/// a role with task text, and no one set `HORCH_RUN_ID`: the role has a
-/// worker row in the controller's run, and its brief carries the row id,
-/// which its pane gets as `HORCH_WORKER_ID`. The controller itself claims
-/// its task, as every worker does (TRF-43).
 #[test]
 fn a_controller_in_a_run_spawns_a_role_that_joins_the_run() {
     let h = roster_harness("intake-join");
@@ -246,14 +207,9 @@ fn a_controller_in_a_run_spawns_a_role_that_joins_the_run() {
     );
 }
 
-/// TRF-43 (T-58): a controller outside every run has no ledger row, so
-/// horch recorded no agent for it, and its brief is refused. The refusal
-/// says to queue the work as a ledger task. No role pane opens, and no row
-/// is written, also while the project has an active run.
 #[test]
 fn trf_43_a_controller_outside_every_run_cannot_send_a_brief() {
     let h = roster_harness("intake-outside");
-    // No run is active yet: the controller joins none.
     let ctl = spawn_pane(&h, &["ctl", "--exact"]);
     register(&h, "ctl-1", &ctl);
     run_id(&h);
@@ -276,18 +232,13 @@ fn trf_43_a_controller_outside_every_run_cannot_send_a_brief() {
     assert!(!role_brief.exists(), "a refused spawn wrote a brief");
 }
 
-/// TRF-43 (T-58): `HERDR_PANE_ID` alone does not make a caller the
-/// controller. A caller outside the process tree of the controller's
-/// recorded agent is refused, and no role row is left.
 #[test]
 fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
     let h = roster_harness("intake-spoof");
     let (_, ctl, ctl_row) = controller_in_run(&h);
     let ctl_id = ctl_row["worker_id"].as_str().unwrap();
-    // No agent recorded: the spawn is refused.
     let o = spawn_from(&h, &ctl, "intake-smoke");
     assert!(!o.status.success(), "{}", text(&o));
-    // The recorded agent is a process that is no ancestor of the caller.
     let mut other = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
@@ -314,14 +265,8 @@ fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
     );
 }
 
-/// Report 56: a report role with a ledger row and no claimed task runs to
-/// `horch done`. Its `agent: none` worker runs `horch done` with the env
-/// that the report socket's `done` uses. The row ends `done`, and no
-/// BLOCKED line or error reaches the controller.
 #[test]
 fn a_report_role_with_a_row_and_no_task_runs_to_done() {
-    // A short label: the report socket path under the harness state root
-    // must stay under the 104-byte macOS `SUN_LEN`.
     let h = roster_harness("i-done");
     let (_, ctl, ctl_row) = controller_in_run(&h);
     record_agent(
@@ -330,7 +275,6 @@ fn a_report_role_with_a_row_and_no_task_runs_to_done() {
         std::process::id(),
     );
 
-    // Only the role's pane runs its command.
     let o = spawn_from_with(
         &h,
         &ctl,
@@ -379,8 +323,6 @@ fn a_report_role_with_a_row_and_no_task_runs_to_done() {
     assert!(blocked.is_empty(), "{blocked:?}");
 }
 
-/// TRF-43: a worker without `spawn_only` cannot send task text, also to a
-/// report role. The refusal names `horch ledger task`, and no row is left.
 #[test]
 fn trf_43_a_worker_without_spawn_only_cannot_send_a_brief() {
     let h = roster_harness("intake-plain");

@@ -1,6 +1,3 @@
-//! How panes learn about each other and talk: the worker brief, the mailbox
-//! registry, what a message says and how it is typed into a pane.
-
 pub mod brief;
 pub mod channel;
 pub mod delivery;
@@ -10,13 +7,6 @@ pub mod message;
 mod private;
 pub mod report;
 
-/// A name as 1 file or directory name: ASCII letters, digits and `-` stay,
-/// every other character (`/`, `:`, `.`, `_`, a space) becomes `_`.
-///
-/// `.` is replaced on purpose, not kept: a workspace named `..` must not
-/// reach a parent directory when it becomes a mail or message directory.
-/// Channel sockets use the same rule, so every name horch derives from a
-/// workspace, role or pane id is mapped 1 way.
 pub(crate) fn file_safe(s: &str) -> String {
     s.chars()
         .map(|c| {

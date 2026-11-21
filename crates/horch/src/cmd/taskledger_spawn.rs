@@ -1,7 +1,3 @@
-//! `horch spawn`'s task-ledger side (#34): the worker row is written before
-//! the pane opens, its id travels in the brief, and the role and pane are
-//! recorded once the split is done.
-
 use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
@@ -16,29 +12,16 @@ use horch_core::taskledger::{self, Store};
 use super::spawn::SpawnArgs;
 use super::taskledger::{project_root, RunArg};
 
-/// The fixed task of a worker spawned with no task text.
 pub const CLAIM_TASK: &str = "Run horch ledger claim. Read the ticket file it prints and follow it exactly. If it prints that there is no task for you, send the line it prints, then end your turn.";
 
-/// The environment variable that names the task a spawned worker claims
-/// first (TRF-24). Reviewer auto-spawn sets it on its `horch spawn` child.
 pub const CLAIM_TARGET_ENV: &str = "HORCH_CLAIM_TARGET";
 
-/// A spawn's worker row.
 pub struct LedgerSpawn {
     store: std::cell::RefCell<Store>,
     pub run: Run,
     pub worker_id: String,
 }
 
-/// Write the worker row when this spawn joins a task-ledger run: it names
-/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, its
-/// workspace has an active run, or a `spawn_only` controller in an active
-/// run sends a role its brief. `None` otherwise: a controller outside every
-/// run sends its brief outside every run too.
-///
-/// `controller` is the caller's ledger row when the caller has
-/// `spawn_only` and passed its check (T-38). Only such a spawn carries task
-/// text: `horch spawn` refuses every other (TRF-43).
 pub fn prepare(
     ctx: &RuntimeContext,
     args: &SpawnArgs,
@@ -70,11 +53,6 @@ pub fn prepare(
     }))
 }
 
-/// Whether this spawn joins a task-ledger run. `None`: it does not. `Some`
-/// holds the run it joins: the run `--run` (or `HORCH_RUN_ID`) names, the run
-/// of the worker `--replaces` names, else the 1 active run of the caller's
-/// herdr workspace (TRF-34). A planned run there wins over solo runs. A spawn never joins the run of another
-/// workspace unless it names that run.
 fn ledger_run_wanted(
     ctx: &RuntimeContext,
     store: &Store,
@@ -90,7 +68,6 @@ fn ledger_run_wanted(
     )
 }
 
-/// [`ledger_run_wanted`] with its inputs read.
 fn run_to_join(
     store: &Store,
     root: &Path,
@@ -107,7 +84,6 @@ fn run_to_join(
         }
     }
     let active = active_runs(store, root)?;
-    // A solo run never makes the workspace's planned run ambiguous (TRF-34).
     let own = runs::planned_first(
         active
             .iter()
@@ -137,8 +113,6 @@ fn run_to_join(
     }
 }
 
-/// Say that a spawn joins no run, because each active run of the
-/// project belongs to another workspace than the caller's.
 fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
     if active.is_empty() {
         return;
@@ -160,10 +134,6 @@ fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
     );
 }
 
-/// The run a role joins (T-38, decision Q4): the active run of the
-/// `spawn_only` controller's ledger row, when the spawn has task text and
-/// names no run. Only a controller passes `controller`, so every other
-/// spawn with task text keeps #89.
 fn controller_run(
     store: &Store,
     args: &SpawnArgs,
@@ -182,13 +152,8 @@ fn controller_run(
     Ok((run.status == RunStatus::Active.as_str()).then_some(run))
 }
 
-/// The text a role's row starts its "no claim" verdict with. It is the
-/// prefix of the watchdog's own verdict (`workers::sweep_preclaim`), which
-/// reports a `claiming` worker once and never again after it.
 const NO_CLAIM: &str = "No claim:";
 
-/// Record that a role works from its brief and claims no task, so the
-/// watchdog never reports it as a worker that has not claimed one.
 fn mark_no_claim(store: &mut Store, run: &Run, worker_id: &str, controller: &str) -> Result<()> {
     store.immediate(|tx| {
         util::event(
@@ -207,14 +172,12 @@ fn mark_no_claim(store: &mut Store, run: &Run, worker_id: &str, controller: &str
     })
 }
 
-/// The run `--run` or `HORCH_RUN_ID` names.
 fn explicit_run(args: &SpawnArgs) -> Option<String> {
     args.run
         .clone()
         .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()))
 }
 
-/// The active runs of the project.
 fn active_runs(store: &Store, root: &Path) -> Result<Vec<Run>> {
     let all = runs::of_project(store.conn(), root)?;
     Ok(all
@@ -223,7 +186,6 @@ fn active_runs(store: &Store, root: &Path) -> Result<Vec<Run>> {
         .collect())
 }
 
-/// Insert the worker row of this spawn and return its id.
 fn insert_row(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -249,14 +211,12 @@ fn insert_row(
     })
 }
 
-/// The task [`CLAIM_TARGET_ENV`] names, if it is set.
 fn claim_target() -> Option<String> {
     std::env::var(CLAIM_TARGET_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())
 }
 
-/// A closed run takes no new worker.
 fn ensure_active(run: &Run) -> Result<()> {
     ensure!(
         run.status == RunStatus::Active.as_str(),
@@ -267,8 +227,6 @@ fn ensure_active(run: &Run) -> Result<()> {
     Ok(())
 }
 
-/// The persona of the new worker: the teammate, or the tier of the
-/// execution `--resume` names.
 fn spawn_persona(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<String> {
     match (&args.teammate, &args.resume) {
         (Some(t), _) => Ok(t.clone()),
@@ -277,7 +235,6 @@ fn spawn_persona(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<String> {
     }
 }
 
-/// Refuse to replace a worker that is still live.
 fn ensure_replaceable(store: &Store, args: &SpawnArgs, run: &Run) -> Result<()> {
     let Some(prev) = &args.replaces else {
         return Ok(());
@@ -295,7 +252,6 @@ fn ensure_replaceable(store: &Store, args: &SpawnArgs, run: &Run) -> Result<()> 
 }
 
 impl LedgerSpawn {
-    /// The pane is open and runs `horch worker <role>`.
     pub fn spawned(
         &self,
         role: &str,
@@ -317,7 +273,6 @@ impl LedgerSpawn {
         );
     }
 
-    /// The spawn failed before the worker ran.
     pub fn launch_failed(&self, reason: &str) {
         let r = self
             .store
@@ -329,28 +284,20 @@ impl LedgerSpawn {
     }
 }
 
-/// What 1 reviewer spawn did (TRF-24).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewSpawn {
-    /// The worker runs as `role`. `substituted` is the gate's SUBSTITUTED line.
     Spawned {
         role: String,
         substituted: Option<String>,
     },
-    /// The gate refused: its REFUSED line.
     Refused(String),
-    /// The spawn failed for another reason.
     Failed(String),
 }
 
-/// Spawns 1 claiming worker of a persona in a run, reserved for 1 task.
 pub trait SpawnReviewer {
     fn spawn(&self, persona: &str, run: &Run, task_id: &str) -> ReviewSpawn;
 }
 
-/// The normal spawn path: `horch spawn <persona> --run <slug>` as a child
-/// process, so the spawn gate decides and its lines stay off this stdout.
-/// [`CLAIM_TARGET_ENV`] reserves the review task for the new worker.
 pub struct CliSpawn;
 
 impl SpawnReviewer for CliSpawn {
@@ -375,7 +322,6 @@ impl SpawnReviewer for CliSpawn {
     }
 }
 
-/// Read the outcome of 1 `horch spawn` from its exit code and output.
 pub fn spawn_outcome(code: Option<i32>, stdout: &str, stderr: &str) -> ReviewSpawn {
     let line_of = |prefix: &str| {
         stdout
@@ -408,12 +354,6 @@ pub fn spawn_outcome(code: Option<i32>, stdout: &str, stderr: &str) -> ReviewSpa
     }
 }
 
-/// Spawn 1 claiming worker for each queued review task of `of` (the step
-/// and its task, as in "code-sweep of T-1") through
-/// `spawner`, then write 1 NOTE wake that names the reviewers. Each worker
-/// is reserved for its review task and claims it first. A refused or
-/// failed spawn leaves its task queued and says so in the NOTE. Returns
-/// the NOTE text.
 pub fn spawn_reviewers(
     ctx: &RuntimeContext,
     store: &Store,
@@ -479,7 +419,6 @@ mod trf_24_tests {
 
     use super::*;
 
-    /// A fake spawn: 1 outcome per call, in order; it records each persona.
     struct Fake {
         outcomes: RefCell<Vec<ReviewSpawn>>,
         personas: RefCell<Vec<String>>,
@@ -511,7 +450,6 @@ mod trf_24_tests {
         }
     }
 
-    /// A ledger, a run, 1 work task and 1 review task per persona.
     fn world(personas: &[&str]) -> (tempfile::TempDir, RuntimeContext, Store, Run, Vec<String>) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ledger.sqlite3");
@@ -723,7 +661,6 @@ mod trf_33_34_tests {
         }
     }
 
-    /// A ledger with 1 active run per (slug, workspace) in project `root`.
     fn world(runs_of: &[(&str, Option<&str>)]) -> (tempfile::TempDir, Store, Vec<Run>) {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -759,7 +696,6 @@ mod trf_33_34_tests {
             super::super::spawn::worker_task(joined.is_some()),
             CLAIM_TASK
         );
-        // A spawn outside every run gets no task.
         assert_eq!(super::super::spawn::worker_task(false), "");
     }
 
@@ -773,13 +709,10 @@ mod trf_33_34_tests {
         };
         assert_eq!(join(Some("w1"), None), Some(Some(made[0].run_id.clone())));
         assert_eq!(join(Some("w2"), None), Some(Some(made[1].run_id.clone())));
-        // Another workspace's 1 active run is not joined.
         assert_eq!(join(Some("w3"), None), None);
         assert_eq!(join(None, None), None);
-        // --run reaches another workspace's run.
         assert_eq!(join(Some("w1"), Some("r2")), Some(Some("r2".to_string())));
 
-        // 1 run of another workspace only: still not joined.
         let (dir, store, _) = world(&[("r9", Some("w9"))]);
         assert_eq!(
             run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
@@ -787,8 +720,6 @@ mod trf_33_34_tests {
         );
     }
 
-    /// TRF-34: a solo run (`horch ledger task`) beside the workspace's
-    /// planned run does not make a plain spawn ambiguous.
     #[test]
     fn trf_34_a_plain_spawn_joins_the_planned_run_beside_a_solo_run() {
         let (dir, store, made) = world(&[("solo-w1", Some("w1")), ("plan", Some("w1"))]);
@@ -804,10 +735,8 @@ mod trf_33_34_tests {
             .unwrap()
         };
         assert_eq!(join(None), Some(Some(made[1].run_id.clone())));
-        // --run still reaches the solo run.
         assert_eq!(join(Some("solo-w1")), Some(Some("solo-w1".to_string())));
 
-        // A solo run alone is still joined.
         let (dir, store, made) = world(&[("solo-w1", Some("w1"))]);
         assert_eq!(
             run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
@@ -852,8 +781,6 @@ mod trf_33_34_tests {
         }
     }
 
-    /// Ticket 19's `refuse_over_plan` guard: a `--replaces` spawn after a
-    /// reap that requeued the task is not refused.
     #[test]
     fn trf_33_a_replaces_spawn_after_a_reap_and_requeue_is_not_refused() {
         let (dir, mut store, made) = world(&[("r1", Some("w1"))]);
@@ -925,9 +852,6 @@ mod tests {
 
     use super::*;
 
-    /// T-38 step 3: the watchdog's pre-claim sweep reports a `claiming`
-    /// worker past the claim grace, but never a role that `prepare` marked.
-    /// The role is not ended either: its supervisor checks in.
     #[test]
     fn a_marked_role_is_never_reported_as_a_worker_that_did_not_claim() {
         let dir = tempfile::tempdir().unwrap();

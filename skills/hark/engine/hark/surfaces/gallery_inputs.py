@@ -128,9 +128,6 @@ def parse_compare(items: list[str], alias: dict[str, str]) -> dict[str, dict[str
     return versions
 
 
-# ---------------------------------------------------------------- forge report
-
-
 def _read_json(path: str) -> Any:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -237,9 +234,6 @@ def critic_of(pick: dict) -> dict[str, Any]:
     out.update(_critic_measures(pick, score, _dict_at(pick, "measured")))
     out.update(robust_mean=_num(robust, "mean"), robust_pass=_num(robust, "pass_rate"), audioset=_audioset(pick))
     return out
-
-
-# ---------------------------------------------------------------- benchmark results
 
 
 def _made_entries(cat: dict) -> tuple[dict[str, dict], list[dict]]:
@@ -424,9 +418,6 @@ def bench_summary(cat: dict) -> dict[str, Any]:
             "n_made": made.get("n"), "artifacts": made.get("artifacts")}
 
 
-# ---------------------------------------------------------------- alignment
-
-
 def align(versions: list[list[dict] | None]) -> list[list[dict | None] | None]:
     """Display orders: later versions put equal variants under the base variants."""
     base = next(([s.get("variant") for s in v] for v in versions if v), None)
@@ -456,7 +447,7 @@ def _fill(slots: list[dict | None], s: dict) -> None:
 
 def _place(sounds: list[dict], base: list[Any]) -> list[dict | None]:
     slots: list[dict | None] = [None] * max(len(base), len(sounds))
-    rest = [s for s in sounds if not _seat(slots, base, s)]  # seats in file order, keeps the rest
+    rest = [s for s in sounds if not _seat(slots, base, s)]
     for s in rest:
         _fill(slots, s)
     last = max((i for i, v in enumerate(slots) if v is not None), default=-1)
@@ -465,9 +456,6 @@ def _place(sounds: list[dict], base: list[Any]) -> list[dict | None]:
 
 def _align_one(sounds: list[dict], base: list[Any]) -> list[dict | None]:
     return _place(sounds, base) if _realignable(sounds, base) else list(sounds)
-
-
-# ---------------------------------------------------------------- references
 
 
 def refsets() -> Any:

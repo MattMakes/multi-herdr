@@ -1,10 +1,5 @@
-//! `horch smoke` against the fake herdr.
-
 use horch_e2e::harness::Harness;
 
-/// `horch smoke messaging` passes when the message runs in pane b. Before the
-/// fix it called `herdr wait output`, which herdr 0.8.2 does not have, and
-/// reported `SMOKE_TEST_42 not observed` with the text on the pane.
 #[cfg(unix)]
 #[test]
 fn smoke_messaging_sees_the_message_run_in_pane_b() {

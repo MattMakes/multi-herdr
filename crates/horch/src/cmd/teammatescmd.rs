@@ -1,8 +1,3 @@
-//! `horch teammates` - inspect, validate, and scaffold the roster.
-//!
-//! The orchestrator reads the roster through its own briefing, not through this
-//! command; this is for the human maintaining `teammates/`.
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -15,7 +10,6 @@ use serde::Serialize;
 
 use crate::output;
 
-/// Human-readable table: what the orchestrator can pick, and what it cannot.
 pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let roster = super::load_roster(ctx, None)?;
     if json {
@@ -31,11 +25,8 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The text body of `horch teammates`: header, offered section, hidden section.
 fn roster_text(roster: &Roster) -> String {
     let mut out = roster_header(roster);
-    // Width spans every printed name, hidden ones included, so the two
-    // sections stay in one column.
     let width = roster
         .names()
         .iter()
@@ -62,10 +53,6 @@ fn roster_header(roster: &Roster) -> String {
 
 fn offered_section(out: &mut String, roster: &Roster, width: usize) {
     let offered = roster.offered();
-    // Agent and model names vary a lot across five harnesses - `claude`/`opus`
-    // next to `opencode`/`opencode/nemotron-3.5-lightning-free` - so both
-    // columns are measured rather than guessed, or the descriptions stop
-    // lining up exactly when the roster gets interesting.
     let agent_width = offered
         .iter()
         .map(|t| t.agent.as_str().len())
@@ -94,7 +81,6 @@ fn offered_section(out: &mut String, roster: &Roster, width: usize) {
                 t.model.as_deref().unwrap_or("-"),
                 t.brief_description,
             ));
-            // Only for a teammate that sets it, so every other line stays as it was.
             if !t.offer_when.is_empty() {
                 out.push_str(&format!(
                     "    {:<width$}  offered when the project has: {}\n",
@@ -116,8 +102,6 @@ fn hidden_section(out: &mut String, roster: &Roster, width: usize) {
     if hidden.is_empty() {
         return;
     }
-    // Not "spawnable by name": the orchestrators are hidden AND reserved,
-    // launched into a pane by `horch fleet` rather than spawned into one.
     out.push_str("\nHIDDEN (never in the orchestrator's context)\n");
     for t in hidden {
         out.push_str(&format!(
@@ -127,31 +111,23 @@ fn hidden_section(out: &mut String, roster: &Roster, width: usize) {
     }
 }
 
-/// One teammate's tuning, as `horch teammates --matrix` shows it.
 #[derive(Debug, Serialize)]
 pub struct MatrixRow {
     pub name: String,
     pub agent: String,
     pub model: String,
-    /// The level passed, or what the pane falls back to when none is.
     pub effort: String,
     pub effort_is_explicit: bool,
     pub phase: String,
     pub skills: Vec<String>,
     pub plugin_skills: Vec<String>,
-    /// Offered by name only (`available_skills`).
     pub available_skills: Vec<String>,
-    /// Expected skills copied from the operator's machine, as `<dir>/<name>`.
     pub operator_skills: Vec<String>,
-    /// Name globs that gate the offer; empty means always offered.
     pub offer_when: Vec<String>,
-    /// Host tools `horch doctor` checks.
     pub requires: Vec<String>,
     pub offered: bool,
     pub generic: bool,
     pub trains_on_input: bool,
-    /// USD per MTok, input / output; `None` when the price table does not
-    /// know the model.
     pub price_in: Option<f64>,
     pub price_out: Option<f64>,
 }
@@ -197,7 +173,6 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
     }
 }
 
-/// The roster as a tuning table.
 pub fn matrix(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let roster = super::load_roster(ctx, None)?;
     let rows: Vec<MatrixRow> = roster
@@ -215,7 +190,6 @@ pub fn matrix(ctx: &RuntimeContext, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The markdown table of `horch teammates --matrix`.
 fn matrix_table(rows: &[MatrixRow]) -> String {
     let list = |items: &[String]| {
         if items.is_empty() {
@@ -248,7 +222,6 @@ fn matrix_table(rows: &[MatrixRow]) -> String {
     out
 }
 
-/// The price column: USD per MTok in / out, or `unknown`.
 fn price_cell(r: &MatrixRow) -> String {
     match (r.price_in, r.price_out) {
         (Some(i), Some(o)) => format!("{i} / {o}"),
@@ -256,7 +229,6 @@ fn price_cell(r: &MatrixRow) -> String {
     }
 }
 
-/// The notes column, as (condition, label) pairs kept in display order.
 fn row_notes(r: &MatrixRow) -> Vec<String> {
     let flags = [
         (!r.offered, "hidden".to_string()),
@@ -281,11 +253,9 @@ fn row_notes(r: &MatrixRow) -> Vec<String> {
         .collect()
 }
 
-/// Validate the roster. Exit code is what CI and `horch doctor` care about.
 pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
     let roster = super::load_roster_unwarned(ctx, None)?;
     let problems = roster.check();
-    // Warnings (design 13.3 rule 6) never fail the check.
     for w in horch_core::roster::validation::fallback_warnings(&roster) {
         eprintln!("warning: {w}");
     }
@@ -312,10 +282,6 @@ pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
     Ok(ExitCode::FAILURE)
 }
 
-/// Scaffold a new teammate from `_template.md`.
-///
-/// The template is the schema's documentation, so it is also what a new file is
-/// cut from - there is no second, drifting copy of the field list in here.
 pub fn new(ctx: &RuntimeContext, name: &str, dir: Option<&str>) -> Result<()> {
     if name.starts_with('_') {
         bail!("a leading '_' means 'not parsed as a teammate'; pick another name");
@@ -336,7 +302,6 @@ pub fn new(ctx: &RuntimeContext, name: &str, dir: Option<&str>) -> Result<()> {
         bail!("{} already exists", path.display());
     }
 
-    // The only edit: `name:` must match the filename, which is the id.
     let body = TEMPLATE.replace("name: my-teammate", &format!("name: {name}"));
     std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
     output::println(&path.display().to_string());
@@ -348,10 +313,6 @@ pub fn new(ctx: &RuntimeContext, name: &str, dir: Option<&str>) -> Result<()> {
 mod tests {
     use horch_core::roster::{Roster, Teammate, TEMPLATE};
 
-    /// The template is the schema's documentation. If a field is added to
-    /// `Teammate` without being documented (or a documented key is removed),
-    /// this fails - which is what keeps `_template.md` from becoming a stale
-    /// description of a struct that has moved on.
     #[test]
     fn the_template_documents_exactly_the_teammate_fields() {
         let front = TEMPLATE
@@ -361,9 +322,6 @@ mod tests {
             .next()
             .unwrap();
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
-        // `fallbacks`, `offer_when`, `skills_when`, `requires`, `compact_window`,
-        // `compact_at` and `system_prompt` are skipped when empty, so give each
-        // a value. `system_prompt_text` is attached by the roster, never written.
         let actual = serde_yaml::to_value(Teammate {
             fallbacks: vec![String::new()],
             system_prompt: Some(String::new()),
@@ -393,8 +351,6 @@ mod tests {
         );
     }
 
-    /// The shipped roster states every effort it can, and prices every model
-    /// the price table covers.
     #[test]
     fn the_matrix_shows_explicit_effort_and_known_prices() {
         let roster = Roster::builtin().unwrap();
@@ -422,8 +378,6 @@ mod tests {
         }
     }
 
-    /// The skill fields and the offer gate reach both the JSON row and the
-    /// table.
     #[test]
     fn the_matrix_shows_skill_fields_and_the_offer_gate() {
         let t = Teammate {
@@ -469,7 +423,6 @@ mod tests {
         assert_eq!(header.matches('|').count(), line.matches('|').count());
     }
 
-    /// Every note, in order, and the price cell both ways.
     #[test]
     fn the_matrix_notes_and_price_cells_render_exactly() {
         let row = |price: Option<(f64, f64)>| super::MatrixRow {
@@ -513,8 +466,6 @@ mod tests {
         assert!(table.lines().nth(2).unwrap().ends_with("| unknown |  |"));
     }
 
-    /// The template must survive the same parser real teammates go through,
-    /// including `deny_unknown_fields`.
     #[test]
     fn the_template_scaffolds_a_loadable_teammate() {
         let text = TEMPLATE.replace("name: my-teammate", "name: scratch");

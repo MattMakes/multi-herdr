@@ -1,9 +1,3 @@
-//! `horch teammates --check` prints the context-policy warnings and still
-//! exits 0 (u3 review finding 2b).
-//!
-//! Hermetic: the environment is cleared and the roster is the built-ins plus
-//! a temp `HORCH_TEAMMATES_DIR`.
-
 use std::path::Path;
 use std::process::{Command, Output};
 

@@ -78,8 +78,6 @@ def _clips(arrays: numpy.ndarray | Sequence[numpy.ndarray]) -> list[numpy.ndarra
 class ClapEmbedding:
     """Embedding methods shared by every loaded CLAP model."""
 
-    # text side ---------------------------------------------------------
-
     def _phrase_file(self) -> str:
         return os.path.join(self.cache_dir, "text.npz")
 
@@ -125,8 +123,6 @@ class ClapEmbedding:
         unseen = dict.fromkeys(p for p, h in zip(phrases, hashes) if h not in self._text)
         self._learn_phrases(list(unseen), batch)
         return numpy.stack([self._text[digest] for digest in hashes]).astype(numpy.float32)
-
-    # audio side --------------------------------------------------------
 
     def _encode_windows(self, windows: list[numpy.ndarray], batch: int) -> numpy.ndarray:
         torch = self._torch

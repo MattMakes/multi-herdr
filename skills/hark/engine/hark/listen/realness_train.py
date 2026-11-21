@@ -29,9 +29,6 @@ FACT_PRECISION = 0.9
 FACT_SUPPORT = 25
 
 
-# ---------------------------------------------------------------- clips
-
-
 def file_clips(path: str, windows: int = 1) -> list[np.ndarray]:
     """Training clips of one file: the whole sound up to 6 s, else evenly spaced 4 s windows."""
     x = np.asarray(audio.load(path, mono=True), np.float64)
@@ -75,9 +72,6 @@ def forge_clips(n: int) -> list[dict]:
     return out
 
 
-# ---------------------------------------------------------------- features and weights
-
-
 def featurise(clips: list[dict]) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """CLAP embeddings and signal vectors of the judgeable clips."""
     kept = [c for c in clips if rl.signal_features(c["x"]) is not None]
@@ -97,9 +91,6 @@ def sample_weights(y: np.ndarray, groups: Sequence[str]) -> np.ndarray:
             idx = [i for i, (gg, yy) in enumerate(zip(groups, y)) if gg == g and yy == label]
             w[idx] = 1.0 / len(gs) / len(idx)
     return w * len(y) / w.sum() if w.sum() else w
-
-
-# ---------------------------------------------------------------- logistic heads
 
 
 def prep(X: np.ndarray) -> dict:
@@ -189,9 +180,6 @@ def choose_c(E: np.ndarray, S: np.ndarray, y: np.ndarray, w: np.ndarray, groups:
     return min(scores, key=scores.get)
 
 
-# ---------------------------------------------------------------- thresholds, facts, base rates
-
-
 def threshold_hi(p: np.ndarray, y: np.ndarray, target: float = TARGET) -> float:
     """The lowest p above which at least the target share is real (clamped 0.5 to 0.95)."""
     order = np.argsort(-p, kind="stable")
@@ -270,9 +258,6 @@ def file_thresholds(p: np.ndarray, y: np.ndarray, sources: Sequence[str], clip: 
     fy = np.array([y[idx[0]] for idx in long])
     return {"hi": max(threshold_hi(fp, fy), clip["hi"]), "lo": max(threshold_lo(fp, fy), clip["lo"]),
             "files": len(long), "synth_files": int((fy == 0).sum()), "how": "R12 rule on long sources"}
-
-
-# ---------------------------------------------------------------- model
 
 
 def _training_set(root: str | None, forge_negatives: int) -> dict:

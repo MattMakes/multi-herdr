@@ -26,18 +26,17 @@ import pw_players
 import pw_rebalance as rb
 
 HOUR = 3600.0
-PASSES = 12              # the most passes of the fit (each pass plays active_greedy 1 time)
-TIME_TOL = 0.10          # a time inside 10% of its target agrees
-STEP_MAX = 12.0          # the largest change of ln c in 1 pass
-SLOPE_MIN = 0.02         # the smallest slope d ln T / d ln c of a secant step
-RUN_TOL = 0.075          # the median later run aims at 92.5% of T_X, inside 7.5% of T_X (PO5: 20% of sigma)
-FLOOR_TOL = 0.05         # a median run within 5% of the run floor ends at the run floor
-OPEN_STAGES = 100000     # the stage count of the ladder of the fit runs
-PASSES_N = 3             # the most runs that set the walls while N changes
+PASSES = 12
+TIME_TOL = 0.10
+STEP_MAX = 12.0
+SLOPE_MIN = 0.02
+RUN_TOL = 0.075
+FLOOR_TOL = 0.05
+OPEN_STAGES = 100000
+PASSES_N = 3
 GAIN_DIGITS = "%.3g"
-STAGE_SHARE = 0.8        # a stage after the first hour comes each 80% of the unlock gap target at most (pw_design)
-REPAIR_ROUNDS = 0        # the rounds of the content repair after the fit (each runs the passes again). Off: in
-                         # Moss Works a repair moved elements of large effect, the c fit then failed PO5 or PC5.
+STAGE_SHARE = 0.8
+REPAIR_ROUNDS = 0
 
 
 class Timeline:
@@ -333,7 +332,7 @@ def reset_map(plan, tl, resets=None):
     with the timeline count only, the runs of Kiln n Kin grew between 2 towns, and the last 3 towns did not come."""
     counts, out, prev = game_counts(plan), {}, 0
     if rb.keeps(plan, "reset_count"):
-        return {k: k for k in counts}         # the count of resets of the game stays (structure, ticket 47)
+        return {k: k for k in counts}
     top = max(counts, default=1)
     for k in counts:
         t = tl.first_reset + (tl.last_slot - tl.first_reset) * (k - 1) / max(1, top - 1)

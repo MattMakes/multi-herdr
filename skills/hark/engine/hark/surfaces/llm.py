@@ -45,7 +45,7 @@ from hark.surfaces._llm_brief import (  # noqa: F401  (re-exported names)
     video_of,
 )
 
-AGY_VERDICT = "HEARS"  # the probe result recorded in docs/specs/hark/agy-audio-probe.md
+AGY_VERDICT = "HEARS"
 RAW_CAP = 20000
 
 
@@ -154,9 +154,6 @@ def critique(path: str, prompt: str | None = None, provider: Any = "agy", model:
     opts = {"prompt": prompt, "video": video, "with_timeline": with_timeline, "start": start, "end": end,
             "max_seconds": max_seconds, "cuts": cuts, "synth_intended": synth_intended}
     return _ask(path, prov, chosen, opts)
-
-
-# command line ---------------------------------------------------------
 
 
 def add_cli(sub: Any) -> None:

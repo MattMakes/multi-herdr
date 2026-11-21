@@ -1,9 +1,3 @@
-//! `horch ledger finish` (#160 phase 2). In the worker's own pane, where
-//! horch mail reaches it, a plain finish starts `finish --run-steps` as a
-//! detached process and returns at once; the detached run sends the result
-//! to the worker as durable mail. Elsewhere, and with `--json` or `--wait`,
-//! the steps run in the foreground.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -23,7 +17,6 @@ use super::taskledger::{
 };
 use crate::output;
 
-/// How `horch ledger finish` was called.
 pub struct How {
     pub as_json: bool,
     pub rereview: bool,
@@ -31,10 +24,8 @@ pub struct How {
     pub run_steps: bool,
 }
 
-/// The sender tag of horch's own notices.
 const HORCH: &str = "horch";
 
-/// `horch ledger finish`.
 pub fn finish_cmd(ctx: &RuntimeContext, store: &mut Store, how: How) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
     let run = run_file(ctx, store, &wid)?;
@@ -52,7 +43,6 @@ pub fn finish_cmd(ctx: &RuntimeContext, store: &mut Store, how: How) -> Result<E
     }
 }
 
-/// The run file of the worker's attempt; `None` when it holds no task.
 fn run_file(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<Option<PathBuf>> {
     let w = workers::get(store.conn(), wid)?;
     Ok(w.task_id
@@ -63,8 +53,6 @@ fn runs_line(pid: u32) -> String {
     format!("finish runs (PID {pid}); horch tells you the result. End your turn now")
 }
 
-/// The detached finish that still runs. A lost one is reported and
-/// forgotten, so finish starts again.
 fn still_running(store: &Store, wid: &str, run: &Path) -> Option<detach::RunFile> {
     match detach::state(run) {
         detach::Detached::Running(r) => Some(r),
@@ -83,8 +71,6 @@ fn still_running(store: &Store, wid: &str, run: &Path) -> Option<detach::RunFile
     }
 }
 
-/// Whether a plain finish detaches: only in the worker's own registered
-/// pane, where horch mail reaches it. Otherwise 1 line says why not.
 fn detaches(ctx: &RuntimeContext, store: &Store, wid: &str, how: &How) -> bool {
     if how.as_json || how.wait {
         return false;
@@ -98,7 +84,6 @@ fn detaches(ctx: &RuntimeContext, store: &Store, wid: &str, how: &How) -> bool {
     }
 }
 
-/// Why horch mail to the worker would not reach this pane, if it would not.
 fn mail_unreachable(ctx: &RuntimeContext, store: &Store, wid: &str) -> Option<String> {
     let w = match workers::get(store.conn(), wid) {
         Ok(w) => w,
@@ -121,8 +106,6 @@ fn mail_unreachable(ctx: &RuntimeContext, store: &Store, wid: &str) -> Option<St
     }
 }
 
-/// Start the detached run, record it, and cover the idle worker with a
-/// wait (#70) as long as 3 checks and the rest of the steps can take.
 fn start_detached(
     ctx: &RuntimeContext,
     store: &Store,
@@ -151,8 +134,6 @@ fn start_detached(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `horch ledger finish --run-steps` in its own process group, its output
-/// in the log beside the run file.
 fn spawn_run_steps(run: &Path, rereview: bool) -> Result<std::process::Child> {
     std::fs::create_dir_all(run.parent().expect("a worker folder"))?;
     let log = std::fs::File::create(detach::log_path(run))?;
@@ -164,14 +145,11 @@ fn spawn_run_steps(run: &Path, rereview: bool) -> Result<std::process::Child> {
     cmd.stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    // Its own group: the signal that ends the agent's command does not end it.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     cmd.spawn().context("starting the detached finish")
 }
 
-/// The detached run: the steps, then the result as durable horch mail to
-/// the worker's role. Its wait and run file end with it.
 fn detached_run(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -192,14 +170,11 @@ fn detached_run(
             "NOTE: finish stopped with an error: {e:#}. Fix it, then run horch ledger finish again."
         ),
     };
-    // End the run before the mail goes: a worker that reads the mail and
-    // runs finish again must find no detached finish.
     detach::clear(run);
     workers::clear_wait(store.conn(), wid, detach::FINISH_WAIT)?;
     super::messaging::tell_as(ctx, Some(HORCH.into()), &role, &text).map(|_| ExitCode::SUCCESS)
 }
 
-/// The mail of a finished detached run.
 fn result_note(report: &finish::FinishReport) -> String {
     let steps: Vec<String> = report
         .steps
@@ -214,8 +189,6 @@ fn result_note(report: &finish::FinishReport) -> String {
     )
 }
 
-/// Run the steps, then stop superseded reviewers and wake the orchestrator
-/// when reviews were queued.
 fn steps(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -231,9 +204,6 @@ fn steps(
     Ok(report)
 }
 
-/// horch spawns the queued reviewers itself (TRF-24, D11). Only from a
-/// herdr pane: a spawn splits a pane, so elsewhere the orchestrator gets
-/// the startable wake as before. An error is printed, never returned.
 fn spawn_reviewers_of(
     ctx: &RuntimeContext,
     store: &Store,
@@ -264,8 +234,6 @@ fn spawn_reviewers_of(
     }
 }
 
-/// The steps in this process; the exit code is 1 while a step has not
-/// passed.
 fn foreground(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -277,7 +245,6 @@ fn foreground(
     print_finish(&report, as_json)
 }
 
-/// Start a new code-sweep round when asked, then run the finish steps.
 fn run_finish(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -293,7 +260,6 @@ fn run_finish(
     finish::finish(store, &tools, wid)
 }
 
-/// finish answers a reviews-in notice: its mail and wait end.
 fn answer_reviews_in(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
     if workers::waiting(store.conn(), wid)?
         .iter()
@@ -307,7 +273,6 @@ fn answer_reviews_in(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<(
     Ok(())
 }
 
-/// Wake the orchestrator of the worker's run about the tasks that can start.
 fn nudge_run_of(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
     let w = workers::get(store.conn(), wid)?;
     if let Some(r) = &w.run_id {
@@ -317,7 +282,6 @@ fn nudge_run_of(ctx: &RuntimeContext, store: &Store, wid: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stop the reviewers whose review a new code-sweep round superseded.
 fn stop_superseded(ctx: &RuntimeContext, store: &mut Store, superseded: &[String]) {
     for w in superseded {
         let stopped = stop::stop_worker(
@@ -338,7 +302,6 @@ fn stop_superseded(ctx: &RuntimeContext, store: &mut Store, superseded: &[String
     }
 }
 
-/// Print the steps; the exit code is 1 while a step has not passed.
 fn print_finish(report: &finish::FinishReport, as_json: bool) -> Result<ExitCode> {
     if as_json {
         json(report)?;

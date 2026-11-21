@@ -20,7 +20,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))      # `python3 -I` does not add it
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pw_analysis import (analyse, dead_zones, derive_links, ledger_rows, lull_causes, mark_robust,  # noqa: E402,F401
                          purchase_rows, run_profile, sensitivity, summary, wall_rows)
@@ -54,11 +54,9 @@ ARGUMENTS = (
                                                 "game.presence or game.targets, else 'none'")),
 )
 
-# The analysis JSON keeps these keys of each purchase row.
 PURCHASE_KEYS = ("id", "status", "first_bought_minutes", "highest_level", "cap_at_end",
                  "payback_first_seconds", "payback_last_seconds")
 
-# The console lists these keys of the analysis when they are not empty.
 LIST_KEYS = ("currencies_without_source", "currencies_without_sink", "orphan_systems", "never_bought", "never_reached")
 
 
@@ -87,7 +85,7 @@ def clean(x):
 
 class Run:
     """The state of 1 script run. Each step reads and sets attributes."""
-    players = presence = None       # simulate_players() sets them; a caller can skip that step
+    players = presence = None
 
 
 def parse_args():

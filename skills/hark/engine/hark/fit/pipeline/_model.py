@@ -12,7 +12,6 @@ import numpy as np
 
 SR = 48000
 
-# model "kind" value -> kind_of name
 NAMES = {
     "modal": "modal",
     "sines": "sines",
@@ -21,7 +20,6 @@ NAMES = {
     "hybrid": "hybrid",
     "morph": "morph",
 }
-# kind_of name -> model "kind" value, for the 4 analysis kinds
 VALUES = {"modal": "modal", "sines": "sines", "spectral": "spectral_noise", "gesture": "gesture"}
 VERSIONS = {"hybrid": 1, "morph": 1}
 

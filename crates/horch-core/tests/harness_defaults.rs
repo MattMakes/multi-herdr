@@ -1,8 +1,3 @@
-//! Per-harness launch defaults: `teammates/_base/harness-defaults.md`
-//! (HDF-01 to HDF-04, design `ai_docs/plans/wave2/w1/design.md` section 6A).
-//! No real harness binary and no herdr: each test builds the command and
-//! reads its argv and env.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,8 +9,6 @@ use horch_core::roster::{HarnessDefault, Roster, Teammate};
 use horch_core::runtime::{Inherited, MapEnv, Paths, RuntimeContext};
 use serde_json::{json, Value};
 
-/// The data file of the temp rosters: 1 Claude entry, 2 Codex entries (the
-/// second only for fleet workers) and 1 OpenCode entry.
 const DEFAULTS: &str = r#"---
 name: harness-defaults
 defaults:
@@ -42,8 +35,6 @@ fn teammate_file(name: &str, agent: &str, base: Option<&str>, extra: &str) -> St
     )
 }
 
-/// A teammates dir holding `_base/harness-defaults.md` (`defaults`) and the
-/// given teammate files.
 fn roster_dir(defaults: &str, files: &[(&str, String)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("_base")).unwrap();
@@ -58,8 +49,6 @@ fn load(dir: &Path) -> Roster {
     Roster::load_layered(None, None, Some(dir.to_str().unwrap())).unwrap()
 }
 
-/// A launch environment with a temp home, a workdir and a managed-settings
-/// path that does not exist: nothing of the machine's leaks in.
 fn ctx_with(home: &Path, workdir: &Path, vars: &[(&str, &str)]) -> RuntimeContext {
     let mut env = MapEnv::new(workdir)
         .with("HOME", &home.to_string_lossy())
@@ -88,8 +77,6 @@ fn argv(cmd: &Command) -> Vec<String> {
         .collect()
 }
 
-/// The env the child starts with: the teammate env layer, then the values
-/// the builder set on the command, which win.
 fn child_env(env: &LaunchEnv, t: &Teammate, cmd: &Command) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = teammate_env(t, env).into_iter().collect();
     for (k, v) in cmd.get_envs() {
@@ -102,7 +89,6 @@ fn child_env(env: &LaunchEnv, t: &Teammate, cmd: &Command) -> BTreeMap<String, S
     out
 }
 
-/// The `-c` pairs of an argv, as a set.
 fn config_pairs(args: &[String]) -> BTreeSet<String> {
     args.windows(2)
         .filter(|w| w[0] == "-c")
@@ -110,7 +96,6 @@ fn config_pairs(args: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-/// The JSON of the `--settings` argument.
 fn settings_arg(args: &[String]) -> Value {
     let i = args
         .iter()
@@ -136,10 +121,6 @@ fn teammate(name: &str, agent: HarnessKind, defaults: Vec<HarnessDefault>) -> Te
     }
 }
 
-// ─── HDF-01 ─────────────────────────────────────────────────────────────────
-
-/// HDF-01: the roster attaches the entries whose base matches, for every
-/// harness; the builder selects by harness, in file order.
 #[test]
 fn hdf_01_entries_attach_by_harness_and_base() {
     let dir = roster_dir(
@@ -187,9 +168,6 @@ fn hdf_01_entries_attach_by_harness_and_base() {
     assert_eq!(select(other), vec![all[1].clone()]);
 }
 
-/// HDF-01 (finding 11): the Claude orchestrator teammate run on Codex (the
-/// `OrchestrationCodex` pane, `cmd/recipes.rs`) gets the Codex defaults and
-/// none of the Claude ones.
 #[test]
 fn hdf_01_defaults_follow_the_final_harness() {
     let home = tempfile::tempdir().unwrap();
@@ -203,7 +181,6 @@ fn hdf_01_defaults_follow_the_final_harness() {
     t.agent = HarnessKind::Codex;
     t.effort = None;
     t.model = Some("gpt-5.6-sol".into());
-    // Only the defaults are under test, not the file's own `env:`.
     t.env.clear();
     let cmd = build(&env, &t);
     let args = argv(&cmd);
@@ -219,8 +196,6 @@ fn hdf_01_defaults_follow_the_final_harness() {
     );
 }
 
-/// HDF-01: the brief carries the resolved teammate, entries included; a
-/// teammate with none serializes without the key.
 #[test]
 fn hdf_01_brief_carries_harness_defaults() {
     let mut codex = entry(HarnessKind::Codex);
@@ -236,9 +211,6 @@ fn hdf_01_brief_carries_harness_defaults() {
     assert!(value.get("harness_defaults").is_none(), "{value}");
 }
 
-// ─── HDF-02 ─────────────────────────────────────────────────────────────────
-
-/// HDF-02: the teammate's own `env` value wins over the default.
 #[test]
 fn hdf_02_teammate_env_wins_over_default() {
     let mut claude = entry(HarnessKind::Claude);
@@ -256,8 +228,6 @@ fn hdf_02_teammate_env_wins_over_default() {
     assert_eq!(get(&t).as_deref(), Some("0"));
 }
 
-/// HDF-02: a default `-c` pair the teammate's args set is left out; else it
-/// comes before the teammate's args.
 #[test]
 fn hdf_02_codex_default_args_skip_a_key_the_teammate_sets() {
     let home = tempfile::tempdir().unwrap();
@@ -286,11 +256,8 @@ fn hdf_02_codex_default_args_skip_a_key_the_teammate_sets() {
     assert!(default.is_some() && default < own, "{args:?}");
 }
 
-/// HDF-02: a codex default yields to the operator's `config.toml`, unless
-/// the entry has `force`.
 #[test]
 fn hdf_02_codex_default_yields_to_operator_config_unless_forced() {
-    // The reader.
     let text = r##"
 model = "gpt-5.6-sol" # a comment
 model_auto_compact_token_limit = 200_000
@@ -316,18 +283,15 @@ auto_recap = false
         codex_config_value(text, "tui.theme").as_deref(),
         Some("dark")
     );
-    // An array keeps its raw text, and `#` inside a string is not a comment.
     assert_eq!(
         codex_config_value(text, "notify").as_deref(),
         Some(r##"["say", "#not a comment"]"##)
     );
-    // The legacy profile table and `profile` key are not read.
     let legacy = "profile = \"q\"\n[profiles.q]\nmodel = \"q-model\"\n";
     assert_eq!(codex_config_value(legacy, "model"), None);
     assert_eq!(codex_config_value("# model = \"x\"\n", "model"), None);
     assert_eq!(codex_config_value(text, "absent"), None);
 
-    // The launch.
     let home = tempfile::tempdir().unwrap();
     let codex_home = home.path().join("codex-home");
     std::fs::create_dir_all(&codex_home).unwrap();
@@ -358,7 +322,6 @@ auto_recap = false
     );
 }
 
-/// A Claude teammate with 1 settings default per key in `keys`.
 fn claude_with_settings(keys: &[&str]) -> Teammate {
     let mut claude = entry(HarnessKind::Claude);
     let mut settings = serde_json::Map::new();
@@ -374,10 +337,6 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// HDF-02: a Claude settings default is left out of the `--settings`
-/// overlay when the operator's chain sets the key, in both overlay paths.
-/// The chain's order is pinned by the claude.rs unit test
-/// `hdf_02_claude_operator_value_follows_the_chain_order`.
 #[test]
 fn hdf_02_claude_settings_default_yields_to_operator_chain() {
     let home = tempfile::tempdir().unwrap();
@@ -397,7 +356,6 @@ fn hdf_02_claude_settings_default_yields_to_operator_chain() {
     let env = LaunchEnv::from_context(&ctx_with(home.path(), work.path(), &[]));
     let keys = ["byUser", "byProject", "byLocal", "free"];
 
-    // The plain overlay: only the key no source sets.
     let t = claude_with_settings(&keys);
     let overlay = settings_arg(&argv(&build(&env, &t)));
     for k in ["byUser", "byProject", "byLocal"] {
@@ -405,7 +363,6 @@ fn hdf_02_claude_settings_default_yields_to_operator_chain() {
     }
     assert_eq!(overlay["free"], "fleet", "{overlay}");
 
-    // setting_sources [project]: the user and local files do not load.
     let mut t = claude_with_settings(&keys);
     t.setting_sources = Some(vec!["project".into()]);
     let overlay = settings_arg(&argv(&build(&env, &t)));
@@ -413,8 +370,6 @@ fn hdf_02_claude_settings_default_yields_to_operator_chain() {
     assert_eq!(overlay["byLocal"], "fleet", "{overlay}");
     assert!(overlay.get("byProject").is_none(), "{overlay}");
 
-    // The inline overlay (as the skills launch passes it): the teammate's
-    // own keys win, and the defaults merge under them.
     let mut t = claude_with_settings(&keys);
     t.settings = Some(r#"{"free": "mine", "disableWorkflows": true}"#.into());
     let overlay = settings_arg(&argv(&build(&env, &t)));
@@ -428,7 +383,6 @@ fn hdf_02_claude_settings_default_yields_to_operator_chain() {
     assert_eq!(overlay["free"], "fleet", "{overlay}");
 }
 
-/// HDF-02 (finding 5): the managed-settings path is a context path.
 #[test]
 fn hdf_02_managed_settings_path_comes_from_the_context() {
     let tmp = tempfile::tempdir().unwrap();
@@ -467,8 +421,6 @@ fn hdf_02_managed_settings_path_comes_from_the_context() {
     assert_eq!(overlay["byManaged"], json!({"other": 3}), "{overlay}");
 }
 
-/// HDF-02 (finding 6): `Inherited` keeps only named variables; a forbidden
-/// name is never captured.
 #[test]
 fn hdf_02_inherited_env_is_an_allow_list() {
     let mut env = MapEnv::new("/w")
@@ -490,7 +442,6 @@ fn hdf_02_inherited_env_is_an_allow_list() {
         assert!(!FORBIDDEN_ENV.contains(&name), "{name}");
     }
 
-    // A non-Claude default yields to the operator's value.
     let mut prime = entry(HarnessKind::Prime);
     prime.env.insert("RLM_MAX_DEPTH".into(), "1".into());
     let t = teammate("t", HarnessKind::Prime, vec![prime]);
@@ -502,7 +453,6 @@ fn hdf_02_inherited_env_is_an_allow_list() {
     assert!(teammate_env(&t, &without).contains(&("RLM_MAX_DEPTH".into(), "1".into())));
 }
 
-/// HDF-02: the OpenCode `config` default merges under the teammate's JSON.
 #[test]
 fn hdf_02_opencode_config_default_merges_under_teammate_json() {
     let home = tempfile::tempdir().unwrap();
@@ -531,8 +481,6 @@ fn hdf_02_opencode_config_default_merges_under_teammate_json() {
     );
 }
 
-// ─── HDF-03 ─────────────────────────────────────────────────────────────────
-
 fn problems_with(roster: &Roster, needle: &str) -> Vec<String> {
     roster
         .check()
@@ -541,8 +489,6 @@ fn problems_with(roster: &Roster, needle: &str) -> Vec<String> {
         .collect()
 }
 
-/// HDF-03: a teammate line that only repeats a default of its own harness
-/// fails the check; a different value is the override.
 #[test]
 fn hdf_03_repeat_of_a_default_fails_the_check() {
     let dir = roster_dir(
@@ -589,8 +535,6 @@ fn hdf_03_repeat_of_a_default_fails_the_check() {
         .any(|p| p.starts_with("t-args:") && p.contains("tui.auto_recap=false")));
 }
 
-/// HDF-03: a malformed entry, and a teammate file that sets
-/// `harness_defaults`, each fail the check once.
 #[test]
 fn hdf_03_malformed_entry_fails_the_check() {
     let defaults = r#"---
@@ -636,11 +580,6 @@ defaults:
     assert!(found[0].starts_with("t-sets:"), "{found:?}");
 }
 
-// ─── HDF-04 ─────────────────────────────────────────────────────────────────
-
-/// HDF-04: after W2's lines moved into the defaults, each harness launches
-/// with the env and the `-c` pairs W2 wrote into the teammate files
-/// (148eb16, 2a48638, bd61495), hard-coded here.
 #[test]
 fn hdf_04_migrated_launch_env_and_args_match_w2() {
     let home = tempfile::tempdir().unwrap();
@@ -652,7 +591,6 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
     ];
     let codex_worker = [
         "check_for_update_on_startup=false",
-        // permission_mode auto selects the fleet write profile.
         "default_permissions=\"fleet_write\"",
         "features.multi_agent=false",
         "model=\"gpt-5.6-sol\"",
@@ -663,7 +601,6 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
     ];
     let codex_orchestrator = [
         "check_for_update_on_startup=false",
-        // permission_mode auto selects the fleet write profile.
         "default_permissions=\"fleet_write\"",
         "features.multi_agent=false",
         "model=\"gpt-6-astra\"",
@@ -687,8 +624,6 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
         ("orchestrator-codex", &codex_orchestrator[..]),
     ] {
         let (_, mut pairs) = launch(name);
-        // `worker_channel` adds these ARC-30 pairs, which harness/codex.rs tests.
-        // They are not harness defaults and can contain runtime-specific paths.
         pairs.retain(|pair| {
             !pair.starts_with("model_catalog_json=")
                 && (name != "orchestrator-codex" || !pair.starts_with("mcp_servers.horch."))
@@ -704,9 +639,6 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
     assert_eq!(got["RLM_MAX_DEPTH"], "1");
 }
 
-/// Operator request 2026-11-04: every built-in Claude teammate, orchestrator
-/// and fleet worker, launches with commit and PR attribution off. The
-/// default is forced, so an operator `attribution` text does not win.
 #[test]
 fn hdf_05_every_claude_launch_turns_attribution_off() {
     let home = tempfile::tempdir().unwrap();
@@ -714,8 +646,6 @@ fn hdf_05_every_claude_launch_turns_attribution_off() {
         &home.path().join(".claude/settings.json"),
         r#"{"includeCoAuthoredBy": true, "attribution": {"commit": "operator text"}}"#,
     );
-    // A sandboxed teammate refuses to launch on Linux unless bwrap and socat
-    // are on PATH. Stubs let the builder run on every host.
     let bin = home.path().join("bin");
     for tool in ["bwrap", "socat"] {
         let path = bin.join(tool);
@@ -735,7 +665,6 @@ fn hdf_05_every_claude_launch_turns_attribution_off() {
         if t.agent != HarnessKind::Claude {
             continue;
         }
-        // The orchestration recipe gives the model at launch.
         let model = t.model.is_none().then_some("opus");
         let cmd =
             launch::command_with_skills_in(&env, t, Session::Unmanaged, "PROMPT", model, None)

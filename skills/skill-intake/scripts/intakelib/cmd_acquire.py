@@ -59,7 +59,7 @@ def run(args) -> int:
     try:
         src = acquire.parse(args.source, args.ref, args.path)
         if src.kind == "github":
-            acquire.clone_url(src)  # check the test seam before any task exists
+            acquire.clone_url(src)
     except BadSource as e:
         print(f"intake acquire: {e}\n{acquire.ACCEPTED_FORMS}", file=sys.stderr)
         return 2
@@ -76,9 +76,9 @@ def run(args) -> int:
                    "ref": src.ref, "commit": None, "subdir": src.subdir},
         "content_sha256": None, "archive_sha256": None, "licence": None,
         "skills": [], "installed": [],
-    }  # intake_version and sweep are added by later stages (schema: no null)
+    }
     skipped = acquire.Skipped()
-    repo_licence = None  # the repo root licence when only a subfolder is taken
+    repo_licence = None
     try:
         if src.kind == "github":
             staging = t.c / "quarantine" / ".clone"
@@ -108,7 +108,7 @@ def run(args) -> int:
     except Refused as e:
         acquire.clear(q)
         write_findings(t, [finding(1, e.rule, e.file, e.reason)])
-        task.set_phase(t, "refused")  # no provenance.json: nothing was acquired
+        task.set_phase(t, "refused")
         where = f" ({evidence.escape(e.file)})" if e.file else ""
         print(f"intake acquire: refused, {e.rule}: {e.reason}{where}", file=sys.stderr)
         print(json.dumps({"task_dir": str(t.c), "refused": e.rule}))

@@ -39,26 +39,25 @@ CORE = ("S01", "S02", "S03", "S04", "S05", "S06")
 PATTERNS = ("continuous", "check_in")
 ECON, RESET_CUR, BANK_CUR, AXIS = "coin", "seed", "dew", "stage"
 X_E, X_P = pw_proof.X_E, pw_proof.X_P
-S_CANDIDATES = (1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5, 1.75, 2.0, 2.5, 3.0)   # the solve rounds: s from low to high
-GEN_COST, GEN_VALUE, GEN_CAP = 10.0, 0.5, 40              # worked example 2 (BM:397); the cap holds lambda (L7)
-GROUP_COSTS = (100.0, 1000.0)                             # worked example 2 (BM:398-399)
-BANK_LINE_CAP = 1                                         # the cap keeps the second clock out of the loop (L7)
-FIRST_TIMES_MIN = (0.5, 2.0, 5.0, 10.0, 25.0, 45.0)       # worked example 2 (BM:418)
+S_CANDIDATES = (1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5, 1.75, 2.0, 2.5, 3.0)
+GEN_COST, GEN_VALUE, GEN_CAP = 10.0, 0.5, 40
+GROUP_COSTS = (100.0, 1000.0)
+BANK_LINE_CAP = 1
+FIRST_TIMES_MIN = (0.5, 2.0, 5.0, 10.0, 25.0, 45.0)
 VISIT_MINUTES = 2
 SUPPORTED = {"S01": ("S01.geometric", "S01.steep", "S01.ladder"), "S02": ("S02.levelled_factor",),
              "S03": ("S03.exponential",), "S04": ("S04.power",), "S05": ("S05.active_lane",),
              "S06": ("S06.penalty_cap",), "S08": ("S08.timed_bank",), "S15": ("S15.geometric",),
              "S28": ("S28.last_step",)}
 MODELLED = tuple(SUPPORTED) + ("S07", "S09", "S30")
-UPKEEP_WRITTEN = ("S30.need_capacity",)                  # the S30 variants that the solver writes (the upkeep block)
-CARE_ROLE = "care"                                       # the role of an S02 entry whose lines are the care lines (S30)
+UPKEEP_WRITTEN = ("S30.need_capacity",)
+CARE_ROLE = "care"
 UNIT_PARAM = {"S01.ladder": "b_i"}
-PLACE_HEADROOM = 2                                       # rebalance: the placement runs have 2 x the stages of
-                                                          # BM L8, so the stage at H comes from the run, not the count
-UNLOCK_SHARE = 0.8                                        # rebalance: the stage gap is 80% of the unlock gap target
-PART_HOURS = pw_proof.PART_HOURS                          # PC3: 1 content slot for each part past the demo
-LONG_RUN_OUT = ("S22", "S29")                             # 1 long run: a selection with neither (design-solver.md)
-LONG_R = 1.0                                              # 1 long run: R = 1 (BM L2 and L3, "1 long run")
+PLACE_HEADROOM = 2
+UNLOCK_SHARE = 0.8
+PART_HOURS = pw_proof.PART_HOURS
+LONG_RUN_OUT = ("S22", "S29")
+LONG_R = 1.0
 
 
 class InputError(Exception):
@@ -103,7 +102,6 @@ def write_file(path, text):
         f.write(text)
 
 
-# ----------------------------------------------------------------------------- the catalog
 class Catalog:
     """assets/systems.json, with lookups by system id and variant id."""
 
@@ -124,7 +122,6 @@ class Catalog:
         return next((k for k in self.data["starter_sets"] if k["id"] == sid), None)
 
 
-# ----------------------------------------------------------------------------- step 2: the selection
 def pattern_of(targets):
     pat = targets.get("play_pattern")
     check(pat not in PATTERNS, f"the targets file needs play_pattern: one of {', '.join(PATTERNS)}")
@@ -207,7 +204,7 @@ def parameter_overrides(sel, cat):
     for vid, vals in ((k or {}).get("parameters") or {}).items():
         out.setdefault(vid, {}).update(vals)
     for entry in sel.get("selected") or []:
-        out.setdefault(entry["variant"], {}).update(entry.get("parameters") or {})    # 2 entries of 1 variant: the last
+        out.setdefault(entry["variant"], {}).update(entry.get("parameters") or {})
     return out
 
 
@@ -257,7 +254,6 @@ def conflict_applies(c, chosen):
     return False
 
 
-# ----------------------------------------------------------------------------- step 3: the targets
 def target_values(tg):
     t = tg.get("targets") or {}
     length, session, unlocks = t.get("length_h") or {}, t.get("session_min") or {}, t.get("unlocks") or {}
@@ -322,7 +318,7 @@ def continuous_values(t):
 
 GAP_KEYS = {"largest_max_min": "largest_purchase_gap_minutes", "first_max_min": "first_purchase_minutes",
             "unlock_max_min": "largest_unlock_gap_minutes", "unlock_first_hour_max_min": "first_hour_unlock_gap_minutes",
-            "unlock_max_min_ending": "ending_unlock_gap_minutes"}       # targets file key -> model key
+            "unlock_max_min_ending": "ending_unlock_gap_minutes"}
 GROUP_KEYS = {"purchase_value": "purchase_value", "purchase_rate": "purchase_rate_max_per_minute"}
 
 
@@ -459,7 +455,6 @@ def static_target_conflicts(tv):
                     "an idle player can never match an active player in a model with f <= 1"])
 
 
-# ----------------------------------------------------------------------------- step 4: the solve
 class Design:
     """The selection, the targets, the parameters with their sources, and the model."""
 
@@ -671,7 +666,7 @@ def spine_rate(d):
         return HOUR * d.val("g_run")
     gr = (HOUR * d.val("q") * math.log1p(X_E) / d.val("T_X")) / (1.0 - d.val("R"))
     if spine_cur(d) != ECON:
-        gr *= d.val("R")        # BM L10: ln of the second income rises R_y = R times as fast (kappa_y)
+        gr *= d.val("R")
     return gr
 
 
@@ -699,7 +694,7 @@ def first_stages(d):
            "u (H - 1))", "PO12 (length)")
 
 
-WALL_MARGIN = 1.005       # 1 long run: a wall step of the first hour stays this factor inside the g range (row WS)
+WALL_MARGIN = 1.005
 
 
 def wall_steps(table, g):
@@ -776,7 +771,6 @@ def peak_until(sim, t, cur=ECON):
     return max([s["income"][cur] for s in sim.samples if s["t"] <= t + 1e-9], default=0.0)
 
 
-# ----------------------------------------------------------------------------- step 5: the model
 def placeholder_spine(cur=ECON):
     return dict(table=None, base=1e300, growth=2.0, count=1000, cur=cur)
 
@@ -866,7 +860,7 @@ def q_held(d, m):
     return pw_proof.held_q(m, ECON)
 
 
-FIRST_RUN_SHARE = 0.5                                     # the first reset opens after half of the run length T_X
+FIRST_RUN_SHARE = 0.5
 
 
 def first_gain(d):
@@ -915,7 +909,7 @@ def continuous_parts(d, H):
     Hd = d.tv["demo_min"] / 60.0
     ends["demo_end"] = dict(axis_step=demo_step(d, Hd), minutes=d.tv["demo_min"], before_system=d.tv["demo_before"])
     if d.named:
-        return ends, []          # the content file is the content: no empty slot
+        return ends, []
     return ends, content_slots(d, Hd, H, ends["demo_end"]["axis_step"], N)
 
 
@@ -1055,13 +1049,10 @@ def step_block(d):
     return dict(every=int(d.val(f"{STEP_VARIANT}.n")), mult=float("%.4g" % d.val(f"{STEP_VARIANT}.m")))
 
 
-# ----------------------------------------------------------------------------- named content of 1 long run
-SIDE_FOLDS = 0.3           # a named side line has a cap where its whole factor is about e^1 (1 e-fold of the game)
-PLACE_SECONDS = 30.0       # the first cost of a placed line: this many seconds of the income at its target time
+SIDE_FOLDS = 0.3
+PLACE_SECONDS = 30.0
 SOLVER_WRITES = (("S01", "gen", "the generator line"), ("S30", "care", "the care line of the upkeep"),
                  ("S08", "bank", "the bank line"), ("S04", "reset", "the first reset"))
-# What the solver writes for a selected system with no content file: (system, id, text). S02 gives 1 group for each
-# entry that is not care (m1, m2, ...; 2 groups with 1 entry or none): group_entries.
 
 
 def start_elements(d):
@@ -1223,7 +1214,6 @@ def not_written_lines(d, names):
         if left else []
 
 
-# ----------------------------------------------------------------------------- selection entries and S30 (upkeep)
 def s02_entries(d):
     return [e for e in d.entries if e["system"] == "S02" and e.get("role") != CARE_ROLE]
 
@@ -1253,9 +1243,9 @@ def care_entry(d):
     return next((e["id"] for e in d.entries if e.get("role") == CARE_ROLE), None)
 
 
-CARE_BASE_NEED = 3.0       # S30: the producer levels that the base capacity meets (u = 1 for the first 3 levels)
-CARE_FIRST_COST = 2        # S30: the care line costs the first cost of group 1 / this
-CARE_GEN_COSTS = 5         # S30, 1 long run: the care line costs this many first costs of the generator
+CARE_BASE_NEED = 3.0
+CARE_FIRST_COST = 2
+CARE_GEN_COSTS = 5
 
 
 def care_lines(d, scale):
@@ -1382,7 +1372,6 @@ def write_model(path, m):
     write_file(path, json.dumps(m, indent=1, sort_keys=True) + "\n")
 
 
-# ----------------------------------------------------------------------------- step 6: proof and rounds
 def prove(m, speed=True):
     tmp = tempfile.TemporaryDirectory()
     path = os.path.join(tmp.name, "model.json")
@@ -1394,8 +1383,8 @@ def prove(m, speed=True):
     return sheet, data
 
 
-C_ROUNDS = 4            # the most extra solves of a round for c from the simulated run length
-C_TOL = 0.10            # a simulated run length more than 10% from sigma solves the round again
+C_ROUNDS = 4
+C_TOL = 0.10
 
 
 def solve_round(d, s):
@@ -1437,7 +1426,7 @@ def spine_ceiling(d):
     if plan is None or not getattr(plan, "spine_capped", False) or getattr(plan, "spine_open", False):
         return False
     if not any(n == "all" or n.startswith("cap:") for n in plan.accepted):
-        return False                    # the cap state of the game stays (pw_rebalance.keep_cap_state)
+        return False
     rec = getattr(d, "fit_record", None) or {}
     last = max((rec.get("steps") or {}).values(), default=0.0)
     return last < d.timeline.last_slot
@@ -1633,7 +1622,7 @@ def place_round(d, plan, move):
     rb.freeze(plan, GEN_COST)
 
 
-AUTOMATE_ROUNDS = 3     # the most rounds of the automation plan: the simulator buys with each new auto-buy
+AUTOMATE_ROUNDS = 3
 
 
 def automate(d):
@@ -1700,7 +1689,6 @@ def solve(d):
     raise proof_conflict(d)
 
 
-# ----------------------------------------------------------------------------- 1 long run (no reset layer)
 def solve_long(d):
     """1 long run (references/design-solver.md, "1 long run"): 1 round with R = 1 and no s. True when the result of
     the proof sheet is ready or simulated; else the conflict of the lead failed row."""
@@ -1750,7 +1738,7 @@ def long_carriers(d):
     count_steps(d, d.gen_b)
 
 
-STEP_VARIANT = "S12.count_steps"      # the count steps of the generator of 1 long run (BM 3a, "The generator")
+STEP_VARIANT = "S12.count_steps"
 
 
 def count_steps(d, b):
@@ -1769,7 +1757,7 @@ def count_steps(d, b):
                     "(BM 3a: r_eff = ln m / (n ln b))", b ** (r * n))
 
 
-GEN_R_FIRST = 0.3         # 1 long run: r of 1 carrier for the first guess of k_mid (3 carriers, R near 0.9)
+GEN_R_FIRST = 0.3
 
 
 def content_share(d):
@@ -1825,8 +1813,8 @@ def long_spine(d):
     prove_long(d)
 
 
-GROWTH_TOL = 0.10        # 1 long run: a measured g more than 10% from g_goal scales the group costs again
-GROWTH_STEPS = 6         # 1 long run: the most steps of that scaling
+GROWTH_TOL = 0.10
+GROWTH_STEPS = 6
 
 
 def solve_growth(d):
@@ -1976,8 +1964,7 @@ def round_state(d, s):
     return "short" if content_short(d) else "next"
 
 
-CONTENT_ROWS = {"PC2", "PC3", "PC4", "PC5", "PC6", "PV", "CG", "CL", "PO13"}               # the rows that a larger s does not fix: content, steps,
-                                                          # the play-test speed
+CONTENT_ROWS = {"PC2", "PC3", "PC4", "PC5", "PC6", "PV", "CG", "CL", "PO13"}
 
 
 def content_short(d):
@@ -2001,7 +1988,7 @@ def not_held(proof):
     return [r["id"] for r in proof["rows"] if r["kind"] in pw_proof.READY_KINDS and r["status"] not in held]
 
 
-NAMED_ROWS = ("PC3", "CG")        # the rows that fail on a skeleton with no named content
+NAMED_ROWS = ("PC3", "CG")
 
 
 def lead_row(failed):
@@ -2070,7 +2057,6 @@ WAYS = {"PC2": ["add a cheap line or a reward where the gap is: the table 'What 
                 "purchase_gap.unlock_first_hour_max_min (designer targets with no source)"]}
 
 
-# ----------------------------------------------------------------------------- step 7: output
 def extension(d):
     """The same formulas with more content: only the stage count N grows (BM L8)."""
     H = d.tv["H_extend"]
@@ -2203,7 +2189,7 @@ def has_cap_raise(m):
     return any(f.get("kind") == "cap" and f.get("target") in capped for x in owners for f in x.get("effects") or [])
 
 
-IN_MODEL = {"S12": has_level_reward, "S13": has_cap_raise}   # systems that content elements can write
+IN_MODEL = {"S12": has_level_reward, "S13": has_cap_raise}
 
 
 def omitted(d):
@@ -2266,7 +2252,7 @@ def detail_lines(d, warnings, ext):
     return head + body + extension_lines(ext) + ["## Proof sheet", ""] + pw_proof.sheet_lines(d.sheet)[2:]
 
 
-FUN_SOLVER_ROWS = ("FM-1", "FM-2", "FM-4", "FM-5")     # the fun rows that the levers of the solver move
+FUN_SOLVER_ROWS = ("FM-1", "FM-2", "FM-4", "FM-5")
 
 
 def content_gap_lines(proof):
@@ -2452,7 +2438,6 @@ def write_proof(path, proof):
     write_file(path, json.dumps(proof, indent=1, sort_keys=True) + "\n")
 
 
-# ----------------------------------------------------------------------------- entry point
 ARGS = (
     (("selection",), dict(nargs="?", help="the selection record (references/interview.md section 8, without "
                                          "targets)")),
@@ -2545,14 +2530,14 @@ def run_as_built(a):
 
 def as_built_game(content, m, tv, pattern):
     d = Design({}, {}, tv, pattern, None)
-    end = (content.get("end") or {}).get("mark") or dict(axis_step=m["ladders"][0]["count"])   # the content key end
+    end = (content.get("end") or {}).get("mark") or dict(axis_step=m["ladders"][0]["count"])
     ends = dict(hard_end=dict(end), largest_purchase_gap_minutes=tv["pgap"],
                 purchase_rate_max_per_minute=tv["rate_max"], first_purchase_minutes=tv["pfirst"],
                 largest_unlock_gap_minutes=tv["ugap_max"], first_hour_unlock_gap_minutes=tv["ugap_first"])
     notes = ["pw_design.py --as-built wrote this model from the content file with the numbers of the game and no "
              "change.", "The active player plays the whole time: an active_only effect pays at its full value "
              "(active_fraction 1)."]
-    m["milestones"] += pw_players.active_action(content, notes)    # the content key active_factor
+    m["milestones"] += pw_players.active_action(content, notes)
     off = content.get("offline") or {}
     presence = dict(open_rate=1.0, visit_minutes=VISIT_MINUTES)
     if off.get("cap_h"):
@@ -2598,9 +2583,8 @@ def run(a):
     return 0 if not_fitted_count(d) == 0 and identity_count(d) == 0 else 1
 
 
-# ----------------------------------------------------------------------------- finding 14: the mark of each system
 MARK_TEXT = {"law": "written, proved by a law", "simulated": "written, simulation only", "not written": "not written"}
-SIM_WRITTEN = ("S07", "S09", "S24")       # the solver writes these systems, and no law of the solver covers them
+SIM_WRITTEN = ("S07", "S09", "S24")
 
 
 def solver_marks(d):
@@ -2621,7 +2605,7 @@ def mark_entries(d, sid):
         return ["upkeep"] + [p["id"] for p in lines]
     ents = [e for e in d.entries if e["system"] == sid]
     if len(ents) < 2:
-        return []                                # an old record: the column stays empty, as before ticket 41
+        return []
     return [entry_text(e, lines + model_lines(d, "S30")) for e in ents]
 
 
@@ -2681,7 +2665,6 @@ def checked_lines(proof):
                    "Not computed: " + (", ".join(left) or "none") + ".", ""]
 
 
-# ----------------------------------------------------------------------------- the simulation path (way out 2)
 PATH_EXIT = {"ready": 0, "simulated": 3, "not ready": 1}
 
 

@@ -1,7 +1,3 @@
-//! The frontmatter types of `teammates/*.md` and `_base/*.md`, and the
-//! constants that decide which tier and which capabilities stay with the
-//! orchestrator.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -9,70 +5,29 @@ use serde::{Deserialize, Serialize};
 use super::{PermissionMode, Phase, Requirement};
 use crate::harness::HarnessKind;
 
-// `TEMPLATE` comes from the generated file above: the annotated `_template.md`,
-// used both to scaffold new teammates and to hold the documented field list to
-// the struct in a test.
-
-/// The model tiers reserved for the orchestrator and named creative seats, and
-/// the ordinary teammate to reach for instead of each.
-///
-/// `horch spawn` refuses ordinary workers on either tier, whichever flavor is
-/// orchestrating. Only the exact names in `TOP_TIER_SEATS` may start there,
-/// and each seat may use only its assigned tier. The one exception is the
-/// operator's own `horch spawn --model` ([`ModelSource::Operator`]): it may
-/// name a reserved tier for any worker, and the orchestrator passes it only
-/// when the operator asks. The orchestrator writes every other brief for an
-/// Opus/Codex-Sol reader.
 pub(crate) const ORCHESTRATOR_TIERS: [(&str, &str); 2] =
     [("fable", "opus"), ("astra", "codex-sol")];
 
-/// The creative council's top-tier seats, and the tier each one runs on.
-/// The only workers `horch spawn` starts on a reserved tier from a teammate
-/// file, and only by name: never as a fallback, never picked by a router or
-/// planner, never in a competition. A teammate file cannot add a seat; this
-/// list can. The operator's `--model` is the other way onto a reserved tier.
 pub(crate) const TOP_TIER_SEATS: [(&str, &str); 3] = [
     ("fable-creative", "fable"),
     ("astra-creative", "astra"),
     ("game-design-juicer", "fable"),
 ];
 
-/// The operator's exception to the seat rules: these seats may name
-/// `fallbacks`, a fallback may share the seat's pool when it runs on another
-/// model family (Fable and Opus have separate scoped windows), and a
-/// substituted launch runs on the fallback's ordinary model.
 pub(crate) const SEATS_WITH_FALLBACKS: [&str; 1] = ["game-design-juicer"];
 
-/// The teammate files `horch fleet` launches as the orchestrator.
 pub(crate) const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];
 
-/// Bundled skills only a fleet orchestrator may carry. `check` fails any other
-/// teammate that names one in `skills:`, and none is in a phase catalog.
 pub(crate) const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-creator"];
 
-/// Tools the Claude orchestrator must deny: `Agent` starts a subagent, in the
-/// foreground or the background, and `RemoteTrigger` starts a cloud agent.
-/// Workers are the orchestrator's only way to delegate.
 pub(crate) const ORCHESTRATOR_DENIED_TOOLS: [&str; 2] = ["Agent", "RemoteTrigger"];
 
-/// Where the model a spawn starts came from. The reserved-tier check takes
-/// it as a typed input, so only the operator's flag opens a reserved tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSource {
-    /// The teammate file, a fallback, a router or planner choice, or a
-    /// record that did not come from an override.
     Teammate,
-    /// The operator's `horch spawn --model`, or the resume of a record that
-    /// one started.
     Operator,
 }
 
-/// The reserved tier a model belongs to, if any.
-///
-/// Matched on the model's name segments rather than the whole slug, because the
-/// two agents name their models differently and both keep moving: `fable`,
-/// `claude-fable-5-2` and `gpt-6-astra` are all reserved, while `opus` and
-/// `gpt-5.6-sol` are not. A version bump stays reserved without an edit here.
 pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
     model
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -83,16 +38,8 @@ pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
         })
 }
 
-/// Longest a `brief_description` may be. Every non-hidden teammate's
-/// description is concatenated into the orchestrator's briefing on every run,
-/// so this is a direct, permanent tax on the orchestrator's context.
 pub(crate) const BRIEF_DESCRIPTION_MAX: usize = 120;
 
-/// One team member: the frontmatter of a `teammates/*.md` file, plus its body.
-///
-/// `deny_unknown_fields` is deliberate. A misspelled key in a hand-written file
-/// would otherwise be silently ignored, producing a worker launched with
-/// permissions or tools its author believed they had set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Teammate {
@@ -100,10 +47,8 @@ pub struct Teammate {
     pub brief_description: String,
     #[serde(default)]
     pub generic: bool,
-    /// Loaded and spawnable by name, but never offered in the roster.
     #[serde(default)]
     pub hidden: bool,
-    /// Names a file in `_base/`. When absent, the body IS the whole prompt.
     #[serde(default)]
     pub base: Option<String>,
     pub agent: HarnessKind,
@@ -113,185 +58,80 @@ pub struct Teammate {
     pub effort: Option<String>,
     #[serde(default)]
     pub subagent_model: Option<String>,
-    /// Whether the operator's globally-enabled plugins load into this agent.
-    /// `false` switches each of them off for this session only, by name, via
-    /// a `--settings` override - the operator's other settings stay exactly as
-    /// tuned. `plugin_dirs` then adds back only what this teammate needs.
     #[serde(default = "yes")]
     pub inherit_plugins: bool,
     #[serde(default)]
     pub plugin_dirs: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
-    /// Catalog skills offered by name only: materialized with the launch, and
-    /// named under "Also available" in the briefing without a description.
-    /// For a related skill that is worth one name, not a full description.
     #[serde(default)]
     pub available_skills: Vec<String>,
-    /// Skills copied at launch from a directory on the operator's machine,
-    /// such as the ones `xcrun agent skills export` writes. They are never
-    /// compiled in. Expected, like `skills:`. See `OperatorSkills`.
     #[serde(default)]
     pub operator_skills: Option<OperatorSkills>,
-    /// Default work phase; spawn --phase overrides it.
     #[serde(default)]
     pub phase: Option<Phase>,
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
-    /// `--tools`. `None` omits the flag; `Some([])` passes `""` (no tools).
     #[serde(default)]
     pub tools: Option<Vec<String>>,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
-    /// Whether this pane may start a subagent of its own.
-    ///
-    /// A fleet pane must not: a subagent's work never reaches the ledger or the
-    /// grid, and deciding to split the work belongs to the orchestrator. A
-    /// worker that needs more hands sends `QUESTION:` instead. `check` enforces
-    /// this on every claude teammate the orchestrator can spawn, and on the
-    /// orchestrator itself, by insisting on `disallowed_tools: [Agent]`.
-    ///
-    /// `true` waives the rule for one teammate. No shipped teammate sets it.
     #[serde(default)]
     pub allow_subagents: bool,
-    /// `--setting-sources`. `None` omits the flag, so the operator's user,
-    /// project and local settings apply as usual. `Some([])` renders
-    /// `--setting-sources ""`, which loads none of them - no `enabledPlugins`,
-    /// no `permissions.deny`. That is the lever for starting an agent clean.
-    ///
-    /// Beware the double negative: dropping user settings also drops
-    /// `disableBundledSkills`, so bundled skills come back. Pair with
-    /// `disable_skills` when the intent is genuinely "no skills".
     #[serde(default)]
     pub setting_sources: Option<Vec<String>>,
-    /// `--disable-slash-commands`, which disables ALL skills - including ones a
-    /// `plugin_dirs` entry brings in. Never set this alongside plugins.
     #[serde(default)]
     pub disable_skills: bool,
-    /// Whether the skills the operator synced from claude.ai (listed as
-    /// `anthropic-skills:<name>`) load. `false`, the default, puts
-    /// `syncClaudeAiSkills: false` in the `--settings` overlay: they are hidden
-    /// for this session only, and nothing on disk moves.
     #[serde(default)]
     pub inherit_claudeai_skills: bool,
-    /// Further skills to switch off by name, as `skillOverrides` entries set to
-    /// `"off"`. Settings merge per key, so the operator's own overrides stay.
     #[serde(default)]
     pub disabled_skills: Vec<String>,
-    /// Claude plugins whose named skills this teammate is expected to use.
-    /// The named skills are rendered, with descriptions, into the briefing;
-    /// the plugin's other skills are switched off for the session. See
-    /// `plugins.rs`.
     #[serde(default)]
     pub plugin_skills: BTreeMap<String, Vec<String>>,
-    /// Claude's Remote Control bridge, as `remoteControlAtStartup` in the
-    /// `--settings` overlay. Every claude pane gets the key: `true` here,
-    /// `false` everywhere else, so an operator or org default cannot turn it
-    /// on in a worker. Only an orchestrator may set it; `check` enforces that.
     #[serde(default)]
     pub remote_control: bool,
-    /// Starts `horch channel serve` as an MCP server in this pane, so worker
-    /// reports reach the orchestrator without terminal text injection. Only
-    /// a Claude or Codex orchestrator may set it; `check` enforces that.
     #[serde(default)]
     pub worker_channel: bool,
     #[serde(default)]
     pub settings: Option<String>,
-    /// Claude's Bash sandbox, as the `sandbox` object of the `--settings`
-    /// overlay. The launch forces the keys in `harness::claude::SANDBOX_FORCED`
-    /// on and refuses a host that cannot sandbox. Claude only; `check`
-    /// rejects it elsewhere and rejects every escape hatch inside it.
     #[serde(default)]
     pub sandbox: Option<serde_json::Map<String, serde_json::Value>>,
-    /// What a sandboxed pane may reach of horch itself. `full` opens the
-    /// state root, the ledger folder and the sockets to the sandbox.
-    /// `report` opens only 1 socket for this pane, which the unsandboxed
-    /// worker process serves (`messaging::report`). `report` needs `sandbox:`.
     #[serde(default)]
     pub horch_access: HorchAccess,
-    /// Name globs (`intake-*`). When set, a pane of this teammate may run
-    /// `horch spawn` only for a teammate whose name matches 1 of them, and
-    /// never with `--resume` or its own `HORCH_TEAMMATES_DIR`. The spawned
-    /// worker reports to this pane's role. Empty: no limit.
     #[serde(default)]
     pub spawn_only: Vec<String>,
-    /// Inline MCP server definitions. `None` leaves the operator's MCP
-    /// configuration alone; `Some` renders `--mcp-config <json>
-    /// --strict-mcp-config`, so `Some({})` means exactly zero MCP servers.
-    ///
-    /// Keep secrets out: these files are committed. A server needing an API key
-    /// belongs in `mcp_config_files`, pointing at a file the operator owns.
     #[serde(default)]
     pub mcp_servers: Option<BTreeMap<String, serde_json::Value>>,
-    /// Extra `--mcp-config <path>` arguments, for servers defined outside this
-    /// repo. Merged under the same `--strict-mcp-config` when `mcp_servers` is
-    /// set.
     #[serde(default)]
     pub mcp_config_files: Vec<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Whether this teammate's provider trains on what it is sent.
-    ///
-    /// True for the free tiers: the model costs nothing because the prompts are
-    /// the payment. It appends the base's `trains_on_input` block to the
-    /// briefing, so the constraint reaches the worker as an instruction rather
-    /// than living only in a `brief_description` the worker never sees.
     #[serde(default)]
     pub trains_on_input: bool,
     #[serde(default)]
     pub first_instruction: Option<String>,
-    /// Names a file in `system_prompt/`. Claude only: the launch appends it
-    /// to Claude's own system prompt with `--append-system-prompt-file`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// The text of that file. The roster attaches it at load, over anything
-    /// a file sets, so the brief carries it to the pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_text: Option<String>,
-    /// Teammates whose launch settings a spawn borrows when this one's usage
-    /// pool cannot serve it, in order of preference. The persona, base,
-    /// phase and skills stay this teammate's. See `balance_policy.rs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<String>,
-    /// Name globs (`*.uproject`). When set, the orchestrator is offered this
-    /// teammate only in a project with a matching file or directory at the
-    /// top level or one level down. `horch spawn <name>` works anywhere.
-    /// See `offer.rs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offer_when: Vec<String>,
-    /// Name globs (`*.csproj`) mapped to catalog skills. In a project with a
-    /// matching file or directory (the facts `offer_when` reads), the skills
-    /// join `skills:` for that launch. See `offer::with_project_skills`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub skills_when: BTreeMap<String, Vec<String>>,
-    /// Host tools this teammate needs. `horch doctor` checks them when the
-    /// project is offered this teammate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
-    /// The entries of `_base/harness-defaults.md` whose `base` matches this
-    /// teammate, for EVERY harness, in file order. The roster attaches them
-    /// at load; a teammate file that sets this fails the check. The builder
-    /// picks the entries of the final harness ([`HarnessDefault::for_harness`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub harness_defaults: Vec<HarnessDefault>,
-    /// The native auto-compact setting this teammate gets when the operator
-    /// set none: Claude window, Codex limit, Prime `contextWindow`. Overrides
-    /// the `windows` of `_base/context-windows.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_window: Option<u64>,
-    /// The watch base of this teammate (CTX-21): `horch context`, `horch
-    /// compact` and the `horch note` check use it in place of the fleet base.
-    /// Tokens, 50,000 to 1,000,000. Frontmatter only, no env variable: a pane
-    /// does not inherit the spawner's env. Every built-in teammate on a
-    /// harness horch watches states it (X1); `None` in an overlay warns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_at: Option<u64>,
-    /// The file body. Its meaning depends on `base`: a persona when `base` is
-    /// set, the entire prompt when it is not.
     #[serde(skip)]
     pub persona: String,
 }
@@ -351,8 +191,6 @@ impl Default for Teammate {
 }
 
 impl Teammate {
-    /// Whether a pane of this teammate may spawn `name`: always without
-    /// `spawn_only`, else only when `name` matches 1 of its globs.
     pub fn may_spawn(&self, name: &str) -> bool {
         self.spawn_only.is_empty()
             || self
@@ -362,10 +200,6 @@ impl Teammate {
     }
 }
 
-/// `operator_skills:`: skill directories `names` under `dir`, an
-/// operator-local directory. `~/` in `dir` expands against the launch's
-/// home. Each name must be a `<dir>/<name>/SKILL.md` whose `name:` matches,
-/// must not clash with a catalog skill, and must not be a subagent skill.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorSkills {
@@ -373,16 +207,11 @@ pub struct OperatorSkills {
     pub names: Vec<String>,
 }
 
-/// `horch_access:`: what a sandboxed pane may reach of horch itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HorchAccess {
-    /// The state root, the ledger folder, the relay sockets and the pane
-    /// manager socket: every `horch` command works in the pane.
     #[default]
     Full,
-    /// 1 per-pane report socket: only `horch ledger progress`, `horch tell`
-    /// to the report target and `horch done` work in the pane.
     Report,
 }
 
@@ -390,25 +219,19 @@ fn yes() -> bool {
     true
 }
 
-/// One execpolicy rule from `_base/codex-execpolicy.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecRule {
     pub pattern: String,
     pub justification: String,
-    /// What codex does with a matching command. When several rules match,
-    /// codex takes the strictest, so a `forbidden` rule beats any `allow`.
     #[serde(default)]
     pub decision: ExecDecision,
 }
 
-/// The `decision` of a codex `prefix_rule`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecDecision {
-    /// Run the command outside the sandbox.
     #[default]
     Allow,
-    /// Refuse the command.
     Forbidden,
 }
 
@@ -421,66 +244,42 @@ impl ExecDecision {
     }
 }
 
-/// A file in `_base/`: a shared prompt shell, or shared data like the
-/// execpolicy rules. Not a teammate and never in the roster.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Base {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    /// Prepended instruction when a teammate declares `skills`. Prose lives
-    /// here rather than in Rust; `{skills}` is the comma-joined list.
     #[serde(default)]
     pub skills_instruction: String,
-    /// Appended when a teammate sets `trains_on_input`. One copy, here, rather
-    /// than the same paragraph pasted into every free-tier teammate file.
     #[serde(default)]
     pub trains_on_input: String,
-    /// Closing paragraph when the spawn carried a task.
     #[serde(default)]
     pub task_fresh: String,
-    /// Closing paragraph when resuming an earlier session.
     #[serde(default)]
     pub task_resume: String,
-    /// Closing paragraph when the worker starts idle.
     #[serde(default)]
     pub task_idle: String,
     #[serde(default)]
     pub rules: Vec<ExecRule>,
-    /// `_base/harness-defaults.md`: launch defaults per harness. See
-    /// [`HarnessDefault`].
     #[serde(default)]
     pub defaults: Vec<HarnessDefault>,
-    /// `_base/context-windows.md`: the fleet's native auto-compact settings,
-    /// keyed `<harness>/<teammate name>` or `<harness>/<model>`. None: the
-    /// key is absent, which the check refuses in that base (an overlay
-    /// replaces the whole file); `windows: {}` is an explicit empty value.
     #[serde(default)]
     pub windows: Option<BTreeMap<String, u64>>,
-    /// `_base/context-windows.md`: the harnesses horch compacts in place
-    /// (CTX-17). Every other harness takes the fresh-session route. None: the
-    /// key is absent, as for `windows`.
     #[serde(default)]
     pub in_place: Option<Vec<String>>,
-    /// `_base/context-messages.md`: every line horch types for the context
-    /// watch, by key. Rust only fills the placeholders.
     #[serde(default)]
     pub messages: BTreeMap<String, String>,
     #[serde(skip)]
     pub body: String,
 }
 
-/// The base that holds the per-harness launch defaults.
 pub(crate) const HARNESS_DEFAULTS_BASE: &str = "harness-defaults";
 
-/// The base that holds the fleet windows and the in-place harnesses.
 pub(crate) const CONTEXT_WINDOWS_BASE: &str = "context-windows";
 
-/// The base that holds the context-watch messages.
 pub(crate) const CONTEXT_MESSAGES_BASE: &str = "context-messages";
 
-/// Every key `_base/context-messages.md` must set.
 pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 9] = [
     "request",
     "warning",
@@ -493,7 +292,6 @@ pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 9] = [
     "failed",
 ];
 
-/// The placeholders a context message may use.
 pub(crate) const CONTEXT_MESSAGE_PLACEHOLDERS: [&str; 9] = [
     "role",
     "tokens",
@@ -506,41 +304,27 @@ pub(crate) const CONTEXT_MESSAGE_PLACEHOLDERS: [&str; 9] = [
     "log",
 ];
 
-/// One entry of `_base/harness-defaults.md`: env, args and settings that
-/// every teammate of a harness gets at launch. A teammate's own value for the
-/// same key wins, and so does the operator's own config, unless `force` is
-/// set (design `ai_docs/plans/wave2/w1/design.md` section 6A.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessDefault {
     pub harness: HarnessKind,
-    /// Only teammates with this `base` (for example fleet-worker). None: all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Claude only: keys merged into the one `--settings` overlay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
-    /// OpenCode only: keys merged into `OPENCODE_CONFIG_CONTENT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Prime only: keys merged into the fleet agent dir `settings.json`.
-    /// Parsed and checked now; applied by the Prime agent dir (slice 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_settings: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Present: this default wins over the operator's config too. The text
-    /// is the reason, and it names the decision that allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force: Option<String>,
 }
 
 impl HarnessDefault {
-    /// The entries for `kind`, in file order. Every builder reads only this
-    /// selection, so a teammate whose `agent` changes after load gets the
-    /// defaults of the harness it runs on.
     pub fn for_harness(
         all: &[HarnessDefault],
         kind: HarnessKind,
@@ -548,12 +332,10 @@ impl HarnessDefault {
         all.iter().filter(move |d| d.harness == kind)
     }
 
-    /// Whether this entry applies to a teammate with `base`.
     pub(crate) fn matches_base(&self, base: Option<&str>) -> bool {
         self.base.is_none() || self.base.as_deref() == base
     }
 
-    /// The keys of the `-c <key>=<value>` pairs in `args`.
     pub fn config_keys(args: &[String]) -> Vec<&str> {
         let mut keys = Vec::new();
         let mut it = args.iter();
@@ -568,7 +350,6 @@ impl HarnessDefault {
     }
 }
 
-/// A Claude entry with nothing in it: tests and struct updates start here.
 impl Default for HarnessDefault {
     fn default() -> Self {
         HarnessDefault {

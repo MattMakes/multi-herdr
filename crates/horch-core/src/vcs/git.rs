@@ -1,12 +1,3 @@
-//! A typed git client (phase B2). [`GitClient`] is the seam: the messaging
-//! commands call it, and a test can put a fake behind it. [`GitCli`] is the
-//! real one; every process it starts goes through
-//! [`horch_marketplace::git::GitRunner`], which removes the API key and the
-//! repo-locating `GIT_*` variables and turns hooks off.
-//!
-//! Every argument that names a ref or a revision is refused when it starts
-//! with `-`, so a label or a branch name can never become an option.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
@@ -14,16 +5,10 @@ use horch_marketplace::git::{GitOutput, GitRunner};
 
 pub trait GitClient {
     fn toplevel(&self, dir: &Path) -> anyhow::Result<PathBuf>;
-    /// `None` on a detached HEAD.
     fn current_branch(&self, dir: &Path) -> anyhow::Result<Option<String>>;
-    /// The full hash `rev` names, or `None` when it names nothing.
     fn rev_parse(&self, dir: &Path, rev: &str) -> anyhow::Result<Option<String>>;
 }
 
-/// Wraps [`GitRunner`], which sets `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`
-/// and strips `FORBIDDEN_ENV` and the repository variables. The caller passes
-/// the git binary (later from `RuntimeContext`, `HORCH_GIT_BIN`); nothing here
-/// reads the environment.
 #[derive(Debug, Clone)]
 pub struct GitCli {
     runner: GitRunner,
@@ -36,8 +21,6 @@ impl GitCli {
         }
     }
 
-    /// Add one variable to every git child, for example `GIT_CONFIG_GLOBAL`
-    /// in a hermetic test.
     pub fn with_env(self, key: &str, value: &str) -> Self {
         Self {
             runner: self.runner.with_env(key, value),

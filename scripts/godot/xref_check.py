@@ -33,7 +33,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-# godot-* names of projects outside this catalog.
 EXTERNAL = {
     "godot-cpp", "godot-docs", "godot-headers", "godot-ios-plugins", "godot-proposals",
     "godot-rust", "godot-wfc", "godot-xr-tools",

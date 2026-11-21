@@ -92,8 +92,6 @@ class GitHubCloneTest(AcquireCase):
             "skills/pdf/SKILL.md": fixtures.skill_md("pdf"), "LICENSE": fixtures.LICENCE_TEXTS["mit"],
         }, sentinel=self.sentinel)
         self.env = {acquire.BASE_ENV: f"file://{self.gh}"}
-        # A global hooks folder that git would use on checkout: the clone's
-        # core.hooksPath=/dev/null must win over it.
         hooks = self.tmp / "global-hooks"
         hooks.mkdir()
         (hooks / "post-checkout").write_text(f"#!/bin/sh\ntouch '{self.sentinel}'\n")
@@ -130,7 +128,6 @@ class GitHubCloneTest(AcquireCase):
         self.assertEqual(self.src_files(c), ["pdf/SKILL.md"])
         p = self.prov(c)
         self.assertEqual((p["source"]["ref"], p["source"]["subdir"]), ("main", "skills"))
-        # The repo-root licence still counts for a subfolder.
         self.assertEqual(p["licence"]["class"], "permissive")
 
     def test_file_protocol_is_never_allowed_without_the_seam(self):
@@ -167,9 +164,6 @@ class GitHubCloneTest(AcquireCase):
         self.assertNotIn("FOO_API_KEY", env)
 
     def test_git_sends_proxy_credentials_on_the_first_connect(self):
-        # T-33: the Claude sandbox proxy closes a CONNECT that has no
-        # Proxy-Authorization instead of sending a 407 challenge. Without
-        # http.proxyAuthMethod=basic, git fails with "Proxy CONNECT aborted".
         server = socket.socket()
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -224,7 +218,7 @@ class FolderTest(AcquireCase):
         sock = socket.socket(socket.AF_UNIX)
         self.addCleanup(sock.close)
         here = os.getcwd()
-        os.chdir(src / "s")  # a relative bind: AF_UNIX paths are short on macOS
+        os.chdir(src / "s")
         sock.bind("sock")
         os.chdir(here)
         r, c = self.acquire(str(src))

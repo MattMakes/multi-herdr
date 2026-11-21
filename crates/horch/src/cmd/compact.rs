@@ -1,24 +1,3 @@
-//! `horch compact`: ask a session to prepare, and compact it in place
-//! (CTX-11, CTX-13 to CTX-16, CTX-18; design §6.8, §6.8a, §6.10).
-//!
-//! - `horch compact <role> --request` types the rendered `request` line into
-//!   the role's pane and records `compact-requested`. Asking twice in 1
-//!   compaction cycle types nothing (rule A).
-//! - `horch compact <role>` checks the record, the pane, the route and the
-//!   handoff, then starts the job: a detached `horch compact <role>
-//!   --foreground`. It prints `scheduled` only when the child wrote
-//!   `job.json` at step `wait-idle` within [`START_TIMEOUT`]; else it records
-//!   `compact-failed` and prints the rendered `failed` line. A start that
-//!   works returns at once; a failed start returns within the timeout.
-//! - `--foreground` is that child. It checks again, holds `job.json`, beats
-//!   the shared heartbeat (`crate::heartbeat` in core, as the judge job
-//!   does) and runs `compaction::job::run` with the real ports. Every exit
-//!   but a second job for the role (`AlreadyExists`) ends in 1 event and 1
-//!   report to the orchestrator pane.
-//!
-//! The rules (states, rule A, the handoff rule, the job steps) are in
-//! `horch_core::compaction`; this module gathers inputs and prints.
-
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,25 +30,12 @@ use horch_core::workspace::PaneHost;
 use super::context::{self, build_row, record_kind, record_workdir, Row, Sources};
 use super::mode;
 
-/// The start handshake: the child must write `job.json` at step
-/// `wait-idle` within this (design §6.8a). The wait ends as soon as the job
-/// file appears, so only a failed start waits this long. 30 s, not the
-/// design's 1.5 s or the later 5 s: the child boots a process, opens the
-/// ledger and runs the checks, and that grows with host load. Measured on a
-/// 18-CPU host: 0.05 to 0.4 s with 16 parallel runs, 1.4 to 2.5 s with 250
-/// busy loops added; a fleet gate run slowed other tests 15 times. A child
-/// that dies is seen at once (`try_wait`), so only a live child that never
-/// writes the file waits the full time.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The poll of the start handshake.
 const START_POLL: Duration = Duration::from_millis(50);
 
-/// The child's exit code when it has recorded `compact-failed` and sent the
-/// `failed` report itself.
 pub const EXIT_REPORTED: u8 = 3;
 
-/// The job's waits (design §6.8).
 const POLL: Duration = Duration::from_secs(2);
 const IDLE_POLLS: u8 = 2;
 const IDLE_TIMEOUT_S: u64 = 1800;
@@ -78,18 +44,15 @@ const MARKER_TIMEOUT: Duration = Duration::from_secs(600);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(600);
 const READING_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The command line of `horch compact`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactArgs {
     pub role: String,
     pub request: bool,
     pub force: bool,
     pub foreground: bool,
-    /// `--timeout`: the wait for idle before the send, in seconds.
     pub timeout: Option<u64>,
 }
 
-/// What 1 run prints and its exit code. Tests read it; the CLI prints it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Outcome {
     pub code: u8,
@@ -121,27 +84,21 @@ impl Outcome {
         }
     }
 
-    /// `ok` on an `Ok` line, `refused` on an `Err` reason.
     fn from_result(r: Result<String, String>) -> Self {
         r.map_or_else(Outcome::refused, Outcome::ok)
     }
 }
 
-/// The text of an `anyhow` error for a refusal reason.
 fn why(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-/// Everything `horch compact` works with. Tests pass the fake workspace,
-/// a temp mailbox, a test exe and a start timeout.
 pub(crate) struct Env<'a> {
     pub src: Sources<'a>,
     pub ws: &'a dyn WorkspaceClient,
     pub mailbox: &'a Mailbox,
-    /// The `horch` that runs the detached child.
     pub exe: PathBuf,
     pub start_timeout: Duration,
-    /// The waits of a `horch mode` switch of a plan pane (X6).
     pub mode_timing: mode::Timing,
 }
 
@@ -158,7 +115,6 @@ impl Env<'_> {
         prompts::context_message(self.src.roster, key, &vars.iter().copied().collect())
     }
 
-    /// The rendered `failed` line.
     fn failed_line(&self, role: &str, step: &str, reason: &str, log: &Path) -> Result<String> {
         let log = log.display().to_string();
         self.message(
@@ -173,7 +129,6 @@ impl Env<'_> {
     }
 }
 
-/// `horch compact`.
 pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
     let mailbox = match Mailbox::resolve_in(&PaneHost::of(ctx), ctx) {
         Ok(m) => m,
@@ -204,8 +159,6 @@ pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
     Ok(print(run(&env, args)))
 }
 
-/// Shared post-note hook for legacy notes and task-ledger note/progress.
-/// A warning never invalidates a saved note. Handoff refusals remain visible.
 pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
     let Some(record_id) = ctx.worker.as_ref().and_then(|w| w.record_id.as_deref()) else {
         return Ok(());
@@ -281,7 +234,6 @@ fn print(o: Outcome) -> ExitCode {
     ExitCode::from(o.code)
 }
 
-/// The 3 forms, in the order of design §6.10.
 pub(crate) fn run(env: &Env, args: &CompactArgs) -> Outcome {
     if args.request {
         request(env, &args.role)
@@ -292,24 +244,15 @@ pub(crate) fn run(env: &Env, args: &CompactArgs) -> Outcome {
     }
 }
 
-/// The record and pane a compaction targets.
 struct Target {
     row: Row,
     pane: String,
 }
 
-/// Step 1: a live record in this workspace, its pane, and a harness with a
-/// compact command (`--request`: any harness but `none`). The text is the
-/// refusal reason.
 fn target(env: &Env, role: &str) -> Result<Target, String> {
     target_for(env, role, true)
 }
 
-/// The "already asked" line of a second `--request`, or None when the line
-/// goes out. A `request-stale` or `compact-failed` row is asked again (#75),
-/// up to [`policy::MAX_REQUESTS`] asks in the cycle; a row with a live or
-/// pending compaction, or inside the deadline, is not. `plan_override` is a
-/// warned plan pane, which is asked once whatever the warning.
 fn repeat_refusal(t: &Target, role: &str, plan_override: bool) -> Option<String> {
     let history = &t.row.record.history;
     let last = t.row.last_compaction();
@@ -362,8 +305,6 @@ fn target_for(env: &Env, role: &str, need_command: bool) -> Result<Target, Strin
     Ok(Target { row, pane })
 }
 
-/// Steps 3 and 4: the in-place route and the handoff guard, unless forced.
-/// A `handoff` row gets no new compaction (TRF-09).
 fn route_and_handoff(env: &Env, t: &Target, force: bool) -> Result<(), String> {
     if force {
         Ok(())
@@ -380,8 +321,6 @@ fn route_and_handoff(env: &Env, t: &Target, force: bool) -> Result<(), String> {
     }
 }
 
-/// TRF-09: the refusal for a row still over its threshold after 1
-/// compaction. A second cycle would not help; the session hands off (C4).
 fn handoff_route(t: &Target) -> Option<String> {
     (t.row.state == RowState::Handoff).then(|| {
         let role = &t.row.record.role;
@@ -393,7 +332,6 @@ fn handoff_route(t: &Target) -> Option<String> {
     })
 }
 
-/// Step 4: the handoff file of the record is fresh enough.
 fn check_handoff(env: &Env, t: &Target) -> Result<(), String> {
     let path = handoff_file(env.src.ctx, &t.row.record);
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
@@ -415,13 +353,9 @@ fn handoff_problem_text(path: &Path, p: HandoffProblem) -> String {
     }
 }
 
-/// The handoff file of a record, resolved against its workdir (review
-/// finding 14), never against this process's cwd.
 fn handoff_file(ctx: &RuntimeContext, record: &Record) -> PathBuf {
     record_workdir(ctx, record).join(policy::handoff_path(&record.role))
 }
-
-// ─── --request ──────────────────────────────────────────────────────────────
 
 fn request(env: &Env, role: &str) -> Outcome {
     Outcome::from_result(request_target(env, role).and_then(|t| {
@@ -432,8 +366,6 @@ fn request(env: &Env, role: &str) -> Outcome {
     }))
 }
 
-/// Step 1 of `--request`: the orchestrator is never asked; any other role
-/// needs a live record and a pane.
 fn request_target(env: &Env, role: &str) -> Result<Target, String> {
     if role == "orchestrator" {
         Err(
@@ -445,16 +377,11 @@ fn request_target(env: &Env, role: &str) -> Result<Target, String> {
     }
 }
 
-/// A Codex pane with `permission_mode: plan` in read-only cannot write its
-/// handoff (X6). It is switched to write before the send.
 fn read_only(env: &Env, t: &Target) -> bool {
     mode::is_plan_pane(env.src.roster, &t.row.record)
         && mode::current_mode(&t.row.record.history) == PaneMode::Plan
 }
 
-/// The "already asked" line, or None when the request goes out. A warning in
-/// this cycle does not stop a read-only pane: the warned pane could not act
-/// on it.
 fn already_asked_line(env: &Env, t: &Target, role: &str) -> Option<String> {
     let warned_only = t
         .row
@@ -467,7 +394,6 @@ fn already_asked_line(env: &Env, t: &Target, role: &str) -> Option<String> {
     repeat_refusal(t, role, read_only(env, t) && warned_only)
 }
 
-/// The message, the mode switch, the send and the ledger event.
 fn send_request(env: &Env, t: &Target, role: &str) -> Result<String, String> {
     let record = &t.row.record;
     let tokens = t
@@ -518,14 +444,11 @@ fn send_request(env: &Env, t: &Target, role: &str) -> Result<String, String> {
     Ok(format!("asked {role} to write {handoff}"))
 }
 
-// ─── the parent: checks, start, handshake ──────────────────────────────────
-
 fn schedule(env: &Env, args: &CompactArgs) -> Outcome {
     let role = &args.role;
     let dir = env.job_dir(role);
     match target(env, role) {
         Err(reason) => Outcome::refused(reason),
-        // A lost job was claimed by `build_row`; the start below clears its dir.
         Ok(t) if t.row.job == JobLiveness::Live => {
             Outcome::ok(already_running(role, &dir.join(LOG_FILE)))
         }
@@ -541,7 +464,6 @@ fn already_running(role: &str, log: &Path) -> String {
     )
 }
 
-/// Spawn the child under the start lock, then wait for its handshake.
 fn start(env: &Env, args: &CompactArgs, record: &Record, dir: &Path) -> Outcome {
     let role = &args.role;
     let log = dir.join(LOG_FILE);
@@ -556,7 +478,6 @@ fn start(env: &Env, args: &CompactArgs, record: &Record, dir: &Path) -> Outcome 
         .unwrap_or_else(|reason| start_failed(env, role, record, dir, &log, &reason))
 }
 
-/// The outcome of a start that did not fail; the reason when it failed.
 fn spawned(
     env: &Env,
     dir: &Path,
@@ -585,8 +506,6 @@ fn spawned(
     }
 }
 
-/// A start that failed: clear the job dir, record `compact-failed`, print the
-/// `failed` line.
 fn start_failed(
     env: &Env,
     role: &str,
@@ -617,8 +536,6 @@ fn start_failed(
     }
 }
 
-/// `<exe> compact <role> --foreground [--force] [--timeout N]`, detached,
-/// stdin null, stdout and stderr appended to `job.log`.
 fn spawn_child(env: &Env, args: &CompactArgs, dir: &Path) -> Result<Child> {
     let log = open_log(&dir.join(LOG_FILE))?;
     let ctx = env.src.ctx;
@@ -639,7 +556,6 @@ fn spawn_child(env: &Env, args: &CompactArgs, dir: &Path) -> Result<Child> {
     if let Ok(project) = ctx.paths.project() {
         cmd.env("HORCH_PROJECT_DIR", project);
     }
-    // `spawn_detached` scrubs the forbidden keys itself.
     spawn_detached(&mut cmd).with_context(|| format!("starting {}", env.exe.display()))
 }
 
@@ -655,13 +571,10 @@ fn open_log(path: &Path) -> Result<std::fs::File> {
 enum Handshake {
     Scheduled,
     AlreadyRunning,
-    /// The child reported itself: the `failed` line it sent.
     Reported(String),
     Failed(String),
 }
 
-/// Poll every 50 ms: `job.json` past step `start` is a start; a child that
-/// exits first says why by its code; past the timeout the child is stopped.
 fn handshake(env: &Env, dir: &Path, mut child: Child) -> Handshake {
     let begin = Instant::now();
     let h = loop {
@@ -676,7 +589,6 @@ fn handshake(env: &Env, dir: &Path, mut child: Child) -> Handshake {
     h
 }
 
-/// One poll of the handshake: the result, or None to poll again.
 fn poll(env: &Env, dir: &Path, child: &mut Child, begin: Instant) -> Option<Handshake> {
     if job_started(dir) {
         return Some(Handshake::Scheduled);
@@ -689,9 +601,6 @@ fn poll(env: &Env, dir: &Path, child: &mut Child, begin: Instant) -> Option<Hand
     }
 }
 
-/// The child exited. `poll` read the job file before it saw the exit, so the
-/// child may have written it in between: read it again, then let the code
-/// say why a child that never started exited.
 fn exited(dir: &Path, status: ExitStatus) -> Handshake {
     if job_started(dir) {
         return Handshake::Scheduled;
@@ -708,9 +617,7 @@ fn exited(dir: &Path, status: ExitStatus) -> Handshake {
     }
 }
 
-/// Stop a child that did not start in time.
 fn timed_out(env: &Env, child: &mut Child) -> Handshake {
-    // The handle is not reaped yet, so its pid is still this child.
     let _ = child.kill();
     let _ = child.wait();
     Handshake::Failed(format!(
@@ -719,14 +626,12 @@ fn timed_out(env: &Env, child: &mut Child) -> Handshake {
     ))
 }
 
-/// The started child runs on; a thread reaps it if this process lives on.
 fn reap(mut child: Child) {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
 }
 
-/// `job.json` exists with a step past `start`.
 fn job_started(dir: &Path) -> bool {
     std::fs::read(dir.join(JOB_FILE))
         .ok()
@@ -734,7 +639,6 @@ fn job_started(dir: &Path) -> bool {
         .is_some_and(|j| j.step != Step::Start.as_str())
 }
 
-/// The last `[horch] BLOCKED:` line of the job log, from its tag on.
 fn last_blocked_line(log: &Path) -> Option<String> {
     let text = std::fs::read_to_string(log).ok()?;
     text.lines()
@@ -742,14 +646,8 @@ fn last_blocked_line(log: &Path) -> Option<String> {
         .find_map(|l| l.find("[horch] BLOCKED:").map(|i| l[i..].to_string()))
 }
 
-// ─── the child: --foreground ───────────────────────────────────────────────
-
-/// Why the child stops before its job runs.
 enum Stop {
-    /// A second job for the role: it ends with no event.
     Duplicate,
-    /// A refusal: `compact-failed` on `record` (when there is one) and the
-    /// `failed` report. `clear` removes the job dir of this child first.
     Refused {
         record: Option<Box<Record>>,
         why: String,
@@ -790,8 +688,6 @@ fn foreground(env: &Env, args: &CompactArgs) -> Outcome {
     }
 }
 
-/// `job.json` at step `start`: a second job for the role stops at its
-/// creation with no event. The parent waits for step `wait-idle`.
 fn new_job(role: &str, record: Option<&Record>) -> JobRecord {
     JobRecord {
         v: jobfile::JOB_VERSION,
@@ -802,8 +698,6 @@ fn new_job(role: &str, record: Option<&Record>) -> JobRecord {
     }
 }
 
-/// The setup of the child: create `job.json`, check the route and the
-/// handoff, build the plan, write step `wait-idle`.
 fn prepare(
     env: &Env,
     args: &CompactArgs,
@@ -824,15 +718,12 @@ fn prepare(
     Ok((t, plan))
 }
 
-/// Create the compact root, the job dir and `job.json`.
 fn create_job_file(
     env: &Env,
     dir: &Path,
     record: Option<&Record>,
     job: &JobRecord,
 ) -> Result<(), Stop> {
-    // The compact root first: `ensure_private_dir` sets the mode of its
-    // last dir only, and a foreground job can be the first to make the root.
     let root = jobfile::compact_root(&env.src.ctx.paths.state_root);
     horch_core::fsx::ensure_private_dir(&root)
         .and_then(|()| horch_core::fsx::ensure_private_dir(dir))
@@ -847,7 +738,6 @@ fn create_job_file(
     })
 }
 
-/// Run the job with the real ports under a heartbeat.
 fn run_job(
     env: &Env,
     t: &Target,
@@ -875,10 +765,6 @@ fn run_job(
     }
 }
 
-/// A child that refuses before its first job step: `compact-failed`
-/// `step start: <reason>` on the record (when there is one), the `failed`
-/// report to the orchestrator pane, the same line in `job.log`, exit
-/// [`EXIT_REPORTED`].
 fn refuse_child(
     env: &Env,
     role: &str,
@@ -909,15 +795,7 @@ fn refuse_child(
     Outcome::code(EXIT_REPORTED)
 }
 
-/// Send 1 untagged line to the mailbox's `orchestrator` pane. Not
-/// `messaging::tell`: that would add a `[<role>]` tag.
-///
-/// Queue `line` as durable orchestrator mail first (#177): the courier
-/// delivers it when no orchestrator pane is registered yet or the push
-/// fails. A queue that fails is printed, and the line is still typed.
 fn report(env: &Env, line: &str) -> Result<()> {
-    // A BLOCKED that names no horch command goes as a NOTE (C2), in the
-    // mail and in the pane alike.
     let line = &horch_core::messaging::mail::horch_line(line);
     if let Err(error) = horch_core::messaging::mail::queue_notice(
         env.src.ctx,
@@ -947,9 +825,6 @@ fn append_log(log: &Path, step: Step, text: &str) {
     }
 }
 
-/// The job plan of a target: its compact line (with `instructions`, or
-/// `instructions-orchestrator` for an orchestrator record), the resume line
-/// and the 2 report templates.
 fn plan_for(env: &Env, t: &Target, timeout: Option<u64>) -> Result<JobPlan> {
     let record = &t.row.record;
     let role = record.role.as_str();
@@ -1008,7 +883,6 @@ fn plan_for(env: &Env, t: &Target, timeout: Option<u64>) -> Result<JobPlan> {
     })
 }
 
-/// The real [`JobPorts`].
 struct Ports<'a> {
     env: &'a Env<'a>,
     record: &'a Record,
@@ -1028,13 +902,11 @@ impl JobPorts for Ports<'_> {
         delivery::send_line(self.env.ws, self.pane, line)
     }
 
-    /// Unwrapped, so a long failure line stays on 1 line.
     fn pane_text(&self) -> Result<String> {
         self.env.ws.pane_read(self.pane, "recent-unwrapped")
     }
 
     fn reading(&self) -> Result<Reading, Unreadable> {
-        // The session id can arrive after the launch (Codex): read it again.
         let sid = self
             .env
             .src
@@ -1085,8 +957,6 @@ impl JobPorts for Ports<'_> {
         report(self.env, line)
     }
 
-    /// A plan pane that `--request` switched to write goes back to plan
-    /// (X6). The record is read again: a manual `horch mode` counts too.
     fn restore_mode(&self) -> Option<Result<()>> {
         let record = self.env.src.ledger.get(&self.record.record_id).ok()?;
         if !mode::is_plan_pane(self.env.src.roster, &record)
@@ -1107,7 +977,6 @@ impl JobPorts for Ports<'_> {
         )
     }
 
-    /// 1 log line; a new job step is written to `job.json` too.
     fn log(&self, step: Step, text: &str) {
         append_log(self.log, step, text);
         let mut job = self.job.borrow_mut();
@@ -1134,7 +1003,6 @@ mod tests {
     use horch_core::roster::{PermissionMode, Teammate};
     use horch_core::workspace::testing::FakeWorkspace;
 
-    /// A world with a fake herdr workspace and a mailbox in `w1`.
     struct Fleet {
         w: World,
         ws: FakeWorkspace,
@@ -1157,7 +1025,6 @@ mod tests {
             }
         }
 
-        /// Register `role` on a new fake pane whose agent is idle.
         fn pane(&self, role: &str) -> String {
             let pane = self
                 .ws
@@ -1174,8 +1041,6 @@ mod tests {
             self.env_on(&self.ws)
         }
 
-        /// [`Fleet::env`] over another workspace, for example a simulated
-        /// Codex pane.
         fn env_on<'a>(&'a self, ws: &'a dyn WorkspaceClient) -> Env<'a> {
             Env {
                 src: self.w.sources(),
@@ -1187,8 +1052,6 @@ mod tests {
             }
         }
 
-        /// A Codex teammate `codex-plan` with `permission_mode: plan`, and
-        /// its live record `r-1` as role `codex-plan-1` on pane `p1`.
         fn plan_pane(&mut self) {
             self.w.roster.insert_for_test(Teammate {
                 name: "codex-plan".into(),
@@ -1212,7 +1075,6 @@ mod tests {
             run(&self.env_on(ws), &args)
         }
 
-        /// The names of the record's mode and request events, in order.
         fn mode_events(&self, id: &str) -> Vec<String> {
             self.w
                 .ledger
@@ -1237,7 +1099,6 @@ mod tests {
             run(&self.env(), &args)
         }
 
-        /// The lines typed into `pane`.
         fn typed(&self, pane: &str) -> Vec<String> {
             self.ws
                 .calls()
@@ -1265,9 +1126,6 @@ mod tests {
         screen_polls: 3,
     };
 
-    /// X6: a Codex pane with `permission_mode: plan` is read-only and cannot
-    /// write its handoff. `--request` switches it to the fleet write profile
-    /// first, then types the request.
     #[test]
     fn x6_request_on_a_plan_pane_switches_to_write_first() {
         let mut f = Fleet::new();
@@ -1290,7 +1148,6 @@ mod tests {
         assert_eq!(f.mode_events("r-1"), ["mode-changed", EVENT_REQUESTED]);
     }
 
-    /// A failed switch refuses the request: no request line, no event.
     #[test]
     fn x6_a_failed_switch_types_no_request() {
         let mut f = Fleet::new();
@@ -1304,9 +1161,6 @@ mod tests {
         assert_eq!(f.mode_events("r-1"), ["mode-failed"]);
     }
 
-    /// Rule A exception: a warning counts as asked, but a pane still in
-    /// plan mode could not write its handoff. So `--request` switches and
-    /// asks; a second `--request` (now in write mode) is already asked.
     #[test]
     fn x6_a_warned_plan_pane_is_switched_and_asked() {
         let mut f = Fleet::new();
@@ -1323,7 +1177,6 @@ mod tests {
         assert_eq!(sim.typed().len(), 5, "nothing more typed");
     }
 
-    /// A plan pane already in write mode gets the request without a switch.
     #[test]
     fn x6_a_plan_pane_in_write_mode_is_not_switched_again() {
         let mut f = Fleet::new();
@@ -1339,7 +1192,6 @@ mod tests {
         assert!(typed[0].contains("codex-plan-1-whats-next.md"));
     }
 
-    /// The job's port of a plan pane, on `ws`.
     fn ports_on<'a>(env: &'a Env<'a>, record: &'a Record, dir: &'a Path) -> Ports<'a> {
         Ports {
             env,
@@ -1358,8 +1210,6 @@ mod tests {
         }
     }
 
-    /// X6: after a `--request` switched a plan pane to write, the job's
-    /// port switches it back to plan (`Read Only`) and records the event.
     #[test]
     fn x6_the_job_port_restores_a_switched_plan_pane() {
         let mut f = Fleet::new();
@@ -1382,8 +1232,6 @@ mod tests {
         );
     }
 
-    /// A pane that was not switched (or not a plan pane) has nothing to
-    /// restore: no key.
     #[test]
     fn x6_the_job_port_restores_nothing_for_an_unswitched_pane() {
         let mut f = Fleet::new();
@@ -1401,7 +1249,6 @@ mod tests {
         f.set_modified(SystemTime::now() - ago).unwrap();
     }
 
-    /// CTX-11, CTX-22: the request is typed and recorded once per cycle.
     #[test]
     fn ctx_11_request_types_message_and_records_event() {
         let f = Fleet::new();
@@ -1437,7 +1284,6 @@ mod tests {
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 1);
     }
 
-    /// #75: an ask inside the deadline is still "already asked".
     #[test]
     fn a_fresh_ask_inside_the_deadline_is_not_typed_again() {
         let f = Fleet::new();
@@ -1454,7 +1300,6 @@ mod tests {
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 1);
     }
 
-    /// #75: a third `--request` in 1 cycle is refused, and names the fresh route.
     #[test]
     fn a_stale_row_with_two_asks_is_not_asked_a_third_time() {
         let f = Fleet::new();
@@ -1472,9 +1317,6 @@ mod tests {
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
     }
 
-    /// TRF-09: a row still over after 1 compaction gets the handoff route.
-    /// `--request` types nothing and records nothing; a compaction is
-    /// refused unless forced.
     #[test]
     fn trf_09_a_row_still_over_after_1_compaction_is_sent_to_the_handoff_route() {
         let f = Fleet::new();
@@ -1501,7 +1343,6 @@ mod tests {
         assert!(!f.env().job_dir("sonnet-1").join(JOB_FILE).exists());
     }
 
-    /// #75: a stale ask whose compaction job is live is not asked again.
     #[test]
     fn a_stale_ask_with_a_live_job_is_not_typed_again() {
         let f = Fleet::new();
@@ -1524,8 +1365,6 @@ mod tests {
         assert!(f.typed(&pane).is_empty());
     }
 
-    /// #75: the second `--request` on a stale row types the line and
-    /// records a second event.
     #[test]
     fn a_request_on_a_stale_row_types_and_records_again() {
         let f = Fleet::new();
@@ -1541,13 +1380,11 @@ mod tests {
         );
         assert_eq!(f.typed(&pane).len(), 1);
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
-        // The new ask is inside the deadline: a third `--request` is refused.
         let third = f.run("sonnet-1", |a| a.request = true);
         assert!(third.out[0].starts_with("already asked"), "{third:?}");
         assert_eq!(f.typed(&pane).len(), 1);
     }
 
-    /// #75: a failed job after the ask also allows a second `--request`.
     #[test]
     fn a_request_after_a_failed_job_types_and_records_again() {
         let f = Fleet::new();
@@ -1562,7 +1399,6 @@ mod tests {
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
     }
 
-    /// CTX-22: the exact texts of the request and warning events.
     #[test]
     fn ctx_22_request_and_warning_event_texts() {
         let f = Fleet::new();
@@ -1587,7 +1423,6 @@ mod tests {
         );
     }
 
-    /// CTX-14: a missing, a stale and a pre-request handoff are refused.
     #[test]
     fn ctx_14_compact_refuses_missing_or_stale_handoff() {
         let f = Fleet::new();
@@ -1617,8 +1452,6 @@ mod tests {
             path.display()
         ));
 
-        // Both stamps are minutes from now, so a slow machine between the
-        // two writes cannot reorder them: the handoff is older than the ask.
         let asked = minutes_ago(5);
         f.w.event_at("r-1", &asked, EVENT_REQUESTED, "tokens 1 threshold 2");
         set_mtime(&path, Duration::from_secs(10 * 60));
@@ -1628,8 +1461,6 @@ mod tests {
         ));
     }
 
-    /// CTX-14 (review finding 14): the handoff is looked for in the
-    /// record's workdir, not in the project or the cwd.
     #[test]
     fn ctx_14_handoff_resolves_against_the_record_workdir() {
         let f = Fleet::new();
@@ -1650,7 +1481,6 @@ mod tests {
                 ..Record::default()
             })
             .unwrap();
-        // Only in the project (the cwd here): missing, with the path in A.
         f.handoff(&f.w.project(), "sonnet-1");
         let t = target(&f.env(), "sonnet-1").ok().unwrap();
         let in_a = a.join("ai_docs/handoffs/sonnet-1-whats-next.md");
@@ -1662,9 +1492,6 @@ mod tests {
         assert_eq!(route_and_handoff(&f.env(), &t, false), Ok(()));
     }
 
-    /// CTX-15 (review finding 1 a): a child that writes no `job.json` is
-    /// stopped at the start timeout (1.5 s here, so the test stays short),
-    /// and the start fails with 1 event and 1 line.
     #[cfg(unix)]
     #[test]
     fn ctx_15_compact_start_handshake_fails_without_job_file() {
@@ -1672,7 +1499,6 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("sleeper");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &exe,
             "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nexec sleep 30\n",
@@ -1688,9 +1514,6 @@ mod tests {
         let begin = Instant::now();
         let o = f.run("sonnet-1", |_| {});
         let took = begin.elapsed();
-        // No upper bound on `took`: a loaded machine can stall any step. The
-        // child sleeps 30 s and never exits, so the failure below can come
-        // only from the start timeout stopping it.
         assert!(took >= f.start_timeout, "{took:?}");
         assert_eq!(o.code, 1, "{o:?}");
         let log = f.env().job_dir("sonnet-1").join(LOG_FILE);
@@ -1719,9 +1542,6 @@ mod tests {
         );
     }
 
-    /// A child that needs 6 s to reach `wait-idle` (a loaded host) is
-    /// scheduled under the default start timeout. With the old 5 s limit it
-    /// was stopped and recorded as `compact-failed`.
     #[cfg(unix)]
     #[test]
     fn a_slow_child_within_the_default_start_timeout_is_scheduled() {
@@ -1730,7 +1550,6 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("slow-starter");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &exe,
             &format!(
@@ -1741,7 +1560,6 @@ mod tests {
         );
         assert!(warm.status.success());
         f.exe = exe;
-        // `f.start_timeout` stays at START_TIMEOUT.
         f.pane("sonnet-1");
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
         f.handoff(&f.w.project(), "sonnet-1");
@@ -1755,8 +1573,6 @@ mod tests {
         assert!(f.w.events("r-1", EVENT_FAILED).is_empty());
     }
 
-    /// CTX-15: a child that writes `job.json` at `wait-idle` in time is
-    /// scheduled, with no event.
     #[cfg(unix)]
     #[test]
     fn ctx_15_compact_start_handshake_accepts_wait_idle() {
@@ -1765,7 +1581,6 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("starter");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &exe,
             &format!(
@@ -1776,8 +1591,6 @@ mod tests {
         );
         assert!(warm.status.success());
         f.exe = exe;
-        // The success path does not depend on the timeout; a loaded test
-        // machine can start a shell slowly.
         f.start_timeout = Duration::from_secs(10);
         f.pane("sonnet-1");
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
@@ -1795,10 +1608,6 @@ mod tests {
         assert!(dir.join(jobfile::SPAWNED_FILE).exists());
     }
 
-    /// CTX-15: a child that wrote `job.json` past `start` and then exited 0
-    /// before the parent polled `try_wait` has started. `poll` reads the job
-    /// file first, so a loaded parent can see the exit without the file it
-    /// just missed; `exited` must read the file again.
     #[cfg(unix)]
     #[test]
     fn ctx_15_exit_after_the_job_file_is_a_start_not_already_running() {
@@ -1815,9 +1624,6 @@ mod tests {
         assert!(matches!(exited(&dir, status), Handshake::Scheduled));
     }
 
-    /// CTX-15 (review finding 1 b): a child that refuses records 1 event,
-    /// reports 1 line and exits 3; a second child while `job.json` exists
-    /// exits 0 with no event.
     #[test]
     fn ctx_15_foreground_refusal_records_failed_and_reports() {
         let f = Fleet::new();
@@ -1861,8 +1667,6 @@ mod tests {
         assert_eq!(f.typed(&orch).len(), 1);
     }
 
-    /// #177: a job that fails with no orchestrator pane registered leaves
-    /// its `failed` line as pending orchestrator mail.
     #[test]
     fn a_failed_job_with_no_orchestrator_leaves_the_failed_line_as_mail() {
         let f = Fleet::new();
@@ -1887,8 +1691,6 @@ mod tests {
         );
     }
 
-    /// A mail dir that the trust check refuses does not stop the report:
-    /// the line is still typed into the orchestrator pane.
     #[cfg(unix)]
     #[test]
     fn a_refused_mail_dir_does_not_stop_the_typed_report() {
@@ -1912,8 +1714,6 @@ mod tests {
         assert!(!mail.dir().join("pending").exists(), "nothing was queued");
     }
 
-    /// #77: a new compact dir and job dir are mode 0700, and the job log
-    /// is mode 0600: the log holds the lines reported for the worker.
     #[cfg(unix)]
     #[test]
     fn compact_dirs_are_0700_and_the_job_log_0600() {
@@ -1935,8 +1735,6 @@ mod tests {
         assert_eq!(mode(&dir.join(LOG_FILE)), 0o600);
     }
 
-    /// CTX-16: a harness that is not in `in_place` takes the fresh route,
-    /// unless forced.
     #[test]
     fn ctx_16_compact_refuses_fresh_route_harness() {
         let f = Fleet::new();
@@ -1952,8 +1750,6 @@ mod tests {
         assert_eq!(route_and_handoff(&f.env(), &t, true), Ok(()));
     }
 
-    /// CTX-18: the orchestrator compacts in its own pane, on its own
-    /// record, with its own keep-list; it is never asked.
     #[test]
     fn ctx_18_compact_targets_the_orchestrator_pane_and_record() {
         let f = Fleet::new();
@@ -2007,7 +1803,6 @@ mod tests {
     #[test]
     fn a_failed_type_into_the_pane_refuses_and_records_nothing() {
         let f = Fleet::new();
-        // The pane id is in the mailbox, but the workspace does not know it.
         std::fs::write(f.mailbox.dir().join("sonnet-1.id"), "no-such-pane").unwrap();
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
         let o = f.run("sonnet-1", |a| a.request = true);
@@ -2036,14 +1831,12 @@ mod tests {
         );
     }
 
-    /// Run `horch compact sonnet-1` against a fake `horch` that runs `body`.
     #[cfg(unix)]
     fn start_with_child(body: &str) -> (Fleet, Outcome) {
         let mut f = Fleet::new();
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("child");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &exe,
             &format!("#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n{body}\n"),

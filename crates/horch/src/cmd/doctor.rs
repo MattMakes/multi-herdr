@@ -1,10 +1,3 @@
-//! `horch doctor` - the port of the justfile's `require-herdr` recipe.
-//!
-//! Fails fast with a clear message when herdr is missing or its server is not
-//! reachable. The old `jq` check is gone: nothing shells out to jq any more.
-//! It also checks the host tools (`requires:`) of the teammates this project
-//! is offered.
-
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -44,7 +37,6 @@ pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
         }
     }
     let mut roster = super::load_roster_unwarned(ctx, None)?;
-    // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
         roster = roster.with_project_facts(horch::project::project_facts(&project));
     }
@@ -66,8 +58,6 @@ pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     Ok(())
 }
 
-/// The stale state the sweep finds, per kind (#140). `clean` removes it;
-/// otherwise nothing is removed.
 fn report_stale_state(ctx: &RuntimeContext, clean: bool) {
     let (lines, warnings) = stale_state(ctx, clean);
     for w in &warnings {
@@ -78,7 +68,6 @@ fn report_stale_state(ctx: &RuntimeContext, clean: bool) {
     }
 }
 
-/// The lines of [`report_stale_state`], and its warnings.
 fn stale_state(ctx: &RuntimeContext, clean: bool) -> (Vec<String>, Vec<String>) {
     let per_kind = |counts: &BTreeMap<sweep::Kind, usize>| {
         counts
@@ -114,9 +103,6 @@ fn stale_state(ctx: &RuntimeContext, clean: bool) -> (Vec<String>, Vec<String>) 
     (lines, Vec::new())
 }
 
-/// The roster line, or its problems. Problems are not fatal: a fleet still
-/// launches, but at least one teammate would misbehave in a pane nobody is
-/// watching.
 fn report_roster(roster: &Roster) {
     let problems = roster.check();
     if problems.is_empty() {
@@ -136,9 +122,6 @@ fn report_roster(roster: &Roster) {
     }
 }
 
-/// The notes and the warnings about the host. None is fatal: the fleet
-/// launches, but the teammate that needs the tool stalls in its pane, or the
-/// harness's teammates are unusable and the rest work.
 fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<String>) {
     let path = ctx.inherited.path.as_deref();
     let pathext = ctx.inherited.pathext.as_deref();
@@ -154,7 +137,6 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
         Some(ExportCheck::Problem(p)) => (None, Some(p)),
         None => (None, None),
     };
-    // Settings that quietly override the effort in every teammate file.
     let home = ctx.inherited.home_var.as_deref().map(Path::new);
     let codex_home = horch_core::harness::codex::codex_home(
         &ctx.paths.home,
@@ -190,10 +172,6 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
     (note.into_iter().collect(), warnings)
 }
 
-/// One warning per `herdr-*` entry in `<home>/.claude/skills` (TRF-10).
-/// Claude loads such an entry as an ambient skill, and its text can name
-/// commands this horch lacks. The briefing horch compiles into each pane is
-/// canonical. Doctor names each entry and removes nothing.
 fn stale_skill_warnings(home: &Path) -> Vec<String> {
     let dir = home.join(".claude").join("skills");
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -316,8 +294,6 @@ fn check_min_version(
     Ok(())
 }
 
-/// The precondition every recipe shares. Deliberately does NOT validate the
-/// roster: a roster warning must not stop a fleet from launching.
 pub fn check(ctx: &RuntimeContext) -> Result<()> {
     if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
         check_min_version(ctx, "hc", &ctx.bins.harness.hc, MIN_HC_VERSION)?;
@@ -360,7 +336,6 @@ pub fn check(ctx: &RuntimeContext) -> Result<()> {
     Ok(())
 }
 
-/// One line per harness whose `--version` ran and failed.
 fn broken_harness_warnings(
     facts: &std::collections::BTreeMap<&'static str, BinaryFacts>,
 ) -> Vec<String> {
@@ -376,13 +351,8 @@ fn broken_harness_warnings(
         .collect()
 }
 
-/// The code-sweep reviewers (#158): the persona for a non-Codex author, then
-/// the one for a Codex author.
 const REVIEWERS: [&str; 2] = ["codex-reviewer", "architect-reviewer"];
 
-/// One line per code-sweep reviewer that cannot run on this host: it is not
-/// in the roster, or its harness binary is missing or broken. Nothing is
-/// started; `facts` come from the binary lookup.
 fn reviewer_warnings(
     roster: &Roster,
     facts: &std::collections::BTreeMap<&'static str, BinaryFacts>,
@@ -410,8 +380,6 @@ fn reviewer_warnings(
         .collect()
 }
 
-/// One line per offered harness that has no timer format and no transcript
-/// lookup (#203): the watchdog cannot see that its workers progress.
 fn watchdog_blind_warnings(roster: &Roster) -> Vec<String> {
     let mut seen = Vec::new();
     for t in roster.offered() {
@@ -434,28 +402,15 @@ fn watchdog_blind_warnings(roster: &Roster) -> Vec<String> {
         .collect()
 }
 
-/// Where doctor looks for the host tools, after PATH: the operator's
-/// variables, which win over PATH, and the app bundle, tried last.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct HostTools<'a> {
-    /// `BLENDER_PATH`.
     pub blender_path: Option<&'a OsStr>,
-    /// Blender's app bundle executable ([`BLENDER_APP`]); `None` in tests.
     pub blender_app: Option<&'a Path>,
-    /// `GODOT_PATH`.
     pub godot_path: Option<&'a OsStr>,
-    /// `GODOT_MONO_PATH`: the Godot .NET engine of a C# project.
     pub godot_mono_path: Option<&'a OsStr>,
-    /// The Godot .NET app bundle executable ([`GODOT_MONO_APP`]); `None` in
-    /// tests.
     pub godot_mono_app: Option<&'a Path>,
 }
 
-/// What is missing for the `requires:` of the teammates `roster` offers, one
-/// line per requirement. Nothing is checked that no offered teammate needs.
-/// `git` is the fleet's git (`HORCH_GIT_BIN`, else `git`); `project` is the
-/// project directory, whose `.gitattributes` the git-lfs check reads and
-/// whose C# test adds the Godot .NET checks.
 pub(crate) fn requirement_problems(
     roster: &Roster,
     path: Option<&OsStr>,
@@ -494,7 +449,6 @@ pub(crate) fn requirement_problems(
     .collect()
 }
 
-/// What is wrong with one needed `requirement`, in the words of its check.
 fn problems_for(
     requirement: Requirement,
     path: Option<&OsStr>,
@@ -524,13 +478,8 @@ fn problems_for(
         .collect()
 }
 
-/// The Antigravity CLI's own installer.
 const AGY_INSTALL: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
 
-/// `agy` is missing while an offered teammate runs on it. Not fatal: routing
-/// moves a teammate with `fallbacks:` to its fallback (the google pool probe
-/// fails, so the pool is unknown), and the others fail at launch. `bin` is
-/// `HORCH_ANTIGRAVITY_BIN`, else `agy`; a bare name is looked up on PATH.
 fn antigravity_problem(
     roster: &Roster,
     path: Option<&OsStr>,
@@ -561,16 +510,12 @@ fn antigravity_problem(
     })
 }
 
-/// `" <tool> said: <line>"` for the first non-empty line of `text`, else `""`.
 fn said(tool: &str, text: &str) -> String {
     text.lines()
         .find(|l| !l.trim().is_empty())
         .map_or_else(String::new, |line| format!(" {tool} said: {}", line.trim()))
 }
 
-/// `git lfs version` must run with the fleet's git, or a new worktree of an
-/// Unreal project holds LFS pointer files instead of assets and `git lfs
-/// lock` fails. A bare `git` is looked up on PATH; a path is used as given.
 fn git_lfs_problem(path: Option<&OsStr>, pathext: Option<&str>, git: &Path) -> Option<String> {
     let bin = if git.components().count() > 1 {
         git.to_path_buf()
@@ -598,9 +543,6 @@ fn git_lfs_problem(path: Option<&OsStr>, pathext: Option<&str>, git: &Path) -> O
     }
 }
 
-/// In an Unreal project (a `*.uproject` at the top), `.gitattributes` must
-/// send `*.uasset` to LFS, or the first asset commit puts binary bytes in
-/// git history. `None` outside an Unreal project.
 fn lfs_rule_problem(project: &Path) -> Option<String> {
     let attributes = project.join(".gitattributes");
     (is_unreal(project) && !has_lfs_rule(&std::fs::read_to_string(&attributes).unwrap_or_default()))
@@ -614,7 +556,6 @@ fn lfs_rule_problem(project: &Path) -> Option<String> {
         })
 }
 
-/// A `*.uproject` at the top of `project`.
 fn is_unreal(project: &Path) -> bool {
     std::fs::read_dir(project)
         .into_iter()
@@ -623,7 +564,6 @@ fn is_unreal(project: &Path) -> bool {
         .any(|e| e.path().extension().is_some_and(|x| x == "uproject"))
 }
 
-/// Whether `.gitattributes` text sends `*.uasset` to LFS.
 fn has_lfs_rule(text: &str) -> bool {
     text.lines().any(|line| {
         let mut fields = line.split_whitespace();
@@ -631,10 +571,6 @@ fn has_lfs_rule(text: &str) -> bool {
     })
 }
 
-/// `xcodebuild` must be on PATH and past its first launch, or the first build
-/// in a pane stalls at the licence prompt. `-checkFirstLaunchStatus` exits 0
-/// when nothing is left to do. With only the Command Line Tools selected, the
-/// `/usr/bin/xcodebuild` shim fails and says so on stderr.
 fn xcode_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> {
     let Some(bin) = process::which(path, pathext, "xcodebuild") else {
         return Some("xcodebuild not found on PATH. Install Xcode 26 or later.".into());
@@ -653,23 +589,14 @@ fn xcode_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> 
     }
 }
 
-/// The first Xcode with `xcrun agent skills export`.
 const XCODE_EXPORT_MIN: u32 = 27;
 
-/// What doctor says about the Xcode agent-skills export. A note is not a
-/// failure: it says the check cannot run on this host.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ExportCheck {
     Note(String),
     Problem(String),
 }
 
-/// U-54: an offered Apple teammate (`requires: xcode`) with `operator_skills:`
-/// gets them from `xcrun agent skills export --output-dir <dir>`
-/// (docs/skills-and-teams.md). On Xcode 27 or later, `--help` must run and
-/// name `--output-dir`. Below 27 the command does not exist, so this is a
-/// note. `None` when no such teammate is offered, when all is well, or when
-/// `xcodebuild` is missing ([`xcode_problem`] reports that).
 pub(crate) fn xcode_export_check(
     roster: &Roster,
     path: Option<&OsStr>,
@@ -694,7 +621,6 @@ pub(crate) fn xcode_export_check(
     }
 }
 
-/// The offered teammates that need Xcode and name operator skills.
 fn export_needed_by(roster: &Roster) -> Vec<&str> {
     roster
         .offered()
@@ -704,7 +630,6 @@ fn export_needed_by(roster: &Roster) -> Vec<&str> {
         .collect()
 }
 
-/// The major version and the full version that `xcodebuild -version` prints.
 fn xcode_major(xcodebuild: &Path) -> Option<(u32, String)> {
     Command::new(xcodebuild)
         .arg("-version")
@@ -714,8 +639,6 @@ fn xcode_major(xcodebuild: &Path) -> Option<(u32, String)> {
         .and_then(|o| xcode_version(&String::from_utf8_lossy(&o.stdout)))
 }
 
-/// On Xcode 27 or later: `xcrun` must be on PATH and its export `--help`
-/// must run and name `--output-dir`.
 fn export_problem(
     path: Option<&OsStr>,
     pathext: Option<&str>,
@@ -758,22 +681,14 @@ fn export_help_problem(xcrun: &Path, head: &str, text: &str) -> Option<String> {
     ))
 }
 
-/// The major version and the full version from `xcodebuild -version`, whose
-/// first line is `Xcode 26.6`.
 fn xcode_version(stdout: &str) -> Option<(u32, String)> {
     let text = stdout.lines().next()?.strip_prefix("Xcode ")?.trim();
     let major = text.split('.').next()?.parse().ok()?;
     Some((major, text.to_string()))
 }
 
-/// The oldest Blender the live MCP tools run on.
 const BLENDER_LIVE_MIN: (u32, u32) = (5, 1);
 
-/// Blender must run, or the blender-artist reports `BLOCKED:` at its first
-/// step. The Blender Lab MCP server runs `BLENDER_PATH` when it is set, else
-/// `blender` on PATH; a launch sets `BLENDER_PATH` from the same lookup
-/// ([`host_tool_bin`]), which tries `app` last. Its `*_for_cli` tools run any
-/// Blender; the live tools need [`BLENDER_LIVE_MIN`] and the add-on.
 fn blender_problem(
     path: Option<&OsStr>,
     pathext: Option<&str>,
@@ -787,15 +702,10 @@ fn blender_problem(
     }
 }
 
-/// The texts of one host tool's check that differ from another's.
 struct ToolText {
-    /// The name in prose: `Blender`.
     name: &'static str,
-    /// The variable that points at the executable.
     env: &'static str,
-    /// Where a macOS install puts the executable.
     mac_path: &'static str,
-    /// The oldest version, as text.
     min: &'static str,
 }
 
@@ -813,8 +723,6 @@ const GODOT: ToolText = ToolText {
     min: "4.3",
 };
 
-/// Runs `bin --version`: the executable and its stdout, or the problem when
-/// there is no `bin`, it cannot run, or it fails.
 fn run_version(bin: Option<PathBuf>, tool: &ToolText) -> Result<(PathBuf, String), String> {
     let ToolText {
         name,
@@ -849,7 +757,6 @@ fn run_version(bin: Option<PathBuf>, tool: &ToolText) -> Result<(PathBuf, String
     ))
 }
 
-/// A problem when the Blender at `bin` is older than [`BLENDER_LIVE_MIN`].
 fn blender_too_old(bin: &Path, stdout: &str) -> Option<String> {
     blender_version(stdout)
         .filter(|v| *v < BLENDER_LIVE_MIN)
@@ -868,7 +775,6 @@ fn blender_too_old(bin: &Path, stdout: &str) -> Option<String> {
         })
 }
 
-/// `(major, minor)` from the first `Blender X.Y[.Z]` line of `--version`.
 fn blender_version(stdout: &str) -> Option<(u32, u32)> {
     let rest = stdout
         .lines()
@@ -879,12 +785,8 @@ fn blender_version(stdout: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
-/// The oldest Godot the godot-* teammates and their skills support.
 const GODOT_MIN: (u32, u32) = (4, 3);
 
-/// Godot must run headless, or every godot-* teammate reports `BLOCKED:` at
-/// its first parse check. Looks at `GODOT_PATH`, then `godot` on PATH, then
-/// `app` (the macOS bundle) when it exists.
 fn godot_problem(
     path: Option<&OsStr>,
     pathext: Option<&str>,
@@ -898,8 +800,6 @@ fn godot_problem(
     }
 }
 
-/// A problem when the Godot at `bin` is older than [`GODOT_MIN`], or prints
-/// no version.
 fn godot_too_old(bin: &Path, stdout: &str) -> Option<String> {
     match godot_version(stdout) {
         Some(v) if v < GODOT_MIN => Some(format!(
@@ -922,9 +822,6 @@ fn godot_too_old(bin: &Path, stdout: &str) -> Option<String> {
     }
 }
 
-/// A C# Godot project: `"C#"` in `config/features` of `project.godot`, or a
-/// `*.csproj` at the top (the test of `godot-project-context` and
-/// `godot-run.sh`).
 fn csharp_project(project: &Path) -> bool {
     let features = std::fs::read_to_string(project.join("project.godot")).is_ok_and(|text| {
         text.lines()
@@ -939,10 +836,6 @@ fn csharp_project(project: &Path) -> bool {
         })
 }
 
-/// A C# project needs the Godot .NET engine and `dotnet`: the standard
-/// engine cannot build or run C#, and `godot-run.sh` never falls back to it.
-/// Looks at `GODOT_MONO_PATH`, then `app` (the macOS bundle) when it exists.
-/// One line per missing tool, each with its fix.
 fn godot_csharp_problems(
     path: Option<&OsStr>,
     pathext: Option<&str>,
@@ -993,8 +886,6 @@ fn godot_csharp_problems(
     problems
 }
 
-/// `(major, minor)` from the first `X.Y[.Z].<status>...` line of
-/// `godot --version`, for example `4.7.2.stable.official.<hash>`.
 fn godot_version(stdout: &str) -> Option<(u32, u32)> {
     stdout.lines().find_map(|l| {
         let mut parts = l.trim().split('.');
@@ -1044,8 +935,6 @@ mod tests {
         r
     }
 
-    /// The xcode line alone: with no project facts every built-in teammate
-    /// is offered, so the blender-artist adds a Blender line.
     fn xcode_problems(path: &std::path::Path) -> Vec<String> {
         requirement_problems(
             &roster_requiring_xcode(),
@@ -1060,7 +949,6 @@ mod tests {
         .collect()
     }
 
-    /// A fake `xcodebuild` in its own PATH directory that exits with `code`.
     fn fake_xcodebuild(code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("xcodebuild");
@@ -1083,7 +971,6 @@ mod tests {
         let dir = fake_xcodebuild(69);
         let problems = xcode_problems(dir.path());
         assert_eq!(problems.len(), 1, "{problems:?}");
-        // The built-in Swift teammates need Xcode too, so they share the line.
         assert!(problems[0].contains("(needed by "), "{}", problems[0]);
         assert!(problems[0].contains("swift-developer"), "{}", problems[0]);
         assert!(problems[0].contains("-runFirstLaunch"), "{}", problems[0]);
@@ -1106,9 +993,6 @@ mod tests {
         );
     }
 
-    /// Nothing is checked when no offered teammate needs Xcode: the built-in
-    /// Swift teammates need it, but a project without Apple files is not
-    /// offered them. An Apple project is, so xcodebuild is checked.
     #[test]
     fn xcode_is_not_checked_unless_an_offered_teammate_needs_it() {
         let empty = tempfile::tempdir().unwrap();
@@ -1144,9 +1028,6 @@ mod tests {
         );
     }
 
-    /// A PATH directory with a fake `xcodebuild` that prints `Xcode <version>`
-    /// for `-version`, and a fake `xcrun` that prints `help` and exits with
-    /// `code` for `agent skills export --help` only.
     fn fake_xcode(version: &str, help: &str, code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let xcodebuild = dir.path().join("xcodebuild");
@@ -1166,14 +1047,10 @@ mod tests {
         dir
     }
 
-    /// The built-in roster, all offered: swift-developer and
-    /// apple-platform-developer need Xcode and name operator skills.
     fn export_check(dir: &Path) -> Option<ExportCheck> {
         xcode_export_check(&Roster::builtin().unwrap(), Some(dir.as_os_str()), None)
     }
 
-    /// U-54: on Xcode 26 the export command does not exist; doctor notes it
-    /// and does not fail.
     #[test]
     fn xcode_export_before_27_is_a_note() {
         let dir = fake_xcode("26.6", "", 99);
@@ -1185,7 +1062,6 @@ mod tests {
         assert!(n.contains("swift-developer"), "{n}");
     }
 
-    /// U-54: on Xcode 27 the `--help` of the export must name `--output-dir`.
     #[test]
     fn xcode_export_on_27_is_verified() {
         let dir = fake_xcode("27.0", "  --output-dir <dir>  Where to write", 0);
@@ -1205,8 +1081,6 @@ mod tests {
         assert!(p.contains("--output-dir"), "{p}");
     }
 
-    /// U-54: no check without an offered Xcode teammate that has operator
-    /// skills, and none without xcodebuild.
     #[test]
     fn xcode_export_is_not_checked_unless_needed() {
         let dir = fake_xcode("27.0", "", 1);
@@ -1221,7 +1095,6 @@ mod tests {
         assert_eq!(export_check(empty.path()), None);
     }
 
-    /// U-54: each way the export check cannot verify the command says so.
     #[test]
     fn xcode_export_names_a_missing_xcrun_and_an_unreadable_version() {
         let dir = fake_xcode("27.0", "", 0);
@@ -1281,8 +1154,6 @@ mod tests {
         r
     }
 
-    /// A fake `blender` in its own directory: `--version` prints `version`
-    /// and exits with `code`.
     fn fake_blender(version: &str, code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("blender");
@@ -1330,8 +1201,6 @@ mod tests {
         assert!(problems[0].contains("BLENDER_PATH"), "{}", problems[0]);
     }
 
-    /// `BLENDER_PATH` wins over PATH, as in the MCP server: a broken one is
-    /// reported even with a good `blender` on PATH.
     #[test]
     fn blender_path_wins_over_path() {
         let good = fake_blender("5.1.0", 0);
@@ -1355,8 +1224,6 @@ mod tests {
         assert!(problems[0].contains("could not run"), "{problems:?}");
     }
 
-    /// The app bundle is the last fallback, after `BLENDER_PATH` and PATH:
-    /// the same lookup that sets `BLENDER_PATH` for a launch.
     #[test]
     fn the_blender_app_is_the_last_fallback() {
         let empty = tempfile::tempdir().unwrap();
@@ -1377,7 +1244,6 @@ mod tests {
         assert!(problems[0].contains("5.1 or later"), "{}", problems[0]);
     }
 
-    /// A `BLENDER_PATH` that cannot run is reported with its fix.
     #[test]
     fn a_blender_that_cannot_run_is_reported() {
         let dir = tempfile::tempdir().unwrap();
@@ -1400,8 +1266,6 @@ mod tests {
         assert_eq!(blender_version("hello\n"), None);
     }
 
-    /// The built-in blender-artist needs Blender: a Blender project is
-    /// offered it, so doctor checks; a Rust project is not.
     #[test]
     fn the_blender_artist_needs_blender() {
         let empty = tempfile::tempdir().unwrap();
@@ -1446,8 +1310,6 @@ mod tests {
         r
     }
 
-    /// A fake Godot named `name` in its own directory: `--version` prints
-    /// `version` and exits with `code`.
     fn fake_godot(name: &str, version: &str, code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join(name);
@@ -1476,8 +1338,6 @@ mod tests {
         assert_eq!(godot_at(dir.path(), None, None), None);
     }
 
-    /// `GODOT_PATH` wins over PATH: a broken one is reported even with a
-    /// good `godot` on PATH, and a good one works with nothing on PATH.
     #[test]
     fn godot_path_wins_over_path() {
         let good = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 0);
@@ -1495,8 +1355,6 @@ mod tests {
         assert!(problem.contains("could not run"), "{problem}");
     }
 
-    /// The app bundle is the last place looked: used when PATH has no
-    /// `godot`, ignored when PATH has one, skipped when it does not exist.
     #[test]
     fn the_app_bundle_is_the_last_fallback() {
         let empty = tempfile::tempdir().unwrap();
@@ -1545,7 +1403,6 @@ mod tests {
         assert!(problem.contains("4.3 or later"), "{problem}");
     }
 
-    /// A broken Godot's stderr is quoted; one that cannot run names the fix.
     #[test]
     fn a_godot_that_cannot_run_or_fails_is_reported_with_its_detail() {
         let broken = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 3);
@@ -1576,9 +1433,6 @@ mod tests {
         assert!(problem.contains("printed no Godot version"), "{problem}");
     }
 
-    /// The Godot lines of `requirement_problems` in `project`, with a good
-    /// standard `godot` and, when `dotnet` is true, a `dotnet` on PATH, and
-    /// `GODOT_MONO_PATH` set to `mono`.
     fn csharp_godot_problems(project: &Path, dotnet: bool, mono: Option<&Path>) -> Vec<String> {
         let bin = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 0);
         if dotnet {
@@ -1602,7 +1456,6 @@ mod tests {
         .collect()
     }
 
-    /// A project with `"C#"` in `config/features`, and one with a `*.csproj`.
     fn csharp_projects() -> [tempfile::TempDir; 2] {
         let features = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1631,7 +1484,6 @@ mod tests {
             assert!(problems[0].contains("GODOT_MONO_PATH"), "{}", problems[0]);
             assert!(problems[0].contains("Godot_mono.app"), "{}", problems[0]);
         }
-        // The standard engine is not a .NET engine.
         let standard = fake_godot("Godot", "4.7.2.stable.official.e4f5a6b7c", 0);
         let [project, _] = csharp_projects();
         let problems =
@@ -1707,7 +1559,6 @@ mod tests {
         r
     }
 
-    /// A fake `git` in its own directory: `lfs version` exits with `code`.
     fn fake_git(code: i32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("git");
@@ -1721,8 +1572,6 @@ mod tests {
         dir
     }
 
-    /// The git-lfs lines for `git` (looked up on `path` when bare) in
-    /// `project`.
     fn lfs_problems(path: &Path, git: &Path, project: Option<&Path>) -> Vec<String> {
         requirement_problems(
             &roster_requiring_git_lfs(),
@@ -1737,7 +1586,6 @@ mod tests {
         .collect()
     }
 
-    /// U-17: `git lfs version` fails when Git LFS is not installed.
     #[test]
     fn missing_git_lfs_is_reported() {
         let dir = fake_git(1);
@@ -1760,7 +1608,6 @@ mod tests {
         assert!(problems[0].contains("git not found"), "{problems:?}");
     }
 
-    /// U-17: a git path (`HORCH_GIT_BIN`) is run as given, not looked up.
     #[test]
     fn git_lfs_uses_the_fleet_git() {
         let good = fake_git(0);
@@ -1778,8 +1625,6 @@ mod tests {
         assert!(lfs_problems(empty.path(), &good.path().join("git"), None).is_empty());
     }
 
-    /// U-17: an Unreal project needs an LFS rule for `*.uasset` in
-    /// `.gitattributes`; any other project does not.
     #[test]
     fn an_unreal_project_needs_an_lfs_rule_for_uasset() {
         let git = fake_git(0);
@@ -1814,8 +1659,6 @@ mod tests {
         assert!(check().is_empty(), "{:?}", check());
     }
 
-    /// U-17: every builder of the Unreal team needs Git LFS; the reviewer,
-    /// which neither builds nor commits, does not.
     #[test]
     fn the_unreal_builders_need_git_lfs() {
         let empty = tempfile::tempdir().unwrap();
@@ -1982,11 +1825,8 @@ mod tests {
         assert!(skills.join("herdr-orchestrator").exists());
     }
 
-    /// A context whose state root is in `dir` and whose herdr is a warmed
-    /// script that lists workspace `w1` with pane `p1`.
     fn sweep_ctx(dir: &Path) -> RuntimeContext {
         let herdr = dir.join("herdr");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &herdr,
             "#!/bin/sh\ncase \"$1 $2\" in\n\
@@ -2091,7 +1931,6 @@ mod tests {
     }
 }
 
-/// Offered services are diagnosed without launching MCP servers.
 fn service_problems(ctx: &RuntimeContext, roster: &Roster) -> Vec<String> {
     let mut problems = Vec::new();
     if let Some(host) = &ctx.inherited.claude_base_url_host {

@@ -1,6 +1,3 @@
-//! The deterministic selectors: which bundled skills a phase brings, and the
-//! legacy per-teammate selection.
-
 use std::collections::BTreeSet;
 
 use anyhow::{bail, Result};
@@ -25,10 +22,6 @@ pub(crate) fn phase_skills(phase: Phase) -> &'static [&'static str] {
     }
 }
 
-/// The legacy per-teammate selection, checked against the compiled-in
-/// catalog. A test oracle only (SKL-02): no production path calls it; the
-/// launch, the spawn plan and `--check` resolve skills through
-/// [`super::SkillResolution`].
 pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
     let catalog = SkillCatalog::bundled()?;
     let mut names: BTreeSet<String> = teammate.skills.iter().cloned().collect();
@@ -40,7 +33,6 @@ pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
     Ok(names.into_iter().collect())
 }
 
-/// The names in the teammate's `operator_skills:`, if any.
 pub(crate) fn operator_names(teammate: &Teammate) -> impl Iterator<Item = &str> {
     teammate
         .operator_skills
@@ -48,8 +40,6 @@ pub(crate) fn operator_names(teammate: &Teammate) -> impl Iterator<Item = &str> 
         .flat_map(|o| o.names.iter().map(String::as_str))
 }
 
-/// Every selected name is in the catalog, and a teammate that selects any
-/// skill, or names operator skills, can load one.
 pub(crate) fn check(
     teammate: &Teammate,
     names: &BTreeSet<String>,
@@ -69,7 +59,6 @@ pub(crate) fn check(
     )
 }
 
-/// A teammate that selects any skill (`any`) can load one.
 fn check_loadable(teammate: &Teammate, any: bool) -> Result<()> {
     let exposes = teammate.agent.capabilities().skill_exposure != SkillExposure::None;
     if any && (teammate.disable_skills || !exposes) {

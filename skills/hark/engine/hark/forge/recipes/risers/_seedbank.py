@@ -47,7 +47,6 @@ def _riser_members() -> list[tuple[str, str, dict]]:
     by_cat = riser.FAMILIES_BY_CAT["riser"]
     edits = dict(zip(("air", "tension", "shepard", "rush", "cymbal"), riser.R4_EDITS["riser"]))
     r14 = {name: {**by_cat[name], **edits[name]} for name in ("air", "tension")}
-    # riser_01 and riser_04 are round 1 to 4 sets; riser_02, 03 and 05 are round-6 builds (r6 = 1).
     rows = [("riser", "riser_01", r14["air"]), ("riser", "riser_02", riser.R6["air"]),
             ("riser", "riser_03", riser.R6["tension"]), ("riser", "riser_04", r14["tension"]),
             ("riser", "riser_05", riser.R6["shepard"])]

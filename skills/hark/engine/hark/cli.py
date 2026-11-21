@@ -79,9 +79,6 @@ def _attempt(fn: Callable[..., Any], *args: Any, errors: tuple[type[BaseExceptio
     return default if error is not None else result
 
 
-# ---------------------------------------------------------------- thread hold
-
-
 def _threads_value(argv: Sequence[str], i: int) -> str | None:
     """The --threads value that argument i gives, or None."""
     arg = argv[i]
@@ -111,9 +108,6 @@ def blas_hold(argv: Sequence[str]) -> None:
     count = None if held else _hold_count(argv)
     if count is not None:
         os.environ["OPENBLAS_NUM_THREADS"] = str(count)
-
-
-# ---------------------------------------------------------------- command lookup
 
 
 def find_command(argv: Sequence[str]) -> str | None:
@@ -155,9 +149,6 @@ def _import_all() -> list[Any]:
     modules = dict.fromkeys(module for _, module in COMMANDS)
     loaded = [_import_noted(module) for module in modules]
     return [module for module in loaded if module is not None]
-
-
-# ---------------------------------------------------------------- parser
 
 
 def _parser() -> tuple[argparse.ArgumentParser, Any]:
@@ -204,9 +195,6 @@ def _safe_stdout(command: str) -> None:
     if command == "mcp" or not callable(reconfigure):
         return
     _outcome(functools.partial(reconfigure, errors="backslashreplace"), errors=(ValueError, OSError))
-
-
-# ---------------------------------------------------------------- ML install prompt
 
 
 def _isatty(stream: Any) -> bool:
@@ -260,9 +248,6 @@ def _missing_extra(command: str, exc: Any) -> int | None:
         return _prompt_install(command, exc)
     _say(_install_line(command, exc))
     return EXIT_INSTALL
-
-
-# ---------------------------------------------------------------- run
 
 
 def _handler_error(command: str, exc: BaseException) -> int:

@@ -16,7 +16,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-# skills/hark/engine, which the eval scripts treat as their repo root.
 REPO = Path(__file__).resolve().parents[4]
 EVAL_DIR = Path(__file__).resolve().parent
 

@@ -35,7 +35,6 @@ MIN_SCALE = {"loudness_lufs": 1.0, "peak_dbfs": 1.0, "noise_floor_dbfs": 2.0, "l
              "decay_ms": 0.1, "length_s": 0.05}
 DEFAULT_MIN_SCALE = 0.1
 
-# key, threshold, kind, up word, down word, label, "with" prefix (order = importance to the ear)
 DIFF_TABLE: tuple[tuple[str, float, str, str, str, str, bool], ...] = (
     ("loudness_lufs", 1.5, "db", "louder", "quieter", "loudness", False),
     ("brightness_hz", 1.15, "ratio", "brighter", "darker", "brightness", False),
@@ -49,9 +48,6 @@ DIFF_TABLE: tuple[tuple[str, float, str, str, str, str, bool], ...] = (
 )
 PEAK_WORDS = ("hotter peaks", "lower peaks")
 SIMILARITY = ((0.9, "nearly the same sound"), (0.75, "similar"), (0.5, "related"))
-
-
-# ---------------------------------------------------------------- trim-proof measurements
 
 
 def sounding_length(sig: numpy.ndarray) -> float:
@@ -109,9 +105,6 @@ def measure_path(fpath: str, t_from: float | None = None, t_to: float | None = N
     if len(sig) < 240:
         return {"duration": round(len(sig) / SR, 3)}
     return feats(features.measure(sig, light=True), sig)
-
-
-# ---------------------------------------------------------------- statistics
 
 
 def _g(kname: str, vec: float) -> float:
@@ -184,9 +177,6 @@ def ordinal(count: int) -> str:
     return f"{count}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(count % 10, 'th') }".replace(" ", "")
 
 
-# ---------------------------------------------------------------- differences in words
-
-
 def _scaled(vec: float, small: str, big: str, at: float) -> str:
     return f"{int(round(vec))} {small}" if vec < at else f"{vec / 1000:.1f} {big}"
 
@@ -250,9 +240,6 @@ def join_words(phrases: Sequence[str]) -> str:
     return ", ".join(ordered[:-1]) + " and " + ordered[-1]
 
 
-# ---------------------------------------------------------------- names
-
-
 def trim_name(fpath: str, t_from: float | None, t_to: float | None) -> str:
     """The base name, plus the trim when one was given."""
     name = os.path.basename(fpath)
@@ -274,9 +261,6 @@ def skipped_note(skipped: Sequence[dict]) -> str:
         return ""
     names = ", ".join(os.path.basename(sv["path"]) for sv in skipped[:3]) + (", ..." if len(skipped) > 3 else "")
     return f" Skipped {len(skipped)} unreadable file(s): {names}."
-
-
-# ---------------------------------------------------------------- compare
 
 
 def _short_compare(fpath: str, count: int, skipped: list[dict]) -> dict:
@@ -358,9 +342,6 @@ def compare_text(result: dict) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- ab
-
-
 def _query_part(E: numpy.ndarray, prompt: str) -> tuple[dict, str]:
     ra, rb = (row[0] for row in voc.get().scores(E, [prompt]))
     who, words = closer(ra["z"], rb["z"])
@@ -425,9 +406,6 @@ def ab(a: str, b: str, query: str | None = None, refs: Sequence[str] | None = No
     result = {"a": a, "b": b, "a_range": list(ra), "b_range": list(rb), "cosine_ab": round(cos_ab, 3), **rec,
               "features": {"a": fa, "b": fb}, "differences": [kname for kname, _ in diffs]}
     return {"summary": " ".join(pieces), **result}
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def _require(name: str) -> None:

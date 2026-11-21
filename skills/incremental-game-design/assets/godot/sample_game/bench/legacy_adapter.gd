@@ -1,13 +1,7 @@
 extends "res://addons/tuning_bench/bench_adapter.gd"
-## A hand-written adapter for Lamp Road. `bench/bench.legacy.json` names it.
-##
-## Lamp Road does not need this adapter: `bench/bench.json` names the core, and the bench then has its own adapter.
-## This file shows the way for a game with no core: the adapter drives the game through its autoload.
-## The bench runs such an adapter in a second Godot process, so the game that the designer plays does not change.
 
 var _session: Node = null
 var _events: Array = []
-## The id of the action that the bot asked for with `do_action`, while the session does it.
 var _asked: String = ""
 
 
@@ -23,7 +17,6 @@ func bench_prepare() -> String:
 
 
 func setup(data: Dictionary) -> void:
-	# The session stops its frame clock and writes no save file from here.
 	_session.set("driven", true)
 	_session.set("data", data)
 	_session.call("new_game", bench_seed)
@@ -84,6 +77,4 @@ func _on_event(e: Dictionary) -> void:
 	if ["unlock", "advance", "reward"].has(str(e["kind"])):
 		_events.append(e)
 	elif str(e["kind"]) == "bought" and str(e["id"]) != _asked:
-		# A purchase that the bot did not ask for: the lamplighter of the game made it. The bench counts it
-		# as an auto purchase.
 		_events.append(e)
