@@ -273,8 +273,6 @@ impl World {
         wait_for_or(what, f, || self.context())
     }
 
-    /// The attempts of `task` that its retry budget counts:
-    /// `attempts - attempt_floor`.
     fn used(&self, task: &str) -> i64 {
         self.one(&format!(
             "SELECT attempts - attempt_floor FROM tasks WHERE task_id = {}",
@@ -284,7 +282,6 @@ impl World {
         .unwrap_or_else(|| panic!("task {task} has a row\n{}", self.context()))
     }
 
-    /// The run of `task` allows 1 more attempt than it used.
     fn one_attempt_left(&self, task: &str) -> i64 {
         let max = self.used(task) + 1;
         let conn = Connection::open(self.h.ledger_db()).unwrap();
@@ -301,14 +298,12 @@ impl World {
     }
 }
 
-/// Which launches of the fake CLI exit at once with no result.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Refuse {
     Never,
     /// A resume: the CLI says that the session is gone, as claude does.
     Resume,
-    /// A resume, and each fresh launch after the first.
-    Every,
+    AllButFirst,
 }
 
 fn wrapper(root: &Path, first: &str, refuse: Refuse) -> String {
@@ -323,7 +318,7 @@ fn wrapper(root: &Path, first: &str, refuse: Refuse) -> String {
              echo 'No conversation found with session ID' >&2; exit 1 ;;\n"
         )
     };
-    let fresh = if refuse == Refuse::Every {
+    let fresh = if refuse == Refuse::AllButFirst {
         format!("; echo \"$*\" >> {refused}; exit 1")
     } else {
         String::new()
@@ -515,7 +510,6 @@ fn answered_question_resumes_the_session_of_the_worker() {
     assert_eq!(w.attempts(&task).len(), 2, "{}", w.context());
 }
 
-/// The first launch commits work in progress, then asks [`QUESTION`].
 fn first_commits_and_asks() -> String {
     let commit = "printf 'work\\n' > work.txt && @GIT@ add work.txt && \
                   @GIT@ -c user.name=t -c user.email=t@t -c commit.gpgSign=false \
@@ -525,7 +519,6 @@ fn first_commits_and_asks() -> String {
     format!("{tree} && {commit} && {}", question_tell(QUESTION))
 }
 
-/// The lines of [`REFUSED_LOG`]: the argv of each refused launch.
 fn refused_argvs(w: &World) -> Vec<Vec<String>> {
     std::fs::read_to_string(w.h.root.join(REFUSED_LOG))
         .unwrap_or_default()
@@ -534,9 +527,6 @@ fn refused_argvs(w: &World) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// A task with 1 attempt left whose resume the CLI refuses: the refused
-/// attempt (a2), and the fresh attempt after it (a3). `max` is the
-/// attempt limit of the run.
 struct Refused {
     w: World,
     task: String,
@@ -557,7 +547,6 @@ fn refused_resume_at_the_last_attempt(name: &str, refuse: Refuse) -> Refused {
     let max = w.one_attempt_left(&task);
     let answer = "The guide names port 8080.";
     answer_by_tell(&w, &task, &id, answer);
-    // RR-12: no backoff, so the fresh attempt comes within 1 wait.
     let a3 = w.wait("the fresh attempt after the refused resume", || {
         w.attempts(&task).get(2).map(|a| a.0.clone())
     });
@@ -641,7 +630,7 @@ fn refused_resume_at_the_last_attempt_gives_a_fresh_attempt_with_the_answer_and_
 /// attempt as today, and no attempt resumes again.
 #[test]
 fn fresh_attempt_after_a_refused_resume_that_fails_burns_the_attempt_and_does_not_loop() {
-    let r = refused_resume_at_the_last_attempt("p6-wq-refused-twice", Refuse::Every);
+    let r = refused_resume_at_the_last_attempt("p6-wq-refused-twice", Refuse::AllButFirst);
     let w = &r.w;
     w.wait("the end of the fresh attempt", || {
         let a = w.attempts(&r.task).get(2).cloned()?;
@@ -741,7 +730,6 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
             })
             .collect()
     };
-    // The attempt row comes before its CLI starts: wait for the call.
     w.wait("a call of the sub-orchestrator CLI", || {
         (!lead_calls().is_empty()).then_some(())
     });
