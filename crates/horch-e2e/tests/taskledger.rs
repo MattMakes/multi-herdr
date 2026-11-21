@@ -1620,8 +1620,6 @@ struct AgentShell {
 
 impl AgentShell {
     fn start(h: &Harness) -> AgentShell {
-        // 1 folder for each shell: a shared folder lets every shell run the
-        // go.sh of 1 shell and write its code file while that shell reads it.
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = h.root.join(format!("agent-shell-{n}"));
