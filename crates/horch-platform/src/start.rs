@@ -51,20 +51,24 @@ impl Command {
         self
     }
 
-    /// A name of [`FORBIDDEN_ENV`] has no effect: each start removes it.
+    /// A name of [`FORBIDDEN_ENV`] has no effect: each start removes it. A
+    /// verbatim value (`GIT_INDEX_FILE=\\?\C:\index`) goes to the child in
+    /// its plain form, as [`arg`](Self::arg).
     pub fn env(&mut self, key: impl AsRef<OsStr>, val: impl AsRef<OsStr>) -> &mut Self {
-        self.0.env(key, val);
+        self.0.env(key, crate::os::path::for_child(val.as_ref()));
         self
     }
 
-    /// A name of [`FORBIDDEN_ENV`] has no effect: each start removes it.
+    /// Each variable as [`env`](Self::env) sets it.
     pub fn envs<I, K, V>(&mut self, vars: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
-        self.0.envs(vars);
+        for (key, val) in vars {
+            self.env(key, val);
+        }
         self
     }
 
@@ -199,5 +203,40 @@ mod sealed {
         fn from_std(cmd: std::process::Command, _: Token) -> Self {
             cmd
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_verbatim_env_value_reaches_the_child_in_its_plain_form() {
+        let mut cmd = command("git");
+        cmd.env("GIT_INDEX_FILE", r"\\?\C:\t\scratch-index")
+            .envs([("GIT_DIR", r"\\?\UNC\s\h\.git"), ("GIT_EDITOR", "true")]);
+        let mut envs: Vec<(String, String)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                let text = |s: &OsStr| s.to_string_lossy().into_owned();
+                (text(k), v.map(text).unwrap_or_default())
+            })
+            .collect();
+        envs.sort();
+        let (index, dir) = if cfg!(windows) {
+            (r"C:\t\scratch-index", r"\\s\h\.git")
+        } else {
+            (r"\\?\C:\t\scratch-index", r"\\?\UNC\s\h\.git")
+        };
+        let want = [
+            ("GIT_DIR", dir),
+            ("GIT_EDITOR", "true"),
+            ("GIT_INDEX_FILE", index),
+        ];
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(envs, want);
     }
 }

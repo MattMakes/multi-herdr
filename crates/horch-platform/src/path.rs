@@ -116,6 +116,13 @@ pub fn for_child(path: &Path) -> PathBuf {
     PathBuf::from(crate::os::path::for_child(path.as_os_str()))
 }
 
+/// The real path of `path`, in the form of [`for_child`]. A path that is
+/// stored, joined or given to a child comes from here, not from
+/// `std::fs::canonicalize`, so no verbatim path (`\\?\C:\dir`) leaves it.
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(|real| for_child(&real))
+}
+
 /// The plain Win32 form of the verbatim path `text`, when that form names
 /// the same file: `\\?\C:\dir` gives `C:\dir`, and
 /// `\\?\UNC\server\share` gives `\\server\share`. `None` when `text` has
@@ -199,4 +206,19 @@ fn plain_component(name: &str) -> bool {
     !RESERVED_NAMES
         .iter()
         .any(|reserved| reserved.eq_ignore_ascii_case(stem))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalize_gives_the_child_form_of_the_real_path() {
+        let temp = std::env::temp_dir();
+        let real = std::fs::canonicalize(&temp).unwrap();
+        let got = canonicalize(&temp).unwrap();
+        assert_eq!(got, for_child(&real));
+        assert!(!got.to_string_lossy().starts_with(r"\\?\"), "{got:?}");
+        assert_eq!(std::fs::canonicalize(&got).unwrap(), real);
+    }
 }
