@@ -314,8 +314,9 @@ fn worktrees_table() -> String {
     )
 }
 
-/// `events.kind` as versions 1 to 7 wrote it. Version 1 runs as a
-/// migration, so its text keeps these words; version 8 adds the later ones.
+/// `events.kind` as versions 1 to 8 wrote it. Version 1 runs as a
+/// migration, so its text keeps these words; [`PHASE_1_VERSION`] adds the
+/// later ones.
 const V1_EVENT_KIND: &str = "CHECK (kind IN ('run_created', 'added', 'claimed', 'no_task', 'progress', 'note', 'question', 'blocked', 'answered', 'fallback', 'step_started', 'step_passed', 'step_failed', 'land_started', 'land_red', 'landed', 'pr_updated', 'cleaned', 'cleanup_failed', 'done', 'unlanded', 'reaped', 'requeued', 'stopped', 'session', 'exited', 'cancelled', 'verdict', 'woke', 'imported', 'reopened', 'dismissed'))";
 
 /// The `events_table` statements.
@@ -557,7 +558,7 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
-/// The comment at each `pid_start` column of version 8.
+/// The comment at each `pid_start` column of [`PHASE_1_VERSION`].
 const PID_START_TYPE: &str = "-- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time";
 
 /// The `fleetd` table: 1 row, written at the first start of fleetd.
@@ -597,8 +598,8 @@ fn attempts_table() -> String {
     )
 }
 
-/// The job kinds that the `kind` CHECK of `jobs` allows at version 8.
-const V8_JOB_KINDS: &str = "'task_check', 'fast_gate', 'full_gate', 'trial_merge',
+/// The job kinds that the `kind` CHECK of `jobs` allows at [`PHASE_1_VERSION`].
+const PHASE_1_JOB_KINDS: &str = "'task_check', 'fast_gate', 'full_gate', 'trial_merge',
         'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
         'worktree_add', 'worktree_remove', 'worktree_list', 'docs_sync', 'conformance'";
 
@@ -612,7 +613,7 @@ fn jobs_table() -> String {
     format!(
         "CREATE TABLE jobs (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ({V8_JOB_KINDS})),
+    kind TEXT NOT NULL CHECK (kind IN ({PHASE_1_JOB_KINDS})),
     subject TEXT NOT NULL,
     repo TEXT,
     input_key TEXT NOT NULL,
@@ -666,7 +667,7 @@ fn needs_you_table() -> String {
 /// with the old table and are made again after the rename.
 fn events_v8() -> String {
     let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
-    let (table, indexes) = events_v8_ddl("events_v8");
+    let (table, indexes) = events_phase_1_ddl("events_v8");
     format!(
         "{table}
 INSERT INTO events_v8 ({old}) SELECT {old} FROM events;
@@ -676,9 +677,9 @@ ALTER TABLE events_v8 RENAME TO events;
     )
 }
 
-/// `events` as version 8 builds it, with the name `name` and the event
+/// `events` as [`PHASE_1_VERSION`] builds it, with the name `name` and the event
 /// kinds of this binary: the table, then its indexes, which name `events`.
-fn events_v8_ddl(name: &str) -> (String, String) {
+fn events_phase_1_ddl(name: &str) -> (String, String) {
     let table = events_table()
         .replace("CREATE TABLE events (", &format!("CREATE TABLE {name} ("))
         .replace(V1_EVENT_KIND, &EventKind::check("kind"))
@@ -699,18 +700,18 @@ fn events_v8_ddl(name: &str) -> (String, String) {
 /// Version [`EVENT_KINDS_VERSION`]: `events` built again, so its kind
 /// `CHECK` is the list of this binary. A ledger keeps the kind list of the
 /// binary that built its `events` table, and no later step built it again,
-/// so a ledger at version 8 or more from an older binary refuses each
+/// so a ledger at [`PHASE_1_VERSION`] or more from an older binary refuses each
 /// newer kind (`doorbell`, `hold_started`, `hold_ended`). A later step
 /// that adds a kind runs it again with its own `version`
 /// ([`PHASE_7_VERSION`]).
 ///
-/// The new table comes from the text of the code ([`events_v8_ddl`]),
+/// The new table comes from the text of the code ([`events_phase_1_ddl`]),
 /// never from the stored text. Each row keeps its `event_id`, and the
 /// `AUTOINCREMENT` counter keeps its value, so no id is used again. The
 /// indexes go with the old table and are made again after the rename;
 /// `events` has no trigger.
 fn events_kinds(conn: &Connection, version: i64) -> Result<()> {
-    let (table, indexes) = events_v8_ddl("events_kinds");
+    let (table, indexes) = events_phase_1_ddl("events_kinds");
     conn.execute_batch(&table)?;
     let columns = column_names(conn, "events_kinds")?;
     if column_names(conn, "events")? != columns {
@@ -956,7 +957,7 @@ fn column_names(conn: &Connection, table: &str) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// `tasks` built again, as `events` in [`v8`], so its status `CHECK` is
+/// `tasks` built again, as `events` in [`phase_1`], so its status `CHECK` is
 /// the list of the 12 states, and each row moves to its design state. The
 /// new table comes from the text of the code: [`tasks_table`] and
 /// [`tasks_added_columns`], never from the stored text. [`migrate`] turns
@@ -1367,7 +1368,10 @@ CREATE TABLE polite_stops (
 fn phase_5_jobs(conn: &Connection) -> Result<()> {
     let ddl = jobs_table()
         .replace("CREATE TABLE jobs (", "CREATE TABLE jobs_kinds (")
-        .replace(V8_JOB_KINDS, &format!("{V8_JOB_KINDS}, {PHASE_5_JOB_KIND}"));
+        .replace(
+            PHASE_1_JOB_KINDS,
+            &format!("{PHASE_1_JOB_KINDS}, {PHASE_5_JOB_KIND}"),
+        );
     let (table, index) = ddl
         .split_once("\nCREATE UNIQUE INDEX")
         .expect("jobs has its index");
@@ -2469,7 +2473,7 @@ mod v7_tests {
     fn older_events_ledger(dir: &Path, events: i64) -> Connection {
         let mut conn = Connection::open(dir.join("ledger.sqlite3")).unwrap();
         migrate_to(&mut conn, EVENT_KINDS_VERSION - 1).unwrap();
-        let (table, indexes) = events_v8_ddl("events_old");
+        let (table, indexes) = events_phase_1_ddl("events_old");
         let older = table.replace(", 'doorbell'", "");
         assert!(!older.contains("doorbell"));
         conn.execute_batch(&format!(

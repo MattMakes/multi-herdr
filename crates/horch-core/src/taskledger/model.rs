@@ -335,7 +335,7 @@ ledger_enum!(
         // a `transition` event names it.
         AttemptStarted = "attempt_started",
         // A state change through `transition()`, with its entity, its
-        // states and its cause in the columns of version 8.
+        // states and its cause in the columns of the Phase 1 schema version.
         Transition = "transition",
         // A global hold on dispatch (a health floor) starts or ends, with
         // its cause.

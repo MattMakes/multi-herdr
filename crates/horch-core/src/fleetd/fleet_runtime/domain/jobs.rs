@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn each_kind_of_the_design_has_its_class_and_input_key() {
-        // The kind CHECK of `jobs` (schema v8, and `triage_apply` from the
+        // The kind CHECK of `jobs` (the Phase 1 schema version, and `triage_apply` from the
         // Phase 5 step), in its order.
         let words = [
             "task_check",
