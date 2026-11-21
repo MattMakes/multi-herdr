@@ -804,9 +804,8 @@ fn locks_left(writable: &[PathBuf]) -> String {
 }
 
 /// Each `.lock` file that stayed after the stop of a git of this process at
-/// its time limit, until the pass writes its needs-you item, the row of the
-/// lock (`jobs::record_locks_left`, D254-F3). A path stays here until its
-/// file is gone, so a pass that rolls back writes the item again.
+/// its time limit. A path stays here until its file is gone, so a pass that
+/// rolls back writes the item again.
 static LOCKS_LEFT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
 /// The `.lock` files that stayed after a stop of a git of this process at

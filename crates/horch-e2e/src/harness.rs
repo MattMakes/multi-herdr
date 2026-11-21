@@ -723,8 +723,6 @@ fn reap_grace() -> std::time::Duration {
 
 const PS_SCAN_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The leader of each run in the `jobs` table of the ledger `db`, with its
-/// recorded start time.
 #[cfg(unix)]
 fn job_leaders(db: &Path) -> Vec<(u32, u64)> {
     if !db.is_file() {
@@ -770,7 +768,6 @@ fn stop_jobs(db: &Path) -> Vec<String> {
     stop_job_groups(&job_leaders(db), &mut || {})
 }
 
-/// The stop of the group of each leader of `leaders` (pid and start time).
 /// Like [`horch_core::fleetd::fleet_runtime::adapters::effects::stop_leader_group`]
 /// (D254-F1): first a snapshot of each member with its start time, then the
 /// check that the leader still leads its group with its start, then a
@@ -780,11 +777,8 @@ fn stop_jobs(db: &Path) -> Vec<String> {
 /// the test. No signal goes to a group id: the group can end after the
 /// check, and its id can go to a group of another world.
 ///
-/// Like the stop of a job at its deadline, each process gets SIGTERM, then
-/// SIGKILL after the stop grace of the design. A process in an
-/// uninterruptible syscall acts on a signal only when the syscall returns,
-/// so the wait for the end is [`EXIT_LIMIT`]. `after_check` runs between
-/// the check and the first signal: the seam of the test of D254-F1.
+/// A process in an uninterruptible syscall acts on a signal only when the
+/// syscall returns, so the wait for the end is [`EXIT_LIMIT`].
 #[cfg(unix)]
 fn stop_job_groups(leaders: &[(u32, u64)], after_check: &mut dyn FnMut()) -> Vec<String> {
     use horch_platform::signal::{stop_same, Stop};
@@ -1615,7 +1609,7 @@ mod tests {
     /// stands for a group that took the id by reuse between the check and
     /// the signal. Teardown sends it neither the TERM nor the KILL: each
     /// signal goes to a process of the snapshot, by its pid and start time
-    /// (D254-F1). Both ignore TERM, so the KILL after the grace goes out.
+    /// (D254-F1).
     #[test]
     fn reused_group_after_teardown_check_gets_no_signal() {
         use std::io::{BufRead, BufReader};

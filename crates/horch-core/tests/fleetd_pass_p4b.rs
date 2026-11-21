@@ -1091,13 +1091,6 @@ fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item(
     assert_eq!(items, 1, "1 row for the lock");
 }
 
-/// The item of a lock that a killed git of the pass left is a row of that
-/// pass: a restart of fleetd between the pass of the timeout and the next
-/// pass keeps it. The git hangs in the duty `trial_merges`, whose savepoint
-/// rolls back, and the item is still there: its write is outside the
-/// savepoint. The child process of the pass exits after 1 pass, and a new
-/// fleetd of this process, which never ran that git, keeps the item 1 time
-/// and resolves it when the file is gone (D254-F3).
 #[test]
 fn a_git_lock_notice_survives_a_fleetd_restart() {
     let w = three_done();

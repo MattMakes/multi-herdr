@@ -368,8 +368,6 @@ impl GitRunner {
         self.output_with(dir, args, &mut group::exited_without_reap)
     }
 
-    /// [`Self::output`] with `exited`, the look at a limited child that
-    /// does not reap it: the seam of the tests of D254-F2.
     fn output_with(
         &self,
         dir: &Path,
@@ -501,7 +499,7 @@ impl Drop for Held {
 /// Run `cmd` with its stdout and stderr read, and stop its group at
 /// `limit`. The child stays unreaped until its group is stopped, so its pid
 /// names its group and no other process. `exited` looks at the child
-/// without a reap; an `EINTR` of it is retried (D254-F2).
+/// without a reap.
 fn output_within(
     cmd: &mut Command,
     limit: Duration,
@@ -681,12 +679,9 @@ mod tests {
         group::kill_group_id(0).is_err()
     }
 
-    /// A run of the fake git of `dir` with `body`, with a time limit of
-    /// 1 s. The first look at the child waits for the pids file, the ready
+    /// The first look at the child waits for the pids file, the ready
     /// mark that the fake writes after `body`: on a loaded host the shell
     /// can start later than the limit, and a TERM before its `trap` ends it.
-    /// That first look then gives `error`, or looks at the child. The
-    /// result, the pids file, and the time of the ready mark.
     fn run_when_ready(
         dir: &Path,
         body: &str,

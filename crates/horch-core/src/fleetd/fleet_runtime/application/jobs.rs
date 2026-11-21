@@ -565,10 +565,7 @@ fn tell_group_left(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
 /// The open item is the row of the lock (A24, D254-F3): it is written in
 /// `tx`, so a restart of fleetd after the commit keeps it. The paths of
 /// this process ([`worktree_git::locks_left_after_stops`]) get an item when
-/// they have none. Each open item whose file is gone is resolved. 1 set read
-/// gives the open items, and a write goes only to a new item or a resolved
-/// one. [`observe`] calls it, and the pass calls it after the git of
-/// integration in part 2 and after the git effects of part 3.
+/// they have none. Each open item whose file is gone is resolved.
 pub fn record_locks_left(ctx: &JobCtx<'_>, tx: &Connection) -> Result<()> {
     let prefix = format!("{}:git_lock:", jobs::NEEDS_YOU_KIND);
     let open: BTreeSet<String> = needs_you_store::open_keys(tx, jobs::NEEDS_YOU_KIND)?
