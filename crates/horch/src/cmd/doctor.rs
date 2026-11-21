@@ -10,6 +10,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
+use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_git_version;
 use horch_core::harness::inventory::BinaryFacts;
 use horch_core::harness::HarnessKind;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
@@ -46,7 +47,26 @@ pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
         eprintln!("warning: {w}");
     }
     report_stale_state(ctx, clean);
-    Ok(())
+    rescue_git_line(ctx)
+}
+
+/// The 1 git line of the doctor: the git of the fleet that the rescue job
+/// runs, with the rule of the rescue. It is `ctx.bins.harness.git` (as
+/// fleetd passes it to `CliWorktreeGit::new`), a bare name looked up on the
+/// PATH of this process. fleetd under launchd or systemd has the PATH of
+/// the service, which can name another git: set HORCH_GIT_BIN to be sure.
+fn rescue_git_line(ctx: &RuntimeContext) -> Result<()> {
+    match rescue_git_version(
+        &ctx.bins.harness.git,
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+    ) {
+        Ok(found) => {
+            println!("git: {found}: the rescue of a worktree can run (it needs 2.41 or newer).");
+            Ok(())
+        }
+        Err(problem) => bail!("git: {problem}"),
+    }
 }
 
 /// The stale state the sweep finds, per kind (#140). `clean` removes it;
@@ -1931,6 +1951,60 @@ mod tests {
             .execution_status()
             .is_terminal());
         assert_eq!(stale_state(&ctx, false).0, ["stale state: none"]);
+    }
+
+    /// A context whose PATH is only `dir`, which holds a fake `git` that
+    /// prints `version` for `git version`, when `version` is given.
+    fn git_ctx(dir: &Path, version: Option<&str>) -> RuntimeContext {
+        if let Some(version) = version {
+            let script = format!(
+                "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n[ \"$1\" = version ] || exit 99\n\
+                 echo '{version}'\n"
+            );
+            let out = crate::test_support::write_warmed(&dir.join("git"), &script, &["warm"]);
+            assert!(out.status.success());
+        }
+        let env = horch_core::runtime::MapEnv::new(dir)
+            .with("HOME", &dir.to_string_lossy())
+            .with("PATH", &dir.to_string_lossy());
+        RuntimeContext::from_env(&env).unwrap()
+    }
+
+    /// T-389: the doctor fails on a git that the rescue refuses, with the
+    /// fix text, and passes on git 2.41 or newer, by the numbers.
+    #[test]
+    fn doctor_checks_the_git_version_of_the_rescue() {
+        for (version, passes) in [
+            ("git version 2.39.5", false),
+            ("git version 2.39.5 (Apple Git-154)", false),
+            ("git version 2.40.1", false),
+            ("git version 2.41.0", true),
+            ("git version 2.51.2.windows.1", true),
+            ("git version 3.0.0", true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let result = rescue_git_line(&git_ctx(dir.path(), Some(version)));
+            assert_eq!(result.is_ok(), passes, "{version}: {result:?}");
+            if let Err(e) = result {
+                let e = format!("{e:#}");
+                assert!(e.contains("older than 2.41"), "{version}: {e}");
+                assert!(e.contains(version), "{version}: {e}");
+                assert!(e.contains("rescue of a worktree"), "{version}: {e}");
+                assert!(e.contains("HORCH_GIT_BIN"), "{version}: {e}");
+            }
+        }
+    }
+
+    /// T-389: no git on the PATH is a failure with the fix text.
+    #[test]
+    fn doctor_fails_without_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = format!(
+            "{:#}",
+            rescue_git_line(&git_ctx(dir.path(), None)).unwrap_err()
+        );
+        assert!(e.contains("git not found on PATH"), "{e}");
+        assert!(e.contains("needs git 2.41 or newer"), "{e}");
     }
 }
 

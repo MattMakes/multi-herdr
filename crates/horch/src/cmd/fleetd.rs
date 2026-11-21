@@ -84,6 +84,7 @@ use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxe
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
 use horch_core::fleetd::worktree_custody::adapters::git::{CliWorktreeGit, FLEETD_GIT_LIMIT};
+use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_git_version;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::messaging::delivery::{self, TypedLine};
@@ -722,6 +723,14 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
             "horch fleetd: refused inside a fleet attempt: this process is a fleet process of attempt {}. Only an operator process or the service manager starts fleetd",
             attempts.join(", ")
         );
+    }
+    // T-389: the rule of the rescue, 1 time, before the fleetd row and any job.
+    if let Err(problem) = rescue_git_version(
+        &ctx.bins.harness.git,
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+    ) {
+        bail!("horch fleetd: refused: {problem}");
     }
     let root = &ctx.paths.fleet_root;
     let writer = LedgerWriter::fleetd();
@@ -1806,6 +1815,54 @@ mod tests {
         );
         assert!(err.contains("fleet process of attempt A-1"), "{err}");
         assert_eq!(w.row(), None, "the refused fleetd wrote the fleetd row");
+    }
+
+    /// T-389: on a git older than 2.41 fleetd refuses to start with the fix
+    /// text, and writes no fleetd row and no job.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_git_refuses_the_fleetd_start() {
+        let w = World::new();
+        let bin = w.dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let out = crate::test_support::write_warmed(
+            &bin.join("git"),
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\necho 'git version 2.39.5'\n",
+            &["warm"],
+        );
+        assert!(out.status.success());
+        let env = MapEnv::new(w.root.parent().unwrap())
+            .with("HOME", &w.root.to_string_lossy())
+            .with("HORCH_LEDGER_DB", &w.ledger.to_string_lossy())
+            .with("FLEET_ROOT", &w.root.to_string_lossy())
+            .with("PATH", &bin.to_string_lossy());
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = format!(
+            "{:#}",
+            daemon(&ctx).expect_err("fleetd started on git 2.39.5")
+        );
+        assert!(err.contains("horch fleetd: refused"), "{err}");
+        assert!(err.contains("2.39.5"), "{err}");
+        assert!(err.contains("needs git 2.41 or newer"), "{err}");
+        assert_eq!(w.row(), None, "the refused fleetd wrote the fleetd row");
+        if w.ledger.is_file() {
+            let store = Store::open_read_only(&w.ledger).unwrap();
+            let jobs: i64 = store
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'jobs'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if jobs == 1 {
+                let n: i64 = store
+                    .conn()
+                    .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(n, 0, "the refused fleetd queued a job");
+            }
+        }
     }
 
     #[cfg(unix)]
