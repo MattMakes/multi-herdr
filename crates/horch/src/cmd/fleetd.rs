@@ -1135,9 +1135,6 @@ fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) -> Re
     Ok(())
 }
 
-/// The time limit of each herdr call of the pass (design, row "herdr
-/// calls"; A32). A call that reaches it is killed with its process group
-/// and fails. 5 s, the limit of the herdr calls of `horch mail`.
 const HERDR_CALL_LIMIT: Duration = Duration::from_secs(5);
 
 /// Build the pass of fleetd on this machine with `settings`, and give it

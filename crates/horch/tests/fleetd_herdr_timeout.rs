@@ -1,7 +1,3 @@
-//! A herdr call of the fleetd pass that does not answer is killed at its
-//! time limit (T-281). The pass ends, writes its heartbeat, and reads the
-//! pane as "not read": it stops no attempt and closes no pane.
-
 #![cfg(unix)]
 
 mod support;
@@ -21,13 +17,8 @@ use support::fleetd::short_tempdir;
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 
-/// The longest wait for the pass. A pass whose herdr calls have a time
-/// limit ends far below it. The hung read sleeps far longer.
 const PASS_WAIT: Duration = Duration::from_secs(120);
 
-/// A fake herdr. Each call appends its arguments to `calls.log`. The pane
-/// `p1` runs the agent `agent` and shows `working`. `pane read p1` writes
-/// its pid to `sleeper.pid` and sleeps: it never answers.
 fn fake_herdr(root: &Path, agent: u32) -> PathBuf {
     let bin = root.join("herdr");
     let calls = root.join("calls.log");
@@ -72,9 +63,6 @@ fn git(proj: &Path, home: &Path, args: &[&str]) {
     assert!(st.success(), "git {args:?}");
 }
 
-/// A run `r1` with 1 task, bound to a live attempt whose agent is this test
-/// process and whose pane is `p1`. Many stall rounds: the forced check does
-/// not reap the worker.
 fn seed_ledger(root: &Path) -> PathBuf {
     let proj = root.join("proj");
     let home = root.join("home");
