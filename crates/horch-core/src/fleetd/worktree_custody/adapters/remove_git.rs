@@ -85,6 +85,9 @@ pub struct Removed {
 pub enum Owner {
     /// The row names no owner attempt.
     NoAttempt,
+    /// The owner attempt is ended and records no process: no process of
+    /// it runs.
+    Ended,
     /// The agent process of the owner attempt: its pid and start time.
     Process { pid: u32, start: Option<u64> },
     /// The ledger cannot name the process of the owner attempt.
@@ -505,7 +508,7 @@ fn read_facts(
             let commit_tree = of_commit("^{tree}");
             let commit_parent = of_commit("^");
             let owner_live = match owner {
-                Owner::NoAttempt => Ok(false),
+                Owner::NoAttempt | Owner::Ended => Ok(false),
                 Owner::Process { pid, start } => Ok(gw.alive(*pid, *start)),
                 Owner::Unknown(why) => Err(why.clone()),
             };

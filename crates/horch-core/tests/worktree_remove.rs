@@ -792,6 +792,29 @@ fn remove_refuses_a_rescued_tree_that_a_process_uses() {
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
 }
 
+/// An owner attempt that records no process is unknown while it is not
+/// ended, and not live when it is ended (a launch that stalled before its
+/// process was recorded).
+#[test]
+fn remove_of_a_rescued_tree_whose_owner_attempt_ended_with_no_process_passes() {
+    let mut w = world();
+    let worker = w.attempt("A1", std::process::id());
+    w.rescued("t1");
+    w.conn
+        .execute_batch(&format!(
+            "UPDATE attempts SET pid = NULL, pid_start = NULL WHERE id = 'A1';
+             UPDATE worktrees SET worker_id = '{worker}', owner_attempt = 'A1'
+             WHERE worktree_id = 't1';"
+        ))
+        .unwrap();
+    assert_refused(&mut w, "t1", "has no recorded process");
+    w.conn
+        .execute("UPDATE attempts SET state = 'ended' WHERE id = 'A1'", [])
+        .unwrap();
+    let (ended, _) = w.remove("t1");
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+}
+
 #[test]
 fn remove_refuses_a_rescued_tree_that_an_attempt_takes_during_the_checks() {
     let mut w = world();

@@ -1,8 +1,0 @@
-# Red tests of crates/horch-e2e/tests/taskledger.rs. T-870 moved their
-# setup to ledger_seed and the fleetd push launch. Each one stays red for a
-# product cause.
-#
-# The tree of each task of the whole flow is removed and cleaned (ticket
-# 168). The gate tree of the feature stays open. Ticket 164 (T-289) of
-# fleetd-finish removes this entry.
-the_whole_flow_on_the_fake_herdr | 4 | the gate tree gate-F-0001 stays open
