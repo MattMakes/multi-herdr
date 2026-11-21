@@ -130,6 +130,20 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     ] {
         m.insert(id.into(), gemini_argon);
     }
+    let gemini_neon = Price {
+        cache_write_5m: Some(3.0),
+        cache_write_1h: Some(3.0),
+        ..Price::new(3.0, 15.0, 0.15)
+    };
+    for id in [
+        "gemini-4-neon",
+        "gemini-4-neon-xhigh",
+        "gemini-4-neon-high",
+        "gemini-4-neon-medium",
+        "gemini-4-neon-low",
+    ] {
+        m.insert(id.into(), gemini_neon);
+    }
     m
 }
 
@@ -773,6 +787,39 @@ mod tests {
         assert!((fable.cost(&million) - (10.0 + 16.0)).abs() < 1e-9);
         let old = price_for(&prices, "claude-fable-5-1").unwrap();
         assert_eq!((old.input, old.output, old.cache_read), (10.0, 50.0, 0.25));
+    }
+
+    #[test]
+    fn gemini_4_neon_has_a_price_and_gemini_4_argon_keeps_its_row() {
+        let prices = builtin_prices();
+        let million = Tokens {
+            cache_write_5m: 1_000_000,
+            cache_write_1h: 1_000_000,
+            ..Tokens::default()
+        };
+        for id in [
+            "gemini-4-neon",
+            "gemini-4-neon-low",
+            "gemini-4-neon-medium",
+            "gemini-4-neon-high",
+            "gemini-4-neon-xhigh",
+        ] {
+            let neon = price_for(&prices, id).unwrap();
+            assert_eq!(
+                (neon.input, neon.output, neon.cache_read),
+                (3.0, 15.0, 0.15),
+                "{id}"
+            );
+            assert!((neon.cost(&million) - 6.0).abs() < 1e-9, "{id}");
+        }
+        for id in ["gemini-4-argon", "gemini-4-argon-high"] {
+            let argon = price_for(&prices, id).unwrap();
+            assert_eq!(
+                (argon.input, argon.output, argon.cache_read),
+                (2.0, 10.0, 0.10),
+                "{id}"
+            );
+        }
     }
 
     #[test]

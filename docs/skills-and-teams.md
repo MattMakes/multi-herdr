@@ -427,13 +427,16 @@ request.
 ### The Antigravity harness
 
 - The binary is `agy`. Set `HORCH_ANTIGRAVITY_BIN` to use another path.
-- Efforts are `low`, `medium` and `high`. The pane takes the prompt with
-  `--prompt-interactive`.
+- Efforts are `low`, `medium` and `high`, plus `xhigh` for a `gemini-4-neon`
+  model. The pane takes the prompt with `--prompt-interactive`.
 - It cannot expose skills (`skills=none` in `horch agent-list`). A teammate on
   it has no `phase` and no `skills`, and `horch spawn` refuses one that has.
 - It uses the `google` usage pool. The probe runs `agy -p /usage --output-format
   json` (no model turn) and scopes each window to its model group: `argon`,
-  `gemini`, or the `3p` models (`opus`, `sonnet`, `gpt-oss`).
+  `neon`, `gemini`, or the `3p` models (`opus`, `sonnet`, `gpt-oss`). A
+  shared `gemini-*` bucket also limits `argon` or `neon` when agy reports no
+  own group for that model
+  ([ADR 0195](adr/0195-agy-teammates-run-gemini-4-neon.md)).
 - Whether Google may use the prompts is the operator's Enable Telemetry setting
   in agy's `/config`. horch cannot read it, so it trusts the operator and sets
   no `trains_on_input`.
@@ -441,4 +444,4 @@ request.
   installed, with the installer: `curl -fsSL
   https://antigravity.google/cli/install.sh | bash`.
 - The shipped teammates are `antigravity` (Gemini 3.8 Flash), and
-  `spec-writer` and `ticket-writer` (Gemini 4 Argon, `fallbacks: [opus]`).
+  `spec-writer` and `ticket-writer` (Gemini 4 Neon, `fallbacks: [opus]`).

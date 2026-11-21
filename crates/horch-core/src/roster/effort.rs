@@ -21,7 +21,15 @@ pub(crate) fn effort_problem(
                 .then(|| codex_effort_trap(model, effort))
                 .flatten()
         })
-        .or_else(|| level_problem(agent, effort))
+        .or_else(|| level_problem(agent, model, effort))
+}
+
+fn model_efforts(agent: HarnessKind, model: &str) -> &'static [&'static str] {
+    if agent == HarnessKind::Antigravity && model.starts_with("gemini-4-neon") {
+        &["xhigh"]
+    } else {
+        &[]
+    }
 }
 
 fn model_effort_problem(agent: HarnessKind, model: &str) -> Option<String> {
@@ -50,8 +58,8 @@ fn codex_effort_trap(model: &str, effort: &str) -> Option<String> {
     }
 }
 
-fn level_problem(agent: HarnessKind, effort: &str) -> Option<String> {
-    let valid = valid_efforts(agent);
+fn level_problem(agent: HarnessKind, model: &str, effort: &str) -> Option<String> {
+    let valid = [valid_efforts(agent), model_efforts(agent, model)].concat();
     (!valid.contains(&effort)).then(|| {
         format!(
             "effort '{effort}' is not a {agent} level (expected one of: {})",
@@ -105,5 +113,28 @@ mod tests {
         assert!(effort_problem(HarnessKind::Claude, Some("haiku"), "bogus")
             .unwrap()
             .starts_with("haiku has no effort setting"));
+    }
+
+    #[test]
+    fn antigravity_takes_xhigh_only_for_gemini_4_neon() {
+        let agy = HarnessKind::Antigravity;
+        for effort in ["low", "medium", "high", "xhigh"] {
+            assert_eq!(effort_problem(agy, Some("gemini-4-neon"), effort), None);
+        }
+        assert_eq!(
+            effort_problem(agy, Some("gemini-4-neon"), "max").as_deref(),
+            Some("effort 'max' is not a antigravity level (expected one of: low, medium, high, xhigh)")
+        );
+        for model in ["gemini-4-argon", "gemini-3.8-flash", "claude-opus-5-5"] {
+            assert_eq!(
+                effort_problem(agy, Some(model), "xhigh").as_deref(),
+                Some("effort 'xhigh' is not a antigravity level (expected one of: low, medium, high)"),
+                "{model}"
+            );
+        }
+        assert_eq!(
+            effort_problem(agy, None, "xhigh").as_deref(),
+            Some("effort 'xhigh' is not a antigravity level (expected one of: low, medium, high)")
+        );
     }
 }

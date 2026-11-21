@@ -516,7 +516,7 @@ fn quo_02_codex_probe_protocol() {
 #[test]
 fn quo_google_probe_reads_agy_usage() {
     let mut h = corpus("quogoogle");
-    h.set("HORCH_FAKE_SCENARIO", "agy_argon_exhausted");
+    h.set("HORCH_FAKE_SCENARIO", "agy_neon_exhausted");
     h.set("GEMINI_API_KEY", "dummy");
     warm_quota_fakes(&h);
     assert!(std::process::Command::new(h.bin.join("agy"))
@@ -542,20 +542,24 @@ fn quo_google_probe_reads_agy_usage() {
         .iter()
         .any(|k| k == "GEMINI_API_KEY"));
     let q = json(&out);
-    let argon = q["pools"]["google"]["windows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["scope_model"] == "argon")
-        .unwrap()
-        .clone();
-    assert_eq!(argon["used"].as_f64(), Some(1.0));
+    let used = |scope: &str| -> Vec<f64> {
+        q["pools"]["google"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["scope_model"] == scope)
+            .map(|w| w["used"].as_f64().unwrap())
+            .collect()
+    };
+    assert_eq!(used("neon"), [1.0]);
+    assert_eq!(used("argon"), [0.0]);
+    assert_eq!(used("gemini"), [0.0, 0.0]);
     assert_eq!(q["pools"]["google"]["source"], "usage");
 
     let route = h.run(&["route", "spec-writer"]);
     let text = format!("{}{}", stdout(&route), stderr(&route));
     assert!(
-        text.contains("spec-writer cannot start. google exhausted (7d:argon 100%"),
+        text.contains("spec-writer cannot start. google exhausted (7d:neon 100%"),
         "{text}"
     );
     let route = h.run(&["route", "antigravity"]);
@@ -563,6 +567,63 @@ fn quo_google_probe_reads_agy_usage() {
         stdout(&route).contains("SPAWN: antigravity runs as itself"),
         "{}",
         stdout(&route)
+    );
+}
+
+fn google_quota_corpus(name: &str, scenario: &str) -> (Harness, Value) {
+    let mut h = corpus(name);
+    h.set("HORCH_FAKE_SCENARIO", scenario);
+    warm_quota_fakes(&h);
+    assert!(std::process::Command::new(h.bin.join("agy"))
+        .arg("--version")
+        .status()
+        .unwrap()
+        .success());
+    let out = h.run(&["quota", "--refresh", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let q = json(&out);
+    (h, q)
+}
+
+#[test]
+fn quo_google_neon_teammate_falls_back_when_its_window_is_exhausted() {
+    let (h, q) = google_quota_corpus("quogoogle-neon", "usage_ok,agy_neon_exhausted");
+    assert_eq!(q["pools"]["claude"]["state"], "ok");
+    for teammate in ["spec-writer", "ticket-writer"] {
+        let route = h.run(&["route", teammate]);
+        let want = format!("SUBSTITUTED: {teammate} runs on opus. Reason: google 7d:neon 100%");
+        assert!(
+            stdout(&route).contains(&want),
+            "{}{}",
+            stdout(&route),
+            stderr(&route)
+        );
+    }
+    let route = h.run(&["route", "audio-reviewer"]);
+    let text = format!("{}{}", stdout(&route), stderr(&route));
+    assert!(
+        text.contains("REFUSED: audio-reviewer cannot start. google exhausted (7d:neon 100%"),
+        "{text}"
+    );
+}
+
+#[test]
+fn quo_google_argon_window_does_not_limit_a_neon_teammate() {
+    let (h, q) = google_quota_corpus("quogoogle-argon", "agy_argon_exhausted");
+    let argon: Vec<f64> = q["pools"]["google"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["scope_model"] == "argon")
+        .map(|w| w["used"].as_f64().unwrap())
+        .collect();
+    assert_eq!(argon, [1.0]);
+    let route = h.run(&["route", "spec-writer"]);
+    assert!(
+        stdout(&route).contains("SPAWN: spec-writer runs as itself"),
+        "{}{}",
+        stdout(&route),
+        stderr(&route)
     );
 }
 

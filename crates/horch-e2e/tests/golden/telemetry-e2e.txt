@@ -3,7 +3,7 @@ POOL          5h      7d     scoped        state       resets         headroom/h
 claude        3%      100%   fable 3%      EXHAUSTED   Fri 14:00Z     0.0%
 codex         -       99%    -             EXHAUSTED   Sat 19:16Z     0.0%
 opencode-zen  no signal                    ok*         -              -          * public work only
-google        -       -      argon 0%      ok          -              -
+google        -       -      neon 0%       ok          -              -
 local         -       -      -             ok          pi and ollama answer
  live panes  rows 1-2 of 2 ─────────────────────────────────────────────────────────────────────────────────────────────
 LIVE               model    phase plan fresh c.read out $    tok/min state

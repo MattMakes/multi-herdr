@@ -526,8 +526,8 @@ registry to update.
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
 | `pi`                   | pi     | local  | low    | Runs on your own hardware; nothing leaves the machine |
 | `prime`                | Prime Agent | Opus 5.5 | medium | One persistent Python kernel; long, exploratory runs |
-| `spec-writer`          | Antigravity | Argon | medium | Rough idea to a spec with test seams; falls back to Opus |
-| `ticket-writer`        | Antigravity | Argon | medium | Resolved spec to 1 ticket file each plus `MAP.md`; falls back to Opus |
+| `spec-writer`          | Antigravity | Neon  | medium | Rough idea to a spec with test seams; falls back to Opus |
+| `ticket-writer`        | Antigravity | Neon  | medium | Resolved spec to 1 ticket file each plus `MAP.md`; falls back to Opus |
 | `antigravity`          | Antigravity | Gemini 3.8 Flash | medium | General implementation work |
 
 Why each runs at that level is in [Models and effort](#models-and-effort)
@@ -535,7 +535,7 @@ below.
 
 ### From a rough idea to tickets
 
-Give the orchestrator a rough idea and it runs 2 Argon workers before any
+Give the orchestrator a rough idea and it runs 2 Neon workers before any
 build work:
 
 1. `spec-writer` reads the brief (a `horch ledger task`) and writes
@@ -553,7 +553,7 @@ build work:
 
 Both writers report only file paths, and only once the file is complete. They
 run on the `google` pool, which horch reads with `agy -p /usage` (no model
-turn). When Argon's bucket is empty, or `agy` is not installed, `horch spawn`
+turn). When Neon's quota is used up, or `agy` is not installed, `horch spawn`
 runs the same persona on Opus and prints `SUBSTITUTED:`. Install `agy` with
 `curl -fsSL https://antigravity.google/cli/install.sh | bash`; `horch doctor`
 prints that line when it is missing.

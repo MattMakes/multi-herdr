@@ -2,6 +2,8 @@
 
 Date: 2026-11-07. Worker: opus-40 (ticket T-11). agy build: the one at `~/.local/bin/agy` on this date.
 
+Update 2026-11-21: `audio-reviewer` and `hark llm` now run Gemini 4 Neon (`gemini-4-neon`, [ADR 0195](../../adr/0195-agy-teammates-run-gemini-4-neon.md)). This probe ran on Gemini 4 Argon and has not been re-run on Neon. Everything below is the Argon record.
+
 ## Verdict: HEARS (coarse only)
 
 agy delivers the real audio to Gemini as a multimodal part. Gemini then names the sound class correctly for 4 of 4 WAV files (tone, noise, clicks, tone after silence). It also names the 1 kHz pitch correctly. Measurements are not reliable: it gets the 440 Hz pitch wrong, gets hit counts wrong in 2 of 3 cases, and invents about 0.4 s of leading silence in 3 of 4 WAV files. It heard the MP3 copy as silence.

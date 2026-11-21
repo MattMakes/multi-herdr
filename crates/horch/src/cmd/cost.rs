@@ -303,7 +303,7 @@ impl Reports<'_> {
     }
 }
 
-const PRICES_AS_OF: &str = "2026-09-24";
+const PRICES_AS_OF: &str = "2026-11-21";
 
 #[derive(Debug, Serialize)]
 pub struct Summary {
@@ -844,7 +844,7 @@ mod tests {
         let day = read_json(&dir.join(format!("{}_24h.json", prefix())));
         assert_eq!(day["window"]["name"], "24h");
         assert_eq!(day["window"]["start"], "2026-10-06T10:00:00Z");
-        assert_eq!(day["prices_as_of"], "2026-09-24");
+        assert_eq!(day["prices_as_of"], "2026-11-21");
         let w1 = day["rows"]
             .as_array()
             .unwrap()

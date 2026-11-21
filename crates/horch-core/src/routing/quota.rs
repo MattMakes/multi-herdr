@@ -113,8 +113,8 @@ fn provider_pool(provider: Option<&str>) -> &'static str {
 pub(crate) fn model_family(model: &str) -> Option<&'static str> {
     let m = model.to_ascii_lowercase();
     [
-        "opus", "sonnet", "haiku", "fable", "astra", "sol", "terra", "luna", "argon", "gemini",
-        "gpt-oss",
+        "opus", "sonnet", "haiku", "fable", "astra", "sol", "terra", "luna", "argon", "neon",
+        "gemini", "gpt-oss",
     ]
     .into_iter()
     .find(|f| m.contains(f))
@@ -858,12 +858,11 @@ fn codex_window(snap: &Value, slot: &str) -> Option<Window> {
 
 pub fn parse_agy_usage(reply: &Value) -> Result<Probed, String> {
     let buckets = agy_buckets(reply)?;
-    let own_argon = buckets
-        .iter()
-        .any(|b| agy_id(b).starts_with("gemini-argon-"));
+    let own = |prefix: &str| buckets.iter().any(|b| agy_id(b).starts_with(prefix));
+    let shared = shared_gemini_scopes(own(AGY_ARGON_PREFIX), own(AGY_NEON_PREFIX));
     let windows: Vec<Window> = buckets
         .iter()
-        .flat_map(|b| bucket_windows(b, own_argon))
+        .flat_map(|b| bucket_windows(b, &shared))
         .collect();
     if windows.is_empty() {
         return Err("agy /usage reply has no windows".into());
@@ -899,12 +898,12 @@ fn agy_id(b: &Value) -> &str {
     b.get("id").and_then(Value::as_str).unwrap_or("")
 }
 
-fn bucket_windows(b: &Value, own_argon: bool) -> Vec<Window> {
+fn bucket_windows(b: &Value, shared: &[&'static str]) -> Vec<Window> {
     let Some((minutes, used)) = agy_bucket(b) else {
         return Vec::new();
     };
     let resets = reset_stamp(b.get("reset_time"));
-    let scopes = agy_scopes(agy_id(b), own_argon);
+    let scopes = agy_scopes(agy_id(b), shared);
     if scopes.is_empty() {
         return vec![Window::new(minutes, used, resets, None)];
     }
@@ -924,15 +923,27 @@ fn agy_bucket(b: &Value) -> Option<(u64, f64)> {
     Some((minutes, 1.0 - left))
 }
 
-fn agy_scopes(id: &str, own_argon: bool) -> &'static [&'static str] {
-    if id.starts_with("gemini-argon-") {
+const AGY_ARGON_PREFIX: &str = "gemini-argon-";
+const AGY_NEON_PREFIX: &str = "gemini-neon-";
+
+fn shared_gemini_scopes(own_argon: bool, own_neon: bool) -> Vec<&'static str> {
+    let mut scopes = vec!["gemini"];
+    if !own_argon {
+        scopes.push("argon");
+    }
+    if !own_neon {
+        scopes.push("neon");
+    }
+    scopes
+}
+
+fn agy_scopes<'a>(id: &str, shared: &'a [&'static str]) -> &'a [&'static str] {
+    if id.starts_with(AGY_ARGON_PREFIX) {
         &["argon"]
+    } else if id.starts_with(AGY_NEON_PREFIX) {
+        &["neon"]
     } else if id.starts_with("gemini-") {
-        if own_argon {
-            &["gemini"]
-        } else {
-            &["gemini", "argon"]
-        }
+        shared
     } else if id.starts_with("3p-") {
         &["opus", "sonnet", "gpt-oss"]
     } else {
@@ -1512,7 +1523,9 @@ mod tests {
             labels,
             [
                 "7d:gemini",
+                "7d:neon",
                 "5h:gemini",
+                "5h:neon",
                 "7d:opus",
                 "7d:sonnet",
                 "7d:gpt-oss",
@@ -1554,6 +1567,67 @@ mod tests {
     }
 
     #[test]
+    fn agy_usage_without_a_neon_group_limits_neon_by_gemini() {
+        let pro = parse_agy_usage(&agy_usage("pro")).unwrap();
+        let v = google_view(pro.windows);
+        assert_eq!(v.assess("antigravity", "gemini-4-neon").state, State::Ok);
+        assert_eq!(
+            v.assess("antigravity", "gemini-4-argon").state,
+            State::Exhausted
+        );
+
+        let ultra = parse_agy_usage(&agy_usage("ultra")).unwrap();
+        let v = google_view(ultra.windows);
+        let a = v.assess("antigravity", "gemini-4-neon");
+        assert_eq!(a.state, State::Exhausted);
+        assert!(a.reason.contains("5h:neon 99%"), "{}", a.reason);
+    }
+
+    fn agy_usage_with_groups(left: &[(&str, f64)]) -> Value {
+        let groups: Vec<Value> = left
+            .iter()
+            .map(|(id, left)| {
+                serde_json::json!({"buckets": [{
+                    "id": id, "window": "weekly", "remaining_fraction": left,
+                    "reset_time": "2026-10-27T18:48:25Z"}]})
+            })
+            .collect();
+        serde_json::json!({"status": "SUCCESS", "command": {"data": {"groups": groups}}})
+    }
+
+    #[test]
+    fn agy_usage_with_a_neon_group_limits_neon_by_its_own_group() {
+        let spent = agy_usage_with_groups(&[
+            ("gemini-weekly", 1.0),
+            ("gemini-argon-wtu-weekly", 1.0),
+            ("gemini-neon-wtu-weekly", 0.0),
+        ]);
+        let p = parse_agy_usage(&spent).unwrap();
+        let labels: Vec<String> = p.windows.iter().map(Window::label).collect();
+        assert_eq!(labels, ["7d:gemini", "7d:argon", "7d:neon"]);
+        let v = google_view(p.windows);
+        assert_eq!(
+            v.assess("antigravity", "gemini-4-neon").state,
+            State::Exhausted
+        );
+        for model in ["gemini-4-argon", "gemini-3.8-flash"] {
+            assert_eq!(v.assess("antigravity", model).state, State::Ok, "{model}");
+        }
+
+        let shared_spent =
+            agy_usage_with_groups(&[("gemini-weekly", 0.0), ("gemini-neon-wtu-weekly", 1.0)]);
+        let p = parse_agy_usage(&shared_spent).unwrap();
+        let labels: Vec<String> = p.windows.iter().map(Window::label).collect();
+        assert_eq!(labels, ["7d:gemini", "7d:argon", "7d:neon"]);
+        let v = google_view(p.windows);
+        assert_eq!(v.assess("antigravity", "gemini-4-neon").state, State::Ok);
+        assert_eq!(
+            v.assess("antigravity", "gemini-4-argon").state,
+            State::Exhausted
+        );
+    }
+
+    #[test]
     fn agy_usage_errors_are_errors() {
         let e = parse_agy_usage(&agy_usage("error")).unwrap_err();
         assert!(e.contains("You are not signed in"), "{e}");
@@ -1570,6 +1644,8 @@ mod tests {
     #[test]
     fn agy_model_families() {
         assert_eq!(model_family("gemini-4-argon"), Some("argon"));
+        assert_eq!(model_family("gemini-4-neon"), Some("neon"));
+        assert_eq!(model_family("gemini-4-neon-xhigh"), Some("neon"));
         assert_eq!(model_family("gemini-3.8-flash"), Some("gemini"));
         assert_eq!(model_family("gpt-oss-120b"), Some("gpt-oss"));
         assert_eq!(model_family("claude-opus-5-5"), Some("opus"));

@@ -1,16 +1,24 @@
 ---
 name: audio-reviewer
-brief_description: Argon/high on agy. Listens to WAV files, measures with hark, writes a blind 7-axis SFX or mix review.
+brief_description: Neon/medium on agy. Listens to WAV files, measures with hark, writes a blind 7-axis SFX or mix review.
 base: fleet-worker
 agent: antigravity
-# Gemini 4 Argon hears audio through agy's file-reading tool. The probe
-# (docs/specs/hark/agy-audio-probe.md) found gemini-4-argon-high the best
-# model. agy takes the bare id plus --effort.
-model: gemini-4-argon
-# high: the probe ran at high, and a missed defect costs a fix round.
-effort: high
+# Gemini 4 Neon since 2026-11-21, by operator request (it was Gemini 4
+# Argon). The audio probe (docs/specs/hark/agy-audio-probe.md) ran on
+# gemini-4-argon-high and found that Argon hears audio through agy's
+# file-reading tool. Nobody has run the probe on Neon: re-run it before you
+# trust a review from this teammate. The model id is from secondary sources
+# and is not yet checked on the operator's Mac
+# (docs/adr/0195-agy-teammates-run-gemini-4-neon.md). agy takes the bare id
+# plus --effort.
+model: gemini-4-neon
+# medium since 2026-11-21: the fleet caps every teammate at medium effort
+# unless the operator signs off. It was high: the probe ran at high, and a
+# missed defect costs a fix round. Set high again only with the operator's
+# sign-off.
+effort: medium
 # No fallback: no Claude or Codex model hears audio, so a fallback could not
-# do this work. When the Argon pool is out, `horch route` refuses and the
+# do this work. When the Neon pool is out, `horch route` refuses and the
 # orchestrator waits.
 # auto = --sandbox --dangerously-skip-permissions: no approval prompt in a pane
 # nobody watches, and terminal commands stay in agy's OS sandbox. agy has no

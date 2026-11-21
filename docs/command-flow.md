@@ -206,8 +206,10 @@ agent CLIs, their versions and pool state), `horch spawn --resume <id>`
 An `antigravity`, `spec-writer` or `ticket-writer` worker draws on the
 `google` pool. Its probe is `agy -p /usage --output-format json`, a slash
 command that runs no model turn. Each window is scoped to the model group
-`agy` reports it for (`argon`, `gemini`, the `3p` Claude and GPT models), so
-an empty Argon bucket moves only the Argon teammates to their fallback.
+`agy` reports it for (`argon`, `neon`, `gemini`, the `3p` Claude and GPT
+models), so an empty Neon bucket moves only the Neon teammates
+(`spec-writer`, `ticket-writer`) to their fallback. When `agy` reports no
+Neon group, the shared Gemini buckets limit them.
 Without `agy` the probe fails, the pool is `unknown`, and those teammates run
 on their fallback. `horch cost` cannot price an Antigravity session: `agy`
 writes no local usage file.
