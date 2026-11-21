@@ -350,6 +350,22 @@ struct Member {
     start: u64,
 }
 
+/// Record a notice in `tx` when the group id `pid` of the abandoned run
+/// `row` still has a member other than its gone leader.
+///
+/// Limit: a job process that something else killed leaves the processes
+/// of its group (on Linux the bwrap and the namespace init of a git
+/// sandbox) alive until their command ends. fleetd sends them no signal: a
+/// group id is free for reuse when its last member ends, and with the
+/// leader gone no recorded start time proves that a member is of the job
+/// (`is_same_group` then only checks that the group has a member). A dev
+/// fleetd never stops a process that it did not start. While a member of
+/// the notice of a git writer runs with its recorded start time, no other
+/// git writer of its repository starts ([`git_writer_busy`]), and the
+/// hold of a task shows it. fleetd puts no bound on that wait: it ends
+/// when the member ends, and past the time limit of the run and the stop
+/// grace the operator gets 1 needs-you item ([`tell_group_left`]).
+///
 /// The `SIGTERM` of [`stop`] keeps its form with the leader gone: it goes
 /// to the group id while the group has a member. The OS does not give a
 /// pid out while it is the id of a group with a member (Linux frees a pid
@@ -492,6 +508,10 @@ pub fn group_left_holds(conn: &Connection, repo: Option<&str>) -> Result<Vec<Gro
     Ok(out)
 }
 
+/// Open 1 needs-you item, in `tx`, for each [`GROUP_LEFT`] notice of a git
+/// writer whose member still runs `time_limit_s` plus `stop_grace_s` after
+/// the notice, and record that it did, so a later pass opens no second
+/// one. fleetd sends the member no signal: the operator ends it by hand.
 fn tell_group_left(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
     let bound = |h: &GroupLeftHold| {
         let wait = h.time_limit_s.saturating_add(ctx.config.stop_grace_s);
@@ -576,6 +596,9 @@ fn record_term(
     Ok(())
 }
 
+/// The fleet time of the first [`TERM_SENT`] fact of the current run and
+/// process of each row of `rows`, in 1 read. A fact of an earlier run or
+/// process of the row does not count.
 fn terms_sent(tx: &Connection, rows: &[&JobRow]) -> Result<Vec<(i64, FleetSeconds)>> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -937,6 +960,16 @@ fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
 /// only, and the processes that it started live on
 /// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
 /// row "Process groups").
+///
+/// The kill comes only after a recorded `SIGTERM` and its grace
+/// ([`observe`]): the handler of the job process kills the group of its
+/// gate or check on that `SIGTERM`. Limit: a job process that cannot run
+/// its handler (stopped, or with its signals blocked) dies by the kill,
+/// and the gate or check group that it leads lives on until its command
+/// ends, which has no time limit of its own. Nothing of fleetd waits for
+/// it: the run ends `abandoned` and frees its job slot, and a gate or a
+/// check holds no git writer lock. Git of a job runs in the job group, so
+/// the kill ends git and its sandbox.
 pub fn stop(s: &Stop) -> bool {
     use horch_platform::group;
     use horch_platform::signal::{stop_same, Stop as How};
