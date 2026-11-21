@@ -202,7 +202,7 @@ impl Herdr {
     }
 
     pub fn pane_exists(&self, pane: &str) -> bool {
-        self.pane_get(pane).is_ok()
+        self.pane_get(pane).is_ok() || !self.server_reachable()
     }
 
     pub fn pane_read(&self, pane: &str, source: &str) -> Result<String> {
@@ -511,6 +511,19 @@ mod tests {
         );
         assert!(warm.status.success(), "warming {}", script.display());
         (dir, script)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pane_is_gone_only_when_an_answering_herdr_says_so() {
+        let missing = r#"{"error":{"code":"pane_not_found","message":"pane w1:p9 not found"}}"#;
+        let (_answering, script) = script_in(&format!(
+            "case \"$1 $2\" in\n\"workspace list\") exit 0;;\nesac\nprintf '%s\\n' '{missing}' >&2\nexit 1"
+        ));
+        assert!(!Herdr::with_bin(script).pane_exists("w1:p9"));
+
+        let (_silent, script) = script_in("exit 1");
+        assert!(Herdr::with_bin(script).pane_exists("w1:p9"));
     }
 
     #[test]

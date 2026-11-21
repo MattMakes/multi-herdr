@@ -190,7 +190,7 @@ pub(crate) const PRIME: Capabilities = Capabilities {
     daemon: true,
     exec_policy: false,
     skill_exposure: SkillExposure::SkillFlag,
-    tool_lists: true,
+    tool_lists: false,
     tool_denylist: false,
     extensions_flag: false,
     tool_selection: false,

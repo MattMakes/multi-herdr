@@ -14,6 +14,7 @@ use crate::workspace::host::Unsupported;
 use crate::workspace::model::{
     Direction, Focus, FocusDir, Layout, Move, NewWorkspace, Pane, Resize, Tab, Workspace,
 };
+use crate::workspace::place::address_key;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HcFailed {
@@ -169,14 +170,6 @@ struct AppTab {
 struct AppTerminalRef {
     terminal: String,
     pane: String,
-}
-
-fn terminal_order(address: &str) -> (u64, &str) {
-    let num = address
-        .strip_prefix('t')
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(u64::MAX);
-    (num, address)
 }
 
 fn missing_hc(err: std::io::Error) -> anyhow::Error {
@@ -380,7 +373,11 @@ impl HcApp {
     }
 
     pub fn pane_exists(&self, address: &str) -> bool {
-        self.pane_get(address).is_ok()
+        match self.pane_get(address) {
+            Ok(_) => true,
+            Err(e) if e.downcast_ref::<HcFailed>().is_some_and(HcFailed::is_gone) => false,
+            Err(_) => !self.server_reachable(),
+        }
     }
 
     pub fn pane_list(&self, workspace_id: &str) -> Result<Vec<Pane>> {
@@ -471,7 +468,11 @@ impl HcApp {
     }
 
     pub fn notification_show(&self, _title: &str, _body: &str) -> Result<()> {
-        Ok(())
+        Err(Unsupported {
+            call: "notification_show",
+            backend: Backend::Hc,
+        }
+        .into())
     }
 
     pub fn report_agent(
@@ -647,7 +648,7 @@ impl HcApp {
             Err(_) => {}
         }
         let mut panes = scoped.pane_list(workspace_id)?;
-        panes.sort_by(|a, b| terminal_order(&a.pane_id).cmp(&terminal_order(&b.pane_id)));
+        panes.sort_by(|a, b| address_key(&a.pane_id).cmp(&address_key(&b.pane_id)));
         let mut seen: Vec<(String, usize)> = Vec::new();
         for pane in panes {
             let Some(tb) = pane.tab_id.filter(|s| !s.is_empty()) else {
@@ -935,6 +936,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn hcb_05_a_silent_core_does_not_make_a_terminal_gone() {
+        let (_dir, hc) = hc_script("exit 1");
+        assert!(hc.pane_get("t1").is_err());
+        assert!(hc.pane_exists("t1"));
+
+        let (_dir, hc) = hc_script(
+            r#"case "$1 $2" in
+"server status") exit 0;;
+esac
+exit 1"#,
+        );
+        assert!(!hc.pane_exists("t1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn hcb_05_finished_terminal_is_gone() {
         let (_dir, hc) = hc_script(
             r#"case "$1 $3" in
@@ -1131,7 +1148,11 @@ printf '{"status":"idle","turn":1}\n'"#,
             .unwrap_err()
             .to_string();
         assert_eq!(rel, "hc agents report their own status");
-        hc.notification_show("title", "body").unwrap();
+        let shown = hc
+            .notification_show("title", "body")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(shown, "notification_show is not supported on backend hc");
         assert_eq!(hc.integration_status(), None);
         assert!(!dir.path().join("called").exists());
     }
@@ -1438,6 +1459,26 @@ esac"#,
         assert_eq!(ids, ["sp1", "sp2"]);
         assert!(spaces.iter().all(|w| w.label.is_none()));
 
+        let tabs = hc.tab_list("sp2").unwrap();
+        let tab_ids: Vec<&str> = tabs.iter().map(|t| t.tab_id.as_str()).collect();
+        assert_eq!(tab_ids, ["tb1", "tb2"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_08_tabs_with_the_window_closed_follow_base_36_address_order() {
+        let (_dir, hc) = hc_and_app_scripts(
+            r#"case "$1" in
+ls)
+  printf '{"hidden_finished":0,"terminals":[{"address":"t20"},{"address":"t1c"}]}\n';;
+get)
+  case "$3" in
+  t20) printf '{"address":"t20","state":"live","labels":{"herdr.space":"sp2","herdr.tab":"tb2"},"status":null,"status_ms":null}\n';;
+  t1c) printf '{"address":"t1c","state":"live","labels":{"herdr.space":"sp2","herdr.tab":"tb1"},"status":null,"status_ms":null}\n';;
+  esac;;
+esac"#,
+            "exit 2",
+        );
         let tabs = hc.tab_list("sp2").unwrap();
         let tab_ids: Vec<&str> = tabs.iter().map(|t| t.tab_id.as_str()).collect();
         assert_eq!(tab_ids, ["tb1", "tb2"]);

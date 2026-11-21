@@ -117,6 +117,7 @@ impl Tables {
 pub struct SkillUse {
     pub teammate: String,
     pub sessions: u64,
+    pub sessions_not_read: u64,
     pub expected: Vec<SkillCount>,
     pub other: Vec<SkillCount>,
 }
@@ -134,7 +135,8 @@ pub fn skill_use(rows: &[Row], roster: Option<&Roster>) -> Vec<SkillUse> {
     }
     by_teammate
         .into_iter()
-        .map(|(teammate, rs)| {
+        .map(|(teammate, all)| {
+            let rs: Vec<&Row> = all.iter().copied().filter(|r| r.skills_read).collect();
             let expected = expected_skills(roster, teammate);
             let count = |skill: &str| {
                 rs.iter()
@@ -149,6 +151,7 @@ pub fn skill_use(rows: &[Row], roster: Option<&Roster>) -> Vec<SkillUse> {
             SkillUse {
                 teammate: teammate.to_string(),
                 sessions: rs.len() as u64,
+                sessions_not_read: (all.len() - rs.len()) as u64,
                 expected: expected
                     .iter()
                     .map(|s| SkillCount {
@@ -166,4 +169,51 @@ pub fn skill_use(rows: &[Row], roster: Option<&Roster>) -> Vec<SkillUse> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(teammate: &str, agent: &str, skills_read: bool, loaded: &[&str]) -> Row {
+        Row {
+            record_id: String::new(),
+            teammate: teammate.into(),
+            role: format!("{teammate}-1"),
+            kind: "worker".into(),
+            agent: agent.into(),
+            model: String::new(),
+            effort: None,
+            family: "build".into(),
+            calls: 1,
+            tokens: Default::default(),
+            cost: 0.0,
+            reprice_cost: None,
+            unpriced_models: Vec::new(),
+            transcript: None,
+            skills_read,
+            skills_used: loaded.iter().map(|s| (s.to_string(), 1)).collect(),
+            expected_unused: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sessions_whose_skill_loads_are_not_read_are_counted_apart() {
+        let rows = [
+            row("a", "claude", true, &["tdd"]),
+            row("a", "opencode", false, &[]),
+            row("b", "opencode", false, &[]),
+        ];
+        let use_ = skill_use(&rows, None);
+        assert_eq!(use_.len(), 2);
+        assert_eq!((use_[0].sessions, use_[0].sessions_not_read), (1, 1));
+        assert_eq!(
+            use_[0].other,
+            [SkillCount {
+                skill: "tdd".into(),
+                sessions: 1
+            }]
+        );
+        assert_eq!((use_[1].sessions, use_[1].sessions_not_read), (0, 1));
+    }
 }

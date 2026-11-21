@@ -1,8 +1,9 @@
 # Specifications: properties, cells and generators
 
 A specification is an ES module: `.js`, `.mjs`, or `.ts` (type annotations are stripped; keep TypeScript
-simple: annotations, interfaces, type aliases, `as` casts). With no `--specification`, the target's defaults
-module is the specification.
+simple: annotations, interfaces, type aliases, `as` casts). A parameter property such as
+`constructor(public name: string)` is refused with an error that names it: declare the field and assign it
+in the constructor body. With no `--specification`, the target's defaults module is the specification.
 
 The tool reads the module's exports:
 

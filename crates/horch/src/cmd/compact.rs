@@ -34,7 +34,7 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 const START_POLL: Duration = Duration::from_millis(50);
 
-pub const EXIT_REPORTED: u8 = 3;
+pub const EXIT_REPORTED: u8 = horch::exit::COMPACTION_REPORTED;
 
 const POLL: Duration = Duration::from_secs(2);
 const IDLE_POLLS: u8 = 2;
@@ -1864,7 +1864,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_child_that_reports_itself_returns_its_line_with_no_second_event() {
-        let (f, o) = start_with_child("echo '2026 start [horch] BLOCKED: boom'\nexit 3");
+        let (f, o) = start_with_child(&format!(
+            "echo '2026 start [horch] BLOCKED: boom'\nexit {EXIT_REPORTED}"
+        ));
         assert_eq!(
             o,
             Outcome {
@@ -1878,12 +1880,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_child_that_exits_3_with_no_report_fails_the_start() {
-        let (f, o) = start_with_child("exit 3");
+    fn a_child_that_exits_reported_with_no_report_fails_the_start() {
+        let (f, o) = start_with_child(&format!("exit {EXIT_REPORTED}"));
         assert_eq!(o.code, 1, "{o:?}");
         assert_eq!(
             f.w.events("r-1", EVENT_FAILED),
-            ["step start: the job exited with 3 and no report in its log"]
+            [format!(
+                "step start: the job exited with {EXIT_REPORTED} and no report in its log"
+            )]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_exits_as_a_refused_spawn_is_not_read_as_a_report() {
+        let refused = horch::exit::REFUSED;
+        let (f, o) = start_with_child(&format!(
+            "echo '2026 start [horch] BLOCKED: boom'\nexit {refused}"
+        ));
+        assert_eq!(o.code, 1, "{o:?}");
+        assert_eq!(
+            f.w.events("r-1", EVENT_FAILED),
+            [format!(
+                "step start: the job exited with {refused} before it started"
+            )]
         );
     }
 

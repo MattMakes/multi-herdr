@@ -74,7 +74,8 @@ Cite a source URL for every fact. Mark anything you could not confirm on a
 first-party page as **unverified**. Then:
 - copy the model guide to a new month's file, or update this month's;
 - update the price table in `crates/horch-core/src/usage.rs` (`builtin_prices`)
-  to match, including its "as of" date in `cmd/cost.rs`.
+  to match, including its "as of" date, `BUILTIN_PRICES_AS_OF`, on the line
+  above it.
 
 ## 4. Decide
 

@@ -234,6 +234,32 @@ mod tests {
 
     const SHA: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
 
+    #[test]
+    fn a_locked_source_reads_back_as_the_url_it_was_written_from() {
+        for spec in [
+            "https://example.com/@org/repo@main",
+            "https://example.com/@org/repo@main#skills/tdd",
+            "file:///tmp/a@b/r.git@v1",
+            "https://example.com/r",
+            "MattMakes/skill-marketplace@v2",
+        ] {
+            let source = SkillSource::parse(spec).unwrap();
+            let SkillSource::Git { revision, .. } = source.clone() else {
+                panic!("{spec} is a git source");
+            };
+            let locked = crate::model::parse_locked_source(&source.to_spec()).unwrap();
+            assert_eq!(locked.with_revision(revision), source, "{spec}");
+        }
+        assert_eq!(
+            crate::model::parse_locked_source("https://example.com/@org/repo").unwrap(),
+            SkillSource::Git {
+                url: "https://example.com/@org/repo".into(),
+                revision: GitRevision::Branch("HEAD".into()),
+                subdir: None,
+            }
+        );
+    }
+
     fn resolve(source: &SkillSource) -> Result<ResolvedSource> {
         let catalog = Catalog::new().with_bundled(BundledSkill {
             id: SkillId::parse("tdd").unwrap(),

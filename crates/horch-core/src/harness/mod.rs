@@ -388,7 +388,7 @@ mod tests {
             matches!(kind, A::Codex | A::OpenCode | A::Prime | A::Antigravity),
             kind == A::Prime,
             kind == A::Codex,
-            matches!(kind, A::Claude | A::Pi | A::Prime),
+            matches!(kind, A::Claude | A::Pi),
             matches!(kind, A::Claude | A::Pi),
             match kind {
                 A::Claude => &["low", "medium", "high", "xhigh", "max"],

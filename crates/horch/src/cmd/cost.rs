@@ -53,6 +53,7 @@ pub struct Row {
     pub reprice_cost: Option<f64>,
     pub unpriced_models: Vec<String>,
     pub transcript: Option<PathBuf>,
+    pub skills_read: bool,
     pub skills_used: BTreeMap<String, u64>,
     pub expected_unused: Vec<String>,
 }
@@ -294,7 +295,7 @@ impl Reports<'_> {
                     .with_timezone(&Local)
                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
                 project: project.to_path_buf(),
-                prices_as_of: PRICES_AS_OF,
+                prices_as_of: usage::BUILTIN_PRICES_AS_OF,
                 files,
                 windows,
             };
@@ -302,8 +303,6 @@ impl Reports<'_> {
         }
     }
 }
-
-const PRICES_AS_OF: &str = "2026-09-24";
 
 #[derive(Debug, Serialize)]
 pub struct Summary {
@@ -431,7 +430,7 @@ pub fn report(
     };
     let mut report = Report {
         window,
-        prices_as_of: PRICES_AS_OF,
+        prices_as_of: usage::BUILTIN_PRICES_AS_OF,
         reprice: reprice.map(str::to_string),
         rows: Vec::new(),
         not_priced: not_priced(read, &span),
@@ -451,10 +450,11 @@ pub fn report(
     for (r, session, used) in readable {
         let (cost, unpriced) = price(prices, &used, &r.model);
         let tokens = used.tokens();
+        let skills_read = usage::reads_skill_loads(&r.agent);
         let skills_used = skills_loaded(&used);
         let expected_unused = expected_skills(roster, &r.tier)
             .into_iter()
-            .filter(|s| !skills_used.contains_key(s))
+            .filter(|s| skills_read && !skills_used.contains_key(s))
             .collect();
         report.add_row(Row {
             record_id: r.record_id.clone(),
@@ -471,6 +471,7 @@ pub fn report(
             reprice_cost: reprice.and_then(|m| usage::cost_of(prices, m, &tokens)),
             unpriced_models: unpriced,
             transcript: Some(session.path.clone()),
+            skills_read,
             skills_used,
             expected_unused,
         });
@@ -844,7 +845,7 @@ mod tests {
         let day = read_json(&dir.join(format!("{}_24h.json", prefix())));
         assert_eq!(day["window"]["name"], "24h");
         assert_eq!(day["window"]["start"], "2026-10-06T10:00:00Z");
-        assert_eq!(day["prices_as_of"], "2026-09-24");
+        assert_eq!(day["prices_as_of"], usage::BUILTIN_PRICES_AS_OF);
         let w1 = day["rows"]
             .as_array()
             .unwrap()

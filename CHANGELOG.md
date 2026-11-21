@@ -4,6 +4,39 @@
 
 ## Unreleased
 
+- Fix: a pane host that does not answer no longer reads as "the pane is
+  gone". `horch fleet`, a respawn and `horch ledger stop` asked whether a
+  pane exists with 1 call, and a timeout or an unreachable herdr answered
+  "no". A fleet then reported that its orchestrator exited at launch, and a
+  stop recorded the pane as already gone. Now only an answering host can say
+  a pane is gone.
+- Fix: on the Herdr app backend (`hc`), the tabs that horch lists while the
+  app window is closed are in the order that pane placement uses. Pane
+  addresses are base 36. This list read them as base 10, so `t1c` sorted
+  after `t20`.
+- Fix: on `hc`, horch says that the "Orchestrator needs /login" notification
+  was not shown. `hc` has no notification call, and horch reported success.
+- Fix: `horch cost` no longer reports every expected skill of an OpenCode
+  teammate as never loaded. horch cannot read skill loads from an OpenCode
+  session. The skill table now counts such sessions apart, as
+  `0 (+3 not read)`, each JSON row has `skills_read`, and each `skill_use`
+  entry has `sessions_not_read`.
+- Fix: `horch cost` prints the date of the newest price in its table,
+  2026-11-09. It printed 2026-09-24, a date kept in another file.
+- Fix: `horch skills update`, and a reinstall from `marketplace.lock`, fetch
+  a git skill from the URL it was installed from when the path of that URL
+  contains `@`. The lock stores the URL without its revision, and horch read
+  the last `@` of the stored URL as a revision.
+- Fix: `ui-prop-tester` refuses a TypeScript parameter property, such as
+  `constructor(public name: string)`, with an error that names it. It removed
+  the modifier, which also removed the assignment to `this.name`, so a
+  specification loaded and tested the wrong thing.
+- Fix: `herdr-docs-sync` deletes no local page when part of the docs site was
+  not mirrored. A page below `docs/<name>/`, such as `docs/guides/install/`,
+  has no file in the flat mirror. The sync skipped it without a word and then
+  pruned every local page that the short list no longer named. It now prints
+  each such URL and skips the cleanup.
+
 ## v0.5.2 - 2026-11-21
 
 - Fix: the video, design and `ui-prop-tester` tools no longer leave copies of

@@ -352,16 +352,15 @@ impl Roster {
         let mut problems = Vec::new();
         let who = &t.name;
         for field in t.agent.unsupported_fields(t) {
+            let advice = match (t.agent, field) {
+                (HarnessKind::Prime, "tools") => {
+                    "prime refuses --tools and --no-tools, so remove tools"
+                }
+                _ => "use args, or move this work to a claude teammate",
+            };
             problems.push(format!(
-                "{who}: '{field}' is not something {} can express; \
-                 use args, or move this work to a claude teammate",
+                "{who}: '{field}' is not something {} can express; {advice}",
                 t.agent
-            ));
-        }
-        if t.agent == HarnessKind::Prime && t.tools.is_some() {
-            problems.push(format!(
-                "{who}: 'tools' is not something prime can express; \
-                 prime refuses --tools and --no-tools, so remove tools"
             ));
         }
         problems

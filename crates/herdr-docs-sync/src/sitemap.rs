@@ -105,24 +105,40 @@ pub fn doc_pages(urls: &[String]) -> Vec<DocPage> {
     let mut pages: Vec<DocPage> = urls
         .iter()
         .filter_map(|url| {
-            let rest = url.strip_prefix(DOCS_PREFIX)?;
-            let slug = rest.trim_end_matches('/');
-            let file_name = if slug.is_empty() {
-                "README.md".to_string()
-            } else if slug.contains('/') || !is_plain_slug(slug) {
-                return None;
-            } else {
-                format!("{slug}.md")
-            };
             Some(DocPage {
                 url: url.clone(),
-                file_name,
+                file_name: file_name(docs_slug(url)?)?,
             })
         })
         .collect();
     pages.sort();
     pages.dedup_by(|a, b| a.file_name == b.file_name);
     pages
+}
+
+pub fn unmirrored(urls: &[String]) -> Vec<String> {
+    let mut skipped: Vec<String> = urls
+        .iter()
+        .filter(|url| docs_slug(url).is_some_and(|slug| file_name(slug).is_none()))
+        .cloned()
+        .collect();
+    skipped.sort();
+    skipped.dedup();
+    skipped
+}
+
+fn docs_slug(url: &str) -> Option<&str> {
+    Some(url.strip_prefix(DOCS_PREFIX)?.trim_end_matches('/'))
+}
+
+fn file_name(slug: &str) -> Option<String> {
+    if slug.is_empty() {
+        Some("README.md".to_string())
+    } else if is_plain_slug(slug) {
+        Some(format!("{slug}.md"))
+    } else {
+        None
+    }
 }
 
 fn is_plain_slug(slug: &str) -> bool {
@@ -254,6 +270,28 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
         assert!(doc_pages(&urls).is_empty(), "{:#?}", doc_pages(&urls));
+        assert_eq!(unmirrored(&urls).len(), urls.len());
+    }
+
+    #[test]
+    fn only_docs_urls_without_a_file_count_as_unmirrored() {
+        let urls: Vec<String> = [
+            "https://herdr.dev/",
+            "https://herdr.dev/blog/a/b/",
+            "https://herdr.dev/ja/docs/guides/install/",
+            "https://herdr.dev/docs/",
+            "https://herdr.dev/docs/install/",
+            "https://herdr.dev/docs/guides/install/",
+            "https://herdr.dev/docs/guides/install/",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            unmirrored(&urls),
+            ["https://herdr.dev/docs/guides/install/"]
+        );
+        assert_eq!(doc_pages(&urls).len(), 2);
     }
 
     #[test]

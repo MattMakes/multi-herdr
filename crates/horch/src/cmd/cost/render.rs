@@ -69,9 +69,14 @@ fn table(out: &mut String, title: &str, head: &str, rows: &[TableRow], reprice: 
 
 fn skills(out: &mut String, use_: &[SkillUse]) {
     out.push_str(
-        "\n## Skill use\n\nSessions that loaded each skill, out of the teammate's sessions.\n\n\
+        "\n## Skill use\n\nSessions that loaded each skill, out of the teammate's sessions \
+         whose skill loads horch can read.\n\n\
          | teammate | sessions | expected skills | other skills loaded |\n|---|---:|---|---|\n",
     );
+    let sessions = |s: &SkillUse| match s.sessions_not_read {
+        0 => s.sessions.to_string(),
+        n => format!("{} (+{n} not read)", s.sessions),
+    };
     let list = |xs: &[super::tables::SkillCount], of: u64| {
         if xs.is_empty() {
             "-".to_string()
@@ -86,7 +91,7 @@ fn skills(out: &mut String, use_: &[SkillUse]) {
         out.push_str(&format!(
             "| {} | {} | {} | {} |\n",
             s.teammate,
-            s.sessions,
+            sessions(s),
             list(&s.expected, s.sessions),
             list(&s.other, s.sessions),
         ));
@@ -224,6 +229,30 @@ mod tests {
             start: start.map(str::to_string),
             end: end.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn the_skill_table_says_how_many_sessions_were_not_read() {
+        let mut r = report(window(None, None));
+        r.skill_use = vec![
+            SkillUse {
+                teammate: "a".into(),
+                sessions: 2,
+                sessions_not_read: 0,
+                expected: Vec::new(),
+                other: Vec::new(),
+            },
+            SkillUse {
+                teammate: "b".into(),
+                sessions: 0,
+                sessions_not_read: 3,
+                expected: Vec::new(),
+                other: Vec::new(),
+            },
+        ];
+        let text = render(&r, "l.json");
+        assert!(text.contains("| a | 2 | - | - |"), "{text}");
+        assert!(text.contains("| b | 0 (+3 not read) | - | - |"), "{text}");
     }
 
     #[test]

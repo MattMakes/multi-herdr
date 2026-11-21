@@ -1757,6 +1757,7 @@ mod tests {
             &bin,
             "#!/bin/sh\n\
              case \"$*\" in\n\
+             'workspace list') echo '{\"result\":{\"workspaces\":[]}}' ;;\n\
              'pane get p1') echo '{\"result\":{\"pane\":{\"pane_id\":\"p1\"}}}' ;;\n\
              'pane list --workspace w1') echo '{\"result\":{\"panes\":[{\"pane_id\":\"p9\"}]}}' ;;\n\
              'pane split p9 --direction right --no-focus') echo '{\"result\":{\"pane\":{\"pane_id\":\"p10\"}}}' ;;\n\

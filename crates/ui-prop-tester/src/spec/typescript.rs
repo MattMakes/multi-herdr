@@ -102,10 +102,14 @@ pub fn strip_types(source: &str) -> Result<String, String> {
         removed_ends: HashMap::new(),
         class_bodies: HashSet::new(),
         specifier_braces: HashSet::new(),
+        unsupported: None,
     };
     stripper.removed = vec![false; stripper.tokens.len()];
     stripper.run();
-    Ok(stripper.render())
+    match stripper.unsupported.take() {
+        Some(message) => Err(message),
+        None => Ok(stripper.render()),
+    }
 }
 
 fn lex(source: &str) -> Result<Vec<Token>, String> {
@@ -359,6 +363,7 @@ struct Stripper<'a> {
     removed_ends: HashMap<usize, usize>,
     class_bodies: HashSet<usize>,
     specifier_braces: HashSet<usize>,
+    unsupported: Option<String>,
 }
 
 impl Stripper<'_> {
@@ -844,6 +849,24 @@ impl Stripper<'_> {
         }
     }
 
+    fn refuse_parameter_property(&mut self, modifier: usize) {
+        if self.unsupported.is_some() {
+            return;
+        }
+        let mut name = modifier + 1;
+        while PARAMETER_MODIFIERS.contains(&self.text(name)) && self.is_ident(name + 1) {
+            name += 1;
+        }
+        let written = &self.source[self.tokens[modifier].start..self.tokens[name].end];
+        self.unsupported = Some(format!(
+            "the parameter property '{written}' at byte {} is not supported: \
+             removing its modifiers would drop the assignment to this.{}; \
+             declare the field and assign it in the constructor body",
+            self.tokens[modifier].start,
+            self.text(name),
+        ));
+    }
+
     fn parameters(&mut self, open: usize, close: usize) {
         let mut cursor = open + 1;
         while cursor < close {
@@ -852,6 +875,7 @@ impl Stripper<'_> {
                     || self.is(cursor + 1, "{")
                     || self.is(cursor + 1, "["))
             {
+                self.refuse_parameter_property(cursor);
                 self.remove(cursor, cursor + 1);
                 cursor += 1;
             }
@@ -1175,9 +1199,28 @@ mod tests {
     #[test]
     fn class_members_lose_annotations_and_modifiers() {
         check(
-            "class Box<T> implements Thing {\n  private value: T;\n  readonly size?: number = 1;\n  constructor(public name: string) { this.value = null; }\n  get(): T { return this.value; }\n}",
-            "class Box {\n value;\n size = 1;\n constructor( name ) { this.value = null; }\n get() { return this.value; }\n}",
+            "class Box<T> implements Thing {\n  private value: T;\n  readonly size?: number = 1;\n  constructor(name: string) { this.value = null; }\n  get(): T { return this.value; }\n}",
+            "class Box {\n value;\n size = 1;\n constructor(name ) { this.value = null; }\n get() { return this.value; }\n}",
         );
+    }
+
+    #[test]
+    fn a_parameter_property_is_refused_by_name() {
+        for (source, named) in [
+            (
+                "class Box {\n  constructor(public name: string) {}\n}",
+                "'public name' at byte 26 is not supported: removing its modifiers would drop the assignment to this.name;",
+            ),
+            (
+                "class Box { constructor(a: number, private readonly b: number) {} }",
+                "'private readonly b' at byte 35 is not supported: removing its modifiers would drop the assignment to this.b;",
+            ),
+        ] {
+            let message = strip_types(source).unwrap_err();
+            assert!(message.contains("parameter property"), "{message}");
+            assert!(message.contains(named), "{message}");
+        }
+        assert!(strip_types("function f(readonly: number) { return readonly; }").is_ok());
     }
 
     #[test]

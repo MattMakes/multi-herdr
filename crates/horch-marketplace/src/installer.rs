@@ -7,7 +7,7 @@ use crate::git::GitRunner;
 use crate::integrity::{check_relative_path, tree_digest};
 use crate::lockfile::{LockEntry, Lockfile};
 use crate::manifest::SkillManifest;
-use crate::model::{parse_source, GitRevision, SkillId, SkillSource, SkillVersion};
+use crate::model::{parse_locked_source, GitRevision, SkillId, SkillSource, SkillVersion};
 use crate::resolver::{ResolvedSource, Resolver};
 use crate::source::fetch;
 use crate::store::{Staging, Store};
@@ -189,7 +189,7 @@ impl Installer {
             .iter()
             .filter(|e| id.is_none_or(|id| e.id == id))
         {
-            let mut source = parse_source(&entry.source)?;
+            let mut source = parse_locked_source(&entry.source)?;
             if let Some(rev) = &entry.requested_revision {
                 source = source.with_revision(GitRevision::from_requested(rev)?);
             }
@@ -213,7 +213,7 @@ impl Installer {
     }
 
     fn rebuild(&self, entry: &LockEntry) -> Result<PathBuf> {
-        let source = pin(parse_source(&entry.source)?, entry);
+        let source = pin(parse_locked_source(&entry.source)?, entry);
         let prepared = self.prepare(&source, &mut None)?;
         check_prepared(&prepared, entry)?;
         let _guard = self.store.lock()?;

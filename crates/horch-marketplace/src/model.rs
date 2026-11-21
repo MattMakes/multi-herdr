@@ -140,6 +140,14 @@ impl SkillSource {
 }
 
 pub fn parse_source(spec: &str) -> Result<SkillSource> {
+    parse_spec(spec, true)
+}
+
+pub fn parse_locked_source(spec: &str) -> Result<SkillSource> {
+    parse_spec(spec, false)
+}
+
+fn parse_spec(spec: &str, url_names_revision: bool) -> Result<SkillSource> {
     let spec = spec.trim();
     if let Some(name) = spec.strip_prefix("bundled:") {
         parse_bundled(name)
@@ -151,7 +159,7 @@ pub fn parse_source(spec: &str) -> Result<SkillSource> {
         let (spec, subdir) = split_off(spec, spec.split_once('#'));
         let subdir = subdir.map(str::to_owned);
         match spec.split_once("://") {
-            Some((scheme, rest)) => parse_git_url(spec, scheme, rest, subdir),
+            Some((scheme, rest)) => parse_git_url(spec, scheme, rest, subdir, url_names_revision),
             None => parse_github(spec, subdir),
         }
     }
@@ -173,10 +181,12 @@ fn parse_git_url(
     scheme: &str,
     rest: &str,
     subdir: Option<String>,
+    names_revision: bool,
 ) -> Result<SkillSource> {
     check_url(spec)?;
     let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let (path, rev) = split_off(path, path.rsplit_once('@'));
+    let revision = path.rsplit_once('@').filter(|_| names_revision);
+    let (path, rev) = split_off(path, revision);
     Ok(SkillSource::Git {
         url: format!("{}://{authority}{path}", scheme.to_ascii_lowercase()),
         revision: GitRevision::from_spec(rev)?,

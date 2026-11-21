@@ -21,6 +21,11 @@ site.
   run (`crates/herdr-docs-sync/src/main.rs`). If any page failed, the run
   does not know what the site really contains, and deleting on that basis
   could destroy good docs.
+- A URL under `https://herdr.dev/docs/` that maps to no local file, such as
+  a nested page `docs/guides/install/`, is printed as not mirrored and also
+  blocks `prune_stale`, and so does a nested sitemap index. The mirror is
+  flat, so a site that nests its docs lists fewer pages than it has, and
+  pruning from that list would delete every page that moved.
 - `SitemapScan::finish` rejects XML that ends with elements still open. A
   truncated download parses as valid-so-far XML and yields a short page
   list, which the prune step would act on by deleting good local files.

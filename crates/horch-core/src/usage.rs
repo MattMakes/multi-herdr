@@ -79,6 +79,8 @@ impl Price {
     }
 }
 
+pub const BUILTIN_PRICES_AS_OF: &str = "2026-11-09";
+
 pub fn builtin_prices() -> BTreeMap<String, Price> {
     let mut m = BTreeMap::new();
     m.insert("claude-fable-5-2".into(), Price::new(8.0, 40.0, 0.20));
@@ -309,9 +311,11 @@ fn line_ts(record: &Value) -> String {
 }
 
 pub(crate) fn skill_loads_in(agent: &str, text: &str) -> Vec<SkillLoad> {
-    let read = skill_reader(agent);
-    let mut seen = BTreeSet::new();
     let mut out = Vec::new();
+    let Some(read) = skill_reader(agent) else {
+        return out;
+    };
+    let mut seen = BTreeSet::new();
     for line in text.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -329,17 +333,17 @@ pub(crate) fn skill_loads_in(agent: &str, text: &str) -> Vec<SkillLoad> {
 
 type SkillReader = fn(&Value, &str, &mut BTreeSet<String>) -> Vec<String>;
 
-fn skill_reader(agent: &str) -> SkillReader {
+fn skill_reader(agent: &str) -> Option<SkillReader> {
     match agent {
-        "claude" => claude_skills,
-        "codex" => codex_skills,
-        "pi" | "prime" => pi_skills,
-        _ => no_skills,
+        "claude" => Some(claude_skills),
+        "codex" => Some(codex_skills),
+        "pi" | "prime" => Some(pi_skills),
+        _ => None,
     }
 }
 
-fn no_skills(_: &Value, _: &str, _: &mut BTreeSet<String>) -> Vec<String> {
-    Vec::new()
+pub fn reads_skill_loads(agent: &str) -> bool {
+    skill_reader(agent).is_some()
 }
 
 fn claude_skills(record: &Value, _line: &str, seen: &mut BTreeSet<String>) -> Vec<String> {
@@ -894,6 +898,16 @@ mod tests {
         assert_eq!(names(skill_loads_in("pi", &pi)), ["tdd"; 2]);
         assert_eq!(names(skill_loads_in("prime", &pi)), ["tdd"; 2]);
         assert!(skill_loads_in("opencode", &pi).is_empty());
+    }
+
+    #[test]
+    fn skill_loads_are_read_only_for_the_harnesses_with_a_reader() {
+        for agent in ["claude", "codex", "pi", "prime"] {
+            assert!(reads_skill_loads(agent), "{agent}");
+        }
+        for agent in ["opencode", "antigravity", "none", "typo"] {
+            assert!(!reads_skill_loads(agent), "{agent}");
+        }
     }
 
     #[test]

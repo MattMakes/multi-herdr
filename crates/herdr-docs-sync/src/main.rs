@@ -81,7 +81,10 @@ fn run() -> Result<bool> {
     let cli = Cli::parse();
 
     println!("Discovering pages from {}...", cli.sitemap);
-    let pages = discover(&cli.sitemap)?;
+    let Discovered { pages, skipped } = discover(&cli.sitemap)?;
+    for url in &skipped {
+        eprintln!("  note: not mirrored: {url}");
+    }
     if pages.is_empty() {
         bail!(
             "the sitemap listed no pages under {}. Has the docs site moved?",
@@ -100,15 +103,28 @@ fn run() -> Result<bool> {
         counts[sync_page(doc, &cli.out, cli.dry_run) as usize] += 1;
     }
 
-    prune_stale(&cli, &pages, &mut counts)?;
+    prune_stale(&cli, &pages, &skipped, &mut counts)?;
     Ok(print_summary(&counts, cli.dry_run) == 0)
 }
 
-fn prune_stale(cli: &Cli, pages: &[DocPage], counts: &mut [usize; 5]) -> Result<()> {
+fn prune_stale(
+    cli: &Cli,
+    pages: &[DocPage],
+    skipped: &[String],
+    counts: &mut [usize; 5],
+) -> Result<()> {
     if cli.keep_stale {
         Ok(())
     } else if counts[Outcome::Failed as usize] > 0 {
         eprintln!("\n  skipping cleanup of stale files: some pages failed this run");
+        Ok(())
+    } else if !skipped.is_empty() {
+        eprintln!(
+            "\n  skipping cleanup of stale files: {} part(s) of the site under {} were not \
+             mirrored, so the page list is incomplete",
+            skipped.len(),
+            sitemap::DOCS_PREFIX
+        );
         Ok(())
     } else {
         remove_stale(cli, pages, counts)
@@ -152,22 +168,34 @@ fn print_summary(counts: &[usize; 5], dry_run: bool) -> usize {
     failed
 }
 
-fn discover(sitemap_url: &str) -> Result<Vec<DocPage>> {
-    let mut urls = Vec::new();
-    match sitemap::parse(&fetch(sitemap_url)?)? {
-        Sitemap::Urls(found) => urls.extend(found),
-        Sitemap::Index(children) => child_urls(children, &mut urls)?,
-    }
-    Ok(sitemap::doc_pages(&urls))
+struct Discovered {
+    pages: Vec<DocPage>,
+    skipped: Vec<String>,
 }
 
-fn child_urls(children: Vec<String>, urls: &mut Vec<String>) -> Result<()> {
+fn discover(sitemap_url: &str) -> Result<Discovered> {
+    let mut urls = Vec::new();
+    let mut skipped = Vec::new();
+    match sitemap::parse(&fetch(sitemap_url)?)? {
+        Sitemap::Urls(found) => urls.extend(found),
+        Sitemap::Index(children) => child_urls(children, &mut urls, &mut skipped)?,
+    }
+    skipped.extend(sitemap::unmirrored(&urls));
+    Ok(Discovered {
+        pages: sitemap::doc_pages(&urls),
+        skipped,
+    })
+}
+
+fn child_urls(
+    children: Vec<String>,
+    urls: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<()> {
     for child in children {
         match sitemap::parse(&fetch(&child)?)? {
             Sitemap::Urls(found) => urls.extend(found),
-            Sitemap::Index(_) => {
-                eprintln!("  note: skipping nested sitemap index at {child}")
-            }
+            Sitemap::Index(_) => skipped.push(format!("the nested sitemap index {child}")),
         }
     }
     Ok(())
@@ -387,7 +415,7 @@ mod tests {
     fn prune_stale_removes_files_whose_pages_are_gone() {
         let (tmp, cli) = stale_fixture(&[]);
         let mut counts = [0usize; 5];
-        prune_stale(&cli, &pages(&["install"]), &mut counts).unwrap();
+        prune_stale(&cli, &pages(&["install"]), &[], &mut counts).unwrap();
         assert!(!tmp.path().join("old.md").exists());
         assert!(tmp.path().join("install.md").exists());
         assert_eq!(counts[Outcome::Removed as usize], 1);
@@ -398,7 +426,17 @@ mod tests {
         let (tmp, cli) = stale_fixture(&[]);
         let mut counts = [0usize; 5];
         counts[Outcome::Failed as usize] = 1;
-        prune_stale(&cli, &pages(&["install"]), &mut counts).unwrap();
+        prune_stale(&cli, &pages(&["install"]), &[], &mut counts).unwrap();
+        assert!(tmp.path().join("old.md").exists());
+        assert_eq!(counts[Outcome::Removed as usize], 0);
+    }
+
+    #[test]
+    fn prune_stale_deletes_nothing_when_part_of_the_site_was_not_mirrored() {
+        let (tmp, cli) = stale_fixture(&[]);
+        let mut counts = [0usize; 5];
+        let skipped = ["https://herdr.dev/docs/guides/install/".to_string()];
+        prune_stale(&cli, &pages(&["install"]), &skipped, &mut counts).unwrap();
         assert!(tmp.path().join("old.md").exists());
         assert_eq!(counts[Outcome::Removed as usize], 0);
     }
@@ -407,13 +445,13 @@ mod tests {
     fn prune_stale_honours_keep_stale_and_dry_run() {
         let (tmp, keep) = stale_fixture(&["--keep-stale"]);
         let mut counts = [0usize; 5];
-        prune_stale(&keep, &pages(&["install"]), &mut counts).unwrap();
+        prune_stale(&keep, &pages(&["install"]), &[], &mut counts).unwrap();
         assert!(tmp.path().join("old.md").exists());
         assert_eq!(counts[Outcome::Removed as usize], 0);
 
         let (tmp, dry) = stale_fixture(&["--dry-run"]);
         let mut counts = [0usize; 5];
-        prune_stale(&dry, &pages(&["install"]), &mut counts).unwrap();
+        prune_stale(&dry, &pages(&["install"]), &[], &mut counts).unwrap();
         assert!(
             tmp.path().join("old.md").exists(),
             "dry run must not delete"
