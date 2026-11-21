@@ -369,6 +369,20 @@ fn g56_later_spawn_receives_recorded_fact() {
         "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\nfetch_period_s = 2\nworktree_list_period_s = 2\n",
     )
     .unwrap();
+    // The project declares its gates, so no hold of a missing fast gate
+    // stops the dispatch.
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {o:?}");
+    }
     let workspace = h.fleet_workspace();
     h.set("HORCH_WORKSPACE_ID", workspace);
     ok(&h, &["note", "--fact", "Use portable BSD sed"]);
