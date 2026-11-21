@@ -194,6 +194,15 @@ pub fn file_identity(meta: &Metadata) -> (u64, u64) {
     os::file_identity(meta)
 }
 
+/// The device and the inode of the file or folder of `meta`, as `stat`
+/// gives them.
+///
+/// Windows: [`NotSupported`]. Stable Rust gives no volume serial number and
+/// no file index, so this OS gives no identity of a folder.
+pub fn device_and_inode(meta: &Metadata) -> Result<(u64, u64), NotSupported> {
+    os::device_and_inode(meta)
+}
+
 /// An exclusive `flock` on the dir of a lock, held while 1 process breaks
 /// that lock. The kernel drops it when the process dies, so it is never
 /// left behind. The drop unlocks before the close: a child that another
