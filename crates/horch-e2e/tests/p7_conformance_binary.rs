@@ -20,14 +20,16 @@ use std::process::Output;
 
 use horch_core::fleetd::worker_profiles::application::conformance::read_conformance_json;
 use horch_core::fleetd::worker_profiles::application::health::unhealthy_profiles;
-use horch_core::fleetd::worker_profiles::domain::conformance::Verdict;
+use horch_core::fleetd::worker_profiles::domain::conformance::{
+    Verdict, CHECKS, FIRST_EVENT_LIMIT,
+};
 use horch_core::harness::HarnessKind;
 use horch_core::roster::Roster;
 use horch_core::taskledger::model::WorkerKind;
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, Store};
-use horch_e2e::harness::{fixtures, repo_root, wait_for_or, warm, Harness};
+use horch_e2e::harness::{fixtures, repo_root, wait_for_or, warm, Harness, DEADLINE};
 use rusqlite::Connection;
 
 /// The `fleet.toml` of the test: 1 pass each second.
@@ -448,6 +450,31 @@ fn ended_again(h: &Harness, kind: &str, cli: &str) -> Option<String> {
         .ok()
 }
 
+/// Wait until `f` gives a value, for [`DEADLINE`] after the bound of 1
+/// conformance suite: the runner ends each of its launches with no stream
+/// event after [`FIRST_EVENT_LIMIT`], so a loaded host can take that long
+/// for each check.
+fn until_suite_ends<T>(
+    what: &str,
+    mut f: impl FnMut() -> Option<T>,
+    context: impl Fn() -> String,
+) -> T {
+    let launches = u32::try_from(CHECKS.len()).unwrap();
+    let wait = DEADLINE + FIRST_EVENT_LIMIT * launches;
+    let end = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < end {
+        if let Some(v) = f() {
+            return v;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!(
+        "timed out after {} s waiting for {what}\n{}",
+        wait.as_secs(),
+        context()
+    );
+}
+
 /// The world of T-333: passes of `horch ledger watch --once` and no fleetd,
 /// so no command channel serves the fleet. Claude Code and Codex are
 /// conformant by design, and Antigravity has no sandbox on any OS (A37).
@@ -461,7 +488,7 @@ fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
     let h = world("p7-conformance-no-fleetd");
     let features = count(&h, "SELECT COUNT(*) FROM features");
     let mut passes = Vec::new();
-    wait_for_or(
+    until_suite_ends(
         "a pass that acted on a conformance run of each exec CLI",
         || {
             let o = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
@@ -517,7 +544,7 @@ fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
 
     h.serve_fleetd();
     for (cli, _, _, _) in &EXEC_CLIS[..2] {
-        let state = wait_for_or(
+        let state = until_suite_ends(
             &format!("a second ended conformance run of {cli}"),
             || ended_again(&h, "conformance", cli),
             || diagnostics(&h),
