@@ -5456,8 +5456,8 @@ fn feature_settings(
     let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
         return Ok(None);
     };
-    let settings = integration::features::project_settings(gw, &repo, &tip)
-        .map_err(|e| format!("feature {feature}: {e:#}"));
+    let settings = integration::features::project_settings(gw, &repo, &tip)?
+        .map_err(|e| format!("feature {feature}: {e}"));
     Ok(Some((run, settings)))
 }
 

@@ -379,7 +379,8 @@ fn record_moved(
         BranchFact::SeenTip(&tip),
         by_fleetd(&why),
     )?;
-    let settings = features::project_settings(r.git, &tips.repo, &tip)?;
+    let settings =
+        features::project_settings(r.git, &tips.repo, &tip)?.map_err(anyhow::Error::msg)?;
     let repo = tips.repo.to_string_lossy();
     remote::queue_push(r.jobs, tx, &repo, feature_id, &settings.remote, true, clock)?;
     Ok(())

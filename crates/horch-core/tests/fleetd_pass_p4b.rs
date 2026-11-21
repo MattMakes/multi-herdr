@@ -1097,3 +1097,47 @@ fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item(
         .unwrap();
     assert_eq!(items, 1, "1 row for the lock");
 }
+
+/// A git that fails to read the project file at a feature tip gives a
+/// failed line of the pass, and the pass does not skip the feature in
+/// silence. The first `cat-file` of the pass reads `fleet.toml` and hangs
+/// past its limit (T-369).
+#[test]
+fn a_failed_read_of_the_project_file_gives_a_failed_line_of_the_pass() {
+    let w = three_done();
+    let bin = hang_once_git(&w, "cat-file", ":");
+    let out = pass_with_git(&w, &bin);
+    assert!(
+        out.contains("PASS-FAILED [\"the gate holds: running git cat-file blob "),
+        "the gate holds name the failed read: {out}"
+    );
+    assert!(out.contains("ran past its time limit of 10 s"), "{out}");
+}
+
+/// A project file that does not parse at the feature tip keeps its path:
+/// the pass names it in 1 failed line of the feature, and the gate holds
+/// give no failed line for it (T-369).
+#[test]
+fn a_project_file_that_does_not_parse_gives_the_line_of_its_feature() {
+    let w = three_done();
+    let tip = w.commit_on(FEATURE_BRANCH, "fleet.toml", "remote = [\n");
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    let report = p.run(&mut conn).unwrap();
+    let parse: Vec<_> = report
+        .failed
+        .iter()
+        .filter(|l| l.contains(&format!("at {tip}")))
+        .collect();
+    assert_eq!(parse.len(), 1, "{:?}", report.failed);
+    assert!(parse[0].starts_with("feature "), "{:?}", report.failed);
+    assert!(
+        !report
+            .failed
+            .iter()
+            .any(|l| l.starts_with("the gate holds")),
+        "{:?}",
+        report.failed
+    );
+}
