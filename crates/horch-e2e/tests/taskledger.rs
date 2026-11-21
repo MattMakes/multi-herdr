@@ -1367,6 +1367,9 @@ fn the_whole_flow_on_the_fake_herdr() {
         // folder is gone, and C can start.
         let reviews = land_by_push(&h, "T-2", &a_tree);
         assert!(reviews > 0, "the code-sweep of A queued its reviews");
+        // FM-16: no orchestrator is woken for C. Under fleetd the wake
+        // `Tasks can start` is retired (wakes.rs, `startable_wake`): the
+        // dispatcher launches C with no command, in step 5.
         let events = json_of(&h, &["ledger", "events", "--json"]);
         assert!(
             !events
@@ -1380,6 +1383,9 @@ fn the_whole_flow_on_the_fake_herdr() {
         // 5. B's checks and the stall ladder; A's worker is untouched.
         stall_by_the_ladder(&h, &wb, bpid, bstart);
         assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
+        // FM-16: no orchestrator is woken for B. With no live
+        // sub-orchestrator of the feature, a stall writes no wake; the stall
+        // ladder of fleetd acts on the attempt (wakes.rs).
         let wakes = outbox(&h);
         assert!(
             !wakes.iter().any(|w| w.contains("shows no progress")),
@@ -1396,6 +1402,9 @@ fn the_whole_flow_on_the_fake_herdr() {
                 .into_iter()
                 .find(|w| w["task_id"] == t1["task"]["task_id"] && w["attempt"] == 2)
         });
+        // FM-16: fleetd launches attempt 2 of T-1 on a new worker; no
+        // `horch spawn --replaces` names the stalled one (wakes.rs,
+        // `spawn_advice`).
         assert_ne!(rb["worker_id"], wb.as_str(), "{rb}");
 
         // 6. No task is left for a spare worker of opus.

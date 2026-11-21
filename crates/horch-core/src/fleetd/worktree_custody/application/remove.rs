@@ -183,6 +183,8 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
         refusals,
     ) {
         Ok(Moved::Changed) => {
+            // A tree of landed work is `cleaned`, as the cleanup of today
+            // leaves it; a rescued tree keeps its status.
             tx.execute(
                 "UPDATE worktrees SET cleaned_at = ?2,
                     status = CASE WHEN status = ?3 THEN ?4 ELSE status END

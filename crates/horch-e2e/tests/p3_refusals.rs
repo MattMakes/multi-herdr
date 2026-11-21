@@ -783,6 +783,9 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
     let mut h = world("p3-ref-cleanup-refused");
     let (w, _task, path) = claimed(&h, "land,cleanup");
     commit_file(&h, &path, "feature.txt");
+    // The untracked file comes after today's checks of the cleanup step
+    // passed, as the remove job reads the HEAD of the tree: the guard of
+    // the job refuses it (RR-13).
     let late = path.join("late.txt");
     let hook = format!("echo late > '{}'", late.display());
     git_with_hook(&mut h, "--show-toplevel --verify HEAD", &late, &hook);
