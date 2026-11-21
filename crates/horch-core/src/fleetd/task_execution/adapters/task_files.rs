@@ -157,10 +157,6 @@ pub fn write_attempt_files_with(
 /// that its `START.md` holds.
 pub const FACTS_MD: &str = "facts.md";
 
-/// The section of the project facts of the attempt: the text of `path`
-/// when an earlier write made it, else the section of each fact of `list`
-/// that the SR-2 lint passes, written to `path` 1 time. A fact that the
-/// lint refuses is left out, so no fact stops the files of a task.
 fn facts_section(
     path: &Path,
     list: &[String],

@@ -391,9 +391,6 @@ fn g56_later_spawn_receives_recorded_fact() {
     let run = horch_e2e::ledger_seed::seed_run(&h, "facts", Some(1), "w1:p1");
     horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "sonnet");
     h.serve_fleetd();
-    // The last line of the prompt of a push attempt is the path of its
-    // START.md, and the facts section of that file holds the project facts
-    // and the host line.
     let tasks = h.fleet_root().join("tasks");
     let start = horch_e2e::harness::wait_for("the START.md prompt of the worker", || {
         h.calls_of("claude").into_iter().find_map(|c| {
