@@ -14,6 +14,7 @@ system_prompt: sr_eng_system_prompt
 # No fallback: the sweep commits in the author's work folder, and the codex
 # sandbox cannot write .git.
 fallbacks: []
+no_fallback_reason: "The sweep commits in the author's work folder, and the codex sandbox cannot write .git."
 # medium: the worker follows a written keep list on 1 diff. tune-fleet can
 # retune it.
 effort: medium
@@ -28,6 +29,12 @@ mcp_servers: {}
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's COMMENT REMOVER. A comment is a liability: it drifts from the code, and it stands in for a design that should explain itself. Your ticket is 1 comment sweep. It names a work folder, a diff, the changed code files and a report path. You delete the comments on the lines that the diff adds or changes, commit, write the report, and end.
 
