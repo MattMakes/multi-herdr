@@ -916,11 +916,13 @@ const LONG_PERIOD_S: u64 = 300;
 
 const WAKE_WAIT_S: u64 = 15;
 
+/// A commit that changes a row. SQLite writes no page for an UPDATE that
+/// keeps each value, so such a commit leaves `PRAGMA data_version` as it is.
 fn commit_to_ledger(h: &Harness) {
     Store::open(&db(h))
         .unwrap()
         .conn()
-        .execute("UPDATE runs SET check_every_s = check_every_s", [])
+        .execute("UPDATE runs SET check_every_s = check_every_s + 1", [])
         .unwrap();
 }
 
