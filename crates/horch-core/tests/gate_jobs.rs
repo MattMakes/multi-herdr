@@ -1253,7 +1253,7 @@ mod tree_end {
             "unique"
         );
 
-        assert_eq!(report.removals, [id.clone()], "{report:?}");
+        assert_eq!(report.removals, std::slice::from_ref(&id), "{report:?}");
         let ended = w.run(w.only_run(Kind::WorktreeRemove, &id));
         assert_eq!(ended.state, State::Passed, "{}", text(&ended));
         w.pass_at(0);
