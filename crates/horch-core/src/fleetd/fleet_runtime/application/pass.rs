@@ -886,10 +886,6 @@ impl<'a> Pass<'a> {
     /// The needs-you item of each `.lock` file that a git of part 3 left, in
     /// 1 short transaction after the git effects: the first write after the
     /// error of a git that ran outside a transaction (D254-F3).
-    ///
-    /// A crash of fleetd between the `SIGKILL` of the git and this commit
-    /// keeps the path in the lock journal, and the next pass opens the item
-    /// (D266-F3).
     fn record_locks_left(&self, conn: &mut Connection) -> Result<()> {
         if !jobs::locks_journaled(conn)? {
             return Ok(());

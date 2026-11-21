@@ -198,7 +198,6 @@ pub fn answered_of_tasks<'a>(
     Ok(out)
 }
 
-/// The text of the newest fact of `facts` about question `id` that holds 1.
 fn text_of(facts: &[Fact], id: &str) -> Option<String> {
     facts
         .iter()

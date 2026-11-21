@@ -621,8 +621,6 @@ pub fn locks_journaled(conn: &Connection) -> Result<bool> {
     }
 }
 
-/// The fleet root of the ledger of `conn`, whose run folder holds the lock
-/// journal. `None` for a ledger with no file: no git of a fleet wrote one.
 fn journal_root(conn: &Connection) -> Option<PathBuf> {
     executors::fleet_root(conn).ok()
 }
@@ -1901,8 +1899,6 @@ mod lock_journal_tests {
     const CHILD: &str = "HORCH_LOCK_JOURNAL_CHILD";
     const CHILD_ROOT: &str = "HORCH_LOCK_JOURNAL_CHILD_ROOT";
 
-    /// Not a test of its own: a fleetd that kills a git at its limit and
-    /// then crashes before any pass transaction.
     #[test]
     fn child_kills_a_git_and_crashes() {
         use crate::runtime::context::{EnvSource, ProcessEnv};
@@ -1932,11 +1928,6 @@ mod lock_journal_tests {
         store.immediate(|tx| record_locks_left(&ctx, tx)).unwrap();
     }
 
-    /// A restart of fleetd between the `SIGKILL` of a git and the next pass
-    /// transaction (D254-F3, D266-F3): the first pass of the new process
-    /// opens 1 item for the lock, the next pass opens no second one, and
-    /// the pass after the operator removes the file resolves it and empties
-    /// the journal.
     #[test]
     fn a_restart_between_the_kill_of_a_git_and_the_pass_keeps_its_lock_item() {
         let dir = tempfile::tempdir().unwrap();

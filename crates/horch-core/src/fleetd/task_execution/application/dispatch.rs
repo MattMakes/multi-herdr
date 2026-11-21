@@ -741,7 +741,6 @@ fn dispatched_worker(conn: &Connection, task_id: &str) -> Result<NewWorker> {
 
 // ─── the task files ─────────────────────────────────────────────────────
 
-/// The rows of 1 attempt that its task files need.
 struct AttemptRows {
     id: String,
     task: Task,
@@ -751,7 +750,6 @@ struct AttemptRows {
 }
 
 impl AttemptRows {
-    /// The rows of the attempt `attempt_id`.
     fn read(conn: &Connection, attempt_id: &str) -> Result<AttemptRows> {
         let (task_id, worker_id): (Option<String>, String) = conn
             .query_row(
@@ -773,8 +771,6 @@ impl AttemptRows {
         })
     }
 
-    /// The rows of each push attempt in `launching` with a task, in 3
-    /// statements on 1 snapshot for any count of attempts (D266-F4).
     fn launching_push(conn: &Connection) -> Result<Vec<AttemptRows>> {
         one_snapshot(conn, || {
             const LAUNCHING: &str =
@@ -826,7 +822,6 @@ impl AttemptRows {
         })
     }
 
-    /// The name `A<n>` of the attempt.
     fn attempt(&self) -> Result<String> {
         let n = self
             .n
@@ -835,10 +830,6 @@ impl AttemptRows {
     }
 }
 
-/// The facts of the files of the attempt of `rows` under `fleet_root`.
-/// The other rows of the task files of a set of attempts, by attempt or
-/// task id: a fixed count of statements for any count of attempts
-/// (D266-F4).
 struct FileRows {
     repairs: BTreeMap<String, String>,
     reviews: BTreeMap<String, String>,
@@ -890,7 +881,6 @@ impl FileRows {
         })
     }
 
-    /// The facts of the files of the attempt of `rows`.
     fn facts(&self, rows: &AttemptRows) -> Result<TaskFacts> {
         let task = rows.task.clone();
         let run = &rows.run;
@@ -971,8 +961,6 @@ pub fn write_task_files_in(
     write_with_facts(fleet_root, state_root, &rows.run, &facts, secrets)
 }
 
-/// Write the files of `facts`; the project facts come from the root of
-/// `run`, which the caller read, so this runs no SQL statement (D266-F4).
 fn write_with_facts(
     fleet_root: &Path,
     state_root: Option<&Path>,
@@ -1250,8 +1238,6 @@ mod missing_task_files_tests {
     use crate::taskledger::store::Store;
     use crate::taskledger::testing::count_statements;
 
-    /// A ledger with `n` leased tasks, each with 1 push attempt in
-    /// `launching` and no task files.
     fn ledger(n: usize) -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
@@ -1296,8 +1282,6 @@ mod missing_task_files_tests {
         (tmp, store)
     }
 
-    /// The statements of 1 write of the missing task files of `n` attempts
-    /// into a new fleet root, with the project facts of `state` or none.
     fn statements(n: usize, state: bool) -> usize {
         let (tmp, store) = ledger(n);
         let fleet_root = tmp.path().join("fleet");
@@ -1318,11 +1302,8 @@ mod missing_task_files_tests {
         count
     }
 
-    /// The statements of [`AttemptRows::launching_push`].
     const ATTEMPT_ROWS_READS: usize = 4;
 
-    /// Task `t0` has an answered question, 2 covered requirements and a
-    /// handed-off attempt; `t1` has a failed review verdict; `t2` has none.
     fn add_task_rows(store: &mut Store) {
         store
             .immediate(|tx| {

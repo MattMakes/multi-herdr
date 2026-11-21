@@ -772,9 +772,6 @@ impl CliWorktreeGit {
 /// `.lock` file that stays makes each later git that takes it fail with
 /// "File exists": the text names each file, so the cause is in the error.
 /// The `objects` folders hold no lock and are not read.
-/// The paths go to the lock journal of `fleet_root` before the error of
-/// the git returns, so a crash of fleetd after the stop keeps them
-/// (D266-F3).
 fn locks_left(fleet_root: &Path, writable: &[PathBuf]) -> String {
     let mut locks = Vec::new();
     let mut todo: Vec<PathBuf> = writable.to_vec();
@@ -820,8 +817,6 @@ pub fn lock_journal(fleet_root: &Path) -> PathBuf {
 
 const LOCK_JOURNAL: &str = "git-locks-left.json";
 
-/// Change the lock journal of `fleet_root` with `change`, under its folder
-/// lock: a job process and fleetd can write it at the same moment.
 fn change_journal(fleet_root: &Path, change: impl FnOnce(&mut BTreeSet<PathBuf>)) -> Result<()> {
     let run = fleet_root.join("run");
     private_folder(&run)?;
@@ -855,7 +850,6 @@ fn read_journal(fleet_root: &Path) -> Result<Vec<PathBuf>> {
     }
 }
 
-/// Add `locks` to the lock journal of `fleet_root`.
 fn journal_locks(fleet_root: &Path, locks: impl IntoIterator<Item = PathBuf>) -> Result<()> {
     change_journal(fleet_root, |paths| paths.extend(locks))
 }
@@ -1348,9 +1342,6 @@ pub(crate) mod tests {
         assert!(!git_dir.join("refs/heads/x.lock").exists());
     }
 
-    /// Run a git of the fleet at `fleet_root` in a new repository in `dir`
-    /// that holds `refs/heads/x.lock`, ignores `SIGTERM` and is killed at its
-    /// limit of 1 s. Gives the lock file, which stays.
     #[cfg(unix)]
     pub(crate) fn kill_a_git_that_holds_a_lock(dir: &Path, fleet_root: &Path) -> PathBuf {
         let (repo, tip) = one_commit(dir);
@@ -1368,9 +1359,6 @@ pub(crate) mod tests {
         lock
     }
 
-    /// The lock file of a killed git is in the owner-only lock journal of
-    /// the fleet when its error returns, and leaves it only by
-    /// [`forget_lock_left`] (D266-F3).
     #[cfg(unix)]
     #[test]
     fn a_git_killed_at_its_limit_journals_its_lock_before_its_error_returns() {
