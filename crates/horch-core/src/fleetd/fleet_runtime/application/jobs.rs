@@ -415,7 +415,7 @@ fn note_group_left(
 const GROUP_TOLD: &str = "the group of the abandoned run still runs past its time limit \
      and the stop grace; the operator got 1 needs-you item";
 
-/// A [`GROUP_LEFT`] notice of an abandoned git writer whose group still
+/// A `GROUP_LEFT` notice of an abandoned git writer whose group still
 /// has a member that runs with its recorded start time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupLeftHold {
@@ -433,7 +433,7 @@ pub struct GroupLeftHold {
 }
 
 impl GroupLeftHold {
-    /// The members as "pid <pid> (start time <start>)", joined by ", ".
+    /// The members as `pid <pid> (start time <start>)`, joined by ", ".
     pub fn members_text(&self) -> String {
         self.members
             .iter()
@@ -443,7 +443,7 @@ impl GroupLeftHold {
     }
 }
 
-/// The [`GROUP_LEFT`] notices of git writers whose group still has a member
+/// The `GROUP_LEFT` notices of git writers whose group still has a member
 /// that runs with its recorded start time, of the repository `repo` or of
 /// each repository, in 1 read.
 pub fn group_left_holds(conn: &Connection, repo: Option<&str>) -> Result<Vec<GroupLeftHold>> {
@@ -900,7 +900,7 @@ pub fn git_writers_running(conn: &Connection, repo: &str) -> Result<Vec<JobRow>>
 
 /// Whether a run of a git writer of the repository `repo` is `running`,
 /// or a member of the group of an abandoned one still runs
-/// ([`note_group_left`]) ("1 git writer for each repository").
+/// (`note_group_left`) ("1 git writer for each repository").
 pub fn git_writer_busy(conn: &Connection, repo: &str) -> Result<bool> {
     Ok(!git_writers_running(conn, repo)?.is_empty()
         || !group_left_holds(conn, Some(repo))?.is_empty())
@@ -1005,7 +1005,7 @@ fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
 /// Stop the process group of a run past its deadline (part 3 of a pass),
 /// only while its leader runs with the recorded start and leads the group
 /// (D242-F1). With the leader gone, no signal goes out: the next pass sees
-/// the job process gone, and [`note_group_left`] records the members.
+/// the job process gone, and `note_group_left` records the members.
 /// Each signal goes to a process of a snapshot of the group, by its pid and
 /// start time, never to the group id ([`effects::stop_leader_group`],
 /// D254-F1). Before the kill, each process of the group gets a stop that it

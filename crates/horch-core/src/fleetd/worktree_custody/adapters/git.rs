@@ -845,7 +845,7 @@ static GIT_GROUP: AtomicI32 = AtomicI32::new(0);
 static OWN_GROUP: AtomicI32 = AtomicI32::new(0);
 
 /// Make each later sandboxed git call of this job process end with the
-/// stop of the job (see [`GIT_GROUP`]). It acts only when this process
+/// stop of the job (see `GIT_GROUP`). It acts only when this process
 /// leads its group, as `horch job run` does. A process that does not (a
 /// test that runs an executor) shares the group of its starter, which a
 /// kill must not reach.
