@@ -402,12 +402,23 @@ impl Drop for DirLockGuard {
 }
 
 fn release_lock(path: &Path, nonce: Option<&str>, guard_wait: Duration) {
+    // The release holds the breaker guard, as a breaker does: between a
+    // breaker's stale check and its removal, a holder that outlived
+    // `stale_after` cannot release and let a next holder take the lock
+    // that the breaker then removes.
+    //
+    // A release that does not get the guard in `guard_wait` removes
+    // nothing: the guard holder may be a breaker that judged this lock and
+    // will remove it. The release marks the lock released instead, and a
+    // taker breaks a marked lock under the guard (see [`stale_lock`]).
     let Some(_breakers_excluded) = wait_for_guard(path, guard_wait) else {
         if let Some(nonce) = nonce {
             mark_released(path, nonce);
         }
         return;
     };
+    // A holder that outlived `stale_after` may have had its lock broken
+    // and taken by another process; that lock is not ours to remove.
     if let Some(nonce) = nonce {
         if read_owner(path).is_none_or(|o| o.nonce != nonce) {
             return;
@@ -420,6 +431,10 @@ fn release_lock(path: &Path, nonce: Option<&str>, guard_wait: Duration) {
     );
 }
 
+/// Mark the lock at `path` released by the holder of `nonce`, in 1 atomic
+/// create. The lock at `path` may be another holder's by now; the mark then
+/// names a nonce that is not its owner's, and [`stale_lock`] ignores it.
+/// The mark goes with that lock when its holder releases it.
 fn mark_released(path: &Path, nonce: &str) {
     let _ = create_new_file(&released_mark(path, nonce), PRIVATE_FILE);
 }
@@ -428,6 +443,9 @@ fn released_mark(path: &Path, nonce: &str) -> PathBuf {
     path.join(format!("released-{nonce}"))
 }
 
+/// The [`BreakerGuard`] of `lock`. A breaker holds it for microseconds, so
+/// this waits up to `wait` ([`BREAKER_STALE_AFTER`], 5 s, outside the
+/// tests); then `None`.
 fn wait_for_guard(lock: &Path, wait: Duration) -> Option<BreakerGuard> {
     let start = Instant::now();
     loop {
@@ -451,6 +469,10 @@ fn read_owner(lock: &Path) -> Option<LockOwner> {
 /// The directory is renamed first, in 1 atomic step, and the owner is read
 /// from the renamed directory. A lock that another process took at `path`
 /// after the caller's check fails `is_ours` and is put back, not removed.
+///
+/// With a working guard the put-back never runs: every remover (a breaker,
+/// a release) holds the guard, and a publisher only fills an empty `path`.
+/// So under the guard the lock at `path` is the one the caller checked.
 ///
 /// Limits: the [`BreakerGuard`] holds nothing on Windows and at a `flock`
 /// error. Then a third process can publish at `path` before the put-back.
