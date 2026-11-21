@@ -386,15 +386,15 @@ fn new_tree(
 /// transaction opens. A task whose base is not known, or whose base branch
 /// has no tip, gets no tip: its bind fails with the cause.
 pub fn read_base_tips(conn: &Connection, gw: &dyn IntegrationGitGateway) -> Result<BaseTips> {
+    let rows = ReadyRows::read(conn)?;
     let mut bases = BTreeSet::new();
-    for id in task_ids(conn, &[TaskStatus::Ready])? {
-        let task = tasks::get(conn, &id)?;
-        if !task.uses_worktree() || task_tree(conn, &id)?.is_some() {
+    for task in &rows.tasks {
+        if !task.uses_worktree() || rows.trees.contains_key(&task.task_id) {
             continue;
         }
-        let run = runs::get(conn, &task.run_id)?;
-        if let Ok(base) = tree_base(conn, &run, &task) {
-            bases.insert((run.project_root, base));
+        let run = rows.run(&task.run_id)?;
+        if let Some(base) = rows.tree_base(run, task) {
+            bases.insert((run.project_root.clone(), base));
         }
     }
     let mut tips = BaseTips::new();
@@ -425,6 +425,7 @@ fn slug(title: &str) -> String {
 // ─── the choice ─────────────────────────────────────────────────────────
 
 /// The ids of the tasks in the states `states`, in seq order of each run.
+#[cfg(test)]
 fn task_ids(conn: &Connection, states: &[TaskStatus]) -> Result<Vec<String>> {
     let words: Vec<String> = states.iter().map(|s| word(*s)).collect();
     let sql = format!(
@@ -438,23 +439,6 @@ fn task_ids(conn: &Connection, states: &[TaskStatus]) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// The project of each run, read once.
-struct Projects<'c> {
-    conn: &'c Connection,
-    by_run: BTreeMap<String, String>,
-}
-
-impl Projects<'_> {
-    fn of(&mut self, run_id: &str) -> Result<String> {
-        if let Some(p) = self.by_run.get(run_id) {
-            return Ok(p.clone());
-        }
-        let project = runs::get(self.conn, run_id)?.project_id;
-        self.by_run.insert(run_id.to_string(), project.clone());
-        Ok(project)
-    }
-}
-
 /// The persona of the next attempt of `t`: `claimable_by`, else its
 /// primary.
 fn persona_of(t: &Task) -> String {
@@ -464,31 +448,204 @@ fn persona_of(t: &Task) -> String {
         .unwrap_or_default()
 }
 
-fn ready_task(
+/// The facts of a run that the choice and a new tree read.
+struct RunFacts {
+    project_id: String,
+    project_root: String,
+    run_branch: Option<String>,
+    base_branch: Option<String>,
+}
+
+/// The live tree of a task: its newest row that is not `removed` and that
+/// no drop or cleanup ended ([`task_tree`]).
+struct LiveTree {
+    orphaned: bool,
+    branch: String,
+}
+
+/// The rows of the ready tasks, read in a fixed number of statements for
+/// any count of ready tasks (A32: no statement for each row of a pass).
+struct ReadyRows {
+    /// The ready tasks, in seq order of each run.
+    tasks: Vec<Task>,
+    /// Each ready task whose cancel waits for the stop of an attempt.
+    cancelled: BTreeSet<String>,
+    /// The `parked` idea of each ready task of a parked idea.
+    parked: BTreeMap<String, String>,
+    own: BTreeMap<String, Vec<String>>,
+    /// The first attempt that is not ended of each ready task.
+    open: BTreeMap<String, String>,
+    /// The live tree of each ready task and of each task that a ready task
+    /// judges.
+    trees: BTreeMap<String, LiveTree>,
+    runs: BTreeMap<String, RunFacts>,
+}
+
+impl ReadyRows {
+    fn read(conn: &Connection) -> Result<ReadyRows> {
+        let ready = word(TaskStatus::Ready);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT * FROM tasks WHERE status = {ready} ORDER BY run_id, seq"
+        ))?;
+        let tasks = stmt
+            .query_map([], Task::from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let cancelled = pairs(
+            conn,
+            &format!(
+                "SELECT task_id, cancel_requested FROM tasks
+                 WHERE status = {ready} AND cancel_requested IS NOT NULL"
+            ),
+            [],
+        )?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+        let parked = pairs(
+            conn,
+            &format!(
+                "SELECT t.task_id, i.id FROM tasks t JOIN ideas i ON i.id = t.idea_id
+                 WHERE t.status = {ready} AND i.state = ?1"
+            ),
+            [PARKED],
+        )?
+        .into_iter()
+        .collect();
+        let mut own: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (task_id, path) in pairs(
+            conn,
+            &format!(
+                "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
+                 WHERE t.status = {ready} AND f.mode = ?1 ORDER BY f.task_id, f.path"
+            ),
+            [FileMode::Own.as_str()],
+        )? {
+            own.entry(task_id).or_default().push(path);
+        }
+        let mut open = BTreeMap::new();
+        for (task_id, id) in pairs(
+            conn,
+            &format!(
+                "SELECT a.task_id, a.id FROM attempts a JOIN tasks t ON t.task_id = a.task_id
+                 WHERE t.status = {ready} AND a.state <> 'ended' ORDER BY a.rowid"
+            ),
+            [],
+        )? {
+            open.entry(task_id).or_insert(id);
+        }
+        Ok(ReadyRows {
+            tasks,
+            cancelled,
+            parked,
+            own,
+            open,
+            trees: live_trees(conn)?,
+            runs: ready_runs(conn)?,
+        })
+    }
+
+    fn run(&self, run_id: &str) -> Result<&RunFacts> {
+        self.runs
+            .get(run_id)
+            .with_context(|| format!("no run {run_id}"))
+    }
+
+    /// The base branch of a new tree of `task` ([`tree_base`]); `None`
+    /// when it is not known.
+    fn tree_base(&self, run: &RunFacts, task: &Task) -> Option<String> {
+        match judged_task(&task.kind, task.parent_task_id.as_deref()) {
+            Some(judged) => self.trees.get(judged).map(|t| t.branch.clone()),
+            None => run.run_branch.clone().or(run.base_branch.clone()),
+        }
+    }
+
+    fn ready_task(&mut self, t: Task, target: Option<&str>) -> Result<ReadyTask> {
+        Ok(ReadyTask {
+            short: t.short(),
+            project: self.run(&t.run_id)?.project_id.clone(),
+            persona: persona_of(&t),
+            target: target == Some(t.task_id.as_str()),
+            shared_checkout: !t.uses_worktree(),
+            review: t.is_review(),
+            own: self.own.remove(&t.task_id).unwrap_or_default(),
+            open_attempt: self.open.remove(&t.task_id),
+            tree_orphaned: self.trees.get(&t.task_id).is_some_and(|r| r.orphaned),
+            priority: t.priority,
+            seq: t.seq,
+            not_before: t.not_before,
+            parallel: t.parallel,
+            run_id: t.run_id,
+            task_id: t.task_id,
+        })
+    }
+}
+
+/// The 2 text columns of each row of `sql`.
+fn pairs(
     conn: &Connection,
-    projects: &mut Projects<'_>,
-    t: Task,
-    target: Option<&str>,
-) -> Result<ReadyTask> {
-    let tree_orphaned =
-        task_tree(conn, &t.task_id)?.is_some_and(|r| r.state == WorktreeState::Orphaned);
-    Ok(ReadyTask {
-        short: t.short(),
-        project: projects.of(&t.run_id)?,
-        persona: persona_of(&t),
-        target: target == Some(t.task_id.as_str()),
-        shared_checkout: !t.uses_worktree(),
-        review: t.is_review(),
-        own: tasks::files(conn, &t.task_id, FileMode::Own)?,
-        open_attempt: open_attempt(conn, &t.task_id)?,
-        tree_orphaned,
-        priority: t.priority,
-        seq: t.seq,
-        not_before: t.not_before,
-        parallel: t.parallel,
-        run_id: t.run_id,
-        task_id: t.task_id,
-    })
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map(params, |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// The live tree of each ready task and of each task that a ready task
+/// judges, in 1 statement. SQLite takes the bare columns from the row of
+/// `max(rowid)`: the newest row, as [`trees::of_task`] reads it.
+fn live_trees(conn: &Connection) -> Result<BTreeMap<String, LiveTree>> {
+    let ready = word(TaskStatus::Ready);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT w.task_id, w.status, w.state, w.branch, max(w.rowid) FROM worktrees w
+         WHERE w.state <> 'removed' AND w.task_id IN (
+             SELECT task_id FROM tasks WHERE status = {ready}
+             UNION SELECT parent_task_id FROM tasks WHERE status = {ready})
+         GROUP BY w.task_id"
+    ))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = BTreeMap::new();
+    for (task_id, status, state, branch) in rows {
+        if WORKTREES_GONE.contains(&WorktreeStatus::parse(&status)?) {
+            continue;
+        }
+        let orphaned = WorktreeState::parse(&state)? == WorktreeState::Orphaned;
+        out.insert(task_id, LiveTree { orphaned, branch });
+    }
+    Ok(out)
+}
+
+/// The facts of each run of a ready task, in 1 statement.
+fn ready_runs(conn: &Connection) -> Result<BTreeMap<String, RunFacts>> {
+    let ready = word(TaskStatus::Ready);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.run_id, r.project_id, p.root, r.run_branch, r.base_branch
+         FROM runs r JOIN projects p ON p.project_id = r.project_id
+         WHERE r.run_id IN (SELECT run_id FROM tasks WHERE status = {ready})"
+    ))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            RunFacts {
+                project_id: r.get(1)?,
+                project_root: r.get(2)?,
+                run_branch: r.get(3)?,
+                base_branch: r.get(4)?,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// 2 statements for any count of tasks: a bind compares its Own files with
@@ -538,26 +695,25 @@ pub fn choices(
     sandboxes: &dyn CheckSandboxes,
     target: Option<&str>,
 ) -> Result<Vec<Choice>> {
-    let mut projects = Projects {
-        conn,
-        by_run: BTreeMap::new(),
-    };
+    let mut rows = ReadyRows::read(conn)?;
     let mut ready = Vec::new();
     let mut parked = Vec::new();
-    for id in task_ids(conn, &[TaskStatus::Ready])? {
+    for t in std::mem::take(&mut rows.tasks) {
         // Its cancel waits for the stop of an attempt: it binds no more.
-        if tasks::cancel_requested(conn, &id)?.is_some() {
+        if rows.cancelled.contains(&t.task_id) {
             continue;
         }
         // No new task of a parked idea is dispatched (MAP.md of
         // fleetd-p6, Q10).
-        if let Some(idea) = parked_idea(conn, &id)? {
-            let hold = Hold::IdeaParked { idea };
-            parked.push(Choice::Held { task_id: id, hold });
+        if let Some(idea) = rows.parked.get(&t.task_id) {
+            let hold = Hold::IdeaParked { idea: idea.clone() };
+            parked.push(Choice::Held {
+                task_id: t.task_id,
+                hold,
+            });
             continue;
         }
-        let t = tasks::get(conn, &id)?;
-        ready.push(ready_task(conn, &mut projects, t, target)?);
+        ready.push(rows.ready_task(t, target)?);
     }
     let running = running_tasks(conn)?;
     let mut holds = holds.clone();
@@ -575,15 +731,6 @@ pub fn choices(
     }
     parked.extend(choose(&ready, &running, &holds));
     Ok(parked)
-}
-
-/// The idea of task `task_id` when that idea is `parked`.
-fn parked_idea(conn: &Connection, task_id: &str) -> Result<Option<String>> {
-    let Some(id) = store::idea_of_task(conn, task_id)? else {
-        return Ok(None);
-    };
-    let parked = ideas_store::idea(conn, &id)?.is_some_and(|i| i.state == PARKED);
-    Ok(parked.then_some(id))
 }
 
 /// 1 dispatch pass of fleetd, in the open transaction `tx`: bind each
