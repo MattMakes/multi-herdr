@@ -491,15 +491,41 @@ fn ready_task(
     })
 }
 
-fn running_task(conn: &Connection, t: Task) -> Result<RunningTask> {
-    Ok(RunningTask {
-        short: t.short(),
-        shared_checkout: !t.uses_worktree(),
-        review: t.is_review(),
-        own: tasks::files(conn, &t.task_id, FileMode::Own)?,
-        parallel: t.parallel,
-        run_id: t.run_id,
-    })
+/// Each task that holds its paths, in seq order of each run, with its
+/// Own files. 2 statements for any count of tasks (T-292): a bind
+/// compares its Own files with each of them, so this read stays whole.
+fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
+    let words: Vec<String> = HOLDING.iter().map(|s| word(*s)).collect();
+    let holding = words.join(", ");
+    let mut own: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
+         WHERE t.status IN ({holding}) AND f.mode = ?1 ORDER BY f.task_id, f.path"
+    ))?;
+    let rows = stmt.query_map([FileMode::Own.as_str()], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (task_id, path) = row?;
+        own.entry(task_id).or_default().push(path);
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT * FROM tasks WHERE status IN ({holding}) ORDER BY run_id, seq"
+    ))?;
+    let tasks = stmt
+        .query_map([], Task::from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(tasks
+        .into_iter()
+        .map(|t| RunningTask {
+            short: t.short(),
+            shared_checkout: !t.uses_worktree(),
+            review: t.is_review(),
+            own: own.remove(&t.task_id).unwrap_or_default(),
+            parallel: t.parallel,
+            run_id: t.run_id,
+        })
+        .collect())
 }
 
 /// The choice for each ready task now, in dispatch order. `holds` are the
@@ -534,10 +560,7 @@ pub fn choices(
         let t = tasks::get(conn, &id)?;
         ready.push(ready_task(conn, &mut projects, t, target)?);
     }
-    let mut running = Vec::new();
-    for id in task_ids(conn, &HOLDING)? {
-        running.push(running_task(conn, tasks::get(conn, &id)?)?);
-    }
+    let running = running_tasks(conn)?;
     let mut holds = holds.clone();
     // A task of an unhealthy profile waits: no fallback applies (MAP.md
     // of fleetd-p7, Q15).
@@ -746,4 +769,152 @@ pub fn write_missing_task_files(
         out.push((id, written));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod running_tasks_tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+
+    /// A ledger with 1 run and the tasks `tasks`: (id, status, kind,
+    /// worktree mode, parallel, Own files, do-not-touch files).
+    type Row<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        bool,
+        &'a [&'a str],
+        &'a [&'a str],
+    );
+
+    fn ledger(tasks: &[Row<'_>]) -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at,
+                         max_attempts)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now', 5);",
+                )?;
+                let idea = crate::taskledger::schema::run_idea(tx, "r1", "now", true)?;
+                for (id, status, kind, mode, parallel, own, dnt) in tasks {
+                    tx.execute(
+                        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                             claimable_by, status, kind, worktree_mode, parallel, created_at, updated_at, idea_id)
+                         VALUES (?1, 'r1', (SELECT count(*) + 1 FROM tasks), ?1, 'a.md', 'opus',
+                             'opus', ?2, ?3, ?4, ?5, 'now', 'now', ?6)",
+                        params![id, status, kind, mode, parallel, idea],
+                    )?;
+                    for (paths, m) in [(own, "own"), (dnt, "do_not_touch")] {
+                        for p in paths.iter() {
+                            tx.execute(
+                                "INSERT INTO task_files (task_id, path, mode) VALUES (?1, ?2, ?3)",
+                                params![id, p, m],
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    /// The read of each task, 1 by 1, as `choices` did it before T-292.
+    fn running_one_by_one(conn: &Connection) -> Vec<RunningTask> {
+        task_ids(conn, &HOLDING)
+            .unwrap()
+            .into_iter()
+            .map(|id| {
+                let t = tasks::get(conn, &id).unwrap();
+                RunningTask {
+                    short: t.short(),
+                    shared_checkout: !t.uses_worktree(),
+                    review: t.is_review(),
+                    own: tasks::files(conn, &t.task_id, FileMode::Own).unwrap(),
+                    parallel: t.parallel,
+                    run_id: t.run_id,
+                }
+            })
+            .collect()
+    }
+
+    /// The set read gives the tasks of the read of each task, with the
+    /// same Own files: the bind compare of Own files does not change.
+    #[test]
+    fn running_tasks_gives_the_rows_of_the_read_of_each_task() {
+        let (_tmp, store) = ledger(&[
+            (
+                "a",
+                "running",
+                "work",
+                "worktree",
+                true,
+                &["src/b.rs", "src/a.rs"],
+                &["x"],
+            ),
+            ("b", "ready", "work", "worktree", true, &["src/a.rs"], &[]),
+            ("c", "leased", "review", "shared", false, &[], &["src/a.rs"]),
+            ("d", "verifying", "work", "worktree", false, &["d.rs"], &[]),
+            ("e", "done", "work", "worktree", true, &["e.rs"], &[]),
+            (
+                "f",
+                "stalled",
+                "work",
+                "shared",
+                true,
+                &["f/1", "f/2", "f/0"],
+                &[],
+            ),
+            ("g", "blocked_on_user", "work", "worktree", true, &[], &[]),
+            (
+                "h",
+                "waiting_quota",
+                "review",
+                "worktree",
+                true,
+                &["h.rs"],
+                &["h.rs"],
+            ),
+        ]);
+        let set = running_tasks(store.conn()).unwrap();
+        assert_eq!(set, running_one_by_one(store.conn()));
+        let shorts: Vec<_> = set.iter().map(|t| t.short.as_str()).collect();
+        assert_eq!(shorts, ["T-1", "T-3", "T-4", "T-6", "T-7", "T-8"]);
+        assert_eq!(set[0].own, ["src/a.rs", "src/b.rs"]);
+    }
+
+    /// T-292, by count: the read of 3 running tasks and of 300 runs the
+    /// same statements.
+    #[test]
+    fn running_tasks_runs_the_same_statements_for_3_and_300_tasks() {
+        let count = |n: usize| {
+            let ids: Vec<String> = (0..n).map(|i| format!("t{i}")).collect();
+            let rows: Vec<Row<'_>> = ids
+                .iter()
+                .map(|id| {
+                    (
+                        id.as_str(),
+                        "running",
+                        "work",
+                        "worktree",
+                        true,
+                        &["a.rs"][..],
+                        &[][..],
+                    )
+                })
+                .collect();
+            let (_tmp, store) = ledger(&rows);
+            let (read, statements) =
+                crate::taskledger::testing::count_statements(store.conn(), || {
+                    running_tasks(store.conn()).unwrap()
+                });
+            assert_eq!(read.len(), n);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }
