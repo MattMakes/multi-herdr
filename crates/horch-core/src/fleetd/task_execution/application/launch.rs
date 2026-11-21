@@ -584,7 +584,7 @@ mod tests {
     impl World {
         fn new() -> World {
             let tmp = tempfile::tempdir().unwrap();
-            let top = tmp.path().canonicalize().unwrap();
+            let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
             let root = top.join("repo");
             let fleet_root = top.join("fleet");
             std::fs::create_dir_all(&root).unwrap();

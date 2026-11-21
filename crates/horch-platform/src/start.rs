@@ -31,17 +31,23 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 pub struct Command(std::process::Command);
 
 impl Command {
+    /// A verbatim path (`\\?\C:\dir` on Windows) goes to the child in its
+    /// plain form, as [`crate::path::for_child`] gives it: git and other
+    /// programs refuse the verbatim form.
     pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
-        self.0.arg(arg);
+        self.0.arg(crate::os::path::for_child(arg.as_ref()));
         self
     }
 
+    /// Each argument as [`arg`](Self::arg) gives it.
     pub fn args<I, S>(&mut self, args: I) -> &mut Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.0.args(args);
+        for arg in args {
+            self.arg(arg);
+        }
         self
     }
 
@@ -89,8 +95,10 @@ impl Command {
         self.0.get_current_dir()
     }
 
+    /// A verbatim folder goes to the child in its plain form, as
+    /// [`arg`](Self::arg).
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
-        self.0.current_dir(dir);
+        self.0.current_dir(crate::path::for_child(dir.as_ref()));
         self
     }
 
