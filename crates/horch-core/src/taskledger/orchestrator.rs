@@ -171,6 +171,25 @@ pub fn claim(
     pane: Option<&str>,
     probe: &dyn Probe,
 ) -> Result<Claimed> {
+    claim_on(
+        tx,
+        run_id,
+        workspace,
+        pane,
+        crate::runtime::Backend::Herdr,
+        probe,
+    )
+}
+
+/// [`claim`] on an explicit pane host `backend`.
+pub fn claim_on(
+    tx: &Transaction,
+    run_id: &str,
+    workspace: &str,
+    pane: Option<&str>,
+    backend: crate::runtime::Backend,
+    probe: &dyn Probe,
+) -> Result<Claimed> {
     let run = runs::get(tx, run_id)?;
     if run.status != RunStatus::Active.as_str() {
         return Ok(Claimed::Unchanged);
@@ -194,7 +213,7 @@ pub fn claim(
         "UPDATE runs SET workspace_id = ?2, orchestrator_stopped_at = NULL WHERE run_id = ?1",
         params![run_id, workspace],
     )?;
-    let orch = live_orchestrator(tx, &run, workspace, pane)?;
+    let orch = live_orchestrator(tx, &run, workspace, pane, backend)?;
     let mut changes = Vec::new();
     if run.workspace_id.as_deref() != Some(workspace) {
         changes.push(format!(
@@ -256,6 +275,7 @@ fn live_orchestrator(
     run: &runs::Run,
     workspace: &str,
     pane: Option<&str>,
+    backend: crate::runtime::Backend,
 ) -> Result<String> {
     let current = run
         .orchestrator_worker_id
@@ -268,9 +288,9 @@ fn live_orchestrator(
         .filter(|o| o.status().is_ok_and(|s| s.is_live()))
     {
         tx.execute(
-            "UPDATE workers SET workspace_id = ?2, pane_id = coalesce(?3, pane_id)
+            "UPDATE workers SET workspace_id = ?2, pane_id = coalesce(?3, pane_id), backend = ?4
              WHERE worker_id = ?1",
-            params![orch.worker_id, workspace, pane],
+            params![orch.worker_id, workspace, pane, backend.as_str()],
         )?;
         return Ok(orch.worker_id.clone());
     }
@@ -284,6 +304,7 @@ fn live_orchestrator(
             workspace_id: Some(workspace.to_string()),
             pane_id: pane.map(str::to_string),
             previous_worker_id: current.map(|o| o.worker_id),
+            backend,
             ..Default::default()
         },
     )?;
@@ -560,6 +581,7 @@ fn dead(
             role: Some("orchestrator".into()),
             workspace_id: Some(workspace.to_string()),
             previous_worker_id: Some(orch.worker_id.clone()),
+            backend: orch.backend,
             ..Default::default()
         },
     )?;

@@ -143,6 +143,7 @@ impl World {
             workspace: &self.fake,
             mailbox: &self.mailbox,
             tile: &tile,
+            open_pane: None,
             ledger_worker: None,
         };
         service.spawn(plan, role).map(|o| o.pane)

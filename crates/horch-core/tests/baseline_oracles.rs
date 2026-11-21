@@ -262,6 +262,11 @@ impl World {
             ("HORCH_DATA_DIR", Some(root.join("data"))),
             ("XDG_STATE_HOME", None),
             ("XDG_DATA_HOME", None),
+            ("HERDR_PANE_ID", None),
+            ("HC_TERMINAL_ID", None),
+            ("HC_SCOPE", None),
+            ("HC_TERMINAL_SOCKET", None),
+            ("HORCH_BACKEND", None),
         ];
         for (key, value) in roots {
             saved.push((key, std::env::var_os(key)));
@@ -472,6 +477,22 @@ fn oracle_launch_matches() {
             &format!("launch/{name}.json"),
             &pretty(&launch_oracle(&world, t)),
         );
+    }
+}
+
+#[test]
+fn oracle_hc_launch_matches() {
+    let world = World::new();
+    std::env::set_var("HORCH_BACKEND", "hc");
+    std::env::set_var("HC_TERMINAL_SOCKET", world.root.join("hc-core.sock"));
+    std::env::set_var("HERDR_APP_HOME", world.root.join("herdr-app"));
+    let roster = world.roster();
+    for (file, name) in [
+        ("launch/orchestrator-hc.json", "orchestrator"),
+        ("launch/worker-hc.json", "codex-sol"),
+    ] {
+        let t = roster.get(name).unwrap();
+        check_oracle(file, &pretty(&launch_oracle(&world, t)));
     }
 }
 
@@ -720,7 +741,8 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 fn arc_01_baseline_oracles_present() {
     let cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch/tests/oracles");
     let expect = [
-        (oracles().join("launch"), TEAMMATES_AT_A0),
+        // 33 A0 teammates plus orchestrator-hc.json and worker-hc.json (HCB-11).
+        (oracles().join("launch"), TEAMMATES_AT_A0 + 2),
         (oracles().join("routing"), QUOTA_FIXTURES_AT_A0 + 1),
         (oracles().join("ledgers"), LEDGERS.len() * 3),
         (oracles().join("skills"), TEAMMATES_AT_A0 * PHASES.len()),

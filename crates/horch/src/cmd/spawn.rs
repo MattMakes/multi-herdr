@@ -31,8 +31,8 @@ use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::taskledger::model::{Actor, EventKind};
 use horch_core::taskledger::util::{event as ledger_event, About};
 use horch_core::workspace::arrange;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
+use horch_core::workspace::PaneHost;
 
 /// How long `horch spawn` waits for its worker to register or to leave a
 /// startup error (`HORCH_SPAWN_WAIT_MS` overrides it). After it, the spawn
@@ -153,6 +153,13 @@ fn shell_quote(text: &str) -> String {
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
 /// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
 pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
+    let mut resolved = ctx.clone();
+    if resolved.herdr.pane.is_none() {
+        if let Some(ws) = &resolved.herdr.workspace {
+            resolved.herdr.backend = PaneHost::for_workspace(&resolved, ws.as_str()).backend();
+        }
+    }
+    let ctx = &resolved;
     // Before the ledger row: a refused caller leaves nothing behind.
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let caller = caller(ctx);
@@ -213,7 +220,7 @@ fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpa
 /// What `spawn_worker` reads before it plans, and the steps after it use.
 struct SpawnContext {
     roster: Roster,
-    herdr: Herdr,
+    herdr: PaneHost,
     mailbox: Mailbox,
     project: PathBuf,
     store: ExecutionStore,
@@ -461,9 +468,7 @@ fn parent_pid(_pid: u32) -> Option<u32> {
 
 fn caller(ctx: &RuntimeContext) -> Option<Caller> {
     let pane = ctx.herdr.pane.as_ref()?;
-    let info = Herdr::with_bin(&ctx.bins.harness.herdr)
-        .pane_get(pane.as_str())
-        .ok()?;
+    let info = PaneHost::of(ctx).pane_get(pane.as_str()).ok()?;
     let workspace = info
         .workspace_id
         .clone()
@@ -588,6 +593,11 @@ fn plan_request(
         project: &sc.project,
     };
     let plan = plan(req, &inputs)?;
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        if let Some(why) = horch_core::harness::launch::refusal_on_hc(plan.launch.teammate.agent) {
+            bail!(why);
+        }
+    }
     if let Some(line) = &plan.gate_line {
         crate::output::println(line);
     }
@@ -608,12 +618,16 @@ fn launch(
     fleet_warnings(ctx, true);
 
     let tile = |pane: &str, tiling: TilingMode| tile_pane(ctx, sc, pane, tiling);
+    let open = |p: &ExecutionPlan| open_hc_pane(ctx, sc, p);
+    let open_pane: Option<horch_core::execution::service::OpenPane<'_>> =
+        (!sc.herdr.caps().geometry).then_some(&open);
     let service = ExecutionService {
         ctx,
         store: &sc.store,
         workspace: &sc.herdr,
         mailbox: &sc.mailbox,
         tile: &tile,
+        open_pane,
         ledger_worker: ledger.map(|l| l.worker_id.as_str()),
     };
     let started = SystemTime::now();
@@ -665,9 +679,10 @@ fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
 fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let roster = super::load_roster(ctx, roster_dir.as_deref())?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)
-        .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
+    let herdr = PaneHost::of(ctx);
+    let mailbox = Mailbox::resolve_in(&herdr, ctx).context(
+        "horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
+    )?;
     std::fs::create_dir_all(mailbox.dir())?;
     // Read once, so the ledger this process writes and the one the worker
     // later reads (its brief carries the project) are the same file.
@@ -758,7 +773,68 @@ fn plan(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan> {
 /// halves its parent, and the tiler moves the worker into the next free
 /// slot and evens every column. Best effort: a grid that will not lay out
 /// must not fail a spawn whose worker is already running.
+fn open_hc_pane(ctx: &RuntimeContext, sc: &SpawnContext, _plan: &ExecutionPlan) -> Result<String> {
+    use horch_core::workspace::place::{self, Placement, TabPanes};
+
+    let ws = sc.mailbox.workspace_id();
+    let tabs = sc.herdr.tab_list(ws)?;
+    let panes = sc.herdr.pane_list(ws)?;
+    let orchestrator = sc
+        .mailbox
+        .pane_for("orchestrator")
+        .or_else(|| {
+            ctx.herdr
+                .pane
+                .as_ref()
+                .and_then(|p| sc.herdr.pane_get(p.as_str()).ok().map(|i| i.pane_id))
+        })
+        .or_else(|| {
+            panes
+                .iter()
+                .min_by(|a, b| place::address_key(&a.pane_id).cmp(&place::address_key(&b.pane_id)))
+                .map(|p| p.pane_id.clone())
+        })
+        .context(
+            "horch spawn needs --from-pane when not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
+        )?;
+    let tab_panes: Vec<TabPanes> = tabs
+        .iter()
+        .map(|tab| {
+            let mut workers: Vec<String> = panes
+                .iter()
+                .filter(|p| {
+                    p.tab_id.as_deref() == Some(tab.tab_id.as_str()) && p.pane_id != orchestrator
+                })
+                .map(|p| p.pane_id.clone())
+                .collect();
+            place::sort_addresses(&mut workers);
+            TabPanes {
+                tab_id: tab.tab_id.clone(),
+                workers,
+            }
+        })
+        .collect();
+    match place::place(&orchestrator, &tab_panes) {
+        Placement::Split { from, direction } => sc.herdr.pane_split(&from, direction),
+        Placement::NewTab { label } => {
+            match sc
+                .herdr
+                .tab_new(ws, &label, Some(&sc.project.to_string_lossy()))
+            {
+                Ok((_, term)) => Ok(term),
+                Err(_) if sc.herdr.window_open() == Some(false) => {
+                    sc.herdr.pane_split(&orchestrator, Direction::Right)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
 fn tile_pane(ctx: &RuntimeContext, sc: &SpawnContext, pane: &str, tiling: TilingMode) {
+    if !sc.herdr.caps().geometry {
+        return;
+    }
     if tiling != TilingMode::Disabled {
         arrange::after_change(ctx, &sc.herdr, sc.mailbox.workspace_id(), Some(pane));
     } else if let Ok(layout) = sc.herdr.pane_layout(Some(pane)) {
@@ -852,8 +928,8 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
         eprintln!("horch: {prefix} {warning}");
     }
     let caller = super::sessionscmd::caller_workspace(ctx);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    if let Ok(workspaces) = herdr.workspace_list() {
+    let hosts = horch_core::workspace::Hosts::reachable(ctx);
+    if let Some(workspaces) = hosts.workspace_list_union() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
         // A read only: a scratch fleet must not create the ledger (#199).
@@ -1407,7 +1483,7 @@ mod tests {
         );
         println!("herdr bin={:?}", ctx.bins.harness.herdr);
         if let Some(pane) = ctx.herdr.pane.as_ref() {
-            match Herdr::with_bin(&ctx.bins.harness.herdr).pane_get(pane.as_str()) {
+            match PaneHost::of(&ctx).pane_get(pane.as_str()) {
                 Ok(info) => {
                     println!(
                         "pane_get: pane_id={:?} workspace_id={:?}",

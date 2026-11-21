@@ -236,6 +236,7 @@ fn failed_start(h: &Harness, age: Duration, marker_pid: Option<u32>) {
         workspace_id: "w9".into(),
         pane_id: "w9:p1".into(),
         herdr: h.bin.join("herdr"),
+        backend: Default::default(),
     };
     start::record(&h.state, &request).unwrap();
     let file = std::fs::File::options()

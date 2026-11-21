@@ -25,9 +25,9 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::taskledger::model::{VerifyProfile, VERIFY_ENV};
 use horch_core::taskledger::orchestrator::{self, Respawn};
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
+use horch_core::workspace::PaneHost;
 
 use super::doctor;
 
@@ -285,6 +285,13 @@ fn pane_command_for(
     if let Some(respawn) = respawn.as_deref() {
         env.push((orchestrator::RESPAWN_ENV, respawn));
     }
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        env.push(("HORCH_BACKEND", "hc"));
+    }
+    let project_dir = super::path_text(ctx.paths.project_dir.as_deref());
+    if let Some(dir) = project_dir.as_deref() {
+        env.push(("HORCH_PROJECT_DIR", dir));
+    }
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
 }
 
@@ -387,14 +394,16 @@ pub fn fleet_with(
     println!("{}", verify_line(options.verify()));
     super::update::before_fleet(ctx, options.no_update);
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let cwd = resolve_cwd(ctx, cwd)?;
     let mut warning_ctx = ctx.clone();
     warning_ctx.paths.project_dir = Some(PathBuf::from(&cwd));
     super::spawn::fleet_warnings(&warning_ctx, false);
 
     warn_about_missing_integrations(&herdr);
-    super::restore::warn_if_resume_on(ctx);
+    if ctx.herdr.backend == horch_core::runtime::Backend::Herdr {
+        super::restore::warn_if_resume_on(ctx);
+    }
 
     let flavor = choose_flavor(ctx, flavor)?;
     warn_about_other_run_steps(ctx, &cwd, options.verify());
@@ -579,11 +588,32 @@ fn choose_flavor(ctx: &RuntimeContext, flavor: FleetFlavor) -> Result<FleetFlavo
 /// The session ledger. Orchestrators of workspaces that are gone are retired
 /// first: an orchestrator never runs `horch done`. Without a herdr workspace
 /// list, none is.
-fn open_ledger(ctx: &RuntimeContext, herdr: &Herdr) -> Result<SessionLedger> {
+fn open_ledger(ctx: &RuntimeContext, herdr: &PaneHost) -> Result<SessionLedger> {
     let ledger = SessionLedger::open_in(ctx)?;
-    if let Ok(open) = herdr.workspace_list() {
-        let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
-        ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
+    let hosts = horch_core::workspace::Hosts::reachable(ctx);
+    let mut open_by_backend: std::collections::BTreeMap<horch_core::runtime::Backend, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for h in &hosts.hosts {
+        if let Ok(list) = h.workspace_list() {
+            open_by_backend.insert(
+                h.backend(),
+                list.into_iter().map(|w| w.workspace_id).collect(),
+            );
+        }
+    }
+    if let std::collections::btree_map::Entry::Vacant(e) = open_by_backend.entry(herdr.backend()) {
+        if let Ok(list) = herdr.workspace_list() {
+            e.insert(list.into_iter().map(|w| w.workspace_id).collect());
+        }
+    }
+    if !open_by_backend.is_empty() {
+        ledger.supersede_orchestrators_by_record(|r| match r.workspace_id.as_deref() {
+            Some(ws) => match open_by_backend.get(&r.backend) {
+                Some(open) => open.iter().any(|o| o == ws),
+                None => true,
+            },
+            None => false,
+        })?;
     }
     Ok(ledger)
 }
@@ -675,7 +705,7 @@ fn orchestrator_start<'a>(
 /// pane. `ctx` then works in `ws`.
 fn start_orchestrator(
     ctx: &mut RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     ws: &NewWorkspace,
     ledger: &SessionLedger,
     start: OrchestratorStart<'_>,
@@ -688,6 +718,7 @@ fn start_orchestrator(
         options,
     } = start;
     record.workspace_id = Some(ws.workspace_id.clone());
+    record.backend = ctx.herdr.backend;
     let (record_id, session_id) = (record.record_id.clone(), record.session_id.clone());
     ledger.insert(record)?;
 
@@ -724,7 +755,7 @@ fn start_orchestrator(
 /// the one the caller returns. The stage `Run` covers the pane command
 /// and the pane run.
 fn abandon_start(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     record: Option<(&SessionLedger, &str)>,
     error: &anyhow::Error,
@@ -755,7 +786,7 @@ fn abandon_record(ledger: &SessionLedger, key: &str, error: &anyhow::Error) {
 /// The pane a respawned orchestrator runs in: the dead orchestrator's pane
 /// when herdr still has it, else a new pane beside the first pane of the
 /// workspace. The workspace must still exist.
-fn respawn_pane(herdr: &Herdr, respawn: &Respawn) -> Result<NewWorkspace> {
+fn respawn_pane(herdr: &PaneHost, respawn: &Respawn) -> Result<NewWorkspace> {
     let ws = &respawn.workspace_id;
     let pane = match respawn
         .old_pane_id
@@ -947,7 +978,7 @@ fn normalised(current: &Path, path: &Path) -> PathBuf {
 /// Native herdr agent-status reporting is optional but nice: it lets the
 /// orchestrator watch workers with `herdr agent list` and hands codex session ids
 /// to the ledger without the rollout-file fallback.
-fn warn_about_missing_integrations(herdr: &Herdr) {
+fn warn_about_missing_integrations(herdr: &PaneHost) {
     let Some(status) = herdr.integration_status() else {
         return;
     };
@@ -972,7 +1003,7 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -> Result<()> {
     super::update::before_fleet(ctx, no_update);
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let cwd = resolve_cwd(ctx, cwd)?;
 
     println!("Creating workspace rooted at {cwd}...");
@@ -998,7 +1029,7 @@ pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -
 
 /// The 5 panes of `horch orchestration` in the new workspace `ws`: the
 /// layout, then each pane's agent.
-fn lay_out_orchestration(ctx: &RuntimeContext, herdr: &Herdr, ws: &NewWorkspace) -> Result<()> {
+fn lay_out_orchestration(ctx: &RuntimeContext, herdr: &PaneHost, ws: &NewWorkspace) -> Result<()> {
     println!("Building layout: orchestrator | 2x2 worker grid...");
     let top_left = herdr.pane_split(&ws.root_pane_id, Direction::Right)?;
     let bottom_left = herdr.pane_split(&top_left, Direction::Down)?;
@@ -1155,7 +1186,7 @@ fn register_pane_then(
     fleet: bool,
     before_route: impl FnOnce(&RuntimeContext, &str, &str) -> Result<()>,
 ) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     if let Some(dir) = &identity.state_dir {
         ctx.paths.set_state_dir(dir);
     }
@@ -1193,8 +1224,16 @@ fn claim_launch_run(
         lock_dir: &dir,
         herdr_open: &|_| None,
     };
-    let claimed = store
-        .immediate(|tx| orchestrator::claim(tx, &run.run_id, workspace, Some(pane), &probe))?;
+    let claimed = store.immediate(|tx| {
+        orchestrator::claim_on(
+            tx,
+            &run.run_id,
+            workspace,
+            Some(pane),
+            ctx.herdr.backend,
+            &probe,
+        )
+    })?;
     match claimed {
         orchestrator::Claimed::Changed(text) => println!("{text}"),
         orchestrator::Claimed::Skipped {
@@ -1366,6 +1405,9 @@ fn child_env(
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
         env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
+    }
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        env.push(("HORCH_BACKEND".into(), "hc".into()));
     }
     // Set explicitly, not inherited: a Codex shell policy can drop it, and
     // the orchestrator's `horch ledger run new` reads it.
@@ -1995,7 +2037,7 @@ mod tests {
 
     /// A herdr where pane `p1` exists, every other pane is gone, and
     /// workspace `w1` has pane `p9`, which splits into `p10`.
-    fn respawn_herdr(dir: &Path) -> Herdr {
+    fn respawn_herdr(dir: &Path) -> PaneHost {
         let bin = dir.join("herdr");
         let warm = crate::test_support::write_warmed(
             &bin,
@@ -2010,7 +2052,7 @@ mod tests {
             &["warm"],
         );
         assert!(warm.status.success());
-        Herdr::with_bin(bin)
+        PaneHost::herdr_bin(bin)
     }
 
     fn respawn(old_pane: Option<&str>) -> Respawn {

@@ -324,7 +324,7 @@ fn t20_the_roles_launch_with_only_the_report_socket() {
     let mut env = launch_env(home.path());
     let state_root = env.state_root.clone().unwrap();
     let ledger_dir = env.ledger_dir.clone().unwrap();
-    let herdr = env.herdr_socket.clone().unwrap();
+    let herdr = env.host_sockets[0].clone();
     let socket = state_root.join("report").join("r1.sock");
     env.report_socket = Some(socket.clone());
     let r = Roster::builtin().unwrap();

@@ -11,6 +11,7 @@ use rusqlite::Connection;
 /// Undo what `schema::v7()` adds: the incident's downgrade, so the test has
 /// a real version 6 file.
 const DOWNGRADE_V7_TO_V6: &str = "
+ALTER TABLE workers DROP COLUMN backend;
 DROP INDEX session_records_by_slug;
 DROP TABLE session_records;
 DROP INDEX outbox_undelivered;
@@ -35,7 +36,7 @@ PRAGMA user_version = 6;";
 fn version_6_file(path: &Path) {
     assert_eq!(
         schema::VERSION,
-        8,
+        9,
         "update DOWNGRADE_V7_TO_V6 for the new version (version 8 needs no undo: it builds task_steps again from its rows)"
     );
     drop(Store::open(path).unwrap());

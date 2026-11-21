@@ -1896,6 +1896,8 @@ the next task, as a fresh spawn does.
 6. Answer every "[<role>]" question at once with horch tell. A blocked
    worker waits. Use horch inbox and horch peek (or ledger show/events).
    Never build pane-reading loops, cron jobs or monitors. Never
+   zoom a pane (`herdr pane zoom`): it fills the operator's screen and hides
+   every other pane in the tab.
 "###,
             r###"   two units that need the same file.
 4. Write 1 ticket per unit, as docs/specs/ticket-format.md says. Queue the
@@ -1905,6 +1907,8 @@ the next task, as a fresh spawn does.
 6. Answer every "[<role> #<id>]" question at once with horch tell <role>
    --answers <id>. A blocked worker waits. Use horch inbox and horch peek (or ledger show/events).
    Never build pane-reading loops, cron jobs or monitors. Never
+   zoom a pane (`herdr pane zoom` or `herdr-app do pane.zoom`): it fills the
+   operator's screen and hides every other pane in the tab.
 "###,
         ),
         (

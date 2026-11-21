@@ -216,8 +216,8 @@ scratch, or drop --reason instead.
 6. Answer every "[<role> #<id>]" question at once with horch tell <role>
    --answers <id>. A blocked worker waits. Use horch inbox and horch peek (or ledger show/events).
    Never build pane-reading loops, cron jobs or monitors. Never
-   zoom a pane (`herdr pane zoom`): it fills the operator's screen and hides
-   every other pane in the tab.
+   zoom a pane (`herdr pane zoom` or `herdr-app do pane.zoom`): it fills the
+   operator's screen and hides every other pane in the tab.
 7. On DONE, read horch ledger steps T-<n> and the diff. Do not re-run tests.
    Before the PR merges, run horch ledger run gate (see "Close the run").
 8. Stop spawning when the remaining work does not justify another worker.

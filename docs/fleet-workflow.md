@@ -84,6 +84,14 @@ no `--run` joins only the active run of its own workspace. A run made outside
 herdr by an older horch has no workspace id and needs `--run <slug>`. One-off
 tasks go to the solo run `solo-<workspace>`.
 
+On the `hc` backend (`herdr-core` + `herdr-app`), a running fleet keeps going
+when the Herdr app window is closed: reads, `horch tell`, mail delivery, the
+watchdog, `horch done`, and `horch spawn` (falling back to labelled `hc run`
+terminals that Herdr adopts into the fleet's space when the window reopens) all
+talk directly to `herdr-core`. Starting a new `hc` fleet requires an open Herdr
+app window; `horch doctor` warns without failing when the core is running and
+the window is closed.
+
 The watchdog respawns a dead orchestrator: at most 1 time in 10 min and 3
 times in a run, never after `horch fleet stop` or `run close`. The new
 orchestrator first reads `ai_docs/handoffs/orchestrator-whats-next.md`, then

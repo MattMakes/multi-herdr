@@ -27,8 +27,8 @@ use horch_core::telemetry::context::{read_current, CompactionMark, Reading};
 use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
 use horch_core::workspace::client::WorkspaceClient;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Pane;
+use horch_core::workspace::PaneHost;
 use serde::Serialize;
 
 /// What `--over` prints when every row is `ok`.
@@ -384,7 +384,10 @@ fn report(
         loc: &loc,
         cache_dir: &cache,
     };
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = match caller_workspace(ctx) {
+        Some(ws) => PaneHost::for_workspace(ctx, &ws),
+        None => PaneHost::of(ctx),
+    };
     Ok(if json {
         context_json_matching(&src, &herdr, filter)
     } else {

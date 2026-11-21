@@ -503,6 +503,7 @@ fn fresh_execution(
         workdir: req.workdir.clone(),
         workspace: None,
         pane: None,
+        backend: crate::runtime::Backend::Herdr,
         skills: skills.activated.clone(),
         routing: Some(draft.routing.clone()),
         via: draft.via.clone(),

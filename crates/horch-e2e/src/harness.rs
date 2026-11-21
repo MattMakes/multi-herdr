@@ -34,11 +34,13 @@ pub fn warm(cmd: &mut Command) -> std::io::Result<Output> {
 }
 
 /// The fakes, by the name of the program each stands in for.
-pub const FAKES: [(&str, &str); 8] = [
+pub const FAKES: [(&str, &str); 10] = [
     ("agy", "fake-antigravity"),
     ("claude", "fake-claude"),
     ("codex", "fake-codex"),
+    ("hc", "fake-hc"),
     ("herdr", "fake-herdr"),
+    ("herdr-app", "fake-herdr-app"),
     ("opencode", "fake-opencode"),
     ("pi", "fake-pi"),
     ("prime-agent", "fake-prime"),
@@ -108,6 +110,12 @@ impl Harness {
         };
         for dir in [&h.home, &h.state, &h.tmp, &h.bin, &h.project] {
             std::fs::create_dir_all(dir).expect("creating harness dirs");
+        }
+        for sock in [h.hc_socket(), h.app_socket()] {
+            if let Some(parent) = sock.parent() {
+                std::fs::create_dir_all(parent).expect("creating fake socket dir");
+            }
+            std::fs::write(&sock, b"").expect("creating fake socket");
         }
         write_owner(&h.root);
         static STALE: std::sync::Once = std::sync::Once::new();
@@ -370,7 +378,9 @@ impl Harness {
         for (name, key) in [
             ("claude", "HORCH_CLAUDE_BIN"),
             ("codex", "HORCH_CODEX_BIN"),
+            ("hc", "HORCH_HC_BIN"),
             ("herdr", "HORCH_HERDR_BIN"),
+            ("herdr-app", "HORCH_HERDR_APP_BIN"),
             ("opencode", "HORCH_OPENCODE_BIN"),
             ("pi", "HORCH_PI_BIN"),
             ("prime-agent", "HORCH_PRIME_BIN"),
@@ -490,6 +500,87 @@ impl Harness {
         walk(&self.state, &mut out);
         out
     }
+
+    /// Default `herdr-core` socket path inside the sealed home.
+    pub fn hc_socket(&self) -> PathBuf {
+        self.home
+            .join(".local/state/herdr-core/default/default.sock")
+    }
+
+    /// Default `herdr-app` socket path inside the sealed home.
+    pub fn app_socket(&self) -> PathBuf {
+        self.home.join(".config/herdr-app/herdr-app.sock")
+    }
+
+    /// Every call recorded in `<state>/fake-hc.log`.
+    pub fn hc_calls(&self) -> Vec<Value> {
+        crate::read_log(&crate::hc_fake::log_file_in(&self.state))
+    }
+
+    /// Current `<state>/fake-hc.json` document.
+    pub fn hc_state(&self) -> Value {
+        crate::hc_fake::load_in(&self.state)
+    }
+
+    /// Set a fake `hc` terminal's status (`(app, state)`) and `status_ms`
+    /// under `<state>/fake-hc.lock/`.
+    pub fn set_hc_terminal_status(
+        &self,
+        address: &str,
+        status: Option<(&str, &str)>,
+        status_ms: Option<u64>,
+    ) {
+        let _lock = crate::hc_fake::StateLock::acquire_in(&self.state);
+        let mut state = crate::hc_fake::load_in(&self.state);
+        let term = crate::hc_fake::find_terminal_mut(&mut state, address)
+            .unwrap_or_else(|| panic!("no fake-hc terminal {address}"));
+        match status {
+            Some((app, st)) => {
+                term["status"] = serde_json::json!({"app": app, "state": st});
+                term["reported"] = serde_json::json!(true);
+            }
+            None => {
+                term["status"] = Value::Null;
+                term["reported"] = serde_json::json!(false);
+            }
+        }
+        term["status_ms"] = match status_ms {
+            Some(ms) => serde_json::json!(ms),
+            None => Value::Null,
+        };
+        crate::hc_fake::save_in(&self.state, &state);
+    }
+
+    /// Set the screen text returned by `fake-hc read <address>`.
+    pub fn set_hc_terminal_screen(&self, address: &str, text: &str) {
+        let _lock = crate::hc_fake::StateLock::acquire_in(&self.state);
+        let mut state = crate::hc_fake::load_in(&self.state);
+        let term = crate::hc_fake::find_terminal_mut(&mut state, address)
+            .unwrap_or_else(|| panic!("no fake-hc terminal {address}"));
+        term["test_screen"] = serde_json::json!(text);
+        crate::hc_fake::save_in(&self.state, &state);
+    }
+
+    /// Simulate closing the Herdr app window while keeping `herdr-core` up.
+    pub fn close_hc_window(&self) {
+        let _ = std::fs::write(crate::hc_fake::window_closed_in(&self.state), b"1");
+        let _ = std::fs::remove_file(self.app_socket());
+    }
+
+    /// Simulate reopening the Herdr app window.
+    pub fn open_hc_window(&self) {
+        let _ = std::fs::remove_file(crate::hc_fake::window_closed_in(&self.state));
+        if let Some(parent) = self.app_socket().parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(self.app_socket(), b"");
+    }
+
+    /// Simulate `herdr-core` not running (removes its socket and marks stopped).
+    pub fn stop_hc_core(&self) {
+        let _ = std::fs::remove_file(self.hc_socket());
+        let _ = std::fs::write(crate::hc_fake::core_stopped_in(&self.state), b"1");
+    }
 }
 
 #[cfg(unix)]
@@ -580,6 +671,10 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(Value::Null);
+    let hc_state: Value = std::fs::read_to_string(root.join("state/fake-hc.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
     // With the separator: one harness root can be a prefix of another's.
     let mut marks = vec![format!("{}/", root.display())];
     if let Ok(canonical) = std::fs::canonicalize(root) {
@@ -588,10 +683,9 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
     let me = std::process::id();
     // SAFETY: plain syscall without arguments.
     let own_group = u32::try_from(unsafe { libc::getpgrp() }).ok();
-    let recorded: Vec<u32> = state["pids"]
-        .as_object()
+    let recorded: Vec<u32> = [&state, &hc_state]
         .into_iter()
-        .flatten()
+        .flat_map(|s| s["pids"].as_object().into_iter().flatten())
         .filter_map(|(_, pid)| u32::try_from(pid.as_u64()?).ok())
         .collect();
     let Some(all) = process_list_or_sandbox(
@@ -604,14 +698,18 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
     else {
         return Ok(Vec::new());
     };
-    let mut groups: Vec<u32> = state["pids"]
-        .as_object()
+    let mut groups: Vec<u32> = [&state, &hc_state]
         .into_iter()
-        .flatten()
-        .filter_map(|(pane, pid)| {
-            let pid = u32::try_from(pid.as_u64()?).ok()?;
-            let started = state["started"][pane.as_str()].as_u64()?;
-            is_same_group(pid, started).then_some(pid)
+        .flat_map(|s| {
+            s["pids"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(move |(pane, pid)| {
+                    let pid = u32::try_from(pid.as_u64()?).ok()?;
+                    let started = s["started"][pane.as_str()].as_u64()?;
+                    is_same_group(pid, started).then_some(pid)
+                })
         })
         .collect();
     let names_root = |p: &Process, environments: &std::collections::HashMap<u32, String>| {

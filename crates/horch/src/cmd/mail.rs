@@ -13,7 +13,7 @@ use horch_core::messaging::mail::{
 };
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 const POLL: Duration = Duration::from_secs(5);
 
@@ -41,7 +41,7 @@ struct Courier<'a> {
     workspace: &'a str,
     mail: Mail,
     lock: File,
-    herdr: Herdr,
+    herdr: PaneHost,
     mailbox: Mailbox,
     socket: PathBuf,
     poll: Duration,
@@ -76,7 +76,7 @@ fn acquire_lock(mail: &Mail) -> Result<Option<File>> {
 }
 
 /// Send `line` to the pane `id` when it is idle. Returns whether it tried.
-fn send_if_idle(herdr: &Herdr, id: &str, idle: bool, line: &str) -> bool {
+fn send_if_idle(herdr: &PaneHost, id: &str, idle: bool, line: &str) -> bool {
     if idle {
         let _ = delivery::send_line(herdr, id, line);
     }
@@ -92,7 +92,7 @@ impl<'a> Courier<'a> {
             workspace,
             mail,
             lock,
-            herdr: Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(Duration::from_secs(5)),
+            herdr: PaneHost::for_workspace(ctx, workspace).with_timeout(Duration::from_secs(5)),
             mailbox: Mailbox::in_context(ctx, workspace),
             socket: channel::socket_path(&ctx.paths.state_root, workspace),
             poll: test_duration("HORCH_TEST_MAIL_POLL_MS", POLL),
@@ -466,7 +466,7 @@ fn mail_now(ctx: &RuntimeContext) -> SystemTime {
 
 /// Read the recent screen on every pass, retaining the previous state on read failure.
 /// The persisted create-new marker deduplicates notifications across tell and courier.
-pub(super) fn check_login(herdr: &Herdr, mailbox: &Mailbox, mail: &Mail) -> Result<bool> {
+pub(super) fn check_login(herdr: &PaneHost, mailbox: &Mailbox, mail: &Mail) -> Result<bool> {
     let herdr = herdr.clone().with_timeout(Duration::from_secs(5));
     if let Some(pane) = mailbox.pane_for("orchestrator") {
         if let Ok(screen) = herdr.pane_read(&pane, "recent-unwrapped") {

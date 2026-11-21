@@ -959,3 +959,183 @@ fn a_fake_logs_one_call_id_per_process() {
     assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
     assert!(calls[0]["call_id"].is_string(), "{calls:?}");
 }
+
+#[test]
+fn fake_hc_run_lists_gets_and_kills() {
+    let h = Harness::new("fakes-hc-run");
+    assert_eq!(version(&h, "hc"), "hc 0.1.21");
+    assert!(fake(&h, "hc", &["server", "status"]).status.success());
+
+    let ran = json(&fake(
+        &h,
+        "hc",
+        &[
+            "run",
+            "--bg",
+            "--json",
+            "--keep",
+            "--no-parent",
+            "--cwd",
+            "/work/alpha",
+            "--label",
+            "herdr.space=sp01",
+            "--label",
+            "herdr.tab=tb01",
+        ],
+    ));
+    let addr = ran["address"].as_str().unwrap().to_string();
+    assert!(addr.starts_with('t'), "{ran}");
+
+    let ls = json(&fake(
+        &h,
+        "hc",
+        &["ls", "--json", "--label", "herdr.space=sp01"],
+    ));
+    let rows = ls["terminals"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{ls}");
+    assert_eq!(rows[0]["address"], addr);
+    assert!(rows[0].get("labels").is_none(), "ls rows carry no labels");
+    assert!(
+        rows[0].get("status_ms").is_none(),
+        "ls rows carry no status_ms"
+    );
+
+    let got = json(&fake(&h, "hc", &["get", "--json", &addr]));
+    assert_eq!(got["address"], addr);
+    assert_eq!(got["state"], "live");
+    assert_eq!(got["keep"], true);
+    assert!(got["parent"].is_null(), "{got}");
+    assert_eq!(got["labels"]["herdr.space"], "sp01");
+    assert_eq!(got["labels"]["herdr.tab"], "tb01");
+    assert!(got["status"].is_null(), "{got}");
+
+    h.set_hc_terminal_status(&addr, Some(("claude-code", "idle")), Some(1042));
+    let got = json(&fake(&h, "hc", &["get", "--json", &addr]));
+    assert_eq!(got["status"]["app"], "claude-code");
+    assert_eq!(got["status"]["state"], "idle");
+    assert_eq!(got["status_ms"], 1042);
+
+    let sent = json(&fake(&h, "hc", &["send", "--json", &addr, "echo hello"]));
+    assert_eq!(sent["started"], true);
+    let read = fake(&h, "hc", &["read", &addr, "--lines", "20"]);
+    assert!(String::from_utf8_lossy(&read.stdout).contains("echo hello"));
+
+    let killed = json(&fake(&h, "hc", &["kill", "--json", &addr]));
+    assert_eq!(killed["state"], "finished");
+    let ls_live = json(&fake(&h, "hc", &["ls", "--json"]));
+    assert!(ls_live["terminals"].as_array().unwrap().is_empty());
+    let ls_all = json(&fake(&h, "hc", &["ls", "--json", "--all"]));
+    assert_eq!(ls_all["terminals"].as_array().unwrap().len(), 1);
+
+    let rm = fake(&h, "hc", &["rm", &addr]);
+    assert!(rm.status.success());
+    assert!(!h.hc_calls().is_empty());
+}
+
+#[test]
+fn fake_hc_errors_use_hc_exit_codes() {
+    let h = Harness::new("fakes-hc-err");
+    let missing = fake(&h, "hc", &["get", "--json", "t99"]);
+    assert_eq!(missing.status.code(), Some(3));
+    let err: Value = serde_json::from_slice(&missing.stderr).unwrap();
+    assert_eq!(err["error"]["kind"], "not_found");
+
+    let ran = json(&fake(&h, "hc", &["run", "--bg", "--json", "--keep"]));
+    let addr = ran["address"].as_str().unwrap().to_string();
+    h.set_hc_terminal_status(&addr, Some(("claude-code", "blocked")), Some(500));
+    let blocked = fake(&h, "hc", &["send", "--json", &addr, "hi"]);
+    assert_eq!(blocked.status.code(), Some(9));
+    let err: Value = serde_json::from_slice(&blocked.stderr).unwrap();
+    assert_eq!(err["error"]["kind"], "blocked");
+
+    assert!(fake(&h, "hc", &["kill", "--json", &addr]).status.success());
+    let finished = fake(&h, "hc", &["send", "--json", &addr, "hi"]);
+    assert_eq!(finished.status.code(), Some(11));
+    let err: Value = serde_json::from_slice(&finished.stderr).unwrap();
+    assert_eq!(err["error"]["kind"], "finished");
+}
+
+#[test]
+fn fake_hc_app_split_adds_a_terminal_hc_lists() {
+    let h = Harness::new("fakes-hc-app");
+    assert_eq!(version(&h, "herdr-app"), "herdr-app 0.1.16");
+    assert!(fake(&h, "herdr-app", &["status"]).status.success());
+
+    let space = json(&fake(
+        &h,
+        "herdr-app",
+        &[
+            "do",
+            "space.new",
+            r#"{"name":"fleet","folder":"/work/alpha","focus":false}"#,
+        ],
+    ));
+    let sp = space["space"].as_str().unwrap().to_string();
+    let tb = space["tab"].as_str().unwrap().to_string();
+    let root_term = space["terminal"].as_str().unwrap().to_string();
+    assert!(sp.starts_with("sp") && sp.len() == 34, "{sp}");
+    assert!(tb.starts_with("tb") && tb.len() == 34, "{tb}");
+
+    let app_ls = json(&fake(&h, "herdr-app", &["ls"]));
+    let root_pane = app_ls["spaces"][0]["tabs"][0]["terminals"][0]["pane"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(root_pane.starts_with('p'), "{root_pane}");
+
+    let split = json(&fake(
+        &h,
+        "herdr-app",
+        &[
+            "do",
+            "pane.split",
+            "--pane",
+            &root_pane,
+            "--direction",
+            "right",
+        ],
+    ));
+    let new_term = split["terminal"].as_str().unwrap().to_string();
+    assert_ne!(new_term, root_term);
+
+    let hc_ls = json(&fake(
+        &h,
+        "hc",
+        &["ls", "--json", "--label", &format!("herdr.space={sp}")],
+    ));
+    let addrs: Vec<&str> = hc_ls["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["address"].as_str().unwrap())
+        .collect();
+    assert_eq!(addrs, [root_term.as_str(), new_term.as_str()]);
+
+    let got = json(&fake(&h, "hc", &["get", "--json", &new_term]));
+    assert_eq!(got["keep"], true);
+    assert!(got["parent"].is_null(), "{got}");
+    assert_eq!(got["labels"]["herdr.space"], sp);
+    assert_eq!(got["labels"]["herdr.tab"], tb);
+}
+
+#[test]
+fn fake_hc_app_window_closed_fails() {
+    let h = Harness::new("fakes-hc-closed");
+    h.close_hc_window();
+    assert_eq!(version(&h, "herdr-app"), "herdr-app 0.1.16");
+
+    for args in [
+        &["status"][..],
+        &["ls"][..],
+        &[
+            "do",
+            "space.new",
+            r#"{"name":"x","folder":"/tmp","focus":false}"#,
+        ][..],
+    ] {
+        let out = fake(&h, "herdr-app", args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("no Herdr window"), "{stderr}");
+    }
+}
