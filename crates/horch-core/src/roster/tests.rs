@@ -557,6 +557,7 @@ fn the_shipped_personas_with_no_fallback_reason_are_pinned() {
             "blender-artist",
             "blender-builder",
             "blender-qa",
+            "comment-remover",
             "idea-lead",
             "intake-analyst",
             "intake-auditor",
