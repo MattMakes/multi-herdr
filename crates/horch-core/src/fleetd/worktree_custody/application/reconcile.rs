@@ -18,7 +18,8 @@
 //! verified rescue moves it to `rescued`. It queues 1 `worktree_remove` job
 //! for each `landed` tree, and for each `rescued` tree whose idea is
 //! `merged` ("Ideas finish clean", ticket 33 of fleetd-p6); the rescue ref
-//! stays. A `rescued` tree with no task is never removed. The jobs run
+//! stays. A `rescued` tree with no task is removed only when its owner gave
+//! it up: a released gate tree or a dropped tree. The jobs run
 //! outside the pass, and the guard of the remove job checks each tree
 //! again at its removal.
 
@@ -202,7 +203,9 @@ fn add_run(conn: &Connection, row: &WorktreeRow) -> Result<Option<jobs_store::Jo
 
 /// Observe the last run of the job that each row waits for, when it
 /// ended `passed` or `failed`: the observations of `create`, `rescue` and
-/// `remove`. A rescue run is the one of the HEAD of the row. A passed
+/// `remove`. A rescue run is the newest of the tree, of any HEAD: a drop
+/// queues it at the HEAD that the command read, which the row may not
+/// have yet, and a run that is not observed gets a second rescue. A passed
 /// rescue whose ref the row has already is the rescue of an earlier orphan
 /// of a reused tree: it does not save the tree now, so it is not observed.
 fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
@@ -213,13 +216,7 @@ fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Resul
         };
         let run = match awaited {
             TreeJob::Add => add_run(tx, &row)?,
-            TreeJob::Rescue => match row.head_sha.as_deref() {
-                Some(head) => {
-                    let key = rescue_key(&row.path, head);
-                    jobs_store::latest(tx, Kind::Rescue, id, &key)?
-                }
-                None => None,
-            },
+            TreeJob::Rescue => jobs_store::last(tx, Kind::Rescue, id)?,
             TreeJob::Remove => remove::latest_removal(tx, id, &row.path)?,
         };
         let Some(job) = run.filter(|j| matches!(j.state, State::Passed | State::Failed)) else {
@@ -772,12 +769,14 @@ fn escalate_vanished(
 
 /// Queue 1 `rescue` run of each `orphaned` row and of each `landing` row
 /// whose task branch is `abandoned`, and 1
-/// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9) and of
-/// each `rescued` row whose idea is `merged` ("Ideas finish clean"). A row
-/// whose folder vanished is escalated, not queued. A row with an active run
-/// of that kind is not queued again.
+/// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9), of
+/// each `rescued` row whose idea is `merged` ("Ideas finish clean"), and of
+/// each `rescued` row with no task that its owner gave up ([`given_up`]).
+/// A removal refused by a process in the tree runs again
+/// ([`remove::retry`]). A row whose folder vanished is escalated, not
+/// queued. A row with an active run of that kind is not queued again.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
-    let (rows, branches) = one_snapshot(tx, || {
+    let (rows, branches, ended) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
         let landing: Vec<WorktreeRow> = rows
             .iter()
@@ -785,11 +784,16 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
             .cloned()
             .collect();
         let branches = Branches::read(tx, &landing, false)?;
-        Ok((rows, branches))
+        Ok((rows, branches, remove::owners_ended(tx)?))
     })?;
     for row in rows {
         let id = row.worktree_id.as_str();
         if report.vanished.iter().any(|v| v == id) {
+            continue;
+        }
+        let removable = matches!(row.state, WorktreeState::Landed | WorktreeState::Rescued);
+        if removable && remove::retry(ctx, tx, &row, clock)? {
+            report.removals.push(id.to_string());
             continue;
         }
         match rules::to_queue(row.state.as_str()) {
@@ -811,16 +815,48 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
                 }
             }
             Some(TreeJob::Add) | None => {
-                if row.state == WorktreeState::Rescued
-                    && idea_merged(tx, &row)?
-                    && remove::queue_auto_remove(ctx, tx, &row, "its idea is merged", clock)?
-                {
+                if row.state != WorktreeState::Rescued {
+                    continue;
+                }
+                let owner = ended.get(id);
+                let keep_branch = owner.is_some_and(|o| o.keep_branch);
+                let cause = if idea_merged(tx, &row)? {
+                    "its idea is merged"
+                } else if given_up(tx, &row, owner)? {
+                    "its owner gave it up, and its rescue ref is verified"
+                } else {
+                    continue;
+                };
+                if remove::auto_remove(ctx, tx, &row, cause, keep_branch, clock)? {
                     report.removals.push(id.to_string());
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Whether the `rescued` row `row` has no task and its owner gave it up
+/// (`owner`): fleetd released its gate tree ("removed at close", row W11
+/// of preservation-04), or a worker dropped it (RR-13). A drop counts only
+/// with the rescue ref of the rescue run that it queued; a later rescue
+/// holds work that came after the drop. A tree with no task that nobody
+/// gave up stays.
+fn given_up(
+    tx: &Connection,
+    row: &WorktreeRow,
+    owner: Option<&remove::OwnerEnded>,
+) -> Result<bool> {
+    let Some(owner) = owner else {
+        return Ok(false);
+    };
+    if row.task_id.is_some() {
+        return Ok(false);
+    }
+    let Some(job) = owner.rescue_job else {
+        return Ok(true);
+    };
+    Ok(jobs_store::get(tx, job)?.is_some_and(|j| applied(&j, row)))
 }
 
 /// Whether the idea of the task of `row` is `merged`. A row with no task

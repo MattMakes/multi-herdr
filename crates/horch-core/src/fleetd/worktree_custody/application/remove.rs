@@ -8,26 +8,30 @@
 //! git call. A command calls [`remove_tree`], which runs the jobs with no
 //! transaction open.
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{facts_after, facts_of};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, result_data, JobCtx, JobKey, NewItem, Queued,
 };
 use crate::fleetd::fleet_runtime::application::ledger::{
-    transition, Cause, DoorError, Moved, RecordRefusal,
+    record, transition, Cause, DoorError, Moved, RecordRefusal,
 };
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
+use crate::fleetd::fleet_runtime::domain::jobs::{backoff_s, Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-use crate::fleetd::worktree_custody::adapters::remove_git::{remove_key, Removed};
+use crate::fleetd::worktree_custody::adapters::remove_git::{read_remove_key, remove_key, Removed};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, WorktreeRow, WorktreeState,
 };
 use crate::fleetd::worktree_custody::application::create::{self, RunJob};
 use crate::fleetd::worktree_custody::domain::removal;
-use crate::taskledger::model::{Actor, WorktreeStatus};
+use crate::taskledger::model::{Actor, EventKind, WorktreeStatus};
 use crate::taskledger::util;
 
 /// Queue 1 `worktree_remove` run of the tree of `row`, in `tx`: subject
@@ -72,11 +76,11 @@ pub fn queue_remove(
 
 /// Queue the automatic removal of `row` for `cause`, as the reconciler and
 /// the disk budget queue it, in `tx`; `true` for a new run. A tree whose
-/// removal failed ([`removal_failed`]) is not queued again: its needs-you
-/// item stays open and says how to run it again (an operator decision,
-/// MAP.md of fleetd-p3; it differs from the row `worktree_remove` of "The
-/// kinds of job" in the design). A run that ended `abandoned` runs again
-/// after its backoff, up to `abandoned_run_limit`.
+/// last removal failed ([`removal_failed`]) is not queued here: [`retry`]
+/// runs a refusal again that can go away, and each other refusal keeps its
+/// needs-you item, which says how to run it again (an operator decision,
+/// MAP.md of fleetd-p3). A run that ended `abandoned` runs again after its
+/// backoff, up to `abandoned_run_limit`.
 pub fn queue_auto_remove(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -84,11 +88,156 @@ pub fn queue_auto_remove(
     cause: &str,
     clock: FleetSeconds,
 ) -> Result<bool> {
-    if removal_failed(tx, &row.worktree_id, &row.path)? {
+    auto_remove(ctx, tx, row, cause, false, clock)
+}
+
+/// [`queue_auto_remove`] with `keep_branch`, the choice of the owner that
+/// dropped the tree.
+pub fn auto_remove(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &WorktreeRow,
+    cause: &str,
+    keep_branch: bool,
+    clock: FleetSeconds,
+) -> Result<bool> {
+    let last = latest_removal(tx, &row.worktree_id, &row.path)?;
+    if last.is_some_and(|j| j.state == State::Failed) || busy(tx, row)? {
         return Ok(false);
     }
-    let queued = queue_remove(ctx, tx, row, cause, false, clock)?;
+    let queued = queue_remove(ctx, tx, row, cause, keep_branch, clock)?;
     Ok(matches!(queued, Ok(Queued::New(_))))
+}
+
+/// Whether a job of fleetd works in the tree of `row` now: a rescue of the
+/// tree is queued or running, or a `worktree_list` run of its repository
+/// runs git in each tree. A removal then waits, because the guard refuses
+/// a tree with a process in it.
+fn busy(tx: &Connection, row: &WorktreeRow) -> Result<bool> {
+    let rescue = jobs_store::active(tx, Kind::Rescue, &row.worktree_id)?;
+    let list = jobs_store::active(tx, Kind::WorktreeList, &row.repo_root)?;
+    Ok(rescue.is_some() || list.is_some_and(|j| j.state == State::Running))
+}
+
+/// Queue the removal of `row` again, in `tx`, at `clock`, when its last
+/// removal was refused for a cause that can go away
+/// ([`removal::transient`]): the same input, after the backoff of
+/// `job_backoff_s` from the pass that saw the refusal, up to
+/// `abandoned_run_limit` refusals ("The kinds of job", row
+/// `worktree_remove`). At the limit, the needs-you item of [`observe`]
+/// stays. `true` for a new run.
+pub fn retry(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &WorktreeRow,
+    clock: FleetSeconds,
+) -> Result<bool> {
+    let id = row.worktree_id.as_str();
+    let Some(last) = latest_removal(tx, id, &row.path)? else {
+        return Ok(false);
+    };
+    if last.state != State::Failed {
+        return Ok(false);
+    }
+    let refusals = refusals(tx, id)?;
+    let Some(seen) = refusals.iter().find(|r| r.job == last.id) else {
+        return Ok(false);
+    };
+    let n = refusals.len() as u64;
+    if n >= ctx.config.abandoned_run_limit || busy(tx, row)? {
+        return Ok(false);
+    }
+    let wait = jobs_backoff(ctx, n);
+    if clock.0 < seen.clock.saturating_add(wait) {
+        return Ok(false);
+    }
+    let (_, keep_branch) = read_remove_key(&last.input_key);
+    let cause = "its last removal was refused by a process in the tree";
+    let queued = queue_remove(ctx, tx, row, cause, keep_branch, clock)?;
+    Ok(matches!(queued, Ok(Queued::New(_))))
+}
+
+fn jobs_backoff(ctx: &JobCtx<'_>, refusals: u64) -> i64 {
+    let s = backoff_s(&ctx.config.job_backoff_s, refusals);
+    i64::try_from(s).unwrap_or(i64::MAX)
+}
+
+/// The cause of the fact of 1 refusal of a removal that can go away.
+const REFUSED: &str = "removal_refused_for_now";
+
+/// 1 refusal that can go away: its run and the fleet clock of the pass
+/// that saw it.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+struct Refusal {
+    job: i64,
+    clock: i64,
+}
+
+/// The refusals that can go away of the removals of the tree `id`, oldest
+/// first. The tree is `removed` after its first passed removal, so each
+/// one counts.
+fn refusals(tx: &Connection, id: &str) -> Result<Vec<Refusal>> {
+    Ok(facts_of(tx, Entity::Worktree, id, EventKind::Note)?
+        .into_iter()
+        .filter(|f| f.cause == REFUSED)
+        .filter_map(|f| serde_json::from_str(&f.data_json).ok())
+        .collect())
+}
+
+/// The cause of the fact that the owner of a tree gave it up: fleetd
+/// released a gate tree (row W11), or a worker dropped a tree (RR-13).
+pub const OWNER_ENDED: &str = "owner_ended";
+
+/// What the owner of a tree decided when it gave it up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct OwnerEnded {
+    /// The removal keeps the branch (`drop --keep-branch`).
+    pub keep_branch: bool,
+    /// The rescue run of the drop. Only a rescue ref of this run lets the
+    /// tree go: a later rescue saves work that came after the drop. `None`
+    /// for a released gate tree, which only fleetd writes.
+    pub rescue_job: Option<i64>,
+}
+
+/// Record, in `tx`, that the owner of the tree `id` gave it up with
+/// `ended`. The caller writes it in the transaction that moves the tree
+/// to its rescue, so a refused request leaves no fact.
+pub fn record_owner_end(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    id: &str,
+    actor: Actor,
+    ended: &OwnerEnded,
+) -> Result<()> {
+    let cause = Cause {
+        actor,
+        text: OWNER_ENDED,
+    };
+    let data = serde_json::to_value(ended)?;
+    record(
+        tx,
+        ctx.guard,
+        EventKind::Note,
+        Entity::Worktree,
+        id,
+        cause,
+        &data,
+    )?;
+    Ok(())
+}
+
+/// The last [`OwnerEnded`] of each tree, by worktree id, in 1 read.
+pub fn owners_ended(tx: &Connection) -> Result<BTreeMap<String, OwnerEnded>> {
+    let mut out = BTreeMap::new();
+    for f in facts_after(tx, Entity::Worktree, EventKind::Note, 0)? {
+        if f.cause != OWNER_ENDED {
+            continue;
+        }
+        if let Ok(ended) = serde_json::from_str(&f.data_json) {
+            out.insert(f.entity_id, ended);
+        }
+    }
+    Ok(out)
 }
 
 /// Whether the last automatic removal of the tree `id` at `path` (the
@@ -119,7 +268,8 @@ pub fn latest_removal(tx: &Connection, id: &str, path: &str) -> Result<Option<Jo
 pub enum Observed {
     /// The row is `removed`.
     Removed,
-    /// The removal failed: the row stays, and 1 needs-you item is open.
+    /// The removal failed: the row stays. 1 needs-you item is open, unless
+    /// [`retry`] runs the refusal again.
     Failed,
     /// The row stays as it was.
     Kept,
@@ -207,10 +357,40 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
     Ok(Observed::Removed)
 }
 
-/// Open the needs-you item of the failed removal `job`. The pass does not
-/// queue the same removal again, so the item says how to run it again.
+/// Open the needs-you item of the failed removal `job`. A refusal that can
+/// go away ([`removal::transient`]) is recorded 1 time, and [`retry`] runs
+/// it again: its item opens only at `abandoned_run_limit` refusals. The
+/// pass does not queue each other refusal again, so the item says how to
+/// run it again.
 fn failed(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, reason: &str) -> Result<Observed> {
     let id = job.subject.as_str();
+    if removal::transient(reason) {
+        let mut seen = refusals(tx, id)?;
+        if !seen.iter().any(|r| r.job == job.id) {
+            let refusal = Refusal {
+                job: job.id,
+                clock: create::fleet_clock(tx)?.0,
+            };
+            let cause = Cause {
+                actor: Actor::Horch,
+                text: REFUSED,
+            };
+            let data = serde_json::to_value(refusal)?;
+            record(
+                tx,
+                ctx.guard,
+                EventKind::Note,
+                Entity::Worktree,
+                id,
+                cause,
+                &data,
+            )?;
+            seen.push(refusal);
+        }
+        if (seen.len() as u64) < ctx.config.abandoned_run_limit {
+            return Ok(Observed::Failed);
+        }
+    }
     let key = removal::needs_you_key(id);
     let text = format!(
         "The removal of worktree {id} failed, so its tree stays: {reason}. \

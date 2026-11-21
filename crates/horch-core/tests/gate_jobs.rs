@@ -1032,3 +1032,392 @@ fn marked(marker: &str) -> Vec<String> {
         .map(|line| line.trim().to_string())
         .collect()
 }
+
+// ─── the end of a tree that its owner gave up ───────────────────────────
+
+/// The end of a gate tree and of a tree that a worker dropped
+/// (preservation-04 row W11, RR-13; ticket 164 of fleetd-finish), and the
+/// retry of a removal that a process in the tree refused (FM-27, "The
+/// kinds of job", row `worktree_remove`).
+mod tree_end {
+    use super::*;
+
+    use horch_core::fleetd::fleet_runtime::adapters::scans::{FolderFact, Presence};
+    use horch_core::fleetd::fleet_runtime::application::jobs::JobKey;
+    use horch_core::fleetd::worktree_custody::adapters::git::{
+        worktree_list, CliWorktreeGit, ListResult,
+    };
+    use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
+    use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
+    use horch_core::fleetd::worktree_custody::application::reconcile::{
+        reconcile_worktrees, Facts, Listed, Report, WorkDir,
+    };
+    use horch_core::taskledger::model::WorktreeStatus;
+    use horch_core::taskledger::util;
+
+    impl World {
+        /// The facts of part 1 of a pass: the folder of each row, each
+        /// folder of `<repo>/.worktrees/`, and the result of the
+        /// `worktree_list` executor on the repository.
+        fn tree_facts(&self) -> Facts {
+            let rows = trees::in_states(&self.conn, &WorktreeState::ALL).unwrap();
+            let folders = rows
+                .iter()
+                .map(|r| FolderFact {
+                    key: r.worktree_id.clone(),
+                    presence: if Path::new(&r.path).is_dir() {
+                        Presence::Present
+                    } else {
+                        Presence::Missing
+                    },
+                })
+                .collect();
+            let mut entries: Vec<String> = std::fs::read_dir(self.repo.join(".worktrees"))
+                .unwrap()
+                .map(|e| e.unwrap().path().display().to_string())
+                .collect();
+            entries.sort();
+            let live: Vec<trees::WorktreeRow> = rows
+                .into_iter()
+                .filter(|r| r.state != WorktreeState::Removed)
+                .collect();
+            let gw = CliWorktreeGit::new("git", self.fleet_root())
+                .reading(std::slice::from_ref(&self.repo));
+            let ran = worktree_list(&gw, &self.repo, &live);
+            assert!(ran.outcome.passed, "{}", ran.outcome.text);
+            let result: ListResult = serde_json::from_value(ran.data.unwrap()).unwrap();
+            Facts {
+                folders,
+                work_dirs: vec![WorkDir {
+                    repo: self.repo.display().to_string(),
+                    folders: entries,
+                }],
+                lists: vec![Listed {
+                    repo: self.repo.display().to_string(),
+                    job: 0,
+                    seen_at: util::now(),
+                    result,
+                }],
+            }
+        }
+
+        /// Part 2 of 1 pass at `clock`: the reconciler on the facts of the
+        /// disk now.
+        fn pass_at(&mut self, clock: i64) -> Report {
+            let facts = self.tree_facts();
+            self.tx(|ctx, tx| reconcile_worktrees(ctx, tx, &facts, FleetSeconds(clock)))
+                .unwrap()
+        }
+
+        /// Each run of `kind` of the tree `id`, oldest first.
+        fn runs_of(&self, kind: Kind, id: &str) -> Vec<JobRow> {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM jobs WHERE kind = ?1 AND subject = ?2 ORDER BY id")
+                .unwrap();
+            let ids: Vec<i64> = stmt
+                .query_map([kind.as_str(), id], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            ids.into_iter().map(|id| self.job(id)).collect()
+        }
+
+        fn only_run(&self, kind: Kind, id: &str) -> i64 {
+            let runs = self.runs_of(kind, id);
+            assert_eq!(runs.len(), 1, "{runs:?}");
+            runs[0].id
+        }
+
+        fn tree_row(&self, id: &str) -> trees::WorktreeRow {
+            trees::get(&self.conn, id).unwrap().unwrap()
+        }
+
+        fn rescue_refs(&self, id: &str) -> Vec<String> {
+            let out = git(
+                &self.repo,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    &format!("refs/horch/rescue/{id}/"),
+                ],
+            );
+            out.lines().map(str::to_string).collect()
+        }
+
+        fn open_kinds(&self) -> Vec<String> {
+            open_items(&self.conn)
+                .unwrap()
+                .into_iter()
+                .map(|i| i.kind)
+                .collect()
+        }
+
+        /// An `orphaned` tree `name` on the branch `fleet/<name>` from
+        /// `main`, of the task `task`.
+        fn orphan(&mut self, name: &str, task: Option<&str>) -> PathBuf {
+            let path = self.repo.join(".worktrees").join(name);
+            let path_s = path.display().to_string();
+            let branch = format!("fleet/{name}");
+            git(
+                &self.repo,
+                &["worktree", "add", "-q", "-b", &branch, &path_s, "main"],
+            );
+            let new = NewWorktree {
+                worktree_id: name.to_string(),
+                task_id: task.map(str::to_string),
+                worker_id: None,
+                repo_root: self.repo.display().to_string(),
+                path: path_s,
+                branch,
+                base: "main".to_string(),
+                base_commit: Some(self.main.clone()),
+                status: WorktreeStatus::Open,
+                mode: None,
+            };
+            self.tx(|_, tx| trees::insert_orphan(tx, None, &new, cause("test")))
+                .unwrap();
+            path
+        }
+
+        /// A task of the run whose idea is `merged`.
+        fn task_of_merged_idea(&mut self) -> String {
+            let run = self.run.clone();
+            let new = NewTask::work("t1", "t1.md", "dev");
+            let task = tasks::add(&self.conn, &run, &new, Actor::Orchestrator)
+                .unwrap()
+                .task_id;
+            self.conn
+                .execute("UPDATE ideas SET state = 'merged'", [])
+                .unwrap();
+            task
+        }
+
+        /// Rescue the orphan `id` through its rescue job: the pass that
+        /// queues it, the run, and the pass that observes it.
+        fn rescue(&mut self, id: &str, clock: i64) -> Report {
+            let report = self.pass_at(clock);
+            assert_eq!(report.rescues, [id], "{report:?}");
+            let job = self.only_run(Kind::Rescue, id);
+            let ended = self.run(job);
+            assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+            let report = self.pass_at(clock);
+            assert_eq!(self.tree_row(id).state, WorktreeState::Rescued);
+            report
+        }
+    }
+
+    /// A process with its working folder in `dir`, which the test ends.
+    struct InTree(std::process::Child);
+
+    impl InTree {
+        fn start(dir: &Path) -> InTree {
+            let child = Command::new("sleep")
+                .arg("300")
+                .current_dir(dir)
+                .spawn()
+                .unwrap();
+            InTree(child)
+        }
+
+        fn end(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    impl Drop for InTree {
+        fn drop(&mut self) {
+            self.end();
+        }
+    }
+
+    /// Row W11: the gate tree that its feature released is rescued, then
+    /// removed; its rescue ref stays.
+    #[test]
+    fn released_gate_tree_is_rescued_then_removed_and_its_rescue_ref_stays() {
+        let mut w = world();
+        let tree = w.gate_tree();
+        let id = tree.worktree_id.clone();
+        let repo = w.repo.clone();
+        assert!(w
+            .tx(|ctx, tx| gate_tree::release(ctx, tx, &repo, FEATURE, "its feature is merged"))
+            .unwrap());
+
+        let report = w.rescue(&id, 0);
+
+        assert_eq!(report.removals, [id.clone()], "{report:?}");
+        let ended = w.run(w.only_run(Kind::WorktreeRemove, &id));
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+        w.pass_at(0);
+        assert_eq!(w.tree_row(&id).state, WorktreeState::Removed);
+        assert!(!w.gate_path().exists());
+        let listed = git(&w.repo, &["worktree", "list", "--porcelain"]);
+        assert!(!listed.contains("gate-F-1"), "{listed}");
+        assert_eq!(w.rescue_refs(&id), [format!("refs/horch/rescue/{id}/1")]);
+        assert_eq!(
+            w.only_run(Kind::Rescue, &id),
+            w.runs_of(Kind::Rescue, &id)[0].id
+        );
+        assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
+    }
+
+    /// A tree with no task that nobody released or dropped is rescued and
+    /// stays: no removal without a decision.
+    #[test]
+    fn rescued_tree_with_no_task_that_nobody_gave_up_stays() {
+        let mut w = world();
+        let path = w.orphan("stray", None);
+        std::fs::write(path.join("notes.txt"), "mine\n").unwrap();
+
+        let report = w.rescue("stray", 0);
+
+        assert!(report.removals.is_empty(), "{report:?}");
+        for clock in [10, 1_000] {
+            let report = w.pass_at(clock);
+            assert!(report.removals.is_empty(), "{report:?}");
+        }
+        assert!(w.runs_of(Kind::WorktreeRemove, "stray").is_empty());
+        assert_eq!(w.tree_row("stray").state, WorktreeState::Rescued);
+        assert_eq!(
+            std::fs::read_to_string(path.join("notes.txt")).unwrap(),
+            "mine\n"
+        );
+    }
+
+    /// A drop queues the rescue at the HEAD that the command read. The row
+    /// still has an older HEAD from the last `worktree_list` result. The
+    /// passed rescue makes the tree `rescued`, and no second rescue runs.
+    #[test]
+    fn rescue_queued_at_a_newer_head_than_the_row_is_the_only_rescue() {
+        let mut w = world();
+        let path = w.orphan("moved", None);
+        let main = w.main.clone();
+        w.tx(|_, tx| trees::set_facts(tx, "moved", &main, false, None, "old"))
+            .unwrap();
+        std::fs::write(path.join("b.txt"), "b\n").unwrap();
+        git(&path, &["add", "b.txt"]);
+        git(&path, &["commit", "-q", "-m", "b"]);
+        let head = git(&path, &["rev-parse", "HEAD"]);
+        let repo = w.repo.display().to_string();
+        let input_key = rescue_key(&path.display().to_string(), &head);
+        let key = JobKey {
+            kind: Kind::Rescue,
+            subject: "moved",
+            input_key: &input_key,
+        };
+        let job = match w.tx(|ctx, tx| jobs::queue(ctx, tx, &key, Some(&repo), FleetSeconds(0))) {
+            Ok(Queued::New(id)) => id,
+            other => panic!("expected a new rescue run, got {other:?}"),
+        };
+        let ended = w.run(job);
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+
+        for clock in [0, 10, 1_000] {
+            let report = w.pass_at(clock);
+            assert!(report.rescues.is_empty(), "{report:?}");
+        }
+
+        assert_eq!(w.tree_row("moved").state, WorktreeState::Rescued);
+        assert_eq!(w.runs_of(Kind::Rescue, "moved").len(), 1);
+        assert_eq!(w.rescue_refs("moved"), ["refs/horch/rescue/moved/1"]);
+    }
+
+    /// The rescued tree of a merged idea, with its removal queued.
+    fn merged_and_rescued(w: &mut World) -> PathBuf {
+        let task = w.task_of_merged_idea();
+        let path = w.orphan("done", Some(&task));
+        let report = w.rescue("done", 0);
+        assert_eq!(report.removals, ["done"], "{report:?}");
+        path
+    }
+
+    /// FM-27: a removal refused because a process has its working folder
+    /// in the tree opens no item. After the backoff, and once the process
+    /// ended, the next run removes the tree.
+    #[test]
+    fn removal_refused_by_a_process_in_the_tree_runs_again_after_it_ends() {
+        let mut w = world();
+        let path = merged_and_rescued(&mut w);
+        let mut child = InTree::start(&path);
+        let first = w.run(w.only_run(Kind::WorktreeRemove, "done"));
+        assert_eq!(first.state, State::Failed);
+        assert!(
+            text(&first).contains("have their working folder in the tree"),
+            "{}",
+            text(&first)
+        );
+
+        // Inside the backoff of 30 s: no new run, and no item.
+        let report = w.pass_at(10);
+        assert!(report.removals.is_empty(), "{report:?}");
+        assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
+        assert_eq!(w.tree_row("done").state, WorktreeState::Rescued);
+        child.end();
+
+        let report = w.pass_at(40);
+
+        assert_eq!(report.removals, ["done"], "{report:?}");
+        let runs = w.runs_of(Kind::WorktreeRemove, "done");
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert_eq!(runs[1].input_key, runs[0].input_key);
+        let ended = w.run(runs[1].id);
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+        w.pass_at(40);
+        assert_eq!(w.tree_row("done").state, WorktreeState::Removed);
+        assert!(!path.exists());
+        assert_eq!(w.rescue_refs("done"), ["refs/horch/rescue/done/1"]);
+        assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
+    }
+
+    /// At `abandoned_run_limit` refusals by a process in the tree, 1 item
+    /// opens and no new run is queued. The tree stays.
+    #[test]
+    fn removal_refused_by_a_process_at_the_limit_opens_1_item_and_stops() {
+        let mut w = world();
+        let path = merged_and_rescued(&mut w);
+        let _child = InTree::start(&path);
+        let limit = w.config.abandoned_run_limit;
+        let mut clock = 0;
+        for n in 1..=limit {
+            let runs = w.runs_of(Kind::WorktreeRemove, "done");
+            assert_eq!(runs.len() as u64, n, "{runs:?}");
+            let ended = w.run(runs.last().unwrap().id);
+            assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+            clock += 1_000;
+            w.pass_at(clock);
+        }
+
+        for _ in 0..2 {
+            clock += 1_000;
+            let report = w.pass_at(clock);
+            assert!(report.removals.is_empty(), "{report:?}");
+        }
+        assert_eq!(w.runs_of(Kind::WorktreeRemove, "done").len() as u64, limit);
+        assert_eq!(w.open_kinds(), ["remove_failed"]);
+        assert_eq!(w.tree_row("done").state, WorktreeState::Rescued);
+        assert!(path.is_dir());
+    }
+
+    /// A refusal for a cause that cannot go away (a file that changed after
+    /// the rescue) is not run again.
+    #[test]
+    fn removal_refused_for_a_changed_file_is_not_run_again() {
+        let mut w = world();
+        let path = merged_and_rescued(&mut w);
+        std::fs::write(path.join("late.txt"), "late\n").unwrap();
+        let ended = w.run(w.only_run(Kind::WorktreeRemove, "done"));
+        assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+
+        for clock in [10, 1_000, 10_000] {
+            let report = w.pass_at(clock);
+            assert!(report.removals.is_empty(), "{report:?}");
+        }
+        assert_eq!(w.runs_of(Kind::WorktreeRemove, "done").len(), 1);
+        assert_eq!(w.open_kinds(), ["remove_failed"]);
+        assert_eq!(
+            std::fs::read_to_string(path.join("late.txt")).unwrap(),
+            "late\n"
+        );
+    }
+}
