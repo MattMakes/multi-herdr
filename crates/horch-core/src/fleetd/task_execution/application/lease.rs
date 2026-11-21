@@ -244,11 +244,32 @@ pub fn check_i1(
     clock: FleetSeconds,
     limits: &dyn Fn(&str) -> Limits,
 ) -> Result<()> {
+    check_i1_within(tx, guard, clock, limits, usize::MAX)
+}
+
+/// [`check_i1`] with at most `budget` lease writes and deletes (PL-5,
+/// T-292). A write or a delete repairs its row, so the next call repairs
+/// other rows: N repairs are done in at most N / `budget` + 1 calls. A
+/// task with 2 live attempts opens its needs-you item in each call, with
+/// no budget: that item writes no lease, and its key keeps it to 1 row.
+pub fn check_i1_within(
+    tx: &Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    limits: &dyn Fn(&str) -> Limits,
+    budget: usize,
+) -> Result<()> {
     check_pass(tx, guard)?;
     let (tasks, worker_of) = task_leases(tx)?;
     let repairs = i1_repairs(&tasks);
     let lease_s = |attempt: &str| limits(&worker_of[attempt]).lease_s;
+    let mut rows = 0;
     for repair in &repairs {
+        let row = !matches!(repair, Repair::TwoLive { .. });
+        if row && rows == budget {
+            continue;
+        }
+        rows += usize::from(row);
         apply(tx, guard, clock, repair, &lease_s)?;
     }
     resolve_ended_breaches(tx, &repairs)
@@ -1097,5 +1118,26 @@ mod tests {
             .unwrap();
         l.check_i1(20);
         assert_eq!(breaches(&l), Vec::<String>::new());
+    }
+
+    /// T-292: 1 call writes or deletes at most `budget` leases, and each
+    /// call repairs rows that the call before did not, so 5 missing leases
+    /// with a budget of 2 are all written in 3 calls.
+    #[test]
+    fn check_i1_within_repairs_at_most_its_budget_of_leases() {
+        let mut l = fixture(0);
+        for n in 0..5 {
+            l.add_task(&format!("t{n}"));
+            l.claimed();
+        }
+        l.store.conn().execute("DELETE FROM leases", []).unwrap();
+        let mut written = Vec::new();
+        for _ in 0..3 {
+            l.store
+                .immediate(|tx| check_i1_within(tx, Some(GEN), FleetSeconds(10), &limits, 2))
+                .unwrap();
+            written.push(l.leases().len());
+        }
+        assert_eq!(written, [2, 4, 5]);
     }
 }
