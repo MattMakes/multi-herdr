@@ -201,7 +201,6 @@ pub struct GitRunner {
     index: Option<PathBuf>,
     /// The sandbox of every child, when it has one.
     sandbox: Option<GitSandbox>,
-    /// The time limit of every child, when it has one.
     limit: Option<Duration>,
 }
 
@@ -526,7 +525,6 @@ fn stop(child: &mut Child, contained: &Contained) -> io::Result<bool> {
     Ok(by_term)
 }
 
-/// A thread that reads `pipe` to its end.
 fn read_all(pipe: Option<impl io::Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -612,7 +610,6 @@ mod tests {
         (bin, pids)
     }
 
-    /// Each pid of `pids` ends within 5 s.
     fn all_gone(pids: &Path) {
         let text = std::fs::read_to_string(pids).expect("the fake git started");
         let until = Instant::now() + Duration::from_secs(5);

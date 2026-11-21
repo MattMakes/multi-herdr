@@ -1755,9 +1755,6 @@ fn run_check(host: &dyn ProcessHost, spec: &LaunchSpec) -> Result<std::process::
     Ok(status?)
 }
 
-/// The proof of the stop window of a job process (T-369): a `SIGTERM` that
-/// comes between the launch of a check or a gate and the store of its
-/// group still ends that group.
 #[cfg(test)]
 pub(crate) mod stop_window {
     use super::*;
@@ -1766,8 +1763,6 @@ pub(crate) mod stop_window {
     use crate::runtime::context::{EnvSource, ProcessEnv};
     use std::time::{Duration, Instant};
 
-    /// The key of the job child: the file where it records the launched
-    /// group.
     const CHILD: &str = "HORCH_STOP_WINDOW_CHILD";
 
     /// A host that launches through [`Launcher`], records the pid and the
@@ -1795,10 +1790,6 @@ pub(crate) mod stop_window {
         }
     }
 
-    /// Run the test `test` (its full path in this test binary) as a job
-    /// child that calls `run` with [`TermAtLaunch`] and a command that
-    /// sleeps 600 s. The proof: the child ends by the signal, and the
-    /// launched group is gone within 10 s.
     pub(crate) fn prove(test: &str, run: impl FnOnce(&dyn ProcessHost, &LaunchSpec)) {
         if let Some(record) = ProcessEnv.var_os(CHILD) {
             let spec = LaunchSpec {
@@ -1850,8 +1841,6 @@ pub(crate) mod stop_window {
 mod tests {
     use super::*;
 
-    /// A `SIGTERM` of the job process between the launch of the check and
-    /// the store of its group ends the check group (T-369, F4).
     #[test]
     fn a_stop_between_the_launch_and_the_store_of_the_check_ends_its_group() {
         stop_window::prove(

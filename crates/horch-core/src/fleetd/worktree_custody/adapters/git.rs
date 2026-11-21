@@ -1229,7 +1229,6 @@ mod tests {
         Ok(cmd)
     }
 
-    /// A repository with 1 commit, and that commit.
     fn one_commit(dir: &Path) -> (PathBuf, String) {
         let repo = dir.join("repo");
         let git = |args: &[&str]| {
@@ -1269,7 +1268,6 @@ mod tests {
         bin
     }
 
-    /// The git of fleetd on `repo` with the git `bin` and a limit of 1 s.
     fn limited(dir: &Path, bin: &Path, repo: &Path) -> CliWorktreeGit {
         CliWorktreeGit::new(bin, dir.join("fleet"))
             .with_home(dir.join("home"))
@@ -1278,8 +1276,6 @@ mod tests {
             .with_time_limit(Duration::from_secs(1))
     }
 
-    /// Git removes its `.lock` file at `SIGTERM`: a git stopped at its
-    /// limit by the `SIGTERM` leaves no lock (T-369).
     #[cfg(unix)]
     #[test]
     fn a_git_stopped_at_its_limit_by_term_leaves_no_lock() {
@@ -1296,9 +1292,6 @@ mod tests {
         assert!(!git_dir.join("refs/heads/x.lock").exists());
     }
 
-    /// A git that the `SIGKILL` ends leaves its `.lock` file: the error
-    /// names it, and the next git that takes that lock fails at once with
-    /// a text that names it too (T-369).
     #[cfg(unix)]
     #[test]
     fn a_git_killed_at_its_limit_names_the_lock_that_stays() {

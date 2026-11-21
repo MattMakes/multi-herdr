@@ -14,7 +14,6 @@ fn kill_pgid(pgid: u32) -> bool {
     signal_pgid(pgid, libc::SIGKILL)
 }
 
-/// `signal` to group `pgid`, with the rule of [`kill_pgid`].
 fn signal_pgid(pgid: u32, signal: libc::c_int) -> bool {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return false;

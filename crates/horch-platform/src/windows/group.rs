@@ -35,7 +35,6 @@ pub(crate) fn kill_child_group(child: &mut Child) -> bool {
     child.kill().is_ok()
 }
 
-/// No polite stop on Windows.
 pub(crate) fn term_child_group(_child: &mut Child) -> bool {
     false
 }

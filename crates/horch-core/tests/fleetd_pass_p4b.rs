@@ -913,9 +913,6 @@ fn crash_before_and_after_the_commit_of_the_ref_move_lands_once() {
     }
 }
 
-// ─── the time limit of the git of the pass ──────────────────────────────
-
-/// The key of [`child_pass_with_git`]: the folder of the world.
 const GIT_CHILD: &str = "HORCH_P4B_GIT_CHILD";
 
 /// Not a test of its own: 1 pass of a child process whose git is
@@ -933,8 +930,6 @@ fn child_pass_with_git() {
         Ok(report) => println!("PASS-FAILED {:?}", report.failed),
         Err(e) => println!("PASS-ERROR {e}"),
     }
-    // The lock test: the next pass opens the item of the lock that stays,
-    // and the pass after the removal of the file resolves it.
     let Some(lock) = std::env::var_os(LOCK_CHILD) else {
         return;
     };
@@ -953,7 +948,6 @@ fn child_pass_with_git() {
     println!("LOCK-ITEMS-AFTER {:?}", lock_items(&conn));
 }
 
-/// The key of the lock file of the lock test of [`child_pass_with_git`].
 const LOCK_CHILD: &str = "HORCH_P4B_LOCK_CHILD";
 
 /// A git of the pass that runs the shell `on_hang` and hangs on its first
@@ -980,12 +974,10 @@ fn hang_once_git(w: &World, subcommand: &str, on_hang: &str) -> PathBuf {
     bin
 }
 
-/// 1 pass in a child process with the git `bin`: its output.
 fn pass_with_git(w: &World, bin: &Path) -> String {
     passes_with_git(w, bin, None)
 }
 
-/// [`pass_with_git`], and with `lock` the passes of the lock test.
 fn passes_with_git(w: &World, bin: &Path, lock: Option<&Path>) -> String {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     if let Some(lock) = lock {
@@ -1056,7 +1048,6 @@ fn a_git_of_the_pass_past_its_limit_rolls_back_its_duty_and_the_next_pass_works(
     assert_eq!(refs, candidate_ref, "no other candidate ref");
 
     let mut p = fleetd(&w, &f, Faults::default());
-    // `run` asserts that no duty fails.
     run(&mut p, &mut conn);
     assert_eq!(w.bundle_state(id), "landed");
     assert_eq!(w.moves_to(&id.to_string(), "landed"), 1, "1 landing");
@@ -1100,10 +1091,6 @@ fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item(
     assert_eq!(items, 1, "1 row for the lock");
 }
 
-/// A git that fails to read the project file at a feature tip gives a
-/// failed line of the pass, and the pass does not skip the feature in
-/// silence. The first `cat-file` of the pass reads `fleet.toml` and hangs
-/// past its limit (T-369).
 #[test]
 fn a_failed_read_of_the_project_file_gives_a_failed_line_of_the_pass() {
     let w = three_done();
@@ -1116,9 +1103,6 @@ fn a_failed_read_of_the_project_file_gives_a_failed_line_of_the_pass() {
     assert!(out.contains("ran past its time limit of 10 s"), "{out}");
 }
 
-/// A project file that does not parse at the feature tip keeps its path:
-/// the pass names it in 1 failed line of the feature, and the gate holds
-/// give no failed line for it (T-369).
 #[test]
 fn a_project_file_that_does_not_parse_gives_the_line_of_its_feature() {
     let w = three_done();

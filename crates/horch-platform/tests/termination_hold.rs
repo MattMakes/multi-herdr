@@ -52,14 +52,12 @@ fn a_signal_in_the_hold_acts_at_its_end_one_time() {
     held_then_ended("twice");
 }
 
-/// A panic in the hold ends the hold, and the signal of the hold acts.
 #[cfg(unix)]
 #[test]
 fn a_panic_in_the_hold_ends_it_and_the_signal_acts() {
     held_then_ended("panic");
 }
 
-/// Only the end of the last open hold acts.
 #[cfg(unix)]
 #[test]
 fn only_the_end_of_the_last_hold_acts() {

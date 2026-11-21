@@ -595,7 +595,6 @@ fn a_leaderless_group_in_the_place_of_the_recorded_group_gets_no_signal() {
     std::thread::sleep(Duration::from_millis(200));
     let lives = alive(member);
 
-    // The test started the process, so the test ends it.
     let ended = Command::new("kill")
         .args(["-KILL", &member.to_string()])
         .status()
@@ -645,7 +644,6 @@ fn a_leaderless_group_gets_no_signal_from_a_leader_group_stop() {
         .unwrap()
         .success();
 
-    // The test started the process, so the test ends it.
     let ended = Command::new("kill")
         .args(["-KILL", &member.to_string()])
         .status()

@@ -507,8 +507,6 @@ mod tests {
     use super::*;
     use crate::fleetd::fleet_runtime::application::jobs::stop_window;
 
-    /// A `SIGTERM` of the job process between the launch of the gate and
-    /// the store of its group ends the gate group (T-369, F4).
     #[test]
     fn a_stop_between_the_launch_and_the_store_of_the_gate_ends_its_group() {
         stop_window::prove(
