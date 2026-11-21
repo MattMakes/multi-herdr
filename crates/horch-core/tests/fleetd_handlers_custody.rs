@@ -37,12 +37,13 @@ use serde_json::{json, Value};
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-/// No test of this file runs git: git has no ref.
+/// No test of this file runs git: git has no ref, and the HEAD of each
+/// folder is [`HEAD`].
 struct NoRefs;
 
 impl RefTips for NoRefs {
-    fn tip(&self, _repo: &Path, _name: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
+    fn tip(&self, _repo: &Path, name: &str) -> anyhow::Result<Option<String>> {
+        Ok((name == "HEAD").then(|| HEAD.to_string()))
     }
 }
 const BASE: &str = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
@@ -362,6 +363,10 @@ fn worktree_drop_keeps_each_refusal_of_today() {
         (
             with(clean(&branch), "dirty", Value::Null),
             "the fact dirty is unknown; nothing removed".to_string(),
+        ),
+        (
+            with(clean(&branch), "head", json!(BASE)),
+            "worktree HEAD changed during the drop checks; nothing removed".to_string(),
         ),
     ];
     for (facts, words) in refusals {

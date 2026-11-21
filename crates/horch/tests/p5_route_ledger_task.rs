@@ -48,11 +48,25 @@ struct Out {
     err: String,
 }
 
-struct NoRefs;
+/// git has no ref but `HEAD`: the HEAD of the folder, which the drop
+/// handler reads.
+struct HeadOnly;
 
-impl RefTips for NoRefs {
-    fn tip(&self, _repo: &Path, _name: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
+impl RefTips for HeadOnly {
+    fn tip(&self, repo: &Path, name: &str) -> anyhow::Result<Option<String>> {
+        if name != "HEAD" {
+            return Ok(None);
+        }
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()?;
+        Ok(out
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 }
 
@@ -119,7 +133,7 @@ impl World {
             Arc::new(Custody {
                 guard: Generation(1),
                 config: FleetConfig::default(),
-                refs: Box::new(NoRefs),
+                refs: Box::new(HeadOnly),
             }),
         );
         let conn = Connection::open(w.ledger()).unwrap();
