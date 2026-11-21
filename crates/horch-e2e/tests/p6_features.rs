@@ -485,12 +485,6 @@ impl World {
     /// job process that the pass started has ended, so the next pass reads
     /// its result. A project with 2 runs needs `--run`; the pass covers the
     /// whole ledger, and `--run r1` names only the run of its printed checks.
-    ///
-    /// The `PATH` of the pass is an empty folder (and the host tools on
-    /// Linux, see `pass_path`): the scan of the CLI
-    /// binaries of Phase 7 finds no CLI and queues no docs or conformance
-    /// job. Git, herdr and the agents have their absolute paths in the
-    /// sealed environment.
     fn pass(&self) {
         if self.pushed.get()
             && self
@@ -825,9 +819,6 @@ fn several_features_run_at_the_same_time() {
     }
 }
 
-/// The `PATH` of a pass: the empty `no_clis` folder, and on Linux also the
-/// host tool folder `host-bin` of the harness. fleetd finds `bwrap` and
-/// `socat` on the `PATH`; without them each job runs no git.
 fn pass_path(root: &std::path::Path, no_clis: std::path::PathBuf) -> std::ffi::OsString {
     #[cfg(target_os = "linux")]
     let dirs = vec![no_clis, root.join("host-bin")];

@@ -363,12 +363,6 @@ impl World {
     /// 1 pass of fleetd, `horch ledger watch --once`, with the fault point
     /// `fault`. Then wait until each job process that a pass started has
     /// ended, so the next pass reads its result.
-    ///
-    /// The `PATH` of the pass is an empty folder (and the host tools on
-    /// Linux, see `pass_path`): the fakes of the harness
-    /// are not on it, so the scan of the CLI binaries of Phase 7 finds no
-    /// CLI and queues no docs or conformance job. Git, herdr and the agents
-    /// have their absolute paths in the sealed environment.
     fn pass_with(&self, fault: Option<&str>) -> Output {
         let no_clis = self.h.root.join("no-clis");
         std::fs::create_dir_all(&no_clis).unwrap();
@@ -577,9 +571,6 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert!(w.feature_rescues().is_empty(), "no rescue ref yet");
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()), "no tip moved");
 
-    // A later pass writes the rescue ref of the old tip. Under load a pass
-    // can reach its time budget (PL-5) before this effect, and the next
-    // pass gives it again, so wait for the ref, not for 1 pass.
     w.pass_until("the rescue ref of the old tip", |w| {
         (!w.feature_rescues().is_empty()).then_some(())
     });
@@ -691,9 +682,6 @@ fn i12_stash_entry_blocks_the_deletion_of_its_branch() {
     assert_eq!(row.as_deref(), Some("landed"));
 }
 
-/// The `PATH` of a pass: the empty `no_clis` folder, and on Linux also the
-/// host tool folder `host-bin` of the harness. fleetd finds `bwrap` and
-/// `socat` on the `PATH`; without them each job runs no git.
 fn pass_path(root: &std::path::Path, no_clis: std::path::PathBuf) -> std::ffi::OsString {
     #[cfg(target_os = "linux")]
     let dirs = vec![no_clis, root.join("host-bin")];
