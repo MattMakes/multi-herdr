@@ -17,6 +17,7 @@
 //! ```
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -34,9 +35,15 @@ use serde_json::Value;
 /// The grace of a polite stop, in s, in the `fleet.toml` of each test.
 const GRACE_S: u64 = 1;
 
-/// 1 pass of 5 s plus the grace, plus 4 s for the start of fleetd and
-/// a slow machine.
-const STOPPED_IN: Duration = Duration::from_secs(5 + GRACE_S + 4);
+/// The time budget of a pass (`pass_time_budget_s`, its default).
+const PASS_BUDGET_S: u64 = 20;
+
+/// A wide guard only: 2 passes of [`PASS_BUDGET_S`] plus the grace, plus
+/// 4 s for the start of fleetd. FM-22 is proven by the count of passes in
+/// [`StopPasses`]. Under load a pass of fleetd takes 9 s or more, because 1
+/// rename or fsync of the kernel takes seconds (measured: the rename of the
+/// heartbeat took 7 s at a load average of 20 to 48).
+const STOPPED_IN: Duration = Duration::from_secs(2 * PASS_BUDGET_S + GRACE_S + 4);
 
 /// A process group that the test started, by the pid and start time of
 /// its leader. Killed on drop while it is still that group, so that a
@@ -226,16 +233,63 @@ fn open_items(store: &Store) -> Vec<String> {
         .unwrap()
 }
 
+/// The awake time of the last heartbeat of fleetd. fleetd writes 1
+/// heartbeat at its start and 1 at the end of each pass.
+fn heartbeat_at(h: &Harness) -> Option<u64> {
+    let path: PathBuf = h.root.join("fleet").join("run").join("heartbeat.json");
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    v["awake"]["awake_ms"].as_u64()
+}
+
+/// The steps of a stop that the `stops` rows of the ledger record: the
+/// polite stop, the kill, and the close of the pane.
+fn stop_steps(store: &Store) -> (bool, bool, bool) {
+    let has = |sql: &str| -> bool {
+        store
+            .conn()
+            .query_row(sql, [], |r| r.get::<_, i64>(0))
+            .unwrap()
+            > 0
+    };
+    (
+        has("SELECT count(*) FROM stops WHERE signal = 'TERM' AND result = 'sent'"),
+        has("SELECT count(*) FROM stops WHERE signal = 'KILL' AND result = 'sent'"),
+        has("SELECT count(*) FROM stops WHERE target = 'pane' AND result = 'pane_closed'"),
+    )
+}
+
+/// The heartbeats that fleetd wrote before each step of a stop. Each poll
+/// reads the heartbeat first and the ledger after it. So a heartbeat counts
+/// before a step only when fleetd wrote it before that step. A late poll
+/// sees fewer heartbeats, never more, and the load of the host cannot add 1.
+#[derive(Default)]
+struct StopPasses {
+    before_polite: BTreeSet<u64>,
+    before_kill_and_close: BTreeSet<u64>,
+}
+
+impl StopPasses {
+    /// 1 poll. True when the ledger records each step.
+    fn poll(&mut self, h: &Harness, store: &Store) -> bool {
+        let heartbeat = heartbeat_at(h);
+        let (polite, kill, close) = stop_steps(store);
+        if let Some(at) = heartbeat {
+            if !polite {
+                self.before_polite.insert(at);
+            }
+            if !(kill && close) {
+                self.before_kill_and_close.insert(at);
+            }
+        }
+        polite && kill && close
+    }
+}
+
 /// Wait until fleetd wrote `passes` more heartbeats: `passes` more passes.
 fn wait_passes(h: &Harness, passes: usize) {
-    let path: PathBuf = h.root.join("fleet").join("run").join("heartbeat.json");
-    let at = || -> Option<u64> {
-        let v: Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-        v["awake"]["awake_ms"].as_u64()
-    };
     let mut seen = Vec::new();
     wait_for("fleetd passes", || {
-        let now = at();
+        let now = heartbeat_at(h);
         if now.is_some() && seen.last() != Some(&now) {
             seen.push(now);
         }
@@ -253,16 +307,21 @@ fn fm22_orphan_process_and_pane_after_a_reap_are_stopped() {
     let mut fleetds = Fleetds::new(&h);
     fleetds.start(&h, "fleetd");
     let started = Instant::now();
+    let mut passes = StopPasses::default();
     // The polite stop goes to each process of the group of the leader. Each
     // process writes its mark when it handles the signal, in any order.
     wait_for("the polite stop of the child and the leader", || {
+        passes.poll(&h, &store);
         (got_term(&h, "w", "child") && got_term(&h, "w", "leader")).then_some(())
     });
     assert!(got_term(&h, "w", "child"));
     assert!(got_term(&h, "w", "leader"));
     wait_for_or(
         "the kill of the group and the close of the pane",
-        || (!alive(leader) && !alive(child) && !panes(&h).contains(&"w1:p1".into())).then_some(()),
+        || {
+            passes.poll(&h, &store);
+            (!alive(leader) && !alive(child) && !panes(&h).contains(&"w1:p1".into())).then_some(())
+        },
         || {
             format!(
                 "leader alive {}, child alive {}, panes {:?}\n{}",
@@ -273,10 +332,29 @@ fn fm22_orphan_process_and_pane_after_a_reap_are_stopped() {
             )
         },
     );
+    wait_for_or(
+        "the stops rows of the polite stop, the kill and the pane close",
+        || passes.poll(&h, &store).then_some(()),
+        || format!("{:?}", stop_steps(&store)),
+    );
+    // The heartbeat of the start comes before pass 1, and the heartbeat of
+    // pass 1 comes before pass 2.
+    assert!(
+        passes.before_polite.len() <= 1,
+        "fleetd sent the polite stop after {} heartbeats; FM-22 sends it in \
+         the first pass after the reap",
+        passes.before_polite.len()
+    );
+    assert!(
+        passes.before_kill_and_close.len() <= 2,
+        "fleetd killed the group and closed the pane after {} heartbeats; \
+         FM-22 does both in the pass after the polite stop",
+        passes.before_kill_and_close.len()
+    );
     assert!(
         started.elapsed() < STOPPED_IN,
-        "the orphans were stopped {} s after fleetd started; FM-22 stops them \
-         within 1 pass of 5 s plus stop_grace_s",
+        "the orphans were stopped {} s after fleetd started; 2 passes take at \
+         most 2 time budgets of a pass",
         started.elapsed().as_secs()
     );
     assert_eq!(open_items(&store), Vec::<String>::new());
