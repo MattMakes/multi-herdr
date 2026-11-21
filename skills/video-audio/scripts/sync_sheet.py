@@ -4,6 +4,7 @@
 Usage:
   sync_sheet.py --timeline timeline.json [--audio-dir audio] [--beats audio/beats.json]
                 [--out audio/sync-sheet.json] [--whisper-model <model.bin>]
+                [--words-dir <dir>]
   sync_sheet.py --self-test
 
 Run it after the timing reconciliation and the beat grid, so that every
@@ -19,6 +20,13 @@ whisper-cpp) is on PATH and --whisper-model names a model file on disk, its
 word timestamps replace the estimate for each segment whose words match the
 narration. The sheet says "timing": "measured" only when every segment is
 measured. Nothing is downloaded.
+
+Supplied route (optional): --words-dir names a folder that holds
+vo-<scene-id>.words.json for some or all voice files, written by any word
+aligner, for example WhisperX. A file is the aligner's JSON: "word_segments"
+or "segments[].words[]" with "word", "start" and "end" in seconds from the
+start of that voice file. A segment uses the file when its words match the
+narration, and is then "measured". It wins over the whisper.cpp route.
 
 Exit codes: 0 sheet written, 2 usage, input or tool error.
 Needs ffmpeg and ffprobe on PATH. Python standard library only.
@@ -211,6 +219,41 @@ def measured_words(text, tokens, duration):
     return out
 
 
+def parse_aligned_json(data):
+    """Return [(text, start_sec, end_sec)] from an aligner's word list (WhisperX shape)."""
+    if not isinstance(data, dict):
+        return []
+    items = data.get("word_segments")
+    if not isinstance(items, list):
+        items = [w for seg in data.get("segments") or [] if isinstance(seg, dict)
+                 for w in seg.get("words") or []]
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("word", "")).strip()
+        start, end = item.get("start"), item.get("end")
+        numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (start, end))
+        if not _norm(text) or not numbers:
+            # An aligner leaves a word without times when it cannot place it.
+            return []
+        out.append((text, float(start), float(end)))
+    return out
+
+
+def supplied_tokens(words_dir, scene_id):
+    """Return the aligned words of 1 voice file, or None when the folder has no usable file."""
+    if not words_dir:
+        return None
+    path = os.path.join(words_dir, f"vo-{scene_id}.words.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        return parse_aligned_json(_load_json(path)) or None
+    except ToolError:
+        return None
+
+
 def run_whisper(binary, model, path):
     """Return whisper.cpp word tokens for path, or None when the run fails."""
     with tempfile.TemporaryDirectory(prefix="sync-sheet-") as tmp:
@@ -251,7 +294,7 @@ def _shift(items, offset):
              "end_sec": round(w["end_sec"] + offset, 3)} for w in items]
 
 
-def build_segment(scene, audio_dir, whisper):
+def build_segment(scene, audio_dir, whisper, words_dir=None):
     text, lead_in = _narration(scene)
     path = os.path.join(audio_dir, f"vo-{scene['id']}.wav")
     if not os.path.isfile(path):
@@ -259,11 +302,12 @@ def build_segment(scene, audio_dir, whisper):
     duration = duration_of(path)
     phrases, words = estimate_words(text, speech_spans(path, duration))
     timing = "estimated"
-    if whisper:
+    tokens = supplied_tokens(words_dir, scene["id"])
+    if not tokens and whisper:
         tokens = run_whisper(whisper[0], whisper[1], path)
-        measured = measured_words(text, tokens, duration) if tokens else None
-        if measured:
-            words, timing = measured, "measured"
+    measured = measured_words(text, tokens, duration) if tokens else None
+    if measured:
+        words, timing = measured, "measured"
     start = float(scene["start_sec"]) + lead_in
     return {
         "scene_id": scene["id"],
@@ -277,12 +321,13 @@ def build_segment(scene, audio_dir, whisper):
     }
 
 
-def build(timeline_path, audio_dir, beats_path, whisper_model=None):
+def build(timeline_path, audio_dir, beats_path, whisper_model=None, words_dir=None):
     timeline = _load_json(timeline_path)
     beats = _load_json(beats_path)
     scenes = timeline.get("scenes", []) if isinstance(timeline, dict) else []
     whisper = whisper_route(whisper_model)
-    segments = [build_segment(s, audio_dir, whisper) for s in scenes if _narration(s)[0].strip()]
+    segments = [build_segment(s, audio_dir, whisper, words_dir)
+                for s in scenes if _narration(s)[0].strip()]
     measured = bool(segments) and all(s["timing"] == "measured" for s in segments)
     return {
         "version": 1,
@@ -310,6 +355,8 @@ def main(argv=None):
     parser.add_argument("--beats", default="audio/beats.json", help="the beat grid")
     parser.add_argument("--out", default="audio/sync-sheet.json", help="the sheet to write")
     parser.add_argument("--whisper-model", help="a whisper.cpp model already on disk (optional)")
+    parser.add_argument("--words-dir",
+                        help="folder with vo-<scene-id>.words.json from a word aligner (optional)")
     parser.add_argument("--self-test", action="store_true", help="run the built-in tests")
     args = parser.parse_args(argv)
     if args.self_test:
@@ -317,7 +364,8 @@ def main(argv=None):
     if not args.timeline:
         parser.error("give --timeline or --self-test")
     try:
-        sheet = build(args.timeline, args.audio_dir, args.beats, args.whisper_model)
+        sheet = build(args.timeline, args.audio_dir, args.beats, args.whisper_model,
+                      args.words_dir)
     except (ToolError, KeyError, TypeError, ValueError) as exc:
         print(json.dumps({"written": False, "error": str(exc)}))
         return 2
@@ -365,6 +413,18 @@ def self_test():
     expect("whisper words that do not match are refused",
            measured_words("Try it today.", tokens, 2.0) is None)
     expect("no whisper model means no measured route", whisper_route(None) is None)
+    aligned = parse_aligned_json({"segments": [{"words": [
+        {"word": "Ship", "start": 0.12, "end": 0.4, "score": 0.9},
+        {"word": "every", "start": 0.4, "end": 0.7},
+        {"word": "frame.", "start": 0.7, "end": 1.15}]}]})
+    got = measured_words("Ship every frame.", aligned, 2.0)
+    expect("aligner words map onto the narration",
+           got and [w["start_sec"] for w in got] == [0.12, 0.4, 0.7], got)
+    expect("word_segments wins over segments", parse_aligned_json(
+        {"word_segments": [{"word": "Go", "start": 0.0, "end": 0.2}], "segments": []})
+        == [("Go", 0.0, 0.2)])
+    expect("a word without times refuses the whole file", parse_aligned_json(
+        {"word_segments": [{"word": "Go", "start": 0.0, "end": 0.2}, {"word": "2026"}]}) == [])
 
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         print("FAIL ffmpeg and ffprobe must be on PATH")
@@ -399,6 +459,28 @@ def self_test():
             expect("2 phrases found", len(segments[0]["phrases"]) == 2, segments[0]["phrases"])
             ordered = all(a["end_sec"] <= b["start_sec"] + 1e-9 for a, b in zip(words, words[1:]))
             expect("words in order", ordered and len(words) == 6, words)
+        words_dir = os.path.join(tmp, "words")
+        os.makedirs(words_dir)
+        spoken = ["Ship", "every", "frame.", "Try", "it", "today."]
+        write_json({"word_segments": [{"word": w, "start": 0.1 + 0.4 * i, "end": 0.4 + 0.4 * i}
+                                      for i, w in enumerate(spoken)]},
+                   os.path.join(words_dir, "vo-s01.words.json"))
+        code = main(["--timeline", os.path.join(tmp, "timeline.json"), "--audio-dir", audio,
+                     "--beats", os.path.join(tmp, "beats.json"), "--out", out,
+                     "--words-dir", words_dir])
+        sheet = _load_json(out) if code == 0 else {}
+        first = (sheet.get("vo_segments") or [{}])[0].get("words") or [{}]
+        expect("supplied words give a measured sheet in project time",
+               code == 0 and sheet.get("timing") == "measured"
+               and abs(first[0].get("start_sec", -9) - (1.0 + 0.15 + 0.1)) < 1e-6, sheet)
+        write_json({"word_segments": [{"word": "Other", "start": 0.1, "end": 0.4}]},
+                   os.path.join(words_dir, "vo-s01.words.json"))
+        code = main(["--timeline", os.path.join(tmp, "timeline.json"), "--audio-dir", audio,
+                     "--beats", os.path.join(tmp, "beats.json"), "--out", out,
+                     "--words-dir", words_dir])
+        sheet = _load_json(out) if code == 0 else {}
+        expect("supplied words that do not match keep the estimate",
+               code == 0 and sheet.get("timing") == "estimated", sheet)
         code = main(["--timeline", os.path.join(tmp, "timeline.json"), "--audio-dir", tmp,
                      "--beats", os.path.join(tmp, "beats.json"), "--out", out])
         expect("missing voice file exits 2", code == 2, f"exit {code}")

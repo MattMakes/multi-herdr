@@ -145,7 +145,7 @@ python3 "<skill-dir>/scripts/sync_sheet.py" --timeline timeline.json \
 It splits each voice file into phrases with `ffmpeg silencedetect` and gives
 each word a time in proportion to its syllables (`"timing": "estimated"`).
 Add `--whisper-model <file>` only when a whisper.cpp binary and model are
-already on disk (`"timing": "measured"`). Run it again after a voice file or scene start changes.
+already on disk (`"timing": "measured"`). WhisperX words and librosa beats: `references/measured-tools.md`. Run it again after a voice file or scene start changes.
 
 ## 4. SFX
 

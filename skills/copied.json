@@ -757,6 +757,11 @@
       "verbatim": false
     },
     {
+      "name": "godot-cutscenes",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "godot-debugging",
       "copied_files": [
         "SKILL.md",
@@ -2113,6 +2118,11 @@
       "verbatim": false
     },
     {
+      "name": "video-art-motion",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "video-audio",
       "copied_files": [],
       "verbatim": false
@@ -2133,12 +2143,32 @@
       "verbatim": false
     },
     {
+      "name": "video-manim",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "video-motion",
       "copied_files": [],
       "verbatim": false
     },
     {
+      "name": "video-motion-craft",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "video-motion-match",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-motion-styles",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-plates",
       "copied_files": [],
       "verbatim": false
     },
@@ -2159,6 +2189,11 @@
     },
     {
       "name": "video-storyboard",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "video-webgl",
       "copied_files": [],
       "verbatim": false
     },

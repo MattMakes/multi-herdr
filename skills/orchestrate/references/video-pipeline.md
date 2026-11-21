@@ -1,9 +1,11 @@
 # Video pipeline recipe
 
 Use this recipe when the operator asks for a rendered video: a launch film,
-a product demo, a CLI walkthrough, a concept explainer or a social cut. 7
-`video-*` teammates make it: `video-producer` in wave 0, then 6 build
-waves. Each wave passes a numeric gate before the next wave starts.
+a product demo, a CLI walkthrough, a concept explainer or a social cut. 10
+`video-*` teammates and `blender-cinematographer` make it: `video-producer`
+in wave 0, then 6 build waves. Each wave passes a numeric gate before the
+next wave starts. A cutscene that plays inside a Godot game is not a film:
+queue `godot-cutscene-director` for it.
 
 For videos of a game made from its git history (a devblog series, new
 episodes, or a change to episodes that exist), load the `make-videos` skill
@@ -119,9 +121,12 @@ plan as it is.
   directions/ d<n>/index.html (key frame pages)
   materials/  materials.md, first-screen.png, full-page.png, colors.json, ...
   captures/   <scene-id>.mp4, <scene-id>.json, src/
+  plates/     <clip>.mp4 or <clip>/f%05d.png, <clip>.json (rendered and
+              recorded plates with their sidecars)
+  shots/      <scene-id>/ (Blender file and shot script)
   audio/      vo-<scene-id>.wav, beats.json, sync-sheet.json, sfx-cues.json,
               sfx/, sfx-bus.wav, bed.wav, mix.wav
-  scenes/     <scene-id>/index.html
+  scenes/     <scene-id>/index.html, look.json (WebGL), scene.py (Manim)
   motion-match/  <scene-id>/ (reference keyframes, motion-spec.json)
   render/     master.mp4, 16x9.mp4, 9x16.mp4, 1x1.mp4, captions.srt,
               captions.vtt, chapters.txt, cover.jpg, preview.gif,
@@ -140,11 +145,16 @@ plan as it is.
 | `video-capture` | `captures/`, `materials/` | `timeline.json` |
 | `video-audio` | `audio/`, `qa/audio-check.json`; in `timeline.json` only `start_sec`, `duration_sec`, `meta.duration_sec`, `meta.allowed_silences`; `qa/plan-check.json` after a reconciliation | scenes, captures, render |
 | `video-animator` | `scenes/<scene-id>/` of its task, `MOTION.md`, `motion-match/`, `qa/motion-match-*` | `timeline.json` |
-| `video-editor` | `render/` except the producer's files, `qa/probe/`, `qa/self-notes.md` | `timeline.json`, scenes |
+| `video-illustrator` | `scenes/<scene-id>/` of its task; `MOTION.md` only when its plan names it as owner | `timeline.json` |
+| `video-3d-animator` | `scenes/<scene-id>/` of its task with `look.json`; `plates/<clip>` for a scene handed over as a plate | `timeline.json`, `MOTION.md` |
+| `video-math-animator` | `scenes/<scene-id>/scene.py`, `plates/<clip>` of its task | `timeline.json`, `MOTION.md` |
+| `blender-cinematographer` | `shots/<scene-id>/`, `plates/<clip>` of its task | `timeline.json`, `MOTION.md` |
+| `video-editor` | `render/` except the producer's files (layer composites go in `render/comp/`), `qa/probe/`, `qa/self-notes.md` | `timeline.json`, scenes, `plates/` |
 | `video-critic` | `qa/render-check.json`, `qa/contact-sheet-360p.png`, `qa/hook-strip.png`, `qa/critique-round-<N>.md`; a ranker: `qa/ab-rank.md`, `qa/ab-*` | every other file |
 
-Give each unit `own` and `do not touch` from this table. 2 animators in
-wave 4 split `scenes/` by scene id. Only 1 of them owns `MOTION.md`.
+Give each unit `own` and `do not touch` from this table. The scene builders
+of wave 4 split `scenes/` and `plates/` by scene id. Only 1 of them owns
+`MOTION.md`, and it is a `video-animator` or a `video-illustrator`.
 
 Assign exactly 1 owner to each output folder in each round. Before a new owner
 starts, tell the old owner that its ownership ended. A new owner does not move
@@ -181,6 +191,11 @@ required gate result is missing.
   You or the operator write the `chosen: D<n>` line in `DIRECTION.md`.
   For `ab`, write the 1st pick. Then resume the director to finish
   `STORYBOARD.md` and `timeline.json` for the pick.
+- Style: each direction in `DIRECTION.md` has a style block from
+  `video-motion-styles`: a named style or "house", its frame rate, palette,
+  type, 4 to 6 testable features and a `Renderer` line. After the pick, the
+  chosen block goes to the top of `MOTION.md`. The `Renderer` line and the
+  scene kinds decide the wave 4 seats (see Wave 4).
 - Gate: `python3 "<skill-dir>/scripts/check_timeline.py" timeline.json`
   (`video-storyboard`).
 - Pass rule: exit 0, and `qa/plan-check.json` has no errors. The 15 plan
@@ -213,6 +228,10 @@ kind `capture`.
 - Outputs: the reconciled `timeline.json`, `audio/beats.json`,
   `audio/sync-sheet.json`, `audio/sfx-cues.json`, `audio/sfx-bus.wav`,
   `audio/bed.wav`, `audio/mix.wav`, `qa/audio-check.json`.
+- Measured routes, only with tools the host already has: librosa for the
+  beat grid of a music bed, and WhisperX word files in `audio/words/` that
+  `sync_sheet.py --words-dir audio/words` reads. `video-audio` reports
+  which route each segment used. Do not ask a worker to install either.
 - Step 3b: after the reconciliation and the beat grid,
   `python3 "<skill-dir>/scripts/sync_sheet.py" --timeline timeline.json --audio-dir audio --beats audio/beats.json --out audio/sync-sheet.json`
   writes the word times that waves 4 and 6 read.
@@ -231,7 +250,22 @@ timing to `video-director` before wave 4.
 
 ## Wave 4: Parallel Scene Animation
 
-- Teammate: 1 to 3 `video-animator`, each with its own scene ids.
+- Teammates: 1 to 3 scene builders, each with its own scene ids. Pick the
+  seat per scene:
+
+  | The scene is | Seat | It delivers |
+  |---|---|---|
+  | HTML, SVG, Canvas or GSAP motion, type, diagrams, characters, a reference match | `video-animator` | `scenes/<scene-id>/index.html` |
+  | painted or hand-drawn: a living painting, a doodle, line boil, a loop | `video-illustrator` | `scenes/<scene-id>/index.html` |
+  | real-time 3D, particles, a shader look, a post-processing finish | `video-3d-animator` | `scenes/<scene-id>/index.html`, or a plate when it is too slow to seek |
+  | a formula, a graph, geometry, an algorithm | `video-math-animator` | `plates/<clip>` with its sidecar |
+  | a rendered 3D shot | `blender-cinematographer` | `plates/<clip>` with its sidecar |
+
+  A plate scene names its plate in the `plate` field of `timeline.json`.
+  The director sets that field; a builder never edits `timeline.json`. A
+  shot that needs a model nobody made is a task for `blender-builder`
+  first. A Remotion composition is a plate too, and only after the operator
+  answers its licence question (`references/remotion.md` of `video-plates`).
 - Inputs: `timeline.json`, `DIRECTION.md`, `STORYBOARD.md`, `MOTION.md`,
   `audio/beats.json`, reference clips for a motion-match scene.
 - Outputs: `scenes/<scene-id>/index.html` for every non-capture scene,
@@ -241,14 +275,29 @@ timing to `video-director` before wave 4.
 - Gate 2, for a reference scene only:
   `python3 "<skill-dir>/scripts/compare_frames.py" --ref motion-match/<scene-id>/ref/keyframes --rendered motion-match/<scene-id>/rendered --spec motion-match/<scene-id>/motion-spec.json --out qa/motion-match-check.json`
   (`video-motion-match`).
-- Pass rule: both gates pass. No `Math.random()`, `Date.now()`,
-  `performance.now()`, `setTimeout` or `setInterval` in render code.
+- Gate 3, every HTML scene: the 6 gates of `video-motion-craft`, with
+  their counts in the `DONE:` report. A painted or drawn scene adds the 6
+  gates of `video-art-motion`.
+- Gate 4, for a plate only: the 5 checks of `video-plates` (frame count,
+  frame rate, freezes, black frames, determinism), and a sidecar
+  `plates/<clip>.json`. The capture plate gate (`check_plate.py`) is for
+  recordings: do not run it on a rendered plate that holds or steps by
+  design.
+- Pass rule: every gate that applies passes. No `Math.random()`, `Date.now()`,
+  `performance.now()`, `setTimeout` or `setInterval` in render code. A
+  WebGL scene may install a seeded replacement of the built-in generator
+  for a library that calls it, declared in a comment.
+- All scenes and plates of 1 film share 1 blur grammar, 1 finish and 1 GPU
+  mode. `MOTION.md` names each. Put that in every wave 4 plan.
 
 ## Wave 5: Frame-Stepping Render, Composite & Publish Pack
 
 - Teammate: `video-editor`.
-- Inputs: `timeline.json`, `scenes/`, `captures/`, `audio/mix.wav`,
-  `audio/beats.json`.
+- Inputs: `timeline.json`, `scenes/`, `captures/`, `plates/`,
+  `audio/mix.wav`, `audio/beats.json`.
+- Plates: the editor checks every plate against the contract of
+  `video-plates` before the assembly. A failed plate goes back to its
+  owner as a fix plan. The editor does not pad, stretch or re-time it.
 - Outputs: `render/master.mp4`, the aspect variants, `captions.srt`,
   `captions.vtt`, `chapters.txt`, `cover.jpg`, the preview, and the
   determinism probe in `qa/probe/forward/` and `qa/probe/reverse/`.
