@@ -77,7 +77,8 @@ fn godot_skills() -> BTreeSet<String> {
 }
 
 /// Runs `python3 -c <code>` in the repository with `scripts/godot` on
-/// `sys.path`. Returns the exit code and stdout.
+/// `sys.path`. Returns the exit code and stdout, with `\r\n` as `\n`:
+/// Python text output on Windows ends each line with CRLF.
 fn python(code: &str) -> (i32, String) {
     let out = Command::new("python3")
         .current_dir(repo())
@@ -91,7 +92,7 @@ fn python(code: &str) -> (i32, String) {
     assert!(!stderr.contains("Traceback"), "{stderr}");
     (
         out.status.code().unwrap(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
     )
 }
 

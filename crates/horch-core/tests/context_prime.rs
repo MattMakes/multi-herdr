@@ -38,10 +38,16 @@ struct World {
 impl World {
     fn new() -> World {
         // A short path: the daemon socket path of a launch must stay within
-        // 103 bytes, and the default temp dir of macOS is long.
+        // 103 bytes, and the default temp dir of macOS is long. Windows has
+        // no `/tmp`: it uses its temp folder.
+        let root = if cfg!(unix) {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
         let tmp = tempfile::Builder::new()
             .prefix("hp")
-            .tempdir_in("/tmp")
+            .tempdir_in(root)
             .unwrap();
         let home = tmp.path().join("home");
         let workdir = tmp.path().join("project");

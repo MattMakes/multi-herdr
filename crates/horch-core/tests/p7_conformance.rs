@@ -61,11 +61,16 @@ fn sealed(dir: &Path, name: &str) -> PathBuf {
 
 /// The folder of each test machine. On Linux the sandbox mounts a new
 /// empty tmpfs on `/tmp`, so a folder in `/tmp` is not visible in it.
-const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
-    "/var/tmp"
-} else {
-    "/tmp"
-};
+/// Windows has no `/tmp`: it uses its temp folder.
+fn machine_root() -> PathBuf {
+    if cfg!(target_os = "linux") {
+        PathBuf::from("/var/tmp")
+    } else if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    }
+}
 
 struct Machine {
     tmp: tempfile::TempDir,
@@ -74,10 +79,10 @@ struct Machine {
 
 impl Machine {
     fn new() -> Machine {
-        Machine::new_in(MACHINE_ROOT)
+        Machine::new_in(machine_root())
     }
 
-    fn new_in(root: &str) -> Machine {
+    fn new_in(root: impl AsRef<std::path::Path>) -> Machine {
         let tmp = tempfile::tempdir_in(root).unwrap();
         for d in ["home", "state", "data", "ledger/fleet", "scratch", "bin"] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
