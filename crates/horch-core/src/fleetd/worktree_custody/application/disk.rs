@@ -100,9 +100,7 @@ pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
 
 /// Queue 1 `worktree_remove` run of each tree of `d`, oldest first. A
 /// tree with an active run, or whose same removal failed, is not queued
-/// again. Give the trees with a new run. 1 snapshot reads the rows and
-/// the job runs of the trees and of their repositories: 2 statements for
-/// any count of trees.
+/// again. Give the trees with a new run.
 fn queue_removals(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -335,9 +333,6 @@ mod tests {
         assert_eq!(count(3), count(300));
     }
 
-    /// T-408: queue_removals reads the rows and the runs of 3 and of 300
-    /// trees of the decision in the same statements. Each tree has an
-    /// active removal, so no run is added.
     #[test]
     fn queue_removals_of_3_and_300_trees_run_the_same_statements() {
         use crate::fleetd::fleet_runtime::domain::config::FleetConfig;

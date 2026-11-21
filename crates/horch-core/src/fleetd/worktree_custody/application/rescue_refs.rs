@@ -215,9 +215,7 @@ pub fn collect(
 
 /// When each feature of `ids` that is `merged` or `abandoned` moved to 1
 /// of those states, in Unix seconds, by id. A feature that is open or
-/// ready, or with no such move, is not in the map. 1 snapshot reads the
-/// states and the last move to each ended state: 3 statements for any
-/// count of features.
+/// ready, or with no such move, is not in the map.
 fn features_ended_s<'a>(
     conn: &Connection,
     ids: impl IntoIterator<Item = &'a str>,
@@ -341,7 +339,6 @@ pub fn drop_ref(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted
     Ok(done)
 }
 
-/// T-408: collect reads the features of all rescue refs in set reads.
 #[cfg(test)]
 mod collect_reads_tests {
     use rusqlite::params;
@@ -353,7 +350,6 @@ mod collect_reads_tests {
     use crate::taskledger::store::Store;
     use crate::taskledger::testing::count_statements;
 
-    /// The feature `id` in `state`, moved to it at `at` when `at` is given.
     fn feature(c: &Connection, id: &str, state: &str, at: Option<&str>) {
         c.execute(
             "INSERT INTO features (id, name, branch, primary_branch, state, created_at, updated_at)
@@ -392,11 +388,6 @@ mod collect_reads_tests {
         }
     }
 
-    /// For each i of `n`: a ref of a merged and of an abandoned feature,
-    /// ended long ago, is deleted; a ref of an open feature, of a merged
-    /// feature with no move event, and of a feature with no row stays.
-    /// The deletions are the ones of the read of each feature, and 3 and
-    /// 300 of each run the same statements.
     #[test]
     fn collect_of_3_and_300_refs_of_each_kind_runs_the_same_statements() {
         let count = |n: usize| {

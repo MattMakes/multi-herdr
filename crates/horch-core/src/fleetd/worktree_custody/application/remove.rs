@@ -79,7 +79,6 @@ pub fn queue_remove(
 /// the `jobs_store` read of 1 subject gives.
 #[derive(Debug, Clone, Default)]
 pub struct TreeJobs {
-    /// The runs of each (kind, subject), oldest first.
     runs: BTreeMap<(&'static str, String), Vec<JobRow>>,
 }
 

@@ -212,9 +212,6 @@ fn add_run<'a>(jobs: &'a TreeJobs, row: &WorktreeRow) -> Option<&'a jobs_store::
 /// have yet, and a run that is not observed gets a second rescue. A passed
 /// rescue whose ref the row has already is the rescue of an earlier orphan
 /// of a reused tree: it does not save the tree now, so it is not observed.
-///
-/// 1 snapshot reads the rows and the runs of their jobs: 2 statements for
-/// any count of rows.
 fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     let (rows, jobs) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
@@ -790,11 +787,6 @@ fn escalate_vanished(
 /// A removal refused by a process in the tree runs again
 /// ([`remove::retry`]). A row whose folder vanished is escalated, not
 /// queued. A row with an active run of that kind is not queued again.
-///
-/// 1 snapshot reads the rows, the task branches of the `landing` rows, the
-/// notes and the job runs of the trees and of their repositories, and the
-/// idea states of the tasks of the `rescued` rows: 7 statements for any
-/// count of rows.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
     let (rows, branches, notes, jobs, ideas) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
@@ -868,7 +860,6 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
 /// with the rescue ref of the rescue run that it queued; a later rescue
 /// holds work that came after the drop. A tree with no task that nobody
 /// gave up stays.
-/// The rescue run of a drop is a run of the tree, so `jobs` holds it.
 fn given_up(jobs: &TreeJobs, row: &WorktreeRow, owner: Option<&remove::OwnerEnded>) -> bool {
     let Some(owner) = owner else {
         return false;
@@ -883,8 +874,6 @@ fn given_up(jobs: &TreeJobs, row: &WorktreeRow, owner: Option<&remove::OwnerEnde
         .is_some_and(|j| applied(j, row))
 }
 
-/// The idea state of the task of each `rescued` row, by task id: 2 set
-/// reads of the contexts that own the tables.
 struct IdeaStates(BTreeMap<String, String>);
 
 impl IdeaStates {
@@ -902,8 +891,6 @@ impl IdeaStates {
         Ok(IdeaStates(by_task))
     }
 
-    /// Whether the idea of the task of `row` is `merged`. A row with no
-    /// task has no idea.
     fn merged(&self, row: &WorktreeRow) -> bool {
         row.task_id
             .as_deref()
@@ -1274,8 +1261,6 @@ mod landing_reads_tests {
     }
 }
 
-/// T-408: each step of a pass reads its rows and their facts in a fixed
-/// count of statements, for any count of rows.
 #[cfg(test)]
 mod pass_reads_tests {
     use super::*;
@@ -1304,7 +1289,6 @@ mod pass_reads_tests {
         (tmp, store)
     }
 
-    /// The row `id` in `state` at `/p/.worktrees/<id>`, with HEAD `h`.
     fn tree(c: &Connection, id: &str, state: &str, task: Option<&str>) -> WorktreeRow {
         c.execute(
             "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status,
@@ -1349,9 +1333,6 @@ mod pass_reads_tests {
         .unwrap();
     }
 
-    /// check_i6 with a `reserved` row and its `worktree_add` run, and a
-    /// `worktree_list` result that names each row: the read of the add run
-    /// of each row and of the last removal of each listed path.
     #[test]
     fn check_i6_reads_the_add_runs_and_removals_of_3_and_300_trees_in_the_same_statements() {
         let count = |n: usize| {
@@ -1403,14 +1384,6 @@ mod pass_reads_tests {
         assert_eq!(count(3), count(300));
     }
 
-    /// observe_runs, escalate_vanished and act over rows of each kind that
-    /// they read and do not act on:
-    /// - an `orphaned` row with an active rescue run;
-    /// - a `landed` row with an active removal;
-    /// - a `rescued` row whose idea is not merged;
-    /// - a `rescued` row with no task, given up by a drop whose rescue run
-    ///   did not save it;
-    /// - a `created` row whose folder vanished, escalated already.
     #[test]
     fn observe_escalate_and_act_read_3_and_300_trees_of_each_kind_in_the_same_statements() {
         let count = |n: usize| {
