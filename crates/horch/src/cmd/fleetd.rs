@@ -724,7 +724,6 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
             attempts.join(", ")
         );
     }
-    // T-389: the rule of the rescue, 1 time, before the fleetd row and any job.
     if let Err(problem) = rescue_git_version(
         &ctx.bins.harness.git,
         ctx.inherited.path.as_deref(),
@@ -1817,8 +1816,6 @@ mod tests {
         assert_eq!(w.row(), None, "the refused fleetd wrote the fleetd row");
     }
 
-    /// T-389: on a git older than 2.41 fleetd refuses to start with the fix
-    /// text, and writes no fleetd row and no job.
     #[cfg(unix)]
     #[test]
     fn an_old_git_refuses_the_fleetd_start() {

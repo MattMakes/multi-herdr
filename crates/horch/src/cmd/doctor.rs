@@ -50,8 +50,7 @@ pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     rescue_git_line(ctx)
 }
 
-/// The 1 git line of the doctor: the git of the fleet that the rescue job
-/// runs, with the rule of the rescue. It is `ctx.bins.harness.git` (as
+/// The git is `ctx.bins.harness.git` (as
 /// fleetd passes it to `CliWorktreeGit::new`), a bare name looked up on the
 /// PATH of this process. fleetd under launchd or systemd has the PATH of
 /// the service, which can name another git: set HORCH_GIT_BIN to be sure.
@@ -1953,8 +1952,6 @@ mod tests {
         assert_eq!(stale_state(&ctx, false).0, ["stale state: none"]);
     }
 
-    /// A context whose PATH is only `dir`, which holds a fake `git` that
-    /// prints `version` for `git version`, when `version` is given.
     fn git_ctx(dir: &Path, version: Option<&str>) -> RuntimeContext {
         if let Some(version) = version {
             let script = format!(
@@ -1970,8 +1967,6 @@ mod tests {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// T-389: the doctor fails on a git that the rescue refuses, with the
-    /// fix text, and passes on git 2.41 or newer, by the numbers.
     #[test]
     fn doctor_checks_the_git_version_of_the_rescue() {
         for (version, passes) in [
@@ -1995,7 +1990,6 @@ mod tests {
         }
     }
 
-    /// T-389: no git on the PATH is a failure with the fix text.
     #[test]
     fn doctor_fails_without_git() {
         let dir = tempfile::tempdir().unwrap();

@@ -359,7 +359,6 @@ pub fn rescue_git_version(
     Ok(format!("{}: {version}", bin.display()))
 }
 
-/// Why the rescue needs git 2.41, and the fix.
 const RESCUE_GIT_FIX: &str = "The rescue of a worktree saves its files with the \
      filters off, and that needs git 2.41 or newer (`--attr-source`). Install git \
      2.41 or newer, or set HORCH_GIT_BIN to one.";
