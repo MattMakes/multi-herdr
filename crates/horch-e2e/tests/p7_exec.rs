@@ -15,10 +15,6 @@ use horch_core::taskledger::{schema, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
 
-/// The rescue of the tree of A1 waits for a `worktree_list` result with its
-/// HEAD, and the first list runs before `worktree_add` makes the folder. So
-/// with the default period of 60 s, A2 starts 1 period after A1 ends, inside
-/// the 120 s wait of a 2-attempt test (T-278).
 const FLEET_TOML: &str = "pass_period_s = 1\nworktree_list_period_s = 5\n";
 
 const DOES_THE_TASK: &str = "commit,result";
