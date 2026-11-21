@@ -454,8 +454,8 @@ pub enum Launch {
 /// after the commit of its rows, through `host`, the launcher of fleetd
 /// (SR-7). It decides again on the rows and the processes of now, so a
 /// process that a stop of this pass did not end yet keeps the launch for
-/// a later pass. A spawn that fails ends its worker row `launch_failed`,
-/// and the start timeout ends the attempt.
+/// a later pass. A spawn that fails ends its worker row `launch_failed`
+/// and its attempt `crashed` at once, as [`end_failed_spawn`] does.
 pub fn launch(
     conn: &Connection,
     fleet_root: &Path,
@@ -508,7 +508,8 @@ pub fn launch(
         Ok(started) => Ok(Launch::Launched(started)),
         Err(e) => {
             let reason = format!("the launch of attempt {attempt_id} did not start: {e:#}");
-            workers::launch_failed(conn, &l.worker_id, &reason)?;
+            // Rung 6: a crash burns 1 attempt; the backoff and max_attempts bound the retries.
+            util::atomic(conn, |tx| end_failed_spawn(tx, None, &l.worker_id, &reason))?;
             Err(e).with_context(|| format!("launching attempt {attempt_id}"))
         }
     }

@@ -39,8 +39,12 @@ use horch_core::fleetd::task_execution::application::dispatch::{
     bind, choices, dispatch_due, read_base_tips, write_missing_task_files, write_task_files,
     BaseTips, Bound, CheckSandboxes, DispatchCtx, Dispatched,
 };
+use horch_core::fleetd::task_execution::application::launch as push_launch;
 use horch_core::fleetd::task_execution::application::lease;
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
+use horch_core::fleetd::worker_profiles::application::ports::{
+    EnvRule, LaunchError, LaunchSpec, Launched, ProcessHost,
+};
 use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
 use horch_core::fleetd::worktree_custody::application::create;
@@ -831,4 +835,141 @@ fn bind_uses_pre_read_sandboxed_base_tips_and_runs_no_git_in_write_tx() {
     assert_eq!(Some(row.worktree_id), b.worktree.map(|t| t.worktree_id));
     assert_eq!(row.base, RUN_BRANCH);
     assert_eq!(row.base_commit, Some(tip));
+}
+
+/// A launcher whose host call fails each time, as when the OS refuses to
+/// start `horch spawn`. It counts the calls.
+#[derive(Default)]
+struct RefusingHost {
+    calls: std::cell::Cell<usize>,
+}
+
+impl push_launch::Launches for RefusingHost {
+    fn spec(&self, l: &push_launch::PushLaunch) -> anyhow::Result<LaunchSpec> {
+        Ok(LaunchSpec {
+            program: "horch".into(),
+            args: vec!["spawn".into(), "--attempt".into(), l.attempt.clone().into()],
+            cwd: None,
+            env_rule: EnvRule::default(),
+            detach: false,
+            output: None,
+        })
+    }
+}
+
+impl ProcessHost for RefusingHost {
+    fn launch(&self, _: &LaunchSpec) -> Result<Launched, LaunchError> {
+        self.calls.set(self.calls.get() + 1);
+        Err(LaunchError::Io(std::io::Error::other("the OS refused")))
+    }
+}
+
+/// Rung 6 (design.md, "The stall ladder", rung 6): a launch whose host
+/// call fails ends its attempt `crashed` in the same pass, as a reported
+/// failed spawn does (T-254). It does not wait for the start timeout. The
+/// next attempt follows the backoff of rung 6 (30 s, 120 s on the fleet
+/// clock), and the `max_attempts` of the run bounds the loop: the last
+/// failure moves the task to `failed`, and no pass launches it again.
+#[test]
+fn failed_host_launch_ends_the_attempt_at_once_and_rung_6_bounds_the_retries() {
+    let mut w = World::new();
+    w.store
+        .conn()
+        .execute(
+            "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, 0, ?2, 0, ?2)",
+            rusqlite::params![std::process::id(), horch_core::taskledger::util::now()],
+        )
+        .unwrap();
+    let set_clock = |w: &World, s: i64| {
+        w.store
+            .conn()
+            .execute("UPDATE fleetd SET fleet_clock_s = ?1 WHERE id = 1", [s])
+            .unwrap();
+    };
+    let mut t = task("refused");
+    t.worktree_mode = WorktreeMode::Shared;
+    let id = w.add(t);
+    let limit = w.run.max_attempts;
+    assert!(limit >= 2, "the run allows a retry: max_attempts {limit}");
+    let backoff = [30_i64, 120, 480];
+    let host = RefusingHost::default();
+    let mut clock = 0_i64;
+    for n in 1..=limit {
+        set_clock(&w, clock);
+        let d = w.dispatch(
+            &Holds {
+                clock,
+                ..Holds::default()
+            },
+            &AllSandboxes,
+        );
+        assert_eq!(bound_ids(&d), vec![id.clone()], "attempt {n} at {clock}");
+        let attempt = d.bound[0].attempt_id.clone();
+        let worker = d.bound[0].worker_id.clone();
+
+        let r = push_launch::launch(
+            w.store.conn(),
+            &w.fleet_root,
+            FleetSeconds(clock),
+            &attempt,
+            &host,
+            &host,
+        );
+        assert!(r.is_err(), "the pass reports the failed launch");
+        assert_eq!(host.calls.get(), n as usize);
+
+        // The same pass ended the attempt: no wait for the start timeout.
+        assert_eq!(
+            w.attempts(&id).last().map(|a| (a.0.clone(), a.1.clone())),
+            Some((attempt.clone(), "ended".to_string()))
+        );
+        let outcome: Option<String> = w
+            .store
+            .conn()
+            .query_row(
+                "SELECT outcome FROM attempts WHERE id = ?1",
+                [&attempt],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome.as_deref(), Some("crashed"));
+        assert_eq!(
+            workers::get(w.store.conn(), &worker).unwrap().status,
+            "launch_failed"
+        );
+        let row = tasks::get(w.store.conn(), &id).unwrap();
+        assert_eq!(row.attempts, n);
+        if n == limit {
+            assert_eq!(row.status, "failed", "max_attempts {limit} ends the loop");
+            break;
+        }
+        let wait = backoff[(n as usize - 1).min(backoff.len() - 1)];
+        assert_eq!(row.status, "ready");
+        assert_eq!(row.not_before, Some(clock + wait), "the backoff of rung 6");
+
+        // No bind before the end of the backoff.
+        let early = w.dispatch(
+            &Holds {
+                clock: clock + wait - 1,
+                ..Holds::default()
+            },
+            &AllSandboxes,
+        );
+        assert!(early.bound.is_empty(), "attempt {} waits", n + 1);
+        clock += wait;
+    }
+
+    // A task that failed at the bound is never bound or launched again.
+    set_clock(&w, clock + 10_000);
+    let d = w.dispatch(
+        &Holds {
+            clock: clock + 10_000,
+            ..Holds::default()
+        },
+        &AllSandboxes,
+    );
+    assert!(d.bound.is_empty());
+    assert_eq!(host.calls.get(), limit as usize);
+    assert_eq!(w.attempts(&id).len(), limit as usize);
 }
