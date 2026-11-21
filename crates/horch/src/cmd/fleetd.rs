@@ -724,6 +724,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
             attempts.join(", ")
         );
     }
+    // T-389: the rule of the rescue, 1 time, before the fleetd row and any job.
     if let Err(problem) = rescue_git_version(
         &ctx.bins.harness.git,
         ctx.inherited.path.as_deref(),

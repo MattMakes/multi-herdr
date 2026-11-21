@@ -50,7 +50,8 @@ pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     rescue_git_line(ctx)
 }
 
-/// The git is `ctx.bins.harness.git` (as
+/// The 1 git line of the doctor: the git of the fleet that the rescue job
+/// runs (SR-4), with the rule of the rescue. It is `ctx.bins.harness.git` (as
 /// fleetd passes it to `CliWorktreeGit::new`), a bare name looked up on the
 /// PATH of this process. fleetd under launchd or systemd has the PATH of
 /// the service, which can name another git: set HORCH_GIT_BIN to be sure.
