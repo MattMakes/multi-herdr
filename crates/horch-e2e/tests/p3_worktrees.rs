@@ -562,10 +562,6 @@ fn rr10_hand_made_worktree_is_adopted_within_1_list_period() {
     // The tree comes after the `worktree_list` run of this period: the
     // longest wait.
     let work = hand_tree(&h, "by-hand", "by-hand");
-    // 1 period, and the pass that reads the run of the next period. The
-    // fleet clock also adds the awake time of the job waits of `pass`, and
-    // under load that time is more than the margin, so the bound counts
-    // the fleet seconds that the steps of the test add.
     let mut steps = 0;
     while state(&h, &work.tree).is_none() {
         assert!(
