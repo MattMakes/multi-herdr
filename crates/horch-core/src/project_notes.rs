@@ -86,7 +86,6 @@ pub fn display(state_root: &Path, project: &Path) -> Result<String> {
     let facts = read(state_root, project)?;
     Ok(list(&facts))
 }
-/// The facts as the briefing shows them: 1 `- ` line for each fact.
 fn list(facts: &[String]) -> String {
     if facts.is_empty() {
         "(No project facts recorded.)".into()

@@ -856,7 +856,6 @@ pub fn write_task_files_in(
     write_with_facts(conn, fleet_root, state_root, &facts, secrets)
 }
 
-/// Write the files of `facts` with the project facts of `state_root`.
 fn write_with_facts(
     conn: &Connection,
     fleet_root: &Path,
