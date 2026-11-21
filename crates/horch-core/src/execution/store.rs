@@ -2460,6 +2460,7 @@ mod session_records_tests {
 
         let store = ExecutionStore::in_db(tmp.path(), &db, "/repo")
             .with_task_ledger(&db, Path::new("/repo"));
+        let _fleetd = test_serve(&db);
         store
             .insert(LedgerRecordV1 {
                 record_id: "r-herdr".into(),
