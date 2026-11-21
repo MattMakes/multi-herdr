@@ -471,6 +471,8 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
     let Some(spec) = &launches[0] else {
         return;
     };
+    // The loopback works in the sandbox, so the off-host refusal below is
+    // the network rule and not a sandbox with no network at all.
     let out = run_check(spec);
     assert!(ok(&out), "{}", show(&out));
     let stdout = String::from_utf8_lossy(&out.stdout);

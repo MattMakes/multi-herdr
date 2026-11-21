@@ -649,6 +649,8 @@ fn sr3_check_that_connects_off_host_is_refused() {
     let verdict = w.verdict(1);
     stop.store(true, Ordering::SeqCst);
     assert_eq!(verdict["decision"], "failed", "{verdict}");
+    // The loopback works in the sandbox, so the off-host refusal below is
+    // the network rule and not a sandbox with no network at all.
     assert!(
         w.worktree().join("loopback-ok.txt").is_file(),
         "the check did not reach loopback, so its refusal proves nothing\n{verdict}\n{}",
