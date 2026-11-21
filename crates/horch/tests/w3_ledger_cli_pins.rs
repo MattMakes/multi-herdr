@@ -426,15 +426,19 @@ fn watch_once_reports_in_text_and_json() {
         "No worker was due for a check.\n"
     );
     assert_eq!(w.ok(&["ledger", "watch", "--once", "--json"]), "[]\n");
-    // Forced: the worker has no agent process. The fleetd pass ends its
-    // attempt before the duty check (I4), so no worker is left to check,
-    // and the task is queued again.
+    // Forced: the worker has no agent process. Its live attempt has no
+    // recorded process and no pane, so the pass does not end it: its
+    // exit.json or its lease expiry ends it. The duty check finds the
+    // agent gone, and the task stays running.
     let forced = w.run(&["ledger", "watch", "--once", "--force"]);
     assert_eq!(forced.code, 0, "{}", forced.err);
-    assert_eq!(forced.out, "No worker was due for a check.\n");
+    assert_eq!(
+        forced.out,
+        "dev1 T-1: dead (round 0): the agent process is gone\n"
+    );
     let status = w.ok(&["ledger", "show", "T-1"]);
-    assert!(status.starts_with("T-1 queued: Ticket One\n"), "{status}");
-    assert!(status.contains("Attempt 1: dev1"), "{status}");
+    assert!(status.starts_with("T-1 running: Ticket One\n"), "{status}");
+    assert!(status.contains("Attempt 1: dev1 working"), "{status}");
 }
 
 #[test]
