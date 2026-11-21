@@ -11,11 +11,16 @@ pub(crate) fn new_group(cmd: &mut Command) {
 /// `SIGKILL` to group `pgid`. 0 names the group of the caller, and a value
 /// above `i32::MAX` becomes a negative `pid_t`, so both send nothing.
 fn kill_pgid(pgid: u32) -> bool {
+    signal_pgid(pgid, libc::SIGKILL)
+}
+
+/// `signal` to group `pgid`, with the rule of [`kill_pgid`].
+fn signal_pgid(pgid: u32, signal: libc::c_int) -> bool {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return false;
     };
     // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe { libc::killpg(group, libc::SIGKILL) == 0 }
+    unsafe { libc::killpg(group, signal) == 0 }
 }
 
 pub(crate) fn kill_group_id(pgid: u32) -> Result<bool, NotSupported> {
@@ -26,6 +31,11 @@ pub(crate) fn kill_group_id(pgid: u32) -> Result<bool, NotSupported> {
 /// group is ours.
 pub(crate) fn kill_child_group(child: &mut Child) -> bool {
     kill_pgid(child.id())
+}
+
+/// `SIGTERM` to the group of `child`, which is ours as above.
+pub(crate) fn term_child_group(child: &mut Child) -> bool {
+    signal_pgid(child.id(), libc::SIGTERM)
 }
 
 /// `waitid` on `child` with `WNOWAIT`: it does not reap. The caller reads

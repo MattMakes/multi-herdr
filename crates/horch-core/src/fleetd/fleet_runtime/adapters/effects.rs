@@ -41,7 +41,9 @@ use crate::fleetd::fleet_runtime::domain::heartbeat::{Exe, Heartbeat};
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::task_execution::domain::task::{GroupLeft, ProcessScope, Recorded};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
-use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
+use crate::fleetd::worktree_custody::adapters::git::{
+    repo_git_dir, CliWorktreeGit, FLEETD_GIT_LIMIT,
+};
 use crate::fsx;
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
@@ -361,12 +363,14 @@ pub fn watchdog_ping() {
 /// project, in its sandbox). It reads each repository of `repos` and
 /// writes only their git folders: a short `git update-ref` of a local ref,
 /// a rescue ref or a deletion. A repository with no git folder is not
-/// writable.
+/// writable. Each call stops at [`FLEETD_GIT_LIMIT`], so a hung git does
+/// not hold the pass (A23).
 pub fn integration_git(fleet_root: &Path, repos: &[PathBuf]) -> CliWorktreeGit {
     let git_dirs: Vec<PathBuf> = repos.iter().filter_map(|r| repo_git_dir(r).ok()).collect();
     CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), fleet_root)
         .reading(repos)
         .writing(&git_dirs)
+        .with_time_limit(FLEETD_GIT_LIMIT)
 }
 
 /// The folder of the private index of each rebuild of a judge branch

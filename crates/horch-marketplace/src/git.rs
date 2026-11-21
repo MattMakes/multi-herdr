@@ -8,8 +8,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, Stdio};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
+use horch_platform::group::{self, Contained};
 use horch_platform::sandbox::{Denials, Network, Reach};
 use horch_platform::start::{self, Command};
 use horch_platform::NotSupported;
@@ -198,6 +201,8 @@ pub struct GitRunner {
     index: Option<PathBuf>,
     /// The sandbox of every child, when it has one.
     sandbox: Option<GitSandbox>,
+    /// The time limit of every child, when it has one.
+    limit: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +228,17 @@ pub enum GitError {
     RelativeIndex(PathBuf),
     /// The runner has a sandbox and this host has none, so git did not run.
     NoSandbox(NotSupported),
+    /// Git ran past the time limit of the runner and was stopped: `SIGTERM`
+    /// to its group, then `SIGKILL` to the group after [`TERM_GRACE`].
+    /// `by_term`: the child ended in the grace, so a git that got the
+    /// signal could remove its `.lock` files. Else the `SIGKILL` ended it,
+    /// and a `.lock` file can stay. In a sandbox the child can be the
+    /// sandbox and not git: then only the `SIGKILL` of the group ends git.
+    TimedOut {
+        args: Vec<String>,
+        limit: Duration,
+        by_term: bool,
+    },
     Spawn {
         bin: PathBuf,
         source: io::Error,
@@ -246,6 +262,32 @@ impl fmt::Display for GitError {
                 )
             }
             Self::NoSandbox(gap) => write!(f, "no sandbox: {gap}"),
+            Self::TimedOut {
+                args,
+                limit,
+                by_term,
+            } => {
+                write!(
+                    f,
+                    "git {} ran past its time limit of {} s and was stopped: ",
+                    args.join(" "),
+                    limit.as_secs()
+                )?;
+                if *by_term {
+                    write!(
+                        f,
+                        "it ended in {} s after SIGTERM to its group, then SIGKILL ended the rest of its group",
+                        TERM_GRACE.as_secs()
+                    )
+                } else {
+                    write!(
+                        f,
+                        "it did not end in {} s after SIGTERM, so SIGKILL ended its group, \
+                         and a .lock file of git can stay",
+                        TERM_GRACE.as_secs()
+                    )
+                }
+            }
             Self::Spawn { bin, source } => write!(f, "cannot run {}: {source}", bin.display()),
             Self::Failed {
                 args,
@@ -274,7 +316,19 @@ impl GitRunner {
             env: Vec::new(),
             index: None,
             sandbox: None,
+            limit: None,
         }
+    }
+
+    /// Stop every child at `limit`: `SIGTERM` to its own group first, so
+    /// that git removes its `.lock` files, then `SIGKILL` to the group after
+    /// [`TERM_GRACE`]. The result is [`GitError::TimedOut`]. Each child then
+    /// leads a group that this runner made for it ([`Contained`]), so the
+    /// stop reaches no other process. With no limit a child runs until it
+    /// ends.
+    pub fn with_time_limit(mut self, limit: Duration) -> Self {
+        self.limit = Some(limit);
+        self
     }
 
     /// Run every child in `sandbox`. A host with no sandbox gives
@@ -355,15 +409,26 @@ impl GitRunner {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let out = cmd.output().map_err(|source| GitError::Spawn {
+        let spawn = |source| GitError::Spawn {
             bin: self.bin.clone(),
             source,
-        })?;
-        Ok(GitOutput {
-            status: out.status.code().unwrap_or(-1),
-            stdout: out.stdout,
-            stderr: out.stderr,
-        })
+        };
+        let Some(limit) = self.limit else {
+            let out = cmd.output().map_err(spawn)?;
+            return Ok(GitOutput {
+                status: out.status.code().unwrap_or(-1),
+                stdout: out.stdout,
+                stderr: out.stderr,
+            });
+        };
+        match output_within(&mut cmd, limit).map_err(spawn)? {
+            Limited::Ended(out) => Ok(out),
+            Limited::Stopped { by_term } => Err(GitError::TimedOut {
+                args: args.iter().map(|a| (*a).to_owned()).collect(),
+                limit,
+                by_term,
+            }),
+        }
     }
 
     /// Run `git <args>` in `dir`; a non-zero exit is an error.
@@ -378,6 +443,98 @@ impl GitRunner {
         }
         Ok(out)
     }
+}
+
+/// The wait after the `SIGTERM` of a child at its time limit, before the
+/// `SIGKILL` of its group. Git removes its `.lock` files at once on
+/// `SIGTERM`.
+pub const TERM_GRACE: Duration = Duration::from_secs(1);
+
+/// The longest sleep between 2 looks at a child under a time limit. The
+/// first look comes after 1 ms, so a short git call waits little.
+const LOOK_MAX: Duration = Duration::from_millis(20);
+
+enum Limited {
+    Ended(GitOutput),
+    Stopped { by_term: bool },
+}
+
+/// Run `cmd` with its stdout and stderr read, and stop its group at
+/// `limit`. The child stays unreaped until its group is stopped, so its pid
+/// names its group and no other process.
+fn output_within(cmd: &mut Command, limit: Duration) -> io::Result<Limited> {
+    let deadline = Instant::now() + limit;
+    Contained::prepare(cmd);
+    let mut child = cmd.spawn()?;
+    let contained = match Contained::start(&child) {
+        Ok(contained) => contained,
+        Err(e) => {
+            group::kill_child_group(&mut child);
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
+    let stdout = read_all(child.stdout.take());
+    let stderr = read_all(child.stderr.take());
+    let mut look = Duration::from_millis(1);
+    let ended = loop {
+        // The readers end when each process with the pipes ends, also a
+        // process that git leaves in its group.
+        if group::exited_without_reap(&mut child)? && stdout.is_finished() && stderr.is_finished() {
+            break true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            break false;
+        }
+        std::thread::sleep(look.min(deadline - now));
+        look = (look * 2).min(LOOK_MAX);
+    };
+    if ended {
+        let status = child.wait()?;
+        return Ok(Limited::Ended(GitOutput {
+            status: status.code().unwrap_or(-1),
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        }));
+    }
+    let by_term = stop(&mut child, &contained)?;
+    let _ = child.wait();
+    let _ = stdout.join();
+    let _ = stderr.join();
+    Ok(Limited::Stopped { by_term })
+}
+
+/// `SIGTERM` to the group of `child`, a wait of [`TERM_GRACE`] for the
+/// child to end, then `SIGKILL` to the group. The kill also comes when the
+/// child ended in the grace, for a process that it left in its group.
+/// Whether the child ended in the grace.
+fn stop(child: &mut Child, contained: &Contained) -> io::Result<bool> {
+    let grace_end = Instant::now() + TERM_GRACE;
+    let mut by_term = false;
+    if group::term_child_group(child) {
+        while Instant::now() < grace_end {
+            if group::exited_without_reap(child)? {
+                by_term = true;
+                break;
+            }
+            std::thread::sleep(LOOK_MAX);
+        }
+    }
+    contained.terminate();
+    group::kill_child_group(child);
+    Ok(by_term)
+}
+
+/// A thread that reads `pipe` to its end.
+fn read_all(pipe: Option<impl io::Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
 }
 
 #[cfg(test)]
@@ -431,5 +588,113 @@ mod tests {
         assert!(matches!(e, GitError::NoSandbox(_)), "{e:?}");
         assert!(e.to_string().starts_with("no sandbox: "), "{e}");
         assert!(!dir.path().join(".git").exists(), "git did not run");
+    }
+
+    /// A fake git in `dir`: the shell `body`, after it records its pid and
+    /// the pid of its child `sleep 600` in `pids`.
+    fn fake_git(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
+        let pids = dir.join("pids");
+        let bin = dir.join("fake-git");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n{body}\nsleep 600 &\necho \"$$ $!\" > '{}'\nwait\n",
+                pids.display()
+            ),
+        )
+        .unwrap();
+        let chmod = std::process::Command::new("chmod")
+            .arg("+x")
+            .arg(&bin)
+            .status()
+            .unwrap();
+        assert!(chmod.success());
+        (bin, pids)
+    }
+
+    /// Each pid of `pids` ends within 5 s.
+    fn all_gone(pids: &Path) {
+        let text = std::fs::read_to_string(pids).expect("the fake git started");
+        let until = Instant::now() + Duration::from_secs(5);
+        for pid in text.split_whitespace() {
+            let pid: u32 = pid.parse().unwrap();
+            while horch_platform::process::start_time(pid).is_some() {
+                assert!(Instant::now() < until, "the process {pid} of git lives on");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    /// No process group on Windows, and the fake git is a shell script.
+    fn no_groups() -> bool {
+        group::kill_group_id(0).is_err()
+    }
+
+    #[test]
+    fn a_git_past_its_time_limit_ends_by_term_with_its_group() {
+        if no_groups() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, pids) = fake_git(dir.path(), "trap 'exit 143' TERM");
+        let started = Instant::now();
+        let e = GitRunner::new(&bin)
+            .with_time_limit(Duration::from_secs(1))
+            .output(dir.path(), &["update-ref", "x"])
+            .unwrap_err();
+        let took = started.elapsed();
+        assert!(
+            matches!(e, GitError::TimedOut { by_term: true, .. }),
+            "{e:?}"
+        );
+        assert!(
+            took < Duration::from_secs(2),
+            "the TERM ends it at once: {took:?}"
+        );
+        assert!(
+            e.to_string()
+                .contains("git update-ref x ran past its time limit of 1 s"),
+            "{e}"
+        );
+        all_gone(&pids);
+    }
+
+    #[test]
+    fn a_git_that_ignores_term_is_killed_after_the_grace() {
+        if no_groups() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // The child `sleep` gets the ignored TERM too.
+        let (bin, pids) = fake_git(dir.path(), "trap '' TERM");
+        let started = Instant::now();
+        let e = GitRunner::new(&bin)
+            .with_time_limit(Duration::from_secs(1))
+            .output(dir.path(), &["update-ref", "x"])
+            .unwrap_err();
+        let took = started.elapsed();
+        assert!(
+            matches!(e, GitError::TimedOut { by_term: false, .. }),
+            "{e:?}"
+        );
+        assert!(
+            took >= Duration::from_secs(1) + TERM_GRACE,
+            "the KILL waits for the grace: {took:?}"
+        );
+        assert!(
+            e.to_string().contains("a .lock file of git can stay"),
+            "{e}"
+        );
+        all_gone(&pids);
+    }
+
+    #[test]
+    fn a_git_within_its_time_limit_gives_its_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = GitRunner::new("git")
+            .with_time_limit(Duration::from_secs(10))
+            .run(dir.path(), &["--version"])
+            .unwrap();
+        assert!(out.stdout_text().starts_with("git version"), "{out:?}");
     }
 }

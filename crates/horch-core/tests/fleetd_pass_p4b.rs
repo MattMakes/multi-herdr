@@ -912,3 +912,124 @@ fn crash_before_and_after_the_commit_of_the_ref_move_lands_once() {
         );
     }
 }
+
+// ─── the time limit of the git of the pass ──────────────────────────────
+
+/// The key of [`child_pass_with_git`]: the folder of the world.
+const GIT_CHILD: &str = "HORCH_P4B_GIT_CHILD";
+
+/// Not a test of its own: 1 pass of a child process whose git is
+/// `HORCH_GIT_BIN`. It prints the pass report or error as 1 line.
+#[test]
+fn child_pass_with_git() {
+    let Some(dir) = std::env::var_os(GIT_CHILD) else {
+        return;
+    };
+    let w = World::reopen(Path::new(&dir));
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    match p.run(&mut conn) {
+        Ok(report) => println!("PASS-FAILED {:?}", report.failed),
+        Err(e) => println!("PASS-ERROR {e}"),
+    }
+}
+
+/// A git of the pass that hangs on its first `subcommand`, then is the real
+/// git. Each call appends its arguments to `log`.
+fn hang_once_git(w: &World, subcommand: &str) -> (PathBuf, PathBuf) {
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    // The sandbox of the git of fleetd can write only the git folder.
+    let log = w.repo().join(".git").join("git-calls.log");
+    let once = w.repo().join(".git").join("git-hung-once");
+    let bin = w.dir.join("hang-once-git");
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> '{log}'\nfor a in \"$@\"; do\n  if [ \"$a\" = '{subcommand}' ] && [ ! -e '{once}' ]; then\n    : > '{once}'\n    sleep 600 &\n    wait\n  fi\ndone\nexec '{real}' \"$@\"\n",
+        log = log.display(),
+        once = once.display(),
+        real = real.trim(),
+    );
+    fs::write(&bin, script).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, log)
+}
+
+/// 1 pass in a child process with the git `bin`: its output.
+fn pass_with_git(w: &World, bin: &Path) -> String {
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "child_pass_with_git",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(GIT_CHILD, &w.dir)
+        .env("HORCH_GIT_BIN", bin)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// A git of the pass that hangs inside the write transaction of the pass
+/// is stopped at `FLEETD_GIT_LIMIT`, and no `.lock` file stays. The `diff`
+/// of the duty `trial_merges` hangs: the savepoint of the duty rolls back
+/// only its rows, and its line names the stop. The rest of the pass goes
+/// on: the bundle passes and its ref move lands after the commit. The next
+/// pass with a git that works runs each duty with no failure and observes
+/// the landing, and only the candidate ref of the bundle was written
+/// (T-369).
+#[test]
+fn a_git_of_the_pass_past_its_limit_rolls_back_its_duty_and_the_next_pass_works() {
+    let w = three_done();
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    let id = to_passed_gate(&w, &mut p, &mut conn);
+    drop(p);
+    let candidate_ref = format!("refs/horch/bundle/{id}");
+    let candidate = w.tip(&candidate_ref).unwrap();
+
+    let (bin, _log) = hang_once_git(&w, "diff");
+    let started = std::time::Instant::now();
+    let out = pass_with_git(&w, &bin);
+    let took = started.elapsed();
+    assert!(
+        out.contains("PASS-FAILED [\"the duty trial_merges: "),
+        "the duty names its failure: {out}"
+    );
+    assert!(out.contains("ran past its time limit of 10 s"), "{out}");
+    assert!(out.contains("no .lock file stays"), "{out}");
+    assert!(
+        took < Duration::from_secs(30),
+        "below the hang limit: {took:?}"
+    );
+    assert_eq!(
+        w.bundle_state(id),
+        "passed",
+        "the rest of the pass committed"
+    );
+    assert_eq!(
+        w.tip(FEATURE_BRANCH),
+        Some(candidate.clone()),
+        "the ref move"
+    );
+    let refs = git(
+        &w.repo(),
+        &["for-each-ref", "--format=%(refname)", "refs/horch/"],
+    );
+    assert_eq!(refs, candidate_ref, "no other candidate ref");
+
+    let mut p = fleetd(&w, &f, Faults::default());
+    // `run` asserts that no duty fails.
+    run(&mut p, &mut conn);
+    assert_eq!(w.bundle_state(id), "landed");
+    assert_eq!(w.moves_to(&id.to_string(), "landed"), 1, "1 landing");
+}

@@ -13,9 +13,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use horch_marketplace::git::{GitOutput, GitRunner, GitSandbox, SandboxHost};
+use horch_marketplace::git::{GitError, GitOutput, GitRunner, GitSandbox, SandboxHost};
 use horch_platform::fs::create_dir_mode;
 use horch_platform::sandbox::{sandboxed_hiding, Denials, Network, Reach};
 use horch_platform::NotSupported;
@@ -485,6 +486,16 @@ const PROJECT_SCOPES: [&str; 2] = ["local", "worktree"];
 /// has no sandbox.
 pub const NO_SANDBOX: &str = "no sandbox";
 
+/// The time limit of each git call of the fleetd process: the reconcile
+/// pass and the command channel (T-369). These calls are local and short
+/// by their nature (design.md, "Long work is a job"), and some run in the
+/// write transaction of the pass. A pass must end below the hang limit of
+/// 30 s (PL-5), so 1 hung git must not hold the pass, the ledger writer
+/// and the heartbeat until the watchdog restarts fleetd. The design gives
+/// no number for a local git command: 10 s is a starting value, below the
+/// hang limit with the 1 s grace of the stop.
+pub const FLEETD_GIT_LIMIT: Duration = Duration::from_secs(10);
+
 /// A test seam: it runs after the scan of the project config and before
 /// git starts, with the folder and the arguments of the git call.
 type RaceFn = dyn Fn(&Path, &[&str]) + Send + Sync;
@@ -593,6 +604,16 @@ impl CliWorktreeGit {
             ..self.clone()
         }
         .writing(&[folder.to_path_buf()]))
+    }
+
+    /// This adapter, and each git call stops at `limit`: `SIGTERM` to the
+    /// group of git, then `SIGKILL` after 1 s. The error then names each
+    /// `.lock` file that stays in the paths that git can write. For the git
+    /// of the fleetd process ([`FLEETD_GIT_LIMIT`]). A job has its own
+    /// time limit, and its git has none.
+    pub fn with_time_limit(mut self, limit: Duration) -> CliWorktreeGit {
+        self.runner = self.runner.with_time_limit(limit);
+        self
     }
 
     /// A test seam: `host` takes the place of the sandbox of the platform.
@@ -712,8 +733,11 @@ impl CliWorktreeGit {
         GIT_GROUP.store(OWN_GROUP.load(Ordering::SeqCst), Ordering::SeqCst);
         let out = self.runner.clone().with_sandbox(sandbox).output(dir, &full);
         GIT_GROUP.store(0, Ordering::SeqCst);
-        out.map_err(|e| anyhow::anyhow!("{e}"))
-            .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))
+        out.map_err(|e| match e {
+            GitError::TimedOut { .. } => anyhow::anyhow!("{e}; {}", locks_left(&self.writable)),
+            e => anyhow::anyhow!("{e}"),
+        })
+        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))
     }
 
     /// An error that names the first key of the repository or worktree
@@ -738,6 +762,41 @@ impl CliWorktreeGit {
         }
         Ok(())
     }
+}
+
+/// The text of the `.lock` files in `writable` after the stop of a git at
+/// its time limit. Git fails at once on a held lock and does not wait, so a
+/// `.lock` file that stays makes each later git that takes it fail with
+/// "File exists": the text names each file, so the cause is in the error.
+/// The `objects` folders hold no lock and are not read.
+fn locks_left(writable: &[PathBuf]) -> String {
+    let mut locks = Vec::new();
+    let mut todo: Vec<PathBuf> = writable.to_vec();
+    while let Some(dir) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() && entry.file_name() != "objects" => todo.push(path),
+                Ok(t) if t.is_file() && path.extension().is_some_and(|e| e == "lock") => {
+                    locks.push(path.display().to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    if locks.is_empty() {
+        return "no .lock file stays in the git folders that it could write".to_string();
+    }
+    locks.sort();
+    format!(
+        ".lock files in the git folders after the stop: {}. Each later git that takes 1 of \
+         these locks fails at once with \"File exists\" until the operator removes the file \
+         by hand, when no git runs in that repository",
+        locks.join(", ")
+    )
 }
 
 /// The group of this job process while 1 of its sandboxed git calls runs,
@@ -1141,6 +1200,112 @@ mod tests {
             GIT_GROUP.load(Ordering::SeqCst),
             0,
             "the slot is free after git"
+        );
+    }
+
+    fn same_host(
+        cmd: horch_platform::start::Command,
+        _reach: &Reach<'_>,
+    ) -> Result<horch_platform::start::Command, NotSupported> {
+        Ok(cmd)
+    }
+
+    /// A repository with 1 commit, and that commit.
+    fn one_commit(dir: &Path) -> (PathBuf, String) {
+        let repo = dir.join("repo");
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{o:?}");
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        (repo, tip)
+    }
+
+    /// A fake git that, on `update-ref`, takes the lock
+    /// `<git_dir>/refs/heads/x.lock` and hangs, with the shell `on_term` as
+    /// its `SIGTERM` trap. Each other git command is the real git.
+    #[cfg(unix)]
+    fn locking_git(dir: &Path, git_dir: &Path, on_term: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("locking-git");
+        let lock = git_dir.join("refs/heads/x.lock");
+        let script = format!(
+            "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = update-ref ]; then\n    \
+             lock='{}'\n    trap '{on_term}' TERM\n    : > \"$lock\"\n    sleep 600 &\n    \
+             wait\n    exit 0\n  fi\ndone\nexec git \"$@\"\n",
+            lock.display()
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    /// The git of fleetd on `repo` with the git `bin` and a limit of 1 s.
+    fn limited(dir: &Path, bin: &Path, repo: &Path) -> CliWorktreeGit {
+        CliWorktreeGit::new(bin, dir.join("fleet"))
+            .with_home(dir.join("home"))
+            .with_sandbox_host(same_host)
+            .writing(&[repo.join(".git")])
+            .with_time_limit(Duration::from_secs(1))
+    }
+
+    /// Git removes its `.lock` file at `SIGTERM`: a git stopped at its
+    /// limit by the `SIGTERM` leaves no lock (T-369).
+    #[cfg(unix)]
+    #[test]
+    fn a_git_stopped_at_its_limit_by_term_leaves_no_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, tip) = one_commit(dir.path());
+        let git_dir = repo.join(".git");
+        let bin = locking_git(dir.path(), &git_dir, "rm -f \"$lock\"; exit 143");
+        let e = limited(dir.path(), &bin, &repo)
+            .git(&repo, &["update-ref", "refs/heads/x", &tip])
+            .unwrap_err();
+        let text = format!("{e:#}");
+        assert!(text.contains("ran past its time limit of 1 s"), "{text}");
+        assert!(text.contains("no .lock file stays"), "{text}");
+        assert!(!git_dir.join("refs/heads/x.lock").exists());
+    }
+
+    /// A git that the `SIGKILL` ends leaves its `.lock` file: the error
+    /// names it, and the next git that takes that lock fails at once with
+    /// a text that names it too (T-369).
+    #[cfg(unix)]
+    #[test]
+    fn a_git_killed_at_its_limit_names_the_lock_that_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, tip) = one_commit(dir.path());
+        let git_dir = repo.join(".git");
+        let lock = git_dir.join("refs/heads/x.lock");
+        let bin = locking_git(dir.path(), &git_dir, "");
+        let e = limited(dir.path(), &bin, &repo)
+            .git(&repo, &["update-ref", "refs/heads/x", &tip])
+            .unwrap_err();
+        let text = format!("{e:#}");
+        assert!(text.contains("SIGKILL ended its group"), "{text}");
+        assert!(text.contains(&lock.display().to_string()), "{text}");
+        assert!(text.contains("File exists"), "{text}");
+        assert!(lock.exists(), "the KILL leaves the lock");
+
+        let started = std::time::Instant::now();
+        let e = limited(dir.path(), Path::new("git"), &repo)
+            .git(&repo, &["update-ref", "refs/heads/x", &tip])
+            .unwrap_err();
+        let text = format!("{e:#}");
+        assert!(text.contains("x.lock"), "{text}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "git does not wait for the lock"
         );
     }
 

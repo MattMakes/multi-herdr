@@ -44,6 +44,19 @@ pub fn kill_child_group(child: &mut Child) -> bool {
     os::kill_child_group(child)
 }
 
+/// Ask `child` and the group it leads (a child started with [`new_group`])
+/// to end: `SIGTERM` to the group. Whether the signal was sent. `child`
+/// must be unreaped, so that its pid still names its group and no other
+/// process. A program can catch the signal and clean up, as git removes
+/// its `.lock` files.
+///
+/// Windows has no polite stop: it sends nothing and gives `false`. The
+/// caller kills the child after its wait. Section 6, row "Signals and
+/// stop".
+pub fn term_child_group(child: &mut Child) -> bool {
+    os::term_child_group(child)
+}
+
 /// Whether `child` has exited. It stays unreaped, so its pid and process
 /// group cannot go to another process before the caller reaps it.
 ///
