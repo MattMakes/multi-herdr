@@ -925,7 +925,6 @@ fn rescue_and_observe(w: &mut World, row: &WorktreeRow, rescue: i64) -> String {
 #[test]
 fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued_rescue() {
     use horch_core::fleetd::fleet_runtime::adapters::scans::Liveness;
-    use horch_core::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
 
     let mut w = world();
     w.config.stop_grace_s = 1;
@@ -945,6 +944,34 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     let rescue = w.queue(Kind::Rescue, &row.worktree_id, &rescue_key);
     let mut runner = JobRunner::new(&Launcher);
 
+    let hung = start_fetch_that_ignores_term(&mut w, &mut runner, fetch);
+    assert_eq!(hung.state, State::Running);
+    assert_eq!(hung.deadline, Some(FleetSeconds(5)));
+    assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
+    assert!(
+        !start_sleeping(&mut w, &mut runner, rescue, "0", 1),
+        "the rescue waits for the fetch"
+    );
+    assert_eq!(w.job(rescue).state, State::Queued);
+
+    term_then_kill_after_the_grace(&mut w, &mut runner, fetch, &repo);
+
+    let ended = observe_run(&mut w, fetch, Liveness::Dead, 8);
+    assert_eq!(ended.ended, vec![(fetch, State::Abandoned)]);
+    assert_eq!(w.job(fetch).state, State::Abandoned);
+    assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
+
+    assert!(start_sleeping(&mut w, &mut runner, rescue, "0", 8));
+    assert_eq!(w.job(rescue).state, State::Running);
+    assert_rescue_saves_the_tree(&mut w, &row, rescue);
+    runner.reap();
+}
+
+/// Start the run `fetch` as a process that ignores TERM, and wait until
+/// its trap is set. The run as it is then.
+#[cfg(unix)]
+fn start_fetch_that_ignores_term(w: &mut World, runner: &mut JobRunner<'_>, fetch: i64) -> JobRow {
+    // The hung fetch ignores TERM, so only the KILL ends it.
     let ready = w.dir.path().join("fetch-ready");
     let hung_spec = LaunchSpec {
         program: "sh".into(),
@@ -973,49 +1000,52 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
         assert!(Instant::now() < until, "the fetch process ignores TERM");
         std::thread::sleep(Duration::from_millis(20));
     }
-    let hung = w.job(fetch);
-    assert_eq!(hung.state, State::Running);
-    assert_eq!(hung.deadline, Some(FleetSeconds(5)));
-    assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
-    assert!(
-        !start_sleeping(&mut w, &mut runner, rescue, "0", 1),
-        "the rescue waits for the fetch"
-    );
-    assert_eq!(w.job(rescue).state, State::Queued);
+    w.job(fetch)
+}
 
-    let before = observe_run(&mut w, fetch, Liveness::Alive, 4);
+/// The run `fetch` (time limit 5 s, grace 1 s) gets the TERM at 6, which
+/// it ignores, no stop in the grace, and the KILL at 7, while it still
+/// holds the git writer of `repo`. Then its process is gone.
+#[cfg(unix)]
+fn term_then_kill_after_the_grace(
+    w: &mut World,
+    runner: &mut JobRunner<'_>,
+    fetch: i64,
+    repo: &str,
+) {
+    use horch_core::fleetd::fleet_runtime::adapters::scans::Liveness;
+
+    let pid = w.job(fetch).pid.unwrap();
+    let before = observe_run(w, fetch, Liveness::Alive, 4);
     assert!(before.ended.is_empty() && before.stops.is_empty());
-    let seen = observe_run(&mut w, fetch, Liveness::Alive, 6);
+    let seen = observe_run(w, fetch, Liveness::Alive, 6);
     assert!(seen.ended.is_empty(), "the process still lives: {seen:?}");
     assert_eq!(seen.stops.len(), 1, "{seen:?}");
     assert!(!seen.stops[0].kill, "the first stop is the TERM: {seen:?}");
     assert!(jobs::stop(&seen.stops[0]), "the TERM reached the process");
     std::thread::sleep(Duration::from_millis(200));
-    assert!(
-        alive(hung.pid.unwrap()),
-        "the fetch process ignores the TERM"
-    );
-    let in_grace = observe_run(&mut w, fetch, Liveness::Alive, 6);
+    assert!(alive(pid), "the fetch process ignores the TERM");
+    let in_grace = observe_run(w, fetch, Liveness::Alive, 6);
     assert!(
         in_grace.stops.is_empty(),
         "no stop in the grace: {in_grace:?}"
     );
-    let seen = observe_run(&mut w, fetch, Liveness::Alive, 7);
+    let seen = observe_run(w, fetch, Liveness::Alive, 7);
     assert_eq!(seen.stops.len(), 1, "{seen:?}");
     assert!(seen.stops[0].kill, "the KILL after the grace: {seen:?}");
     assert_eq!(w.job(fetch).state, State::Running);
-    assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
+    assert!(jobs::git_writer_busy(&w.conn, repo).unwrap());
     assert!(jobs::stop(&seen.stops[0]), "the KILL reached the process");
-    wait_gone(&mut runner, hung.pid.unwrap());
+    wait_gone(runner, pid);
+}
 
-    let ended = observe_run(&mut w, fetch, Liveness::Dead, 8);
-    assert_eq!(ended.ended, vec![(fetch, State::Abandoned)]);
-    assert_eq!(w.job(fetch).state, State::Abandoned);
-    assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
+/// The running rescue `rescue` of `row` ends with a rescue ref on the base
+/// that holds the untracked file, and the tree stays.
+#[cfg(unix)]
+fn assert_rescue_saves_the_tree(w: &mut World, row: &WorktreeRow, rescue: i64) {
+    use horch_core::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
 
-    assert!(start_sleeping(&mut w, &mut runner, rescue, "0", 8));
-    assert_eq!(w.job(rescue).state, State::Running);
-    let rescue_ref = rescue_and_observe(&mut w, &row, rescue);
+    let rescue_ref = rescue_and_observe(w, row, rescue);
     assert!(
         rescue_ref.starts_with("refs/horch/rescue/t1/"),
         "{rescue_ref}"
@@ -1031,7 +1061,6 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
         "the untracked file is saved"
     );
     assert!(w.tree_path("t1").join("new.txt").is_file());
-    runner.reap();
 }
 
 #[test]
