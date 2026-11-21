@@ -7,7 +7,7 @@
 **Check:** `scripts/dev-sandbox.sh cargo test -p horch-core --lib taskledger::finish fleetd::task_execution && scripts/dev-sandbox.sh cargo test -p horch-e2e --test taskledger && cargo fmt --all --check`
 **Own:** `crates/horch/src/cmd/resultcmd.rs`, `crates/horch-core/src/taskledger/finish/mod.rs`, `crates/horch-core/src/fleetd/task_execution/application/verifier.rs`, `crates/horch-core/src/fleetd/task_execution/application/review.rs`, `crates/horch-core/src/fleetd/task_execution/application/ingest.rs`, `crates/horch-e2e/expected-failures/taskledger.txt`, `crates/horch-e2e/tests/taskledger.rs`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 items L6, L13; section 3 unit C11) and `ai_docs/plans/fleetd-finish/audit/unlanded-branches.md` (section "T-900 - complete push code-sweep review tasks").
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 items L6, L13; section 3 unit C11) and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/unlanded-branches.md` (section "T-900 - complete push code-sweep review tasks").
 
 ## Read first: the original ticket of this task
 
@@ -28,7 +28,7 @@ Give a code-sweep review task (`task.is_review()`) of a push attempt a valid pat
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.

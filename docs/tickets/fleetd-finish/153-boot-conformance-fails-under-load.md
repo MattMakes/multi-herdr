@@ -12,7 +12,7 @@ The land step of task T-6 failed in `fr10_a_agent_of_a_live_attempt_cannot_appro
 
 ## Read first
 
-- The evidence of the failed land (70 lines of the log, with the panic context): `ai_docs/plans/fleetd-finish/evidence/T6-4-land-fr10a-flake.log`.
+- The evidence of the failed land (70 lines of the log, with the panic context): `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/evidence/T6-4-land-fr10a-flake.log`.
 - `crates/horch-e2e/tests/p6_fr10_approval.rs`, `crates/horch-e2e/src/fr10_agent.rs`, and how the harness starts fleetd (`crates/horch-e2e/src/harness.rs`: boot jobs `conformance` and `docs_sync`).
 - Ticket `152-launcher-start-time-unreadable.md` (task T-157): `Launcher::launch` can fail with "the start time of process N is unreadable" on a loaded host. This can be the cause of `worker_launch_failed` here. Do not fix the launcher; read the failure reason and say in the commit message if it is the same.
 
@@ -35,7 +35,7 @@ The new test passes, 10 of 10 runs pass, the commit message names the reason of 
 
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.

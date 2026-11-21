@@ -20,7 +20,7 @@ The operator: an engineer who designed fleetd (`docs/specs/fleetd/design.md`) an
 2. `git log --first-parent --oneline origin/main..fleet/fleetd-finish` and, for the build run before this one, `git log --oneline origin/main..fleet/fleetd-build`. Group by phase and by area; do not list each commit.
 3. `git diff --stat origin/main...fleet/fleetd-finish` (the size: files, lines, new crates) and `git diff --name-status origin/main...fleet/fleetd-finish -- crates | cut -f1 | sort | uniq -c`.
 4. The gate and report files in `docs/specs/fleetd/gates/` (each `fleetd-p*.md`, `pre-gate-p4.md`, `pre-gate-p5.md`, `pre-gate-p6.md`, `ci-run-3.md`, `ci-run-4.md` if it exists, `merge-main-plan.md`, `merge-main-proof.md`, `macos-check-sandbox-lan.md`) and the review `docs/specs/fleetd/reviews/end-review-a.md`.
-5. The decisions log `ai_docs/plans/fleetd-finish/decisions.md` (long: search it for "OPERATOR", "PRODUCT", "SECURITY", "DONE") and `ai_docs/plans/fleetd-finish/goal-prompt.md` (the done criteria).
+5. The decisions log `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/decisions.md` (long: search it for "OPERATOR", "PRODUCT", "SECURITY", "DONE") and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/goal-prompt.md` (the done criteria).
 6. `crates/horch-e2e/expected-failures/*.txt` on the run branch (what is still listed and who owns it), and `git grep -n '#\[ignore' fleet/fleetd-finish -- crates`.
 
 ## The file `docs/specs/fleetd/gates/pr-description.md`

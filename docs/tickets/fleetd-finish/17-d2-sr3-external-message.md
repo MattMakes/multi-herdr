@@ -7,7 +7,7 @@
 **Check:** `scripts/dev-sandbox.sh cargo test -p horch-core --test sr3_no_agent_push && scripts/dev-sandbox.sh cargo test -p horch-e2e --test p4_safety && cargo fmt --all --check`
 **Own:** `crates/horch-core/src/fleetd/worker_profiles/domain/launch_env.rs`, `crates/horch-core/tests/sr3_no_agent_push.rs`, `crates/horch-e2e/tests/p4_safety.rs`, `crates/horch-platform/src/sandbox.rs`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 item L9; section 3 unit D2), `ai_docs/plans/fleetd-finish/audit/phase-4.md` (lines 19, 138, 149), and `docs/tickets/fleetd-p4/22-agents-never-push.md`.
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 item L9; section 3 unit D2), `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/phase-4.md` (lines 19, 138, 149), and `docs/tickets/fleetd-p4/22-agents-never-push.md`.
 
 ## Goal
 
@@ -22,7 +22,7 @@ Prove SR-3 ("No agent shall push to a protected branch, deploy, or message anyon
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.

@@ -6,7 +6,7 @@
 **Check:** `test -s docs/specs/fleetd/gates/ci-run-2.md && grep -q '^## Windows' docs/specs/fleetd/gates/ci-run-2.md && grep -q '^## Difference to CI0' docs/specs/fleetd/gates/ci-run-2.md && cargo fmt --all --check`
 **Own:** `docs/specs/fleetd/gates/ci-run-2.md`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (item L12).
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (item L12).
 
 ## Goal
 
@@ -21,7 +21,7 @@ The first CI run (report `docs/specs/fleetd/gates/ci-baseline-2026-11.md`, run 4
 
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
@@ -40,7 +40,7 @@ The first CI run (report `docs/specs/fleetd/gates/ci-baseline-2026-11.md`, run 4
 5. For each job, record the result. For each failed job, read the log: `gh run view <id> --log-failed`. List each failed test with its first error line.
 6. Sort each failure into 1 class: (a) a test that is on `crates/horch-e2e/expected-failures/`; (b) a compile error on that OS; (c) a test that is unix-only by its code but runs on Windows; (d) a real fault of the product on that OS; (e) a fault of the CI setup.
 7. Compare with the first report: for each failure group of CI0, write fixed, still red, or new. Name each test that is red now and was not red in CI0.
-8. For each failure that is still red: name the ticket of `docs/tickets/fleetd-finish/FIX-INDEX-8.md` or `FIX-INDEX-9.md` that covers it (read both in `docs/tickets/fleetd-finish/`), or write `no ticket`.
+8. For each failure that is still red: name the ticket of `docs/tickets/fleetd-finish/FIX-INDEX-8.md` or `FIX-INDEX-9.md` that covers it (read both in `/Users/matthewscott/repo/multi-herdr/docs/tickets/fleetd-finish/`), or write `no ticket`.
 9. Write the report and commit it with the subject `CI1: the second CI result of fleetd on 3 OSes`.
 
 ## Report

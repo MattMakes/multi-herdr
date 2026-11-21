@@ -7,7 +7,7 @@
 **Check:** `scripts/dev-sandbox.sh cargo test -p horch-core --lib taskledger::triage && scripts/dev-sandbox.sh cargo test -p horch-core --test worktree_triage && cargo fmt --all --check`
 **Own:** `crates/horch-core/src/taskledger/triage/apply.rs`, `crates/horch-core/src/taskledger/triage/mod.rs`, `crates/horch-core/tests/worktree_triage.rs`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 item L14; section 3 unit A2) and `ai_docs/plans/fleetd-finish/audit/worktree-cleanup.md` (section "Bug found").
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 item L14; section 3 unit A2) and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/worktree-cleanup.md` (section "Bug found").
 
 ## Goal
 
@@ -20,7 +20,7 @@ Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 item L14; section 3 unit 
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.

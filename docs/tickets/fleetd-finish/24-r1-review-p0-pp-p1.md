@@ -6,7 +6,7 @@
 **Check:** `test -s docs/specs/fleetd/reviews/end-review-p0-pp-p1.md && grep -q '^## Watchlist lines covered' docs/specs/fleetd/reviews/end-review-p0-pp-p1.md && cargo fmt --all --check`
 **Own:** `docs/specs/fleetd/reviews/end-review-p0-pp-p1.md`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (wave F).
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (wave F).
 
 ## Goal
 
@@ -17,7 +17,7 @@ Review the code of fleetd for phases 0, P and 1 (the platform layer, the control
 - `docs/specs/fleetd/design.md`: the sections that your scope names, the table "Where each rule becomes green", and "Failure modes and effects".
 - `ai_docs/plans/fleetd-build/for-operator/end-review-watchlist.md` in your worktree: 77 lines. Each line is 1 point that an earlier worker marked for this review.
 - `ai_docs/plans/fleetd-build/for-operator/main-findings-from-T177-review.md`.
-- The audit of your phases in `ai_docs/plans/fleetd-finish/audit/`: it maps each rule to its code path and test.
+- The audit of your phases in `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/`: it maps each rule to its code path and test.
 - `ai_docs/plans/fleetd-build/decisions.md`: search it for the T-number of a watchlist point to get the ruling.
 
 ## Scope
@@ -31,7 +31,7 @@ Review the code of fleetd for phases 0, P and 1 (the platform layer, the control
 
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.

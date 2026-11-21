@@ -8,7 +8,7 @@
 **Own:** `docs/specs/fleetd/gates/pre-gate-p5.md`
 **Do not touch:** `crates/`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 items L11, Q1, Q2; section 3 unit E3), `ai_docs/plans/fleetd-finish/audit/phase-5.md`, and `docs/tickets/fleetd-p5/49-gate.md`.
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 items L11, Q1, Q2; section 3 unit E3), `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/phase-5.md`, and `docs/tickets/fleetd-p5/49-gate.md`.
 
 ## Goal
 
@@ -18,7 +18,7 @@ Run the Phase 5 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 
 - **L11 (Phase 5 gate, `docs/tickets/fleetd-p5/49-gate.md`)**:
   - Verify green rows: FR-7, RR-5, RR-8, SR-5, SR-6, SR-8, FM-15, FM-17, FM-23, FM-24.
-  - Note open design text questions Q1 (FR-7: 9 fixed lines in `TYPED_LINES` vs 1 line in `design.md:143`) and Q2 (SR-8: OS sandbox refusal leaves no `requests` row vs server refusal after sandbox bypass) as described in `ai_docs/plans/fleetd-finish/plan.md` section "Design text questions".
+  - Note open design text questions Q1 (FR-7: 9 fixed lines in `TYPED_LINES` vs 1 line in `design.md:143`) and Q2 (SR-8: OS sandbox refusal leaves no `requests` row vs server refusal after sandbox bypass) as described in `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` section "Design text questions".
   - Verify the architecture test (`arch_scan -- fitness_only_fleet_runtime_opens_the_ledger_writable`), the Phase 5 e2e suites (`p5_operator_boundary`, `p5_untrusted_files`, `p5_requests`, `p5_read_only_worker`, `p5_push_stop`), and the Phase 5 release test (`p5_release`).
   - Verify that no active Phase 5 expected-failure entry remains in `crates/horch-e2e/expected-failures/*.txt` (`grep -n "| 5 |" crates/horch-e2e/expected-failures/*.txt`).
   - A red row is a `BLOCKED:` report to the orchestrator, not a quiet fix.
@@ -26,7 +26,7 @@ Run the Phase 5 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
@@ -37,7 +37,7 @@ Run the Phase 5 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 
 ## Steps
 
-1. Read `docs/tickets/fleetd-p5/49-gate.md`, `docs/tickets/fleetd-p5/MAP.md`, `docs/specs/fleetd/gates/fleetd-p1.md`, and `ai_docs/plans/fleetd-finish/audit/phase-5.md`.
+1. Read `docs/tickets/fleetd-p5/49-gate.md`, `docs/tickets/fleetd-p5/MAP.md`, `docs/specs/fleetd/gates/fleetd-p1.md`, and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/phase-5.md`.
    - Check: list every row required in `docs/specs/fleetd/gates/fleetd-p5.md`.
 2. Check for any Phase 5 entry in `crates/horch-e2e/expected-failures/*.txt`:
    `grep -n "| 5 |" crates/horch-e2e/expected-failures/*.txt`
@@ -66,7 +66,7 @@ Run the Phase 5 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 
 The real gate of Phase 5 runs after the merge of `origin/main` (task E1). This task runs the same rows NOW, so that each red row gets its fix task while other fix tasks still run. Differences to the text above:
 
-- Write `docs/specs/fleetd/gates/pre-gate-p5.md`, not `docs/specs/fleetd/gates/fleetd-p5.md`. First line: the commit of your tip. Then 1 table row for each gate row (rule or test, the test binary and test name that proves it, passed or failed, the first failure line). Then the heading `## Red rows`: 1 item for each red row with the failure text, the file and line, your reading of the cause (label it verified or not verified), and the fix task that owns it if one exists (`horch ledger status --run fleetd-finish`; the tickets are in `docs/tickets/fleetd-finish/`). Write `none` when no row is red. Then `## Rules with no test`: each rule of the gate for which you find no test that proves it.
+- Write `docs/specs/fleetd/gates/pre-gate-p5.md`, not `docs/specs/fleetd/gates/fleetd-p5.md`. First line: the commit of your tip. Then 1 table row for each gate row (rule or test, the test binary and test name that proves it, passed or failed, the first failure line). Then the heading `## Red rows`: 1 item for each red row with the failure text, the file and line, your reading of the cause (label it verified or not verified), and the fix task that owns it if one exists (`horch ledger status --run fleetd-finish`; the tickets are in `/Users/matthewscott/repo/multi-herdr/docs/tickets/fleetd-finish/`). Write `none` when no row is red. Then `## Rules with no test`: each rule of the gate for which you find no test that proves it.
 - A red row does NOT stop the task and is NOT a `BLOCKED:` report: record it and go on with the next row. An expected-failures entry of the phase is a red row: record its owner.
 - Do NOT run the full workspace test command of the old Check (step 5). Run only the named suites of the gate, 1 `cargo test` command at a time, with `--no-fail-fast`, and with `--test-threads=4` when the 1-minute load is above 32.
 - A test that fails: run it 2 more times alone. Record 3 of 3 red, or flaky with the counts. A flaky test is a red row.

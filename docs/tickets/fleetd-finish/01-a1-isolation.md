@@ -8,7 +8,7 @@
 **Own:** `.gitignore`, `scripts/dev-sandbox.sh`, `crates/horch-core/src/taskledger/store.rs`, `crates/horch-core/src/fleetd/fleet_runtime/adapters/old_watchdog.rs`, `crates/horch-core/tests/old_watchdog.rs`, `crates/horch-platform/src/service.rs`, `crates/horch-platform/tests/service.rs`, `crates/horch/src/cmd/fleetd.rs`, `crates/horch-e2e/src/harness.rs`
 **Do not touch:** `docs/specs/fleetd/design.md`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 items L1, L2, L3; section 3 unit A1) and `ai_docs/plans/fleetd-finish/audit/isolation.md`.
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 items L1, L2, L3; section 3 unit A1) and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md`.
 
 ## Goal
 
@@ -23,7 +23,7 @@ A development build cannot write the live shared ledger or collide with the inst
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
@@ -34,7 +34,7 @@ A development build cannot write the live shared ledger or collide with the inst
 
 ## Steps
 
-1. Add `.dev-sandbox/` to `.gitignore`. Write `scripts/dev-sandbox.sh` with mode `0755`. The script takes `<command...>`, creates `<worktree>/.dev-sandbox/run.$$` with subdirectories `home`, `tmp`, `state`, `data`, `ledger`, `config`, and `cache`, sets a `trap` on `EXIT INT TERM` that removes the run folder, unsets `FLEET_ROOT`, `HORCH_ALLOW_LEDGER_MIGRATE`, and `ANTHROPIC_API_KEY`, preserves `CARGO_HOME` and `RUSTUP_HOME`, exports `HOME`, `TMPDIR`, `HORCH_STATE_DIR`, `HORCH_DATA_DIR`, `HORCH_LEDGER_DB`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR` as in `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", and runs `"$@"`.
+1. Add `.dev-sandbox/` to `.gitignore`. Write `scripts/dev-sandbox.sh` with mode `0755`. The script takes `<command...>`, creates `<worktree>/.dev-sandbox/run.$$` with subdirectories `home`, `tmp`, `state`, `data`, `ledger`, `config`, and `cache`, sets a `trap` on `EXIT INT TERM` that removes the run folder, unsets `FLEET_ROOT`, `HORCH_ALLOW_LEDGER_MIGRATE`, and `ANTHROPIC_API_KEY`, preserves `CARGO_HOME` and `RUSTUP_HOME`, exports `HOME`, `TMPDIR`, `HORCH_STATE_DIR`, `HORCH_DATA_DIR`, `HORCH_LEDGER_DB`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR` as in `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", and runs `"$@"`.
    - Check: `scripts/dev-sandbox.sh sh -c 'test -z "$FLEET_ROOT" && test -z "$ANTHROPIC_API_KEY" && test -n "$HORCH_LEDGER_DB"'` exits 0 and leaves no `.dev-sandbox/run.*` folder.
 2. In `crates/horch-core/src/taskledger/store.rs`, add a writable-open guard function `write_refusal` and call `guard_open(path)` at the top of `Store::open` (line 178), before `std::fs::create_dir_all` and `Connection::open`. A development binary (`is_dev_build(&exe)`) that opens the shared ledger (`is_shared_ledger(ledger, passwd_home)`) fails unless `HORCH_ALLOW_LEDGER_MIGRATE=1`, even when the schema version already matches `schema::VERSION`. Add unit tests in `crates/horch-core/src/taskledger/store.rs` that prove a dev build refuses a same-version writable open of the shared ledger and permits a scratch ledger or `HORCH_ALLOW_LEDGER_MIGRATE=1`.
    - Check: `scripts/dev-sandbox.sh cargo test -p horch-core --lib taskledger::store`

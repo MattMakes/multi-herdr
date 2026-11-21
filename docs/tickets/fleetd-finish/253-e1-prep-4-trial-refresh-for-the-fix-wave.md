@@ -8,7 +8,7 @@
 
 ## Goal
 
-The local branch `keep/fleetd-finish-trial-merge-main` (tip 3fd534f7, task T-330; proof: `docs/specs/fleetd/gates/merge-main-proof-2.md` on the run branch; method: ticket `docs/tickets/fleetd-finish/215-*.md`, read both in full) holds the merge of `origin/main` 5863c698 (Release v0.5.2) with the run branch at 4e806d0b. Since then about 80 commits landed on `fleet/fleetd-finish`. `git merge-tree --write-tree fleet/fleetd-finish keep/fleetd-finish-trial-merge-main` now exits 1 with 2 conflicts: `crates/horch-core/tests/context_prime.rs` and `crates/horch-e2e/src/harness.rs`. The final merge task (E1) uses this trial, so it must merge with no conflict and be proven.
+The local branch `keep/fleetd-finish-trial-merge-main` (tip 3fd534f7, task T-330; proof: `docs/specs/fleetd/gates/merge-main-proof-2.md` on the run branch; method: ticket `/Users/matthewscott/repo/multi-herdr/docs/tickets/fleetd-finish/215-*.md`, read both in full) holds the merge of `origin/main` 5863c698 (Release v0.5.2) with the run branch at 4e806d0b. Since then about 80 commits landed on `fleet/fleetd-finish`. `git merge-tree --write-tree fleet/fleetd-finish keep/fleetd-finish-trial-merge-main` now exits 1 with 2 conflicts: `crates/horch-core/tests/context_prime.rs` and `crates/horch-e2e/src/harness.rs`. The final merge task (E1) uses this trial, so it must merge with no conflict and be proven.
 
 ## Steps
 

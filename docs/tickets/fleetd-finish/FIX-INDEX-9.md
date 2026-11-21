@@ -1,6 +1,6 @@
 # Fix Index 9 — Local Baseline Red Tests Without a Ticket
 
-Source baseline: `git -C . show fleet/fleetd-finish:docs/specs/fleetd/gates/baseline-2026-11.md` (`## Failing tests`, 361 failing tests across 65 test binaries/files).
+Source baseline: `git -C /Users/matthewscott/repo/multi-herdr show fleet/fleetd-finish:docs/specs/fleetd/gates/baseline-2026-11.md` (`## Failing tests`, 361 failing tests across 65 test binaries/files).
 
 ## Step 1: Coverage Table of the 361 Red Tests of the Baseline
 
@@ -164,7 +164,7 @@ In accordance with Step 2 ("For a test not covered inside a file that has a tick
 
 ### Ticket `116` (`116-ci-fix8-e2e-taskledger-a.md`) — `crates/horch-e2e/tests/taskledger.rs` (2 tests)
 - `legacy_plumbing_lives_under_ledger_legacy` — `horch [ledger, legacy, init, --goal, legacy check] failed: error: unrecognized subcommand 'legacy'`
-- `status_on_a_fresh_ledger_creates_it_and_says_no_runs` — `status failed: horch: reading the operator token at ~/.horch/operator.token: No such file or directory (os error 2)`
+- `status_on_a_fresh_ledger_creates_it_and_says_no_runs` — `status failed: horch: reading the operator token at /Users/matthewscott/.horch/operator.token: No such file or directory (os error 2)`
 
 ### Ticket `132` (`132-ci-fix10-e2e-p7-docs-sync-release.md`) — `crates/horch-e2e/tests/p7_docs_sync.rs` (3 tests)
 - `new_fake_cli_version_fails_a_check_marks_its_profiles_unhealthy_and_adds_1_idea` — `timed out after 20s waiting for an unhealthy row of claude and an idea` (Note: shares root cause with ticket `146` in `crates/horch-e2e/src/exec.rs:221`; block `132` on `146` or run `146` first.)

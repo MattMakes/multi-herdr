@@ -56,7 +56,7 @@ All tests in lines 304 to 1978 of `crates/horch-e2e/tests/taskledger.rs` pass, a
 
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
@@ -71,4 +71,4 @@ All tests in lines 304 to 1978 of `crates/horch-e2e/tests/taskledger.rs` pass, a
 These tests are red in `docs/specs/fleetd/gates/baseline-2026-11.md` and are part of this ticket. The ticket is done only when each test of each Own test file passes. Rule: a test of a behavior that Phase 6 retired by design gets its assert moved to the designed new effect; delete it only when no form of the rule exists, and name the test, the retired behavior and its rule in the commit message. No permanent expected-failures entry.
 
 - `legacy_plumbing_lives_under_ledger_legacy` — `horch [ledger, legacy, init, --goal, legacy check] failed: error: unrecognized subcommand 'legacy'`
-- `status_on_a_fresh_ledger_creates_it_and_says_no_runs` — `status failed: horch: reading the operator token at ~/.horch/operator.token: No such file or directory (os error 2)`
+- `status_on_a_fresh_ledger_creates_it_and_says_no_runs` — `status failed: horch: reading the operator token at /Users/matthewscott/.horch/operator.token: No such file or directory (os error 2)`

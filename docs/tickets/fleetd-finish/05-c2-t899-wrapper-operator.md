@@ -7,7 +7,7 @@
 **Check:** `scripts/dev-sandbox.sh cargo test -p horch-core --lib execution && scripts/dev-sandbox.sh cargo test -p horch-core --test p5_operator_boundary --test p6_authorize --test p7_operator_boundary && scripts/dev-sandbox.sh cargo test -p horch-e2e --test p5_operator_boundary && cargo fmt --all --check`
 **Own:** `crates/horch-core/src/execution/lifecycle.rs`, `crates/horch-core/src/execution/service.rs`, `crates/horch-core/src/execution/store.rs`, `crates/horch-core/src/fleetd/fleet_runtime/adapters/channel_client.rs`, `crates/horch-core/src/fleetd/task_execution/domain/task_files.rs`, `crates/horch-core/src/fleetd/task_execution/adapters/task_files.rs`, `crates/horch-core/src/fleetd/task_execution/application/ingest.rs`, `crates/horch-core/tests/p6_authorize.rs`, `crates/horch-e2e/tests/p5_operator_boundary.rs`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 item L5; section 3 unit C2), `ai_docs/plans/fleetd-finish/audit/unlanded-branches.md` (section "T-899 - remove operator-class requests from worker wrappers"), and `ai_docs/plans/fleetd-finish/audit/phases-0-P-1.md` (line 161).
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 item L5; section 3 unit C2), `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/unlanded-branches.md` (section "T-899 - remove operator-class requests from worker wrappers"), and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/phases-0-P-1.md` (line 161).
 
 ## Read first: the original ticket of this task
 
@@ -31,7 +31,7 @@ The worker wrapper (`horch worker`) sends no request of class `operator` and nev
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.

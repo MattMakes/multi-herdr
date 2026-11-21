@@ -12,10 +12,10 @@ Done criteria 1, 4 and 7 of the run need the operator to decide each waiver, eac
 
 ## Sources (read all)
 
-1. The decisions log: `docs/tickets/fleetd-finish/_decisions-snapshot-1004Z.md` (a copy of the log of the orchestrator; search for "OPERATOR", "operator decision", "open", "not verified", "Limit").
+1. The decisions log: `/Users/matthewscott/repo/multi-herdr/docs/tickets/fleetd-finish/_decisions-snapshot-1004Z.md` (a copy of the log of the orchestrator; search for "OPERATOR", "operator decision", "open", "not verified", "Limit").
 2. On the run branch, folder `docs/specs/fleetd/`: `reviews/end-review-a.md` (5 operator decisions), `reviews/delta-review-*.md` (3 files), `gates/hc-adapter-scope.md` (options a, b, c), `gates/merge-main-plan.md` and `merge-main-proof.md` and `merge-main-proof-2.md` (sections "For the operator"), `gates/pre-gate-p4.md`, `pre-gate-p5.md`, `pre-gate-p6.md`, `gates/ci-run-4.md`, `gates/macos-check-sandbox-lan.md`, `gates/linux-git-241-proof.md`, `gates/pr-description.md`.
 3. `crates/horch-e2e/expected-failures/` (each entry that is left).
-4. The goal: `ai_docs/plans/fleetd-finish/goal-prompt.md` (the done criteria and the list "Stop and ask the operator").
+4. The goal: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/goal-prompt.md` (the done criteria and the list "Stop and ask the operator").
 
 ## Output: `docs/specs/fleetd/gates/operator-decisions.md`
 

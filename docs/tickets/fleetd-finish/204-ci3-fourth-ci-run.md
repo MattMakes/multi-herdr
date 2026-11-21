@@ -6,7 +6,7 @@
 **Check:** `test -s docs/specs/fleetd/gates/ci-run-4.md && grep -q '^## Windows' docs/specs/fleetd/gates/ci-run-4.md && grep -q '^## Difference to run 3' docs/specs/fleetd/gates/ci-run-4.md && cargo fmt --all --check`
 **Own:** `docs/specs/fleetd/gates/ci-run-4.md`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (item L12).
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (item L12).
 
 ## Goal
 
@@ -21,7 +21,7 @@ The third CI run (report `docs/specs/fleetd/gates/ci-run-3.md`, run 44784709135,
 
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
@@ -40,7 +40,7 @@ The third CI run (report `docs/specs/fleetd/gates/ci-run-3.md`, run 44784709135,
 5. For each job, record the result. For each failed job, read the log: `gh run view <id> --log-failed`. List each failed test with its first error line.
 6. Sort each failure into 1 class: (a) a test that is on `crates/horch-e2e/expected-failures/`; (b) a compile error on that OS; (c) a test that is unix-only by its code but runs on Windows; (d) a real fault of the product on that OS; (e) a fault of the CI setup.
 7. Compare with the second report `docs/specs/fleetd/gates/ci-run-3.md`: for each failure group of run 3, write fixed, still red, or new. Name each test that is red now and was not red in run 3.
-8. For each failure that is still red: name the task that covers it. Read `horch ledger status --run fleetd-finish` for the queued and running tasks, and the tickets in `docs/tickets/fleetd-finish/` (`FIX-INDEX-8.md`, `FIX-INDEX-9.md`, tickets 156 to 203). Write `no ticket` when none covers it. Also list each `no ticket` row of `ci-run-3.md` (for example the Linux `p4_repair` hang) with its state now.
+8. For each failure that is still red: name the task that covers it. Read `horch ledger status --run fleetd-finish` for the queued and running tasks, and the tickets in `/Users/matthewscott/repo/multi-herdr/docs/tickets/fleetd-finish/` (`FIX-INDEX-8.md`, `FIX-INDEX-9.md`, tickets 156 to 203). Write `no ticket` when none covers it. Also list each `no ticket` row of `ci-run-3.md` (for example the Linux `p4_repair` hang) with its state now.
 9. Write the report and commit it with the subject `CI3: the fourth CI result of fleetd on 3 OSes`.
 
 ## Report

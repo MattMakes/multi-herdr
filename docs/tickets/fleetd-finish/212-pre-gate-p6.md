@@ -8,7 +8,7 @@
 **Own:** `docs/specs/fleetd/gates/pre-gate-p6.md`
 **Do not touch:** `crates/`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (section 1 item L11; section 3 unit E4), `ai_docs/plans/fleetd-finish/audit/phase-6.md`, and `docs/tickets/fleetd-p6/65-gate.md`.
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (section 1 item L11; section 3 unit E4), `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/phase-6.md`, and `docs/tickets/fleetd-p6/65-gate.md`.
 
 ## Goal
 
@@ -25,7 +25,7 @@ Run the Phase 6 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 ## Rules
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
@@ -36,7 +36,7 @@ Run the Phase 6 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 
 ## Steps
 
-1. Read `docs/tickets/fleetd-p6/65-gate.md`, `docs/tickets/fleetd-p6/MAP.md`, `docs/specs/fleetd/gates/fleetd-p1.md`, and `ai_docs/plans/fleetd-finish/audit/phase-6.md`.
+1. Read `docs/tickets/fleetd-p6/65-gate.md`, `docs/tickets/fleetd-p6/MAP.md`, `docs/specs/fleetd/gates/fleetd-p1.md`, and `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/phase-6.md`.
    - Check: list every row required in `docs/specs/fleetd/gates/fleetd-p6.md`.
 2. Check for any Phase 6 entry in `crates/horch-e2e/expected-failures/*.txt`:
    `grep -n "| 6 |" crates/horch-e2e/expected-failures/*.txt`
@@ -65,7 +65,7 @@ Run the Phase 6 gate verification inside `scripts/dev-sandbox.sh` and write `doc
 
 The real gate of Phase 6 runs after the merge of `origin/main` (task E1). This task runs the same rows NOW, so that each red row gets its fix task while other fix tasks still run. Differences to the text above:
 
-- Write `docs/specs/fleetd/gates/pre-gate-p6.md`, not `docs/specs/fleetd/gates/fleetd-p6.md`. First line: the commit of your tip. Then 1 table row for each gate row (rule or test, the test binary and test name that proves it, passed or failed, the first failure line). Then the heading `## Red rows`: 1 item for each red row with the failure text, the file and line, your reading of the cause (label it verified or not verified), and the fix task that owns it if one exists (`horch ledger status --run fleetd-finish`; the tickets are in `docs/tickets/fleetd-finish/`). Write `none` when no row is red. Then `## Rules with no test`: each rule of the gate for which you find no test that proves it.
+- Write `docs/specs/fleetd/gates/pre-gate-p6.md`, not `docs/specs/fleetd/gates/fleetd-p6.md`. First line: the commit of your tip. Then 1 table row for each gate row (rule or test, the test binary and test name that proves it, passed or failed, the first failure line). Then the heading `## Red rows`: 1 item for each red row with the failure text, the file and line, your reading of the cause (label it verified or not verified), and the fix task that owns it if one exists (`horch ledger status --run fleetd-finish`; the tickets are in `/Users/matthewscott/repo/multi-herdr/docs/tickets/fleetd-finish/`). Write `none` when no row is red. Then `## Rules with no test`: each rule of the gate for which you find no test that proves it.
 - A red row does NOT stop the task and is NOT a `BLOCKED:` report: record it and go on with the next row. An expected-failures entry of the phase is a red row: record its owner.
 - Do NOT run the full workspace test command of the old Check (step 5). Run only the named suites of the gate, 1 `cargo test` command at a time, with `--no-fail-fast`, and with `--test-threads=4` when the 1-minute load is above 32.
 - A test that fails: run it 2 more times alone. Record 3 of 3 red, or flaky with the counts. A flaky test is a red row.

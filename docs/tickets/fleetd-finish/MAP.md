@@ -1,6 +1,6 @@
 # Map: fleetd-finish
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md`
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md`
 
 | # | Title | Blocked by | Wave |
 |---|---|---|---|

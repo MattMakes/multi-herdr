@@ -6,7 +6,7 @@
 **Check:** `test -s docs/specs/fleetd/gates/ci-final.md && grep -q '^## Windows' docs/specs/fleetd/gates/ci-final.md && cargo fmt --all --check`
 **Own:** `docs/specs/fleetd/gates/ci-final.md`, `docs/specs/fleetd/gates/fleetd-pp.md`, `docs/specs/fleetd/gates/fleetd-p1.md`, `scripts/pl6/windows-gaps.txt`
 
-Spec: `ai_docs/plans/fleetd-finish/plan.md` (unit E5, item L12).
+Spec: `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/plan.md` (unit E5, item L12).
 
 ## Goal
 
@@ -20,7 +20,7 @@ A merge of this pull request with a CHANGELOG line publishes a release at once. 
 
 
 1. Work only in the worktree that `horch ledger claim` gives. The worktree keeps its own `target/`.
-2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
+2. Run each `cargo test`, `cargo run` and each manual binary through `scripts/dev-sandbox.sh` (unit A1 makes it). Until A1 lands, use the env of `/Users/matthewscott/repo/multi-herdr/ai_docs/plans/fleetd-finish/audit/isolation.md` section "Sandbox env", with the sandbox folder inside the worktree.
 3. Never install the build. No `horch self-update`, `horch install`, `cargo install`, `launchctl`. Never write `~/.horch`, `~/.local/state/horch`, `~/.local/bin`, `~/Library/LaunchAgents`, `/fleet`.
 4. Never read, set or pass `ANTHROPIC_API_KEY`.
 5. Each Check ends with `cargo fmt --all --check`.
