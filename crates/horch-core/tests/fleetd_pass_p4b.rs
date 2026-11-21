@@ -40,7 +40,7 @@ use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::health::Hold;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, BranchFact, NewBranch};
 use horch_core::fleetd::integration::application::rebase::{rebase_key, Rebased};
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
@@ -933,11 +933,32 @@ fn child_pass_with_git() {
         Ok(report) => println!("PASS-FAILED {:?}", report.failed),
         Err(e) => println!("PASS-ERROR {e}"),
     }
+    // The lock test: the next pass opens the item of the lock that stays,
+    // and the pass after the removal of the file resolves it.
+    let Some(lock) = std::env::var_os(LOCK_CHILD) else {
+        return;
+    };
+    let lock_items = |conn: &Connection| {
+        needs_you::open_keys(conn, "job_abandoned")
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains(":git_lock:"))
+            .collect::<Vec<_>>()
+    };
+    run(&mut p, &mut conn);
+    run(&mut p, &mut conn);
+    println!("LOCK-ITEMS {:?}", lock_items(&conn));
+    fs::remove_file(&lock).unwrap();
+    run(&mut p, &mut conn);
+    println!("LOCK-ITEMS-AFTER {:?}", lock_items(&conn));
 }
 
-/// A git of the pass that hangs on its first `subcommand`, then is the real
-/// git. Each call appends its arguments to `log`.
-fn hang_once_git(w: &World, subcommand: &str) -> (PathBuf, PathBuf) {
+/// The key of the lock file of the lock test of [`child_pass_with_git`].
+const LOCK_CHILD: &str = "HORCH_P4B_LOCK_CHILD";
+
+/// A git of the pass that runs the shell `on_hang` and hangs on its first
+/// `subcommand`, then is the real git.
+fn hang_once_git(w: &World, subcommand: &str, on_hang: &str) -> PathBuf {
     let real = String::from_utf8(
         Command::new("sh")
             .args(["-c", "command -v git"])
@@ -947,23 +968,30 @@ fn hang_once_git(w: &World, subcommand: &str) -> (PathBuf, PathBuf) {
     )
     .unwrap();
     // The sandbox of the git of fleetd can write only the git folder.
-    let log = w.repo().join(".git").join("git-calls.log");
     let once = w.repo().join(".git").join("git-hung-once");
     let bin = w.dir.join("hang-once-git");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> '{log}'\nfor a in \"$@\"; do\n  if [ \"$a\" = '{subcommand}' ] && [ ! -e '{once}' ]; then\n    : > '{once}'\n    sleep 600 &\n    wait\n  fi\ndone\nexec '{real}' \"$@\"\n",
-        log = log.display(),
+        "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = '{subcommand}' ] && [ ! -e '{once}' ]; then\n    : > '{once}'\n    {on_hang}\n    sleep 600 &\n    wait\n  fi\ndone\nexec '{real}' \"$@\"\n",
         once = once.display(),
         real = real.trim(),
     );
     fs::write(&bin, script).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
-    (bin, log)
+    bin
 }
 
 /// 1 pass in a child process with the git `bin`: its output.
 fn pass_with_git(w: &World, bin: &Path) -> String {
-    let out = Command::new(std::env::current_exe().unwrap())
+    passes_with_git(w, bin, None)
+}
+
+/// [`pass_with_git`], and with `lock` the passes of the lock test.
+fn passes_with_git(w: &World, bin: &Path, lock: Option<&Path>) -> String {
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    if let Some(lock) = lock {
+        cmd.env(LOCK_CHILD, lock);
+    }
+    let out = cmd
         .args([
             "--exact",
             "child_pass_with_git",
@@ -997,7 +1025,7 @@ fn a_git_of_the_pass_past_its_limit_rolls_back_its_duty_and_the_next_pass_works(
     let candidate_ref = format!("refs/horch/bundle/{id}");
     let candidate = w.tip(&candidate_ref).unwrap();
 
-    let (bin, _log) = hang_once_git(&w, "diff");
+    let bin = hang_once_git(&w, "diff", ":");
     let started = std::time::Instant::now();
     let out = pass_with_git(&w, &bin);
     let took = started.elapsed();
@@ -1032,4 +1060,40 @@ fn a_git_of_the_pass_past_its_limit_rolls_back_its_duty_and_the_next_pass_works(
     run(&mut p, &mut conn);
     assert_eq!(w.bundle_state(id), "landed");
     assert_eq!(w.moves_to(&id.to_string(), "landed"), 1, "1 landing");
+}
+
+/// A git of the pass that holds a lock and ignores `SIGTERM` is killed at
+/// its limit, and its lock file stays. The next pass opens 1 needs-you item
+/// that names the file, the pass after it opens no second one, and the
+/// pass after the operator removes the file resolves it. fleetd does not
+/// delete the file (T-369).
+#[test]
+fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item() {
+    let w = three_done();
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    to_passed_gate(&w, &mut p, &mut conn);
+    drop(p);
+    let lock = w.repo().join(".git/refs/heads/fleet/held.lock");
+    let on_hang = format!("trap '' TERM; : > '{}'", lock.display());
+    let bin = hang_once_git(&w, "diff", &on_hang);
+    let out = passes_with_git(&w, &bin, Some(&lock));
+    assert!(out.contains("SIGKILL ended its group"), "{out}");
+    assert!(out.contains(&lock.display().to_string()), "{out}");
+    let key = format!("job_abandoned:git_lock:{}", lock.display());
+    assert!(
+        out.contains(&format!("LOCK-ITEMS [\"{key}\"]")),
+        "1 item for the lock: {out}"
+    );
+    assert!(out.contains("LOCK-ITEMS-AFTER []"), "resolved: {out}");
+    let items: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM needs_you WHERE key = ?1",
+            [&key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(items, 1, "1 row for the lock");
 }

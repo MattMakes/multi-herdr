@@ -9,10 +9,11 @@
 //! never runs with the rights of fleetd (the fleetd git rule, review F4 of
 //! T-607, T-691). Each of its calls goes through `CliWorktreeGit::checked`.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -791,12 +792,30 @@ fn locks_left(writable: &[PathBuf]) -> String {
         return "no .lock file stays in the git folders that it could write".to_string();
     }
     locks.sort();
+    if let Ok(mut left) = LOCKS_LEFT.lock() {
+        left.extend(locks.iter().map(PathBuf::from));
+    }
     format!(
         ".lock files in the git folders after the stop: {}. Each later git that takes 1 of \
          these locks fails at once with \"File exists\" until the operator removes the file \
          by hand, when no git runs in that repository",
         locks.join(", ")
     )
+}
+
+/// Each `.lock` file that stayed after the stop of a git of this process at
+/// its time limit. The pass opens 1 needs-you item for each while the file
+/// stays (`jobs::observe`). A restart of fleetd forgets them: then only the
+/// error of each later git that takes the lock names the file.
+static LOCKS_LEFT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// The `.lock` files that stayed after a stop of a git of this process at
+/// its time limit, also the ones that are gone since.
+pub fn locks_left_after_stops() -> Vec<PathBuf> {
+    LOCKS_LEFT
+        .lock()
+        .map(|left| left.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// The group of this job process while 1 of its sandboxed git calls runs,

@@ -330,6 +330,7 @@ pub fn observe(
         }
     }
     tell_group_left(ctx, tx, clock)?;
+    tell_locks_left(ctx, tx)?;
     Ok(seen)
 }
 
@@ -554,6 +555,38 @@ fn tell_group_left(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
             pass_cause(GROUP_TOLD),
             &data,
         )?;
+    }
+    Ok(())
+}
+
+/// 1 needs-you item for each `.lock` file that stays after the `SIGKILL` of
+/// a git of fleetd at its time limit (T-369). Git fails at once on a held
+/// lock, so the item names the file. fleetd does not delete it: it cannot
+/// prove that no other git holds it. The open of an open item only writes
+/// its text again, so each lock file has 1 item. When the file is gone, the
+/// item is resolved. Both are safe to repeat after a rollback of the pass.
+fn tell_locks_left(ctx: &JobCtx<'_>, tx: &Connection) -> Result<()> {
+    for lock in worktree_git::locks_left_after_stops() {
+        let path = lock.display().to_string();
+        let key = format!("{}:git_lock:{path}", jobs::NEEDS_YOU_KIND);
+        if !lock.exists() {
+            ctx.needs_you.resolve_item(tx, &key)?;
+            continue;
+        }
+        let text = format!(
+            "A git of fleetd ran past its time limit, and SIGKILL ended it. Its lock \
+             file {path} stays. While it stays, each git that takes this lock fails at \
+             once with \"File exists\". fleetd does not delete it. Check that no git \
+             runs in that repository, then remove the file by hand."
+        );
+        let item = NewItem {
+            key: &key,
+            kind: jobs::NEEDS_YOU_KIND,
+            entity: Entity::Job,
+            entity_id: &path,
+            text: &text,
+        };
+        ctx.needs_you.open_item(tx, &item)?;
     }
     Ok(())
 }
@@ -1769,7 +1802,7 @@ pub(crate) mod stop_window {
     /// sleeps 600 s. The proof: the child ends by the signal, and the
     /// launched group is gone within 10 s.
     pub(crate) fn prove(test: &str, run: impl FnOnce(&dyn ProcessHost, &LaunchSpec)) {
-        if let Ok(record) = std::env::var(CHILD) {
+        if let Some(record) = crate::runtime::context::ProcessEnv.var_os(CHILD) {
             let spec = LaunchSpec {
                 program: PathBuf::from("/bin/sh"),
                 args: vec!["-c".into(), "sleep 600".into()],
