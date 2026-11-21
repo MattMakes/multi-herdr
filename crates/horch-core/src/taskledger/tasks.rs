@@ -138,8 +138,7 @@ impl Task {
     /// Parked by `done --unlanded`: escalated, held, with its worktree kept
     /// (trace-fixes D16). `requeue` resumes it on that worktree.
     pub fn is_parked(&self) -> bool {
-        self.status == TaskStatus::Escalated.as_str()
-            && self.held_reason.as_deref() == Some(HeldReason::Unlanded.as_str())
+        parked(&self.status, self.held_reason.as_deref())
     }
 
     pub(crate) fn from_row(r: &Row<'_>) -> rusqlite::Result<Task> {
@@ -312,6 +311,12 @@ pub fn refuse_queued(conn: &Connection, run_id: &str, items: &[(String, NewTask)
         "{}\nNothing was queued. To queue these tickets again, add --again.",
         lines.join("\n")
     )
+}
+
+/// Whether a task with `status` and `held_reason` is parked by `done
+/// --unlanded` ([`Task::is_parked`]).
+pub fn parked(status: &str, held_reason: Option<&str>) -> bool {
+    status == TaskStatus::Escalated.as_str() && held_reason == Some(HeldReason::Unlanded.as_str())
 }
 
 /// 1 task by id.

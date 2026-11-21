@@ -26,13 +26,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store;
 use crate::fleetd::fleet_runtime::adapters::scans::{FolderFact, Presence};
-use crate::fleetd::fleet_runtime::adapters::sqlite::{has_fact, last_moves_to, state_of};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{has_fact, last_moves_to};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, result_data, JobCtx, JobKey, NewItem, Queued,
 };
@@ -58,7 +58,7 @@ use crate::fleetd::worktree_custody::domain::worktree::{
 };
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus, WorktreeStatus};
 use crate::taskledger::store::one_snapshot;
-use crate::taskledger::{runs, tasks, util, workers};
+use crate::taskledger::{runs, tasks, util};
 
 /// The folders under `<project>/.worktrees/` of 1 repository (Q4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,33 +497,36 @@ fn moved(ctx: &JobCtx<'_>, tx: &Connection, id: &str, to: &str, cause: &str) -> 
     }
 }
 
-/// The owner of the `active` row `row`, as the ledger gives it.
+/// The owner of the `active` row `row`, as the ledger gives it in `facts`
+/// and `outcomes`. A task id with no task row is an error.
 fn owner(
-    tx: &Connection,
     row: &WorktreeRow,
     outcomes: &BTreeMap<String, Option<String>>,
+    facts: &attempts_store::OwnerFacts,
 ) -> Result<Owner> {
-    let attempt = match row.owner_attempt.as_deref() {
-        Some(a) => Some(match state_of(tx, Entity::Attempt, a)?.as_deref() {
+    let attempt = row.owner_attempt.as_deref().map(|a| {
+        match facts.attempt_states.get(a).map(String::as_str) {
             None => Attempt::Missing,
             Some("ended") => Attempt::Ended,
             Some(_) => Attempt::Holds,
-        }),
-        None => None,
-    };
-    let worker_live = match row.worker_id.as_deref() {
-        Some(w) => workers::find(tx, w)?
-            .is_some_and(|w| WorkerStatus::parse(&w.status).is_ok_and(WorkerStatus::is_live)),
-        None => false,
-    };
+        }
+    });
+    let worker_live = row
+        .worker_id
+        .as_deref()
+        .and_then(|w| facts.worker_statuses.get(w))
+        .is_some_and(|s| WorkerStatus::parse(s).is_ok_and(WorkerStatus::is_live));
     let task = match row.task_id.as_deref() {
-        Some(t) => Some(tasks::get(tx, t)?),
-        None => None,
+        Some(t) => {
+            let (status, held) = facts.tasks.get(t).with_context(|| format!("no task {t}"))?;
+            task_now(status, held.as_deref())
+        }
+        None => TaskNow::Other,
     };
     Ok(Owner {
         attempt,
         worker_live,
-        task: task.as_ref().map_or(TaskNow::Other, task_now),
+        task,
         ended_clean: rules::clean_end(outcome_of(outcomes, row)),
     })
 }
@@ -545,11 +548,11 @@ fn owner_outcomes(
     attempts_store::outcomes_of(tx, rows.iter().filter_map(|r| r.owner_attempt.as_deref()))
 }
 
-fn task_now(task: &tasks::Task) -> TaskNow {
-    if task.is_parked() {
+fn task_now(status: &str, held_reason: Option<&str>) -> TaskNow {
+    if tasks::parked(status, held_reason) {
         return TaskNow::Parked;
     }
-    match TaskStatus::parse(&task.status) {
+    match TaskStatus::parse(status) {
         Ok(TaskStatus::Verifying) => TaskNow::Verifying,
         Ok(TaskStatus::Done) => TaskNow::Done,
         Ok(TaskStatus::Ready | TaskStatus::BlockedOnUser | TaskStatus::WaitingQuota) => {
@@ -564,14 +567,20 @@ fn task_now(task: &tasks::Task) -> TaskNow {
 /// task, `created` for a parked or retried task, else `orphaned` in this
 /// pass (FM-25, Q10, Q23).
 fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
-    let (rows, outcomes) = one_snapshot(tx, || {
+    let (rows, outcomes, facts) = one_snapshot(tx, || {
         let rows = store::in_states(tx, &[WorktreeState::Active])?;
         let outcomes = owner_outcomes(tx, &rows)?;
-        Ok((rows, outcomes))
+        let facts = attempts_store::owner_facts(
+            tx,
+            rows.iter().filter_map(|r| r.owner_attempt.as_deref()),
+            rows.iter().filter_map(|r| r.worker_id.as_deref()),
+            rows.iter().filter_map(|r| r.task_id.as_deref()),
+        )?;
+        Ok((rows, outcomes, facts))
     })?;
     for row in rows {
         let id = row.worktree_id.as_str();
-        let (to, cause, list) = match rules::owner_gone(&owner(tx, &row, &outcomes)?) {
+        let (to, cause, list) = match rules::owner_gone(&owner(&row, &outcomes, &facts)?) {
             None => continue,
             Some(OwnerGone::Created(cause)) => ("created", cause, &mut report.created),
             Some(OwnerGone::Landing) => ("landing", rules::VERIFIED, &mut report.landing),
