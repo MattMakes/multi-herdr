@@ -364,7 +364,8 @@ impl World {
     /// `fault`. Then wait until each job process that a pass started has
     /// ended, so the next pass reads its result.
     ///
-    /// The `PATH` of the pass is an empty folder: the fakes of the harness
+    /// The `PATH` of the pass is an empty folder (and the host tools on
+    /// Linux, see `pass_path`): the fakes of the harness
     /// are not on it, so the scan of the CLI binaries of Phase 7 finds no
     /// CLI and queues no docs or conformance job. Git, herdr and the agents
     /// have their absolute paths in the sealed environment.
@@ -374,7 +375,7 @@ impl World {
         let mut cmd = self
             .h
             .horch(&["ledger", "watch", "--once", "--force", "--json"]);
-        cmd.env("PATH", &no_clis);
+        cmd.env("PATH", pass_path(&self.h.root, no_clis));
         if let Some(fault) = fault {
             cmd.env("HORCH_FAULT", format!("{DELIVERY_PROBE_FAULT},{fault}"));
         }
@@ -684,4 +685,18 @@ fn i12_stash_entry_blocks_the_deletion_of_its_branch() {
         [stashed],
     );
     assert_eq!(row.as_deref(), Some("landed"));
+}
+
+/// The `PATH` of a pass: the empty `no_clis` folder, and on Linux also the
+/// host tool folder `host-bin` of the harness. fleetd finds `bwrap` and
+/// `socat` on the `PATH`; without them each job runs no git.
+fn pass_path(root: &std::path::Path, no_clis: std::path::PathBuf) -> std::ffi::OsString {
+    #[cfg(target_os = "linux")]
+    let dirs = vec![no_clis, root.join("host-bin")];
+    #[cfg(not(target_os = "linux"))]
+    let dirs = {
+        let _ = root;
+        vec![no_clis]
+    };
+    std::env::join_paths(dirs).expect("the harness folders hold no PATH separator")
 }
