@@ -1,25 +1,4 @@
 #!/usr/bin/env bash
-# Live check: Linux. Runs `cargo test --workspace` and Godot headless in an
-# aarch64 Linux container under colima. Result file: docs/live-checks/linux.md.
-#
-# Steps:
-#   colima       start colima (stopped again at exit if this script started it)
-#   cargo-test   cargo test --workspace in the official rust image; the source
-#                is mounted read-only, the target dir and HOME are container-local
-#   godot-sha    download Godot 4.7.2 linux.arm64, check SHA-512 against the
-#                release's SHA512-SUMS.txt
-#   godot-version   godot --headless --version
-#   godot-xdg    import + 1 headless script with XDG_* set to scratch paths;
-#                every file Godot writes must be under a scratch path
-#
-# Env: HORCH_LINUX_IMAGE (default rust:1-bookworm),
-#      HORCH_LINUX_STEPS (default "cargo-test godot"; pick a subset),
-#      HORCH_LINUX_SRC (default "head": a `git archive HEAD` snapshot, so other
-#      workers' uncommitted edits in the shared checkout do not break the build;
-#      "worktree" mounts the checkout as it is; any other value is a source
-#      directory to mount).
-# Writes only under .worktrees/_scratch/live-linux/ (the logs, the snapshot).
-# Builds no image; every container is --rm.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -80,9 +59,7 @@ else
     SRC=$(cd "$SRC_MODE" && pwd)
     echo "source directory $SRC"
 fi
-# The snapshot (about 16 MB) is removed at exit by cleanup.
 
-# One container per step: --rm, source read-only, everything else container-local.
 run() {
     docker run --rm --platform linux/arm64 \
         -v "$SRC:/src:ro" -w /src \
@@ -94,10 +71,6 @@ run() {
 if want cargo-test; then
     log="$SCRATCH/cargo-test.log"
     rc=0
-    # As a normal user, not root: root ignores file modes, and some tests
-    # make a directory read-only to force a failure. bubblewrap and socat are
-    # what Claude Code's sandbox needs on Linux; a test checks the host for them.
-    # /bin/sh stays dash, the Debian and Ubuntu default.
     # shellcheck disable=SC2016 # the container's bash expands $ in the script, not this shell
     run '
         apt-get update -qq >/dev/null

@@ -1,7 +1,3 @@
-// capture.mjs - deterministic CDP capture. Node built-ins only.
-// Usage: node "<skill-dir>/scripts/capture.mjs" <project-dir> <scene-id> [--timings]
-//        node "<skill-dir>/scripts/capture.mjs" --self-test [--timings]
-// --timings prints the real time of each phase (Chrome start, page step, screenshot, encode).
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +7,7 @@ import { promisify } from 'node:util';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 if (process.argv[2] === '--self-test') process.exit(await selfTest(process.argv.includes('--timings')));
-const tm = {}, tStart = performance.now(); // --timings: real ms spent in each phase
+const tm = {}, tStart = performance.now();
 const addTime = (phase, t) => (tm[phase] = (tm[phase] || 0) + performance.now() - t);
 function timed(phase, fn) {
   const t = performance.now();
@@ -27,17 +23,16 @@ const cfg = { dsf: 2, seed: 1, clockIso: '2026-01-15T10:00:00Z', cursor: true, f
 const { fps, width: W, height: H } = timeline.meta;
 const frameMs = 1000 / fps, totalFrames = Math.round(scene.duration_sec * fps);
 
-function mulberry32(state) { // 1 step: advance state.s, return a float in [0, 1)
+function mulberry32(state) {
   state.s = (state.s + 0x6d2b79f5) >>> 0; let t = state.s;
   t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
-function prng(seed) { // mulberry32: same seed, same sequence
+function prng(seed) {
   return mulberry32.bind(null, { s: seed >>> 0 });
 }
 const rand = prng(cfg.seed + 1);
 
-// ---- page prelude: virtual clock, seeded Math.random, CSS locks, cursor overlay ----
 const prelude = `(() => {
   const s0 = ${cfg.seed}, t0 = ${Date.parse(cfg.clockIso)};
   ${mulberry32.toString()}
@@ -99,19 +94,13 @@ const prelude = `(() => {
   };
 })();`;
 
-// ---- Chrome + CDP ----
 const userDir = mkdtempSync(join(tmpdir(), 'cap-chrome-'));
 const chromePath = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
-// during its start leaves that copy on the disk, and macOS records each copy as one more
-// "Google Chrome" in its privacy lists. --disable-features=MacAppCodeSignClone stops the copy.
 const chromeArgs = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDir}`,
   '--hide-scrollbars', '--mute-audio', '--no-first-run', '--no-default-browser-check',
   '--force-color-profile=srgb', '--font-render-hinting=none', '--disable-lcd-text',
   '--disable-features=MacAppCodeSignClone', 'about:blank'];
-// Chrome can deadlock in its own start-up fork, before it prints the DevTools URL. Give each start 15 s,
-// then kill that Chrome and its child processes and start again, 3 tries in total.
-function onChromeLog(log, ok, chunk) { // resolve with the DevTools URL once Chrome prints it
+function onChromeLog(log, ok, chunk) {
   log.text += chunk;
   const m = log.text.match(/DevTools listening on (ws:\/\/\S+)/);
   return m && ok(m[1]);
@@ -119,9 +108,9 @@ function onChromeLog(log, ok, chunk) { // resolve with the DevTools URL once Chr
 function onChromeExit(fail, code) {
   fail(new Error(`chrome exited ${code}`));
 }
-function watchChrome(p, ok, fail) { // resolves '' when the start times out
+function watchChrome(p, ok, fail) {
   p.stderr.on('data', onChromeLog.bind(null, { text: '' }, ok));
-  p.on('error', fail); // spawn failure, for example ENOENT when the binary is missing
+  p.on('error', fail);
   p.on('exit', onChromeExit.bind(null, fail));
   setTimeout(ok, 15000, '').unref();
 }
@@ -130,7 +119,7 @@ function launchChrome() {
   return { p, url: new Promise(watchChrome.bind(null, p)) };
 }
 function killChrome(p) {
-  spawnSync('pkill', ['-KILL', '-P', String(p.pid)]); // only the children of this stuck Chrome
+  spawnSync('pkill', ['-KILL', '-P', String(p.pid)]);
   p.kill('SIGKILL');
 }
 function retryChrome(c, tries) {
@@ -141,7 +130,7 @@ async function startChrome(tries) {
   const c = launchChrome(), url = await c.url;
   return url ? { chrome: c.p, wsUrl: url } : retryChrome(c, tries);
 }
-function chromeMissing(e) { // a missing Chrome binary is a usage error: exit 2, no stack trace
+function chromeMissing(e) {
   if (e.code !== 'ENOENT') throw e;
   console.error(`Chrome not found at ${chromePath}. Set CHROME_PATH or install Google Chrome.`);
   rmSync(userDir, { recursive: true, force: true });
@@ -151,12 +140,12 @@ const { chrome, wsUrl } = await timed('chrome-start', () => startChrome(3)).catc
 const ws = new WebSocket(wsUrl);
 await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
 const cdp = { ws, msgId: 0, sessionId: undefined, pending: new Map(), events: [] };
-function settle(m) { // a reply: resolve or reject the send that waits for it
+function settle(m) {
   const p = cdp.pending.get(m.id); cdp.pending.delete(m.id);
   return m.error ? p.fail(new Error(m.error.message)) : p.ok(m.result);
 }
 const callWith = (m, fn) => fn(m);
-function dispatch(m) { // an event: give it to every listener
+function dispatch(m) {
   cdp.events.forEach(callWith.bind(null, m));
 }
 ws.onmessage = (e) => { const m = JSON.parse(e.data); return m.id ? settle(m) : dispatch(m); };
@@ -175,13 +164,13 @@ const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
 cdp.sessionId = (await send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
 const errors = [];
 const argText = (a) => a.value ?? a.description;
-const ON_EVENT = { // CDP event method -> handler of its params
+const ON_EVENT = {
   'Runtime.exceptionThrown': ({ exceptionDetails: d }) => errors.push(`uncaught in page: ${d.exception?.description || d.text}`),
   'Runtime.consoleAPICalled': ({ type, args }) => type === 'error' && errors.push(`page logged an error: ${args.map(argText).join(' ')}`),
   'Fetch.requestPaused': (p) => route(p),
 };
 cdp.events.push((m) => ON_EVENT[m.method]?.(m.params));
-const held = []; // fixture responses with delay_ms, sent when the virtual clock reaches `at`
+const held = [];
 const fulfil = ({ requestId, fx }) => {
   const body = Buffer.from(typeof fx.body === 'string' ? fx.body : JSON.stringify(fx.json ?? {})).toString('base64');
   return send('Fetch.fulfillRequest', { requestId, responseCode: fx.status ?? 200, body,
@@ -194,7 +183,7 @@ function block({ requestId, request }) {
   errors.push(`blocked live request: ${request.url}`);
   return send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
 }
-const ROUTES = [ // first match wins: a delayed fixture, a fixture, a local URL, then everything else fails
+const ROUTES = [
   [(r, fx) => fx?.delay_ms > 0, hold],
   [(r, fx) => fx, ({ requestId }, fx) => fulfil({ requestId, fx })],
   [(r) => isLocal(r.request.url), passThrough],
@@ -202,47 +191,43 @@ const ROUTES = [ // first match wins: a delayed fixture, a fixture, a local URL,
 ];
 const route = (r) => { const fx = cfg.fixtures[r.request.url]; return ROUTES.find(([when]) => when(r, fx))[1](r, fx); };
 for (const d of ['Page', 'Runtime', 'Animation']) await send(`${d}.enable`);
-await send('Animation.setPlaybackRate', { playbackRate: 0 }); // the page clock alone moves CSS animations
+await send('Animation.setPlaybackRate', { playbackRate: 0 });
 await send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
 await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: cfg.dsf, mobile: false });
 await send('Emulation.setTimezoneOverride', { timezoneId: 'UTC' });
 await send('Emulation.setLocaleOverride', { locale: 'en-US' });
 await send('Page.addScriptToEvaluateOnNewDocument', { source: prelude });
 
-// ---- ffmpeg: PNG frames in, CFR H.264 out ----
 const outMp4 = join(projectDir, 'captures', `${sceneId}.mp4`);
 const ff = spawn('ffmpeg', ['-v', 'error', '-y', '-f', 'image2pipe', '-c:v', 'png', '-framerate', String(fps), '-i', '-',
   '-vsync', 'cfr', '-r', String(fps), '-c:v', 'libx264', '-preset', 'slow', '-crf', '14', '-pix_fmt', 'yuv420p', outMp4],
   { stdio: ['pipe', 'inherit', 'inherit'] });
 const ffDone = new Promise((ok) => ff.on('exit', ok));
 
-// ---- telemetry and frame loop ----
 const tel = { scene_id: sceneId, fps, width: W * cfg.dsf, height: H * cfg.dsf, duration_sec: 0,
   cursor: [], clicks: [], keys: [], zoom_keyframes: [{ t_sec: 0, scale: 1, cx: 0.5, cy: 0.5, ease: 'linear' }], speed_ramps: [] };
 let out = 0, vt = 0, owed = 0; const pos = { x: W / 2, y: H / 2 }, ripples = [];
 const tNow = () => +(out / fps).toFixed(4);
 const px = (v) => Math.round(v * cfg.dsf);
 const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
-const heldOnly = (n) => n <= held.length; // no request is in flight except the held ones
+const heldOnly = (n) => n <= held.length;
 const isDue = (d) => d.at <= vt + 1e-6;
 const sendHeld = (d) => { held.splice(held.indexOf(d), 1); return fulfil(d); };
 const inflightCalm = async (isCalm) => isCalm(await evaluate('__cap.inflight()'));
 const retryCalm = (isCalm, tries) => pause(10).then(() => pageCalm(isCalm, tries - 1));
-// Poll the page request count for up to 2 s of real time.
 const pageCalm = async (isCalm, tries = 200) => (tries === 0 || (await inflightCalm(isCalm)) ? undefined : retryCalm(isCalm, tries));
 const sendAll = (list) => list.reduce((chain, d) => chain.then(() => sendHeld(d)), Promise.resolve());
 const settleAfter = (due) => (due.length ? pageCalm(heldOnly) : undefined);
-// Send the delayed responses that are due, then let the page take them.
 const release = () => Promise.resolve(held.filter(isDue)).then((due) => sendAll(due).then(() => settleAfter(due)));
 const ripplesNow = () => ripples.filter((r) => vt - r.t0 < 240).map((r) => ({ x: r.x, y: r.y, p: (vt - r.t0) / 240 }));
 const stepPage = () => evaluate(`__cap.step(${frameMs}, ${pos.x}, ${pos.y}, ${JSON.stringify(ripplesNow())})`);
 const screenshot = async () => Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64');
-async function advance() { // every request the page issued has reached route(), then the clock moves 1 frame
+async function advance() {
   await timed('calm', pageCalm.bind(null, heldOnly));
   vt += frameMs;
   await timed('release', release);
 }
-async function shoot() { // advance the page 1 frame of virtual time, return a PNG
+async function shoot() {
   await advance();
   await timed('step', stepPage);
   return timed('screenshot', screenshot);
@@ -259,14 +244,12 @@ async function emit(png) {
   out++;
   return ff.stdin.write(png) || timed('encode-backpressure', drained);
 }
-async function shootOne() { // shoot 1 frame and send it to the encoder
+async function shootOne() {
   return emit(await shoot());
 }
-// Run fn on each item of list, one after the other.
 const inOrder = (list, fn) => list.reduce((chain, x) => chain.then(() => fn(x)), Promise.resolve());
 const isLoaded = async () => (await evaluate('document.readyState')) === 'complete';
 const retryLoaded = (tries) => pause(25).then(waitLoaded.bind(null, tries - 1));
-// Poll document.readyState for up to 5 s of real time.
 const waitLoaded = async (tries) => (tries === 0 || (await isLoaded()) ? undefined : retryLoaded(tries));
 async function loadPage(url) {
   await send('Page.navigate', { url });
@@ -276,23 +259,22 @@ async function loadPage(url) {
 const easeInOut = (u) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2);
 const smooth = (u) => u * u * (3 - 2 * u);
 
-// ---- helpers of the scene API below ----
-function takeFrame() { // 1 frame of the owed hold time is due: take it
+function takeFrame() {
   const due = owed >= frameMs - 1e-6;
   owed -= due ? frameMs : 0;
   return due;
 }
-function holdOwed() { // shoot frames while hold time is owed
+function holdOwed() {
   return takeFrame() ? shootOne().then(holdOwed) : undefined;
 }
-function control(p0, d, m, w) { // Bezier control point at m/3 of the way, bowed by w
+function control(p0, d, m, w) {
   return { x: p0.x + (m * d.dx) / 3 + d.nx * d.bow * w, y: p0.y + (m * d.dy) / 3 + d.ny * d.bow * w };
 }
-function bend(p0, x, y) { // the straight line from p0 to (x, y), its unit normal and a seeded bow
+function bend(p0, x, y) {
   const dx = x - p0.x, dy = y - p0.y, dist = Math.hypot(dx, dy);
   return { dx, dy, dist, bow: (rand() < 0.5 ? -1 : 1) * Math.min(80, dist * 0.12), nx: dist ? -dy / dist : 0, ny: dist ? dx / dist : 0 };
 }
-function bowPath(x, y) { // cubic Bezier from pos to (x, y), bowed to a seeded side
+function bowPath(x, y) {
   const p0 = { ...pos }, d = bend(p0, x, y);
   return { dist: d.dist, p0, c1: control(p0, d, 1, 1), c2: control(p0, d, 2, 0.6), p3: { x, y } };
 }
@@ -303,15 +285,15 @@ function pathPoint({ p0, c1, c2, p3 }, u) {
   const v = 1 - u;
   return { x: cubic(p0.x, c1.x, c2.x, p3.x, u, v), y: cubic(p0.y, c1.y, c2.y, p3.y, u, v) };
 }
-const cursorNow = () => ({ t_sec: tNow(), x: px(pos.x), y: px(pos.y) }); // telemetry of the cursor
-async function moveStep(path, n, i) { // 1 frame of the cursor along the path
+const cursorNow = () => ({ t_sec: tNow(), x: px(pos.x), y: px(pos.y) });
+async function moveStep(path, n, i) {
   Object.assign(pos, pathPoint(path, easeInOut(i / n)));
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
   tel.cursor.push(cursorNow());
   await shootOne();
 }
 const stepNumber = (_, k) => k + 1;
-const stepNumbers = (n) => Array.from({ length: n }, stepNumber); // 1..n
+const stepNumbers = (n) => Array.from({ length: n }, stepNumber);
 function noElement(sel) {
   throw new Error(`no element ${sel}`);
 }
@@ -322,25 +304,24 @@ function recordClick(button) {
   tel.clicks.push({ ...cursorNow(), button });
   addRipple();
 }
-async function typeChar(ch) { // 35-55 ms per char, seeded variance
+async function typeChar(ch) {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
   tel.keys.push({ t_sec: tNow(), key: ch });
   await h.hold(35 + 20 * rand());
 }
-function zoomFrom(last) { // hold the last zoom until now, so the next ease starts here
+function zoomFrom(last) {
   return tNow() > last.t_sec ? [{ ...last, t_sec: tNow(), ease: 'linear' }] : [];
 }
-async function termChar(ch) { // terminal page: echo 1 typed char at 35-55 ms
+async function termChar(ch) {
   await evaluate(`termWrite(${JSON.stringify(ch)})`);
   tel.keys.push({ t_sec: tNow(), key: ch });
   await h.hold(35 + 20 * rand());
 }
 const parseLine = (line) => JSON.parse(line);
 const isOutput = ([, kind]) => kind === 'o';
-// asciicast v2: header line, then [t_sec, "o", data] lines; only output events replay.
 const castEvents = (file) => readFileSync(file, 'utf8').trim().split('\n').slice(1).map(parseLine).filter(isOutput);
-async function castStep(last, [t, , data]) { // replay 1 output event; return its time
+async function castStep(last, [t, , data]) {
   const gap = (t - last) * 1000;
   await (gap >= 500 ? h.wait(gap) : h.hold(gap));
   await h.term(data);
@@ -354,11 +335,11 @@ function timedOut(w) {
 async function shootInto(frames) {
   frames.push(await shoot());
 }
-async function waitFrames(w, frames, v) { // shoot frames until the wait ends; v is the virtual ms waited
+async function waitFrames(w, frames, v) {
   const done = await waitDone(w, v, frames);
   return done ? frames : v > w.timeoutMs ? timedOut(w) : shootInto(frames).then(waitFrames.bind(null, w, frames, v + frameMs));
 }
-function rampOf(D) { // speed-ramp shape for D s of dead time
+function rampOf(D) {
   const [F, P] = D < 1 ? [2, 0.15] : D < 2 ? [3, 0.2] : [4, 0.25];
   const T = 2 * P + (D - P * (F + 1)) / F;
   return { F, P, T, N: Math.max(1, Math.round(T * fps)) };
@@ -366,7 +347,7 @@ function rampOf(D) { // speed-ramp shape for D s of dead time
 function rampSpeed(r, u) {
   return 1 + (r.F - 1) * smooth(Math.min(1, u / r.P, (r.T - u) / r.P));
 }
-function addStep(r, cum, _, j) { // cum[j + 1]: the source time used up after output frame j
+function addStep(r, cum, _, j) {
   cum.push(cum[j] + rampSpeed(r, ((j + 0.5) / r.N) * r.T));
   return cum;
 }
@@ -374,7 +355,7 @@ const cumulative = (r) => Array.from({ length: r.N }).reduce(addStep.bind(null, 
 function pickFrame(frames, cum, r, c) {
   return frames[Math.min(frames.length - 1, Math.floor((c / cum[r.N]) * frames.length))];
 }
-async function emitRamp(frames) { // emit the waited frames faster in the middle, at 1x at both ends
+async function emitRamp(frames) {
   const r = rampOf((frames.length * frameMs) / 1000), cum = cumulative(r), t0 = tNow();
   await inOrder(cum.slice(0, r.N).map(pickFrame.bind(null, frames, cum, r)), emit);
   tel.speed_ramps.push({ in_sec: t0, out_sec: tNow(), factor: r.F, pad_in_sec: r.P, pad_out_sec: r.P });
@@ -382,15 +363,15 @@ async function emitRamp(frames) { // emit the waited frames faster in the middle
 
 const h = {
   W, H, fps, rand,
-  termUrl: pathToFileURL(join(scriptsDir, 'term.html')).href, // the terminal page next to this script
+  termUrl: pathToFileURL(join(scriptsDir, 'term.html')).href,
   async goto(url) {
     await timed('navigate', loadPage.bind(null, url));
   },
-  async hold(ms) { // interactive pause at 1x
+  async hold(ms) {
     owed += ms;
     await holdOwed();
   },
-  async move(x, y, ms) { // cubic Bezier path, eased timing, 400-700 ms
+  async move(x, y, ms) {
     const path = bowPath(x, y);
     ms ??= Math.min(700, Math.max(400, 400 + path.dist * 0.3));
     const n = Math.max(1, Math.round(ms / frameMs));
@@ -406,7 +387,7 @@ const h = {
     recordClick(button);
     await h.hold(240);
   },
-  async type(text) { // 35-55 ms per char, seeded variance
+  async type(text) {
     await inOrder([...text], typeChar);
   },
   async press(key) {
@@ -415,28 +396,27 @@ const h = {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: k[0] });
     tel.keys.push({ t_sec: tNow(), key }); await h.hold(120);
   },
-  zoom(scale, cx = 0.5, cy = 0.5, ms = 500, ease = 'cubic-bezier(0.22, 1, 0.36, 1)') { // compositor applies it
+  zoom(scale, cx = 0.5, cy = 0.5, ms = 500, ease = 'cubic-bezier(0.22, 1, 0.36, 1)') {
     tel.zoom_keyframes.push(...zoomFrom(tel.zoom_keyframes.at(-1)), { t_sec: +(tNow() + ms / 1000).toFixed(4), scale, cx, cy, ease });
   },
   async zoomTo(sel, scale = 1.6) { const b = await h.box(sel); h.zoom(scale, +(b.x / W).toFixed(4), +(b.y / H).toFixed(4)); },
-  term: (data) => evaluate(`termWrite(${JSON.stringify(data)})`), // terminal page: print output now
-  async termType(text) { // terminal page: echo a typed command at 35-55 ms per char
+  term: (data) => evaluate(`termWrite(${JSON.stringify(data)})`),
+  async termType(text) {
     await inOrder([...text], termChar);
   },
-  async termCast(file) { // asciicast v2 replay
+  async termCast(file) {
     await castEvents(file).reduce(nextCast, Promise.resolve(0));
   },
-  async wait(msOrExpr, timeoutMs = 30000) { // dead time: no input. >= 500 ms is speed-ramped
+  async wait(msOrExpr, timeoutMs = 30000) {
     const frames = await waitFrames({ until: msOrExpr, timeoutMs }, [], 0);
     await ((frames.length * frameMs) / 1000 < 0.5 ? inOrder(frames, emit) : emitRamp(frames));
   },
 };
 
-const pidList = (out) => out.split(/\s+/).filter(Boolean); // pgrep or ps output -> pid strings
+const pidList = (out) => out.split(/\s+/).filter(Boolean);
 const childPids = (pid) => pidList(spawnSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' }).stdout);
 const livePids = (pids) => (pids.length ? pidList(spawnSync('ps', ['-o', 'pid=', '-p', pids.join(',')], { encoding: 'utf8' }).stdout) : []);
 const forceKill = (pids) => pids.length && spawnSync('kill', ['-KILL', ...pids]);
-// Poll for up to 5 s of real time, then SIGKILL the helpers that are still alive.
 async function helpersGone(pids, tries = 500) {
   const alive = livePids(pids);
   if (!alive.length || tries === 0) return forceKill(alive);
@@ -446,8 +426,6 @@ async function helpersGone(pids, tries = 500) {
 function killMain(ok) {
   chrome.once('exit', ok); chrome.kill();
 }
-// The Chrome helpers (network service, GPU, renderers) outlive the main process for some ms, and the
-// network service writes its cache index into userDir as it exits. Wait for them before userDir is removed.
 async function stopChrome() {
   const helpers = childPids(chrome.pid);
   await new Promise(killMain);
@@ -456,7 +434,7 @@ async function stopChrome() {
 
 try {
   await mod.default(h);
-  while (out < totalFrames) await emit(await shoot()); // hold the last state to the timeline duration
+  while (out < totalFrames) await emit(await shoot());
 } finally {
   ff.stdin.end(); const code = await timed('encode-finish', () => ffDone);
   tel.duration_sec = +(out / fps).toFixed(4);
@@ -476,10 +454,6 @@ function printTimings() {
   console.log(`timing ${sceneId}: total ${total} s; ${Object.entries(tm).map(phaseText).join('; ')}`);
 }
 
-// ---- self-test: a web scene and a terminal scene pass the plate gate, console.error fails, 3 runs match ----
-// Function declarations only: the self-test runs before the module-level constants above are set.
-// The captures run in parallel, each web run in its own project folder. Parallel runs also load the host,
-// so the 3 identical runs check determinism under load.
 async function selfTest(timings) {
   selfTest.timings = timings;
   const t0 = Date.now(), results = await runChecks(makeRunDirs());
@@ -490,7 +464,7 @@ async function selfTest(timings) {
 
 function makeRunDirs() {
   const dir = mkdtempSync(join(tmpdir(), 'cap-selftest-'));
-  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true })); // remove the temp dir on every exit
+  process.on('exit', rmSync.bind(null, dir, { recursive: true, force: true }));
   const dirs = [1, 2, 3].map(runDir.bind(null, dir));
   dirs.forEach(writeFixtures);
   return dirs;
@@ -502,7 +476,7 @@ function runDir(dir, i) {
 
 async function runChecks(dirs) {
   const [main] = dirs, webs = Promise.all(dirs.map(captureWeb)), err = captureIn(main, 'err');
-  const rec = testRecCast(await runAsync(main, process.execPath, recCastArgs()), main); // term replays this cast
+  const rec = testRecCast(await runAsync(main, process.execPath, recCastArgs()), main);
   const term = await captureIn(main, 'term');
   return [...rec, ...testDeterminism(dirs, await webs), ...testTelemetry(main), ...testPlates(main, term), ...testErrors(await err), ...testMissingChrome(main)];
 }
@@ -521,12 +495,12 @@ function runIn(dir, cmd, args) {
   return noteTiming(cmd, args, t, spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' }));
 }
 
-function runAsync(dir, cmd, args) { // resolves to the spawnSync result shape: { status, stdout, stderr }
+function runAsync(dir, cmd, args) {
   const t = Date.now(), run = promisify(execFile)(cmd, args, { cwd: dir, encoding: 'utf8' });
   return run.then(asResult, asResult).then(noteTiming.bind(null, cmd, args, t));
 }
 
-function asResult(r) { // execFile resolves { stdout, stderr } or rejects an Error that also has them
+function asResult(r) {
   return { status: r instanceof Error ? r.code ?? 1 : 0, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -537,7 +511,7 @@ function noteTiming(cmd, args, t, r) {
 
 function printStepTiming(cmd, args, r, ms) {
   const name = [cmd, ...args].map(baseName).join(' ').slice(0, 60);
-  r.stdout.split('\n').filter(isTimingLine).forEach(printIndented); // the child capture's own phase line
+  r.stdout.split('\n').filter(isTimingLine).forEach(printIndented);
   console.log(`timing: ${name}: ${(ms / 1000).toFixed(2)} s`);
 }
 

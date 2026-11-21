@@ -31,7 +31,7 @@ from .task import is_within, read_json, resolve, write_json
 
 HELP = "the clean-room commands: init, index, role, scan, handoff, context, verify, status, validate"
 FLEET_REFUSED = 10
-ARTIFACT_KINDS = {  # file name -> schema kind, for `cr status` and `cr validate` auto-detection
+ARTIFACT_KINDS = {
     "preflight.json": "preflight", "report.json": "report", "review.json": "report",
     "package.json": "handoff", "findings.json": "findings", "mitigation.json": "mitigation",
     "provenance.json": "provenance", "verify.json": "verify", "fixes.json": "fixes",

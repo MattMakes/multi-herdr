@@ -24,8 +24,6 @@ def has(name: str) -> bool:
     return True
 
 
-# ------------------------------------------------------------- pop: v1
-
 def test_pop_metadata():
     assert pop.TARGET == "a small bubble pop" and pop.REFSET == "pop"
     assert pop.V2.TARGET == "a short tonal pop" and pop.V2.REFSET == "pro_pop"
@@ -77,8 +75,6 @@ def test_pop_v1_kit_length():
     y = pop.render(dict(pop.DEFAULTS), rng())
     assert 0.19 <= len(y) / SR <= 0.41
 
-
-# ------------------------------------------------------------- pop: v2
 
 def test_pop_v2_space_and_fine_keys():
     assert pop.V2_SPACE["style"] == ["chirp", "blip", "bubble"]
@@ -176,8 +172,6 @@ def test_pop_v2_penalty():
 def test_pop_v2_penalty_without_targets_needs_no_notify():
     assert pop.pro_penalty(np.zeros(100), "toggle") == 0.0
 
-
-# ---------------------------------------------------------------- popin
 
 def test_popin_metadata():
     assert popin.TARGETS["pro_tap"] == popin.TARGETS["tap"] == "a soft low thump of a finger touching a screen"

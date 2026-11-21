@@ -34,8 +34,6 @@ __all__ = ["SCORE_KEYS", "audition", "family_box", "forge", "load_recipe", "pale
            "recipes", "render_block", "render_params", "report_md", "resolve_refs", "variant_recipe"]
 
 
-# ---------------------------------------------------------------- recipes
-
 def recipes() -> list[str]:
     """Sorted recipe module names; helper modules (leading _) are not listed."""
     return registry.names()
@@ -57,8 +55,6 @@ def _registered(rc: Any) -> bool:
 def _leaf(pd: Any) -> str:
     return os.path.basename(str(pd).replace("\\", "/"))
 
-
-# ---------------------------------------------------------------- references
 
 def _without_held(outs: list[str], is_kit: bool, say: Callable | None) -> list[str]:
     withheld = set(refsets.held_out(outs, kit=is_kit))
@@ -112,8 +108,6 @@ def resolve_refs(refs: Any = None, refset: str | None = None, recipe: Any = None
     return pick_refs(refs, refset, recipe, log)[0]
 
 
-# ---------------------------------------------------------------- render blocks
-
 class _MemberSwitch(types.SimpleNamespace):
     def render(self, p: dict, r: np.random.Generator) -> Any:
         return self.RENDER_FN(dict(self.MEMBERS[int(p["variant"])]), r)
@@ -144,15 +138,12 @@ def render_block(rec: Any, params: dict, seed: int, member: Any = None, mode: st
     return schema.make_block(rec.render, params, seed, member=member, mode=mode, gain=gain)
 
 
-# ---------------------------------------------------------------- family box
-
 def _geo_window(sp_v: tuple, val: float, frac: float) -> tuple | None:
     low, high = float(sp_v[0]), float(sp_v[1])
     if low <= 0:
         return None
     half = frac * (math.log(high) - math.log(low))
     centre = math.log(min(max(float(val), low), high))
-    # Clamp after exp: exp(log(hi)) can round past hi.
     return max(low, math.exp(max(math.log(low), centre - half))), min(high, math.exp(min(math.log(high), centre + half))), "log"
 
 
@@ -182,8 +173,6 @@ def family_box(recipe: Any, params: dict, box: float = 0.15, keys: Sequence[str]
     return acc
 
 
-# ---------------------------------------------------------------- forge: setup
-
 def _build_judge(rc: Any, cfg: dict) -> Any:
     from hark.forge.engine.critic import Critic
 
@@ -211,8 +200,6 @@ def _search(rc: Any, judge: Any, cfg: dict, seeds_in: list[dict], scr: Any) -> d
                            strategy=cfg["strategy"], prescreen=cfg["prescreen"], workers=cfg["workers"], pre=scr,
                            log=cfg["log"])
 
-
-# ---------------------------------------------------------------- forge: picks
 
 def _candidates(result: dict) -> list[dict]:
     good = [hrow for hrow in result["history"] if math.isfinite(hrow["score"]["total"])]
@@ -245,8 +232,6 @@ def _select(rc: Any, judge: Any, result: dict, cfg: dict) -> tuple[list[dict], s
             chosen = sorted(chosen, key=_by_robust)[: cfg["keep"]]
     return chosen, _rule_text(cfg, sd)
 
-
-# ---------------------------------------------------------------- measurement
 
 def _flag_names(desc: dict) -> list[str]:
     return sorted((desc.get("art") or {}).get("flags") or {})
@@ -310,8 +295,6 @@ def _save_audio(acc: Path | None, entries: list[dict], takes: list) -> None:
             entry["file"] = write_wav(acc / f"{entry['name']}.wav", wav, SR, "PCM_24")
 
 
-# ---------------------------------------------------------------- reference scores, summary, gap
-
 def _loo_tone(profs: np.ndarray, ix: int) -> float:
     rest = np.delete(profs, ix, 0)
     return round(float(np.sqrt(np.mean((profs[ix] - np.median(rest, axis=0)) ** 2))), 2)
@@ -358,8 +341,6 @@ def _gap_note(entries: list[dict], ref_tbl: list[dict]) -> str | None:
     return (f"Tone distance to the refs' median: picks {min(ours):.1f}-{max(ours):.1f} dB, real refs "
             f"{min(theirs):.1f}-{max(theirs):.1f} dB; a pick inside the ref range is as typical as a real recording.")
 
-
-# ---------------------------------------------------------------- forge: report
 
 def _judge_info(judge: Any) -> dict:
     return {"version": getattr(judge, "version", None), "mode": getattr(judge, "mode", None),
@@ -437,8 +418,6 @@ def _wrap_up(rep_d: dict, cfg: dict, began: float, entries: list[dict], takes: l
     schema.write_json(acc / "report.json", rep_d)
 
 
-# ---------------------------------------------------------------- forge
-
 def _render_selected(rc: Any, judge: Any, chosen: list[dict], cfg: dict, scr: Any) -> tuple[list[dict], dict, list]:
     """Render the picks, take holdouts and write the WAVs: (items, pick context, ref holdouts)."""
     nm = _short(rc)
@@ -498,8 +477,6 @@ def forge(recipe: Any, *args: Any, **opts: Any) -> dict:
 
 with_signature(forge, ("recipe",), FORGE_DEFAULTS)
 
-
-# ---------------------------------------------------------------- families
 
 _FAMILY_FIELDS = ("init", "space", "fixed", "budget")
 
@@ -570,8 +547,6 @@ def _by_family(rc: Any, fams: Any, judge: Any, cfg: dict, began: float) -> dict:
         schema.write_json(Path(cfg["out"]) / "report.json", pal)
     return pal
 
-
-# ---------------------------------------------------------------- palette
 
 def _unpack(rc: Any, meas: dict) -> tuple[dict, int, dict]:
     own_p = meas["params"] if isinstance(meas.get("params"), dict) else meas
@@ -750,8 +725,6 @@ def palette(recipe: Any, members: Sequence[dict], critic: Any, *args: Any, **opt
 
 with_signature(palette, ("recipe", "members", "critic"), PALETTE_DEFAULTS)
 
-
-# ---------------------------------------------------------------- render without a search
 
 def _sets_from_dict(prm: dict) -> list[tuple[dict, dict | None, int | None]]:
     if "picks" in prm:

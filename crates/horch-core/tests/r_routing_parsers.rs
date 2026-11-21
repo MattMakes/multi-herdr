@@ -1,8 +1,3 @@
-//! The quota reply parsers keep their output for the odd replies as well as
-//! the real ones. The golden file was written by the code before the #153
-//! refactor. The test only reads it: a test that rewrote the file could not
-//! fail.
-
 use std::fmt::Write;
 use std::path::Path;
 

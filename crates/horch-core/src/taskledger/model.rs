@@ -1,8 +1,3 @@
-//! The words the task ledger stores: every enum column's values.
-//!
-//! Each enum is the one source of its column's `CHECK` list in the schema
-//! ([`super::schema`]), so the code and the database cannot disagree.
-
 use anyhow::{bail, Result};
 
 macro_rules! ledger_enum {
@@ -14,17 +9,14 @@ macro_rules! ledger_enum {
         }
 
         impl $name {
-            /// Every value, in declaration order.
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
 
-            /// The stored word.
             pub fn as_str(self) -> &'static str {
                 match self {
                     $($name::$variant => $text),+
                 }
             }
 
-            /// The value a stored word names.
             pub fn parse(text: &str) -> Result<$name> {
                 match text {
                     $($text => Ok($name::$variant),)+
@@ -36,7 +28,6 @@ macro_rules! ledger_enum {
                 }
             }
 
-            /// `CHECK (<column> IN ('a', 'b', ...))`.
             pub fn check(column: &str) -> String {
                 let words: Vec<String> = [$($text),+].iter().map(|w| format!("'{w}'")).collect();
                 format!("CHECK ({column} IN ({}))", words.join(", "))
@@ -52,17 +43,14 @@ macro_rules! ledger_enum {
 }
 
 ledger_enum!(
-    /// Where a row came from: written by this ledger, or imported (section 11).
     Origin { Native = "native", Import = "import" }
 );
 
 ledger_enum!(
-    /// `runs.status`.
     RunStatus { Active = "active", Done = "done", Abandoned = "abandoned" }
 );
 
 ledger_enum!(
-    /// `tasks.status`. "Blocked" is not stored: it is derived from `task_deps`.
     TaskStatus {
         Queued = "queued",
         Running = "running",
@@ -73,14 +61,10 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `tasks.kind`: ordinary work, or a code-sweep reviewer task that changes
-    /// no code and so runs no finish steps.
     TaskKind { Work = "work", Review = "review" }
 );
 
 ledger_enum!(
-    /// `tasks.work_kind`: the ticket's `**Kind:**` field (trace-fixes C1).
-    /// `tasks.kind` already means work vs review.
     WorkKind {
         Feature = "feature",
         Quality = "quality",
@@ -92,26 +76,18 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `tasks.review_mode`: the ticket's `**Review:**` field (trace-fixes C1).
     ReviewMode { NoReview = "none", Light = "light", Full = "full" }
 );
 
 ledger_enum!(
-    /// `tasks.held_reason` words that horch acts on. The column is free text;
-    /// `unlanded` marks a task parked with its worktree (trace-fixes D16).
     HeldReason { Unlanded = "unlanded" }
 );
 
 ledger_enum!(
-    /// `workers.end_reason` words that horch acts on. The column is free
-    /// text; `handed_off` marks a worker that ended through
-    /// `horch ledger handoff` (trace-fixes C4).
     EndReason { HandedOff = "handed_off" }
 );
 
 ledger_enum!(
-    /// `outbox.event`: the wakes the task ledger writes for the orchestrator
-    /// (trace-fixes C3).
     OutboxEvent {
         Startable = "startable",
         Settled = "settled",
@@ -122,28 +98,23 @@ ledger_enum!(
         NoTask = "no-task",
         UnclaimedSpawn = "unclaimed-spawn",
         OrchestratorRespawned = "orchestrator-respawned",
-        // A ruling horch asks the orchestrator for (code-sweep TRF-27).
         Question = "question",
     }
 );
 
 ledger_enum!(
-    /// `tasks.worktree_mode`.
     WorktreeMode { Shared = "shared", Worktree = "worktree" }
 );
 
 ledger_enum!(
-    /// `task_files.mode`.
     FileMode { Own = "own", DoNotTouch = "do_not_touch" }
 );
 
 ledger_enum!(
-    /// `workers.kind`.
     WorkerKind { Worker = "worker", Orchestrator = "orchestrator" }
 );
 
 ledger_enum!(
-    /// `workers.status`.
     WorkerStatus {
         Spawning = "spawning",
         Starting = "starting",
@@ -158,7 +129,6 @@ ledger_enum!(
 );
 
 impl WorkerStatus {
-    /// Whether a worker in this state may still run.
     pub fn is_live(self) -> bool {
         matches!(
             self,
@@ -171,7 +141,6 @@ impl WorkerStatus {
 }
 
 ledger_enum!(
-    /// `workers.last_progress_source`: why `last_progress_at` last moved.
     ProgressSource {
         Agent = "agent",
         Transcript = "transcript",
@@ -181,7 +150,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `checks.verdict`.
     Verdict {
         Progress = "progress",
         ProxyCheckin = "proxy_checkin",
@@ -192,7 +160,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `stops.requested_by`.
     StopRequester {
         Orchestrator = "orchestrator",
         Watchdog = "watchdog",
@@ -202,17 +169,14 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `stops.target`.
     StopTarget { Agent = "agent", Supervisor = "supervisor", Pane = "pane" }
 );
 
 ledger_enum!(
-    /// `stops.signal`.
     StopSignal { Term = "TERM", Kill = "KILL" }
 );
 
 ledger_enum!(
-    /// `stops.result`.
     StopResult {
         Sent = "sent",
         AlreadyGone = "already_gone",
@@ -224,7 +188,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `worktrees.status`.
     WorktreeStatus {
         Open = "open",
         Landing = "landing",
@@ -233,15 +196,12 @@ ledger_enum!(
         Cleaned = "cleaned",
         Unlanded = "unlanded",
         Abandoned = "abandoned",
-        // A triage decision freed the folder; a ref holds the work (#308).
         Archived = "archived",
         Trashed = "trashed",
     }
 );
 
 ledger_enum!(
-    /// `worktrees.decision`: what the operator decided at a worktree triage
-    /// (#308).
     TriageDecision {
         Land = "LAND",
         Pr = "PR",
@@ -253,7 +213,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `events.actor`.
     Actor {
         Orchestrator = "orchestrator",
         Worker = "worker",
@@ -265,7 +224,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `events.kind`.
     EventKind {
         RunCreated = "run_created",
         Added = "added",
@@ -303,7 +261,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `task_steps.status`.
     StepStatus {
         Pending = "pending",
         Running = "running",
@@ -314,14 +271,12 @@ ledger_enum!(
 );
 
 impl StepStatus {
-    /// Whether the step lets the pipeline go on.
     pub fn is_through(self) -> bool {
         matches!(self, StepStatus::Passed | StepStatus::NotApplicable)
     }
 }
 
 ledger_enum!(
-    /// The finish steps (section 5.5), in their default order.
     StepName {
         Check = "check",
         CommentSweep = "comment-sweep",
@@ -335,7 +290,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `import_raw.source_kind`.
     SourceKind {
         SessionLedger = "session_ledger",
         WorktreeClaims = "worktree_claims",
@@ -344,7 +298,6 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `import_findings.kind`.
     FindingKind {
         WorktreeUnlanded = "worktree_unlanded",
         WorktreeOrphan = "worktree_orphan",
@@ -358,19 +311,14 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `import_findings.status`.
     FindingStatus { Open = "open", Requeued = "requeued", Dismissed = "dismissed" }
 );
 
-/// The default finish pipeline of a run.
 pub fn default_finish_steps() -> Vec<StepName> {
     StepName::ALL.to_vec()
 }
 
 ledger_enum!(
-    /// How much a run verifies before a task lands: a named set of finish
-    /// steps, picked at `horch fleet` start (`--verify`). Only the steps are
-    /// stored; the profile is the name for them.
     VerifyProfile {
         Full = "full",
         Light = "light",
@@ -378,25 +326,15 @@ ledger_enum!(
     }
 );
 
-/// The variable that carries the profile from `horch fleet` into the
-/// orchestrator's pane, where `horch ledger run new` reads it. An operator
-/// can also set it in their shell as their own default.
 pub const VERIFY_ENV: &str = "HORCH_VERIFY";
 
 impl VerifyProfile {
-    /// The profile `horch fleet` and `horch ledger run new` use when none is
-    /// named: tests must pass and comments go, but no AI reviewer workers
-    /// are queued.
     pub const DEFAULT: VerifyProfile = VerifyProfile::Light;
 
-    /// The finish steps of the profile, in pipeline order.
     pub fn steps(self) -> Vec<StepName> {
         use StepName::*;
         match self {
             VerifyProfile::Full => default_finish_steps(),
-            // No code-sweep, so no recheck: what commits between check and
-            // land is a fix or the comment-sweep, and each moves the tree,
-            // which re-runs check from the top.
             VerifyProfile::Light => {
                 vec![Check, CommentSweep, ComplexitySweep, Land, Pr, Cleanup]
             }
@@ -404,7 +342,6 @@ impl VerifyProfile {
         }
     }
 
-    /// 1 line for the operator: what the profile runs before a task lands.
     pub fn summary(self) -> &'static str {
         match self {
             VerifyProfile::Full => {
@@ -417,7 +354,6 @@ impl VerifyProfile {
         }
     }
 
-    /// The profile whose steps are exactly `steps`, if one is.
     pub fn of_steps(steps: &[StepName]) -> Option<VerifyProfile> {
         VerifyProfile::ALL
             .iter()

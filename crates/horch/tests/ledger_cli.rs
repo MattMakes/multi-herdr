@@ -1,8 +1,3 @@
-//! `horch ledger add` maps `--check none` to "no check", the same as the
-//! ticket line `**Check:** none`. It never stores the shell command `none`.
-//! Every test runs the binary on a temp git project, with the watchdog off
-//! and no herdr pane.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -55,7 +50,6 @@ impl World {
         out
     }
 
-    /// Run horch. It returns success and stdout followed by stderr.
     fn run(&self, args: &[&str]) -> (bool, String) {
         let root = self.tmp.path();
         let o = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -75,8 +69,6 @@ impl World {
         (o.status.success(), format!("{out}{err}"))
     }
 
-    /// The `task` object of each queued task, in queue order. `status`
-    /// exits non-zero with no orchestrator, so only its JSON counts.
     fn tasks(&self) -> Vec<serde_json::Value> {
         let root = self.tmp.path();
         let o = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -105,9 +97,7 @@ impl World {
 fn check_none_flag_on_add_stores_no_check() {
     let w = World::new();
     w.ok(&["ledger", "run", "new", "r1"]);
-    // The incident: the ticket says none and the flag says none.
     w.ticket("a.md", "none");
-    // The flag overrides a ticket command, with spaces around it.
     w.ticket("b.md", "`cargo test`");
     w.ok(&[
         "ledger",

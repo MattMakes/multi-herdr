@@ -15,20 +15,19 @@ from pw_model import BIG, INF, cost_one, presence_of, prestige_on
 
 WEIGHT = {"system_unlock": 5, "prestige_first": 5, "prestige": 3, "feature": 3, "content": 2,
           "reward": 2, "ladder": 2, "first_purchase": 2, "purchase": 1, "repeat": 1, "stall": 0}
-SMALL_VALUE = 0.02      # value of a purchase that changes nothing the buyer can measure
-WALL_WEIGHT = 3.0       # weight of a stat that blocks the next ladder step or a milestone
+SMALL_VALUE = 0.02
+WALL_WEIGHT = 3.0
 BASE = "(base income)"
 EFFECT_OWNERS = (("p", "purchases"), ("m", "milestones"), ("l", "ladders"))
 LEVEL_NEED_OWNERS = (("p", "purchases"), ("m", "milestones"))
 TIMER_KEYS = ("attempt_seconds", "cooldown_seconds", "needs_visit")
-AWAY_STEP_LIMIT = 20000  # most event steps in 1 stretch of away time
-AUTO_BUY_LIMIT = 1000   # most auto-buy purchases (S24) in 1 step
+AWAY_STEP_LIMIT = 20000
+AUTO_BUY_LIMIT = 1000
 STALL_NO_CONTENT = ("Nothing left to buy or reach", "content ends here, or a requirement can never be met")
 STALL_NO_GOAL = ("No reachable goal", "prestige is enabled, but the buyer did not reset and nothing "
                                       "else changed for this long")
 
 
-# -- compiled effects -----------------------------------------------------------
 def _delta_add(d, c, v, grp):
     d[0][c] = d[0].get(c, 0.0) + v
 
@@ -115,8 +114,7 @@ def currency_gain(new, old, weight):
     return -(weight * (1.0 - new / old))
 
 
-# -- upkeep (S30) ---------------------------------------------------------------
-NO_DELTA = ({}, {}, {}, set(), set())      # the income delta of a line with no income effect (a care line)
+NO_DELTA = ({}, {}, {}, set(), set())
 
 
 def upkeep_sums(up, level, plus=None):
@@ -208,12 +206,11 @@ def _never(sim, v):
     return False
 
 
-# The test of each kind of hard end (game.targets.hard_end): the event happened.
 END_TESTS = {"axis_step": _axis_end, "purchase": lambda sim, v: v in sim.ever,
              "resets": lambda sim, v: sim.prestiges >= v, "milestone": lambda sim, v: v in sim.ever_done}
 
 
-STOP_KINDS = ("resets", "milestone")     # the kinds of hard end after which the game has no more play
+STOP_KINDS = ("resets", "milestone")
 
 
 class Sim:
@@ -243,8 +240,8 @@ class Sim:
     def _init_progress(self, m):
         self.level = {p["id"]: 0 for p in m["purchases"]}
         self.ever = set()
-        self.done = {}                      # milestones done now -> time
-        self.ever_done = {}                 # milestones done at any time -> first time
+        self.done = {}
+        self.ever_done = {}
         self.ladder_pos = {l["id"]: 0 for l in m["ladders"]}
         self.ladder_best = {l["id"]: 0 for l in m["ladders"]}
         self.lmap = {l["id"]: l for l in m["ladders"]}
@@ -282,7 +279,7 @@ class Sim:
         self.present, self.visits, self.active = True, 0, 0.0
         self._rates = self._ainc = None
         self.step_last, self.attempt_from = {}, {}
-        self.step_clock = {l["id"]: {} for l in m["ladders"]}     # step -> (real, active, t) of the first time
+        self.step_clock = {l["id"]: {} for l in m["ladders"]}
         self.bank_caps = {c["id"]: c["bank_cap"] for c in m["currencies"] if "bank_cap" in c}
         self.bank = dict.fromkeys(self.bank_caps, 0.0)
         self.sysclock = {s["id"]: s.get("clock", "game") for s in m["systems"]}
@@ -291,7 +288,7 @@ class Sim:
 
     def _init_end(self, m):
         self.end_mark = (m["game"].get("targets") or {}).get("hard_end")
-        self.end_real = self.end_clock = None   # the hard end event: real seconds, and (real, active, t); None before
+        self.end_real = self.end_clock = None
 
     def _init_visits(self, g, p):
         if self.player is None:
@@ -346,14 +343,13 @@ class Sim:
         g = m["game"]
         self.af = g["active_fraction"]
         by_system = g["pct_grouping"] == "system"
-        self.sources = []                   # (kind, id, system, [(currency, kind, value, group)])
-        self.away_sources = []              # the same with no active-only effect: the income while away
-        self.capfx = {}                     # purchase id -> [(source kind, source id, value)]
+        self.sources = []
+        self.away_sources = []
+        self.capfx = {}
         owners = [(kind, x) for kind, key in EFFECT_OWNERS for x in m[key]]
         for kind, x in owners:
             self._compile_owner(kind, x, by_system)
         self.has_income_fx = {s[1] for s in self.sources if s[0] == "p"} | self.need_lines | self.care_lines
-        # purchase id -> what one more level adds to the income terms
         self.pdelta = {ident: purchase_delta(fx) for kind, ident, _, fx in self.sources if kind == "p"}
         self.count_steps = {p["id"]: p["count_steps"] for p in m["purchases"] if p.get("count_steps")}
         self._compile_cap_targets()
@@ -378,17 +374,17 @@ class Sim:
         targets = tuple(self.cids) if e["target"] == "all" else (e["target"],)
         v = e["value"] * (self.af if e.get("active") and e["kind"] == "add" else 1.0)
         if self.speed != 1.0 and e["kind"] == "add" and self._clock_of(x) == "real":
-            v /= self.speed                 # a real-time source pays the same for each real second
+            v /= self.speed
         return (targets, e["kind"], v, e.get("group") or (x["system"] if by_system else ""))
 
     def _compile_cap_targets(self):
-        self.cap_targets = {}               # source purchase id -> [(target id, value)]
+        self.cap_targets = {}
         raises = [(sid, tgt, v) for tgt, lst in self.capfx.items() for kind, sid, v in lst if kind == "p"]
         for sid, tgt, v in raises:
             self.cap_targets.setdefault(sid, []).append((tgt, v))
 
     def _compile_wanted_by(self, m):
-        self.wanted_by = {}                 # purchase id -> [(kind, id, level)]
+        self.wanted_by = {}
         needs = [n for kind, key in LEVEL_NEED_OWNERS for x in m[key]
                  for n in level_needs(kind, x["id"], x["requires"])]
         if self.pr:
@@ -401,7 +397,7 @@ class Sim:
         self._inc = self._parts = self._w = self._acc = None
         self.last_change = 0.0
         self.pstat = {p["id"]: new_purchase_stats() for p in m["purchases"]}
-        self.steps = {l["id"]: {} for l in m["ladders"]}      # step -> (t, value of the gating quantity)
+        self.steps = {l["id"]: {} for l in m["ladders"]}
         self.earn = {c: {} for c in self.cids}
         self.spent = {c: {} for c in self.cids}
         self.lost = dict.fromkeys(self.cids, 0.0)
@@ -415,7 +411,6 @@ class Sim:
         self.auto_open = set()
         self.auto_lines = list(self.auto_from) + list(self.auto_reqs)
 
-    # -- income -----------------------------------------------------------------
     def count(self, kind, ident):
         if kind == "p":
             return self.level[ident]
@@ -526,7 +521,6 @@ class Sim:
         off = (c in zero and dlog_u <= 0) or c in delta[3] or dlog_u == -math.inf
         return min(0.0 if off else x * math.exp(min(mul[c] + delta[2].get(c, 0.0) + dlog_u, 690.0)), BIG)
 
-    # -- requirements -----------------------------------------------------------
     def quantity(self, req, inc):
         """(value now, rate of change) of the quantity that a requirement compares."""
         t = req["type"]
@@ -588,7 +582,6 @@ class Sim:
             cap += v * self.count(kind, sid)
         return math.floor(cap + 1e-9)
 
-    # -- events -----------------------------------------------------------------
     def log(self, kind, ident, name, system, weight, cost=None, currency=None, note=None):
         if weight >= self.beat_weight and kind != "prestige":
             self.run_new_beats += 1
@@ -741,13 +734,11 @@ class Sim:
             return max(0.0, self.run_start + self.pr["run_seconds"] - self.t)
         return INF
 
-    # -- the buyer --------------------------------------------------------------
     def candidates(self, inc):
         """(purchase, [(currency, cost)], seconds until affordable) for each purchase that is open now."""
         open_ = [p for p in self.m["purchases"] if self._is_open(p, inc) and not self.auto_on(p["id"])]
         return [self._candidate(p, inc) for p in open_]
 
-    # -- the auto-buy (S24) -----------------------------------------------------
     def auto_on(self, pid):
         """True when the auto-buy of the line is open: the player does not buy the line by hand any more. The minute
         counts active play only, so a player who never plays does not open it (the game opens it from progress)."""
@@ -861,13 +852,13 @@ class Sim:
         pid = p["id"]
         v = self.rel_gain(pid, inc, w) if pid in self.has_income_fx else 0.0
         for tgt in self._raisable_caps(pid):
-            v += self.rel_gain(tgt, inc, w)       # one more level of the capped line becomes possible
+            v += self.rel_gain(tgt, inc, w)
         if v <= 0 and self.wanted(pid):
             v = 1.0
         if v <= 0 and pid in self.care_lines:
-            v = self.care_unlock_gain(pid, inc, w)      # care that raises nothing now: what it frees (S30)
+            v = self.care_unlock_gain(pid, inc, w)
             return max(v, 0.0) if v < SMALL_VALUE else v
-        return 0.0 if v < 0 else max(v, SMALL_VALUE)    # 0: it lowers income and nothing needs it
+        return 0.0 if v < 0 else max(v, SMALL_VALUE)
 
     def _raisable_caps(self, pid):
         """The capped income lines that one more level of pid lets the buyer raise."""
@@ -922,7 +913,7 @@ class Sim:
         w = p.get("excitement", WEIGHT["first_purchase"]) if first else WEIGHT["purchase"]
         self.log("purchase", pid, f"{p['name']} L{self.level[pid]}", p["system"], w,
                  cost=costs[0][1], currency=costs[0][0], note="first" if first else None)
-        self.events[-1].update({"auto": True} if auto else {})     # a purchase of the auto-buy (S24)
+        self.events[-1].update({"auto": True} if auto else {})
 
     def _pay(self, p, costs):
         st = self.pstat[p["id"]]
@@ -950,7 +941,6 @@ class Sim:
         if cap is not None and self.level[p["id"]] >= cap and st["cap_at"] is None:
             st["cap_at"] = self.t
 
-    # -- prestige ---------------------------------------------------------------
     def prestige_raw(self):
         """The gain before rounding down."""
         basis_gain = self._ladder_basis_gain if "basis_ladder" in self.pr else self._currency_basis_gain
@@ -1006,7 +996,6 @@ class Sim:
     def _policy_resets(self, rate, gain):
         pr = self.pr
         if pr["policy"] == "peak_rate":
-            # no reset while the run still pays about as much each minute as at its best
             return not rate >= self.best_rate * pr["peak_tolerance"]
         return not gain < pr["policy_ratio"] * self.life[pr["currency"]]
 
@@ -1058,7 +1047,6 @@ class Sim:
                 + ("" if new or self.prestiges == 1 else "; nothing new in this run"))
         self.log("prestige", "prestige", f"Prestige {self.prestiges}", pr["system"], weight, note=note)
 
-    # -- the loop ---------------------------------------------------------------
     def sample(self, inc, cands):
         now = sum(1 for _, _, w in cands if w == 0)
         soon = sum(1 for _, _, w in cands if w <= 300)
@@ -1144,10 +1132,9 @@ class Sim:
             return self._player_away()
         self.advance(self.away, self.income(), factor=self.offline, play=False)
         self.block_left = self.session
-        self.check_milestones()     # beats that happened while away are met now
+        self.check_milestones()
         return True
 
-    # -- presence: the time between 2 visits ----------------------------------------
     def _player_away(self):
         self.present = False
         (self.away_open if self.between == "open" else self.away_closed)(self.away)
@@ -1171,7 +1158,7 @@ class Sim:
     def _away_span(self, seconds, factor, running):
         """Earn at factor x the away income for seconds, up to each event that only needs time."""
         end = self.real + seconds
-        steps = iter(range(AWAY_STEP_LIMIT))         # at most AWAY_STEP_LIMIT steps
+        steps = iter(range(AWAY_STEP_LIMIT))
         while next(steps, None) is not None and not self._away_over(end):
             self._away_step(min(end - self.real, self._away_wait(factor, running)), factor, running)
 
@@ -1197,7 +1184,7 @@ class Sim:
         self.check_milestones()
         self.end_reached()
         if running:
-            self.auto_buy()         # the game runs, so its auto-buy buys
+            self.auto_buy()
         if self.pr and not self.pr.get("needs_visit", True) and self.try_prestige(self.income()):
             self.check_milestones()
 
@@ -1286,7 +1273,6 @@ class Sim:
                 if wait == 0 and not saving & {c for c, _ in costs}]
         return [x for x in side if x[0] > 0]
 
-    # -- the payback buyer (the buyer of the measured game, tests/pacing_buyer.gd) ---------------
     def _payback_pick(self, inc, cands):
         """Lines that cost another currency: the cheapest affordable one first. Then the main-currency line
         with the lowest wait + cost / value. value = main income x the sum of the relative income gains."""

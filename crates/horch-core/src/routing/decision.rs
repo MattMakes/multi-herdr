@@ -1,11 +1,3 @@
-//! Quota-aware balancing: which teammate a spawn actually runs as (design
-//! section 13). Moved from `balance_policy.rs` (A5).
-//!
-//! A teammate names `fallbacks`. When its usage pool cannot serve a spawn, a
-//! fallback lends its LAUNCH settings (agent, model, args, env, ...) while the
-//! persona, base, phase and skills stay the original's (D6). [`decide`] is
-//! pure: no I/O, and the time arrives inside the [`QuotaView`].
-
 use serde::{Deserialize, Serialize};
 
 use crate::harness::HarnessKind;
@@ -15,16 +7,12 @@ use crate::routing::eligible::eligible_fallbacks;
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::{self, Assessment, QuotaView, State};
 
-/// Flags a spawn passes to the gate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GateFlags {
-    /// Never substitute.
     pub exact: bool,
-    /// Never refuse.
     pub force: bool,
 }
 
-/// One pool line for a REFUSED message and `horch route`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PoolLine {
     pub pool: String,
@@ -52,7 +40,6 @@ pub enum Decision {
 }
 
 impl Decision {
-    /// The line printed to stdout before the pane id, if any.
     pub fn line(&self) -> Option<String> {
         match self {
             Decision::Spawn { note, .. } => note.as_ref().map(|n| format!("NOTE: {n}")),
@@ -79,16 +66,6 @@ impl Decision {
     }
 }
 
-// ─── merge ──────────────────────────────────────────────────────────────────
-
-/// `original` launched with `fallback`'s settings (section 13.2).
-///
-/// From the fallback: every field that says HOW to launch - agent, model,
-/// args, env, tool lists, permission mode, plugins, MCP, settings, and the
-/// rest of the Claude-shaped fields. From the original: name, description,
-/// base, persona, phase, skills (with available and operator skills),
-/// generic, hidden, and `system_prompt` when the fallback is also Claude. Effort stays the
-/// original's when the fallback's agent and model accept it.
 pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     let mut m = fallback.clone();
     m.name = original.name.clone();
@@ -102,7 +79,6 @@ pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     m.generic = original.generic;
     m.hidden = original.hidden;
     m.first_instruction = original.first_instruction.clone();
-    // Claude only: a fallback on another harness has nowhere to put it.
     if fallback.agent == HarnessKind::Claude {
         m.system_prompt = original.system_prompt.clone();
         m.system_prompt_text = original.system_prompt_text.clone();
@@ -120,9 +96,6 @@ pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     m
 }
 
-// ─── decide ─────────────────────────────────────────────────────────────────
-
-/// `7d 88%, pace 1.4x, resets Fri 14:00Z`: an assessment in a few words.
 pub fn summary(a: &Assessment, view: &QuotaView) -> String {
     match &a.worst {
         Some(w) if a.state != State::Exhausted || a.reason.contains('%') => {
@@ -146,8 +119,6 @@ pub fn summary(a: &Assessment, view: &QuotaView) -> String {
     }
 }
 
-/// The one-line reason a substitution records: `claude 7d 100%, resets
-/// 2026-10-02T14:00Z`.
 fn reason_line(a: &Assessment, view: &QuotaView) -> String {
     match &a.worst {
         Some(w) if a.state != State::Unknown && a.reason.contains('%') => {
@@ -167,14 +138,12 @@ fn reason_line(a: &Assessment, view: &QuotaView) -> String {
     }
 }
 
-/// A fallback the gate may use, with its pool's state.
 struct Candidate {
     name: String,
     state: State,
     assessment: Assessment,
 }
 
-/// The fallbacks the gate may use: the eligible ones, in `fallbacks:` order.
 fn candidates(req: &Teammate, roster: &Roster, view: &QuotaView) -> Vec<Candidate> {
     eligible_fallbacks(req, roster, view)
         .into_iter()
@@ -199,7 +168,6 @@ fn pool_line(a: &Assessment, view: &QuotaView) -> PoolLine {
     }
 }
 
-/// One gate run: the request, its pool's assessment and the usable fallbacks.
 struct Gate<'a> {
     req: &'a Teammate,
     view: &'a QuotaView,
@@ -257,8 +225,6 @@ impl Gate<'_> {
         }
     }
 
-    /// `auto` mode, tight pool: switch only to a fallback with enough more
-    /// headroom.
     fn tight(&self, flags: GateFlags, first_ok: Option<&Candidate>) -> Decision {
         match first_ok {
             None => self.spawn(Some(self.pool_note(None))),
@@ -274,7 +240,6 @@ impl Gate<'_> {
         }
     }
 
-    /// `auto` mode, pool out of reach: any fallback with room, else refuse.
     fn depleted(&self, flags: GateFlags) -> Decision {
         let usable = self
             .cands
@@ -313,7 +278,6 @@ impl Gate<'_> {
     }
 }
 
-/// What the spawn gate does with a request (section 13.4, BAL-03).
 pub fn decide(
     req: &Teammate,
     roster: &Roster,
@@ -339,8 +303,6 @@ pub fn decide(
     }
 }
 
-/// The teammate a decision launches: the request, or the request merged with
-/// its fallback.
 pub fn resolve(req: &Teammate, roster: &Roster, decision: &Decision) -> Option<Teammate> {
     match decision {
         Decision::Spawn { .. } => Some(req.clone()),
@@ -349,32 +311,20 @@ pub fn resolve(req: &Teammate, roster: &Roster, decision: &Decision) -> Option<T
     }
 }
 
-// ─── provenance ─────────────────────────────────────────────────────────────
-
-/// How routing chose the teammate a record runs as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingMode {
-    /// The gate in balance mode `auto`, with no flag.
     Auto,
-    /// Balance mode `advise`: a note at most.
     Advise,
-    /// Balance mode `off`.
     Off,
-    /// `auto` with `--exact`: never substitute.
     Exact,
-    /// `auto` with `--force`: never refuse.
     Force,
-    /// A competition candidate on a fixed teammate (B3).
     Pinned,
-    /// `horch spawn --resume`: the record's routing, kept.
     Resume,
-    /// No gate ran: the `none` agent spends nothing.
     Ungated,
 }
 
 impl RoutingMode {
-    /// The mode of one gate run.
     pub fn for_gate(mode: BalanceMode, flags: GateFlags) -> RoutingMode {
         match mode {
             BalanceMode::Off => RoutingMode::Off,
@@ -386,21 +336,13 @@ impl RoutingMode {
     }
 }
 
-/// What routing decided for one record (ARC-14). Written next to `via` and
-/// `substitution_reason`, which stay for older readers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutingProvenance {
-    /// The teammate the spawn asked for.
     pub requested: TeammateName,
-    /// The teammate whose launch settings ran: the request, or its fallback.
     pub resolved: TeammateName,
-    /// `Some(i)` when `resolved` is `fallbacks[i]` of the request.
     pub fallback_index: Option<u32>,
-    /// The pool the resolved launch draws from, and its state at decision
-    /// time.
     pub pool: String,
     pub pool_state: State,
-    /// The gate's note or substitution reason, if any.
     pub reason: Option<String>,
     pub mode: RoutingMode,
 }
@@ -412,8 +354,6 @@ fn fallback_index(req: &Teammate, name: &str) -> Option<u32> {
         .map(|i| i as u32)
 }
 
-/// The teammate a decision launches, with its `fallbacks` index when it is a
-/// substitute; `None` when nothing launches.
 fn launch_of<'a>(
     req: &'a Teammate,
     roster: &'a Roster,
@@ -427,8 +367,6 @@ fn launch_of<'a>(
 }
 
 impl RoutingProvenance {
-    /// The provenance of a gate decision; `None` for a refusal, which
-    /// writes no record.
     pub fn from_decision(
         req: &Teammate,
         roster: &Roster,
@@ -459,7 +397,6 @@ impl RoutingProvenance {
         }))
     }
 
-    /// A spawn no gate looked at: the teammate runs as itself.
     pub fn ungated(req: &Teammate) -> Result<RoutingProvenance, IdError> {
         let name = TeammateName::new(req.name.as_str())?;
         Ok(RoutingProvenance {
@@ -474,9 +411,6 @@ impl RoutingProvenance {
         })
     }
 
-    /// The provenance of a record written before A5, from its `tier`,
-    /// `via`, `agent`, `model` and `substitution_reason`. The pool state
-    /// then is unknown. `req` is the requested teammate, if it still exists.
     pub fn legacy(
         tier: &str,
         via: Option<&str>,
@@ -496,7 +430,6 @@ impl RoutingProvenance {
         })
     }
 
-    /// The same routing, carried into a resume.
     pub fn resumed(self) -> RoutingProvenance {
         RoutingProvenance {
             mode: RoutingMode::Resume,
@@ -505,7 +438,6 @@ impl RoutingProvenance {
     }
 }
 
-/// A [`Decision`] in typed form. The JSON stays [`Decision`]'s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RoutingDecision {
     Spawn {
@@ -558,7 +490,6 @@ mod tests {
     use crate::routing::policy::Policy;
     use crate::routing::quota::QuotaFile;
 
-    /// `candidates()` as it was before A5, for the comparison.
     fn old_candidates(req: &Teammate, roster: &Roster, view: &QuotaView) -> Vec<Candidate> {
         req.fallbacks
             .iter()
@@ -589,8 +520,6 @@ mod tests {
         reserved.model = Some("gpt-6-astra".into());
         roster.insert_for_test(reserved);
         let names: Vec<String> = roster.names().into_iter().map(str::to_owned).collect();
-        // Every drop rule in one list: missing, hidden, reserved, trains on
-        // input, and usable ones around them.
         let mixed: Vec<String> = [
             "ghost",
             "codex-sol",
@@ -634,8 +563,6 @@ mod tests {
     }
 }
 
-/// The BAL tables across routing and the roster rules: the merge rule, the
-/// fallback rules, the decision table and the never-trains-on-input rule.
 #[cfg(test)]
 mod bal_tables {
     use super::{decide, merge, Decision, GateFlags};
@@ -671,7 +598,6 @@ mod bal_tables {
         let r = t("researcher");
         let f = t("codex-sol");
         let m = merge(&r, &f);
-        // From the fallback: how to launch.
         assert_eq!(m.agent, HarnessKind::Codex);
         assert_eq!(m.model, f.model);
         assert_eq!(m.args, f.args);
@@ -683,7 +609,6 @@ mod bal_tables {
         assert_eq!(m.disabled_skills, f.disabled_skills);
         assert_eq!(m.subagent_model, f.subagent_model);
         assert_eq!(m.plugin_skills, f.plugin_skills);
-        // From the original: who it is.
         assert_eq!(m.name, "researcher");
         assert_eq!(m.brief_description, r.brief_description);
         assert_eq!(m.base, r.base);
@@ -691,16 +616,12 @@ mod bal_tables {
         assert_eq!(m.phase, r.phase);
         assert_eq!(m.skills, r.skills);
         assert_eq!((m.generic, m.hidden), (r.generic, r.hidden));
-        // researcher's `medium` is a codex level too, so it stays.
         assert_eq!(m.effort.as_deref(), Some("medium"));
-        // An effort the fallback cannot take comes from the fallback.
         let mut xhigh_claude = r.clone();
         xhigh_claude.effort = Some("bogus".into());
         assert_eq!(merge(&xhigh_claude, &f).effort, f.effort);
     }
 
-    /// A fallback launch keeps the persona's offered and operator skills, and
-    /// never takes the fallback's.
     #[test]
     fn merge_keeps_the_original_available_and_operator_skills() {
         let mut r = t("researcher");
@@ -718,8 +639,6 @@ mod bal_tables {
         assert_eq!(merge(&f, &r).operator_skills, None);
     }
 
-    /// The system prompt follows the persona onto a Claude fallback and is
-    /// dropped on any other harness.
     #[test]
     fn merge_keeps_the_system_prompt_only_on_claude() {
         let o = t("opus");
@@ -743,7 +662,6 @@ mod bal_tables {
             fallback_problems(&r)
         };
         let none = |_: &mut Roster| {};
-        // 1: missing, hidden, not spawnable.
         assert!(with("researcher", &["ghost"], &none)
             .iter()
             .any(|p| p.contains("does not exist")));
@@ -759,17 +677,12 @@ mod bal_tables {
         assert!(with("researcher", &["astra-worker"], &reserved)
             .iter()
             .any(|p| p.contains("not spawnable")));
-        // 2: same pool.
         assert!(with("researcher", &["sonnet"], &none)
             .iter()
             .any(|p| p.contains("same pool")));
-        // 3: trains on input.
         assert!(with("researcher", &["opencode-pickle"], &none)
             .iter()
             .any(|p| p.contains("trains on its input")));
-        // 4: the merged teammate must pass the existing rules. A claude
-        // fallback without `disallowed_tools: [Agent]` breaks the
-        // no-subagents rule once merged.
         let open_claude = |r: &mut Roster| {
             let mut s = r.require("sonnet").unwrap().clone();
             s.name = "loose".into();
@@ -779,7 +692,6 @@ mod bal_tables {
         assert!(with("codex-sol", &["loose"], &open_claude)
             .iter()
             .any(|p| p.contains("via loose") && p.contains("subagents")));
-        // 5: a fallback with fallbacks of its own is fine.
         assert!(with("researcher", &["codex-sol"], &none).is_empty());
     }
 
@@ -799,7 +711,6 @@ mod bal_tables {
             force: true,
         };
 
-        // ok: spawn, every mode.
         for mode in [BalanceMode::Off, BalanceMode::Advise, auto] {
             assert_eq!(
                 d("all-ok", &opus, mode, plain),
@@ -809,7 +720,6 @@ mod bal_tables {
                 }
             );
         }
-        // off: always a plain spawn.
         assert_eq!(
             d("all-exhausted", &opus, BalanceMode::Off, plain),
             Decision::Spawn {
@@ -817,14 +727,12 @@ mod bal_tables {
                 note: None
             }
         );
-        // advise: spawn with a note, never substitute or refuse.
         let adv = d("all-exhausted", &opus, BalanceMode::Advise, plain);
         assert!(
             matches!(&adv, Decision::Spawn { note: Some(n), .. } if n.starts_with("claude pool exhausted")),
             "{adv:?}"
         );
 
-        // exhausted -> the first ok-or-tight fallback.
         let sub = d("claude-exhausted-codex-ok", &opus, auto, plain);
         assert!(
             matches!(&sub, Decision::Substitute { via, .. } if via == "codex-sol"),
@@ -834,7 +742,6 @@ mod bal_tables {
             sub.line().unwrap(),
             "SUBSTITUTED: opus runs on codex-sol. Reason: claude 7d 100%, resets 2026-10-02T14:00Z."
         );
-        // ... --exact refuses instead; nothing usable refuses; --force spawns.
         assert!(matches!(
             d("claude-exhausted-codex-ok", &opus, auto, exact),
             Decision::Refuse { .. }
@@ -849,7 +756,6 @@ mod bal_tables {
             Decision::Spawn { note: Some(_), .. }
         ));
 
-        // tight: substitute only with >= 2x the headroom.
         let sonnet = t("sonnet");
         let tight_sub = d("claude-tight-codex-ok", &sonnet, auto, plain);
         assert!(
@@ -870,7 +776,6 @@ mod bal_tables {
             Decision::Substitute { .. } | Decision::Spawn { note: Some(_), .. }
         ));
 
-        // unknown: substitute with an ok fallback, never refuse.
         assert!(matches!(
             d("claude-unknown-codex-ok", &opus, auto, plain),
             Decision::Substitute { .. }
@@ -885,7 +790,6 @@ mod bal_tables {
             d("claude-unknown-codex-ok", &lonely, auto, plain),
             Decision::Spawn { note: Some(_), .. }
         ));
-        // No fallbacks: the else branch of each cell.
         assert!(matches!(
             d("claude-exhausted-codex-ok", &lonely, auto, plain),
             Decision::Refuse { .. }
@@ -895,7 +799,6 @@ mod bal_tables {
             Decision::Spawn { note: Some(_), .. }
         ));
 
-        // broken and cooling behave like exhausted.
         let pi = t("pi");
         assert!(matches!(
             d("local-broken", &pi, auto, plain),
@@ -917,7 +820,6 @@ mod bal_tables {
             .map(str::to_owned)
             .collect();
         assert!(!free.is_empty());
-        // Every permutation of fallbacks with a free teammate in it fails --check.
         for name in ["opus", "sonnet", "codex-sol", "pi", "prime"] {
             for f in &free {
                 for order in [
@@ -937,7 +839,6 @@ mod bal_tables {
                 }
             }
         }
-        // And decide() never hands out one, whatever the pools say.
         for fixture in [
             "all-ok",
             "all-exhausted",

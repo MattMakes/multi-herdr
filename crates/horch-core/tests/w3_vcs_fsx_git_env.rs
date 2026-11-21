@@ -1,12 +1,3 @@
-//! Every git layer of horch-core runs git through the 1 runner, so every git
-//! child gets the same environment and config (#101): no prompt, the C
-//! locale, no system config, no hooks, and none of the caller's repository
-//! variables.
-//!
-//! The parent test runs each layer in a child test process whose own
-//! environment carries a `GIT_DIR`, numbered config variables, a prompt and a
-//! locale. A fake git records what it receives.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -19,12 +10,8 @@ use horch_core::vcs::landing::Landing;
 #[path = "common/warm.rs"]
 mod warm;
 
-/// The directory of the fake git, which a child test reads.
 const FAKE_DIR: &str = "W3_VCS_FSX_FAKE_DIR";
 
-/// A fake git that writes its arguments and environment to `call-<pid>`
-/// next to itself. It is run once here: macOS scans a new executable at its
-/// first exec.
 fn fake_git(dir: &Path) -> PathBuf {
     let git = dir.join("git");
     let warm = warm::write_warmed(
@@ -37,8 +24,6 @@ fn fake_git(dir: &Path) -> PathBuf {
     git
 }
 
-/// Run the ignored test `child` with a caller environment that git must not
-/// see, and return the 1 call the fake git recorded.
 fn record_one_call(child: &str) -> String {
     let tmp = tempfile::tempdir().unwrap();
     fake_git(tmp.path());
@@ -99,7 +84,6 @@ fn assert_runner_env(layer: &str, call: &str) {
     );
 }
 
-/// The directory a child test works in, and the fake git in it.
 fn child_setup() -> (PathBuf, PathBuf) {
     let dir = PathBuf::from(std::env::var_os(FAKE_DIR).expect("run by the parent test"));
     let git = dir.join("git");
@@ -131,7 +115,6 @@ fn dataset_git_cli_gets_the_runner_env() {
 #[ignore = "run by dataset_git_cli_gets_the_runner_env"]
 fn dataset_git_cli_child() {
     let (dir, git) = child_setup();
-    // The fake prints nothing: the branch is empty, not an error.
     let _ = GitCli::new(git).current_branch(&dir).unwrap();
 }
 
@@ -145,7 +128,6 @@ fn landing_git_gets_the_runner_env() {
 #[ignore = "run by landing_git_gets_the_runner_env"]
 fn landing_git_child() {
     let (dir, git) = child_setup();
-    // The fake lists no worktree, so the call fails after 1 git run.
     let error = Landing::new(git, dir.join("state"))
         .claims(&dir)
         .unwrap_err();

@@ -1,22 +1,9 @@
-//! Windows-only install steps: directory junctions and the user PATH entry.
-//!
-//! The pure string and decision logic is compiled everywhere so it can be tested
-//! on any platform; only the two pieces that actually touch Windows APIs are
-//! `cfg`-gated.
-//!
-//! Off Windows the only callers are the tests, so the compiler sees these as dead.
-//! They are the real implementation on Windows.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::Path;
 
 use anyhow::Result;
 
-/// Prepend `entry` to a PATH-style string, returning `None` when it is already
-/// first.
-///
-/// PATH order decides which `herdr` wins, so the managed directory goes first. An
-/// existing occurrence elsewhere in the list is removed rather than duplicated.
 pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
     let normalize = |s: &str| s.trim().trim_end_matches('\\').to_ascii_lowercase();
     let target = normalize(entry);
@@ -30,7 +17,6 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
         .copied()
         .filter(|p| normalize(p) != target)
         .collect();
-    // A leading empty part means the entry is not first, so test the raw first part.
     let already_first = current
         .split(';')
         .next()
@@ -47,18 +33,13 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
     )
 }
 
-/// What to do about a path that should become a junction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JunctionAction {
-    /// Nothing is there; create it.
     Create,
-    /// A link or empty directory is there; replace it.
     Replace,
-    /// Real content is there; refuse rather than delete the user's files.
     Refuse,
 }
 
-/// Decide how to treat an existing link path.
 pub fn plan_junction(exists: bool, is_link: bool, is_empty_dir: bool) -> JunctionAction {
     match (exists, is_link, is_empty_dir) {
         (false, _, _) => JunctionAction::Create,
@@ -68,7 +49,6 @@ pub fn plan_junction(exists: bool, is_link: bool, is_empty_dir: bool) -> Junctio
     }
 }
 
-/// Inspect `path` and decide what `set_junction` should do with it.
 pub fn inspect_junction_target(path: &Path) -> JunctionAction {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return JunctionAction::Create;
@@ -93,11 +73,6 @@ fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Point `link` at `target` as a directory junction.
-///
-/// Junctions rather than symlinks: creating a directory symlink on Windows needs
-/// Developer Mode or elevation, while `mklink /J` does not. `mklink` is a cmd
-/// built-in, so no extra tooling is required.
 #[cfg(windows)]
 pub fn set_junction(link: &Path, target: &Path) -> Result<()> {
     clear_link(link)?;
@@ -107,8 +82,6 @@ pub fn set_junction(link: &Path, target: &Path) -> Result<()> {
     mklink_junction(link, target)
 }
 
-/// Remove what is at `link` so a junction can take its place, refusing to delete
-/// real content.
 #[cfg(windows)]
 fn clear_link(link: &Path) -> Result<()> {
     use anyhow::{bail, Context};
@@ -120,8 +93,6 @@ fn clear_link(link: &Path) -> Result<()> {
             link.display()
         ),
         JunctionAction::Replace => {
-            // A junction is removed with remove_dir, not remove_dir_all, or the
-            // delete would follow the link and take the release with it.
             if std::fs::remove_dir(link).is_err() {
                 std::fs::remove_dir_all(link)
                     .with_context(|| format!("clearing {}", link.display()))?;
@@ -158,10 +129,6 @@ pub fn set_junction(_link: &Path, _target: &Path) -> Result<()> {
     anyhow::bail!("directory junctions are a Windows-only concept")
 }
 
-/// Add `dir` to the current user's persistent PATH. Returns true when changed.
-///
-/// Writes `HKCU\Environment` directly rather than using `setx`, which truncates
-/// PATH at 1024 characters.
 #[cfg(windows)]
 pub fn ensure_user_path(dir: &Path) -> Result<bool> {
     use anyhow::Context;
@@ -203,7 +170,6 @@ mod tests {
         );
     }
 
-    /// Case and trailing backslashes are insignificant on Windows.
     #[test]
     fn prepend_matches_case_insensitively_and_ignores_trailing_slashes() {
         assert_eq!(
@@ -212,7 +178,6 @@ mod tests {
         );
     }
 
-    /// An entry further down the list is moved to the front, not duplicated.
     #[test]
     fn prepend_moves_an_existing_entry_rather_than_duplicating_it() {
         let next = prepend_path_entry(r"C:\Windows;C:\herdr\bin", r"C:\herdr\bin").unwrap();
@@ -229,8 +194,6 @@ mod tests {
         );
     }
 
-    /// Only an entry at index 0 of the raw list counts as first: a leading empty
-    /// part pushes it to index 1, so the list is rewritten.
     #[test]
     fn prepend_rewrites_when_a_leading_empty_part_precedes_the_entry() {
         assert_eq!(
@@ -239,7 +202,6 @@ mod tests {
         );
     }
 
-    /// First is not enough: a later duplicate must still be removed.
     #[test]
     fn prepend_removes_a_later_duplicate_of_the_first_entry() {
         assert_eq!(
@@ -273,7 +235,6 @@ mod tests {
         assert_eq!(inspect_junction_target(&dir), JunctionAction::Replace);
     }
 
-    /// The user's own files must never be deleted to make room for a junction.
     #[test]
     fn inspecting_a_directory_with_files_says_refuse() {
         let tmp = tempfile::tempdir().unwrap();

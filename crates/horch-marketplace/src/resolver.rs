@@ -1,7 +1,3 @@
-//! Resolve a `SkillSource` to a pinned `ResolvedSource`. Together with the
-//! fetch in `source`, this is the only place that dispatches on the source
-//! kind, so a new source is added here and there and nowhere else.
-
 use std::path::{Path, PathBuf};
 
 use crate::catalog::{BundledSkill, Catalog};
@@ -10,13 +6,10 @@ use crate::git::GitRunner;
 use crate::integrity::{check_relative_path, digest12};
 use crate::model::{check_url, is_full_sha, GitRevision, SkillId, SkillSource, SkillVersion};
 
-/// A source with everything pinned that the fetch needs.
 #[derive(Debug, Clone)]
 pub struct ResolvedSource {
     pub source: SkillSource,
     pub origin: ResolvedOrigin,
-    /// The skill directory name, when the source names one. SKILL.md
-    /// `name` must equal it.
     pub expected_name: Option<String>,
     pub requested_revision: Option<String>,
     pub resolved_commit: Option<String>,
@@ -34,7 +27,6 @@ pub enum ResolvedOrigin {
 }
 
 impl ResolvedSource {
-    /// The store version for a verified tree digest.
     pub fn version(&self, digest: &str) -> SkillVersion {
         SkillVersion(match &self.origin {
             ResolvedOrigin::Bundled(_) => format!("bundled+{}", digest12(digest)),
@@ -47,11 +39,9 @@ impl ResolvedSource {
 pub struct Resolver<'a> {
     pub git: &'a GitRunner,
     pub catalog: &'a Catalog,
-    /// A directory git can run in; `ls-remote` does not touch it.
     pub scratch: &'a Path,
 }
 
-/// What a source resolves to, before it is joined with the source itself.
 struct Origin {
     origin: ResolvedOrigin,
     expected_name: Option<String>,
@@ -59,11 +49,8 @@ struct Origin {
     resolved_commit: Option<String>,
 }
 
-/// What a git revision asks the remote for.
 enum Lookup<'a> {
-    /// A full commit: no remote lookup.
     Commit(String),
-    /// A branch or tag: the ref names to look for, in order.
     Refs { wanted: Vec<String>, name: &'a str },
 }
 
@@ -121,8 +108,6 @@ impl Resolver<'_> {
         })
     }
 
-    /// A branch or tag becomes a full commit through `git ls-remote`. A
-    /// commit is returned as is; the fetch verifies it exists.
     fn resolve_git(&self, url: &str, revision: &GitRevision) -> Result<String> {
         match wanted_refs(revision)? {
             Lookup::Commit(sha) => Ok(sha),
@@ -206,8 +191,6 @@ fn check_ref_name(name: &str) -> Result<()> {
 }
 
 impl SkillSource {
-    /// Set the skill directory inside a git repository. Other sources are
-    /// returned unchanged.
     pub fn with_subdir(self, dir: impl Into<String>) -> Self {
         match self {
             SkillSource::Git { url, revision, .. } => SkillSource::Git {
@@ -219,9 +202,6 @@ impl SkillSource {
         }
     }
 
-    /// The same source at another revision: a pinned commit for a rebuild
-    /// from the lock, or the requested revision again for an update. Other
-    /// sources are returned unchanged.
     pub fn with_revision(self, revision: GitRevision) -> Self {
         match self {
             SkillSource::Git { url, subdir, .. } => SkillSource::Git {
@@ -233,8 +213,6 @@ impl SkillSource {
         }
     }
 
-    /// The spec the lock stores as `source`, without the revision. It
-    /// parses back to this source at the default revision.
     pub fn to_spec(&self) -> String {
         match self {
             SkillSource::Bundled { name } => format!("bundled:{name}"),
@@ -265,8 +243,6 @@ mod tests {
                 executable: false,
             }],
         });
-        // The commit and refused cases never start git, so the binary is
-        // never run.
         let git = GitRunner::new("git-is-never-run");
         let scratch = std::env::temp_dir();
         Resolver {

@@ -1,8 +1,4 @@
 extends SceneTree
-## godot-gameplay-loops scenarios: the "Checks" list of each reference, on the
-## skill's own blocks in res://skill/. The 3 three-dimensional nodes
-## (CollectiblePickup, HarvestNode, a GhostTrack recorder and player) run in
-## the scene tree with real physics frames.
 
 const Expect = preload("res://expect.gd")
 
@@ -11,7 +7,6 @@ var e := Expect.new()
 
 func _initialize() -> void:
 	e.watch(self)
-	# The root enters the tree after _initialize starts; _ready needs it.
 	await process_frame
 	_collection()
 	_harvest_rules()
@@ -40,7 +35,6 @@ func _shape(radius: float) -> CollisionShape3D:
 	return shape
 
 
-# collection.md
 func _collection() -> void:
 	var t := CollectionTracker.new()
 	var done: Array[StringName] = []
@@ -64,7 +58,6 @@ func _collection() -> void:
 	loaded.free()
 
 
-# harvest.md: the rules without a scene
 func _harvest_rules() -> void:
 	var reg := HarvestRegistry.new()
 	reg.mark_depleted(&"oak_1", 60)
@@ -85,7 +78,6 @@ func _harvest_rules() -> void:
 	passive.free()
 
 
-# secrets.md: the code matcher and the meta unlocks
 func _secrets() -> void:
 	var m := SequenceMatcher.new()
 	m.codes = {&"up_up_down": PackedStringArray(["ui_up", "ui_up", "ui_down"])} as Dictionary[StringName, PackedStringArray]
@@ -107,7 +99,6 @@ func _secrets() -> void:
 		"MetaUnlocks.unlock(&\"x\"), then is_unlocked(&\"x\") is true in a new call")
 
 
-# time-trial.md: the clock and the track math
 func _time_trial() -> void:
 	var clock := RaceClock.new()
 	clock.lap_count = 1
@@ -136,7 +127,6 @@ func _time_trial() -> void:
 	e.check(fmt.format_race_time(83_456_789) == "01:23.456", "format_race_time shows minutes, seconds, milliseconds")
 
 
-# collection.md: CollectiblePickup in a scene, picked up by a moving body
 func _pickup_in_scene() -> void:
 	var tracker := CollectionTracker.new()
 	tracker.name = "Collection"
@@ -169,7 +159,6 @@ func _pickup_in_scene() -> void:
 	await process_frame
 
 
-# harvest.md: HarvestNode in a scene
 func _harvest_node_in_scene() -> void:
 	var source := HarvestSource.new()
 	source.needs_kind = HarvestTool.Kind.AXE
@@ -213,7 +202,6 @@ func _harvest_node_in_scene() -> void:
 	node.queue_free()
 
 
-# time-trial.md: the recorder and the player of a GhostTrack, on nodes
 func _ghost_in_scene() -> void:
 	var racer := Node3D.new()
 	var ghost := Node3D.new()
@@ -223,7 +211,6 @@ func _ghost_in_scene() -> void:
 	track.sample_interval = 0.05
 	var since: float = 0.0
 	var recorded: Array[Vector3] = []
-	# Recorder: the racer moves 1 m and turns 0.02 rad per physics frame.
 	for i: int in 30:
 		await physics_frame
 		var dt: float = get_root().get_physics_process_delta_time()
@@ -234,7 +221,6 @@ func _ghost_in_scene() -> void:
 			since -= track.sample_interval
 			track.add_sample(racer.global_transform)
 			recorded.append(racer.global_position)
-	# Player: the ghost follows the track at play time.
 	var play_time: float = 0.0
 	var worst: float = 0.0
 	for i: int in 24:
@@ -252,7 +238,6 @@ func _ghost_in_scene() -> void:
 	ghost.queue_free()
 
 
-# secrets.md: the look-at spot
 func _look_spot() -> void:
 	var camera := Camera3D.new()
 	root.add_child(camera)
@@ -275,7 +260,6 @@ func _look_spot() -> void:
 		n.queue_free()
 
 
-# revival.md
 func _revival() -> void:
 	var d := RespawnDirector.new()
 	d.respawn_delay_sec = 0.05
@@ -310,7 +294,6 @@ func _revival() -> void:
 	player.queue_free()
 
 
-# waves.md
 func _waves() -> void:
 	var enemy := Node3D.new()
 	var scene := PackedScene.new()

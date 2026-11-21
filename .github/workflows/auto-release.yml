@@ -1,10 +1,5 @@
 name: auto-release
 
-# Every push to main publishes a release when CHANGELOG.md has entries under
-# "## Unreleased". The bump is patch, or minor/major when a PR merged since
-# the last tag has the label `release:minor` or `release:major`. A merge with
-# an empty Unreleased section (docs, CI, refactors) publishes nothing.
-
 on:
   push:
     branches: [main]
@@ -28,8 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The tip of main, not the pushed sha: a queued run must see the
-          # release commit an earlier run pushed.
           ref: main
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

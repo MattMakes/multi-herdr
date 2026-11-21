@@ -180,10 +180,6 @@ def test_models_init_imports_only_stdlib():
     assert names <= set(sys.stdlib_module_names) | {"__future__"}
 
 
-# ---------------------------------------------------------------- real models (ML tier, pre-filled cache)
-
-
-# The user's offline flag and hub cache, read before the autouse cfg fixture clears them.
 _REAL_OFFLINE = __import__("hark.core.config", fromlist=["offline"]).offline()
 _REAL_HF_CACHE = __import__("hark.core.config", fromlist=["HF_CACHE"]).HF_CACHE
 
@@ -244,11 +240,10 @@ def test_at_38_ast_probs(real_models):
 
 
 def test_redirects_note_filtered_by_exact_message(caplog):
-    # T-41: only the exact torch redirects note is dropped; other records of that logger still pass
     import logging
 
     _common.drop_redirects_note()
-    _common.drop_redirects_note()  # idempotent
+    _common.drop_redirects_note()
     logger = logging.getLogger(_common.REDIRECTS_LOGGER)
     assert logger.filters.count(_common._not_redirects_note) == 1
     with caplog.at_level(logging.WARNING, logger=_common.REDIRECTS_LOGGER):

@@ -1,14 +1,9 @@
-//! `arrange::run` and `arrange::workspace_of` against a scripted `herdr`:
-//! the plan report, the refusals, the fast path and the move path. The script
-//! answers each herdr call with canned JSON and moves nothing.
-
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::workspace::{arrange, PaneHost};
 
 #[path = "common/warm.rs"]
 mod warm;
 
-/// One tab's layout JSON: `(pane, x, y, width, height)` in a 120x40 area.
 fn layout(tab: &str, zoomed: bool, panes: &[(&str, i64, i64, i64, i64)]) -> String {
     let panes: Vec<String> = panes
         .iter()
@@ -28,8 +23,6 @@ struct World {
     herdr: PaneHost,
 }
 
-/// A script that answers `workspace list`, `tab list`, `pane list`, `pane
-/// layout --pane <p>` and the move and focus calls.
 fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
     let dir = tempfile::tempdir().unwrap();
     let tab_list: Vec<String> = tabs
@@ -68,7 +61,6 @@ fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
         }
     }
     body.push_str("esac;;\n");
-    // A declined resize ends any balance loop.
     if let Some((_, json, _)) = tabs.first() {
         body.push_str(&format!(
             "\"pane resize\") echo '{{\"result\":{{\"resize\":{{\"changed\":false,\"layout\":{json}}}}}}}';;\n"
@@ -84,8 +76,6 @@ fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
          *) echo \"unscripted: $*\" >&2; exit 1;;\nesac\n",
     );
     let script = dir.path().join("herdr");
-    // macOS scans a new executable at its first exec; do it here, not in the
-    // call under test. The script has no warm case, so its exit is ignored.
     let _ = warm::write_warmed(&script, &format!("#!/bin/sh\n{body}"), &["warm"]);
     let state = dir.path().join("state");
     std::fs::create_dir(&state).unwrap();
@@ -101,7 +91,6 @@ fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
     }
 }
 
-/// Orchestrator on the left, 2 workers stacked on the right.
 fn stacked(tab: &str) -> String {
     layout(
         tab,
@@ -114,7 +103,6 @@ fn stacked(tab: &str) -> String {
     )
 }
 
-/// Orchestrator on the left, 2 workers side by side: not the canonical grid.
 fn scrambled(tab: &str, zoomed: bool) -> String {
     layout(
         tab,
@@ -232,7 +220,6 @@ fn workspace_of_prefers_the_named_workspace_then_the_pane() {
     let w = fleet(stacked("t1"));
     let of = |pane, ws| arrange::workspace_of(&w.ctx, &w.herdr, pane, ws);
     assert_eq!(of(Some("p1"), Some("wx")).unwrap(), "wx");
-    // An empty name counts as none.
     assert_eq!(of(Some("p1"), Some("")).unwrap(), "wget");
     assert_eq!(of(Some("p1"), None).unwrap(), "wget");
     let err = format!("{:#}", of(None, None).unwrap_err());

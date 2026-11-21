@@ -1,6 +1,3 @@
-//! A git network call against a remote that never answers ends within its
-//! bound, and the result names the command and the bound (ticket
-//! quiet-orchestrator-mail/03).
 #![cfg(unix)]
 
 use std::path::Path;
@@ -21,7 +18,6 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(st.success(), "git {args:?}");
 }
 
-/// A repository whose `origin` goes through an ssh that never answers.
 fn stalled_repo(tmp: &Path) -> std::path::PathBuf {
     let ssh = tmp.join("stall-ssh");
     std::fs::write(&ssh, "#!/bin/sh\nexec sleep 600\n").unwrap();
@@ -50,7 +46,6 @@ fn stalled_repo(tmp: &Path) -> std::path::PathBuf {
 
 #[test]
 fn a_stalled_remote_fails_within_the_bound() {
-    // The only test in this binary, so no other test sees the short bound.
     horch_core::vcs::network::set_test_bound(Duration::from_millis(1500));
     let tmp = tempfile::tempdir().unwrap();
     let repo = stalled_repo(tmp.path());

@@ -1,17 +1,3 @@
-// horch fleet compaction for pi (X3, ai_docs/plans/wave3/x3-design.md).
-//
-// horch loads this file per launch with `pi --extension <path>`. It replaces
-// pi's model-written compaction summary with one built from the session
-// alone: no model call, no network, no file write, no environment read.
-//
-// pi still picks the cut: everything after `preparation.firstKeptEntryId`
-// (the newest `keepRecentTokens`) stays verbatim. This file summarizes only
-// the older part, and it keeps the `/compact` argument (horch's keep-list,
-// with the handoff path) word for word.
-//
-// No imports, so the file does not depend on pi's package names. Only
-// erasable TypeScript syntax: node strips the types in the tests.
-
 const MAX_SUMMARY = 16_000;
 const TOOL_HEAD_LINES = 3;
 const TOOL_TAIL_LINES = 3;
@@ -42,7 +28,6 @@ function blocks(m: Message): Block[] {
   return Array.isArray(m.content) ? m.content : [];
 }
 
-/** The text of a message; thinking blocks are left out. */
 function textOf(m: Message): string {
   return blocks(m)
     .filter((b) => b && b.type === "text" && typeof b.text === "string")
@@ -59,13 +44,11 @@ function clip(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + ` [trimmed ${s.length - max} chars]`;
 }
 
-/** The head and the tail of `s`, with a marker for what is left out. */
 function clipMiddle(s: string, head: number, tail: number): string {
   if (s.length <= head + tail) return s;
   return s.slice(0, head) + `\n[trimmed ${s.length - head - tail} chars]\n` + s.slice(-tail);
 }
 
-/** Trim a tool output to its first and last lines (the trim step). */
 function trimOutput(s: string): string {
   const lines = s.split("\n");
   let out = s;
@@ -93,7 +76,6 @@ function capped(items: string[], max: number): string[] {
   return items.length <= max ? items : [...items.slice(0, max), `(+${items.length - max} more)`];
 }
 
-/** The handoff path in `s`, from horch's own words for it. */
 function handoffIn(s: string): string | undefined {
   const re = /(?:handoff file|handoff:|COMPACT-READY|full state is in)\s+([^\s"'`]+)/g;
   let found: string | undefined;
@@ -103,7 +85,6 @@ function handoffIn(s: string): string | undefined {
 
 type Call = { name: string; command?: string; summary: string; error?: boolean };
 
-/** Every tool call, in order, with whether its result failed. */
 function calls(messages: Message[]): Call[] {
   const out: Call[] = [];
   const byId = new Map<string, Call>();
@@ -156,7 +137,6 @@ function transcriptLine(m: Message): string | undefined {
   return undefined;
 }
 
-/** Build the summary. Exported for nothing but clarity: pi calls the hook. */
 function buildSummary(preparation: any, instructions: string | undefined): string {
   const messages: Message[] = [
     ...(Array.isArray(preparation.messagesToSummarize) ? preparation.messagesToSummarize : []),
@@ -165,7 +145,6 @@ function buildSummary(preparation: any, instructions: string | undefined): strin
   const keep = (instructions ?? "").trim();
   const allCalls = calls(messages);
 
-  // Handoff: the argument first, else the newest one a command names.
   let handoff = keep ? handoffIn(keep) : undefined;
   if (!handoff) {
     for (const c of allCalls) {
@@ -210,7 +189,6 @@ function buildSummary(preparation: any, instructions: string | undefined): strin
     section("Previous summary", previous),
   ].filter(Boolean);
 
-  // The transcript tail fills what is left, newest lines first.
   const lines = messages
     .slice(-TRANSCRIPT_MESSAGES)
     .map(transcriptLine)
@@ -225,8 +203,6 @@ function buildSummary(preparation: any, instructions: string | undefined): strin
   }
   const summary = kept.length ? fixed + "\n\n[Transcript]\n" + kept.join("\n") : fixed;
   if (summary.length <= MAX_SUMMARY) return summary;
-  // Only when the fixed sections alone are too long: the keep-list and the
-  // handoff come first, so the cut takes the oldest sections' ends.
   return summary.slice(0, MAX_SUMMARY);
 }
 
@@ -245,7 +221,6 @@ export default function horchCompact(pi: any): void {
         },
       };
     } catch {
-      // pi then writes its own summary: a worse summary, not a lost one.
       return undefined;
     }
   });

@@ -1,5 +1,3 @@
-//! `horch ledger status`: the board `report` builds and `render` prints (#82).
-
 use std::path::Path;
 
 use horch_core::taskledger::model::Actor;
@@ -36,8 +34,6 @@ fn add(store: &mut Store, run: &Run, title: &str) -> tasks::Task {
         .unwrap()
 }
 
-/// 1 task of each status, 1 working worker whose last sign of life is old,
-/// and 1 open worktree.
 fn busy_board() -> (tempfile::TempDir, Store, Run) {
     let (dir, mut store, run) = ledger();
     let first = add(&mut store, &run, "alpha");
@@ -203,7 +199,6 @@ fn the_watchdog_version_and_binary_show_after_its_checkin() {
         len: 10,
         mtime_ns: 5,
     };
-    // Before the first checkin there is no watchdog line.
     let before = status::report_for(store.conn(), &run, Some(&mine)).unwrap();
     assert_eq!(before.watchdog, None);
     assert!(!status::render(&before).contains("Watchdog"));

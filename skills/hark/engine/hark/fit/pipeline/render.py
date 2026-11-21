@@ -57,9 +57,6 @@ class _KnobTables(Mapping):
 KNOBS: Mapping[str, dict] = _KnobTables()
 
 
-# ---------------------------------------------------------------- knobs
-
-
 def _roles(model: dict) -> set:
     return {layer.get("role") for layer in model.get("layers", [])}
 
@@ -116,9 +113,6 @@ def finished(model: dict) -> bool:
     """True when renders of this model get the finish step."""
     rule = _FINISHED.get(kind_of(model))
     return True if rule is None else rule(model)
-
-
-# ---------------------------------------------------------------- raw renders
 
 
 def _rename(knobs: dict, old: str, new: str) -> dict:
@@ -198,9 +192,6 @@ _RAW: dict[str, Callable] = {
     "modal": _raw_modal, "sines": _raw_sines, "gesture": _raw_gesture,
     "spectral": _raw_spectral, "hybrid": _raw_hybrid,
 }
-
-
-# ---------------------------------------------------------------- time scale and gate map
 
 
 def _time_scale(model: dict, name: str, kn: dict) -> tuple[float, float, float]:
@@ -317,9 +308,6 @@ def gate_map(model: dict, name: str, kn: dict) -> Callable[[list], list] | None:
     return tmap or _same_times
 
 
-# ---------------------------------------------------------------- render
-
-
 def _vary_knobs(model: dict, knobs: dict) -> dict:
     kn = dict(knobs)
     if "vary_scale" in model and kn.get("vary"):
@@ -387,9 +375,6 @@ def render(model: dict, seed: int = 0, take: bool | None = None, bed: bool = Tru
     return render_full(model, seed, take, bed, True, True, **knobs)
 
 
-# ---------------------------------------------------------------- morph
-
-
 def morph(a: dict, b: dict, amount: float = 0.5) -> dict:
     """A new model between 2 fits of one kind."""
     from hark.fit.pipeline import _morph
@@ -404,9 +389,6 @@ def morph_model(a: dict, b: dict, amount: float = 0.5) -> dict:
     if kind_of(a) != kind_of(b):
         raise ValueError(f"cannot morph a {kind_of(a)} model with a {kind_of(b)} model; refit both with one kind")
     return {"kind": "morph", "version": 1, "amount": float(amount), "a": strip(a), "b": strip(b)}
-
-
-# ---------------------------------------------------------------- fit pair
 
 
 def _winner_score(model: dict) -> float:
@@ -449,9 +431,6 @@ def fit_pair(xa: Any, xb: Any, clap: bool = False, fast: bool = False, verbose: 
     if a is None or b is None:
         raise RuntimeError("fit_pair: no kind fits both recordings")
     return a, b, tried
-
-
-# ---------------------------------------------------------------- summary
 
 
 def _indent(text: Any, pad: str = "  ") -> str:

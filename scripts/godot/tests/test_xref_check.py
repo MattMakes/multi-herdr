@@ -28,13 +28,13 @@ class XrefCheckTest(unittest.TestCase):
         (a / "references" / "notes.md").write_text("# Notes\n\n## Godot 4.7 Additions\n")
         (a / "SKILL.md").write_text(
             "# Alpha\n"
-            "See godot-beta and `godot-alpha`.\n"  # 2: fine
-            "Ask godot-tech-lead. Build godot-cpp.\n"  # 3: teammate, external
-            "See godot-gamma for loops.\n"  # 4: broken
-            "[n](references/notes.md#godot-47-additions) [f](references/godot-4.7-x.md)\n"  # 5: anchor ok, file broken
-            "https://github.com/x/godot-delta and .godot-cache/ and org/godot-eps\n"  # 6: skipped
-            "[n](references/notes.md#missing) [w](https://example.com/a)\n"  # 7: broken anchor
-            "Old name godot-zeta. <!-- xref-check: allow godot-zeta -->\n"  # 8: allowed
+            "See godot-beta and `godot-alpha`.\n"
+            "Ask godot-tech-lead. Build godot-cpp.\n"
+            "See godot-gamma for loops.\n"
+            "[n](references/notes.md#godot-47-additions) [f](references/godot-4.7-x.md)\n"
+            "https://github.com/x/godot-delta and .godot-cache/ and org/godot-eps\n"
+            "[n](references/notes.md#missing) [w](https://example.com/a)\n"
+            "Old name godot-zeta. <!-- xref-check: allow godot-zeta -->\n"
         )
 
     def tearDown(self):

@@ -24,8 +24,6 @@ def spectral_centroid(y: np.ndarray) -> float:
     return float(np.sum(f * pw) / np.sum(pw))
 
 
-# ---------------------------------------------------------------- L1-L9
-
 def test_l1_band_burst_length_and_peak():
     y = L.band_burst(0.001, rng(), 2000, 8000)
     assert len(y) == L.n_of(max(0.006, 0.004))
@@ -98,8 +96,6 @@ def test_l9_narrowing_and_centre():
     assert centre["n"] == 2 and isinstance(centre["n"], int) and centre["c"] == "y"
 
 
-# ----------------------------------------------------------------- click
-
 def test_click_metadata():
     assert click.TARGET == "a clean bright user interface click"
     assert click.TARGETS["pro_click"] == "a crisp high digital interface tick for a product video"
@@ -169,8 +165,6 @@ def test_click_direct_sound_is_mono_without_space():
     y = click.render(p, rng())
     assert np.allclose(y[:, 0], y[:, 1])
 
-
-# ---------------------------------------------------------------- toggle
 
 def test_toggle_space_has_no_click_edit_keys():
     assert not {"rel", "rel_dt", "length"} & set(toggle.SPACE)

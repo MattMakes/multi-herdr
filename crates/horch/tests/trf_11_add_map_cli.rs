@@ -1,9 +1,3 @@
-//! `horch ledger add-map` as the strict consumer of the ticket contract C1
-//! (trace-fixes ticket 10): `--dry-run` (TRF-11), the ticket snapshot in the
-//! claim (TRF-12), the refusal of a ticket already queued (TRF-13) and the
-//! `Kind`, `Review` and `Check none` fields (TRF-14). Every test runs the
-//! binary on a temp git project, with the watchdog off and no herdr pane.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -93,7 +87,6 @@ impl World {
     }
 }
 
-/// A C1 ticket with `fields` after its version line.
 fn c1(title: &str, fields: &str) -> String {
     format!("# 01: {title}\n\n<!-- horch-ticket: 1 -->\n{fields}\n\n## Goal\n\nDo {title}.\n")
 }
@@ -134,7 +127,6 @@ fn trf_11_dry_run_names_each_problem_and_writes_nothing() {
     );
     assert_eq!(w.task_count(), 0);
 
-    // A clean map passes the dry run, needs no run, and still queues nothing.
     let w = World::new();
     w.write("a.md", &c1("A", FIELDS));
     w.write("MAP.md", MAP);

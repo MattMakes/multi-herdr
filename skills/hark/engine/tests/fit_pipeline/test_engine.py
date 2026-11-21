@@ -177,7 +177,6 @@ def test_a_11_gate_cuts_after_each_pulse(sounds):
         after = _rms_db(y[e + 480: e + 960])
         assert after <= peak - 20, (i, peak, after)
         if i:
-            # the gate is open again at each pulse onset
             assert abs(_rms_db(y[s: s + 240]) - _rms_db(y_open[s: s + 240])) <= 1.0, i
             assert abs(_rms_db(y[s: s + 240]) - _rms_db(x[s: s + 240])) <= 1.0, i
 
@@ -201,7 +200,6 @@ def test_a_12_bed_strip_and_check(sounds, bed_lead):
 def test_a_13_auto_chooses_by_character(sounds):
     s1, s3 = auto.fit(sounds["S1"]), auto.fit(sounds["S3"])
     k1 = auto.kind_of(s1)
-    # Spec test adjustment (orchestrator approved): a gesture whose tones layer is sines or modal also passes.
     tonal = ("modal", "sines")
     assert k1 in tonal or (k1 == "hybrid" and any(
         auto.kind_of(layer["model"]) in tonal for layer in s1["layers"])) or (
@@ -228,9 +226,6 @@ def test_a_14_stereo_space_and_mono_shapes(sounds):
     mono = auto.fit(sounds["S1"])
     assert auto.render(mono).ndim == 1
     assert "space" not in mono["post"]
-
-
-# ---------------------------------------------------------------- engine contracts
 
 
 def test_kind_of_and_errors(sounds):

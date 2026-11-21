@@ -1,9 +1,3 @@
-//! A recording stand-in for the `herdr-app` CLI.
-//!
-//! Shares `<state dir>/fake-hc.json` and `<state dir>/fake-hc.log` with
-//! `fake-hc`. When `<state dir>/window-closed` exists, every command other than
-//! `--version` fails with exit 1 and the Q6 socket error message.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -138,7 +132,6 @@ fn cmd_ls() -> i32 {
     0
 }
 
-/// Parse either one JSON object argument or `--key value` pairs into a map.
 fn parse_payload(rest: &[&str]) -> Result<Map<String, Value>, String> {
     if rest.len() == 1 && rest[0].trim_start().starts_with('{') {
         return serde_json::from_str::<Map<String, Value>>(rest[0])

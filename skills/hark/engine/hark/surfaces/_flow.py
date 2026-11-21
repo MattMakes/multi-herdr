@@ -25,7 +25,7 @@ def capture(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> tuple[Any, Bas
     slot = "value"
     try:
         box[slot] = fn(*args, **kwargs)
-    except Exception as exc:  # the caller reports it
+    except Exception as exc:
         box["error"] = exc
     value, error = box["value"], box["error"]
     return value, error

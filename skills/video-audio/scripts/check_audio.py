@@ -239,8 +239,6 @@ def check_beats(beats, duration, errors):
             _err(errors, "beats.range", f"{key} leaves [0, {duration:.3f}] s")
 
 
-# ---------------------------------------------------------------- sync sheet
-
 def _narration_text(scene):
     value = scene.get("narration")
     if isinstance(value, dict):
@@ -315,8 +313,6 @@ def check_sync_sheet(sheet, timeline, duration, errors):
         if _narration_text(scene) and scene_id not in covered:
             _err(errors, "sync.missing", f"scene {scene_id} has narration and no vo_segments entry")
 
-
-# ---------------------------------------------------------------- sample analysis
 
 def _decode_cmd(path, audio_filter, rate):
     """Return the ffmpeg command that decodes path to mono s16le at rate."""
@@ -442,8 +438,6 @@ def measure_sfx(folder):
     return {name: sync_points(os.path.join(folder, name)) for name in names}
 
 
-# ---------------------------------------------------------------- effects
-
 def _cue_list(cues):
     items = cues.get("cues") if isinstance(cues, dict) else cues
     return items if isinstance(items, list) else None
@@ -515,8 +509,6 @@ def check_sfx(cues_path, bus, bed, errors):
     entries = (_check_cue(cue, root, points, bands, errors) for cue in cues)
     return [e for e in entries if e]
 
-
-# ---------------------------------------------------------------- arc
 
 def check_hero(momentary, hero, errors):
     """The loudest momentary loudness of the mix lands on meta.hero_sec."""
@@ -610,8 +602,6 @@ def check_drop(music, beats, hero, errors):
              f"{hero[0]:.3f} s (tolerance 1 beat, {60.0 / bpm:.3f} s)")
     return out
 
-
-# ---------------------------------------------------------------- gate
 
 def _check_format(info, timeline, has_timeline, errors):
     if info["sample_rate"] != SAMPLE_RATE:
@@ -940,8 +930,6 @@ def _input_error(exc):
     return 2
 
 
-# ---------------------------------------------------------------- self-test
-
 def _synth(path, expr, seconds, target_lufs, rate=SAMPLE_RATE, channels=CHANNELS):
     """Render an aevalsrc expression, then set its integrated loudness to target_lufs."""
     raw = path + ".raw.wav"
@@ -1023,9 +1011,7 @@ def _sync_tests(p, expect, failures):
 
 def _sfx_tests(p, expect):
     sfx = p("proj/audio/sfx")
-    # riser: 1.0 s rising sweep with a hard stop, so its end is at 1.0 s.
     _render(os.path.join(sfx, "riser.wav"), "0.5*t*sin(2*PI*(200+400*t)*t)", 1.0)
-    # tick: silent, then a burst at 0.20 to 0.22 s, so its peak is near 0.21 s.
     _render(os.path.join(sfx, "tick.wav"), "if(between(t,0.2,0.22),0.5*sin(2*PI*2000*t),0)", 0.3)
     good = [{"time_sec": 2.0, "kind": "riser", "start_sec": 1.0},
             {"time_sec": 3.0, "kind": "tick", "start_sec": 2.79}]
@@ -1086,12 +1072,10 @@ def _breakdown_dip_tests(p, expect, tone):
     """A breakdown dips <= 12 dB and is never silent."""
     plan = p("breakdown.json")
     _write(plan, {"meta": {"duration_sec": 5.0, "payoff_breakdown_sec": [2.0, 2.6]}})
-    # Gains 0.5, 0.1 and 0 are dips of 6 dB, 20 dB and silence.
     for case in BREAKDOWN_CASES:
         _dip_case(p, expect, tone, case)
 
 
-# (name, gain in the breakdown, failed rules)
 BREAKDOWN_CASES = (("6db", 0.5, []), ("20db", 0.1, ["mix.payoff_breakdown"]),
                    ("silent", 0, ["mix.payoff_breakdown"]))
 

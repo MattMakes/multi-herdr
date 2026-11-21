@@ -1,7 +1,3 @@
-//! The eligible set (ARC-13): which teammates a spawn may run as, and why
-//! each other one is excluded. Pure: no I/O, no clock read, no environment;
-//! the time arrives inside the [`QuotaView`].
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -11,38 +7,23 @@ use crate::ids::{ModelId, TeammateName};
 use crate::roster::{effort_problem, Roster, Teammate};
 use crate::routing::quota::{QuotaView, State, POOL_UNKNOWN};
 
-/// Why a teammate is not in the eligible set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExclusionReason {
-    /// A `fallbacks:` entry names no teammate.
     NotInRoster,
-    /// Hidden teammates are spawned by name only, never chosen.
     Hidden,
-    /// The model is an orchestrator tier.
     ReservedTier,
-    /// The provider trains on its input (BAL-09).
     TrainsOnInput,
-    /// The teammate's pool is exhausted, broken or cooling.
     PoolBlocked,
-    /// The teammate has no model of its own (a recipe supplies one).
     Unspawnable,
-    /// The teammate's effort is not a level its agent and model take.
     EffortUnsupported,
-    /// The caller says this harness is not installed.
     HarnessUnavailable,
-    /// The `none` agent: the smoke fake, never a real worker.
     AgentNone,
-    /// The caller's config excludes the teammate.
     ExcludedByConfig,
-    /// The caller's cost estimate exceeds its budget.
     OverBudget,
-    /// The price table has no price for the model, so no budget can count
-    /// it. The planner applies this rule.
     Unpriced,
 }
 
-/// The snake_case name of each reason, in declaration order.
 const NAMES: [&str; 12] = [
     "not_in_roster",
     "hidden",
@@ -70,7 +51,6 @@ impl std::fmt::Display for ExclusionReason {
     }
 }
 
-/// `{"verdict":"eligible"}` or `{"verdict":"excluded","reason":"hidden"}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", content = "reason", rename_all = "snake_case")]
 pub enum Verdict {
@@ -84,16 +64,12 @@ impl Verdict {
     }
 }
 
-/// One teammate in an eligible set, with its pool and its verdict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EligibleEntry {
     pub teammate: TeammateName,
     pub harness: HarnessKind,
-    /// `None` when the teammate has no model of its own, or is not in the
-    /// roster.
     pub model: Option<ModelId>,
     pub effort: Option<String>,
-    /// `None` = the requested teammate; `Some(i)` = `fallbacks[i]`.
     pub fallback_index: Option<u32>,
     pub pool: String,
     pub pool_state: State,
@@ -107,27 +83,18 @@ impl EligibleEntry {
     }
 }
 
-/// The caller's exclusions (B3 config). Empty excludes nothing.
 #[derive(Debug, Clone, Default)]
 pub struct EligibilityFilter {
     pub excluded: BTreeSet<TeammateName>,
-    /// The budget per spawn. A teammate whose estimate exceeds it is
-    /// [`ExclusionReason::OverBudget`].
     pub max_cost_microusd: Option<i64>,
-    /// The caller's cost estimate per teammate. No estimate is never over
-    /// budget.
     pub estimated_cost_microusd: BTreeMap<TeammateName, i64>,
-    /// `Some`: only these harnesses are installed.
     pub available_harnesses: Option<Vec<HarnessKind>>,
 }
 
-/// Whether a teammate's provider trains on its input: every OpenCode one
-/// (BAL-09). Never chosen automatically.
 pub fn trains_on_input(t: &Teammate) -> bool {
     t.trains_on_input || t.agent == HarnessKind::OpenCode
 }
 
-/// An entry for a roster teammate, with its pool assessed.
 fn entry(t: &Teammate, view: &QuotaView, fallback_index: Option<u32>) -> Option<EligibleEntry> {
     let model = t.model.as_deref().unwrap_or_default();
     let a = view.assess(t.agent.as_str(), model);
@@ -143,8 +110,6 @@ fn entry(t: &Teammate, view: &QuotaView, fallback_index: Option<u32>) -> Option<
     })
 }
 
-/// The first rule a fallback breaks, in the order the gate always applied
-/// them.
 fn fallback_rule(f: &Teammate) -> Option<ExclusionReason> {
     if f.hidden {
         Some(ExclusionReason::Hidden)
@@ -161,13 +126,6 @@ fn verdict(reason: Option<ExclusionReason>) -> Verdict {
     reason.map_or(Verdict::Eligible, Verdict::Excluded)
 }
 
-/// The requested teammate, then its fallbacks, in `fallbacks:` order.
-///
-/// The fallbacks the gate may use are exactly the eligible entries with a
-/// `fallback_index`: the same order and the same drop rules as the gate's
-/// candidate list before A5. Pool states are reported, not judged; the gate
-/// decides on them. The requested teammate is spawned by name, so only the
-/// reserved-tier rule applies to it.
 pub fn eligible_fallbacks(req: &Teammate, roster: &Roster, view: &QuotaView) -> Vec<EligibleEntry> {
     let mut out = Vec::new();
     if let Some(mut e) = entry(req, view, None) {
@@ -229,8 +187,6 @@ fn over_budget(e: &EligibleEntry, filter: &EligibilityFilter) -> bool {
     })
 }
 
-/// The first rule a roster teammate breaks for a planner that chooses on
-/// its own (B3).
 fn roster_rule(
     t: &Teammate,
     e: &EligibleEntry,
@@ -256,7 +212,6 @@ fn roster_rule(
     }
 }
 
-/// The last rules of `roster_rule`: the harness, the pool and the budget.
 fn availability_rule(
     t: &Teammate,
     e: &EligibleEntry,
@@ -273,7 +228,6 @@ fn availability_rule(
     }
 }
 
-/// Every roster teammate, sorted by name, each with a verdict.
 pub fn roster_eligibility(
     roster: &Roster,
     view: &QuotaView,
@@ -309,7 +263,6 @@ mod tests {
         )
     }
 
-    /// One way to break one `roster_rule` rule, applied to a clean teammate.
     struct Breaker {
         reason: ExclusionReason,
         teammate: fn(&mut Teammate),
@@ -320,7 +273,6 @@ mod tests {
     const NOTHING_T: fn(&mut Teammate) = |_| {};
     const NOTHING_F: fn(&mut EligibilityFilter) = |_| {};
 
-    /// In the order `roster_rule` applies the rules.
     fn breakers() -> Vec<Breaker> {
         use ExclusionReason as R;
         let b = |reason, teammate, filter, pool| Breaker {
@@ -384,7 +336,6 @@ mod tests {
         ]
     }
 
-    /// The rule a clean `sonnet` breaks after the chosen breakers apply.
     fn rule_after(chosen: &[&Breaker]) -> Option<ExclusionReason> {
         let mut t = Roster::builtin()
             .unwrap()
@@ -416,14 +367,12 @@ mod tests {
         }
     }
 
-    /// A teammate that breaks 2 rules gets the reason of the earlier rule.
     #[test]
     fn the_earlier_rule_names_the_reason() {
         use ExclusionReason as R;
         let all = breakers();
         for (i, first) in all.iter().enumerate() {
             for second in &all[i + 1..] {
-                // Clearing the model also clears a reserved model.
                 if (first.reason, second.reason) == (R::ReservedTier, R::Unspawnable) {
                     continue;
                 }

@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# NFR-05 and NFR-06: no runtime crate beyond the allowed lists. NFR-05 keeps
-# the telemetry crates (ratatui, crossterm) in the horch crate; NFR-06 (OD6)
-# allows sha2 in horch-core and horch-marketplace. Compares the direct normal
-# dependencies of each checked crate with its allowed list. Keep these in sync
-# with tests/nfr.rs: self-update (2026-10-20), task ledger (ADR 0001), and
-# Windows process identity (#29) are already approved runtime dependencies.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc sha2 horch-marketplace rusqlite windows-sys"
-# rusqlite in horch: same crate and version as horch-core (ADR 0001). The
-# direct dependency replaces a re-export that arc_25 forbids (ticket 36).
 allowed_horch="horch-core anyhow clap serde serde_json chrono tempfile libc ratatui crossterm ureq sha2 flate2 tar zip rusqlite"
 allowed_marketplace="anyhow serde serde_json serde_yaml sha2 thiserror"
 fail=0
@@ -23,7 +15,6 @@ check() {
 }
 check horch-core "$allowed_core"
 check horch "$allowed_horch"
-# horch-marketplace arrives in phase A8; skip it until it exists.
 if cargo tree -p horch-marketplace --depth 0 >/dev/null 2>&1; then
   check horch-marketplace "$allowed_marketplace"
 fi

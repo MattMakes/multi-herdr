@@ -1,6 +1,3 @@
-//! `horch ledger watch`: the watchdog process of a run (#42), and the
-//! restart every `horch` command makes when it has gone quiet.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +21,6 @@ use super::taskledger::{stop_grace, HerdrPanes};
 use super::taskledger_wake;
 use crate::output;
 
-/// A SIGTERM came: the watchdog loop ends after the pass it runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
 #[cfg(unix)]
@@ -32,9 +28,6 @@ extern "C" fn on_term(_: libc::c_int) {
     TERM.store(true, Ordering::SeqCst);
 }
 
-/// SIGTERM ends the watchdog loop between passes, never inside one: a pass
-/// can be in a reap, which requeues the task before it stops the agent
-/// (#216 restart, review of T-3).
 fn exit_between_passes() {
     #[cfg(unix)]
     // SAFETY: the handler only stores to an atomic, which is
@@ -45,7 +38,6 @@ fn exit_between_passes() {
     }
 }
 
-/// Sleep `d`, or less when a SIGTERM comes.
 fn sleep_unless_term(d: Duration) {
     let until = std::time::Instant::now() + d;
     while !TERM.load(Ordering::SeqCst) && std::time::Instant::now() < until {
@@ -53,7 +45,6 @@ fn sleep_unless_term(d: Duration) {
     }
 }
 
-/// What the watchdog reads: the pane host for the pane, the disk for the transcript.
 enum Live<'a> {
     Context(&'a RuntimeContext),
     #[cfg(test)]
@@ -91,8 +82,6 @@ impl Observer for Live<'_> {
     }
 }
 
-/// Whether the agent PID of `w` runs with its recorded start time. An old
-/// record has no start time: the PID alone counts.
 fn agent_alive(w: &Worker) -> bool {
     match (w.agent_pid, w.agent_started) {
         (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
@@ -101,7 +90,6 @@ fn agent_alive(w: &Worker) -> bool {
     }
 }
 
-/// The size and the write time of the transcript of `w`, when it can be read.
 fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
     let meta = w
         .transcript_path
@@ -114,7 +102,6 @@ fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
     )
 }
 
-/// The single-instance lock of a run's watchdog.
 fn lock_dir(ctx: &RuntimeContext) -> PathBuf {
     ctx.paths
         .ledger_db
@@ -127,9 +114,6 @@ fn lock_held(ctx: &RuntimeContext, run: &Run) -> Option<u32> {
     watchdog::holder(&lock_dir(ctx), &run.run_id).map(|h| h.pid)
 }
 
-/// 1 pass: drain the outbox, check, reap the dead, wake on changes, read
-/// the board for a re-wake, retry cleanups. `seen` is the board sighting of
-/// the last pass.
 fn pass(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -137,7 +121,6 @@ fn pass(
     force: bool,
     seen: &mut Option<Sighting>,
 ) -> Result<Vec<watchdog::Checked>> {
-    // A row that a send or a busy drain left goes out first (trace-fixes D7).
     taskledger_wake::drain_run(ctx, store, run, None);
     let me = std::process::id();
     watchdog::checkin(
@@ -155,9 +138,6 @@ fn pass(
         )?;
     }
     let checked = watchdog::check_run(store, run, &live, force)?;
-    // 1 push budget for every wake of this pass (#67, #177): an orchestrator
-    // pane that is not ready holds the pass no longer, and the courier
-    // delivers the queued wakes.
     let _budget = horch_core::messaging::delivery::start_push_budget(
         horch_core::messaging::delivery::done_push_budget(&ctx.settings.faults),
     );
@@ -203,10 +183,6 @@ fn pass(
     Ok(checked)
 }
 
-/// The board read of a pass at `now` (TRF-22, TRF-23, TRF-51): 1 re-wake
-/// for tasks that can start with no worker on its way for 2 min, 1 flag for
-/// each spawned worker with no claim after 3 min, and each wake that a crash
-/// after its ledger commit lost. A failure is printed.
 fn reconcile_at(
     ctx: &RuntimeContext,
     store: &Store,
@@ -237,9 +213,6 @@ fn reconcile_at(
     taskledger_wake::reconcile_lost(ctx, store, run, now);
 }
 
-/// The orchestrator check of a pass at `now` (trace-fixes C7): record a
-/// live orchestrator's PID, and start a respawn the guards allow with
-/// `launch`. A failure is printed; a failed launch is recorded.
 fn orchestrator_at(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -275,14 +248,9 @@ fn orchestrator_at(
         }
         _ => {}
     }
-    // The wake goes out after the launch, so the new orchestrator's mailbox
-    // can take it; durable mail keeps it either way.
     taskledger_wake::drain_run(ctx, store, run, checked.wake_id.as_deref());
 }
 
-/// Give the respawned orchestrator row the harness and model of the row it
-/// replaces, when it has none (report 28 D-c): the respawn runs the same
-/// flavor. Returns the rows changed.
 fn inherit_harness(store: &Store, r: &orchestrator::Respawn) -> Result<usize> {
     Ok(store.conn().execute(
         "UPDATE workers SET
@@ -293,8 +261,6 @@ fn inherit_harness(store: &Store, r: &orchestrator::Respawn) -> Result<usize> {
     )?)
 }
 
-/// What the watchdog does about 1 verdict: reap the dead, wake the
-/// orchestrator on a first stall or a suspect.
 fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
     let who = c.role.as_deref().unwrap_or(&c.worker_id);
     let on = c.task.as_deref().unwrap_or("its task");
@@ -319,12 +285,10 @@ fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Chec
                 c.note
             ),
         ),
-        // A worker back to normal after a stall needs no wake.
         _ => {}
     }
 }
 
-/// Reap a worker the check found dead, and wake on the result.
 fn reap_dead(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
     let who = c.role.as_deref().unwrap_or(&c.worker_id);
     let panes = HerdrPanes::new(ctx);
@@ -343,7 +307,6 @@ fn reap_dead(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::C
     }
 }
 
-/// `horch ledger watch`.
 pub fn watch(
     ctx: &RuntimeContext,
     mut store: Store,
@@ -361,12 +324,7 @@ pub fn watch(
     watch_loop(ctx, &mut store, run)
 }
 
-/// Wait out the start fault, refuse a second watchdog, and take the lock of
-/// the run. The starter compares the recorded binary with the one it would
-/// start (#216).
 fn take_lock(ctx: &RuntimeContext, run: &Run) -> Result<horch_core::fsx::DirLockGuard> {
-    // A slow start, as on a loaded machine: the e2e tests of `ensure` hold
-    // a new watchdog before its lock with `HORCH_FAULT=watchdog-start-ms:<n>`.
     if let Some(ms) = ctx
         .settings
         .faults
@@ -390,7 +348,6 @@ fn take_lock(ctx: &RuntimeContext, run: &Run) -> Result<horch_core::fsx::DirLock
     Ok(guard)
 }
 
-/// The report of `watch --once`: JSON, or 1 line per checked worker.
 fn print_checked(checked: &[watchdog::Checked], as_json: bool) -> Result<()> {
     if as_json {
         output::println(&serde_json::to_string_pretty(checked)?);
@@ -412,8 +369,6 @@ fn print_checked(checked: &[watchdog::Checked], as_json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The loop: a pass on every tick; each worker is checked when it is due.
-/// It ends when the run is no longer active or on SIGTERM.
 fn watch_loop(ctx: &RuntimeContext, store: &mut Store, run: &Run) -> Result<ExitCode> {
     exit_between_passes();
     let mut seen = None;
@@ -425,14 +380,11 @@ fn watch_loop(ctx: &RuntimeContext, store: &mut Store, run: &Run) -> Result<Exit
         if let Err(e) = pass(ctx, store, &run_now, false, &mut seen) {
             eprintln!("horch ledger watch: {e:#}");
         }
-        // At most RECONCILE_S apart: each pass drains and reads the board.
         let tick = (run_now.check_every_s / 10).clamp(1, watchdog::RECONCILE_S as i64) as u64;
         sleep_unless_term(Duration::from_secs(tick));
     }
 }
 
-/// Restart the watchdog of each active run of this project that has gone
-/// quiet while a task runs. Best effort, silent unless it restarts one.
 pub fn ensure(ctx: &RuntimeContext) {
     let Some((root, store, runs)) = quiet_runs(ctx) else {
         return;
@@ -448,9 +400,6 @@ pub fn ensure(ctx: &RuntimeContext) {
     }
 }
 
-/// The active runs of this project, with its root and the ledger. None when
-/// the watchdog is off, the ledger file is missing (it is never created
-/// just to look) or unreadable.
 fn quiet_runs(ctx: &RuntimeContext) -> Option<(PathBuf, Store, Vec<Run>)> {
     if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") || !ctx.paths.ledger_db.exists() {
         return None;
@@ -468,8 +417,6 @@ fn quiet_runs(ctx: &RuntimeContext) -> Option<(PathBuf, Store, Vec<Run>)> {
     Some((root, store, active))
 }
 
-/// A live watchdog stays, unless its own binary file changed: it then moves
-/// onto that file. A horch at another path does not take it over.
 fn keep_or_replace(
     ctx: &RuntimeContext,
     store: &Store,
@@ -490,7 +437,6 @@ fn keep_or_replace(
     replace(ctx, store, run, root, h, &target, true);
 }
 
-/// Start a watchdog for a run that has none and needs one, and say so.
 fn restart(ctx: &RuntimeContext, store: &Store, run: &Run, root: &Path, exe: &Path) {
     if !watchdog::needs_restart(store.conn(), run).unwrap_or(false) {
         return;
@@ -507,9 +453,6 @@ fn restart(ctx: &RuntimeContext, store: &Store, run: &Run, root: &Path, exe: &Pa
     }
 }
 
-/// After `horch install`: restart the watchdog of every active run that
-/// runs another binary than the one just installed at `installed` (#216).
-/// Prints 1 line per restarted watchdog. Starts none that is not live.
 pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
     if !ctx.paths.ledger_db.exists() {
         return;
@@ -531,10 +474,6 @@ pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
     }
 }
 
-/// Stop the live watchdog `h` of `run`, which runs another binary, by its
-/// exact PID and start time, then start one on `exe`. A watchdog keeps no
-/// state between passes, so the restart loses nothing. It ends after its
-/// current pass, and a reap in that pass waits up to the stop grace.
 fn replace(
     ctx: &RuntimeContext,
     store: &Store,
@@ -573,10 +512,6 @@ fn replace(
     }
 }
 
-/// `horch ledger watch --run <id>` of `exe`, detached in its own session so
-/// a pane close does not end it. Its output goes to
-/// `<ledger dir>/watchdog-<run>.log`. The run records the new process at
-/// once, so a command before its first checkin does not start another.
 fn start_detached(
     ctx: &RuntimeContext,
     store: &Store,
@@ -607,8 +542,6 @@ fn start_detached(
     }
     let child = horch_core::runtime::process::spawn_detached(&mut cmd)?;
     let pid = child.id();
-    // It runs either way; without the record, the next command can start a
-    // second one, which finds the lock taken and ends.
     if let Err(e) = watchdog::record_start(
         store.conn(),
         &run.run_id,
@@ -635,8 +568,6 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, UNIX_EPOCH};
 
-    /// A worker row of a new run in `dir`. The tests set the fields `observe`
-    /// reads and leave the others as the ledger made them.
     fn worker(dir: &Path) -> Worker {
         let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
         let new_run = NewRun {
@@ -657,12 +588,8 @@ mod tests {
         workers::find(store.conn(), &id).unwrap().unwrap()
     }
 
-    /// A herdr that answers by pane: `p1` has a status, a change count and a
-    /// screen; `p2` has a screen but no status; `p3` has a status but no
-    /// screen; any other pane fails both.
     fn herdr(dir: &Path) -> PaneHost {
         let bin = dir.join("herdr");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &bin,
             "#!/bin/sh\n\
@@ -693,7 +620,6 @@ mod tests {
         assert!(alive(&w), "the pid and its start time match");
         w.agent_started = Some(start + 1);
         assert!(!alive(&w), "the pid runs, but it started at another time");
-        // An old record has no start time: the pid alone counts.
         w.agent_started = None;
         assert!(alive(&w), "the pid runs");
         w.agent_pid = Some(2_000_000_000);
@@ -850,8 +776,6 @@ mod reconcile_tests {
 
     use super::*;
 
-    /// A ledger with a run of 1 queued task for `dev`, and a context with no
-    /// workspace: each send fails, so every row stays in the outbox.
     fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ledger.sqlite3");
@@ -887,7 +811,6 @@ mod reconcile_tests {
         (dir, ctx, store, run)
     }
 
-    /// The fake clock: the ledger stamp `secs` after `t0`.
     fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
         horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
     }
@@ -916,7 +839,6 @@ mod reconcile_tests {
         assert!(r[0].contains("no worker is on its way to them"), "{r:?}");
         assert!(r[0].contains("Spawn: dev x1."), "{r:?}");
 
-        // A new board state gets its own re-wake after its own 2 min.
         store
             .immediate(|tx| {
                 tasks::add(
@@ -953,7 +875,6 @@ mod reconcile_tests {
             .unwrap();
         let mut seen = None;
         for secs in (0..=600).step_by(watchdog::RECONCILE_S as usize) {
-            // The worker checks in, but it does not claim.
             store
                 .conn()
                 .execute(
@@ -982,9 +903,6 @@ mod reconcile_tests {
     }
 }
 
-/// TRF-51: each test commits a ledger change and skips its direct wake, as
-/// a crash after the commit does. An unrelated worker stays live. 1 pass
-/// writes exactly 1 row; a 2nd pass, and the direct path, write none.
 #[cfg(test)]
 mod trf_51_tests {
     use std::path::Path;
@@ -997,8 +915,6 @@ mod trf_51_tests {
 
     use super::*;
 
-    /// A run with task `a` (T-1) for `dev`, task `b` (T-2) that waits for
-    /// it, and 1 live worker on neither. Each send fails: rows stay.
     fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ledger.sqlite3");
@@ -1038,7 +954,6 @@ mod trf_51_tests {
         (dir, ctx, store, run)
     }
 
-    /// A working worker of `persona` with `role`, checked in now.
     fn worker(store: &mut Store, run: &Run, persona: &str, role: &str) -> String {
         let id = store
             .immediate(|tx| {
@@ -1068,7 +983,6 @@ mod trf_51_tests {
         horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
     }
 
-    /// 1 watchdog pass at `now`, with no sighting kept.
     fn pass(ctx: &RuntimeContext, store: &Store, run: &Run, now: &str) {
         reconcile_at(ctx, store, run, now, &mut None);
     }
@@ -1092,7 +1006,6 @@ mod trf_51_tests {
         store.conn().execute(sql, [id]).unwrap();
     }
 
-    /// A board change that no wake of these tests answers.
     fn unrelated_change(store: &mut Store, run: &Run) {
         store
             .immediate(|tx| {
@@ -1106,7 +1019,6 @@ mod trf_51_tests {
             .unwrap();
     }
 
-    /// I-03: the last task is done, and `wake_after_done` never ran.
     #[test]
     fn trf_51_a_lost_settled_wake_is_written_once() {
         let (_dir, ctx, store, run) = world();
@@ -1131,7 +1043,6 @@ mod trf_51_tests {
         assert_eq!(rows(&store, &run, "settled").len(), 1, "1 row per settle");
     }
 
-    /// I-04: the last review of T-1 is done, and its author was never told.
     #[test]
     fn trf_51_a_lost_reviews_in_wake_is_written_once() {
         let (_dir, ctx, mut store, run) = world();
@@ -1190,8 +1101,6 @@ mod trf_51_tests {
         assert_eq!(rows(&store, &run, "reviews-in").len(), 1);
     }
 
-    /// I-05: T-1 is cancelled while T-2 waits, and `wake_dependents` never
-    /// ran.
     #[test]
     fn trf_51_a_lost_cancelled_wake_is_written_once() {
         let (_dir, ctx, mut store, run) = world();
@@ -1213,8 +1122,6 @@ mod trf_51_tests {
         assert_eq!(rows(&store, &run, "cancelled").len(), 1);
     }
 
-    /// I-06: T-1 is parked unlanded while T-2 waits, and `wake_unlanded`
-    /// never ran.
     #[test]
     fn trf_51_a_lost_parked_blocker_wake_is_written_once() {
         let (_dir, ctx, mut store, run) = world();
@@ -1239,8 +1146,6 @@ mod trf_51_tests {
         assert_eq!(rows(&store, &run, "held").len(), 1);
     }
 
-    /// I-07: the reap that held T-1 at the attempt limit committed, and
-    /// `after_reap` never ran.
     #[test]
     fn trf_51_a_lost_held_attempt_question_is_written_once() {
         let (_dir, ctx, mut store, run) = world();
@@ -1280,7 +1185,6 @@ mod orchestrator_tests {
 
     use super::*;
 
-    /// No lock holder, no live PID, and the workspace is open.
     struct Dead;
 
     impl Probe for Dead {
@@ -1295,7 +1199,6 @@ mod orchestrator_tests {
         }
     }
 
-    /// A live lock holder, PID 31.
     struct Held;
 
     impl Probe for Held {
@@ -1313,8 +1216,6 @@ mod orchestrator_tests {
         }
     }
 
-    /// A run in workspace `w1` whose orchestrator's agent PID is recorded,
-    /// and a context with no workspace: each send fails, so wakes stay.
     fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ledger.sqlite3");
@@ -1366,8 +1267,6 @@ mod orchestrator_tests {
         horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
     }
 
-    /// Give the current orchestrator row a recorded agent PID, as the
-    /// pass after a launch does from the lock holder.
     fn registered(store: &Store, run: &Run) {
         let id = runs::get(store.conn(), &run.run_id)
             .unwrap()
@@ -1383,7 +1282,6 @@ mod orchestrator_tests {
             .unwrap();
     }
 
-    /// The run's current orchestrator row.
     fn current(store: &Store, run: &Run) -> workers::Worker {
         let id = runs::get(store.conn(), &run.run_id)
             .unwrap()
@@ -1392,8 +1290,6 @@ mod orchestrator_tests {
         workers::get(store.conn(), &id).unwrap()
     }
 
-    /// Report 28 D-c: the respawned orchestrator row records the harness
-    /// and model of the row it replaces before its launch runs.
     #[test]
     fn trf_45_a_respawned_orchestrator_row_keeps_the_harness() {
         let (_dir, ctx, store, run) = world();
@@ -1411,8 +1307,6 @@ mod orchestrator_tests {
             *seen.borrow_mut() = Some((w.harness, w.model));
             Ok(())
         };
-        // The launch reads through `store`; the pass writes through a 2nd
-        // connection to the same file.
         orchestrator_at(
             &ctx,
             &mut Store::open(store.path()).unwrap(),
@@ -1489,7 +1383,6 @@ mod orchestrator_tests {
                 &launch,
             );
         }
-        // Each failed launch counts 1 respawn, so it cannot loop.
         assert_eq!(tries.into_inner(), vec![(0, 1), (600, 2), (1200, 3)]);
         let new = current(&store, &run);
         assert_eq!(new.status, "launch_failed");
@@ -1519,7 +1412,6 @@ mod orchestrator_tests {
     fn trf_38_crash_before_launch_is_retried_on_the_next_pass() {
         let (_dir, ctx, mut store, run) = world();
         let t0 = horch_core::clock::now();
-        // A pass commits the respawn, and the watchdog exits before the launch.
         let checked = store
             .immediate(|tx| orchestrator::check(tx, &run.run_id, &at(&t0, 0), &Dead))
             .unwrap();
@@ -1533,8 +1425,6 @@ mod orchestrator_tests {
             "no lock holder seen: the row is launch-pending"
         );
 
-        // The restarted watchdog passes every 30 s. The next pass that the
-        // 10 min guard allows launches the same row again.
         let launched = RefCell::new(Vec::<(u64, Respawn)>::new());
         for secs in (30..=900).step_by(watchdog::RECONCILE_S as usize) {
             let launch = |r: &Respawn| {
@@ -1562,7 +1452,6 @@ mod orchestrator_tests {
         assert_eq!(r.old_worker_id, first.old_worker_id);
         assert_eq!(r.slug, "r1");
 
-        // A pass that observes the lock holder marks the row live.
         let none = |_: &Respawn| anyhow::bail!("no launch while the holder lives");
         orchestrator_at(&ctx, &mut store, &run, &at(&t0, 930), &Held, &none);
         let live = current(&store, &run);
@@ -1664,7 +1553,6 @@ mod orchestrator_tests {
                 &Dead,
                 &launch,
             );
-            // Each new orchestrator registers, then dies at once.
             registered(&store, &run);
         }
         assert_eq!(times.into_inner(), vec![0, 600, 1200]);

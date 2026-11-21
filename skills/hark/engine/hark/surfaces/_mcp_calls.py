@@ -31,9 +31,6 @@ class ToolResult:
     image: bytes | None = None
 
 
-# backing modules ------------------------------------------------------
-
-
 def _importable(module: str) -> bool:
     if module in sys.modules:
         return True

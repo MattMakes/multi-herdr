@@ -1,29 +1,17 @@
-//! Spawn-time worker placement for pane hosts without geometry (`Caps {
-//! geometry: false }`).
-//!
-//! Pure module (ARC-27): no process, file, or environment access.
-
 use crate::workspace::model::Direction;
 
-/// The workers currently sitting on one tab, ordered by terminal address
-/// (`t7` -> `7`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabPanes {
     pub tab_id: String,
     pub workers: Vec<String>,
 }
 
-/// Where the next spawned worker pane should be created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Placement {
     Split { from: String, direction: Direction },
     NewTab { label: String },
 }
 
-/// Creation-order sort key for `hc` terminal addresses (base-32/36
-/// alphanumeric suffixes such as `"t17"`, `"t1c"`, `"t1j"`, `"t1k"`, `"t1m"`,
-/// `"t1n"`, `"t1p"`, `"t20"`). Base 36 preserves monotone creation order across
-/// decimal, hex, Crockford base-32, and base-36 digit alphabets.
 pub fn address_key(address: &str) -> (u64, &str) {
     let n = address
         .strip_prefix('t')
@@ -32,13 +20,10 @@ pub fn address_key(address: &str) -> (u64, &str) {
     (n, address)
 }
 
-/// Sort worker terminal addresses in creation order.
 pub fn sort_addresses(workers: &mut [String]) {
     workers.sort_by(|a, b| address_key(a).cmp(&address_key(b)));
 }
 
-/// Decide where a newly spawned worker belongs given `orchestrator` and the
-/// workspace's `tabs` in tab-strip order.
 pub fn place(orchestrator: &str, tabs: &[TabPanes]) -> Placement {
     if tabs.is_empty() {
         return Placement::Split {
@@ -104,7 +89,6 @@ mod tests {
 
     #[test]
     fn hcb_09_first_tab_fills_two_columns_then_rows() {
-        // Worker 2: splits right from w[0] (t2) to open column 2.
         assert_eq!(
             place("t1", &[tab("tb1", &["t2"])]),
             Placement::Split {
@@ -112,8 +96,6 @@ mod tests {
                 direction: Direction::Right,
             }
         );
-        // Worker 3: splits down from w[0] (t2) to fill row 2 of column 1.
-        // Input deliberately unsorted ("t10", "t2") to verify numeric address sort.
         assert_eq!(
             place("t1", &[tab("tb1", &["t10", "t2"])]),
             Placement::Split {
@@ -121,7 +103,6 @@ mod tests {
                 direction: Direction::Down,
             }
         );
-        // Worker 4: splits down from w[1] (t10) to fill row 2 of column 2.
         assert_eq!(
             place("t1", &[tab("tb1", &["t10", "t2", "t11"])]),
             Placement::Split {
@@ -144,8 +125,6 @@ mod tests {
     #[test]
     fn hcb_09_later_tab_holds_six_in_three_columns() {
         let full_tab1 = tab("tb1", &["t2", "t3", "t4", "t5"]);
-        // Tab 2 starts with 1 worker (t6) from tab_new:
-        // Worker 6 (n=1 < 3): right of t6 -> column 2.
         assert_eq!(
             place("t1", &[full_tab1.clone(), tab("tb2", &["t6"])]),
             Placement::Split {
@@ -153,7 +132,6 @@ mod tests {
                 direction: Direction::Right,
             }
         );
-        // Worker 7 (n=2 < 3): right of t7 -> column 3.
         assert_eq!(
             place("t1", &[full_tab1.clone(), tab("tb2", &["t6", "t7"])]),
             Placement::Split {
@@ -161,7 +139,6 @@ mod tests {
                 direction: Direction::Right,
             }
         );
-        // Worker 8 (n=3 >= 3): down of w[0] (t6) -> col 1 row 2.
         assert_eq!(
             place("t1", &[full_tab1.clone(), tab("tb2", &["t6", "t7", "t8"])]),
             Placement::Split {
@@ -169,7 +146,6 @@ mod tests {
                 direction: Direction::Down,
             }
         );
-        // Worker 9 (n=4 >= 3): down of w[1] (t7) -> col 2 row 2.
         assert_eq!(
             place(
                 "t1",
@@ -180,7 +156,6 @@ mod tests {
                 direction: Direction::Down,
             }
         );
-        // Worker 10 (n=5 >= 3): down of w[2] (t8) -> col 3 row 2.
         assert_eq!(
             place(
                 "t1",
@@ -194,7 +169,6 @@ mod tests {
                 direction: Direction::Down,
             }
         );
-        // Worker 11 (n=6 == cap): opens "workers 3".
         assert_eq!(
             place(
                 "t1",
@@ -222,7 +196,6 @@ mod tests {
             addrs,
             ["t9", "ta", "t19", "t1c", "t1j", "t1k", "t1m", "t1n", "t1p", "t20"]
         );
-        // Worker 3 splits down from w[0] (t1c), worker 4 splits down from w[1] (t1j).
         assert_eq!(
             place("t17", &[tab("tb1", &["t1j", "t1c"])]),
             Placement::Split {

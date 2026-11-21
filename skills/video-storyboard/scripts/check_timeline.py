@@ -1128,7 +1128,6 @@ def run(timeline_path, out_path, zoom_plan_path=None):
     return report_result(timeline_path, out_path, errors)
 
 
-# valid_timeline() plus these fields is a film with music: bpm 120, 1 bar = 2 s.
 MUSIC_META = {"bpm": 120, "terms": ["flaky tests"], "hero_sec": [12.0, 13.5],
               "payoff_breakdown_sec": [11.5, 12.0]}
 MUSIC_RHYTHM = [
@@ -1369,7 +1368,6 @@ def self_test():
             self.assertEqual(rows, expected_zoom_plan)
 
         def test_1_hook_window(self):
-            # The caption still holds 2.0 s after the late reveal, so only the hook fails.
             self.scenes[0]["motion"]["reveal_sec"] = 3.2
             self.scenes[0]["duration_sec"] = 5.2
             self.scenes[1]["start_sec"] = 5.2
@@ -1544,7 +1542,6 @@ def self_test():
             self.assertEqual(json.loads(proc.stdout)["errors"][0]["rule"], "schema")
 
         def test_9_read_hold(self):
-            # 4 words need max(1.5, 1.0 + 4 x 0.3) = 2.2 s after the reveal.
             self.scenes[1]["motion"]["reveal_sec"] = 3.0
             self.assertEqual(rules_of(self.timeline), {"read_hold"})
             self.assert_cli_fails_with("read_hold")
@@ -1626,11 +1623,9 @@ def self_test():
         def test_11_rhythm_needed_with_music(self):
             self.timeline = music_timeline()
             del self.timeline["rhythm"]
-            # The rhythm events go too, so the 5.0 s scene also breaks event_gap.
             self.assertIn("rhythm", rules_of(self.timeline))
 
         def test_12_event_gap(self):
-            # bpm 120: 2 bars = 4.0 s. s02-demo runs 5.0 s; its mid event is removed.
             self.timeline = music_timeline()
             del self.timeline["rhythm"][1]["events_sec"]
             self.assertEqual(rules_of(self.timeline), {"event_gap"})
@@ -1643,7 +1638,6 @@ def self_test():
             self.assertEqual(rules_of(self.timeline), set())
 
         def test_13_hero_window(self):
-            # 30 % of 15 s is 4.5 s, 90 % is 13.5 s.
             self.timeline = music_timeline()
             self.timeline["meta"]["hero_sec"] = [13.0, 14.0]
             self.timeline["meta"]["payoff_breakdown_sec"] = [12.5, 13.0]
@@ -1817,7 +1811,6 @@ def self_test():
         def test_skill_files_under_byte_cap(self):
             for skill in ("video-direction", "video-storyboard"):
                 path = os.path.join(skills_dir, skill, "SKILL.md")
-                # A fleet bundle holds only the teammate's own skills.
                 if os.path.exists(path):
                     self.assertLess(os.path.getsize(path), 12288, path)
 

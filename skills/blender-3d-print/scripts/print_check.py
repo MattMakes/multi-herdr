@@ -21,14 +21,14 @@ from mathutils import Matrix
 from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import threemf  # same folder; the skill is self-contained
+import threemf
 
 UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
 WALL_DEFAULT_MM = {"fdm": 0.8, "resin": 0.4}
-AREA_EPS_MM2 = 1e-6  # a face below this area is degenerate
-EDGE_EPS_MM = 1e-4  # an edge below this length is degenerate
-WELD_MM = 1e-5  # vertices this close are 1 vertex (STL stores no shared vertices)
-BED_TOL_MM = 0.01  # a vertex this close to the lowest Z touches the bed
+AREA_EPS_MM2 = 1e-6
+EDGE_EPS_MM = 1e-4
+WELD_MM = 1e-5
+BED_TOL_MM = 0.01
 
 
 class LoadError(Exception):
@@ -58,8 +58,6 @@ def limits(args):
         raise LoadError(f"--printer-mm must be XxYxZ in mm, got {args.printer_mm!r}")
     return {"process": args.process, "wall_mm": wall, "overhang_deg": args.overhang_deg, "printer_mm": printer}
 
-
-# ---- loading -------------------------------------------------------------
 
 def import_3mf(path):
     """Read a 3MF file with threemf.py (no add-on) into 1 mesh object per shell. Numbers are mm."""
@@ -126,7 +124,7 @@ def build_bmesh(objs, mm):
         ev.to_mesh_clear()
         m = Matrix.Scale(mm, 4) @ o.matrix_world
         tmp.transform(m)
-        if m.determinant() < 0:  # a mirrored object: keep the faces outward
+        if m.determinant() < 0:
             bmesh.ops.reverse_faces(tmp, faces=tmp.faces)
         tmp.to_mesh(scratch)
         tmp.free()
@@ -134,8 +132,6 @@ def build_bmesh(objs, mm):
     bpy.data.meshes.remove(scratch)
     return out
 
-
-# ---- checks --------------------------------------------------------------
 
 def shells(bm):
     """Face islands, linked through shared edges. Returns a list of face lists."""
@@ -178,8 +174,6 @@ def ray_hits(tree, faces, outward, limit):
         loc, hit_n, idx, dist = tree.ray_cast(origin, n, limit)
         if loc is None or idx == f.index or dist <= 1e-6:
             continue
-        # A wall ray leaves the solid through a face that points along it.
-        # A gap ray reaches a face that points back at it.
         if (hit_n.dot(n) > 0) != outward:
             n_hit += 1
             area += f.calc_area()
@@ -220,7 +214,6 @@ def run_checks(bm, lim):
     def hard(name, ok, value, rule):
         add(name, "PASS" if ok else "FAIL", value, rule, True)
 
-    # Topology.
     boundary = sum(1 for e in bm.edges if len(e.link_faces) == 1)
     multi = sum(1 for e in bm.edges if len(e.link_faces) > 2)
     bowtie = sum(1 for v in bm.verts if v.link_faces and not v.is_manifold
@@ -234,7 +227,7 @@ def run_checks(bm, lim):
          {"face_pairs": len(pairs), "faces": len({i for p in pairs for i in p})},
          "self-intersecting face pairs (BVH overlap) = 0")
 
-    fixed = bm.copy()  # the same mesh with recalculated outward normals
+    fixed = bm.copy()
     bmesh.ops.recalc_face_normals(fixed, faces=fixed.faces)
     fixed.normal_update()
     for seq in (fixed.verts, fixed.faces):
@@ -258,7 +251,7 @@ def run_checks(bm, lim):
          "faces whose every edge has more than 2 faces = 0")
 
     islands = shells(bm)
-    holes = 0  # through-holes (genus) of closed shells, from V - E + F = 2 - 2g
+    holes = 0
     for isl in islands:
         es = {e for f in isl for e in f.edges}
         if all(len(e.link_faces) == 2 for e in es):
@@ -266,7 +259,6 @@ def run_checks(bm, lim):
             holes += max(0, (2 - (len(vs) - len(es) + len(isl))) // 2)
     add("shells", "INFO", {"shells": len(islands)}, "count of separate face islands; report only", False)
 
-    # Size.
     if bm.verts:
         lo = [min(v.co[i] for v in bm.verts) for i in range(3)]
         hi = [max(v.co[i] for v in bm.verts) for i in range(3)]
@@ -281,7 +273,6 @@ def run_checks(bm, lim):
          "largest bbox side >= 1 mm and every side <= the printer volume; "
          "a part under 1 mm is often a model in m or cm read as mm")
 
-    # Geometry, on the outward-normal copy.
     tree = BVHTree.FromBMesh(fixed)
     t_n, t_area, t_min = ray_hits(tree, fixed.faces, False, lim["wall_mm"])
     hard("wall_thickness", t_n == 0,
@@ -319,8 +310,6 @@ def run_checks(bm, lim):
     return {"limits": lim, "stats": stats, "checks": checks, "failed": failed,
             "result": "FAIL" if failed else "PASS"}
 
-
-# ---- output --------------------------------------------------------------
 
 def fmt(value):
     return " ".join(f"{k}={v}" for k, v in value.items())
@@ -382,7 +371,7 @@ def main():
     except LoadError as e:
         print(f"ERROR {e}")
         sys.exit(2)
-    except SystemExit as e:  # argparse error
+    except SystemExit as e:
         sys.exit(2 if e.code else 0)
     print_report(rep)
     write_outputs(rep, args.json, args.md)

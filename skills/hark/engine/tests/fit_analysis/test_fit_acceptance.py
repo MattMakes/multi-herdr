@@ -44,8 +44,6 @@ def _mel(a, b):
     return modal.mel_distance(a, b)[0]
 
 
-# ---------------------------------------------------------------- A-5
-
 @pytest.mark.parametrize("knobs", [{}, {"size": 1.1}])
 def test_a_5_modal_code_renders_fit(models, tmp_path, knobs):
     m = models["modal_s1"]
@@ -99,8 +97,6 @@ def test_a_5_every_kind_renders(models):
         assert y.ndim in (1, 2) and len(y) > 0 and np.all(np.isfinite(y)), key
 
 
-# ---------------------------------------------------------------- A-6
-
 _RENDER_SCRIPT = """
 import json, sys
 import numpy as np
@@ -137,8 +133,6 @@ def test_a_6_fit_is_deterministic(s1, kind):
     assert _no_seconds(a) == _no_seconds(b)
 
 
-# ---------------------------------------------------------------- A-7
-
 def test_a_7_noise_layer_differs_per_seed(models):
     m = models["spectral_s3"]
     y0, y1 = spectral.render(m, 0), spectral.render(m, 1)
@@ -156,8 +150,6 @@ def test_a_7_modal_noise_differs_per_seed(models):
     m = models["modal_s1"]
     assert not np.array_equal(modal.render(m, 0), modal.render(m, 1))
 
-
-# ---------------------------------------------------------------- A-8 (morph side)
 
 def test_a_8_morph_side_ends_and_middle(make):
     a = np.column_stack([make.s3()[:, 0], 0.5 * make.s3()[:, 1]])
@@ -196,8 +188,6 @@ def test_a_8_kinds_do_not_mix(models):
         sinusoidal.check(models["modal_s1"])
 
 
-# ---------------------------------------------------------------- A-9
-
 @pytest.mark.parametrize("seed", [1, 2, 3, 4])
 def test_a_9_modal_takes_ring_out(models, s1, seed):
     m = models["modal_s1"]
@@ -214,8 +204,6 @@ def test_a_9_gesture_takes_ring_out(models, s1, seed):
     y = gesture.render(m, seed, vary=0.3, ring=True)
     assert len(y) >= len(s1)
 
-
-# ---------------------------------------------------------------- A-14
 
 def _side_db(x):
     x = np.asarray(x, float)
@@ -239,8 +227,6 @@ def test_a_14_mono_struck_renders_mono(models, s1):
     assert space.fit_space(s1) is None
     assert not space.needs_space(s1)
 
-
-# ---------------------------------------------------------------- A-16
 
 def test_a_16_threads_do_not_change_the_model(s3, monkeypatch):
     out = []

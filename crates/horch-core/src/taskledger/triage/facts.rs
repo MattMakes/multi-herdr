@@ -1,5 +1,3 @@
-//! The git and disk facts of 1 triage row. Every call reads; none writes.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -10,40 +8,32 @@ use serde::Serialize;
 use super::{Measure, Row};
 use crate::taskledger::git::Git;
 
-/// The ages of a row's work.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Age {
     pub created_at: Option<String>,
     pub last_commit_at: Option<String>,
-    /// The newest file that git does not ignore.
     pub newest_mtime: Option<String>,
 }
 
-/// The disk a row's folder uses.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Disk {
     pub bytes: u64,
-    /// The share that git ignores (build output).
     pub ignored_bytes: u64,
 }
 
-/// What the branch changes against its base.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Diff {
     pub files: usize,
     pub insertions: usize,
     pub deletions: usize,
-    /// The 3 paths with the most changed lines.
     pub top_paths: Vec<String>,
 }
 
-/// The work in the folder that no commit holds.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Uncommitted {
     pub modified: usize,
     pub staged: usize,
     pub untracked: usize,
-    /// The 3 largest untracked files: what `ARCHIVE` or `DELETE` commits.
     pub largest_untracked: Vec<String>,
 }
 
@@ -51,13 +41,11 @@ fn stamp(t: SystemTime) -> String {
     DateTime::<Utc>::from(t).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// When the folder was made, from its metadata.
 pub(super) fn created_at(dir: &Path) -> Option<String> {
     let meta = std::fs::metadata(dir).ok()?;
     meta.created().or_else(|_| meta.modified()).ok().map(stamp)
 }
 
-/// The tip of the row's work: the folder's HEAD, else its branch.
 fn tip(git: &Git, root: &Path, row: &Row) -> Option<String> {
     if row.on_disk {
         if let Ok(head) = git.rev(Path::new(&row.path), "HEAD") {
@@ -67,7 +55,6 @@ fn tip(git: &Git, root: &Path, row: &Row) -> Option<String> {
     row.branch.as_deref().and_then(|b| git.rev(root, b).ok())
 }
 
-/// Fill in `row`'s tip and, for [`Measure::Full`], every fact.
 pub(super) fn measure(git: &Git, root: &Path, row: &mut Row, measure: Measure) {
     row.tip = tip(git, root, row);
     if measure == Measure::Ids {
@@ -85,7 +72,6 @@ pub(super) fn measure(git: &Git, root: &Path, row: &mut Row, measure: Measure) {
     }
 }
 
-/// The facts that compare the tip with the base.
 fn history(git: &Git, root: &Path, row: &mut Row, tip: &str) {
     let base = row.base.clone();
     let run = |args: &[&str]| {
@@ -114,7 +100,6 @@ fn history(git: &Git, root: &Path, row: &mut Row, tip: &str) {
     row.age.last_commit_at = run(&["log", "-1", "--format=%cI", tip]).filter(|s| !s.is_empty());
 }
 
-/// The diff of `git diff --numstat` output.
 fn diff(numstat: &str) -> Diff {
     let mut paths: Vec<(usize, String)> = Vec::new();
     let mut d = Diff::default();
@@ -134,8 +119,6 @@ fn diff(numstat: &str) -> Diff {
     d
 }
 
-/// The conflicting files of a merge of `tip` into `base`, from
-/// `git merge-tree --write-tree` (it touches no ref, index or folder).
 fn conflicts(git: &Git, root: &Path, base: &str, tip: &str) -> Option<usize> {
     let out = git
         .try_run(
@@ -153,7 +136,6 @@ fn conflicts(git: &Git, root: &Path, base: &str, tip: &str) -> Option<usize> {
     if out.ok {
         return Some(0);
     }
-    // Exit 1 is a conflict: the tree, then 1 conflicting path per line.
     let names: HashSet<&str> = out
         .stdout
         .lines()
@@ -163,7 +145,6 @@ fn conflicts(git: &Git, root: &Path, base: &str, tip: &str) -> Option<usize> {
     (!names.is_empty()).then_some(names.len())
 }
 
-/// The modified, staged and untracked counts of `dir`.
 fn uncommitted(git: &Git, dir: &Path) -> Uncommitted {
     let mut u = Uncommitted::default();
     let mut untracked: Vec<(u64, String)> = Vec::new();
@@ -186,7 +167,6 @@ fn uncommitted(git: &Git, dir: &Path) -> Uncommitted {
     u
 }
 
-/// The paths git ignores in `dir` (a folder counts as 1 path).
 fn ignored(git: &Git, dir: &Path) -> HashSet<PathBuf> {
     let out = git
         .try_run(
@@ -208,7 +188,6 @@ fn ignored(git: &Git, dir: &Path) -> HashSet<PathBuf> {
         .collect()
 }
 
-/// The folder's bytes, its ignored share, and its newest not-ignored file.
 fn disk(git: &Git, dir: &Path) -> (Disk, Option<String>) {
     let ignored = ignored(git, dir);
     let mut walk = Walk {
@@ -227,7 +206,6 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// Add `p` (following no links); `in_ignored` when an ignored folder holds it.
     fn visit(&mut self, p: &Path, in_ignored: bool) {
         let Ok(meta) = std::fs::symlink_metadata(p) else {
             return;

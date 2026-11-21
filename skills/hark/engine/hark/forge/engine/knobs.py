@@ -127,8 +127,6 @@ class KnobError(ValueError):
     """A knob the sound cannot take, or a target out of range."""
 
 
-# ---------------------------------------------------------------- other units (function-level back-edges)
-
 def _estimate_pitch(x: np.ndarray, near_hz: float | None, span_st: float | None = None) -> float | None:
     from hark.forge.bank.bank import estimate_pitch
 
@@ -152,8 +150,6 @@ def _tonal_measure(x: np.ndarray) -> dict:
 
     return measure(x)
 
-
-# ---------------------------------------------------------------- pitch text
 
 _NOTE = re.compile(r"^([A-Ga-g])([#sb]{0,2})(-?\d+)$")
 _PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -220,8 +216,6 @@ def _sharp_label(k: int) -> str:
     sharp = ("C", "Cs", "D", "Ds", "E", "F", "Fs", "G", "Gs", "A", "As", "B")
     return f"{sharp[k % 12]}{k // 12 - 1}"
 
-
-# ---------------------------------------------------------------- specs
 
 def _err(entry: dict, msg: str) -> KnobError:
     return KnobError(f"{entry.get('id', '?')}: {msg}")
@@ -372,8 +366,6 @@ def pitch_warning(edits: dict) -> dict | None:
     return {"code": "pitch_off", "msg": msg}
 
 
-# ---------------------------------------------------------------- validate
-
 def _number(entry: dict, name: str, v: Any) -> float:
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
         raise _err(entry, f"{name} must be a number")
@@ -425,8 +417,6 @@ def validate(entry: dict, dur: Any = None, apex: Any = None, pitch: Any = None, 
     if pitch is not None:
         _plan_pitch(entry, pitch)
 
-
-# ---------------------------------------------------------------- pitch planning
 
 def _plan_pc(spec: dict, pitch: Any) -> tuple[dict, dict, dict]:
     n = midi(pitch)
@@ -557,8 +547,6 @@ def _measure_pitch(entry: dict, x: np.ndarray, info: dict) -> None:
     else:
         info["ok"] = None
 
-
-# ---------------------------------------------------------------- tonal aiming
 
 def _coords(knob: str, spec: dict) -> tuple[Callable, Callable, Callable]:
     if knob == "width":
@@ -698,8 +686,6 @@ def _aim_tonal(entry: dict, run: Callable, knob: str, target: float, pe: dict, f
     return upd, info
 
 
-# ---------------------------------------------------------------- length
-
 def _fade_len(n: int, keep_s: float | None) -> int:
     k = min(n, max(int(0.01 * SR), min(int(0.15 * SR), n // 4)))
     if keep_s is not None:
@@ -777,8 +763,6 @@ def _param_length(entry: dict, run: Callable, dur: float, pe: dict, fk: dict) ->
     x, s, n = _secant_len(lambda s: run({**pe, k: v0 * s}, fk), _len_s, 1.0, L0, dur)
     return x, {"target": dur, "method": "param", "param": k, "value": round(v0 * s, 5), "renders": n + extra}
 
-
-# ---------------------------------------------------------------- whoosh path
 
 def _head_trim(x: np.ndarray, n: int) -> tuple[np.ndarray, str]:
     """Cut n samples off the head with a 3 ms fade in, unless that would cut into the pass."""
@@ -891,8 +875,6 @@ def _set_apex_measure(x: np.ndarray, apex: float, edits: dict) -> None:
     pk = _peak_s(x)
     edits["apex"].update(measured=round(pk, 4), err_ms=round((pk - apex) * 1000, 1), ok=abs(pk - apex) <= APEX_TOL)
 
-
-# ---------------------------------------------------------------- apply
 
 def _render(entry: dict, run: Callable, dur: Any, apex: Any, pe: dict, fk: dict, edits: dict) -> np.ndarray:
     if apex is not None or (dur is not None and entry.get("category") in WHOOSH):

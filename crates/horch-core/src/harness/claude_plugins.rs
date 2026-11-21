@@ -1,22 +1,3 @@
-//! Claude Code plugins whose skills a teammate reinforces by name.
-//!
-//! A plugin often ships many skills while a teammate should use two of them.
-//! `plugin_skills: { <plugin>: [a, b] }` does three things with that:
-//! - names `a` and `b`, with their descriptions, in the worker's briefing as
-//!   skills it is expected to use (`skills.rs`, `Bundle::briefing`);
-//! - loads a filtered copy of the plugin from the launch's skills bundle
-//!   (`<bundle>/plugins/<plugin>/`, [`materialize_filtered`]) with
-//!   `--plugin-dir`: the plugin minus every skill and command the teammate
-//!   did not name. Claude Code ignores `skillOverrides` for a plugin skill
-//!   (2.1.289), so only a copy without the other skills hides them;
-//! - switches the installed original off (`"<plugin>@<marketplace>":
-//!   false`) and the copy on (`"<plugin>@inline": true`), whatever
-//!   `inherit_plugins` says.
-//!
-//! A plugin is found in the teammate's `plugin_dirs` first, then in the
-//! operator's `~/.claude/plugins/installed_plugins.json`. Its skills are the
-//! `skills/*/SKILL.md` files under its root.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -26,18 +7,12 @@ use serde_json::Value;
 use crate::roster::expand_home;
 use crate::roster::Teammate;
 
-/// One plugin, resolved to its skills.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Plugin {
     pub name: String,
-    /// The `name@marketplace` key when the plugin came from the operator's
-    /// installed plugins, so the overlay can keep it enabled. `None` when it
-    /// came from a `plugin_dirs` entry, which `--plugin-dir` already loads.
     pub installed_key: Option<String>,
     pub root: PathBuf,
-    /// The installed record's `version`, else the manifest's `version`.
     pub version: Option<String>,
-    /// `(name, description)` of every skill the plugin ships, sorted by name.
     pub skills: Vec<(String, String)>,
 }
 
@@ -50,8 +25,6 @@ impl Plugin {
     }
 }
 
-/// Resolve `plugin` for `teammate`, reading the operator's installed plugins
-/// under `home` (`$HOME`).
 pub(crate) fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result<Plugin> {
     let dirs: Vec<PathBuf> = teammate
         .plugin_dirs
@@ -61,8 +34,6 @@ pub(crate) fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) ->
     resolve_in(&dirs, installed_plugins_in(home).as_ref(), plugin, home)
 }
 
-/// Every `plugin_skills` entry of `teammate`, resolved and checked: each
-/// plugin exists and ships each named skill. `home` is `$HOME`.
 pub(crate) fn resolve_all_in(
     teammate: &Teammate,
     home: Option<&Path>,
@@ -91,8 +62,6 @@ pub(crate) fn resolve_all_in(
     Ok(out)
 }
 
-/// The pure half of [`resolve`]: explicit plugin directories and the parsed
-/// `installed_plugins.json`, whose `~/` paths expand against `home`.
 pub(crate) fn resolve_in(
     dirs: &[PathBuf],
     installed: Option<&Value>,
@@ -141,14 +110,11 @@ fn plugin_from_install(
     })
 }
 
-/// A plugin directory's name: `.claude-plugin/plugin.json`'s `name`, else the
-/// directory's own name.
 fn plugin_name(dir: &Path) -> Option<String> {
     manifest_field(dir, "name")
         .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 
-/// `.claude-plugin/plugin.json`'s `version`, if the plugin has one.
 fn manifest_version(dir: &Path) -> Option<String> {
     manifest_field(dir, "version")
 }
@@ -160,17 +126,11 @@ fn manifest_field(dir: &Path, field: &str) -> Option<String> {
         .and_then(|v| v.get(field).and_then(|n| n.as_str()).map(str::to_owned))
 }
 
-/// The operator's installed-plugins registry under `home` (`$HOME`), if it
-/// exists and parses.
 pub(crate) fn installed_plugins_in(home: Option<&Path>) -> Option<Value> {
     let path = home?.join(".claude/plugins/installed_plugins.json");
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// Find `plugin` in `installed_plugins.json`: its key, install path and
-/// recorded `version`. Keys are `name@marketplace`; the value is an install
-/// record, or (version 2 of the file) a list of them, each carrying an
-/// `installPath`.
 fn installed_root(
     installed: &Value,
     plugin: &str,
@@ -183,8 +143,6 @@ fn installed_root(
         .find_map(|(key, value)| install_record(key, value, home))
 }
 
-/// The first record of one `installed_plugins.json` entry that has an
-/// `installPath`, as (key, install path, recorded version).
 fn install_record(
     key: &str,
     value: &Value,
@@ -204,9 +162,6 @@ fn install_record(
     })
 }
 
-/// Every `name@marketplace` key under which `plugin` is installed, plus
-/// `always`, sorted. `always` covers a machine where it is not installed yet:
-/// an `enabledPlugins` entry for a missing plugin does nothing.
 pub(crate) fn installed_keys(installed: Option<&Value>, plugin: &str, always: &str) -> Vec<String> {
     let mut keys = registry_keys(installed, plugin);
     keys.push(always.to_string());
@@ -221,7 +176,6 @@ struct SkillFront {
     description: Option<String>,
 }
 
-/// `(name, description)` for each `skills/<dir>/SKILL.md` under `root`.
 fn read_skills(root: &Path) -> Result<Vec<(String, String)>> {
     let mut out: Vec<(String, String)> = skill_dirs(root)?
         .into_iter()
@@ -231,8 +185,6 @@ fn read_skills(root: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-/// `(name, description, directory)` for each `skills/<dir>/SKILL.md` under
-/// `root`. The name is the front matter's `name`, else the directory's.
 fn skill_dirs(root: &Path) -> Result<Vec<(String, String, PathBuf)>> {
     let dir = root.join("skills");
     let entries = std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
@@ -265,29 +217,18 @@ fn skill_dirs(root: &Path) -> Result<Vec<(String, String, PathBuf)>> {
     Ok(out)
 }
 
-/// One skill a teammate names in `plugin_skills`, as a launch would load it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NamedPluginSkill {
     pub plugin: String,
     pub skill: String,
-    /// `<plugin>@<marketplace>` for an installed plugin, `<plugin>@inline`
-    /// for one from `plugin_dirs`: the id Claude Code gives the plugin.
     pub plugin_key: String,
-    /// The plugin's version, when its install record or manifest has one.
     pub version: Option<String>,
     pub description: String,
-    /// The skill's directory in the original plugin.
     pub dir: PathBuf,
-    /// Byte length of the skill's SKILL.md.
     pub skill_file_bytes: usize,
-    /// `tree_digest` of `dir`: the same digest [`materialize_filtered`]
-    /// checks its copy against.
     pub digest: String,
 }
 
-/// Every skill `teammate` names in `plugin_skills`, resolved under `home`
-/// (`$HOME`) and digested. Fails as [`resolve_all_in`] does, and on a skill
-/// tree the digest rules refuse (a symlink, say).
 pub(crate) fn named_skills(
     teammate: &Teammate,
     home: Option<&Path>,
@@ -306,8 +247,6 @@ pub(crate) fn named_skills(
     Ok(out)
 }
 
-/// `skill` of `plugin`, found among the `dirs` of its skills (see
-/// [`skill_dirs`]) and digested.
 fn named_skill(
     plugin: &Plugin,
     plugin_key: &str,
@@ -334,13 +273,8 @@ fn named_skill(
     })
 }
 
-/// The directory under a skills bundle that holds the filtered plugins.
 pub(crate) const FILTERED_DIR: &str = "plugins";
 
-/// What a filtered copy leaves out of the plugin root: the skills and the
-/// commands (Claude Code lists a command as a skill), which it rebuilds from
-/// the named skills only; the manifest, which it rewrites; and Claude Code's
-/// own markers in an installed plugin's cache directory.
 const LEFT_OUT: [&str; 6] = [
     "skills",
     "commands",
@@ -350,21 +284,8 @@ const LEFT_OUT: [&str; 6] = [
     ".git",
 ];
 
-/// Manifest keys a filtered copy drops: `skills` adds skill directories to
-/// the `skills/` scan, and `commands` names command files.
 const MANIFEST_LEFT_OUT: [&str; 2] = ["skills", "commands"];
 
-/// Write a filtered copy of each `plugin_skills` plugin under
-/// `<bundle>/plugins/<plugin>/` and return the teammate's `plugin_dirs` with
-/// each plugin's original directory replaced by its copy, and the copy of
-/// each installed plugin appended. `home` is `$HOME`.
-///
-/// A copy is the plugin minus its commands and every skill the teammate did
-/// not name. Its agents, hooks, MCP and LSP servers, scripts and other files
-/// stay: `plugin_skills` narrows skills, not tools. Each named skill's copy
-/// must hold the bytes the bundle's plan pinned for `<plugin>:<skill>` (the
-/// digest the ledger recorded, SKL-04), or, for a skill the plan lacks, the
-/// bytes of its source (`tree_digest`); else the launch fails.
 pub(crate) fn materialize_filtered(
     teammate: &Teammate,
     skills: &crate::skills::Bundle,
@@ -390,13 +311,10 @@ pub(crate) fn materialize_filtered(
     Ok(dirs)
 }
 
-/// Whether `name` can be the name of one directory: it is not empty, not `.`
-/// or `..`, and holds no path separator or NUL.
 fn is_dir_name(name: &str) -> bool {
     !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\\', '\0'])
 }
 
-/// The digest the bundle's plan pinned for `<plugin>:<skill>`, if it did.
 fn pinned_digest(skills: &crate::skills::Bundle, plugin: &str, skill: &str) -> Option<String> {
     let id = format!("{plugin}:{skill}");
     skills
@@ -407,8 +325,6 @@ fn pinned_digest(skills: &crate::skills::Bundle, plugin: &str, skill: &str) -> O
         .map(|r| r.digest.to_string())
 }
 
-/// Put `copy` in `dirs` where the plugin's original directory stands (at
-/// `original`), else at the end.
 fn put_copy(dirs: &mut Vec<String>, original: Option<usize>, copy: String) {
     match original {
         Some(at) => dirs[at] = copy,
@@ -416,8 +332,6 @@ fn put_copy(dirs: &mut Vec<String>, original: Option<usize>, copy: String) {
     }
 }
 
-/// Copy `plugin` to `to` with only the `wanted` skills. `pinned` gives the
-/// digest a skill's copy must have; `None` pins the source's digest.
 fn filtered_copy(
     plugin: &Plugin,
     wanted: &[String],
@@ -432,8 +346,6 @@ fn filtered_copy(
         .try_for_each(|(name, _, from)| copy_checked_skill(plugin, &name, &from, to, pinned(&name)))
 }
 
-/// The plugin's manifest without the keys that add skills, named for the
-/// plugin.
 fn write_filtered_manifest(plugin: &Plugin, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to.join(".claude-plugin"))
         .with_context(|| format!("creating {}", to.display()))?;
@@ -445,14 +357,11 @@ fn write_filtered_manifest(plugin: &Plugin, to: &Path) -> Result<()> {
     for key in MANIFEST_LEFT_OUT {
         fields.remove(key);
     }
-    // A manifest-less plugin takes its name from its directory, which the
-    // copy does not share.
     fields.insert("name".into(), Value::String(plugin.name.clone()));
     std::fs::write(to.join(".claude-plugin/plugin.json"), manifest.to_string())
         .map_err(anyhow::Error::from)
 }
 
-/// The manifest at `path`; a plugin without one has an empty manifest.
 fn read_manifest(path: &Path) -> Result<Value> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
@@ -467,7 +376,6 @@ fn skill_digest(plugin: &Plugin, name: &str, dir: &Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("plugin skill '{}:{name}': {e}", plugin.name))
 }
 
-/// Everything in the plugin root except the [`LEFT_OUT`] names.
 fn copy_top_level(plugin: &Plugin, to: &Path) -> Result<()> {
     let entries = std::fs::read_dir(&plugin.root)
         .with_context(|| format!("reading {}", plugin.root.display()))?;
@@ -481,8 +389,6 @@ fn copy_top_level(plugin: &Plugin, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copy one wanted skill and check the copy against `pinned`, else against
-/// the source's own digest.
 fn copy_checked_skill(
     plugin: &Plugin,
     name: &str,
@@ -512,7 +418,6 @@ fn copy_checked_skill(
     Ok(())
 }
 
-/// Copy a file, a symlink (as a symlink) or a directory tree.
 fn copy_entry(from: &Path, to: &Path) -> Result<()> {
     let kind = std::fs::symlink_metadata(from)
         .with_context(|| format!("reading {}", from.display()))?
@@ -551,7 +456,6 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Every `name@marketplace` key under which `plugin` is installed, sorted.
 fn registry_keys(installed: Option<&Value>, plugin: &str) -> Vec<String> {
     let mut keys: Vec<String> = installed
         .and_then(|v| v.get("plugins"))
@@ -567,11 +471,6 @@ fn registry_keys(installed: Option<&Value>, plugin: &str) -> Vec<String> {
     keys
 }
 
-/// Switch each `plugin_skills` plugin to its filtered copy: every installed
-/// `"<plugin>@<marketplace>"` off, so only the copy can load, and
-/// `"<plugin>@inline"` (the `--plugin-dir` copy) on, even where
-/// `inherit_plugins: false` or the operator's settings switched it off.
-/// Must run after that switch-off, so it wins.
 pub(crate) fn overlay_plugin_skills(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, serde_json::Value>,
@@ -595,10 +494,6 @@ pub(crate) fn overlay_plugin_skills(
     Ok(())
 }
 
-/// Fail a launch whose `plugin_skills` plugins are not filtered copies: a
-/// launch without a skills bundle has nowhere to put one, and the original
-/// plugin would load with every skill, or (installed and switched off) with
-/// none. `home` is `$HOME`.
 pub(crate) fn check_filtered(teammate: &Teammate, home: Option<&Path>) -> Result<()> {
     for (plugin, wanted) in resolve_all_in(teammate, home)? {
         let extra: Vec<&str> = plugin
@@ -692,8 +587,6 @@ mod tests {
         );
         assert_eq!(installed_keys(None, "sc", "sc@official"), ["sc@official"]);
     }
-    /// An empty skill list is refused before any plugin is looked up, and the
-    /// message says how to switch a whole plugin off.
     #[test]
     fn an_empty_skill_list_is_refused_with_the_way_out() {
         let teammate = Teammate {
@@ -709,8 +602,6 @@ mod tests {
              leave it out of plugin_skills"
         );
     }
-
-    // ---- Pins for the filtered_copy split (#200) ----
 
     fn wanted(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| n.to_string()).collect()
@@ -790,7 +681,6 @@ mod tests {
         }
     }
 
-    /// The guard against a plugin that changes while the launch copies it.
     #[test]
     fn a_skill_that_differs_from_its_pinned_digest_fails_the_launch() {
         let tmp = tempfile::tempdir().unwrap();
@@ -798,13 +688,11 @@ mod tests {
         let plugin = resolved(&src);
         let real = digest_of(&src.join("skills/review"));
 
-        // The plan pins the real digest: the copy passes.
         let ok = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("a"), |s| {
             (s == "review").then(|| real.clone())
         });
         assert!(ok.is_ok(), "{ok:?}");
 
-        // The plan pinned other bytes: the launch fails and says why.
         let err = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("b"), |_| {
             Some("sha256:other".to_string())
         })
@@ -819,8 +707,6 @@ mod tests {
             "{err}"
         );
 
-        // No pin: the source's own digest is the expectation, so an
-        // untouched source passes.
         let ok = filtered_copy(&plugin, &wanted(&["review"]), &tmp.path().join("c"), |_| {
             None
         });
@@ -900,7 +786,6 @@ mod tests {
                 Some("1.2".to_string())
             ))
         );
-        // The whole key also names a plugin.
         assert_eq!(
             installed_root(&registry, "dev@a", Some(home)).map(|r| r.0),
             Some("dev@a".to_string())
@@ -934,7 +819,6 @@ mod tests {
         let without = serde_json::json!({"plugins": {"dev@m": {"installPath": installed}}});
         let found = resolve_in(&[], Some(&without), "dev", None).unwrap();
         assert_eq!(found.version.as_deref(), Some("3.0"));
-        // A plugin_dirs entry is matched by its manifest name, else its directory name.
         let local = plugin(tmp.path(), "dir-name", &[("a", "A.")]);
         std::fs::write(
             local.join(".claude-plugin/plugin.json"),
@@ -948,7 +832,6 @@ mod tests {
         );
         assert!(resolve_in(&[local], None, "dir-name", None).is_err());
     }
-    // ---- Pins for the named_skills and materialize_filtered splits (#145) ----
 
     fn teammate_naming(dirs: &[&Path], skills: &[(&str, &[&str])]) -> Teammate {
         Teammate {
@@ -964,7 +847,6 @@ mod tests {
         }
     }
 
-    /// A registry under `home` that installs `dir` as `key`, at `version`.
     fn install_registry(home: &Path, key: &str, dir: &Path, version: &str) {
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
         std::fs::write(
@@ -975,7 +857,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A skills bundle that pins no plugin skill.
     fn plain_bundle(state: &Path) -> crate::skills::Bundle {
         let t = Teammate {
             phase: Some(crate::roster::Phase::Plan),
@@ -1018,8 +899,6 @@ mod tests {
                 ("dev", "deploy", "dev@market"),
             ]
         );
-        // A plugin from plugin_dirs: the manifest's version, the skill's own
-        // directory, file size and digest.
         let tdd = &got[0];
         assert_eq!(tdd.version.as_deref(), Some("1.2.0"));
         assert_eq!(tdd.description, "Red, green.");
@@ -1030,12 +909,10 @@ mod tests {
         );
         assert_eq!(tdd.digest, digest_of(&local.join("skills/tdd")));
         assert_ne!(tdd.digest, got[1].digest);
-        // An installed plugin: its key, the record's version, its own files.
         let deploy = &got[2];
         assert_eq!(deploy.version.as_deref(), Some("3.1"));
         assert_eq!(deploy.dir, installed.join("skills/deploy"));
         assert_eq!(deploy.digest, digest_of(&installed.join("skills/deploy")));
-        // No plugin named, nothing to resolve.
         assert_eq!(named_skills(&Teammate::default(), None).unwrap(), []);
     }
 
@@ -1045,7 +922,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let src = plugin(tmp.path(), "code", &[("lint", "L."), ("review", "R.")]);
         std::os::unix::fs::symlink("SKILL.md", src.join("skills/review/alias")).unwrap();
-        // The skill that is not named may hold a link; the named one may not.
         let t = teammate_naming(&[&src], &[("code", &["lint"])]);
         assert_eq!(named_skills(&t, None).unwrap().len(), 1);
         let t = teammate_naming(&[&src], &[("code", &["lint", "review"])]);
@@ -1079,9 +955,6 @@ mod tests {
         );
     }
 
-    /// A plugin_dirs entry (written with `~/`) is swapped for its copy where
-    /// it stands; an installed plugin's copy follows, in name order; the
-    /// other entries stay as they are.
     #[test]
     fn materialize_filtered_swaps_a_plugin_dir_and_appends_an_installed_one() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1117,7 +990,6 @@ mod tests {
         assert!(!copy("code").join("skills/lint").exists());
         assert!(copy("dev").join("skills/deploy/SKILL.md").is_file());
         assert!(!bundle.root().join(FILTERED_DIR).join("other").exists());
-        // Nothing named, nothing copied: the entries come back as given.
         let none = Teammate {
             plugin_skills: Default::default(),
             ..t

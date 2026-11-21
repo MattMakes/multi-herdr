@@ -1,14 +1,3 @@
-//! The skill catalog: every skill a teammate could be given, with an
-//! immutable resolved identity.
-//!
-//! Bundled skills come from the compiled-in `skills/` tree and are versioned
-//! `bundled+<digest12>`. Marketplace lock entries merge in on top. A
-//! teammate's `operator_skills:` merge in per launch, versioned
-//! `operator+<digest12>`, and its `plugin_skills:` as `<plugin>:<skill>`,
-//! versioned `<plugin version>+<digest12>`. Only [`SkillCatalog::installed`],
-//! [`check_store`] and `SkillCatalog::with_host_skills` read the
-//! filesystem. Nothing here reads the environment.
-
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,49 +17,31 @@ use crate::digest::Digest;
 use crate::ids::SkillId;
 use crate::roster::{OperatorSkills, Teammate};
 
-/// The marketplace API, for the `horch` binary, which depends on core only.
 pub use horch_marketplace as marketplace;
 use horch_marketplace::SkillVersion;
 
-/// Where a catalog entry's files come from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CatalogSource {
-    /// Compiled into the binary from `skills/`.
     Bundled,
-    /// Installed by the marketplace; `source` is the lock's source spec.
-    /// `resolved_commit` is the 40-hex commit of a git source, `None` for a
-    /// local one.
     Marketplace {
         source: String,
         resolved_commit: Option<String>,
     },
-    /// A teammate's `operator_skills:`: read at launch from `<dir>/<id>/` on
-    /// the operator's machine. `dir` is already expanded.
-    Operator { dir: PathBuf },
-    /// A skill a teammate names in `plugin_skills:`, read at launch from an
-    /// external Claude plugin. `plugin` is the plugin's id
-    /// (`<plugin>@<marketplace>`, or `<plugin>@inline` for a `plugin_dirs`
-    /// entry); `dir` is the skill's directory in the original plugin. The
-    /// harness loads it from a filtered copy, not from the bundle.
-    Plugin { plugin: String, dir: PathBuf },
+    Operator {
+        dir: PathBuf,
+    },
+    Plugin {
+        plugin: String,
+        dir: PathBuf,
+    },
 }
 
-/// Which files of a bundled skill were copied into this repository, per
-/// `skills/copied.json`. A skill written in this repository has no copied
-/// files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Copied {
-    /// Paths relative to the skill directory. A check reports a problem in a
-    /// copied file but does not fail on it.
     pub copied_files: Vec<String>,
-    /// The skill directory is an unchanged copy: `copied_files` lists every
-    /// file and none was edited. A verbatim skill is exempt from the bundled
-    /// size budget.
     #[serde(default)]
     pub verbatim: bool,
-    /// Why a skill that is not verbatim (renamed, adapted, combined) may
-    /// exceed the bundled size budget. `None` means it meets the budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_exempt: Option<String>,
 }
@@ -80,24 +51,15 @@ pub struct CatalogEntry {
     pub id: SkillId,
     pub version: SkillVersion,
     pub source: CatalogSource,
-    /// The marketplace tree digest of the skill directory.
     pub digest: Digest,
-    /// The SKILL.md `description`, as written. Empty for a marketplace entry:
-    /// the lock does not carry it.
     pub description: String,
     pub copied: Option<Copied>,
-    /// Byte length of SKILL.md; 0 for a marketplace entry.
     pub skill_file_bytes: usize,
-    /// `(path relative to the skill dir, bytes)`; empty for a marketplace
-    /// entry, whose files live in the marketplace store.
     pub(crate) files: Vec<(&'static str, &'static [u8])>,
-    /// The paths of `files` that have an execute bit in `skills/`.
     pub(crate) executable: Vec<&'static str>,
 }
 
 impl CatalogEntry {
-    /// The source label a `ResolvedSkillRef` records: `bundled`, or the
-    /// lock's source spec with `@<commit>` for a git source.
     pub fn source_label(&self) -> String {
         match &self.source {
             CatalogSource::Bundled => "bundled".into(),
@@ -111,17 +73,14 @@ impl CatalogEntry {
         }
     }
 
-    /// Whether this entry is a skill of an external plugin (`plugin_skills:`).
     pub fn is_plugin(&self) -> bool {
         matches!(self.source, CatalogSource::Plugin { .. })
     }
 
-    /// Whether this entry came from a teammate's `operator_skills:`.
     pub fn is_operator(&self) -> bool {
         matches!(self.source, CatalogSource::Operator { .. })
     }
 
-    /// `<dir>/<id>/` of an operator entry; `None` for any other entry.
     pub fn operator_dir(&self) -> Option<PathBuf> {
         match &self.source {
             CatalogSource::Operator { dir } => Some(dir.join(self.id.as_str())),
@@ -130,30 +89,20 @@ impl CatalogEntry {
     }
 }
 
-/// Bundled entries plus marketplace lock entries, keyed by skill id.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillCatalog {
     entries: BTreeMap<String, CatalogEntry>,
-    /// The marketplace store root (`<data_root>`) that marketplace entries'
-    /// files live under. `None` for a catalog built from a lock in memory.
     store_root: Option<PathBuf>,
-    /// Operator skills that [`SkillCatalog::with_host_skills`] skipped
-    /// because this host does not have them.
     skipped_operator: Vec<SkippedOperatorSkill>,
 }
 
-/// An operator skill that this host does not have: its directory, or its
-/// `<dir>/<name>/`, does not exist. The launch goes on without it, the
-/// briefing says so, and `horch teammates --check` warns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedOperatorSkill {
     pub name: String,
-    /// `<dir>/<name>` as the teammate file writes it, `~/` unexpanded.
     pub path: String,
 }
 
 impl SkippedOperatorSkill {
-    /// The sentence for the briefing and the `--check` warning.
     pub fn note(&self) -> String {
         format!(
             "operator skill {} is not installed on this host (no {}): ask the operator to run \
@@ -185,7 +134,6 @@ struct CopiedSkill {
     budget_exempt: Option<String>,
 }
 
-/// Parse the text of `skills/copied.json` into one entry per skill name.
 pub fn parse_copied(text: &str) -> Result<BTreeMap<String, Copied>> {
     let file: CopiedFile = serde_json::from_str(text).context("skills/copied.json")?;
     let mut out = BTreeMap::new();
@@ -203,7 +151,6 @@ pub fn parse_copied(text: &str) -> Result<BTreeMap<String, Copied>> {
     Ok(out)
 }
 
-/// The rules of one `copied.json` entry, before it is stored.
 fn check_copied(s: &CopiedSkill) -> Result<()> {
     let name = &s.name;
     for path in &s.copied_files {
@@ -225,10 +172,6 @@ fn check_copied(s: &CopiedSkill) -> Result<()> {
 }
 
 impl SkillCatalog {
-    /// The compiled-in skills, validated, with their copied files.
-    /// Built once per process: the files are compiled in, and digesting them
-    /// on every call made `Roster::check` (one call per teammate) slow. A
-    /// clone is cheap, because the entries hold `&'static` file bytes.
     pub fn bundled() -> Result<SkillCatalog> {
         static BUNDLED: OnceLock<std::result::Result<SkillCatalog, String>> = OnceLock::new();
         BUNDLED
@@ -257,11 +200,6 @@ impl SkillCatalog {
         })
     }
 
-    /// The catalog a launch sees: the bundled skills plus the marketplace
-    /// lock under `data_root` (`${XDG_DATA_HOME:-~/.local/share}/horch/`),
-    /// when it exists. A marketplace entry gets its description from the
-    /// installed SKILL.md; a missing version directory leaves it empty, and
-    /// materializing that entry fails.
     pub fn installed(data_root: &Path) -> Result<SkillCatalog> {
         let lock_path = Store::new(data_root).lock_path();
         let lock =
@@ -283,8 +221,6 @@ impl SkillCatalog {
         Ok(catalog)
     }
 
-    /// `<data_root>/skills/<id>/<version>/` of a marketplace entry. `None`
-    /// for a bundled entry, or when this catalog has no store root.
     pub fn store_dir(&self, entry: &CatalogEntry) -> Result<Option<PathBuf>> {
         match (&entry.source, &self.store_root) {
             (CatalogSource::Marketplace { .. }, Some(root)) => {
@@ -294,8 +230,6 @@ impl SkillCatalog {
         }
     }
 
-    /// The bundled skills as the installer's catalog, so a `bundled:<id>`
-    /// source installs the compiled-in copy.
     pub(crate) fn marketplace_catalog(&self) -> Result<Catalog> {
         let mut out = Catalog::new();
         for entry in self.entries.values() {
@@ -319,18 +253,11 @@ impl SkillCatalog {
         Ok(out)
     }
 
-    /// Merge marketplace lock entries in.
-    ///
-    /// A lock entry whose source is `bundled:<id>` records an install of the
-    /// compiled-in copy; it never replaces the bundled entry. Any other lock
-    /// entry is an explicit install and wins over a bundled skill of the
-    /// same id.
     pub fn with_lock(mut self, lock: &[LockEntry]) -> Result<SkillCatalog> {
         for entry in lock {
             if entry.source.starts_with("bundled:") {
                 continue;
             }
-            // The SKILL.md name rules: an id later names a directory.
             horch_marketplace::SkillId::parse(&entry.id)
                 .map_err(|e| anyhow::anyhow!("marketplace.lock: {e}"))?;
             let id = SkillId::new(entry.id.as_str())
@@ -363,23 +290,6 @@ impl SkillCatalog {
         Ok(self)
     }
 
-    /// This catalog plus the skills `teammate` brings from the operator's
-    /// machine, read from disk: its `operator_skills:` and its
-    /// `plugin_skills:` ([`SkillCatalog::with_plugin_skills`]). `~/`
-    /// expands against `home`, the launch's home. Only
-    /// `SkillResolution::read` calls it, for the spawn, `horch fleet`, the
-    /// competition coordinator, the launch and `--check`, so the ledger
-    /// record and the launch's skill check (SKL-04) see the same skills.
-    ///
-    /// A skill this host does not have (no directory, or no `<dir>/<name>/`)
-    /// is skipped and recorded in [`SkillCatalog::skipped_operator`]: the
-    /// skills are exported per host with Xcode, so one host may lack them.
-    /// Fails on a name that a catalog skill already has (one bundle
-    /// directory cannot hold both), a name given twice, a subagent skill, a
-    /// directory or skill that exists but cannot be read, an invalid
-    /// SKILL.md, or a tree the marketplace digest rules refuse (a symlink,
-    /// say). The name rules apply on every host, so a clash fails even where
-    /// the skill is missing. A teammate without the field changes nothing.
     pub(crate) fn with_host_skills(
         self,
         teammate: &Teammate,
@@ -389,15 +299,6 @@ impl SkillCatalog {
             .with_plugin_skills(teammate, home)
     }
 
-    /// This catalog plus `teammate`'s `plugin_skills:`, one entry per named
-    /// skill: id `<plugin>:<skill>` (the name the agent lists it under),
-    /// version `<plugin version>+<digest12>` (`plugin+<digest12>` when the
-    /// plugin has no version), and the marketplace tree digest of the skill
-    /// directory in the original plugin. A catalog id has no `:`, so a
-    /// plugin skill never shadows one. Nothing changes for a teammate
-    /// without the field, with `disable_skills`, or on an agent that does
-    /// not load skills as plugins. Fails on a plugin or skill that does not
-    /// resolve, as the launch would.
     pub(crate) fn with_plugin_skills(
         mut self,
         teammate: &Teammate,
@@ -446,7 +347,6 @@ impl SkillCatalog {
         Ok(self)
     }
 
-    /// This catalog plus `teammate`'s `operator_skills:`.
     fn with_operator_dir(
         mut self,
         teammate: &Teammate,
@@ -472,8 +372,6 @@ impl SkillCatalog {
         Ok(self)
     }
 
-    /// The name rules of `operator_skills:`, which hold on every host. The
-    /// ids of the names, in order.
     fn check_operator_names(&self, who: &str, operator: &OperatorSkills) -> Result<Vec<SkillId>> {
         let mut ids = Vec::new();
         if operator.names.is_empty() {
@@ -498,8 +396,6 @@ impl SkillCatalog {
         Ok(ids)
     }
 
-    /// The operator skills that `SkillCatalog::with_host_skills`
-    /// skipped because this host does not have them, in `names:` order.
     pub fn skipped_operator(&self) -> &[SkippedOperatorSkill] {
         &self.skipped_operator
     }
@@ -508,12 +404,10 @@ impl SkillCatalog {
         self.entries.get(id.as_str())
     }
 
-    /// Look a skill up by a name that may not be a valid id.
     pub fn lookup(&self, name: &str) -> Option<&CatalogEntry> {
         self.entries.get(name)
     }
 
-    /// Every entry, sorted by id.
     pub fn entries(&self) -> impl Iterator<Item = &CatalogEntry> {
         self.entries.values()
     }
@@ -527,30 +421,19 @@ impl SkillCatalog {
     }
 }
 
-/// The marketplace installer over the store at `data_root`, running `git`
-/// (the caller resolves `$HORCH_GIT_BIN`), with the bundled skills as its
-/// catalog.
 pub fn installer(data_root: &Path, git: &Path) -> Result<Installer> {
     Ok(Installer::new(data_root.to_path_buf(), GitRunner::new(git))
         .with_catalog(SkillCatalog::bundled()?.marketplace_catalog()?))
 }
 
-/// What `horch skills doctor` found for one lock entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreState {
-    /// The version directory exists and matches the locked digest.
     Ok,
-    /// The version directory does not exist.
     Missing,
-    /// The files on disk have a different digest, or fail the store's
-    /// tree rules (`actual` says why).
     Tampered { actual: String },
-    /// The lock entry cannot name a directory.
     Invalid(String),
 }
 
-/// Check every lock entry under `data_root` against the files on disk.
-/// Needs no network. An absent lock is an empty store.
 pub fn check_store(data_root: &Path) -> Result<Vec<(LockEntry, PathBuf, StoreState)>> {
     let lock_path = Store::new(data_root).lock_path();
     let lock = Lockfile::read(&lock_path).map_err(|e| anyhow!("{}: {e}", lock_path.display()))?;
@@ -569,8 +452,6 @@ pub fn check_store(data_root: &Path) -> Result<Vec<(LockEntry, PathBuf, StoreSta
     Ok(out)
 }
 
-/// The operator directory, expanded against `home`. A directory this host
-/// does not have is returned too: no skill is under it, so each is skipped.
 fn operator_dir(who: &str, operator: &OperatorSkills, home: Option<&Path>) -> Result<PathBuf> {
     let dir = crate::roster::expand_home(&operator.dir, home);
     if exists(&dir, || {
@@ -592,8 +473,6 @@ fn operator_dir(who: &str, operator: &OperatorSkills, home: Option<&Path>) -> Re
     Ok(dir)
 }
 
-/// The catalog entry of operator skill `name` under `dir`. `None` when this
-/// host does not have `<dir>/<name>/`.
 fn load_operator_skill(
     who: &str,
     operator: &OperatorSkills,
@@ -623,8 +502,6 @@ fn load_operator_skill(
     }))
 }
 
-/// The digest of the tree of operator skill `name`, which the digest rules
-/// may refuse.
 fn operator_skill_digest(who: &str, name: &str, skill_dir: &Path) -> Result<Digest> {
     horch_marketplace::integrity::tree_digest(skill_dir)
         .map_err(|e| anyhow!("{who}: operator skill '{name}': {e}"))?
@@ -632,7 +509,6 @@ fn operator_skill_digest(who: &str, name: &str, skill_dir: &Path) -> Result<Dige
         .with_context(|| format!("{who}: operator skill '{name}' digest"))
 }
 
-/// The bytes and the metadata of `<skill_dir>/SKILL.md`.
 fn read_operator_skill_md(
     who: &str,
     operator: &OperatorSkills,
@@ -651,8 +527,6 @@ fn read_operator_skill_md(
     Ok((bytes, meta))
 }
 
-/// Fails when operator skill `name` starts a subagent, which a fleet pane
-/// must not do.
 fn bail_if_subagent(who: &str, name: &str, skill_md: &[u8]) -> Result<()> {
     if let Some(why) = subagent_skill(name, skill_md) {
         bail!(
@@ -663,9 +537,7 @@ fn bail_if_subagent(who: &str, name: &str, skill_md: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// How the files of `dir` stand against the digest `want`.
 fn digest_state(dir: &Path, want: &str) -> StoreState {
-    // A tree the digest rules refuse reports why, in place of a digest.
     let actual = horch_marketplace::integrity::tree_digest(dir).unwrap_or_else(|e| e.to_string());
     if actual == want {
         StoreState::Ok
@@ -674,8 +546,6 @@ fn digest_state(dir: &Path, want: &str) -> StoreState {
     }
 }
 
-/// `<root>/skills/<id>/<version>/`, after checking that `id` and `version`
-/// are plain path segments: the lock is an operator-writable file.
 fn version_dir(root: &Path, id: &str, version: &str) -> Result<PathBuf> {
     horch_marketplace::SkillId::parse(id).map_err(|e| anyhow!("marketplace.lock: {e}"))?;
     if version.is_empty()
@@ -687,8 +557,6 @@ fn version_dir(root: &Path, id: &str, version: &str) -> Result<PathBuf> {
     Ok(root.join("skills").join(id).join(version))
 }
 
-/// The catalog entry of the compiled-in skill `name`, whose SKILL.md is
-/// `bytes` at `path`.
 fn bundled_entry(
     path: &str,
     name: &str,
@@ -697,7 +565,6 @@ fn bundled_entry(
 ) -> Result<CatalogEntry> {
     let meta = validate_skill_md(path, name, bytes)?;
     let (files, executable) = bundled_files(name);
-    // `build.rs` digested the same bytes and execute bits at build time.
     let digest = BUNDLED_SKILL_DIGESTS
         .iter()
         .find_map(|&(n, d)| (n == name).then_some(Digest(d)))
@@ -717,8 +584,6 @@ fn bundled_entry(
     })
 }
 
-/// The files of the compiled-in skill `name`, relative to its directory, and
-/// the ones among them with the execute bit.
 #[allow(clippy::type_complexity)]
 fn bundled_files(name: &str) -> (Vec<(&'static str, &'static [u8])>, Vec<&'static str>) {
     let prefix = format!("{name}/");
@@ -733,7 +598,6 @@ fn bundled_files(name: &str) -> (Vec<(&'static str, &'static [u8])>, Vec<&'stati
     (files, executable)
 }
 
-/// Every file `copied.json` lists for `name` is a file of the skill.
 fn check_copied_present(
     name: &str,
     copied: Option<&Copied>,
@@ -747,8 +611,6 @@ fn check_copied_present(
     Ok(())
 }
 
-/// Whether `path` exists. `false` only for "not found"; any other error
-/// (a parent that cannot be searched, say) is a real error, named by `what`.
 fn exists(path: &Path, what: impl FnOnce() -> String) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -757,9 +619,6 @@ fn exists(path: &Path, what: impl FnOnce() -> String) -> Result<bool> {
     }
 }
 
-/// Skills that only work by starting a subagent, which a fleet pane must
-/// not do. Apple's `device-interaction` is one by name. Any other skill is
-/// one when its SKILL.md says so. The reason is `None` for a fleet skill.
 fn subagent_skill(name: &str, skill_md: &[u8]) -> Option<&'static str> {
     if name == "device-interaction" {
         return Some("device-interaction runs as a subagent");
@@ -774,9 +633,6 @@ fn subagent_skill(name: &str, skill_md: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// The SKILL.md rules: YAML frontmatter whose `name` equals the directory
-/// name and follows `[a-z0-9-]` without a leading, trailing or doubled `-`,
-/// and a non-empty `description` of at most 1024 bytes.
 fn validate_skill_md(path: &str, name: &str, bytes: &[u8]) -> Result<Metadata> {
     let meta = skill_md_metadata(path, bytes)?;
     if meta.name != name || !valid_skill_name(name) || !valid_description(&meta.description) {
@@ -785,7 +641,6 @@ fn validate_skill_md(path: &str, name: &str, bytes: &[u8]) -> Result<Metadata> {
     Ok(meta)
 }
 
-/// The YAML frontmatter of a SKILL.md.
 fn skill_md_metadata(path: &str, bytes: &[u8]) -> Result<Metadata> {
     let text = std::str::from_utf8(bytes)
         .context("skill is not UTF-8")?
@@ -797,26 +652,16 @@ fn skill_md_metadata(path: &str, bytes: &[u8]) -> Result<Metadata> {
     serde_yaml::from_str(front).with_context(|| format!("{path}: invalid metadata"))
 }
 
-/// A skill name follows `[a-z0-9-]` without a leading, trailing or doubled
-/// `-`.
 fn valid_skill_name(name: &str) -> bool {
-    // An empty part is an empty name, or a leading, trailing or doubled `-`.
     name.split('-').all(|part| {
         !part.is_empty() && part.bytes().all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9'))
     })
 }
 
-/// A description is not blank and has at most 1024 bytes.
 fn valid_description(description: &str) -> bool {
     !description.trim().is_empty() && description.len() <= 1024
 }
 
-/// The marketplace tree-digest rule (`horch_marketplace::integrity::tree_digest`)
-/// over in-memory files: sha256 over the sorted lines
-/// `<relative path>\0<hex sha256 of the bytes>\n`, where the line of a path
-/// in `executable` ends `\0x\n`. `build.rs` applies it to the bundled
-/// skills; the test checks that both agree. A skill without an executable
-/// file has its marketplace digest.
 #[cfg(test)]
 fn tree_digest(files: &[(&str, &[u8])], executable: &[&str]) -> Digest {
     use sha2::{Digest as _, Sha256};
@@ -848,8 +693,6 @@ fn tree_digest(files: &[(&str, &[u8])], executable: &[&str]) -> Digest {
 mod tests {
     use super::*;
 
-    /// The build-time digest of each bundled skill is the run-time tree
-    /// digest of its embedded files, and every bundled skill has one.
     #[test]
     fn build_time_digests_equal_the_run_time_digest() {
         let catalog = SkillCatalog::bundled().unwrap();
@@ -867,9 +710,6 @@ mod tests {
         }
     }
 
-    /// A fixture skill whose only change is the execute bit of 1 file gets
-    /// a new digest. A skill without an executable file keeps the
-    /// marketplace digest of its tree on disk.
     #[test]
     fn skl_11_digest_covers_the_execute_bit() {
         let files: [(&str, &[u8]); 2] = [
@@ -891,8 +731,6 @@ mod tests {
         assert_eq!(plain.to_string(), on_disk);
     }
 
-    /// The bundled table names the 755 script of `godot-build-verify` and
-    /// not its SKILL.md.
     #[cfg(unix)]
     #[test]
     fn skl_11_bundled_entry_lists_its_executable_files() {
@@ -902,10 +740,6 @@ mod tests {
         assert!(!entry.executable.contains(&"SKILL.md"));
     }
 
-    /// A marketplace install of `bundled:godot-build-verify` writes its
-    /// script with an execute bit and SKILL.md without one. The lock digest
-    /// is the mode-blind `tree_digest` of the store copy, so `check_store`
-    /// reports `Ok`.
     #[cfg(unix)]
     #[test]
     fn skl_11_marketplace_install_keeps_the_execute_bit() {
@@ -960,7 +794,6 @@ mod tests {
         }
     }
 
-    /// Each SKILL.md rule rejects on its own.
     #[test]
     fn validate_skill_md_rejects_each_rule_alone() {
         let meta = validate_skill_md(
@@ -1043,8 +876,6 @@ mod tests {
         }
     }
 
-    /// `check_store` reports a bad lock entry, a missing version
-    /// directory and changed files, each beside its own entry.
     #[test]
     fn check_store_reports_invalid_missing_and_tampered_entries() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1212,8 +1043,6 @@ mod tests {
             .with_operator_dir(&operator_teammate(&dir, &["fine"]), None)
             .unwrap();
         let entry = catalog.lookup("fine").unwrap();
-        // The digest covers that skill's own tree: not its sibling, not the
-        // directory above.
         let own = horch_marketplace::integrity::tree_digest(&tmp.path().join("fine")).unwrap();
         let sibling = horch_marketplace::integrity::tree_digest(&tmp.path().join("other")).unwrap();
         let above = horch_marketplace::integrity::tree_digest(tmp.path()).unwrap();

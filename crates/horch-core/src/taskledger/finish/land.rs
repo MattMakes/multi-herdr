@@ -1,5 +1,3 @@
-//! The check, recheck, land and cleanup steps (#36).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -14,37 +12,24 @@ use crate::taskledger::sql_words::word;
 use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
 
-/// How long a land waits for another land of the same repository.
 pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// How much older than its holder's check timeout a land lock gets before
-/// a waiter may break it: the time for the rebase, the fast-forward and the
-/// push around the check.
 const LOCK_STALE_MARGIN: Duration = Duration::from_secs(10 * 60);
 
-/// How many times a land rebases and checks again because the run branch
-/// moved during its check.
 const MAX_LAND_TRIES: u32 = 5;
 
-/// How long a check runs before it is killed, unless the task sets it
-/// (`horch ledger add --check-timeout`).
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// The longest check timeout a task may set; a longer one is cut to this.
 pub const MAX_CHECK_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// How long a timed-out check gets to exit after its group is killed.
 const REAP_WAIT: Duration = Duration::from_secs(5);
 
-/// How often a land that waits for the land lock names its holder.
 const LOCK_NOTICE_EVERY: Duration = Duration::from_secs(30);
 
 fn check_timeout_path(evidence_root: &Path, task_id: &str) -> PathBuf {
     super::task_dir(evidence_root, task_id).join("check-timeout-s")
 }
 
-/// Record the check timeout of 1 task. Refuses 0 and more than
-/// [`MAX_CHECK_TIMEOUT`].
 pub fn set_check_timeout(evidence_root: &Path, task_id: &str, timeout: Duration) -> Result<()> {
     if timeout.is_zero() || timeout > MAX_CHECK_TIMEOUT {
         bail!(
@@ -59,7 +44,6 @@ pub fn set_check_timeout(evidence_root: &Path, task_id: &str, timeout: Duration)
     Ok(())
 }
 
-/// The check timeout of 1 task: its own, else [`CHECK_TIMEOUT`].
 pub fn check_timeout(evidence_root: &Path, task_id: &str) -> Duration {
     std::fs::read_to_string(check_timeout_path(evidence_root, task_id))
         .ok()
@@ -69,7 +53,6 @@ pub fn check_timeout(evidence_root: &Path, task_id: &str) -> Duration {
         .unwrap_or(CHECK_TIMEOUT)
 }
 
-/// How 1 check run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Checked {
     Passed,
@@ -77,10 +60,6 @@ enum Checked {
     TimedOut(Duration),
 }
 
-/// Run `cmd`, which runs `command`, in `dir`, in its own process group;
-/// the output goes to `log`. At `timeout` the whole group is killed (#160),
-/// and so it is on every other way out of this function, and when horch
-/// gets SIGINT, SIGTERM or SIGHUP while the check runs.
 fn run_check(
     mut cmd: Command,
     dir: &Path,
@@ -130,8 +109,6 @@ fn run_check(
     })
 }
 
-/// A running check. Dropped before it exited (an error, a panic), it kills
-/// the check's whole group, so no check outlives its finish.
 struct CheckGroup {
     child: std::process::Child,
     done: bool,
@@ -143,14 +120,12 @@ impl CheckGroup {
         Self { child, done: false }
     }
 
-    /// Kill the group; when that fails, kill at least the shell.
     fn kill(&mut self) {
         if !crate::runtime::process::kill_pgid(self.child.id()) {
             let _ = self.child.kill();
         }
     }
 
-    /// Wait up to `limit` for the killed check to exit. Whether it did.
     fn reap(&mut self, limit: Duration) -> bool {
         let until = std::time::Instant::now() + limit;
         loop {
@@ -177,15 +152,11 @@ impl Drop for CheckGroup {
     }
 }
 
-/// SIGINT, SIGTERM and SIGHUP to horch while a check runs kill the check's
-/// group too: the check has its own group, so a terminal's signal does not
-/// reach it, and without this it ran on with no deadline.
 #[cfg(unix)]
 mod signals {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Once;
 
-    /// The group of the running check, 0 when none runs.
     static GROUP: AtomicI32 = AtomicI32::new(0);
     static INSTALL: Once = Once::new();
 
@@ -227,9 +198,6 @@ mod signals {
     pub(super) fn forget() {}
 }
 
-/// The check command of the task: its own, else the run's default
-/// (TRF-16). `None` only when the ticket says `**Check:** none`. A task with
-/// neither is an error: work never lands untested by default (TRF-17).
 fn check_command<'a>(cx: &'a Ctx<'_>) -> Result<Option<&'a str>> {
     let own = cx.task.land_check.as_deref();
     let run = cx.default_check.as_deref();
@@ -247,14 +215,6 @@ fn check_command<'a>(cx: &'a Ctx<'_>) -> Result<Option<&'a str>> {
     )
 }
 
-/// The process that runs the check `command` in `dir`: the shell, or for a
-/// Codex worker the shell inside the sandbox of its pane (#181), with the
-/// pane's TMPDIR, as `/tmp` is read-only there.
-///
-/// Only the shell gets that TMPDIR. `codex sandbox` reads its own `TMPDIR`
-/// for the profile's `":tmpdir"="read"` entry, so a pane TMPDIR on `codex`
-/// makes that dir read-only for the check. A `finish` run from a Codex
-/// pane inherits the pane TMPDIR, so `codex` runs without one.
 fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Result<Command> {
     let codex = &cx.tools.codex;
     let mut cmd = if sandboxed {
@@ -278,8 +238,6 @@ fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Re
     Ok(cmd)
 }
 
-/// Run the task's check in `dir`. `None` when it passed or the ticket says
-/// `**Check:** none`, else how it ended and why it did not pass.
 fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<(Checked, String)>> {
     let Some(cmd) = check_command(cx)? else {
         return Ok(None);
@@ -306,9 +264,6 @@ fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<(Checked, Str
     Ok(Some((checked, why)))
 }
 
-/// Committed work only: a step judges commits, never a half-saved tree.
-/// In the shared checkout only tracked files count: its untracked files are
-/// the operator's or other workers', not the task's.
 fn require_clean(git: &Git, dir: &Path, shared: bool) -> Result<()> {
     let dirty = if shared {
         git.dirty_tracked(dir)?
@@ -326,8 +281,6 @@ fn require_clean(git: &Git, dir: &Path, shared: bool) -> Result<()> {
     Ok(())
 }
 
-/// `check` and `recheck`: the task's check command, exit 0 to pass. A task
-/// with no check fails unless its ticket says `**Check:** none`.
 pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
     let cmd = match check_command(cx) {
         Ok(Some(cmd)) => cmd,
@@ -351,14 +304,10 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
     }
 }
 
-/// The age at which a land lock whose holder runs checks of `check_timeout`
-/// is stale (D7). A check can run under the lock, so a shorter age breaks
-/// the lock of a live holder.
 pub(crate) fn lock_stale_age(check_timeout: Duration) -> Duration {
     check_timeout.min(MAX_CHECK_TIMEOUT) + LOCK_STALE_MARGIN
 }
 
-/// How long a land waits for the land lock.
 fn lock_wait() -> Duration {
     #[cfg(test)]
     if let Some(wait) = tests::LOCK_WAIT.with(std::cell::Cell::get) {
@@ -367,9 +316,6 @@ fn lock_wait() -> Duration {
     LAND_LOCK_TIMEOUT
 }
 
-/// The lock every land of 1 repository takes, so lands go in a line. While
-/// it waits, it prints who holds it every 30 s. It is stale only after the
-/// task's check timeout plus [`LOCK_STALE_MARGIN`].
 pub(crate) fn land_lock(cx: &Ctx<'_>) -> Result<crate::fsx::DirLockGuard> {
     let holder = format!(
         "{} of {} (PID {})",
@@ -381,9 +327,6 @@ pub(crate) fn land_lock(cx: &Ctx<'_>) -> Result<crate::fsx::DirLockGuard> {
     lock_of_repo(&cx.tools.evidence_root, &cx.root, &holder, stale)
 }
 
-/// The land lock of the repository at `root`, held by `holder`: the lock
-/// [`land_lock`] takes, for a land that has no finish context (#308). It
-/// runs no check, so the default check timeout sets its stale age.
 pub(crate) fn repo_land_lock(
     evidence_root: &Path,
     root: &Path,
@@ -411,8 +354,6 @@ fn lock_of_repo(
     )
 }
 
-/// Take lock `name` in `dir`, stale after `stale`, and write `holder` into
-/// it. Every `every` that it waits, `notice` gets the current holder's line.
 fn take_lock(
     dir: &Path,
     name: &str,
@@ -448,9 +389,6 @@ fn sha_hex(s: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `land`: rebase on the run branch, run the check, fast-forward the run
-/// branch under the land lock, push it. A red check or a conflict changes
-/// nothing.
 pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     let run_branch = cx
         .run
@@ -468,8 +406,6 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         return Ok(Outcome::fail("no check", None, &format!("{e:#}")));
     }
     let Some(wt) = cx.worktree.clone() else {
-        // Only a one-off `--check none` task passes finish without its
-        // worktree (`require_worktree`): it made no change, so nothing lands (T-5).
         if cx.task.uses_worktree() && cx.task.is_no_change_one_off() {
             return Ok(Outcome::not_applicable(
                 "the task has no worktree and changed no file",
@@ -481,21 +417,17 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         return land_again(cx, &wt, &run_branch, &log);
     }
     let dir = PathBuf::from(&wt.path);
-    // The lock stays held until the land is pushed and recorded.
     match land_stages(store, cx, &wt, &dir, &run_branch, &log) {
         Ok((_lock, new)) => finish_landed(store, cx, &wt, &run_branch, &new, log),
         Err(Stop::Red(why)) => red(store, cx, &wt, log, why),
         Err(Stop::NotMine(o)) => Ok(*o),
         Err(Stop::Error(e)) => {
-            // Like a red stage, an error leaves no `landing` row (D7).
             let _ = reopen_landing(store, &wt, &format!("{e:#}"));
             Err(e)
         }
     }
 }
 
-/// Whether a worktree is clean and still at the commit where it was made.
-/// Such a task has no work to land or push.
 pub(crate) fn no_commits_since_claim(git: &Git, wt: &WorktreeRow) -> Result<bool> {
     let Some(base) = wt.base_commit.as_deref() else {
         return Ok(false);
@@ -504,7 +436,6 @@ pub(crate) fn no_commits_since_claim(git: &Git, wt: &WorktreeRow) -> Result<bool
     Ok(dir.exists() && git.dirty(dir)?.is_empty() && git.rev(dir, "HEAD")? == base)
 }
 
-/// A worktree still `landing` is `open` again, with why.
 fn reopen_landing(store: &Store, wt: &WorktreeRow, why: &str) -> Result<()> {
     store.conn().execute(
         &format!(
@@ -518,11 +449,8 @@ fn reopen_landing(store: &Store, wt: &WorktreeRow, why: &str) -> Result<()> {
     Ok(())
 }
 
-/// Why a land stopped before the fast-forward.
 enum Stop {
-    /// A red stage: the worktree goes back to `open` with this reason.
     Red(String),
-    /// The task is no longer this worker's: nothing is recorded.
     NotMine(Box<Outcome>),
     Error(anyhow::Error),
 }
@@ -533,7 +461,6 @@ impl From<anyhow::Error> for Stop {
     }
 }
 
-/// The events of 1 land are about its run, task and worker.
 fn about<'a>(cx: &'a Ctx<'_>) -> About<'a> {
     About {
         run: Some(&cx.run.run_id),
@@ -542,8 +469,6 @@ fn about<'a>(cx: &'a Ctx<'_>) -> About<'a> {
     }
 }
 
-/// The stages of a land, in order. On success the land lock is held and
-/// the run branch is at the returned commit.
 fn land_stages(
     store: &Store,
     cx: &Ctx<'_>,
@@ -564,8 +489,6 @@ fn land_stages(
     )?;
     let tip = cx.tools.git.rev(dir, "HEAD")?;
     let landed = rebase_and_check(cx, dir, run_branch, log).and_then(|(lock, new)| {
-        // Under the land lock, just before the fast-forward: a cancel that
-        // arrived during the rebase, the check or the lock wait lands nothing.
         still_mine(store, cx)?;
         fast_forward(cx, run_branch, &new)?;
         Ok((lock, new))
@@ -573,11 +496,6 @@ fn land_stages(
     landed.map_err(|stop| undo_rebase(&cx.tools.git, dir, &tip, stop))
 }
 
-/// A land that stops after its rebase puts the branch back at `tip`, its
-/// head before the land (L2). The tree that the steps before land judged
-/// stays, so the next finish starts no new review round. A task that is no
-/// longer this worker's keeps its branch as it is: another worker can use
-/// the worktree now.
 fn undo_rebase(git: &Git, dir: &Path, tip: &str, stop: Stop) -> Stop {
     if matches!(stop, Stop::NotMine(_)) {
         return stop;
@@ -596,7 +514,6 @@ fn undo_rebase(git: &Git, dir: &Path, tip: &str, stop: Stop) -> Stop {
     }
 }
 
-/// Move the branch checked out in `dir` back to `tip`, when it moved.
 fn reset_to(git: &Git, dir: &Path, tip: &str) -> Result<()> {
     if git.rev(dir, "HEAD")? == tip {
         return Ok(());
@@ -608,7 +525,6 @@ fn reset_to(git: &Git, dir: &Path, tip: &str) -> Result<()> {
     Ok(())
 }
 
-/// The task may be cancelled at any time before the fast-forward (#136).
 fn still_mine(store: &Store, cx: &Ctx<'_>) -> Result<(), Stop> {
     let t = super::tasks::get(store.conn(), &cx.task.task_id)?;
     let mine = Some(cx.worker.worker_id.as_str());
@@ -628,9 +544,6 @@ fn still_mine(store: &Store, cx: &Ctx<'_>) -> Result<(), Stop> {
     }
 }
 
-/// Rebase and check outside the land lock; under it, go on only when the
-/// run branch did not move meanwhile (#160). When it moved, the next try
-/// takes the lock first, so a land runs the check at most twice.
 fn rebase_and_check(
     cx: &Ctx<'_>,
     dir: &Path,
@@ -640,12 +553,9 @@ fn rebase_and_check(
     let mut held: Option<crate::fsx::DirLockGuard> = None;
     for _ in 0..MAX_LAND_TRIES {
         if let Some(lock) = &held {
-            // This check runs under the lock: its age starts again, so a
-            // waiter does not take it for stale.
             lock.refresh().map_err(anyhow::Error::from)?;
         }
         let (target_before, new) = rebased_and_checked(cx, dir, run_branch, log)?;
-        // After the first try the lock is held already.
         let lock = match held.take() {
             Some(lock) => lock,
             None => land_lock(cx).map_err(lock_wait_stop)?,
@@ -660,8 +570,6 @@ fn rebase_and_check(
     )))
 }
 
-/// A land-lock wait that timed out is a red stage, so the worktree is
-/// `open` again (D7); every other lock error is an error.
 fn lock_wait_stop(e: anyhow::Error) -> Stop {
     match e.downcast_ref::<crate::fsx::FsxError>() {
         Some(crate::fsx::FsxError::LockTimeout { waited, .. }) => Stop::Red(format!(
@@ -672,8 +580,6 @@ fn lock_wait_stop(e: anyhow::Error) -> Stop {
     }
 }
 
-/// 1 try: rebase the branch on the run branch and run the check. The run
-/// branch it rebased on, and the new head.
 fn rebased_and_checked(
     cx: &Ctx<'_>,
     dir: &Path,
@@ -696,10 +602,6 @@ fn rebased_and_checked(
     }
 }
 
-/// Rebase on `target`; a conflict aborts the rebase. When `target` is an
-/// ancestor of the branch head already, nothing is rebased: a rebase would
-/// flatten the merge commits of the branch, and a fast-forward lands them as
-/// they are.
 fn rebase(
     cx: &Ctx<'_>,
     dir: &Path,
@@ -724,8 +626,6 @@ fn rebase(
     )))
 }
 
-/// Fast-forward the run branch to `new`: by merge when it is checked out in
-/// the main checkout, else by a compare-and-swap of its ref. Never forced.
 fn fast_forward(cx: &Ctx<'_>, run_branch: &str, new: &str) -> Result<(), Stop> {
     let git = &cx.tools.git;
     let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch);
@@ -749,7 +649,6 @@ fn fast_forward(cx: &Ctx<'_>, run_branch: &str, new: &str) -> Result<(), Stop> {
     }
 }
 
-/// A red stage: the worktree is open again, with why.
 fn red(
     store: &Store,
     cx: &Ctx<'_>,
@@ -773,7 +672,6 @@ fn red(
     Ok(Outcome::fail("not landed", Some(log), &why))
 }
 
-/// The worktree's work is on the run branch at `new`.
 fn record_landed(store: &Store, wt: &WorktreeRow, new: &str) -> Result<()> {
     store.conn().execute(
         &format!(
@@ -786,7 +684,6 @@ fn record_landed(store: &Store, wt: &WorktreeRow, new: &str) -> Result<()> {
     Ok(())
 }
 
-/// The run branch is at `new`: push it and record the land.
 fn finish_landed(
     store: &Store,
     cx: &Ctx<'_>,
@@ -806,7 +703,6 @@ fn finish_landed(
             &["push", remote, &format!("{run_branch}:{run_branch}")],
         )?;
         if !push.ok {
-            // The land stands; the next finish pushes again (`land_again`).
             record_landed(store, wt, new)?;
             return Ok(Outcome::fail(
                 "landed, not pushed",
@@ -828,15 +724,11 @@ fn finish_landed(
     Ok(Outcome::pass(new, Some(log), &note))
 }
 
-/// Whether the worktree's work landed already.
 fn is_landed(wt: &WorktreeRow) -> bool {
     wt.status == WorktreeStatus::Landed.as_str()
         || wt.status == WorktreeStatus::CleanupFailed.as_str()
 }
 
-/// A landed worktree whose branch has commits the run branch lacks goes
-/// back to `open`, so they are checked, reviewed and landed (#154). Returns
-/// whether it did.
 pub(crate) fn reopen_if_new_commits(
     store: &Store,
     git: &Git,
@@ -862,15 +754,12 @@ pub(crate) fn reopen_if_new_commits(
     Ok(true)
 }
 
-/// Whether `remote`'s run branch holds `commit` (after a fetch).
 fn remote_has(git: &Git, root: &Path, remote: &str, run_branch: &str, commit: &str) -> bool {
     let _ = git.try_network(root, &["fetch", remote, run_branch]);
     let remote_ref = format!("refs/remotes/{remote}/{run_branch}");
     git.rev(root, &remote_ref).is_ok() && git.is_ancestor(root, commit, &remote_ref)
 }
 
-/// A landed worktree with no new commit: push the run branch again when the
-/// remote lacks the land, else pass at once.
 fn land_again(cx: &Ctx<'_>, wt: &WorktreeRow, run_branch: &str, log: &Path) -> Result<Outcome> {
     let git = &cx.tools.git;
     let landed = wt.landed_commit.clone().unwrap_or_default();
@@ -900,8 +789,6 @@ fn land_again(cx: &Ctx<'_>, wt: &WorktreeRow, run_branch: &str, log: &Path) -> R
     Ok(Outcome::pass(&landed, Some(log.to_path_buf()), &note))
 }
 
-/// A shared-checkout task: its commits are on the run branch already when
-/// the checkout is on it; push them.
 fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
     let git = &cx.tools.git;
     require_clean(git, &cx.root, true)?;
@@ -934,7 +821,6 @@ fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
     ))
 }
 
-/// What decides whether 1 worktree may be removed.
 struct Removal<'a> {
     git: &'a Git,
     root: &'a Path,
@@ -986,8 +872,6 @@ impl Removal<'_> {
     }
 }
 
-/// Why a worktree may not be removed yet, or `None` when no work can be lost.
-/// The checks run in order; a later one runs only when the earlier pass.
 pub fn unsafe_to_remove(
     git: &Git,
     root: &Path,
@@ -1013,8 +897,6 @@ pub fn unsafe_to_remove(
         Removal::unlanded,
         Removal::unpushed,
     ];
-    // The first reason ends the search: a later check runs only when the
-    // earlier ones found none.
     checks
         .iter()
         .map(|check| check(&removal))
@@ -1022,7 +904,6 @@ pub fn unsafe_to_remove(
         .transpose()
 }
 
-/// Remove 1 landed worktree when no work can be lost; record the bytes.
 pub fn remove(
     store: &Store,
     git: &Git,
@@ -1046,7 +927,6 @@ pub fn remove(
     }
 }
 
-/// Remove the worktree's folder, then its branch. What failed, if anything.
 fn delete_worktree(
     git: &Git,
     root: &Path,
@@ -1061,9 +941,6 @@ fn delete_worktree(
         }
     }
     if git.branch_exists(root, &wt.branch) {
-        // `branch -d` checks the branch is merged into its upstream (else the
-        // checked-out branch): make that the run branch, so git itself
-        // verifies the work is on it. Never `-D`.
         let _ = git.try_run(
             root,
             &["branch", "--set-upstream-to", run_branch, &wt.branch],
@@ -1078,7 +955,6 @@ fn delete_worktree(
         .then(|| format!("{} still exists", dir.display())))
 }
 
-/// The events of a cleanup are about the worktree's task and worker.
 fn about_worktree(wt: &WorktreeRow) -> About<'_> {
     About {
         task: wt.task_id.as_deref(),
@@ -1131,7 +1007,6 @@ fn removed(store: &Store, wt: &WorktreeRow, bytes: i64) -> Result<Outcome> {
     ))
 }
 
-/// `cleanup`: remove the worktree when no work can be lost.
 pub fn cleanup(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     let Some(wt) = worktree_of(store.conn(), &cx.task.task_id)? else {
         return Ok(Outcome::not_applicable("the task has no worktree"));
@@ -1150,8 +1025,6 @@ pub fn cleanup(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     )
 }
 
-/// Remove 1 `cleanup_failed` worktree again. `None` when it has no task or
-/// its run has no run branch.
 fn retry_one(store: &Store, git: &Git, wt: WorktreeRow) -> Result<Option<(String, Outcome)>> {
     let Some(task) = &wt.task_id else {
         return Ok(None);
@@ -1165,7 +1038,6 @@ fn retry_one(store: &Store, git: &Git, wt: WorktreeRow) -> Result<Option<(String
     Ok(Some((wt.path, o)))
 }
 
-/// Retry every `cleanup_failed` worktree (the watchdog calls this).
 pub fn retry_cleanup(store: &mut Store, git: &Git) -> Result<Vec<(String, Outcome)>> {
     let mut out = Vec::new();
     for wt in super::worktrees_with(store.conn(), WorktreeStatus::CleanupFailed)? {
@@ -1184,7 +1056,6 @@ mod tests {
     use crate::taskledger::workers::{self, NewWorker};
 
     thread_local! {
-        /// The land-lock wait of a test, instead of [`LAND_LOCK_TIMEOUT`].
         pub(super) static LOCK_WAIT: std::cell::Cell<Option<Duration>> =
             const { std::cell::Cell::new(None) };
     }
@@ -1215,8 +1086,6 @@ mod tests {
         git(dir, &["rev-parse", "HEAD"])
     }
 
-    /// A repository with a run branch, a ledger, and 1 claimed task with
-    /// the check `check` and 1 commit in its worktree.
     struct World {
         _tmp: tempfile::TempDir,
         root: PathBuf,
@@ -1232,7 +1101,6 @@ mod tests {
             World::shaped(|t| t.land_check = Some(check.into()))
         }
 
-        /// Like [`World::new`], with the task shaped by `shape`.
         fn shaped(shape: impl FnOnce(&mut NewTask)) -> World {
             let tmp = tempfile::tempdir().unwrap();
             let top = tmp.path().canonicalize().unwrap();
@@ -1309,7 +1177,6 @@ mod tests {
             }
         }
 
-        /// A commit on the run branch, so a land must rebase.
         fn move_run_branch(&self) -> String {
             let tree = format!("{RUN_BRANCH}^{{tree}}");
             let c = git(
@@ -1360,8 +1227,6 @@ mod tests {
                 .unwrap();
         }
 
-        /// Add `origin`. When `reject` is true, each push writes `marker`
-        /// before its hook rejects the push.
         fn remote(&self, reject: bool) -> (PathBuf, PathBuf) {
             use std::os::unix::fs::PermissionsExt;
 
@@ -1403,9 +1268,6 @@ mod tests {
         )
     }
 
-    /// A Codex worker's check can write its pane TMPDIR. `codex sandbox`
-    /// makes its own `TMPDIR` read-only (`":tmpdir"="read"`), so only the
-    /// shell inside the sandbox gets the pane TMPDIR, never `codex` itself.
     #[test]
     fn a_codex_workers_check_gets_the_pane_tmpdir_and_codex_does_not() {
         let mut w = World::new("echo \"$TMPDIR\" > check-tmpdir");
@@ -1427,7 +1289,6 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        // Warm the new executable (first exec scan on macOS).
         assert!(Command::new(&fake)
             .args(["--", "true"])
             .status()
@@ -1637,7 +1498,6 @@ mod tests {
         assert_eq!(row.reason.as_deref(), Some(note.as_str()));
         assert_eq!(w.head(), tip, "the rebase is undone");
         assert_eq!(git(&w.root, &["rev-parse", RUN_BRANCH]), moved);
-        // The lock is free again: the next finish lands.
         drop(held);
         let r = w.finish();
         assert!(r.complete, "{r:?}");
@@ -1698,15 +1558,12 @@ mod tests {
             })
         };
         let mut held = Some(take("T-3 of w1 (PID 7)", every, &mut |_| {}).unwrap());
-        // No time left: the wait gives up and names nobody.
         let mut seen = Vec::new();
         let r = take("T-4 of w2 (PID 8)", Duration::ZERO, &mut |h| {
             seen.push(h.to_string())
         });
         assert!(r.is_err(), "the lock is held");
         assert!(seen.is_empty(), "{seen:?}");
-        // The holder lets go after the 2nd line. The long timeout is never
-        // reached: the lines, not the clock, end the wait.
         let g = take("T-4 of w2 (PID 8)", Duration::from_secs(600), &mut |h| {
             seen.push(h.to_string());
             if seen.len() == 2 {

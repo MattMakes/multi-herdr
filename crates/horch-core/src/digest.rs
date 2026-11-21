@@ -1,30 +1,19 @@
-//! sha256 digests over canonical JSON.
-//!
-//! A digest names a task, a config, a judge policy or an environment, so the
-//! same value must give the same digest on every machine and every run. The
-//! canonical form sorts object keys recursively and drops insignificant
-//! whitespace; numbers and strings are printed exactly as serde_json prints
-//! them.
-
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
 
-/// A sha256 digest, written as `sha256:<64 lowercase hex>`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Digest(pub [u8; 32]);
 
 const PREFIX: &str = "sha256:";
 
 impl Digest {
-    /// The first 12 hex characters, for file names and labels.
     pub fn short12(&self) -> String {
         self.hex()[..12].to_string()
     }
 
-    /// The 64 hex characters without the `sha256:` prefix.
     pub fn hex(&self) -> String {
         self.0.iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -42,7 +31,6 @@ impl fmt::Debug for Digest {
     }
 }
 
-/// Why a string is not a [`Digest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseDigestError(String);
 
@@ -96,13 +84,10 @@ impl<'de> Deserialize<'de> for Digest {
     }
 }
 
-/// sha256 of raw bytes.
 pub fn sha256_bytes(bytes: &[u8]) -> Digest {
     Digest(Sha256::digest(bytes).into())
 }
 
-/// The canonical text of a JSON value: keys sorted at every depth, no
-/// whitespace between tokens.
 pub fn canonical_json(value: &serde_json::Value) -> String {
     let mut out = String::new();
     write_canonical(value, &mut out);
@@ -112,7 +97,6 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
 fn write_canonical(value: &serde_json::Value, out: &mut String) {
     use serde_json::Value;
     match value {
-        // serde_json writes these 3 kinds as compact JSON already.
         Value::Null | Value::Bool(_) | Value::Number(_) => out.push_str(&value.to_string()),
         Value::String(s) => write_string(s, out),
         Value::Array(items) => {
@@ -126,8 +110,6 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
             out.push(']');
         }
         Value::Object(map) => {
-            // Sorted here, not by the map: serde_json's `preserve_order`
-            // feature can be switched on by any crate in the build.
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             out.push('{');
@@ -148,7 +130,6 @@ fn write_string(s: &str, out: &mut String) {
     out.push_str(&serde_json::to_string(s).expect("a string serializes"));
 }
 
-/// sha256 of the canonical JSON of `value`.
 pub fn digest_json<T: Serialize + ?Sized>(value: &T) -> Digest {
     let v = serde_json::to_value(value).expect("a digested value serializes to JSON");
     sha256_bytes(canonical_json(&v).as_bytes())
@@ -178,14 +159,12 @@ mod tests {
         let want = "sha256:fef91f37d67e4bb1c37368baf19dd640ab0703913f900546b4792ec580e3906d";
         assert_eq!(digest_json(&a).to_string(), want);
 
-        // Key order and whitespace in the source text do not matter.
         let b: serde_json::Value = serde_json::from_str(
             "{ \"a\" : 1,\n  \"c\": { \"y\": \"é\\n\", \"z\": -2.5 },\n  \"b\": [ true, null, \"x\" ] }",
         )
         .unwrap();
         assert_eq!(digest_json(&b).to_string(), want);
 
-        // A struct digests the same as its JSON value.
         #[derive(Serialize)]
         struct S {
             b: u32,
@@ -197,9 +176,6 @@ mod tests {
         );
     }
 
-    /// Each JSON kind has exactly one canonical text: empty containers,
-    /// both booleans, integer and float forms, escapes in keys and strings,
-    /// and sorting at every depth.
     #[test]
     fn canonical_json_text_per_kind() {
         for (value, want) in [
@@ -245,8 +221,6 @@ mod tests {
         }
     }
 
-    /// Each refusal names the whole text it was given, prefix included, in
-    /// the same words.
     #[test]
     fn digest_parse_error_names_the_whole_input() {
         let digits = "a".repeat(64);
@@ -265,8 +239,6 @@ mod tests {
         );
     }
 
-    /// A digit is `0-9` or `a-f`, in either place of a pair: the edges of both
-    /// ranges pass, the chars just outside them and the capitals do not.
     #[test]
     fn digest_parse_takes_the_edges_of_the_digit_ranges_and_no_more() {
         let with = |c: char, at: usize| {
@@ -284,8 +256,6 @@ mod tests {
         }
     }
 
-    /// The text after the prefix is 64 bytes, counted in bytes, with no
-    /// trimming; the prefix is exact.
     #[test]
     fn digest_parse_wants_64_bytes_after_the_exact_prefix() {
         let digits = "a".repeat(64);
@@ -294,8 +264,6 @@ mod tests {
             let text = format!("sha256:{}", "a".repeat(n));
             assert!(text.parse::<Digest>().is_err(), "{n} digits");
         }
-        // Text that is not ASCII is refused, never sliced: 32 two-byte chars
-        // make 64 bytes, and a two-byte char at an odd offset splits a pair.
         for text in [
             format!("sha256:{}", "é".repeat(32)),
             format!("sha256:{}éa", "a".repeat(61)),

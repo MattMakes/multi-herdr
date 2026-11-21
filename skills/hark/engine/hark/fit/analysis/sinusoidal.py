@@ -60,8 +60,6 @@ __all__ = ["KIND", "NAME", "VERSION", "KNOBS", "fit", "render", "check", "summar
            "band_masks", "describe", "to_code"]
 
 
-# ================================================================ band envelopes
-
 def band_env(x: np.ndarray, centres, sr: int = SR, step_s: float = 0.001,
              max_smooth: float = 0.03) -> tuple[np.ndarray, np.ndarray]:
     """Band power in dB at ``step_s`` steps: (times, (B, T))."""
@@ -92,8 +90,6 @@ def _lesser_mean(pwr: np.ndarray, lwin: int) -> np.ndarray:
     lead = (cc[high_i] - cc[ii]) / (high_i - ii)
     return np.minimum(trail, lead)
 
-
-# ================================================================ strikes
 
 def onsets(x: np.ndarray, sr: int = SR) -> list[dict]:
     """Strikes ``[{'t', 'rise', 'strength'}]`` of a mono signal."""
@@ -171,8 +167,6 @@ def _join_strikes(got: list[dict]) -> list[dict]:
     return acc
 
 
-# ================================================================ framing and peaks
-
 def _frames_stft(sig: np.ndarray, win_n: int) -> dict:
     step_n = max(32, win_n // 8)
     nfr = len(sig) // step_n + 2
@@ -230,8 +224,6 @@ def _refine_peaks(bb, dlt, phs0, floor, frame, rate):
     phz = phs0[bb] + np.abs(pwr) * stride
     return np.column_stack([freq, ampl, phz, cc, cc - floor[bb]])
 
-
-# ================================================================ tracking
 
 def _track_one(pk_list: list[np.ndarray], win_n: int, rate: int) -> list[dict]:
     tol_min = 1.5 * rate / win_n
@@ -340,8 +332,6 @@ def _peak_contrast(tm: dict) -> float:
     err = tm["a"] ** 2
     return float(np.sum(err * tm["c"]) / max(np.sum(err), 1e-30))
 
-
-# ================================================================ onset fixes
 
 def _repair_onsets(lines_: list[dict], hits: list[dict], frame: dict, rate: int) -> list[dict]:
     step_n = frame["hop"]
@@ -452,8 +442,6 @@ def _post_strike(tgrid: np.ndarray, tstamp: float) -> np.ndarray:
     return later
 
 
-# ================================================================ phase-exact synthesis
-
 def _exact_synth(lines_: list[dict], count: int, step_n: int, rate: int) -> np.ndarray:
     out_y = np.zeros(count)
     for tm in lines_:
@@ -506,8 +494,6 @@ def _place(out_y, begin, chunk):
     if bb > aa:
         out_y[aa:bb] += chunk[aa - begin:bb - begin]
 
-
-# ================================================================ atoms
 
 def _matrix_pencil(chunk: np.ndarray, max_atoms: int, max_t60: float, rdg: float, rate: float) -> list:
     cplx = _poles_by_pencil(chunk, max_atoms) if len(chunk) >= 16 and np.any(chunk) else None
@@ -627,8 +613,6 @@ def _atoms_line(bnd, amp0, len_n, atom_l, rate) -> bool:
     return bool(np.sum((refv - syn) ** 2) < 0.7 * np.sum(refv ** 2))
 
 
-# ================================================================ residual model
-
 _BIAS: dict[tuple, np.ndarray] = {}
 
 
@@ -715,8 +699,6 @@ def _levels_at_points(fq: np.ndarray, pwr: np.ndarray, pts, rate: int) -> list[f
     return values_
 
 
-# ================================================================ breakpoints
-
 def _bp_list(tm: dict, step_n: int, rate: int, cfg: dict) -> dict:
     tgrid = tm["k"] * step_n / rate
     adj = 20 * np.log10(np.maximum(tm["a"], 1e-30))
@@ -753,8 +735,6 @@ def _freq_points(where_, avg, fval, cfg) -> list[int]:
 def _top_of(pwr: dict) -> float:
     return max(aa[1] for aa in pwr["amp"])
 
-
-# ================================================================ analysis per window
 
 def _base_options(**kw) -> dict:
     cfg = {"max_partials": 160, "dyn_db": 80, "keep_db": 60, "prom_db": 4, "max_peaks": 100,
@@ -825,8 +805,6 @@ def _refit_pass(sig, detail, lines_, win_n, hits, cfg, rate, frame):
     return lines_, detail
 
 
-# ================================================================ fit
-
 def _log_spec_dist(aa: np.ndarray, bb: np.ndarray) -> float:
     count = max(len(aa), len(bb))
     aa, bb = np.pad(aa, (0, count - len(aa))), np.pad(bb, (0, count - len(bb)))
@@ -895,8 +873,6 @@ def _width_db(aa: np.ndarray) -> float:
         return -120.0
     return max(-120.0, float(10 * np.log10(max(np.sum(sv ** 2), 1e-300) / emv)))
 
-
-# ================================================================ side model
 
 def _key_moments(ons: float, dur_s: float) -> np.ndarray:
     tstamp = [0.0, ons - 0.01, ons]
@@ -1015,8 +991,6 @@ def vary_field(r: np.random.Generator, parts: int = 6) -> Callable[[Any], np.nda
 
     return field
 
-
-# ================================================================ render
 
 def check(model: Any) -> None:
     check_kind(model, KIND, VERSION)
@@ -1265,8 +1239,6 @@ def _side_noise(mdl: dict, count: int, seed, ix) -> np.ndarray:
     return synth_noise(resid["bands"], resid["times"], resid["db"], count, int(seed) + 1000003, SR,
                        hf=resid.get("hf")) * 10 ** (mdl.get("width", -120) / 20) * 10 ** (ix["gain_db"] / 20)
 
-
-# ================================================================ summary, io, code
 
 def summary(model: dict) -> dict:
     pieces = model.get("partials") or []

@@ -1,6 +1,3 @@
-//! End-to-end: `horch fleet` and `horch spawn` on the `hc` (`herdr-core` +
-//! `herdr-app`) pane host backend.
-
 use horch_core::execution::records::SessionLedger;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::Backend;
@@ -36,7 +33,6 @@ fn cwd(h: &Harness) -> String {
     h.project.to_string_lossy().into_owned()
 }
 
-/// Find the fleet space (ignoring the `horch telemetry` space if started).
 fn fleet_space(h: &Harness) -> Value {
     let state = h.hc_state();
     let spaces: Vec<Value> = state["spaces"]
@@ -119,10 +115,6 @@ fn hc_fleet_start_makes_a_space_and_records_the_backend() {
         sends[0]
     );
 
-    // Execute the exact pane-launch command line inside the root terminal
-    // (HC_TERMINAL_ID set, no HERDR_PANE_ID, and from a canonicalized cwd that
-    // may differ from a symlinked --cwd such as /tmp vs /private/tmp on macOS)
-    // and confirm the launched agent gets HORCH_BACKEND=hc and no HERDR_PANE_ID.
     let cmdline = sends[0].last().unwrap();
     let canon_cwd = h
         .project
@@ -200,8 +192,6 @@ fn hc_spawn_splits_right_of_the_orchestrator() {
     let worker_term = out(&so).lines().last().unwrap().trim().to_string();
     assert_ne!(worker_term, root_term);
 
-    // Confirm herdr-app split right from the orchestrator's app pane, and no
-    // herdr pane/layout calls happened.
     let herdr_non_list: Vec<Value> = h
         .calls_of("herdr")
         .into_iter()
@@ -239,8 +229,6 @@ fn hc_spawn_splits_right_of_the_orchestrator() {
     let brief = mailbox.read_brief("sonnet-1").unwrap();
     assert_eq!(brief.backend, Backend::Hc);
 
-    // Run `horch worker sonnet-1` in the worker terminal (HC_TERMINAL_ID only)
-    // to exercise Lifecycle::pane identity, registration, and agent launch env.
     let mut wcmd = h.horch(&["worker", "sonnet-1"]);
     wcmd.env("HC_TERMINAL_ID", &worker_term)
         .env("HORCH_BACKEND", "hc")
@@ -368,7 +356,6 @@ fn hc_spawn_with_the_window_closed_uses_a_labelled_run() {
     assert!(runs[0].contains(&space_label), "{:?}", runs[0]);
     assert!(runs[0].contains(&tab_label), "{:?}", runs[0]);
 
-    // Reopening the window adopts the labelled terminal into the space and tab.
     h.open_hc_window();
     let ls = h.horch(&["--backend", "hc", "sessions"]).output().unwrap();
     assert!(ls.status.success(), "{}{}", out(&ls), err(&ls));

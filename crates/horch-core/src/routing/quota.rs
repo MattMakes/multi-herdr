@@ -1,26 +1,3 @@
-//! Usage limits: the pools a teammate draws from, how full each one is, and
-//! what state that puts it in (design section 11).
-//!
-//! Every reading is normalized on the way in: a window is named by its
-//! duration, never by its position; `used` is a fraction 0-1; times are
-//! RFC 3339 UTC (QUO-04). Account ids, emails and dollar amounts never leave
-//! the parsers (TEL-11).
-//!
-//! Limits are read through each harness's own client, so horch never holds a
-//! credential (D2):
-//!
-//! | pool | probe |
-//! |---|---|
-//! | claude | `claude -p --input-format stream-json` + one `get_usage` control request |
-//! | codex | `codex app-server`: `initialize`, `initialized`, `account/rateLimits/read` |
-//! | opencode-zen | none exists; a `FreeUsageLimitError` starts a cooldown |
-//! | google | `agy -p /usage --output-format json`: a slash command, no model turn |
-//! | local | `pi --version`, and the model in `ollama list` |
-
-//!
-//! This module is pure. File I/O lives in [`crate::routing::snapshot`] and the
-//! probes in [`crate::routing::quota_probe`].
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -35,32 +12,23 @@ use crate::telemetry::QuotaSignal;
 pub const POOL_CLAUDE: &str = "claude";
 pub const POOL_CODEX: &str = "codex";
 pub const POOL_ZEN: &str = "opencode-zen";
-/// The operator's Google account, which every Antigravity model draws on,
-/// whoever made the model. Its windows are scoped by model group
-/// ([`parse_agy_usage`]).
 pub const POOL_GOOGLE: &str = "google";
 pub(crate) const POOL_LOCAL: &str = "local";
 pub(crate) const POOL_UNKNOWN: &str = "unknown";
 
-/// The pools, in display order.
 pub const POOLS: [&str; 5] = [POOL_CLAUDE, POOL_CODEX, POOL_ZEN, POOL_GOOGLE, POOL_LOCAL];
 
-/// One limit window, normalized (QUO-04).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Window {
-    /// `5h`, `7d`, or `<n>m` for any other duration.
     pub name: String,
     pub minutes: u64,
-    /// The model family a scoped window limits (`opus`, `sonnet`, `fable`).
     #[serde(default)]
     pub scope_model: Option<String>,
-    /// Fraction used, 0-1. A reading above 1 is kept: it means over.
     pub used: f64,
     #[serde(default)]
     pub resets_at: Option<String>,
 }
 
-/// A window's name from its duration (QUO-04).
 pub fn window_name(minutes: u64) -> String {
     match minutes {
         300 => "5h".into(),
@@ -80,7 +48,6 @@ impl Window {
         }
     }
 
-    /// `name`, with the scope when there is one: `7d`, `7d:fable`.
     pub fn label(&self) -> String {
         match &self.scope_model {
             Some(s) => format!("{}:{s}", self.name),
@@ -92,7 +59,6 @@ impl Window {
         self.resets_at.as_deref().and_then(clock::parse)
     }
 
-    /// `used`, or 0 once the window has reset (section 11.4).
     pub fn used_at(&self, now: DateTime<Utc>) -> f64 {
         match self.resets() {
             Some(r) if r <= now => 0.0,
@@ -100,36 +66,27 @@ impl Window {
         }
     }
 
-    /// Hours until reset, if known and in the future.
     pub(crate) fn left_h(&self, now: DateTime<Utc>) -> Option<f64> {
         let r = self.resets()?;
         (r > now).then(|| (r - now).num_seconds() as f64 / 3600.0)
     }
 
-    /// When the current window started: `resets_at - minutes`.
     pub fn start(&self) -> Option<DateTime<Utc>> {
         Some(self.resets()? - Duration::minutes(self.minutes as i64))
     }
 
-    /// `used / elapsed`, elapsed clamped to [0.01, 1] (section 11.4).
     pub(crate) fn pace(&self, now: DateTime<Utc>) -> Option<f64> {
         let left = self.left_h(now)?;
         let elapsed = (1.0 - left / (self.minutes as f64 / 60.0)).clamp(0.01, 1.0);
         Some(self.used_at(now) / elapsed)
     }
 
-    /// `(1 - used) / max(left_h, 1)`.
     pub fn headroom_per_h(&self, now: DateTime<Utc>) -> f64 {
         let left = self.left_h(now).unwrap_or(0.0);
         (1.0 - self.used_at(now)).max(0.0) / left.max(1.0)
     }
 }
 
-// ─── pools ──────────────────────────────────────────────────────────────────
-
-/// A teammate's pool, from its agent and model (section 11.1). Prime runs
-/// Anthropic models on a credential horch cannot see, so it is counted
-/// against the claude pool: the conservative choice.
 pub fn pool_for(agent: &str, model: &str) -> &'static str {
     let m = model.to_ascii_lowercase();
     let provider = m.split_once('/').map(|(p, _)| p);
@@ -143,7 +100,6 @@ pub fn pool_for(agent: &str, model: &str) -> &'static str {
     }
 }
 
-/// The pool a `pi` or `prime` model draws from, by its provider prefix.
 fn provider_pool(provider: Option<&str>) -> &'static str {
     match provider {
         Some("ollama") => POOL_LOCAL,
@@ -154,10 +110,8 @@ fn provider_pool(provider: Option<&str>) -> &'static str {
     }
 }
 
-/// The model family a scoped window can limit, from a model name.
 pub(crate) fn model_family(model: &str) -> Option<&'static str> {
     let m = model.to_ascii_lowercase();
-    // `argon` before `gemini`: `gemini-4-argon` is limited by its own group.
     [
         "opus", "sonnet", "haiku", "fable", "astra", "sol", "terra", "luna", "argon", "gemini",
         "gpt-oss",
@@ -166,19 +120,14 @@ pub(crate) fn model_family(model: &str) -> Option<&'static str> {
     .find(|f| m.contains(f))
 }
 
-// ─── quota.json ─────────────────────────────────────────────────────────────
-
-/// What horch last knew about one pool (section 11.3).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PoolReading {
-    /// The state when this was written, for display. Deciders re-assess.
     #[serde(default)]
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default)]
     pub observed_at: Option<String>,
-    /// `get_usage`, `app-server`, `rollout`, `refusal`, `health`, `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,7 +136,6 @@ pub struct PoolReading {
     pub windows: Vec<Window>,
     #[serde(default)]
     pub refusal_seen_at: Option<String>,
-    /// Which window the refusal named (`5h`, `7d`, `7d:fable`), if it said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal_window: Option<String>,
     #[serde(default)]
@@ -198,10 +146,8 @@ pub struct PoolReading {
     pub no_signal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooling_until: Option<String>,
-    /// Local pool: the models `ollama list` reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<String>>,
-    /// When a probe last ran, successful or not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probed_at: Option<String>,
 }
@@ -213,20 +159,14 @@ pub struct QuotaFile {
     pub written_at: Option<String>,
     #[serde(default)]
     pub pools: BTreeMap<String, PoolReading>,
-    /// What the last probe's `<harness> --version` showed, by harness
-    /// (`claude`, `pi`, ...). Absent in files written before it existed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub harnesses: BTreeMap<String, HarnessHealth>,
 }
 
-/// One harness binary at the last probe. A pool is shared by harnesses (a
-/// `pi` teammate on an `anthropic/` model draws on the `claude` pool), so a
-/// binary that crashes is judged here, by harness, not by pool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessHealth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Set when `--version` ran and failed; cleared when it next succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,8 +189,6 @@ pub(crate) fn quota_path(state_root: &Path) -> PathBuf {
 }
 
 impl QuotaFile {
-    /// Fold transcript signals in (QUO-03, QUO-06): refusals, and Codex
-    /// snapshots that are newer than what the file holds.
     pub(crate) fn apply_signals(&mut self, signals: &[QuotaSignal], policy: &Policy) {
         for s in signals {
             match s {
@@ -275,8 +213,6 @@ impl QuotaFile {
 }
 
 impl PoolReading {
-    /// Note a refusal, when it is newer than the last one; a `zen` refusal
-    /// also starts a cooldown.
     fn apply_refusal(&mut self, pool: &str, at: &str, what: &str, policy: &Policy) {
         if self.refusal_seen_at.as_deref().is_none_or(|prev| at > prev) {
             self.refusal_seen_at = Some(at.to_string());
@@ -297,7 +233,6 @@ impl PoolReading {
         }
     }
 
-    /// Take a Codex rollout snapshot, when it is newer than the reading.
     fn apply_snapshot(
         &mut self,
         at: &str,
@@ -315,9 +250,6 @@ impl PoolReading {
     }
 }
 
-// ─── states ─────────────────────────────────────────────────────────────────
-
-/// A pool state (section 11.4), worst first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -341,7 +273,6 @@ impl State {
         }
     }
 
-    /// A pool a spawn cannot use.
     pub fn blocks(self) -> bool {
         matches!(self, State::Broken | State::Exhausted | State::Cooling)
     }
@@ -353,15 +284,12 @@ impl std::fmt::Display for State {
     }
 }
 
-/// A pool's state for one model scope, and why.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Assessment {
     pub pool: String,
     pub state: State,
     pub reason: String,
-    /// The binding window's headroom, per hour. `None` without windows.
     pub headroom_per_h: Option<f64>,
-    /// The window that decided, e.g. `7d 100%, resets 2026-10-02T13:59:59Z`.
     pub worst: Option<Window>,
 }
 
@@ -383,29 +311,24 @@ impl Assessment {
     }
 }
 
-/// `100%` from 1.0.
 pub fn pct(used: f64) -> String {
     format!("{:.0}%", used * 100.0)
 }
 
-/// `Thu 14:00Z`: a short reset time for NOTE lines and the screen.
 pub fn short_time(stamp: &str) -> String {
     clock::parse(stamp)
         .map(|t| {
-            // Round to the minute the way people read a reset.
             let t = t + Duration::seconds(30);
             t.format("%a %H:%MZ").to_string()
         })
         .unwrap_or_else(|| stamp.to_string())
 }
 
-/// Readings plus everything needed to judge them. Pure: time comes in.
 #[derive(Debug, Clone)]
 pub struct QuotaView {
     pub file: QuotaFile,
     pub now: DateTime<Utc>,
     pub policy: Policy,
-    /// Readings came from `HORCH_QUOTA_FILE`: authoritative, never stale.
     pub from_override: bool,
 }
 
@@ -419,10 +342,6 @@ impl QuotaView {
         }
     }
 
-    /// The state of the pool a teammate draws from, for its model.
-    ///
-    /// A harness whose last `--version` probe failed is `broken` whatever
-    /// its pool says: routing never chooses a binary that cannot start.
     pub fn assess(&self, agent: &str, model: &str) -> Assessment {
         let pool = pool_for(agent, model);
         if let Some(e) = self
@@ -444,10 +363,6 @@ impl QuotaView {
         self.assess_pool(pool, model_family(model), local_model)
     }
 
-    /// The state a screen shows for `pool`, with no model in view. A pool
-    /// whose every window is scoped (google: 1 group per model family) has no
-    /// pool-wide limit, so it shows its most usable scope. Routing never uses
-    /// this: it judges each model by its own scope ([`QuotaView::assess`]).
     pub fn assess_shown(&self, pool: &str) -> Assessment {
         let scopes: Vec<&str> = self
             .file
@@ -463,7 +378,6 @@ impl QuotaView {
             .unwrap_or_else(|| self.assess_pool(pool, None, None))
     }
 
-    /// The state of `pool` for a model family scope (section 11.4).
     pub fn assess_pool(
         &self,
         pool: &str,
@@ -476,8 +390,6 @@ impl QuotaView {
         }
     }
 
-    /// The reading of `pool`, or the state and reason that stop the rules at
-    /// once: an unknown pool, no reading, or a broken local health check.
     fn precheck(
         &self,
         pool: &str,
@@ -506,7 +418,6 @@ impl QuotaView {
     }
 }
 
-/// Why the local health check failed, if it did.
 fn local_broken(pool: &str, r: &PoolReading, local_model: Option<&str>) -> Option<String> {
     if pool != POOL_LOCAL {
         return None;
@@ -525,7 +436,6 @@ fn local_broken(pool: &str, r: &PoolReading, local_model: Option<&str>) -> Optio
         .or_else(|| (r.state == "broken").then(|| "broken".into()))
 }
 
-/// One pool reading, with the windows that apply to the scope asked for.
 struct Rules<'a> {
     view: &'a QuotaView,
     pool: &'a str,
@@ -537,7 +447,6 @@ struct Rules<'a> {
 }
 
 impl<'a> Rules<'a> {
-    /// The rules for `r`, over the windows that apply to `scope`.
     fn new(view: &'a QuotaView, pool: &'a str, scope: Option<&'a str>, r: &'a PoolReading) -> Self {
         let now = view.now;
         let windows: Vec<&Window> = r
@@ -594,7 +503,6 @@ impl<'a> Rules<'a> {
         ))
     }
 
-    /// A Zen refusal starts a cooldown instead (`keyless_pool`).
     fn refused(&self) -> Option<Assessment> {
         let seen = self
             .r
@@ -623,7 +531,6 @@ impl<'a> Rules<'a> {
         })
     }
 
-    /// The pools with no quota endpoint: Zen cools down, a local model is Ok.
     fn keyless_pool(&self) -> Option<Assessment> {
         match self.pool {
             POOL_ZEN => Some(self.zen_state()),
@@ -659,7 +566,6 @@ impl<'a> Rules<'a> {
         }
     }
 
-    /// Unknown when the reading is stale or has no window; else tight, else Ok.
     fn soft_limit(&self, scope: Option<&str>) -> Assessment {
         let now = self.view.now;
         let fresh = self.view.from_override
@@ -694,8 +600,6 @@ impl<'a> Rules<'a> {
         }
     }
 
-    /// Tight: the worst window is high, or some window burns faster than the
-    /// pace limit.
     fn tight(&self, worst: &Window) -> Option<Assessment> {
         let (now, p) = (self.view.now, &self.view.policy);
         if worst.used_at(now) >= p.tight_used {
@@ -720,9 +624,6 @@ impl<'a> Rules<'a> {
     }
 }
 
-/// A refusal counts until the window it hit resets. Unnamed, it is held to
-/// the shortest window it could be (it expires soonest); with no windows at
-/// all, for 5 hours.
 fn refusal_in_force(
     r: &PoolReading,
     windows: &[&Window],
@@ -735,7 +636,6 @@ fn refusal_in_force(
     }
 }
 
-/// A refusal that named a scoped window blocks that scope only.
 fn refusal_covers(r: &PoolReading, scope: Option<&str>) -> bool {
     match r.refusal_window.as_deref().and_then(|l| l.split_once(':')) {
         Some((_, named)) => scope == Some(named),
@@ -743,8 +643,6 @@ fn refusal_covers(r: &PoolReading, scope: Option<&str>) -> bool {
     }
 }
 
-/// The window the refusal named, else the shortest of `windows` that is no
-/// longer than the named one.
 fn refused_window<'a>(r: &PoolReading, windows: &[&'a Window]) -> Option<&'a Window> {
     let label = r.refusal_window.as_deref();
     let named = label.and_then(|label| windows.iter().find(|w| w.label() == label));
@@ -766,14 +664,12 @@ fn named_minutes(label: &str) -> u64 {
     }
 }
 
-/// What a successful probe read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Probed {
     pub windows: Vec<Window>,
     pub ordinary_usage_allowed: Option<bool>,
 }
 
-/// The first object under `v` (depth first) that has `key`.
 fn object_with<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     match v {
         Value::Object(map) => {
@@ -787,7 +683,6 @@ fn object_with<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
-/// An ISO string or epoch seconds, as a stamp.
 fn reset_stamp(v: Option<&Value>) -> Option<String> {
     match v? {
         Value::String(s) => clock::parse(s).map(clock::stamp),
@@ -796,8 +691,6 @@ fn reset_stamp(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Parse a `get_usage` reply (quota specification 1a). `utilization` is 0-100 and resets
-/// are ISO. Only window fields are read; everything else is dropped.
 pub fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
     let rl = claude_rate_limits(reply)?;
     let mut out = fixed_windows(rl);
@@ -814,7 +707,6 @@ pub fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
     })
 }
 
-/// The `rate_limits` object of a `get_usage` reply, or why it has none.
 fn claude_rate_limits(reply: &Value) -> Result<&Value, String> {
     if reply.pointer("/response/subtype").and_then(Value::as_str) == Some("error") {
         let e = reply
@@ -830,7 +722,6 @@ fn claude_rate_limits(reply: &Value) -> Result<&Value, String> {
     Ok(holder.get("rate_limits").unwrap_or(&Value::Null))
 }
 
-/// `utilization` or `percent` (0-100) of a row, as a fraction.
 fn pct_of(w: &Value, key: &str) -> Option<f64> {
     w.get(key).and_then(Value::as_f64).map(|u| u / 100.0)
 }
@@ -839,7 +730,6 @@ fn has_scope(windows: &[Window], s: &str) -> bool {
     windows.iter().any(|w| w.scope_model.as_deref() == Some(s))
 }
 
-/// The five-hour and weekly windows, each under its own key.
 fn fixed_windows(rl: &Value) -> Vec<Window> {
     [
         ("five_hour", 300u64, None),
@@ -861,7 +751,6 @@ fn fixed_windows(rl: &Value) -> Vec<Window> {
     .collect()
 }
 
-/// Weekly windows of the `model_scoped` list, for scopes `have` lacks.
 fn model_windows(rl: &Value, have: &[Window]) -> Vec<Window> {
     let mut out: Vec<Window> = Vec::new();
     let rows = rl.get("model_scoped").and_then(Value::as_array);
@@ -883,8 +772,6 @@ fn model_windows(rl: &Value, have: &[Window]) -> Vec<Window> {
     out
 }
 
-/// The endpoint's own rows, passed through when `have` lacks their window.
-/// Classified by `kind`, never by label.
 fn row_windows(rl: &Value, have: &[Window]) -> Vec<Window> {
     let mut out: Vec<Window> = Vec::new();
     let rows = rl.get("limits").and_then(Value::as_array);
@@ -895,7 +782,6 @@ fn row_windows(rl: &Value, have: &[Window]) -> Vec<Window> {
     out
 }
 
-/// The window of one `limits` row, when `all` lacks one like it.
 fn row_window(row: &Value, all: &[Window]) -> Option<Window> {
     let used = pct_of(row, "percent")?;
     let resets = reset_stamp(row.get("resets_at"));
@@ -909,8 +795,6 @@ fn row_window(row: &Value, all: &[Window]) -> Option<Window> {
         .then(|| Window::new(minutes, used, resets, scope))
 }
 
-/// Whether `all` has the window a `limits` row would add: the scope's own, the
-/// unscoped weekly one, or any five-hour one.
 fn window_held(all: &[Window], minutes: u64, scope: Option<&str>) -> bool {
     match scope {
         Some(s) => has_scope(all, s),
@@ -921,7 +805,6 @@ fn window_held(all: &[Window], minutes: u64, scope: Option<&str>) -> bool {
     }
 }
 
-/// The lower-case model name a `weekly_scoped` row limits.
 fn row_scope(row: &Value) -> Option<String> {
     let name = row
         .pointer("/scope/model/display_name")
@@ -929,8 +812,6 @@ fn row_scope(row: &Value) -> Option<String> {
     Some(name.to_ascii_lowercase())
 }
 
-/// Parse an `account/rateLimits/read` result (quota specification 2). `usedPercent` is
-/// 0-100 and `resetsAt` epoch seconds; windows by `windowDurationMins`.
 pub fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
     codex_error(reply)?;
     let result = reply.get("result").ok_or("no result in the reply")?;
@@ -953,7 +834,6 @@ pub fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
     })
 }
 
-/// The reply's error, if it carries one.
 fn codex_error(reply: &Value) -> Result<(), String> {
     match reply.get("error") {
         Some(e) => {
@@ -964,7 +844,6 @@ fn codex_error(reply: &Value) -> Result<(), String> {
     }
 }
 
-/// One rate-limit slot, when it names a duration and a use.
 fn codex_window(snap: &Value, slot: &str) -> Option<Window> {
     let w = snap.get(slot).filter(|w| w.is_object())?;
     let mins = w.get("windowDurationMins").and_then(Value::as_u64)?;
@@ -977,18 +856,6 @@ fn codex_window(snap: &Value, slot: &str) -> Option<Window> {
     ))
 }
 
-/// Parse `agy -p /usage --output-format json` (agy 1.4.3; the field names are
-/// undocumented). Each group of `command.data.groups` lists `buckets` with a
-/// `window` (`weekly`, `5h`), a `remaining_fraction` 0-1 and a UTC
-/// `reset_time`. A group limits only its own models, so each window is
-/// scoped by its bucket id:
-/// - `gemini-argon-*`: `argon`. Pro plans give Argon its own group.
-/// - `gemini-*`: `gemini`, and `argon` too when no Argon group exists (Ultra
-///   plans count Argon against the Gemini buckets).
-/// - `3p-*`: the Claude and GPT models agy serves: `opus`, `sonnet`,
-///   `gpt-oss`.
-/// - any other id: unscoped, so it limits every model (the conservative
-///   choice).
 pub fn parse_agy_usage(reply: &Value) -> Result<Probed, String> {
     let buckets = agy_buckets(reply)?;
     let own_argon = buckets
@@ -1007,7 +874,6 @@ pub fn parse_agy_usage(reply: &Value) -> Result<Probed, String> {
     })
 }
 
-/// Every bucket of every group, or why the reply has none to read.
 fn agy_buckets(reply: &Value) -> Result<Vec<&Value>, String> {
     let status = reply.get("status").and_then(Value::as_str).unwrap_or("");
     if status != "SUCCESS" {
@@ -1033,7 +899,6 @@ fn agy_id(b: &Value) -> &str {
     b.get("id").and_then(Value::as_str).unwrap_or("")
 }
 
-/// The windows of one bucket: 1 per scope it limits, or 1 unscoped.
 fn bucket_windows(b: &Value, own_argon: bool) -> Vec<Window> {
     let Some((minutes, used)) = agy_bucket(b) else {
         return Vec::new();
@@ -1049,7 +914,6 @@ fn bucket_windows(b: &Value, own_argon: bool) -> Vec<Window> {
         .collect()
 }
 
-/// A bucket's window minutes and fraction used, when it has both.
 fn agy_bucket(b: &Value) -> Option<(u64, f64)> {
     let minutes = match b.get("window").and_then(Value::as_str) {
         Some("weekly") => 10_080,
@@ -1060,7 +924,6 @@ fn agy_bucket(b: &Value) -> Option<(u64, f64)> {
     Some((minutes, 1.0 - left))
 }
 
-/// The model scopes a bucket limits, by its id; none means every model.
 fn agy_scopes(id: &str, own_argon: bool) -> &'static [&'static str] {
     if id.starts_with("gemini-argon-") {
         &["argon"]
@@ -1077,7 +940,6 @@ fn agy_scopes(id: &str, own_argon: bool) -> &'static [&'static str] {
     }
 }
 
-/// The newest time any pool was probed.
 pub(crate) fn last_probe(file: &QuotaFile) -> Option<DateTime<Utc>> {
     file.pools
         .values()
@@ -1085,9 +947,6 @@ pub(crate) fn last_probe(file: &QuotaFile) -> Option<DateTime<Utc>> {
         .max()
 }
 
-/// Whether a probe is due (QUO-07): when the last probe is older than
-/// `age_min`. A file override is never probed; the caller checks for one
-/// first (it is a parameter, not an environment read, since A5).
 pub(crate) fn probe_due(file: &QuotaFile, now: DateTime<Utc>, age_min: i64) -> bool {
     last_probe(file).is_none_or(|t| now - t >= Duration::minutes(age_min))
 }
@@ -1118,7 +977,6 @@ mod tests {
 
     #[test]
     fn quo_04_windows_by_duration() {
-        // The same limits in either slot read the same.
         let a = parse_codex_limits(
             &serde_json::from_str(
                 &std::fs::read_to_string(fixture("probes/codex-ratelimits-5h-weekly.json"))
@@ -1145,20 +1003,17 @@ mod tests {
         };
         assert_eq!(names(&a), vec![("5h".into(), 20), ("7d".into(), 40)]);
         assert_eq!(names(&b), vec![("5h".into(), 20), ("7d".into(), 40)]);
-        // The 09-11 rollout: primary is 5h, secondary 7d.
         let rl: Value = serde_json::json!({"primary":{"used_percent":10.0,"window_minutes":300,"resets_at":1789473600},
                                            "secondary":{"used_percent":45.0,"window_minutes":10080,"resets_at":1789920000}});
         let w = crate::telemetry::readers::codex_rollout_windows(&rl);
         assert_eq!((w[0].name.as_str(), w[1].name.as_str()), ("5h", "7d"));
         assert_eq!(window_name(60), "60m");
-        // Codex 0.160: primary is the weekly window and secondary is null.
         let rl: Value = serde_json::json!({"limit_id":"codex","limit_name":null,
             "primary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1791949554},
             "secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"}});
         let w = crate::telemetry::readers::codex_rollout_windows(&rl);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].name, "7d");
-        // The same shape from the app-server probe.
         let p = parse_codex_limits(&serde_json::json!({"result":{"rateLimits":{
             "primary":{"usedPercent":43.0,"windowDurationMins":10080,"resetsAt":1791595230},
             "secondary":null}}}))
@@ -1169,7 +1024,6 @@ mod tests {
 
     #[test]
     fn quo_04_units_normalized() {
-        // get_usage: 0-100, ISO.
         let p =
             parse_claude_usage(&last_json_line("probes/claude-get-usage-exhausted.jsonl")).unwrap();
         let seven = p
@@ -1179,7 +1033,6 @@ mod tests {
             .unwrap();
         assert_eq!(seven.used, 1.0);
         assert_eq!(seven.resets_at.as_deref(), Some("2026-10-02T13:59:59Z"));
-        // Codex: 0-100, epoch seconds.
         let c = parse_codex_limits(
             &serde_json::from_str(
                 &std::fs::read_to_string(fixture("probes/codex-ratelimits-weekly.json")).unwrap(),
@@ -1193,7 +1046,6 @@ mod tests {
             Some("2026-10-03T19:15:49Z")
         );
         assert_eq!(c.ordinary_usage_allowed, Some(true));
-        // A numeric reset is epoch seconds wherever it appears.
         assert_eq!(
             reset_stamp(Some(&Value::from(1_791_054_949))).as_deref(),
             Some("2026-10-03T19:15:49Z")
@@ -1222,7 +1074,6 @@ mod tests {
             .windows
             .iter()
             .any(|w| w.label() == "7d:opus" && (w.used - 0.97).abs() < 1e-9));
-        // The scope applies only to its own family.
         let v = view("fable-scoped-exhausted");
         assert_eq!(v.assess("claude", "fable").state, State::Exhausted);
         assert_eq!(v.assess("claude", "opus").state, State::Ok);
@@ -1319,7 +1170,6 @@ mod tests {
 
     #[test]
     fn quo_05_edges_and_overrides() {
-        // Late in the window (pace low), so only the levels decide.
         let late = "2026-09-28T20:00:00Z";
         assert_eq!(
             one_window(0.849, late).assess("claude", "opus").state,
@@ -1337,7 +1187,6 @@ mod tests {
             one_window(0.98, late).assess("claude", "opus").state,
             State::Exhausted
         );
-        // Pace: 84h of 168h left is half elapsed. 0.6 / 0.5 = 1.2 (ok), 0.63 / 0.5 = 1.26 (tight).
         let half = "2026-10-02T06:00:00Z";
         assert_eq!(
             one_window(0.60, half).assess("claude", "opus").state,
@@ -1347,25 +1196,21 @@ mod tests {
             one_window(0.63, half).assess("claude", "opus").state,
             State::Tight
         );
-        // Below pace_min_used, pace does not matter.
         assert_eq!(
             one_window(0.45, "2026-10-05T06:00:00Z")
                 .assess("claude", "opus")
                 .state,
             State::Ok
         );
-        // A reset in the past reads as 0.
         assert_eq!(
             one_window(1.0, "2026-09-28T12:00:00Z")
                 .assess("claude", "opus")
                 .state,
             State::Ok
         );
-        // policy.json overrides every threshold.
         let mut v = one_window(0.80, late);
         v.policy = Policy::parse(r#"{"tight_used": 0.75}"#).unwrap();
         assert_eq!(v.assess("claude", "opus").state, State::Tight);
-        // Stale reading.
         let mut v = one_window(0.1, late);
         v.now = clock::parse("2026-09-28T19:00:00Z").unwrap();
         assert_eq!(v.assess("claude", "opus").state, State::Unknown);
@@ -1403,9 +1248,6 @@ mod tests {
         );
     }
 
-    /// Whether a refusal seen at `seen` is in force at `now()`, for a claude
-    /// pool that reads `windows` (all far from full) and whose refusal named
-    /// `named`.
     fn refusal_holds(seen: &str, named: Option<&str>, windows: Vec<Window>) -> bool {
         let mut file = QuotaFile::default();
         file.pools.insert(
@@ -1426,38 +1268,28 @@ mod tests {
         a.state == State::Exhausted
     }
 
-    /// The 5h window `now()` is in: it began at 14:00 and resets at 19:00.
     fn five_h() -> Window {
         Window::new(300, 0.1, Some("2026-09-28T19:00:00Z".into()), None)
     }
 
-    /// The 7d window `now()` is in: it began on 09-25 and resets on 10-02.
     fn seven_d() -> Window {
         Window::new(10_080, 0.1, Some("2026-10-02T00:00:00Z".into()), None)
     }
 
-    /// A refusal that named no window is held to the shortest window, wherever
-    /// it is listed: it counts from the window's start until its reset.
     #[test]
     fn a_refusal_without_a_window_is_held_to_the_shortest_window() {
         let both = || vec![seven_d(), five_h()];
         assert!(refusal_holds("2026-09-28T17:00:00Z", None, both()));
-        // Before the start of the 5h window, inside the 7d one.
         assert!(!refusal_holds("2026-09-28T13:00:00Z", None, both()));
-        // The start of the window counts, the second before it does not.
         assert!(refusal_holds("2026-09-28T14:00:00Z", None, both()));
         assert!(!refusal_holds("2026-09-28T13:59:59Z", None, both()));
     }
 
-    /// The window a refusal named is the one that decides, and a name no
-    /// window answers to falls back to the shortest window.
     #[test]
     fn a_refusal_is_held_to_the_window_it_named() {
         let both = || vec![five_h(), seven_d()];
         assert!(refusal_holds("2026-09-28T13:00:00Z", Some("7d"), both()));
         assert!(!refusal_holds("2026-09-28T13:00:00Z", Some("5h"), both()));
-        // No `7d:opus` window: the shortest one decides, not the 5-hour hold
-        // (13:30 is 4.5 hours ago, before the 5h window began).
         assert!(!refusal_holds(
             "2026-09-28T13:30:00Z",
             Some("7d:opus"),
@@ -1468,7 +1300,6 @@ mod tests {
             Some("7d:opus"),
             both()
         ));
-        // A scoped window answers to its scoped name only: it began on 09-28.
         let opus = Window::new(
             10_080,
             0.1,
@@ -1484,7 +1315,6 @@ mod tests {
         assert!(!refusal_holds(seen, Some("7d"), vec![five_h(), opus]));
     }
 
-    /// A refusal ends with the window: at its reset second, not before.
     #[test]
     fn a_refusal_ends_when_its_window_resets() {
         let resets = |at: &str| vec![Window::new(300, 0.1, Some(at.into()), None)];
@@ -1494,8 +1324,6 @@ mod tests {
         assert!(!refusal_holds(seen, None, resets("2026-09-28T17:30:00Z")));
     }
 
-    /// With no window to read (none at all, or none with a reset time) a
-    /// refusal counts while it is less than 5 hours old.
     #[test]
     fn a_refusal_with_no_window_to_read_counts_for_5_hours() {
         let readings: [fn() -> Vec<Window>; 2] =
@@ -1568,7 +1396,6 @@ mod tests {
         assert_ne!(v.assess_shown(POOL_CLAUDE).state, State::Exhausted);
     }
 
-    /// Of 2 windows as short as each other, the first listed decides.
     #[test]
     fn a_refusal_is_held_to_the_first_of_two_equally_short_windows() {
         let opus = Window::new(
@@ -1577,7 +1404,6 @@ mod tests {
             Some("2026-10-05T00:00:00Z".into()),
             Some("opus".into()),
         );
-        // Seen after the 7d window began (09-25) and before the opus one (09-28).
         let seen = "2026-09-27T12:00:00Z";
         assert!(refusal_holds(seen, None, vec![seven_d(), opus.clone()]));
         assert!(!refusal_holds(seen, None, vec![opus, seven_d()]));
@@ -1615,13 +1441,8 @@ mod tests {
         assert_eq!(short_time("2026-10-02T13:59:59Z"), "Fri 14:00Z");
     }
 
-    /// A broken harness is judged by harness, not pool: `pi` on an
-    /// `anthropic/` model draws on the `claude` pool, which stays ok for
-    /// `claude`. A file written before `harnesses` existed still reads, and a
-    /// recovered harness is no longer broken.
     #[test]
     fn a_broken_harness_is_broken_whatever_its_pool() {
-        // all-ok.json predates `harnesses`.
         let raw = std::fs::read_to_string(fixture("quota/all-ok.json")).unwrap();
         assert!(!raw.contains("harnesses"));
         let mut file = QuotaFile::read(&fixture("quota/all-ok.json")).unwrap();
@@ -1648,7 +1469,6 @@ mod tests {
             assert_eq!(a.reason, why);
         }
         assert_eq!(v.assess("claude", "claude-sonnet-5-5").state, State::Ok);
-        // The field round-trips, and is left out when empty.
         let text = serde_json::to_string(&file).unwrap();
         let back: QuotaFile = serde_json::from_str(&text).unwrap();
         assert_eq!(back.harnesses, file.harnesses);
@@ -1684,8 +1504,6 @@ mod tests {
         QuotaView::new(file, now(), Policy::default(), false)
     }
 
-    /// Each agy group limits only its own models: an empty Argon bucket
-    /// stops Argon and leaves Flash and the 3p models alone.
     #[test]
     fn agy_usage_scopes_each_group_to_its_models() {
         let p = parse_agy_usage(&agy_usage("pro")).unwrap();
@@ -1714,12 +1532,10 @@ mod tests {
         );
         assert_eq!(v.assess("antigravity", "gemini-3.8-flash").state, State::Ok);
         assert_eq!(v.assess("antigravity", "claude-opus-5-5").state, State::Ok);
-        // A screen shows the pool by its most usable scope, not `unknown`.
         assert_eq!(v.assess_shown(POOL_GOOGLE).state, State::Ok);
         assert_eq!(v.assess_shown(POOL_CLAUDE).state, State::Unknown);
     }
 
-    /// Without its own group (Ultra), Argon draws on the Gemini buckets.
     #[test]
     fn agy_usage_without_an_argon_group_limits_argon_by_gemini() {
         let p = parse_agy_usage(&agy_usage("ultra")).unwrap();
@@ -1746,7 +1562,6 @@ mod tests {
             &serde_json::json!({"status": "SUCCESS", "command": {"data": {"groups": []}}})
         )
         .is_err());
-        // An unknown bucket id limits every model.
         let odd = serde_json::json!({"status": "SUCCESS", "command": {"data": {"groups": [
             {"buckets": [{"id": "new-bucket", "window": "5h", "remaining_fraction": 0.5}]}]}}});
         assert_eq!(parse_agy_usage(&odd).unwrap().windows[0].scope_model, None);

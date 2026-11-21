@@ -1,12 +1,9 @@
-//! Reading one `---` frontmatter file into a [`Teammate`] or a [`Base`].
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use super::{Base, Teammate};
 
-/// `*.md` in one directory as `(stem, path)`, sorted, skipping READMEs.
 pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)
@@ -25,7 +22,6 @@ pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// Split `---\n<frontmatter>\n---\n<body>`.
 pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
     let rest = text
         .strip_prefix("---\n")

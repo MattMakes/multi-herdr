@@ -15,9 +15,6 @@ from hark.fit.pipeline._model import kind_of, strip
 TMap = Callable[[Any], Any]
 
 
-# ---------------------------------------------------------------- shared tools
-
-
 def geo(a: float, b: float, w: float) -> float:
     return float(math.exp((1 - w) * math.log(max(a, 1e-300)) + w * math.log(max(b, 1e-300))))
 
@@ -132,9 +129,6 @@ def set_or_drop(m: dict, key: str, value: Any) -> None:
         m.pop(key, None)
 
 
-# ---------------------------------------------------------------- mode rows
-
-
 def _pos(rows: list) -> list:
     out = []
     for f, tau, amp, ph in rows:
@@ -170,9 +164,6 @@ def rows_mix(ra: list, rb: list, w: float) -> list:
 
 def _scale_rows(rows: list, g: float) -> list:
     return [[f, tau, amp * g, ph] for f, tau, amp, ph in rows]
-
-
-# ---------------------------------------------------------------- anchors per kind
 
 
 def _modal_anchors(m: dict, k: int) -> list:
@@ -245,9 +236,6 @@ def maps_for(a: dict, b: dict, w: float) -> tuple[TMap, TMap, list]:
         return maps
     ident = tmap([0.0, 1.0], [0.0, 1.0])
     return ident, ident, [0.0, 1.0]
-
-
-# ---------------------------------------------------------------- modal
 
 
 def _strike_mix(sa: dict, sb: dict, t: float, w: float) -> dict:
@@ -327,9 +315,6 @@ def morph_modal(a: dict, b: dict, w: float) -> dict:
     m["length_s"] = round(tm[-1], 6)
     m.update(_modal_scalars(a, b, w))
     return m
-
-
-# ---------------------------------------------------------------- sines
 
 
 def _peak_db(p: dict) -> float:
@@ -472,9 +457,6 @@ def morph_sines(a: dict, b: dict, w: float) -> dict:
     return _with_summary(m)
 
 
-# ---------------------------------------------------------------- spectral
-
-
 def _stereo_grid(st: dict | None, tk: np.ndarray, grid: np.ndarray, groups: int, key: str, empty: float) -> np.ndarray:
     if not st:
         return np.full((len(grid), groups), empty)
@@ -595,9 +577,6 @@ def morph_spectral(a: dict, b: dict, w: float) -> dict:
     return m
 
 
-# ---------------------------------------------------------------- gesture and hybrid
-
-
 def _tones_same(ta: dict, tb: dict, w: float) -> dict:
     t = KIND_MORPH[kind_of(ta)](ta, tb, w)
     t["layer"] = "deterministic"
@@ -663,9 +642,6 @@ KIND_MORPH: dict[str, Callable[[dict, dict, float], dict]] = {
     "modal": morph_modal, "sines": morph_sines, "spectral": morph_spectral,
     "gesture": morph_gesture, "hybrid": morph_hybrid,
 }
-
-
-# ---------------------------------------------------------------- post stage mix
 
 
 def _resample(v: list, n: int) -> np.ndarray:
@@ -746,9 +722,6 @@ def post_mix(a: dict, b: dict, w: float) -> dict | None:
     out.update(_pre_and_gate(a, b, xa, xb, w))
     out.update(_near_parts(xa if w < 0.5 else xb))
     return out
-
-
-# ---------------------------------------------------------------- entry
 
 
 def _check_pair(ka: str, kb: str) -> None:

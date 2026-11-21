@@ -36,8 +36,6 @@ CATEGORIES: dict[str, str] = {
     "logo_sting": "brief logo sound: a struck hit that rings out, 1-6 s",
 }
 
-# Stems of our kit files that were cut from a bench source. Empty until the kit
-# manifest names such a file.
 KIT_BENCH: list[str] = []
 
 AUDIO_EXTS = (".wav", ".flac", ".ogg", ".mp3", ".aif", ".aiff")

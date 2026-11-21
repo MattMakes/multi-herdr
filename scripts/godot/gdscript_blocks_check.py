@@ -58,7 +58,6 @@ FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([^\s`]*)")
 SKIP = re.compile(r"^\s*<!--\s*gdscript-check:\s*skip\s*-->\s*$")
 CLASS_NAME = re.compile(r"^class_name\s+([A-Za-z_]\w*)\s*")
 EXTENDS = re.compile(r"^(?:class_name\s+\w+\s+)?extends\s+([\w.\"/:]+)", re.MULTILINE)
-# Bases tried for a fragment, in order. A fragment parses if it parses on any.
 BASES = ["Node", "Node2D", "Node3D", "Control", "CharacterBody2D", "CharacterBody3D", "Resource"]
 FRAGMENT_KIND = "in a func of Node"
 DEFAULT_SCRATCH = REPO / ".worktrees" / "_scratch" / "godot-blockcheck"
@@ -80,20 +79,20 @@ func _init() -> void:
 
 @dataclass
 class Try:
-    kind: str  # "whole", "extends <Base>" or "in a func of <Base>"
+    kind: str
     source: str
-    offset: int  # lines added before the block
+    offset: int
 
 
 @dataclass
 class Block:
     path: Path
-    line: int  # markdown line of the first code line
+    line: int
     code: str
     index: int = 0
     class_name: str | None = None
-    errors: dict[str, str] = field(default_factory=dict)  # try kind -> error
-    passed: str | None = None  # the kind of the try that parsed
+    errors: dict[str, str] = field(default_factory=dict)
+    passed: str | None = None
 
 
 def extract(path: Path) -> list[Block]:
@@ -136,7 +135,6 @@ def tries(block: Block, owns_class: bool) -> list[Try]:
     """Return the tries for a block, in order."""
     code = block.code
     if block.class_name and not owns_class:
-        # Another block registers this class_name; keep the line count.
         code = "\n".join(
             CLASS_NAME.sub(lambda m: "", ln, count=1) or f"# class_name {block.class_name}"
             if CLASS_NAME.match(ln) else ln
@@ -192,7 +190,6 @@ def run_godot(godot: str, project: Path, files: list[str], timeout: int) -> dict
         elif current not in errors and line.startswith(("SCRIPT ERROR:", "ERROR:")):
             errors[current] = line.split(":", 1)[1].strip()
         elif current in errors and not located:
-            # "   at: GDScript::reload (res://blocks/b00001_1.gd:4)"
             m = re.search(r"\((res://[^:)]+):(\d+)\)", line)
             if m and m[1] == current:
                 errors[current] += f" @line {m[2]}"
@@ -226,7 +223,6 @@ def check(blocks: list[Block], godot: str, project: Path, timeout: int) -> None:
     (project / ".godot" / "global_script_class_cache.cfg").write_text(class_cache(registry))
 
     plans = {b.index: tries(b, owners.get(b.class_name) is b) for b in blocks}
-    # Round k loads try k of every block that has not parsed yet.
     for k in range(max(len(p) for p in plans.values())):
         files = {}
         for b in blocks:
@@ -251,8 +247,6 @@ def shift(msg: str, offset: int) -> str:
 
 
 def report_line(b: Block) -> tuple[int, str]:
-    # A statement list fails as a whole script with "Unexpected ... in class
-    # body"; the error inside a function of Node says more.
     msg = b.errors.get("whole", "")
     statements = not has_extends(b.code) and not re.search(r"^(static\s+)?func\s", b.code, re.MULTILINE)
     if statements and "in class body" in msg and FRAGMENT_KIND in b.errors:

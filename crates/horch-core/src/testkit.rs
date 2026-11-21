@@ -1,20 +1,11 @@
-//! The in-repo PRNG (NFR-11): SplitMix64, and a small property-test runner.
-//!
-//! There is no `proptest` and no `rand` in the build. SplitMix64 is a few
-//! lines, fully specified, and the same on every platform, so a seed
-//! replays the same draws.
-
-/// A SplitMix64 generator; the field is the state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitMix64(pub u64);
 
 impl SplitMix64 {
-    /// A generator seeded with `seed`.
     pub fn new(seed: u64) -> Self {
         SplitMix64(seed)
     }
 
-    /// The next 64 random bits (the published reference algorithm).
     pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
@@ -23,11 +14,8 @@ impl SplitMix64 {
         z ^ (z >> 31)
     }
 
-    /// A uniform integer in [0, n), without modulo bias. Panics when `n` is 0.
     pub fn below(&mut self, n: u64) -> u64 {
         assert!(n > 0, "SplitMix64::below(0)");
-        // Reject the low `2^64 mod n` values so every residue is equally
-        // likely.
         let threshold = n.wrapping_neg() % n;
         loop {
             let x = self.next_u64();
@@ -38,9 +26,6 @@ impl SplitMix64 {
     }
 }
 
-/// Run `f` for `cases` cases, each with a fresh generator. The case seeds
-/// come from `seed`, so a run is reproducible; a panic names the failing
-/// case index and its seed, then propagates.
 pub fn property<F: FnMut(&mut SplitMix64)>(seed: u64, cases: u32, mut f: F) {
     let mut seeds = SplitMix64::new(seed);
     for case in 0..cases {

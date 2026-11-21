@@ -11,8 +11,6 @@ HOP = 240
 BED_FLOOR = 1e-4
 
 
-# ---------------------------------------------------------------- onset strength
-
 def onset_strength(m: np.ndarray) -> np.ndarray:
     L = logmel(m, n_fft=1024, hop=HOP, n_mels=96, fmin=30, fmax=16000)
     L = np.maximum(L, L.max() - 80)
@@ -37,8 +35,6 @@ def band_envs(x: np.ndarray, m: np.ndarray) -> dict[str, np.ndarray]:
         "high": ms_env(band_filter(m, "highpass", 2000.0)),
     }
 
-
-# ---------------------------------------------------------------- attack refine
 
 def _bed(e: np.ndarray, ic: int) -> float:
     pre = e[max(0, ic - 160): max(0, ic - 40)]
@@ -111,8 +107,6 @@ def lead_event(e: np.ndarray, hits: list[dict]) -> dict | None:
             "length_ms": length_ms(e, j, ip, BED_FLOOR), "starts_file": True}
 
 
-# ---------------------------------------------------------------- prominence
-
 def k_power_curve(x: np.ndarray) -> np.ndarray:
     from hark.core.features import k_weight
 
@@ -136,8 +130,6 @@ def prominence(curve: np.ndarray, ev: dict) -> None:
     ev["prominence_db"] = max(0.0, float(curve[j: j + 80].max()) - bed) if j < curve.size else 0.0
     ev["bed_db"] = round(bed, 1)
 
-
-# ---------------------------------------------------------------- level envelopes, swells, level peaks
 
 def level_envs(x: np.ndarray) -> dict[str, np.ndarray]:
     """10 ms RMS level envelopes in dB (full and 2 kHz high-pass), 90 ms smoothed."""
@@ -225,8 +217,6 @@ def level_peak(envs: dict, t: float, radius: float = 0.15, min_rise_db: float = 
     return {"t": round(i / 100, 3), "band": band, "rise_db": round(rise, 1)}
 
 
-# ---------------------------------------------------------------- per-event levels
-
 def excess_centroid(m: np.ndarray, t: float, length_s: float) -> int | None:
     a = int(t * SR)
     n = int(min(max(length_s, 0.03), 0.12) * SR)
@@ -275,8 +265,6 @@ def momentary_points(x: np.ndarray) -> tuple:
     t, L = loudness_curve(x, 0.4, 0.05)
     return np.asarray(t, dtype=float), np.asarray(L, dtype=float)
 
-
-# ---------------------------------------------------------------- the detector
 
 def detect_events(x: np.ndarray, zthr: float = 3.0, min_contrast_db: float = 3.0, min_gap: float = 0.03,
                   lead: bool = True) -> list[dict]:

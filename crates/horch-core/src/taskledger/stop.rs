@@ -1,11 +1,3 @@
-//! Stopping 1 worker by its recorded PIDs and its exact pane (section 7,
-//! docs/adr/0002, #35).
-//!
-//! [`stop_worker`] takes a worker id and nothing else that names a process.
-//! It reads each PID and start time from the worker's row, and every signal
-//! goes through [`crate::procid::stop_same`], which sends nothing when the
-//! PID now belongs to another process. Every step leaves a `stops` row.
-
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -21,35 +13,25 @@ use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::procid;
 
-/// How a stop reaches the pane host: close 1 pane by its id.
 pub trait Panes {
-    /// Whether the pane exists.
     fn exists(&self, pane: &str) -> bool;
-    /// Close the pane.
     fn close(&self, pane: &str) -> Result<()>;
-    /// Whether the pane exists on `backend`.
     fn exists_on(&self, backend: crate::runtime::Backend, pane: &str) -> bool {
         let _ = backend;
         self.exists(pane)
     }
-    /// Close the pane on `backend`.
     fn close_on(&self, backend: crate::runtime::Backend, pane: &str) -> Result<()> {
         let _ = backend;
         self.close(pane)
     }
 }
 
-/// The operating system side of a stop, replaceable in tests.
 pub trait Processes {
-    /// Whether `pid` runs with start time `started`.
     fn is_same(&self, pid: u32, started: u64) -> bool;
-    /// Whether any process has `pid`.
     fn exists(&self, pid: u32) -> bool;
-    /// Stop `pid` only while it runs with start time `started`.
     fn stop_same(&self, pid: u32, started: u64, how: procid::Stop) -> bool;
 }
 
-/// The real processes of this machine.
 pub struct Os;
 
 impl Processes for Os {
@@ -66,7 +48,6 @@ impl Processes for Os {
     }
 }
 
-/// 1 step of a stop, as recorded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StopStep {
     pub target: String,
@@ -76,25 +57,18 @@ pub struct StopStep {
     pub result: String,
 }
 
-/// What [`stop_worker`] did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StopReport {
     pub worker_id: String,
     pub role: Option<String>,
     pub steps: Vec<StopStep>,
-    /// The task the worker held, queued again.
     pub requeued: Option<String>,
 }
 
-/// Options of a stop.
 #[derive(Debug, Clone, Copy)]
 pub struct StopOptions {
-    /// How long a process gets after TERM before KILL.
     pub grace: Duration,
-    /// How often the grace wait looks.
     pub poll: Duration,
-    /// The final state of the worker: `stopped` for a deliberate stop,
-    /// `incomplete` for a reap.
     pub final_status: WorkerStatus,
 }
 
@@ -147,9 +121,6 @@ impl From<StopRequester> for Actor {
     }
 }
 
-/// The recorded PID and start time, when that process still runs. Otherwise
-/// the result to record: nothing is sent to a PID that cannot be proved to
-/// be this worker's process.
 fn live_identity(
     procs: &dyn Processes,
     pid: Option<i64>,
@@ -158,14 +129,12 @@ fn live_identity(
     let pid = pid
         .and_then(|p| u32::try_from(p).ok())
         .ok_or(StopResult::AlreadyGone)?;
-    // No recorded start time: the PID cannot be proved to be this worker's.
     let started = started
         .and_then(|s| u64::try_from(s).ok())
         .ok_or(StopResult::NotSameProcess)?;
     if procs.is_same(pid, started) {
         return Ok((pid, started));
     }
-    // The PID is free, or another program has it now.
     Err(if procs.exists(pid) {
         StopResult::NotSameProcess
     } else {
@@ -173,7 +142,6 @@ fn live_identity(
     })
 }
 
-/// Wait up to the grace period for the process to go. Whether it went.
 fn wait_gone(procs: &dyn Processes, pid: u32, started: u64, opts: &StopOptions) -> bool {
     let until = Instant::now() + opts.grace;
     while Instant::now() < until {
@@ -185,7 +153,6 @@ fn wait_gone(procs: &dyn Processes, pid: u32, started: u64, opts: &StopOptions) 
     !procs.is_same(pid, started)
 }
 
-/// TERM, wait, then KILL if the same process still runs.
 fn signal_and_wait(
     procs: &dyn Processes,
     pid: u32,
@@ -216,8 +183,6 @@ fn signal_and_wait(
     steps
 }
 
-/// Stop 1 process: TERM, wait up to the grace period, then KILL if the same
-/// process still runs. Returns the steps taken.
 fn stop_process(
     procs: &dyn Processes,
     target: StopTarget,
@@ -238,8 +203,6 @@ fn stop_process(
     }
 }
 
-/// Refuse the workers that `stop_worker` must not touch: the orchestrator,
-/// and a worker of another host (recorded as a step).
 fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -> Result<()> {
     if w.kind == WorkerKind::Orchestrator.as_str() {
         bail!("horch ledger stop does not stop the orchestrator; the operator does");
@@ -263,8 +226,6 @@ fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -
     Ok(())
 }
 
-/// Queue the task `task_id` again when `worker_id` still holds it. Returns
-/// the task as it was read, and whether it was queued.
 fn requeue_if_held(
     conn: &Connection,
     task_id: &str,
@@ -280,9 +241,6 @@ fn requeue_if_held(
     Ok((task, held))
 }
 
-/// Settle the worker's row first: the supervisor sees a worker that is no
-/// longer working and records only the exit code. Returns the task queued
-/// again.
 fn end_row(
     store: &mut Store,
     w: &Worker,
@@ -313,8 +271,6 @@ fn end_row(
     })
 }
 
-/// Stop the agent, then the supervisor, each by its recorded PID and start
-/// time. Every step is recorded.
 fn stop_processes(
     store: &Store,
     w: &Worker,
@@ -340,7 +296,6 @@ fn stop_processes(
     Ok(steps)
 }
 
-/// Close the worker's pane by its id on its recorded backend.
 fn close_pane(
     panes: &dyn Panes,
     backend: crate::runtime::Backend,
@@ -366,10 +321,6 @@ fn close_pane(
     }
 }
 
-/// Stop worker `worker_id`: its agent, then its supervisor, each by the PID
-/// and start time in its row, then its pane by its id. The worker's state
-/// becomes `opts.final_status` first, so its supervisor does not report the
-/// exit as a crash, and a task it held goes back to the queue.
 pub fn stop_worker(
     store: &mut Store,
     worker_id: &str,
@@ -394,12 +345,6 @@ pub fn stop_worker(
     })
 }
 
-/// Stop the workers that held the tasks a cancel just dropped (TRF-36):
-/// `horch ledger cancel` and `run close --abandon`. Each goes through
-/// [`stop_worker`], so each PID is signalled only while it runs with its
-/// recorded start time. The cancel already ended each row and let go of its
-/// task, so nothing is queued again. A worker that cannot be stopped gives
-/// its error in its slot, and the cancel stands.
 pub fn stop_cancelled(
     store: &mut Store,
     holders: &[String],
@@ -444,7 +389,6 @@ mod tests {
         }
     }
 
-    /// A process that ignores TERM.
     struct Stubborn {
         alive: RefCell<bool>,
         sent: RefCell<Vec<procid::Stop>>,
@@ -535,7 +479,6 @@ mod tests {
     fn a_reused_pid_is_not_signalled() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        // The recorded start time (8) is not the running process's (7).
         let id = worker(&mut s, 8);
         let procs = Stubborn {
             alive: RefCell::new(true),
@@ -555,7 +498,6 @@ mod tests {
         assert_eq!(r.steps[0].result, "not_same_process");
     }
 
-    /// A process whose answers the test sets.
     struct Scripted {
         alive: RefCell<bool>,
         term_ok: bool,
@@ -850,7 +792,6 @@ mod tests {
         assert_eq!(workers::get(s.conn(), &id).unwrap().status, "claiming");
     }
 
-    /// Queue a task and mark it running under `worker`.
     fn hold_task(s: &mut Store, worker: &str, holder: &str, status: &str) -> String {
         let run_id = workers::get(s.conn(), worker).unwrap().run_id.unwrap();
         let run = runs::get(s.conn(), &run_id).unwrap();
@@ -1000,8 +941,6 @@ mod tests {
             .ends_with("is done; only a live or incomplete worker is reaped"));
     }
 
-    /// A task "t" claimed by a worker whose agent (PID 4000) and supervisor
-    /// (PID 4001) run with start time 7. Returns the task and the worker.
     fn claimed_task(s: &mut Store) -> (tasks::Task, String) {
         let id = worker(s, 7);
         s.immediate(|tx| {
@@ -1044,8 +983,6 @@ mod tests {
         assert_eq!(r.len(), 1);
         let report = r[0].1.as_ref().unwrap();
         assert_eq!(report.requeued, None);
-        // The agent's TERM ends the scripted process, so the supervisor PID
-        // is already gone: each PID is signalled only while it is the same.
         assert_eq!(*procs.sent.borrow(), vec![procid::Stop::Term]);
         assert_eq!(agent_steps(report), vec![(Some("TERM"), "sent")]);
         assert_eq!(
@@ -1084,15 +1021,12 @@ mod tests {
     }
 }
 
-/// What [`reap`] did: the stop, and the persona to spawn for the requeued
-/// task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReapReport {
     pub stop: StopReport,
     pub persona: Option<String>,
 }
 
-/// Refuse a worker that already finished: there is nothing to reap.
 fn check_reapable(w: &Worker) -> Result<()> {
     let status = w.status()?;
     if !status.is_live() && status != WorkerStatus::Incomplete {
@@ -1105,7 +1039,6 @@ fn check_reapable(w: &Worker) -> Result<()> {
     Ok(())
 }
 
-/// Who a reap is recorded as: the watchdog, or else the orchestrator.
 fn reap_actor(by: StopRequester) -> Actor {
     if matches!(by, StopRequester::Watchdog) {
         Actor::Watchdog
@@ -1114,10 +1047,6 @@ fn reap_actor(by: StopRequester) -> Actor {
     }
 }
 
-/// Reap a dead worker (section 5.4): stop it by its recorded PIDs and pane,
-/// end its attempt `incomplete`, and queue its task again, first in line.
-/// A worker that already finished (`done`, `no_task`, `stopped`) is refused:
-/// there is nothing to reap.
 pub fn reap(
     store: &mut Store,
     worker_id: &str,
@@ -1143,8 +1072,6 @@ pub fn reap(
         procs,
         &opts,
     )?;
-    // A worker whose supervisor already settled it (incomplete, task
-    // requeued) still gets its pane closed above; the task is checked here.
     let persona = match &w.task_id {
         Some(t) => {
             let (task, _) = store.immediate(|tx| requeue_if_held(tx, t, worker_id, reason))?;

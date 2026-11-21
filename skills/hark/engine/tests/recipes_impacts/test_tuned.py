@@ -35,11 +35,8 @@ def _envelope_db(y: np.ndarray) -> np.ndarray:
     return 20 * np.log10(e / e.max() + 1e-12)
 
 
-# ---- mallet
-
 def test_8_10_mallet_gate(take):
     glock = {**_member(mallet, "mallet", "glock"), "jit": 0, "room": 0}
-    # The spec prints 0.39018 s, but its own formula gives 0.08478 + 0.2954 + 0.02 = 0.40018 s.
     assert mallet.length_of(glock) == pytest.approx(min(2, 0.08478 + 7 * 0.0422 + 0.02, 0.00162 + 7 * 0.5027 + 0.02))
     assert mallet.length_of(glock) == pytest.approx(0.40018, abs=1e-9)
     db = _envelope_db(take(mallet.render, glock))
@@ -114,8 +111,6 @@ def test_chime_runs(take):
     assert np.array_equal(a, take(mallet.render_run, mallet.RUN_DEFAULTS, 1))
 
 
-# ---- drip
-
 def test_8_13_drip_allowance():
     assert drip.allows({}) and drip.allows(None)
     assert drip.allows({"rise_st": 20, "from_s": None, "to_s": 0.2})
@@ -159,8 +154,6 @@ def test_drip_pitch_rises(take):
 
     assert peak_hz(late) > 1.4 * peak_hz(early)
 
-
-# ---- pluck
 
 def test_8_12_note_names():
     assert round(pluck.note("C5"), 4) == 523.2511

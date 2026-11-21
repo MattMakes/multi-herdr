@@ -1,21 +1,13 @@
-//! Turning a docs page into markdown.
-//!
-//! Two steps: [`crate::clean`] reduces the Starlight page to plain content HTML,
-//! then htmd converts it. The split keeps all the site-specific knowledge in one
-//! place and leaves this module to formatting concerns.
-
 use anyhow::{Context, Result};
 use htmd::options::{BulletListMarker, Options};
 use htmd::HtmlToMarkdown;
 
 use crate::clean;
 
-/// Convert a docs page's HTML into markdown.
 pub fn to_markdown(html: &str) -> Result<String> {
     let page = clean::clean(html)?;
     let converter = HtmlToMarkdown::builder()
         .options(Options {
-            // The existing mirror uses `-` bullets; keep diffs to real changes.
             bullet_list_marker: BulletListMarker::Dash,
             ..Options::default()
         })
@@ -25,28 +17,18 @@ pub fn to_markdown(html: &str) -> Result<String> {
         .convert(&page.content_html)
         .context("converting HTML to markdown")?;
 
-    // Put the tables back where their placeholders sit. The converter has no table
-    // support, so `clean` rendered them and left a marker behind.
     for (index, table) in page.tables.iter().enumerate() {
         body = body.replace(&clean::table_placeholder(index), table);
     }
 
     let mut markdown = String::new();
     if let Some(title) = &page.title {
-        // Starlight renders the page title outside the content element, so it has
-        // to be put back or every file would start mid-prose.
         markdown.push_str(&format!("# {title}\n\n"));
     }
     markdown.push_str(&body);
     Ok(normalize(&markdown))
 }
 
-/// Tidy the converter's output: one trailing newline, no trailing spaces, and at
-/// most one blank line in a row.
-///
-/// Without this, incidental whitespace churn would show up as a diff on every sync
-/// and hide the real content changes. Blank lines inside fenced code blocks are
-/// left alone, because there they are content.
 fn normalize(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len() + 1);
     let mut blank_run = 0;
@@ -68,8 +50,6 @@ fn normalize(markdown: &str) -> String {
     out
 }
 
-/// The text to write for `line`, or `None` to drop it. Tracks fence state and the
-/// run of blank lines across calls.
 fn keep_line<'a>(
     line: &'a str,
     in_fence: &mut bool,
@@ -118,8 +98,6 @@ mod tests {
         assert!(!md.contains("Footer text"), "{md}");
     }
 
-    /// The whole point of the cleaning step: a real Starlight code block becomes
-    /// one fenced block that names its language.
     #[test]
     fn code_blocks_keep_their_language_and_shape() {
         let md = to_markdown(&page(
@@ -165,8 +143,6 @@ mod tests {
         assert!(md.contains("`herdr pane split`"), "{md}");
     }
 
-    /// The existing mirror uses `-` bullets, so keep that marker. The converter
-    /// aligns list content to 4 columns, which is fine - only the marker matters.
     #[test]
     fn uses_dash_bullets() {
         let md = to_markdown(&page("<ul><li>one</li><li>two</li></ul>")).unwrap();
@@ -205,8 +181,6 @@ mod tests {
         assert_eq!(normalize("   \n"), "\n");
     }
 
-    /// A blank line inside a code block is content, so it must survive the
-    /// blank-run collapsing that applies to prose.
     #[test]
     fn normalize_leaves_blank_lines_inside_code_fences() {
         let input = "text\n\n```toml\n[ui]\n\n\nkey = 1\n```\n\n\nafter\n";
@@ -216,8 +190,6 @@ mod tests {
         );
     }
 
-    /// An indented fence still toggles, trailing spaces go, and an unclosed fence
-    /// keeps its blank lines to the end.
     #[test]
     fn normalize_handles_indented_and_unterminated_fences() {
         assert_eq!(
@@ -227,7 +199,6 @@ mod tests {
         assert_eq!(normalize("```\na\n\n\n\nb\n"), "```\na\n\n\n\nb\n");
     }
 
-    /// Closing a fence resets the blank-run count, so one blank after it survives.
     #[test]
     fn normalize_keeps_one_blank_line_straight_after_a_fence() {
         assert_eq!(normalize("```\na\n```\n\nb\n"), "```\na\n```\n\nb\n");

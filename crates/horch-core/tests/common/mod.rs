@@ -1,4 +1,3 @@
-//! Installing the telemetry fixture corpus into a temp home and state root.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -11,7 +10,6 @@ pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry")
 }
 
-/// The `sqlite3` program: `$HORCH_SQLITE3_BIN`, else the bare name.
 fn sqlite3_bin() -> PathBuf {
     bins::sqlite3_bin(&BinOverrides::from_env(&ProcessEnv))
 }
@@ -23,7 +21,6 @@ pub struct World {
     pub loc: Locations,
 }
 
-/// Which part of every transcript to install (EXPECTED.md stages).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     Whole,
@@ -41,7 +38,6 @@ pub fn locations(home: &Path) -> Locations {
     }
 }
 
-/// Where each fixture subtree lands.
 pub fn targets(home: &Path, state: &Path) -> Vec<(PathBuf, PathBuf)> {
     let f = fixtures();
     vec![
@@ -80,8 +76,6 @@ pub fn install_ledgers(state: &Path) {
     }
 }
 
-/// Copy a tree; `.jsonl` files are cut to their first floor(n/2) lines for
-/// [`Part::FirstHalf`].
 pub fn copy(from: &Path, to: &Path, part: Part) {
     if from.is_dir() {
         std::fs::create_dir_all(to).unwrap();
@@ -108,7 +102,6 @@ pub fn first_half(text: &str) -> String {
         .collect()
 }
 
-/// `sqlite3` on PATH or at `HORCH_SQLITE3_BIN`.
 pub fn sqlite3() -> Option<PathBuf> {
     let bin = sqlite3_bin();
     if bin.components().count() > 1 {
@@ -121,13 +114,10 @@ pub fn sqlite3() -> Option<PathBuf> {
     )
 }
 
-/// Build `opencode.db` from the SQL fixture. `None` without `sqlite3`.
 pub fn build_opencode_db(db: &Path) -> Option<()> {
     let bin = sqlite3()?;
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let sql = std::fs::read_to_string(fixtures().join("opencode/opencode.sql")).unwrap();
-    // The SQL goes in on stdin: it starts with `--`, which sqlite3 reads as
-    // an option when it is an argument.
     let mut child = std::process::Command::new(bin)
         .arg(db)
         .stdin(std::process::Stdio::piped())
@@ -145,7 +135,6 @@ pub fn build_opencode_db(db: &Path) -> Option<()> {
     Some(())
 }
 
-/// Skip a test that needs `sqlite3`, unless `HORCH_REQUIRE_SQLITE=1`.
 pub fn need_sqlite(test: &str) -> bool {
     if sqlite3().is_some() {
         return true;
@@ -171,11 +160,6 @@ pub fn prime_sid(state: &Path) -> String {
         .into_owned()
 }
 
-/// D20 item 5. Run test `child` of this test binary in a new process with
-/// `GIT_DIR` and `GIT_WORK_TREE` aimed at a decoy repository, and assert
-/// that the child passed and the decoy did not change. The child process,
-/// not this one, gets the variables: the other tests of this binary run in
-/// parallel and must not see them.
 pub fn assert_decoy_untouched(git: &Path, child: &str) {
     use horch_marketplace::git::{repo_state, GitRunner};
     let tmp = tempfile::tempdir().unwrap();

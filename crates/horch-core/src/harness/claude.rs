@@ -1,9 +1,3 @@
-//! Claude Code: `claude [variadic flags] --model <m> ... "<prompt>"`.
-//!
-//! horch mints the session id (`--session-id`), so nothing is discovered
-//! after launch. Skills reach it as a `--plugin-dir` plus a `--settings`
-//! overlay.
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,7 +17,6 @@ use crate::roster::{HarnessDefault, HorchAccess, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
-/// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
 pub(crate) const SKILLS_PLUGIN: &str = "horch";
 
 pub(crate) struct Claude;
@@ -33,13 +26,10 @@ impl Harness for Claude {
         HarnessKind::Claude
     }
 
-    /// Every teammate field is Claude-shaped.
     fn validate(&self, _t: &Teammate) -> Vec<&'static str> {
         Vec::new()
     }
 
-    /// `--append-system-prompt-file <path>` for a teammate's `system_prompt`.
-    /// A teammate that names one never starts without it.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         let mut prepared = Prepared::default();
         if let Some(path) = install_system_prompt(&ctx.paths.state_root, req.teammate)? {
@@ -51,7 +41,6 @@ impl Harness for Claude {
         Ok(prepared)
     }
 
-    /// Haiku 4.5 has no effort setting, so claude rejects `--effort` for it.
     fn model_takes_effort(&self, model: &str) -> bool {
         !model
             .split(|c: char| !c.is_ascii_alphanumeric())
@@ -62,8 +51,6 @@ impl Harness for Claude {
         Some(SKILLS_PLUGIN)
     }
 
-    /// The bundle loads as a plugin: `--plugin-dir <bundle>` with a plugin
-    /// manifest, plus a `--settings` overlay merged into the teammate's own.
     fn expose_skills(
         &self,
         teammate: &Teammate,
@@ -78,10 +65,7 @@ impl Harness for Claude {
                 .to_string(),
         )?;
         let mut adjusted = teammate.clone();
-        // Each plugin_skills plugin loads as a filtered copy in the bundle.
         adjusted.plugin_dirs = super::claude_plugins::materialize_filtered(teammate, skills, home)?;
-        // plugin_dirs precede scalar flags in the Claude builder, which
-        // fences variadic --plugin-dir parsing away from the briefing.
         adjusted
             .plugin_dirs
             .push(skills.root().to_string_lossy().into_owned());
@@ -89,8 +73,6 @@ impl Harness for Claude {
         Ok(adjusted)
     }
 
-    /// The operator's `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: the settings chain,
-    /// then the inherited process env (design §6.4).
     fn operator_window(&self, inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
         let texts = read_claude_settings(
             Some(inputs.claude_managed_settings),
@@ -105,8 +87,6 @@ impl Harness for Claude {
         )
     }
 
-    /// The `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` of the inline `--settings`
-    /// JSON. A settings file is not read.
     fn window_in_command(&self, cmd: &Command) -> Option<u64> {
         let args: Vec<_> = cmd.get_args().collect();
         let i = args.iter().position(|a| *a == "--settings")?;
@@ -125,10 +105,6 @@ impl Harness for Claude {
     }
 }
 
-/// Write the teammate's `system_prompt` text under the state root, named by
-/// the prompt and the first 12 hex digits of its SHA-256, and return the
-/// path. The name is content-addressed, so a live or resumed pane's file
-/// never changes under it. `None` when the teammate names no prompt.
 pub(crate) fn install_system_prompt(state_root: &Path, t: &Teammate) -> Result<Option<PathBuf>> {
     let Some(name) = &t.system_prompt else {
         return Ok(None);
@@ -161,12 +137,6 @@ pub(super) fn claude_command(
 ) -> Result<Command> {
     let mut cmd = Command::new(&env.bins.claude);
 
-    // ORDERING MATTERS. `--mcp-config`, `--tools`, `--allowedTools` and
-    // `--disallowedTools` are variadic (`<x...>`): they keep consuming
-    // arguments until the next flag. The prompt is a bare positional at the
-    // end, so any variadic flag that ended up last would swallow it as one
-    // more config path or tool name. Every variadic flag therefore goes
-    // first, and `--model` - always present, never variadic - fences them off.
     push_mcp_args(&mut cmd, env, teammate);
     push_tool_args(&mut cmd, env, teammate);
 
@@ -181,19 +151,13 @@ pub(super) fn claude_command(
         cmd.env(crate::messaging::report::ENV, socket);
     }
     push_session_args(&mut cmd, session);
-    // Escape-hatch args sit right before the prompt: a variadic flag at the
-    // end of `args` would eat it. `Roster::check` warns about that.
     cmd.args(&teammate.args);
-    // An empty prompt is no prompt: a resumed orchestrator starts idle.
     if !prompt.is_empty() {
         cmd.arg(prompt);
     }
     Ok(cmd)
 }
 
-/// `--strict-mcp-config` makes `--mcp-config` the whole truth rather than an
-/// addition, so an empty `mcpServers` object is what "no MCP servers at all"
-/// looks like. Without strict, the operator's servers would still load.
 fn push_mcp_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
     if teammate.mcp_servers.is_some() || teammate.worker_channel {
         cmd.arg("--mcp-config")
@@ -212,8 +176,6 @@ fn push_mcp_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
     }
 }
 
-/// The inline `--mcp-config` JSON: the teammate's servers plus the horch
-/// channel server of a worker channel.
 fn mcp_servers_config(env: &LaunchEnv, teammate: &Teammate) -> String {
     let mut servers = teammate.mcp_servers.clone().unwrap_or_default();
     if teammate.worker_channel {
@@ -229,7 +191,6 @@ fn mcp_servers_config(env: &LaunchEnv, teammate: &Teammate) -> String {
 }
 
 fn push_tool_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
-    // `Some([])` means "no tools", which is `--tools ""`, not "omit the flag".
     if let Some(tools) = &teammate.tools {
         cmd.arg("--tools").arg(tools.join(","));
     }
@@ -259,8 +220,6 @@ fn push_tool_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
 }
 
 fn push_model_args(cmd: &mut Command, teammate: &Teammate, model: &str) {
-    // Haiku 4.5 has no effort setting, and a `--model haiku` override can land
-    // on a teammate whose file sets one; drop it rather than fail the launch.
     if let Some(effort) = &teammate.effort {
         if Claude.model_takes_effort(model) {
             cmd.arg("--effort").arg(effort);
@@ -269,11 +228,6 @@ fn push_model_args(cmd: &mut Command, teammate: &Teammate, model: &str) {
     if let Some(mode) = teammate.permission_mode {
         cmd.arg("--permission-mode").arg(mode.as_str());
     }
-    // Which of the operator's settings files load. Normally all of them: the
-    // operator has tuned settings.json for token economy (disableWorkflows,
-    // disableBundledSkills, ...) and a fleet worker should keep every bit of
-    // that. An empty list drops them all; it is a blunt instrument, kept for
-    // the case where nothing narrower will do.
     if let Some(sources) = &teammate.setting_sources {
         cmd.arg("--setting-sources").arg(sources.join(","));
     }
@@ -283,7 +237,6 @@ fn push_plugin_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> 
     if teammate.disable_skills {
         cmd.arg("--disable-slash-commands");
     } else {
-        // Only a filtered copy hides a plugin's other skills.
         super::claude_plugins::check_filtered(teammate, env.home())?;
     }
     for dir in &teammate.plugin_dirs {
@@ -292,7 +245,6 @@ fn push_plugin_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> 
     Ok(())
 }
 
-/// A sandboxed teammate never starts on a host that cannot sandbox it.
 fn check_sandbox_host(env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
     let Some(problem) = teammate.sandbox.as_ref().and_then(|_| {
         sandbox_host_problem(
@@ -309,8 +261,6 @@ fn check_sandbox_host(env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
     )
 }
 
-/// `--settings` takes a path OR a JSON string, and is not repeatable, so
-/// everything horch wants to overlay has to be assembled into one object.
 fn push_settings_arg(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
     let arg = match &teammate.settings {
         Some(settings) => inline_settings_arg(env, teammate, settings).map(Some),
@@ -322,11 +272,8 @@ fn push_settings_arg(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) ->
     Ok(())
 }
 
-/// The `--settings` argument for a teammate that names its own settings.
 fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> Result<OsString> {
     let inline = settings.trim_start().starts_with('{');
-    // A skills launch gives inline JSON with the sandbox merged in. A file
-    // the teammate named would replace the overlay and drop the sandbox.
     if teammate.sandbox.is_some() && !inline {
         anyhow::bail!(
             "{}: sandbox cannot be combined with a settings file",
@@ -339,14 +286,10 @@ fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> 
     if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some()) {
         merged_inline_settings(env, teammate, settings, window)
     } else {
-        // The teammate named its own file; that file owns the overlay.
         Ok(env.expand_home(settings).into_os_string())
     }
 }
 
-/// Inline JSON (the teammate's own, or the skills overlay): the harness
-/// defaults and the fleet window merge under it. Unchanged text when none
-/// adds a key.
 fn merged_inline_settings(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -358,8 +301,6 @@ fn merged_inline_settings(
     let obj = value
         .as_object_mut()
         .context("teammate settings must be a JSON object")?;
-    // The teammate's own inline JSON carries no sandbox unless a skills
-    // launch merged it in; the `sandbox:` block is the truth either way.
     overlay_sandbox(teammate, obj)?;
     let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
         | overlay_window(window, obj)
@@ -372,13 +313,9 @@ fn merged_inline_settings(
     })
 }
 
-/// The `--settings` overlay of a teammate with no settings of its own, as
-/// JSON text; `None` when it would be empty.
 fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsString>> {
     let mut overlay = serde_json::Map::new();
     disable_operator_plugins(&mut overlay, teammate, env.home())?;
-    // Whatever inherit_plugins says: the generic tiers inherit plugins, but
-    // no pane has a use for the operator's claude.ai skills.
     overlay_skill_switches(teammate, &mut overlay, env.home())?;
     copy_operator_status_line(&mut overlay, teammate, env.home());
     overlay_sandbox(teammate, &mut overlay)?;
@@ -396,10 +333,6 @@ fn push_session_args(cmd: &mut Command, session: Session<'_>) {
     }
 }
 
-/// Unless the teammate inherits plugins, switch the operator's
-/// globally-enabled plugins off, by name, for this session. Settings merge per key, so this touches nothing else - verified
-/// against a live launch: "Found 3 plugins (0 enabled, 3 disabled)" with
-/// every other setting intact.
 pub(crate) fn disable_operator_plugins(
     obj: &mut serde_json::Map<String, Value>,
     teammate: &Teammate,
@@ -414,8 +347,6 @@ pub(crate) fn disable_operator_plugins(
     Ok(())
 }
 
-/// Restricting settings would take the status line with it. Every pane in a
-/// fleet keeps the operator's, so a worker reads like any session.
 fn copy_operator_status_line(
     obj: &mut serde_json::Map<String, Value>,
     teammate: &Teammate,
@@ -427,7 +358,6 @@ fn copy_operator_status_line(
     }
 }
 
-/// The object under `key`, made empty when it is missing.
 fn object_entry<'a>(
     map: &'a mut serde_json::Map<String, Value>,
     key: &str,
@@ -438,8 +368,6 @@ fn object_entry<'a>(
         .with_context(|| format!("{key} must be an object"))
 }
 
-/// The `--settings` overlay of a launch with a skills bundle: the teammate's
-/// own settings (inline JSON or a file), with horch's switches merged in.
 fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
     let mut settings = read_settings_value(teammate.settings.as_deref(), home)?;
     let obj = settings
@@ -448,14 +376,12 @@ fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
     obj.entry("disableBundledSkills").or_insert(json!(true));
     obj.entry("disableWorkflows").or_insert(json!(true));
     disable_operator_plugins(obj, teammate, home)?;
-    // After the plugin switch-off: a plugin_skills plugin stays enabled.
     overlay_skill_switches(teammate, obj, home)?;
     copy_operator_status_line(obj, teammate, home);
     overlay_sandbox(teammate, obj)?;
     Ok(settings)
 }
 
-/// A teammate's `settings` source as JSON: inline text, or a file to read.
 fn read_settings_value(source: Option<&str>, home: Option<&Path>) -> Result<Value> {
     let Some(source) = source else {
         return Ok(json!({}));
@@ -468,19 +394,15 @@ fn read_settings_value(source: Option<&str>, home: Option<&Path>) -> Result<Valu
     serde_json::from_str(&text).context("invalid teammate settings JSON")
 }
 
-/// The texts of the operator's Claude settings files, for one launch. A
-/// file that does not exist is `None`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ClaudeSettingsTexts {
     pub managed: Option<String>,
     pub local: Option<String>,
     pub project: Option<String>,
     pub user: Option<String>,
-    /// Where `user` was read from, for the detail.
     pub user_path: String,
 }
 
-/// The operator's settings files for a launch in `env`.
 fn operator_settings(env: &LaunchEnv) -> ClaudeSettingsTexts {
     read_claude_settings(
         env.claude_managed_settings.as_deref(),
@@ -490,11 +412,6 @@ fn operator_settings(env: &LaunchEnv) -> ClaudeSettingsTexts {
     )
 }
 
-/// Read the settings files of the operator chain. `managed` is
-/// `RuntimeContext.paths.claude_managed_settings`; `None` reads no managed
-/// file. The user file is `<config_dir or home/.claude>/settings.json`.
-/// The project files belong to the repository, so each read is bounded: a
-/// FIFO, a device or a file over 1 MiB counts as absent.
 pub(crate) fn read_claude_settings(
     managed: Option<&Path>,
     home: Option<&Path>,
@@ -517,10 +434,6 @@ pub(crate) fn read_claude_settings(
     }
 }
 
-/// The first source of the operator chain (managed, local, project, user)
-/// that sets the dotted `path`, as (value, detail). A source other than
-/// managed counts only when `sources` is `None` or names it (the teammate's
-/// `setting_sources`).
 pub(crate) fn claude_operator_value(
     t: &ClaudeSettingsTexts,
     sources: Option<&[String]>,
@@ -529,8 +442,6 @@ pub(crate) fn claude_operator_value(
     operator_docs(t, sources).find_map(|(doc, detail)| Some((json_at(&doc, path)?.clone(), detail)))
 }
 
-/// The parsed files of the operator chain that count, in order, each with
-/// its detail. A file that is not valid JSON is skipped.
 fn operator_docs<'a>(
     t: &'a ClaudeSettingsTexts,
     sources: Option<&'a [String]>,
@@ -556,12 +467,9 @@ fn operator_docs<'a>(
     })
 }
 
-/// The env key of Claude's auto-compact window.
 const WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
-/// The env key that makes the window a percentage: the trigger is unknown.
 const PCT_OVERRIDE_ENV: &str = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 
-/// The window the launch applies: the decision's tokens when it is applied.
 fn applied_window(env: &LaunchEnv) -> Option<u64> {
     env.compact_window
         .as_ref()
@@ -569,10 +477,6 @@ fn applied_window(env: &LaunchEnv) -> Option<u64> {
         .and_then(|d| d.tokens)
 }
 
-/// Put the fleet window into a `--settings` overlay as
-/// `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`, at the harness-default level: an
-/// overlay that sets the key (or a non-object `env`) keeps its value, and
-/// the other `env` keys stay. Returns whether the overlay changed.
 fn overlay_window(window: Option<u64>, overlay: &mut serde_json::Map<String, Value>) -> bool {
     let Some(n) = window else {
         return false;
@@ -591,7 +495,6 @@ fn overlay_window(window: Option<u64>, overlay: &mut serde_json::Map<String, Val
     true
 }
 
-/// A window value as tokens: a number, or a string that holds one.
 fn window_tokens(v: &Value) -> Option<u64> {
     match v {
         Value::Number(n) => n.as_u64(),
@@ -600,10 +503,6 @@ fn window_tokens(v: &Value) -> Option<u64> {
     }
 }
 
-/// The operator's Claude window over the settings texts (design §6.4): the
-/// first source of the chain whose `env` sets the window, else the process
-/// env. A file whose `env` also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, or
-/// a value that is not a number, gives `tokens: None`.
 pub(crate) fn claude_operator_window(
     t: &ClaudeSettingsTexts,
     sources: Option<&[String]>,
@@ -641,13 +540,10 @@ fn parse_window(v: &Value, detail: String) -> OperatorWindow {
     }
 }
 
-/// The value at a dotted key path in a JSON document.
 fn json_at<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.').try_fold(doc, |node, key| node.get(key))
 }
 
-/// Every leaf key path of a settings object, dotted: a nested object is
-/// walked, any other value (or an empty object) is a leaf.
 fn leaf_paths(obj: &serde_json::Map<String, Value>, prefix: &str, out: &mut Vec<(String, Value)>) {
     for (key, value) in obj {
         let path = if prefix.is_empty() {
@@ -662,8 +558,6 @@ fn leaf_paths(obj: &serde_json::Map<String, Value>, prefix: &str, out: &mut Vec<
     }
 }
 
-/// Whether the overlay sets `parents.key`, or a parent of it as a
-/// non-object: either way a default cannot go there.
 fn overlay_blocks(overlay: &serde_json::Map<String, Value>, parents: &[&str], key: &str) -> bool {
     let mut node = overlay;
     for parent in parents {
@@ -678,8 +572,6 @@ fn overlay_blocks(overlay: &serde_json::Map<String, Value>, parents: &[&str], ke
     node.contains_key(key)
 }
 
-/// The operator's settings files, read at most once and only when a
-/// non-forced default key asks whether the operator already sets it.
 struct OperatorChain<'a, F> {
     texts: Option<F>,
     read: Option<ClaudeSettingsTexts>,
@@ -695,8 +587,6 @@ impl<F: FnOnce() -> ClaudeSettingsTexts> OperatorChain<'_, F> {
     }
 }
 
-/// The leaf key paths of harness-default settings objects as (path, value,
-/// forced), from entries of (settings, forced). A later entry wins.
 pub(super) fn default_leaves<'a>(
     entries: impl Iterator<Item = (&'a serde_json::Map<String, Value>, bool)>,
 ) -> Vec<(String, Value, bool)> {
@@ -712,12 +602,6 @@ pub(super) fn default_leaves<'a>(
     leaves
 }
 
-/// Merge the teammate's Claude harness-default `settings` into a
-/// `--settings` overlay at the lowest precedence. A key path is left out
-/// when the overlay has it (the teammate's inline settings or horch's fixed
-/// switches), or when the operator chain sets it and the entry has no
-/// `force`. Among the defaults, a later entry wins. `texts` is read only
-/// when a non-forced key needs it. Returns whether the overlay changed.
 pub(crate) fn merge_settings_defaults(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, Value>,
@@ -746,9 +630,6 @@ pub(crate) fn merge_settings_defaults(
     Ok(changed)
 }
 
-/// Set `parents.key` in `overlay`, making the parent objects; whether it
-/// was set. A parent that is not an object is left alone, and so is the
-/// value.
 pub(super) fn insert_at_path(
     overlay: &mut serde_json::Map<String, Value>,
     parents: &[&str],
@@ -764,20 +645,8 @@ pub(super) fn insert_at_path(
         .is_some()
 }
 
-/// Where macOS keeps the Seatbelt launcher Claude Code's sandbox runs under.
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// The `sandbox` keys horch sets on every sandboxed launch, whatever the
-/// teammate file says, as (path, value). `check` rejects a file that sets
-/// one to anything else.
-/// - `enabled`: the field means "sandbox this pane".
-/// - `failIfUnavailable`: Claude Code exits at startup rather than run
-///   commands unsandboxed.
-/// - `allowUnsandboxedCommands: false`: no retry outside the sandbox. Given
-///   through `--settings`, it also makes the sandbox admin-required, so a
-///   repository's `.claude/settings.json` cannot widen it.
-/// - `network.strictAllowlist`: a host outside `allowedDomains` is denied in
-///   every permission mode, auto mode's per-command domains included.
 pub(crate) const SANDBOX_FORCED: [(&[&str], bool); 4] = [
     (&["enabled"], true),
     (&["failIfUnavailable"], true),
@@ -785,12 +654,6 @@ pub(crate) const SANDBOX_FORCED: [(&[&str], bool); 4] = [
     (&["network", "strictAllowlist"], true),
 ];
 
-/// Put the teammate's `sandbox:` block into a `--settings` object, with the
-/// [`SANDBOX_FORCED`] keys set. The sandbox wraps Bash only, so the Read,
-/// Grep and Glob tools get `permissions.blockReadsOutsideWorkingDirectories`:
-/// without it they read what the sandbox denies to a shell command. With the
-/// sandbox on, the same key also closes the home directory to sandboxed
-/// commands; the block's `allowRead` re-opens what the teammate needs.
 pub(crate) fn overlay_sandbox(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, Value>,
@@ -826,26 +689,12 @@ pub(crate) fn overlay_sandbox(
     Ok(())
 }
 
-/// The report socket of a sandboxed `horch_access: report` teammate.
 fn report_socket<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> Option<&'a PathBuf> {
     (teammate.sandbox.is_some() && teammate.horch_access == HorchAccess::Report)
         .then_some(env.report_socket.as_ref())
         .flatten()
 }
 
-/// Open horch's own paths to a sandboxed teammate's Bash. For
-/// `horch_access: full`, so `horch tell`, `horch done`, `horch ledger` and
-/// `horch spawn` work in the pane:
-/// - the state root and the ledger folder, for read and write;
-/// - Unix sockets under the state root (the channel relays) and
-///   `$HERDR_SOCKET_PATH`, for connect.
-///
-/// For `horch_access: report`, only the pane's report socket, for connect
-/// (`docs/security/sandboxed-pane-horch-access.md`, C1 to C3).
-///
-/// The paths come from the launch's resolved roots, so a moved root is the
-/// one opened. A launch with no `sandbox:` block, or whose settings carry
-/// no sandbox, is unchanged. Returns whether a path was added.
 fn overlay_horch_paths(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -895,9 +744,6 @@ fn overlay_horch_paths(
             .as_deref()
             .filter(|project| project.join(".git").is_dir())
         {
-            // Claude Code denies `.git` writes inside the working directory
-            // by default. `sandbox.filesystem.allowWrite` must name the git
-            // common dir for commits and `.worktrees` for `git worktree add`.
             changed |= add_entries(
                 settings,
                 [
@@ -915,8 +761,6 @@ fn overlay_horch_paths(
             )?;
         }
     }
-    // The state root holds every worker's skills bundle, which the pane's
-    // `horch` commands never write (ticket 28; R6).
     if let (HorchAccess::Full, Some(root)) = (teammate.horch_access, &env.state_root) {
         changed |= deny_writes(&root.join("skill-bundles"), settings)?;
     }
@@ -962,14 +806,6 @@ fn repository_write_paths(workdir: Option<&Path>) -> Option<(PathBuf, PathBuf)> 
     Some((common, root.join(".worktrees")))
 }
 
-/// Open each roster folder `horch spawn` reads in the pane to read, and
-/// close it to write (ticket 35): `~/.config/horch/teammates` and the
-/// briefed `$HORCH_TEAMMATES_DIR`, each when it exists. A pane that could
-/// edit the roster could re-brief the roles it spawns (R6). Bash gets
-/// `allowRead` and `denyWrite`, the Read tool a working directory
-/// (ticket 31), and an `Edit(...)` deny closes it to Edit and Write. A
-/// `Write(...)` deny has no effect (ticket 28 finding). Returns whether an
-/// entry was added.
 fn overlay_roster_dirs(
     env: &LaunchEnv,
     settings: &mut serde_json::Map<String, Value>,
@@ -986,7 +822,6 @@ fn overlay_roster_dirs(
                 (FS, "allowRead", dir.to_string()),
                 (FS, "denyWrite", dir.to_string()),
                 (PERMS, "additionalDirectories", dir.to_string()),
-                // A rule path that starts with `//` is absolute.
                 (PERMS, "deny", format!("Edit(/{dir}/**)")),
             ],
         )?;
@@ -994,15 +829,6 @@ fn overlay_roster_dirs(
     Ok(changed)
 }
 
-/// Open the launch's own skills bundle to read and close it to write, for
-/// every tool (ticket 27; `docs/security/sandboxed-pane-horch-access.md`,
-/// R6). The Read tool reads it as a working directory
-/// (`permissions.additionalDirectories`), and deny rules close it to Edit
-/// and Write. Bash gets it in `sandbox.filesystem.allowRead` and
-/// `denyWrite`; `denyWrite` wins over the state root in a `full` pane's
-/// `allowWrite`. A `Read(...)` allow rule does not pass
-/// `blockReadsOutsideWorkingDirectories` (live probe, Claude Code
-/// 2.1.318). Returns whether an entry was added.
 fn overlay_bundle_paths(
     bundle: &Path,
     settings: &mut serde_json::Map<String, Value>,
@@ -1018,15 +844,6 @@ fn overlay_bundle_paths(
     Ok(deny_writes(bundle, settings)? | changed)
 }
 
-/// Make each `allowRead` and `allowWrite` path of the teammate's `sandbox:`
-/// block, with `~` expanded, a working directory
-/// (`permissions.additionalDirectories`). Without it, Claude Code asks
-/// before a Bash command that names a path there, because of
-/// `blockReadsOutsideWorkingDirectories` (ticket 31; live probe, Claude Code
-/// 2.1.318). A working directory is open to Edit and Write too, so an
-/// `allowRead`-only path gets an `Edit(...)` deny rule, which also covers
-/// Write. horch's own paths stay out: only `horch` commands use them.
-/// Returns whether an entry was added.
 fn overlay_sandbox_dirs(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -1052,7 +869,6 @@ fn overlay_sandbox_dirs(
         changed |= add_entries(settings, [(PERMS, "additionalDirectories", dir)])?;
     }
     for dir in reads.iter().filter(|d| !writes.contains(d)) {
-        // A rule path that starts with `//` is absolute.
         let rule = format!("Edit(/{}/**)", dir.to_string_lossy());
         changed |= add_entries(settings, [(PERMS, "deny", rule)])?;
     }
@@ -1062,12 +878,8 @@ fn overlay_sandbox_dirs(
 const FS: &[&str] = &["sandbox", "filesystem"];
 const PERMS: &[&str] = &["permissions"];
 
-/// Close `dir` to writes for every tool: Bash by
-/// `sandbox.filesystem.denyWrite`, which wins over `allowWrite`, and Edit
-/// and Write by deny rules. Returns whether an entry was added.
 fn deny_writes(dir: &Path, settings: &mut serde_json::Map<String, Value>) -> Result<bool> {
     let dir = dir.to_string_lossy();
-    // A rule path that starts with `//` is absolute.
     let rule = |tool: &str| format!("{tool}(/{dir}/**)");
     add_entries(
         settings,
@@ -1079,8 +891,6 @@ fn deny_writes(dir: &Path, settings: &mut serde_json::Map<String, Value>) -> Res
     )
 }
 
-/// Append each `(parents, key, entry)` to the list at `parents.key`, once.
-/// Returns whether an entry was added.
 fn add_entries<const N: usize>(
     settings: &mut serde_json::Map<String, Value>,
     entries: [(&[&str], &str, String); N],
@@ -1105,9 +915,6 @@ fn add_entries<const N: usize>(
     Ok(changed)
 }
 
-/// What in a teammate's `sandbox:` block would open a way out, one line
-/// each: a value against a [`SANDBOX_FORCED`] key, `excludedCommands` (runs
-/// a command outside the sandbox) or `filesystem.disabled`.
 pub(crate) fn sandbox_problems(block: &serde_json::Map<String, Value>) -> Vec<String> {
     let mut problems: Vec<String> = SANDBOX_FORCED
         .iter()
@@ -1126,9 +933,6 @@ pub(crate) fn sandbox_problems(block: &serde_json::Map<String, Value>) -> Vec<St
     problems
 }
 
-/// The line for the [`SANDBOX_FORCED`] key at `path`, when the block sets it
-/// to anything but `forced`. A key the block leaves out, or whose parent is
-/// not an object, is no problem.
 fn forced_value_problem(
     block: &serde_json::Map<String, Value>,
     path: &[&str],
@@ -1148,10 +952,6 @@ fn forced_value_problem(
     })
 }
 
-/// Why this host cannot run Claude Code's sandbox, or `None` when it can.
-/// macOS needs Seatbelt's `sandbox-exec`; Linux needs `bwrap` and `socat`
-/// (code.claude.com/docs/en/sandboxing, "Set up Linux and WSL2"). The
-/// sandbox runs nowhere else.
 pub(crate) fn sandbox_host_problem(
     os: &str,
     path: Option<&std::ffi::OsStr>,
@@ -1176,9 +976,6 @@ pub(crate) fn sandbox_host_problem(
     }
 }
 
-/// A `PATH` of 1 temp directory for a sandbox test: with fake `bwrap` and
-/// `socat` executables when `tools` is true, else empty. The Linux sandbox
-/// check looks there, so a test does not depend on the host's PATH.
 #[cfg(test)]
 pub(crate) fn sandbox_tools_path(dir: &Path, tools: bool) -> std::ffi::OsString {
     std::fs::create_dir_all(dir).unwrap();
@@ -1193,17 +990,6 @@ pub(crate) fn sandbox_tools_path(dir: &Path, tools: bool) -> std::ffi::OsString 
     std::env::join_paths([dir]).unwrap()
 }
 
-/// Add the skill switches every Claude launch overlays on the operator's
-/// settings. Shared by the plain overlay above and [`skills_settings`], which
-/// is the path fleet panes take.
-///
-/// The skills synced from claude.ai (`anthropic-skills:<name>`) go off unless
-/// the teammate opts back in. `syncClaudeAiSkills: false` given through
-/// `--settings` hides them for this session only and moves nothing on disk;
-/// the same value in the operator's settings.json would trash the cache.
-/// Each `disabled_skills` entry goes off by name. Settings merge per key, so
-/// the operator's own `skillOverrides` still apply - verified against a live
-/// launch (Claude Code 2.1.276).
 pub(crate) fn overlay_skill_switches(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, serde_json::Value>,
@@ -1214,15 +1000,11 @@ pub(crate) fn overlay_skill_switches(
             .entry("syncClaudeAiSkills")
             .or_insert(serde_json::Value::Bool(false));
     }
-    // Plugins synced from claude.ai are plugins too: a teammate that sheds the
-    // operator's plugins sheds these, for this session only.
     if !teammate.inherit_plugins {
         overlay
             .entry("syncClaudeAiPlugins")
             .or_insert(serde_json::Value::Bool(false));
     }
-    // Remote Control is the orchestrator's. Stated in every pane, so an
-    // operator or org default of "on" never reaches a worker.
     overlay
         .entry("remoteControlAtStartup")
         .or_insert(serde_json::Value::Bool(teammate.remote_control));
@@ -1230,8 +1012,6 @@ pub(crate) fn overlay_skill_switches(
     for name in &teammate.disabled_skills {
         overrides.insert(name.clone(), "off".into());
     }
-    // The ambient copies of skill-creator go off in every pane. The
-    // orchestrator carries its own as `horch:skill-creator`; no worker has one.
     for name in AMBIENT_SKILL_CREATOR {
         overrides.insert(name.to_string(), "off".into());
     }
@@ -1239,12 +1019,6 @@ pub(crate) fn overlay_skill_switches(
     disable_skill_plugins(teammate, overlay, home)
 }
 
-/// A plugin skill ignores skillOverrides, in every key form (Claude Code
-/// 2.1.283, tested live), so the official plugin goes off as a plugin. For
-/// the same reason a disabled `<plugin>:<skill>` switches its whole plugin
-/// off (Claude Code 2.1.289).
-/// `or_insert` keeps what plugin_skills set. Its filtered copy is
-/// `<plugin>@inline`, a key this never names, so it stays on.
 fn disable_skill_plugins(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, Value>,
@@ -1269,8 +1043,6 @@ fn disable_skill_plugins(
     Ok(())
 }
 
-/// Every `name@marketplace` key under which `plugin` is enabled in the
-/// operator's settings or installed, sorted. Empty when it is neither.
 fn plugin_keys(plugin: &str, enabled: &[String], installed: Option<&Value>) -> Vec<String> {
     let registered = installed
         .and_then(|v| v.get("plugins"))
@@ -1288,8 +1060,6 @@ fn plugin_keys(plugin: &str, enabled: &[String], installed: Option<&Value>) -> V
     keys
 }
 
-/// The names skill-creator loads under as a skill, outside horch's bundle and
-/// the plugin: a user or project skill, and the claude.ai-synced copy.
 pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
     ["skill-creator", "anthropic-skills:skill-creator"];
 
@@ -1334,8 +1104,6 @@ mod tests {
         assert_eq!(args.last().map(String::as_str), Some("the prompt"));
     }
 
-    /// A resumed fleet orchestrator gets no prompt: `--resume <id>` ends
-    /// the command line, with no empty argument after it.
     #[test]
     fn an_empty_prompt_is_left_off_the_command_line() {
         let teammate = Teammate {
@@ -1398,7 +1166,6 @@ mod tests {
             .any(|arg| arg == "--dangerously-load-development-channels"));
     }
 
-    /// Run `read` in a thread; panic when it does not return within 1 s.
     #[cfg(unix)]
     fn within_1s<T: Send + 'static>(read: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1409,8 +1176,6 @@ mod tests {
             .expect("the read blocked")
     }
 
-    /// A FIFO at the repository's `.claude/settings.json` neither blocks the
-    /// operator chain read nor counts as a file (u9b step 10).
     #[cfg(unix)]
     #[test]
     fn claude_project_settings_fifo_does_not_block() {
@@ -1423,9 +1188,6 @@ mod tests {
         assert_eq!(texts.local.as_deref(), Some("{}"));
     }
 
-    /// HDF-02: the operator chain is managed, then local, then project, then
-    /// user; `setting_sources` drops the sources it does not name, never
-    /// managed. A dotted path walks nested objects.
     #[test]
     fn hdf_02_claude_operator_value_follows_the_chain_order() {
         let texts = ClaudeSettingsTexts {
@@ -1451,9 +1213,6 @@ mod tests {
         assert_eq!(value(Some(&[]), "c"), None);
     }
 
-    /// A plugin skill ignores `skillOverrides`, so a disabled `herdr:<skill>`
-    /// switches the herdr plugin off under every key it is enabled or
-    /// installed as. A bare name and a plugin nobody has add no plugin key.
     #[test]
     fn a_disabled_plugin_skill_switches_its_plugin_off() {
         let home = tempfile::tempdir().unwrap();
@@ -1488,12 +1247,9 @@ mod tests {
                 "skill-creator@claude-plugins-official": false
             })
         );
-        // The bare names still go off: they hide the user-level copies.
         assert_eq!(overlay["skillOverrides"]["herdr-worker"], "off");
     }
 
-    /// The filtered copy that plugin_skills switches on stays on when a
-    /// disabled skill switches its plugin off.
     #[test]
     fn plugin_skills_wins_over_a_disabled_plugin_skill() {
         let mut overlay = serde_json::Map::new();
@@ -1521,7 +1277,6 @@ mod tests {
         }
     }
 
-    /// Whether a launch in `env` passes the host sandbox check.
     fn host_can_sandbox(env: &LaunchEnv) -> bool {
         sandbox_host_problem(
             std::env::consts::OS,
@@ -1531,8 +1286,6 @@ mod tests {
         .is_none()
     }
 
-    /// 2 launch environments: PATH with the Linux sandbox tools, and PATH
-    /// without them. The temp dir must outlive them.
     fn sandbox_envs(tmp: &Path) -> [LaunchEnv; 2] {
         [true, false].map(|tools| LaunchEnv {
             path: Some(sandbox_tools_path(&tmp.join(tools.to_string()), tools)),
@@ -1552,9 +1305,6 @@ mod tests {
         serde_json::from_str(&args[i + 1]).unwrap()
     }
 
-    /// The launch writes the teammate's block into `--settings`, with the
-    /// forced keys set over what the file said, and closes the Read tool.
-    /// On a host with no sandbox, the same launch is refused instead.
     #[test]
     fn a_sandboxed_launch_writes_the_sandbox_block_or_refuses() {
         let t = sandboxed(json!({
@@ -1599,9 +1349,6 @@ mod tests {
         }
     }
 
-    /// A `horch_access: report` launch opens only the pane's report socket:
-    /// no state root, ledger folder, relay or herdr socket. It sets
-    /// `HORCH_REPORT_SOCKET`. Through the skills overlay too.
     #[test]
     fn a_report_launch_opens_only_the_report_socket() {
         let mut t = sandboxed(json!({
@@ -1648,8 +1395,6 @@ mod tests {
     #[test]
     fn a_sandboxed_fleet_worker_can_write_git_and_worktree_paths() {
         let tmp = tempfile::tempdir().unwrap();
-        // git answers with the real path, and the macOS temp folder is a
-        // symlink (/var -> /private/var).
         let root = tmp.path().canonicalize().unwrap();
         let repo = root.join("repo");
         let status = Command::new("git")
@@ -1711,11 +1456,6 @@ mod tests {
             .contains(&json!(worktrees.to_string_lossy())));
     }
 
-    /// T-27: a sandboxed launch with a skills bundle opens that bundle, and
-    /// no other path, to read: a working directory for the Read tool and
-    /// `allowRead` for Bash. Deny rules close it to Edit and Write, and
-    /// `denyWrite` closes it to Bash, also over a `full` pane's state root.
-    /// Through the skills overlay too, for a `full` and a `report` teammate.
     #[test]
     fn a_sandboxed_launch_reads_but_does_not_write_its_bundle() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1749,7 +1489,6 @@ mod tests {
                 assert!(!writes.contains(&json!(bundle)), "{access:?}");
                 let perms = &settings["permissions"];
                 assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true);
-                // `/side` is the teammate's own `allowRead` path (T-31).
                 assert_eq!(perms["additionalDirectories"], json!(["/side", bundle]));
                 let rules = perms["deny"].as_array().unwrap();
                 assert_eq!(
@@ -1764,12 +1503,6 @@ mod tests {
         }
     }
 
-    /// T-31: the teammate's own `allowRead` and `allowWrite` paths, with `~`
-    /// expanded, are working directories, so a Bash command that names one
-    /// does not stop at `blockReadsOutsideWorkingDirectories`. An
-    /// `allowRead`-only path gets an `Edit(...)` deny rule. horch's own
-    /// paths are not working directories. Through the skills overlay too,
-    /// for a `full` and a `report` teammate.
     #[test]
     fn a_sandboxed_launch_opens_its_own_paths_as_working_directories() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1815,9 +1548,6 @@ mod tests {
         }
     }
 
-    /// A sandboxed ledger worker can create its ledger worktree and commit
-    /// there: git writes the main checkout's common dir and horch creates the
-    /// linked checkout under the project's `.worktrees` folder.
     #[test]
     fn a_sandboxed_launch_can_write_its_project_worktree_paths() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1846,10 +1576,6 @@ mod tests {
         assert!(writes.contains(&json!(tmp.path().join(".worktrees"))));
     }
 
-    /// A sandboxed `full` launch closes every skills bundle under the state
-    /// root to writes, with or without a bundle of its own and through the
-    /// skills overlay too (ticket 28; R6). A `report` launch has no state
-    /// root to close.
     #[test]
     fn a_full_sandboxed_launch_writes_no_skills_bundle() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1898,11 +1624,6 @@ mod tests {
         }
     }
 
-    /// T-35: a sandboxed `full` launch reads the roster it was briefed from
-    /// and `~/.config/horch/teammates`, so `horch spawn` works in the pane.
-    /// It writes neither (R6): `denyWrite` for Bash, an `Edit(...)` deny for
-    /// the Edit and Write tools, and no `Write(...)` rule (T-28 finding).
-    /// Through the skills overlay too.
     #[test]
     fn a_full_sandboxed_launch_reads_but_does_not_write_its_roster() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1948,8 +1669,6 @@ mod tests {
         }
     }
 
-    /// T-35: a `report` launch gets no roster path, and a `full` launch with
-    /// no roster dir and no `~/.config/horch/teammates` gets none either.
     #[test]
     fn only_a_full_launch_with_a_roster_opens_one() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1987,8 +1706,6 @@ mod tests {
         }
     }
 
-    /// A sandboxed launch with no skills bundle opens no bundle path, and a
-    /// launch with no `sandbox:` block opens none even with a bundle.
     #[test]
     fn only_a_sandboxed_bundle_launch_opens_the_bundle() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2005,7 +1722,6 @@ mod tests {
         )
         .unwrap();
         let settings = settings_arg(&built);
-        // Only the state root's bundle folder (ticket 28), no bundle of its own.
         assert_eq!(
             settings["sandbox"]["filesystem"]["denyWrite"],
             json!(["/state/horch/skill-bundles"])
@@ -2036,9 +1752,6 @@ mod tests {
         );
     }
 
-    /// A `report` launch with no ledger record has no socket: it opens no
-    /// horch path at all and sets no `HORCH_REPORT_SOCKET`. A `full`
-    /// launch ignores a report socket.
     #[test]
     fn a_report_launch_without_a_socket_opens_nothing() {
         let mut t = sandboxed(json!({}));
@@ -2069,8 +1782,6 @@ mod tests {
         assert!(!built.get_envs().any(|(k, _)| k == "HORCH_REPORT_SOCKET"));
     }
 
-    /// A launch with no `sandbox:` block gets no horch paths: its argv is
-    /// the same whether or not the launch knows horch's roots.
     #[test]
     fn a_launch_without_a_sandbox_is_unchanged_by_the_horch_paths() {
         let t = Teammate {
@@ -2098,9 +1809,6 @@ mod tests {
         assert!(!got.iter().any(|a| a.contains("/state/horch")), "{got:?}");
     }
 
-    /// A skills launch carries the sandbox as inline settings JSON. The
-    /// launch adds horch's paths to it too, once each, and keeps the forced
-    /// keys.
     #[test]
     fn a_sandboxed_skills_launch_gets_the_horch_paths() {
         let mut t = sandboxed(json!({
@@ -2130,10 +1838,6 @@ mod tests {
         );
     }
 
-    /// Launch a sandboxed teammate and check `--settings` holds the sandbox
-    /// block, the forced keys and the horch paths. `skills` runs the teammate
-    /// through the skills overlay first; `inline` gives it settings of its own.
-    /// Returns the launched settings, or `None` on a host with no sandbox.
     fn sandboxed_launch_settings(skills: bool, inline: bool) -> Option<Value> {
         let mut t = sandboxed(json!({
             "network": {"allowedDomains": ["example.com"]}
@@ -2184,12 +1888,9 @@ mod tests {
         Some(settings)
     }
 
-    /// A sandboxed teammate with inline settings and no skills keeps its
-    /// sandbox: the inline settings path used to drop the block.
     #[test]
     fn a_sandboxed_launch_with_inline_settings_and_no_skills_keeps_the_sandbox() {
         if let Some(settings) = sandboxed_launch_settings(false, true) {
-            // The teammate's own settings stay.
             assert_eq!(settings["model"], "sonnet");
         }
     }
@@ -2211,9 +1912,6 @@ mod tests {
         sandboxed_launch_settings(true, false);
     }
 
-    /// The shipped release preparer launches inside the sandbox: only the
-    /// App Store Connect API host, the key directory re-opened, asc's
-    /// credential variables unset, and no way out.
     #[test]
     fn the_release_preparer_launches_sandboxed() {
         let roster = crate::roster::Roster::builtin().unwrap();
@@ -2249,8 +1947,6 @@ mod tests {
         );
     }
 
-    /// A fleet pane launches with skills: the sandbox rides in the merged
-    /// skills overlay too, and a teammate without the field gets no block.
     #[test]
     fn the_skills_overlay_carries_the_sandbox() {
         let settings = skills_settings(&sandboxed(json!({"enabled": false})), None).unwrap();
@@ -2261,8 +1957,6 @@ mod tests {
         assert!(plain.get("permissions").is_none());
     }
 
-    /// The Linux check finds `bwrap` and `socat` on the launch's PATH, and
-    /// names what is missing. Run on every host, macOS included.
     #[cfg(unix)]
     #[test]
     fn the_linux_sandbox_check_reads_the_launch_path() {
@@ -2277,7 +1971,6 @@ mod tests {
         assert!(sandbox_host_problem("linux", None, false).is_some());
     }
 
-    /// A settings file replaces the overlay, so it would drop the sandbox.
     #[test]
     fn a_sandbox_with_a_settings_file_is_refused() {
         let mut t = sandboxed(json!({}));
@@ -2317,7 +2010,6 @@ mod tests {
         assert!(sandbox_problems(empty.as_object().unwrap()).is_empty());
     }
 
-    /// The whole text of each line, and how a block of an odd shape reads.
     #[test]
     fn the_sandbox_check_gives_each_line_in_full_and_reads_odd_blocks() {
         let problems = |block: Value| sandbox_problems(block.as_object().unwrap());
@@ -2333,21 +2025,17 @@ mod tests {
                 "sandbox.network.strictAllowlist must be true or left out (horch sets it)",
             ]
         );
-        // A key at its forced value is no problem, a value of another type is.
         assert!(problems(json!({"enabled": true, "failIfUnavailable": true})).is_empty());
         assert_eq!(
             problems(json!({"enabled": "yes"})),
             ["sandbox.enabled must be true or left out (horch sets it)"]
         );
-        // A parent that is not an object holds no key to check.
         assert!(problems(json!({"network": true})).is_empty());
-        // excludedCommands: anything but an empty list.
         assert_eq!(
             problems(json!({"excludedCommands": "asc *"})),
             ["sandbox.excludedCommands runs commands outside the sandbox; leave it out"]
         );
         assert!(problems(json!({"excludedCommands": []})).is_empty());
-        // filesystem.disabled: anything but false.
         assert_eq!(
             problems(json!({"filesystem": {"disabled": "yes"}})),
             ["sandbox.filesystem.disabled turns the filesystem layer off"]
@@ -2383,7 +2071,6 @@ mod tests {
             );
         }
     }
-    // ---- Pins for the claude_command split (#191) ----
 
     fn claude_default(settings: serde_json::Map<String, Value>, force: bool) -> HarnessDefault {
         HarnessDefault {
@@ -2415,7 +2102,6 @@ mod tests {
         command_args(&claude_command(env, t, s, prompt, None).unwrap())
     }
 
-    /// Every flag group at once, in the order the variadic fence needs.
     #[test]
     fn every_flag_group_keeps_its_place() {
         let mut t = quiet("opus");
@@ -2484,12 +2170,10 @@ mod tests {
         };
         assert!(mcp_part(&quiet("m")).is_empty());
 
-        // Files only: one variadic flag, not strict.
         let mut t = quiet("m");
         t.mcp_config_files = vec!["a.json".into(), "b.json".into()];
         assert_eq!(mcp_part(&t), ["--mcp-config", "a.json", "b.json"]);
 
-        // Declared servers: strict, each file its own flag.
         let mut t = quiet("m");
         t.mcp_servers = Some(Default::default());
         t.mcp_config_files = vec!["a.json".into(), "b.json".into()];
@@ -2506,14 +2190,12 @@ mod tests {
             ]
         );
 
-        // Channel alone: not strict.
         let mut t = quiet("m");
         t.worker_channel = true;
         let a = mcp_part(&t);
         assert!(!a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
         assert_eq!(a.len(), 4, "{a:?}");
 
-        // `Some([])` tools is `--tools ""`.
         let mut t = quiet("m");
         t.tools = Some(vec![]);
         assert_eq!(mcp_part(&t), ["--tools", ""]);
@@ -2555,14 +2237,12 @@ mod tests {
             serde_json::from_str(&value(&built(&env, &t, Session::Unmanaged, ""))).unwrap();
         assert_eq!(merged, json!({"a": 1, "b": {"c": 2}}));
 
-        // A default that adds nothing leaves the text alone.
         t.harness_defaults = vec![claude_default(obj(json!({"a": 9})), false)];
         assert_eq!(
             value(&built(&env, &t, Session::Unmanaged, "")),
             r#" { "a" : 1 } "#
         );
 
-        // The window merges in as env.CLAUDE_CODE_AUTO_COMPACT_WINDOW.
         env.compact_window = Some(crate::compaction::window::WindowDecision {
             tokens: Some(1234),
             source: crate::compaction::window::WindowSource::Fleet,
@@ -2576,7 +2256,6 @@ mod tests {
             json!({"a": 1, "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1234"}})
         );
 
-        // Invalid inline JSON that needs a merge is refused; a file is passed on.
         t.settings = Some("{oops".into());
         assert!(claude_command(&env, &t, Session::Unmanaged, "", None).is_err());
         t.settings = Some("~/s.json".into());
@@ -2611,7 +2290,6 @@ mod tests {
         assert_eq!(overlay["statusLine"]["command"], "x");
         assert_eq!(overlay["syncClaudeAiPlugins"], false);
 
-        // Without setting_sources the status line stays with the operator.
         t.setting_sources = None;
         let overlay = settings_overlay_of(&built(&env, &t, Session::Unmanaged, ""));
         assert!(overlay.get("statusLine").is_none());
@@ -2633,7 +2311,6 @@ mod tests {
         assert_eq!(v["disableWorkflows"], true);
         assert!(v.get("statusLine").is_none());
 
-        // A file source is read, and its own keys win.
         std::fs::write(
             tmp.path().join("mine.json"),
             r#"{"disableWorkflows":false,"statusLine":"mine"}"#,
@@ -2647,7 +2324,6 @@ mod tests {
         assert_eq!(v["statusLine"], "mine");
         assert_eq!(v["enabledPlugins"]["a@m"], false);
 
-        // Without its own status line the operator's is copied.
         t.settings = Some("{}".into());
         let v = skills_settings(&t, home).unwrap();
         assert_eq!(v["statusLine"]["command"], "op");
@@ -2684,7 +2360,6 @@ mod tests {
         assert_eq!(w.tokens, Some(150000));
         assert_eq!(w.detail, ".claude/settings.json");
 
-        // Narrowed to user: the percentage override hides the trigger.
         let only_user = vec!["user".to_string()];
         let w = claude_operator_window(&texts, Some(&only_user), Some("77")).unwrap();
         assert_eq!(w.tokens, None);
@@ -2693,7 +2368,6 @@ mod tests {
             "/u (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set; trigger unknown)"
         );
 
-        // No file sets it: the process env counts; a non-number is flagged.
         let none = ClaudeSettingsTexts::default();
         let w = claude_operator_window(&none, None, Some("88")).unwrap();
         assert_eq!(
@@ -2731,7 +2405,6 @@ mod tests {
             json!({"KEEP": "1", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "7"})
         );
 
-        // A non-object env is left alone.
         let mut o = obj(json!({"env": 3}));
         assert!(!overlay_window(Some(7), &mut o));
         assert_eq!(o["env"], 3);
@@ -2746,7 +2419,6 @@ mod tests {
         assert!(!overlay_blocks(&o, &["a", "b"], "d"));
         assert!(!overlay_blocks(&o, &["a", "x"], "c"));
         assert!(!overlay_blocks(&o, &["x", "y"], "c"));
-        // A parent that is not an object blocks every child key.
         assert!(overlay_blocks(&o, &["s"], "anything"));
         assert!(overlay_blocks(&o, &["a", "b", "c"], "d"));
     }
@@ -2778,17 +2450,13 @@ mod tests {
                 "nest": {"new": 3}
             })
         );
-        // A second pass changes nothing.
         assert!(!merge_settings_defaults(&t, &mut o, read).unwrap());
 
-        // The overlay's own key beats a default, even a forced one; a
-        // non-object parent blocks.
         let mut o = obj(json!({"x": 0, "deep": 3}));
         merge_settings_defaults(&t, &mut o, read).unwrap();
         assert_eq!(o["x"], 0);
         assert_eq!(o["deep"], 3);
 
-        // The operator files are read only when a non-forced key needs them.
         let mut only_forced = quiet("m");
         only_forced.harness_defaults = vec![claude_default(obj(json!({"f": 1})), true)];
         let mut o = obj(json!({}));
@@ -2807,9 +2475,6 @@ mod tests {
         }
     }
 
-    /// The opus pane starts with `--append-system-prompt-file`, and the file
-    /// holds `system_prompt/sr_eng_system_prompt.md` byte for byte. A new
-    /// text gets a new file, so a live pane's file never changes.
     #[test]
     fn opus_starts_with_the_sr_eng_system_prompt_file() {
         let tmp = tempfile::tempdir().unwrap();

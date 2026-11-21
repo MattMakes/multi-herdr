@@ -1,9 +1,3 @@
-//! The task ledger's tables (docs/specs/task-ledger.md section 4 and 11).
-//!
-//! The schema is built from the enums in [`super::model`], so each `CHECK`
-//! list is the code's own list. `PRAGMA user_version` holds the version;
-//! [`migrate`] brings an older file forward and never goes back.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -11,11 +5,8 @@ use rusqlite::Connection;
 
 use super::model::*;
 
-/// The schema version this binary writes.
 pub const VERSION: i64 = 9;
 
-/// A rule that applies to rows this ledger writes, not to imported ones
-/// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
 fn native(expr: &str) -> String {
     format!("CHECK (origin = 'import' OR ({expr}))")
 }
@@ -27,7 +18,6 @@ fn origin_columns() -> String {
     )
 }
 
-/// The `projects` table.
 fn projects() -> String {
     r#"CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -37,7 +27,6 @@ fn projects() -> String {
     .to_string()
 }
 
-/// The `runs_table` statements.
 fn runs_table() -> String {
     let origin = origin_columns();
     format!(
@@ -70,7 +59,6 @@ fn runs_table() -> String {
     )
 }
 
-/// The `tasks_table` statements.
 fn tasks_table() -> String {
     let origin = origin_columns();
     format!(
@@ -116,7 +104,6 @@ fn tasks_table() -> String {
     )
 }
 
-/// The `task_deps` statements.
 fn task_deps() -> String {
     r#"CREATE TABLE task_deps (
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
@@ -127,7 +114,6 @@ fn task_deps() -> String {
     .to_string()
 }
 
-/// The `task_files` statements.
 fn task_files() -> String {
     format!(
         r#"CREATE TABLE task_files (
@@ -140,7 +126,6 @@ fn task_files() -> String {
     )
 }
 
-/// The `workers_table` statements.
 fn workers_table() -> String {
     let origin = origin_columns();
     format!(
@@ -192,7 +177,6 @@ CREATE UNIQUE INDEX workers_one_working_per_task
     )
 }
 
-/// The `checks_table` statements.
 fn checks_table() -> String {
     format!(
         r#"CREATE TABLE checks (
@@ -216,7 +200,6 @@ fn checks_table() -> String {
     )
 }
 
-/// The `stops_table` statements.
 fn stops_table() -> String {
     format!(
         r#"CREATE TABLE stops (
@@ -239,11 +222,8 @@ fn stops_table() -> String {
     )
 }
 
-/// `worktrees.status` as version 1 wrote it. Version 1 runs as a migration,
-/// so its text keeps these words; version 5 adds the later ones.
 const V1_WORKTREE_STATUS: &str = "CHECK (status IN ('open', 'landing', 'landed', 'cleanup_failed', 'cleaned', 'unlanded', 'abandoned'))";
 
-/// The `worktrees_table` statements.
 fn worktrees_table() -> String {
     let origin = origin_columns();
     format!(
@@ -270,7 +250,6 @@ fn worktrees_table() -> String {
     )
 }
 
-/// The `events_table` statements.
 fn events_table() -> String {
     format!(
         r#"CREATE TABLE events (
@@ -291,7 +270,6 @@ CREATE INDEX events_by_worker ON events(worker_id, event_id);"#,
     )
 }
 
-/// The `task_steps` statements.
 fn task_steps() -> String {
     format!(
         r#"CREATE TABLE task_steps (
@@ -315,13 +293,8 @@ fn task_steps() -> String {
     )
 }
 
-/// `task_steps.name` as version 1 wrote it. Version 1 runs as a migration,
-/// so its text keeps these words; version 8 adds `comment-sweep`.
 const V1_STEP_NAME: &str = "CHECK (name IN ('check', 'code-sweep', 'complexity-sweep', 'recheck', 'land', 'pr', 'cleanup'))";
 
-/// Version 8: the finish step `comment-sweep`. SQLite cannot change a
-/// `CHECK`, so `task_steps` is built again under its own name and its rows
-/// copied. No table points at it.
 fn v8() -> String {
     let table = task_steps()
         .replace("CREATE TABLE task_steps (", "CREATE TABLE task_steps_v8 (")
@@ -334,7 +307,6 @@ ALTER TABLE task_steps_v8 RENAME TO task_steps;"
     )
 }
 
-/// The `import_raw` statements.
 fn import_raw() -> String {
     format!(
         r#"CREATE TABLE import_raw (
@@ -352,7 +324,6 @@ fn import_raw() -> String {
     )
 }
 
-/// The `import_findings` statements.
 fn import_findings() -> String {
     format!(
         r#"CREATE TABLE import_findings (
@@ -375,7 +346,6 @@ fn import_findings() -> String {
     )
 }
 
-/// The statements of version 1.
 fn v1() -> String {
     let tables = [
         projects(),
@@ -395,7 +365,6 @@ fn v1() -> String {
     format!("\n{}\n", tables.join("\n\n"))
 }
 
-/// Version 2: the waits of a worker, and the modes of a worktree.
 const V2: &str = "CREATE TABLE worker_waits (
             worker_id TEXT NOT NULL REFERENCES workers(worker_id),
             kind TEXT NOT NULL CHECK(kind IN ('question','reviewers','background')),
@@ -406,22 +375,13 @@ const V2: &str = "CREATE TABLE worker_waits (
                 run_id TEXT NOT NULL REFERENCES runs(run_id), name TEXT NOT NULL,
                 scratch INTEGER NOT NULL DEFAULT 0 CHECK(scratch IN (0,1))); ";
 
-/// Version 3: a held task stays `queued` with a reason, so the status CHECK
-/// list keeps its words (#168). `attempt_floor` is the attempt count at the
-/// last operator requeue: the limit counts the attempts after it.
 const V3: &str = "ALTER TABLE runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
              ALTER TABLE tasks ADD COLUMN held_reason TEXT;
              ALTER TABLE tasks ADD COLUMN attempt_floor INTEGER NOT NULL DEFAULT 0;";
 
-/// Version 4: the version and the binary (a JSON `ExeIdentity`) of the
-/// watchdog at its last checkin, so `ledger status` shows an old watchdog
-/// (#216).
 const V4: &str = "ALTER TABLE runs ADD COLUMN watchdog_version TEXT;
              ALTER TABLE runs ADD COLUMN watchdog_exe TEXT;";
 
-/// Version 5: worktree triage (#308). The statuses `archived` and `trashed`,
-/// and the columns of a decision. SQLite cannot change a `CHECK`, so the
-/// table is built again under its own name and its rows copied.
 fn v5() -> String {
     let columns = "worktree_id, task_id, worker_id, repo_root, path, branch, base, base_commit, \
         status, landed_commit, check_output_path, bytes_on_disk, origin, import_raw_id, \
@@ -436,8 +396,6 @@ fn v5() -> String {
                 TriageDecision::check("decision")
             ),
         );
-    // The rows of `worktree_modes` point at `worktrees`. [`migrate`] turns
-    // the foreign keys off around it and checks them before the commit.
     format!(
         "{table}
 INSERT INTO worktrees_v5 ({columns}) SELECT {columns} FROM worktrees;
@@ -446,19 +404,9 @@ ALTER TABLE worktrees_v5 RENAME TO worktrees;"
     )
 }
 
-/// Version 6: the disk a parked worktree held when `horch worktree triage`
-/// last measured it, so `ledger status` sums a stored value and never walks
-/// a folder (#308).
 const V6: &str = "ALTER TABLE worktrees ADD COLUMN bytes INTEGER;
              ALTER TABLE worktrees ADD COLUMN bytes_measured_at TEXT;";
 
-/// Version 7: every field of the trace-fixes plan (docs/specs/trace-fixes.md
-/// section 4), in 1 migration so no 2 tickets race on the version. The
-/// ticket fields of a task (C1), the run check, PR decline and orchestrator
-/// respawn of a run (C5, C7), the run gates (C5), the wake outbox (C3),
-/// the handoff of a worker (C4) and the session records that replace the
-/// JSON session ledger (D10, TRF-45). `held_reason` and `end_reason` stay free
-/// text: their new words live in [`HeldReason`] and [`EndReason`].
 fn v7() -> String {
     format!(
         "ALTER TABLE tasks ADD COLUMN work_kind TEXT {work_kind};
@@ -509,24 +457,13 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
-/// Version 9: the pane host backend (`herdr` or `hc`) that owns a worker's
-/// workspace and pane (HCB-03).
 const V9: &str = "ALTER TABLE workers ADD COLUMN backend TEXT NOT NULL DEFAULT 'herdr' CHECK (backend IN ('herdr', 'hc'));";
 
-/// Bring the database to [`VERSION`]. A file from a newer binary is refused:
-/// this one would not know its columns.
-///
-/// Foreign keys are off while it runs: a table that is built again
-/// (`v5`) is dropped while other rows point at it. They are checked before
-/// the commit, and turned back on after it.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     migrate_guarded(conn, &|_| Ok(()))
 }
 
-/// [`migrate`], but an existing file (version 1 or more) is migrated only
-/// when `guard(version)` is `Ok`, and only after a backup (`backup`).
 pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
-    // The pragma is a no-op inside a transaction, so it is set before one.
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
     let migrated = migrate_unchecked(conn, guard);
@@ -534,16 +471,12 @@ pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>)
     migrated
 }
 
-/// The file of `conn`, or `None` for an in-memory database.
 fn file_of(conn: &Connection) -> Option<PathBuf> {
     conn.path().filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
-/// How many backups `backup` keeps in 1 folder.
 pub const BACKUPS_KEPT: usize = 3;
 
-/// The backups in `dir`, `ledger.v<n>-backup-<stamp>.sqlite3`, oldest
-/// name first.
 pub fn backups_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -567,16 +500,10 @@ pub fn backups_in(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Copy the ledger `file` at version `from` to
-/// `<dir>/ledger.v<from>-backup-<UTC yyyymmddTHHMMSSZ>.sqlite3`, then keep
-/// the newest [`BACKUPS_KEPT`]. The caller holds the write lock, so the copy
-/// is the state the migration starts from. `VACUUM INTO` cannot run inside a
-/// transaction, so it runs on a second connection.
 fn backup(file: &Path, from: i64) -> Result<PathBuf> {
     let dir = file.parent().unwrap_or(Path::new("."));
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let mut copy = dir.join(format!("ledger.v{from}-backup-{stamp}.sqlite3"));
-    // 2 migrations in 1 second: the second copy gets a number.
     let mut n = 2;
     while copy.exists() {
         copy = dir.join(format!("ledger.v{from}-backup-{stamp}-{n}.sqlite3"));
@@ -595,8 +522,6 @@ fn backup(file: &Path, from: i64) -> Result<PathBuf> {
     Ok(copy)
 }
 
-/// The error for a file at version `current` above [`VERSION`]: 1 sentence
-/// and 1 instruction line.
 fn newer_schema(file: Option<&Path>, current: i64) -> anyhow::Error {
     let what = match file {
         Some(f) => format!("the task ledger {}", f.display()),
@@ -620,8 +545,6 @@ fn newer_schema(file: Option<&Path>, current: i64) -> anyhow::Error {
 }
 
 fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
-    // The write lock first, then the version: 2 processes that open a fresh
-    // file at once must not both create the tables.
     let file = file_of(conn);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -681,14 +604,12 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
 mod tests {
     use super::*;
 
-    /// FNV-1a, so the pin below needs no copy of the 250-line text.
     fn fnv1a(text: &str) -> u64 {
         text.bytes().fold(0xcbf29ce484222325, |h, b| {
             (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
         })
     }
 
-    /// Version 1 runs as a migration on existing files: its text must not drift.
     #[test]
     fn v1_text_is_pinned() {
         let sql = v1();
@@ -713,7 +634,6 @@ mod tests {
         assert_eq!(tables, 18);
     }
 
-    /// A ledger file as version 3 left it, with 1 run.
     fn version_3_ledger() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -746,7 +666,6 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, VERSION);
-        // A second run of the migration changes nothing.
         migrate(&mut conn).unwrap();
     }
 
@@ -811,7 +730,6 @@ mod tests {
 mod v5_tests {
     use super::*;
 
-    /// A ledger file as version 4 left it, with 1 worktree and its mode row.
     fn version_4_file(path: &std::path::Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -834,7 +752,6 @@ mod v5_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.sqlite3");
         version_4_file(&path);
-        // The store opens with foreign keys on, as every real open does.
         let store = crate::taskledger::Store::open(&path).unwrap();
         let conn = store.conn();
         let v: i64 = conn
@@ -872,7 +789,6 @@ mod v5_tests {
                 []
             )
             .is_err());
-        // The mode row still points at the rebuilt table, and the key holds.
         let fk: i64 = conn
             .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
                 r.get(0)
@@ -886,7 +802,6 @@ mod v5_tests {
             )
             .is_err());
         drop(store);
-        // A second open migrates nothing.
         crate::taskledger::Store::open(&path).unwrap();
     }
 }
@@ -895,7 +810,6 @@ mod v5_tests {
 mod v6_tests {
     use super::*;
 
-    /// A ledger file as version 5 left it, with 1 parked worktree.
     fn version_5_file(path: &std::path::Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -939,7 +853,6 @@ mod v6_tests {
         )
         .unwrap();
         drop(store);
-        // A second open migrates nothing and keeps the measurement.
         let store = crate::taskledger::Store::open(&path).unwrap();
         let bytes: i64 = store
             .conn()
@@ -954,7 +867,6 @@ mod v7_tests {
     use super::*;
     use rusqlite::types::Value;
 
-    /// A ledger file as version 6 left it, with rows in every table.
     fn version_6_file(path: &std::path::Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -993,7 +905,6 @@ mod v7_tests {
         .unwrap();
     }
 
-    /// Every table, with its columns and rows, ordered so 2 dumps compare.
     type Dump = Vec<(String, Vec<String>, Vec<Vec<Value>>)>;
 
     fn dump(conn: &Connection, only: Option<&Dump>) -> Dump {
@@ -1099,7 +1010,6 @@ mod v7_tests {
             assert_eq!(n, 0, "{table} starts empty");
         }
 
-        // The new words are the enums' words, and the CHECK lists hold.
         conn.execute(
             "UPDATE tasks SET work_kind = ?1, review_mode = ?2, held_reason = ?3 WHERE task_id = 't1'",
             [WorkKind::Security.as_str(), ReviewMode::NoReview.as_str(), HeldReason::Unlanded.as_str()],
@@ -1137,7 +1047,6 @@ mod v7_tests {
             .execute("INSERT INTO outbox (id, run_id, event, key, text, created_at) VALUES ('u4', 'nope', 'held', 'k4', 'x', 'now')", [])
             .is_err(), "run_id must name a run");
         drop(store);
-        // A second open migrates nothing and keeps the new rows.
         let store = crate::taskledger::Store::open(&path).unwrap();
         let n: i64 = store
             .conn()
@@ -1146,8 +1055,6 @@ mod v7_tests {
         assert_eq!(n, 1);
     }
 
-    /// A ledger file at `path` that the real steps 1..=`version` built, with
-    /// 1 project row.
     fn file_at(path: &std::path::Path, version: i64) {
         let conn = Connection::open(path).unwrap();
         let steps = [
@@ -1170,7 +1077,6 @@ mod v7_tests {
         conn.pragma_update(None, "user_version", version).unwrap();
     }
 
-    /// Every table, index and trigger with its SQL text.
     fn schema_text(conn: &Connection) -> Vec<(String, String, Option<String>)> {
         conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
             .unwrap()

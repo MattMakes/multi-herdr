@@ -30,8 +30,6 @@ def _decay_noise(sec: float, tau: float, seed: int = 0) -> np.ndarray:
 
 
 def test_p1_click_found():
-    # A slow decay keeps the loudest frame at the start, away from the jump
-    # (the detector skips +-3 frames around the loudest frame).
     x = _fade(_sine(1000, 0.5) * np.linspace(1.0, 0.8, SR // 2))
     assert polish.clicks(x)["clicks"] == 0
     y = x.copy()
@@ -43,7 +41,7 @@ def test_p1_click_found():
 
 def test_p2_edge_db():
     t = _t(0.5)
-    x = 0.5 * np.cos(2 * np.pi * 1000 * t)  # ends near full amplitude
+    x = 0.5 * np.cos(2 * np.pi * 1000 * t)
     x = x * np.minimum(1, t / 0.01)
     assert polish.clicks(x)["edge_db"] > -6
     assert polish.clicks(_fade(x))["edge_db"] < -60
@@ -80,10 +78,10 @@ def test_p5_resonance_found():
 
 def test_p6_truncated_tail():
     x = _decay_noise(2.0, 0.1)
-    cut = int(SR * np.log(10) * 0.1)  # the file stops where the amplitude is down 20 dB
+    cut = int(SR * np.log(10) * 0.1)
     v = polish.truncated(x[:cut])["trunc_db"]
     assert v is not None and abs(v - (-20)) <= 3
-    full = x[: int(SR * np.log(10) * 0.1 * 3.5)]  # down 70 dB
+    full = x[: int(SR * np.log(10) * 0.1 * 3.5)]
     assert polish.truncated(full)["trunc_db"] is None
 
 

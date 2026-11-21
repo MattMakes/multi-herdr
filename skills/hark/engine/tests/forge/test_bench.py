@@ -33,12 +33,10 @@ def _wav(path, x):
     return str(path)
 
 
-# ---------------------------------------------------------------- model-free checks
-
 def test_B1_env_feats_burst():
     n_att = int(0.002 * SR)
     t = np.arange(int(0.6 * SR)) / SR
-    tau = 0.2 / (2 * math.log(10))  # amplitude down 40 dB in 200 ms
+    tau = 0.2 / (2 * math.log(10))
     burst = np.sin(2 * np.pi * 1000 * t) * np.exp(-t / tau)
     burst[:n_att] *= np.linspace(0, 1, n_att)
     x = np.concatenate([np.zeros(int(0.01 * SR)), burst])
@@ -49,7 +47,6 @@ def test_B1_env_feats_burst():
 
 
 def test_B2_artifact_flags():
-    # A decaying sine: a constant sine with 10 ms fades still has its last 10 ms within 30 dB of the peak.
     x = 0.5 * _decay(phase=0.0)
     assert "start click" in bench.artifacts(x)["flags"]
     assert bench.artifacts(_fades(x))["flags"] == []
@@ -120,8 +117,6 @@ def test_B8_gather(tmp_path):
     assert [p.rsplit("/", 1)[-1] for p in more["tap"]] == ["click_01.wav"]
 
 
-# ---------------------------------------------------------------- main
-
 @pytest.fixture
 def registry(tmp_path, monkeypatch):
     path = tmp_path / "refsets.json"
@@ -171,8 +166,6 @@ def test_B11_retable(tmp_path, capsys):
     assert "wrote" in capsys.readouterr().out
 
 
-# ---------------------------------------------------------------- frozen tone
-
 def test_B12_frozen_t40_and_profile():
     rng = np.random.default_rng(0)
     t = np.arange(int(0.8 * SR)) / SR
@@ -193,8 +186,6 @@ def test_frozen_toneref_check():
     assert frozen_tone.ToneRef([]).check(xs[0]) == {}
 
 
-# ---------------------------------------------------------------- scrub
-
 def test_B13_scrub_paths(monkeypatch, tmp_path):
     monkeypatch.setenv("HARK_HOME", str(tmp_path / "home"))
     repo = str(scrub_paths.REPO).replace("\\", "/")
@@ -214,8 +205,6 @@ def test_scrub_registry_root(monkeypatch, tmp_path):
     assert ("/data/lib/refs", "<refs>") in rs
     assert scrub_paths.scrub("/data/lib/refs/click/bench/b.wav", rs=rs) == "<refs>/click/bench/b.wav"
 
-
-# ---------------------------------------------------------------- build script
 
 def test_B14_build_refsets(tmp_path, monkeypatch, capsys):
     assert build_refsets.family({"id": "fs-1", "author": "u"}) == "fs-author:u"
@@ -252,8 +241,6 @@ def test_build_refsets_export_and_pick(tmp_path):
     assert whys[0.1] == "overlaps a kept trim" and whys[1.0].startswith("z 1.00 <")
     assert whys[2.0] == "27 dB under the loudest"
 
-
-# ---------------------------------------------------------------- one category with stub models
 
 class _Vocab:
     def embed_files(self, paths):

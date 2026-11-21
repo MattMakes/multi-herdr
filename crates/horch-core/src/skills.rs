@@ -1,6 +1,3 @@
-//! Portable phase catalogs. Only selected skill files are materialized per launch;
-//! native harness loaders expose metadata and read bodies on demand.
-
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -37,7 +34,6 @@ struct Metadata {
     description: String,
 }
 
-/// The bundled catalog in the shape the legacy callers read.
 fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
     Ok(SkillCatalog::bundled()?
         .entries()
@@ -51,7 +47,6 @@ fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
         .collect())
 }
 
-/// Inspect costs without launching a harness. Bytes/4 is an estimate, not a tokenizer.
 pub fn describe(phase: Option<Phase>) -> Result<Value> {
     let all = catalog()?;
     let names: Vec<&str> = match phase {
@@ -76,23 +71,15 @@ pub fn describe(phase: Option<Phase>) -> Result<Value> {
     )
 }
 
-/// An owned launch directory. Dropping it only deletes files we created.
-///
-/// It holds exactly the activated skills. How a CLI discovers them is the
-/// harness's business: the teammate's harness adapter exposes the bundle
-/// (`expose_skills`, `expose_skills_env`).
 #[derive(Debug)]
 pub struct Bundle {
     root: PathBuf,
     catalog: SkillCatalog,
     plan: SkillActivationPlan,
-    /// `None` for a bundle that activates nothing: it carries only the
-    /// briefing's `Skipped:` notes, and no directory exists.
     _files: Option<MaterializedSkills>,
 }
 
 impl Bundle {
-    /// The compiled-in catalog, under a fresh directory name.
     pub fn install(state_root: &Path, teammate: &Teammate) -> Result<Option<Self>> {
         Self::install_from(
             state_root,
@@ -103,12 +90,6 @@ impl Bundle {
         )
     }
 
-    /// Plan `teammate`'s skills against `catalog` plus its
-    /// `operator_skills:` (`~/` expanded against `home`), and materialize
-    /// the activated ones under `<state_root>/skill-bundles/<execution_id>/`.
-    /// `None` when nothing is activated and no operator skill was skipped.
-    /// A bundle with an empty plan and no directory is returned when every
-    /// operator skill was skipped, so the briefing can still say so (U-53).
     pub(crate) fn install_from(
         state_root: &Path,
         teammate: &Teammate,
@@ -139,29 +120,21 @@ impl Bundle {
         }
     }
 
-    /// The activation plan this bundle materialized.
     pub fn plan(&self) -> &SkillActivationPlan {
         &self.plan
     }
 
-    /// `<state_root>/skill-bundles/<execution_id>/`.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// One directory per activated skill, and nothing else.
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
 
-    /// The skill paragraph prepended to a worker's briefing, with plugin
-    /// skills resolved under `home`; see `briefing::render`.
     pub fn briefing_in(&self, teammate: &Teammate, home: Option<&Path>) -> String {
         let namespace = teammate.agent.adapter().skill_namespace();
         let mut plugin_lines = Vec::new();
-        // Plugin skills exist only where skills load as plugins. A plugin
-        // that does not resolve is reported by `--check`; the briefing must
-        // not fail a launch over a description.
         if namespace.is_some() {
             if let Ok(plugins) = crate::harness::claude_plugins::resolve_all_in(teammate, home) {
                 for (plugin, wanted) in plugins {
@@ -172,7 +145,6 @@ impl Bundle {
                 }
             }
         }
-        // Operator skills are expected too; they follow the bundled ones.
         let declared: Vec<String> = teammate
             .skills
             .iter()
@@ -198,7 +170,6 @@ impl Bundle {
 mod tests {
     use super::*;
 
-    /// The ids of the skills `t` activates on the bundled catalog.
     fn activated(t: &Teammate) -> Result<Vec<String>> {
         let resolution =
             SkillResolution::read(SkillCatalog::bundled()?, Some(t), None, |_| Ok(()))?;
@@ -213,12 +184,7 @@ mod tests {
     #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {
         let catalog = catalog().unwrap();
-        // The 16 original skills; design skills join by name, not by phase.
         assert!(catalog.len() >= 16, "{}", catalog.len());
-        // `orchestrate` and `skill-creator` are attached by name, to the
-        // orchestrators only, and belong to no phase catalog. Adding either to
-        // `Phase::Plan` would hand it to `staff-engineer` and every other
-        // plan-phase teammate, which is the opposite of what it is for.
         let phased: BTreeSet<&str> = [
             Phase::Research,
             Phase::Plan,
@@ -233,7 +199,6 @@ mod tests {
             .map(String::as_str)
             .filter(|n| !phased.contains(n))
             .collect();
-        // Design skills are by name too, for the specialists that list them.
         for name in &crate::roster::ORCHESTRATOR_ONLY_SKILLS {
             assert!(by_name_only.contains(name), "{name}");
         }
@@ -307,8 +272,6 @@ mod tests {
         assert!(b.skills_dir().join("create-plan/SKILL.md").exists());
     }
 
-    /// A teammate's own skills are named as expected, with descriptions; the
-    /// rest of its phase catalog stays available by name only.
     #[test]
     fn skills_briefing_names_expected_skills_with_descriptions() {
         let tmp = tempfile::tempdir().unwrap();
@@ -343,7 +306,6 @@ mod tests {
             "only expected skills carry descriptions"
         );
 
-        // Codex names skills bare.
         let codex = roster.require("codex-reviewer").unwrap();
         if !cfg!(windows) {
             let bundle = Bundle::install(tmp.path(), codex).unwrap().unwrap();
@@ -367,11 +329,6 @@ mod tests {
         assert_eq!(value["syncClaudeAiSkills"], false);
     }
 
-    /// The orchestrator's playbook reaches the orchestrator and nobody else.
-    /// Both teammates sit on `phase: plan`, so the only difference between
-    /// these two lists is the `skills: [orchestrate, skill-creator, make-videos]`
-    /// line in `teammates/orchestrator.md`. skill-creator is the Claude
-    /// flavor's only; make-videos is on both orchestrators and on no worker.
     #[test]
     fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
         let roster = crate::roster::Roster::builtin().unwrap();
@@ -411,9 +368,6 @@ mod tests {
         );
     }
 
-    /// Fleet panes take this path, not the plain overlay in `launch.rs`, so the
-    /// skill switches have to land here too: into the teammate's own
-    /// `skillOverrides`, and out entirely on opt-in.
     #[test]
     fn skills_claude_overlay_carries_the_skill_switches() {
         let tmp = tempfile::tempdir().unwrap();
@@ -474,10 +428,6 @@ mod tests {
         );
     }
 
-    /// Nothing activated and nothing skipped: no bundle and no directory.
-    /// Nothing activated but an operator skill skipped: a bundle that holds
-    /// only the briefing's note, with no directory (U-53). An activated
-    /// skill: a directory whose root is canonical, as the files made it.
     #[test]
     fn install_from_has_no_bundle_a_hollow_one_or_a_directory() {
         let tmp = tempfile::tempdir().unwrap();

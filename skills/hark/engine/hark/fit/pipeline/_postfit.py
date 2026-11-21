@@ -12,14 +12,11 @@ from hark.fit.pipeline._post import ATTACK_FRAME_S, ATTACK_HOP, apply_post, fram
 
 SR = 48000
 N_BANDS = 28
-GATE_HOP = 24            # 0.5 ms
-GATE_WIN = 48            # 1 ms
+GATE_HOP = 24
+GATE_WIN = 48
 NOISE_HP_HZ = 200
 
 Judge = Callable[[list], tuple]
-
-
-# ---------------------------------------------------------------- scoring
 
 
 def _scorer(X: np.ndarray, renders: list, judge: Judge | None) -> Callable[[dict], tuple]:
@@ -33,9 +30,6 @@ def _scorer(X: np.ndarray, renders: list, judge: Judge | None) -> Callable[[dict
         return float(np.mean([Q.score(Q.quality(xm, mono(y))) for y in ys])), 0.0
 
     return sc
-
-
-# ---------------------------------------------------------------- EQ and gain
 
 
 def _profile_power(y: np.ndarray) -> np.ndarray:
@@ -67,9 +61,6 @@ def level_gain(X: np.ndarray, renders: list, p: dict) -> float:
     return float(p.get("gain_db", 0.0) + Q.peak_rms_db(X) - lv)
 
 
-# ---------------------------------------------------------------- attack clamp
-
-
 def attack_pre(X: np.ndarray, noise: bool = False) -> dict | None:
     """The attack clamp entry of a recording, or None."""
     m = mono(X)
@@ -98,9 +89,6 @@ def _with_clamp(X: np.ndarray, renders: list, p: dict, noise: bool) -> dict | No
     return q
 
 
-# ---------------------------------------------------------------- envelope calibration
-
-
 def _env_start(p: dict) -> int:
     """The first 5 ms frame after the attack clamp onset plus 8 ms."""
     t_on = float((p.get("pre") or {}).get("t_on", 0))
@@ -124,9 +112,6 @@ def _env_curve(X: np.ndarray, renders: list, p: dict) -> dict | None:
         return None
     g = _env_gains(e0, np.mean(es, axis=0), _env_start(p))
     return {"hop": 0.005, "db": np.round(g, 2).tolist()}
-
-
-# ---------------------------------------------------------------- gate
 
 
 def _gate_env(m: np.ndarray) -> np.ndarray:
@@ -235,9 +220,6 @@ def fit_gate(X: np.ndarray, renders: list, pre: dict | None = None) -> dict | No
     t = (np.arange(len(cut)) + 1) * 0.0005
     pts = _rdp(np.column_stack([t, cut]), 0.5)
     return {"pts": [[round(float(a), 5), round(float(b), 1)] for a, b in pts]}
-
-
-# ---------------------------------------------------------------- the post stage
 
 
 def _try_gate(X: np.ndarray, renders: list, p: dict, sc: Callable, base: tuple) -> dict:

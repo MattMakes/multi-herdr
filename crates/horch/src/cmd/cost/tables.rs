@@ -1,8 +1,3 @@
-//! The report's tables, as row objects: per tier (workers only), the
-//! orchestrator, per teammate, and per-teammate expected-skill use. The
-//! columns are those of `ai_docs/reports/wave2/baseline.md`. They describe
-//! spend; nothing here ranks or recommends.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use horch_core::roster::Roster;
@@ -10,18 +5,14 @@ use serde::Serialize;
 
 use super::{expected_skills, Row};
 
-/// One table line: sums over its sessions and means per session.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct TableRow {
-    /// The tier (`<harness> <model> <effort>`), the teammate, or `all`.
     pub key: String,
     pub sessions: u64,
     pub calls: u64,
-    /// Uncached input.
     pub input: u64,
     pub output: u64,
     pub cache_read: u64,
-    /// 5-minute and 1-hour cache writes together.
     pub cache_write: u64,
     pub cost: f64,
     pub mean_input: f64,
@@ -29,11 +20,8 @@ pub struct TableRow {
     pub mean_cache_read: f64,
     pub mean_cache_write: f64,
     pub mean_cost: f64,
-    /// The same tokens at `--reprice`'s model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reprice_cost: Option<f64>,
-    /// Sessions in this line whose transcript names a model with no price.
-    /// Their priced models are in `cost`; the rest is not.
     pub partly_priced_sessions: u64,
 }
 
@@ -70,20 +58,13 @@ impl TableRow {
     }
 }
 
-/// The 3 tables. `tiers` and `orchestrator` end with an `all` line when
-/// they have any line.
 #[derive(Debug, Default, Serialize)]
 pub struct Tables {
-    /// Workers only: one line per `<harness> <model> <effort>`.
     pub tiers: Vec<TableRow>,
-    /// Orchestrator sessions, by the same tier key.
     pub orchestrator: Vec<TableRow>,
-    /// One line per teammate, orchestrator and outside-ledger sessions
-    /// included.
     pub teammates: Vec<TableRow>,
 }
 
-/// A session counts as the orchestrator by its ledger kind.
 fn is_orchestrator(r: &Row) -> bool {
     r.kind == "orchestrator"
 }
@@ -132,22 +113,17 @@ impl Tables {
     }
 }
 
-/// One teammate's skill use in the window.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SkillUse {
     pub teammate: String,
     pub sessions: u64,
-    /// Each skill its teammate file expects, with the number of sessions
-    /// that loaded it.
     pub expected: Vec<SkillCount>,
-    /// Skills loaded that the teammate file does not expect.
     pub other: Vec<SkillCount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SkillCount {
     pub skill: String,
-    /// Sessions that loaded it at least once.
     pub sessions: u64,
 }
 

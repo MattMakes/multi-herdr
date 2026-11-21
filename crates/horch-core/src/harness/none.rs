@@ -1,6 +1,3 @@
-//! `agent: none`: the smoke teammate, which exercises the machinery and
-//! launches no CLI.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -17,7 +14,6 @@ impl Harness for NoAgent {
         HarnessKind::None
     }
 
-    /// Nothing is launched, so no field can fail to take effect.
     fn validate(&self, _t: &Teammate) -> Vec<&'static str> {
         Vec::new()
     }

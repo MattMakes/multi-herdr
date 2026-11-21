@@ -1,4 +1,3 @@
-// node rec-cast.mjs <out.cast> -- <command> [args...]: run a command, save its output and timing as asciicast v2
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 const [out, , cmd, ...args] = process.argv.slice(2);

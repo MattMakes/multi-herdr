@@ -1,12 +1,3 @@
-//! TRF-46: the briefings describe pull dispatch only, and every non-ok
-//! `horch context --over` state has an instruction in them.
-//!
-//! Pull is the only dispatch model (trace-fixes D1): `horch assign` and
-//! task-text spawns are gone, so no briefing may tell an agent to use them.
-//! `horch context --over` prints 1 instruction id per state it shows
-//! (TRF-08); each id must name an instruction in the orchestrator briefing
-//! and in the worker briefing.
-
 use horch_core::compaction::policy::RowState;
 use horch_core::execution::SessionMode;
 use horch_core::prompts;
@@ -54,7 +45,6 @@ fn repo_file(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The push phrases a briefing must not hold, with the line they are on.
 fn push_phrases(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     for line in text.lines() {
@@ -63,7 +53,6 @@ fn push_phrases(text: &str) -> Vec<String> {
                 found.push(format!("{phrase:?} in: {line}"));
             }
         }
-        // `horch spawn <persona> "<task>"`: a spawn that carries task text.
         let mut rest = line;
         while let Some(at) = rest.find("horch spawn") {
             let after = &rest[at + "horch spawn".len()..];
@@ -132,7 +121,6 @@ fn trf_46_every_context_state_has_an_instruction() {
     }
 }
 
-/// The ids of the instruction lines `- <id>[, <id>...]: <what to do>`.
 fn instructed_ids(text: &str) -> Vec<&str> {
     text.lines()
         .filter_map(|l| {

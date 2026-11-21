@@ -26,7 +26,6 @@ ALTS = ["a music box", "a xylophone note", "a glockenspiel", "an electric piano 
 REFS: list[str] = [cm.ref_root() + "/kalimba/kalimba_%02d.ogg" % k for k in (1, 2, 3, 4, 5)]
 REF_F0: tuple[float, ...] = (392.0, 440.0, 493.9, 587.3, 659.3)
 
-# The 17 tines: a C major scale from C4 upward.
 _SCALE_STEPS = (0, 2, 4, 5, 7, 9, 11)
 TINES: list[float] = [261.63 * 2 ** ((12 * octave + step) / 12)
                       for octave in range(3) for step in _SCALE_STEPS][:17]
@@ -132,7 +131,6 @@ def tine(p: dict, f0: float, n: int, rng: np.random.Generator) -> np.ndarray:
     thumb_s = p["thumb_ms"] / 1000
 
     def soften(hz: float) -> float:
-        # A soft thumb takes the top off the higher modes.
         return 1 / (1 + 0.5 * hz * thumb_s)
 
     base_tau = p["tau1"] * (f0 / 523.25) ** -0.5

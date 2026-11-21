@@ -21,7 +21,6 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
-# Names that the starter page, the drawing parts and SKILL.md also use.
 SURFACE_TAG = "main"
 SURFACE_CLASS = "sheet"
 NOTE_CLASS = "note"
@@ -29,7 +28,7 @@ SIZE_W = "--sheet-w"
 SIZE_H = "--sheet-h"
 
 CALLOUT_CAP = 8
-LAYER_UNITS = 100.0  # drawing units per inch
+LAYER_UNITS = 100.0
 SCREEN_PPI = 96
 FALLBACK_SIZE = (17.0, 11.0)
 INCHES_PER = {"in": 1.0, "cm": 1 / 2.54, "mm": 1 / 25.4}
@@ -41,8 +40,6 @@ RELATIVE_UNITS = frozenset(("em", "rem", "%"))
 
 _N = r"(\d*\.?\d+)"
 _LENGTH = re.compile(r"^\s*" + _N + r"\s*(in|cm|mm)\s*$", re.I)
-# A property counts when its name is font-size or ends in it (a size token
-# such as --label-font-size), and font or a name ending in -font.
 _FONT_SIZE = re.compile(r"(?<![\w-])[\w-]*font-size\s*:\s*([^;}\"]+)", re.I)
 _SHORTHAND_FONT = re.compile(
     r"(?<![\w-])(?:[\w-]*-)?font\s*:\s*([^;}\"]+)", re.I)
@@ -56,15 +53,13 @@ _FIXED_WIDTH = re.compile(
     r"(?<![\w-])width\s*:\s*" + _N + r"\s*(px|pt|pc|in|cm|mm)", re.I)
 
 
-# ---------------------------------------------------------------- pass 1: tree
-
 class Element:
     def __init__(self, tag, attrs, parent):
         self.tag = tag
         self.attrs = attrs
         self.parent = parent
         self.children = []
-        self.drawing = None  # the outermost <svg> around this element, if any
+        self.drawing = None
 
     def attr(self, name):
         return self.attrs.get(name) or ""
@@ -136,10 +131,8 @@ class Page:
                              if el.tag == SURFACE_TAG
                              and el.has_class(SURFACE_CLASS)), None)
         self.size = None
-        self.scales = {}  # id(layer svg) -> units per inch for its text
+        self.scales = {}
 
-
-# ------------------------------------------------------------- small helpers
 
 def num(x):
     return f"{x:g}"
@@ -241,8 +234,6 @@ def layer_view_box(el):
         return None
     return box[2], box[3]
 
-
-# ------------------------------------------------------ pass 2: one rule each
 
 def rule_surface_and_size(page):
     out = []
@@ -379,7 +370,6 @@ def count_callouts(page):
     return sum(1 for el in page.elements if el.has_class(NOTE_CLASS))
 
 
-# The size rule runs first: the layer and side rules need the size.
 RULES = (rule_surface_and_size, rule_one_surface, rule_self_contained,
          rule_layers, rule_text_size, rule_longest_side)
 
@@ -402,8 +392,6 @@ def check_page(text, min_pt=6.0, longest_side=44.0):
                         f"card set.")
     return findings, page.size, callouts
 
-
-# ------------------------------------------------------------- command line
 
 def _chrome_candidates():
     for program in ("google-chrome", "google-chrome-stable", "chromium",
@@ -428,9 +416,6 @@ def make_preview(page_path, png_path, size):
     w_in, h_in = size if size else FALLBACK_SIZE
     window = f"{round((w_in + 1) * SCREEN_PPI)},{round((h_in + 1) * SCREEN_PPI)}"
     target = Path(png_path).resolve()
-    # On macOS, Chrome copies its app into a code_sign_clone folder at each
-    # start, and a killed Chrome leaves the copy on the disk. The feature
-    # switch stops the copy.
     argv = [chrome, "--headless", "--hide-scrollbars",
             "--disable-features=MacAppCodeSignClone",
             "--window-size=" + window, "--screenshot=" + str(target),

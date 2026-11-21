@@ -38,8 +38,6 @@ SKIP_PREFIX = ("external", "third_party", "thirdparty", "vendor")
 SKIP_FILES = {"export_presets.cfg", "override.cfg", "default_bus_layout.tres"}
 TESTS = re.compile(r"(^|/)(tests?|tools|fixtures|testing|spec|bench\w*|qa)/|(^|/)test_[^/]*$|_test\.\w+$", re.I)
 
-# Economy words match as whole tokens of a snake_case or camelCase name: `cost_x`, `maxLevel`, `hp`.
-# `export_filter`, `expand_margin`, `scale_w`, and `caption` do not match.
 ECON_TOK = re.compile(
     r"(?:^|_)(?:costs?|prices?|growth|mult|multi|multipliers?|rate|income|per_sec|prestige|rebirth|ascend|"
     r"ascension|upgrades?|unlock|unlocks|unlocked|rewards?|payout|yield|exp|xp|levels?|tiers?|ranks?|damage|"
@@ -59,12 +57,10 @@ SAVE_NAME = re.compile(r"save|store|persist|profile|slot", re.I)
 UNLOCK = re.compile(r"\b(unlock\w*|prestige\w*|rebirth\w*|ascend\w*|milestone\w*|achievement\w*|tutorial\w*)\b", re.I)
 UNLOCK_CORE = re.compile(r"^(unlock|prestige|rebirth|ascend|milestone)")
 TELEMETRY = re.compile(r"telemetry|analytics|track_event|log_event", re.I)
-# Offline progress: an offline word, or the wall clock near a subtraction. The word `away` alone is not evidence.
 OFFLINE = re.compile(r"\boffline_?\w*|\bidle_gain\w*|\bcatch_?up\w*|\bwelcome_?back\w*|\bwhile_(?:you_were_)?away\w*", re.I)
 OFFLINE_GUARD = ("offline", "idle_gain", "catch_up", "catchup", "welcome", "while_")
 ASSIGN = re.compile(r"(\w+)\s*(?::\s*\w+\s*)?:?=")
 
-# Patterns run on lower-case text.
 FEEDBACK = {
     "tween": re.compile(r"create_?tween|\btween_(?:property|method|callback|interval)|\btween\b"),
     "particles": re.compile(r"gpuparticles|cpuparticles|\.emitting\s*=|emit_particle|particles?\w*\.restart\("),
@@ -86,7 +82,6 @@ TYPE_CAT = {"AudioStreamPlayer": "sound", "GPUParticles": "particles", "CPUParti
 SCENE_NODES = re.compile(r"^(?:GPUParticles|CPUParticles|AnimationPlayer|AnimatedSprite|AnimationTree|"
                          r"AudioStreamPlayer|ProgressBar|TextureProgressBar|Popup|AcceptDialog|ConfirmationDialog)")
 
-# Signals that mark a beat. The kind is a guess from the name.
 BEAT_KINDS = [
     ("unlock", re.compile(r"unlock|discover|reveal")),
     ("purchase", re.compile(r"purchas|bought|(?:^|_)buy|upgrad")),
@@ -96,7 +91,7 @@ BEAT_KINDS = [
     ("ladder step", re.compile(r"cleared|complet|defeat|victory|(?:stage|wave|depth|floor|zone)_(?:reached|won|up|done)")),
     ("reward", re.compile(r"reward|payout|earned|loot_(?:granted|dropped)")),
 ]
-NOT_BEAT = re.compile(r"request|pressed|clicked|refused|denied|failed|hovered|selected|focus")  # UI intent
+NOT_BEAT = re.compile(r"request|pressed|clicked|refused|denied|failed|hovered|selected|focus")
 KIND_ORDER = {k: i for i, k in enumerate(["purchase", "unlock", "ladder step", "level up", "milestone", "reward", "reset"])}
 TOOLING = re.compile(r"(?:^|[_\-./])(?:sim|sims|simulator|simulation|simulate|balance|balancing|diag|diagnostics?|"
                      r"tune|tuning|tuner|calibrat\w*|polic(?:y|ies)|sweeps?|autoplay\w*|playstyle\w*|headless|"
@@ -150,7 +145,6 @@ SCENE_PROP = re.compile(r"^(\w+) = (-?\d[\d.e+-]*)$", re.M)
 SCENE_SCRIPT = re.compile(r'path="(res://[^"]+\.(?:gd|cs))"')
 NODE_HEAD = re.compile(r'\n\[node name="([^"]*)"')
 DATA_NAME = re.compile(r"^\s*([A-Za-z_]\w*)\s*=", re.M)
-# Performance tools are not balance tools.
 NOT_BALANCE = re.compile(r"(^|/)(perf\w*|profil\w*|bench\w*|art|audio|shaders?)/", re.I)
 LOOSE_JSON = re.compile(r"target|polic|tun|balanc|calibr|diag|sim", re.I)
 TEST_FILE = re.compile(r"(^|/)tests?/|(^|/)test_")
@@ -192,7 +186,7 @@ def find_projects(root, hidden=False):
     return hits
 
 
-NOT_GAME_FILES = (".gdignore", "SKILL.md")     # a folder with 1 of these files is not a part of the game
+NOT_GAME_FILES = (".gdignore", "SKILL.md")
 
 
 def not_game(path):
@@ -909,15 +903,13 @@ class Scan:
     def scan_text_data(self, path, relp, ext):
         text = read(path, 500_000)
         if ext == ".tres" and not _is_resource(text):
-            return                                      # a theme, a style box, a material: engine data, not economy
+            return
         names = _csv_names(text) if ext == ".csv" else DATA_NAME.findall(text)
         shape = {"type": ext[1:], "top_keys": []}
         self._add_data(data_record(relp, os.path.getsize(path), collections.Counter(names), shape))
 
     def _add_data(self, rec):
         self.data_files += [rec] if rec else []
-
-    # ---- the steps for 1 script ----
 
     def _math_hit(self, src, n, line):
         names = [norm(x) for x in IDENT.findall(line)]
@@ -1028,8 +1020,6 @@ class Scan:
         for key, spec in FEEL.items():
             feel[key] += _feel_hits(src, spec)
 
-    # ---- the steps for 1 scene ----
-
     def scan_scene_nodes(self, src):
         types = [t for t in SCENE_NODE.findall(src.text) if SCENE_NODES.match(t)]
         for t in types:
@@ -1057,8 +1047,6 @@ class Scan:
 
     def scan_scene_feel(self, src):
         self.feel["away_screen"] += [] if src.test else _away_hits(src)
-
-    # ---- the result ----
 
     def beat_hooks(self):
         autoload_file = {x["name"]: x["path"][len("res://"):] for x in self.info["autoloads"]
@@ -1172,20 +1160,12 @@ def build_result(scan, found, cap):
             **_result_feedback(scan, hooks, cap)}
 
 
-# ---- the catalog map: each system of references/systems-catalog.md against the code ----
-#
-# The map reads the game scripts and the data files that the scan collected (tests and tools are left out).
-# A strong signature gives found = yes, a weak signature gives unsure, and no signature gives no. The
-# analyzers below read the purchase lines, the reset gain, the offline rule, the spine and the sub-game
-# export, and extract the parameters of the catalog variants.
-
 SYSTEMS_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "systems.json")
 CATALOG_SCHEMA = 1
 CORE_IDS = ("S01", "S02", "S03", "S04", "S05", "S06")
 GATE_IDS = ("S07", "S08", "S09")
 GATE_SLOT = {"slot": "presence gate", "members": list(GATE_IDS), "default": "S08"}
 
-# The row "Signature in code" of each card: (name, strong patterns, weak patterns).
 SIGNATURES = {
     "S01": ("Generator line", [r"\b\w*(?:cost|price)\w*\b[^\n]*\bpow\s*\("], [r"\b(?:owned|count)\s*\*"]),
     "S02": ("Multiplier upgrade", [r"\bpow\s*\([^\n]*\b(?:mult\w*|bonus\w*|factor)", r"\bbonus_pct\b"],
@@ -1231,9 +1211,7 @@ SIGNATURES = {
     "S27": ("Line rebirth", [r"\brebirths?\s*\[|\brebirth_count\b|\bline_rebirth\b"], []),
     "S28": ("Hard end", [r"\bgame_(?:won|complete|completed|finished|over_win)\b|\b(?:show|play)_(?:ending|credits)\b|"
                          r"\bend_screen\b|\bvictory_screen\b"],
-            # A cap such as max_stage is not a weak sign: most staged games have one and no end event.
             [r"\bfinal_(?:stage|town|depth|zone|step)\b|\bthe_end\b|\bending\b"]),
-    # S30: a factor between 0 and 1 on income that purchases raise; a need that grows with a count.
     "S30": ("Upkeep", [r"\b(?:uptime|upkeep|satisfaction)\w*|\bmin\s*\(\s*1(?:\.0)?\s*,\s*\w*(?:supply|capacity|care)\w*\s*/",
                        r"\b\w*need\w*\s*=\s*\w*(?:count|units|owned)\w*\s*\*"],
             [r"\b(?:hunger|happiness|morale|efficiency|consumption)\b"]),
@@ -1255,7 +1233,7 @@ CAP_KEYS = ("cap", "max_add")
 MAX_KEYS = ("max_level", "max", "level_cap")
 CURRENCY_KEYS = ("currency", "cost_currency", "price_currency", "currency_id")
 KIND_FAMILY = {"mult": "geometric", "add": "linear", "pct": "linear", "cap": "cap"}
-LINE_WEIGHT = 25                    # the weight of an uncapped line in the choice of the main currency
+LINE_WEIGHT = 25
 DOC_DIRS = re.compile(r"(^|/)(docs?|design|notes|research)/", re.I)
 WRAP = re.compile(r"^(?:float|int|double|real|floor|floorf|ceil|ceilf|abs)\s*\((.*)\)$")
 NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
@@ -1357,7 +1335,7 @@ def _evidence(relp, n, text, strength, source="code"):
     return {"file": relp, "line": n, "text": text[:160], "strength": strength, "source": source}
 
 
-COPY_MIN = 200                      # a smaller file (an empty list, a stub) is not a copy of game data
+COPY_MIN = 200
 
 
 def _skip_reason(relp, text, seen):
@@ -1399,7 +1377,7 @@ class CodeIndex:
     def __init__(self, scan):
         self.root, self.info = scan.root, scan.info
         self.texts = {k: v for k, v in scan.texts.items() if not in_tests(k)}
-        self.all_texts = dict(scan.texts)          # with the tests and the tools: the players of the game live there
+        self.all_texts = dict(scan.texts)
         self.data, self.skipped = game_data(scan.json_data)
         self.funcs = Funcs(self.texts)
         self.autoloads = {a["name"] for a in scan.info["autoloads"]}
@@ -1581,7 +1559,7 @@ class LineScan:
         kind = _kind_value(eff)[0]
         rx = VALUE_RX["cap"] if kind else VALUE_RX.get(family)
         place = self.code_place(key, rx, files) if family else None
-        place = place or (self.code_place("kind", rx, files) if kind else None)   # the code dispatches on "kind"
+        place = place or (self.code_place("kind", rx, files) if kind else None)
         return {"stat": eff.get("stat") or eff.get("target"), "value_key": key, "value_family": family,
                 "value_ratio": value if family == "geometric" else None,
                 "value_step": value if family != "geometric" else None, "value_place": place}
@@ -1641,10 +1619,6 @@ class ResetScan:
         return {"currency": name, "currency_place": _place(hit[0], hit[1]) if hit else None}
 
 
-# ----------------------------------------------------------------------------- the reset rule, the most resets, the end
-# The model as built must play like the game: the rule by which the player of the game resets, the most resets that
-# the game allows, and the event where the game ends (card S28). Each value has its code place, and a value that the
-# scan is not sure of has a confirm question.
 PROFILE_RULES = {"eager": ("peak_rate", 0.95), "patient": ("peak_rate", 0.75), "doubler": ("ratio", 1.0)}
 PEAK_RULE = re.compile(r"\w+\s*>=?\s*(\d*\.?\d+)\s*\*\s*\w*best\w*")
 RATIO_RULE = re.compile(r"gain\w*(?:\(\s*\))?\)?\s*(?:<|>=)\s*([A-Za-z_][\w.]*|\d*\.?\d+)\s*\*\s*(?:float\(\s*)?"
@@ -1770,10 +1744,6 @@ def hard_end(count, most):
     return {"mark": mark, "reason": why, "place": place, "sure": False, "confirm": ASK_END % (text, why)}
 
 
-# ----------------------------------------------------------------------------- a data file in the model format
-# A game can keep its economy in the model format of this skill (references/model-schema.md): the keys `purchases`,
-# `milestones`, `ladders`, `prestige` and `currencies`. The scan then reads the spine, the reset, the rewards and the
-# unlocks from the data, and it says that the file is a model.
 MODEL_KEYS = ("currencies", "prestige", "ladders", "milestones")
 UNLOCK_ORDER = ("resets", "level", "stage", "total", "milestone")
 LOOP_SYSTEMS = {"automation": "S24", "minigame": "S23", "collection": "S19", "meta": "S04"}
@@ -1847,7 +1817,6 @@ class ModelData:
     def systems(self):
         return _dict_list(self.obj.get("systems"))
 
-    # ---- unlocks
     def unlocks(self, reqs, depth=0):
         """The unlocks of the content format from a list of requirements, the most specific first: a count of
         resets, a level of a line, a stage, a lifetime total, a milestone."""
@@ -1872,7 +1841,6 @@ class ModelData:
             return {"milestone": mid}
         return self.unlock(m.get("requires"), depth + 1) if depth < 4 else {}
 
-    # ---- spine, reset, rewards, systems
     def spine(self):
         lad = self.ladder or {}
         req = lad.get("requires") if isinstance(lad.get("requires"), dict) else {}
@@ -2005,9 +1973,6 @@ def _ladder_power(g, w, base, k, lid):
     return {"gain_family": "power", "p": round(p, 4), "divisor": round(c, 4), "gain_key": "growth", "gain_formula": text}
 
 
-# ----------------------------------------------------------------------------- the reset by the shape of the code
-# A reset clears the run state and keeps a permanent value, whatever its name: it sets 2 or more values to 0 (or
-# clears them), and it adds to another value. A name of the list adds to the score.
 CLEAR_LINE = re.compile(r"=\s*0(?:\.0*)?\s*$|\.clear\(\s*\)|\.erase\(")
 COUNT_LINE = re.compile(r"\+=\s*1\s*$")
 GAIN_LINE = re.compile(r"\+=\s*[A-Za-z_(]|\b_?(?:add|gain|grant|award|earn)\w*\s*\(")
@@ -2313,7 +2278,6 @@ def _pick_variant(ids, name, value, variants):
     return min(ranges, key=lambda x: _distance(value, x[1]))[0] if ranges else ids[0]
 
 
-# (system, value family) -> (candidate variants, (parameter, field of the line record)).
 LINE_PARAMS = {
     ("S01", "linear"): (("S01.geometric", "S01.steep"), (("b", "cost_ratio"),)),
     ("S02", "geometric"): (("S02.levelled_factor",), (("b", "cost_ratio"), ("d", "value_ratio"))),
@@ -2586,7 +2550,6 @@ BUILD_STEPS = (CatalogMap._apply_reset, CatalogMap._apply_offline, CatalogMap._a
                CatalogMap._apply_export, CatalogMap._apply_clock)
 
 
-# ----------------------------------------------------------------------------- the content file (--content-out)
 CONTENT_SCHEMA = 1
 UNLOCK_PREFIX = "unlock_"
 REWARD_KINDS = (("mult", GEO_KEYS), ("add", ADD_KEYS), ("pct", BONUS_KEYS), ("cap", CAP_KEYS))
@@ -2622,7 +2585,7 @@ def _unlock_of(obj, currency_of_key):
     if k == "unlock_stage":
         return {"stage": int(v)}
     if RESET_WORD.search(k[len(UNLOCK_PREFIX):]):
-        return {"resets": int(v)}               # a count of resets, not a total of a currency
+        return {"resets": int(v)}
     return {"total": currency_of_key(k[len(UNLOCK_PREFIX):]), "amount": float(v)}
 
 
@@ -2890,7 +2853,7 @@ def reset_values(r):
     if r.get("unlock_in_run"):
         values["unlock_in_run"], evidence["unlock_in_run"] = True, r["unlock_in_run"]
     asks = [x["confirm"] for x in (rule, most) if x and x.get("confirm")]
-    evidence = {k: v for k, v in evidence.items() if v}       # a value with no code place has no evidence
+    evidence = {k: v for k, v in evidence.items() if v}
     return {"values": values, "evidence": evidence, "confirm": asks} if values else {}
 
 
@@ -2963,12 +2926,9 @@ def missing_core(systems, pattern=None):
     return core + ([] if gate else [dict(GATE_SLOT, kind="slot")])
 
 
-# ----------------------------------------------------------------------------- the confirm step (--confirm)
-# A person reads the code and writes a small file of corrections. The scan applies it to the map and to the content
-# file, and records each edit in `confirmed` (references/reverse-engineering.md, "The confirm file").
 CONFIRM_KEYS = ("systems", "currencies", "reset", "stats", "spine_stat", "end", "base_income", "active_factor", "add",
                 "remove", "change", "notes")
-COPY_KEYS = ("base_income", "active_factor")     # content keys that the confirm file sets as they are
+COPY_KEYS = ("base_income", "active_factor")
 END_KEYS = ("axis_step", "resets", "purchase", "milestone")
 FOUND_VALUES = ("yes", "no", "unsure")
 

@@ -1,6 +1,3 @@
-// Self-test for seek-timeline.js. Node built-ins only. It loads the library
-// in a small DOM stub and checks easing values, seek determinism in every
-// order, stagger, labels and position offsets. Run: node seek-timeline.selftest.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -23,7 +20,6 @@ function makeElement(id) {
   };
 }
 
-// A fresh library copy in a fresh global, with elements found by "#id" or ".class".
 function load() {
   const bySelector = new Map();
   const document = { querySelectorAll(sel) { return bySelector.get(sel) ?? []; } };
@@ -40,7 +36,6 @@ function load() {
 const close = (a, b, eps = 1e-4) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 const snapshot = (el) => JSON.stringify([Object.entries(el.style).sort(), el.attributes()]);
 
-// [ease, p, expected value]
 const EASE_POINTS = [
   ["linear", 0.25, 0.25],
   ["power1.in", 0.5, 0.25],
@@ -54,12 +49,11 @@ const EASE_POINTS = [
   ["expo.in", 0.5, Math.pow(2, -5)],
   ["expo.out", 0.5, 1 - Math.pow(2, -5)],
   ["cubic-bezier(0.25, 0.25, 0.75, 0.75)", 0.3, 0.3],
-  ["cubic-bezier(0.42, 0, 1, 1)", 0.5, 0.3153], // CSS ease-in at 50 %
-  ["cubic-bezier(0, 0, 0.58, 1)", 0.5, 0.6847], // CSS ease-out at 50 %
+  ["cubic-bezier(0.42, 0, 1, 1)", 0.5, 0.3153],
+  ["cubic-bezier(0, 0, 0.58, 1)", 0.5, 0.6847],
 ];
 const ENDPOINT_EASES = ["linear", "power1.in", "power4.inOut", "back.out", "elastic.out", "expo.in", "sine.inOut",
   "cubic-bezier(0.22, 1, 0.36, 1)"];
-// [ease, p, true when the curve leaves [0, 1] there]
 const OVERSHOOTS = [["back.in", 0.2, (v) => v < 0], ["back.out", 0.8, (v) => v > 1], ["elastic.out", 0.2, (v) => v > 1]];
 
 test("easing values at known points", () => {
@@ -78,7 +72,6 @@ test("back and elastic leave the 0 to 1 range", () => {
   OVERSHOOTS.forEach(function ([name, p, leaves]) { assert.ok(leaves(ease(name)(p)), `${name} at ${p}`); });
 });
 
-// The scene: a title, 3 staggered items, an SVG dot, labels and offsets.
 function addMotion(tl) {
   tl.fromTo("#title", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "expo.out" }, 0)
     .addLabel("list", 0.6)
@@ -104,14 +97,11 @@ function scene() {
   return { tl, at, seen, title: els[0], items: els.slice(1, 4), dot: els[4] };
 }
 
-// The state of each frame of a fresh scene, seeked in the given order. A
-// repeated frame keeps its last state.
 function statesInOrder(frames) {
   const s = scene();
   return new Map(frames.map(function (k) { return [k, s.at(k / FPS)]; }));
 }
 
-// Every frame twice, in a scrambled order.
 function scrambled(frames, step) {
   const twice = [...frames, ...frames];
   return twice.map(function (k, i) { return twice[(i * step) % twice.length]; });
@@ -142,11 +132,11 @@ const translateX = (el) => Number(/translate\(([-\d.]+)px/.exec(el.style.transfo
 test("stagger and label offsets", () => {
   const s = scene();
   assert.equal(s.tl.labels().list, 0.6);
-  s.at(0.8); // item 0 starts at list+=0.2 = 0.8 s
+  s.at(0.8);
   assert.deepEqual(s.items.map(translateX), [0, 0, 0]);
-  s.at(0.9); // item 1 starts, item 0 is 25 % in
+  s.at(0.9);
   close(translateX(s.items[0]), 100 * (1 - Math.pow(0.75, 3)));
-  s.at(1.4); // item 2 ends at 1.0 + 0.4 s
+  s.at(1.4);
   assert.deepEqual(s.items.map(translateX), [100, 100, 100]);
   assert.match(s.items[2].style.transform, /scale\(1\.5, 1\.5\)/);
 });
@@ -155,7 +145,7 @@ test("colours, units and SVG attributes", () => {
   const s = scene();
   s.at(0.85);
   assert.equal(s.title.style.color, "rgba(128, 0, 0, 1)");
-  s.at(1.6); // "<" starts the dot at the start of the previous tween, 0.6 s
+  s.at(1.6);
   assert.deepEqual([s.title.style.fontSize, s.dot.getAttribute("fill"), s.dot.getAttribute("r")],
     ["48px", "rgba(0, 0, 255, 1)", "12"]);
   s.at(0.6);
@@ -168,7 +158,7 @@ test("set and relative positions", () => {
   assert.match(s.title.style.transform, /rotate\(0deg\)/);
   s.at(1.6);
   assert.match(s.title.style.transform, /rotate\(5deg\)/);
-  close(s.tl.duration(), 1.8); // "-=0.1" starts the fade 0.1 s before the end, 1.6 s
+  close(s.tl.duration(), 1.8);
   s.at(1.8);
   assert.equal(s.title.style.opacity, "0");
   assert.throws(() => s.tl.to("#title", { x: 1 }, "nope+=1"), /unknown label/);
@@ -189,14 +179,12 @@ test("a final motion-blur subframe cannot pick past the exported plate", () => {
   assert.equal(plateFrame(10.5 / FPS, FPS, lastFrame), 10);
 });
 
-// [preset, value at p = 0.1, 0.25, 0.5, 0.75, peak over [0, 1]]
 const SPRING_POINTS = [
   ["ui", [0.2035, 0.6510, 0.9663, 1.0035], 1.0035],
   ["camera", [0.1090, 0.4079, 0.7752, 0.9378], 1.0],
   ["heavy", [0.1201, 0.4706, 0.8770, 0.9946], 1.0030],
   ["playful", [0.5087, 1.2217, 0.9575, 1.0062], 1.2337],
 ];
-// f at n + 1 even steps from 0 to 1.
 const samples = (f, n) => [...Array(n + 1).keys()].map((i) => f(i / n));
 const peakOf = (f) => Math.max(...samples(f, 1000));
 const rising = (values) => values.every((v, i) => i === 0 || v >= values[i - 1]);

@@ -1,10 +1,3 @@
-//! End-to-end: `horch done` finishes inside the agent's 120 s command
-//! timeout, whatever state the orchestrator is in (#67, P18).
-//!
-//! The orchestrator's pane shows an agent at status `unknown`: an agent that
-//! is still starting, for as long as the test runs. Before #67, `done`
-//! waited 120 s for it, and Claude Code killed `done` with SIGKILL.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -22,13 +15,7 @@ const WORKER: &str = "w2:p1";
 const ROLE: &str = "opus-1";
 const RECORD: &str = "r-done";
 const CLOSING: &str = "closing: reporting to the orchestrator";
-/// The push budget the timed tests set through `done-push-budget-ms`, in
-/// place of the real 20 s.
 const BUDGET: Duration = Duration::from_secs(2);
-/// A command that spent the budget and stopped at its end takes less than
-/// this. It is inside the 30 s acceptance limit (Claude Code kills a
-/// command at 120 s). The real 20 s budget takes longer, so this bound
-/// fails if the fault point is ignored.
 const BOUNDED: Duration = Duration::from_secs(10);
 
 fn text(o: &Output) -> String {
@@ -46,8 +33,6 @@ fn herdr(h: &Harness, args: &[&str]) -> Output {
     cmd.args(args).output().unwrap()
 }
 
-/// Set the orchestrator's pane to an agent at status `unknown` in the
-/// fake herdr's state.
 fn stick_orchestrator(h: &Harness) {
     let mut path = h.log.clone().into_os_string();
     path.push(".state.json");
@@ -64,8 +49,6 @@ fn stick_orchestrator(h: &Harness) {
     std::fs::write(&path, state.to_string()).unwrap();
 }
 
-/// Workspace `w1` holds the stuck orchestrator, `w2` the worker's pane, and
-/// the legacy ledger holds the worker's record.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set(
@@ -97,7 +80,6 @@ fn world(name: &str) -> Harness {
     h
 }
 
-/// `horch <args>` as the worker in its pane.
 fn as_worker(h: &Harness, args: &[&str]) -> Command {
     let mut cmd = h.horch(args);
     cmd.env("HERDR_PANE_ID", WORKER)
@@ -106,7 +88,6 @@ fn as_worker(h: &Harness, args: &[&str]) -> Command {
     cmd
 }
 
-/// Give `h` the short push budget.
 fn short_budget(h: &mut Harness) {
     h.set(
         "HORCH_FAULT",
@@ -114,8 +95,6 @@ fn short_budget(h: &mut Harness) {
     );
 }
 
-/// `took` spent the push budget, waiting for the stuck orchestrator, and
-/// the budget then ended the wait.
 fn assert_bounded(what: &str, took: Duration, o: &Output) {
     assert!(
         took >= BUDGET,
@@ -141,9 +120,6 @@ fn done_entries(h: &Harness) -> usize {
         .count()
 }
 
-/// The text of every pending mail file in the workspace. The courier
-/// removes a delivered file between the listing and the read: that file
-/// is no longer pending, so it is skipped, as `Mail::pending` does.
 fn pending(h: &Harness) -> Vec<String> {
     let dir = h.state.join(format!("mail/{WORKSPACE}/pending"));
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -162,8 +138,6 @@ fn worker_pane_closed(h: &Harness) -> bool {
     !herdr(h, &["pane", "get", WORKER]).status.success()
 }
 
-/// Acceptance 1 and 3: `horch done` exits 0 in under 30 s, its first line
-/// is the closing line, the report is pending mail and the record is done.
 #[test]
 fn done_finishes_in_time_against_a_stuck_orchestrator() {
     let mut h = world("done-stuck");
@@ -198,15 +172,12 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(worker_pane_closed(&h), "the worker pane closes");
 }
 
-/// Run `cmd`; its stdout. It must succeed.
 fn ok(cmd: &mut Command) -> String {
     let o = cmd.output().unwrap();
     assert!(o.status.success(), "{}", text(&o));
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A task-ledger run of 1 task that the worker claimed, committed and
-/// finished; the worker id, for `horch ledger done`.
 fn finished_task(h: &Harness) -> String {
     ok(&mut h.horch(&[
         "ledger",
@@ -248,8 +219,6 @@ fn finished_task(h: &Harness) -> String {
     worker.to_string()
 }
 
-/// Acceptance 2: `horch ledger done` of a finished task. The ledger's wake
-/// and the report are both pending mail, in under 30 s in total.
 #[test]
 fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     let mut h = world("ldone-stuck");
@@ -284,10 +253,6 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(worker_pane_closed(&h), "the worker pane closes");
 }
 
-/// #67: `horch ledger done` marks the record done and queues the report
-/// before its wake push. A `ledger done` killed during that push, as
-/// Claude Code would, leaves the work done and the report pending; the
-/// retry queues no second report and closes the pane.
 #[test]
 fn ledger_done_killed_during_the_wake_push_has_recorded_the_report() {
     let h = world("ldone-kill");
@@ -299,8 +264,6 @@ fn ledger_done_killed_during_the_wake_push_has_recorded_the_report() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // The wake is queued just before its push, which waits for the stuck
-    // orchestrator until the push budget ends: kill `ledger done` there.
     wait_for("the wake to be queued", || {
         pending(&h)
             .iter()
@@ -332,8 +295,6 @@ fn ledger_done_killed_during_the_wake_push_has_recorded_the_report() {
     assert!(worker_pane_closed(&h), "the retry closes the pane");
 }
 
-/// Acceptance 4: a `done` killed during its push has recorded the summary.
-/// The retry records no second done and queues no second report.
 #[test]
 fn done_retried_after_a_kill_during_the_push_records_one_done() {
     let h = world("done-kill");
@@ -342,8 +303,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // The record is done before the push, and the push waits for the
-    // stuck orchestrator: kill `done` there, as Claude Code would.
     wait_for("the record to be done", || {
         (done_entries(&h) == 1).then_some(())
     });
@@ -354,8 +313,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         !worker_pane_closed(&h),
         "the killed done left its pane open"
     );
-    // The courier started before the push, so the killed push's mail is
-    // still redelivered.
     let lock_path = h.state.join(format!("mail/{WORKSPACE}/courier.lock"));
     wait_for("a courier for the pending report", || {
         let lock = std::fs::File::options()
@@ -366,9 +323,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         if lock.try_lock().is_err() {
             return Some(());
         }
-        // Unlock before the close: a process that another test thread
-        // spawns at the close holds a copy of the file until it execs, and
-        // a courier that starts while the flock stays held exits at once.
         let _ = lock.unlock();
         None
     });
@@ -387,9 +341,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
     assert!(worker_pane_closed(&h), "the retry closes the pane");
 }
 
-/// #67, round-5 F52: without `HORCH_WORKSPACE_ID`, `done` finds its
-/// workspace with `herdr pane get`. A herdr that hangs there is cut off at
-/// the push deadline, so `done` still returns inside the limit.
 #[test]
 fn done_returns_in_time_when_herdr_hangs_on_pane_get() {
     let mut h = world("done-hung-get");

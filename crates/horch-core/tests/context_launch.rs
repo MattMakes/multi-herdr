@@ -1,9 +1,3 @@
-//! The launch's native auto-compact window (CTX-05, design
-//! `ai_docs/plans/wave2/w1/design.md` §6.4 and §6.5): the operator's value
-//! wins, else the fleet default is applied, and the launch records what it
-//! decided. Temp homes with hand-written settings files; no real CLI and no
-//! machine settings (the managed-settings path is a temp path).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -19,7 +13,6 @@ use serde_json::{json, Value};
 const WINDOW_KEY: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 const CODEX_KEY: &str = "model_auto_compact_token_limit";
 
-/// A temp home, a workdir under it and a managed-settings path in it.
 struct World {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -75,7 +68,6 @@ impl World {
     }
 }
 
-/// A settings file whose `env` sets the window to `value`.
 fn window_file(value: Value) -> String {
     json!({"env": {WINDOW_KEY: value}}).to_string()
 }
@@ -90,8 +82,6 @@ fn claude_teammate(sources: Option<&[&str]>) -> Teammate {
     }
 }
 
-/// The Claude adapter's operator window for `t` in `world`, with
-/// `process` as the inherited `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
 fn claude_operator(
     world: &World,
     t: &Teammate,
@@ -122,7 +112,6 @@ fn argv(cmd: &Command) -> Vec<String> {
         .collect()
 }
 
-/// The JSON of the `--settings` argument, or `None` without one.
 fn settings_arg(args: &[String]) -> Option<Value> {
     let i = args.iter().position(|a| a == "--settings")?;
     serde_json::from_str(&args[i + 1]).ok()
@@ -139,8 +128,6 @@ fn codex_limit_flag(args: &[String]) -> Option<String> {
     })
 }
 
-/// The launch path of `run_flow_code` without the CLI: decide, build with
-/// the decision on the launch env, then read the command back (step 3).
 fn launch_with(
     ctx: &RuntimeContext,
     roster: &Roster,
@@ -158,13 +145,10 @@ fn launch_with(
     (window_in_effect(decision, t, &cmd), argv(&cmd))
 }
 
-// ─── CTX-05 ─────────────────────────────────────────────────────────────────
-
 #[test]
 fn ctx_05_claude_settings_chain_precedence() {
     let all = claude_teammate(None);
 
-    // User file only.
     let w = World::new();
     w.write(&w.user_settings(), &window_file(json!("500000")));
     let (tokens, detail) = claude_operator(&w, &all, None).unwrap();
@@ -174,23 +158,19 @@ fn ctx_05_claude_settings_chain_precedence() {
         "{detail}"
     );
 
-    // Project beats user.
     w.write(
         &w.workdir.join(".claude/settings.json"),
         &window_file(json!(250000)),
     );
     assert_eq!(claude_operator(&w, &all, None).unwrap().0, Some(250_000));
-    // Local beats project.
     w.write(
         &w.workdir.join(".claude/settings.local.json"),
         &window_file(json!("240000")),
     );
     assert_eq!(claude_operator(&w, &all, None).unwrap().0, Some(240_000));
-    // Managed (the context's temp path) beats all.
     w.write(&w.managed, &window_file(json!("230000")));
     assert_eq!(claude_operator(&w, &all, None).unwrap().0, Some(230_000));
 
-    // `setting_sources: ["project"]` ignores the user file.
     let w = World::new();
     w.write(&w.user_settings(), &window_file(json!("500000")));
     let project_only = claude_teammate(Some(&["project"]));
@@ -204,7 +184,6 @@ fn ctx_05_claude_settings_chain_precedence() {
         Some(250_000)
     );
 
-    // The process env counts only when no file sets the window.
     let w = World::new();
     let (tokens, _) = claude_operator(&w, &all, Some("400000")).unwrap();
     assert_eq!(tokens, Some(400_000));
@@ -214,7 +193,6 @@ fn ctx_05_claude_settings_chain_precedence() {
         Some(500_000)
     );
 
-    // A percentage override in the same file: set, but the trigger is unknown.
     let w = World::new();
     w.write(
         &w.user_settings(),
@@ -231,14 +209,12 @@ fn ctx_05_claude_settings_chain_precedence() {
         )
     );
 
-    // Not a number.
     let w = World::new();
     w.write(&w.user_settings(), &window_file(json!("abc")));
     let (tokens, detail) = claude_operator(&w, &all, None).unwrap();
     assert_eq!(tokens, None);
     assert!(detail.ends_with("(not a number)"), "{detail}");
 
-    // Nothing anywhere.
     assert_eq!(claude_operator(&World::new(), &all, None), None);
 }
 
@@ -246,16 +222,13 @@ fn ctx_05_claude_settings_chain_precedence() {
 fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
     let roster = Roster::builtin().unwrap();
     let builtin_opus = roster.require("opus").unwrap().clone();
-    // The `windows` key alone: opus.md states the same window (X1).
     let mut opus = builtin_opus.clone();
     opus.compact_window = None;
     let mut skilled = opus.clone();
     skilled.phase = Some(Phase::Research);
 
-    // Empty home: the fleet window, in the plain path and the skills path.
     let w = World::new();
     let ctx = w.ctx(&[]);
-    // X1: the built-in file's own compact_window gives the same launch.
     let (d, args) = launch_with(&ctx, &roster, &builtin_opus, Session::Fresh("sid"), None);
     assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
     assert_eq!(
@@ -292,7 +265,6 @@ fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
     assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
     assert!(d.applied);
 
-    // An operator value: no key, and the decision names the user file.
     let w = World::new();
     w.write(&w.user_settings(), &window_file(json!("500000")));
     let ctx = w.ctx(&[]);
@@ -308,7 +280,6 @@ fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
         }
     );
 
-    // A harness-default `env` key in the overlay keeps its value.
     let w = World::new();
     let ctx = w.ctx(&[]);
     let mut with_default = opus.clone();
@@ -366,7 +337,6 @@ fn ctx_05_codex_operator_limit_from_profile_or_top_level() {
         ),
         Some(Some(180_000))
     );
-    // The profile file wins over the top level of `config.toml`.
     assert_eq!(
         limit(
             &[
@@ -377,7 +347,6 @@ fn ctx_05_codex_operator_limit_from_profile_or_top_level() {
         ),
         Some(Some(160_000))
     );
-    // The legacy `[profiles.<name>]` table and `profile` key are not read.
     assert_eq!(
         limit(
             &[(
@@ -450,7 +419,6 @@ fn ctx_05_codex_fleet_limit_flag_only_without_operator_value() {
     assert!(!d.applied);
 }
 
-/// The wire shape of design §6.5.
 const GOLDEN: &str = r#"{"tokens":200000,"source":"fleet","detail":"context-policy windows codex/gpt-5.6-sol","applied":true}"#;
 
 #[test]
@@ -467,7 +435,6 @@ fn ctx_05_launch_records_window_decision() {
         golden
     );
 
-    // Through the store.
     let tmp = tempfile::tempdir().unwrap();
     let store = ExecutionStore::for_project(tmp.path(), "/p");
     store
@@ -486,7 +453,6 @@ fn ctx_05_launch_records_window_decision() {
     let text = store.stored_json().unwrap();
     assert!(text.contains("\"compact_window\""), "{text}");
 
-    // The store boundary converts each source both ways.
     for source in [
         WindowSource::Operator,
         WindowSource::Fleet,
@@ -517,7 +483,6 @@ fn ctx_05_old_ledger_loads() {
     let want = std::fs::read_to_string(oracles.join("orchestrator.saved.json")).unwrap();
     assert_eq!(saved, want, "an old ledger re-serializes byte-identical");
 
-    // A newer binary's source loads as Unknown and resolves now.
     let later: Value = json!([{
         "record_id": "rec-later", "session_id": null, "agent": "codex",
         "tier": "codex-sol", "model": "gpt-5.6-sol", "role": "codex-sol-1",
@@ -537,7 +502,6 @@ fn ctx_05_recorded_applied_matches_the_command() {
     let roster = Roster::builtin().unwrap();
     let opus = roster.require("opus").unwrap().clone();
 
-    // Inline `settings:` on the plain path: the teammate owns the overlay.
     let mut inline = opus.clone();
     inline.settings = Some(r#"{"theme":"dark"}"#.into());
     let w = World::new();
@@ -552,7 +516,6 @@ fn ctx_05_recorded_applied_matches_the_command() {
         )
     );
 
-    // The record stores what the command carries.
     let store = ExecutionStore::open_in(&ctx).unwrap();
     store
         .insert(LedgerRecordV1 {
@@ -567,12 +530,10 @@ fn ctx_05_recorded_applied_matches_the_command() {
     let stored = store.get("rec-opus").unwrap().compact_window.unwrap();
     assert!(!stored.applied);
 
-    // Without `settings:`: applied, and the key is in the argv.
     let (d, args) = launch_with(&ctx, &roster, &opus, Session::Fresh("sid"), None);
     assert!(d.applied);
     assert_eq!(window_in_settings(&args), Some(json!("200000")));
 
-    // A settings file: never applied.
     let mut file = opus.clone();
     let path = w.home.join("mine.json");
     w.write(&path, "{}");
@@ -584,7 +545,6 @@ fn ctx_05_recorded_applied_matches_the_command() {
         (false, "not applied: teammate settings file")
     );
 
-    // Codex: applied equals whether the argv has the flag.
     let sol = roster.require("codex-sol").unwrap().clone();
     for config in [None, Some("model_auto_compact_token_limit = 300000\n")] {
         let w = World::new();

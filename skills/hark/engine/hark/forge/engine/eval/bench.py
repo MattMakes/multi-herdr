@@ -91,7 +91,6 @@ CONFUSIONS = {
     "pro_logo_sting": ["a doorbell", "a car horn", "an error buzzer", "a church bell"],
 }
 
-# Pro categories without their own list reuse the plain category's list.
 _SAME_AS = {"pro_click": "click", "pro_tap": "tap", "pro_hover_tick": "hover_tick", "pro_notify": "notify",
             "pro_shimmer": "shimmer", "pro_typing_key": "typing_key", "pro_glitch": "glitch",
             "pro_whoosh_big": "whoosh_big", "pro_impact": "impact", "pro_sub_drop": "sub_drop"}
@@ -139,8 +138,6 @@ for _alias, _plain in _SAME_AS.items():
     AS_LABELS.setdefault(_alias, AS_LABELS[_plain])
 
 
-# ---------------------------------------------------------------- signal access
-
 def _read(source: Any) -> np.ndarray:
     """Float samples of an array, or of an audio file loaded at SR."""
     if isinstance(source, (str, os.PathLike)):
@@ -163,8 +160,6 @@ def frames_db(m: np.ndarray, ms: float) -> np.ndarray:
     power = np.mean(padded.reshape(count, hop) ** 2, axis=1)
     return 20 * np.log10(np.sqrt(power) + 1e-12)
 
-
-# ---------------------------------------------------------------- envelope and artifact checks
 
 def env_feats(x: Any) -> dict:
     """Onset, attack, t40, active span and peak time of the downmixed signal."""
@@ -343,8 +338,6 @@ def texture(x: Any) -> dict:
     floor = max(float(np.percentile(coarse, 10) - coarse.max()), -120.0)
     return {"floor_db": round(floor, 1), "stereo_corr": _channel_correlation(raw), "darken": _decay_shift(mono)}
 
-
-# ---------------------------------------------------------------- model-based checks
 
 def _typicality(e: np.ndarray, A: np.ndarray, k: int) -> float:
     from hark.listen.compare import typicality
@@ -578,8 +571,6 @@ def _progress_line(cat: str, res: dict) -> str:
         format(mine, "g"), counts["n_checks"], format(theirs, "g"))
 
 
-# ---------------------------------------------------------------- collecting inputs and running
-
 def _ignored(path: Any) -> bool:
     name = os.path.basename(str(path)).lower()
     return name.startswith(("audition", "_"))
@@ -734,8 +725,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     _save(out, scrub_paths.scrub(_plain_json(res), registry=reg))
     return 0
 
-
-# ---------------------------------------------------------------- markdown report
 
 _COLUMNS = (("typ z", "typ_z"), ("tone dB", "tone_db"), ("env oct", "env_oct"), ("curve dB", "curve_db"),
             ("t40 x", "t40_ratio"), ("phrase z", "phrase_z"), ("margin", "margin"), ("AS names", "as_names"),

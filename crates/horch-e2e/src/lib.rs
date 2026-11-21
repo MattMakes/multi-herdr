@@ -1,16 +1,3 @@
-//! Shared pieces of the fake harness binaries, and the harness the end-to-end
-//! tests drive `horch` through.
-//!
-//! Every fake appends one JSON line per call to `$HORCH_FAKE_LOG`:
-//!
-//! ```json
-//! {"fake":"claude","argv":[...],"env_keys":[...],"stdin":[...],"violations":[...]}
-//! ```
-//!
-//! A test reads that log to prove what horch asked of each program, and that
-//! it never asked for anything forbidden. The behavior of a fake is chosen by
-//! `$HORCH_FAKE_SCENARIO`, one name or a comma-separated list.
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -20,12 +7,9 @@ pub mod harness;
 pub mod hc_fake;
 pub mod process;
 
-/// One call of a fake, built up while it runs and written when it finishes.
 #[derive(Debug)]
 pub struct Call {
     pub fake: &'static str,
-    /// Names this call in the log: the pid and the start time in nanoseconds.
-    /// A pid alone is not enough, the system reuses it under fork load.
     pub call_id: String,
     pub argv: Vec<String>,
     pub stdin: Vec<String>,
@@ -34,7 +18,6 @@ pub struct Call {
 }
 
 impl Call {
-    /// Start recording a call of `fake`.
     pub fn start(fake: &'static str) -> Self {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -53,8 +36,6 @@ impl Call {
         self.violations.push(what.into());
     }
 
-    /// Append this call to `$HORCH_FAKE_LOG`. Written eagerly by the fakes
-    /// that may be killed (the probe fakes), so nothing is lost.
     pub fn flush(&self) {
         let Some(path) = std::env::var_os("HORCH_FAKE_LOG") else {
             return;
@@ -88,8 +69,6 @@ impl Call {
     }
 }
 
-/// Every scenario in `$HORCH_FAKE_SCENARIO`. The variable holds one name or a
-/// comma-separated list (`exec,fail_split`). Empty means `["default"]`.
 pub fn scenarios() -> Vec<String> {
     let list: Vec<String> = std::env::var("HORCH_FAKE_SCENARIO")
         .unwrap_or_default()
@@ -104,20 +83,14 @@ pub fn scenarios() -> Vec<String> {
     }
 }
 
-/// The first scenario in `$HORCH_FAKE_SCENARIO`, or `default`. With a single
-/// name this is that name, as before. Use [`scenario_has`] to test one name
-/// in a list.
 pub fn scenario() -> String {
     scenarios().remove(0)
 }
 
-/// True when `$HORCH_FAKE_SCENARIO` lists `name`.
 pub fn scenario_has(name: &str) -> bool {
     scenarios().iter().any(|s| s == name)
 }
 
-/// 16 lowercase hex digits of the FNV-1a 64-bit hash of `text`. Simple and
-/// stable, so a test can predict the ids the fakes mint.
 pub fn hash16(text: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {
@@ -127,36 +100,27 @@ pub fn hash16(text: &str) -> String {
     format!("{h:016x}")
 }
 
-/// The session id `fake-opencode` reports for a worker running in `dir`:
-/// `ses_` and `hash16` of the canonical directory path. Canonical, because the
-/// fake sees the path the operating system reports (`/private/var` on macOS).
 pub fn opencode_session_id(dir: &Path) -> String {
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     format!("ses_{}", hash16(&dir.to_string_lossy()))
 }
 
-/// The session id `fake-prime` mints for the `--session-dir` it is given:
-/// `prime_` and `hash16` of the path text exactly as passed. The session file
-/// is `<id>.jsonl` in that directory.
 pub fn prime_session_id(session_dir: &str) -> String {
     format!("prime_{}", hash16(session_dir))
 }
 
-/// Print one line to stdout and flush it: the probes read line by line.
 pub fn say(line: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
 }
 
-/// Block until killed. The `hang` scenarios prove horch's timeouts.
 pub fn hang() -> ! {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
     }
 }
 
-/// Every line of a fake log, parsed.
 pub fn read_log(path: &Path) -> Vec<Value> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -165,7 +129,6 @@ pub fn read_log(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// Every violation any fake recorded.
 pub fn violations(path: &Path) -> Vec<String> {
     read_log(path)
         .iter()
@@ -181,12 +144,6 @@ pub fn violations(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The `inspect_skills` scenario's report, written to
-/// `$HORCH_FAKE_LOG.skills.json` (the last launch wins): what one launch
-/// exposed. `dirs` are the skill directories the fake was pointed at; each
-/// is one skill (it holds `SKILL.md`) or a directory of skills. `skills` is
-/// every skill id found there, sorted. `extra` adds the fake's flags and env.
-/// Written while the agent runs, because horch removes the bundle after it.
 pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
     let Some(log) = std::env::var_os("HORCH_FAKE_LOG") else {
         return;
@@ -218,14 +175,6 @@ pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
     let _ = std::fs::write(path, report.to_string());
 }
 
-/// The directory the fake binaries were built into (next to `horch`).
-///
-/// A test executable sits below that directory, and how far below depends on
-/// the Cargo version: `target/<profile>/deps/<test>-<hash>` up to Cargo 1.99,
-/// `target/<profile>/build/<package>/<hash>/out/<test>-<hash>` from Cargo
-/// 1.100. Walk up to the first directory that contains a fake. If no such
-/// directory exists, use the older layout so a caller's error names a useful
-/// path.
 pub fn bin_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");
     bin_dir_from(&exe)
@@ -237,7 +186,6 @@ fn bin_dir_from(exe: &Path) -> PathBuf {
     if let Some(dir) = start.ancestors().find(|dir| dir.join(&fake).is_file()) {
         return dir.to_path_buf();
     }
-    // target/<profile>/deps/<test>-<hash> -> target/<profile>
     let mut dir = start;
     if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
         dir.pop();

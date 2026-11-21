@@ -1,36 +1,13 @@
-# multi-herdr: "horch" multi-agent orchestration layouts for herdr
-# (https://herdr.dev).
-#
-# horch (crates/horch) is the actual implementation now - a single Rust
-# binary, no bash/jq/node required. For day-to-day use run `just install`
-# once: it puts the release build on your PATH as `horch`, plus a
-# `herdr-fleet` launcher you can run from any project. Run it again after
-# any change (yours or a `git pull`) to reinstall. The other recipes are a thin, optional `just` front end
-# over horch for people who like typing `just herdr-fleet`; they build horch
-# on demand via `cargo run`, so they always run the current source tree,
-# never a stale installed copy - useful for development.
-#
-# All recipes need a running herdr server (`herdr server` headless) or an
-# open Herdr app window, and work from ANY terminal - the host socket has
-# no client ancestry check.
-
 cwd := invocation_directory()
 horch := "cargo run --quiet --bin horch --"
 
-# The roster of team members. Every briefing an agent reads comes from a file
-# in here, so it is exported to every recipe: `horch` falls back to a
-# compiled-in copy, and without this a fleet launched from another directory
-# would silently ignore edits made in this folder.
 export HORCH_TEAMMATES_DIR := justfile_directory() / "teammates"
 
 # List available recipes.
 default:
     @just --list
 
-# Build the release binaries and run `horch install`. It puts horch,
-# herdr-install and the herdr-fleet and herdr-run launchers
-# (this checkout's teammates dir baked in) in ~/.local/bin. Then remove the old herdr-fleet shell function from ~/.zshrc (a
-# backup is written first).
+# Build the release binaries and install horch, herdr-install and the herdr-fleet and herdr-run launchers into ~/.local/bin.
 install:
     cargo build --release --bin horch --bin herdr-install
     ./target/release/horch install
@@ -41,48 +18,23 @@ install:
 require-herdr:
     {{horch}} doctor
 
-# Launch herdr-orchestration: 1 orchestrator (Claude, Fable) + 4 workers
-# (2x Claude Sonnet medium, 1x Claude Opus medium, 1x Codex CLI), laid out
-# as orchestrator-left / 2x2-worker-grid-right, wired for two-way messaging
-# via `horch tell`.
+# Launch the fixed 5-pane workspace: 1 orchestrator and 4 workers, wired for two-way messaging.
 herdr-orchestration: require-herdr
     {{horch}} orchestration --cwd "{{cwd}}"
 
-# Launch herdr-fleet: a dynamic multi-agent fleet with a persistent
-# per-project session ledger. Starts ONE orchestrator pane and nothing
-# else - it breaks the work down and spawns exactly the workers it needs
-# with `horch spawn` (new panes, new or RESUMED sessions chosen from the
-# ledger by task complexity/continuity); workers record progress with
-# `horch note` and shut their own pane down with `horch done` when truly
-# finished. Run `just teammates` to see who it can pick from.
-#
-# FLAVOR picks who orchestrates, and nothing else - the roster of workers
-# is the same either way:
-#   herdr-fleet        Claude Code on Opus (the default; also cc, claude)
-#   herdr-fleet fable  Claude Code on Fable
-#   herdr-fleet astra  Codex on Astra (also codex)
-#   herdr-fleet sol    Codex on Sol
+# Launch a fleet: 1 orchestrator pane that spawns the workers it needs. FLAVOR picks the orchestrator: opus, fable, astra or sol.
 herdr-fleet FLAVOR="opus": require-herdr
     {{horch}} fleet {{FLAVOR}} --cwd "{{cwd}}"
 
-# Self-verifying check of the fleet machinery (spawn -> brief -> register
-# -> ledger add/note/done -> tell -> pane self-close) using a token-free
-# fake agent in a scratch workspace with an isolated ledger. Closes and
-# cleans everything up on success, leaves the workspace open on failure.
+# Check the fleet machinery end to end with a token-free fake agent in a scratch workspace.
 herdr-fleet-smoke: require-herdr
     {{horch}} smoke fleet
 
-# Self-verifying check of `horch tile`: a deliberately bad shape becomes the
-# canonical grid across two tabs with every pane and its process alive, a
-# spawn lays the grid out by itself, and a worker leaving frees its slot.
-# Token-free: the panes are shells counting into a file.
+# Check `horch tile` with token-free shell panes in a scratch workspace.
 horch-tile-smoke: require-herdr
     {{horch}} smoke tile
 
-# Cheap, self-verifying 2-pane check of the herdr messaging primitives
-# (send-text + send-keys enter, and horch's pane registry) without
-# booting any agents. Run this first if you haven't verified horch
-# against your herdr install yet. Closes its scratch workspace on success.
+# Check the herdr messaging primitives with 2 panes and no agents. Run this first on a new herdr install.
 horch1-smoke: require-herdr
     {{horch}} smoke messaging
 
@@ -90,14 +42,11 @@ horch1-smoke: require-herdr
 teammates:
     {{horch}} teammates
 
-# The roster as a tuning table: harness, model, effort, phase, expected
-# skills, price. Pair with `just cost` when retuning (see the tune-fleet skill).
+# The roster as a tuning table: harness, model, effort, phase, expected skills, price.
 teammates-matrix:
     {{horch}} teammates --matrix
 
-# What the fleet run in the directory you called this from cost, per worker,
-# from each harness's transcripts. Extra flags pass through, e.g.
-# `just cost --since 2026-09-24 --reprice sonnet`.
+# What the fleet run in the calling directory cost, per worker. Extra flags pass through, e.g. `--since 2026-09-24`.
 cost *ARGS:
     HORCH_PROJECT_DIR="{{cwd}}" {{horch}} cost {{ARGS}}
 
@@ -129,8 +78,7 @@ skills-doctor:
 marketplace-refresh:
     {{horch}} marketplace refresh
 
-# Everything the telemetry spec asks before a milestone is claimed
-# (docs/specs/telemetry.md, section 16.3).
+# Everything the telemetry spec asks before a milestone is claimed (docs/specs/telemetry.md, section 16.3).
 verify:
     cargo build --workspace --bins
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
@@ -145,13 +93,10 @@ verify:
 gate:
     ./scripts/phase-gate.sh
 
-# Slow; not part of `verify` or the gate. Starts colima and stops it again.
-# Result file: docs/live-checks/linux.md (U-29, U-24).
-# Live check: cargo test --workspace and Godot headless in aarch64 Linux.
+# Live check, slow: cargo test --workspace and Godot headless in aarch64 Linux. Starts colima and stops it again.
 test-linux:
     ./scripts/live/linux.sh
 
-# NFR-02: the collector's tick and cold-start budgets over a generated 1 GB
-# corpus. Slow; not part of `verify`.
+# NFR-02, slow: the collector's tick and cold-start budgets over a generated 1 GB corpus. Not part of `verify`.
 verify-perf:
     cargo test --release -p horch-core --test nfr -- --ignored --nocapture nfr_02

@@ -25,9 +25,6 @@ RANK = {"permissive": 0, "none": 1, "copyleft": 2, "restrictive": 3}
 _SPDX_SAFE = re.compile(r"^[A-Za-z0-9.+() -]{1,64}$")
 _TOML_LICENSE = re.compile(r'^\s*license\s*=\s*(?:\{[^}]*?text\s*=\s*)?"([^"]{1,200})"', re.M)
 
-# Text markers. A clause that forbids analysis makes any text restrictive,
-# even with a grant. Weaker markers count only when no known grant matches
-# (GPL, for example, says "proprietary" and "may not ... modify").
 _FORBIDS_ANALYSIS = re.compile(
     r"\b(?:not|no|never|prohibit\w*|forbid\w*)\W+(?:\w+\W+){0,6}?"
     r"(?:reverse[- ]?engineer|decompil|disassembl)|\bno ?derivatives?\b"
@@ -119,7 +116,7 @@ def _safe_spdx(spdx: str) -> str:
 def detect(src: Path, dirs: list[Path]) -> dict:
     """Detect the licence. `dirs` are the folders to check for licence files
     and manifests (the source root and every folder that holds a SKILL.md)."""
-    found: list[tuple[str, str | None, str]] = []  # (class, spdx, relpath)
+    found: list[tuple[str, str | None, str]] = []
 
     def rel(p: Path) -> str:
         return evidence.escape(p.relative_to(src).as_posix())

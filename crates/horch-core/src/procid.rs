@@ -1,47 +1,13 @@
-//! Process identity: a pid with its start time.
-//!
-//! A pid alone does not name a process. Once a process ends, the OS can give
-//! its pid to any later program, so a pid read from a file, a heartbeat or a
-//! lock can name a stranger. A signal to that pid ends the wrong program, and
-//! a liveness check on it keeps a stale lock alive for ever.
-//!
-//! So every stored pid is stored with [`start_time`], and every signal and
-//! liveness check first confirms that the pid still has that start time.
-//! A child the caller still holds unreaped is safe without this: its zombie
-//! keeps the pid.
-//!
-//! The start time is opaque: compare it for equality, never for order across
-//! platforms. macOS gives microseconds since the epoch (`proc_pidinfo`),
-//! Linux gives clock ticks since boot (`/proc/<pid>/stat` field 22),
-//! Windows gives the creation time from `GetProcessTimes` (a `FILETIME`:
-//! 100 ns ticks since 1601-01-01). Other platforms have no start time here:
-//! [`start_time`] is `None` and [`alive`] falls back to "the pid exists".
-//!
-//! [`stop_same`] stops a process only while it has its recorded start time.
-//! On Unix it sends `SIGTERM` or `SIGKILL` through `signal_same`. Windows
-//! has no polite stop for an arbitrary process, so [`Stop::Term`] and
-//! [`Stop::Kill`] both call `TerminateProcess` with exit code 1, on the same
-//! handle the start time was read through.
-
-/// The start time of `pid`, or `None` when it does not run or this platform
-/// cannot read it.
 pub fn start_time(pid: u32) -> Option<u64> {
     let pid = raw(pid)?;
     imp::start_time(pid)
 }
 
-/// When `pid` started, on the wall clock, or `None` when it does not run or
-/// this platform cannot read it. For an order with a time this process
-/// took. On Linux it is boot time plus clock ticks, so it can be off by up
-/// to a second.
 pub fn started_at(pid: u32) -> Option<std::time::SystemTime> {
     let pid = raw(pid)?;
     imp::started_at(pid)
 }
 
-/// Whether `pid` runs and is the process that started at `started`. With
-/// `started` unknown (an old record), or a platform that cannot read start
-/// times, this is "the pid exists".
 pub fn alive(pid: u32, started: Option<u64>) -> bool {
     if !crate::fsx::pid_alive(pid) {
         return false;
@@ -52,42 +18,30 @@ pub fn alive(pid: u32, started: Option<u64>) -> bool {
     }
 }
 
-/// Whether `pid` runs with start time `started`. The check before any
-/// signal: an unreadable start time is not a match.
 pub fn is_same(pid: u32, started: u64) -> bool {
     start_time(pid) == Some(started)
 }
 
-/// Whether `pid` has `started`, using the macOS `KERN_PROC_PID` query that
-/// Claude's sandbox permits for an ancestor outside the sandbox.
 #[cfg(target_os = "macos")]
 pub fn is_same_sandboxed(pid: u32, started: u64) -> bool {
     raw(pid).and_then(imp::sysctl_start_time) == Some(started)
 }
 
-/// Other platforms need no second process-identity query for this sandbox.
 #[cfg(not(target_os = "macos"))]
 pub fn is_same_sandboxed(_pid: u32, _started: u64) -> bool {
     false
 }
 
-/// The parent of `pid`, from the macOS `KERN_PROC_PID` query that Claude's
-/// sandbox permits where it blocks `proc_pidinfo`.
 #[cfg(target_os = "macos")]
 pub fn parent_sandboxed(pid: u32) -> Option<u32> {
     raw(pid).and_then(imp::sysctl_parent)
 }
 
-/// Other platforms need no second parent query for this sandbox.
 #[cfg(not(target_os = "macos"))]
 pub fn parent_sandboxed(_pid: u32) -> Option<u32> {
     None
 }
 
-/// Whether process group `pgid` is still the one whose leader started at
-/// `started`: the leader runs with that start time and still leads the
-/// group; or the leader has ended and the group still has members, which
-/// keeps the id from being given out again.
 #[cfg(unix)]
 pub fn is_same_group(pgid: u32, started: u64) -> bool {
     let Some(group) = raw(pgid) else {
@@ -101,9 +55,6 @@ pub fn is_same_group(pgid: u32, started: u64) -> bool {
     }
 }
 
-/// The pids in process group `pgid` now: its members, the leader among
-/// them while it runs. Empty when the group has none, or on a platform that
-/// cannot list them (Windows).
 pub fn group_members(pgid: u32) -> Vec<u32> {
     match raw(pgid) {
         Some(group) => imp::group_members(group),
@@ -111,17 +62,10 @@ pub fn group_members(pgid: u32) -> Vec<u32> {
     }
 }
 
-/// Whether `pid` runs and started at or before `t` on the wall clock. An
-/// unknown start time is not a match. Linux compares in clock ticks since
-/// boot, not with [`started_at`], so the whole-second boot time cannot move
-/// a start before `t`.
 pub fn started_by(pid: u32, t: std::time::SystemTime) -> bool {
     raw(pid).and_then(|pid| imp::started_by(pid, t)) == Some(true)
 }
 
-/// `pid` as the OS type, when it can name one process: 0 and values that
-/// would turn negative (a process group, or every process) are refused.
-/// Every cast of a stored pid to `pid_t` goes through here.
 pub fn os_pid(pid: u32) -> Option<i32> {
     i32::try_from(pid).ok().filter(|p| *p > 0)
 }
@@ -130,24 +74,11 @@ fn raw(pid: u32) -> Option<i32> {
     os_pid(pid)
 }
 
-/// Send `signal` to `pid` only while it runs with start time `started`, and
-/// say whether it was sent.
-///
-/// On Linux a pidfd is opened first and the start time checked after: the
-/// pidfd names the process that had the pid when it was opened, and a match
-/// after that proves it is the one recorded. The signal then goes to that
-/// process even if it ends and its pid is given out in between. A kernel
-/// without pidfds (before 5.3) falls back to the check and `kill`. On
-/// macOS there is no pidfd for a process that is not a child: the start
-/// time is checked just before `kill`, and the pid would have to end and
-/// be given out again between the two calls.
 #[cfg(unix)]
 pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
     raw(pid).is_some_and(|os| signal_os(pid, os, started, signal))
 }
 
-/// [`signal_same`] once `pid` is known to name one process, as the OS type
-/// `os`: the pidfd route on Linux, else the check and `kill`.
 #[cfg(unix)]
 fn signal_os(pid: u32, os: i32, started: u64, signal: i32) -> bool {
     #[cfg(target_os = "linux")]
@@ -158,27 +89,12 @@ fn signal_os(pid: u32, os: i32, started: u64, signal: i32) -> bool {
     is_same(pid, started) && unsafe { libc::kill(os, signal) } == 0
 }
 
-/// How hard a stop is. On Unix [`Stop::Term`] is `SIGTERM`, which the
-/// process can catch to clean up, and [`Stop::Kill`] is `SIGKILL`. Windows
-/// has no polite stop for an arbitrary process: both are `TerminateProcess`
-/// with exit code 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
     Term,
     Kill,
 }
 
-/// Stop `pid` only while it runs with start time `started`, and say whether
-/// a stop was sent.
-///
-/// On Unix this is `signal_same` with `SIGTERM` or `SIGKILL`. On Windows
-/// one handle is opened with `PROCESS_TERMINATE` and
-/// `PROCESS_QUERY_LIMITED_INFORMATION`, the creation time is read through
-/// that handle, and only on a match is `TerminateProcess` called on the same
-/// handle. The handle names the process that had the pid when it was opened
-/// and keeps that pid from being given out, so a reused pid can never be hit
-/// between the check and the stop. Both kinds of stop end the process at
-/// once there, with exit code 1. Other platforms send nothing.
 pub fn stop_same(pid: u32, started: u64, how: Stop) -> bool {
     #[cfg(unix)]
     {
@@ -200,9 +116,6 @@ pub fn stop_same(pid: u32, started: u64, how: Stop) -> bool {
     }
 }
 
-/// Whether `pid` names a process that has not exited, for
-/// [`crate::fsx::pid_alive`] on Windows. A process this user may not open
-/// exists all the same.
 #[cfg(windows)]
 pub(crate) fn windows_running(pid: i32) -> bool {
     imp::running(pid)
@@ -227,13 +140,9 @@ mod imp {
         (n == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
     }
 
-    /// The size of Darwin's `kinfo_proc` on 64-bit macOS.
     const KINFO_PROC_SIZE: usize = 648;
-    /// The offset of `kp_eproc.e_ppid` in `kinfo_proc`.
     const KINFO_PROC_PPID: usize = 560;
 
-    /// `kern.proc.pid.<pid>`: the `kinfo_proc` of `pid`. Claude's macOS
-    /// sandbox permits this query where it blocks `proc_pidinfo`.
     fn kinfo_proc(pid: i32) -> Option<[u8; KINFO_PROC_SIZE]> {
         let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
         let mut bytes = [0_u8; KINFO_PROC_SIZE];
@@ -253,8 +162,6 @@ mod imp {
         (rc == 0 && len == KINFO_PROC_SIZE).then_some(bytes)
     }
 
-    /// The start time from `kinfo_proc`: `kp_proc.p_starttime`, a `timeval`
-    /// at offset 0.
     pub(super) fn sysctl_start_time(pid: i32) -> Option<u64> {
         let bytes = kinfo_proc(pid)?;
         // SAFETY: `bytes` holds a whole `kinfo_proc`, which starts with a
@@ -267,7 +174,6 @@ mod imp {
             .and_then(|()| seconds.checked_mul(1_000_000)?.checked_add(micros))
     }
 
-    /// The parent pid from `kinfo_proc`: `kp_eproc.e_ppid`.
     pub(super) fn sysctl_parent(pid: i32) -> Option<u32> {
         let bytes = kinfo_proc(pid)?;
         let field = bytes.get(KINFO_PROC_PPID..KINFO_PROC_PPID + 4)?;
@@ -275,7 +181,6 @@ mod imp {
         u32::try_from(ppid).ok()
     }
 
-    /// The start time is microseconds since the epoch.
     pub(super) fn started_at(pid: i32) -> Option<std::time::SystemTime> {
         let micros = start_time(pid)?;
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_micros(micros))
@@ -286,7 +191,6 @@ mod imp {
     }
 
     pub(super) fn group_members(pgid: i32) -> Vec<u32> {
-        // Room for more members than a judge job has; a fuller group is cut.
         const CAP: usize = 4096;
         let mut pids = vec![0 as libc::pid_t; CAP];
         let bytes = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
@@ -295,8 +199,6 @@ mod imp {
         if n <= 0 {
             return Vec::new();
         }
-        // `n` counts bytes; the buffer was zeroed, so a slot it did not
-        // fill is 0 and is dropped.
         pids.truncate((n as usize).min(CAP));
         pids.into_iter()
             .filter_map(|p| u32::try_from(p).ok().filter(|p| *p > 0))
@@ -311,20 +213,15 @@ mod imp {
         parse_stat(&stat)
     }
 
-    /// Field 22 of `/proc/<pid>/stat`. Field 2, the command, is in
-    /// parentheses and may hold spaces, so counting starts after the last
-    /// `)`, at field 3.
     pub(super) fn parse_stat(stat: &str) -> Option<u64> {
         stat_field(stat, 22)
     }
 
-    /// Field `n` (from 3) of a `/proc/<pid>/stat` line.
     pub(super) fn stat_field<T: std::str::FromStr>(stat: &str, n: usize) -> Option<T> {
         let (_, rest) = stat.rsplit_once(')')?;
         rest.split_whitespace().nth(n - 3)?.parse().ok()
     }
 
-    /// Every pid in `/proc` whose field 5, the process group, is `pgid`.
     pub(super) fn group_members(pgid: i32) -> Vec<u32> {
         let Ok(dir) = std::fs::read_dir("/proc") else {
             return Vec::new();
@@ -340,14 +237,11 @@ mod imp {
             .collect()
     }
 
-    /// Open a pidfd for `pid`, run `same`, and send `signal` through the
-    /// pidfd when it holds. `None` when this kernel has no pidfds.
     pub(super) fn pidfd_signal(pid: i32, signal: i32, same: impl Fn() -> bool) -> Option<bool> {
         // SAFETY: plain syscalls; the fd is closed below.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
         if fd < 0 {
             let err = std::io::Error::last_os_error().raw_os_error();
-            // ESRCH: no process has the pid, so there is nothing to signal.
             return (err != Some(libc::ENOSYS)).then_some(false);
         }
         let fd = fd as libc::c_int;
@@ -368,8 +262,6 @@ mod imp {
         Some(sent)
     }
 
-    /// `t` moved onto `CLOCK_BOOTTIME`, which the start time counts in,
-    /// through the distance between `t` and now.
     pub(super) fn started_by(pid: i32, t: std::time::SystemTime) -> Option<bool> {
         let ticks = start_time(pid)?;
         // SAFETY: sysconf reads a constant.
@@ -390,8 +282,6 @@ mod imp {
         Some(start <= t_boot)
     }
 
-    /// Boot time (`btime` in `/proc/stat`, in seconds) plus the start time
-    /// in clock ticks.
     pub(super) fn started_at(pid: i32) -> Option<std::time::SystemTime> {
         let ticks = start_time(pid)?;
         let stat = std::fs::read_to_string("/proc/stat").ok()?;
@@ -421,11 +311,9 @@ mod imp {
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
     };
 
-    /// `FILETIME` ticks (100 ns) from 1601-01-01 to 1970-01-01.
     const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
     const TICKS_PER_SEC: u64 = 10_000_000;
 
-    /// A process handle, closed on drop.
     struct Process(HANDLE);
 
     impl Process {
@@ -435,18 +323,12 @@ mod imp {
             (!h.is_null()).then_some(Self(h))
         }
 
-        /// Whether the process has not exited. A handle can outlive its
-        /// process (a parent holds one until it drops the child), so an
-        /// open handle alone does not prove it runs. A process that exited
-        /// with code 259 (`STILL_ACTIVE`) itself reads as running.
         fn running(&self) -> bool {
             let mut code = 0u32;
             // SAFETY: the handle is open and `code` is a valid u32 to fill.
             (unsafe { GetExitCodeProcess(self.0, &mut code) }) != 0 && code == STILL_ACTIVE as u32
         }
 
-        /// The creation time as a u64 of `FILETIME` ticks, while the process
-        /// has not exited.
         fn start_time(&self) -> Option<u64> {
             if !self.running() {
                 return None;
@@ -477,7 +359,6 @@ mod imp {
         Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?.start_time()
     }
 
-    /// The start time is 100 ns ticks since 1601-01-01.
     pub(super) fn started_at(pid: i32) -> Option<std::time::SystemTime> {
         Some(filetime_to_system(start_time(pid)?))
     }
@@ -499,8 +380,6 @@ mod imp {
         Vec::new()
     }
 
-    /// Whether `pid` names a process that has not exited. One this user
-    /// may not open exists all the same, as `EPERM` does on Unix.
     pub(super) fn running(pid: i32) -> bool {
         match Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
             Some(p) => p.running(),
@@ -509,8 +388,6 @@ mod imp {
         }
     }
 
-    /// Open one handle that may both read the creation time and terminate,
-    /// and terminate through it only when the creation time is `started`.
     pub(super) fn terminate_same(pid: i32, started: u64) -> bool {
         let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION;
         let Some(p) = Process::open(pid, access) else {
@@ -604,9 +481,6 @@ mod tests {
         let theirs = started_at(child.id()).expect("the child runs");
         child.kill().unwrap();
         child.wait().unwrap();
-        // Linux counts start times from a boot time in whole seconds, so
-        // the child can read up to 1 s plus 1 clock tick early (CI saw
-        // 1.003 s). Allow 2 s.
         assert!(
             theirs + Duration::from_secs(2) >= before,
             "{theirs:?} {before:?}"
@@ -614,7 +488,6 @@ mod tests {
         assert!(theirs >= mine);
     }
 
-    /// A child that has ended and been reaped: its record names nothing.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn an_ended_child_is_not_the_same() {
@@ -641,7 +514,6 @@ mod tests {
         assert!(!alive(u32::MAX, None));
     }
 
-    /// The signal goes only to the process with the recorded start time.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn signal_same_signals_only_the_recorded_process() {
@@ -663,7 +535,6 @@ mod tests {
         assert!(!signal_same(pid, started, libc::SIGKILL), "gone");
     }
 
-    /// This test's own group holds this process and a child it starts.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn group_members_lists_this_group() {
@@ -682,8 +553,6 @@ mod tests {
         assert_eq!(group_members(u32::MAX), Vec::<u32>::new());
     }
 
-    /// A process started by a time only from its start on, and a gone
-    /// process never.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn started_by_orders_a_start_with_a_time() {
@@ -706,7 +575,6 @@ mod tests {
         assert!(!started_by(0, after));
     }
 
-    /// `stop_same` stops only the process with the recorded start time.
     #[cfg(unix)]
     #[test]
     fn stop_same_stops_only_the_recorded_process() {
@@ -738,8 +606,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A child has a start time while it runs and none once it has ended,
-    /// even while this process still holds a handle to it.
     #[cfg(windows)]
     #[test]
     fn windows_child_identity_ends_with_it() {
@@ -767,7 +633,6 @@ mod tests {
         assert!(!stop_same(pid, started, Stop::Kill), "gone");
     }
 
-    /// `stop_same` terminates only the process with the recorded start time.
     #[cfg(windows)]
     #[test]
     fn windows_stop_same_stops_only_the_recorded_process() {

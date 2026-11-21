@@ -1,5 +1,3 @@
-//! Opening the task ledger: 1 SQLite file per machine (ADR 0001).
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -8,30 +6,18 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, Transactio
 
 use super::schema;
 
-/// How long a writer waits for another writer's lock before it fails.
-/// A claim or a checkin holds the lock for milliseconds; 30 s is room for
-/// many workers at once on a slow disk.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A live opener keeps its initialization lock for at most this long before
-/// another machine may break it. Dead local processes are detected at once.
 const OPEN_LOCK_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 
-/// The cross-process lock used only while a ledger switches to WAL and runs
-/// its first migration. Ledgers already in WAL mode do not take this lock.
 const OPEN_LOCK_NAME: &str = "task-ledger-open";
 
-/// The ledger file under a home directory: `<home>/.horch/ledger.sqlite3`.
 pub fn default_path(home: &Path) -> PathBuf {
     home.join(".horch").join("ledger.sqlite3")
 }
 
-/// The opt-in that lets a development build migrate the shared ledger.
 pub const ALLOW_MIGRATE_ENV: &str = "HORCH_ALLOW_LEDGER_MIGRATE";
 
-/// True when `exe` is a cargo build output: a `target` component followed
-/// by `debug` or `release`, or by 1 more component and then `debug`,
-/// `release` or `deps` (`target/<triple>/debug`, `target/<profile>/deps`).
 pub fn is_dev_build(exe: &Path) -> bool {
     let parts: Vec<&std::ffi::OsStr> = exe
         .parent()
@@ -48,15 +34,10 @@ pub fn is_dev_build(exe: &Path) -> bool {
     })
 }
 
-/// True when `ledger` is the operator's shared ledger,
-/// `<passwd_home>/.horch/ledger.sqlite3`.
 pub fn is_shared_ledger(ledger: &Path, passwd_home: &Path) -> bool {
     ledger == default_path(passwd_home)
 }
 
-/// Why this horch must not migrate `ledger` from version `from`, or `None`
-/// when it may. A development build refuses the shared ledger unless
-/// `allow` (the value of [`ALLOW_MIGRATE_ENV`]) is `1`.
 pub fn migrate_refusal(
     exe: &Path,
     ledger: &Path,
@@ -79,8 +60,6 @@ pub fn migrate_refusal(
     ))
 }
 
-/// The home directory of this user in the passwd database, not `$HOME`: a
-/// test or a fleet can point `$HOME` anywhere, but the shared ledger stays.
 #[cfg(unix)]
 pub fn passwd_home() -> Option<PathBuf> {
     use std::ffi::{CStr, OsStr};
@@ -108,26 +87,21 @@ pub fn passwd_home() -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(dir.to_bytes())))
 }
 
-/// No passwd database: no ledger counts as shared.
 #[cfg(not(unix))]
 pub fn passwd_home() -> Option<PathBuf> {
     None
 }
 
-/// [`migrate_refusal`] for this process and `ledger`.
 fn guard(ledger: &Path, from: i64) -> Result<()> {
     use crate::runtime::{EnvSource, ProcessEnv};
     let Some(exe) = ProcessEnv.current_exe() else {
         return Ok(());
     };
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    // Compare real paths, so a symlinked home or a relative path still matches.
     let home = passwd_home();
     let shared = home.as_deref().map(|h| real(&default_path(h)));
     let ledger = real(ledger);
     let allow = ProcessEnv.var(ALLOW_MIGRATE_ENV);
-    // `is_shared_ledger` checks `<home>/.horch/ledger.sqlite3`; pass the home
-    // only when the real paths match.
     let home = home.filter(|_| shared.as_deref() == Some(ledger.as_path()));
     let shown = home.as_deref().map(default_path).unwrap_or(ledger);
     match migrate_refusal(&exe, &shown, home.as_deref(), allow.as_deref(), from) {
@@ -136,13 +110,11 @@ fn guard(ledger: &Path, from: i64) -> Result<()> {
     }
 }
 
-/// The current SQLite journal mode, in lower-case ASCII.
 fn journal_mode(conn: &Connection) -> Result<String> {
     conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .context("reading the task ledger journal mode")
 }
 
-/// Serialize the WAL switch and first migration across threads and processes.
 fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
     let dir = path
         .parent()
@@ -152,15 +124,12 @@ fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
         .with_context(|| format!("locking task ledger initialization for {}", path.display()))
 }
 
-/// An open task ledger.
 pub struct Store {
     conn: Connection,
     path: PathBuf,
 }
 
 impl Store {
-    /// Open (and create, and migrate) the ledger at `path`. A development
-    /// build does not migrate the shared ledger ([`migrate_refusal`]).
     pub fn open(path: &Path) -> Result<Store> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -168,17 +137,12 @@ impl Store {
         let mut conn = Connection::open(path)
             .with_context(|| format!("opening the task ledger {}", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        // Switching journal mode is not covered by SQLite's busy timeout. A
-        // first opener holds a cross-process lock until migration completes;
-        // later openers see WAL and rely on SQLite's writer lock as usual.
         let _open_lock = if journal_mode(&conn)? == "wal" {
             None
         } else {
             Some(open_lock(path)?)
         };
         if journal_mode(&conn)? != "wal" {
-            // WAL: readers never block the 1 writer, and a crash mid-write
-            // keeps the last committed state.
             let _: String = conn
                 .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
                 .context("setting the task ledger journal mode to WAL")?;
@@ -193,8 +157,6 @@ impl Store {
         })
     }
 
-    /// Open an existing ledger without creating, migrating, or changing its
-    /// journal settings. Read-only commands use this in a sandbox.
     pub fn open_read_only(path: &Path) -> Result<Store> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("opening the task ledger {} read-only", path.display()))?;
@@ -205,19 +167,14 @@ impl Store {
         })
     }
 
-    /// The file this store reads and writes.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The connection, for reads.
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
 
-    /// Run `f` in a `BEGIN IMMEDIATE` transaction: the write lock is taken
-    /// before the first read, so a read-then-write (claim, reap, land) cannot
-    /// interleave with another writer. Commits when `f` returns `Ok`.
     pub fn immediate<T>(&mut self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let tx = self
             .conn
@@ -229,7 +186,6 @@ impl Store {
     }
 }
 
-/// 1 optional value of a query.
 pub fn optional<T>(r: rusqlite::Result<T>) -> Result<Option<T>> {
     Ok(r.optional()?)
 }
@@ -265,7 +221,6 @@ mod tests {
             .unwrap();
         assert_eq!(v, schema::VERSION);
         drop(store);
-        // Reopening is a no-op migration.
         Store::open(&path).unwrap();
     }
 

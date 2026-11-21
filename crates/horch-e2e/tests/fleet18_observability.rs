@@ -1,4 +1,3 @@
-//! Behavioral coverage for fleet pitfalls #49–55.
 use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::json;
@@ -15,7 +14,7 @@ fn g49_offline_stale_cache_survives_age_pipe_and_no_update() {
     let mut h = Harness::new("g49-stale");
     std::fs::write(h.state.join("self-check.json"), json!({"checked_at":"2020-01-01T00:00:00Z","latest_tag":"v99.0.0","html_url":"https://example.invalid/release"}).to_string()).unwrap();
     h.set("HORCH_RELEASE_API", "http://192.0.2.1:1");
-    h.run(&["inbox"]); // Warm macOS first-exec scanning before measuring the offline path.
+    h.run(&["inbox"]);
     let start = std::time::Instant::now();
     let o = h.run(&["inbox"]);
     assert_eq!(err(&o).matches("stale horch").count(), 1, "{}", err(&o));
@@ -148,8 +147,6 @@ fn g54_doctor_warns_on_proxy_host() {
 #[test]
 fn g55_unknown_pool_reason_is_visible() {
     let mut h = Harness::new("g55-reason");
-    // A stale reading has no error and a table row without its reason: only
-    // the `claude: <reason>` line says why the pool is unknown.
     let telemetry = h.state.join("telemetry");
     std::fs::create_dir_all(&telemetry).unwrap();
     std::fs::copy(
@@ -170,7 +167,6 @@ fn g55_unknown_pool_reason_is_visible() {
     let value: serde_json::Value = serde_json::from_str(&out(&j)).unwrap();
     assert_eq!(value["pools"]["claude"]["state"], "unknown");
     assert_eq!(value["pools"]["claude"]["reason"], why);
-    // A probe error is the reason, in the row and on its own line.
     h.set(
         "HORCH_QUOTA_FILE",
         fixtures()
@@ -320,7 +316,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         &h,
         &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
     );
-    // A task-less spawn needs a startable task (TRF-31): 1 per worker.
     for n in 1..=2 {
         let file = h.project.join(format!("race-{n}.md"));
         std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
@@ -338,8 +333,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         "--no-tile",
         "--force",
     ];
-    // Launch within the same polling interval. Reverse worker traversal below
-    // deliberately checks the worker that was created second first.
     let mut first = argv.to_vec();
     first.extend(["--role", "codex-terra-1"]);
     let mut second = argv.to_vec();
@@ -362,7 +355,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     }
     let workers = wait("two session transcripts", || {
         let state: serde_json::Value =
-            // The queued tasks keep the run open, so status exits 1 (TRF-15).
             serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
         let ws: Vec<_> = state["workers"]
             .as_array()?
@@ -390,7 +382,6 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         let transcript = std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
         assert!(transcript.contains(&horch_core::harness::codex::launch_token(&record.record_id)));
     }
-    // Exact PID/start identity protects cleanup from PID reuse.
     for w in &workers {
         let pid = w["agent_pid"].as_u64().unwrap() as u32;
         let started = w["agent_started"].as_u64().unwrap();
@@ -471,8 +462,6 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     h.seal(&mut warm);
     let warmed = horch_e2e::harness::warm(warm.arg("warm")).unwrap();
     assert!(warmed.status.success());
-    // Observe the daemon warning before later version checks complete.
-    // Their own 15s budgets are independent of Docker's 2s timeout.
     use std::io::BufRead;
     let mut child = h
         .horch(&["doctor"])
@@ -499,9 +488,6 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     while std::time::Instant::now() < deadline {
         if let Ok(line) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
             if line.contains("Docker daemon version timed out") {
-                // Doctor kills Docker 2s after it spawns it. Under load the
-                // fake's shell may not run before that kill, so the marker
-                // can be absent. Check the delay only when Docker started.
                 if let Ok(modified) = std::fs::metadata(&marker).and_then(|m| m.modified()) {
                     let since = modified.elapsed().unwrap_or_default();
                     assert!(
@@ -844,7 +830,6 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
             .any(|l| l.contains("Read ai_docs/handoffs/sonnet-1-whats-next.md now. Then continue")),
         "{lines:?}"
     );
-    // #57: only the orchestrator resume carries the command card.
     assert!(
         !lines
             .iter()
@@ -1094,7 +1079,6 @@ fn g55_real_captures_scrub_personal_identifiers_preserve_functional_limits() {
             .skip(1)
             .any(|suffix| suffix.bytes().take_while(u8::is_ascii_hexdigit).count() >= 16)
     }
-    // A representative synthetic identifier proves the detector is active.
     assert!(has_reset_credit_id(
         "id: RateLimitResetCredit_0123456789abcdef0123456789abcdef"
     ));

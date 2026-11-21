@@ -69,9 +69,7 @@ RUN_DEFAULTS = {**DEFAULTS, **kit.value_table("""
     swell_db -42.0  swell_len 0.3
 """)}
 
-# A layer whose level sits at or under this many dB is left out.
 _SILENT_DB = -39.5
-# The typed run moves between this many key layouts.
 _LAYOUT_COUNT = 5
 _TOP_RIDGE_HZ = 16000.0
 
@@ -84,8 +82,6 @@ def key_rng(key: int, part: int = 0) -> np.random.Generator:
     """Generator tied to one key number; the recipe only uses part 0."""
     return np.random.default_rng(int(key) * 7919 + part * 104729 + 31)
 
-
-# ---------------------------------------------------------------- key parts
 
 def _ridge_filter(sig: np.ndarray, cfg: dict, ridge: float | None = None) -> np.ndarray:
     """Steep high-pass, a peaking boost at the ridge, a soft top roll-off and a hard cut at 18.5 kHz."""
@@ -248,8 +244,6 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     return _both_channels(dsp.fade(_tick(cfg, rng, force), 0.0, 0.0015))
 
 
-# ---------------------------------------------------------------- typed run
-
 def key_times(p: dict, r: np.random.Generator) -> list[float]:
     """Key start times with jitter and word gaps, from 0 up to dur - 0.07 s."""
     typical = 1 / p["rate"]
@@ -308,8 +302,6 @@ def render_run(p: dict, rng: np.random.Generator) -> np.ndarray:
     out = out + hiss / (np.std(hiss) + 1e-12) * kit.peak(out) * 10 ** (-68 / 20)
     return _both_channels(dsp.fade(out, 0.002, 0.004))
 
-
-# ------------------------------------------------------------ critic checks
 
 def _to_mono(x: np.ndarray) -> np.ndarray:
     arr = np.asarray(x, dtype=float)

@@ -1,14 +1,3 @@
-//! One collector tick (section 8.3), and the snapshot it writes (section 9).
-//!
-//! 1. Read every ledger under the state root (a ledger that does not parse
-//!    keeps its last good copy: a write may be in flight).
-//! 2. Keep the records updated inside the retention window.
-//! 3. Poll each record's reader.
-//! 4. Append the events, sync, then save the cursors: per batch of
-//!    [`BATCH`] events, so a first read of a large history holds one batch.
-//! 5. Fold limit signals into the quota readings; probe when due.
-//! 6. Write `snapshot.json` (temp file + rename).
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -32,11 +21,6 @@ use crate::routing::quota_probe::{self, ProbeBins};
 use crate::routing::snapshot::QuotaEnv;
 use crate::usage::{self, Locations, Price};
 
-/// Every session record under `state_root`, skipping a JSON ledger that does
-/// not parse right now. For readers outside the collector. The records are
-/// the session records (TRF-45) and old JSON ledgers, and for this
-/// process's own state root the task ledger's worker rows are laid over
-/// them (TRF-44, [`execution_store::session_files`]).
 pub fn read_ledgers(state_root: &Path) -> Vec<Record> {
     let (db, task_ledger) = execution_store::session_files(state_root);
     execution_store::read_all_sessions(state_root, &db, task_ledger.as_deref())
@@ -45,8 +29,6 @@ pub fn read_ledgers(state_root: &Path) -> Vec<Record> {
         .collect()
 }
 
-/// The ids of the records whose typed status is terminal: their spend counts
-/// as finished work in the rollups.
 pub fn done_record_ids(records: &[Record]) -> BTreeSet<String> {
     done_ids(records)
 }
@@ -59,22 +41,15 @@ fn done_ids<'r>(records: impl IntoIterator<Item = &'r Record>) -> BTreeSet<Strin
         .collect()
 }
 
-/// The idle marker a worker spawned without a task carries.
 pub const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
-/// When the probes run in a tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Probing {
-    /// Never (a viewer, or tests without fakes).
     Never,
-    /// When the last probe is older than `probe_interval_min` (the collector).
     Scheduled,
-    /// When the last probe is older than `probe_on_demand_age_min` (a CLI
-    /// with no live collector, QUO-07).
     OnDemand,
 }
 
-/// The collector's own identity in the snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CollectorInfo {
     pub pid: u32,
@@ -82,7 +57,6 @@ pub struct CollectorInfo {
     pub started_at: String,
 }
 
-/// One live pane (section 9).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LiveRow {
     pub project: Option<String>,
@@ -99,16 +73,13 @@ pub struct LiveRow {
     pub status: String,
     pub task_head: String,
     pub tokens: TokenClasses,
-    /// The priced events' cost; `unpriced_events` are not in it.
     pub cost_usd: f64,
-    /// Events with no price (an unknown model), never counted as $0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unpriced_events: u64,
     pub rate_tokens_per_min: f64,
     pub rate_usd_per_hour: f64,
     pub last_event_at: Option<String>,
     pub idle: bool,
-    /// The state of the pool this pane draws from.
     #[serde(default)]
     pub pool: String,
     #[serde(default)]
@@ -123,7 +94,6 @@ pub struct Insights {
     pub top_plan: Option<String>,
 }
 
-/// `telemetry/snapshot.json`, schema 1.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema: u32,
@@ -131,11 +101,9 @@ pub struct Snapshot {
     pub collector: CollectorInfo,
     pub pools: BTreeMap<String, quota::PoolReading>,
     pub live: Vec<LiveRow>,
-    /// `5h`, `today`, `7d`.
     pub rollups: BTreeMap<String, Rollup>,
     pub insights: Insights,
     pub unread: Vec<Unread>,
-    /// How many distinct projects the live rows span.
     #[serde(default)]
     pub projects: usize,
 }
@@ -152,7 +120,6 @@ impl Snapshot {
     }
 }
 
-/// The start of each rollup window at `now`.
 pub fn window_start(window: &str, now: DateTime<Utc>) -> Option<String> {
     match window {
         "5h" => Some(clock::stamp(now - Duration::hours(5))),
@@ -164,7 +131,6 @@ pub fn window_start(window: &str, now: DateTime<Utc>) -> Option<String> {
 
 pub const WINDOWS: [&str; 3] = ["5h", "today", "7d"];
 
-/// Collector state that lives across ticks.
 pub struct Collector {
     pub state_root: PathBuf,
     pub loc: Locations,
@@ -174,40 +140,21 @@ pub struct Collector {
     pub cursors: Cursors,
     pub probing: Probing,
     pub bins: ProbeBins,
-    /// The quota file override, probe timeout and temp root.
     pub quota_env: QuotaEnv,
     pub info: CollectorInfo,
-    /// Each ledger's last good records, read again only when it changes.
     last_good: BTreeMap<PathBuf, LedgerSnapshot>,
-    /// The task ledger whose worker rows are laid over each ledger's
-    /// records (TRF-44). `None` lays no worker rows.
     task_ledger: Option<PathBuf>,
-    /// The task ledger file that holds the session records (TRF-45):
-    /// `<state_root>/ledger.sqlite3` unless [`Collector::open_in`] names it.
     session_db: PathBuf,
-    /// Where each session's inputs are, kept across ticks.
     places: HashMap<(String, String), Place>,
-    /// Each session's inputs as they were when last polled.
     polled: HashMap<(String, String), Vec<Option<Stamp>>>,
-    /// How many times a tick searched the transcript trees.
     pub searches: u64,
-    /// The most new events a tick holds before it stores them ([`BATCH`]).
     pub batch: usize,
-    /// The most new events any tick held at once, for the NFR-02 guard.
     pub peak_pending: usize,
-    /// Test hook: fail after the append, before the cursor save.
     pub fail_after_append: bool,
-    /// Test hook: die there instead, leaving a stale lock (a `kill -9`).
     pub abort_after_append: bool,
-    /// The last tick's time per phase and bytes written (NFR-02).
     pub timing: TickTiming,
-    /// Print [`Collector::timing`] to stderr after each tick
-    /// (`HORCH_TELEMETRY_TIMING=1`).
     pub print_timing: bool,
-    /// The content hash of `snapshot.json` as last written or read
-    /// ([`content_hash`]); `None` before the first tick.
     snapshot_hash: Option<u64>,
-    /// When [`Collector::tidy_cursors`] last ran.
     tidied_at: Option<DateTime<Utc>>,
 }
 
@@ -216,11 +163,6 @@ impl Collector {
         Self::open_at(state_root, loc, probing, clock::now())
     }
 
-    /// As [`Collector::open`], at an explicit time (retention is relative).
-    ///
-    /// These two read no environment: no `HORCH_BALANCE`, no quota file, the
-    /// default probe timeout, and the plain program names. The binary opens
-    /// its collector with [`Collector::open_in`].
     pub fn open_at(
         state_root: &Path,
         loc: Locations,
@@ -243,8 +185,6 @@ impl Collector {
         Self::open_with(state_root, loc, probing, now, None, quota_env)
     }
 
-    /// The collector the binary runs: `HORCH_BALANCE`, the quota settings,
-    /// the programs and the fault points all come from `ctx`.
     pub fn open_in(
         ctx: &crate::runtime::RuntimeContext,
         loc: Locations,
@@ -317,23 +257,17 @@ impl Collector {
         })
     }
 
-    /// Arm the test hooks that `HORCH_FAULT` names (`RuntimeContext::settings`).
     pub(crate) fn with_faults(mut self, faults: &crate::runtime::Faults) -> Collector {
         self.fail_after_append = faults.has("after-append");
         self.abort_after_append = faults.has("abort-after-append");
         self
     }
 
-    /// Every project's records, keeping the last good copy of a JSON
-    /// ledger that does not parse right now.
     pub fn ledgers(&mut self) -> Vec<Record> {
         self.refresh_ledgers();
         self.merged()
     }
 
-    /// The session records (TRF-45) merged with the last good JSON ledgers,
-    /// with the task ledger's worker rows of each project laid over them
-    /// ([`execution_store::merge_projects`]).
     fn merged(&self) -> Vec<Record> {
         let legacy = (self.last_good.iter())
             .map(|(p, l)| (p.clone(), l.records.clone()))
@@ -345,18 +279,11 @@ impl Collector {
             .collect()
     }
 
-    /// The rollups of 1 project, 1 per window of [`WINDOWS`], keyed like
-    /// [`Snapshot::rollups`], from the in-memory table: what
-    /// [`store::rollup`] gives over the stored events of `project`, without
-    /// reading the event files. The done records are the last tick's
-    /// ledgers. An event with no project is under the key `-`, so `-`
-    /// matches it too.
     pub fn project_rollups(&self, project: &str, now: DateTime<Utc>) -> BTreeMap<String, Rollup> {
         let index = &self.store.table;
         let records = self.merged();
         let mut fold = RollupFold::new(index, &done_ids(&records), now);
         if let Some(id) = index.names.get(project) {
-            // Per row: whether its project key (group 3) is `project`.
             let mine: Vec<bool> = index.rows.iter().map(|r| r.groups[3] == id).collect();
             for e in index.kept.iter().filter(|e| mine[e.row as usize]) {
                 fold.add(e);
@@ -365,12 +292,6 @@ impl Collector {
         fold.finish()
     }
 
-    /// Read the ledgers whose length, inode or modification time changed
-    /// since the last tick (NFR-02: parsing every ledger took most of a
-    /// tick). The inode catches a rewrite by rename to the same length
-    /// within one modification-time tick. A ledger that does not parse keeps
-    /// its last good copy and is read again next tick; a deleted one is
-    /// dropped.
     fn refresh_ledgers(&mut self) {
         let paths = execution_store::ledger_paths(&self.state_root);
         self.last_good.retain(|p, _| paths.contains(p));
@@ -386,7 +307,6 @@ impl Collector {
         }
     }
 
-    /// Run one tick at `now` and write the snapshot.
     pub fn tick(&mut self, now: DateTime<Utc>) -> Result<Snapshot> {
         self.timing = TickTiming::default();
         let start = Instant::now();
@@ -417,10 +337,7 @@ impl Collector {
                 pass.unread.push(unread_row(r, Unreadable::NoSessionId));
             }
         }
-        // The tidy's changes are saved with the last batch, after its events
-        // (its time counts as cursor_save).
         pass.moved |= self.tidy_if_due(records, &oldest, now);
-        // A cursor moves only when its input is polled or tidied.
         self.store_batch(pass.pending, pass.moved.then_some(true))?;
 
         let at = Instant::now();
@@ -439,8 +356,6 @@ impl Collector {
         Ok(snapshot)
     }
 
-    /// Read the inputs of record `r` until they are read to the end, storing
-    /// each full batch of `pass` on the way.
     fn drain_record(
         &mut self,
         r: &Record,
@@ -449,7 +364,6 @@ impl Collector {
         batch: usize,
         pass: &mut TickPass,
     ) -> Result<()> {
-        // A read stops when the batch is full; store it, then read on.
         loop {
             let polled = match self.poll(r, sid, now, batch - pass.pending.len()) {
                 Ok(None) => break,
@@ -473,8 +387,6 @@ impl Collector {
         Ok(())
     }
 
-    /// Tidy the cursors when the last tidy is old enough. Returns whether a
-    /// cursor changed.
     fn tidy_if_due(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
         let due = (self.tidied_at).is_none_or(|t| now - t >= Duration::minutes(TIDY_EVERY_MIN));
         if !due {
@@ -487,8 +399,6 @@ impl Collector {
         changed
     }
 
-    /// NFR-02: write the snapshot file only when its content changed. `at`
-    /// is when the build ended.
     fn write_snapshot_if_changed(&mut self, snapshot: &Snapshot, at: Instant) -> Result<()> {
         let path = snapshot_path(&self.state_root);
         let hash = content_hash(snapshot)?;
@@ -497,8 +407,6 @@ impl Collector {
             .get_or_insert_with(|| file_hash(&path).unwrap_or(!hash));
         let at = self.timing.lap("serialize", at);
         if known != hash {
-            // The output's serialization counts as `serialize` too; `write`
-            // is the file replace alone.
             let json = serde_json::to_vec(snapshot)?;
             let at = self.timing.lap("serialize", at);
             store::replace_private(&path, &json)?;
@@ -509,11 +417,6 @@ impl Collector {
         Ok(())
     }
 
-    /// Append and sync `events`, then save the cursors when `save` is
-    /// `Some(sync)`: the events first, the cursors second (section 8.2). A
-    /// crash between the two re-reads from the last saved cursors, and the
-    /// store drops the repeats. A batch inside a read leaves its cursors
-    /// unsynced ([`store::save_cursors`]); the tick's last save syncs.
     fn store_batch(&mut self, events: Vec<Event>, save: Option<bool>) -> Result<()> {
         let at = Instant::now();
         let bytes = self.store.bytes_written;
@@ -536,12 +439,6 @@ impl Collector {
         Ok(())
     }
 
-    /// Poll the inputs of `r` when they changed since its last poll
-    /// (NFR-02: opening every transcript of every record took most of a
-    /// tick), reading at most `limit` observations. `None`: nothing changed,
-    /// so there is nothing new to read. The stamps are taken before the
-    /// poll, so a write during it shows next tick; they are kept only when
-    /// the poll read to the end ([`Polled::more`] is false).
     fn poll(
         &mut self,
         r: &Record,
@@ -549,7 +446,6 @@ impl Collector {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<Option<Polled>, Unreadable> {
-        // "resolve": find the inputs and stamp them.
         let at = Instant::now();
         let located = self.locate(r, sid, now);
         let located = located.inspect_err(|_| {
@@ -557,7 +453,6 @@ impl Collector {
         })?;
         let stamps: Vec<Option<Stamp>> = match &located {
             Located::Files(files) => files.iter().map(|f| stamp(f)).collect(),
-            // SQLite writes to the database or to its write-ahead log.
             Located::OpenCode(db) => vec![stamp(db), wal_stamp(db)],
         };
         let key = (r.agent.clone(), sid.to_string());
@@ -576,12 +471,6 @@ impl Collector {
         Ok(Some(polled))
     }
 
-    /// The inputs of session `sid`, from the places found on earlier ticks
-    /// (NFR-02: a search walks the transcript trees). A found file is kept
-    /// while it is a file. A session with no transcript is searched again
-    /// on every tick while its record is fresh (a new spawn), else after
-    /// [`SEARCH_AGAIN_S`]. Claude's subagent files are listed again when a
-    /// directory of the last listing changed.
     fn locate(&mut self, r: &Record, sid: &str, now: DateTime<Utc>) -> Result<Located, Unreadable> {
         if !matches!(r.agent.as_str(), "claude" | "codex" | "pi" | "prime") {
             return readers::locate(&self.loc, &r.agent, sid);
@@ -591,8 +480,6 @@ impl Collector {
         cached.unwrap_or_else(|| self.search(key, r, sid, now))
     }
 
-    /// What an earlier tick found for `key`, when it still holds: a found
-    /// file that is still a file, or a miss that is too recent to search again.
     fn cached(
         &mut self,
         key: &(String, String),
@@ -611,7 +498,6 @@ impl Collector {
         }
     }
 
-    /// Search the transcript trees for session `sid`, and keep what is found.
     fn search(
         &mut self,
         key: (String, String),
@@ -625,8 +511,6 @@ impl Collector {
         found
     }
 
-    /// Keep `found` for `key`: a transcript, or a miss to search for again
-    /// later. Any other result keeps nothing.
     fn remember(
         &mut self,
         key: (String, String),
@@ -651,22 +535,6 @@ impl Collector {
         }
     }
 
-    /// Keep `cursors.json` small (NFR-02): it is rewritten whole whenever an
-    /// input moves. Returns whether a cursor changed.
-    ///
-    /// - A cursor whose input file is gone is dropped.
-    /// - A cursor whose session has no live record and no record inside the
-    ///   retention window, and whose input has not changed for [`QUIET_H`]
-    ///   hours, is dropped.
-    /// - A cursor whose records are all done, and whose input has not
-    ///   changed for [`QUIET_H`] hours, keeps only its newest
-    ///   [`QUIET_RECENT_IDS`] Claude message ids: the recent ids were most
-    ///   of the file. Claude repeats a line only for the message in flight,
-    ///   so a later line can correct only the newest ids.
-    ///
-    /// An input that grows again is read again: a dropped cursor from the
-    /// start, a tidied one from its offset. The store drops the events
-    /// it already holds (section 8.2).
     fn tidy_cursors(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
         let owners = session_owners(records, oldest);
         let quiet_since = std::time::SystemTime::from(now - Duration::hours(QUIET_H));
@@ -679,8 +547,6 @@ impl Collector {
         changed
     }
 
-    /// Fold signals into `quota.json`, probing when due. A file override
-    /// is read, never written.
     fn update_quota(&mut self, now: DateTime<Utc>, signals: &[QuotaSignal]) -> Result<QuotaView> {
         match &self.quota_env.quota_file {
             Some(p) => {
@@ -691,8 +557,6 @@ impl Collector {
         }
     }
 
-    /// The quota file with `signals` folded in and the probes that are due
-    /// run, written when its content changed.
     fn merged_quota(&mut self, now: DateTime<Utc>, signals: &[QuotaSignal]) -> Result<QuotaView> {
         let path = quota::quota_path(&self.state_root);
         let on_disk = path
@@ -715,7 +579,6 @@ impl Collector {
                 &self.quota_env.temp_root,
             );
         }
-        // NFR-02: write only when the content, all but `written_at`, changed.
         let next = refreshed(&file, now, &self.policy);
         if on_disk.as_ref() != Some(&next) {
             file.write(&self.state_root, now, &self.policy)?;
@@ -726,8 +589,6 @@ impl Collector {
     }
 }
 
-/// The files of a found session: the main one, and for Claude its subagent
-/// files, listed again when a directory of the last listing changed.
 fn cached_files(main: &Path, subagents: &mut Option<Listing>, agent: &str) -> Vec<PathBuf> {
     let mut files = vec![main.to_path_buf()];
     if agent == "claude" {
@@ -739,20 +600,15 @@ fn cached_files(main: &Path, subagents: &mut Option<Listing>, agent: &str) -> Ve
     files
 }
 
-/// What a tick has read so far.
 #[derive(Default)]
 struct TickPass {
-    /// The events not stored yet.
     pending: Vec<Event>,
     signals: Vec<QuotaSignal>,
     unread: Vec<Unread>,
-    /// An input was polled since the last stored batch.
     moved: bool,
 }
 
 impl TickPass {
-    /// Take the observations of record `r`: usage as events, quota signals
-    /// as they are.
     fn absorb(
         &mut self,
         r: &Record,
@@ -768,7 +624,6 @@ impl TickPass {
     }
 }
 
-/// What a tidy did to 1 cursor.
 #[derive(PartialEq)]
 enum Tidy {
     Keep,
@@ -776,9 +631,6 @@ enum Tidy {
     Drop,
 }
 
-/// (agent, session) -> whether every record of it is done: the records in
-/// the window, and every live one (a live record can keep an old
-/// `updated_at`).
 fn session_owners<'r>(records: &[&'r Record], oldest: &str) -> HashMap<(&'r str, &'r str), bool> {
     let mut owners = HashMap::new();
     let owns = |r: &&&Record| r.updated_at.as_str() >= oldest || r.execution_status().is_live();
@@ -792,8 +644,6 @@ fn session_owners<'r>(records: &[&'r Record], oldest: &str) -> HashMap<(&'r str,
     owners
 }
 
-/// Tidy 1 cursor: drop it when its input is gone, or quiet with no owner;
-/// trim its recent ids when it is quiet and every owner is done.
 fn tidy_cursor(
     c: &mut Cursor,
     owners: &HashMap<(&str, &str), bool>,
@@ -809,7 +659,6 @@ fn tidy_cursor(
     }
 }
 
-/// Tidy the cursor of an input quiet for [`QUIET_H`] hours.
 fn tidy_quiet(c: &mut Cursor, owners: &HashMap<(&str, &str), bool>) -> Tidy {
     match owners.get(&(c.agent.as_str(), c.session_id.as_str())) {
         None => Tidy::Drop,
@@ -822,8 +671,6 @@ fn tidy_quiet(c: &mut Cursor, owners: &HashMap<(&str, &str), bool>) -> Tidy {
     }
 }
 
-/// `file` as [`QuotaFile::write`] would write it, each pool's display state
-/// refreshed at `now`, with `written_at` kept as it is.
 fn refreshed(file: &QuotaFile, now: DateTime<Utc>, policy: &Policy) -> QuotaFile {
     let view = QuotaView::new(file.clone(), now, policy.clone(), false);
     QuotaFile {
@@ -832,8 +679,6 @@ fn refreshed(file: &QuotaFile, now: DateTime<Utc>, policy: &Policy) -> QuotaFile
     }
 }
 
-/// The hash of `snapshot`'s compact JSON with `generated_at` empty: 2
-/// snapshots with the same hash differ only in when they were built.
 fn content_hash(snapshot: &Snapshot) -> Result<u64> {
     let content = Snapshot {
         generated_at: String::new(),
@@ -849,10 +694,6 @@ fn bytes_hash(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-/// [`content_hash`] of the compact snapshot file at `path`, from its bytes:
-/// a parse would not give the same floats back to the last bit. `None` when
-/// the file is absent or not compact JSON that starts with `schema` and
-/// `generated_at` (the field order of [`Snapshot`]).
 fn file_hash(path: &Path) -> Option<u64> {
     let bytes = std::fs::read(path).ok()?;
     let head = b",\"generated_at\":\"";
@@ -864,58 +705,36 @@ fn file_hash(path: &Path) -> Option<u64> {
     Some(bytes_hash(&[&bytes[..at], &bytes[end..]].concat()))
 }
 
-/// One ledger file's last good records, and the file's stamp when they
-/// were read.
 struct LedgerSnapshot {
     stamp: Option<Stamp>,
     records: Vec<Record>,
 }
 
-/// A record updated this many minutes ago or less is searched for its
-/// transcript on every tick: a new spawn's transcript appears within seconds.
 const FRESH_MIN: i64 = 10;
 
-/// An input unchanged this many hours has its cursor tidied
-/// (`Collector::tidy_cursors`).
 pub const QUIET_H: i64 = 24;
 
-/// How often a tick tidies the cursors, in minutes (the first tick always).
 pub const TIDY_EVERY_MIN: i64 = 60;
 
-/// How many of its newest Claude message ids a quiet done cursor keeps
-/// (`Collector::tidy_cursors`).
 pub const QUIET_RECENT_IDS: usize = 4;
 
-/// How long an older record with no transcript waits between 2 searches.
 pub const SEARCH_AGAIN_S: i64 = 30;
 
-/// Where one session's input is, as the collector last found it.
 enum Place {
-    /// The main transcript (Claude, Codex, pi, Prime), and Claude's
-    /// subagent files as last listed.
     File {
         main: PathBuf,
         subagents: Option<Listing>,
     },
-    /// None found; search again at `again`.
     Missing {
         why: Unreadable,
         again: DateTime<Utc>,
     },
 }
 
-/// A file or directory as it was: `(length, inode, modification time)`.
 type Stamp = (u64, u64, Option<std::time::SystemTime>);
 
-/// How many new events a tick holds before it stores them (NFR-02): about
-/// 10 MB of events. A first read of a large history goes in batches.
 pub const BATCH: usize = 10_000;
 
-/// The stamp of `db`'s write-ahead log, an empty one stamped as none. The
-/// first `sqlite3 -readonly` read of a WAL database creates an empty
-/// `-wal` on Linux (sqlite 3.40), so the stamp a tick takes before that
-/// read differs from the next tick's although nothing was written. A write
-/// fills the log; a checkpoint that empties it writes the database.
 fn wal_stamp(db: &Path) -> Option<Stamp> {
     let mut wal = db.as_os_str().to_owned();
     wal.push("-wal");
@@ -940,9 +759,6 @@ fn stamp(path: &Path) -> Option<Stamp> {
     ))
 }
 
-/// The `*.jsonl` files under a Claude `<sid>/subagents/` directory, nested
-/// ones included ([`readers::claude_subagent_files`]), with the stamp of
-/// every directory walked: a file added anywhere below changes one of them.
 struct Listing {
     dirs: Vec<(PathBuf, Option<Stamp>)>,
     files: Vec<PathBuf>,
@@ -960,7 +776,6 @@ impl Listing {
     }
 
     fn walk(&mut self, dir: &Path) {
-        // The stamp first: a file added during the walk shows next tick.
         self.dirs.push((dir.to_path_buf(), stamp(dir)));
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -980,7 +795,6 @@ impl Listing {
     }
 }
 
-/// A reader's usage, stamped with the record it belongs to and priced.
 pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String, Price>) -> Event {
     let model = if u.model.is_empty() {
         r.model.clone()
@@ -1002,7 +816,6 @@ pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String
         model,
         effort: u.effort.or_else(|| r.effort.clone()),
         phase: r.phase.map(|p| p.to_string()),
-        // Ledgers written before `plan` existed still name the plan in the task.
         plan: r.plan.clone().or_else(|| super::plan_slug(&r.task)),
         subagent: u.subagent,
         delta: u.delta,
@@ -1014,7 +827,6 @@ pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String
     }
 }
 
-/// [`store::add_unpriced`] on the table: per model, sorted by model.
 fn add_unpriced<'t>(by_model: &mut BTreeMap<&'t str, UnpricedRow>, index: &'t Table, e: &Kept) {
     let model = &*index.names.names[e.model as usize];
     let row = by_model.entry(model).or_insert_with(|| UnpricedRow {
@@ -1033,7 +845,6 @@ fn share(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then(|| part / whole)
 }
 
-/// Build the snapshot from the ledgers and the stored events. Pure.
 pub fn build_snapshot(
     records: &[Record],
     events: &[Event],
@@ -1049,24 +860,14 @@ pub fn build_snapshot(
     build_indexed(&records, &table, quota, unread, now, collector)
 }
 
-/// The rollups of [`WINDOWS`] folded over the table's events: [`add`] each
-/// event in store order, as [`store::rollup`] does, so the costs are the
-/// same to the last bit.
-///
-/// [`add`]: RollupFold::add
 struct RollupFold<'t> {
     index: &'t Table,
-    /// Per name id: whether it is a done record.
     is_done: Vec<bool>,
-    /// The start of each window.
     since: [String; WINDOWS.len()],
-    /// Per window and row: tokens, and whether it has an event.
     row_tokens: Vec<TokenClasses>,
     row_seen: Vec<bool>,
-    /// Per window, group and key: cost and done cost, and the unpriced events.
     costs: Vec<(f64, f64)>,
     unpriced: Vec<u64>,
-    /// Per window: the unpriced events per model.
     unpriced_models: [BTreeMap<&'t str, UnpricedRow>; WINDOWS.len()],
 }
 
@@ -1116,13 +917,11 @@ impl<'t> RollupFold<'t> {
         }
     }
 
-    /// One rollup per window, keyed by its name.
     fn finish(mut self) -> BTreeMap<String, Rollup> {
         let index = self.index;
         let (names, rows) = (index.names.len(), index.rows.len());
         let mut rollups = BTreeMap::new();
         for (w, window) in WINDOWS.iter().enumerate() {
-            // Per group: key -> (tokens, records), from the rows in the window.
             let mut groups: [BTreeMap<u32, (TokenClasses, BTreeSet<u32>)>; 6] = Default::default();
             for (row, r) in index.rows.iter().enumerate() {
                 if !self.row_seen[w * rows + row] {
@@ -1172,9 +971,6 @@ impl<'t> RollupFold<'t> {
     }
 }
 
-/// [`build_snapshot`] from the store's [`Table`]. Each sum adds its events
-/// in store order, as [`store::rollup`] does, so the costs are the same to
-/// the last bit.
 fn build_indexed(
     records: &[&Record],
     index: &Table,
@@ -1215,7 +1011,6 @@ fn build_indexed(
     }
 }
 
-/// Per record: totals, last event, and the last 5 minutes for the rate.
 #[derive(Default)]
 struct Acc<'e> {
     events: u64,
@@ -1228,7 +1023,6 @@ struct Acc<'e> {
 }
 
 impl<'e> Acc<'e> {
-    /// Add `e`; `recent` is the start of the rate window.
     fn add(&mut self, e: &'e Kept, recent: &str) {
         let ts = &*e.ts;
         let cost = e.cost.unwrap_or(0.0);
@@ -1246,7 +1040,6 @@ impl<'e> Acc<'e> {
     }
 }
 
-/// Insights over the 7-day window.
 #[derive(Default)]
 struct WeekTotals {
     total: f64,
@@ -1255,8 +1048,6 @@ struct WeekTotals {
     tokens: TokenClasses,
 }
 
-/// Fold every kept event, in store order, into `fold` and the per-record
-/// totals, and the 7-day totals. `recent` is the start of the rate window.
 fn fold_events<'e>(
     index: &'e Table,
     fold: &mut RollupFold<'e>,
@@ -1290,9 +1081,6 @@ fn fold_events<'e>(
     (per, week)
 }
 
-/// The records that show as live rows: orchestrators first, then by project
-/// and role. A live execution always shows; a finished one while its last
-/// event is recent. A failed one never does: no agent runs for it.
 fn live_rows(
     records: &[&Record],
     index: &Table,
@@ -1324,13 +1112,11 @@ fn live_rows(
     live
 }
 
-/// The totals of record `record_id`, when it has events.
 fn record_acc<'a>(index: &Table, per: &'a [Acc], record_id: &str) -> Option<&'a Acc<'a>> {
     let id = index.names.get(record_id)?;
     Some(&per[id as usize]).filter(|a| a.events > 0)
 }
 
-/// Whether a record with this status shows as a live row.
 fn shows_live(status: &ExecutionStatus, recent_event: bool) -> bool {
     let failed = matches!(
         status,
@@ -1339,7 +1125,6 @@ fn shows_live(status: &ExecutionStatus, recent_event: bool) -> bool {
     !failed && (status.is_live() || recent_event)
 }
 
-/// The live row of record `r`, with its totals `a` when it has events.
 fn live_row(r: &Record, a: Option<&Acc>, idle: bool, assessment: Assessment) -> LiveRow {
     let none = Acc::default();
     let a = a.unwrap_or(&none);
@@ -1369,7 +1154,6 @@ fn live_row(r: &Record, a: Option<&Acc>, idle: bool, assessment: Assessment) -> 
     }
 }
 
-/// The pools with each one's state shown now, and why.
 fn shown_pools(quota: &QuotaView) -> BTreeMap<String, quota::PoolReading> {
     let mut pools = quota.file.pools.clone();
     for (name, reading) in pools.iter_mut() {
@@ -1393,7 +1177,6 @@ mod tests {
         from[rng.below(from.len() as u64) as usize]
     }
 
-    /// Events over 8 days around every window start, some keys missing.
     fn events(rng: &mut SplitMix64) -> Vec<Event> {
         let records = ["r0", "r1", "r2", "r3"];
         let maybe = |rng: &mut SplitMix64, from: &[&str]| {
@@ -1456,9 +1239,6 @@ mod tests {
         build_indexed(&records, index, quota, Vec::new(), now(), info)
     }
 
-    /// NFR-02: a ledger rewritten by rename to the same length, with the
-    /// same modification time, is read again (W16 audit: the cache keyed a
-    /// ledger by length and modification time only).
     #[test]
     fn nfr_02_a_same_length_ledger_rewrite_by_rename_is_read() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1503,9 +1283,6 @@ mod tests {
         assert!(!roles.contains(&"aaaa".to_string()), "{roles:?}");
     }
 
-    /// NFR-02: an empty write-ahead log stamps as no log. On Linux the
-    /// first `sqlite3 -readonly` read creates an empty `-wal`, and a quiet
-    /// tick then saw a change and saved the cursors again.
     #[test]
     fn nfr_02_an_empty_wal_stamps_as_no_wal() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1520,8 +1297,6 @@ mod tests {
         assert!(wal_stamp(&db).is_some());
     }
 
-    /// NFR-02: the fold over the store's table gives what the per-event sums
-    /// give, and a table grown tick by tick gives what a fresh one gives.
     #[test]
     fn nfr_02_indexed_fold_matches_the_event_sums() {
         let records = records();
@@ -1562,9 +1337,6 @@ mod tests {
                 assert_eq!(row.last_event_at, mine.map(|e| e.ts.clone()).max());
             }
 
-            // The store's table, appended in 2 ticks and reopened from the
-            // files, folds as a fresh table over the same events in the same
-            // order. An append files its events by day, oldest file first.
             let tmp = tempfile::tempdir().unwrap();
             let mut store = Store::open(tmp.path(), now(), 35).unwrap();
             let cut = events.len() / 2;
@@ -1584,8 +1356,6 @@ mod tests {
         });
     }
 
-    /// A collector on `state`, with the ledger of [`records`], its ledgers
-    /// read as a tick reads them.
     fn collector_on(state: &Path) -> Collector {
         let home = state.join("home");
         let loc = Locations {
@@ -1603,8 +1373,6 @@ mod tests {
         c
     }
 
-    /// The rollups of `project` the old way: every event file read, the
-    /// project's events kept, folded by [`store::rollup`].
     fn rollups_from_files(state: &Path, project: &str) -> BTreeMap<String, Rollup> {
         let events: Vec<Event> = store::read_all(&super::super::dir(state))
             .into_iter()
@@ -1622,7 +1390,6 @@ mod tests {
             .collect()
     }
 
-    /// Equal JSON, each number within 1e-9 of the other.
     fn near(a: &serde_json::Value, b: &serde_json::Value) -> bool {
         use serde_json::Value;
         match (a, b) {
@@ -1639,12 +1406,6 @@ mod tests {
         }
     }
 
-    /// The screen's project filter: the rollups of 1 project from the
-    /// collector's table equal, per window, those from the event files. A
-    /// collector opened on the files folds the costs it read, to the last
-    /// bit. The collector that stored the events keeps their costs exact;
-    /// serde_json reads some of them back 1 ulp off, so those agree to
-    /// 1e-9 (the tokens and counts exactly).
     #[test]
     fn project_rollups_match_the_rollups_from_the_event_files() {
         property(0x5435_6300_0000_0001, 40, |rng| {
@@ -1662,7 +1423,6 @@ mod tests {
         });
     }
 
-    /// A project with no events has 1 empty rollup per window.
     #[test]
     fn project_rollups_of_a_project_with_no_events_are_empty() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1682,8 +1442,6 @@ mod trf_45_tests {
     use super::*;
     use crate::execution::records::{NewRecord, SessionLedger};
 
-    /// Report 28 amendment: `read_ledgers` and the collector return the
-    /// session records with no JSON ledger on disk.
     #[test]
     fn trf_45_read_ledgers_and_the_collector_read_the_session_records() {
         let tmp = tempfile::tempdir().unwrap();

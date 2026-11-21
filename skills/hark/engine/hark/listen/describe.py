@@ -49,9 +49,6 @@ SHOWN = ("duration", "peak_dbfs", "true_peak_dbtp", "rms_dbfs", "lufs", "lra_lu"
 READING = ((3.0, "clear reading"), (2.5, "plausible reading"), (2.0, "weak reading"))
 
 
-# ---------------------------------------------------------------- measurements and shape
-
-
 def width_text(side_to_mid: float | None) -> str:
     """'mono' when the side is unknown or under -40 dB, else 'side/mid N dB'."""
     if side_to_mid is None or side_to_mid < MONO_DB:
@@ -143,9 +140,6 @@ def shape_words(m: dict, d: float) -> str:
     return f"{text} {env}" if env else text
 
 
-# ---------------------------------------------------------------- tags
-
-
 def character_words(quality: Sequence[dict]) -> list[str]:
     """Up to 2 quality words of terms with z >= 2.5 ('a deep sound' -> 'deep')."""
     out = []
@@ -186,9 +180,6 @@ def audioset_list(model: Any, p: np.ndarray, keep: tuple[int, float] = AUDIOSET_
     k, line = keep
     top = model.top(p, k=k)
     return [{"label": lab, "p": pp} for i, (lab, pp) in enumerate(top) if i == 0 or pp >= line]
-
-
-# ---------------------------------------------------------------- embedding
 
 
 def ast_model() -> Any:
@@ -245,9 +236,6 @@ def window_records(emb: dict, v: voc.Vocab) -> tuple[list[dict], list[dict]]:
     recs = [{"start": round(emb["spans"][i][0], 3), "end": round(emb["spans"][i][1], 3), "top_tag": tops[i],
              "audioset": audioset_list(emb["model"], emb["P"][i], WINDOW_AUDIOSET_KEEP)} for i in picks]
     return recs, tops
-
-
-# ---------------------------------------------------------------- summary
 
 
 def _music_sentence(p_music: float, hints: Sequence[dict]) -> str:
@@ -328,9 +316,6 @@ def build_summary(r: dict, p_music: float, tops: Sequence[dict]) -> str:
     return " ".join(p for p in parts if p)
 
 
-# ---------------------------------------------------------------- describe
-
-
 def _untagged(base: dict, summary: str) -> dict:
     return {**base, "shape": summary, "top_tags": [], "music_hints": [], "tags": {}, "audioset": [],
             "character": [], "summary": summary}
@@ -393,9 +378,6 @@ def describe_text(r: dict) -> str:
         lines.append("audioset: " + ", ".join(f"{a['label']} {a['p']:.2f}" for a in r["audioset"]))
     lines.append("measurements: " + ", ".join(f"{k} {v}" for k, v in r["measurements"].items()))
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------- CLI
 
 
 @report.expected_errors("describe")

@@ -1,26 +1,8 @@
 #!/usr/bin/env bash
-# Every requirement ID defined in docs/specs/*.md must have at least one
-# (tracked files only: an operator's untracked draft must not change the result)
-# test whose name starts with the lowercase ID: TEL-05 -> tel_05_...
-#
-# A row `| XXX-00 | ...` defines its ID only inside a table whose header's
-# second cell is `Requirement` or `Check`; other tables (test mappings) only
-# refer to it. An ID defined twice is an error. When the table has a `Phase`
-# (or `Ph`) column, the ID's phase is that cell's first token (A0..A12,
-# B1..B6); otherwise the ID is legacy and has no phase.
-#
-#   scripts/check-req-coverage.sh                  # every ID (all phases have landed)
-#   scripts/check-req-coverage.sh --through A3     # legacy IDs + phases A0..A3
-#   scripts/check-req-coverage.sh --phase A1,B2    # only IDs of these phases
-#   scripts/check-req-coverage.sh TEL-05 ...       # only these IDs
-#
-# Prints each ID with the tests found, and exits 1 if any ID has none, or if
-# nothing is left to check (a moved or deleted spec must not pass silently).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 order="A0 A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 A11 A12 B1 B2 B3 B4 B5 B6"
 
-# The position of a phase in $order (1-based), or 0 when it is not a phase.
 phase_index() {
   local i=1 p
   for p in $order; do
@@ -33,7 +15,6 @@ phase_index() {
   echo 0
 }
 
-# One line per definition: `ID <tab> phase-or-"-" <tab> file:line`.
 definitions() {
   awk '
     function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
@@ -77,15 +58,12 @@ fi
 # shellcheck disable=SC2086 # one word per path; spec names have no spaces
 defs=$(definitions $specs)
 
-# Reject an ID that is defined more than once.
 dups=$(echo "$defs" | awk -F'\t' 'NF { n[$1]++; at[$1] = at[$1] " " $3 } END { for (id in n) if (n[id] > 1) print "DUPLICATE " id ":" at[id] }' | sort)
 if [ -n "$dups" ]; then
   echo "$dups"
   exit 1
 fi
 
-# Which IDs to check: legacy ones (no phase) if $1 is 1, and those whose
-# phase is in the space-separated list $2.
 select_ids() {
   local want_legacy=$1 phases=$2
   echo "$defs" | while IFS="$(printf '\t')" read -r id phase _; do

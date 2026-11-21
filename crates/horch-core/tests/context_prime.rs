@@ -1,9 +1,3 @@
-//! Prime's fleet agent dir (CTX-05, design `ai_docs/plans/wave2/w1/design.md`
-//! §6.4 Prime rules and §6.9): each launch gets its own agent dir that links
-//! the operator's entries, carries the fleet window in a `models.json` with
-//! only the override, and yields to every value the operator sets. A temp
-//! home with a fake `~/.prime/agent/` tree; no real Prime.
-
 #[path = "common/warm.rs"]
 mod warm;
 
@@ -23,11 +17,8 @@ use serde_json::{json, Value};
 
 const MODEL: &str = "anthropic/claude-opus-5-5";
 const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
-/// The fake credential: it must never appear in a regular file of the
-/// fleet agent dir.
 const TOKEN: &str = "sk-ant-oat-FAKE-TOKEN-u9";
 
-/// A temp home with a fake Prime agent dir, a workdir and a state root.
 struct World {
     tmp: tempfile::TempDir,
     home: PathBuf,
@@ -36,8 +27,6 @@ struct World {
 
 impl World {
     fn new() -> World {
-        // A short path: the daemon socket path of a launch must stay within
-        // 103 bytes, and the default temp dir of macOS is long.
         let tmp = tempfile::Builder::new()
             .prefix("hp")
             .tempdir_in("/tmp")
@@ -51,7 +40,6 @@ impl World {
         w
     }
 
-    /// `~/.prime/agent` with the entries of this Mac (design §2.4).
     fn source(&self) -> PathBuf {
         self.home.join(".prime/agent")
     }
@@ -95,7 +83,6 @@ impl World {
         self.tmp.path().join("state")
     }
 
-    /// A `prime-agent` that exits 0 and prints nothing.
     fn fake_prime(&self) -> PathBuf {
         self.tmp.path().join("prime-agent")
     }
@@ -116,7 +103,6 @@ fn prime_teammate() -> (Roster, Teammate) {
     (roster, t)
 }
 
-/// The decision `run_flow_code` makes before `prepare`.
 fn decide(w: &World, ctx: &RuntimeContext) -> (Teammate, WindowDecision) {
     let (roster, t) = prime_teammate();
     let fleet = roster.fleet_window(&t, MODEL);
@@ -156,7 +142,6 @@ fn is_link(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
-/// Every regular file under `dir`, not following links.
 fn regular_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let kind = entry.file_type().unwrap();
@@ -173,8 +158,6 @@ fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
-
-// ─── CTX-05: Prime ──────────────────────────────────────────────────────────
 
 #[test]
 fn ctx_05_prime_agent_dir_links_and_fleet_models() {
@@ -193,7 +176,6 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     let prepared = prepare(&w, &ctx, &t, &decision);
     let agent = agent_dir(&prepared);
 
-    // <state>/prime/<12 hex>/agent/, beside the daemon's own files.
     assert_eq!(agent.file_name().unwrap(), "agent");
     let launch_dir = agent.parent().unwrap();
     assert_eq!(launch_dir.parent().unwrap(), w.state().join("prime"));
@@ -221,20 +203,16 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     listing.sort();
     eprintln!("agent dir {}:\n  {}", agent.display(), listing.join("\n  "));
 
-    // Every source entry but the 2 generated files is a link to the source.
     for name in ["auth.json", "kernel-venv", "telemetry.json"] {
         let entry = agent.join(name);
         assert!(is_link(&entry), "{name} is not a link");
         assert_eq!(std::fs::read_link(&entry).unwrap(), w.source().join(name));
     }
-    // Step 9 of u9b: Prime's global harness state dir is created empty in
-    // the source and linked, so it persists as it does without horch.
     assert!(w.source().join("harness").is_dir());
     assert_eq!(
         std::fs::read_link(agent.join("harness")).unwrap(),
         w.source().join("harness")
     );
-    // No credential is copied.
     let mut files = Vec::new();
     regular_files(&agent, &mut files);
     for file in &files {
@@ -260,7 +238,6 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     }
     assert!(!w.workdir.join(".prime").exists(), "wrote into the workdir");
 
-    // The built command carries the window (design §6.5 step 3).
     let adapter = HarnessKind::Prime.adapter();
     let mut built = t.clone();
     built.args.extend(prepared.extra_args.iter().cloned());
@@ -281,19 +258,14 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     }
     assert_eq!(adapter.window_in_command(&cmd), Some(200_000));
     assert!(window_in_effect(decision, &built, &cmd).applied);
-    // Dropped, not finished: no daemon runs.
     drop(prepared);
 }
 
-/// The launch dir of a prepared launch: it holds `sessions/`, the pane file
-/// and (when built) `agent/`.
 fn launch_dir(prepared: &Prepared) -> PathBuf {
     let sessions = prepared.sessions_dir.clone().expect("a sessions dir");
     sessions.parent().unwrap().to_path_buf()
 }
 
-/// The daemon flags come first and in this order, with or without a fleet
-/// agent dir.
 fn assert_daemon_flags(prepared: &Prepared) {
     let args = &prepared.extra_args;
     assert_eq!(args.len(), 4, "{args:?}");
@@ -307,9 +279,6 @@ fn assert_daemon_flags(prepared: &Prepared) {
     );
 }
 
-/// The operator has no agent dir: nothing to link, and a login would land in
-/// a dir nobody keeps. Prime runs on its own default dir, and horch creates
-/// nothing in the operator's home. Outside a herdr pane, no pane file.
 #[test]
 fn prime_launch_without_an_operator_agent_dir_builds_none() {
     let w = World::new();
@@ -330,13 +299,9 @@ fn prime_launch_without_an_operator_agent_dir_builds_none() {
     assert!(!w.source().exists(), "the operator's agent dir was created");
     assert!(!launch.join("pane").exists(), "a pane file outside a pane");
     assert_daemon_flags(&prepared);
-    // Dropped, not finished: no daemon runs.
     drop(prepared);
 }
 
-/// An agent dir that cannot be built does not stop the launch: the half-built
-/// dir is removed, no variable points at it, and the pane uses the operator's
-/// own dir. The daemon is reserved all the same.
 #[cfg(unix)]
 #[test]
 fn prime_launch_goes_on_when_the_agent_dir_cannot_be_built() {
@@ -344,9 +309,7 @@ fn prime_launch_goes_on_when_the_agent_dir_cannot_be_built() {
     let w = World::new();
     let ctx = w.ctx(&[]);
     let (t, decision) = decide(&w, &ctx);
-    // The entries of an operator dir that cannot be read cannot be linked.
     std::fs::set_permissions(w.source(), std::fs::Permissions::from_mode(0o000)).unwrap();
-    // Root reads anything; then there is nothing to test.
     let readable = std::fs::read_dir(w.source()).is_ok();
     let prepared = prepare(&w, &ctx, &t, &decision);
     std::fs::set_permissions(w.source(), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -363,13 +326,11 @@ fn prime_launch_goes_on_when_the_agent_dir_cannot_be_built() {
         "the half-built agent dir stayed"
     );
     assert_daemon_flags(&prepared);
-    // Dropped, not finished: no daemon runs.
     drop(prepared);
 }
 
 #[test]
 fn ctx_05_prime_operator_override_wins() {
-    // The operator's own window for this model.
     let w = World::new();
     let models = w.source().join("models.json");
     write(
@@ -389,7 +350,6 @@ fn ctx_05_prime_operator_override_wins() {
         models
     );
 
-    // Finding 10: a provider the operator defines at all is the operator's.
     let w = World::new();
     let models = w.source().join("models.json");
     write(
@@ -413,8 +373,6 @@ fn ctx_05_prime_operator_override_wins() {
         "the pane keeps the proxy"
     );
 
-    // The operator's own autoRefine is kept: no fleet key to add, so the
-    // operator's file is linked, not copied (S6).
     let w = World::new();
     let operator = w.source().join("settings.json");
     write(
@@ -429,7 +387,6 @@ fn ctx_05_prime_operator_override_wins() {
         operator
     );
 
-    // Project compaction settings: the trigger is the operator's, unknown.
     let w = World::new();
     let project = w.workdir.join(".prime/agent/settings.json");
     write(
@@ -449,8 +406,6 @@ fn ctx_05_prime_operator_override_wins() {
     );
     let agent = agent_dir(&prepare(&w, &ctx, &t, &decision));
     assert!(is_link(&agent.join("models.json")));
-    // The project file sets autoRefine, so the default yields to it and
-    // the operator's file is linked.
     assert!(is_link(&agent.join("settings.json")));
     assert_eq!(
         std::fs::read_dir(w.workdir.join(".prime/agent"))
@@ -479,9 +434,6 @@ fn ctx_05_prime_inherited_agent_dir_is_the_source() {
     }
 }
 
-/// Review finding 12 with Prime: the launch reads the window back after the
-/// environment `prepare` set is on the command, so the record says applied.
-/// Before the fix the read-back ran first and recorded `applied: false`.
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_launch_records_the_applied_window() {
@@ -490,7 +442,6 @@ fn ctx_05_prime_launch_records_the_applied_window() {
     assert!(warm.status.success());
     let ctx = w.ctx(&[]);
     let (roster, mut t) = prime_teammate();
-    // No skills: a resume checks them against the record, which has none.
     t.phase = None;
     t.skills.clear();
     t.available_skills.clear();
@@ -504,7 +455,6 @@ fn ctx_05_prime_launch_records_the_applied_window() {
         .unwrap();
     let mailbox = Mailbox::under(w.tmp.path().join("mail"), "ws");
     let workdir = w.workdir.to_string_lossy().into_owned();
-    // A resume: no discovery thread to wait for.
     let session = SessionMode::Resume(SessionId::new("/s/old.jsonl").unwrap());
     launch::run_flow(
         &ctx,
@@ -531,8 +481,6 @@ fn ctx_05_prime_launch_records_the_applied_window() {
     assert!(recorded.applied, "{recorded:?}");
 }
 
-/// Review S2 and S10: a teammate's own agent dir is the source, `~/`
-/// expanded; a provider defined there is the operator's.
 #[test]
 fn ctx_05_prime_teammate_agent_dir_is_the_source() {
     let w = World::new();
@@ -564,8 +512,6 @@ fn ctx_05_prime_teammate_agent_dir_is_the_source() {
     }
 }
 
-/// An inherited agent dir inside `<state_root>/prime/` is another launch's
-/// (a pane started from a Prime pane): it is ignored.
 #[test]
 fn ctx_05_prime_inherited_launch_dir_is_ignored() {
     let w = World::new();
@@ -581,8 +527,6 @@ fn ctx_05_prime_inherited_launch_dir_is_ignored() {
     );
 }
 
-/// Review S3 and S4: lock dirs and temp files are not linked; `auth.json`
-/// is always a link, a dangling one when the operator has none.
 #[test]
 fn ctx_05_prime_transient_entries_and_missing_auth() {
     let w = World::new();
@@ -615,7 +559,6 @@ fn ctx_05_prime_transient_entries_and_missing_auth() {
     );
 }
 
-/// Review S6: the settings copy drops the legacy `apiKeys`.
 #[test]
 fn ctx_05_prime_settings_copy_drops_api_keys() {
     let w = World::new();
@@ -638,8 +581,6 @@ fn ctx_05_prime_settings_copy_drops_api_keys() {
     assert!(!text.contains("FAKE-LEGACY-KEY"));
 }
 
-/// Review S7: a FIFO in the repository's Prime settings neither blocks the
-/// decision nor counts as absent.
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_project_fifo_does_not_block() {
@@ -673,14 +614,10 @@ fn ctx_05_prime_project_fifo_does_not_block() {
     );
 }
 
-/// Review S5 and outside-scope 3: the launch dir and `sessions/` are owner
-/// only; `finish` removes `agent/` and keeps `sessions/` and the operator's
-/// `auth.json`.
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_finish_removes_the_agent_dir() {
     let w = World::new();
-    // `status --json` names no daemon.
     let warm = warm::write_warmed(&w.fake_prime(), "#!/bin/sh\necho '[]'\n", &["warm"]);
     assert!(warm.status.success());
     let ctx = w.ctx(&[]);
@@ -698,8 +635,6 @@ fn ctx_05_prime_finish_removes_the_agent_dir() {
     assert!(w.source().join("auth.json").is_file());
 }
 
-/// Review S5: a launch removes the agent dirs of earlier launches that are
-/// over (no socket, no live launcher), and leaves the others.
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_launch_sweeps_old_agent_dirs() {
@@ -753,21 +688,12 @@ fn ctx_05_prime_launch_sweeps_old_agent_dirs() {
     assert!(w.source().join("auth.json").is_file());
 }
 
-// ─── Prime 0.10.0: daemon stop, sweep and herdr release ────────────────────
-
-/// The scan dir name of Prime 0.10.0 under `$TMPDIR`.
 #[cfg(unix)]
 fn scan_dir() -> String {
     // SAFETY: getuid has no preconditions and cannot fail.
     format!("prime-agent-{}", unsafe { libc::getuid() })
 }
 
-/// A `prime-agent` like the Rust build, as a shell script. Each call
-/// appends `<command> <TMPDIR>` to `<tmp>/prime.log`. `shutdown` names
-/// `$TMPDIR/prime-agent-<uid>/d.sock` as stopped when that socket exists,
-/// unless `<tmp>/shutdown-fails` exists. `status` prints
-/// `<tmp>/status.json`, else `[]`. It runs once before it is given back,
-/// so the first-exec scan of macOS does not fall inside a test's wait.
 #[cfg(unix)]
 fn fake_rust_prime(w: &World) -> PathBuf {
     let dir = w.tmp.path();
@@ -803,9 +729,6 @@ fn prime_calls(w: &World) -> Vec<String> {
         .collect()
 }
 
-/// An earlier launch dir: `agent/`, `sessions/`, the launcher file, and a
-/// socket in the Rust layout (`new_layout`) or the 0.9.4 layout. `listen`
-/// binds the socket, so a process listens on it.
 #[cfg(unix)]
 fn old_launch(
     w: &World,
@@ -834,7 +757,6 @@ fn old_launch(
     (dir, socket, listener)
 }
 
-/// The pid of a process that has ended, for a launcher file.
 #[cfg(unix)]
 fn dead_launcher() -> String {
     let mut gone = std::process::Command::new("true").spawn().unwrap();
@@ -843,8 +765,6 @@ fn dead_launcher() -> String {
     format!("{pid} \n")
 }
 
-/// The flags Prime 0.10.0 refuses ("Unknown option", exit 1) are not in a
-/// launch: no `-e` status hook, and the pane file names the pane.
 #[cfg(unix)]
 #[test]
 fn arc_10_prime_launch_in_a_herdr_pane_has_no_refused_flag() {
@@ -887,14 +807,10 @@ fn arc_10_prime_launch_in_a_herdr_pane_has_no_refused_flag() {
     );
 }
 
-/// A `herdr` that appends each argv to `<tmp>/herdr.log`, 1 line per call.
-/// Like herdr 0.8.2, it fails when the pane id does not follow the
-/// subcommand (`pane release-agent --source x ...` exits 2).
 #[cfg(unix)]
 fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
     let bin = w.tmp.path().join("herdr");
     let log = w.tmp.path().join("herdr.log");
-    // The first run of a new executable on macOS can be slow.
     let _ = warm::write_warmed(
         &bin,
         &format!(
@@ -907,9 +823,6 @@ fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
     (bin, log)
 }
 
-/// On finish in a herdr pane, horch releases the pane's agent once, with
-/// the source and agent label of Prime's built-in reporter: a clean-up
-/// after a crash.
 #[cfg(unix)]
 #[test]
 fn x2_prime_finish_releases_the_built_in_reporters_agent() {
@@ -937,18 +850,6 @@ fn x2_prime_finish_releases_the_built_in_reporters_agent() {
     assert_eq!(horch_core::harness::prime::STATUS_SOURCE, "herdr:pi");
 }
 
-/// The sweep handles both layouts, and stops only a daemon that its launch
-/// started:
-/// - Rust layout, nobody listens: files removed, no Prime call.
-/// - 0.9.4 layout, nobody listens: files removed.
-/// - 0.9.4 layout, a process listens: the Rust `prime-agent` cannot name
-///   it, so it is left running with its files.
-/// - Rust layout, the scoped stop fails, `status` names a process started
-///   after the launcher file: SIGTERM.
-/// - Rust layout, `status` names a process started before the launcher
-///   file: left running.
-///
-/// Every child sleeps 1 h, so none ends by itself during the test.
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_sweep_handles_both_layouts() {
@@ -960,7 +861,6 @@ fn ctx_05_prime_sweep_handles_both_layouts() {
     let (old_idle, old_idle_sock, _) = old_launch(&w, "prime-1-old", &dead, false, false);
     let (old_live, old_live_sock, _old_listener) =
         old_launch(&w, "prime-2-live", &dead, false, true);
-    // Started before its launch's launcher file: not that launch's daemon.
     let mut foreign = std::process::Command::new("sleep")
         .arg("3600")
         .spawn()
@@ -972,8 +872,6 @@ fn ctx_05_prime_sweep_handles_both_layouts() {
         .arg("3600")
         .spawn()
         .unwrap();
-    // The scoped stop fails, so the `status` fallback runs. The fake's
-    // `status` ignores TMPDIR; horch matches the socket path.
     write(&w.tmp.path().join("shutdown-fails"), "");
     write(
         &w.tmp.path().join("status.json"),
@@ -1018,8 +916,6 @@ fn ctx_05_prime_sweep_handles_both_layouts() {
     foreign.kill().unwrap();
     foreign.wait().unwrap();
 
-    // Only the launches with a listening socket got a Prime call, each
-    // scoped by its own launch dir.
     let calls = prime_calls(&w);
     let scoped = |dir: &Path, cmd: &str| format!("{cmd} {}/", dir.display());
     for dir in [&new_idle, &old_idle] {
@@ -1036,11 +932,6 @@ fn ctx_05_prime_sweep_handles_both_layouts() {
     }
 }
 
-/// `horch done` closes the pane, and herdr kills the pane's processes
-/// within about 1 s, often before the launcher stops the daemon (live check
-/// X2: prime-4's daemon ran on). So `horch done` stops the daemon of each
-/// launch that ran in its pane, and only those: the scoped stop runs with
-/// that launch's `TMPDIR` only.
 #[cfg(unix)]
 #[test]
 fn ctx_05_prime_finish_pane_stops_only_that_panes_daemon() {
@@ -1068,17 +959,9 @@ fn ctx_05_prime_finish_pane_stops_only_that_panes_daemon() {
     assert!(other_sock.exists());
     assert!(other.join("agent").is_dir());
 
-    // No Prime launch dir at all: nothing to do, no error.
     horch_core::harness::prime::finish_pane(&w.tmp.path().join("none"), &w.fake_prime(), "w3F:p42");
 }
 
-/// Live check (docs/live-checks/harnesses.md, "Prime adapter, Rust build"):
-/// run inside a scratch herdr pane, with the real `prime-agent` and
-/// `HORCH_STATE_DIR` set to a short scratch dir. It runs the Prime adapter's
-/// `prepare`, the command horch builds without the `--` and the prompt (no
-/// model turn), the TUI in this terminal until the operator quits it, and
-/// then `finish`. It prints the argv and the scoped `status` before and
-/// after the finish. Never run by the gate.
 #[cfg(unix)]
 #[test]
 #[ignore = "live: needs the real prime-agent in a scratch herdr pane"]

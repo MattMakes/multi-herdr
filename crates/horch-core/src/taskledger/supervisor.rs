@@ -1,7 +1,3 @@
-//! What `horch worker` (the supervisor) writes to the task ledger
-//! (section 4.6, #34): its own PID, its agent's PID, a checkin every
-//! `heartbeat_every_s`, the session and transcript once known, and the end.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,8 +13,6 @@ use super::tasks;
 use super::util::{self, About};
 use super::workers;
 
-/// Record that the supervisor runs: this process's PID and start time, and
-/// the role spawn gave it.
 pub fn started(db: &Path, worker_id: &str, role: &str) -> Result<()> {
     let pid = std::process::id();
     let mut s = Store::open(db)?;
@@ -32,17 +26,13 @@ pub fn started(db: &Path, worker_id: &str, role: &str) -> Result<()> {
     })
 }
 
-/// Record the agent child's PID and start time.
 pub fn agent_started(db: &Path, worker_id: &str, pid: u32) -> Result<()> {
     let mut s = Store::open(db)?;
     s.immediate(|tx| workers::agent_started(tx, worker_id, pid, crate::procid::start_time(pid)))
 }
 
-/// Looks up the session id and transcript path while the agent runs.
 pub type SessionLookup = Box<dyn Fn() -> (Option<String>, Option<String>) + Send>;
 
-/// The checkin thread. Dropping it, or [`Checkins::stop`], ends it within 1
-/// tick.
 pub struct Checkins {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -67,7 +57,6 @@ impl Drop for Checkins {
     }
 }
 
-/// The checkin interval of the worker's run.
 pub fn interval(db: &Path, worker_id: &str) -> Duration {
     let secs = Store::open(db)
         .ok()
@@ -86,8 +75,6 @@ pub fn interval(db: &Path, worker_id: &str) -> Duration {
     Duration::from_secs(secs as u64)
 }
 
-/// Write `last_checkin_at = now` every `every` until stopped, and fill the
-/// session id and transcript path as soon as `lookup` knows them.
 pub fn start_checkins(
     db: PathBuf,
     worker_id: String,
@@ -123,28 +110,17 @@ pub fn start_checkins(
     }
 }
 
-/// The longest time 1 repeated checkin error stays silent.
 pub const REPEAT_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// What the checkin thread printed, so 1 error that repeats every checkin
-/// does not fill the pane (TRF-49).
 #[derive(Debug, Default)]
 pub struct CheckinLog {
-    /// The text of the last failure, while checkins fail.
     last_error: Option<String>,
-    /// How many checkins in a row failed with `last_error`.
     repeats: u64,
-    /// How many checkins in a row failed, with any text.
     failures: u64,
-    /// When the last failure line was printed.
     printed_at: Option<Instant>,
 }
 
 impl CheckinLog {
-    /// The line to print for 1 checkin `result` at `now`, if any. A failure
-    /// prints the first time and when its text changes. The same failure
-    /// prints again only after [`REPEAT_EVERY`], with its repeat count. The
-    /// first success after failures prints 1 recovery line.
     pub fn record(&mut self, result: Result<(), String>, now: Instant) -> Option<String> {
         let text = match result {
             Ok(()) => {
@@ -200,19 +176,13 @@ fn beat(
     Ok(())
 }
 
-/// How a worker's agent ended, for the supervisor's report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
-    /// It ran `horch ledger done`, or held no task.
     Clean,
-    /// It held a task without finishing it: the task is queued again.
     Requeued { task: String, persona: String },
-    /// It held a task that has now used up its attempts: the task is held
-    /// for the operator (#168).
     Held { task: String },
 }
 
-/// Settle the worker row after the agent exited with `code`.
 pub fn agent_exited(db: &Path, worker_id: &str, code: Option<i32>) -> Result<Ended> {
     let mut s = Store::open(db)?;
     s.immediate(|tx| settle(tx, worker_id, code))
@@ -234,8 +204,6 @@ fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> Resu
     Ok(Ended::Clean)
 }
 
-/// End the worker per [`exit_rule`], or only record the exit code. Returns
-/// the reason text of the exit event.
 fn record_exit(
     tx: &rusqlite::Connection,
     worker_id: &str,
@@ -252,7 +220,6 @@ fn record_exit(
     Ok(reason)
 }
 
-/// How the agent ended, as the exit event words it.
 fn exit_text(code: Option<i32>) -> String {
     match code {
         Some(c) => format!("agent exited with code {c}"),
@@ -260,8 +227,6 @@ fn exit_text(code: Option<i32>) -> String {
     }
 }
 
-/// The end status and reason suffix of a worker whose agent exited in
-/// `status`; `None` keeps the row and only records the exit code.
 fn exit_rule(status: WorkerStatus) -> Option<(WorkerStatus, &'static str)> {
     match status {
         WorkerStatus::Working => Some((WorkerStatus::Incomplete, " before horch ledger done")),
@@ -271,7 +236,6 @@ fn exit_rule(status: WorkerStatus) -> Option<(WorkerStatus, &'static str)> {
     }
 }
 
-/// Queue the task of a worker that exited while working, or hold it.
 fn requeue_after_exit(
     tx: &rusqlite::Connection,
     w: &workers::Worker,
@@ -289,7 +253,6 @@ fn requeue_after_exit(
     })
 }
 
-/// Record that the worker closed its own pane.
 pub fn closed_own_pane(db: &Path, worker_id: &str, pane: &str, outcome: &Result<()>) -> Result<()> {
     let s = Store::open(db)?;
     s.conn().execute(
@@ -329,7 +292,6 @@ mod tests {
         worker: String,
     }
 
-    /// A worker in `status` (`working` holds a claimed task).
     fn fixture(status: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("l.sqlite3");
@@ -463,7 +425,6 @@ mod tests {
             log.record(err(), t0).as_deref(),
             Some("horch worker: checkin failed: the task ledger is schema version 8")
         );
-        // 1 checkin each 30 s for 10 min: silent until the 10 min mark.
         let mut printed = Vec::new();
         for i in 1..=40u64 {
             if let Some(line) = log.record(err(), t0 + Duration::from_secs(30 * i)) {
@@ -503,7 +464,6 @@ mod tests {
         assert!(log
             .record(Err("b".into()), t0 + Duration::from_secs(3))
             .is_none());
-        // Back to the first text: it changed again, so it prints.
         assert_eq!(
             log.record(Err("a".into()), t0 + Duration::from_secs(4))
                 .as_deref(),
@@ -524,7 +484,6 @@ mod tests {
             Some("horch worker: checkin recovered after 3 failures")
         );
         assert_eq!(log.record(Ok(()), t0 + Duration::from_secs(6)), None);
-        // A new failure after the recovery prints again.
         assert_eq!(
             log.record(Err("a".into()), t0 + Duration::from_secs(7))
                 .as_deref(),

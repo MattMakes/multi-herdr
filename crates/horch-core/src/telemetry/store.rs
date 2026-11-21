@@ -1,10 +1,3 @@
-//! The event store: `events-YYYY-MM-DD.jsonl`, append-only (section 8.2).
-//!
-//! Crash safety comes from order, not transactions: events are appended and
-//! synced first, and only then is the cursor file replaced. A crash between
-//! the two re-reads some input on restart, and the dedupe index drops every
-//! event whose key `(agent, session_id, event_id)` is already stored.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -19,31 +12,18 @@ use crate::usage::{self, Price};
 
 pub type Key = (String, String, String);
 
-/// The events on disk, with what the snapshot folds of each one in memory
-/// (`Table`) and the index of keys already stored.
-///
-/// The collector keeps every event of the retention window for as long as it
-/// runs (NFR-02 RSS), so it keeps no [`Event`]: a few interned ids, the time,
-/// the tokens and the cost. The full events stay on disk.
 #[derive(Debug, Default)]
 pub struct Store {
     dir: PathBuf,
-    /// `(agent, session, event id)`, the agent and session interned.
     keys: HashSet<(u32, u32, Box<str>)>,
     sessions: Interner,
     pub(crate) table: Table,
-    /// The bytes appended to the event files since open (NFR-02 timing).
     pub bytes_written: u64,
-    /// The retention window in days, and the oldest event file date it
-    /// keeps (`YYYY-MM-DD`). [`Store::append`] drops older events.
     retention_days: i64,
     oldest: String,
-    /// The events [`Store::append`] dropped as older than the retention
-    /// window: a transcript read again from the start (section 8.2).
     pub expired_dropped: u64,
 }
 
-/// Strings stored once, each with a dense id.
 #[derive(Debug, Default)]
 pub(crate) struct Interner {
     pub names: Vec<Box<str>>,
@@ -70,34 +50,27 @@ impl Interner {
     }
 }
 
-/// A record and its keys in [`GROUPS`] order, as name ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Row {
     pub record: u32,
     pub groups: [u32; 6],
 }
 
-/// What the snapshot folds of one stored event.
 #[derive(Debug, Clone)]
 pub(crate) struct Kept {
     pub ts: Box<str>,
     pub tokens: TokenClasses,
     pub cost: Option<f64>,
-    /// Into [`Table::rows`].
     pub row: u32,
-    /// The model, a name id: the unpriced events are listed per model.
     pub model: u32,
     pub idle: bool,
 }
 
-/// The stored events in store order, interned for the snapshot fold
-/// (NFR-02): each event's record and 6 group keys become 1 shared [`Row`].
 #[derive(Debug, Default)]
 pub(crate) struct Table {
     pub kept: Vec<Kept>,
     pub rows: Vec<Row>,
     row_ids: HashMap<Row, u32>,
-    /// The record ids, group keys and models.
     pub names: Interner,
 }
 
@@ -131,8 +104,6 @@ impl Table {
     }
 }
 
-/// Create (or truncate) a file readable by its owner only (section 15), and
-/// sync it when `sync`.
 fn write_private(path: &Path, bytes: &[u8], sync: bool) -> std::io::Result<()> {
     let mut f = private_options()
         .write(true)
@@ -146,7 +117,6 @@ fn write_private(path: &Path, bytes: &[u8], sync: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Replace `path` atomically: write a private temp file, then rename.
 pub(crate) fn replace_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     replace_private_with(path, bytes, true)
 }
@@ -168,26 +138,22 @@ fn private_options() -> std::fs::OpenOptions {
     o
 }
 
-/// The event file an event belongs in: the UTC date of its timestamp.
 fn file_for(dir: &Path, ts: &str) -> PathBuf {
     dir.join(format!("events-{}.jsonl", file_date(ts)))
 }
 
-/// The date part of an event file name: the date of `ts`, or `undated`.
 fn file_date(ts: &str) -> &str {
     ts.get(..10)
         .filter(|d| d.as_bytes().get(4) == Some(&b'-'))
         .unwrap_or("undated")
 }
 
-/// The oldest event file date the retention window keeps at `now`.
 fn oldest_date(now: DateTime<Utc>, retention_days: i64) -> String {
     (now - Duration::days(retention_days))
         .format("%Y-%m-%d")
         .to_string()
 }
 
-/// Event files in `dir`, oldest first, with their date.
 fn event_files(dir: &Path) -> Vec<(String, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -207,8 +173,6 @@ fn event_files(dir: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// The event files in `dir` the retention window keeps, oldest first. The
-/// files dated before `oldest` are deleted; an undated one stays.
 fn prune_event_files(dir: &Path, oldest: &str) -> Vec<(String, PathBuf)> {
     let mut files = event_files(dir);
     files.retain(|(date, path)| {
@@ -222,8 +186,6 @@ fn prune_event_files(dir: &Path, oldest: &str) -> Vec<(String, PathBuf)> {
 }
 
 impl Store {
-    /// Open the store in `dir`, deleting files older than the retention
-    /// window and loading the rest (keys and events).
     pub fn open(dir: &Path, now: DateTime<Utc>, retention_days: i64) -> Result<Store> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let oldest = oldest_date(now, retention_days);
@@ -235,10 +197,6 @@ impl Store {
         };
         let prices = usage::builtin_prices();
         let files = prune_event_files(dir, &oldest);
-        // NFR-02 peak RSS: size the table and the key index once, from the
-        // line count, with room for the events of the next hours. Grown by
-        // doubling, they left each old block in the allocator's cache of
-        // freed large blocks, still resident.
         let lines: usize = files.iter().map(|(_, path)| count_lines(path)).sum();
         store.reserve(lines + lines / 8);
         for (_, path) in &files {
@@ -255,20 +213,15 @@ impl Store {
         &self.dir
     }
 
-    /// Move the retention window to `now`: [`Store::append`] drops the
-    /// events older than it. The files already stored stay until the next
-    /// open.
     pub fn advance(&mut self, now: DateTime<Utc>) {
         self.oldest = oldest_date(now, self.retention_days);
     }
 
-    /// Room for `n` events in the key index and the table.
     fn reserve(&mut self, n: usize) {
         self.keys.reserve(n);
         self.table.kept.reserve_exact(n);
     }
 
-    /// How many events the store holds.
     pub fn len(&self) -> usize {
         self.table.kept.len()
     }
@@ -286,14 +239,11 @@ impl Store {
         self.keys.contains(&(agent, session, key.2.as_str().into()))
     }
 
-    /// Whether an event at `ts` is older than the retention window: its
-    /// file date, as [`Store::open`] keeps files. An undated event is kept.
     fn expired(&self, ts: &str) -> bool {
         let date = file_date(ts);
         date != "undated" && date < self.oldest.as_str()
     }
 
-    /// Record `e`'s key; false when it is already stored.
     fn insert_key(&mut self, e: &Event) -> bool {
         let agent = self.table.names.id(&e.agent);
         let session = self.sessions.id(&e.session_id);
@@ -301,9 +251,6 @@ impl Store {
             .insert((agent, session, e.event_id.as_str().into()))
     }
 
-    /// Append the events whose keys are new, and sync. Returns how many were
-    /// appended. An event older than the retention window is dropped: its
-    /// key may be gone with its file, and the store never takes it back.
     pub fn append(&mut self, events: Vec<Event>) -> Result<usize> {
         let mut n = 0;
         for (path, batch) in self.group_new(events) {
@@ -316,8 +263,6 @@ impl Store {
         Ok(n)
     }
 
-    /// The events whose keys are new, grouped by file; an expired event is
-    /// counted in `expired_dropped` and left out.
     fn group_new(&mut self, events: Vec<Event>) -> BTreeMap<PathBuf, Vec<Event>> {
         let (expired, live): (Vec<Event>, Vec<Event>) =
             events.into_iter().partition(|e| self.expired(&e.ts));
@@ -334,8 +279,6 @@ impl Store {
     }
 }
 
-/// Write one file's batch, one line each, and sync. Returns the bytes
-/// written.
 fn write_batch(path: &Path, batch: &[Event]) -> Result<u64> {
     let text = batch
         .iter()
@@ -351,21 +294,16 @@ fn write_batch(path: &Path, batch: &[Event]) -> Result<u64> {
     Ok(text.len() as u64)
 }
 
-/// Every event in one file, an event stored without a cost priced from
-/// `prices` now ([`Event::price_if_unset`]). A line that does not parse (a
-/// torn last line after a crash mid-append) is skipped.
 pub(crate) fn read_file(path: &Path, prices: &BTreeMap<String, Price>) -> Vec<Event> {
     let mut out = Vec::new();
     for_each_event(path, prices, |e| out.push(e));
     out
 }
 
-/// How many lines `path` holds (its `\n` bytes), 0 when it does not open.
 fn count_lines(path: &Path) -> usize {
     std::fs::File::open(path).map_or(0, count_newlines)
 }
 
-/// The `\n` bytes `file` holds; a read error ends the count.
 fn count_newlines(file: std::fs::File) -> usize {
     use std::io::Read;
     std::io::BufReader::with_capacity(64 << 10, file)
@@ -375,7 +313,6 @@ fn count_newlines(file: std::fs::File) -> usize {
         .count()
 }
 
-/// [`read_file`], one event at a time: the file is never in memory whole.
 fn for_each_event(path: &Path, prices: &BTreeMap<String, Price>, mut f: impl FnMut(Event)) {
     let Ok(file) = std::fs::File::open(path) else {
         return;
@@ -391,9 +328,6 @@ fn for_each_event(path: &Path, prices: &BTreeMap<String, Price>, mut f: impl FnM
     }
 }
 
-/// Every event in `dir`, deduplicated, without opening a [`Store`] (the
-/// readers of the files: `horch usage` with a live collector). Priced at
-/// read time from the built-in table, as [`Store::open`] does.
 pub fn read_all(dir: &Path) -> Vec<Event> {
     let prices = usage::builtin_prices();
     let mut keys = HashSet::new();
@@ -408,14 +342,10 @@ pub fn read_all(dir: &Path) -> Vec<Event> {
     out
 }
 
-// ─── cursors ────────────────────────────────────────────────────────────────
-
 pub(crate) fn cursors_path(dir: &Path) -> PathBuf {
     dir.join("cursors.json")
 }
 
-/// The saved cursors. A cursor saved before it named its agent and session
-/// gets them from its key (`Cursor::fill_from_key`).
 pub fn load_cursors(dir: &Path) -> Cursors {
     let mut cursors: Cursors = std::fs::read_to_string(cursors_path(dir))
         .ok()
@@ -429,11 +359,6 @@ pub fn load_cursors(dir: &Path) -> Cursors {
     cursors
 }
 
-/// Replace the cursor file. `sync: false` leaves the new file in the page
-/// cache. That is safe after the events are synced: a power loss can only
-/// keep the old cursors, or a torn file that loads as none, and both re-read
-/// input the store already holds, whose repeats it drops (section 8.2).
-/// Returns the bytes written.
 pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors, sync: bool) -> Result<usize> {
     let json = serde_json::to_vec(cursors)?;
     replace_private_with(&cursors_path(dir), &json, sync)
@@ -441,29 +366,19 @@ pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors, sync: bool) -> Result<
     Ok(json.len())
 }
 
-// ─── rollups ────────────────────────────────────────────────────────────────
-
-/// One row of a rollup (section 9).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RollupRow {
     pub key: String,
     pub tokens: TokenClasses,
     pub cost_usd: f64,
-    /// Distinct records with events in the window.
     pub records: u64,
-    /// Of those, how many are `done` now.
     pub done: u64,
     pub cache_hit: Option<f64>,
-    /// Cost of the done records divided by their count.
     pub cost_per_done: Option<f64>,
-    /// Events with no price (an unknown model): their tokens are in
-    /// `tokens`, their cost is not in `cost_usd`.
     #[serde(default)]
     pub unpriced_events: u64,
 }
 
-/// The events of one model the price table does not know (TEL-10: listed,
-/// never counted as $0).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnpricedRow {
     pub model: String,
@@ -471,7 +386,6 @@ pub struct UnpricedRow {
     pub tokens: TokenClasses,
 }
 
-/// The unpriced events of `events`, one row per model, sorted by model.
 pub fn unpriced<'a>(events: impl Iterator<Item = &'a Event>) -> Vec<UnpricedRow> {
     let mut by_model: BTreeMap<&str, UnpricedRow> = BTreeMap::new();
     for e in events.filter(|e| e.cost_usd.is_none()) {
@@ -491,7 +405,6 @@ pub(crate) fn add_unpriced<'a>(by_model: &mut BTreeMap<&'a str, UnpricedRow>, e:
     row.tokens.add(&e.tokens);
 }
 
-/// The six groupings of one window.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rollup {
     pub by_teammate: Vec<RollupRow>,
@@ -500,7 +413,6 @@ pub struct Rollup {
     pub by_project: Vec<RollupRow>,
     pub by_plan: Vec<RollupRow>,
     pub by_kind: Vec<RollupRow>,
-    /// The window's unpriced events, per model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unpriced: Vec<UnpricedRow>,
 }
@@ -519,10 +431,8 @@ impl Rollup {
     }
 }
 
-/// The groupings `horch usage --by` and the screen's `g` key cycle through.
 pub const GROUPS: [&str; 6] = ["teammate", "phase", "agent", "project", "plan", "kind"];
 
-/// The group key of an event.
 pub(crate) fn group_key<'a>(e: &'a Event, group: &str) -> &'a str {
     match group {
         "teammate" => &e.teammate,
@@ -535,22 +445,16 @@ pub(crate) fn group_key<'a>(e: &'a Event, group: &str) -> &'a str {
     }
 }
 
-/// One group's sums, before it becomes a row.
 #[derive(Debug, Default)]
 pub(crate) struct GroupSums {
     pub tokens: TokenClasses,
     pub cost: f64,
-    /// Distinct records with events in the window.
     pub records: u64,
-    /// Of those, how many are done now.
     pub done: u64,
-    /// The cost of the done records' events.
     pub done_cost: f64,
-    /// Events with no price.
     pub unpriced_events: u64,
 }
 
-/// The rows of one grouping, sorted by cost, highest first.
 pub(crate) fn rows_from(groups: impl IntoIterator<Item = (String, GroupSums)>) -> Vec<RollupRow> {
     let mut rows: Vec<RollupRow> = groups
         .into_iter()
@@ -574,8 +478,6 @@ pub(crate) fn rows_from(groups: impl IntoIterator<Item = (String, GroupSums)>) -
     rows
 }
 
-/// Group `events` by `group`, rows sorted by cost, highest first.
-/// `done` names the records whose status is `done`.
 pub fn rollup_rows<'a>(
     events: impl Iterator<Item = &'a Event>,
     group: &str,
@@ -593,7 +495,6 @@ pub fn rollup_rows<'a>(
     for e in events {
         let a = acc.entry(group_key(e, group)).or_default();
         a.tokens.add(&e.tokens);
-        // An unpriced event adds its tokens and is counted; it adds no $0.
         a.unpriced += u64::from(e.cost_usd.is_none());
         let cost = e.cost_usd.unwrap_or(0.0);
         a.cost += cost;
@@ -615,7 +516,6 @@ pub fn rollup_rows<'a>(
     }))
 }
 
-/// All six groupings of the events at or after `since`.
 pub fn rollup(events: &[Event], since: Option<&str>, done: &BTreeSet<String>) -> Rollup {
     let pick = || {
         events
@@ -686,10 +586,6 @@ mod tests {
         assert!(tmp.path().join("events-2026-09-28.jsonl").is_file());
     }
 
-    /// NFR-02 peak RSS: the open sizes the table and the key index once,
-    /// from the line count, with room for an eighth more: the next events
-    /// go in without a new block. The table and the keys are what the files
-    /// hold, a repeat and a torn line dropped.
     #[test]
     fn nfr_02_open_sizes_the_table_once() {
         let tmp = tempfile::tempdir().unwrap();
@@ -702,7 +598,6 @@ mod tests {
             })
             .collect();
         s.append(events.clone()).unwrap();
-        // A repeat in another file, and a torn last line.
         let line = serde_json::to_string(&events[1]).unwrap();
         let path = tmp.path().join("events-2026-09-27.jsonl");
         let mut f = std::fs::OpenOptions::new()
@@ -715,8 +610,6 @@ mod tests {
         let mut s = Store::open(tmp.path(), now(), 35).unwrap();
         let all = read_all(tmp.path());
         assert_eq!(all.len(), 80);
-        // Each kept event with its names resolved (the store interns the
-        // agent first, so the ids differ).
         let resolved = |t: &Table| -> Vec<String> {
             let name = |id: u32| t.names.names[id as usize].to_string();
             (t.kept.iter())
@@ -735,7 +628,6 @@ mod tests {
         assert!(all.iter().all(|e| s.contains(&e.key())));
         assert_eq!(s.keys.len(), 80);
 
-        // 80 events and the repeat; the torn line has no `\n`.
         let lines = 81;
         let (cap, at) = (s.table.kept.capacity(), s.table.kept.as_ptr());
         assert_eq!(cap, lines + lines / 8);
@@ -769,9 +661,6 @@ mod tests {
         assert!(!tmp.path().join("events-2026-08-01.jsonl").exists());
     }
 
-    /// The window keeps the file of its oldest day and an undated one,
-    /// deletes the file of the day before with its events, and leaves every
-    /// file that is not an event file alone.
     #[test]
     fn open_deletes_only_the_event_files_dated_before_the_oldest_day() {
         let tmp = tempfile::tempdir().unwrap();
@@ -803,8 +692,6 @@ mod tests {
         }
     }
 
-    /// The open makes the directory, with its parents, and names it when it
-    /// cannot.
     #[test]
     fn open_makes_the_directory_and_names_it_when_it_cannot() {
         let tmp = tempfile::tempdir().unwrap();
@@ -820,10 +707,6 @@ mod tests {
         assert_eq!(err.to_string(), format!("creating {}", blocked.display()));
     }
 
-    /// R2 review: the store never takes an event older than its retention
-    /// window back (a transcript read again from the start, after its old
-    /// keys left with their file). The window moves with [`Store::advance`];
-    /// an undated event is kept, as its file is.
     #[test]
     fn append_drops_events_older_than_the_retention_window() {
         let tmp = tempfile::tempdir().unwrap();
@@ -844,9 +727,6 @@ mod tests {
         assert_eq!((n, s.expired_dropped), (0, 2));
     }
 
-    /// R2 review: a `cursors.json` saved before the cursors named their
-    /// agent and session loads, each cursor's owner taken from its key, a
-    /// session id with a `|` included; a save then writes the fields.
     #[test]
     fn an_old_cursors_file_loads_with_its_owners() {
         let tmp = tempfile::tempdir().unwrap();
@@ -917,10 +797,6 @@ mod tests {
         }
     }
 
-    /// Read-time pricing (W9): an event stored with no cost, on a model the
-    /// table prices now, is priced on read with the one pricing function. A
-    /// stored cost is the price at the time and is kept. A model with no
-    /// price stays unpriced.
     #[test]
     fn tel_10_a_stored_event_without_a_cost_is_priced_at_read_time() {
         let tmp = tempfile::tempdir().unwrap();
@@ -950,14 +826,11 @@ mod tests {
         assert_eq!(cost("late"), want);
         assert_eq!(cost("kept"), Some(0.5), "the stored price is kept");
         assert_eq!(cost("unknown"), None, "unpriced, not $0");
-        // The collector's store, in file order: late, kept, unknown.
         let opened = Store::open(tmp.path(), now(), 35).unwrap();
         let costs: Vec<Option<f64>> = opened.table.kept.iter().map(|k| k.cost).collect();
         assert_eq!(costs, vec![want, Some(0.5), None]);
     }
 
-    /// Never zero the unpriced (W9): an unpriced event adds its tokens and a
-    /// count, and no cost; the window lists it per model.
     #[test]
     fn tel_10_rollups_list_unpriced_events_and_never_count_them_as_zero() {
         let mut free = ev("b", "2026-09-28T17:01:00Z", "r1", 10, 0.0);

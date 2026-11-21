@@ -1,14 +1,3 @@
-//! Typed wrapper around the `herdr` CLI, replacing the shell's `herdr ... | jq`
-//! pipelines.
-//!
-//! Verified against herdr 0.6.1 and re-checked against 0.8.0. The splitting and
-//! messaging surface is deliberately limited to what 0.6.1 advertises: no `pane
-//! current`, and no `--env` or `--ratio` on `pane split`.
-//!
-//! The tab and `pane move` calls that `horch tile` needs arrived later and are
-//! verified against 0.8.2. They
-//! are additions, so a caller that never tiles still only needs 0.6.1.
-
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::PathBuf;
@@ -72,9 +61,6 @@ struct WorkspaceCreateResult {
     root_pane: Pane,
 }
 
-/// A `herdr` command that exited non-zero, with herdr's own stderr, which is
-/// what actually explains a failure. Typed so the CLI can tell a herdr failure
-/// from any other without reading the message (ARC-22).
 #[derive(Debug)]
 pub struct HerdrFailed {
     pub command: String,
@@ -95,18 +81,14 @@ impl fmt::Display for HerdrFailed {
 
 impl std::error::Error for HerdrFailed {}
 
-/// Handle to the `herdr` executable.
 #[derive(Debug, Clone)]
 pub struct Herdr {
     bin: PathBuf,
-    /// When set, a call that has not finished by then is killed and fails.
     timeout: Option<Duration>,
-    /// When set, a call still running at this instant is killed and fails.
     deadline: Option<Instant>,
 }
 
 impl Herdr {
-    /// A handle that runs `bin`. The CLI passes `ctx.bins.harness.herdr`.
     pub fn with_bin(bin: impl Into<PathBuf>) -> Self {
         Self {
             bin: bin.into(),
@@ -115,18 +97,11 @@ impl Herdr {
         }
     }
 
-    /// The same handle, with the calls that go through `output` and `json`
-    /// bounded: a herdr that has not answered after `timeout` is killed and
-    /// the call fails. `server_reachable`, `wait_output` and
-    /// `integration_status` are not bounded.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
-    /// The same handle, with the same calls as [`Herdr::with_timeout`] cut
-    /// off at `deadline`. With a timeout too, a call stops at the earlier of
-    /// the two. `None`: no deadline.
     pub fn until(mut self, deadline: Option<Instant>) -> Self {
         self.deadline = deadline;
         self
@@ -146,8 +121,6 @@ impl Herdr {
         }
     }
 
-    /// Run `herdr <args>`, returning stdout. Errors carry herdr's own stderr,
-    /// which is what actually explains a failure.
     pub(crate) fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
         let out = self.run(args).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -171,7 +144,6 @@ impl Herdr {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// Run `herdr <args>` and decode the `{"result": ...}` envelope it prints.
     fn json<T: for<'de> Deserialize<'de>, S: AsRef<OsStr>>(&self, args: &[S]) -> Result<T> {
         let stdout = self.output(args)?;
         let envelope: Envelope<T> = serde_json::from_str(stdout.trim())
@@ -179,7 +151,6 @@ impl Herdr {
         Ok(envelope.result)
     }
 
-    /// True when the herdr server answers at all. Cheap reachability probe.
     pub fn server_reachable(&self) -> bool {
         Command::new(&self.bin)
             .args(["workspace", "list"])
@@ -188,8 +159,6 @@ impl Herdr {
             .unwrap_or(false)
     }
 
-    /// `herdr pane get <id>`. Accepts the internal id herdr exports as
-    /// `HERDR_PANE_ID` (e.g. `p_2`) and upgrades it to the public ids.
     pub fn pane_get(&self, id: &str) -> Result<Pane> {
         let r: PaneResult = self.json(&["pane", "get", id])?;
         Ok(r.pane)
@@ -212,9 +181,6 @@ impl Herdr {
         Ok(r.pane.pane_id)
     }
 
-    /// `herdr pane run` submits text and Enter atomically. Safe for launching a
-    /// command into a fresh shell; not safe for a TUI in raw mode, which is why
-    /// [`crate::messaging::delivery::send_line`] exists.
     pub fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
         self.output(&["pane", "run", pane, command])?;
         Ok(())
@@ -235,7 +201,6 @@ impl Herdr {
         Ok(())
     }
 
-    /// True when the pane still exists.
     pub fn pane_exists(&self, pane: &str) -> bool {
         self.pane_get(pane).is_ok()
     }
@@ -252,10 +217,6 @@ impl Herdr {
         Ok(r.layout)
     }
 
-    /// `herdr tab list --workspace <ws>`, in tab-strip order.
-    ///
-    /// Always scoped to a workspace: without `--workspace` herdr returns the tabs
-    /// of every workspace it has open.
     pub fn tab_list(&self, workspace_id: &str) -> Result<Vec<Tab>> {
         let r: TabListResult = self.json(&["tab", "list", "--workspace", workspace_id])?;
         let mut tabs = r.tabs;
@@ -263,8 +224,6 @@ impl Herdr {
         Ok(tabs)
     }
 
-    /// `herdr` creates tabs by moving an existing pane (`pane_move_new_tab`),
-    /// not by opening a fresh empty tab.
     pub fn tab_new(
         &self,
         _workspace_id: &str,
@@ -278,24 +237,16 @@ impl Herdr {
         .into())
     }
 
-    /// `herdr workspace list`.
     pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
         let r: WorkspaceListResult = self.json(&["workspace", "list"])?;
         Ok(r.workspaces)
     }
 
-    /// `herdr tab focus <tab>`. The only way to focus a specific pane's tab:
-    /// `pane focus` moves to a NEIGHBOUR, not to an id.
     pub(crate) fn tab_focus(&self, tab_id: &str) -> Result<()> {
         self.output(&["tab", "focus", tab_id])?;
         Ok(())
     }
 
-    /// `herdr pane focus --direction <d> --pane <origin>`.
-    ///
-    /// One step to a neighbour. herdr answers with exit 0 and `changed: false,
-    /// reason: "no_neighbor"` when nothing sits on that side, so a caller learns
-    /// it has run out of room without an error.
     pub(crate) fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
         let r: FocusResult = self.json(&[
             "pane",
@@ -308,22 +259,7 @@ impl Herdr {
         Ok(r.focus)
     }
 
-    /// Walk the focus of `tab` to `target`, one neighbour at a time.
-    ///
-    /// Returns false rather than erroring when the focus cannot be placed: the
-    /// caller is restoring a view, and a view that cannot be restored must never
-    /// fail the operation that moved it.
-    ///
-    /// WARNING: like `tab focus`, this pulls the whole workspace into view.
-    ///
-    /// The step budget is the pane count, which is more than any walk needs: each
-    /// step closes the larger of the two axis gaps, so the focus reaches any pane
-    /// of a two-row grid in at most two moves. The budget only has to stop a walk
-    /// that oscillates because herdr picked a different neighbour than the
-    /// geometry suggested.
     pub fn pane_focus_walk(&self, tab: &str, target: &str) -> Result<bool> {
-        // `pane layout` reports the whole tab that holds the pane it is asked
-        // about, so the target doubles as the probe for its own tab.
         let layout = self.pane_layout(Some(target))?;
         if layout.tab_id != tab {
             Ok(false)
@@ -332,12 +268,8 @@ impl Herdr {
         }
     }
 
-    /// The loop of [`Herdr::pane_focus_walk`] inside the target's tab: at most
-    /// 1 step per pane of `layout`.
     fn walk(&self, mut layout: Layout, target: &str) -> Result<bool> {
         for _ in 0..layout.panes.len() {
-            // `Arrived` and `Stuck` both end the walk; the check below tells
-            // them apart.
             let Walk::Step { from, direction } = next_step(&layout, target) else {
                 break;
             };
@@ -350,16 +282,6 @@ impl Herdr {
         Ok(layout.focused_pane_id.as_deref() == Some(target))
     }
 
-    /// `herdr pane move <pane> --tab <tab> --split <d> [--target-pane <target>]
-    /// [--ratio <r>] --no-focus`.
-    ///
-    /// Keeps the pane id and the running process (verified against herdr 0.8.2).
-    /// `ratio` is the share
-    /// the TARGET pane keeps, so the moved pane gets `1 - ratio`.
-    ///
-    /// A move into the tab the pane already occupies is refused with
-    /// `changed: false, reason: "same_tab"`: repositioning a pane inside its own
-    /// tab means moving it out and back.
     pub(crate) fn pane_move(
         &self,
         pane: &str,
@@ -383,7 +305,6 @@ impl Herdr {
         }
         if let Some(ratio) = ratio {
             args.push("--ratio".into());
-            // Match herdr's own four-decimal storage of split ratios.
             args.push(format!("{ratio:.4}"));
         }
         args.push("--no-focus".into());
@@ -391,11 +312,6 @@ impl Herdr {
         Ok(r.move_result)
     }
 
-    /// `herdr pane move <pane> --new-tab --label <label> --no-focus`.
-    ///
-    /// The new tab holds only the moved pane, and its id comes back as
-    /// `created_tab`. This form takes neither `--split` nor `--ratio`; the label
-    /// flag is `--label`, not `--tab-label`.
     pub(crate) fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         let r: MoveResult = self.json(&[
             "pane",
@@ -409,17 +325,7 @@ impl Herdr {
         Ok(r.move_result)
     }
 
-    /// Move the divider on `direction` side of `pane` by `amount`, a fraction of
-    /// the split container that owns it.
-    ///
-    /// The reply carries the post-resize layout, so a caller adjusting several
-    /// dividers can re-plan against real geometry instead of predicting it. It
-    /// also carries `changed`, which goes false when herdr refuses the move -
-    /// that is how a caller discovers the minimum pane width rather than
-    /// hard-coding one.
     pub(crate) fn pane_resize(&self, pane: &str, direction: &str, amount: f64) -> Result<Resize> {
-        // herdr stores split ratios to four decimal places; matching that here
-        // keeps the request and what it can actually honour in step.
         let amount = format!("{amount:.4}");
         let r: ResizeResult = self.json(&[
             "pane",
@@ -461,19 +367,11 @@ impl Herdr {
         Ok(())
     }
 
-    /// Show an operator notification through the existing herdr boundary.
     pub fn notification_show(&self, title: &str, body: &str) -> Result<()> {
         self.output(&["notification", "show", title, "--body", body])?;
         Ok(())
     }
 
-    /// `herdr pane wait-output <pane> --match <needle> --source recent-unwrapped
-    /// --timeout <ms>`. Returns false on timeout rather than erroring.
-    ///
-    /// herdr 0.8.2 has no top-level `wait`: the old `herdr wait output` exits 2
-    /// with `unknown command: wait`, which read as a timeout and failed every
-    /// `horch smoke messaging`. Any failure other than herdr's `timeout` error
-    /// is now an error. The source is the one the smoke failure dump prints.
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         let timeout = timeout_ms.to_string();
         let args = [
@@ -495,7 +393,6 @@ impl Herdr {
             .with_context(|| format!("herdr {} failed ({})", args.join(" "), out.status))
     }
 
-    /// `herdr integration status`, or None when the subcommand is unavailable.
     pub fn integration_status(&self) -> Option<String> {
         Command::new(&self.bin)
             .args(["integration", "status"])
@@ -505,21 +402,11 @@ impl Herdr {
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     }
 
-    /// `herdr agent prompt <target> <text>`: herdr writes the text as one
-    /// bracketed paste plus an encoded Enter, atomically, even while the agent
-    /// is mid-turn. Fails when herdr sees no agent in the pane.
     pub fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
         self.output(&["agent", "prompt", pane, text])?;
         Ok(())
     }
 
-    /// `herdr pane report-agent <pane> --source <source> --agent <agent>
-    /// --state <state> --seq <seq>` (herdr 0.8.2): `state` is `idle`,
-    /// `working`, `blocked` or `unknown`. herdr keeps the report with the
-    /// highest `seq` of a source, so a report with a lower one is stale.
-    /// For a harness herdr does not detect itself (Prime). The pane id
-    /// comes first: herdr 0.8.2 answers `unknown option: <source>` when it
-    /// comes last, as its `--help` shows it (live check X2, 2026-10-07).
     pub fn report_agent(
         &self,
         pane: &str,
@@ -545,9 +432,6 @@ impl Herdr {
         Ok(())
     }
 
-    /// `herdr pane release-agent <pane> --source <source> --agent <agent>
-    /// --seq <seq>`: the end of [`Herdr::report_agent`]'s reports, so herdr
-    /// stops showing that agent in the pane.
     pub fn release_agent(&self, pane: &str, source: &str, agent: &str, seq: u64) -> Result<()> {
         let seq = seq.to_string();
         self.output(&[
@@ -565,18 +449,13 @@ impl Herdr {
     }
 }
 
-/// What a focus walk does next, read from the layout alone.
 #[derive(Debug, PartialEq, Eq)]
 enum Walk {
-    /// The target has the focus.
     Arrived,
-    /// No focus, a pane missing from the layout, or no direction leads on.
     Stuck,
-    /// Move the focus from pane `from` toward `direction`.
     Step { from: String, direction: FocusDir },
 }
 
-/// The next move of a walk of the focus of `layout` to `target`.
 fn next_step(layout: &Layout, target: &str) -> Walk {
     let Some(from) = layout.focused_pane_id.as_deref() else {
         return Walk::Stuck;
@@ -591,8 +470,6 @@ fn next_step(layout: &Layout, target: &str) -> Walk {
     }
 }
 
-/// The direction of 1 step from pane `from` toward pane `to` of `layout`.
-/// `None` when either pane is not in the layout, or no direction leads on.
 fn step_between(layout: &Layout, from: &str, to: &str) -> Option<FocusDir> {
     let rect = |id: &str| {
         layout
@@ -604,15 +481,10 @@ fn step_between(layout: &Layout, from: &str, to: &str) -> Option<FocusDir> {
     crate::workspace::tile::step_toward(&rect(from)?, &rect(to)?)
 }
 
-/// `no_neighbor`, or a step that landed back on `from`: either way the walk
-/// is not converging, so it stops instead of spinning.
 fn stalled(step: &Focus, from: &str) -> bool {
     !step.changed || step.focused_pane_id.as_deref() == Some(from)
 }
 
-/// Read a `herdr pane wait-output` result: success is a match; herdr's
-/// `{"error":{"code":"timeout",...}}` on stderr is no match; anything else
-/// (a missing pane, an unknown command) is an error.
 fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
     if success {
         Ok(true)
@@ -627,9 +499,6 @@ fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
 mod tests {
     use super::*;
 
-    /// A fake herdr that runs `body`, already run once. macOS scans a new
-    /// executable at its first exec for seconds (up to 35 s under load),
-    /// which would race every timed call. The warm run exits before `body`.
     #[cfg(unix)]
     fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -644,7 +513,6 @@ mod tests {
         (dir, script)
     }
 
-    /// The three answers herdr 0.8.2 gives, verbatim.
     #[test]
     fn wait_outcome_tells_a_timeout_from_an_error() {
         assert!(wait_outcome(true, "").unwrap());
@@ -675,8 +543,6 @@ mod tests {
         assert_eq!(r.result.root_pane.pane_id, "w7-1");
     }
 
-    /// herdr has reported the agent session under several shapes across
-    /// versions; all of them must resolve.
     #[test]
     fn agent_session_id_handles_every_known_shape() {
         let cases = [
@@ -696,9 +562,6 @@ mod tests {
         }
     }
 
-    /// The real 0.8.2 reply, trimmed. Two fields are conditional and must not be
-    /// required: `source_layout` is absent when the move emptied and so closed the
-    /// source tab, and `created_tab` is present only for `--new-tab`.
     #[test]
     fn parses_a_pane_move_that_closed_its_source_tab() {
         let raw = r#"{"result":{"type":"pane_move","move_result":{
@@ -717,8 +580,6 @@ mod tests {
         assert!(m.reason.is_none());
     }
 
-    /// herdr declines a move rather than failing the call, so the reason is the
-    /// only way a caller learns that nothing happened.
     #[test]
     fn parses_a_declined_pane_move_with_its_reason() {
         let raw = r#"{"result":{"move_result":{"changed":false,"reason":"same_tab",
@@ -742,8 +603,6 @@ mod tests {
         );
     }
 
-    /// A tiler has to know the focused pane to hand focus back, and the zoom
-    /// state because herdr refuses to move panes in a zoomed tab.
     #[test]
     fn a_layout_reports_the_focused_pane_and_the_zoom_state() {
         let raw = r#"{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
@@ -756,9 +615,6 @@ mod tests {
         assert!(r.result.layout.zoomed);
     }
 
-    /// The real 0.8.2 `pane focus --direction` reply, trimmed. The walk reads
-    /// three things from it: whether the focus moved, where it moved to, and
-    /// the layout, which saves a `pane layout` call between steps.
     #[test]
     fn parses_a_pane_focus_reply_with_its_layout() {
         let raw = r#"{"result":{"type":"pane_focus_direction","focus":{
@@ -778,8 +634,6 @@ mod tests {
         assert!(r.result.focus.reason.is_none());
     }
 
-    /// At the edge of a tab herdr declines with exit 0 rather than failing, so
-    /// `reason` is the only way the walk learns it has run out of room.
     #[test]
     fn parses_a_declined_pane_focus_at_the_edge_of_a_tab() {
         let raw = r#"{"result":{"focus":{"changed":false,"reason":"no_neighbor",
@@ -791,7 +645,6 @@ mod tests {
         assert_eq!(r.result.focus.reason.as_deref(), Some("no_neighbor"));
     }
 
-    /// Older herdr omits both, and the wrapper still has to parse the reply.
     #[test]
     fn a_layout_without_focus_or_zoom_still_parses() {
         let raw = r#"{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
@@ -820,8 +673,6 @@ mod tests {
         std::fs::read_to_string(path).unwrap()
     }
 
-    /// Every wire shape that `Herdr` parses has a JSON sample under
-    /// `tests/fixtures/herdr/`; each one parses into the model types.
     #[test]
     fn arc_19_herdr_parsing_contract() {
         let r: Envelope<PaneResult> = serde_json::from_str(&fixture("pane_get.json")).unwrap();
@@ -879,11 +730,6 @@ mod tests {
         assert_eq!(r.result.root_pane.tab_id.as_deref(), Some("w7:t1"));
     }
 
-    /// A fake herdr for [`Herdr::pane_focus_walk`]: tab `w1:t1` holds `panes`
-    /// (id, x) side by side, `focus` is the focused pane, and `moves` maps
-    /// the origin of each `pane focus` call to the pane herdr then focuses.
-    /// An origin with no move is `no_neighbor`. Each focus call appends a
-    /// line to `calls`.
     #[cfg(unix)]
     fn walk_herdr(
         panes: &[(&str, i64)],

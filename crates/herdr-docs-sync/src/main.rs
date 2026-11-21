@@ -1,11 +1,3 @@
-//! `herdr-docs-sync` - mirror the Herdr documentation into a local directory.
-//!
-//! Discovers every English page under <https://herdr.dev/docs/> from the sitemap,
-//! converts each to markdown, and writes it to `herdr-docs/`. Safe to run as often
-//! as you like: it reports what changed, and removes local files for pages that no
-//! longer exist so the directory stays a faithful mirror rather than an accreting
-//! pile.
-
 mod clean;
 mod page;
 mod sitemap;
@@ -47,7 +39,6 @@ struct Cli {
     sitemap: String,
 }
 
-/// What happened to one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Added,
@@ -58,9 +49,7 @@ enum Outcome {
 }
 
 impl Outcome {
-    /// The word printed beside a file name; a dry run says what would happen.
     fn label(self, dry_run: bool) -> &'static str {
-        // Indexed by `Outcome as usize`: (real run, dry run).
         const LABELS: [(&str, &str); 5] = [
             ("added", "would add"),
             ("updated", "would update"),
@@ -80,7 +69,6 @@ impl Outcome {
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(true) => std::process::ExitCode::SUCCESS,
-        // Some pages failed; the rest were still written.
         Ok(false) => std::process::ExitCode::FAILURE,
         Err(e) => {
             eprintln!("herdr-docs-sync: {e:#}");
@@ -116,11 +104,7 @@ fn run() -> Result<bool> {
     Ok(print_summary(&counts, cli.dry_run) == 0)
 }
 
-/// Remove local files whose pages are gone, and count them.
 fn prune_stale(cli: &Cli, pages: &[DocPage], counts: &mut [usize; 5]) -> Result<()> {
-    // Pruning deletes local documentation, so only do it from a complete picture.
-    // If a page could not be fetched or converted, the run does not know what the
-    // site really contains, and deleting on that basis could destroy good docs.
     if cli.keep_stale {
         Ok(())
     } else if counts[Outcome::Failed as usize] > 0 {
@@ -147,7 +131,6 @@ fn remove_stale(cli: &Cli, pages: &[DocPage], counts: &mut [usize; 5]) -> Result
     Ok(())
 }
 
-/// Print the totals and return how many pages failed.
 fn print_summary(counts: &[usize; 5], dry_run: bool) -> usize {
     let failed = counts[Outcome::Failed as usize];
     let suffix = if dry_run {
@@ -169,7 +152,6 @@ fn print_summary(counts: &[usize; 5], dry_run: bool) -> usize {
     failed
 }
 
-/// Resolve the sitemap, following a `<sitemapindex>` to the `<urlset>`s it names.
 fn discover(sitemap_url: &str) -> Result<Vec<DocPage>> {
     let mut urls = Vec::new();
     match sitemap::parse(&fetch(sitemap_url)?)? {
@@ -179,12 +161,10 @@ fn discover(sitemap_url: &str) -> Result<Vec<DocPage>> {
     Ok(sitemap::doc_pages(&urls))
 }
 
-/// Collect the page URLs of each child sitemap.
 fn child_urls(children: Vec<String>, urls: &mut Vec<String>) -> Result<()> {
     for child in children {
         match sitemap::parse(&fetch(&child)?)? {
             Sitemap::Urls(found) => urls.extend(found),
-            // One level of indirection is all the spec allows.
             Sitemap::Index(_) => {
                 eprintln!("  note: skipping nested sitemap index at {child}")
             }
@@ -215,7 +195,6 @@ fn fetch_and_write(doc: &DocPage, target: &Path, dry_run: bool) -> Result<Outcom
     write_page(target, &markdown, dry_run)
 }
 
-/// Compare `markdown` with what is on disk and write it when it differs.
 fn write_page(target: &Path, markdown: &str, dry_run: bool) -> Result<Outcome> {
     let outcome = match std::fs::read_to_string(target).ok() {
         Some(current) if current == markdown => Outcome::Unchanged,
@@ -228,7 +207,6 @@ fn write_page(target: &Path, markdown: &str, dry_run: bool) -> Result<Outcome> {
     Ok(outcome)
 }
 
-/// Markdown files in `out_dir` that no page maps to any more.
 fn stale_files(out_dir: &Path, pages: &[DocPage]) -> Result<Vec<PathBuf>> {
     let expected: BTreeSet<&str> = pages.iter().map(|p| p.file_name.as_str()).collect();
     let Ok(entries) = std::fs::read_dir(out_dir) else {
@@ -242,12 +220,10 @@ fn stale_files(out_dir: &Path, pages: &[DocPage]) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// A file with the extension `md`.
 fn is_markdown_file(path: &Path) -> bool {
     path.is_file() && path.extension().is_some_and(|e| e == "md")
 }
 
-/// A path whose file name is text that no page maps to.
 fn is_unexpected(path: &Path, expected: &BTreeSet<&str>) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -295,7 +271,6 @@ mod tests {
             .collect()
     }
 
-    /// A renamed or retired page leaves a stale local file, which must be found.
     #[test]
     fn stale_files_finds_only_unexpected_markdown() {
         let tmp = tempfile::tempdir().unwrap();
@@ -311,14 +286,9 @@ mod tests {
             .collect();
         stale.sort();
 
-        // README.md is not in `pages`, so it is stale here; notse.txt is not
-        // markdown and the directory is not a file.
         assert_eq!(stale, vec!["README.md", "agent-guide.md"]);
     }
 
-    /// Only a file whose extension is `md` can be stale, and it is given by its
-    /// path: the case, a longer extension and a name with no extension all
-    /// leave a file alone.
     #[test]
     fn stale_files_wants_the_extension_md_and_gives_the_path() {
         let tmp = tempfile::tempdir().unwrap();
@@ -335,7 +305,6 @@ mod tests {
         }
         let stale = stale_files(tmp.path(), &pages(&["install"])).unwrap();
         assert_eq!(stale, vec![tmp.path().join("old.md")]);
-        // A page that maps to the file keeps it.
         assert!(stale_files(tmp.path(), &pages(&["old"]))
             .unwrap()
             .is_empty());

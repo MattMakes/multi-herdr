@@ -16,4 +16,4 @@ if __cached__ and os.path.isfile(__cached__):
     try:
         os.rmdir(os.path.dirname(__cached__))
     except OSError:
-        pass  # the folder holds other files; leave it
+        pass

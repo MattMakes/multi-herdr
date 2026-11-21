@@ -1,13 +1,3 @@
-//! A recording stand-in for the `pi` CLI. Only `--version` and
-//! `update --self` are answered: the local-pool health check and the update
-//! step are the things horch asks of pi outside a pane.
-//!
-//! Scenarios: `ok` (the default), `crash` (exit 1), `model_missing` (as `ok`;
-//! the missing model is fake-ollama's half of that scenario), and
-//! `inspect_skills`: a launch also writes its `--skill` dirs (the options
-//! before `--`) to `$HORCH_FAKE_LOG.skills.json`
-//! (`horch_e2e::write_skills_report`).
-
 use std::path::PathBuf;
 
 use horch_e2e::{say, scenario, scenario_has, write_skills_report, Call};
@@ -44,10 +34,6 @@ fn main() {
     std::process::exit(code);
 }
 
-/// `pi update --self`: record the call, then answer as the scenario says.
-/// `update_fail:pi` exits 1 with a coloured error line, and
-/// `update_hang:pi` sleeps 60 s first. Otherwise it prints 1 line and
-/// exits 0.
 fn update(call: &Call) -> ! {
     call.flush();
     if horch_e2e::scenario_has("update_fail:pi") {

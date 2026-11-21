@@ -1,12 +1,3 @@
-//! The channel between panes: `tell`, `inbox`, `note`, `done`.
-//!
-//! Ports `bin/herdr-tell`, `bin/herdr-inbox`,
-//! `bin/horch-note`, `bin/horch-done` and `scripts/lib/herdr-register.sh`.
-//!
-//! There is no AI-native agent-to-agent protocol here: a message is literally
-//! typed into the target pane's terminal and submitted, exactly as if someone
-//! switched panes and typed it by hand.
-
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
@@ -35,9 +26,6 @@ use horch_core::workspace::PaneHost;
 use super::context::{self, Sources};
 use crate::output;
 
-/// Report mode: a `horch_access: report` pane sends `request` to its
-/// report socket. `None` (any other command) is refused before anything
-/// else runs. The worker parent runs the request with its own identity.
 pub fn report_mode(socket: &std::path::Path, request: Option<report::Request>) -> Result<()> {
     let Some(request) = request else {
         bail!(
@@ -48,13 +36,6 @@ pub fn report_mode(socket: &std::path::Path, request: Option<report::Request>) -
     report::send(socket, &request)
 }
 
-/// Deliver `text` into the pane registered as `role`.
-///
-/// From a worker (`HORCH_ROLE` set) the message always starts with the worker's
-/// `[<role>]` tag: an untagged line reads as the human operator. A message over
-/// [`message::MAX_INLINE`] chars is written to a file, and the pane gets one
-/// short line that quotes its head and names the file. An agent that is
-/// still starting in that pane is waited for first; it would drop the text.
 pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     match tell_outcome(ctx, role, text)? {
         ReportStatus::Delivered => Ok(()),
@@ -65,11 +46,6 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     }
 }
 
-/// `horch tell <role> --answers <id>`: deliver `text` to `role` as the
-/// answer to its open question `<id>`, then close that question and no
-/// other (C2). The line reads `[orchestrator re #<id>] <text>`. Only the
-/// orchestrator answers; an unknown id, or a question of another role,
-/// sends nothing.
 pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str) -> Result<()> {
     let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
     if sender.as_deref().is_some_and(|s| s != "orchestrator") {
@@ -86,12 +62,6 @@ fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportSt
     tell_as(ctx, sender, role, text)
 }
 
-/// [`tell`] with an explicit sender tag. horch itself sends as `horch` (the
-/// task ledger's wakes): a tagged message to the orchestrator is durable
-/// mail, redelivered until `horch inbox` acknowledges it. A `horch` notice
-/// to a worker role is durable mail too (#177), and its push has the push
-/// budget of `horch done` (#67): a pane that is not ready does not hold the
-/// caller, and the courier delivers the line later.
 pub fn tell_as(
     ctx: &RuntimeContext,
     sender: Option<String>,
@@ -107,11 +77,8 @@ pub fn tell_as(
     }
 }
 
-/// The sender tag of horch's own notices.
 const HORCH: &str = "horch";
 
-/// Whether a line from `sender` to `role` is durable mail: any tagged line
-/// to the orchestrator, and horch's own notices to a worker.
 fn is_durable(sender: Option<&str>, role: &str) -> bool {
     match sender {
         Some(HORCH) => true,
@@ -120,8 +87,6 @@ fn is_durable(sender: Option<&str>, role: &str) -> bool {
     }
 }
 
-/// A line [`queue_as`] made ready (and durable, for the orchestrator) that
-/// is not pushed yet.
 struct Outgoing<'a> {
     ctx: &'a RuntimeContext,
     herdr: PaneHost,
@@ -131,21 +96,11 @@ struct Outgoing<'a> {
     target: Option<String>,
     line: String,
     durable: bool,
-    /// The durable mail of the line: a push records its first push on it.
     queued: Option<Id>,
-    /// Start the courier after the push, as before #67: an unbounded push
-    /// can outlast the courier's first redelivery and deliver the line twice.
     courier_after: bool,
-    /// The full id of the question this line answers: a delivered answer
-    /// closes it.
     answers: Option<String>,
 }
 
-/// The first half of [`tell_as`]: an error here means nothing was sent or
-/// queued. `None`: the line went already, as there was nothing to queue.
-/// `take_back` is for the `done` report only: a courier that cannot start
-/// takes its mail back. Any other line stays queued and is pushed.
-/// `answers`: the id of the open question of `role` that this line answers.
 fn queue_as<'a>(
     ctx: &'a RuntimeContext,
     sender: Option<String>,
@@ -154,15 +109,12 @@ fn queue_as<'a>(
     take_back: bool,
     answers: Option<&str>,
 ) -> Result<Option<Outgoing<'a>>> {
-    // Inside a push budget, resolving the mailbox (a `pane get` without
-    // HORCH_WORKSPACE_ID) ends at the push deadline too.
     let mailbox = Mailbox::resolve_in(&PaneHost::of(ctx).until(delivery::push_deadline()), ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
     let herdr =
         PaneHost::for_workspace(ctx, mailbox.workspace_id()).until(delivery::push_deadline());
     let horch_text;
     let text = if sender.as_deref() == Some(HORCH) {
-        // A horch QUESTION or BLOCKED that names no closing action is a NOTE.
         horch_text = horch_core::messaging::mail::horch_line(text);
         horch_text.as_str()
     } else {
@@ -172,7 +124,6 @@ fn queue_as<'a>(
         .map(|key| open_question(ctx, mailbox.workspace_id(), role, key))
         .transpose()?;
     let mut line = match &question {
-        // The answer tag replaces the sender tag.
         Some(q) => render_line(
             ctx,
             mailbox.workspace_id(),
@@ -184,10 +135,6 @@ fn queue_as<'a>(
     };
     let target = mailbox.pane_for(role);
     let durable = is_durable(sender.as_deref(), role);
-    // Inside a push budget (`horch done`), the courier starts now, before
-    // `done` marks the record done: a process killed after that leaves the
-    // mail with a courier. Its first redelivery is 30 s after the enqueue,
-    // after the push budget ends.
     let courier_now = durable && delivery::push_time_left().is_some();
     let mut queued = None;
     if durable {
@@ -202,17 +149,13 @@ fn queue_as<'a>(
             courier_now,
             take_back,
         )?;
-        // A replay of a keyed mail that went out already pushes nothing
-        // (TRF-51): the first send pushed it, and the courier redelivers it.
         if enqueued.already_published {
             return Ok(None);
         }
         let id = enqueued.id;
-        // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
         queued = Some(id);
         if role != "orchestrator" {
-            // Worker mail holds no question for the orchestrator.
         } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
             eprintln!(
                 "horch tell: question wait projection failed ({error:#}); mail remains durable"
@@ -234,7 +177,6 @@ fn queue_as<'a>(
     }))
 }
 
-/// The open question `key` names, if it is a question of `role`.
 fn open_question(
     ctx: &RuntimeContext,
     workspace: &str,
@@ -252,7 +194,6 @@ fn open_question(
     Ok(question)
 }
 
-/// An answer goes to the role that asked.
 fn check_answer_role(asker: &str, role: &str, short: &str) -> Result<()> {
     if asker != role {
         bail!("question #{short} is from {asker}, not {role}; run: horch tell {asker} --answers {short} \"<answer>\"");
@@ -260,8 +201,6 @@ fn check_answer_role(asker: &str, role: &str, short: &str) -> Result<()> {
     Ok(())
 }
 
-/// `[orchestrator re #<id>] <text>` (C2). A leading `[orchestrator]` tag
-/// in `text` is dropped.
 fn answer_line(short: &str, text: &str) -> String {
     let body = text.trim_start();
     let body = body
@@ -271,8 +210,6 @@ fn answer_line(short: &str, text: &str) -> String {
     format!("[orchestrator re #{short}] {body}")
 }
 
-/// The line `tell` sends: tagged with the sender, and spooled to a file
-/// with a reference line when it is too long to type.
 fn render_line(
     ctx: &RuntimeContext,
     workspace: &str,
@@ -297,12 +234,7 @@ fn render_line(
     Ok(message::reference_line(&text, &path))
 }
 
-/// Queue `line` as durable mail. With `courier_now`, the courier starts
-/// too. A courier that cannot start takes the mail back out with
-/// `take_back`: `done` then fails with nothing queued, and its retry queues
-/// the line once. Without `take_back`, the line stays queued: a wake that
-/// is neither queued nor pushed is lost (#67).
-#[allow(clippy::too_many_arguments)] // one mail line: each argument is a distinct input of the same step
+#[allow(clippy::too_many_arguments)]
 fn enqueue_durable(
     ctx: &RuntimeContext,
     workspace: &str,
@@ -315,7 +247,6 @@ fn enqueue_durable(
 ) -> Result<Enqueued> {
     let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
     let queued = mail.enqueue_once(from, line, original)?;
-    // A replayed mail went out before: its courier ran then.
     if !courier_now || queued.already_published {
         return Ok(queued);
     }
@@ -334,10 +265,7 @@ fn enqueue_durable(
 }
 
 impl Outgoing<'_> {
-    /// The second half of [`tell_as`]: type the line. A durable line that
-    /// does not land is queued, not an error: the courier delivers it.
     fn push(self) -> Result<ReportStatus> {
-        // Inside a push budget, a herdr call that hangs is cut off with it.
         let herdr = self.herdr.clone().until(delivery::push_deadline());
         let mail = Mail::under(&self.ctx.paths.state_root, self.mailbox.workspace_id());
         let to_orchestrator = self.role == "orchestrator";
@@ -360,7 +288,6 @@ impl Outgoing<'_> {
                 true,
             )
         };
-        // The courier sends the full text 1 time to mail with no first push.
         if let (Ok(()), Some(id)) = (&pushed, &self.queued) {
             let state_root = &self.ctx.paths.state_root;
             let queued = Mail::for_role(state_root, self.mailbox.workspace_id(), &self.role);
@@ -374,9 +301,6 @@ impl Outgoing<'_> {
             }
         }
         if self.durable && !to_orchestrator {
-            // A worker acknowledges its notice with `horch ledger finish` or
-            // `horch inbox`; until then the courier types it again when the
-            // pane is idle. A typed line is delivered.
             return Ok(match pushed {
                 Ok(()) => ReportStatus::Delivered,
                 Err(error) => ReportStatus::Queued(format!("{error:#}")),
@@ -391,7 +315,6 @@ impl Outgoing<'_> {
             });
         }
         pushed?;
-        // Only an answer by id closes a question; a plain tell closes none.
         if let Some(id) = &self.answers {
             mail.close_question(id)?;
             sync_question_waits(self.ctx, self.mailbox.workspace_id())?;
@@ -400,7 +323,6 @@ impl Outgoing<'_> {
     }
 }
 
-/// Who a pushed line is from and where it goes.
 struct Tell<'a> {
     ctx: &'a RuntimeContext,
     herdr: &'a PaneHost,
@@ -420,8 +342,6 @@ fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> 
     let Some(target) = target else {
         return Err(not_registered(tell));
     };
-    // An agent that is still starting drops typed text, so wait it out. A
-    // role that registered just now may not show its agent yet.
     let grace = tell.ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
     let age = tell
         .mailbox
@@ -437,14 +357,7 @@ fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> 
     )
 }
 
-/// Offer `line` to the orchestrator's channel relay. `None`: the relay took
-/// it. `Some(line)`: the caller types it, with a duplicate warning when the
-/// relay did not confirm. An error: the relay is live but did not take or
-/// confirm durable mail. The mail stays pending, and the courier redelivers
-/// it through the relay: an idle pane can hold the operator's draft.
 fn try_relay(tell: &Tell, mut line: String) -> Result<Option<String>> {
-    // `horch done` caps all its pushes at one budget; a spent budget skips
-    // the relay and waits no more, so only an idle agent still gets the line.
     let spent = delivery::push_time_left().is_some_and(|left| left.is_zero());
     if tell.role != "orchestrator" || spent {
         return Ok(Some(line));
@@ -453,7 +366,6 @@ fn try_relay(tell: &Tell, mut line: String) -> Result<Option<String>> {
     let from = tell.sender.unwrap_or("orchestrator");
     match channel::send(&socket, from, &line, delivery::capped(send_timeout())) {
         Ok(()) => return Ok(None),
-        // Only a line with a sender is durable mail that a courier holds.
         Err(error) if tell.sender.is_some() && channel::is_live(&socket) => {
             bail!("the channel relay did not take or confirm the message ({error}); the courier redelivers it through the relay")
         }
@@ -471,7 +383,6 @@ fn try_relay(tell: &Tell, mut line: String) -> Result<Option<String>> {
     Ok(Some(line))
 }
 
-/// The relay send timeout; a debug build lets a test shorten it.
 fn send_timeout() -> std::time::Duration {
     #[cfg(debug_assertions)]
     if let Some(ms) = std::env::var("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS")
@@ -483,7 +394,6 @@ fn send_timeout() -> std::time::Duration {
     channel::SEND_TIMEOUT
 }
 
-/// The error of a line to a role that is not registered.
 fn not_registered(tell: &Tell) -> anyhow::Error {
     let known: Vec<String> = tell.mailbox.roles().into_iter().map(|(r, _)| r).collect();
     let known = if known.is_empty() {
@@ -491,8 +401,6 @@ fn not_registered(tell: &Tell) -> anyhow::Error {
     } else {
         known.join(" ")
     };
-    // A relay that answers is an orchestrator that refused this one
-    // message: `horch done` would not get through either.
     let relay_live = tell.role == "orchestrator"
         && channel::is_live(&channel::socket_path(
             &tell.ctx.paths.state_root,
@@ -510,15 +418,10 @@ fn not_registered(tell: &Tell) -> anyhow::Error {
     )
 }
 
-/// How long `tell` may still wait for an agent to show in a role's pane: the
-/// rest of `grace` after the role registered `age` ago. A role registered
-/// 29 s ago gets 1 s, not another full `grace`. Zero when the age is unknown.
 fn grace_left(age: Option<std::time::Duration>, grace: std::time::Duration) -> std::time::Duration {
     age.map_or(std::time::Duration::ZERO, |age| grace.saturating_sub(age))
 }
 
-/// The line a worker's failed `tell` to a missing orchestrator ends with.
-/// Without it, a worker reads the failure as a block and never runs `done`.
 fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
     if role == "orchestrator" && sender.is_some() {
         "\n       no orchestrator runs in this workspace, so nobody reads reports here.\n       \
@@ -528,22 +431,11 @@ fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
     }
 }
 
-/// List roles registered in this workspace, and mark each one whose pane
-/// herdr no longer has. An orchestrator then gets its pending mail: `--roles`
-/// skips the mail, and `--peek` prints it without acknowledging it.
-///
-/// A closed role stays in the list, marked, rather than hidden: its id file
-/// is still there, and a reader who sees why `horch tell` to it fails does
-/// not have to guess where the role went.
 pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
-    // A herdr that accepts a call and never answers must not keep pending
-    // mail from printing: each call is killed at the deadline, and every
-    // pane reads as unknown.
     let mailbox = Mailbox::resolve_in(&PaneHost::of(ctx).with_timeout(pane_list_timeout()), ctx)?;
     let herdr =
         PaneHost::for_workspace(ctx, mailbox.workspace_id()).with_timeout(pane_list_timeout());
     let roles = mailbox.role_states(&herdr);
-    // A horch question whose ledger action ran closes before the listing.
     if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
         eprintln!("horch inbox: question wait projection failed ({error:#})");
     }
@@ -565,7 +457,6 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     if roles.is_empty() {
         output::println("no roles registered yet");
     } else {
-        // Unknown pane states keep their role names; this line says why.
         if roles.iter().any(|r| r.state == PaneState::Unknown) {
             eprintln!("roles unavailable: herdr did not answer, so pane states are unknown");
         }
@@ -603,15 +494,12 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
         return Ok(());
     }
     if let Some(role) = ctx.worker.as_ref().and_then(|w| w.role.as_deref()) {
-        // A worker reads its own mail, never the orchestrator's.
         let mail = Mail::to_role(&ctx.paths.state_root, mailbox.workspace_id(), role);
         return print_mail(&mail, peek);
     }
     print_orchestrator_mail(ctx, &herdr, &mailbox, peek)
 }
 
-/// Print the orchestrator's mail. Only the orchestrator's pane acknowledges
-/// it; any other pane gets a peek and one line that says so.
 fn print_orchestrator_mail(
     ctx: &RuntimeContext,
     herdr: &PaneHost,
@@ -634,11 +522,6 @@ fn print_orchestrator_mail(
     )
 }
 
-/// Whether the caller may acknowledge the orchestrator's mail: a pane
-/// outside the fleet (`caller` unset) or a fleet with no registered
-/// orchestrator may; a pane that is not the registered orchestrator's may
-/// not (a resumed worker, #125). `caller` is herdr's internal pane id and
-/// `orchestrator` the public one, so both forms are compared.
 fn may_acknowledge(
     caller: Option<&str>,
     public_id: impl FnOnce(&str) -> Option<String>,
@@ -650,8 +533,6 @@ fn may_acknowledge(
     caller == orchestrator || public_id(caller).is_some_and(|id| id == orchestrator)
 }
 
-/// Acknowledge the notices horch queued for `role` (`horch ledger finish`
-/// is the worker's answer to a reviews-in notice). Best effort.
 pub fn ack_role_mail(ctx: &RuntimeContext, role: &str) {
     let herdr = match ctx.herdr.workspace.as_ref() {
         Some(ws) => PaneHost::for_workspace(ctx, ws.as_str()),
@@ -667,13 +548,9 @@ pub fn ack_role_mail(ctx: &RuntimeContext, role: &str) {
     }
 }
 
-/// Print `mail`, then acknowledge it unless `peek`.
 fn print_mail(mail: &Mail, peek: bool) -> Result<()> {
-    // The mail comes after the roles, and the count comes last: a reader
-    // that pipes this output into `tail` still sees how many it acknowledged.
     let pending = mail.pending()?;
     for message in &pending {
-        // The line shows the mail id, as the pane line does.
         output::println(&message.line());
         if !peek {
             mail.ack(&message.id)?;
@@ -690,7 +567,6 @@ fn print_mail(mail: &Mail, peek: bool) -> Result<()> {
 }
 
 fn pane_list_timeout() -> std::time::Duration {
-    // A test shortens the wait.
     #[cfg(debug_assertions)]
     if let Some(ms) = std::env::var("HORCH_TEST_PANE_LIST_MS")
         .ok()
@@ -701,7 +577,6 @@ fn pane_list_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(5)
 }
 
-/// Tell an orchestrator that durable mail still waits for explicit acknowledgement.
 pub fn remind_pending(ctx: &RuntimeContext) {
     if ctx
         .worker
@@ -736,8 +611,6 @@ pub fn remind_pending(ctx: &RuntimeContext) {
     eprintln!("horch: {count} {message} {verb} not acknowledged; run horch inbox");
 }
 
-/// One line for each role: name, pane, and `(pane closed)` when herdr does
-/// not list the pane.
 fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
     let mut listing = String::new();
     for r in roles {
@@ -755,25 +628,10 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
     listing
 }
 
-/// Worker-facing: append a progress note to this worker's own session record,
-/// so the session history shows what it is doing, not just start and end
-/// states. [`note_as`] with a note.
 pub fn note(ctx: &RuntimeContext, text: &str) -> Result<std::process::ExitCode> {
     note_as(ctx, text, EventKind::Note)
 }
 
-/// The 1 progress command (TRF-45): `horch note`, `horch ledger progress`
-/// and `horch ledger note`. It appends `text` to this worker's session
-/// record (`HORCH_RECORD_ID`) and records `kind` on its task ledger row
-/// (`HORCH_WORKER_ID`), when it has one. With a record, a task ledger
-/// failure prints and never fails the note. Without a record, the task
-/// ledger row is the only record and its failure fails the command.
-///
-/// Then the context check (CTX-10, design §6.10): when the session is over
-/// its threshold and was not asked in this compaction cycle, it records
-/// `context-warned` and prints the rendered `warning` line (the stopping
-/// point). Context follow-up never fails a saved note. Handoff scheduling
-/// errors are visible on stderr; a panic is silenced.
 pub fn note_as(
     ctx: &RuntimeContext,
     text: &str,
@@ -822,8 +680,6 @@ fn context_followup_exit(result: std::thread::Result<Result<()>>) -> std::proces
     std::process::ExitCode::SUCCESS
 }
 
-/// [`note_check`] with its own sources, inside `catch_unwind` and with the
-/// panic hook silenced: a check that panics or fails prints nothing.
 #[cfg(test)]
 fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
     let hook = std::panic::take_hook();
@@ -846,11 +702,6 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
     result.ok().flatten()
 }
 
-/// The `horch note` warning of record `record_id`, if it warns: the row is
-/// built as `horch context` builds it, and the rule is
-/// [`policy::should_warn`]. On a warning it records `context-warned`
-/// (its error ignored) and returns the rendered `warning` line, or
-/// `warning-orchestrator` for an orchestrator record.
 pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
     let record = src.ledger.get(record_id)?;
     let Some((row, tokens)) = warn_row(src, record) else {
@@ -879,7 +730,6 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
     Ok(Some(line))
 }
 
-/// The context row of a live `record` and its tokens, when the rule warns.
 fn warn_row(
     src: &Sources,
     record: horch_core::execution::legacy::Record,
@@ -896,12 +746,6 @@ fn warn_row(
     Some((row, tokens))
 }
 
-/// Worker-facing self-shutdown, run only when the work is truly complete (not
-/// while waiting on a question): the 1 done command (TRF-45), `horch done`
-/// and `horch ledger done`. A worker with a claimed task finishes it in the
-/// task ledger first ([`super::taskledger::done_cmd`]), which then runs
-/// [`done_then`] in its pane. Any other worker runs [`done_then`]. The
-/// order of the steps is [`lifecycle::done`]'s.
 pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
     if super::taskledger::is_ledger_worker(ctx) {
         let store = horch_core::taskledger::open(ctx)?;
@@ -910,10 +754,6 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
     done_then(ctx, summary, unlanded, &|| end_taskless_row(ctx))
 }
 
-/// End this pane's live ledger row when it holds no task, as a
-/// controller's report role does (T-38). `done` closes the pane next, and
-/// that ends the `horch worker` that would settle the row. A retry finds
-/// the row ended and changes nothing.
 fn end_taskless_row(ctx: &RuntimeContext) {
     use horch_core::taskledger::{model::WorkerStatus, workers};
     let Some(wid) = super::taskledger::worker_id_opt(ctx) else {
@@ -931,9 +771,6 @@ fn end_taskless_row(ctx: &RuntimeContext) {
     }
 }
 
-/// [`done`], with `after_mark_done` run once the record is done and before
-/// the report push ([`DoneSteps::after_mark_done`]). A retry of a `done`
-/// that recorded its summary does not run it.
 pub fn done_then(
     ctx: &RuntimeContext,
     summary: &str,
@@ -948,7 +785,6 @@ pub fn done_then(
     )
     .context("horch done must run inside a herdr pane")?;
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
-    // `horch ledger done` started the budget and printed the line already.
     let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
     if budget.is_some() {
         eprintln!("{CLOSING}");
@@ -975,11 +811,6 @@ pub fn done_then(
             unlanded,
         },
     );
-    // After the close, and only when it worked: a Prime pane's tools (this
-    // process too) run under Prime's daemon, in another session, so the
-    // close does not end this process, and a stop before the close could.
-    // herdr kills a closed pane's processes within about 1 s, often before
-    // the launcher stops the daemon. No Prime launch in this pane: nothing.
     if closed.is_ok() {
         horch_core::harness::prime::finish_pane(
             &ctx.paths.state_root,
@@ -990,17 +821,12 @@ pub fn done_then(
     closed
 }
 
-/// Who this worker reports to: its brief says. A candidate's brief says
-/// nobody. A worker whose brief cannot be read reports to the orchestrator,
-/// as every worker did before briefs carried it.
 fn report_target(ctx: &RuntimeContext, workspace: Option<&str>, role: &str) -> ReportTarget {
     workspace
         .and_then(|w| Mailbox::in_context(ctx, w).read_brief(role).ok())
         .map_or(ReportTarget::Orchestrator, |b| b.report_to)
 }
 
-/// Whether a failed `git rev-parse --show-toplevel` means there is no git
-/// or no work tree here, so nothing can be unregistered.
 fn outside_repo(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let git_not_found = cause
@@ -1015,22 +841,15 @@ fn outside_repo(error: &anyhow::Error) -> bool {
     })
 }
 
-/// The first line `horch done` prints, so the worker sees progress at once.
-/// On stderr: stdout stays data.
 pub const CLOSING: &str = "closing: reporting to the orchestrator";
 
-/// The `done` steps against this process's ledger, mailbox and workspace.
 struct CliDone<'a> {
     ctx: &'a RuntimeContext,
-    /// The report [`DoneSteps::queue_report`] queued, for
-    /// [`DoneSteps::push_report`].
     outgoing: std::cell::RefCell<Option<Outgoing<'a>>>,
-    /// [`DoneSteps::after_mark_done`]: see [`done_then`].
     after_mark_done: &'a dyn Fn(),
 }
 
 impl CliDone<'_> {
-    /// The lines of the worktrees under `dir` that nobody registered.
     fn scan_unregistered(&self, dir: &std::path::Path) -> Result<Vec<String>> {
         Landing::new(
             self.ctx.bins.harness.git.clone(),
@@ -1055,8 +874,6 @@ impl CliDone<'_> {
         })
     }
 
-    /// The role name can start again: its old notices must not reach the
-    /// next worker that takes it. Best effort.
     fn drop_role_mail(&self, workspace: &str, role: &str) {
         let mail = Mail::to_role(&self.ctx.paths.state_root, workspace, role);
         if let Err(error) = mail.ack_all() {
@@ -1071,7 +888,6 @@ impl DoneSteps for CliDone<'_> {
             self.ctx.bins.harness.git.clone(),
             self.ctx.paths.state_root.clone(),
         );
-        // A landed claim whose worktree still holds work is open again.
         landing.reopen_landed_for_record(record_id)?;
         if !landing.record_has_open_claims(record_id)? {
             return Ok(Vec::new());
@@ -1141,12 +957,6 @@ impl DoneSteps for CliDone<'_> {
         }
     }
 
-    /// Queue the report to the orchestrator; [`DoneSteps::push_report`]
-    /// types it.
-    /// A workspace with no registered orchestrator
-    /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
-    /// that is not a failure, so `done` goes on and exits 0. A live channel
-    /// relay is an orchestrator too, with or without a registered pane.
     fn queue_report(&self, line: &str) -> Result<()> {
         let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
         *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true, None)?;
@@ -1210,11 +1020,6 @@ fn claim_line(
     })
 }
 
-/// Record this pane's public id under `role` so other panes can address it.
-/// Role `orchestrator` takes the workspace orchestrator lock first, as a
-/// fleet launch does (TRF-39): while another live process holds it, this
-/// refuses, names the holder's PID and changes no route. The lock is free
-/// again when this returns.
 pub fn register(ctx: &mut RuntimeContext, role: &str) -> Result<()> {
     let (mailbox, pane_id, _lock) = super::recipes::register_pane(
         ctx,
@@ -1236,7 +1041,6 @@ pub fn register(ctx: &mut RuntimeContext, role: &str) -> Result<()> {
     Ok(())
 }
 
-/// One worker variable from the context, when it is set.
 fn worker_var(
     ctx: &RuntimeContext,
     field: impl Fn(&horch_core::runtime::WorkerEnv) -> &Option<String>,
@@ -1244,9 +1048,6 @@ fn worker_var(
     ctx.worker.as_ref().and_then(|w| field(w).clone())
 }
 
-/// A required environment value, with a message naming what sets it. A
-/// worker that sets it inline instead runs sandboxed in Codex, where its
-/// report cannot get out (W2 C1), so the message says not to.
 fn require_env(key: &str, value: Option<String>) -> Result<String> {
     value.filter(|v| !v.is_empty()).with_context(|| {
         format!(
@@ -1258,7 +1059,6 @@ fn require_env(key: &str, value: Option<String>) -> Result<String> {
     })
 }
 
-/// Read-only tail of a registered role's visible pane.
 pub fn peek(ctx: &RuntimeContext, role: &str, lines: usize) -> Result<()> {
     let mailbox = Mailbox::resolve_in(&PaneHost::of(ctx).with_timeout(pane_list_timeout()), ctx)?;
     let herdr =
@@ -1302,8 +1102,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// A context in herdr pane p2 of workspace w1, with a fake herdr and a
-    /// scratch ledger. The second value is the folder of the workspace locks.
     fn register_ctx(dir: &std::path::Path) -> (RuntimeContext, std::path::PathBuf) {
         let bin = dir.join("herdr");
         let warm = crate::test_support::write_warmed(
@@ -1332,9 +1130,6 @@ mod tests {
         (ctx, locks)
     }
 
-    /// TRF-39: `horch register orchestrator` while a live orchestrator holds
-    /// the workspace lock refuses with the holder's PID and keeps the route.
-    /// Other roles register as before.
     #[test]
     fn trf_39_register_refuses_the_orchestrator_role_while_another_holds_the_lock() {
         use horch_core::taskledger::orchestrator;
@@ -1361,8 +1156,6 @@ mod tests {
         assert_eq!(mailbox.pane_for("dev-1").as_deref(), Some("p2"));
     }
 
-    /// TRF-39: with the workspace lock free, `horch register orchestrator`
-    /// takes the lock, writes the route, and frees the lock when it ends.
     #[test]
     fn trf_39_register_takes_the_orchestrator_role_when_the_lock_is_free() {
         use horch_core::taskledger::orchestrator;
@@ -1378,10 +1171,6 @@ mod tests {
         );
     }
 
-    /// TRF-45: `horch note`, `horch ledger progress` and `horch ledger note`
-    /// are 1 command. With a record and a worker row, each writes the
-    /// session record's history and the worker row's progress. Without a
-    /// record, the worker row is the only record. No JSON file is written.
     #[test]
     fn trf_45_note_and_ledger_progress_are_1_command_and_write_no_json() {
         use horch_core::runtime::MapEnv;
@@ -1484,7 +1273,6 @@ mod tests {
         assert!(json.is_empty(), "{json:?}");
     }
 
-    /// TRF-25: an answer carries `re #<id>` in the orchestrator tag, once.
     #[test]
     fn trf_25_an_answer_line_names_the_question_id() {
         assert_eq!(
@@ -1497,8 +1285,6 @@ mod tests {
         );
     }
 
-    /// TRF-25: an answer to the role that did not ask is refused, and the
-    /// error names the command for the role that asked.
     #[test]
     fn trf_25_an_answer_goes_only_to_the_role_that_asked() {
         assert!(check_answer_role("opus-1", "opus-1", "0a1b2c3d").is_ok());
@@ -1511,8 +1297,6 @@ mod tests {
         );
     }
 
-    /// #67: inside `done`, a courier that cannot start fails the queue and
-    /// leaves no mail, so the retry does not queue a second report.
     #[test]
     fn a_durable_line_without_a_courier_is_taken_back() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1538,9 +1322,6 @@ mod tests {
         assert!(mail.pending().unwrap().is_empty(), "no mail stays queued");
     }
 
-    /// #67: a wake inside `horch ledger done` is not the done report. A
-    /// courier that cannot start leaves it queued, so the push still goes
-    /// and `horch inbox` still shows it.
     #[test]
     fn a_durable_wake_without_a_courier_stays_queued() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1602,8 +1383,6 @@ mod tests {
         );
     }
 
-    /// W2 C1: a worker that met this error set the variable inline, ran
-    /// sandboxed in Codex, and lost its report. The error says not to.
     #[test]
     fn w2_an_unset_variable_says_not_to_set_it_inline() {
         let text = require_env("HORCH_RECORD_ID", None)
@@ -1623,8 +1402,6 @@ mod tests {
         .into()
     }
 
-    /// `horch done` reads "no git" and "not a work tree" as nothing to
-    /// register, and every other git failure as a failure.
     #[test]
     fn outside_repo_means_no_git_or_no_work_tree() {
         let toplevel = ["rev-parse", "--show-toplevel"];
@@ -1637,9 +1414,6 @@ mod tests {
         assert!(!outside_repo(&denied));
     }
 
-    /// The error of a line to a role nobody registered: it names the
-    /// registry and the known roles, and a worker's line to a missing
-    /// orchestrator gets the `horch done` hint.
     #[test]
     fn a_line_to_an_unregistered_role_names_the_known_roles() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1675,18 +1449,13 @@ mod tests {
         assert!(!operator.contains("no orchestrator runs"), "{operator}");
     }
 
-    /// #125: a resumed worker pane runs `horch inbox` and must not
-    /// acknowledge the orchestrator's mail.
     #[test]
     fn only_the_orchestrator_pane_acknowledges_the_inbox() {
         let public = |pane: &str| Some(format!("w1:{pane}"));
-        // The orchestrator's pane, in the internal or the public form.
         assert!(may_acknowledge(Some("p1"), public, Some("w1:p1")));
         assert!(may_acknowledge(Some("w1:p1"), |_| None, Some("w1:p1")));
-        // A worker pane.
         assert!(!may_acknowledge(Some("p2"), public, Some("w1:p1")));
         assert!(!may_acknowledge(Some("w1:p2"), |_| None, Some("w1:p1")));
-        // No pane (an operator shell) and no registered orchestrator.
         assert!(may_acknowledge(None, public, Some("w1:p1")));
         assert!(may_acknowledge(Some("p2"), public, None));
     }
@@ -1706,7 +1475,6 @@ mod tests {
         use super::super::context::testkit::*;
         use super::super::*;
 
-        /// The rendered `warning` line of `sonnet-1` at 311,225 tokens.
         fn sonnet_warning(w: &World) -> String {
             let vars = BTreeMap::from([
                 ("role", "sonnet-1"),
@@ -1717,20 +1485,16 @@ mod tests {
             prompts::context_message(&w.roster, "warning", &vars).unwrap()
         }
 
-        /// What `horch note` does: the note, then the check.
         fn note_in(w: &World, id: &str, text: &str) -> Option<String> {
             w.ledger.note(id, text).unwrap();
             note_check(&w.sources(), id).ok().flatten()
         }
 
-        /// CTX-10: over the threshold, the first note warns; the second is
-        /// silent (asked in this cycle).
         #[test]
         fn ctx_10_note_warns_once_over_threshold() {
             let w = World::new();
             w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
             let first = note_in(&w, "r-1", "step 1 done");
-            // The exact line of design §6.3.
             assert_eq!(
                 first.as_deref(),
                 Some(
@@ -1750,8 +1514,6 @@ mod tests {
             assert_eq!(events, ["spawned", "note", "context-warned", "note"]);
         }
 
-        /// CTX-10: no transcript, a pending reading, a harness without a
-        /// reader and a broken roster are silent; the note is recorded.
         #[test]
         fn ctx_10_note_silent_on_unknown_pending_or_error() {
             let w = World::new();
@@ -1770,8 +1532,6 @@ mod tests {
                 assert!(w.events(id, policy::EVENT_WARNED).is_empty(), "{id}");
             }
 
-            // A roster dir that does not read (an unreadable directory is
-            // the 1 roster error): `horch note` stays silent.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1791,7 +1551,6 @@ mod tests {
             }
         }
 
-        /// CTX-10: a compaction after the warning starts a new cycle.
         #[test]
         fn ctx_10_note_warns_again_after_compaction() {
             let w = World::new();
@@ -1812,8 +1571,6 @@ mod tests {
             assert_eq!(note_in(&w, "r-1", "y"), Some(sonnet_warning(&w)));
         }
 
-        /// CTX-10 (review finding 2): a marker cache dir that cannot be
-        /// written does not hide the warning.
         #[cfg(unix)]
         #[test]
         fn ctx_10_note_warns_with_a_read_only_cache_dir() {
