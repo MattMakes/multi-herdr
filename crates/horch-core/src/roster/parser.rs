@@ -25,8 +25,7 @@ pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// Split `---\n<frontmatter>\n---\n<body>`. The line end of the opening fence,
-/// `\n` or `\r\n` (a Windows checkout), is the line end of the closing fence.
+/// Split `---\n<frontmatter>\n---\n<body>`.
 pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
     let nl = if text.starts_with("---\r\n") {
         "\r\n"
@@ -43,7 +42,6 @@ pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
     Ok((&rest[..end], &rest[end + fence.len()..]))
 }
 
-/// The body with `\n` line ends and no trailing line end.
 fn body_text(body: &str) -> String {
     body.replace("\r\n", "\n")
         .trim_end_matches('\n')
