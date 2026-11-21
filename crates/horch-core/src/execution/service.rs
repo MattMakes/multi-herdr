@@ -26,11 +26,8 @@ use crate::runtime::RuntimeContext;
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::paneshell::PaneShell;
 
-/// How many numbers a spawn with no explicit role tries.
 const ROLE_TRIES: usize = 64;
-/// A role-claim lock older than this is broken: a claim takes milliseconds.
 const CLAIM_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
-/// How long a spawn waits for the role-claim lock.
 const CLAIM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Why a spawn did not start a worker.
@@ -175,10 +172,6 @@ impl ExecutionService<'_> {
         }
     }
 
-    /// Allocate the role and write the `Planned` record, under the
-    /// role-claim lock of the workspace. The record store is optimistic
-    /// (RR-5) and the role counter is a plain file, so without the lock 2
-    /// spawns can take 1 role.
     fn insert(&self, plan: ExecutionPlan, role: Option<&str>) -> Result<ExecutionPlan, SpawnError> {
         let workspace = WorkspaceId::new(self.mailbox.workspace_id())
             .map_err(|e| SpawnError::Store(e.into()))?;
@@ -193,8 +186,6 @@ impl ExecutionService<'_> {
         }
     }
 
-    /// The lock `role-claim-<workspace>.lock` beside the mailbox folder,
-    /// held by 1 spawn of the workspace at a time.
     fn claim_lock(&self) -> Result<crate::fsx::DirLockGuard> {
         let dir = self.mailbox.dir();
         let parent = dir
@@ -209,9 +200,6 @@ impl ExecutionService<'_> {
         )?)
     }
 
-    /// Name the role, check that it is free and write the record. A taken
-    /// explicit role is the inner error. With no explicit role, the next
-    /// free `<teammate>-<n>`, at most [`ROLE_TRIES`] numbers.
     fn claim(
         &self,
         records: &mut Vec<LedgerRecordV1>,

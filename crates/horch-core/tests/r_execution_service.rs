@@ -141,8 +141,6 @@ fn resume_plan(record: &LedgerRecordV1) -> ExecutionPlan {
     plan(&req, "unused", Some(record))
 }
 
-/// Spawn `plan` with no role as another `horch spawn` process would: its
-/// own store, mailbox and workspace client on the folders of `ctx`.
 fn spawn_apart(
     ctx: &RuntimeContext,
     project: &Path,
