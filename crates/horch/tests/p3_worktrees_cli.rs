@@ -87,6 +87,19 @@ struct World {
 
 impl World {
     fn with_a_tree() -> World {
+        World::start("")
+    }
+
+    /// The tree of T1 in a fleetd that lists its trees each 5 s. A rescue
+    /// waits for a `worktree_list` result with the HEAD of the tree, and the
+    /// first list runs before `worktree_add` makes the folder. With the
+    /// default period of 60 s, [`World::rescued`] used 65 to 74 s of its
+    /// 120 s wait (T-290).
+    fn with_a_rescuable_tree() -> World {
+        World::start("worktree_list_period_s = 5\n")
+    }
+
+    fn start(fleet_toml: &str) -> World {
         let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let mut w = World {
@@ -108,7 +121,9 @@ impl World {
         std::fs::create_dir_all(w.root().join("fleet")).unwrap();
         std::fs::write(
             w.root().join("fleet/fleet.toml"),
-            "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n",
+            format!(
+                "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n{fleet_toml}"
+            ),
         )
         .unwrap();
         seed_run_and_task(|args| drop(w.git(&proj, args)), &proj, &w.ledger());
@@ -465,7 +480,7 @@ fn worktrees_json_has_each_field() {
 
 #[test]
 fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_file() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     let rescue_ref = w.rescued();
     let n = rescue_ref.rsplit('/').next().unwrap();
     let branch = format!("rescue/T1-{n}");
@@ -512,7 +527,7 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
 /// custody removed still gives its rescue ref back.
 #[test]
 fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     let rescue_ref = w.rescued();
     let id = w.row().worktree_id;
     w.store()
@@ -544,7 +559,7 @@ fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
 /// when restore makes the tree.
 #[test]
 fn restore_runs_no_hook_of_the_project() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     w.rescued();
     let marker = w.root().join("hook-ran");
     let hook = w.proj().join(".git/hooks/post-checkout");
@@ -565,7 +580,7 @@ fn restore_runs_no_hook_of_the_project() {
 
 #[test]
 fn restore_refuses_when_the_branch_or_the_folder_exists_and_changes_nothing() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     w.rescued();
     let rows = w.rows();
     let tree = w.proj().join(".worktrees/rescue-T1-1");
