@@ -2806,10 +2806,19 @@ fn a_launch_of_an_unknown_teammate_leaves_no_live_row() {
     });
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["status"], "launch_failed", "{rows:?}");
-    let reason = rows[0]["end_reason"].as_str().unwrap();
+    let unknown = horch_core::roster::Roster::builtin()
+        .unwrap()
+        .require("no-such-teammate")
+        .unwrap_err();
     assert!(
-        reason.starts_with("unknown teammate 'no-such-teammate'."),
-        "{reason}"
+        unknown
+            .to_string()
+            .starts_with("unknown teammate 'no-such-teammate'."),
+        "{unknown}"
+    );
+    assert_eq!(
+        rows[0]["end_reason"].as_str().unwrap(),
+        format!("its spawn failed: {unknown}")
     );
 }
 
