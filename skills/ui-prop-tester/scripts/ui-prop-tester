@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_self() {
+  local path="$1" dir
+  while [ -L "$path" ]; do
+    dir="$(cd -P "$(dirname "$path")" && pwd)"
+    path="$(readlink "$path")"
+    case "$path" in /*) ;; *) path="$dir/$path" ;; esac
+  done
+  printf '%s/%s\n' "$(cd -P "$(dirname "$path")" && pwd)" "$(basename "$path")"
+}
+
+SELF="$(resolve_self "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SELF")"
+CACHE_DIR="${UI_PROP_TESTER_HOME:-$HOME/.local/state/horch/ui-prop-tester}"
+CACHED="$CACHE_DIR/bin/ui-prop-tester"
+INSTALL_HINT="cargo install --path crates/ui-prop-tester   (run it in a multi-herdr checkout)"
+
+fail() {
+  echo "ui-prop-tester: error: $1" >&2
+  exit "${2:-1}"
+}
+
+find_checkout() {
+  local candidate
+  for candidate in "${UI_PROP_TESTER_SOURCE:-}" "$SCRIPT_DIR/../../.." "$(git rev-parse --show-toplevel 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ -f "$candidate/crates/ui-prop-tester/Cargo.toml" ]; then
+      (cd -P "$candidate" && pwd)
+      return 0
+    fi
+  done
+  return 1
+}
+
+on_path() {
+  local found
+  found="$(command -v ui-prop-tester 2>/dev/null || true)"
+  [ -n "$found" ] || return 1
+  [ "$(resolve_self "$found")" != "$SELF" ] || return 1
+  printf '%s\n' "$found"
+}
+
+cache_is_stale() {
+  local checkout="$1"
+  [ -x "$CACHED" ] || return 0
+  [ -n "$(find "$checkout/crates/ui-prop-tester/src" "$checkout/crates/ui-prop-tester/Cargo.toml" -newer "$CACHED" -print -quit 2>/dev/null)" ]
+}
+
+build_into_cache() {
+  local checkout="$1"
+  command -v cargo >/dev/null 2>&1 || fail "no ui-prop-tester binary and no cargo to build one. Install Rust, then: $INSTALL_HINT" 3
+  echo "ui-prop-tester: building the binary from $checkout (first use, a few minutes)" >&2
+  (cd "$checkout" && cargo build --release --locked -p ui-prop-tester >&2) || fail "the build failed"
+  mkdir -p "$CACHE_DIR/bin"
+  cp "$checkout/target/release/ui-prop-tester" "$CACHED.new"
+  mv "$CACHED.new" "$CACHED"
+}
+
+if [ -n "${UI_PROP_TESTER_BIN:-}" ]; then
+  [ -x "$UI_PROP_TESTER_BIN" ] || fail "UI_PROP_TESTER_BIN=$UI_PROP_TESTER_BIN is not an executable file"
+  exec "$UI_PROP_TESTER_BIN" "$@"
+fi
+
+if BIN="$(on_path)"; then
+  exec "$BIN" "$@"
+fi
+
+if CHECKOUT="$(find_checkout)"; then
+  if cache_is_stale "$CHECKOUT"; then
+    build_into_cache "$CHECKOUT"
+  fi
+  exec "$CACHED" "$@"
+fi
+
+if [ -x "$CACHED" ]; then
+  exec "$CACHED" "$@"
+fi
+
+fail "no ui-prop-tester binary found. Install it with: $INSTALL_HINT" 3

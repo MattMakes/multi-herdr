@@ -13,7 +13,7 @@
 //! evening out the columns.
 //!
 //! Moved out of the CLI's `cmd/{tilecmd,layoutcmd,balancecmd}.rs` in A7. Every
-//! function takes [`Herdr`]: the tab, layout, move, resize and focus calls are
+//! function takes [`PaneHost`]: the tab, layout, move, resize and focus calls are
 //! not part of [`WorkspaceClient`](crate::workspace::client::WorkspaceClient).
 
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ use crate::messaging::mailbox::Mailbox;
 use crate::runtime::process::spawn_detached;
 use crate::runtime::RuntimeContext;
 use crate::workspace::balance;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::layout::{self, Orchestrator};
 use crate::workspace::model::{Direction, Layout};
 use crate::workspace::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
@@ -46,7 +46,7 @@ const LOCK_WAIT: Duration = Duration::from_secs(20);
 const LOCK_STALE: Duration = Duration::from_secs(60);
 
 /// Whether `workspace_id` is the `horch telemetry` workspace.
-fn is_telemetry_space(herdr: &Herdr, workspace_id: &str) -> bool {
+fn is_telemetry_space(herdr: &PaneHost, workspace_id: &str) -> bool {
     herdr.workspace_list().is_ok_and(|list| {
         list.iter().any(|w| {
             w.workspace_id == workspace_id && w.label.as_deref() == Some(TELEMETRY_WORKSPACE_LABEL)
@@ -137,7 +137,7 @@ impl Snapshot {
 /// One `tab list` plus one `pane list` plus one `pane layout` per tab: `pane
 /// layout` reports the whole tab that holds the pane it is asked about, and every
 /// pane in `pane list` carries its `tab_id`, so one pane per tab is enough.
-fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
+fn gather(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<Snapshot> {
     // The telemetry space holds no fleet, and its pane must stay where the
     // operator left it (design 12.3).
     if is_telemetry_space(herdr, workspace_id) {
@@ -162,7 +162,7 @@ fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Sna
 }
 
 /// Every tab that holds a pane, with its layout.
-fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
+fn read_tabs(herdr: &PaneHost, workspace_id: &str) -> Result<Vec<TabState>> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
     let states = tabs
@@ -188,7 +188,7 @@ fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
 }
 
 /// The tab the workspace shows now, when herdr says.
-fn active_tab(herdr: &Herdr, workspace_id: &str) -> Option<String> {
+fn active_tab(herdr: &PaneHost, workspace_id: &str) -> Option<String> {
     herdr
         .workspace_list()
         .ok()?
@@ -237,7 +237,7 @@ fn find_orchestrator(
 /// build a shape nobody planned. Aborting is safe - no pane is ever closed, so
 /// the workers sit in the scratch tab and the next run gathers them like any
 /// other panes and finishes the job.
-fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
+fn apply(herdr: &PaneHost, plan: &Plan) -> Result<usize> {
     let mut created: HashMap<usize, String> = HashMap::new();
     let mut moved = 0;
     for op in plan.ops() {
@@ -247,7 +247,7 @@ fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
 }
 
 /// Run 1 op. True when it moved a pane.
-fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
+fn apply_op(herdr: &PaneHost, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
     match op {
         Op::NewTab {
             pane,
@@ -274,7 +274,7 @@ fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Res
 }
 
 /// Move `pane` into a new tab, returning the id herdr gave the tab.
-fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
+fn new_tab(herdr: &PaneHost, op: &Op, pane: &str, label: &str) -> Result<String> {
     let result = herdr.pane_move_new_tab(pane, label)?;
     declined(op, result.changed, result.reason.as_deref())?;
     result
@@ -287,7 +287,7 @@ fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
 /// Move `pane` into `tab`; a tab the plan creates is looked up in `created`
 /// by its index.
 fn move_pane(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     op: &Op,
     (pane, tab, created): (&str, &TabRef, &HashMap<usize, String>),
     (split, target, ratio): (Direction, &str, Option<f64>),
@@ -324,7 +324,7 @@ fn declined(op: &Op, changed: bool, reason: Option<&str>) -> Result<()> {
 /// cannot accumulate. Two things stop it: `changed: false`, which is how the
 /// minimum pane width announces itself, and a divider asked to move from the same
 /// place twice, which means the previous op did not land.
-fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) -> Result<usize> {
+fn balance_tab(herdr: &PaneHost, mut layout: Layout, orchestrator: Option<&str>) -> Result<usize> {
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
     for _ in 0..MAX_BALANCE_OPS {
@@ -347,7 +347,7 @@ fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) ->
 }
 
 /// Even out every tab: equal columns, and the orchestrator on its share of tab 1.
-fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
+fn balance_all(herdr: &PaneHost, snapshot: &Snapshot) -> Result<usize> {
     let mut applied = 0;
     for tab in &snapshot.tabs {
         let orchestrator =
@@ -370,7 +370,7 @@ fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
 /// Best effort throughout. A view that cannot be restored must never fail a
 /// tiling that has already moved the panes.
 fn restore_focus(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     after: &Snapshot,
     before: Option<&FocusState>,
     before_tab: Option<&str>,
@@ -500,11 +500,14 @@ fn roles(ctx: &RuntimeContext, workspace_id: &str) -> HashMap<String, String> {
 /// `horch spawn` passes the pane it just made.
 pub fn run(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     newcomer: Option<&str>,
     plan_only: bool,
 ) -> Result<String> {
+    if !herdr.caps().geometry {
+        return Ok("the Herdr app arranges its own panes; nothing to tile\n".to_string());
+    }
     let snapshot = gather(ctx, herdr, workspace_id)?;
     let plan = tile::plan(&snapshot.fleet(newcomer));
     if plan_only {
@@ -580,7 +583,7 @@ fn ready_to_tile(
 
 fn run_live(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     snapshot: Snapshot,
     plan: &Plan,
@@ -634,7 +637,7 @@ fn run_live(
 /// pane, else this pane's own.
 pub fn workspace_of(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<String> {
@@ -646,8 +649,8 @@ pub fn workspace_of(
             .with_context(|| format!("herdr did not say which workspace holds {pane}")),
         (None, None) => Ok(Mailbox::resolve_in(herdr, ctx)
             .context(
-                "horch needs --workspace, or to run inside a herdr pane (HERDR_PANE_ID) or with \
-                 HORCH_WORKSPACE_ID set",
+                "horch needs --workspace, or to run inside a herdr pane or a Herdr app terminal \
+                 (HERDR_PANE_ID and HC_TERMINAL_ID are unset) or with HORCH_WORKSPACE_ID set",
             )?
             .workspace_id()
             .to_string()),
@@ -662,10 +665,13 @@ pub fn workspace_of(
 /// back to only evening out the columns.
 pub fn after_change(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     newcomer: Option<&str>,
 ) {
+    if !herdr.caps().geometry {
+        return;
+    }
     if ctx.settings.tiling == TilingMode::Disabled {
         // The operator asked for the old behaviour: even the columns and nothing
         // else.
@@ -688,6 +694,9 @@ pub fn after_change(
 /// outlives the pane, which fills the hole and lets herdr close an emptied
 /// overflow tab.
 pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
+    if !PaneHost::for_workspace(ctx, workspace_id).caps().geometry {
+        return;
+    }
     let Some(exe) = ctx.bins.current_exe.clone() else {
         return;
     };
@@ -719,7 +728,10 @@ pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
 /// The orchestrator is only sought on the tab that actually holds it. On the
 /// others every pane is a worker, and the positional guess - leftmost full-height
 /// pane - would quietly drop a worker column from the report.
-pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<String> {
+pub fn report(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<String> {
+    if !herdr.caps().geometry {
+        return report_without_geometry(ctx, herdr, workspace_id);
+    }
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
 
@@ -769,6 +781,50 @@ pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result
     Ok(layout::render_all(&analyses, &notes, &roles))
 }
 
+fn report_without_geometry(
+    ctx: &RuntimeContext,
+    herdr: &PaneHost,
+    workspace_id: &str,
+) -> Result<String> {
+    let tabs = herdr.tab_list(workspace_id)?;
+    let mut panes = herdr.pane_list(workspace_id)?;
+    panes.sort_by(|a, b| {
+        crate::workspace::place::address_key(&a.pane_id)
+            .cmp(&crate::workspace::place::address_key(&b.pane_id))
+    });
+    let roles: HashMap<String, String> = Mailbox::in_context(ctx, workspace_id)
+        .panes_to_roles()
+        .into_iter()
+        .collect();
+
+    let mut out = format!("space {workspace_id}\n");
+    for tab in &tabs {
+        let label_suffix = tab
+            .label
+            .as_deref()
+            .filter(|l| !l.is_empty())
+            .map(|l| format!(" ({l})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  tab {} {}{label_suffix}\n",
+            tab.number, tab.tab_id
+        ));
+        for pane in panes
+            .iter()
+            .filter(|p| p.tab_id.as_deref() == Some(tab.tab_id.as_str()))
+        {
+            let role = roles
+                .get(&pane.pane_id)
+                .map(|r| format!(" [{r}]"))
+                .unwrap_or_default();
+            let agent = pane.agent.as_deref().unwrap_or("shell");
+            let status = pane.agent_status.as_deref().unwrap_or("none");
+            out.push_str(&format!("    {}{role}: {agent} ({status})\n", pane.pane_id));
+        }
+    }
+    Ok(out)
+}
+
 fn holds(layout: &Layout, pane_id: &str) -> bool {
     layout.panes.iter().any(|p| p.pane_id == pane_id)
 }
@@ -812,7 +868,10 @@ pub fn orchestrator_of(ctx: &RuntimeContext, layout: &Layout) -> Option<String> 
 /// off target. Two things stop the loop: herdr reporting `changed: false`, which
 /// is how the minimum pane width announces itself, and a divider that is asked
 /// to move from the same place twice, which means the previous op did not land.
-pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Result<usize> {
+pub fn equalize(ctx: &RuntimeContext, herdr: &PaneHost, mut layout: Layout) -> Result<usize> {
+    if !herdr.caps().geometry {
+        return Ok(0);
+    }
     let orch = orchestrator_of(ctx, &layout);
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
@@ -840,7 +899,7 @@ pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Resu
 ///
 /// A grid that will not even out must never fail a spawn or a worker's shutdown,
 /// so this reports the problem and returns.
-pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &Herdr, layout: Layout) {
+pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &PaneHost, layout: Layout) {
     if let Err(e) = equalize(ctx, herdr, layout) {
         eprintln!("horch: could not even out the worker columns ({e:#}); carrying on");
     }
@@ -853,7 +912,7 @@ pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &Herdr, layout: Layout) {
 /// round-trips through `pane get` for the public one.
 pub fn balance_target(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<Layout> {
@@ -930,5 +989,98 @@ mod tests {
         assert!(path.exists(), "and the new holder now owns it");
         drop(taken);
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_09_tilers_do_nothing_without_geometry() {
+        use crate::runtime::MapEnv;
+        use crate::workspace::hc::HcApp;
+        use crate::workspace::model::{LayoutPane, Rect};
+
+        let dir = tempfile::tempdir().unwrap();
+        let hc_bin = dir.path().join("hc");
+        let app_bin = dir.path().join("herdr-app");
+        let sock = dir.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let hc_body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf 'hc %s\n' "$*" >> "$d/calls"
+case "$1" in
+ls) printf '{"hidden_finished":0,"terminals":[{"address":"t1"},{"address":"t2"}]}\n';;
+get)
+  case "$3" in
+  t1) printf '{"address":"t1","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"claude-code","state":"idle"},"status_ms":10}\n';;
+  t2) printf '{"address":"t2","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"codex","state":"working"},"status_ms":20}\n';;
+  esac;;
+esac"#;
+        let app_body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf 'app %s\n' "$*" >> "$d/calls"
+case "$1" in
+ls) printf '{"spaces":[{"id":"sp1","name":"fleet","folder":"/w","active":true,"tabs":[{"id":"tb1","name":"1","active":true,"settled":false,"terminals":[{"terminal":"t1","pane":"p1"},{"terminal":"t2","pane":"p2"}]}]}]}\n';;
+*) exit 1;;
+esac"#;
+        assert!(
+            crate::test_support::write_warmed(&hc_bin, hc_body, &["warm"])
+                .status
+                .success()
+        );
+        assert!(
+            crate::test_support::write_warmed(&app_bin, app_body, &["warm"])
+                .status
+                .success()
+        );
+
+        let state = dir.path().join("state");
+        let env = MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &state.to_string_lossy())
+            .with("HC_TERMINAL_ID", "t1");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let host = PaneHost::hc_app(HcApp::new(&hc_bin, &app_bin, &sock));
+
+        after_change(&ctx, &host, "sp1", Some("t2"));
+        settle_after_close(&ctx, "sp1");
+        let tile_out = run(&ctx, &host, "sp1", None, false).unwrap();
+        assert_eq!(
+            tile_out.trim(),
+            "the Herdr app arranges its own panes; nothing to tile"
+        );
+
+        let dummy_layout = Layout {
+            workspace_id: "sp1".into(),
+            tab_id: "tb1".into(),
+            area: Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 60,
+            },
+            panes: vec![LayoutPane {
+                pane_id: "t1".into(),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 60,
+                },
+            }],
+            focused_pane_id: None,
+            zoomed: false,
+        };
+        assert_eq!(equalize(&ctx, &host, dummy_layout).unwrap(), 0);
+        assert!(
+            !dir.path().join("calls").exists(),
+            "after_change, settle_after_close, run and equalize must make zero host calls without geometry"
+        );
+
+        let rep = report(&ctx, &host, "sp1").unwrap();
+        assert!(rep.contains("sp1"), "{rep}");
+        assert!(rep.contains("tb1"), "{rep}");
+        assert!(rep.contains("t1") && rep.contains("idle"), "{rep}");
+        assert!(rep.contains("t2") && rep.contains("working"), "{rep}");
     }
 }

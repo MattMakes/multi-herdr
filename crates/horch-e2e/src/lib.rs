@@ -23,6 +23,7 @@ pub mod expected;
 pub mod fleetd;
 pub mod fr10_agent;
 pub mod harness;
+pub mod hc_fake;
 pub mod idea_agent;
 pub mod ledger_seed;
 pub mod probe;
@@ -227,6 +228,42 @@ pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
 }
 
 /// The directory the fake binaries were built into (next to `horch`).
+///
+/// A test executable sits below that directory, and how far below depends on
+/// the Cargo version: `target/<profile>/deps/<test>-<hash>` up to Cargo 1.99,
+/// `target/<profile>/build/<package>/<hash>/out/<test>-<hash>` from Cargo
+/// 1.100. Walk up to the first directory that contains a fake. If no such
+/// directory exists, use the older layout so a caller's error names a useful
+/// path.
 pub fn bin_dir() -> PathBuf {
     harness::built_dir_of(&std::env::current_exe().expect("current exe"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bin_dir_finds_binaries_above_the_cargo_1_100_out_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("target/debug");
+        let out = profile.join("build/horch-e2e/hash/out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(
+            profile.join(format!("fake-herdr{}", std::env::consts::EXE_SUFFIX)),
+            "fake",
+        )
+        .unwrap();
+
+        assert_eq!(harness::built_dir_of(&out.join("horch-e2e-test")), profile);
+    }
+
+    #[test]
+    fn bin_dir_keeps_the_older_deps_fallback_before_binaries_exist() {
+        let profile = Path::new("target/debug");
+        assert_eq!(
+            harness::built_dir_of(&profile.join("deps/horch-e2e-test")),
+            profile
+        );
+    }
 }

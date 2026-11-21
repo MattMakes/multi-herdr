@@ -1276,7 +1276,11 @@ fn production_files() -> (PathBuf, Vec<PathBuf>) {
     let end = start + manifest[start..].find(']').unwrap();
     let mut files = Vec::new();
     for member in manifest[start..end].split('"').skip(1).step_by(2) {
-        if member == "crates/horch-platform" || member == "crates/horch-e2e" {
+        // ui-prop-tester: a standalone tool that no horch crate links.
+        if member == "crates/horch-platform"
+            || member == "crates/horch-e2e"
+            || member == "crates/ui-prop-tester"
+        {
             continue;
         }
         let dir = root.join(member);
@@ -2794,13 +2798,17 @@ fn process_starts(text: &str) -> Vec<(usize, String)> {
 /// `<crate>/src/<path>:<line>: <path>`, outside `PROCESS_START_ALLOWED`.
 /// It reads the `src/` of each crate. `horch-e2e` is test code: its library
 /// starts the development binaries with the environment that a test gives,
-/// and its `src/bin/` holds the fake agents. A `tests.rs` file and each
+/// and its `src/bin/` holds the fake agents. `ui-prop-tester` is a
+/// standalone tool that no horch crate links. A `tests.rs` file and each
 /// module that a test-only `cfg` declares are test code.
 fn process_starts_under(crates: &Path) -> Vec<String> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(crates).unwrap() {
         let dir = entry.unwrap().path();
-        if dir.file_name().is_some_and(|n| n != "horch-e2e") && dir.join("src").is_dir() {
+        let own = dir
+            .file_name()
+            .is_some_and(|n| n != "horch-e2e" && n != "ui-prop-tester");
+        if own && dir.join("src").is_dir() {
             rust_files(&dir.join("src"), &mut files);
         }
     }
@@ -2826,6 +2834,29 @@ fn process_starts_under(crates: &Path) -> Vec<String> {
     }
     found.sort();
     found
+}
+
+/// The scans of PL-2 and SR-7 skip `ui-prop-tester`. That is safe only
+/// while no other crate of the workspace has it in its dependencies.
+#[test]
+fn no_crate_of_horch_depends_on_ui_prop_tester() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&crates).unwrap() {
+        let dir = entry.unwrap().path();
+        let manifest = dir.join("Cargo.toml");
+        if dir.file_name().is_some_and(|n| n == "ui-prop-tester") || !manifest.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        if text.contains("ui-prop-tester") || text.contains("ui_prop_tester") {
+            found.push(relative(&manifest, &crates));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these crates name ui-prop-tester: {found:?}"
+    );
 }
 
 /// SR-7: production code starts each process through the launcher or the

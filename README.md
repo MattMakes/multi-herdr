@@ -1,8 +1,11 @@
 # multi-herdr
 
-"horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
+"horch" multi-agent orchestration layouts for [herdr](https://herdr.dev) —
+supporting both the `herdr` TUI server and `herdr-core` (`hc`) plus the Herdr
+desktop app (`herdr-app`) — in Rust.
 
-Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
+Three binaries, no runtime dependencies beyond the pane host (`herdr` or `hc` +
+`herdr-app`) itself. No bash, no jq, no
 Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
 skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
@@ -192,6 +195,7 @@ See [docs/testing-and-gates.md](docs/testing-and-gates.md) and
 
 | capability | default | turn it on | turn it off | where |
 |---|---|---|---|---|
+| Pane host backend | `hc` inside a Herdr desktop app terminal; `herdr` everywhere else | `--backend hc`, or `HORCH_BACKEND=hc` | `--backend herdr`, or `HORCH_BACKEND=herdr` | global flag, environment |
 | Update horch and the agent CLIs at fleet start | on | - | `--no-update`, or `HORCH_NO_UPDATE=1` | `horch fleet` / `horch orchestration` flag, environment |
 | Release cooldown of the agent CLI updates | 7 days | `HORCH_UPDATE_COOLDOWN_DAYS=<days>` | `HORCH_UPDATE_COOLDOWN_DAYS=0` | environment |
 | Stale-binary warning of `doctor`, `spawn`, `inbox` | on | - | `HORCH_NO_SELF_CHECK=1` | environment |
@@ -250,14 +254,48 @@ one, but only when a release is newer than its version.
 If you download an archive in a browser on macOS, clear the quarantine flag
 before you run it: `xattr -d com.apple.quarantine horch herdr-install`.
 
+### Pick and start your pane host first
+
+`horch` (and the `herdr-fleet` launcher) connects to one of **two separate
+terminal hosts**. They are independent daemons with **no bridge between them**,
+and neither `horch fleet` nor `herdr-fleet` starts a server for you — start the
+one you want first:
+
+- **Herdr desktop app (`hc` backend):** powered by `herdr-core` (`hc` +
+  `herdr-app`). Open the Herdr desktop app before starting a fleet. Terminals
+  live in `herdr-core` — visible in the Herdr app and `hc ls`, **not** in the
+  `herdr` CLI/TUI.
+- **`herdr` CLI/TUI (`herdr` backend):** powered by `herdr server`. Install it
+  with `herdr-install` if you do not have it yet, then launch `herdr` or run
+  `herdr server` headless. Terminals live in `herdr server` — visible in the
+  `herdr` CLI/TUI, **not** in the Herdr desktop app or `hc ls`.
+
+Which host `horch` / `herdr-fleet` talks to depends on the flag and the terminal
+you run it from:
+
+- **`horch fleet`** / **`herdr-fleet`** (no flag):
+  - Inside a **Herdr desktop app** terminal (`HC_TERMINAL_ID` is set) → uses
+    **`hc`** (`herdr-core` + the Herdr desktop app).
+  - Anywhere else (Ghostty, iTerm, Terminal.app, `herdr` TUI, etc.) → uses
+    **`herdr`** (`herdr server` / CLI/TUI).
+- **`horch fleet --backend herdr`** / **`herdr-fleet --backend herdr`** (or
+  `HORCH_BACKEND=herdr`) → always uses **`herdr server`** (the `herdr`
+  CLI/TUI), even from inside a Herdr desktop app terminal.
+- **`horch fleet --backend hc`** / **`herdr-fleet --backend hc`** (or
+  `HORCH_BACKEND=hc`) → always uses **`herdr-core` + the Herdr desktop app**,
+  from any terminal.
+
+`horch doctor` and `horch smoke` follow the exact same rules (pass
+`--backend hc` or `--backend herdr` to check a specific host).
+
 ### From source (contributors)
 
 Build and put the binaries on your PATH:
 
 ```bash
 cargo build --release
-./target/release/herdr-install          # if you do not have herdr yet
-./target/release/horch install           # copies horch to ~/.local/bin
+./target/release/herdr-install          # if you want the herdr CLI/TUI server and do not have it yet
+./target/release/horch install          # copies horch to ~/.local/bin
 ```
 
 `horch install` prints what to add to your PATH if the directory is not already
@@ -267,13 +305,13 @@ on it. On Windows the default install directory is
 Then check your setup and verify the machinery end to end:
 
 ```bash
-horch doctor            # herdr reachable? roster ok? host tools, effort overrides, stale state
-horch smoke messaging   # 2-pane check of the messaging primitives, no agents
-horch smoke fleet       # full spawn -> ledger -> report -> self-close check
+horch doctor                  # checks the resolved host (add --backend hc or --backend herdr to pick one)
+horch smoke messaging         # 2-pane check of the messaging primitives, no agents
+horch smoke fleet             # full spawn -> ledger -> report -> self-close check
 ```
 
-`horch doctor` stops with an error when herdr is missing or its server is
-unreachable. It then prints a warning, and still exits 0, for a roster problem,
+`horch doctor` stops with an error when the resolved pane host (`herdr`, or `hc`
++ `herdr-app`) is missing or unreachable. It then prints a warning, and still exits 0, for a roster problem,
 for a host tool that an offered teammate needs (`xcodebuild` for the Swift
 team), and for a setting that overrides every teammate's effort. Run it from
 your project directory: it counts the teammates the orchestrator would be
@@ -298,8 +336,9 @@ and keeps state whose owner is live or unknown.
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
 
-Day to day: `just install` once, then `herdr-fleet` from any project.
-To pick up new changes, run `git pull` yourself, then `just install` again.
+Day to day: `just install` once, then run `herdr-fleet` from any project (see
+[Choosing a pane host](#choosing-a-pane-host-herdr-vs-hc) below). To pick up new
+changes, run `git pull` yourself, then `just install` again.
 
 ## Releases
 
@@ -357,6 +396,12 @@ again. A teammate file, a fallback, a router or planner choice and a
 competition still cannot reach a reserved tier. A Claude model on a Codex
 teammate is refused: pick a Claude teammate.
 
+`game-design-juicer` is a third Fable seat, by the operator's exception
+(`SEATS_WITH_FALLBACKS`). It starts only when named, like the council seats,
+but it names `opus` as its fallback: when Fable's own window is used up and
+Opus still has room, it runs on Opus at the same high effort. A pool-wide
+Claude limit blocks both.
+
 Every other briefing is written for an Opus or Codex-Sol reader: the
 orchestrator does the reasoning that needs its tier, writes the result to a
 file, and hands the execution down. The seats are a list in the code
@@ -364,8 +409,8 @@ file, and hands the execution down. The seats are a list in the code
 on a reserved tier, a seat off its own tier or with fallbacks, and any fallback
 that names a seat, so the rule cannot be broken by adding a file.
 
-Everything needs a running herdr server: launch the herdr app, or run
-`herdr server` headless.
+Every command needs its chosen pane host already running: open the Herdr desktop
+app (for `hc`), or launch `herdr` / run `herdr server` headless (for `herdr`).
 
 `horch orchestration` is the simpler alternative: a fixed 5-pane workspace with
 no ledger and no dynamic spawning.
@@ -431,6 +476,7 @@ registry to update.
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
 | `architect-reviewer-light` | Claude | Opus | medium | Code-sweep rounds 2 and 3 only. Read-only    |
+| `root-cause-auditor`   | Claude | Opus   | high   | Finds code patched around a stale comment or core flaw; fixes the root cause when told |
 | `codex-reviewer-light` | Codex  | Terra  | medium | Code-sweep rounds 2 and 3 only               |
 | `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
 | `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
@@ -443,6 +489,9 @@ registry to update.
 | `fable-creative`       | Claude | Fable  | high   | Creative council seat; also combines the designs |
 | `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
 | `opus-creative`        | Claude | Opus   | high   | Creative council seat |
+| `game-design-juicer`   | Claude | Fable (Opus fallback) | high | Studies a game or design doc; proposes balanced juice |
+| `game-design-incremental-specialist` | Claude | Opus | high | Incremental and idle game math: designs, proves and rebalances progression; says "not ready" when the proof fails |
+| `addictive-game-design-reviewer` | Claude | Opus | high | Reviews a built incremental game's source; ranks what to rebalance, redo, add or remove |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
@@ -554,7 +603,9 @@ A fleet boots from this repository alone. The orchestrator briefing, the worker
 briefing and the orchestration playbook all ship here: the two briefings in
 [`teammates/_base/`](teammates/), the playbook as the bundled
 [`orchestrate`](skills/orchestrate/SKILL.md) skill, attached to
-`orchestrator` and `orchestrator-codex` by name. No `~/.claude/skills` entry
+`orchestrator` and `orchestrator-codex` by name. Both also carry
+[`make-videos`](skills/make-videos/SKILL.md), which turns a game's git history
+into a devblog video series. No `~/.claude/skills` entry
 and no plugin is required or consulted at boot, and an installed `horch` works
 with no checkout because both are compiled in.
 
@@ -1084,9 +1135,9 @@ lands: the verifier of fleetd runs its steps, and landing follows.
 
 | profile | steps before land | token cost |
 |---|---|---|
-| `full` | check, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
-| `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
-| `minimal` | check | lowest |
+| `full` | check, comment-sweep, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
+| `light` (default) | check, comment-sweep, complexity-sweep | low: the check is the task's own command; comment-sweep is 1 `comment-remover` worker per task; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
+| `minimal` | check, comment-sweep | lowest: the check and 1 `comment-remover` worker per task |
 
 Worktrees that no step takes to an outcome are *parked*:
 `horch worktree triage` lists them with the facts for a decision, and `horch worktree triage apply` runs the operator's decisions. See
@@ -1107,6 +1158,28 @@ when the project has a matching file (`offer_when`). Skills are bundled
 team, how to refresh a copied skill and what `horch agent-list` shows. [docs/README.md](docs/README.md) is the
 contributor handbook, including the gate rules: never run the gate under
 `git rebase -x`, and run it through the slot wrapper when other gates run.
+
+## ui-prop-tester: property testing for web and terminal UIs
+
+`ui-prop-tester` is a second binary in this workspace (`crates/ui-prop-tester`).
+It walks a web page in Chromium or a program in a pseudo-terminal with seeded
+random actions and checks temporal properties after every step. It is not
+part of a horch release archive; build it from a checkout:
+
+```bash
+cargo install --path crates/ui-prop-tester
+ui-prop-tester browser test --headless --time-limit 60s --output-path run.trace http://localhost:3000
+ui-prop-tester terminal test --actions-max 200 --output-path repl.trace python3 -q
+ui-prop-tester trace run.trace
+ui-prop-tester browser shrink --trace run.trace --output-path min.trace
+```
+
+Exit 0 means no violation within the limits, 1 an operational error, 2 a
+property violation. The bundled `ui-prop-tester` skill
+([skills/ui-prop-tester/SKILL.md](skills/ui-prop-tester/SKILL.md)) teaches
+agents the workflow and the specification API; `qa-engineer` and
+`frontend-developer` can load it. The behaviour spec is
+[docs/specs/ui-prop-tester.md](docs/specs/ui-prop-tester.md).
 
 ## Keeping the docs current
 
@@ -1244,7 +1317,10 @@ less often: only when their newest release has been out for a week.
 | `HORCH_VERIFY`       | The verification profile of `horch fleet`: `full`, `light` (default) or `minimal`, like `--verify` |
 | `HORCH_UPDATE_TIMEOUT_MS` | The time limit of 1 agent CLI updater. Defaults to 180000 |
 | `HORCH_UPDATE_COOLDOWN_DAYS` | How old an agent CLI release must be before the update step installs it. Defaults to 7; `0` turns the cooldown off |
-| `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |
+| `HORCH_BACKEND`      | Pane host backend: `herdr` (`herdr server` / CLI/TUI) or `hc` (`herdr-core` + Herdr desktop app). Overrides terminal auto-detection (`--backend` overrides this) |
+| `HORCH_HERDR_BIN`    | Which `herdr` CLI to drive. Defaults to `herdr`                |
+| `HORCH_HC_BIN`       | Which `hc` CLI to drive on the `hc` backend. Defaults to `hc`  |
+| `HORCH_HERDR_APP_BIN` | Which `herdr-app` CLI to drive on the `hc` backend. Defaults to `herdr-app` |
 | `HORCH_SQLITE3_BIN`  | Which `sqlite3` reads OpenCode's database                       |
 | `HORCH_OLLAMA_BIN`   | Which `ollama` the local-pool check asks                       |
 | `HORCH_OPENCODE_DB`  | OpenCode's database. Defaults to `~/.local/share/opencode/opencode.db` |

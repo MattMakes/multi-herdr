@@ -1,0 +1,100 @@
+{
+  "upgrades": [
+    {
+      "id": "long_wick",
+      "name": "Long wick",
+      "cost": 300,
+      "target": "candle",
+      "mult": 2.0,
+      "unlock_at": 120
+    },
+    {
+      "id": "dry_matches",
+      "name": "Dry matches",
+      "cost": 900,
+      "target": "click",
+      "mult": 3.0,
+      "unlock_at": 400
+    },
+    {
+      "id": "clean_glass",
+      "name": "Clean glass",
+      "cost": 5000,
+      "target": "lantern",
+      "mult": 2.0,
+      "unlock_at": 2000
+    },
+    {
+      "id": "wide_tank",
+      "name": "Wide tank",
+      "cost": 110000,
+      "target": "oil_lamp",
+      "mult": 2.0,
+      "unlock_at": 50000
+    },
+    {
+      "id": "mirror_row",
+      "name": "Mirror row",
+      "cost": 500000,
+      "target": "all",
+      "mult": 1.5,
+      "unlock_at": 2500000
+    },
+    {
+      "id": "quick_hands",
+      "name": "Quick hands",
+      "cost": 800000,
+      "target": "click",
+      "mult": 3.0,
+      "unlock_at": 4500000
+    },
+    {
+      "id": "gas_main",
+      "name": "Gas main",
+      "cost": 1500000,
+      "target": "gas_lamp",
+      "mult": 2.0,
+      "unlock_at": 8000000
+    },
+    {
+      "id": "wax_works",
+      "name": "Wax works",
+      "cost": 30000000,
+      "target": "candle",
+      "mult": 4.0,
+      "unlock_at": 60000000
+    },
+    {
+      "id": "carbon_rods",
+      "name": "Carbon rods",
+      "cost": 140000000,
+      "target": "arc_lamp",
+      "mult": 2.0,
+      "unlock_at": 400000000
+    },
+    {
+      "id": "brass_fittings",
+      "name": "Brass fittings",
+      "cost": 1500000000,
+      "target": "lantern",
+      "mult": 4.0,
+      "unlock_at": 3000000000
+    },
+    {
+      "id": "lens_array",
+      "name": "Lens array",
+      "cost": 6000000000,
+      "target": "sun_tower",
+      "mult": 2.0,
+      "unlock_at": 50000000000
+    },
+    {
+      "id": "road_crew",
+      "name": "Road crew",
+      "cost": 20000000000,
+      "target": "all",
+      "mult": 1.5,
+      "unlock_at": 120000000000
+    }
+  ]
+}

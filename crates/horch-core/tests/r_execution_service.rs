@@ -157,6 +157,7 @@ fn spawn_apart(
         workspace: &fake,
         mailbox: &mailbox,
         tile: &tile,
+        open_pane: None,
         ledger_worker: None,
         task_yaml: None,
     };
@@ -172,6 +173,7 @@ impl World {
             workspace: &self.fake,
             mailbox: &self.mailbox,
             tile: &tile,
+            open_pane: None,
             ledger_worker: None,
             task_yaml: None,
         };

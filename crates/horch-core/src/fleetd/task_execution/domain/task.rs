@@ -79,7 +79,7 @@ impl AttemptState {
     }
 }
 
-/// The id of attempt `n` of task `task_id`, as the schema v8 backfill
+/// The id of attempt `n` of task `task_id`, as the backfill of the Phase 1 schema version
 /// writes it.
 pub fn attempt_id(task_id: &str, n: i64) -> String {
     format!("{task_id}/A{n}")

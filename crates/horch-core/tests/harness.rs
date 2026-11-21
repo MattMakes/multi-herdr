@@ -88,8 +88,16 @@ fn harness_prime_daemon_args_snapshot() {
     let tmp = tempfile::Builder::new()
         .prefix("hp")
         .tempdir_in("/tmp")
+        .or_else(|_| tempfile::Builder::new().prefix("hp").tempdir())
         .unwrap();
-    let ctx = ctx(tmp.path());
+    let ctx = RuntimeContext::from_env(
+        &MapEnv::new("/")
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &tmp.path().join("s").to_string_lossy())
+            .with("PATH", "/nonexistent")
+            .with("HORCH_PRIME_BIN", "/fake/prime-agent"),
+    )
+    .unwrap();
     let roster = Roster::builtin().unwrap();
     let teammate = roster.require("prime").unwrap().clone();
     let adapter = HarnessKind::Prime.adapter();
@@ -227,21 +235,26 @@ fn arc_11_opencode_discovery_by_workdir() {
 
 /// A workdir given as the temp dir's own spelling (`/var/...` on macOS)
 /// matches a session recorded under its canonical path
-/// (`/private/var/...`). On other systems a symlinked temp dir stands in.
+/// (`/private/var/...`). A temp dir that is already canonical, such as a
+/// Codex pane's TMPDIR, gets a symlinked dir in its place.
 #[test]
 fn arc_11_canonical_tmp_paths() {
     let tmp = tempfile::tempdir().unwrap();
     let real = tmp.path().join("real");
     std::fs::create_dir_all(&real).unwrap();
     let canonical = std::fs::canonicalize(&real).unwrap();
+    assert_eq!(
+        canonical,
+        std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(tmp.path().file_name().unwrap())
+            .join("real")
+    );
 
-    #[cfg(target_os = "macos")]
-    let given = {
-        assert_ne!(real, canonical, "macOS temp dirs live under /private");
+    #[cfg(unix)]
+    let given = if real != canonical {
         real.clone()
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let given = {
+    } else {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         link

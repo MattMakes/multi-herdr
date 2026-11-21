@@ -16,13 +16,17 @@ use serde::{Deserialize, Serialize};
 use crate::execution::{ReportTarget, SessionMode};
 use crate::harness::HarnessKind;
 use crate::roster::Teammate;
-use crate::runtime::BinOverrides;
+use crate::runtime::{Backend, BinOverrides};
 
 /// The schema this binary writes.
 pub const SCHEMA: u32 = 2;
 
 fn schema_v1() -> u32 {
     1
+}
+
+fn is_herdr(b: &Backend) -> bool {
+    *b == Backend::Herdr
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +105,10 @@ pub struct Brief {
     /// `horch result` finds its attempt by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_yaml: Option<String>,
+    /// Which pane host owns this worker's workspace. Absent on older briefs,
+    /// which are `herdr`.
+    #[serde(default, skip_serializing_if = "is_herdr")]
+    pub backend: Backend,
 }
 
 fn report_to_orchestrator() -> ReportTarget {
@@ -168,6 +176,7 @@ impl Brief {
             ),
             ("HORCH_TASK", self.task.as_str()),
             ("HORCH_PROJECT_DIR", self.project_dir.as_str()),
+            ("HORCH_BACKEND", self.backend.as_str()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -266,6 +275,7 @@ mod tests {
             fleet_root: None,
             controller: None,
             task_yaml: None,
+            backend: Backend::Herdr,
         }
     }
 
@@ -364,12 +374,14 @@ mod tests {
             ("HORCH_RESUME", "0"),
             ("HORCH_TASK", "do the thing"),
             ("HORCH_PROJECT_DIR", "/tmp/proj"),
+            ("HORCH_BACKEND", "herdr"),
             ("HORCH_STATE_DIR", "/state"),
             ("HORCH_TEAMMATES_DIR", "/roster"),
             ("FLEET_ROOT", "/srv/fleet"),
         ] {
             assert_eq!(env.get(key).map(String::as_str), Some(want), "{key}");
         }
+        assert_eq!(BinOverrides::VARS.len(), 12);
         for (i, key) in BinOverrides::VARS.iter().enumerate() {
             assert_eq!(env.get(*key), Some(&format!("/bin/{i}")), "{key}");
         }
@@ -393,5 +405,39 @@ mod tests {
         assert!(back
             .transport_env()
             .contains(&("HORCH_TASK_YAML".into(), path.into())));
+    }
+
+    #[test]
+    fn hcb_02_brief_carries_the_backend() {
+        let mut b = brief();
+        assert_eq!(b.backend, crate::runtime::Backend::Herdr);
+        let default_json = serde_json::to_value(&b).unwrap();
+        assert!(
+            default_json.get("backend").is_none(),
+            "herdr brief omits backend: {default_json}"
+        );
+
+        b.backend = crate::runtime::Backend::Hc;
+        b.set_overrides(BinOverrides {
+            hc: Some("/fake/hc".into()),
+            herdr_app: Some("/fake/herdr-app".into()),
+            ..BinOverrides::default()
+        });
+        let hc_json = serde_json::to_value(&b).unwrap();
+        assert_eq!(hc_json["backend"], "hc");
+
+        let back = Brief::from_json(&hc_json.to_string()).unwrap();
+        assert_eq!(back.backend, crate::runtime::Backend::Hc);
+        let env: std::collections::BTreeMap<String, String> =
+            back.transport_env().into_iter().collect();
+        assert_eq!(env.get("HORCH_BACKEND").map(String::as_str), Some("hc"));
+        assert_eq!(
+            env.get("HORCH_HC_BIN").map(String::as_str),
+            Some("/fake/hc")
+        );
+        assert_eq!(
+            env.get("HORCH_HERDR_APP_BIN").map(String::as_str),
+            Some("/fake/herdr-app")
+        );
     }
 }

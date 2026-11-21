@@ -209,6 +209,10 @@ class Cdp {
 // window never goes below WINDOW_MIN; Emulation.setDeviceMetricsOverride sets the viewport.
 // --allow-file-access-from-files lets a file:// scene read its own image pixels. Without it
 // the canvas is tainted and the pre-upscale check cannot run. It has no effect on http pages.
+// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
+// during its start leaves that copy on the disk, and macOS records each copy as one more
+// "Google Chrome" in its privacy lists. NO_CODE_SIGN_CLONE stops the copy.
+const NO_CODE_SIGN_CLONE = "--disable-features=MacAppCodeSignClone";
 const WINDOW_MIN = { width: 800, height: 600 };
 
 function chromeArgs(userDataDir, width, height) {
@@ -220,7 +224,7 @@ function chromeArgs(userDataDir, width, height) {
     "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows", "--disable-extensions",
     "--no-first-run", "--no-default-browser-check", "--disable-sync",
-    "--disable-component-update", "--metrics-recording-only", "--allow-file-access-from-files", "about:blank",
+    "--disable-component-update", "--metrics-recording-only", "--allow-file-access-from-files", NO_CODE_SIGN_CLONE, "about:blank",
   ];
 }
 
@@ -1629,6 +1633,10 @@ async function testMissingChrome() {
   assertEq(error.message, `Chrome not found at ${missing}. Set CHROME_PATH or install Google Chrome.`, "message");
 }
 
+function testNoCodeSignClone() {
+  check(chromeArgs("/tmp/x", 64, 48).includes("--disable-features=MacAppCodeSignClone"), "Chrome starts without --disable-features=MacAppCodeSignClone");
+}
+
 const restoreEnv = (key, value) => (value === undefined ? delete process.env[key] : (process.env[key] = value));
 
 async function testMissingSeek(root) {
@@ -1915,6 +1923,7 @@ const BASE_TESTS = [
   ["ffmpeg encodes PNG frames to CFR H.264 High yuv420p", testEncode],
   ["--package writes captions, chapters, cover, previews and 3 aspects", testPackage],
   ["a missing Chrome binary gives a usage error with a clear message", testMissingChrome],
+  ["Chrome starts with the macOS code-sign clone off", testNoCodeSignClone],
   ["subframe n of frame k seeks k + n / count", testSubframeTimes],
   ["default workers are 60 % of CPUs, 1 to 8", testWorkers],
   ["scope samples are first, quarters and last", testSamples],

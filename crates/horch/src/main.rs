@@ -17,8 +17,8 @@ use horch::{bootstrap, exit, output};
 use horch_core::execution::service::SpawnError;
 use horch_core::execution::TilingMode;
 use horch_core::runtime::{EnvSource, ProcessEnv};
-use horch_core::workspace::herdr::HerdrFailed;
 use horch_core::workspace::model::Direction;
+use horch_core::workspace::HerdrFailed;
 
 #[derive(Parser)]
 #[command(
@@ -32,6 +32,9 @@ use horch_core::workspace::model::Direction;
     arg_required_else_help = true
 )]
 struct Cli {
+    /// Pane host backend (`herdr` or `hc`). Overrides `HORCH_BACKEND` and pane detection.
+    #[arg(long, global = true, value_name = "BACKEND")]
+    backend: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -103,9 +106,11 @@ enum LaunchCommand {
         #[arg(long, value_name = "SESSION_ID")]
         resume: Option<String>,
         /// How much each task is verified before it lands; the default for
-        /// the run the orchestrator creates. `full`: check, AI code review
-        /// (code-sweep), complexity-sweep, recheck. `light` (the default):
-        /// check and complexity-sweep, no AI reviewers. `minimal`: check only.
+        /// the run the orchestrator creates. Every profile runs the check and
+        /// comment-sweep (a comment-remover worker deletes the comments the
+        /// task added). `full` adds AI code review (code-sweep),
+        /// complexity-sweep and recheck. `light` (the default) adds
+        /// complexity-sweep, no AI reviewers. `minimal` adds nothing.
         #[arg(long, value_name = "PROFILE", env = "HORCH_VERIFY")]
         verify: Option<horch_core::taskledger::model::VerifyProfile>,
     },
@@ -841,7 +846,9 @@ fn codex_sandbox_hint(
             }
             _ => false,
         };
-        inner || e.chain().any(|c| c.is::<HerdrFailed>())
+        inner
+            || e.chain()
+                .any(|c| c.is::<HerdrFailed>() || c.is::<horch_core::workspace::HcFailed>())
     }
     (codex_sandbox.is_some() && herdr_failed(e)).then(|| {
         format!(
@@ -878,7 +885,7 @@ fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     // The one read of the process environment. Every command takes its
     // values from this context.
-    let mut ctx = bootstrap::context()?;
+    let mut ctx = bootstrap::context_with_backend(cli.backend.as_deref())?;
     // A `horch_access: report` pane reaches only its outbox and its report
     // socket.
     if let Some(socket) = ctx.report_socket.clone() {
@@ -1064,7 +1071,7 @@ impl MessagingCommand {
                 done(cmd::messaging::inbox(ctx, roles, peek))
             }
             MessagingCommand::Peek { role, lines } => done(cmd::messaging::peek(ctx, &role, lines)),
-            MessagingCommand::Note { text, fact } => done(note_command(ctx, &joined(&text), fact)),
+            MessagingCommand::Note { text, fact } => note_command(ctx, &joined(&text), fact),
         }
     }
 }
@@ -1332,7 +1339,7 @@ impl ToolCommand {
 }
 
 /// `horch note`: a note on the worker's record, or a project fact.
-fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
+fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<ExitCode> {
     if !fact {
         return cmd::messaging::note(ctx, text);
     }
@@ -1343,7 +1350,7 @@ fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
     } else {
         "Project fact already recorded."
     });
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn mode_command(ctx: &mut Ctx, role: String, mode: &str, timeout: Option<u64>) -> Result<ExitCode> {
@@ -1456,7 +1463,10 @@ mod tests {
     fn report_mode_routes_3_commands_and_refuses_the_rest() {
         use horch_core::messaging::report::{self, Request};
         use std::sync::{Arc, Mutex};
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = report::socket_path(tmp.path(), "r1");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();

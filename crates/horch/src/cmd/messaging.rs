@@ -34,7 +34,7 @@ use horch_core::vcs::git::GitCli;
 use horch_core::vcs::git::GitClient;
 use horch_core::vcs::landing::Landing;
 use horch_core::workspace::arrange;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 use super::context::{self, Sources};
 use super::operator_request::Answer;
@@ -155,7 +155,7 @@ fn is_durable(sender: Option<&str>, role: &str) -> bool {
 /// is not pushed yet.
 struct Outgoing<'a> {
     ctx: &'a RuntimeContext,
-    herdr: Herdr,
+    herdr: PaneHost,
     mailbox: Mailbox,
     role: String,
     sender: Option<String>,
@@ -187,9 +187,10 @@ fn queue_as<'a>(
 ) -> Result<Option<Outgoing<'a>>> {
     // Inside a push budget, resolving the mailbox (a `pane get` without
     // HORCH_WORKSPACE_ID) ends at the push deadline too.
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).until(delivery::push_deadline());
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)
+    let mailbox = Mailbox::resolve_in(&PaneHost::of(ctx).until(delivery::push_deadline()), ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
+    let herdr =
+        PaneHost::for_workspace(ctx, mailbox.workspace_id()).until(delivery::push_deadline());
     let horch_text;
     let text = if sender.as_deref() == Some(HORCH) {
         // A horch QUESTION or BLOCKED that names no closing action is a NOTE.
@@ -439,7 +440,7 @@ impl Outgoing<'_> {
 /// Who a pushed line is from and where it goes.
 struct Tell<'a> {
     ctx: &'a RuntimeContext,
-    herdr: &'a Herdr,
+    herdr: &'a PaneHost,
     mailbox: &'a Mailbox,
     role: &'a str,
     sender: Option<&'a str>,
@@ -571,8 +572,9 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     // A herdr that accepts a call and never answers must not keep pending
     // mail from printing: each call is killed at the deadline, and every
     // pane reads as unknown.
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
+    let mailbox = Mailbox::resolve_in(&PaneHost::of(ctx).with_timeout(pane_list_timeout()), ctx)?;
+    let herdr =
+        PaneHost::for_workspace(ctx, mailbox.workspace_id()).with_timeout(pane_list_timeout());
     let roles = mailbox.role_states(&herdr);
     let question_mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
     let questions = question_mail.open_questions()?;
@@ -641,7 +643,7 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
 /// it; any other pane gets a peek and one line that says so.
 fn print_orchestrator_mail(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     mailbox: &Mailbox,
     peek: bool,
 ) -> Result<()> {
@@ -721,7 +723,11 @@ pub fn remind_pending(ctx: &RuntimeContext) {
     {
         return;
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
+    let herdr = match ctx.herdr.workspace.as_ref() {
+        Some(ws) => PaneHost::for_workspace(ctx, ws.as_str()),
+        None => PaneHost::of(ctx),
+    }
+    .with_timeout(pane_list_timeout());
     let Some(count) = Mailbox::resolve_in(&herdr, ctx)
         .ok()
         .and_then(|mailbox| {
@@ -764,7 +770,7 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
 /// Worker-facing: append a progress note to this worker's own session record,
 /// so the session history shows what it is doing, not just start and end
 /// states. [`note_as`] with a note.
-pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
+pub fn note(ctx: &RuntimeContext, text: &str) -> Result<std::process::ExitCode> {
     note_as(ctx, text, EventKind::Note)
 }
 
@@ -780,7 +786,11 @@ pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
 /// `context-warned` and prints the rendered `warning` line (the stopping
 /// point). Context follow-up never fails a saved note. Handoff scheduling
 /// errors are visible on stderr; a panic is silenced.
-pub fn note_as(ctx: &RuntimeContext, text: &str, kind: EventKind) -> Result<()> {
+pub fn note_as(
+    ctx: &RuntimeContext,
+    text: &str,
+    kind: EventKind,
+) -> Result<std::process::ExitCode> {
     let record_id = worker_var(ctx, |w| &w.record_id);
     let worker_id = super::taskledger::worker_id_opt(ctx);
     if record_id.is_none() && worker_id.is_none() {
@@ -814,10 +824,14 @@ pub fn note_as(ctx: &RuntimeContext, text: &str, kind: EventKind) -> Result<()> 
         super::compact::worker_note_context(ctx, text)
     }));
     std::panic::set_hook(hook);
+    Ok(context_followup_exit(result))
+}
+
+fn context_followup_exit(result: std::thread::Result<Result<()>>) -> std::process::ExitCode {
     if let Ok(Err(error)) = result {
         eprintln!("horch note: context follow-up: {error:#}");
     }
-    Ok(())
+    std::process::ExitCode::SUCCESS
 }
 
 /// [`note_check`] with its own sources, inside `catch_unwind` and with the
@@ -1001,7 +1015,10 @@ pub fn done_then(
         eprintln!("{CLOSING}");
     }
 
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = match workspace.as_deref() {
+        Some(ws) => PaneHost::for_workspace(ctx, ws),
+        None => PaneHost::of(ctx),
+    };
     let closed = lifecycle::done(
         &herdr,
         &CliDone {
@@ -1304,8 +1321,9 @@ fn require_env(key: &str, value: Option<String>) -> Result<String> {
 
 /// Read-only tail of a registered role's visible pane.
 pub fn peek(ctx: &RuntimeContext, role: &str, lines: usize) -> Result<()> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
+    let mailbox = Mailbox::resolve_in(&PaneHost::of(ctx).with_timeout(pane_list_timeout()), ctx)?;
+    let herdr =
+        PaneHost::for_workspace(ctx, mailbox.workspace_id()).with_timeout(pane_list_timeout());
     let pane = mailbox
         .pane_for(role)
         .with_context(|| format!("role '{role}' is not registered"))?;
@@ -1775,7 +1793,7 @@ mod tests {
                 .with_exe("/nonexistent/horch"),
         )
         .unwrap();
-        let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+        let herdr = PaneHost::herdr_bin(&ctx.bins.harness.herdr);
         let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
         let tell = |role, sender| {
             not_registered(&Tell {
@@ -1952,6 +1970,15 @@ mod tests {
             std::fs::set_permissions(&w.cache, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert_eq!(line, Some(sonnet_warning(&w)));
             assert!(!w.cache.join("markers").exists());
+        }
+
+        #[test]
+        fn a_saved_note_with_a_refused_compaction_follow_up_exits_0() {
+            let success = std::process::ExitCode::SUCCESS;
+            let refused = Err(anyhow::anyhow!("handoff file is missing"));
+            assert_eq!(context_followup_exit(Ok(refused)), success);
+            assert_eq!(context_followup_exit(Ok(Ok(()))), success);
+            assert_eq!(context_followup_exit(Err(Box::new("panic"))), success);
         }
     }
 }

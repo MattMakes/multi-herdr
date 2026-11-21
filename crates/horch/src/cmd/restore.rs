@@ -15,7 +15,7 @@ use std::time::Duration;
 use horch_core::harness::launch::FORBIDDEN_ENV;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::{RuntimeContext, WorkerEnv};
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 /// herdr's config file: `HERDR_CONFIG_PATH`, else the platform default.
 fn herdr_config_path(ctx: &RuntimeContext) -> PathBuf {
@@ -110,7 +110,7 @@ pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
         }
     }
     // herdr can hang while its server restarts, the case this serves.
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(Duration::from_secs(2));
+    let herdr = PaneHost::of(ctx).with_timeout(Duration::from_secs(2));
     let Ok(pane) = herdr.pane_get(&pane_env) else {
         return;
     };

@@ -90,6 +90,7 @@ fn self_update(root: &Path, api: &str) -> Output {
         .arg("self-update")
         .current_dir(root)
         .env_clear()
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
@@ -174,6 +175,7 @@ fn horch_in_pty(root: &Path, api: &str, args: &[&str]) -> Output {
     }
     cmd.current_dir(root)
         .env_clear()
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))

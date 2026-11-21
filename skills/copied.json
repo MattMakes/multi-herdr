@@ -2,6 +2,11 @@
   "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy: copied_files lists every file and none was edited. A verbatim skill is exempt from the bundled size budget. budget_exempt: \"<reason>\" exempts a skill that is not verbatim (renamed, adapted or combined) from the size budget; set it only on a skill over the budget.",
   "skills": [
     {
+      "name": "addictive-game-design-review",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "api-contracts",
       "copied_files": [],
       "verbatim": false
@@ -483,6 +488,11 @@
       "verbatim": false
     },
     {
+      "name": "comment-pruning",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "create-plan",
       "copied_files": [
         "SKILL.md"
@@ -532,6 +542,11 @@
       "copied_files": [
         "SKILL.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "game-juice",
+      "copied_files": [],
       "verbatim": false
     },
     {
@@ -975,6 +990,12 @@
       "name": "godot-language-choice",
       "copied_files": [],
       "verbatim": false
+    },
+    {
+      "name": "godot-library",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "a reference library of 35 shelves; a worker reads only the shelves its task needs"
     },
     {
       "name": "godot-limboai",
@@ -1435,6 +1456,12 @@
       "verbatim": false
     },
     {
+      "name": "incremental-game-design",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "ships its tools: the solver, the proof sheet, the simulator and the workbook writer (17 Python scripts), the tuning bench for a Godot game (GDScript addon and a sample game), the system catalog and the math references"
+    },
+    {
       "name": "ios-simulator-run",
       "copied_files": [
         "SKILL.md"
@@ -1446,6 +1473,11 @@
       "copied_files": [
         "SKILL.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "make-videos",
+      "copied_files": [],
       "verbatim": false
     },
     {
@@ -1482,6 +1514,11 @@
     },
     {
       "name": "orchestrate",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "patch-around-audit",
       "copied_files": [],
       "verbatim": false
     },
@@ -2042,6 +2079,11 @@
         "references/streaming-patterns.md"
       ],
       "verbatim": true
+    },
+    {
+      "name": "ui-prop-tester",
+      "copied_files": [],
+      "verbatim": false
     },
     {
       "name": "ui-redesign",

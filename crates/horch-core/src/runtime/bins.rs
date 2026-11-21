@@ -33,6 +33,10 @@ pub struct BinOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub herdr: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr_app: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlite3: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama: Option<PathBuf>,
@@ -45,7 +49,7 @@ type Slot = fn(&mut BinOverrides) -> &mut Option<PathBuf>;
 
 impl BinOverrides {
     /// Each override variable with the field it fills, in a fixed order.
-    const SLOTS: [(&'static str, Slot); 10] = [
+    const SLOTS: [(&'static str, Slot); 12] = [
         ("HORCH_CLAUDE_BIN", |o| &mut o.claude),
         ("HORCH_CODEX_BIN", |o| &mut o.codex),
         ("HORCH_OPENCODE_BIN", |o| &mut o.opencode),
@@ -53,6 +57,8 @@ impl BinOverrides {
         ("HORCH_PRIME_BIN", |o| &mut o.prime),
         ("HORCH_ANTIGRAVITY_BIN", |o| &mut o.antigravity),
         ("HORCH_HERDR_BIN", |o| &mut o.herdr),
+        ("HORCH_HC_BIN", |o| &mut o.hc),
+        ("HORCH_HERDR_APP_BIN", |o| &mut o.herdr_app),
         ("HORCH_SQLITE3_BIN", |o| &mut o.sqlite3),
         ("HORCH_OLLAMA_BIN", |o| &mut o.ollama),
         ("HORCH_GIT_BIN", |o| &mut o.git),
@@ -60,10 +66,10 @@ impl BinOverrides {
 
     /// Every override variable, in the order of `SLOTS`.
     #[cfg(test)]
-    pub(crate) const VARS: [&'static str; 10] = {
-        let mut names = [""; 10];
+    pub(crate) const VARS: [&'static str; 12] = {
+        let mut names = [""; 12];
         let mut i = 0;
-        while i < 10 {
+        while i < 12 {
             names[i] = Self::SLOTS[i].0;
             i += 1;
         }
@@ -117,13 +123,16 @@ pub struct HarnessBins {
     pub prime: PathBuf,
     pub antigravity: PathBuf,
     pub herdr: PathBuf,
+    pub hc: PathBuf,
+    pub herdr_app: PathBuf,
     pub sqlite3: PathBuf,
     pub ollama: PathBuf,
     pub git: PathBuf,
 }
 
 impl HarnessBins {
-    /// Resolve every tool. `path` and `pathext` are only searched for `cpx`.
+    /// Resolve every tool. `path` and `pathext` are searched for `cpx` and
+    /// hidden host CLIs.
     pub fn resolve(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> HarnessBins {
         HarnessBins {
             claude: claude_bin(o, path, pathext),
@@ -132,7 +141,9 @@ impl HarnessBins {
             pi: pi_bin(o),
             prime: prime_bin(o),
             antigravity: antigravity_bin(o),
-            herdr: herdr_bin(o),
+            herdr: herdr_bin(o, path, pathext),
+            hc: hc_bin(o, path, pathext),
+            herdr_app: herdr_app_bin(o, path, pathext),
             sqlite3: sqlite3_bin(o),
             ollama: ollama_bin(o),
             git: git_bin(o),
@@ -189,8 +200,53 @@ pub(crate) fn antigravity_bin(o: &BinOverrides) -> PathBuf {
 
 /// Which herdr CLI to drive. `$HORCH_HERDR_BIN` overrides, which is how the
 /// end-to-end tests put a recording fake in its place.
-pub fn herdr_bin(o: &BinOverrides) -> PathBuf {
-    or_default(&o.herdr, "herdr")
+///
+/// A sandboxed Claude pane may run `herdr` but may not stat it. There the
+/// libc PATH search of a bare `herdr` runs it once for each matching PATH
+/// entry and then fails with "not found", so horch gets no answer from a
+/// herdr call that ran. When no `herdr` on `path` can be read, the first
+/// absolute PATH entry whose `herdr` is hidden by a permission error is the
+/// one to run, by its absolute path.
+pub fn herdr_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    sandbox_host_bin(&o.herdr, path, pathext, "herdr")
+}
+
+/// Which `hc` CLI to drive. `$HORCH_HC_BIN` overrides.
+pub fn hc_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    sandbox_host_bin(&o.hc, path, pathext, "hc")
+}
+
+/// Which `herdr-app` CLI to drive. `$HORCH_HERDR_APP_BIN` overrides.
+pub fn herdr_app_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    sandbox_host_bin(&o.herdr_app, path, pathext, "herdr-app")
+}
+
+fn sandbox_host_bin(
+    override_val: &Option<PathBuf>,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    name: &str,
+) -> PathBuf {
+    override_val.clone().unwrap_or_else(|| {
+        if process::which(path, pathext, name).is_some() {
+            PathBuf::from(name)
+        } else {
+            path.and_then(|p| hidden_on_path(p, name))
+                .unwrap_or_else(|| PathBuf::from(name))
+        }
+    })
+}
+
+/// The first `<dir>/<name>` on `path`, for an absolute `dir`, whose
+/// metadata a permission error hides.
+fn hidden_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+        })
 }
 
 /// Which `sqlite3` CLI reads OpenCode's database. `$HORCH_SQLITE3_BIN`
@@ -271,6 +327,9 @@ mod tests {
         assert_eq!(b.claude, PathBuf::from("claude"));
         assert_eq!(b.prime, PathBuf::from("prime-agent"));
         assert_eq!(b.antigravity, PathBuf::from("agy"));
+        assert_eq!(b.herdr, PathBuf::from("herdr"));
+        assert_eq!(b.hc, PathBuf::from("hc"));
+        assert_eq!(b.herdr_app, PathBuf::from("herdr-app"));
         assert_eq!(b.git, PathBuf::from("git"));
     }
 
@@ -286,6 +345,67 @@ mod tests {
         assert_eq!(claude_bin(&o, Some(&path), None), PathBuf::from("cpx"));
     }
 
+    /// A sandboxed pane that cannot stat `herdr` gets the absolute path of
+    /// the first PATH entry that hides it. A readable `herdr` on PATH keeps
+    /// the plain name, and no `herdr` at all keeps the plain name too.
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_hidden_from_stat_resolves_to_its_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let hidden = tmp.path().join("hidden");
+        let readable = tmp.path().join("readable");
+        let empty = tmp.path().join("empty");
+        for dir in [&hidden, &readable, &empty] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let herdr = readable.join("herdr");
+        std::fs::write(&herdr, "#!/bin/sh\n").unwrap();
+        process::make_executable(&herdr).unwrap();
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let o = BinOverrides::default();
+        let on = |dirs: &[&std::path::Path]| {
+            herdr_bin(&o, Some(&std::env::join_paths(dirs).unwrap()), None)
+        };
+
+        let resolved = (
+            on(&[&empty, &hidden]),
+            on(&[&hidden, &readable]),
+            on(&[&empty]),
+            on(&[std::path::Path::new("relative"), &empty]),
+        );
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolved.0,
+            hidden.join("herdr"),
+            "a hidden herdr runs by path"
+        );
+        assert_eq!(
+            resolved.1,
+            PathBuf::from("herdr"),
+            "a readable herdr keeps the name"
+        );
+        assert_eq!(
+            resolved.2,
+            PathBuf::from("herdr"),
+            "no herdr keeps the name"
+        );
+        assert_eq!(
+            resolved.3,
+            PathBuf::from("herdr"),
+            "a relative entry is skipped"
+        );
+        let overridden = BinOverrides {
+            herdr: Some("/fake/herdr".into()),
+            ..BinOverrides::default()
+        };
+        let path = std::env::join_paths([&hidden]).unwrap();
+        assert_eq!(
+            herdr_bin(&overridden, Some(&path), None),
+            PathBuf::from("/fake/herdr")
+        );
+    }
+
     #[test]
     fn env_pairs_and_merge_cover_every_override() {
         let mut env = MapEnv::new("/");
@@ -294,7 +414,7 @@ mod tests {
         }
         let all = BinOverrides::from_env(&env);
         let pairs = all.env_pairs();
-        assert_eq!(pairs.len(), 10);
+        assert_eq!(pairs.len(), 12);
         for (key, value) in &pairs {
             assert_eq!(value, &PathBuf::from(format!("/fake/{key}")));
         }

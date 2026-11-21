@@ -582,7 +582,7 @@ fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str, work: Option<&Work>) 
         cx.worker.label(),
         &landed[..landed.len().min(12)]
     ));
-    let sweeps: Vec<String> = ["code-sweep", "complexity-sweep", "recheck"]
+    let sweeps: Vec<String> = ["comment-sweep", "code-sweep", "complexity-sweep", "recheck"]
         .into_iter()
         .filter_map(ran)
         .collect();

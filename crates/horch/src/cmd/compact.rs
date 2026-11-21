@@ -47,7 +47,7 @@ use horch_core::telemetry::context::{read_current, Reading};
 use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
 use horch_core::workspace::client::WorkspaceClient;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 use horch_platform::start;
 
 use super::context::{self, build_row, record_kind, record_workdir, Row, Sources};
@@ -181,11 +181,11 @@ impl Env<'_> {
 
 /// `horch compact`.
 pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = match Mailbox::resolve_in(&herdr, ctx) {
+    let mailbox = match Mailbox::resolve_in(&PaneHost::of(ctx), ctx) {
         Ok(m) => m,
         Err(e) => return Ok(print(Outcome::refused(format!("{e:#}")))),
     };
+    let herdr = PaneHost::for_workspace(ctx, mailbox.workspace_id());
     let ledger = SessionLedger::open_in(ctx)?;
     let roster = match super::load_roster_unwarned(ctx, None) {
         Ok(r) => r,
@@ -247,7 +247,7 @@ pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
     {
         return Ok(());
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
     let env = Env {
         src,

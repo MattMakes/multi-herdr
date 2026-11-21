@@ -1021,7 +1021,7 @@ impl Harness for Prime {
         // has released the agent already; this is for a crash. A closed
         // pane or herdr down: nothing to do.
         if let Some(pane) = pane {
-            let herdr = crate::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+            let herdr = crate::workspace::PaneHost::of(ctx);
             prepared.on_finish(move || {
                 let _ = herdr.release_agent(&pane, STATUS_SOURCE, STATUS_AGENT, release_seq());
             });
@@ -1212,6 +1212,7 @@ mod tests {
         tempfile::Builder::new()
             .prefix("hp")
             .tempdir_in("/tmp")
+            .or_else(|_| tempfile::Builder::new().prefix("hp").tempdir())
             .unwrap()
     }
 

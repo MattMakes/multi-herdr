@@ -109,6 +109,7 @@ fn self_update(root: &Path, api: &str, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env_clear()
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))

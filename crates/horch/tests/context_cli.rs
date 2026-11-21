@@ -242,7 +242,7 @@ Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch led
     assert_eq!(handoff_out.stdout, b"", "1 warning per cycle");
     assert_eq!(
         String::from_utf8(handoff_out.stderr).unwrap(),
-        "horch note: context follow-up: not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set\n"
+        "horch note: context follow-up: not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset) and HORCH_WORKSPACE_ID is not set\n"
     );
     let history = w.history("rec-s1");
     let notes: Vec<&str> = history

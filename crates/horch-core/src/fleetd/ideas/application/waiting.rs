@@ -77,7 +77,7 @@ use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, Facts, RowRef, Stop};
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::{tasks, util, workers};
-use crate::workspace::herdr::Herdr;
+use crate::workspace::PaneHost;
 
 /// The kind of the needs-you item of an idea that waits on you.
 pub const WAITING: &str = "waiting_on_you";
@@ -181,7 +181,7 @@ pub fn keep_waits(tx: &Transaction<'_>, ctx: &Wait<'_>) -> Result<Waits> {
 
 /// The notification of ticket 21 for `reminded` reminders of 1 pass, with
 /// `open` open items. It reports nothing when `reminded` is 0.
-pub fn remind(herdr: &Herdr, reminded: usize, open: usize, seq: u64) -> Notice {
+pub fn remind(herdr: &PaneHost, reminded: usize, open: usize, seq: u64) -> Notice {
     let mirrored = Mirrored {
         new: reminded,
         open,

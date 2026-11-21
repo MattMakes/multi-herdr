@@ -12,9 +12,18 @@ use rusqlite::{Connection, OptionalExtension};
 use super::model::*;
 use super::sql_words::word;
 
-/// The version of the Phase 1 tables of fleetd (`v8`). A test that
+/// The version of the finish step `comment-sweep` (`comment_sweep_step`).
+/// horch 0.4.10 of main wrote it as version 8, so it keeps that number.
+pub const COMMENT_SWEEP_VERSION: i64 = 8;
+
+/// The version of the step that adds `workers.backend` (`V9`), the pane
+/// host of a worker. horch 0.5.2 of main wrote it as version 9, so it keeps
+/// that number.
+pub const BACKEND_VERSION: i64 = COMMENT_SWEEP_VERSION + 1;
+
+/// The version of the Phase 1 tables of fleetd (`phase_1`). A test that
 /// tests that step builds or migrates to this version, not to [`VERSION`].
-pub const PHASE_1_VERSION: i64 = 8;
+pub const PHASE_1_VERSION: i64 = BACKEND_VERSION + 1;
 
 /// The version of the Phase 2 tables and columns of fleetd (`phase_2`).
 pub const PHASE_2_VERSION: i64 = PHASE_1_VERSION + 1;
@@ -315,8 +324,9 @@ fn worktrees_table() -> String {
     )
 }
 
-/// `events.kind` as versions 1 to 7 wrote it. Version 1 runs as a
-/// migration, so its text keeps these words; version 8 adds the later ones.
+/// `events.kind` as versions 1 to 8 wrote it. Version 1 runs as a
+/// migration, so its text keeps these words; [`PHASE_1_VERSION`] adds the
+/// later ones.
 const V1_EVENT_KIND: &str = "CHECK (kind IN ('run_created', 'added', 'claimed', 'no_task', 'progress', 'note', 'question', 'blocked', 'answered', 'fallback', 'step_started', 'step_passed', 'step_failed', 'land_started', 'land_red', 'landed', 'pr_updated', 'cleaned', 'cleanup_failed', 'done', 'unlanded', 'reaped', 'requeued', 'stopped', 'session', 'exited', 'cancelled', 'verdict', 'woke', 'imported', 'reopened', 'dismissed'))";
 
 /// The `events_table` statements.
@@ -359,8 +369,27 @@ fn task_steps() -> String {
     note TEXT,
     PRIMARY KEY (task_id, worker_id, seq)
 );"#,
-        step_name = StepName::check("name"),
+        step_name = V1_STEP_NAME,
         step_status = StepStatus::check("status"),
+    )
+}
+
+/// `task_steps.name` as version 1 wrote it. Version 1 runs as a migration,
+/// so its text keeps these words; version 8 adds `comment-sweep`.
+const V1_STEP_NAME: &str = "CHECK (name IN ('check', 'code-sweep', 'complexity-sweep', 'recheck', 'land', 'pr', 'cleanup'))";
+
+/// Version 8: the finish step `comment-sweep`. SQLite cannot change a
+/// `CHECK`, so `task_steps` is built again under its own name and its rows
+/// copied. No table points at it.
+fn comment_sweep_step() -> String {
+    let table = task_steps()
+        .replace("CREATE TABLE task_steps (", "CREATE TABLE task_steps_v8 (")
+        .replace(V1_STEP_NAME, &StepName::check("name"));
+    format!(
+        "{table}
+INSERT INTO task_steps_v8 SELECT * FROM task_steps;
+DROP TABLE task_steps;
+ALTER TABLE task_steps_v8 RENAME TO task_steps;"
     )
 }
 
@@ -539,7 +568,7 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
-/// The comment at each `pid_start` column of version 8.
+/// The comment at each `pid_start` column of [`PHASE_1_VERSION`].
 const PID_START_TYPE: &str = "-- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time";
 
 /// The `fleetd` table: 1 row, written at the first start of fleetd.
@@ -579,8 +608,8 @@ fn attempts_table() -> String {
     )
 }
 
-/// The job kinds that the `kind` CHECK of `jobs` allows at version 8.
-const V8_JOB_KINDS: &str = "'task_check', 'fast_gate', 'full_gate', 'trial_merge',
+/// The job kinds that the `kind` CHECK of `jobs` allows at [`PHASE_1_VERSION`].
+const PHASE_1_JOB_KINDS: &str = "'task_check', 'fast_gate', 'full_gate', 'trial_merge',
         'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
         'worktree_add', 'worktree_remove', 'worktree_list', 'docs_sync', 'conformance'";
 
@@ -594,7 +623,7 @@ fn jobs_table() -> String {
     format!(
         "CREATE TABLE jobs (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ({V8_JOB_KINDS})),
+    kind TEXT NOT NULL CHECK (kind IN ({PHASE_1_JOB_KINDS})),
     subject TEXT NOT NULL,
     repo TEXT,
     input_key TEXT NOT NULL,
@@ -648,7 +677,7 @@ fn needs_you_table() -> String {
 /// with the old table and are made again after the rename.
 fn events_v8() -> String {
     let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
-    let (table, indexes) = events_v8_ddl("events_v8");
+    let (table, indexes) = events_phase_1_ddl("events_v8");
     format!(
         "{table}
 INSERT INTO events_v8 ({old}) SELECT {old} FROM events;
@@ -658,9 +687,9 @@ ALTER TABLE events_v8 RENAME TO events;
     )
 }
 
-/// `events` as version 8 builds it, with the name `name` and the event
+/// `events` as [`PHASE_1_VERSION`] builds it, with the name `name` and the event
 /// kinds of this binary: the table, then its indexes, which name `events`.
-fn events_v8_ddl(name: &str) -> (String, String) {
+fn events_phase_1_ddl(name: &str) -> (String, String) {
     let table = events_table()
         .replace("CREATE TABLE events (", &format!("CREATE TABLE {name} ("))
         .replace(V1_EVENT_KIND, &EventKind::check("kind"))
@@ -681,18 +710,18 @@ fn events_v8_ddl(name: &str) -> (String, String) {
 /// Version [`EVENT_KINDS_VERSION`]: `events` built again, so its kind
 /// `CHECK` is the list of this binary. A ledger keeps the kind list of the
 /// binary that built its `events` table, and no later step built it again,
-/// so a ledger at version 8 or more from an older binary refuses each
+/// so a ledger at [`PHASE_1_VERSION`] or more from an older binary refuses each
 /// newer kind (`doorbell`, `hold_started`, `hold_ended`). A later step
 /// that adds a kind runs it again with its own `version`
 /// ([`PHASE_7_VERSION`]).
 ///
-/// The new table comes from the text of the code ([`events_v8_ddl`]),
+/// The new table comes from the text of the code ([`events_phase_1_ddl`]),
 /// never from the stored text. Each row keeps its `event_id`, and the
 /// `AUTOINCREMENT` counter keeps its value, so no id is used again. The
 /// indexes go with the old table and are made again after the rename;
 /// `events` has no trigger.
 fn events_kinds(conn: &Connection, version: i64) -> Result<()> {
-    let (table, indexes) = events_v8_ddl("events_kinds");
+    let (table, indexes) = events_phase_1_ddl("events_kinds");
     conn.execute_batch(&table)?;
     let columns = column_names(conn, "events_kinds")?;
     if column_names(conn, "events")? != columns {
@@ -821,10 +850,10 @@ fn attempts_backfill() -> String {
     )
 }
 
-/// Version 8: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
+/// Version 9: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
 /// "Ledger"; docs/tickets/fleetd-p1/MAP.md, Q5 to Q7), `events` with the
 /// columns of a transition, and the attempts of the live workers.
-fn v8() -> String {
+fn phase_1() -> String {
     [
         fleetd_table(),
         attempts_table(),
@@ -938,7 +967,7 @@ fn column_names(conn: &Connection, table: &str) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// `tasks` built again, as `events` in [`v8`], so its status `CHECK` is
+/// `tasks` built again, as `events` in [`phase_1`], so its status `CHECK` is
 /// the list of the 12 states, and each row moves to its design state. The
 /// new table comes from the text of the code: [`tasks_table`] and
 /// [`tasks_added_columns`], never from the stored text. [`migrate`] turns
@@ -1349,7 +1378,10 @@ CREATE TABLE polite_stops (
 fn phase_5_jobs(conn: &Connection) -> Result<()> {
     let ddl = jobs_table()
         .replace("CREATE TABLE jobs (", "CREATE TABLE jobs_kinds (")
-        .replace(V8_JOB_KINDS, &format!("{V8_JOB_KINDS}, {PHASE_5_JOB_KIND}"));
+        .replace(
+            PHASE_1_JOB_KINDS,
+            &format!("{PHASE_1_JOB_KINDS}, {PHASE_5_JOB_KIND}"),
+        );
     let (table, index) = ddl
         .split_once("\nCREATE UNIQUE INDEX")
         .expect("jobs has its index");
@@ -1543,6 +1575,10 @@ pub fn run_idea(
     Ok(Some(idea))
 }
 
+/// Version 9: the pane host backend (`herdr` or `hc`) that owns a worker's
+/// workspace and pane (HCB-03).
+const V9: &str = "ALTER TABLE workers ADD COLUMN backend TEXT NOT NULL DEFAULT 'herdr' CHECK (backend IN ('herdr', 'hc'));";
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -1711,8 +1747,16 @@ fn migrate_unchecked(
         tx.execute_batch(&v7())
             .context("adding the trace-fixes columns and tables")?;
     }
+    if due(COMMENT_SWEEP_VERSION) {
+        tx.execute_batch(&comment_sweep_step())
+            .context("adding the comment-sweep finish step")?;
+    }
+    if due(BACKEND_VERSION) {
+        tx.execute_batch(V9)
+            .context("adding the worker pane host backend")?;
+    }
     if due(PHASE_1_VERSION) {
-        tx.execute_batch(&v8())
+        tx.execute_batch(&phase_1())
             .context("adding the fleetd tables and the attempts of live workers")?;
         no_broken_reference(&tx, PHASE_1_VERSION)?;
     }
@@ -1914,6 +1958,62 @@ mod tests {
         assert_eq!(v, VERSION);
         // A second run of the migration changes nothing.
         migrate(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn hcb_03_migrate_from_version_7_adds_backend_and_keeps_rows() {
+        for start_version in [7_i64, 8_i64] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(&v1()).unwrap();
+            for sql in [V2, V3, V4] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(&v5()).unwrap();
+            conn.execute_batch(V6).unwrap();
+            conn.execute_batch(&v7()).unwrap();
+            if start_version >= 8 {
+                conn.execute_batch(&comment_sweep_step()).unwrap();
+            }
+            conn.pragma_update(None, "user_version", start_version)
+                .unwrap();
+            conn.execute_batch(
+                "INSERT INTO projects VALUES ('p', '/r', 'now');
+                 INSERT INTO runs (run_id, project_id, slug, status, started_at)
+                    VALUES ('r1', 'p', 's', 'active', 'now');
+                 INSERT INTO workers (worker_id, run_id, persona, host, workspace_id, pane_id, status)
+                    VALUES ('w1', 'r1', 'opus', 'h', 'ws1', 'p1', 'working');",
+            )
+            .unwrap();
+            let mut conn = conn;
+            assert!(conn.prepare("SELECT backend FROM workers").is_err());
+
+            migrate(&mut conn).unwrap();
+
+            let v: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, VERSION);
+            let row = crate::taskledger::workers::get(&conn, "w1").unwrap();
+            assert_eq!(row.workspace_id.as_deref(), Some("ws1"));
+            assert_eq!(row.pane_id.as_deref(), Some("p1"));
+            assert_eq!(row.backend, crate::runtime::Backend::Herdr);
+
+            conn.execute(
+                "UPDATE workers SET backend = 'hc' WHERE worker_id = 'w1'",
+                [],
+            )
+            .unwrap();
+            let updated = crate::taskledger::workers::get(&conn, "w1").unwrap();
+            assert_eq!(updated.backend, crate::runtime::Backend::Hc);
+            assert!(
+                conn.execute(
+                    "UPDATE workers SET backend = 'tmux' WHERE worker_id = 'w1'",
+                    []
+                )
+                .is_err(),
+                "CHECK rejects unknown backend"
+            );
+        }
     }
 }
 
@@ -2277,7 +2377,9 @@ mod v7_tests {
             v5(),
             V6.into(),
             v7(),
-            v8(),
+            comment_sweep_step(),
+            V9.into(),
+            phase_1(),
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
@@ -2422,6 +2524,34 @@ mod v7_tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap()
+    }
+
+    #[test]
+    fn cms_07_migration_keeps_the_step_rows_and_takes_the_comment_sweep_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        version_6_file(&path);
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let old: (String, String) = conn
+            .query_row("SELECT name, status FROM task_steps", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(old, ("check".to_string(), "passed".to_string()));
+        conn.execute(
+            "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+             VALUES ('t1', 'w1', 2, 'comment-sweep', 'pending')",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+                 VALUES ('t1', 'w1', 3, 'no-such-step', 'pending')",
+                [],
+            )
+            .is_err());
     }
 
     #[test]
@@ -2576,7 +2706,7 @@ mod v7_tests {
     fn older_events_ledger(dir: &Path, events: i64) -> Connection {
         let mut conn = Connection::open(dir.join("ledger.sqlite3")).unwrap();
         migrate_to(&mut conn, EVENT_KINDS_VERSION - 1).unwrap();
-        let (table, indexes) = events_v8_ddl("events_old");
+        let (table, indexes) = events_phase_1_ddl("events_old");
         let older = table.replace(", 'doorbell'", "");
         assert!(!older.contains("doorbell"));
         conn.execute_batch(&format!(

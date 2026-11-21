@@ -45,7 +45,7 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     place_horch(&source, &dir, &target)?;
     // A live collector keeps running the binary it started with: old
     // prices, old readers. Restart it on the binary just installed.
-    let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = horch_core::workspace::PaneHost::of(ctx);
     if let Err(e) = super::telemetry::restart_if_stale(ctx, &herdr, &target) {
         println!("warning: telemetry collector not restarted: {e:#}; run `horch telemetry ensure`");
     }

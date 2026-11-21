@@ -30,8 +30,8 @@ use horch_core::routing::quota::QuotaView;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::workspace::arrange;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
+use horch_core::workspace::PaneHost;
 
 use super::taskledger_spawn::Prepared;
 
@@ -162,6 +162,13 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     if !super::taskledger_spawn::launched_by_fleetd(&args) {
         bail!("{}", super::taskledger_spawn::retired_line());
     }
+    let mut resolved = ctx.clone();
+    if resolved.herdr.pane.is_none() {
+        if let Some(ws) = &resolved.herdr.workspace {
+            resolved.herdr.backend = PaneHost::for_workspace(&resolved, ws.as_str()).backend();
+        }
+    }
+    let ctx = &resolved;
     // Before the ledger row: a refused caller leaves nothing behind.
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let caller = caller(ctx);
@@ -224,7 +231,7 @@ fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpa
 /// What `spawn_worker` reads before it plans, and the steps after it use.
 struct SpawnContext {
     roster: Roster,
-    herdr: Herdr,
+    herdr: PaneHost,
     mailbox: Mailbox,
     project: PathBuf,
     store: ExecutionStore,
@@ -385,8 +392,12 @@ struct Procs<'a> {
     me: u32,
     /// The parent of a pid. `None` when it cannot be read.
     parent: &'a dyn Fn(u32) -> Option<u32>,
+    /// A sandbox-safe parent query, tried when `parent` is blocked.
+    parent_fallback: &'a dyn Fn(u32) -> Option<u32>,
     /// Whether a pid runs with the given start time.
     same: &'a dyn Fn(u32, u64) -> bool,
+    /// A sandbox-safe identity query, tried when `same` is blocked.
+    same_fallback: &'a dyn Fn(u32, u64) -> bool,
 }
 
 impl Procs<'static> {
@@ -394,7 +405,9 @@ impl Procs<'static> {
         Procs {
             me: std::process::id(),
             parent: &parent_pid,
+            parent_fallback: &horch_core::procid::parent_sandboxed,
             same: &horch_core::procid::is_same,
+            same_fallback: &horch_core::procid::is_same_sandboxed,
         }
     }
 }
@@ -414,7 +427,7 @@ fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
     else {
         return false;
     };
-    if !(procs.same)(agent, started) {
+    if !(procs.same)(agent, started) && !(procs.same_fallback)(agent, started) {
         return false;
     }
     let mut pid = procs.me;
@@ -422,7 +435,7 @@ fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
         if pid == agent {
             return true;
         }
-        match (procs.parent)(pid) {
+        match (procs.parent)(pid).or_else(|| (procs.parent_fallback)(pid)) {
             Some(p) if p != pid && p > 0 => pid = p,
             _ => return false,
         }
@@ -438,9 +451,7 @@ fn parent_pid(pid: u32) -> Option<u32> {
 
 fn caller(ctx: &RuntimeContext) -> Option<Caller> {
     let pane = ctx.herdr.pane.as_ref()?;
-    let info = Herdr::with_bin(&ctx.bins.harness.herdr)
-        .pane_get(pane.as_str())
-        .ok()?;
+    let info = PaneHost::of(ctx).pane_get(pane.as_str()).ok()?;
     let workspace = info
         .workspace_id
         .clone()
@@ -565,6 +576,11 @@ fn plan_request(
         project: &sc.project,
     };
     let plan = plan(req, &inputs)?;
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        if let Some(why) = horch_core::harness::launch::refusal_on_hc(plan.launch.teammate.agent) {
+            bail!(why);
+        }
+    }
     if let Some(line) = &plan.gate_line {
         crate::output::println(line);
     }
@@ -605,12 +621,16 @@ fn launch(
     fleet_warnings(ctx, true);
 
     let tile = |pane: &str, tiling: TilingMode| tile_pane(ctx, sc, pane, tiling);
+    let open = |p: &ExecutionPlan| open_hc_pane(ctx, sc, p);
+    let open_pane: Option<horch_core::execution::service::OpenPane<'_>> =
+        (!sc.herdr.caps().geometry).then_some(&open);
     let service = ExecutionService {
         ctx,
         store: &sc.store,
         workspace: &sc.herdr,
         mailbox: &sc.mailbox,
         tile: &tile,
+        open_pane,
         ledger_worker: ledger.map(|l| l.worker_id.as_str()),
         task_yaml: ledger
             .and_then(|l| l.push.as_ref())
@@ -666,9 +686,10 @@ fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
 fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let roster = super::load_roster(ctx, roster_dir.as_deref())?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = Mailbox::resolve_in(&herdr, ctx)
-        .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
+    let herdr = PaneHost::of(ctx);
+    let mailbox = Mailbox::resolve_in(&herdr, ctx).context(
+        "horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
+    )?;
     std::fs::create_dir_all(mailbox.dir())?;
     // Read once, so the ledger this process writes and the one the worker
     // later reads (its brief carries the project) are the same file.
@@ -759,7 +780,68 @@ fn plan(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan> {
 /// halves its parent, and the tiler moves the worker into the next free
 /// slot and evens every column. Best effort: a grid that will not lay out
 /// must not fail a spawn whose worker is already running.
+fn open_hc_pane(ctx: &RuntimeContext, sc: &SpawnContext, _plan: &ExecutionPlan) -> Result<String> {
+    use horch_core::workspace::place::{self, Placement, TabPanes};
+
+    let ws = sc.mailbox.workspace_id();
+    let tabs = sc.herdr.tab_list(ws)?;
+    let panes = sc.herdr.pane_list(ws)?;
+    let orchestrator = sc
+        .mailbox
+        .pane_for("orchestrator")
+        .or_else(|| {
+            ctx.herdr
+                .pane
+                .as_ref()
+                .and_then(|p| sc.herdr.pane_get(p.as_str()).ok().map(|i| i.pane_id))
+        })
+        .or_else(|| {
+            panes
+                .iter()
+                .min_by(|a, b| place::address_key(&a.pane_id).cmp(&place::address_key(&b.pane_id)))
+                .map(|p| p.pane_id.clone())
+        })
+        .context(
+            "horch spawn needs --from-pane when not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
+        )?;
+    let tab_panes: Vec<TabPanes> = tabs
+        .iter()
+        .map(|tab| {
+            let mut workers: Vec<String> = panes
+                .iter()
+                .filter(|p| {
+                    p.tab_id.as_deref() == Some(tab.tab_id.as_str()) && p.pane_id != orchestrator
+                })
+                .map(|p| p.pane_id.clone())
+                .collect();
+            place::sort_addresses(&mut workers);
+            TabPanes {
+                tab_id: tab.tab_id.clone(),
+                workers,
+            }
+        })
+        .collect();
+    match place::place(&orchestrator, &tab_panes) {
+        Placement::Split { from, direction } => sc.herdr.pane_split(&from, direction),
+        Placement::NewTab { label } => {
+            match sc
+                .herdr
+                .tab_new(ws, &label, Some(&sc.project.to_string_lossy()))
+            {
+                Ok((_, term)) => Ok(term),
+                Err(_) if sc.herdr.window_open() == Some(false) => {
+                    sc.herdr.pane_split(&orchestrator, Direction::Right)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
 fn tile_pane(ctx: &RuntimeContext, sc: &SpawnContext, pane: &str, tiling: TilingMode) {
+    if !sc.herdr.caps().geometry {
+        return;
+    }
     if tiling != TilingMode::Disabled {
         arrange::after_change(ctx, &sc.herdr, sc.mailbox.workspace_id(), Some(pane));
     } else if let Ok(layout) = sc.herdr.pane_layout(Some(pane)) {
@@ -854,8 +936,8 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
         eprintln!("horch: {prefix} {warning}");
     }
     let caller = super::sessionscmd::caller_workspace(ctx);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    if let Ok(workspaces) = herdr.workspace_list() {
+    let hosts = horch_core::workspace::Hosts::reachable(ctx);
+    if let Some(workspaces) = hosts.workspace_list_union() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
         // A read only: a scratch fleet must not create the ledger (#199).
@@ -1039,7 +1121,9 @@ mod tests {
             &Procs {
                 me,
                 parent: &parent,
+                parent_fallback: &|_| None,
                 same: &same,
+                same_fallback: &|_, _| false,
             },
         )
     }
@@ -1049,7 +1133,9 @@ mod tests {
         Procs {
             me: AGENT.pid,
             parent: &|_| None,
+            parent_fallback: &|_| None,
             same: &|_, _| true,
+            same_fallback: &|_, _| false,
         }
     }
 
@@ -1058,7 +1144,9 @@ mod tests {
         Procs {
             me: 91,
             parent: &|pid| (pid == 91).then_some(90),
+            parent_fallback: &|_| None,
             same: &|_, _| true,
+            same_fallback: &|_, _| false,
         }
     }
 
@@ -1299,6 +1387,169 @@ mod tests {
         };
         assert!(!tree_check(42, Some(unknown)), "no recorded start time");
         assert!(!tree_check(42, None), "no recorded agent");
+    }
+
+    /// Claude's macOS sandbox blocks the full process-info query for its
+    /// agent process. The sandbox-safe query still proves the agent's exact
+    /// start time before the caller's parent walk passes.
+    #[test]
+    fn trf_43_a_blocked_agent_query_uses_the_sandbox_safe_query() {
+        let parent = |pid: u32| match pid {
+            41 => Some(40),
+            42 => Some(41),
+            _ => None,
+        };
+        let procs = Procs {
+            me: 42,
+            parent: &parent,
+            parent_fallback: &|_| None,
+            same: &|_, _| false,
+            same_fallback: &|pid, started| (pid, started) == (40, 7),
+        };
+        assert!(runs_in(Some(AGENT), &procs));
+    }
+
+    /// The sandbox blocks the full process-info query for the caller's
+    /// ancestors, so the walk asks the sandbox-safe parent query. Before
+    /// that fallback, this walk stopped at 42 and refused the brief.
+    #[test]
+    fn trf_43_a_blocked_parent_query_uses_the_sandbox_safe_query() {
+        let fallback = |pid: u32| match pid {
+            40 | 90 => Some(1),
+            41 => Some(40),
+            42 => Some(41),
+            91 => Some(90),
+            _ => None,
+        };
+        let procs = |me| Procs {
+            me,
+            parent: &|_| None,
+            parent_fallback: &fallback,
+            same: &|pid, started| (pid, started) == (40, 7),
+            same_fallback: &|_, _| false,
+        };
+        assert!(runs_in(Some(AGENT), &procs(42)), "a descendant passes");
+        assert!(!runs_in(Some(AGENT), &procs(91)), "a stranger still fails");
+        let blocked = Procs {
+            parent_fallback: &|_| None,
+            ..procs(42)
+        };
+        assert!(!runs_in(Some(AGENT), &blocked), "no parent, no pass");
+    }
+
+    /// A probe for the real Claude Code sandbox: run it there with the
+    /// recorded agent of the caller's ledger row in
+    /// `HORCH_PROBE_AGENT_PID` and `HORCH_PROBE_AGENT_STARTED`.
+    #[test]
+    #[ignore = "a probe run by hand inside a worker's sandbox"]
+    fn trf_43_probe_runs_in_from_env() {
+        let read = |name: &str| {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("set {name}"))
+                .parse::<u64>()
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        };
+        let agent = u32::try_from(read("HORCH_PROBE_AGENT_PID")).unwrap();
+        let started = read("HORCH_PROBE_AGENT_STARTED");
+        let procs = Procs::os();
+        println!(
+            "agent {agent} started {started}: same={} same_fallback={}",
+            (procs.same)(agent, started),
+            (procs.same_fallback)(agent, started),
+        );
+        let mut pid = procs.me;
+        for _ in 0..MAX_TREE_DEPTH {
+            let primary = (procs.parent)(pid);
+            let fallback = (procs.parent_fallback)(pid);
+            println!("pid {pid}: parent={primary:?} parent_fallback={fallback:?}");
+            match primary.or(fallback) {
+                Some(p) if p != pid && p > 0 && pid != agent => pid = p,
+                _ => break,
+            }
+        }
+        let passed = runs_in(
+            Some(Agent {
+                pid: agent,
+                started: Some(started),
+            }),
+            &procs,
+        );
+        println!("runs_in={passed}");
+        assert!(passed);
+    }
+
+    /// A probe for the real Claude Code sandbox: run it in the controller's
+    /// pane. It prints each step of [`caller`] and of the brief check for
+    /// the teammate in `HORCH_PROBE_TARGET`.
+    #[test]
+    #[ignore = "a probe run by hand inside a worker's sandbox"]
+    fn trf_43_probe_spawn_checks_from_env() {
+        let ctx = RuntimeContext::from_env(&horch_core::runtime::ProcessEnv).unwrap();
+        let target = std::env::var("HORCH_PROBE_TARGET").unwrap_or("intake-auditor".into());
+        println!(
+            "pane={:?} workspace={:?}",
+            ctx.herdr.pane, ctx.herdr.workspace
+        );
+        println!("herdr bin={:?}", ctx.bins.harness.herdr);
+        if let Some(pane) = ctx.herdr.pane.as_ref() {
+            match PaneHost::of(&ctx).pane_get(pane.as_str()) {
+                Ok(info) => {
+                    println!(
+                        "pane_get: pane_id={:?} workspace_id={:?}",
+                        info.pane_id, info.workspace_id
+                    );
+                    let workspace = info
+                        .workspace_id
+                        .clone()
+                        .or_else(|| ctx.herdr.workspace.as_ref().map(|w| w.to_string()));
+                    println!("workspace={workspace:?}");
+                    if let Some(workspace) = workspace {
+                        let mailbox = Mailbox::in_context(&ctx, &workspace);
+                        let roles = mailbox.roles();
+                        println!("roles={roles:?}");
+                        let role = roles.into_iter().find(|(_, p)| *p == info.pane_id);
+                        println!("role={role:?}");
+                        if let Some((role, _)) = role {
+                            match mailbox.read_brief(&role) {
+                                Ok(b) => println!(
+                                    "brief: worker_id={:?} resolved={:?} teammates_dir={:?}",
+                                    b.worker_id,
+                                    b.resolved.as_ref().map(|t| t.name.clone()),
+                                    b.teammates_dir
+                                ),
+                                Err(e) => println!("read_brief: {e:#}"),
+                            }
+                        }
+                    }
+                }
+                Err(e) => println!("pane_get: {e:#}"),
+            }
+        }
+        let caller = caller(&ctx);
+        println!(
+            "caller: role={:?} worker_id={:?} agent={:?}",
+            caller.as_ref().map(|c| c.role.clone()),
+            caller.as_ref().and_then(|c| c.worker_id.clone()),
+            caller.as_ref().and_then(|c| c.agent)
+        );
+        let roster_dir = crate::cmd::path_text(ctx.bins.roster_override.as_deref());
+        println!("roster_dir={roster_dir:?}");
+        let mut a = args(Some(&target), None);
+        a.task = "Read and follow /x/brief.md exactly.".into();
+        let controller = spawn_only_check(caller.as_ref(), &a, roster_dir.as_deref(), &Procs::os());
+        println!("spawn_only_check={controller:?}");
+        let roster = crate::cmd::load_roster(&ctx, roster_dir.as_deref());
+        let teammate = roster.as_ref().ok().and_then(|r| r.get(&target));
+        println!(
+            "roster ok={} target found={} horch_access={:?}",
+            roster.is_ok(),
+            teammate.is_some(),
+            teammate.map(|t| t.horch_access)
+        );
+        let controller = controller.unwrap();
+        let checked = check_task_text(&a, controller.as_deref(), teammate);
+        println!("check_task_text={checked:?}");
+        checked.unwrap();
     }
 
     /// TRF-43: the real process tree. This test process descends from its

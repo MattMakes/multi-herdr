@@ -1,0 +1,26 @@
+{
+  "task_id": "20261115-202955-244e1d",
+  "fetched_at": "2026-11-15T20:29:55+00:00",
+  "source": {
+    "kind": "local",
+    "name": "comment-removal",
+    "ref": null,
+    "commit": null,
+    "subdir": null
+  },
+  "content_sha256": "6df588214ed1abe72764b422ee6617778c21f896239797f65f78aaef8b16e701",
+  "archive_sha256": null,
+  "licence": {
+    "spdx": null,
+    "class": "none",
+    "flag": "no-licence"
+  },
+  "skills": [
+    {
+      "name": "comment-pruning",
+      "renamed_from": null,
+      "sha256": "2985d877ed18f9b858b6c3c8ba94b0d2d62b3ac1f0a8b76003e8654cc114ba3d"
+    }
+  ],
+  "gate2": "pass"
+}

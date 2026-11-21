@@ -263,6 +263,9 @@ pub const PANE_IDENTITY_ENV: &[&str] = &[
     "HORCH_WORKER_ID",
     "HORCH_WORKSPACE_ID",
     "HERDR_PANE_ID",
+    "HC_TERMINAL_ID",
+    "HC_SCOPE",
+    "HORCH_BACKEND",
 ];
 
 /// Remove from `cmd` the [`PANE_IDENTITY_ENV`] it would inherit from
@@ -427,16 +430,43 @@ mod tests {
             .collect()
     }
 
-    /// The keys #218 names, written out. The tests read this list and not
+    /// The keys #218 and HCB-02 name, written out. The tests read this list and not
     /// `PANE_IDENTITY_ENV`: a loop over the list under test passes when a key
     /// is dropped from it, or when the list is empty.
-    const PANE_KEYS: [&str; 5] = [
+    const PANE_KEYS: [&str; 8] = [
         "HORCH_ROLE",
         "HORCH_RECORD_ID",
         "HORCH_WORKER_ID",
         "HORCH_WORKSPACE_ID",
         "HERDR_PANE_ID",
+        "HC_TERMINAL_ID",
+        "HC_SCOPE",
+        "HORCH_BACKEND",
     ];
+
+    #[test]
+    fn hcb_02_detached_child_gets_no_backend_or_terminal_id() {
+        let inherited = MapEnv::new("/cwd")
+            .with("HOME", "/home/a")
+            .with("HC_TERMINAL_ID", "t7")
+            .with("HC_SCOPE", "sp123")
+            .with("HORCH_BACKEND", "hc")
+            .with("HERDR_PANE_ID", "p_9");
+        let mut cmd = Command::new("true");
+        scrub_pane_identity(&mut cmd, &inherited);
+        let envs = envs_of(&cmd);
+        for key in [
+            "HC_TERMINAL_ID",
+            "HC_SCOPE",
+            "HORCH_BACKEND",
+            "HERDR_PANE_ID",
+        ] {
+            assert!(
+                envs.contains(&(key.to_string(), None)),
+                "{key} is not removed: {envs:?}"
+            );
+        }
+    }
 
     /// #218 through a real spawn: this test binary runs again as a process
     /// of a worker pane, and its `spawn_detached` child prints its env.
@@ -463,6 +493,9 @@ mod tests {
             .env("HORCH_WORKER_ID", "w-123")
             .env("HORCH_WORKSPACE_ID", "W2")
             .env("HERDR_PANE_ID", "p_9")
+            .env("HC_TERMINAL_ID", "t7")
+            .env("HC_SCOPE", "sp1")
+            .env("HORCH_BACKEND", "hc")
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -557,6 +590,9 @@ mod tests {
         inherited = inherited.with("HORCH_WORKER_ID", "w-123");
         inherited = inherited.with("HORCH_WORKSPACE_ID", "W2");
         inherited = inherited.with("HERDR_PANE_ID", "p_9");
+        inherited = inherited.with("HC_TERMINAL_ID", "t7");
+        inherited = inherited.with("HC_SCOPE", "sp1");
+        inherited = inherited.with("HORCH_BACKEND", "hc");
         inherited = inherited.with("TMPDIR", "/state/tmp/sonnet-2");
         let mut cmd = Command::new("true");
         scrub_pane_identity(&mut cmd, &inherited);

@@ -32,6 +32,7 @@ fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivation
 /// Skills written in this repository: their `copied.json` entry lists no
 /// copied files.
 const REPO_ORIGINAL: &[&str] = &[
+    "addictive-game-design-review",
     "api-contracts",
     "architecture-review",
     "audio-review",
@@ -40,8 +41,10 @@ const REPO_ORIGINAL: &[&str] = &[
     "blender-modeling",
     "blender-rigging",
     "blender-ue-pipeline",
+    "comment-pruning",
     "creative-council",
     "data-migrations",
+    "game-juice",
     "godot-build-verify",
     "godot-combat-system",
     "godot-dimension-port",
@@ -49,6 +52,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-gameplay-loops",
     "godot-genre-blueprints",
     "godot-language-choice",
+    "godot-library",
     "godot-project-context",
     "godot-quest-system",
     "godot-save-security",
@@ -56,8 +60,11 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-sound-design",
     "godot-version-migration",
     "hark",
+    "incremental-game-design",
+    "make-videos",
     "one-page-design",
     "orchestrate",
+    "patch-around-audit",
     "pixel-vfx",
     "pixel-vfx-library",
     "product-requirements",
@@ -65,6 +72,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "system-design",
     "ue-build-verify",
     "ue-editor-scripting",
+    "ui-prop-tester",
     "video-audio",
     "video-capture",
     "video-character",
@@ -102,6 +110,7 @@ fn oracles() -> PathBuf {
 /// oracle loop skips them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
+    "addictive-game-design-reviewer",
     "antigravity",
     "app-release-preparer",
     "apple-accessibility-auditor",
@@ -115,10 +124,13 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "blender-qa",
     "codex-reviewer-light",
     "codex-swift-reviewer",
+    "comment-remover",
     "design-critic",
     "design-director",
     "design-system-engineer",
     "fable-creative",
+    "game-design-incremental-specialist",
+    "game-design-juicer",
     "godot-ai-programmer",
     "godot-animator",
     "godot-code-reviewer",
@@ -149,6 +161,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "one-page-design",
     "opus-creative",
     "pixel-vfx-artist",
+    "root-cause-auditor",
     "skill-importer",
     "sound-engineer",
     "spec-writer",
@@ -421,7 +434,11 @@ fn skills_bundled_size_budget() {
 /// capture and render scripts. The own-text `one-page-design` ships its page
 /// checker script, the checker's tests and an HTML starter page.
 /// `skill-intake` ships its `intake` tool as real `.py` files, so the gate's
-/// tests and the skill digest cover the tool itself.
+/// tests and the skill digest cover the tool itself. The own-text
+/// `incremental-game-design` ships its solver, proof, simulator and workbook
+/// scripts, its Godot project scan, JSON assets (the system catalog, example
+/// models and targets), and Godot files: the tuning bench addon and a sample
+/// game (`.gd`, `.tscn`, `.godot`).
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -452,6 +469,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-video-editing",
     "blender-weather-fx",
     "hark",
+    "incremental-game-design",
     "one-page-design",
     "skill-creator",
     "skill-intake",
@@ -469,7 +487,10 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
 /// Single files exempt from the text-only rule; the rest of their skill is
 /// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,
 /// and SKL-11 keeps its execute bit in a bundle.
-const EXEMPT_FILES: &[&str] = &["godot-build-verify/scripts/godot-run.sh"];
+const EXEMPT_FILES: &[&str] = &[
+    "godot-build-verify/scripts/godot-run.sh",
+    "ui-prop-tester/scripts/ui-prop-tester",
+];
 
 /// Skill files are `.md` or `.txt`, except the skills in
 /// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. A verbatim

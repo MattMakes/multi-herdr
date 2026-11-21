@@ -6,7 +6,7 @@
 //! does not answer gives 1 log line, not an error (OR-3, MAP.md Q12).
 
 use crate::fleetd::ideas::adapters::needs_you_folder::Mirrored;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::PaneHost;
 
 /// The pane that shows the needs-you list.
 pub const PANE: &str = "fleet-needs-you";
@@ -28,7 +28,7 @@ pub enum Notice {
 /// Report 1 notification when `mirrored` wrote the file of a new open
 /// item. `seq` increases strictly from report to report, so herdr ignores
 /// a stale one.
-pub fn notify(herdr: &Herdr, mirrored: &Mirrored, seq: u64) -> Notice {
+pub fn notify(herdr: &PaneHost, mirrored: &Mirrored, seq: u64) -> Notice {
     if mirrored.new == 0 {
         return Notice::Quiet;
     }

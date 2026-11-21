@@ -97,7 +97,11 @@ pub fn verifier_steps(steps: &[StepName]) -> Vec<StepName> {
         .filter(|n| {
             !matches!(
                 n,
-                StepName::Check | StepName::Land | StepName::Pr | StepName::Cleanup
+                StepName::Check
+                    | StepName::CommentSweep
+                    | StepName::Land
+                    | StepName::Pr
+                    | StepName::Cleanup
             )
         })
         .collect()

@@ -386,8 +386,9 @@ mod tests {
 
     /// The orchestrator's playbook reaches the orchestrator and nobody else.
     /// Both teammates sit on `phase: plan`, so the only difference between
-    /// these two lists is the `skills: [orchestrate, skill-creator]` line in
-    /// `teammates/orchestrator.md`. skill-creator is the Claude flavor's only.
+    /// these two lists is the `skills: [orchestrate, skill-creator, make-videos]`
+    /// line in `teammates/orchestrator.md`. skill-creator is the Claude
+    /// flavor's only; make-videos is on both orchestrators and on no worker.
     #[test]
     fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
         let roster = crate::roster::Roster::builtin().unwrap();
@@ -396,6 +397,7 @@ mod tests {
             [
                 "create-plan",
                 "handoff",
+                "make-videos",
                 "orchestrate",
                 "pre-flight",
                 "skill-creator"
@@ -403,7 +405,13 @@ mod tests {
         );
         assert_eq!(
             activated(roster.require("orchestrator-codex").unwrap()).unwrap(),
-            ["create-plan", "handoff", "orchestrate", "pre-flight"]
+            [
+                "create-plan",
+                "handoff",
+                "make-videos",
+                "orchestrate",
+                "pre-flight"
+            ]
         );
         assert_eq!(
             activated(roster.require("staff-engineer").unwrap()).unwrap(),

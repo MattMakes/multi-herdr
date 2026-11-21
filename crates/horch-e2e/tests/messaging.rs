@@ -207,6 +207,7 @@ fn launch_worker(h: &Harness) -> (String, String, String) {
             fleet_root: None,
             controller: None,
             task_yaml: None,
+            backend: Default::default(),
         })
         .unwrap();
     let worker = format!(

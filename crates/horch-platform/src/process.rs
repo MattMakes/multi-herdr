@@ -51,6 +51,35 @@ pub fn parent(pid: u32) -> Result<Option<u32>, NotSupported> {
     os::parent(pid)
 }
 
+/// The start time of process `pid` from the macOS `KERN_PROC_PID` sysctl,
+/// which Claude's sandbox permits where it blocks `proc_pidinfo`. The same
+/// unit as [`start_time`]. `None` on other platforms.
+pub fn start_time_sandboxed(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        os::sysctl_start_time(raw(pid)?)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The parent pid of process `pid` from the macOS `KERN_PROC_PID` sysctl,
+/// for a sandbox that blocks [`parent`]. `None` on other platforms.
+pub fn parent_sandboxed(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        os::sysctl_parent(raw(pid)?)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// The pids in process group `pgid`. Empty when it cannot be read.
 ///
 /// Windows gives [`NotSupported`]: it has no process groups.

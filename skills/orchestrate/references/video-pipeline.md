@@ -5,6 +5,11 @@ a product demo, a CLI walkthrough, a concept explainer or a social cut. 7
 `video-*` teammates make it: `video-producer` in wave 0, then 6 build
 waves. Each wave passes a numeric gate before the next wave starts.
 
+For videos of a game made from its git history (a devblog series, new
+episodes, or a change to episodes that exist), load the `make-videos` skill
+first. It plans the episodes, holds the plan and script gates, and sends each
+approved cut through this recipe.
+
 ## Production control files
 
 Create these text files before production work starts:

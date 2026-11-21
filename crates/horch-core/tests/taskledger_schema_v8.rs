@@ -1,4 +1,5 @@
-//! Schema v8 (docs/specs/fleetd/design.md, "Ledger" and "Migration plan";
+//! The Phase 1 schema version, [`schema::PHASE_1_VERSION`]
+//! (docs/specs/fleetd/design.md, "Ledger" and "Migration plan";
 //! docs/tickets/fleetd-p1/03-schema-v8.md): the Phase 1 tables, the new
 //! columns of `events`, the backfill of `attempts`, and the 3 safety rules
 //! of OR-6 (a backup first, a newer schema refused, no migration of the

@@ -27,7 +27,7 @@ use crate::roster::{HorchAccess, Roster, Teammate};
 use crate::runtime::{process, RuntimeContext};
 use crate::taskledger::supervisor::{AgentFacts, AttemptFiles, Checkins, OutcomeHint};
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::model::Pane;
 
 /// Who hears about an execution when it ends.
@@ -1316,8 +1316,8 @@ impl<'a> PaneWorker<'a> {
         }
     }
 
-    fn herdr(&self) -> Herdr {
-        Herdr::with_bin(&self.ctx.bins.harness.herdr)
+    fn herdr(&self) -> PaneHost {
+        PaneHost::of(self.ctx)
     }
 
     fn mailbox(&self) -> Result<&Mailbox> {
@@ -1374,6 +1374,7 @@ impl WorkerSteps for PaneWorker<'_> {
         if let Some(state_dir) = &brief.state_dir {
             self.ctx.paths.set_state_dir(state_dir);
         }
+        self.ctx.herdr.backend = brief.backend;
         self.ctx.apply_overrides(&brief.overrides());
         if !project.is_dir() {
             bail!("project dir '{}' is missing", brief.project_dir);
@@ -1446,7 +1447,7 @@ impl WorkerSteps for PaneWorker<'_> {
             .herdr
             .pane
             .as_ref()
-            .context("HERDR_PANE_ID is not set, so horch spawn cannot be told")?;
+            .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset), so horch spawn cannot be told")?;
         let public = self.herdr().pane_get(pane.as_ref())?.pane_id;
         write_startup_error(&data_root, StartupKey::Pane(&public), error)
     }
@@ -1457,7 +1458,7 @@ impl WorkerSteps for PaneWorker<'_> {
             .herdr
             .pane
             .as_ref()
-            .context("HERDR_PANE_ID is not set")?;
+            .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)")?;
         // herdr gives the pane its internal id; close it by its public id,
         // the one the ledgers record.
         let herdr = self.herdr();
@@ -1993,6 +1994,7 @@ mod tests {
             fleet_root: None,
             controller: None,
             task_yaml: None,
+            backend: Default::default(),
         }
     }
 
@@ -2029,7 +2031,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_parent_serves_the_report_socket_only_for_report() {
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let mut ctx = RuntimeContext::from_env(&MapEnv::new("/")).unwrap();
         ctx.paths.state_root = tmp.path().to_path_buf();
         let brief = report_brief(ReportTarget::Orchestrator);
@@ -2099,6 +2104,7 @@ mod tests {
             fleet_root: None,
             controller: None,
             task_yaml: None,
+            backend: Default::default(),
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {
@@ -2524,6 +2530,7 @@ mod tests {
                     fleet_root: None,
                     controller: None,
                     task_yaml: None,
+                    backend: Default::default(),
                 }
             }
         }

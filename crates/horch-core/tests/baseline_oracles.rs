@@ -68,6 +68,7 @@ fn check_oracle(rel: &str, actual: &str) {
 /// oracle loops skip them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
+    "addictive-game-design-reviewer",
     "antigravity",
     "app-release-preparer",
     "apple-accessibility-auditor",
@@ -81,10 +82,13 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "blender-qa",
     "codex-reviewer-light",
     "codex-swift-reviewer",
+    "comment-remover",
     "design-critic",
     "design-director",
     "design-system-engineer",
     "fable-creative",
+    "game-design-incremental-specialist",
+    "game-design-juicer",
     "godot-ai-programmer",
     "godot-animator",
     "godot-code-reviewer",
@@ -115,6 +119,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "one-page-design",
     "opus-creative",
     "pixel-vfx-artist",
+    "root-cause-auditor",
     "skill-importer",
     "sound-engineer",
     "spec-writer",
@@ -270,6 +275,11 @@ impl World {
             // A herdr pane sets it, and a sandboxed Claude teammate
             // (idea-lead) allows its socket.
             ("HERDR_SOCKET_PATH", None),
+            ("HERDR_PANE_ID", None),
+            ("HC_TERMINAL_ID", None),
+            ("HC_SCOPE", None),
+            ("HC_TERMINAL_SOCKET", None),
+            ("HORCH_BACKEND", None),
         ];
         for (key, value) in roots {
             saved.push((key, std::env::var_os(key)));
@@ -488,6 +498,22 @@ fn oracle_launch_matches() {
             &format!("launch/{name}.json"),
             &pretty(&launch_oracle(&world, t)),
         );
+    }
+}
+
+#[test]
+fn oracle_hc_launch_matches() {
+    let world = World::new();
+    std::env::set_var("HORCH_BACKEND", "hc");
+    std::env::set_var("HC_TERMINAL_SOCKET", world.root.join("hc-core.sock"));
+    std::env::set_var("HERDR_APP_HOME", world.root.join("herdr-app"));
+    let roster = world.roster();
+    for (file, name) in [
+        ("launch/orchestrator-hc.json", "orchestrator"),
+        ("launch/worker-hc.json", "codex-sol"),
+    ] {
+        let t = roster.get(name).unwrap();
+        check_oracle(file, &pretty(&launch_oracle(&world, t)));
     }
 }
 
@@ -740,9 +766,10 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 fn arc_01_baseline_oracles_present() {
     let cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch/tests/oracles");
     let expect = [
+        // The teammates plus orchestrator-hc.json and worker-hc.json (HCB-11).
         (
             oracles().join("launch"),
-            TEAMMATES_AT_A0 + TEAMMATES_AFTER_A0,
+            TEAMMATES_AT_A0 + TEAMMATES_AFTER_A0 + 2,
         ),
         (oracles().join("routing"), QUOTA_FIXTURES_AT_A0 + 1),
         (oracles().join("ledgers"), LEDGERS.len() * 3),

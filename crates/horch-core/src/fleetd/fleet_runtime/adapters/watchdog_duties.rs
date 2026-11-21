@@ -597,7 +597,7 @@ fn end_respawns(tx: &Transaction<'_>, run: &Run) -> Result<()> {
 /// The observer of a real machine: herdr for the pane, the disk for the
 /// transcript.
 pub struct HerdrObserver {
-    pub herdr: crate::workspace::herdr::Herdr,
+    pub herdr: crate::workspace::PaneHost,
 }
 
 impl Observer for HerdrObserver {

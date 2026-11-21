@@ -249,6 +249,7 @@ pub struct Execution {
     pub workdir: Option<PathBuf>,
     pub workspace: Option<WorkspaceId>,
     pub pane: Option<PaneId>,
+    pub backend: crate::runtime::Backend,
     pub skills: Vec<ResolvedSkillRef>,
     pub routing: Option<RoutingProvenance>,
     /// The fallback teammate whose launch settings ran, and why (legacy keys).

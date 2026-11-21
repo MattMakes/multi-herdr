@@ -1640,6 +1640,9 @@ pub(super) fn codex_command(
     model_override: Option<&str>,
 ) -> Result<Command> {
     let mut cmd = horch_platform::start::command(&env.bins.codex);
+    if env.backend == crate::runtime::Backend::Hc {
+        cmd.arg("--no-daemon");
+    }
     // `resume` is a subcommand, so it has to lead.
     if let Session::Resume(_) = session {
         cmd.arg("resume");
@@ -1838,7 +1841,7 @@ fn push_defaults(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> boo
 
 /// The `-c` pairs that register the worker channel MCP server.
 fn push_channel_args(cmd: &mut Command, env: &LaunchEnv) -> Result<()> {
-    const CHANNEL_ENV_VARS: [&str; 14] = [
+    const CHANNEL_ENV_VARS: [&str; 19] = [
         "HORCH_WORKSPACE_ID",
         "HORCH_RECORD_ID",
         "HORCH_STATE_DIR",
@@ -1849,6 +1852,11 @@ fn push_channel_args(cmd: &mut Command, env: &LaunchEnv) -> Result<()> {
         "HERDR_SOCKET_PATH",
         "HERDR_BIN_PATH",
         "HORCH_HERDR_BIN",
+        "HORCH_BACKEND",
+        "HC_TERMINAL_ID",
+        "HC_TERMINAL_SOCKET",
+        "HORCH_HC_BIN",
+        "HORCH_HERDR_APP_BIN",
         "XDG_STATE_HOME",
         "XDG_DATA_HOME",
         "HOME",
@@ -2489,6 +2497,11 @@ mod tests {
                     "HERDR_SOCKET_PATH",
                     "HERDR_BIN_PATH",
                     "HORCH_HERDR_BIN",
+                    "HORCH_BACKEND",
+                    "HC_TERMINAL_ID",
+                    "HC_TERMINAL_SOCKET",
+                    "HORCH_HC_BIN",
+                    "HORCH_HERDR_APP_BIN",
                     "XDG_STATE_HOME",
                     "XDG_DATA_HOME",
                     "HOME",
@@ -3412,6 +3425,35 @@ mod tests {
         }
     }
 
+    /// A write pane's TMPDIR is a made dir inside the profile's granted
+    /// workspace root.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_pane_tmpdir_is_inside_its_granted_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_ctx, prepared) = prepare_in(
+            tmp.path(),
+            &Teammate {
+                permission_mode: Some(crate::roster::PermissionMode::Auto),
+                ..Default::default()
+            },
+        );
+        let value = |key: &str| -> String {
+            let pair = prepared
+                .extra_args
+                .iter()
+                .find_map(|a| a.strip_prefix(key))
+                .unwrap_or_else(|| panic!("{key} missing"));
+            serde_json::from_str::<String>(pair.trim_end_matches("=true}"))
+                .or_else(|_| serde_json::from_str::<String>(pair))
+                .unwrap()
+        };
+        let root = PathBuf::from(value("permissions.fleet_write.workspace_roots={"));
+        let tmpdir = PathBuf::from(value("shell_environment_policy.set.TMPDIR="));
+        assert!(tmpdir.starts_with(&root), "{tmpdir:?} not in {root:?}");
+        assert!(tmpdir.is_dir());
+    }
+
     /// A pane's TMPDIR exists before codex starts, and a role name cannot
     /// leave `<state root>/tmp`.
     #[cfg(unix)]
@@ -4187,5 +4229,66 @@ mod tests {
             let err = exec_command(&LaunchEnv::for_test(), &t, "p").unwrap_err();
             assert!(!format!("{err:#}").contains("secret-value"), "{err:#}");
         }
+    }
+
+    #[test]
+    fn hcb_11_codex_passes_the_hc_variables() {
+        let mut env = LaunchEnv::for_test();
+        env.horch_exe = PathBuf::from("horch");
+        env.workdir = Some(PathBuf::from("/work"));
+        let mut teammate = Teammate {
+            model: Some("gpt-5.6-sol".into()),
+            ..Default::default()
+        };
+        teammate.worker_channel = true;
+        let args =
+            command_args(&codex_command(&env, &teammate, Session::Unmanaged, "go", None).unwrap());
+        let env_arg = args
+            .iter()
+            .find(|a| a.starts_with("mcp_servers.horch.env_vars="))
+            .expect("channel env_vars arg");
+        let (_, rhs) = env_arg.split_once('=').unwrap();
+        let vars: Vec<String> = serde_json::from_str(rhs).unwrap();
+        assert_eq!(vars.len(), 19, "{vars:?}");
+        for expected in [
+            "HORCH_BACKEND",
+            "HC_TERMINAL_ID",
+            "HC_TERMINAL_SOCKET",
+            "HORCH_HC_BIN",
+            "HORCH_HERDR_APP_BIN",
+        ] {
+            assert!(
+                vars.iter().any(|v| v == expected),
+                "missing {expected} in {vars:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hcb_11_codex_on_hc_runs_without_its_daemon() {
+        let mut teammate = Teammate {
+            model: Some("gpt-5.6-sol".into()),
+            ..Default::default()
+        };
+        teammate.worker_channel = false;
+
+        let herdr_args = command_args(
+            &codex_command(
+                &LaunchEnv::for_test(),
+                &teammate,
+                Session::Unmanaged,
+                "go",
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!herdr_args.iter().any(|a| a == "--no-daemon"));
+
+        let mut hc_env = LaunchEnv::for_test();
+        hc_env.backend = crate::runtime::Backend::Hc;
+        let hc_args = command_args(
+            &codex_command(&hc_env, &teammate, Session::Unmanaged, "go", None).unwrap(),
+        );
+        assert_eq!(hc_args.first().map(String::as_str), Some("--no-daemon"));
     }
 }
