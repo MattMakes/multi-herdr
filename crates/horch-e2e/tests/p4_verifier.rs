@@ -583,6 +583,26 @@ fn loopback_server(
     (port, seen)
 }
 
+/// A check that runs its own webhook on the loopback of its sandbox: `perl`
+/// listens on 127.0.0.1, `curl` posts `hello` to it, and the check passes
+/// only when the request arrives. The alarm ends it when curl never connects.
+fn sandbox_loopback_check(perl: &str, curl: &str) -> String {
+    format!(
+        "{perl} -MIO::Socket::INET -e '\
+         alarm 20; \
+         my $l = IO::Socket::INET->new(Listen => 1, LocalAddr => \"127.0.0.1\", LocalPort => 0) \
+           or die \"listen: $!\"; \
+         my $p = $l->sockport; \
+         my $pid = fork; defined $pid or die \"fork: $!\"; \
+         if (!$pid) {{ exec \"{curl}\", \"--silent\", \"--show-error\", \"--max-time\", \"5\", \
+           \"--data\", \"hello\", \"http://127.0.0.1:$p/\"; die \"exec: $!\" }} \
+         my $c = $l->accept or die \"accept: $!\"; \
+         my $r = \"\"; while ($r !~ /hello/ && sysread($c, my $b, 1024)) {{ $r .= $b }} \
+         print $c \"HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"; \
+         close $c; waitpid $pid, 0; exit($? >> 8 || $r !~ /hello/)'"
+    )
+}
+
 #[test]
 fn sr3_check_that_connects_off_host_is_refused() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -592,9 +612,14 @@ fn sr3_check_that_connects_off_host_is_refused() {
         .into_iter()
         .find(|p| Path::new(p).is_file())
         .expect("curl on this host");
+    let perl = ["/usr/bin/perl", "/bin/perl"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .expect("perl on this host");
     let get = |url: &str| format!("{curl} --silent --show-error --max-time 5 --data hello {url}");
     let check = format!(
-        "{} && echo reached > loopback-ok.txt; {}",
+        "{} && echo reached > loopback-ok.txt; {}; {}",
+        sandbox_loopback_check(perl, curl),
         get(&format!("http://127.0.0.1:{port}/")),
         get(OFF_HOST_URL)
     );
@@ -631,16 +656,25 @@ fn sr3_check_that_connects_off_host_is_refused() {
         "the check did not reach loopback, so its refusal proves nothing\n{verdict}\n{}",
         w.evidence()
     );
-    assert!(
-        loopback_requests
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|r| r.contains("hello")),
-        "{}",
-        w.evidence()
-    );
     let reason = verdict["reason"].as_str().unwrap();
+    let refused = |host: &str| {
+        reason
+            .lines()
+            .any(|l| l.starts_with("check| curl: (7)") && l.contains(host))
+    };
+    let host_requests = loopback_requests.lock().unwrap().clone();
+    if cfg!(target_os = "linux") {
+        // The check has a new network namespace with its own loopback: a
+        // listener on the loopback of the host is not in it.
+        assert!(host_requests.is_empty(), "{host_requests:?}");
+        assert!(refused("127.0.0.1"), "{verdict}");
+    } else {
+        assert!(
+            host_requests.iter().any(|r| r.contains("hello")),
+            "{}",
+            w.evidence()
+        );
+    }
     assert!(
         reason
             .lines()
@@ -648,7 +682,7 @@ fn sr3_check_that_connects_off_host_is_refused() {
         "the verdict names no SR-3 network rule\n{verdict}"
     );
     assert!(
-        reason.contains("\ncheck| curl: (7)"),
+        refused("192.0.2.1"),
         "SR-3: the connect to {OFF_HOST_URL} was not refused\n{verdict}"
     );
     assert_not_done(&w);

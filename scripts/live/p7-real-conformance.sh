@@ -92,8 +92,14 @@ GIT="$(command -v git || true)"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 
-# A short temp folder: macOS limits a Unix socket path to 104 bytes.
-TMP="$(mktemp -d /tmp/p7rc.XXXXXX)"
+# A short temp folder: macOS limits a Unix socket path to 104 bytes. The
+# Linux sandbox mounts a new empty tmpfs on /tmp, so a fleet in /tmp is
+# hidden from the checks there: on Linux the temp fleet is in /var/tmp.
+case "$(uname -s)" in
+Linux) TMP_BASE=/var/tmp ;;
+*) TMP_BASE=/tmp ;;
+esac
+TMP="$(mktemp -d "$TMP_BASE/p7rc.XXXXXX")"
 FLEETD_PID=""
 
 cleanup() {

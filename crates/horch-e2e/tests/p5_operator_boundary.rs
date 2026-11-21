@@ -718,7 +718,7 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let paths = w.paths();
     let token = w.token();
-    let before = w.state();
+    let before = state_without_drift_ideas(&w);
     let mut files = Vec::new();
     for kind in operator_kinds() {
         let name = kind.as_str();
@@ -799,11 +799,69 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
         !read.text.contains(&token),
         "the attacker never prints the token"
     );
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
-        w.state(),
+        state_without_drift_ideas(&w),
         before,
         "no attack changes the state of the ledger"
     );
+}
+
+/// [`World::state`] without the rows of the drift ideas (FM-19): the boot
+/// conformance run of agy fails by design, and fleetd adds its idea, with a
+/// new feature, run and sub-orchestrator, while the test runs. The drift
+/// ids are read after the state, and a drift row never stops being one, so
+/// each drift row of the state is left out.
+fn state_without_drift_ideas(w: &World) -> Vec<String> {
+    use horch_core::fleetd::worker_profiles::domain::conformance::AdapterConformanceFailed;
+    let state = w.state();
+    let conn = w.conn();
+    let mut stmt = conn
+        .prepare(
+            "WITH idea(id) AS (SELECT entity_id FROM events
+                 WHERE entity = 'idea' AND kind = 'added'
+                   AND json_extract(data_json, '$.source') = ?1),
+                  feature(id) AS (SELECT feature_id FROM ideas WHERE id IN idea),
+                  run(id) AS (SELECT run_id FROM runs
+                 WHERE rowid IN (SELECT CAST(substr(id, 3) AS INTEGER) FROM feature)),
+                  worker(id) AS (SELECT worker_id FROM workers WHERE run_id IN run)
+             SELECT 'feature ' || id FROM feature
+             UNION SELECT 'run ' || id FROM run
+             UNION SELECT 'worker ' || id FROM worker
+             UNION SELECT 'task ' || task_id FROM tasks WHERE run_id IN run
+             UNION SELECT 'attempt ' || id FROM attempts
+                 WHERE idea_id IN idea OR worker_id IN worker
+             UNION SELECT 'branch ' || name FROM branches WHERE feature_id IN feature",
+        )
+        .unwrap();
+    let drift: BTreeSet<String> = stmt
+        .query_map([AdapterConformanceFailed::NAME], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    state
+        .into_iter()
+        .filter(|row| {
+            let mut words = row.splitn(3, ' ');
+            let entity = format!("{} {}", words.next().unwrap(), words.next().unwrap());
+            !drift.contains(&entity)
+        })
+        .collect()
 }
 
 // ─── SR-8 from a process of a live attempt ──────────────────────────────
