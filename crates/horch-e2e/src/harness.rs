@@ -751,9 +751,14 @@ fn job_groups(db: &Path) -> Vec<u32> {
         );
         Vec::new()
     });
+    // Only a live leader proves a recorded group (D242-F1): a member of a
+    // job group whose leader is gone gets no signal here, so it shows as a
+    // leak of the test.
     let mut groups: Vec<u32> = rows
         .into_iter()
-        .filter(|&(pid, started)| pid > 1 && horch_core::procid::is_same_group(pid, started))
+        .filter(|&(pid, started)| {
+            pid > 1 && horch_platform::group::is_group_leader(pid, started).unwrap_or(false)
+        })
         .map(|(pid, _)| pid)
         .collect();
     groups.sort_unstable();
@@ -849,7 +854,9 @@ fn stop_jobs(_db: &Path) -> Vec<String> {
 /// fake-herdr `exec` pane commands running: `horch worker` and a `stay`
 /// fake run for ever. Teardown sends SIGTERM to the process group of every
 /// pane that fake-herdr recorded and that is still the same group (the
-/// leader's start time matches, see [`horch_core::procid::is_same_group`]), and
+/// leader runs with its start time, see
+/// [`horch_platform::group::is_group_leader`]: with the leader gone, the id
+/// can be of a group of another process by reuse, D242-F1), and
 /// to the group of every process whose command line or environment names
 /// the harness root (a fake, a pane whose start was never recorded, the
 /// detached mail courier, which redelivers until `horch inbox`
@@ -860,7 +867,6 @@ fn stop_jobs(_db: &Path) -> Vec<String> {
 #[cfg(unix)]
 fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<Vec<String>> {
     use crate::process::{commands_with_environment, signal_groups, try_processes, Process};
-    use horch_core::procid::is_same_group;
     let mut state = log.as_os_str().to_owned();
     state.push(".state.json");
     let state: Value = std::fs::read_to_string(&state)
@@ -893,7 +899,9 @@ fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<
         .filter_map(|(pane, pid)| {
             let pid = u32::try_from(pid.as_u64()?).ok()?;
             let started = state["started"][pane.as_str()].as_u64()?;
-            is_same_group(pid, started).then_some(pid)
+            horch_platform::group::is_group_leader(pid, started)
+                .unwrap_or(false)
+                .then_some(pid)
         })
         .collect();
     let names_root = |p: &Process, environments: &std::collections::HashMap<u32, String>| {
