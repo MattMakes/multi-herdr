@@ -753,9 +753,6 @@ impl CliWorktreeGit {
 /// the handler then kills only their group and the job ends by the signal.
 static GIT_GROUP: AtomicI32 = AtomicI32::new(0);
 
-/// The group of this process when [`kill_job_group_on_stop`] armed it, else
-/// 0: fleetd and the CLI run git with no group kill, as they keep their
-/// own signal handlers.
 static OWN_GROUP: AtomicI32 = AtomicI32::new(0);
 
 /// Make each later sandboxed git call of this job process end with the
@@ -1104,12 +1101,8 @@ mod tests {
         assert!(!Path::new(&row.path).exists());
     }
 
-    /// The value of [`GIT_GROUP`] that the fake host of
-    /// [`git_call_holds_the_job_group_only_while_it_runs`] saw.
     static SEEN: AtomicI32 = AtomicI32::new(0);
 
-    /// A host that records [`GIT_GROUP`] at the start of git, and runs git
-    /// with no sandbox.
     fn seeing_host(
         cmd: horch_platform::start::Command,
         _reach: &Reach<'_>,
@@ -1121,11 +1114,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn git_call_holds_the_job_group_only_while_it_runs() {
-        // No process has this group, so a stop in the test kills nothing.
         let group = i32::MAX;
         OWN_GROUP.store(group, Ordering::SeqCst);
-        // The 8 slots of the handler: each call with the same static takes
-        // the slot of the first call.
         for _ in 0..9 {
             horch_platform::signal::kill_group_on_termination(&GIT_GROUP).unwrap();
         }

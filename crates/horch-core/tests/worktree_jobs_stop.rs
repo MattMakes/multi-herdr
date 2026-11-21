@@ -1,11 +1,3 @@
-//! Each stop of a worktree job ends the sandboxed git of the job
-//! (docs/tickets/fleetd-finish/208-linux-job-stop-reaches-each-sandbox.md).
-//!
-//! The job process is this test binary, started through the launcher as
-//! part 3 of a pass starts `horch job run <id>`. Its git is a fake git that
-//! writes a heartbeat into the git folder of the repository and never
-//! ends. The path of the fake git holds a marker, so a search of the
-//! command lines of the host finds each process of the sandbox.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -33,8 +25,6 @@ use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::Worker;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-/// The variable that makes this test binary the job process: `<ledger
-/// path>|<job id>`.
 const JOB_CHILD: &str = "HORCH_WORKTREE_JOBS_STOP_CHILD";
 
 const LIMIT_S: u64 = 10;
@@ -120,8 +110,6 @@ impl World {
         out
     }
 
-    /// A fake git whose file name holds `marker`: each call writes a
-    /// count to [`World::beat_file`] each 100 ms and never ends.
     fn hanging_git(&self, marker: &str) -> PathBuf {
         let path = self.dir.path().join(marker);
         let beat = self.beat_file();
@@ -138,7 +126,6 @@ impl World {
         path.canonicalize().unwrap()
     }
 
-    /// Queue the `worktree_add` job of a new `reserved` row.
     fn queue_add(&mut self) -> i64 {
         let new = NewWorktree {
             worktree_id: "w1".to_string(),
@@ -153,8 +140,6 @@ impl World {
                 .to_string(),
             branch: "fleet/w1".to_string(),
             base: "main".to_string(),
-            // The fake git hangs at its first call, before a read of the
-            // base tip.
             base_commit: Some("0".repeat(40)),
             status: WorktreeStatus::Open,
             mode: None,
@@ -197,7 +182,6 @@ impl World {
         scans::scan_processes(&items, &mut Cursor::new("pass"), &mut clock).facts
     }
 
-    /// Reap and scan until the process of the run `id` is gone.
     fn wait_gone(&self, runner: &mut JobRunner<'_>, id: i64) -> Vec<ProcessFact> {
         let until = Instant::now() + Duration::from_secs(30);
         loop {
@@ -214,8 +198,6 @@ impl World {
     }
 }
 
-/// The job process: `horch job run <id>` of the ledger and the run of
-/// [`JOB_CHILD`].
 fn job_child(value: &str) {
     let (db, id) = value.rsplit_once('|').unwrap();
     let conn = open(Path::new(db));
@@ -240,7 +222,6 @@ fn job_child(value: &str) {
     eprintln!("job child: {ran:?}");
 }
 
-/// Whether this host runs git in the sandbox.
 fn has_sandbox(w: &World) -> bool {
     let gap = CliWorktreeGit::new("git", w.dir.path().join("fleet")).sandbox_gap();
     if let Some(gap) = &gap {
@@ -249,11 +230,6 @@ fn has_sandbox(w: &World) -> bool {
     gap.is_none()
 }
 
-/// Start the `worktree_add` job of `w` as this test binary `test`, with
-/// the hanging git of `marker`; stop it with the TERM of a pass at the
-/// clock `stop_at`, or with a KILL of the job group when `kill`; then
-/// assert that the job is abandoned and that no process of its sandbox
-/// lives on.
 fn stop_ends_the_git_sandbox(test: &str, stop_at: i64, kill: bool) {
     if let Ok(value) = std::env::var(JOB_CHILD) {
         job_child(&value);
@@ -342,8 +318,6 @@ fn stop_ends_the_git_sandbox(test: &str, stop_at: i64, kill: bool) {
     assert_no_process_left(&marker, &beat_file);
 }
 
-/// No process of the command line `marker` is alive, and the heartbeat in
-/// `beat_file` stops.
 fn assert_no_process_left(marker: &str, beat_file: &Path) {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
@@ -392,10 +366,6 @@ fn kill_of_the_job_group_ends_the_git_sandbox_of_a_worktree_job() {
     );
 }
 
-/// The leader of the group of a job ends, and a member of its group lives
-/// on. With the leader gone, no recorded start time proves that the member
-/// is of the job (the group id can be another's by reuse): the pass sends
-/// it no signal and records a notice.
 #[test]
 fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
     let mut w = world();
@@ -462,10 +432,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
         "no git writer of the repository starts while the member runs"
     );
 
-    // The next run of the add waits: the hold of its task names the group,
-    // the member and its start time, and the end by hand.
-    // The hold reads only the task id of the tree, so the test names a task
-    // that has no row.
     w.conn
         .execute_batch(
             "PRAGMA foreign_keys = OFF;
@@ -484,8 +450,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
         assert!(cause.contains(&part), "the hold names {part:?}: {cause}");
     }
 
-    // 1 needs-you item, only when the member runs past the time limit and
-    // the stop grace after the notice, and only 1 time.
     let grace = i64::try_from(config.stop_grace_s).unwrap();
     let bound = 1 + i64::try_from(LIMIT_S).unwrap() + grace;
     let items = |conn: &Connection, state: &str| -> Vec<String> {
@@ -527,7 +491,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
         "a later pass opens no second item"
     );
 
-    // The test started the member, so the test ends it.
     let ended = Command::new("kill")
         .args(["-KILL", &member.to_string()])
         .status()
@@ -544,10 +507,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
     );
 }
 
-/// A job process that ignores TERM: it gets the TERM at its deadline,
-/// nothing in the grace after the recorded TERM, then the KILL. The record
-/// is in the ledger, so a new connection (a restarted fleetd) counts the
-/// same grace.
 #[test]
 fn job_stop_sends_the_term_first_and_the_kill_after_the_grace_of_the_recorded_term() {
     let mut w = world();
@@ -584,7 +543,6 @@ fn job_stop_sends_the_term_first_and_the_kill_after_the_grace_of_the_recorded_te
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // The first pass sees the run long past its deadline and its grace.
     let facts = w.facts();
     let seen = w
         .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(late)))
@@ -595,8 +553,6 @@ fn job_stop_sends_the_term_first_and_the_kill_after_the_grace_of_the_recorded_te
     std::thread::sleep(Duration::from_millis(200));
     runner.reap();
 
-    // A restarted fleetd reads the TERM from the ledger: no stop in the
-    // grace, the kill at its end.
     w.conn = open(&w.db());
     let facts = w.facts();
     let key = id.to_string();

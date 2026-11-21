@@ -945,7 +945,6 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     let rescue = w.queue(Kind::Rescue, &row.worktree_id, &rescue_key);
     let mut runner = JobRunner::new(&Launcher);
 
-    // The hung fetch ignores TERM, so only the KILL ends it.
     let ready = w.dir.path().join("fetch-ready");
     let hung_spec = LaunchSpec {
         program: "sh".into(),

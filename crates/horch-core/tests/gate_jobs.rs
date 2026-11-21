@@ -871,9 +871,6 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     );
 }
 
-/// A pass that first sees the gate job past its deadline and its grace
-/// (a restart of fleetd, a long pass) sends the TERM first, not a KILL of
-/// the job group that would miss the gate group.
 #[test]
 fn gate_first_seen_past_its_grace_gets_the_term_and_its_group_killed() {
     let past_grace = 10 + i64::try_from(FleetConfig::default().stop_grace_s).unwrap();
@@ -884,18 +881,11 @@ fn gate_first_seen_past_its_grace_gets_the_term_and_its_group_killed() {
     );
 }
 
-/// The git of a gate job runs in the job group, not in the gate group: the
-/// stop at the deadline ends it and its sandbox too.
 #[test]
 fn gate_job_stopped_in_its_git_ends_its_git_sandbox() {
     gate_stop_kills_its_group("gate_job_stopped_in_its_git_ends_its_git_sandbox", 10, true);
 }
 
-/// The gate job `test` with a time limit of 10 s, stopped by the pass at
-/// the clock `stop_at`: the run is abandoned and each process of the
-/// command that hangs is killed. The command that hangs is the gate, or
-/// with `hang_git` the first git call of the job: a fake git whose file
-/// name holds the marker.
 fn gate_stop_kills_its_group(test: &str, stop_at: i64, hang_git: bool) {
     if let Ok(value) = std::env::var(JOB_CHILD) {
         job_child(&value);
@@ -910,7 +900,6 @@ fn gate_stop_kills_its_group(test: &str, stop_at: i64, hang_git: bool) {
     let tree = w.gate_path();
     let beat_file = tree.join("beat");
     let marker = format!("gate-group-marker-{}-{stop_at}", std::process::id());
-    // With `hang_git`, only the fake git holds the marker.
     let gate_marker = if hang_git { "no-marker" } else { &marker };
     let gates = format!(
         "[gates]\nfast = \"sh -c 'sleep 600; :' {gate_marker} & i=0; \
@@ -976,7 +965,6 @@ fn gate_stop_kills_its_group(test: &str, stop_at: i64, hang_git: bool) {
     }
     assert!(!marked(&marker).is_empty(), "the command that hangs runs");
 
-    // The pass sends the TERM to the job process; the groups go too.
     let facts = w.facts();
     let seen = w
         .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(stop_at)))
