@@ -2675,6 +2675,8 @@ fn wakes(h: &Harness) -> Vec<String> {
     wakes_of(h, None)
 }
 
+/// [`wakes`] of the run `run`. A failed conformance job of the fake agents
+/// adds a drift idea, whose feature has its own active run.
 fn wakes_of(h: &Harness, run: Option<&str>) -> Vec<String> {
     let mut args = vec!["ledger", "events", "--json"];
     args.extend(run.iter().flat_map(|r| ["--run", *r]));
