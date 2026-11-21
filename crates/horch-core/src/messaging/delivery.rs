@@ -194,7 +194,7 @@ pub fn send_line_with(
     timing: &Timing,
 ) -> Result<()> {
     let message = line.text();
-    let prompt_err = match ws.agent_prompt(pane, message) {
+    let prompt_err = match ws.agent_prompt(pane, line.text()) {
         Ok(()) => return Ok(()),
         Err(e) => e,
     };
@@ -211,7 +211,7 @@ pub fn send_line_with(
     if push_time_left().is_some_and(|left| left < reserve) {
         bail!("the push budget is spent, so the line was not typed");
     }
-    if let Err(type_err) = ws.pane_send_text(pane, message) {
+    if let Err(type_err) = ws.pane_send_text(pane, line.text()) {
         if type_err.is::<crate::workspace::Unsupported>() {
             return Err(prompt_err);
         }
