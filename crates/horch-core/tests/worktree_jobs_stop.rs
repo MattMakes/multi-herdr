@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use horch_core::fleetd::fleet_runtime::adapters::effects;
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{self, ProcessFact, ScanClock};
 use horch_core::fleetd::fleet_runtime::application::holds;
@@ -24,6 +25,7 @@ use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::domain::task::ProcessScope;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec};
 use horch_core::fleetd::worktree_custody::adapters::git::{worktree_add_key, CliWorktreeGit};
@@ -600,6 +602,57 @@ fn a_leaderless_group_in_the_place_of_the_recorded_group_gets_no_signal() {
         .unwrap();
     assert!(ended.success());
     assert!(lives, "the process of the group got no signal");
+}
+
+/// The stop of a task attempt with [`ProcessScope::LeaderGroup`] is the
+/// same: with the leader gone, a leaderless group in the place of its group
+/// gets no signal, neither the TERM nor the KILL (D242-F1).
+#[test]
+fn a_leaderless_group_gets_no_signal_from_a_leader_group_stop() {
+    use std::io::{Read, Write};
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "read line; sleep 60 >/dev/null & echo $!"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    horch_platform::group::new_group(&mut cmd);
+    let mut leader = cmd.spawn().expect("start sh");
+    let pgid = leader.id();
+    let started = horch_platform::process::start_time(pgid).expect("sh runs");
+    leader.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let mut out = String::new();
+    leader
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    leader.wait().unwrap();
+    let member: u32 = out.trim().parse().unwrap();
+    assert_eq!(
+        horch_platform::process::group_of(member).unwrap(),
+        Some(pgid),
+        "the process holds the id of the recorded group"
+    );
+    let sent: Vec<bool> = [false, true]
+        .into_iter()
+        .map(|kill| effects::stop_process(pgid, started, ProcessScope::LeaderGroup, kill))
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let lives = Command::new("kill")
+        .args(["-0", &member.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+
+    // The test started the process, so the test ends it.
+    let ended = Command::new("kill")
+        .args(["-KILL", &member.to_string()])
+        .status()
+        .unwrap();
+    assert_eq!(sent, vec![false, false], "no signal goes out");
+    assert!(lives, "the process of the group got no signal");
+    assert!(ended.success());
 }
 
 /// A job process that ignores TERM: it gets the TERM at its deadline,

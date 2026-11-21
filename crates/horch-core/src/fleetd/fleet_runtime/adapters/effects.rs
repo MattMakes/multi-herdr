@@ -80,8 +80,10 @@ pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -
     if scope == ProcessScope::OrphanGroup {
         return stop_orphan_group(pid, how);
     }
+    // Only a live leader proves the group: with the leader gone, the id can
+    // name a group of another process by reuse (D242-F1).
     let leads = scope == ProcessScope::LeaderGroup
-        && matches!(group::is_same_group(pid, pid_start), Ok(true));
+        && matches!(group::is_group_leader(pid, pid_start), Ok(true));
     if !leads {
         return stop_same(pid, pid_start, how);
     }
@@ -104,6 +106,14 @@ fn stop_each(members: Vec<u32>, how: How) -> bool {
 
 /// The stop of the group `pgid` whose leader is gone. A process with the
 /// pid `pgid` makes the group a new group (FM-22): no stop then.
+///
+/// Limit (D242-F1, kept by design): this check does not prove that a member
+/// is of the recorded group. The order of events: each member of the
+/// recorded group ends, so the id is free; the OS gives the pid `pgid` to a
+/// new process; that process makes its own group (`setsid` or `setpgid`),
+/// starts a child and ends; the child keeps the group id `pgid`, and no
+/// process has the pid `pgid`. This stop then sends its signal to that
+/// child, which fleetd did not start.
 fn stop_orphan_group(pgid: u32, how: How) -> bool {
     if horch_platform::process::alive(pgid) {
         return false;
