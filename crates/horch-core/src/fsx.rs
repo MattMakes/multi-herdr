@@ -397,6 +397,10 @@ impl DirLockGuard {
 
 impl Drop for DirLockGuard {
     fn drop(&mut self) {
+        // The release holds the breaker guard, as a breaker does: between a
+        // breaker's stale check and its removal, a holder that outlived
+        // `stale_after` cannot release and let a next holder take the lock
+        // that the breaker then removes.
         let _breakers_excluded = wait_for_guard(&self.path);
         // A holder that outlived `stale_after` may have had its lock broken
         // and taken by another process; that lock is not ours to remove.
@@ -412,6 +416,9 @@ impl Drop for DirLockGuard {
     }
 }
 
+/// The [`BreakerGuard`] of `lock`. A breaker holds it for microseconds, so
+/// this waits up to [`BREAKER_STALE_AFTER`] (5 s); then `None`, and the
+/// owner check of [`remove_lock`] is the only check.
 fn wait_for_guard(lock: &Path) -> Option<BreakerGuard> {
     let start = Instant::now();
     loop {
@@ -431,6 +438,16 @@ fn read_owner(lock: &Path) -> Option<LockOwner> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
+/// Remove the lock directory at `path` when its owner passes `is_ours`.
+/// The directory is renamed first, in 1 atomic step, and the owner is read
+/// from the renamed directory. A lock that another process took at `path`
+/// after the caller's check fails `is_ours` and is put back, not removed.
+///
+/// Limits: the [`BreakerGuard`] holds nothing on Windows, at a `flock`
+/// error, and in a release after the 5 s wait of [`wait_for_guard`]. Then
+/// a third process can publish at `path` before the put-back. The put-back
+/// fails, 2 processes hold the lock, and this prints "was taken while
+/// another lock was put back".
 fn remove_lock(path: &Path, is_ours: impl FnOnce(Option<&LockOwner>) -> bool) -> bool {
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let mut tomb = path.as_os_str().to_owned();
@@ -618,6 +635,8 @@ fn stale_lock(path: &Path, stale_after: Duration) -> Option<StaleLock> {
         || match &owner {
             // A pid on another host cannot be checked from here.
             Some(o) => o.host == host_name() && !crate::procid::alive(o.pid, o.started),
+            // A holder between `create_dir` and writing its owner is live for a
+            // moment; only an old, ownerless lock is stale.
             None => age.is_some_and(|a| a >= OWNERLESS_GRACE),
         };
     stale.then(|| StaleLock {
@@ -646,6 +665,8 @@ fn break_lock(path: &Path, stale_after: Duration) -> bool {
     break_lock_with(path, stale_after, || {})
 }
 
+/// [`break_lock`], with `judged` run once after the lock is judged stale
+/// and before it is removed.
 fn break_lock_with(path: &Path, stale_after: Duration, judged: impl FnOnce()) -> bool {
     let Some(_guard) = BreakerGuard::take(path) else {
         return false;
@@ -1285,6 +1306,10 @@ mod tests {
         assert!(held.contains("dir: None"), "{held}");
     }
 
+    /// A holder that outlived its `stale_after` releases its lock after a
+    /// breaker judged that lock stale and before the breaker removes it,
+    /// and a next holder takes the lock in that window. The breaker removes
+    /// only the lock it judged: the next holder keeps its lock.
     #[cfg(unix)]
     #[test]
     fn dirlock_break_keeps_a_lock_taken_after_its_check() {
@@ -1292,6 +1317,7 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         let lock = dir.join("events.lock");
         let hour = Duration::from_secs(3600);
+        // With stale_after zero, the old holder's lock is stale at once.
         let old = DirLock::acquire(&dir, "events", Duration::ZERO, Duration::from_secs(1)).unwrap();
         let (taken, next_took_lock) = std::sync::mpsc::channel();
         let mut next = None;
@@ -1302,6 +1328,9 @@ mod tests {
                 let _ = taken.send(());
                 held
             }));
+            // A release that does not wait for this breaker ends here, and
+            // the next holder has its lock. A release that waits for it
+            // does not end: then this wait only ends the window.
             let _ = next_took_lock.recv_timeout(Duration::from_millis(500));
         });
         let next = next
