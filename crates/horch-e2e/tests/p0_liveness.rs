@@ -730,3 +730,45 @@ fn an_unreadable_old_record_of_the_polite_stop_is_removed_and_the_pane_is_kept()
     assert!(!record.exists(), "fleetd removed the old record");
     assert!(panes(&h).contains(&"w1:p1".to_string()), "the pane is kept");
 }
+
+// ─── a host with no git (T-389) ─────────────────────────────────────────
+
+/// The `horch doctor` output of `h`, with its root shown as `<root>`, and
+/// whether the doctor passed.
+fn doctor(h: &Harness) -> (bool, String, String) {
+    let o = h.run(&["doctor"]);
+    let root = h.root.to_string_lossy().into_owned();
+    let shown = |b: &[u8]| String::from_utf8_lossy(b).replace(&root, "<root>");
+    (o.status.success(), shown(&o.stdout), shown(&o.stderr))
+}
+
+/// The lines of `text` without the git line of the doctor.
+fn without_git_line(text: &str) -> Vec<&str> {
+    text.lines().filter(|l| !l.starts_with("git: ")).collect()
+}
+
+#[test]
+fn on_a_host_with_no_git_the_doctor_fails_only_its_git_line_and_fleetd_refuses_to_start() {
+    let with_git = Harness::new("p0-a-git");
+    let mut h = Harness::new("p0-no-git");
+    h.without("HORCH_GIT_BIN");
+
+    let (passed, out_git, err_git) = doctor(&with_git);
+    assert!(passed, "{out_git}{err_git}");
+    assert!(out_git.contains("git: git version 2.41.0"), "{out_git}");
+    assert!(!without_git_line(&out_git).is_empty(), "{out_git}");
+    let (passed, out, err) = doctor(&h);
+    assert!(!passed, "{out}{err}");
+    assert!(err.contains("git: git not found on PATH"), "{err}");
+    assert_eq!(without_git_line(&out), without_git_line(&out_git), "{err}");
+
+    let mut fleetds = Fleetds::new(&h);
+    let pid = fleetds.spawn(&h, "fleetd");
+    assert!(!fleetds.wait_exit(pid).success());
+    let stderr = fleetds.output("fleetd", "stderr");
+    assert!(
+        stderr.contains("refused: git not found on PATH"),
+        "{stderr}"
+    );
+    assert_eq!(fleetds.row(), None);
+}

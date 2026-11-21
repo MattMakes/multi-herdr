@@ -143,6 +143,8 @@ impl Harness {
         h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
         let ledger = h.root.join("ledger").join("ledger.sqlite3");
         h.set("HORCH_LEDGER_DB", ledger.to_string_lossy());
+        #[cfg(unix)]
+        write_no_git(&h.root);
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));
@@ -442,6 +444,15 @@ impl Harness {
         env.insert(
             "HORCH_TEAMMATES_DIR".into(),
             repo_root().join("teammates").to_string_lossy().into_owned(),
+        );
+        // The start of fleetd and `horch doctor` refuse without git 2.41 or
+        // newer (T-389). A world without `with_git` has no usable git, so
+        // its `HORCH_GIT_BIN` is the fake of [`NO_GIT`]. A test of a host
+        // without git uses `without("HORCH_GIT_BIN")`.
+        #[cfg(unix)]
+        env.insert(
+            "HORCH_GIT_BIN".into(),
+            no_git_path(&self.root).to_string_lossy().into_owned(),
         );
         for (name, key) in [
             ("claude", "HORCH_CLAUDE_BIN"),
@@ -1557,6 +1568,34 @@ fn unique_sequence() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     N.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The git of a world without [`Harness::with_git`]: it answers `git
+/// version` with 2.41 and ends each other command with exit 1. It is
+/// outside the sealed `PATH`, and only `HORCH_GIT_BIN` names it.
+#[cfg(unix)]
+const NO_GIT: &str = "#!/bin/sh\n\
+[ \"$1\" = warm ] && exit 0\n\
+if [ \"$1\" = version ]; then echo 'git version 2.41.0 (the test world has no git)'; exit 0; fi\n\
+echo 'the test world has no git: use with_git' >&2\n\
+exit 1\n";
+
+#[cfg(unix)]
+fn no_git_path(root: &Path) -> PathBuf {
+    root.join("no-git").join("git")
+}
+
+#[cfg(unix)]
+fn write_no_git(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = no_git_path(root);
+    std::fs::create_dir_all(path.parent().unwrap()).expect("creating the no-git dir");
+    std::fs::write(&path, NO_GIT).expect("writing the no-git fake");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("making the no-git fake executable");
+    let out = warm(Command::new(&path).arg("warm"))
+        .unwrap_or_else(|e| panic!("warm {}: {e}", path.display()));
+    assert!(out.status.success(), "warming {} failed", path.display());
 }
 
 fn find_on_real_path(name: &str) -> Option<PathBuf> {
