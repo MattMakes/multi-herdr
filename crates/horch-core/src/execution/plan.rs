@@ -166,8 +166,6 @@ fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
     )
 }
 
-/// The session of a fresh record: the resume of `req.resume_session` when
-/// the harness has a resume form (RR-12), else [`fresh_session`].
 fn attempt_session(agent: HarnessKind, req: &SpawnRequest, minted: &SessionId) -> SessionMode {
     match &req.resume_session {
         Some(id) if agent.capabilities().resumes => SessionMode::Resume(id.clone()),

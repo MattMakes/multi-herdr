@@ -489,7 +489,6 @@ pub fn launch(
         }
     }
     let l = push_launch(conn, &p)?;
-    // The row comes before the effect: the spawn reads the resume here.
     let resume = resume_of(conn, attempt_id, ports)?;
     conn.execute(
         "UPDATE workers SET resumed_from_session = ?2 WHERE worker_id = ?1",
@@ -1068,8 +1067,6 @@ mod tests {
         assert_eq!(decide(TreeFact::Ready, &[]), Decision::Launch);
     }
 
-    /// Security of RR-12: a session id becomes 1 CLI argument, so only a
-    /// plain id of a bounded length passes, and never an option.
     #[test]
     fn session_id_form_refuses_an_option_and_odd_bytes() {
         assert!(session_id_ok("5bd39a10-8a9f-43b8-a26f-3e68992c7d58"));
@@ -1081,8 +1078,6 @@ mod tests {
         assert!(!session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES + 1)));
     }
 
-    /// RR-12: the worker row of a launch with no answered question records
-    /// no resume.
     #[test]
     fn launch_with_no_question_records_no_resume() {
         let mut w = World::new();

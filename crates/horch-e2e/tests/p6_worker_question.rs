@@ -51,7 +51,6 @@ impl World {
         World::with(name, scenario, first, false)
     }
 
-    /// A world whose fake CLI refuses each resume when `refuse_resume`.
     fn with(name: &str, scenario: &str, first: &str, refuse_resume: bool) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
@@ -76,7 +75,6 @@ impl World {
         if !horch.exists() {
             std::os::unix::fs::symlink(Harness::horch_bin(), horch).unwrap();
         }
-        // The worker has no git on its PATH: `@GIT@` names the git of the harness.
         let git = shell_word(&h.git_bin().expect("a git").to_string_lossy());
         let wrapper = wrapper(&h.root, &first.replace("@GIT@", &git), refuse_resume);
         let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
@@ -275,8 +273,6 @@ impl World {
         wait_for_or(what, f, || self.context())
     }
 
-    /// [`World::wait`] past a retry backoff of rung 6: the backoff of the
-    /// roster is 120 s of fleet time, so this waits 3 deadlines.
     fn wait_past_backoff<T>(&self, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
         let until = Instant::now() + 3 * DEADLINE;
         while Instant::now() < until {
@@ -293,8 +289,6 @@ impl World {
     }
 }
 
-/// The CLI of each attempt: the first launch runs `first` in place of the
-/// fake CLI. With `refuse_resume`, a resume ends at once with a failure.
 fn wrapper(root: &Path, first: &str, refuse_resume: bool) -> String {
     let fake = Harness::horch_bin().with_file_name("fake-claude");
     let refuse = if refuse_resume {
@@ -318,7 +312,6 @@ fn wrapper(root: &Path, first: &str, refuse_resume: bool) -> String {
 
 const FIRST_LOG: &str = "first-launch.log";
 
-/// The argv of each resume that the refusing CLI refused, 1 line each.
 const REFUSED_LOG: &str = "refused-resume.log";
 
 fn horch_ask(text: &str) -> String {
@@ -366,8 +359,6 @@ fn assert_1_row_of_the_first_attempt(w: &World, task: &str) -> String {
     id
 }
 
-/// Answer the question `id` of `task` with `answer`, as the owner does:
-/// `horch tell <role> --answers <mail id>`.
 fn answer_by_tell(w: &World, task: &str, id: &str, answer: &str) {
     let mail_id = w
         .one(&format!(
@@ -426,7 +417,6 @@ fn answer_by_tell_answers_reaches_the_next_attempt() {
     );
 }
 
-/// The column `col` of the worker row of attempt `attempt`.
 fn worker_of(w: &World, attempt: &str, col: &str) -> String {
     w.one(&format!(
         "SELECT w.{col} FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
@@ -436,7 +426,6 @@ fn worker_of(w: &World, attempt: &str, col: &str) -> String {
     .unwrap_or_default()
 }
 
-/// The argv of each call of the fake CLI that names START.md of `attempt`.
 fn argv_of(w: &World, attempt: &str) -> Vec<Vec<String>> {
     let start = w.attempt_dir(attempt).join("inbox/START.md");
     let start = start.to_string_lossy();
@@ -454,21 +443,17 @@ fn argv_of(w: &World, attempt: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Whether `argv` holds `--resume <session>`.
 fn resumes(argv: &[String], session: &str) -> bool {
     argv.windows(2)
         .any(|p| p[0] == "--resume" && p[1] == session)
 }
 
-/// The session id that the worker of `attempt` recorded.
 fn session_of(w: &World, attempt: &str) -> String {
     w.wait("the session id of the first attempt", || {
         Some(worker_of(w, attempt, "session_id")).filter(|s| !s.is_empty())
     })
 }
 
-/// RR-12, design line 1015: fleetd resumes the session of the worker with
-/// the answer, through the resume form of the adapter, and records it.
 #[test]
 fn answered_question_resumes_the_session_of_the_worker() {
     let w = World::new("p6-wq-resume", "stay", &question_tell(QUESTION));
@@ -495,21 +480,16 @@ fn answered_question_resumes_the_session_of_the_worker() {
         "the worker row records the resumed session\n{}",
         w.context()
     );
-    // T-15 retired the manual resume: no CLI user can start one.
     let o = w.h.run(&["spawn", "--resume", &session]);
     assert!(!o.status.success(), "horch spawn --resume: {}", text(&o));
     assert_eq!(w.attempts(&task).len(), 2, "{}", w.context());
 }
 
-/// RR-12, design line 1015: a resume that fails at once gives a fresh
-/// attempt from the question, the answer and the committed work.
 #[test]
 fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
     let commit = "printf 'work\\n' > work.txt && @GIT@ add work.txt && \
                   @GIT@ -c user.name=t -c user.email=t@t -c commit.gpgSign=false \
                   commit -q --no-verify -m 'work in progress'";
-    // The CLI starts in the project root; the worker works in the tree
-    // that `task.yaml` names.
     let tree =
         "cd \"$(/usr/bin/sed -n 's/^worktree: //p' \"$HORCH_TASK_YAML\" | /usr/bin/tr -d '\"')\"";
     let first = format!("{tree} && {commit} && {}", question_tell(QUESTION));
@@ -521,8 +501,6 @@ fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
     let session = session_of(&w, &a1);
     let answer = "The guide names port 8080.";
     answer_by_tell(&w, &task, &id, answer);
-    // Design line 1236: an exit with no result ends `no_result`, and line
-    // 1237: it burns 1 attempt, so the fresh attempt waits its backoff.
     let a3 = w.wait_past_backoff("the fresh attempt after the failed resume", || {
         w.attempts(&task).get(2).map(|a| a.0.clone())
     });
