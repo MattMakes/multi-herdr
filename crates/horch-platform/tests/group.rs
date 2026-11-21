@@ -177,6 +177,7 @@ fn detach_and_kill_group_id_are_not_supported_on_windows() {
     assert!(group::is_same_group(std::process::id(), 0).is_err());
 }
 
+/// A parent that read the output of `horch tell` through a pipe waited until the detached courier ended, because the courier inherited the std handles (Windows, CI run 4).
 #[test]
 fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
     const HELPER: &str = "HORCH_PLATFORM_DETACHED_CHILD_PID_FILE";
