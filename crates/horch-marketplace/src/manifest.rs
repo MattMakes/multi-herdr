@@ -1,6 +1,3 @@
-//! `SkillManifest`: the SKILL.md YAML frontmatter, validated with the same
-//! rules as the bundled catalog.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -12,9 +9,6 @@ use crate::model::is_valid_skill_name;
 
 pub const MAX_DESCRIPTION_BYTES: usize = 1024;
 
-/// The allowed keys are `name`, `description`, `license`, `metadata` and
-/// `allowed-tools`. Any other key, `hooks` included, is rejected. The key
-/// list is specified in the architecture design §4.10 (Spec A §10).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillManifest {
@@ -24,15 +18,11 @@ pub struct SkillManifest {
     pub license: Option<String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
-    /// A string or a list in practice; kept as YAML.
     #[serde(default, rename = "allowed-tools")]
     pub allowed_tools: Option<serde_yaml::Value>,
 }
 
 impl SkillManifest {
-    /// Parse SKILL.md text. `expected_name`, when known, must equal `name`
-    /// (the skill directory name). Frontmatter errors and unknown keys are
-    /// `Manifest`; name and description rules are `SkillMd`.
     pub fn parse(text: &str, expected_name: Option<&str>) -> Result<Self> {
         let text = text.replace("\r\n", "\n");
         let front = text
@@ -47,7 +37,6 @@ impl SkillManifest {
         Ok(manifest)
     }
 
-    /// The first SKILL.md rule this manifest breaks, or `None`.
     fn rule_violation(&self, expected_name: Option<&str>) -> Option<String> {
         if !is_valid_skill_name(&self.name) {
             Some(format!("invalid skill name '{}'", self.name))
@@ -65,8 +54,6 @@ impl SkillManifest {
         }
     }
 
-    /// Read and validate `<dir>/SKILL.md`. A symlinked SKILL.md is rejected
-    /// before it is read.
     pub fn read(dir: &Path, expected_name: Option<&str>) -> Result<Self> {
         let path = dir.join("SKILL.md");
         let invalid = |why: &dyn std::fmt::Display| {
@@ -129,8 +116,6 @@ mod tests {
             .map(|_| ())
             .map_err(|e| e.to_string())
         };
-        // The name rule fires before the directory rule, which fires before
-        // the description rules.
         assert_eq!(
             parse("Bad", "", Some("other")),
             Err("invalid SKILL.md: invalid skill name 'Bad'".into())

@@ -1,7 +1,3 @@
-//! `tasks::claim`, `tasks::waits` and `tasks::add_many` (#90). The queue's
-//! rule clauses have their own tests in `taskledger_queue.rs`; these pin the
-//! branches of `claim` and the 1 test per `Wait` kind.
-
 use std::path::Path;
 
 use horch_core::taskledger::model::{Actor, TaskKind, WorktreeMode};
@@ -109,7 +105,6 @@ fn a_replacement_takes_its_predecessors_task_first() {
     add(&mut s, &run, "front", |t| t.priority = 50);
     add(&mut s, &run, "mine", |_| {});
     let old = worker(&mut s, &run);
-    // The predecessor holds "mine" when it dies; the task goes back to the queue.
     sql(
         &s,
         &format!(
@@ -205,8 +200,6 @@ fn a_lost_race_is_an_error_and_changes_no_worker() {
     let (_d, mut s, run) = ledger();
     add(&mut s, &run, "a", |_| {});
     let w = worker(&mut s, &run);
-    // Another writer took the task between the read and the write: the
-    // guarded UPDATE changes 0 rows. A trigger stands in for that writer.
     sql(
         &s,
         "CREATE TRIGGER lose_the_race BEFORE UPDATE ON tasks BEGIN SELECT RAISE(IGNORE); END",
@@ -426,7 +419,6 @@ fn add_many_queues_in_dependency_order_and_returns_them_by_seq() {
     let out = s
         .immediate(|tx| tasks::add_many(tx, &run, &items, Actor::Orchestrator))
         .unwrap();
-    // The blocker is inserted first, so it gets seq 1.
     let titles: Vec<_> = out.iter().map(|t| (t.seq, t.title.as_str())).collect();
     assert_eq!(titles, vec![(1, "early"), (2, "late")]);
     let text: String = s
@@ -451,8 +443,6 @@ fn task_count(store: &Store) -> i64 {
         .unwrap()
 }
 
-/// Each check of `add` refuses alone, with its own message, and writes
-/// nothing; a task that passes them all is still taken.
 #[test]
 fn add_refuses_a_missing_title_ticket_or_primary_and_a_fallback_equal_to_it() {
     let (_d, mut s, run) = ledger();
@@ -491,7 +481,6 @@ fn unblock_refuses_a_blocker_the_task_does_not_wait_for() {
     let a = add(&mut s, &run, "a", |_| {});
     let b = add(&mut s, &run, "b", |t| t.blocked_by = vec!["T-1".into()]);
 
-    // T-2 waits for T-1, not the other way round.
     let err = tasks::unblock(s.conn(), &a, &b).unwrap_err().to_string();
     assert_eq!(err, "T-1 does not wait for T-2");
     tasks::unblock(s.conn(), &b, &a).unwrap();
@@ -533,7 +522,6 @@ fn cancel_and_requeue_take_only_the_states_they_are_for() {
     let (_d, mut s, run) = ledger();
     let t = add(&mut s, &run, "t", |_| {});
 
-    // A queued task that nobody holds is not requeued: there is nothing to undo.
     let err = tasks::requeue_by_operator(s.conn(), &t, "again")
         .unwrap_err()
         .to_string();

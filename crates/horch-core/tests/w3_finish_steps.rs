@@ -1,8 +1,3 @@
-//! The finish steps on a real git repository in a temp dir: land, cleanup,
-//! complexity-sweep, pr, code-sweep, `finish` and `done` (#137, #138, #141,
-//! #144, #146). Each test pins the outcome text of 1 path, so a refactor
-//! that changes a path fails here.
-
 #[path = "common/warm.rs"]
 mod warm;
 
@@ -40,7 +35,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Write `file` in `dir`, commit it, and return the new HEAD.
 fn commit(dir: &Path, file: &str, body: &str) -> String {
     std::fs::write(dir.join(file), body).unwrap();
     git(dir, &["add", file]);
@@ -48,7 +42,6 @@ fn commit(dir: &Path, file: &str, body: &str) -> String {
     git(dir, &["rev-parse", "HEAD"])
 }
 
-/// A commit on the run branch, made without a checkout.
 fn move_run_branch_script(root: &Path) -> String {
     format!(
         "c=$(git -C {r} commit-tree -p {RUN_BRANCH} -m moved {RUN_BRANCH}^{{tree}}) && git -C {r} update-ref refs/heads/{RUN_BRANCH} $c",
@@ -133,7 +126,6 @@ impl World {
         self.tmp.path().canonicalize().unwrap()
     }
 
-    /// A claimed task of a new `persona` worker; returns the worker id.
     fn claimed(&mut self, persona: &str, f: impl FnOnce(&mut NewTask)) -> String {
         let mut t = NewTask::work("feature", "t.md", persona);
         f(&mut t);
@@ -146,9 +138,6 @@ impl World {
             .unwrap()
     }
 
-    /// A claimed worktree task with `check`, and its worktree with 1 commit
-    /// of `file`. No `check` means its ticket says `**Check:** none`: a
-    /// task with no check lands only then (TRF-17).
     fn task(&mut self, check: Option<&str>, file: &str) -> (String, PathBuf) {
         let w = self.claimed("opus", |t| {
             t.land_check = check.map(Into::into);
@@ -185,7 +174,6 @@ impl World {
     }
 }
 
-/// A started worker of `persona` that claims the next task it can.
 fn worker(tx: &rusqlite::Transaction<'_>, run: &Run, persona: &str) -> anyhow::Result<String> {
     let n: i64 = tx.query_row("SELECT count(*) FROM workers", [], |r| r.get(0))?;
     let id = workers::insert(
@@ -214,8 +202,6 @@ fn note(r: &FinishReport, name: &str) -> String {
 fn verdict(r: &FinishReport, name: &str) -> String {
     step(r, name).verdict.clone().unwrap_or_default()
 }
-
-// ---- land (#141) ----
 
 #[test]
 fn a_clean_branch_lands_on_the_run_branch_by_a_ref_update() {
@@ -457,8 +443,6 @@ fn a_task_that_is_not_landing_lands_nothing() {
     assert_eq!(w.rev(RUN_BRANCH), w.base);
 }
 
-// ---- unsafe_to_remove, remove, retry_cleanup (#141) ----
-
 #[test]
 fn unsafe_to_remove_names_the_first_reason_work_could_be_lost() {
     let mut w = World::new(&[StepName::Land], true);
@@ -474,7 +458,6 @@ fn unsafe_to_remove_names_the_first_reason_work_could_be_lost() {
         ..wt.clone()
     };
     assert_eq!(why(&gone), None, "a missing folder loses nothing");
-    // Dirty wins over the unlanded commit.
     std::fs::write(path.join("scratch.txt"), "x\n").unwrap();
     assert_eq!(
         why(&wt).as_deref(),
@@ -548,7 +531,6 @@ fn a_failed_branch_delete_is_retried_by_the_watchdog() {
     );
     assert!(!path.exists(), "the folder went before the branch");
 
-    // A cleanup_failed row with no task is skipped.
     w.store
         .conn()
         .execute(
@@ -580,10 +562,6 @@ impl World {
     }
 }
 
-// ---- complexity-sweep (#138) ----
-
-/// An analyser script, run as `node <script>` with node = /bin/sh, so no
-/// new executable is started (macOS scans each one at its first exec).
 fn analyser(w: &mut World, body: &str) -> PathBuf {
     let cli = w.top().join("cli.js");
     std::fs::write(&cli, body).unwrap();
@@ -683,8 +661,6 @@ fn complexity_sweep_fails_on_a_violation_in_a_changed_function() {
     assert!(step(&r, "complexity-sweep").judged_rev.is_some());
 }
 
-/// A cargo crate whose `tangled` function is over the threshold that
-/// `clippy.toml` sets (2).
 const RUST_LIB: &str = "pub fn simple(x: u32) -> u32 {
     x + 1
 }
@@ -736,8 +712,6 @@ fn trf_07_complexity_sweep_runs_clippy_on_a_changed_rust_function() {
     );
 }
 
-// ---- pr (#146) ----
-
 const FAKE_GH: &str = r#"#!/bin/sh
 d="$(dirname "$0")/ghstate"
 n=$(ls "$d/calls" | wc -l | tr -d ' ')
@@ -749,7 +723,6 @@ case "$1 $2" in
 esac
 "#;
 
-/// A fake gh, warmed once, whose `pr view` prints `ghstate/view.json`.
 fn fake_gh(w: &World) -> PathBuf {
     let state = w.top().join("ghstate");
     std::fs::create_dir_all(state.join("calls")).unwrap();
@@ -811,8 +784,6 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     assert_eq!(verdict(&r, "pr"), "PR #7");
     assert_eq!(note(&r, "pr"), "PR #7 holds T-1");
     let short = git(&path, &["rev-parse", "--short", "HEAD"]);
-    // The section says what the task's commits did and which files they
-    // touch; steps that never ran are left out.
     let section = format!(
         "<!-- horch:task T-1 -->\n### T-1 feature\n\n- feature.txt (`{short}`)\n\n<details><summary>1 file changed</summary>\n\n- `feature.txt`\n\n</details>\n\nLanded by opus-1 at `{}`.\n<!-- /horch:task T-1 -->",
         &head[..12]
@@ -851,7 +822,6 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     assert_eq!(run.pr_number, Some(7));
     assert_eq!(run.pr_url.as_deref(), Some("https://github.com/o/r/pull/7"));
 
-    // The next pr run finds the PR, and an unchanged body is not edited.
     view(&state, &section, &head);
     w.store
         .conn()
@@ -871,13 +841,10 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
 fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
-    // A research task: its worktree holds no commit since the claim, so
-    // nothing lands and the PR needs nothing from it (video-lessons T-15).
     let id = w.claimed("opus", |t| t.check_none = true);
     finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");
-    // A task with 0 commits skips land and pr with the note "no commits".
     assert_eq!(step(&r, "land").status, "not_applicable", "{r:?}");
     assert_eq!(note(&r, "land"), "no commits");
     assert_eq!(w.worktree().landed_commit, None);
@@ -894,8 +861,6 @@ fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
 fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
     let state = fake_gh(&w);
-    // 2 tasks make the same change from the same run branch tip. The 2nd
-    // rebase drops its commit, so it lands at the 1st task's commit.
     let (first, path) = w.task(None, "same.txt");
     let (second, _) = w.task(None, "same.txt");
     view(&state, "", &git(&path, &["rev-parse", "HEAD"]));
@@ -943,8 +908,6 @@ fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
 #[test]
 fn pr_fails_when_its_head_lacks_the_landed_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
-    // The land pushes to another repository, so the remote run branch that
-    // origin reads stays at the base and lacks the landed commit (TRF-50).
     let other = w.top().join("other.git");
     git(
         &w.top(),
@@ -969,8 +932,6 @@ fn pr_fails_when_its_head_lacks_the_landed_commit() {
         )
     );
 }
-
-// ---- code-sweep (#137) ----
 
 const REVIEWER_NAMES: &[&str] = &[
     "bug-hunter",
@@ -998,7 +959,6 @@ fn sweep_world() -> World {
     w
 }
 
-/// The review tasks of round 1: (short, findings file).
 fn reviews(w: &World) -> Vec<(String, String)> {
     let mut stmt = w
         .store
@@ -1013,7 +973,6 @@ fn reviews(w: &World) -> Vec<(String, String)> {
     .collect()
 }
 
-/// Every review is in, with these findings files (empty: none written).
 fn reviews_in(w: &World, files: &[&str]) {
     for ((_, file), body) in reviews(w).iter().zip(files) {
         std::fs::write(file, body).unwrap();
@@ -1190,8 +1149,6 @@ fn code_sweep_fails_on_a_critical_finding_until_it_is_waived() {
     );
 }
 
-// ---- finish and done (#144) ----
-
 #[test]
 fn finish_refuses_a_review_task_and_a_task_without_its_worktree() {
     let mut w = sweep_world();
@@ -1234,12 +1191,10 @@ fn a_passed_step_stands_until_the_tree_changes_and_after_the_land() {
     let r = w.finish(&id);
     assert!(r.complete);
     assert_eq!(runs(), 2, "nothing runs again on the same tree");
-    // Once landed, a tree change with no new commit keeps the check.
     git(&path, &["reset", "--quiet", "--hard", &w.base]);
     let r = w.finish(&id);
     assert!(r.complete);
     assert_eq!(runs(), 2);
-    // A commit after the land opens the steps from land on again (#154).
     git(&path, &["reset", "--quiet", "--hard", RUN_BRANCH]);
     let new = commit(&path, "more.txt", "y\n");
     let r = w.finish(&id);
@@ -1413,7 +1368,6 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     assert_eq!(first.base_commit.as_deref(), Some(w.base.as_str()));
     assert_eq!(first.status, "open");
     assert!(Path::new(&first.path).ends_with(".worktrees/T2-feat-b"));
-    // A replacement worker of the task gets the same worktree.
     let run = w.run.clone();
     w.store
         .immediate(|tx| {
@@ -1470,8 +1424,6 @@ fn a_step_row_reads_back_every_column() {
     assert_eq!(wt.reason, None);
 }
 
-// ---- `horch worktree drop`: what it refuses, and then removes nothing ------
-
 fn dropped(
     w: &mut World,
     name: &str,
@@ -1489,10 +1441,6 @@ fn dropped(
     )
 }
 
-/// Each check of `drop_worktree` refuses alone, with its own message, and
-/// leaves the folder and the branch where they were. Once the checks pass,
-/// the folder goes, the row is abandoned with the reason, and the branch
-/// stays because `--keep-branch` asked for it.
 #[test]
 fn a_drop_refuses_an_empty_reason_a_dirty_tree_and_a_stash_and_removes_nothing() {
     let mut w = World::new(&[StepName::Land], false);
@@ -1539,9 +1487,6 @@ fn a_drop_refuses_an_empty_reason_a_dirty_tree_and_a_stash_and_removes_nothing()
     git(&w.root, &["rev-parse", "--verify", BRANCH]);
 }
 
-/// A name that no registered worktree has is refused with the count, and a
-/// worktree that sits on another branch than its recorded one is refused
-/// even with `--keep-branch`, although it holds the same commit.
 #[test]
 fn a_drop_refuses_an_unknown_name_and_a_worktree_on_another_branch() {
     let mut w = World::new(&[StepName::Land], false);

@@ -21,9 +21,6 @@ from .task import SIDES, Task, now, write_json
 SHORT = {"contaminated": "C", "drafts": "D", "clean": "K"}
 CHECK = "domain-snapshot"
 
-# Write set per role, as patterns on "<C|D|K>/<path in that side root>".
-# Each role also writes its status file in the status/ folder of its own side
-# (spec 6.6; the analyst brief is in C/briefs/, its status file in D/status/).
 WRITE_SETS = {
     "auditor": ("C/sweep/audit.jsonl", "C/sweep/opaque/*.md", "C/status/auditor-*.json"),
     "analyst": ("D/drafts/*", "D/status/analyst-*.json"),
@@ -31,9 +28,6 @@ WRITE_SETS = {
     "writer": ("K/out/*", "K/report.json", "K/persona.md", "K/verify-log/*", "K/status/writer-*.json"),
     "reviewer": ("K/out/*", "K/review.json", "K/verify-log/*", "K/status/reviewer-*.json"),
 }
-# Files the controller writes through `intake` while a role runs: the task
-# manifest, the role log, briefs and the role snapshots. A change to them is
-# not counted against a role.
 CONTROLLER = ("C/task.json", "C/roles.jsonl", "C/briefs/*", "D/briefs/*", "K/briefs/*",
               "C/contaminated/snapshots/*")
 
@@ -46,7 +40,6 @@ def take(task: Task) -> dict:
         root = task.root(side)
         for d, dirs, names in os.walk(root, followlinks=False):
             dirs.sort()
-            # os.walk lists a symlink to a folder under dirs; record it as a link too.
             for name in sorted(names + [x for x in dirs if os.path.islink(os.path.join(d, x))]):
                 p = os.path.join(d, name)
                 rel = SHORT[side] + "/" + os.path.relpath(p, root).replace(os.sep, "/")

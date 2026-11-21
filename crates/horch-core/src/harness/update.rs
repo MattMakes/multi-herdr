@@ -1,37 +1,3 @@
-//! The agent CLI update step: `horch update`, and the step `horch fleet` and
-//! `horch orchestration` run before their first pane starts (ARC-32 to
-//! ARC-35).
-//!
-//! Each CLI has its own update command, and each command finds its own
-//! install method (native, Homebrew, npm), so horch only runs it. The panes
-//! themselves keep their auto-update switched off.
-//!
-//! Several fleets can start on 1 host, and each one runs this step (#205):
-//! - 1 lock per CLI under `<default state root>/update/` lets 1 updater of
-//!   a CLI run at a time on the host. The folder does not follow
-//!   `HORCH_STATE_DIR`: a scratch fleet updates the same installed CLIs.
-//!   A second horch that finds the lock held skips that CLI.
-//! - The fleet step skips a CLI whose last update succeeded less than
-//!   [`FRESH_FOR`] ago.
-//! - An updater that passes its time limit is not killed: a package manager
-//!   stopped between the removal of the old build and the link of the new
-//!   one leaves no CLI. It is left to finish, and while it runs (at most
-//!   `LOCK_STALE`), every later horch skips that CLI. An updater that
-//!   ended unseen counts as the CLI's last check.
-//!
-//! So a CLI can change under a running fleet: a detached updater, or the
-//! updater of a later fleet start, replaces it. It is never left half
-//! installed. The files under `<default state root>/update/` are written without
-//! following a link: a Codex pane can write the state root.
-//!
-//! Every updater waits out the release cooldown first ([`super::cooldown`]):
-//! a CLI whose newest release is younger than it, or whose release dates
-//! horch cannot read, is held back and keeps the build it has.
-//!
-//! herdr is not in the default list: `herdr update` can stop the herdr
-//! server, and that closes every pane. [`run_herdr_update`] runs it only on
-//! the operator's request, attached to the operator's terminal.
-
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -44,7 +10,6 @@ use crate::fsx::{DirLock, FsxError, PRIVATE_FILE};
 use crate::routing::quota_probe::probe_version;
 use crate::runtime::{process, RuntimeContext};
 
-/// Every agent CLI the update step updates, in the order of its results.
 pub const ORDER: [HarnessKind; 6] = [
     HarnessKind::Claude,
     HarnessKind::Codex,
@@ -54,82 +19,59 @@ pub const ORDER: [HarnessKind; 6] = [
     HarnessKind::Prime,
 ];
 
-/// The longest failure reason, in characters.
 const REASON_MAX: usize = 200;
 
-/// How long a successful update of 1 CLI holds for the fleet step. The
-/// horch self-update cache (`CACHE_TTL_HOURS` in `horch`) is 24 h too.
 pub const FRESH_FOR: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 
-/// How old an update lock must be before a later horch breaks it while its
-/// holder still runs, and how long a detached updater keeps its CLI busy.
-/// A lock holder that has exited is broken at once.
 const LOCK_STALE: Duration = Duration::from_secs(3600);
 
-/// The longest horch waits for 1 updater: under `LOCK_STALE`, so a later
-/// horch never breaks the lock of a horch that still waits.
 const MAX_TIMEOUT: Duration = Duration::from_secs(1800);
 
-// The lock of a horch that still waits must never be old enough to break.
 const _: () = assert!(MAX_TIMEOUT.as_secs() < LOCK_STALE.as_secs());
 
-/// How much of the end of an updater log horch reads for a failure reason.
 const LOG_TAIL: u64 = 64 * 1024;
 
-/// What the update step did for 1 harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The binary is not on `PATH`. Nothing ran.
     NotInstalled,
-    /// The updater exited 0. The first `--version` line before and after it.
     Updated {
         before: Option<String>,
         after: Option<String>,
     },
-    /// The newest release is younger than the cooldown. Nothing ran.
     Cooldown {
         version: String,
         age: chrono::TimeDelta,
         days: u32,
     },
-    /// horch cannot read when the CLI's releases were published, so the
-    /// cooldown cannot pass. Nothing ran.
-    NoReleaseDates { days: u32 },
-    /// The updater failed, or the release dates could not be read: why.
-    Failed { reason: String },
-    /// Another horch holds this CLI's update lock, or an updater an earlier
-    /// horch left running still runs. Nothing ran.
+    NoReleaseDates {
+        days: u32,
+    },
+    Failed {
+        reason: String,
+    },
     Busy,
-    /// The last update succeeded at `checked_at`, less than the fleet step's
-    /// limit ago. Nothing ran.
     Fresh {
         checked_at: chrono::DateTime<chrono::Utc>,
     },
-    /// The updater still ran at the time limit `after`. horch did not wait
-    /// for it and did not kill it.
-    Detached { after: Duration },
+    Detached {
+        after: Duration,
+    },
 }
 
-/// Read the npm registry document of a package: `Err` is why it could not.
 pub type ReleaseLookup<'a> = dyn Fn(&str) -> Result<Packument, String> + Sync + 'a;
 
-/// The update step's result for 1 harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateResult {
     pub harness: HarnessKind,
-    /// The program that ran, when it was found.
     pub bin: Option<PathBuf>,
     pub outcome: Outcome,
 }
 
 impl UpdateResult {
-    /// The updater failed.
     pub fn failed(&self) -> bool {
         matches!(self.outcome, Outcome::Failed { .. })
     }
 
-    /// The result prints as a `horch: NOTE:` line on stderr: the updater
-    /// failed, or horch did not wait for it.
     pub fn is_note(&self) -> bool {
         matches!(
             self.outcome,
@@ -137,15 +79,11 @@ impl UpdateResult {
         )
     }
 
-    /// The CLI is not known to be updated: its updater failed, still runs,
-    /// or another horch updates it. `horch update` exits 1 on it.
     pub fn unfinished(&self) -> bool {
         self.is_note() || self.outcome == Outcome::Busy
     }
 }
 
-/// The arguments of `kind`'s own update command. `None` for the agentless
-/// smoke harness.
 pub fn update_args(kind: HarnessKind) -> Option<&'static [&'static str]> {
     match kind {
         HarnessKind::Claude => Some(&["update"]),
@@ -158,11 +96,6 @@ pub fn update_args(kind: HarnessKind) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Update every harness in `harnesses` at the same time, each within
-/// `ctx.settings.update_timeout` and only past the release cooldown, whose
-/// dates `releases` reads. With `skip_fresh`, a harness whose last update
-/// succeeded less than [`FRESH_FOR`] ago is skipped. The results come in
-/// [`ORDER`], 1 per harness, whatever the order of `harnesses`.
 pub fn update_all(
     ctx: &RuntimeContext,
     harnesses: &[HarnessKind],
@@ -228,14 +161,12 @@ fn update_one(
     }
 }
 
-/// `kind`'s update arguments and the installed program that runs them.
 fn updater(ctx: &RuntimeContext, kind: HarnessKind) -> Option<(&'static [&'static str], PathBuf)> {
     let args = update_args(kind)?;
     let launched = kind.binary(&ctx.bins.harness)?;
     Some((args, process::resolve(ctx, &update_bin(kind, &launched))?))
 }
 
-/// 1 CLI's updater, ready to run.
 struct Job<'a> {
     kind: HarnessKind,
     bin: &'a Path,
@@ -243,7 +174,6 @@ struct Job<'a> {
     timeout: Duration,
 }
 
-/// [`update_one`] for an installed CLI, under the CLI's update lock.
 fn locked_update(
     ctx: &RuntimeContext,
     job: &Job<'_>,
@@ -251,8 +181,6 @@ fn locked_update(
     skip_fresh: bool,
 ) -> Outcome {
     let files = UpdateFiles {
-        // Host-wide, as the CLIs are: a fleet with its own state root
-        // updates the same installs (#205).
         dir: ctx.paths.default_state_root.join("update"),
         name: job.kind.as_str(),
     };
@@ -301,16 +229,11 @@ fn locked_update(
     }
 }
 
-/// The files of 1 CLI's update step in `dir` (`<default state root>/update/`): the
-/// lock `<name>.lock/`, the last check `<name>.checked`, the updater that
-/// runs `<name>.running`, and its output `<name>.stdout.log` and
-/// `<name>.stderr.log`.
 struct UpdateFiles {
     dir: PathBuf,
     name: &'static str,
 }
 
-/// An updater as `<name>.running` records it: `<pid> <start time or -> <time>`.
 struct RunningMark {
     pid: u32,
     started: Option<u64>,
@@ -318,8 +241,6 @@ struct RunningMark {
 }
 
 impl RunningMark {
-    /// Whether its process group still runs. Without a start time, whether
-    /// the pid exists.
     fn alive(&self) -> bool {
         #[cfg(unix)]
         if let Some(started) = self.started {
@@ -334,8 +255,6 @@ impl UpdateFiles {
         self.dir.join(format!("{}.{suffix}", self.name))
     }
 
-    /// When the last check was, if that is less than [`FRESH_FOR`] before
-    /// `now`. A time after `now` is not fresh.
     fn checked_within(
         &self,
         now: chrono::DateTime<chrono::Utc>,
@@ -353,8 +272,6 @@ impl UpdateFiles {
         }
     }
 
-    /// Mark file `suffix` as text: a regular file only, read without
-    /// blocking and bounded, as a Codex pane can write the state root.
     fn read_mark(&self, suffix: &str) -> Option<String> {
         crate::fsx::read_regular_bounded(&self.file(suffix))
             .ok()
@@ -370,9 +287,6 @@ impl UpdateFiles {
         Some(RunningMark { pid, started, at })
     }
 
-    /// Whether an updater a horch started still runs, for at most
-    /// `LOCK_STALE`. A mark of an updater that ended, or ran too long,
-    /// is removed. The updater ran, so its start counts as the last check.
     fn settle_running(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
         let Some(mark) = self.running() else {
             self.clear_running();
@@ -399,7 +313,6 @@ impl UpdateFiles {
         false
     }
 
-    /// Record `pid`, the updater that runs from `now`.
     fn set_running(&self, pid: u32, now: chrono::DateTime<chrono::Utc>) -> crate::fsx::Result<()> {
         let started =
             crate::procid::start_time(pid).map_or_else(|| "-".to_string(), |t| t.to_string());
@@ -411,8 +324,6 @@ impl UpdateFiles {
         let _ = std::fs::remove_file(self.file("running"));
     }
 
-    /// A new log file `suffix`: an old file or link at its path is removed
-    /// first, and the new one is created, never opened through a link.
     fn new_log(&self, suffix: &str) -> std::io::Result<std::fs::File> {
         let path = self.file(suffix);
         match std::fs::remove_file(&path) {
@@ -420,7 +331,6 @@ impl UpdateFiles {
             _ => {}
         }
         let mut options = std::fs::OpenOptions::new();
-        // Read too: horch reads the tail through a clone of this handle.
         options.read(true).write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, PRIVATE_FILE);
@@ -428,8 +338,6 @@ impl UpdateFiles {
     }
 }
 
-/// The last [`LOG_TAIL`] bytes of an updater log, read through the handle
-/// horch created it with, never by its path again.
 fn log_tail(file: &mut std::fs::File) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -439,8 +347,6 @@ fn log_tail(file: &mut std::fs::File) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// What keeps `kind`'s updater from running under a cooldown of `days` at
-/// `now`, if anything does.
 pub fn hold(
     kind: HarnessKind,
     now: chrono::DateTime<chrono::Utc>,
@@ -458,8 +364,6 @@ pub fn hold(
     }
 }
 
-/// What the cooldown makes of the release dates in `doc`, if it holds the
-/// updater back.
 fn judged(doc: &Packument, now: chrono::DateTime<chrono::Utc>, days: u32) -> Option<Outcome> {
     match cooldown::judge(doc, now, days) {
         Verdict::Clear => None,
@@ -470,9 +374,6 @@ fn judged(doc: &Packument, now: chrono::DateTime<chrono::Utc>, days: u32) -> Opt
     }
 }
 
-/// The program that updates `kind`, given the one horch launches. `cpx` is a
-/// proxy that launches `claude` and has no `update` command, so a `cpx`
-/// launch updates `claude` from `PATH`.
 pub fn update_bin(kind: HarnessKind, launched: &Path) -> PathBuf {
     let is_cpx = launched.file_stem().is_some_and(|s| s == "cpx");
     if kind == HarnessKind::Claude && is_cpx {
@@ -482,22 +383,12 @@ pub fn update_bin(kind: HarnessKind, launched: &Path) -> PathBuf {
     }
 }
 
-/// How 1 updater run ended.
 enum Ran {
-    /// It exited 0.
     Done,
-    /// It still ran at the time limit; its `.running` mark stays.
     Detached,
-    /// It failed: why.
     Failed(String),
 }
 
-/// Run 1 updater with stdin null, no forbidden variable, in its own process
-/// group, with its output in the log files of `files`. Files, not pipes: an
-/// updater left running at `timeout` must not die of a closed pipe when
-/// horch exits. It is not killed either (#205). Its `.running` mark is
-/// written as soon as it starts, so a horch that dies while it waits
-/// still leaves the mark.
 fn run_updater(
     mut cmd: Command,
     timeout: Duration,
@@ -512,8 +403,6 @@ fn run_updater(
     }
 }
 
-/// Start `cmd` with its output in the logs of `files` and its `.running`
-/// mark written. Its child and horch's handles to the logs, or why not.
 fn start_updater(
     mut cmd: Command,
     files: &UpdateFiles,
@@ -527,8 +416,6 @@ fn start_updater(
     let mut child = cmd
         .spawn()
         .map_err(|e| cut(&format!("{name} did not start: {e}")))?;
-    // An unmarked updater must not outlive horch: a later horch would run a
-    // second one beside it. It is stopped before it can change anything.
     if let Err(e) = files.set_running(child.id(), now) {
         stop_group(&mut child);
         return Err(cut(&format!("{name} could not be marked as running: {e}")));
@@ -536,22 +423,15 @@ fn start_updater(
     Ok((child, tails))
 }
 
-/// The stdout and stderr log files of `files`, and horch's own handles to
-/// them, which it reads the tails from.
 fn open_logs(files: &UpdateFiles) -> std::io::Result<(LogPair, LogPair)> {
-    // Both are created, whichever fails.
     let (out, err) = (files.new_log("stdout.log"), files.new_log("stderr.log"));
     let (out, err) = (out?, err?);
     let tails = (out.try_clone()?, err.try_clone()?);
     Ok(((out, err), tails))
 }
 
-/// A stdout log and a stderr log.
 type LogPair = (std::fs::File, std::fs::File);
 
-/// Wait for `child` until `timeout`. A child that still runs then is left
-/// alone: `Ran::Detached`. A wait that fails kills the child's group. A
-/// failed exit reads its reason from `tails`, the stdout and stderr logs.
 fn wait_or_kill(child: &mut Child, name: &str, timeout: Duration, tails: &mut LogPair) -> Ran {
     let deadline = Instant::now() + timeout;
     match process::wait_until(child, deadline, Duration::from_millis(50)) {
@@ -564,7 +444,6 @@ fn wait_or_kill(child: &mut Child, name: &str, timeout: Duration, tails: &mut Lo
     }
 }
 
-/// How an updater that exited with `status` ran.
 fn finished(status: ExitStatus, name: &str, tails: &mut LogPair) -> Ran {
     if status.success() {
         return Ran::Done;
@@ -576,13 +455,11 @@ fn finished(status: ExitStatus, name: &str, tails: &mut LogPair) -> Ran {
     )
 }
 
-/// Kill `child`'s process group and reap it.
 fn stop_group(child: &mut Child) {
     crate::runtime::process::kill_group(child);
     let _ = child.wait();
 }
 
-/// `<name> exited <code>` for a failure that printed nothing.
 fn exited(name: &str, status: ExitStatus) -> String {
     match status.code() {
         Some(code) => format!("{name} exited {code}"),
@@ -590,9 +467,6 @@ fn exited(name: &str, status: ExitStatus) -> String {
     }
 }
 
-/// The failure reason in `text`: its last non-empty line, with ANSI escape
-/// codes removed, cut to 200 characters. A carriage return starts a new
-/// line, so a spinner's last frame is a line of its own.
 pub fn reason_line(text: &str) -> Option<String> {
     let plain = strip_ansi(text);
     plain
@@ -609,8 +483,6 @@ fn cut(line: &str) -> String {
     }
 }
 
-/// `text` without ANSI escape sequences: CSI (`ESC [ ... final`), OSC
-/// (`ESC ] ... BEL` or `ESC ] ... ESC \`) and 2-character escapes.
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -628,8 +500,6 @@ pub fn strip_ansi(text: &str) -> String {
     out
 }
 
-/// Skip the rest of a CSI: parameters and intermediates, then 1 final byte
-/// in `@..~`.
 fn skip_csi(chars: &mut impl Iterator<Item = char>) {
     for c in chars {
         if ('@'..='~').contains(&c) {
@@ -638,7 +508,6 @@ fn skip_csi(chars: &mut impl Iterator<Item = char>) {
     }
 }
 
-/// Skip the rest of an OSC, up to `BEL` or `ESC \`.
 fn skip_osc(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) {
     while let Some(c) = chars.next() {
         if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
@@ -647,9 +516,6 @@ fn skip_osc(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) {
     }
 }
 
-/// Run `<herdr> update` attached to the operator's terminal, with no time
-/// limit: herdr can ask the operator whether to stop its server. The exit
-/// status is herdr's.
 pub fn run_herdr_update(ctx: &RuntimeContext) -> Result<ExitStatus> {
     let bin = &ctx.bins.harness.herdr;
     let mut cmd = Command::new(bin);
@@ -682,7 +548,6 @@ mod tests {
         assert_eq!(strip_ansi("a\u{1b}"), "a");
         assert_eq!(strip_ansi("a\u{1b}[31"), "a");
         assert_eq!(strip_ansi("a\u{1b}]0;title"), "a");
-        // A lone ESC inside an OSC is not a terminator; ESC \ is.
         assert_eq!(strip_ansi("\u{1b}]0;ti\u{1b}tle\u{7}b"), "b");
         assert_eq!(strip_ansi("\u{1b}]0;t\u{1b}\\b\u{1b}[1;2Hc"), "bc");
     }
@@ -742,7 +607,6 @@ mod tests {
                 reason: "release date check: network down".into()
             })
         );
-        // No npm package: no lookup, and no update.
         assert_eq!(
             hold(HarnessKind::Antigravity, now, 7, &record),
             Some(Outcome::NoReleaseDates { days: 7 })
@@ -756,9 +620,6 @@ mod tests {
         assert_eq!(*asked.lock().unwrap(), ["opencode-ai"]);
     }
 
-    /// A codex updater script in a temp dir: `--version` prints 1 line, and
-    /// `update` appends its pid to `runs`, sleeps `sleep` seconds and exits
-    /// `exit`.
     #[cfg(unix)]
     struct FakeUpdater {
         dir: tempfile::TempDir,
@@ -771,8 +632,6 @@ mod tests {
             Self::with_wait(&format!("sleep {sleep}"), exit, timeout_ms)
         }
 
-        /// An updater that runs until the test creates `release`: no clock
-        /// decides how long it holds the update lock.
         fn gated(timeout_ms: u64) -> Self {
             Self::with_wait(
                 "while [ ! -e \"$(dirname \"$0\")/release\" ]; do sleep 0.05; done",
@@ -792,8 +651,6 @@ mod tests {
                 runs.display(),
                 finished.display()
             );
-            // macOS scans a new executable at its first exec. Warm it here,
-            // without a limit, so the scan never counts against a timeout.
             let warm = crate::test_support::write_warmed(&bin, &script, &["--version"]);
             assert!(warm.status.success());
             let env = crate::runtime::context::MapEnv::new(dir.path())
@@ -809,7 +666,6 @@ mod tests {
             FakeUpdater { dir, ctx }
         }
 
-        /// The pid of each updater run, in order.
         fn runs(&self) -> Vec<u32> {
             std::fs::read_to_string(self.dir.path().join("runs"))
                 .unwrap_or_default()
@@ -825,8 +681,6 @@ mod tests {
             results.remove(0).outcome
         }
 
-        /// The pids of live processes whose command line names this
-        /// updater's script.
         fn live_updaters(&self) -> Vec<u32> {
             let out = Command::new("pgrep")
                 .arg("-f")
@@ -846,8 +700,6 @@ mod tests {
                 .join(format!("codex.{suffix}"))
         }
 
-        /// Write the `.running` mark of `pid` with start time `started`,
-        /// made at `at`.
         fn mark_running(&self, pid: u32, started: Option<u64>, at: chrono::DateTime<chrono::Utc>) {
             std::fs::create_dir_all(self.dir.path().join("home/.local/state/horch/update"))
                 .unwrap();
@@ -857,8 +709,6 @@ mod tests {
         }
     }
 
-    /// Kills the process group it names when dropped, so a failed assert
-    /// leaves no sleeping updater behind.
     #[cfg(unix)]
     struct StopGroupOnDrop(u32);
 
@@ -873,7 +723,6 @@ mod tests {
         }
     }
 
-    /// A `sleep 60` in its own process group: a live updater stand-in.
     #[cfg(unix)]
     fn sleeper() -> (std::process::Child, StopGroupOnDrop) {
         let mut cmd = Command::new("sleep");
@@ -884,13 +733,9 @@ mod tests {
         (child, guard)
     }
 
-    /// #205: 2 fleets that start together run 1 codex updater, and the
-    /// second one says it skipped codex.
     #[cfg(unix)]
     #[test]
     fn arc_33_concurrent_updates_run_the_updater_once_and_the_second_skips() {
-        // The updater holds the lock until the second horch has answered, so
-        // a slow thread under load cannot start after the first one is done.
         let fake = FakeUpdater::gated(20_000);
         let (tx, rx) = std::sync::mpsc::channel();
         let outcomes: Vec<Outcome> = std::thread::scope(|s| {
@@ -915,9 +760,6 @@ mod tests {
         );
     }
 
-    /// #205: the fleet step does not run a CLI again within 24 h of its
-    /// last successful update; `horch update` (no skip), an older success,
-    /// a stamp in the future and an unreadable stamp do run it.
     #[cfg(unix)]
     #[test]
     fn arc_33_a_cli_updated_less_than_24_h_ago_is_not_run_again() {
@@ -930,7 +772,6 @@ mod tests {
         assert!(matches!(skipped, Outcome::Fresh { .. }), "{skipped:?}");
         assert_eq!(fake.runs().len(), 1, "a fresh CLI ran again");
 
-        // The operator's own `horch update` does not skip.
         assert!(matches!(fake.update(false), Outcome::Updated { .. }));
         assert_eq!(fake.runs().len(), 2);
 
@@ -956,8 +797,6 @@ mod tests {
         }
     }
 
-    /// #205: a failed updater records no check, so the next fleet runs it
-    /// again.
     #[cfg(unix)]
     #[test]
     fn arc_33_a_failed_updater_writes_no_check_and_runs_again() {
@@ -974,15 +813,10 @@ mod tests {
         assert!(!fake.file("running").exists());
     }
 
-    /// #205: an updater still running at the time limit is left to finish:
-    /// it is alive after `update_all` returns, the result says horch did
-    /// not wait, and the next update skips the CLI while it runs.
     #[cfg(unix)]
     #[test]
     fn arc_33_an_updater_past_the_timeout_is_not_killed_and_not_waited_for() {
         let fake = FakeUpdater::new(30, 0, 500);
-        // The updater sleeps 30 s, so a live updater after `update` returns
-        // shows that horch did not wait for it.
         let outcome = fake.update(false);
         let deadline = Instant::now() + Duration::from_secs(10);
         while fake.runs().is_empty() && Instant::now() < deadline {
@@ -1010,9 +844,6 @@ mod tests {
         );
     }
 
-    /// #205: a `.running` mark keeps the CLI busy only while its updater
-    /// runs, and for at most `LOCK_STALE`. A mark of an updater that ended
-    /// counts as the CLI's last check.
     #[cfg(unix)]
     #[test]
     fn arc_33_a_running_mark_blocks_only_a_live_recent_updater() {
@@ -1026,18 +857,14 @@ mod tests {
         assert_eq!(fake.update(false), Outcome::Busy);
         assert!(fake.runs().is_empty());
 
-        // The same pid with another start time is another process.
         fake.mark_running(live.id(), started.map(|t| t + 1), now);
         assert!(matches!(fake.update(false), Outcome::Updated { .. }));
         assert_eq!(fake.runs().len(), 1);
 
-        // A live updater older than LOCK_STALE no longer blocks.
         fake.mark_running(live.id(), started, now - chrono::TimeDelta::hours(2));
         assert!(matches!(fake.update(false), Outcome::Updated { .. }));
         assert_eq!(fake.runs().len(), 2);
 
-        // An updater that ended unseen: the fleet step counts its start as
-        // the last check and removes the mark.
         let mut ended = Command::new("true").spawn().unwrap();
         ended.wait().unwrap();
         let at = now - chrono::TimeDelta::hours(1);
@@ -1053,7 +880,6 @@ mod tests {
         assert_eq!(fake.runs().len(), 2);
     }
 
-    /// Which outcomes print as a NOTE and which make `horch update` exit 1.
     #[test]
     fn arc_35_notes_and_unfinished_outcomes() {
         let cases = [
@@ -1104,13 +930,10 @@ mod tests {
         }
     }
 
-    /// #205: an updater whose `.running` mark cannot be written is stopped
-    /// at once, so no unmarked updater outlives horch.
     #[cfg(unix)]
     #[test]
     fn arc_33_an_updater_that_cannot_be_marked_is_stopped() {
         let fake = FakeUpdater::new(30, 0, 20_000);
-        // A directory where the mark file belongs: the write fails.
         std::fs::create_dir_all(fake.file("running")).unwrap();
         let outcome = fake.update(false);
         let Outcome::Failed { reason } = &outcome else {
@@ -1120,8 +943,6 @@ mod tests {
             reason.contains("could not be marked as running"),
             "{reason}"
         );
-        // The updater can be stopped before it writes `runs`, so look for
-        // the process itself: its command line names the unique temp dir.
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut left = fake.live_updaters();
         while !left.is_empty() && Instant::now() < deadline {
@@ -1130,15 +951,12 @@ mod tests {
         }
         let _stop: Vec<_> = left.iter().map(|&pid| StopGroupOnDrop(pid)).collect();
         assert!(left.is_empty(), "updater still runs: {left:?}");
-        // Stopped, not waited for: the updater never reached its end.
         assert!(
             !fake.dir.path().join("finished").exists(),
             "horch waited for the updater to end"
         );
     }
 
-    /// #205: the update files are host-wide. A fleet with its own
-    /// `HORCH_STATE_DIR` sees the 24 h mark that another state root wrote.
     #[cfg(unix)]
     #[test]
     fn arc_33_a_scratch_state_root_shares_the_update_files() {
@@ -1167,8 +985,6 @@ mod tests {
         assert!(!fake.dir.path().join("scratch/update").exists());
     }
 
-    /// #205: a FIFO planted as a mark file neither hangs the update step nor
-    /// counts as a mark.
     #[cfg(unix)]
     #[test]
     fn arc_33_a_fifo_mark_is_ignored() {
@@ -1181,7 +997,6 @@ mod tests {
                 .unwrap();
             assert!(made.success());
         }
-        // A FIFO that blocked the step would hang this call.
         assert!(matches!(fake.update(true), Outcome::Updated { .. }));
         assert_eq!(fake.runs().len(), 1);
     }
@@ -1201,7 +1016,6 @@ mod tests {
             update_bin(claude, Path::new("/opt/bin/claude")),
             PathBuf::from("/opt/bin/claude")
         );
-        // Only claude has the proxy.
         assert_eq!(
             update_bin(HarnessKind::Codex, Path::new("cpx")),
             PathBuf::from("cpx")

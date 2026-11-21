@@ -1,15 +1,3 @@
-//! End-to-end: a worker's whole life through the real `horch` binary.
-//!
-//! - ARC-26: for each of the 6 harnesses, a fresh spawn, the session found
-//!   (minted by horch or discovered from the harness), `horch done`, then
-//!   `horch spawn --resume` reusing that session.
-//! - ARC-16: a failed pane split and a crash after the insert leave no
-//!   live-looking record.
-//!
-//! fake-herdr runs in the `exec` scenario, so `horch spawn`'s pane command
-//! really starts `horch worker`, and `pane close` kills it. The harness fakes
-//! run in `stay`, so an agent lives until its pane closes.
-
 use std::process::Output;
 use std::time::{Duration, Instant};
 
@@ -27,8 +15,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with workspace `w1` and its root pane `w1:p1`, as `horch fleet`
-/// leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name);
     let quota = fixtures().join("quota/all-ok.json");
@@ -59,7 +45,6 @@ fn records(h: &Harness) -> Vec<Value> {
             }
         })
         .collect();
-    // TRF-45: the session records, not a JSON file.
     horch_core::execution::store::ExecutionStore::for_project(&h.state, &slug)
         .stored_json()
         .ok()
@@ -78,7 +63,6 @@ fn wait_for<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
     wait_for_or(what, f, String::new)
 }
 
-/// [`wait_for`], with `context` in the panic message.
 fn wait_for_or<T>(what: &str, mut f: impl FnMut() -> Option<T>, context: impl Fn() -> String) -> T {
     let until = Instant::now() + Duration::from_secs(30);
     while Instant::now() < until {
@@ -90,8 +74,6 @@ fn wait_for_or<T>(what: &str, mut f: impl FnMut() -> Option<T>, context: impl Fn
     panic!("timed out waiting for {what}\n{}", context());
 }
 
-/// What a worker pane wrote (fake-herdr `exec` saves its output), and the
-/// record, for a failure message.
 fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
     let mut out = h.log.clone().into_os_string();
     out.push(format!(".pane-{}.out", pane.replace(':', "_")));
@@ -102,7 +84,6 @@ fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
     )
 }
 
-/// `horch spawn`, returning the new pane id (the last stdout line).
 fn spawn(h: &Harness, args: &[&str]) -> String {
     let mut argv = vec!["spawn"];
     argv.extend_from_slice(args);
@@ -117,8 +98,6 @@ fn spawn(h: &Harness, args: &[&str]) -> String {
         .to_string()
 }
 
-/// `horch done` as the agent in `pane` runs it: the transport variables say
-/// who it is. Closing the pane kills the worker and its agent.
 fn done(h: &Harness, pane: &str, role: &str, id: &str) {
     let mut cmd = h.horch(&["done", "finished the work"]);
     cmd.env("HERDR_PANE_ID", pane)
@@ -128,7 +107,6 @@ fn done(h: &Harness, pane: &str, role: &str, id: &str) {
     assert!(out.status.success(), "{}", text(&out));
 }
 
-/// The last launch of `fake` whose argv names `needle`.
 fn launch_naming(h: &Harness, fake: &str, needle: &str) -> Option<Value> {
     h.calls_of(fake).into_iter().rev().find(|c| {
         c["argv"]
@@ -137,13 +115,11 @@ fn launch_naming(h: &Harness, fake: &str, needle: &str) -> Option<Value> {
     })
 }
 
-/// Fresh spawn → session known → done → resume on the same session.
 fn lifecycle(harness: &str, teammate: &str, fake: &str) {
     let h = fleet(&format!("arc26-{harness}"), "exec,stay");
     lifecycle_in(h, harness, teammate, fake);
 }
 
-/// [`lifecycle`] in a harness the caller has set up.
 fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     let pane = spawn(&h, &[teammate]);
     let fresh = records(&h)
@@ -154,9 +130,6 @@ fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     let role = fresh["role"].as_str().unwrap().to_string();
     assert_eq!(fresh["agent"], harness);
 
-    // The worker marks itself running, and the session id is known: minted
-    // by horch (claude, pi) or discovered while the agent runs. The claude
-    // and pi fakes exit at once, so their worker may already be done.
     let session = wait_for_or(
         "the session id",
         || {
@@ -182,7 +155,6 @@ fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     );
     let r = record(&h, &id);
     assert_eq!(r["session_id"], session.as_str(), "the session is reused");
-    // The fake may already have exited again, so skip a trailing "exited".
     let last = r["history"]
         .as_array()
         .unwrap()
@@ -194,7 +166,6 @@ fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     assert_eq!(r["routing"]["mode"], "resume");
     assert_eq!(records(&h).len(), 1, "a resume writes no new record");
 
-    // Close the resumed pane too, which stops its agent.
     let role2 = r["role"].as_str().unwrap().to_string();
     done(&h, &pane2, &role2, &id);
 }
@@ -224,16 +195,12 @@ fn arc_26_e2e_lifecycle_matrix_prime() {
     lifecycle("prime", "prime", "prime");
 }
 
-/// `fake-antigravity` as `agy` (the harness installs it in `bin/`), named by
-/// `HORCH_ANTIGRAVITY_BIN`.
 fn with_agy(h: &mut Harness) {
     let name = format!("agy{}", std::env::consts::EXE_SUFFIX);
     let bin = h.bin.join(name).to_string_lossy().into_owned();
     h.set("HORCH_ANTIGRAVITY_BIN", bin);
 }
 
-/// agy mints its own conversation id; horch reads it back from the session
-/// cache and resumes it with `--conversation`.
 #[test]
 fn arc_26_e2e_lifecycle_matrix_antigravity() {
     let mut h = fleet("arc26-antigravity", "exec,stay");
@@ -241,10 +208,6 @@ fn arc_26_e2e_lifecycle_matrix_antigravity() {
     lifecycle_in(h, "antigravity", "antigravity", "antigravity");
 }
 
-/// G3: the pane shell holds `ANTHROPIC_API_KEY` (herdr keeps the operator's
-/// environment), so the pane command removes it before horch starts. The
-/// recorded line runs again in a shell that holds the key, with a probe in
-/// place of horch, and the probe does not see the key.
 #[cfg(unix)]
 #[test]
 fn pane_command_removes_a_forbidden_key_before_horch_starts() {
@@ -261,7 +224,6 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
         "{pane}: {ran}"
     );
 
-    // The first quoted word is the horch binary.
     let start = ran.find('\'').unwrap();
     let end = start + 1 + ran[start + 1..].find('\'').unwrap();
     let horch = &ran[start..=end];
@@ -287,9 +249,6 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
     );
 }
 
-/// F7 (G3): the worker loads the roster in its pane, and an overlay file
-/// that does not load gives one `warning:` line there. The worker still
-/// launches its agent.
 #[test]
 fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
     let h = fleet("f7-worker", "default");
@@ -323,8 +282,6 @@ fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
     );
 }
 
-/// The keys that move agy off the operator's Google login never reach an
-/// agy child, even when the worker's own environment holds them.
 #[test]
 fn antigravity_child_never_receives_a_forbidden_key() {
     const KEYS: [&str; 4] = [
@@ -357,7 +314,6 @@ fn antigravity_child_never_receives_a_forbidden_key() {
             "{key} reached agy: {keys:?}"
         );
     }
-    // fake-antigravity flags each of them as a violation too.
     assert_eq!(agy["violations"], serde_json::json!([]), "{agy}");
     let argv: Vec<String> = serde_json::from_value(agy["argv"].clone()).unwrap();
     assert_eq!(&argv[..2], ["--model", "gemini-3.8-flash"], "{argv:?}");
@@ -368,10 +324,6 @@ fn antigravity_child_never_receives_a_forbidden_key() {
     assert_eq!(argv[argv.len() - 2], "--prompt-interactive", "{argv:?}");
 }
 
-// ─── ARC-16 ─────────────────────────────────────────────────────────────────
-
-/// An agent that ends within 1 s of launch still gets its session id
-/// recorded: `horch done` runs one last discovery before it closes the pane.
 #[test]
 fn tel_session_recorded_when_agent_ends_fast() {
     let h = fleet("tel-fast-end", "exec,stay");
@@ -383,7 +335,6 @@ fn tel_session_recorded_when_agent_ends_fast() {
     let id = fresh["record_id"].as_str().unwrap().to_string();
     let role = fresh["role"].as_str().unwrap().to_string();
 
-    // The fake has written its rollout; `done` follows at once.
     let minted = wait_for("the fake's session id", || {
         h.calls_of("codex")
             .iter()
@@ -396,8 +347,6 @@ fn tel_session_recorded_when_agent_ends_fast() {
     assert_eq!(r["session_id"], minted.as_str(), "{r}");
 }
 
-/// The same for Prime, whose session file is in a directory only its launch
-/// knows: the launch marker carries that directory to `horch done`.
 #[test]
 fn tel_session_recorded_when_prime_ends_fast() {
     let h = fleet("tel-fast-end-prime", "exec,stay");
@@ -409,7 +358,6 @@ fn tel_session_recorded_when_prime_ends_fast() {
     let id = fresh["record_id"].as_str().unwrap().to_string();
     let role = fresh["role"].as_str().unwrap().to_string();
 
-    // The fake has written its session file; `done` follows at once.
     let file = wait_for("the fake's session file", || {
         h.calls_of("prime")
             .iter()
@@ -449,8 +397,6 @@ fn arc_16_e2e_fail_split() {
     assert!(sessions.status.success(), "{}", text(&sessions));
 }
 
-/// A crash right after the insert: the record is `Planned`, which is never
-/// live. The recovery rule closes it on a spawn 5 minutes or more later.
 #[test]
 fn arc_16_crash_after_insert_not_live() {
     let mut h = fleet("arc16-crash", "default");
@@ -466,7 +412,6 @@ fn arc_16_crash_after_insert_not_live() {
     );
     let crashed = r["record_id"].as_str().unwrap().to_string();
 
-    // A later spawn recovers it and goes on.
     h.unset("HORCH_FAULT");
     h.set("HORCH_NOW", "2026-09-28T18:05:00Z");
     spawn(&h, &["sonnet"]);
@@ -480,10 +425,6 @@ fn arc_16_crash_after_insert_not_live() {
     assert_eq!(live.len(), 1, "only the new spawn is live");
 }
 
-/// The operator's `horch spawn <teammate> --model fable` starts an ordinary
-/// Claude teammate on Fable: the real `claude` command line has
-/// `--model fable`, the record keeps the override, and a resume starts
-/// Fable again.
 #[test]
 fn spawn_model_fable_reaches_the_claude_command_line_and_the_resume() {
     let h = fleet("spawn-model-fable", "exec,stay");

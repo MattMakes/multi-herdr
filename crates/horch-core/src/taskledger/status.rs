@@ -1,5 +1,3 @@
-//! `horch ledger status` and `show`: the board of a run (section 5.6).
-
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -17,7 +15,6 @@ use super::tasks::{self, Task};
 use super::util;
 use super::workers::{self, Worker};
 
-/// 1 worktree line.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WorktreeLine {
     pub worktree_id: String,
@@ -31,70 +28,45 @@ pub struct WorktreeLine {
     pub reason: Option<String>,
 }
 
-/// 1 task line.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TaskLine {
     pub task: Task,
-    /// The role of the worker that holds it.
     pub worker: Option<String>,
-    /// Why a queued task does not start now.
     pub waits: Option<String>,
-    /// How each attempt since the last operator requeue ended, when the
-    /// task had more than 1 attempt (#168).
     pub attempt_ends: Vec<String>,
 }
 
-/// 1 worker line.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WorkerLine {
     pub worker: Worker,
     pub task: Option<String>,
     pub checkin_age_s: Option<i64>,
     pub progress_age_s: Option<i64>,
-    /// A working worker with no check in the last 2 check intervals.
     pub unwatched: bool,
-    /// A pre-claim row whose process went silent ([`workers::is_stale`]).
-    /// A pending orchestrator row is never stale.
     pub stale: bool,
-    /// An orchestrator row in status `spawning`: it waits for a watchdog
-    /// pass to see the lock holder (TRF-39), so its age is not silence.
     pub launch_pending: bool,
     pub waiting: Vec<workers::Wait>,
 }
 
-/// The board of 1 run.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Report {
     pub run: Run,
     pub tasks: Vec<TaskLine>,
     pub workers: Vec<WorkerLine>,
     pub worktrees: Vec<WorktreeLine>,
-    /// The run is settled (C6): [`Report::unsettled`] is empty.
     pub complete: bool,
-    /// What keeps the run from being settled ([`unsettled`]).
     pub unsettled: Vec<Unsettled>,
     pub counts: Counts,
-    /// The watchdog's version and binary, once it has checked in (#216).
     pub watchdog: Option<WatchdogLine>,
-    /// The run's parked worktrees on disk (#308).
     pub parked: Parked,
-    /// The orchestrator's respawns and stop (trace-fixes C7).
     pub orchestrator: Option<String>,
 }
 
-/// The parked worktrees of a run: on disk, and no step takes them to an
-/// outcome. `horch worktree triage` decides them.
-///
-/// The disk is the sum of what `horch worktree triage` stored for each row.
-/// `status` runs often, so it never walks a folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Parked {
     pub count: usize,
-    /// The sum of the stored measurements.
     pub bytes: u64,
-    /// The rows with no stored measurement.
     pub unmeasured: usize,
-    /// Seconds since the oldest stored measurement; `None` when no row has one.
     pub measured_age_s: Option<i64>,
 }
 
@@ -113,7 +85,6 @@ impl Parked {
             match stored {
                 Some((bytes, at)) => {
                     parked.bytes += bytes.max(0) as u64;
-                    // Stamps sort as time does.
                     if oldest.as_ref().is_none_or(|o| at < *o) {
                         oldest = Some(at);
                     }
@@ -126,20 +97,15 @@ impl Parked {
     }
 }
 
-/// The watchdog of a run, as it recorded itself at its last checkin.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WatchdogLine {
     pub version: String,
     pub exe: Option<ExeIdentity>,
     pub checkin_at: Option<String>,
-    /// It runs another binary than the horch that built this board: an old
-    /// watchdog after `horch self-update`.
     pub other_binary: bool,
 }
 
 impl WatchdogLine {
-    /// The line for `run`, judged against the binary `current` that builds
-    /// the board. A run whose watchdog never checked in has none.
     fn of(run: &Run, current: Option<&ExeIdentity>) -> Option<WatchdogLine> {
         let version = run.watchdog_version.clone()?;
         Some(WatchdogLine {
@@ -164,7 +130,6 @@ pub struct Counts {
     pub cancelled: i64,
 }
 
-/// The worktrees of a run.
 pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
     let mut stmt = conn.prepare(
         "SELECT w.worktree_id, t.seq, w.path, w.branch, w.status, w.bytes_on_disk, w.reason, w.base, COALESCE(m.scratch, 0)
@@ -178,7 +143,6 @@ pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
     Ok(rows)
 }
 
-/// The columns of the `worktrees` SELECT.
 type WorktreeRow = (
     String,
     Option<i64>,
@@ -192,7 +156,6 @@ type WorktreeRow = (
 );
 
 impl WorktreeLine {
-    /// The 9 columns of the `worktrees` SELECT, in order.
     fn from_row(r: &Row<'_>) -> rusqlite::Result<WorktreeLine> {
         let (worktree_id, seq, path, branch, status, bytes_on_disk, reason, base, scratch): WorktreeRow =
             r.try_into()?;
@@ -210,8 +173,6 @@ impl WorktreeLine {
     }
 }
 
-/// Every path the ledger records as a worktree, in any run. The claim
-/// registry never sees these, so the unregistered scan asks for them here.
 pub fn worktree_paths(conn: &Connection) -> Result<Vec<PathBuf>> {
     let mut stmt = conn.prepare("SELECT path FROM worktrees")?;
     let rows = stmt
@@ -220,7 +181,6 @@ pub fn worktree_paths(conn: &Connection) -> Result<Vec<PathBuf>> {
     Ok(rows.into_iter().map(PathBuf::from).collect())
 }
 
-/// The last check of a worker, if any.
 fn last_check_at(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
     super::store::optional(conn.query_row(
         "SELECT at FROM checks WHERE worker_id = ?1 ORDER BY check_id DESC LIMIT 1",
@@ -230,7 +190,6 @@ fn last_check_at(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
 }
 
 impl Counts {
-    /// Count 1 task by its status; a status with no counter is not counted.
     fn add(&mut self, status: &str) {
         match status {
             "queued" => self.queued += 1,
@@ -243,7 +202,6 @@ impl Counts {
     }
 }
 
-/// Why a task does not start now: its hold, else the queue's wait.
 fn task_wait(t: &Task, waits: &[(Task, tasks::Wait)]) -> Option<String> {
     match &t.held_reason {
         Some(r) => Some(format!(
@@ -257,7 +215,6 @@ fn task_wait(t: &Task, waits: &[(Task, tasks::Wait)]) -> Option<String> {
     }
 }
 
-/// The line of 1 worker: its ages, its watch state and its waits.
 fn worker_line(
     conn: &Connection,
     run: &Run,
@@ -292,7 +249,6 @@ fn worker_line(
     })
 }
 
-/// A working worker with no check in the last 2 check intervals.
 fn is_unwatched(conn: &Connection, run: &Run, w: &Worker, now: &str) -> Result<bool> {
     if w.status != "working" {
         return Ok(false);
@@ -304,7 +260,6 @@ fn is_unwatched(conn: &Connection, run: &Run, w: &Worker, now: &str) -> Result<b
         .is_some_and(|age| age > 2 * run.check_every_s))
 }
 
-/// The line of 1 task: its holder's role, its wait and how its attempts ended.
 fn task_line(
     conn: &Connection,
     t: Task,
@@ -330,7 +285,6 @@ fn task_line(
     })
 }
 
-/// The lines of every worker of the run.
 fn worker_lines(
     conn: &Connection,
     run: &Run,
@@ -344,20 +298,22 @@ fn worker_lines(
         .collect()
 }
 
-/// 1 thing that keeps a run from being settled (C6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Unsettled {
-    /// A task that is not done or cancelled. `held` is its held reason.
     Task {
         task: String,
         status: String,
         held: Option<String>,
     },
-    /// A worktree whose work is not on the run branch yet.
-    Worktree { path: String, status: String },
-    /// A parked worktree on disk with no triage decision.
-    Parked { path: String, status: String },
+    Worktree {
+        path: String,
+        status: String,
+    },
+    Parked {
+        path: String,
+        status: String,
+    },
 }
 
 impl std::fmt::Display for Unsettled {
@@ -377,7 +333,6 @@ impl std::fmt::Display for Unsettled {
     }
 }
 
-/// How a worktree row counts for C6.
 fn worktree_unsettled(
     path: String,
     status: String,
@@ -402,16 +357,6 @@ fn worktree_unsettled(
     }
 }
 
-/// C6, the 1 "run settled" rule: what keeps `run_id` from being settled.
-/// Empty means settled. `ledger status`, `run close` and the settled wake
-/// all use it.
-///
-/// - Each task that is not `done` or `cancelled` (held tasks included).
-/// - Each worktree that is `open` or `landing`.
-/// - Each parked worktree (`landed`, `cleanup_failed`, `unlanded`,
-///   `abandoned`) whose folder is on disk and has no triage decision.
-///
-/// Scratch worktrees and `cleaned`, `archived` or `trashed` rows never count.
 pub fn unsettled(conn: &Connection, run_id: &str) -> Result<Vec<Unsettled>> {
     let mut out: Vec<Unsettled> = tasks::of_run(conn, run_id)?
         .into_iter()
@@ -449,14 +394,11 @@ pub fn unsettled(conn: &Connection, run_id: &str) -> Result<Vec<Unsettled>> {
     Ok(out)
 }
 
-/// Build the board of `run`.
 pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
     let current = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
     report_for(conn, run, current.as_ref())
 }
 
-/// Build the board of `run`, judging its watchdog against the binary
-/// `current` that builds it.
 pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -> Result<Report> {
     let now = util::now();
     let waits = tasks::waits(conn, &run.run_id)?;
@@ -493,7 +435,6 @@ fn age(s: Option<i64>) -> String {
     }
 }
 
-/// The text form of a board.
 pub fn render(r: &Report) -> String {
     let mut out = String::new();
     let run = &r.run;
@@ -540,7 +481,6 @@ pub fn render(r: &Report) -> String {
     out
 }
 
-/// The watchdog line; nothing before its first checkin.
 fn render_watchdog(out: &mut String, w: Option<&WatchdogLine>) {
     let Some(w) = w else { return };
     let _ = writeln!(
@@ -556,7 +496,6 @@ fn render_watchdog(out: &mut String, w: Option<&WatchdogLine>) {
     );
 }
 
-/// The task rows, or `No tasks.`.
 fn render_tasks(out: &mut String, lines: &[TaskLine]) {
     if lines.is_empty() {
         let _ = writeln!(out, "No tasks.");
@@ -586,7 +525,6 @@ fn render_tasks(out: &mut String, lines: &[TaskLine]) {
     }
 }
 
-/// The live workers block, with their waits; nothing when none is live.
 fn render_live(out: &mut String, workers: &[WorkerLine]) {
     let live: Vec<&WorkerLine> = workers
         .iter()
@@ -631,7 +569,6 @@ fn render_live(out: &mut String, workers: &[WorkerLine]) {
     }
 }
 
-/// The parked worktrees line; nothing when none.
 fn render_parked(out: &mut String, p: &Parked) {
     if p.count == 0 {
         return;
@@ -657,7 +594,6 @@ fn render_parked(out: &mut String, p: &Parked) {
     );
 }
 
-/// How long ago, in the largest whole unit: `45s`, `5m`, `2h`, `3d`.
 fn ago(s: i64) -> String {
     match s.max(0) {
         s if s < 60 => format!("{s}s"),
@@ -667,7 +603,6 @@ fn ago(s: i64) -> String {
     }
 }
 
-/// The worktrees block for every worktree not yet cleaned; nothing when none.
 fn render_open_worktrees(out: &mut String, worktrees: &[WorktreeLine]) {
     let open: Vec<&WorktreeLine> = worktrees
         .iter()
@@ -696,7 +631,6 @@ fn render_open_worktrees(out: &mut String, worktrees: &[WorktreeLine]) {
     }
 }
 
-/// The history of 1 task or worker, oldest first.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EventLine {
     pub at: String,
@@ -705,7 +639,6 @@ pub struct EventLine {
     pub text: String,
 }
 
-/// The events about a task (`column = "task_id"`) or a worker.
 pub fn events(conn: &Connection, column: &str, id: &str) -> Result<Vec<EventLine>> {
     let column = match column {
         "task_id" => "task_id",
@@ -728,7 +661,6 @@ pub fn events(conn: &Connection, column: &str, id: &str) -> Result<Vec<EventLine
     Ok(rows)
 }
 
-/// 1 recorded stop step.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StopLine {
     pub at: String,
@@ -742,7 +674,6 @@ pub struct StopLine {
     pub result: String,
 }
 
-/// The columns of the `stops` SELECT.
 type StopRow = (
     String,
     String,
@@ -756,7 +687,6 @@ type StopRow = (
 );
 
 impl StopLine {
-    /// The 9 columns of the `stops` SELECT, in order.
     fn from_row(r: &Row<'_>) -> rusqlite::Result<StopLine> {
         let (at, requested_by, reason, target, pid, pid_started, signal, pane_id, result): StopRow =
             r.try_into()?;
@@ -774,7 +704,6 @@ impl StopLine {
     }
 }
 
-/// The stops of 1 worker, oldest first.
 pub fn stops(conn: &Connection, worker_id: &str) -> Result<Vec<StopLine>> {
     let mut stmt = conn.prepare(
         "SELECT at, requested_by, reason, target, pid, pid_started, signal, pane_id, result
@@ -796,8 +725,6 @@ mod trf_15_tests {
     use crate::taskledger::tasks::NewTask;
     use crate::taskledger::Store;
 
-    /// 1 worktree row: (status, folder on disk, triage decision, scratch,
-    /// the run is settled).
     pub(crate) const CASES: &[(&str, bool, Option<&str>, bool, bool)] = &[
         ("open", true, None, false, false),
         ("landing", true, None, false, false),
@@ -816,7 +743,6 @@ mod trf_15_tests {
         ("open", true, None, true, true),
     ];
 
-    /// A run with 1 done task and 1 worktree row of `case`.
     fn fixture(case: (&str, bool, Option<&str>, bool, bool)) -> (tempfile::TempDir, Store, Run) {
         let (status, on_disk, decision, scratch, _) = case;
         let dir = tempfile::tempdir().unwrap();
@@ -933,10 +859,6 @@ mod trf_39_tests {
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::Store;
 
-    /// A replacement orchestrator row stays `spawning` until a watchdog pass
-    /// sees the lock holder (ticket 44). Its old spawn time is not a silent
-    /// process: the board says `launch pending`, not `STALE`. A worker row of
-    /// the same age stays stale.
     #[test]
     fn trf_39_a_pending_orchestrator_row_is_not_stale() {
         let dir = tempfile::tempdir().unwrap();

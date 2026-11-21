@@ -1,5 +1,3 @@
-//! Workspace boundary: the herdr client and the pure tiler modules.
-
 pub mod arrange;
 pub mod balance;
 pub mod client;
@@ -33,8 +31,6 @@ mod tests {
         "std::env",
     ];
 
-    /// Lines of `source` that name a forbidden item. A comment line is not a
-    /// dependency, so lines whose trimmed text starts with `//` are skipped.
     fn violations(source: &str) -> Vec<String> {
         source
             .lines()

@@ -34,22 +34,22 @@ import pw_rebalance as rb  # noqa: E402
 
 ECON, AXIS = pd.ECON, pd.AXIS
 LAW, SIMULATED, NOT_WRITTEN = "law", "simulated", "not written"
-NO_RESET_LAWS = ("S01", "S02", "S05")    # L1 (the lines) and L5 (the active factor) hold with no reset layer
-STAGE_SHARE = pd.UNLOCK_SHARE            # a stage each 80% of the unlock gap target (the rebalance mode, PC4)
-FIT_PASSES = 4                           # the passes of the fit: each pass plays active_greedy 1 time
-REFINE_PASSES = 6                        # the passes with the walls in play: each wall moves to its target time
-FIRST_COST_SECONDS = 20.0                # a placed line costs 20 s of the income at its unlock (the rebalance mode)
-VISITOR_BANK_S = 60.0                    # S10: a greedy player holds about 60 s of income (assumption)
-AUTO_SHARE = 0.25                        # S24: the auto-buy opens at 25% of the length (a hand-set number)
-COUNT_STEPS = 4                          # S12: 4 count milestones
-PLACE_GROUPS = (1.0, 4.0)               # S02: the 2 lines open at 1 and 4 minutes (worked example 2, BM:418)
-PLACE_STEP = 3.0                         # S02: each more group opens 3 minutes after the group before it (hand-set)
-VARY = (0.8, 1.2)                        # --vary: each hand-set number -20% and +20%
-RATIO_KEYS = ("cost_growth", "growth")   # --vary: a ratio changes by its part above 1, as the bonus of a mult
-WALL_SHADE = 1.0 - 1e-5                  # a wall a little below the value, so that the rounding never lifts it above
-STAGE_TOL = 0.20                         # the fit: a stage misses outside 20% of its target minute (no source)
-CAUSE_STEP_S = 30.0                      # the fit: the step of the income samples that look for a fall
-FALL_SHARE = 0.01                        # the fit: a fall of the income is a drop of more than 1% in 1 step
+NO_RESET_LAWS = ("S01", "S02", "S05")
+STAGE_SHARE = pd.UNLOCK_SHARE
+FIT_PASSES = 4
+REFINE_PASSES = 6
+FIRST_COST_SECONDS = 20.0
+VISITOR_BANK_S = 60.0
+AUTO_SHARE = 0.25
+COUNT_STEPS = 4
+PLACE_GROUPS = (1.0, 4.0)
+PLACE_STEP = 3.0
+VARY = (0.8, 1.2)
+RATIO_KEYS = ("cost_growth", "growth")
+WALL_SHADE = 1.0 - 1e-5
+STAGE_TOL = 0.20
+CAUSE_STEP_S = 30.0
+FALL_SHARE = 0.01
 HOUR = 3600.0
 
 
@@ -71,7 +71,6 @@ class Scaffold:
         return any(x["id"] == ident for x in self.m[kind])
 
 
-# ----------------------------------------------------------------------------- the writers of each system
 def add(v, active=False):
     e = dict(target=ECON, kind="add", value=v)
     if active:
@@ -185,7 +184,7 @@ def write_s24(sc, vid):
     return ["automation: gen"], "no sourced formula for the value of automation"
 
 
-RESET_MIN_RUN = 0.5      # S04: the reset opens after a run of 0.5 x run_min or more (the run floor of the solver)
+RESET_MIN_RUN = 0.5
 
 
 def write_s04(sc, vid):
@@ -254,8 +253,6 @@ NOT_WRITTEN_WHY = {
 }
 
 
-# The systems that the model cannot express: the stub text gives the fold-in method and the direction of its error
-# (references/simulation-path.md, "Systems that the model cannot express").
 CANNOT_EXPRESS = {
     "S21": "the model cannot express an allocation pool: no construct splits 1 pool between 2 or more sinks, so "
            "'speed = share^e for each sink' has no model line. The fold-in method: write 1 purchase line for each "
@@ -272,7 +269,6 @@ CANNOT_EXPRESS = {
 }
 
 
-# ----------------------------------------------------------------------------- the parts
 def write_parts(sc):
     chosen = dict(sc.d.chosen)
     chosen.setdefault("S04", "S04.none")
@@ -314,7 +310,6 @@ def stub_text(sid, v):
     return head + ", mark it simulated, and fit again (references/simulation-path.md, 'Complete a stub')"
 
 
-# ----------------------------------------------------------------------------- the model
 def scaffold(d):
     """The starting model of the selection: each part written or stubbed, with the key simulation_path."""
     sc = Scaffold(d)
@@ -393,7 +388,6 @@ def to_add(parts):
     return [f"{p['system']} {p['variant']}: {p['to_fill']}" for p in parts if p.get("fill")]
 
 
-# ----------------------------------------------------------------------------- the timing fit
 def stage_times(tv):
     """The target time of each stage in seconds: each STAGE_SHARE x the first-hour unlock gap target in the first hour,
     then each STAGE_SHARE x the unlock gap target, and the last stage at the hard end (the length target)."""
@@ -730,7 +724,6 @@ def row(what, target_min, t):
     return dict(what=what, target_min=round(target_min, 2), sim_min=None if t is None else round(t / 60.0, 2))
 
 
-# ----------------------------------------------------------------------------- --vary
 def at_path(m, path):
     """(container, key) of a path of simulation_path.hand_set: the keys and indexes from the model root
     (references/model-schema.md). A text step in a list of objects is the id of an entry (or the line of an auto-buy
@@ -871,7 +864,6 @@ def result_text(res):
     return f"hard end {end_t}, purchase gap {pgap:.2f} min, unlock gap {ugap:.2f} min"
 
 
-# ----------------------------------------------------------------------------- entry point
 def design_of(sel_path, tg_path):
     """The Design of pw_design.py for a selection and a targets file (the checks of the solver, step 2)."""
     a = argparse.Namespace(selection=sel_path, targets=tg_path, content=None)

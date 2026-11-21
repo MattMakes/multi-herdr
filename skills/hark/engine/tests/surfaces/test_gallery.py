@@ -85,9 +85,6 @@ def refsets(fake_module, monkeypatch):
     return mod
 
 
-# ---------------------------------------------------------------- loudness
-
-
 def by_hand_lufs(x: np.ndarray) -> float:
     from scipy.signal import lfilter
     y = lfilter(*K2, lfilter(*K1, x.astype(np.float64)))
@@ -118,9 +115,6 @@ def test_g_t3_resampled_to_48k():
     b = gs.lufs_max(sine(997.0, 1.0, amp=0.1), 48000)
     assert abs(a - b) <= 0.1
     assert gs.lufs_max(np.zeros((0, 1)), 48000) is None
-
-
-# ---------------------------------------------------------------- inputs
 
 
 def test_g_t4_discover_and_order(tree, tmp_path):
@@ -198,9 +192,6 @@ def test_g_t9_variant_alignment():
     assert gi.align([None, sounds("a")])[0] is None
 
 
-# ---------------------------------------------------------------- benchmark results
-
-
 def _stamp(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
@@ -257,9 +248,6 @@ def test_results_errors(tmp_path, tree):
         g.gallery(str(tree), out=str(tmp_path / "x.html"), results=f"nolabel:{good}")
 
 
-# ---------------------------------------------------------------- references
-
-
 def test_g_t12_refs_bench_refused(tree, tmp_path):
     out = tmp_path / "site" / "g.html"
     with pytest.raises(ValueError, match="bench"):
@@ -305,9 +293,6 @@ def test_audition_with_clean_index(tree, tmp_path, refsets):
     assert "audition (made, nearest ref, alternating)" in article(page, "click")
 
 
-# ---------------------------------------------------------------- loudness switch
-
-
 def test_g_t15_loudness_target():
     t = gp.loudness_target([-12.0, -18.0, -24.0])
     assert t == -22.8
@@ -325,9 +310,6 @@ def test_g_t15_page_switch(tree, tmp_path):
     target = re.search(r'id="match"[^>]*data-target="(-?[0-9.]+)"', page)
     assert target and float(target.group(1)) == gp.loudness_target(lufs)
     assert re.search(r'<input[^>]*id="match"[^>]*checked', page)
-
-
-# ---------------------------------------------------------------- embedding
 
 
 def test_g_t16_embed_compressed(tree, tmp_path):
@@ -383,9 +365,6 @@ def test_g_t20_card_span():
     assert gs.card_span([2.0] + [0.1] * 5) == pytest.approx(0.25)
     assert gs.card_span([]) == 1.0 and gs.card_span([None, 0]) == 1.0
     assert gs.card_span([0.01]) == 0.05
-
-
-# ---------------------------------------------------------------- page details
 
 
 def test_summary_text_and_result_keys(tree, tmp_path):

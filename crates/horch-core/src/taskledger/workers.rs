@@ -1,5 +1,3 @@
-//! Worker rows: 1 process life each (section 4.6).
-
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
@@ -9,7 +7,6 @@ use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 
-/// 1 worker row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Worker {
     pub worker_id: String,
@@ -47,13 +44,8 @@ pub struct Worker {
     pub started_at: Option<String>,
     pub claimed_at: Option<String>,
     pub ended_at: Option<String>,
-    /// The handoff file of a worker that ended `handed_off` (C4).
     pub handoff_path: Option<String>,
-    /// The task this worker was spawned to claim (TRF-24). The claim takes
-    /// it first; no other worker claims it while this worker is live.
     pub target_task_id: Option<String>,
-    /// The pane host backend (`herdr` or `hc`) that owns `workspace_id` and
-    /// `pane_id` (HCB-03).
     pub backend: crate::runtime::Backend,
 }
 
@@ -62,7 +54,6 @@ impl Worker {
         WorkerStatus::parse(&self.status)
     }
 
-    /// The name used in messages: the role, else the id.
     pub fn label(&self) -> &str {
         self.role.as_deref().unwrap_or(&self.worker_id)
     }
@@ -121,12 +112,10 @@ impl Worker {
     }
 }
 
-/// 1 worker by id.
 pub fn get(conn: &Connection, worker_id: &str) -> Result<Worker> {
     find(conn, worker_id)?.with_context(|| format!("no worker {worker_id} in the task ledger"))
 }
 
-/// 1 worker by id, if it exists.
 pub fn find(conn: &Connection, worker_id: &str) -> Result<Option<Worker>> {
     optional(conn.query_row(
         "SELECT * FROM workers WHERE worker_id = ?1",
@@ -135,7 +124,6 @@ pub fn find(conn: &Connection, worker_id: &str) -> Result<Option<Worker>> {
     ))
 }
 
-/// A worker by its id or its role in `run_id`: the newest row with that role.
 pub fn resolve(conn: &Connection, run_id: &str, key: &str) -> Result<Worker> {
     if let Some(w) = find(conn, key)? {
         return Ok(w);
@@ -149,7 +137,6 @@ pub fn resolve(conn: &Connection, run_id: &str, key: &str) -> Result<Worker> {
     .with_context(|| format!("no worker '{key}' in this run"))
 }
 
-/// Every worker of a run, oldest first.
 pub fn of_run(conn: &Connection, run_id: &str) -> Result<Vec<Worker>> {
     let mut stmt =
         conn.prepare("SELECT * FROM workers WHERE run_id = ?1 ORDER BY spawned_at, rowid")?;
@@ -159,7 +146,6 @@ pub fn of_run(conn: &Connection, run_id: &str) -> Result<Vec<Worker>> {
     Ok(rows)
 }
 
-/// The attempts at a task, oldest first.
 pub fn attempts_at(conn: &Connection, task_id: &str) -> Result<Vec<Worker>> {
     let mut stmt = conn
         .prepare("SELECT * FROM workers WHERE task_id = ?1 ORDER BY attempt, claimed_at, rowid")?;
@@ -169,7 +155,6 @@ pub fn attempts_at(conn: &Connection, task_id: &str) -> Result<Vec<Worker>> {
     Ok(rows)
 }
 
-/// What spawn records before the pane opens.
 #[derive(Debug, Clone, Default)]
 pub struct NewWorker {
     pub run_id: String,
@@ -184,14 +169,10 @@ pub struct NewWorker {
     pub previous_worker_id: Option<String>,
     pub resumed_from_session: Option<String>,
     pub legacy_record_id: Option<String>,
-    /// The task this worker is spawned to claim (TRF-24).
     pub target_task_id: Option<String>,
-    /// The pane host backend (`herdr` or `hc`) that owns `workspace_id` and
-    /// `pane_id`.
     pub backend: crate::runtime::Backend,
 }
 
-/// Insert a worker in state `spawning` and return its id.
 pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
     if let Some(prev) = &new.previous_worker_id {
         let p = get(conn, prev)?;
@@ -240,7 +221,6 @@ pub fn insert(conn: &Connection, new: &NewWorker) -> Result<String> {
     Ok(id)
 }
 
-/// Record the pane spawn opened.
 pub fn set_pane(conn: &Connection, worker_id: &str, pane_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE workers SET pane_id = ?2 WHERE worker_id = ?1",
@@ -249,7 +229,6 @@ pub fn set_pane(conn: &Connection, worker_id: &str, pane_id: &str) -> Result<()>
     Ok(())
 }
 
-/// What spawn launched: role, harness, model and effort.
 pub fn set_launch(
     conn: &Connection,
     worker_id: &str,
@@ -266,7 +245,6 @@ pub fn set_launch(
     Ok(())
 }
 
-/// The spawn failed before `horch worker` ran.
 pub fn launch_failed(conn: &Connection, worker_id: &str, reason: &str) -> Result<()> {
     conn.execute(
         &format!(
@@ -284,7 +262,6 @@ pub fn launch_failed(conn: &Connection, worker_id: &str, reason: &str) -> Result
     Ok(())
 }
 
-/// `horch worker` runs: its own PID and start time.
 pub fn supervisor_started(
     conn: &Connection,
     worker_id: &str,
@@ -310,8 +287,6 @@ pub fn supervisor_started(
     Ok(())
 }
 
-/// The agent child started: its PID and start time. The worker now looks
-/// for a task.
 pub fn agent_started(
     conn: &Connection,
     worker_id: &str,
@@ -340,7 +315,6 @@ pub fn agent_started(
     Ok(())
 }
 
-/// The heartbeat: the supervisor is alive now.
 pub fn checkin(conn: &Connection, worker_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE workers SET last_checkin_at = ?2 WHERE worker_id = ?1",
@@ -349,8 +323,6 @@ pub fn checkin(conn: &Connection, worker_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The session id and transcript, once known. Only fills what is empty, and
-/// says whether it changed anything.
 pub fn set_session(
     conn: &Connection,
     worker_id: &str,
@@ -387,8 +359,6 @@ pub fn set_session(
     Ok(n > 0)
 }
 
-/// Progress seen for a worker: from the agent itself, or a proxy checkin
-/// from the watchdog. Resets the stall count.
 pub fn progress(
     conn: &Connection,
     worker_id: &str,
@@ -427,7 +397,6 @@ pub fn progress(
     Ok(())
 }
 
-/// Set a worker's final state, unless it already ended.
 pub fn end(
     conn: &Connection,
     worker_id: &str,
@@ -447,9 +416,6 @@ pub fn end(
     Ok(n > 0)
 }
 
-/// End a live worker `handed_off` with its handoff file (trace-fixes C4).
-/// The attempt did not finish, so the row ends `incomplete`, as a reaped
-/// one does: `plan-workers` then names it for `--replaces`.
 pub fn hand_off(conn: &Connection, worker_id: &str, path: &str) -> Result<()> {
     let n = conn.execute(
         &format!(
@@ -467,18 +433,10 @@ pub fn hand_off(conn: &Connection, worker_id: &str, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// How long a `spawning` row may wait for its supervisor: longer than the
-/// registration wait of `horch spawn` (#190).
 pub const LAUNCH_GRACE_S: i64 = 120;
 
-/// How long a live `claiming` worker may take to claim before the
-/// orchestrator is asked to look at its pane (#190).
 pub const CLAIM_GRACE_S: i64 = 600;
 
-/// Whether a pre-claim row (`spawning`, `starting`, `claiming`) no longer
-/// stands for a process on its way to a claim: its last checkin is older
-/// than `heartbeat_stale_s`, or it never checked in within
-/// [`LAUNCH_GRACE_S`] of its spawn.
 pub fn is_stale(w: &Worker, heartbeat_stale_s: i64, now: &str) -> bool {
     if !matches!(w.status.as_str(), "spawning" | "starting" | "claiming") {
         return false;
@@ -493,27 +451,20 @@ pub fn is_stale(w: &Worker, heartbeat_stale_s: i64, now: &str) -> bool {
     }
 }
 
-/// Whether the worker's recorded supervisor process still runs.
 pub fn supervisor_alive(w: &Worker) -> bool {
     w.supervisor_pid
         .is_some_and(|p| crate::procid::alive(p as u32, w.supervisor_started.map(|s| s as u64)))
 }
 
-/// What the pre-claim sweep did to 1 worker.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Preclaim {
     pub worker: Worker,
-    /// The status it ended with; `None` for a live worker that has not
-    /// claimed within [`CLAIM_GRACE_S`] (reported once).
     pub ended: Option<String>,
     pub note: String,
 }
 
 const NO_CLAIM: &str = "No claim:";
 
-/// The watchdog's pass over pre-claim rows (#190). A row whose process is
-/// gone or silent ends: `launch_failed` before the agent ran, `no_task`
-/// after. A live `claiming` worker past [`CLAIM_GRACE_S`] is reported once.
 pub fn sweep_preclaim(
     conn: &Connection,
     run: &super::runs::Run,
@@ -606,7 +557,6 @@ pub fn sweep_preclaim(
     Ok(out)
 }
 
-/// Record the exit code of a worker that already ended (a `done` worker).
 pub fn set_exit_code(conn: &Connection, worker_id: &str, exit_code: Option<i32>) -> Result<()> {
     conn.execute(
         "UPDATE workers SET exit_code = COALESCE(?2, exit_code), ended_at = COALESCE(ended_at, ?3)
@@ -616,7 +566,6 @@ pub fn set_exit_code(conn: &Connection, worker_id: &str, exit_code: Option<i32>)
     Ok(())
 }
 
-/// A known bounded wait; multiple causes may coexist for one worker.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Wait {
     pub kind: String,
@@ -626,26 +575,15 @@ pub struct Wait {
     pub task_ids: Vec<String>,
 }
 
-/// The wait kind of an author on its reviews.
 pub const REVIEWS_WAIT: &str = "reviewers";
 
-/// How long an author waits for its reviews when no deadline is known.
 pub const REVIEWS_WAIT_SECS: i64 = 7 * 24 * 3600;
 
-/// Whether `wait` is an author's reviewers wait after its reviews are in:
-/// it has no task ids, so [`waiting`] keeps it until finish clears it or
-/// its deadline passes (#177).
 pub fn holds_for_finish(wait: &Wait) -> bool {
     wait.kind == REVIEWS_WAIT && wait.task_ids.is_empty()
 }
 
-/// After the last review of its task: keep `worker`'s reviewers wait, with
-/// no task ids, up to the deadline it had (#177). With no earlier wait, the
-/// wait lasts [`REVIEWS_WAIT_SECS`]. A deadline that has passed sets no
-/// wait: the stall checks then judge the author.
 pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
-    // Read the row, not `waiting`: that ends a reviewers wait whose reviews
-    // are done, which they all are now.
     let deadline: Option<String> = optional(conn.query_row(
         "SELECT deadline FROM worker_waits WHERE worker_id = ?1 AND kind = ?2",
         params![worker, REVIEWS_WAIT],
@@ -707,7 +645,6 @@ pub fn clear_wait(conn: &Connection, worker: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
-/// Expired waits and completed reviews stop holding the watchdog immediately.
 pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
     let mut stmt=conn.prepare("SELECT kind,reason,started_at,deadline,task_ids FROM worker_waits WHERE worker_id=?1 ORDER BY kind")?;
     let rows = stmt
@@ -745,8 +682,6 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
     Ok(out)
 }
 
-/// The event kind of the ledger action `verb` names in a horch question,
-/// else `None`. Only these actions close a horch question (C2).
 pub fn closing_event(verb: &str) -> Option<EventKind> {
     match verb {
         "requeue" => Some(EventKind::Requeued),
@@ -755,9 +690,6 @@ pub fn closing_event(verb: &str) -> Option<EventKind> {
     }
 }
 
-/// Close each open horch question once a ledger action it names happened
-/// after it was asked (TRF-26). The task is looked up in every run of
-/// `workspace`.
 fn close_acted_questions(
     conn: &Connection,
     mail: &crate::messaging::mail::Mail,
@@ -786,8 +718,6 @@ fn close_acted_questions(
     Ok(())
 }
 
-/// Whether an action of `actions` (`<verb> T-<n>`) has an event at or after
-/// `since` for its task in one of `runs`.
 fn acted_since(
     conn: &Connection,
     runs: &[String],
@@ -818,10 +748,6 @@ fn acted_since(
     Ok(false)
 }
 
-/// Project the messaging layer's authoritative questions into ledger waits.
-/// First close the horch questions whose ledger action happened. A wait
-/// names its question by id (`#<id>`): an answer by that id ends it, and
-/// the next open question of the role starts a new wait.
 pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &str) -> Result<()> {
     let mail = crate::messaging::mail::Mail::under(state, workspace);
     close_acted_questions(conn, &mail, workspace)?;
@@ -834,7 +760,6 @@ pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &st
         .query_map([workspace], Worker::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for w in roster {
-        // The oldest open question fixes the deadline; polling must never extend it.
         let question = questions
             .iter()
             .find(|q| w.role.as_deref() == Some(q.from.as_str()));
@@ -881,7 +806,6 @@ pub fn role_state(conn: &Connection, workspace: &str, role: &str) -> Result<Stri
     ))
 }
 
-/// Join the native worker life to its execution record for session and compaction hooks.
 pub fn set_record(conn: &Connection, worker_id: &str, record_id: &str) -> Result<()> {
     let changed = conn.execute(
         "UPDATE workers SET legacy_record_id=?2 WHERE worker_id=?1",
@@ -924,7 +848,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A run in workspace `w1` with task T-1 and a working worker `worker-1`.
     fn asker(store: &mut Store) -> (String, String) {
         use crate::taskledger::tasks::{self, NewTask};
         store
@@ -973,9 +896,6 @@ mod tests {
             .find(|w| w.kind == "question")
     }
 
-    /// TRF-25: the question wait names its question by id. An answer to
-    /// the first question moves the wait to the second, with the second's
-    /// start; an answer to the second ends it.
     #[test]
     fn trf_25_a_question_wait_is_keyed_by_question_id() {
         use crate::messaging::mail::Mail;
@@ -1026,8 +946,6 @@ mod tests {
         crate::taskledger::tasks::resolve(conn, run, "T-1").unwrap()
     }
 
-    /// TRF-26: a horch question stays open until the ledger action it
-    /// names runs: `requeue T-1` closes it.
     #[test]
     fn trf_26_a_requeue_closes_the_held_question() {
         use crate::messaging::mail::Mail;
@@ -1049,8 +967,6 @@ mod tests {
         assert!(open[0].text.contains("T-9 is held"));
     }
 
-    /// TRF-26: `cancel T-1`, the other action the question names, closes
-    /// it too.
     #[test]
     fn trf_26_a_cancel_closes_the_held_question() {
         use crate::messaging::mail::Mail;
@@ -1073,8 +989,6 @@ mod tests {
         assert_eq!(closing_event("status"), None);
     }
 
-    /// An agent PID for a worker the ledger does not know is an error, as
-    /// for the supervisor PID. It used to exit 0 and change nothing.
     #[test]
     fn agent_started_refuses_an_unknown_worker() {
         let dir = tempfile::tempdir().unwrap();
@@ -1083,8 +997,6 @@ mod tests {
         assert_eq!(err.to_string(), "no worker w-missing in the task ledger");
     }
 
-    /// The agent PID of a known worker is stored and the worker moves on to
-    /// claiming.
     #[test]
     fn agent_started_records_the_pid_and_moves_a_starting_worker_on() {
         let dir = tempfile::tempdir().unwrap();
@@ -1103,8 +1015,6 @@ mod tests {
         (crate::clock::parse(&wait.deadline).unwrap() - crate::clock::now()).num_seconds()
     }
 
-    /// #177: the reviews are in. The author keeps waiting, with no task
-    /// ids, up to the deadline it had.
     #[test]
     fn a_held_wait_keeps_its_deadline_and_survives_waiting() {
         let dir = tempfile::tempdir().unwrap();
@@ -1148,8 +1058,6 @@ mod tests {
         );
     }
 
-    /// A deadline that has passed is not renewed: the stall checks judge
-    /// the author at once.
     #[test]
     fn a_wait_past_its_deadline_is_not_held() {
         let dir = tempfile::tempdir().unwrap();

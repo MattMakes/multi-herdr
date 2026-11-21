@@ -1,10 +1,4 @@
 #!/bin/bash
-# Run 1 Godot command for a fleet worker. Usage, from the project root:
-#   godot-run.sh <godot arguments...>
-# Sets private user dirs under .godot/horch-home, adds --headless, logs the
-# output, and exits 3 when the log has a sandbox line. In a Codex pane on
-# macOS it also writes the 2 TLS overrides of docs/live-checks/godot-codex.md.
-# Exit codes: the engine's code, 2 for a setup error, 3 for a sandbox line.
 set -euo pipefail
 
 CERT=/etc/ssl/cert.pem
@@ -13,16 +7,11 @@ die() { printf 'godot-run: %s\n' "$1" >&2; exit 2; }
 
 MONO_APP=/Applications/Godot_mono.app/Contents/MacOS/Godot
 
-# A C# project: "C#" in config/features of project.godot, or a *.csproj in
-# the project root.
 is_csharp() {
   grep -q '^config/features=.*"C#"' project.godot && return 0
   compgen -G '*.csproj' > /dev/null
 }
 
-# Print the engine path. A C# project gets only the .NET engine: the
-# standard engine cannot build or run C#. Order: GODOT_MONO_PATH, the macOS
-# Godot_mono app. Any other project: GODOT_PATH, godot on PATH, the macOS app.
 find_engine() {
   if is_csharp; then
     local mono="${GODOT_MONO_PATH:-}"
@@ -40,8 +29,6 @@ find_engine() {
   printf '%s\n' "$engine"
 }
 
-# Set network/tls/editor_tls_certificates in the editor settings file, and
-# keep every other line. Godot creates the file on the first import.
 write_editor_setting() {
   local file=$1
   mkdir -p "$(dirname "$file")"
@@ -66,8 +53,6 @@ write_override() {
   fi
 }
 
-# Count the sandbox lines (E1 to E9 of docs/live-checks/godot-codex.md): E3,
-# or an E line that names a path outside the project.
 count_sandbox_lines() {
   local log=$1 root=$2 real=$3 n=0 line path outside
   local e_lines='Could not create directory|Error attempting to create data dir|Could not open .user://. directory|Cannot save file|Error saving editor settings|Failed to open log file for writing|Cannot remove file or directory'

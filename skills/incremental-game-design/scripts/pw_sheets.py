@@ -12,7 +12,6 @@ import os
 from pw_analysis import TARGET_HOURS, derive_links, ideal_count, ideal_time, is_lull, pm
 from pw_model import INF, cost_one
 
-# Timeline columns
 TL = dict(real="A", hours="B", pm="C", ph="D", event="E", kind="F", system="G", weight="H", cost="I",
           currency="J", note="K", prest="L", beat="M", moment="N", last="O", gap="P", ratio="Q", lull="R",
           cum="S")
@@ -47,7 +46,6 @@ def fin(x):
     return min(x, 1e300)
 
 
-# ---- Styles -------------------------------------------------------------------
 FONTS = dict(F=dict(name="Arial", size=10), B=dict(name="Arial", size=10, bold=True),
              H=dict(name="Arial", size=10, bold=True, color="FFFFFF"), T=dict(name="Arial", size=14, bold=True),
              INP=dict(name="Arial", size=10, color="0000FF"))
@@ -57,7 +55,6 @@ SESSION_SCALE = dict(start_type="num", start_value=0, start_color="FFFFFF", mid_
                      mid_color="FFE699", end_type="max", end_color="63BE7B")
 SIM = "From the simulation. "
 
-# ---- Params -------------------------------------------------------------------
 PARAM_INPUTS = (
     ("Session minutes", "session_minutes", "Length of one play session. From the model."),
     ("Beat weight", "beat_weight", "An event is a beat when its weight is this value or more. 1 = each purchase. 3 = features, prestiges that reach something new, system unlocks."),
@@ -81,10 +78,8 @@ PARAMS_NOTE = ("Blue text on yellow: inputs. Change a value and the formulas on 
                "the script again after a change to the model. The rows of Beats, Lulls, and Target use the "
                "beat weight and the merge seconds of the script run.")
 
-# ---- Timeline -----------------------------------------------------------------
 TL_REFS = (("tC", "pm"), ("tH", "weight"), ("tM", "beat"), ("tN", "moment"), ("tF", "kind"), ("tG", "system"),
            ("tK", "note"))
-# (column, formula, value or formula of the first row, number format)
 TL_LIVE = (
     (13, f"=IF(H{{i}}>={PR['beat']},1,0)", None, None),
     (14, f"=IF(AND(M{{i}}=1,(C{{i}}-O{{i}})*60>={PR['merge']}),1,0)", None, None),
@@ -95,7 +90,6 @@ TL_LIVE = (
     (19, "=S{p}+N{i}", "=N2", None),
 )
 
-# ---- Sessions -----------------------------------------------------------------
 SESSION_NAMES = ["Bucket", "Start (played min)", "End (played min)", "Start (h)", "Beats (at build)",
                  "Beat weight sum (at build)", "Flag (at build)", "Beats (live)", "Beat weight sum (live)",
                  "Events (live)", "Purchases (live)", "Top weight (live)", "Flag (live)"]
@@ -105,7 +99,6 @@ SESSIONS_NOTE = ("'At build' columns are values from the script run: a reader se
                  "weight on Params, so the two can differ after an edit. Buckets count beats before stacked "
                  "beats are merged. Times are minutes of play.")
 
-# ---- Beats --------------------------------------------------------------------
 BEATS_NAMES = ["#", "Played min", "Played hours", "Real hours", "Beat", "Top weight", "Beats in the stack",
                "Systems", "Gap (min, at build)", "Gap ratio (at build)", "Lull (at build)", "Cause of the lull",
                "Last beat at (min, live)", "Gap (min, live)", "Gap ratio (live)", "Lull (live)"]
@@ -120,7 +113,6 @@ BEATS_NOTE = ("One row for each moment: beats closer than the merge seconds are 
               "follow the lull thresholds on Params, so the two can differ after an edit. The rows "
               "themselves use the beat weight and the merge seconds of the script run.")
 
-# ---- Lulls --------------------------------------------------------------------
 LULLS_NAMES = ["Starts at (h)", "Ends at (h)", "Gap (min)", "Gap ratio", "Ends with", "System that ends it",
                "Sessions in the gap (at build)", "In all buyer profiles?", "Probable cause",
                "Why (from the simulation)", "Options within 5 min (mean)", "Capped lines (share)",
@@ -140,7 +132,6 @@ DEAD_ZONE_NAMES = ["Dead zone", "Starts at (h)", "Ends at (h)", "Minutes", "Lull
 DEAD_ZONE_NOTE = ("A dead zone is a group of lulls with less than the max gap between them. It is the stretch "
                   "that a player feels as 'the game went quiet', also when one or two beats fall inside it.")
 
-# ---- Swimlane -----------------------------------------------------------------
 SWIM_TITLE = "Swimlane: which system gives beats, and when"
 SWIM_INTRO = ("Four blocks. Beats: events at the beat weight or more (before merging). Activity: all events on "
               "the Timeline. First with equal buckets (Params: swimlane bucket minutes), then with buckets "
@@ -150,11 +141,9 @@ SWIM_INTRO = ("Four blocks. Beats: events at the beat weight or more (before mer
 SWIM_LIVE_TITLE = ("LIVE: the same four blocks as formulas. They follow the beat weight and the swimlane bucket "
                    "on Params.")
 SWIM_BUILD_TITLE = "AT BUILD: values of the script run. A reader sees them with no recalculation."
-# (title, beats only, equal buckets)
 SWIM_BLOCKS = (("Beats, equal buckets", True, True), ("Activity, equal buckets", False, True),
                ("Beats, buckets that double", True, False), ("Activity, buckets that double", False, False))
 
-# ---- Profiles -----------------------------------------------------------------
 PROFILE_ROWS = [("Reset rule of the buyer", "text", None), ("Lulls", "lulls", "0"),
                 ("Longest gap between beats (min)", "longest_gap_minutes", "0.0"),
                 ("Minutes in dead zones", "dead_zone_minutes", "0"), ("Beats (after merging)", "beats", "0"),
@@ -175,7 +164,6 @@ PROFILES_NOTE = ("Each column is one full simulation of the same model with a di
                  "all columns show is a property of the game. A lull in one column only is a property of the "
                  "player model. All values come from the simulation at the thresholds of the script run.")
 
-# ---- Target -------------------------------------------------------------------
 TARGET_NAMES = ["Beat #", "Ideal time (min, at build)", "Actual time (min)", "Error (min, at build)",
                 "Ideal (h, at build)", "Actual (h)", "Ideal time (min, live)", "Error (min, live)",
                 "Actual / ideal (live)"]
@@ -187,7 +175,6 @@ TARGET_NOTE = ("Ideal time of beat n = first gap x (stretch^n - 1) / (stretch - 
                "grows fastest is where the game needs a new beat. 'At build' columns and the chart use the inputs "
                "of the script run. 'Live' columns follow Params.")
 
-# ---- Walls --------------------------------------------------------------------
 WALLS_NAMES = ["Ladder", "Step", "Requirement (at build)", "Compares", "Reached at (h)",
                "Wait since the step before (min)", "Value at that time", "Status", "log10 requirement",
                "log10 value", "Base (what-if)", "Growth (what-if)", "Requirement (live what-if)"]
@@ -200,7 +187,6 @@ WALLS_NOTE = ("One row for each ladder step. Time, wait, and value come from the
               "requirement line leaves the value line is the wall.")
 NO_LADDER_NOTE = "The model has no ladder. A ladder is the spine of the game: see model-schema.md."
 
-# ---- Purchases ----------------------------------------------------------------
 PURCHASE_NAMES = ["Line", "Id", "System", "Status", "First bought (min)", "Last bought (min)", "Highest level",
                   "Levels bought", "Max level at the end", "Spent", "Currency", "Share of spending in the currency",
                   "Payback of the first level (s)", "Payback of the last bought level (s)"]
@@ -209,7 +195,6 @@ PURCHASES_NOTE = ("All values come from the simulation, primary buyer profile. P
                   "income of the cost currency. It is empty when the line does not raise the currency that "
                   "pays for it. 'Spent' is the first cost currency of the line. Levels bought counts all runs.")
 
-# ---- Prestige -----------------------------------------------------------------
 PRESTIGE_NAMES = ["Run", "Start (h)", "Length (min)", "Gain", "Gain each minute"]
 PRESTIGE_WIDTHS = [7, 9, 10, 12, 11, 11, 9]
 PRESTIGE_CHARTS = ((3, "Run length (healthy: shorter at first, then steady or slowly longer)", "Minutes"),
@@ -218,12 +203,10 @@ PRESTIGE_NOTE = ("One row for each finished run, from the simulation, primary bu
                  "('{}'). A red cell: the run reached no new beat, so its prestige has weight 1 and "
                  "is not a beat. The run lengths depend on the reset rule: compare the Profiles sheet.")
 
-# ---- Ledger -------------------------------------------------------------------
 LEDGER_NOTE = ("Sources and sinks of each currency over the whole simulation, by system. Income is split by "
                "the system that owns the 'add' effects; multipliers are not split. A source with no sink "
                "of the same size piles up. All values come from the simulation.")
 
-# ---- Sensitivity --------------------------------------------------------------
 SENS_KEYS = ("lulls", "longest_gap_minutes", "first_prestige_minutes", "ladder_step", "beats")
 SENS_HEADS = (["Parameter", "Base value", "Low value (x0.95)", "High value (x1.05)"]
               + [f"{side}: {name}" for side in ("Low", "High")
@@ -239,7 +222,6 @@ SENS_NOTE = ("Each row is two more runs of the primary buyer profile ('{primary}
              "as 'this number matters', not as a forecast.")
 SENS_LIMIT = " (time limit: ladders and the prestige exponent first, then the lines that the buyer bought most)."
 
-# ---- Compare ------------------------------------------------------------------
 NO_COMPARE_TEXT = ("No second run. To compare two models: run the script for the first model, then run it for "
                    "the second model with --compare <first>.analysis.json.")
 COMPARE_KEYS = [("Simulated hours", "simulated_hours", "0.0"), ("Beats (after merging)", "beats", "0"),
@@ -258,12 +240,10 @@ COMPARE_KEYS = [("Simulated hours", "simulated_hours", "0.0"), ("Beats (after me
 COMPARE_NOTE = ("Before: {} ({}). After: {} (this workbook). Both columns come from simulations. Check that the "
                 "two runs used the same thresholds and the same buyer profile.")
 
-# ---- Income -------------------------------------------------------------------
 INCOME_CHART = ("Income growth (flat parts are stalls; steps are purchases and resets)", "Hours played",
                 "log10 of income per second")
 OPTIONS_CHART = ("Decision density (0 = nothing to do; more than 7 = too many options)", "Hours played", "Options")
 
-# ---- Curves -------------------------------------------------------------------
 CURVE_LEVELS = [0, 1, 5, 10, 25, 50, 100]
 C_LV = 11
 C0 = C_LV + len(CURVE_LEVELS)
@@ -285,7 +265,6 @@ CURVES_NOTE = ("Yellow cells are a what-if for this sheet only: they move the 'l
                "slowed down and needs other systems to multiply it.")
 CURVES_CHART = "Cost curves: first 10 lines, each to its max level (currencies differ: compare shapes)"
 
-# ---- Systems and Matrix -------------------------------------------------------
 SYSTEMS_NAMES = ["System", "Name", "Loop", "Persists through prestige", "Clock", "First event (played min, at build)",
                  "Events on the Timeline (at build)", "Links out (at build)", "Links in (at build)",
                  "Role (at build)", "Description", "First event (played min, live)", "Events on the Timeline (live)",
@@ -301,14 +280,12 @@ SYSTEMS_NOTE = ("'At build' columns are values from the script run. 'Live' colum
 MATRIX_NOTE = ("Count of links from the row system to the column system. Values of the script run, from the "
                "Links sheet.")
 
-# ---- Ideas --------------------------------------------------------------------
 IDEA_COLS = ["Idea", "Archetype", "Problem it solves", "Feeds (core-loop value)", "Fed by", "Unlock point",
              "Persists through prestige", "Scope (S/M/L)", "Juice moment", "Risk"]
 IDEA_KEYS = ["idea", "archetype", "problem", "feeds", "fed_by", "unlock", "persists", "scope", "juice", "risk"]
 IDEA_WIDTHS = [26, 18, 40, 30, 26, 22, 10, 9, 36, 36]
 NO_IDEAS_TEXT = "Add ideas to model.review.ideas and run the script again, or type them here."
 
-# ---- Reference ----------------------------------------------------------------
 REF_NAMES = ["Reference: main level", "Share of main axis", "System that opens", "Share of systems open", "",
              "This game: system", "First event (played h)", "Share of progress (x)", "Share of systems open"]
 REF_WIDTHS = [12, 10, 26, 10, 3, 20, 10, 12, 10]
@@ -319,7 +296,6 @@ REF_AXIS_TIME = ("A level axis is close to a log-time axis: against it, a time a
                  "healthy game look front-loaded. Set game.progress_axis to compare.")
 NO_REF_TEXT = "The reference curve file was not found (assets/reference_unlock_curve.json)."
 
-# ---- Dashboard ----------------------------------------------------------------
 DASH_HEADS = ["Indicator", "At build", "Live", "Low", "High", "Status (at build)", "Status (live)",
               "How to read it"]
 DASH_INTRO_TAIL = ("'At build' = the value of the script run: it needs no "
@@ -345,7 +321,6 @@ PACING_TITLE = "Pacing: cumulative beats (flat parts are lulls; red boxes mark t
 DASH_STATUS = ('=IF(NOT(ISNUMBER({x})),"CHECK",IF({x}<D{i},"LOW",IF({x}>E{i},"HIGH","OK")))')
 
 
-# ---- Shared helpers -----------------------------------------------------------
 def col_letter(i):
     from openpyxl.utils import get_column_letter
     return get_column_letter(i)
@@ -443,7 +418,6 @@ def add_rule(ws, area, rule_name, **kw):
     ws.conditional_formatting.add(area, getattr(rule, rule_name)(**kw))
 
 
-# ---- Params -------------------------------------------------------------------
 def sheet_params(bk):
     wp = bk.wb.active
     wp.title = "Params"
@@ -481,7 +455,6 @@ def params_sim(bk, ws):
     bk.put(ws, 17, 3, BUCKET_TEXT.format(bk.A["sessions"]))
 
 
-# ---- Timeline -----------------------------------------------------------------
 def routine_row(e, P):
     return e["weight"] < 2 and e["kind"] != "stall" and e["weight"] < P["beat_weight"]
 
@@ -595,7 +568,6 @@ def timeline_refs(bk):
         setattr(bk, attr, tl_range(bk.nT, key))
 
 
-# ---- Sessions -----------------------------------------------------------------
 def sheet_sessions(bk):
     bk.nS = nS = bk.A["sessions"]
     ws = bk.wb.create_sheet("Sessions")
@@ -657,7 +629,6 @@ def sessions_chart(ws, nS):
     ws.add_chart(bc, "O2")
 
 
-# ---- Beats --------------------------------------------------------------------
 def sheet_beats(bk):
     ws = bk.wbt = bk.wb.create_sheet("Beats")
     bk.mos = bk.A["moments"]
@@ -665,7 +636,7 @@ def sheet_beats(bk):
     tail, cause_at = tail_gap(bk), {round(x["at_minutes"], 4): x.get("cause") for x in bk.A["lulls"]}
     for i, mo in enumerate(bk.mos + [None], 2):
         beat_row(bk, ws, i, (tail, mo), cause_at)
-    nB = len(bk.mos) + 2                   # the last row is the end of the simulation
+    nB = len(bk.mos) + 2
     add_rule(ws, f"A2:L{nB}", "FormulaRule", formula=['$K2="LULL"'], fill=bk.RED)
     add_rule(ws, f"M2:P{nB}", "FormulaRule", formula=['$P2="LULL"'], fill=bk.RED)
     bk.note(ws, nB + 2, BEATS_NOTE, 16, 45)
@@ -730,7 +701,7 @@ def lull_bands(bk, ws):
     ws.column_dimensions["R"].width = ws.column_dimensions["S"].width = 11
     r = 2
     for gp in bk.A["lulls"]:
-        r = lull_band(bk, ws, r, gp) + 1   # an empty row breaks the line between two bands
+        r = lull_band(bk, ws, r, gp) + 1
     bk.nBand = max(r - 2, 2)
 
 
@@ -743,7 +714,6 @@ def lull_band(bk, ws, r, gp):
     return r + 4
 
 
-# ---- Lulls --------------------------------------------------------------------
 def sheet_lulls(bk):
     ws = bk.wb.create_sheet("Lulls")
     bk.head(ws, 1, LULLS_NAMES, LULLS_WIDTHS)
@@ -818,7 +788,6 @@ def dead_zone_row(bk, ws, r, z, zn):
     bk.put(ws, r, 7, round(zn["share_of_run"], 4), fmt="0%")
 
 
-# ---- Swimlane -----------------------------------------------------------------
 class Block:
     """1 block of the Swimlane sheet: its rows and its bucket edges."""
 
@@ -928,7 +897,7 @@ def swim_edges(bk, ws, blk):
     bk.put(ws, blk.e_row, 3, None)
     for k in range(blk.n):
         swim_edge(bk, ws, blk, k)
-    bk.put(ws, blk.e_row, 4 + blk.n, LAST_EDGE, fmt="0E+00")       # the last bucket has no end
+    bk.put(ws, blk.e_row, 4 + blk.n, LAST_EDGE, fmt="0E+00")
     bk.heads(ws, blk.h_row, ["System", "Loop", "Total"])
 
 
@@ -979,7 +948,6 @@ def swim_formats(bk, ws, blk):
     add_rule(ws, area, "CellIsRule", operator="greaterThan", formula=["0"], fill=bk.GRN)
 
 
-# ---- Profiles -----------------------------------------------------------------
 def sheet_profiles(bk):
     ws = bk.wb.create_sheet("Profiles")
     bk.profs = profs = bk.R["profiles"]
@@ -1022,7 +990,6 @@ def profile_lull(bk, ws, r, span):
     bk.put(ws, r, 4, round((b - a) * 60), fmt="0")
 
 
-# ---- Target -------------------------------------------------------------------
 def sheet_target(bk):
     ws = bk.wb.create_sheet("Target")
     P = bk.P
@@ -1066,7 +1033,6 @@ def target_chart(ws, nG, n_act):
     ws.add_chart(tc, "K2")
 
 
-# ---- Walls --------------------------------------------------------------------
 def sheet_walls(bk):
     ws = bk.wb.create_sheet("Walls")
     bk.head(ws, 1, WALLS_NAMES, WALLS_WIDTHS)
@@ -1136,7 +1102,6 @@ def wall_chart(ws, k, lid, span):
     ws.add_chart(ch, f"O{2 + 21 * k}")
 
 
-# ---- Purchases ----------------------------------------------------------------
 def first_currency(p):
     return p["costs"][0]["currency"]
 
@@ -1189,7 +1154,6 @@ def purchase_spend(bk, ws, i, x, spent_all):
     bk.put(ws, i, 14, x["payback_last_seconds"], fmt="0")
 
 
-# ---- Prestige -----------------------------------------------------------------
 def sheet_prestige(bk):
     ws = bk.wb.create_sheet("Prestige")
     runs = bk.sim.runs[:3000]
@@ -1232,7 +1196,6 @@ def prestige_chart(ws, k, spec, nR):
     ws.add_chart(ch, f"I{2 + 18 * k}")
 
 
-# ---- Ledger -------------------------------------------------------------------
 def sheet_ledger(bk):
     ws = bk.wb.create_sheet("Ledger")
     bk.head(ws, 1, ["Currency", "Direction", "Where", "Amount", "Share of the direction"], [14, 11, 34, 14, 12])
@@ -1261,7 +1224,6 @@ def ledger_row(bk, ws, i, row, totals):
     bk.put(ws, i, 5, amt / total if total > 0 else 0, fmt="0%")
 
 
-# ---- Sensitivity --------------------------------------------------------------
 def sheet_sensitivity(bk):
     ws = bk.wb.create_sheet("Sensitivity")
     sens = bk.R.get("sens")
@@ -1337,7 +1299,6 @@ def sign_rules(bk, ws, area):
     add_rule(ws, area, "CellIsRule", operator="greaterThan", formula=["0"], fill=bk.RED)
 
 
-# ---- Compare ------------------------------------------------------------------
 def count_lulls(d, key):
     return len(d.get("lulls") or [])
 
@@ -1427,7 +1388,6 @@ def compare_chart(ws, n_before, n_after):
     ws.add_chart(cc, "L2")
 
 
-# ---- Income -------------------------------------------------------------------
 def sheet_income(bk):
     sm = bk.sim.samples
     sm = sm[::math.ceil(len(sm) / 500)] if len(sm) > 500 else sm
@@ -1459,7 +1419,6 @@ def income_chart(ws, cols, nI, titles, anchor):
     ws.add_chart(ch, anchor)
 
 
-# ---- Curves -------------------------------------------------------------------
 def cell_cost(p, n):
     v = cost_one(p["costs"][0], n)
     return None if v == INF else v
@@ -1546,7 +1505,7 @@ def curve_table_row(bk, ws, r, n, shown):
 def curve_point(bk, ws, at, n, p):
     cap = bk.pur[bk.m["purchases"].index(p)]["cap_at_end"]
     if cap is not None and n > cap:
-        return                             # the chart stops at the max level of the line
+        return
     v = cell_cost(p, n)
     if v is not None:
         bk.put(ws, at[0], at[1], round(math.log10(max(v, 1e-9)), 4), fmt="0.00")
@@ -1562,12 +1521,11 @@ def curves_chart(ws, top, shown):
     ws.add_chart(cc, f"{col_letter(len(shown) + 4)}{top}")
 
 
-# ---- Count steps --------------------------------------------------------------
 STEP_NAMES = ["Line", "Id", "Levels in a block (n)", "Step factor (m)", "r_eff = ln m / (n ln b)", "Block",
               "Levels", "Block cost", "Output of the line at the step (each s)", "Block gain (formula)",
               "Step reached (min)", "Block gain (simulation)"]
 STEP_WIDTHS = [22, 14, 9, 9, 11, 7, 10, 12, 14, 11, 10, 11]
-STEP_BLOCKS = 40                       # the most blocks of 1 line on the sheet
+STEP_BLOCKS = 40
 STEP_NOTE = ("1 row for each count block of a line with count steps (model key count_steps): the n levels up to and "
              "with 1 step. At the step the output of the line takes the factor m. Block cost: the sum of the costs "
              "of the n levels. Output: the add effects of the line at the step level, value x level x "
@@ -1680,7 +1638,6 @@ def step_sim(bk, ws, r, item):
     bk.put(ws, r, 12, after.get(c, 0.0) / before[c] if before.get(c, 0.0) > 0 else None, fmt="0.000")
 
 
-# ---- Systems + Matrix + Links -------------------------------------------------
 def sheet_links(bk):
     bk.links = links = derive_links(bk.m)
     ws = bk.wb.create_sheet("Links")
@@ -1770,7 +1727,6 @@ def matrix_counts(bk, ws, nM):
         bk.put(ws, r, c, link_count(bk.links, ids[r - 2], ids[c - 2]), fmt="0;-0;;@")
 
 
-# ---- Ideas --------------------------------------------------------------------
 def sheet_ideas(bk):
     ws = bk.wb.create_sheet("Ideas")
     bk.head(ws, 1, IDEA_COLS, IDEA_WIDTHS)
@@ -1792,7 +1748,6 @@ def idea_row(bk, ws, i, idea):
         bk.put(ws, i, k, idea_cell(idea.get(key)), text=True)
 
 
-# ---- Reference ----------------------------------------------------------------
 def load_ref(ref_path):
     found = ref_path and os.path.exists(ref_path)
     try:
@@ -1884,7 +1839,6 @@ def reference_chart(ws, nref, n_open):
     ws.add_chart(rc, "K5")
 
 
-# ---- Dashboard ----------------------------------------------------------------
 def band(bk, key, lo, hi):
     v = (bk.m.get("bands") or {}).get(key, [lo, hi])
     return (v[0], v[1]) if isinstance(v, list) and len(v) == 2 else (lo, hi)
@@ -1946,8 +1900,7 @@ def dash_indicators(bk):
     ind = (dash_starts(bk) + dash_beats(bk) + dash_gaps(bk) + dash_spread(bk)
            + [dash_target(bk, h) for h in TARGET_HOURS] + dash_robust(bk) + dash_options(bk) + dash_links(bk)
            + dash_misses(bk) + dash_runs(bk))
-    # the live cells of 'Last beat' (C13) and 'Tail gap' (C14) are used by the two rows after them: keep the order
-    assert ind[8][0].startswith("Last beat") and ind[9][0].startswith("Tail gap")       # rows 13 and 14
+    assert ind[8][0].startswith("Last beat") and ind[9][0].startswith("Tail gap")
     return ind
 
 
@@ -2182,7 +2135,6 @@ def pacing_chart(bk, ws, r):
     ws.add_chart(pc, f"A{r}")
 
 
-# ---- Players and Presence (only when the run has a players block) ------------------
 PLAYERS_HEADS = ["Player", "What it does", "Decides each (s)", "Visits each (h)", "Between visits", "Reset rule",
                  "Wall h to 25%", "Wall h to 50%", "Wall h to 75%", "Wall h to end", "Active min to 25%",
                  "Active min to 50%", "Active min to 75%", "Active min to end", "Visits", "Resets", "Axis reached",
@@ -2310,7 +2262,7 @@ def dash_presence(bk):
     return [dash_band(b) for b in bk.R["presence"]["bands"] if b["status"] in ("in band", "out of band")]
 
 
-PACING_CHART_ROWS = 24      # the pacing chart is 11 cm high: about 21 rows of the default height
+PACING_CHART_ROWS = 24
 PRESENCE_TITLE = "Presence bands (from the players: see the Players and Presence sheets)"
 
 
@@ -2334,7 +2286,6 @@ def dash_band(b):
     return (b["indicator"], value, None, b["low"], b["high"], "0.000", read)
 
 
-# ---- Workbook -----------------------------------------------------------------
 SHEET_STEPS = (sheet_params, sheet_timeline, sheet_sessions, sheet_beats, sheet_lulls, sheet_swimlane,
                sheet_profiles, sheet_target, sheet_walls, sheet_purchases, sheet_prestige, sheet_ledger,
                sheet_sensitivity, sheet_compare, sheet_income, sheet_curves, sheet_count_steps, sheet_links,

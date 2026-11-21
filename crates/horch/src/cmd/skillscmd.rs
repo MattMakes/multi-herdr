@@ -1,9 +1,3 @@
-//! `horch skills` - the skill catalog: the legacy listing, reading a
-//! skill's files, and the marketplace install, update and check commands.
-//!
-//! `horch skills [list] [--phase <p>] [--json]` prints exactly what it
-//! printed before the marketplace existed (the A0 oracle).
-
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -70,8 +64,6 @@ pub enum SkillsCommand {
     Doctor,
 }
 
-/// Run `horch skills`. `phase` and `json` are the group's own flags, for
-/// the legacy form without a subcommand.
 pub fn run(
     ctx: &RuntimeContext,
     command: Option<SkillsCommand>,
@@ -85,7 +77,6 @@ pub fn run(
     }
 }
 
-/// Every subcommand that exits 0 on success.
 fn dispatch(ctx: &RuntimeContext, command: SkillsCommand) -> Result<()> {
     match command {
         SkillsCommand::List { phase, json } => list(phase, json),
@@ -98,10 +89,6 @@ fn dispatch(ctx: &RuntimeContext, command: SkillsCommand) -> Result<()> {
     }
 }
 
-/// `horch skills show <id>`. JSON keys: `id`, `version`, `source`,
-/// `digest`, `description`, `copied` (null unless a bundled skill has an
-/// entry in `copied.json`) and `install_path` (null for a
-/// compiled-in skill).
 fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
     let entry = catalog
@@ -163,9 +150,6 @@ fn install_path_label(source: &CatalogSource, path: Option<&Path>) -> String {
     }
 }
 
-/// `horch skills read <id> [<file>] [--files]`: the file's text as is, or
-/// the skill's file list. Fails on an unknown skill or file, and on a path
-/// that is absolute or contains `..`.
 fn read(ctx: &RuntimeContext, id: &str, file: Option<&str>, files: bool) -> Result<()> {
     let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
     if files {
@@ -179,8 +163,6 @@ fn read(ctx: &RuntimeContext, id: &str, file: Option<&str>, files: bool) -> Resu
     Ok(())
 }
 
-/// `horch skills path <id> [--script <rel>]`: materialize a bundled skill
-/// outside the disposable bundle tree, or return an installed skill's path.
 fn skill_path(ctx: &RuntimeContext, id: &str, script: Option<&str>) -> Result<()> {
     let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
     if let Some(rel) = script {
@@ -195,7 +177,6 @@ fn skill_path(ctx: &RuntimeContext, id: &str, script: Option<&str>) -> Result<()
     Ok(())
 }
 
-/// `horch skills install <source>[@rev] [--path <subdir>]`.
 fn install(ctx: &RuntimeContext, spec: &str, subdir: Option<&str>) -> Result<()> {
     let mut source = parse_source(spec).map_err(|e| anyhow!("{e}"))?;
     if let Some(dir) = subdir {
@@ -210,7 +191,6 @@ fn install(ctx: &RuntimeContext, spec: &str, subdir: Option<&str>) -> Result<()>
     }
     let entry = installer
         .install(&source, &opts, None)
-        // Not the spec: a rejected one can hold a credential.
         .map_err(|e| anyhow!("install: {e}"))?;
     let unchanged = before
         .get(&entry.id)
@@ -229,7 +209,6 @@ fn install(ctx: &RuntimeContext, spec: &str, subdir: Option<&str>) -> Result<()>
     Ok(())
 }
 
-/// `horch skills update [<id>]`: one `<id> <old> -> <new>` line per skill.
 fn update(ctx: &RuntimeContext, id: Option<&str>) -> Result<()> {
     let installer = catalog::installer(&ctx.paths.data_root, &ctx.bins.harness.git)?;
     let before = read_lock(&ctx.paths.data_root)?;
@@ -247,7 +226,6 @@ fn update(ctx: &RuntimeContext, id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `horch skills doctor`: one line per lock entry; exit 1 on any problem.
 fn doctor(ctx: &RuntimeContext) -> Result<ExitCode> {
     let checks = catalog::check_store(&ctx.paths.data_root)?;
     let mut problems = 0;
@@ -283,8 +261,6 @@ fn doctor(ctx: &RuntimeContext) -> Result<ExitCode> {
     })
 }
 
-/// SKILL.md text from an installed source, safe for a terminal: control
-/// characters become `?`.
 fn printable(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { '?' } else { c })
@@ -296,7 +272,6 @@ fn read_lock(data_root: &std::path::Path) -> Result<Lockfile> {
     Lockfile::read(&path).map_err(|e| anyhow!("{}: {e}", path.display()))
 }
 
-/// The legacy listing, byte for byte.
 fn list(phase: Option<Phase>, json: bool) -> Result<()> {
     let catalog = horch_core::skills::describe(phase)?;
     if json {

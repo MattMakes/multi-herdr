@@ -1,6 +1,3 @@
-//! The import of the old JSON ledgers, `unfinished` and `reopened_from` (#150).
-//! Real `git` runs in temp repositories; nothing reads the host's state.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -40,7 +37,6 @@ struct Fixture {
     store: Store,
 }
 
-/// A repo with 1 commit on `main`, an empty state root, an empty ledger.
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(dir.path()).unwrap();
@@ -267,7 +263,6 @@ fn an_open_claim_with_unlanded_commits_and_dirty_files_raises_findings() {
     git(&wt, &["add", "new.txt"]);
     git(&wt, &["commit", "-q", "-m", "ahead"]);
     std::fs::write(wt.join("dirty.txt"), "d").unwrap();
-    // The record of the claim reported done: that is a second finding.
     f.write(
         "ledger.json",
         json!([session(
@@ -294,7 +289,6 @@ fn an_open_claim_with_unlanded_commits_and_dirty_files_raises_findings() {
         assert!(k[1].starts_with(&facts), "{}", k[1]);
         assert!(k[1].ends_with(" bytes"), "{}", k[1]);
     }
-    // The claim is tied to the worker of its record.
     assert_eq!(
         f.rows("SELECT CASE WHEN w.worker_id = wt.worker_id AND wt.task_id = w.task_id THEN 'tied' ELSE 'loose' END FROM worktrees wt, workers w"),
         vec![vec!["tied".to_string()]]
@@ -345,7 +339,6 @@ fn a_pending_mail_file_without_an_id_is_keyed_by_its_file_name() {
         json!({"id": "given", "text": "yo"}).to_string(),
     )
     .unwrap();
-    // A JSON file that is not a session ledger is not a source.
     f.write("other.json", json!([{"no": "record_id"}]));
     let report = f.import(false);
     assert_eq!((report.files.len(), report.raw_added), (2, 2));
@@ -358,7 +351,6 @@ fn a_pending_mail_file_without_an_id_is_keyed_by_its_file_name() {
     );
 }
 
-/// 1 native run, closed, with the rows `sync_native` reads.
 fn native_fixture(f: &Fixture) {
     let c = f.store.conn();
     for sql in [

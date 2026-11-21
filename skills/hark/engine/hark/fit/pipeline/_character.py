@@ -30,9 +30,6 @@ LONG_PLANS = {
 }
 
 
-# ---------------------------------------------------------------- spectra
-
-
 def _power_stft(mv: np.ndarray, fft_n: int, step_n: int) -> np.ndarray:
     ix = max(1, int(math.ceil(len(mv) / step_n)))
     bufv = np.zeros((ix - 1) * step_n + fft_n)
@@ -53,9 +50,6 @@ def _peak_list(dbv: np.ndarray, overv: float, n_med: int, floor: np.ndarray) -> 
     mxv = ndimage.maximum_filter1d(dbv, 3, axis=1, mode="nearest")
     medv = ndimage.median_filter(dbv, size=(1, n_med), mode="nearest")
     return (dbv >= mxv) & (dbv > medv + overv) & (dbv >= floor)
-
-
-# ---------------------------------------------------------------- envelope measures
 
 
 def _to_db(pv: np.ndarray) -> np.ndarray:
@@ -234,9 +228,6 @@ def plan(c: dict, max_candidates: int | None = None) -> list:
         ordv.insert(ordv.index("sines") + 1, "gesture")
     lim = max_candidates or (4 if longv else 7)
     return ordv[:lim]
-
-
-# ---------------------------------------------------------------- bed
 
 
 def _onset_of_bed(mv: np.ndarray) -> int | None:

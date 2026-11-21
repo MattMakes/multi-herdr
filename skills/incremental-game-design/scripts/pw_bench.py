@@ -84,26 +84,25 @@ AUTOLOAD_LINE = 'TuningBench="*res://addons/tuning_bench/bench.gd"'
 CLI_SCRIPT = "res://addons/tuning_bench/bench_cli.gd"
 DEFAULT_CORE = "core"
 
-DATA_KINDS = (".json", ".tres", ".cfg", ".csv")         # a file of these kinds can be a source of the bench
-SCENE_KINDS = (".tscn", ".godot")                       # a scene and project.godot: the text format of a .tres file
+DATA_KINDS = (".json", ".tres", ".cfg", ".csv")
+SCENE_KINDS = (".tscn", ".godot")
 CODE_KIND = ".gd"
 SHADER_KIND = ".gdshader"
 CODE_KINDS = (CODE_KIND, SHADER_KIND)
 VARIANT_KINDS = (".tres", ".cfg") + SCENE_KINDS
 KINDS = DATA_KINDS + SCENE_KINDS + CODE_KINDS
-NOT_SCANNED = (".cs",)                                  # a kind with numbers that the inventory does not read
+NOT_SCANNED = (".cs",)
 CONTRACT_SKIPS = (".godot", "addons", "bench/settings")
 CLASSES = ("balance", "structure", "presentation", "engine", "unclassified")
-SELFCHECK_JSON = "bench/selfcheck.json"                # the result of the self-check; the addon reads it for M8
+SELFCHECK_JSON = "bench/selfcheck.json"
 ROLES = ("cost_base", "cost_growth", "effect", "effect_factor", "effect_growth", "effect_exponent", "base_income",
          "active_power", "active_time", "wall", "wall_growth", "unlock_at", "reset_need", "reset_gain", "reset_bonus",
          "cap", "timer", "rate", "auto_at", "offline", "reward", "reward_growth", "end_at", "other")
-SENSES = (1, -1)                                      # "sense": -1: a control with the factor k applies 1/k
+SENSES = (1, -1)
 IN_CODE = "in code; lift to data"
-# The keys that the inventory writes again on each run. Each other key of a number is a decision of the user.
 MACHINE_KEYS = ("id", "file", "pointer", "line", "index", "text", "value", "quoted", "anchor")
 PROPOSAL_KEYS = ("class", "role", "proposed", "rule", "hint", "sense")
-LIST_MAX = 40                                         # the lines of 1 printed list without --all
+LIST_MAX = 40
 
 
 class InputError(Exception):
@@ -155,7 +154,6 @@ def file_of(number):
     return str(number.get("file", "?"))
 
 
-# ----------------------------------------------------------------------------- the GDScript literals
 GD_TOKEN = re.compile(r'''
     (?P<comment>\#[^\n]*)
   | (?P<string>"""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\'|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')
@@ -166,7 +164,6 @@ GD_TOKEN = re.compile(r'''
   | (?P<space>[ \t\r]+)
   | (?P<op>\*\*=?|<<=?|>>=?|[-+*/%&|^<>=!]=|:=|->|&&|\|\||.)
 ''', re.X | re.S)
-# A shader has the comments // and /* */, and a number can end with f or u.
 SHADER_TOKEN = re.compile(r'''
     (?P<comment>//[^\n]*|/\*.*?\*/)
   | (?P<string>"(?:\\.|[^"\\\n])*")
@@ -177,8 +174,7 @@ SHADER_TOKEN = re.compile(r'''
   | (?P<space>[ \t\r]+)
   | (?P<op>[-+*/%&|^<>=!]=|&&|\|\||.)
 ''', re.X | re.S)
-ID_FORMAT = re.compile(r"[\w/.:-]*%0?\d*d[\w/.:-]*")       # a text that makes an id: "town%d", "glaze%02d"
-# After these words a minus sign is a sign, not a subtraction.
+ID_FORMAT = re.compile(r"[\w/.:-]*%0?\d*d[\w/.:-]*")
 GD_NO_OPERAND = frozenset("return in and or not if elif else while for match when await assert yield is as".split())
 GD_ASSIGN = frozenset(("=", ":=", "+=", "-=", "*=", "/="))
 GD_BRACKETS = {"(": "open_bracket", "[": "open_bracket", "{": "open_bracket", ")": "close_bracket",
@@ -226,18 +222,18 @@ class GdScan:
     def __init__(self, text, pattern=GD_TOKEN):
         self.lines = text.split("\n")
         self.starts = line_starts(text)
-        self.fmt = False                # the statement has a text that makes an id ("town%d")
+        self.fmt = False
         self.line = 1
-        self.count = {}                 # line -> count of literals so far
-        self.seen = {}                  # line -> count of string literals so far
-        self.hist = []                  # the last tokens of the statement that are not space
-        self.stack = []                 # open brackets: [bracket, name of the call, is a subscript, first string]
-        self.decl = self.func = None    # the name of the var or const statement, and of the function
-        self.const = False              # the statement is a const statement
-        self.bol = True                 # at the first column of a statement line
-        self.wait = None                # the context of the literal that waits for its next token
-        self.tail = None                # the string literal that waits for its next token
-        self.strings = []               # each string literal: line, index in the line, text, and its context
+        self.count = {}
+        self.seen = {}
+        self.hist = []
+        self.stack = []
+        self.decl = self.func = None
+        self.const = False
+        self.bol = True
+        self.wait = None
+        self.tail = None
+        self.strings = []
         self.out = []
         for match in pattern.finditer(text):
             self.token(match)
@@ -357,7 +353,7 @@ class GdScan:
     def assigned(self, t4, t3, t2):
         if self.decl and not self.stack:
             return self.decl
-        if t3[1] == ":" and t4[0] == "name" and t2[0] == "name":      # name: type = literal
+        if t3[1] == ":" and t4[0] == "name" and t2[0] == "name":
             return t4[1]
         subscript = t3[1] if t2[1] == "]" and t3[0] == "string" else None
         return t2[1] if t2[0] in ("name", "string") else subscript
@@ -385,7 +381,6 @@ def shape(text):
     return NUMBER_SHAPE.sub("#", text)
 
 
-# ----------------------------------------------------------------------------- the data files
 NUMERIC_TEXT = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 ID_KEYS = ("id", "key", "name")
 
@@ -525,13 +520,13 @@ class VariantScan:
     def __init__(self, text):
         self.text = text
         self.section, self.key, self.stype = "", None, ""
-        self.stack = []                 # frames: [kind, index, dictionary key, a key comes next]
+        self.stack = []
         self.before = self.closed = None
-        self.skip = 0                   # the tokens before this position are read already
-        self.sol = True                 # at the start of a line and outside each container
-        self.res_type = None            # the type of the resource of a .tres file
-        self.pos = 0                    # the position of the present token
-        self.strings = []               # each string value of a key line: position, key, text
+        self.skip = 0
+        self.sol = True
+        self.res_type = None
+        self.pos = 0
+        self.strings = []
         self.out = []
         for match in VT_TOKEN.finditer(text):
             self.token(match)
@@ -672,10 +667,6 @@ def csv_numbers(text):
     return [cell for cell in cells if cell["value"] is not None]
 
 
-# ----------------------------------------------------------------------------- the proposal rules
-# A proposal is a help, not a decision. Each rule is simple, and the entry names the rule that made it.
-# The words of a name are its parts in lower case (max_level -> max, level; baseCost -> base, cost). A word
-# matches with or without a last "s".
 PRES_STRONG = frozenset("""color colour font alpha opacity margin padding anim animation tween fade flash shake blink
     volume pitch pixel px db hue saturation brightness modulate shadow outline glow particle sfx vfx sound audio z zoom
     icon sprite texture frame fps popup toast tooltip label panel button screen viewport""".split())
@@ -684,8 +675,6 @@ PRES_WEAK = frozenset("""size width height pos position offset scale x y w h rad
 STRUCTURE = frozenset("id index idx order sort version format slot tier stage row col column page".split())
 PRES_FOLDERS = frozenset("""ui gui hud menu menus theme themes font fonts audio sound sounds music sfx vfx fx shader
     shaders art juice particles anim animation animations""".split())
-# The keys of a scene that are layout or look. Each other key of a scene gets no proposal: a property of a script
-# that a scene sets is a number of the game that hides.
 SCENE_LAYOUT = re.compile(r"(?:offset|anchor|anchors|grow|size_flags|theme_override|custom_minimum|pivot|layout|z)_\w+"
                           r"(?:/\w+)*|position|size|scale|rotation|skew|color|modulate|self_modulate|\w*alignment"
                           r"|\w+_mode|mouse_filter|texture_filter|texture_repeat")
@@ -703,7 +692,7 @@ RESET = frozenset("prestige reset rebirth ascend ascension".split())
 NEED = frozenset("need min threshold require requirement required req at".split())
 GAIN = frozenset("gain divisor div exponent".split())
 BONUS = frozenset("bonus mult multiplier boost effect".split())
-RESET_REWARD = frozenset(("reward", "bonus", "boost", "effect"))      # what the reset currency gives
+RESET_REWARD = frozenset(("reward", "bonus", "boost", "effect"))
 OFFLINE = frozenset(("offline", "idle", "away"))
 AUTO = frozenset(("auto", "automation", "autobuy"))
 START = frozenset(("at", "start", "threshold"))
@@ -716,15 +705,15 @@ CAP_OF = frozenset("level count stack amount owned rank storage".split())
 REWARD = frozenset(("reward", "payout", "bounty", "prize"))
 BASE = frozenset(("base", "start", "starting", "initial"))
 INCOME = frozenset(("income", "rate", "production"))
-PERSEC = frozenset(("persec",))                       # the word that per_time makes from `per` and a time unit
+PERSEC = frozenset(("persec",))
 BASE_OF = INCOME | PERSEC | frozenset(("power", "yield", "output", "dps"))
 FINAL = frozenset(("final", "last", "end"))
 STEP = frozenset("stage level zone wave floor world era".split())
 EXPONENT = frozenset(("exponent",))
 DIVISOR = frozenset(("divisor", "div", "denominator", "denom"))
 MULTIPLY = frozenset("mult multiplier multiply mul factor x times".split())
-KIND_KEYS = ("type", "op", "kind", "operation", "mode")       # the field of an effect that says what it does
-FACTOR_RANGE = (1.0, 3.0)                             # a factor of income for 1 level or 1 purchase
+KIND_KEYS = ("type", "op", "kind", "operation", "mode")
+FACTOR_RANGE = (1.0, 3.0)
 PER_UNIT = frozenset("s sec second min minute hour tick".split())
 UNIT_NAMES = {"s": "second", "sec": "second", "second": "second", "ms": "ms", "msec": "ms", "millisecond": "ms",
               "min": "minute", "minute": "minute", "hr": "hour", "hour": "hour", "day": "day", "week": "week"}
@@ -733,11 +722,6 @@ DURATION = frozenset("s sec second ms msec duration delay time timeout".split())
 EFFECT = frozenset("effect mult multiplier bonus boost income production yield output dps power".split())
 TIMER = frozenset("cooldown interval period duration timer tick second sec minute hour".split())
 LOOSE = frozenset("growth grow rate speed chance probability odd crit".split())
-# (a word of this set, and a word of this set or None, the role or None). The first rule that matches gives the
-# role of a balance number. The role None means "balance, and the name does not tell the role".
-# Some rules come first for a reason. An unlock point of automation (auto_unlock_at) is auto_at, not unlock_at.
-# The strength of what a reset gives (prestige_reward_exponent) is reset_bonus, though `exponent` is a gain word.
-# A base with a production word (base_spores_per_sec, base_power) is base_income, not a timer and not a growth.
 ROLE_RULES = (
     (COST, COST_GROWTH, "cost_growth"), (COST, None, "cost_base"),
     (WALL, GROWTH, "wall_growth"), (WALL, None, "wall"),
@@ -757,7 +741,6 @@ ROLE_RULES = (
     (TIMER, None, "timer"),
     (LOOSE, None, None),
 )
-# A number of a data file under a key with 1 of these words is a number of a tool or a design note, not of the game.
 TOOL_WORDS = frozenset("autosave tolerance target debug version".split())
 TOOL_RULE = "tool or note"
 FALLBACK_RULE = "fallback copy"
@@ -765,20 +748,6 @@ FALLBACK_REASON = "fallback copy of "
 COMPARE = frozenset(("==", "!=", "<", ">", "<=", ">="))
 UNITS = frozenset((60, 3600, 86400, 1000, 0.001))
 WORD = re.compile(r"[A-Za-z][a-z]*")
-# GDScript literals with no game meaning: (class, rule, test). The test reads the value v, the context c of the
-# literal and its place p. c["prev"] is the token before the literal. The place "start" is after a comparison,
-# after `return` or `else`, as an argument of a call, or, outside a const statement, after an assignment or as a
-# value of a dictionary. A const with a name is for the name rules.
-#   an enum value (enum State { A = 0 }) and a match label (1: at the start of a line): structure
-#   an index: 0, 1, 2 or -1 in a subscript (list[0])
-#   an increment: 1 after +=, -=, + or - (count += 1, size - 1)
-#   a zero: 0 in a place "start" (count > 0, var total := 0, maxf(x, 0.0))
-#   a sentinel: -1 in a place "start" (return -1)
-#   a fallback: 0 or 1 as the second argument of get (data.get("growth", 1.0))
-#   a range start: 0 or 1 as an argument of range; each other literal in the arguments of range: structure
-#   a start value: 1 after an assignment in a function (var multiplier := 1.0)
-#   a unit conversion: 60, 3600, 86400, 1000 or 0.001 after * or / (seconds / 60.0)
-#   an id in a format text: a literal in a statement with a text that makes an id ("town%d" % (n + 2)): structure
 ENGINE_RULES = (
     ("structure", "an enum value", lambda v, c, p: c["enum"]),
     ("structure", "a match label", lambda v, c, p: c["prev"] is None and c["next"] == ":"),
@@ -1089,19 +1058,8 @@ def tool_reason(reason):
     return reason == IN_CODE or str(reason or "").startswith(FALLBACK_REASON)
 
 
-# ----------------------------------------------------------------------------- the texts with a number
-# A string literal can hold a copy of a balance number ("+25% pot value per level", "Unlocks at Shop Level 4").
-# The ledger of the numbers does not see it, and the view shows the old value after a change on the bench. So
-# the inventory lists each string literal of a .gd file and each string value of a property of a .tscn or
-# .tres file that has a digit, in the list `texts` of the bench file. A person reads each one and accepts it
-# with a reason (the key `ok`), or builds the text from the data.
-#
-# The inventory leaves out a string that is clearly not a text for a player (TEXT_RULES). The digits of a format
-# spec do not count: "%.2f", "%d / %d", "%02d:%02d" and "{0} of {1}" have no number of their own. The digits of
-# a code do not count: 1 to 4 capital letters and a number with no space ("FM-1 gap", "C12 Tend boost", "F2").
-# "X2" is a factor, not a code.
-TEXT_KINDS = (CODE_KIND, ".tscn", ".tres", ".cfg")      # and .json and .csv, by pointer (data_texts)
-TEXT_MAX = 200                                         # the ledger keeps the first characters of a long text
+TEXT_KINDS = (CODE_KIND, ".tscn", ".tres", ".cfg")
+TEXT_MAX = 200
 FORMAT_SPEC = re.compile(r"%%|%[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*)?)?[a-zA-Z]|\{[^{}\s]*\}")
 CODE_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?![xX]\d)[A-Z]{1,4}-?\d+(?![\w.])")
 DATA_AMOUNT = re.compile(r"[%+\u00d7]|(?<![A-Za-z])[xX]\d")
@@ -1112,14 +1070,12 @@ HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}|(?=[0-9]*[a-fA-F])(?:[0-9a-fA-F]{6}|
 IDENT = r"(?:[a-z_][a-z0-9_]*|[A-Z_][A-Z0-9_]*)"
 IDENTIFIER = re.compile(r"[%%$^&@]?%s(?:[.:]%s)*|[%%$^&@][A-Za-z_]\w*" % (IDENT, IDENT))
 MULTIPLIER = re.compile(r"[xX]\d+")
-# A call whose text argument is a name for the engine or a message for the developer.
 NOT_TEXT_CALL = re.compile(
     r"get_node(?:_or_null)?|has_node|find_child(?:ren)?|(?:dis)?connect|is_connected|emit_signal|has_signal"
     r"|has_method|call(?:v|_deferred)?|set_deferred|rpc(?:_id)?|is_action_\w+|get_action_\w+|action_(?:press|release)"
     r"|add_to_group|remove_from_group|is_in_group|get_nodes_in_group|(?:pre)?load|print\w*|push_(?:error|warning)"
     r"|assert|(?:get|set|has|remove)_meta|StringName|NodePath|Color|(?:add|get|has|remove)_theme_\w+|export_\w+"
     r"|warning_ignore|is_class|get_singleton|has_singleton")
-# The keys of a scene or a resource whose string is a name for the engine or for the editor.
 NOT_TEXT_KEY = re.compile(r"script|resource_name|resource_path|editor_description|bus|animation|autoplay"
                           r"|\w*_animation|theme_type_variation|metadata/.*|_.*")
 
@@ -1147,9 +1103,6 @@ def unique_node(raw):
     return raw.get("prev") == "%" and not gd_operand(raw.get("prev2"))
 
 
-# The reasons to leave a string out of the list of the texts: (reason, test). The test reads the text t, the
-# text p with no format spec, and the context c of the string. The first tests read only the text; the last
-# tests read the place of the string in the code.
 TEXT_RULES = (
     ("no number of its own", lambda t, p, c: not re.search(r"\d", p)),
     ("no letter and no sign of an amount", lambda t, p, c: not re.search(r"[^\W\d_]", p) and not AMOUNT_SIGN.search(p)),
@@ -1285,7 +1238,6 @@ def text_line(text):
     return "%s | %s" % (text.get("id"), one_line(text.get("text")))
 
 
-# ----------------------------------------------------------------------------- the scan of the project
 def read_text(path):
     return pathlib.Path(path).read_text(encoding="utf-8-sig", errors="replace")
 
@@ -1512,7 +1464,6 @@ def scan_project(root, data=None):
     return entries, facts
 
 
-# ----------------------------------------------------------------------------- the update of the ledger
 def kind_of(entry):
     return ext(str(entry.get("file", "")))
 
@@ -1574,7 +1525,7 @@ def merged(old, new):
     if decided(old):
         return dict(new, **user)
     keep = {k: v for k, v in user.items() if k not in PROPOSAL_KEYS}
-    stale = tool_reason(keep.get("reason"))             # the new proposal writes the reason of the tool again
+    stale = tool_reason(keep.get("reason"))
     keep = {k: v for k, v in keep.items() if not (stale and k in ("reason", "tunable"))}
     return dict(new, **dict(fresh, **keep))
 
@@ -1619,7 +1570,6 @@ def sources_of(numbers, old_sources, skip=()):
     return [name for name in names if not skip_pattern(str(name).replace("res://", "", 1), skip)]
 
 
-# ----------------------------------------------------------------------------- bench.json
 def dump_value(value):
     """A list has 1 item on each line, and a dictionary of dictionaries has 1 key on each line."""
     if isinstance(value, list) and value:
@@ -1659,7 +1609,6 @@ def core_script(root):
     return next(("res://%s/%s" % (DEFAULT_CORE, name) for name in cores), None)
 
 
-# The keys that the bench can take for its panel, with the key code that a scene or the input map writes.
 HOTKEYS = (("F2", 4194333), ("F9", 4194340), ("F10", 4194341), ("F11", 4194342))
 HOTKEY_FILES = (CODE_KIND, ".tscn", ".tres", ".godot")
 
@@ -1749,7 +1698,6 @@ def say_list(title, lines, show_all):
     say_lines(["%s: %d" % (title, len(lines))] + short(lines, show_all))
 
 
-# ----------------------------------------------------------------------------- install
 STUB = '''extends "res://addons/tuning_bench/bench_adapter.gd"
 # The adapter of this game for the tuning bench. It is the only bench code that knows the game.
 # The contract is in references/tuning-bench.md, section 6, of the skill incremental-game-design.
@@ -1894,8 +1842,7 @@ def run_install(a):
     return 0
 
 
-# ----------------------------------------------------------------------------- inventory
-NOT_GAME = ("tests", "test", "tools", "addons", "docs")    # folders that often hold no number of the game
+NOT_GAME = ("tests", "test", "tools", "addons", "docs")
 NOT_GAME_SHARE = 0.25
 
 
@@ -2023,7 +1970,6 @@ def run_inventory(a):
     return 0
 
 
-# ----------------------------------------------------------------------------- init
 DEFAULT_PHASES = [
     {"id": "p1", "name": "Opening", "until": {"progress": 0.15}, "share": 0.1},
     {"id": "p2", "name": "Middle", "until": {"progress": 0.7}, "share": 0.5},
@@ -2037,7 +1983,7 @@ DEFAULT_PLAYERS = [
     {"id": "idle", "name": "Idle player", "decision_s": 300, "active_share": 0.0, "reset_gain": 2.0,
      "stuck_s": 3600},
 ]
-NO_SOURCE = 0.2                                       # the tolerance of a target with no source
+NO_SOURCE = 0.2
 DEFAULT_LENGTH_H = 6
 DEFAULT_TARGETS = {
     "length_h": {"about": DEFAULT_LENGTH_H, "tolerance": NO_SOURCE},
@@ -2048,20 +1994,18 @@ DEFAULT_TARGETS = {
     "idle_ratio": {"min": 1.5, "max": 6.0, "tolerance": NO_SOURCE},
     "wait_share_max": {"about": 0.15, "tolerance": NO_SOURCE},
 }
-# The targets file of the solver: (its key, its field) -> (the target of the bench, its field).
 SOLVER_MAP = (
     (("length_h", "value"), ("length_h", "about")), (("length_h", "tolerance"), ("length_h", "tolerance")),
     (("purchase_gap", "largest_max_min"), ("upgrade_gap_min", "longest_max")),
     (("purchase_gap", "unlock_max_min"), ("content_gap_min", "longest_max")),
     (("unlocks", "first_hour"), ("content_gap_min", "first_hour_min_count")),
 )
-MAX_HOURS_FACTOR = 3                                  # sim.max_hours is this times the length target
+MAX_HOURS_FACTOR = 3
 MUL = dict(op="mul", min=0.25, max=4.0)
 GROWTH_OP = dict(op="growth", min=0.5, max=2.0)
-ADD_OP = dict(op="add", min=-0.1, max=0.1)            # for an exponent: k is added, and the range is small
-ROLE_OP = dict(op="role", min=0.25, max=4.0)          # for each number, the op of its role: role_op
+ADD_OP = dict(op="add", min=-0.1, max=0.1)
+ROLE_OP = dict(op="role", min=0.25, max=4.0)
 END_OP = dict(op="mul", min=0.5, max=2.0)
-# The controls of the group "Whole game": (role, id, name, op). The role `other` has no control.
 WHOLE = (
     ("cost_base", "all_cost", "All prices", MUL), ("cost_growth", "all_cost_growth", "Price growth", GROWTH_OP),
     ("effect", "all_effect", "Purchase punch", MUL),
@@ -2079,22 +2023,16 @@ WHOLE = (
     ("reward", "all_reward", "Rewards", MUL), ("reward_growth", "all_reward_growth", "Reward growth", GROWTH_OP),
     ("end_at", "all_end", "Game end", END_OP),
 )
-# The controls of each phase: (id suffix, name, roles, op).
 PHASE = (("cost", "prices", ["cost_base"], MUL), ("effect", "purchase punch", ["effect", "effect_factor"], ROLE_OP),
          ("wall", "walls and unlock points", ["wall", "unlock_at"], MUL))
-# What init wrote before it marked its controls (the key `by`). A control of the file with no mark that equals
-# 1 of these is a generated control that nobody edited: `init --refresh-controls` writes it again.
 LEGACY_ROLES = ("cost_base", "cost_growth", "effect", "effect_growth", "base_income", "active_power", "active_time",
                 "wall", "wall_growth", "unlock_at", "reset_need", "reset_gain", "reset_bonus", "cap", "timer", "rate",
                 "auto_at", "offline", "reward")
 LEGACY_PHASE = (("cost", "prices", ["cost_base"], MUL), ("effect", "purchase punch", ["effect"], MUL),
                 ("wall", "walls and unlock points", ["wall", "unlock_at"], MUL))
-# A number that leaves the control of its role: (part, id suffix, name suffix, op or None for the op of the role).
 VARIANTS = (("exp", "_exp", ": exponent (k is added)", ADD_OP),
             ("div", "_div", ": divisor (a larger k gives less)", None))
 PARTS = ("main", "exp", "div")
-# The times away of a player, when the ledger has a number with the role offline: after `away_every_min` minutes
-# of play the player closes the game for `away_min` minutes. 0 or no key: the player is never away.
 AWAY = {"casual": {"away_every_min": 30, "away_min": 60}, "idle": {"away_every_min": 15, "away_min": 240}}
 AWAY_KEYS = ("away_every_min", "away_min")
 CONTROL_RULE = [
@@ -2108,13 +2046,9 @@ CONTROL_RULE = [
     '  a generated control has "by": "init:<stamp>". The stamp is a hash of the control, so `--refresh-controls` '
     "writes a control again only when nobody edited it",
 ]
-# The controls of the group "Player" change the bot, not the game. The key `player` names the field of each
-# player that the control multiplies: {"field": <name>}. The bench keeps a share between 0 and 1. This is the
-# shape that the addon reads (bench_knobs.gd) and that the sample game has.
 PLAYER = (("player_decision", "Decision time", "decision_s", 0.25, 4.0),
           ("player_active_share", "Share of time with the manual action", "active_share", 0.0, 1.25),
           ("player_reset_gain", "Reset gain that starts a reset", "reset_gain", 0.25, 4.0))
-# The fields of a player that a control can change (the addon has the same list).
 PLAYER_FIELDS = tuple(p[2] for p in PLAYER) + ("stuck_s", "away_every_min", "away_min")
 CONTROL_KEYS = ("id", "group", "name", "op", "min", "max", "select")
 ALL_NUMBERS_NOTE = ('The panel makes the controls of the group "All numbers" from the ledger when it starts: 1 for '
@@ -2432,8 +2366,6 @@ def run_init(a):
     return 0
 
 
-# ----------------------------------------------------------------------------- confirm
-# The selectors of `confirm`: (the option, the test of a number against the value of the option).
 SELECTORS = (
     ("file", lambda n, glob: fnmatch.fnmatch(file_of(n).replace("res://", "", 1), glob)),
     ("cls", lambda n, cls: class_of(n) == cls),
@@ -2499,14 +2431,6 @@ def confirm_numbers(data, a):
     return [n for n, yes in zip(data["numbers"], hit) if yes]
 
 
-# The rules file of `confirm --from`: a JSON list of rules, or an object with the key "rules". 1 rule:
-#   {"match": {"file": "data/purchases.json", "pointer": "/purchases/*/requires/*/level", "key": "level",
-#              "class": "balance", "role": "unlock_at"},
-#    "set": {"class": "balance", "role": "unlock_at", "element": "{owner}", "phase": "p1", "label": "{owner}: needs {2}",
-#            "sense": 1, "tunable": false, "reason": "...", "dead_ok": "..."}}
-# Each key of "match" is optional, and a number must pass each key that is there. For each number the first rule
-# that matches is the only rule that writes. See rule_tests for the keys of "match" and captures for the names
-# that a text of "set" can use.
 MATCH_KEYS = ("file", "pointer", "key", "class", "role")
 SET_KEYS = ("class", "role", "element", "phase", "label", "sense", "tunable", "reason", "dead_ok")
 SET_VALUES = (("class", CLASSES), ("role", ROLES), ("sense", SENSES), ("tunable", (True, False)))
@@ -2528,7 +2452,6 @@ def pointer_match(glob, number):
     return next((found for found in (pattern.fullmatch(str(t)) for t in texts if t) if found), None)
 
 
-# The keys of "match": (key, test of a number against the value of the key).
 RULE_TESTS = (
     ("file", lambda n, glob: fnmatch.fnmatch(file_of(n).replace("res://", "", 1), glob)),
     ("pointer", lambda n, glob: pointer_match(glob, n) is not None),
@@ -2703,13 +2626,10 @@ def run_confirm(a):
     return 0 if done or texts else 1
 
 
-# ----------------------------------------------------------------------------- check
 def in_code_and_tunable(n):
     return kind_of(n) not in DATA_KINDS and n.get("tunable", True) is not False
 
 
-# The rules for the numbers: (message, True for the balance numbers only, test). phase_ids is None when the
-# phases have a fault.
 NUMBER_RULES = (
     ("unclassified: %d numbers have the class unclassified", False,
      lambda n, phase_ids: class_of(n) == "unclassified"),
@@ -2976,7 +2896,6 @@ def run_check(a):
     return code
 
 
-# ----------------------------------------------------------------------------- corecheck
 CORE_BASES = ("RefCounted", "Resource", "Object")
 CORE_FUNCTIONS = ("new_state", "step", "actions", "apply", "rate", "progress")
 CORE_OPTIONAL = ("active", "wealth", "max_step")
@@ -2990,7 +2909,7 @@ CORE_NAMES = dict(
     + [(n, ASYNC) for n in "await signal Thread Mutex".split()])
 CORE_SINGLETONS = ("Engine", "Time", "OS", "Input", "DisplayServer")
 CORE_METHODS = ("emit", "connect")
-EDGE = (None, None, 0)                                # the token before the first token and after the last token
+EDGE = (None, None, 0)
 
 
 def in_core(path, core):
@@ -2999,8 +2918,6 @@ def in_core(path, core):
     return any(rel == c or rel.startswith(c + "/") for c in core["paths"])
 
 
-# Each rule reads 1 token, the token before it, the 2 tokens after it, and the facts of the core. It returns
-# (rule, detail) for a finding, or None.
 def rule_name(tok, before, after, after2, core):
     hit = tok[0] == "name" and tok[1] in CORE_NAMES
     return (CORE_NAMES[tok[1]], tok[1]) if hit else None
@@ -3187,7 +3104,6 @@ def run_corecheck(a):
     return 1 if fails else 0
 
 
-# ----------------------------------------------------------------------------- selfcheck and run
 METER_HEAD = ["Id", "Meter", "Value", "Target", "Status", "Controls that move it"]
 
 
@@ -3209,9 +3125,9 @@ def no_echo(line):
     return line
 
 
-PROGRESS_LINE = re.compile(r"\s*\S.*: (\d+) of (\d+)\s*")      # "  dead-number check: 40 of 297"
-PROGRESS_EVERY = 10                                   # print each 10th progress line
-PROGRESS_QUIET_S = 60.0                               # and each progress line after this many seconds with none
+PROGRESS_LINE = re.compile(r"\s*\S.*: (\d+) of (\d+)\s*")
+PROGRESS_EVERY = 10
+PROGRESS_QUIET_S = 60.0
 IDLE_POLL_S = 1.0
 HOME_FOLDERS = (("XDG_DATA_HOME", ".local/share"), ("XDG_CONFIG_HOME", ".config"), ("XDG_CACHE_HOME", ".cache"))
 
@@ -3429,7 +3345,6 @@ def row_lines(row, line):
     return ["  " + line] + ["    " + scalar(item) for item in inner]
 
 
-# Godot writes the keys of a result file in the order of the alphabet. These columns come first in a table.
 FIRST_COLUMNS = ("id", "name", "label", "ok", "value", "tried")
 
 
@@ -3528,7 +3443,7 @@ def run_end(code, data, compare):
     return [("" if compare else "exit 1: ") + meters_text(data) + tail]
 
 
-COMPARE_MAX = 10                                      # the lines of a comparison that `run --compare` prints
+COMPARE_MAX = 10
 
 
 def differences(old, new):
@@ -3604,7 +3519,6 @@ def run_run(a):
     return end if golden is None else compared_run(a, golden, data, raw)
 
 
-# ----------------------------------------------------------------------------- the command line
 HOME_HELP = ("run Godot with HOME, XDG_DATA_HOME, XDG_CONFIG_HOME and XDG_CACHE_HOME in this folder, so that "
              "user://, the logs and the caches of Godot are not those of the user (for a sandbox, a test or a "
              "run on a build server). Without it Godot writes its logs, and the panel its settings, into the "

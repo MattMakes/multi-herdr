@@ -29,20 +29,17 @@ from .task import Task, TaskError, is_within, now, read_json, resolve, write_jso
 ROLES = ("auditor", "analyst", "sanitizer", "writer", "reviewer")
 SIDE = {"auditor": "contaminated", "analyst": "contaminated", "sanitizer": "drafts",
         "writer": "clean", "reviewer": "clean"}
-# The side a role writes, which holds its status file. The analyst reads its
-# brief in C but its sandbox writes only D (one-way flow C -> D -> K).
 STATUS_SIDE = {**SIDE, "analyst": "drafts"}
 ROLES_DIR = guard.SKILL_DIR / "roles"
 TEAMMATE_ENV = "SKILL_INTAKE_ROLE_TEAMMATE"
 LOG = "roles.jsonl"
-FIXES = "fixes.json"  # K/fixes.json: written only by intake verify (verify.FIXES)
+FIXES = "fixes.json"
 STATUS_KEYS = {"role", "status", "outputs", "error"}
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SPAWNED = re.compile(r"^spawned (\S+) \(pane ", re.M)
 ERROR_MAX = 200
-SPAWN_TIMEOUT = 300  # seconds
+SPAWN_TIMEOUT = 300
 
-# Exit codes (spec 10).
 LOST_TWICE = 8
 BRIEF_LEAK = 9
 WRONG_MODE = 10
@@ -70,8 +67,6 @@ def _plain_name(flag: str, value: str | None) -> None:
     if value is not None and not NAME.fullmatch(value):
         raise TaskError(f"{flag} must be a plain name ({NAME.pattern}): {evidence.escape(value)}")
 
-
-# ---- briefs ----
 
 def _io(t: Task, role: str, skill: str | None) -> tuple[list[Path], list[Path]]:
     """(read, write) paths of a role (spec 6.3)."""
@@ -190,8 +185,6 @@ def brief(t: Task, role: str, unit: str | None = None, skill: str | None = None,
     return {"brief": str(path), "status_file": str(status_path(t, role, f"{role}-{n}"))}
 
 
-# ---- the role log ----
-
 def _log(t: Task) -> Path:
     return t.c / LOG
 
@@ -250,8 +243,6 @@ def _start(t: Task, role: str, worker: str | None, brief_path: Path, mode: str, 
     return line
 
 
-# ---- fleet: spawn ----
-
 def spawn_argv(role: str, brief_path: Path) -> list[str]:
     """The exact argv of spec 6.5, after the horch binary."""
     teammate = os.environ.get(TEAMMATE_ENV) or f"intake-{role}"
@@ -303,12 +294,9 @@ def mark_lost(t: Task, worker_id: str) -> dict:
                     "reason": f"brief {Path(w['brief']).name} was lost 2 times"})
         raise RoleError(LOST_TWICE, f"abort: brief {w['brief']} was lost 2 times")
     b = Path(w["brief"])
-    # The first attempt's snapshot stays: role-result checks both workers' writes.
     worker = _run_spawn(w["role"], b)
     return _start(t, w["role"], worker, b, "fleet", w["attempt"] + 1, Path(w["snapshot"]))
 
-
-# ---- plain: subagent prompt ----
 
 def _brief_task(brief_path: Path) -> tuple[Task, str]:
     """The task and role of an intake brief path <B>/<side>/<task>/briefs/<role>-<n>.md."""
@@ -365,8 +353,6 @@ def _listing(brief: Path) -> str:
     return "\n".join(out) + "\n"
 
 
-# ---- role-result ----
-
 def _status_task(path: Path) -> Task:
     root = path.parent.parent
     if path.parent.name != "status" or root.parent.name not in tasklib.SIDES:
@@ -401,7 +387,6 @@ def _schema_problems(doc, w: dict, allowed: list[Path], own: Path) -> list[str]:
         problems.append("outputs is not a list of paths")
     else:
         for p in outputs:
-            # The role's own status file is a write path of the brief; no other file under status/ is.
             if not os.path.isabs(p) or not (resolve(p) == own or any(is_within(resolve(p), a) for a in allowed)):
                 problems.append(f"output outside the {w['role']} write paths: {evidence.escape(p)}")
     return problems
@@ -426,7 +411,6 @@ def role_result(status_path: str) -> dict:
     except (OSError, ValueError) as e:
         doc, problems = None, [f"unreadable status file: {evidence.escape(str(e))}"]
     if doc is not None:
-        # The write paths the brief names (`_io`); K/out covers every skill folder.
         problems = _schema_problems(doc, w, _io(t, w["role"], None)[1], path)
     if incident:
         problems.append(f"domain incident {incident['incident_id']}: {incident['notes']}")

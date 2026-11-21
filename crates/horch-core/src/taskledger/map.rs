@@ -1,21 +1,3 @@
-//! Reading a ticket map (`MAP.md`) for `horch ledger add-map` (section 5.5a).
-//!
-//! A map is a markdown table with 1 row per ticket. horch reads these
-//! columns by header name, ignoring case: `#` (the ticket key), `Title`,
-//! `Blocked by`, `Wave`, `Issue` (optional), and the first link in the row
-//! that points at a ticket file. Each ticket file names its persona:
-//!
-//! ```text
-//! **Persona:** primary `backend-developer`, fallback `opus` · **Parallel:** yes
-//! **Check:** `cargo test -p horch-core`
-//! **Own:** `src/a.rs`, `src/b/`
-//! **Do not touch:** `src/c.rs`
-//! ```
-//!
-//! A `Persona` or `Parallel` column in the map wins over the ticket's line.
-//! `Blocked by` holds ticket keys (`01`, `1`) or issue numbers (`#30`) of
-//! rows in the same map, or `T-<n>` tasks already in the run.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -24,14 +6,12 @@ use anyhow::{bail, Context, Result};
 use super::model::{ReviewMode, TaskKind, WorkKind, WorktreeMode};
 use super::tasks::NewTask;
 
-/// 1 ticket of a map, ready to queue.
 #[derive(Debug, Clone)]
 pub struct MapItem {
     pub key: String,
     pub task: NewTask,
 }
 
-/// A parsed map.
 #[derive(Debug, Clone)]
 pub struct Map {
     pub spec_ref: Option<String>,
@@ -53,7 +33,6 @@ fn is_rule(cells: &[String]) -> bool {
         .all(|c| !c.is_empty() && c.chars().all(|ch| matches!(ch, '-' | ':' | ' ')))
 }
 
-/// Every `[text](target)` in `s`, as (text, target).
 pub fn links(s: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = s;
@@ -69,7 +48,6 @@ pub fn links(s: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Text with markdown links reduced to their text and backticks removed.
 fn plain(s: &str) -> String {
     let mut out = s.to_string();
     for (text, target) in links(s) {
@@ -78,7 +56,6 @@ fn plain(s: &str) -> String {
     out.replace('`', "").trim().to_string()
 }
 
-/// A ticket key, normalised: `01` and `1` are the same key.
 fn norm(key: &str) -> String {
     let k = key.trim().trim_start_matches('#');
     match k.parse::<u64>() {
@@ -87,7 +64,6 @@ fn norm(key: &str) -> String {
     }
 }
 
-/// The text with parenthesised titles dropped.
 fn strip_parens(text: &str) -> String {
     let mut cleaned = String::new();
     let mut depth = 0;
@@ -102,7 +78,6 @@ fn strip_parens(text: &str) -> String {
     cleaned
 }
 
-/// `T-<n>`: a task already in the run. `T-` with no number names nothing.
 fn task_ref(tok: &str) -> Option<Vec<String>> {
     let t = tok.strip_prefix("T-").or(tok.strip_prefix("t-"))?;
     Some(if t.parse::<u64>().is_ok() {
@@ -112,7 +87,6 @@ fn task_ref(tok: &str) -> Option<Vec<String>> {
     })
 }
 
-/// A key as written: `#<n>` for an issue number, else `<n>`.
 fn keyed(n: impl std::fmt::Display, hash: bool) -> String {
     if hash {
         format!("#{n}")
@@ -121,7 +95,6 @@ fn keyed(n: impl std::fmt::Display, hash: bool) -> String {
     }
 }
 
-/// A range like `#37-#40`, at most 1000 keys long.
 fn number_range(tok: &str, hash: bool) -> Option<Vec<String>> {
     let (a, b) = tok.split_once('-')?;
     let a = a.trim_start_matches('#').parse::<u64>().ok()?;
@@ -132,14 +105,12 @@ fn number_range(tok: &str, hash: bool) -> Option<Vec<String>> {
     Some((a..=b).map(|n| keyed(n, hash)).collect())
 }
 
-/// A single key: `01` or `#30`.
 fn plain_number(tok: &str, hash: bool) -> Option<Vec<String>> {
     let digits = tok.trim_start_matches('#');
     digits.parse::<u64>().ok()?;
     Some(vec![keyed(digits, hash)])
 }
 
-/// The keys 1 token names; none when it names nothing, as `-` and `none`.
 fn expand_token(tok: &str) -> Vec<String> {
     let hash = tok.starts_with('#');
     task_ref(tok)
@@ -148,7 +119,6 @@ fn expand_token(tok: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The keys in a `Blocked by` cell: `01, 02`, `#30 (title)`, `T-3`, `-`, `None`.
 fn blocker_tokens(cell: &str) -> Vec<String> {
     strip_parens(&plain(cell))
         .split([',', ';', ' '])
@@ -157,7 +127,6 @@ fn blocker_tokens(cell: &str) -> Vec<String> {
         .collect()
 }
 
-/// The first backticked word after `word` in `line`.
 fn ticked_after(line: &str, word: &str) -> Option<String> {
     let lower = line.to_lowercase();
     let at = lower.find(word)?;
@@ -168,7 +137,6 @@ fn ticked_after(line: &str, word: &str) -> Option<String> {
     Some(rest[..close].trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Every backticked item in `line` after the first `:`.
 fn ticked_list(line: &str) -> Vec<String> {
     let rest = line.split_once(":**").map(|(_, r)| r).unwrap_or(line);
     let mut out = Vec::new();
@@ -183,7 +151,6 @@ fn ticked_list(line: &str) -> Vec<String> {
     out
 }
 
-/// What a ticket file says about itself.
 #[derive(Debug, Clone, Default)]
 pub struct TicketFacts {
     pub title: Option<String>,
@@ -193,25 +160,20 @@ pub struct TicketFacts {
     pub check: Option<String>,
     pub own: Vec<String>,
     pub no_touch: Vec<String>,
-    /// The `<!-- horch-ticket: N -->` version; none for a ticket older than C1.
     pub version: Option<String>,
     pub kind: Option<WorkKind>,
     pub review: Option<ReviewMode>,
-    /// `**Check:** none`: the ticket has no check on purpose.
     pub check_none: bool,
 }
 
 impl TicketFacts {
-    /// The review mode: the explicit `Review`, else the default of `Kind`.
     pub fn review_mode(&self) -> Option<ReviewMode> {
         self.review.or(self.kind.map(default_review))
     }
 }
 
-/// The C1 ticket format version this horch reads.
 pub const TICKET_VERSION: &str = "1";
 
-/// The review a `Kind` gets when the ticket names none (C1).
 pub fn default_review(kind: WorkKind) -> ReviewMode {
     match kind {
         WorkKind::Feature | WorkKind::Docs | WorkKind::Report => ReviewMode::NoReview,
@@ -219,14 +181,12 @@ pub fn default_review(kind: WorkKind) -> ReviewMode {
     }
 }
 
-/// The version a `<!-- horch-ticket: N -->` line names.
 fn version_of(line: &str) -> Option<String> {
     let inner = line.trim().strip_prefix("<!--")?.strip_suffix("-->")?;
     let v = inner.trim().strip_prefix("horch-ticket:")?.trim();
     Some(v.to_string())
 }
 
-/// The first word after `prefix` in a lowercased field line, without backticks.
 fn field_word<'a>(lower: &'a str, prefix: &str) -> &'a str {
     lower[prefix.len()..]
         .split_whitespace()
@@ -235,7 +195,6 @@ fn field_word<'a>(lower: &'a str, prefix: &str) -> &'a str {
         .trim_matches('`')
 }
 
-/// A heading's title: `03: Title` is `Title`.
 fn ticket_title(h: &str) -> String {
     let h = h.trim();
     match h.split_once(':') {
@@ -245,7 +204,6 @@ fn ticket_title(h: &str) -> String {
     .to_string()
 }
 
-/// The value of a `**Parallel:**` field, lowercased and trimmed at its start.
 fn parse_parallel(v: &str) -> Option<bool> {
     if v.starts_with("yes") || v.starts_with("true") {
         Some(true)
@@ -256,14 +214,12 @@ fn parse_parallel(v: &str) -> Option<bool> {
     }
 }
 
-/// The facts lines that hold a list of backticked items.
 type ListField = (&'static str, fn(&mut TicketFacts) -> &mut Vec<String>);
 const LIST_FIELDS: [ListField; 2] = [
     ("**own:**", |f| &mut f.own),
     ("**do not touch:**", |f| &mut f.no_touch),
 ];
 
-/// Read the facts lines of a ticket's text.
 pub fn ticket_facts(text: &str) -> TicketFacts {
     let mut f = TicketFacts::default();
     for line in text.lines() {
@@ -301,25 +257,21 @@ pub fn ticket_facts(text: &str) -> TicketFacts {
     f
 }
 
-/// The C1 fields, in their order.
 const FIELDS: [&str; 6] = ["Persona", "Kind", "Review", "Check", "Own", "Do not touch"];
 const PERSONA: usize = 0;
 const KIND: usize = 1;
 const OWN: usize = 4;
 
-/// The name of a `**Name:**` field line.
 fn field_name(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("**")?;
     let at = rest.find(":**")?;
     Some(&rest[..at]).filter(|n| !n.contains('*'))
 }
 
-/// `'<word>' is not a <what>; use one of: a, b`.
 fn not_one_of(what: &str, word: &str, all: &[&str]) -> String {
     format!("{what} '{word}' is not one of: {}", all.join(", "))
 }
 
-/// What is wrong with the value of field `idx` on `line`, if anything.
 fn field_problem(idx: usize, line: &str) -> Option<String> {
     let lower = line.to_lowercase();
     let word = |prefix: &str| field_word(&lower, prefix).to_string();
@@ -361,8 +313,6 @@ fn field_problem(idx: usize, line: &str) -> Option<String> {
     }
 }
 
-/// The field block of a C1 ticket: its first line (the version comment)
-/// and the field lines after it, as (0-based index, line).
 fn field_block(lines: &[&str]) -> Result<(usize, Vec<usize>), (usize, String)> {
     let Some(h) = lines.iter().position(|l| l.trim().starts_with("# ")) else {
         return Err((1, "the ticket has no '# NN: Title' heading".into()));
@@ -379,7 +329,6 @@ fn field_block(lines: &[&str]) -> Result<(usize, Vec<usize>), (usize, String)> {
     Ok((start, block))
 }
 
-/// The C1 problems of a ticket's text, as (line, problem). Lines count from 1.
 pub fn ticket_problems(text: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = text.lines().collect();
     let (start, block) = match field_block(&lines) {
@@ -461,12 +410,9 @@ pub fn ticket_problems(text: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// 1 thing wrong with a map or a ticket, at a file and a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
-    /// The file, relative to the project root when it is inside it.
     pub file: String,
-    /// The line, counted from 1.
     pub line: usize,
     pub problem: String,
 }
@@ -477,38 +423,28 @@ impl std::fmt::Display for Problem {
     }
 }
 
-/// How strictly a map is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// `add-map`: a ticket with a version comment must follow C1; an older
-    /// ticket keeps the old rules. The ledger checks the blockers.
     Queue,
-    /// `add-map --dry-run`: every ticket must follow C1, and the blockers,
-    /// keys and cycles are checked without the ledger.
     DryRun,
 }
 
-/// The first table of a map, and the `Spec:` line before it. Each table
-/// line keeps its line number, counted from 1.
 struct Table {
     spec_ref: Option<String>,
     header: Option<(usize, Vec<String>)>,
     rows: Vec<(usize, Vec<String>)>,
 }
 
-/// The first link of `s`: its target.
 fn first_link(s: &str) -> Option<String> {
     links(s).into_iter().next().map(|(_, t)| t)
 }
 
-/// The spec a `Spec:` line names: its first link, else its text.
 fn spec_ref_of(rest: &str) -> String {
     let rest = rest.trim();
     first_link(rest).unwrap_or(plain(rest.split('·').next().unwrap_or(rest)))
 }
 
 impl Table {
-    /// Take a table line: the header first, then the rows.
     fn add(&mut self, line: usize, c: Vec<String>) {
         if self.header.is_none() {
             self.header = Some((line, c.iter().map(|h| h.to_lowercase()).collect()));
@@ -517,13 +453,11 @@ impl Table {
         }
     }
 
-    /// Whether the first table has a row, so a line that is not a table line ends it.
     fn has_rows(&self) -> bool {
         !self.rows.is_empty()
     }
 }
 
-/// Find the `Spec:` line and the first table: its header and its rows.
 fn scan_table(text: &str) -> Table {
     let mut t = Table {
         spec_ref: None,
@@ -543,7 +477,6 @@ fn scan_table(text: &str) -> Table {
     t
 }
 
-/// The column of each field, by header name.
 struct Columns {
     key: usize,
     title: Option<usize>,
@@ -567,22 +500,18 @@ fn columns(header: &[String]) -> Option<Columns> {
     })
 }
 
-/// What a row needs to become a ticket, and where its problems go.
 struct RowContext<'a> {
     cols: Columns,
     dir: &'a Path,
     relative_to: &'a Path,
-    /// The map file as problems name it.
     map_file: String,
     mode: Mode,
 }
 
-/// The text of cell `i` of `row`; empty when there is none.
 fn cell(row: &[String], i: Option<usize>) -> String {
     i.and_then(|i| row.get(i)).cloned().unwrap_or_default()
 }
 
-/// The ticket file: the first link in the row to a `.md` file that exists.
 fn ticket_path(row: &[String], dir: &Path) -> Option<PathBuf> {
     row.iter()
         .flat_map(|c| links(c))
@@ -590,7 +519,6 @@ fn ticket_path(row: &[String], dir: &Path) -> Option<PathBuf> {
         .find(|p| p.extension().is_some_and(|e| e == "md") && p.is_file())
 }
 
-/// `ticket` as written relative to `relative_to` when it resolves inside it.
 fn project_path(ticket: &Path, relative_to: &Path) -> String {
     let canon = ticket.canonicalize().unwrap_or(ticket.to_path_buf());
     let base = relative_to
@@ -602,7 +530,6 @@ fn project_path(ticket: &Path, relative_to: &Path) -> String {
         .unwrap_or_else(|_| canon.to_string_lossy().into_owned())
 }
 
-/// The personas of a ticket; a `Persona` cell wins over the ticket's line.
 fn personas(facts: &TicketFacts, cell: Option<&str>) -> (Option<String>, Option<String>) {
     let (mut primary, mut fallback) = (facts.primary.clone(), facts.fallback.clone());
     if let Some(p) = cell {
@@ -616,8 +543,6 @@ fn personas(facts: &TicketFacts, cell: Option<&str>) -> (Option<String>, Option<
     (primary, fallback)
 }
 
-/// The C1 problems of 1 ticket in `mode`. A ticket without a version comment
-/// is an older ticket: `add-map` reads it by the old rules, a dry run refuses it.
 fn c1_problems(text: &str, facts: &TicketFacts, mode: Mode) -> Vec<(usize, String)> {
     match (&facts.version, mode) {
         (Some(_), _) => ticket_problems(text),
@@ -626,13 +551,11 @@ fn c1_problems(text: &str, facts: &TicketFacts, mode: Mode) -> Vec<(usize, Strin
     }
 }
 
-/// A row and the line of the map it is on.
 struct Row<'a> {
     line: usize,
     cells: &'a [String],
 }
 
-/// The text and the project path of a row's ticket file.
 fn read_ticket(
     row: &Row,
     key: &str,
@@ -660,9 +583,6 @@ fn read_ticket(
     }
 }
 
-/// Map one table row to a ticket and its raw blocker tokens. A row with an
-/// empty key is skipped. Issue numbers of the row go into `issue_to_key`.
-/// Every problem goes into `problems`; a row with one queues nothing.
 fn map_item(
     row: &Row,
     ctx: &RowContext,
@@ -739,8 +659,6 @@ fn map_item(
     Some((MapItem { key, task }, blockers))
 }
 
-/// The key a blocker token names: issue numbers map to keys of this map,
-/// `T-<n>` stays, and plain numbers are keys.
 fn blocker_key(
     t: String,
     of: &str,
@@ -755,15 +673,12 @@ fn blocker_key(
     Ok(if t.starts_with("T-") { t } else { norm(&t) })
 }
 
-/// The rows of the map that became items, with the map line of each.
 struct Rows {
     items: Vec<MapItem>,
     lines: Vec<usize>,
     raw: Vec<Vec<String>>,
 }
 
-/// Set the blockers and the spec of each item from its raw tokens. A dry
-/// run also checks that a plain key names a row of this map.
 fn resolve_blockers(
     rows: &mut Rows,
     issue_to_key: &BTreeMap<String, String>,
@@ -802,8 +717,6 @@ fn resolve_blockers(
     }
 }
 
-/// Keys that 2 rows share, and a cycle among the rows (a dry run only:
-/// `add-map` gets these from the ledger).
 fn order_problems(rows: &Rows, ctx: &RowContext, problems: &mut Vec<Problem>) {
     let mut first: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, item) in rows.items.iter().enumerate() {
@@ -839,7 +752,6 @@ fn order_problems(rows: &Rows, ctx: &RowContext, problems: &mut Vec<Problem>) {
     }
 }
 
-/// A problem with the map file as a whole.
 fn map_problem(map_file: &str, line: usize, problem: String) -> Vec<Problem> {
     vec![Problem {
         file: map_file.to_string(),
@@ -848,7 +760,6 @@ fn map_problem(map_file: &str, line: usize, problem: String) -> Vec<Problem> {
     }]
 }
 
-/// Parse the map at `path` in `mode`: the tickets, and every problem.
 fn parse(path: &Path, relative_to: &Path, mode: Mode) -> Result<(Map, Vec<Problem>)> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading the ticket map {}", path.display()))?;
@@ -921,7 +832,6 @@ fn parse(path: &Path, relative_to: &Path, mode: Mode) -> Result<(Map, Vec<Proble
     ))
 }
 
-/// Every problem, 1 per line.
 fn joined(problems: &[Problem]) -> String {
     problems
         .iter()
@@ -930,9 +840,6 @@ fn joined(problems: &[Problem]) -> String {
         .join("\n")
 }
 
-/// Parse the map at `path` for `add-map`. Ticket paths are kept as written
-/// relative to `relative_to` (the project root) when they resolve inside
-/// it. Any problem refuses the whole map.
 pub fn read(path: &Path, relative_to: &Path) -> Result<Map> {
     let (map, problems) = parse(path, relative_to, Mode::Queue)?;
     if !problems.is_empty() {
@@ -941,9 +848,6 @@ pub fn read(path: &Path, relative_to: &Path) -> Result<Map> {
     Ok(map)
 }
 
-/// Check the map at `path` and every ticket it links against C1, for
-/// `add-map --dry-run`. Nothing is written. The error is only for a map
-/// file that cannot be read.
 pub fn check(path: &Path, relative_to: &Path) -> Result<(Map, Vec<Problem>)> {
     parse(path, relative_to, Mode::DryRun)
 }
@@ -1163,7 +1067,6 @@ mod tests {
         assert_eq!(b.task_file, "tickets/b.md");
     }
 
-    /// A C1 ticket with `fields` as its field block after the version line.
     fn c1(fields: &str) -> String {
         format!("# 01: A\n\n<!-- horch-ticket: 1 -->\n{fields}\n\nSpec: x.\n\n## Goal\n\nG.\n")
     }
@@ -1240,7 +1143,6 @@ mod tests {
             )]
         );
         assert_eq!(ticket_problems("no heading\n")[0].0, 1);
-        // add-map refuses a future version too, not only the dry run.
         let dir = tempfile::tempdir().unwrap();
         let p = write_map(dir.path(), ONE_ROW, &[("a.md", &v2)]);
         let e = read(&p, dir.path()).unwrap_err().to_string();
@@ -1280,7 +1182,6 @@ mod tests {
             ]
         );
         assert_eq!(parsed.items.len(), 3);
-        // The same map without the problem rows passes.
         let p = write_map(dir.path(), ONE_ROW, &[("a.md", &good)]);
         assert_eq!(check(&p, dir.path()).unwrap().1, Vec::<Problem>::new());
     }

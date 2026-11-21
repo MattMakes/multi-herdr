@@ -1,11 +1,3 @@
-//! The pr step (#37): the run's 1 pull request, from the run branch into
-//! the main branch, holds a section for every landed task.
-//!
-//! Each task owns the text between `<!-- horch:task T-<n> -->` and
-//! `<!-- /horch:task T-<n> -->`; text outside every marker is never changed.
-//! Updates run under the landing lock, so 2 workers never overwrite each
-//! other's section.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -44,7 +36,6 @@ fn gh(bin: &Path, dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// The markers of 1 task's section.
 fn markers(short: &str) -> (String, String) {
     (
         format!("<!-- horch:task {short} -->"),
@@ -52,8 +43,6 @@ fn markers(short: &str) -> (String, String) {
     )
 }
 
-/// `body` with the section of `short` set to `section`: replaced in place
-/// when it exists, else appended. Nothing outside the markers changes.
 pub fn with_section(body: &str, short: &str, section: &str) -> String {
     let (open, close) = markers(short);
     let block = format!("{open}\n{}\n{close}", section.trim_end());
@@ -77,8 +66,6 @@ struct PrView {
     head: String,
 }
 
-/// The commit the task landed: its worktree's, or the run branch's for a
-/// shared-checkout task.
 fn landed_commit(store: &Store, cx: &Ctx<'_>, run_branch: &str) -> Result<String> {
     match worktree_of(store.conn(), &cx.task.task_id)? {
         Some(w) => w.landed_commit.context("the task has not landed"),
@@ -86,7 +73,6 @@ fn landed_commit(store: &Store, cx: &Ctx<'_>, run_branch: &str) -> Result<String
     }
 }
 
-/// Open the run's PR with the task's section, and record its number.
 fn create_pr(
     store: &Store,
     cx: &Ctx<'_>,
@@ -132,7 +118,6 @@ fn create_pr(
     Ok(n)
 }
 
-/// The number of the run's PR; the first task to get here opens it.
 fn pr_number(
     store: &Store,
     cx: &Ctx<'_>,
@@ -148,8 +133,6 @@ fn pr_number(
     }
 }
 
-/// Write the task's section into the body of the run's PR when it differs,
-/// and record it. The PR's number, and the PR as it was read.
 fn sync_pr_body(
     store: &Store,
     cx: &Ctx<'_>,
@@ -190,8 +173,6 @@ fn sync_pr_body(
     Ok((n.to_string(), view))
 }
 
-/// How the pr step waits for GitHub's PR head to catch up with a push
-/// (TRF-50): `tries` re-reads, `pause` apart, slept with `sleep`.
 #[derive(Clone, Copy)]
 struct HeadWait {
     tries: u32,
@@ -200,7 +181,6 @@ struct HeadWait {
 }
 
 impl HeadWait {
-    /// GitHub updates a PR's head some seconds after a push: 6 reads, 5 s apart.
     const GITHUB: HeadWait = HeadWait {
         tries: 6,
         pause: std::time::Duration::from_secs(5),
@@ -208,7 +188,6 @@ impl HeadWait {
     };
 }
 
-/// What the pr step compares: the landed commit and where it must be.
 struct Heads<'a> {
     git: &'a crate::taskledger::git::Git,
     gh: &'a Path,
@@ -219,12 +198,10 @@ struct Heads<'a> {
 }
 
 impl Heads<'_> {
-    /// Whether `head` is the landed commit or holds it.
     fn holds(&self, head: &str) -> bool {
         head == self.landed || self.git.is_ancestor(self.root, self.landed, head)
     }
 
-    /// The tip of the run branch on the remote, or "" when it has none.
     fn remote_tip(&self) -> Result<String> {
         let rf = format!("refs/heads/{}", self.run_branch);
         let out = self
@@ -242,8 +219,6 @@ impl Heads<'_> {
             .to_string())
     }
 
-    /// Whether the remote tip `tip` holds the landed commit; fetches the run
-    /// branch first when the tip object is not here.
     fn tip_holds(&self, tip: &str) -> bool {
         if tip.is_empty() {
             return false;
@@ -263,7 +238,6 @@ impl Heads<'_> {
         self.holds(tip)
     }
 
-    /// The head of PR `n`, read again.
     fn pr_head(&self, n: &str) -> Result<String> {
         #[derive(Deserialize)]
         struct Head {
@@ -281,10 +255,6 @@ impl Heads<'_> {
     }
 }
 
-/// Pass when the head of PR `n` holds the landed commit. When the head read
-/// lacks it but the remote run branch holds it, GitHub lags the push: read
-/// the head again as `wait` says, and pass with a note when it still lags.
-/// Fail only when the remote run branch lacks the commit (TRF-50).
 fn verdict(h: &Heads<'_>, head: &str, n: &str, short: &str, wait: &HeadWait) -> Result<Outcome> {
     let pass = |extra: &str| {
         Outcome::pass(
@@ -326,7 +296,6 @@ fn verdict(h: &Heads<'_>, head: &str, n: &str, short: &str, wait: &HeadWait) -> 
     )))
 }
 
-/// The pr step.
 pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     if let Some(wt) = cx.worktree.as_ref() {
         if land::no_commits_since_claim(&cx.tools.git, wt)? {
@@ -350,7 +319,6 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .clone()
         .context("the run has no main branch")?;
     let landed = landed_commit(store, cx, &run_branch)?;
-    // `gh pr create` refuses a head with no commit ahead of the base.
     if cx.tools.git.is_ancestor(&cx.root, &landed, &base) {
         return Ok(Outcome::not_applicable(&format!(
             "the task landed no commit that {base} lacks, so it needs no pull request"
@@ -364,7 +332,6 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     }
     let section = section_text(store, cx, &landed, work.as_ref())?;
     let short = cx.task.short();
-    // 1 writer at a time: the landing lock of this repository.
     let _lock = land::land_lock(cx)?;
     let (n, view) = sync_pr_body(store, cx, &run_branch, &base, &short, &section)?;
     let heads = Heads {
@@ -378,9 +345,6 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     verdict(&heads, &view.head, &n, &short, &HeadWait::GITHUB)
 }
 
-/// The state of `run`'s PR for `run close` (C5, TRF-20), asked with gh.
-/// Not applicable with no remote, no gh, or no commit on the run branch
-/// that the main branch lacks. A failing gh is an error, never a pass.
 pub fn pr_check(
     gh_bin: &Path,
     git: &crate::taskledger::git::Git,
@@ -442,19 +406,13 @@ pub fn pr_check(
     })
 }
 
-/// What 1 task put on the run branch: the subjects of its own commits,
-/// oldest first, each with its short sha, and the files they touch.
 struct Work {
     commits: Vec<String>,
     files: Vec<String>,
 }
 
-/// The most commit subjects and files a section lists before it says how
-/// many more there are.
 const LIST_MAX: usize = 20;
 
-/// The landed commits of the run's other tasks that landed before this one:
-/// at another commit, or at the same commit and first (by time, then row).
 fn earlier_lands(store: &Store, cx: &Ctx<'_>) -> Result<Vec<String>> {
     let Some(mine) = worktree_of(store.conn(), &cx.task.task_id)? else {
         return Ok(Vec::new());
@@ -475,11 +433,6 @@ fn earlier_lands(store: &Store, cx: &Ctx<'_>) -> Result<Vec<String>> {
     Ok(rows)
 }
 
-/// The commits the task added to the run branch: those of `landed` that
-/// neither `base` nor an earlier land of the run holds. A land fast-forwards
-/// the run branch, so an earlier land is an ancestor of `landed`. `None` for a
-/// shared-checkout task with no recorded start, whose commits cannot be told
-/// from the others on the run branch.
 fn own_work(store: &Store, cx: &Ctx<'_>, base: &str, landed: &str) -> Result<Option<Work>> {
     let git = &cx.tools.git;
     let mut not = vec![format!("^{base}")];
@@ -517,8 +470,6 @@ fn own_work(store: &Store, cx: &Ctx<'_>, base: &str, landed: &str) -> Result<Opt
     Ok(Some(Work { commits, files }))
 }
 
-/// `items` as a markdown list of at most [`LIST_MAX`] lines, `code` ones in
-/// backticks.
 fn list(items: &[String], code: bool, noun: &str) -> String {
     let mut s = String::new();
     for i in items.iter().take(LIST_MAX) {
@@ -534,9 +485,6 @@ fn list(items: &[String], code: bool, noun: &str) -> String {
     s
 }
 
-/// The task's section: what its commits did, the files they touch, who
-/// landed it where, and the sweeps that ran. A step that did not run, or
-/// did not apply, is left out.
 fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str, work: Option<&Work>) -> Result<String> {
     let steps = super::steps_of(store.conn(), &cx.task.task_id, &cx.worker.worker_id)?;
     let ran = |name: &str| {
@@ -634,8 +582,6 @@ printf '{"headRefOid":"%s"}' "$h"
         sleep: no_sleep,
     };
 
-    /// A repo whose remote `origin` has `run` at commit `old`, a local
-    /// commit `new` on top, and a fake gh in its own directory.
     struct World {
         _tmp: tempfile::TempDir,
         root: std::path::PathBuf,
@@ -683,7 +629,6 @@ printf '{"headRefOid":"%s"}' "$h"
             }
         }
 
-        /// The heads the fake gh prints, 1 per re-read; the last repeats.
         fn gh_heads(&self, heads: &[&str]) {
             let dir = self.gh.parent().unwrap();
             std::fs::write(dir.join("heads"), heads.join("\n") + "\n").unwrap();

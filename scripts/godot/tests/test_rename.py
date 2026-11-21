@@ -22,7 +22,6 @@ class RenameTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.source = self.tmp / "source"
         shutil.copytree(FIXTURE, self.source)
-        # Dotfiles are made here, not committed: git ignores some of them.
         (self.source / "skills" / "state-machine" / ".DS_Store").write_bytes(b"\0")
         (self.source / "skills" / ".hidden").mkdir()
         (self.source / "skills" / ".hidden" / "SKILL.md").write_text("---\nname: x\n---\n")

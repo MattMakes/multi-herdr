@@ -1,10 +1,3 @@
-//! The fleet pi compaction extension (`assets/pi/horch-compact.ts`, X3):
-//! its `session_before_compact` handler, run with `node` on a fixture
-//! branch. No pi and no model: the handler is all that pi calls.
-//!
-//! `node` (22.6 or later strips the TypeScript types) runs the asset; a
-//! machine without `node` skips these tests with a line on stderr.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -17,9 +10,6 @@ fn asset() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/pi/horch-compact.ts")
 }
 
-/// The driver: load the extension with a stub `pi`, call the handler that
-/// it registers for `session_before_compact`, print the result as JSON.
-/// `fileOps` arrive as arrays and become the `Set`s that pi passes.
 const DRIVER: &str = r#"
 import { readFileSync } from "node:fs";
 const ext = (await import(process.argv[2])).default;
@@ -46,10 +36,8 @@ fn node() -> Option<()> {
     ok.then_some(())
 }
 
-/// Run the handler on `event`; returns `{ names, out }`.
 fn run(event: &Value) -> Value {
     let tmp = tempfile::tempdir().unwrap();
-    // `.mts`: an ES module whatever package.json is above it.
     let ext = tmp.path().join("horch-compact.mts");
     std::fs::copy(asset(), &ext).unwrap();
     let driver = tmp.path().join("driver.mjs");
@@ -87,8 +75,6 @@ fn result(id: &str, name: &str, out: &str, is_error: bool) -> Value {
             "content": [text(out)], "isError": is_error })
 }
 
-/// A worker session: the briefing, a read with a long output, an edit, a
-/// failed test run, a commit, the handoff note, and an orchestrator line.
 fn messages() -> Vec<Value> {
     let long: String = (0..400)
         .map(|i| format!("README line {i} LONG-OUTPUT-MIDDLE\n"))

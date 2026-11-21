@@ -1,8 +1,3 @@
-//! `assess_pool` keeps its state, reason, worst window and headroom for every
-//! reading in the quota fixtures. The golden file was written by the code
-//! before the #153 refactor. The test only reads it: a test that rewrote the
-//! file could not fail.
-
 use std::fmt::Write;
 use std::path::Path;
 
@@ -21,7 +16,6 @@ const POOLS: [&str; 6] = [
 ];
 const SCOPES: [Option<&str>; 3] = [None, Some("fable"), Some("opus")];
 const LOCAL_MODELS: [Option<&str>; 3] = [None, Some("qwen3.8"), Some("missing-model")];
-/// Before and after the zen cooldown of `opencode-cooling.json`.
 const NOWS: [&str; 3] = [
     "2026-09-28T18:00:00Z",
     "2026-09-28T19:00:00Z",
@@ -104,7 +98,6 @@ fn a_local_model_missing_from_ollama_list_is_broken() {
     let missing = view.assess_pool("local", None, Some("llama9"));
     assert_eq!(missing.state.to_string(), "broken");
     assert_eq!(missing.reason, "model llama9 is not in ollama list");
-    // `:latest` is optional, and no wanted model skips the check.
     assert_eq!(
         view.assess_pool("local", None, Some("qwen3.8"))
             .state

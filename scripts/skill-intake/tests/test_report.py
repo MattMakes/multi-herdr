@@ -53,7 +53,7 @@ class OutcomeTest(ReportMixin, InstallCase):
         self.install(t)
         text, out = self.report(t)
         self.check_shape(text, out)
-        self.assertIn("- outcome: installed with flags", text)  # the script is unverified (no sandbox)
+        self.assertIn("- outcome: installed with flags", text)
         self.assertIn("- script left unverified: pdf-editor/scripts/tally.py", text.replace("flag: ", ""))
         self.assertIn("- installed: pdf-editor (standalone)", text)
         self.assertIn("- mode: plain", text)
@@ -160,7 +160,7 @@ class Gate1Test(ReportMixin, TriageCase):
             v = self.run_intake("cr", "validate", "--task", str(c), str(p))
             self.assertEqual(v.returncode, 0, v.stdout + v.stderr)
             self.assertIn(read_json(p)["incident_id"], text)
-        self.report(c)  # a second report writes no new file
+        self.report(c)
         self.assertEqual(sorted(inc_dir.glob("inc-*.json")), files)
         self.assertIn("| AUD-TAMPER | escalated-to-user |", text)
 

@@ -86,8 +86,6 @@ class ApiCheckTest(unittest.TestCase):
         api = api_check.Api.load(DOCTOOL)
         path = CLASSES / "skill" / "SKILL.md"
         found = [u.text() for u in api_check.check_file(api, path, known)]
-        # SkillThing: references/defs.md; KnownAddon: listed for "skill";
-        # OtherAddon: listed for another skill only.
         self.assertEqual(found, [f"{path}:6: unknown class OtherAddon"])
 
     def test_deprecated_names_fail_in_own_text(self):
@@ -111,7 +109,6 @@ class ApiCheckTest(unittest.TestCase):
                 "api_check: 3 copied deprecated names fail in 1 skills, report only (baseline 3, baseline.json)",
                 "  per skill: up 3",
             ])
-            # U-22: a count above the baseline fails; --update-baseline lowers it.
             baseline.write_text('{"api_check": {"up": 2}}')
             code, out = run(*args, CLASSES / "up")
             self.assertEqual(code, 1)
@@ -131,7 +128,6 @@ class ApiCheckTest(unittest.TestCase):
             self.assertIsNone(api.deprecation("Node", "is_inside_tree"))
 
     def test_deprecated_everywhere_is_built_once_and_follows_new_marks(self):
-        # C5: check_file asks for it for each file; it was rebuilt for each of 389 files.
         api = api_check.Api.load(DOCTOOL)
         first = api.deprecated_everywhere()
         self.assertIs(api.deprecated_everywhere(), first)
@@ -143,7 +139,6 @@ class ApiCheckTest(unittest.TestCase):
         self.assertEqual(api.deprecated_everywhere()["is_inside_tree"], ("Node", "Gone."))
 
     def test_auto_mode_uses_the_pinned_deprecations_of_the_version(self):
-        # U-59: the marks come from deprecated-<version>.json, not from a host cache.
         with tempfile.TemporaryDirectory() as tmp:
             dump = Path(tmp) / "dump"
             shutil.copytree(DOCTOOL, dump)
@@ -158,7 +153,6 @@ class ApiCheckTest(unittest.TestCase):
                     mock.patch.object(api_check, "pinned_deprecations", return_value=pinned):
                 code, out = run(md)
             self.assertEqual(code, 1)
-            # The scratch dump's sidecar is ignored: only the pinned file counts.
             self.assertEqual(out, f"{md}:2: deprecated Node.add_child (Gone.)\n")
 
     def test_auto_mode_without_pinned_deprecations_fails(self):

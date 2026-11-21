@@ -52,8 +52,6 @@ def unit_hash(text: str) -> float:
     return zlib.crc32(text.encode("utf-8")) / 4294967295.0
 
 
-# ---------------------------------------------------------------- decoding
-
 _RAM_CACHE: dict[str, np.ndarray] = {}
 
 
@@ -119,8 +117,6 @@ def stretched(media: str, tempo: float, store: str | None = None) -> np.ndarray:
         return pcm.reshape(-1, 2).copy()
     return _memo(_fingerprint(media, f"|{tempo:.6f}|{STRETCH_TAG}"), store, build)
 
-
-# ---------------------------------------------------------------- DSP
 
 def biquad_coeffs(kind: str, centre: float, gain_db: float, width_q: float = 0.707):
     amp = 10 ** (gain_db / 40)
@@ -231,7 +227,6 @@ def shape(sig: np.ndarray, opts: dict, tail_s: float = EDGE_FALL, with_fades: bo
     return sig * np.float32(10 ** (level / 20)) if level else sig
 
 
-# Block alignment modes: (block size, index of the block maximum array).
 _ANCHOR_MODES = {"attack": (48, lambda bm, blk: int(np.argmax(bm >= 0.1 * bm.max())) * blk),
           "peak": (240, lambda bm, blk: int(np.argmax(bm)) * blk + blk // 2)}
 
@@ -316,8 +311,6 @@ def cut_slices(whole: np.ndarray, opts: dict, fname: str, with_fades: bool = Tru
         raise DesignError(f"slices from {fname}: no onset found (widen the window, lower delta or gate_db)")
     return chops
 
-
-# ---------------------------------------------------------------- design
 
 def load_json(path: str):
     with open(path) as fh:
@@ -746,8 +739,6 @@ def bus_curve(spec: dict, lanes: str, offset0: int, count: int) -> np.ndarray:
     return gain_arr
 
 
-# ---------------------------------------------------------------- outputs
-
 def safe(text: str, allowed: str = r"A-Za-z0-9._#-") -> str:
     return re.sub(f"[^{allowed}]+", "_", text)
 
@@ -979,7 +970,6 @@ def _chk_repitch_and_loop(ck, fx, sf, tmp: str) -> None:
     fft_mag = np.abs(np.fft.rfft(wet[:, 0]))
     peak_hz = np.argmax(fft_mag) * SR / len(wet)
     ck("M7 pitch 12: half length, double frequency", abs(len(wet) - SR / 2) <= 1 and abs(peak_hz - 880) < 5)
-    # M8: a 10 s bed from a 4 s window loops smoothly
     whole = fx.noise_bed(4.0, 0.1).astype(np.float32)
     looped_bed, looped = loop_bed(whole, {"at": 0, "until": 10, "file": "x"})
     max_step = np.abs(np.diff(whole, axis=0)).max()

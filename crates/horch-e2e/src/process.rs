@@ -1,11 +1,3 @@
-//! The processes on this machine, for the harness teardown and for
-//! fake-herdr's `pane close`. Both signal a process group only while it is
-//! still the one they started: a pid that has ended can belong to another
-//! program, and a kill of a reused group id can end another test run, even
-//! a whole gate. Whether a group is still the same is
-//! [`horch_core::procid::is_same_group`].
-
-/// One row of `ps`.
 #[derive(Debug, Clone)]
 pub struct Process {
     pub pid: u32,
@@ -13,15 +5,11 @@ pub struct Process {
     pub command: String,
 }
 
-/// Every process on the machine, from `ps`. Empty when `ps` cannot run.
 #[cfg(unix)]
 pub fn processes() -> Vec<Process> {
     try_processes().unwrap_or_default()
 }
 
-/// Every process on the machine, from `ps`, or why `ps` did not run: a
-/// fork can fail on a loaded machine, and an empty list then hides every
-/// process.
 #[cfg(unix)]
 pub fn try_processes() -> std::io::Result<Vec<Process>> {
     let out = std::process::Command::new("/bin/ps")
@@ -45,10 +33,6 @@ pub fn try_processes() -> std::io::Result<Vec<Process>> {
         .collect())
 }
 
-/// The command line and environment of each process of this user, by pid,
-/// as 1 line each. A detached process that a harness started (the mail
-/// courier) names the harness only in its environment. Empty when they
-/// cannot be read.
 #[cfg(target_os = "macos")]
 pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
     let Ok(out) = std::process::Command::new("/bin/ps")
@@ -67,7 +51,6 @@ pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
         .collect()
 }
 
-/// [`commands_with_environment`] from `/proc`.
 #[cfg(target_os = "linux")]
 pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -88,15 +71,11 @@ pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
         .collect()
 }
 
-/// [`commands_with_environment`] where neither `ps -E` nor `/proc` exists.
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
     Default::default()
 }
 
-/// Send `signal` (`TERM`, `KILL`) to each process group, with the `kill`
-/// syscall: a `kill` program would need a fork, which can fail on a loaded
-/// machine, and then nothing is signalled.
 #[cfg(unix)]
 pub fn signal_groups(groups: &[u32], signal: &str) {
     let signal = match signal {

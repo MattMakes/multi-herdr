@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import evidence
 
-Dep = namedtuple("Dep", "name spec line eco")  # eco: npm, pypi, cargo, go, gem, composer
+Dep = namedtuple("Dep", "name spec line eco")
 
 POPULAR = Path(__file__).resolve().parents[2] / "references" / "popular-packages.txt"
 VENDORED_DIRS = frozenset(("node_modules", "vendor", "site-packages", "third_party"))
@@ -48,7 +48,6 @@ RUNTIME_INSTALL = re.compile(
     r"|" + _B + r"(?:go|cargo|brew|gem)\s+install\b|" + _B + r"deno\s+(?:run|install)\b[^\n]*\bhttps?://"
     r"|\bimport\b[^\n]*?\bfrom\s*['\"]https?://|\bimport\s*\(?\s*['\"]https?://"
 )
-# The package arguments of an install line. Runners take 1 package; installers take many.
 RUNNER = re.compile(_B + r"(npx|bunx|uvx|(?:pnpm|yarn)\s+dlx|pipx\s+run)((?:\s+[^\s|;&<>`)]+)*)")
 INSTALLER = re.compile(_B + r"(pip[\d.]*\s+install|(?:npm|pnpm)\s+(?:install|i|add)|(?:yarn|bun)\s+add)((?:\s+[^\s|;&<>`)]+)*)")
 PYPI_TOOLS = ("uvx", "pipx", "pip")
@@ -113,8 +112,6 @@ def licence_header(rel: str, lines: list[str]) -> int:
             return n
     return 0
 
-
-# ---- names (SUP-04) ---------------------------------------------------------
 
 CONFUSABLE = {
     **{chr(cp): ch for cp, ch in (
@@ -192,9 +189,6 @@ def typosquat(name: str) -> str | None:
         if len(chars ^ nchars) <= 2 * limit and distance(c, n, limit) <= limit:
             return f"{distance(c, n, limit)} edit(s) from {n}"
     return None
-
-
-# ---- manifests (SUP-01) -----------------------------------------------------
 
 
 def _line_of(lines: list[str], name: str) -> int:
@@ -396,9 +390,6 @@ def manifest_deps(name: str, text: str, lines: list[str]) -> list[Dep] | None:
         return parser(text, lines)
     except (ValueError, TypeError, AttributeError, configparser.Error):
         return []
-
-
-# ---- the rules ----------------------------------------------------------------
 
 
 def unpinned(spec: str, eco: str) -> str | None:

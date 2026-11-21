@@ -29,7 +29,6 @@ PHRASES: dict[str, tuple[str, ...]] = {
     "VOICE": ("a spoken word", "a person talking", "a breath", "a short vocal sound"),
 }
 
-# Mean CLAP cosine of each phrase over real background events (data asset A2; regenerate for another checkpoint).
 BACKGROUND: dict[str, float] = {
     "a fast air whoosh": -0.0137, "a swoosh passing by": -0.0271, "a short swish": 0.0538,
     "a whip pan whoosh transition": 0.0173, "a rising riser building tension": -0.0403,
@@ -53,7 +52,7 @@ KINDS = tuple(PHRASES)
 PHRASE_LIST = [p for ps in PHRASES.values() for p in ps]
 PHRASE_KIND = {p: k for k, ps in PHRASES.items() for p in ps}
 SPAN_VERSION = 1
-BUDGETS = {  # detail -> (tag, ast, win, hop, max_win, ast_sec)
+BUDGETS = {
     "low": (12, 0, 4.0, 4.0, 30, 0),
     "normal": (20, 1, 3.0, 2.0, 32, 3),
     "high": (96, 16, 3.0, 1.5, 200, 12),
@@ -66,8 +65,6 @@ def short_label(phrase: str) -> str:
             return phrase[len(art):]
     return phrase
 
-
-# ---------------------------------------------------------------- which events
 
 def _priority(events: list[dict], near_times) -> list[int]:
     near = np.asarray(sorted(near_times), dtype=float)
@@ -128,8 +125,6 @@ def excerpt(m: np.ndarray, a: float, b: float) -> np.ndarray:
     return np.asarray(m[i:j], dtype=np.float32)
 
 
-# ---------------------------------------------------------------- per-span model cache
-
 def cache_dir() -> str:
     home = os.environ.get("HARK_HOME")
     if not home:
@@ -188,8 +183,6 @@ def cached_vectors(spans, m: np.ndarray, kind: str, cache: SpanCache, compute, o
             cache.put(*keys[k], kind, v)
     return np.vstack(out) if out else np.zeros((0, 0))
 
-
-# ---------------------------------------------------------------- scoring
 
 def phrase_matrix(clap) -> np.ndarray:
     texts = [tpl.format(p) for p in PHRASE_LIST for tpl in TEMPLATES]

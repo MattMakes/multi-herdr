@@ -12,7 +12,6 @@ import re
 import sys
 from urllib.parse import urlparse
 
-# Forbidden terms, checked in order. Each item: (test on the lower-case text, reason).
 _FORBIDDEN = [
     (lambda s: "disputed" in s, "the sources disagree about the terms"),
     (lambda s: re.search(r"\bnc\b", s) or "noncommercial" in s or "non-commercial" in s,
@@ -28,7 +27,6 @@ _FORBIDDEN = [
     (lambda s: "editorial" in s, "editorial use only"),
 ]
 
-# Fixed allowed classes: (key, test, name, url).
 _FIXED = [
     ("cc0", lambda s: re.search(r"\bcc0\b", s) or "cc-0" in s or "creative commons 0" in s
      or "publicdomain/zero" in s or re.search(r"\bzero\b", s) or "public domain dedication" in s,

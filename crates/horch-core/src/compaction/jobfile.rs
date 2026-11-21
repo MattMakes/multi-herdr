@@ -1,17 +1,3 @@
-//! The compaction job dir, `<state_root>/compact/<workspace>-<role>/`
-//! (design §6.8, §6.8a), on the shared [`crate::heartbeat`]:
-//!
-//! | file | written by | content |
-//! |---|---|---|
-//! | `job.log` | the parent creates it before the spawn; the child appends | 1 line per step |
-//! | `spawned` | the parent, right after the spawn | [`Spawned`] |
-//! | `job.json` | the child, `create_new`, then rewritten at each step | [`JobRecord`] |
-//! | `heartbeat` | the child, through [`crate::heartbeat::start`] | [`crate::heartbeat::Heartbeat`] |
-//! | `lost` | the first reader that finds the job lost, `create_new` | `{"at": "<UTC>"}` |
-//!
-//! The child removes `job.json`, `heartbeat` and `spawned` on every exit;
-//! `job.log` stays.
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,25 +15,20 @@ pub const SPAWNED_FILE: &str = "spawned";
 pub const LOST_FILE: &str = "lost";
 pub const LOG_FILE: &str = "job.log";
 
-/// The `job.json` format.
 pub const JOB_VERSION: u32 = 1;
 
-/// How long [`start_locked`] waits for the start lock.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `job.json`: which job runs, and its step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRecord {
     pub v: u32,
     pub role: String,
     pub record_id: String,
     pub started_at: String,
-    /// The kebab-case [`super::job::Step`] name.
     pub step: String,
 }
 
 impl JobRecord {
-    /// The record for a `job.json` that is absent or does not parse.
     fn unknown() -> JobRecord {
         JobRecord {
             v: JOB_VERSION,
@@ -59,30 +40,22 @@ impl JobRecord {
     }
 }
 
-/// `spawned`: the parent started the child `pid` at `at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spawned {
     pub pid: u32,
     pub at: String,
 }
 
-/// What [`start_locked`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Started {
-    Spawned {
-        pid: u32,
-    },
-    /// A live job holds the dir; nothing was spawned.
+    Spawned { pid: u32 },
     AlreadyRunning,
 }
 
-/// `<state_root>/compact`.
 pub fn compact_root(state_root: &Path) -> PathBuf {
     state_root.join("compact")
 }
 
-/// The job dir of `role` in `workspace`. Characters outside
-/// `[A-Za-z0-9._-]` become `-`.
 pub fn job_dir(state_root: &Path, workspace: &str, role: &str) -> PathBuf {
     let safe = |s: &str| -> String {
         s.chars()
@@ -98,15 +71,11 @@ pub fn job_dir(state_root: &Path, workspace: &str, role: &str) -> PathBuf {
     compact_root(state_root).join(format!("{}-{}", safe(workspace), safe(role)))
 }
 
-/// `job.json` in `dir`: `None` when it is absent, `Some(None)` when it does
-/// not parse.
 fn read_job(dir: &Path) -> Option<Option<JobRecord>> {
     let bytes = std::fs::read(dir.join(JOB_FILE)).ok()?;
     Some(serde_json::from_slice(&bytes).ok())
 }
 
-/// When the job was spawned: the `spawned` file, else the `job.json` file
-/// time (the child can write it before the parent writes `spawned`).
 fn spawned_at(dir: &Path) -> Option<DateTime<Utc>> {
     let file = std::fs::read(dir.join(SPAWNED_FILE))
         .ok()
@@ -122,10 +91,6 @@ fn spawned_at(dir: &Path) -> Option<DateTime<Utc>> {
     })
 }
 
-/// None: no `job.json` and no starting job. Live: [`heartbeat::liveness`]
-/// is Running. Lost: `job.json` exists and liveness is Lost (dead pid, or a
-/// stale heartbeat), with the step `job.json` names. `now` is the wall
-/// clock: heartbeats and spawn times are real times.
 pub fn liveness(dir: &Path, now: DateTime<Utc>) -> JobLiveness {
     let (hb, alive) = heartbeat::read(dir);
     let job = read_job(dir);
@@ -139,9 +104,6 @@ pub fn liveness(dir: &Path, now: DateTime<Utc>) -> JobLiveness {
     }
 }
 
-/// Create `lost` with `create_new`. `Some(job.json content)` only for the 1
-/// caller that created it: that caller records the `compact-failed` event.
-/// A `job.json` that does not parse gives a record with step `unknown`.
 pub fn claim_lost(dir: &Path) -> Result<Option<JobRecord>> {
     let path = dir.join(LOST_FILE);
     let body = serde_json::json!({ "at": crate::clock::now_stamp() }).to_string();
@@ -153,34 +115,23 @@ pub fn claim_lost(dir: &Path) -> Result<Option<JobRecord>> {
     Ok(claimed.then(|| read_job(dir).flatten().unwrap_or_else(JobRecord::unknown)))
 }
 
-/// Create `job.json` with `create_new`, so 2 jobs for 1 role cannot both
-/// run. The second gets `ErrorKind::AlreadyExists`.
 pub fn create_job(dir: &Path, job: &JobRecord) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(job).map_err(std::io::Error::other)?;
     create_new(&dir.join(JOB_FILE), &bytes)
 }
 
-/// Rewrite `job.json` atomically with the job's new step.
 pub fn write_step(dir: &Path, job: &JobRecord) -> Result<()> {
     let bytes = serde_json::to_vec(job)?;
     fsx::write_atomic(&dir.join(JOB_FILE), &bytes, fsx::PRIVATE_FILE)?;
     Ok(())
 }
 
-/// The child's exit: remove `job.json`, `heartbeat` and `spawned`. `job.log`
-/// stays.
 pub fn clear_on_exit(dir: &Path) {
     remove(dir, &[JOB_FILE, HEARTBEAT_FILE, SPAWNED_FILE]);
 }
 
-/// Under a `fsx::DirLock` in `<state_root>/compact/`: check liveness again;
-/// when Lost or None, remove `job.json`, `heartbeat`, `spawned` and `lost`
-/// (keep `job.log`), run `spawn`, write `spawned`. Live: return
-/// [`Started::AlreadyRunning`] and spawn nothing. So 2 callers cannot
-/// remove each other's new job.
 pub fn start_locked(dir: &Path, spawn: impl FnOnce() -> Result<u32>) -> Result<Started> {
     let _lock = lock_job_dir(dir)?;
-    // Wall clock: heartbeats and spawn times are real times.
     if liveness(dir, Utc::now()) == JobLiveness::Live {
         return Ok(Started::AlreadyRunning);
     }
@@ -189,7 +140,6 @@ pub fn start_locked(dir: &Path, spawn: impl FnOnce() -> Result<u32>) -> Result<S
     record_spawn(dir, spawn()?)
 }
 
-/// The start lock of `dir`, in the job dir's parent under the job dir's name.
 fn lock_job_dir(dir: &Path) -> Result<fsx::DirLockGuard> {
     let root = dir.parent().context("the job dir has no parent")?;
     let name = dir
@@ -205,7 +155,6 @@ fn lock_job_dir(dir: &Path) -> Result<fsx::DirLockGuard> {
     )?)
 }
 
-/// Write `spawned`: the parent started the child `pid` now.
 fn record_spawn(dir: &Path, pid: u32) -> Result<Started> {
     let spawned = Spawned {
         pid,
@@ -309,7 +258,6 @@ mod tests {
         for name in [JOB_FILE, HEARTBEAT_FILE, LOST_FILE, LOG_FILE] {
             let path = dir.join(name);
             std::fs::write(&path, b"old").unwrap();
-            // Old enough that the job counts as lost, not starting.
             let old = std::time::SystemTime::now() - Duration::from_secs(3600);
             std::fs::File::options()
                 .write(true)

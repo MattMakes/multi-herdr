@@ -36,13 +36,13 @@ class SkillTextTests(unittest.TestCase):
         self.assertIn("one-page design", fm["description"])
         self.assertIn("Stone Librande", read("SKILL.md"))
 
-    def test_trigger_match(self):  # spec-skill-workflow t1
+    def test_trigger_match(self):
         desc = front_matter()["description"].lower()
         for phrase in ("too long", "nobody reads", "wall", "one sheet",
                        "poster", "table-mat", "meeting"):
             self.assertIn(phrase, desc)
 
-    def test_trigger_ticket_deliverable(self):  # spec-skill-trigger-p2 t1
+    def test_trigger_ticket_deliverable(self):
         desc = front_matter()["description"].lower()
         self.assertIn("orchestrator ticket", desc)
         self.assertIn("deliverable", desc)
@@ -50,17 +50,17 @@ class SkillTextTests(unittest.TestCase):
         self.assertIn("a team or fleet task asks for a one-page design as its "
                       "output", body)
 
-    def test_trigger_one_pager(self):  # spec-skill-trigger-p2 t2
+    def test_trigger_one_pager(self):
         desc = front_matter()["description"].lower()
         self.assertIn("one-pager", desc)
         self.assertIn("must fit on one sheet", desc)
 
-    def test_scope_when_to_use(self):  # spec-skill-trigger-p2 b2
+    def test_scope_when_to_use(self):
         body = squash(read("SKILL.md"))
         self.assertIn("keep on a wall or a table and read it there", body)
         self.assertIn("grown too long for the people who must read it", body)
 
-    def test_trigger_exclusion(self):  # spec-skill-workflow t2, spec-skill-trigger-p2 t3
+    def test_trigger_exclusion(self):
         desc = front_matter()["description"].lower()
         self.assertIn("skip it when the output is a dashboard, a report or a "
                       "slide deck", desc)
@@ -68,13 +68,13 @@ class SkillTextTests(unittest.TestCase):
         self.assertIn("leave it out for slide decks, dashboards, status "
                       "reports and api reference documents", body)
 
-    def test_no_point_sentence(self):  # spec-skill-workflow t3
+    def test_no_point_sentence(self):
         body = squash(read("SKILL.md"))
         self.assertIn("do not make a page", body)
         self.assertIn("there is not yet a page to make", body)
         self.assertIn("ask them for the one point", body)
 
-    def test_drawn_way_without_image_source(self):  # spec-skill-workflow t4
+    def test_drawn_way_without_image_source(self):
         body = squash(read("SKILL.md"))
         self.assertIn("nothing on hand can make images", body)
         self.assertIn("exact and open to later edits", body)
@@ -110,21 +110,21 @@ class ContractTests(unittest.TestCase):
     def setUp(self):
         self.text = squash(read("references/page-contract.md"))
 
-    def test_picture_too_small(self):  # spec-page-contract t2
+    def test_picture_too_small(self):
         self.assertIn("covers at least half of the sheet", self.text)
         self.assertIn("35 percent", self.text)
 
-    def test_one_text_style_fails(self):  # spec-page-contract t3
+    def test_one_text_style_fails(self):
         self.assertIn("one text style only fails", self.text)
         self.assertIn("flavour italic, the rules upright and the numbers as a "
                       "small italic line", self.text)
 
-    def test_limits(self):  # spec-page-contract t1, t4
+    def test_limits(self):
         self.assertIn("at most 8 callouts", self.text)
         self.assertIn("at most 3 card sets", self.text)
         self.assertIn("never make fine print smaller than 6 pt", self.text)
 
-    def test_no_external_loads(self):  # spec-reword-doc-phrases-p3 b3
+    def test_no_external_loads(self):
         self.assertIn("fetches no style sheet, script or font from outside "
                       "its own file", self.text)
 
@@ -134,29 +134,29 @@ class PartsTests(unittest.TestCase):
         self.parts = squash(read("references/page-parts.md"))
         self.drawing = squash(read("references/drawing-parts.md"))
 
-    def test_timed_route(self):  # spec-visual-grammar t1
+    def test_timed_route(self):
         self.assertIn("map with numbered stops", self.parts)
         self.assertIn("minute ruler along the bottom edge", self.parts)
 
-    def test_crossed_attributes(self):  # spec-visual-grammar t2
+    def test_crossed_attributes(self):
         self.assertIn("an x in each unused cell", self.parts)
 
-    def test_screen_flow(self):  # spec-visual-grammar t3
+    def test_screen_flow(self):
         self.assertIn("how does one screen or menu lead to the next? "
                       "(only this) | a flowchart", self.parts)
         self.assertIn("only case for a flowchart", self.parts)
 
-    def test_wrong_ring(self):  # spec-visual-grammar t4
+    def test_wrong_ring(self):
         self.assertIn("use a ring only when that is true", self.parts)
         self.assertIn("refuse that shape and use a matrix or cards", self.parts)
 
-    def test_stacked_blocks(self):  # spec-drawing-parts t2
+    def test_stacked_blocks(self):
         self.assertIn("move each layer up by one block height", self.drawing)
         self.assertIn("draw the lowest block first and the highest block "
                       "last", self.drawing)
         self.assertIn("draw from back to front", self.drawing)
 
-    def test_leader_line_shape(self):  # spec-drawing-parts t3
+    def test_leader_line_shape(self):
         self.assertIn("it is straight or it has one bend", self.drawing)
         self.assertIn("it is never curved", self.drawing)
         self.assertIn("two leader lines never cross", self.drawing)
@@ -164,7 +164,7 @@ class PartsTests(unittest.TestCase):
         self.assertIn("100 drawing units for each inch", self.drawing)
         self.assertIn("all cards on one page use one layout", self.drawing)
 
-    def test_layer_view_box_rule(self):  # spec-drawing-parts t1 (text half)
+    def test_layer_view_box_rule(self):
         self.assertIn('viewbox="0 0 3000 2000"', self.drawing)
 
 
@@ -196,7 +196,7 @@ class RequestTests(unittest.TestCase):
     def setUp(self):
         self.text = read("references/illustrator-request.md")
 
-    def test_completed_form(self):  # spec-illustrator-request t1
+    def test_completed_form(self):
         example = self.text.split("## Filled example")[1].split("## When")[0]
         self.assertIn("View type: high oblique", example)
         for part in ("gears", "workbench", "pendulum"):
@@ -206,9 +206,9 @@ class RequestTests(unittest.TestCase):
         self.assertIn("NO TEXT", example)
         self.assertIn("2048 pixels", example)
         self.assertIn("accent colour only: orange", example.replace("\n", " "))
-        self.assertNotIn("<", example)  # every field is filled
+        self.assertNotIn("<", example)
 
-    def test_view_types_and_embed_step(self):  # spec-rewrite-picture-request-p4 t1
+    def test_view_types_and_embed_step(self):
         form = self.text.split("## Form")[1].split("## Filled example")[0]
         field = re.search(r"View type: <choose one: (.*)>", form).group(1)
         names = [part.split(" (")[0] for part in field.split(" | ")]
@@ -219,7 +219,7 @@ class RequestTests(unittest.TestCase):
                      "no separate image file"):
             self.assertIn(need, step)
 
-    def test_text_in_result(self):  # spec-illustrator-request t2
+    def test_text_in_result(self):
         text = squash(self.text)
         self.assertIn("open", text)
         self.assertIn("refuse it and send the same form again", text)
@@ -230,7 +230,7 @@ class PrinciplesTests(unittest.TestCase):
     def setUp(self):
         self.text = read("references/principles.md")
 
-    def test_mission_principle(self):  # spec-reference-principles t1
+    def test_mission_principle(self):
         section = squash(self.text.split("## A mission or quest")[1]
                          .split("\n## ")[0])
         for need in ("thumbnail", "italic story line", "central map",
@@ -238,14 +238,14 @@ class PrinciplesTests(unittest.TestCase):
                      "date", "flooded city"):
             self.assertIn(need, section)
 
-    def test_trade_off_regions(self):  # spec-reword-doc-phrases-p3 b4
+    def test_trade_off_regions(self):
         section = squash(self.text.split("## Roles that trade off")[1]
                          .split("\n## ")[0])
         for need in ("edges are the axes", "each region holds a single unit "
                      "group", "figure", "traits", "continuous trade-offs"):
             self.assertIn(need, section)
 
-    def test_credit_and_no_images(self):  # spec-reference-principles t2
+    def test_credit_and_no_images(self):
         self.assertIn("Librande", self.text)
         self.assertNotRegex(self.text, r"!\[|<img|\.png|\.jpe?g")
 

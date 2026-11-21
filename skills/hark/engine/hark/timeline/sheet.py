@@ -32,7 +32,6 @@ _INK_DARK = "#444444"
 _INK_PALE = "#777777"
 _RULE = "#bbbbbb"
 
-# Lane name -> (height in inches, title). Order here is the order on the page.
 _LANES = {
     "frames": (1.55, "frames"),
     "sections": (0.6, "sections"),
@@ -68,8 +67,6 @@ def _clock(t) -> str:
     return fmt_t(t)
 
 
-# ---------------------------------------------------------------- time axis
-
 def tick_step(span: float) -> float:
     """Smallest tick spacing that keeps the axis at 24 ticks or fewer (600 s past the table)."""
     return next((float(c) for c in _TICK_CHOICES if span / c <= _MAX_TICKS), 600.0)
@@ -88,8 +85,6 @@ def _tick_positions(low: float, high: float) -> tuple[numpy.ndarray, float]:
     start = numpy.ceil(low / step - 1e-9) * step
     return numpy.arange(start, high + 1e-9, step), step
 
-
-# ---------------------------------------------------------------- header text
 
 def _pct(x) -> str:
     return f"{100 * x:.0f}%"
@@ -154,8 +149,6 @@ def _header_inches(rows) -> float:
     return 0.22 + sum(row[1] * 1.45 / 72 for row in rows)
 
 
-# ---------------------------------------------------------------- label placement
-
 def _fits(row_spans, low: float, high: float) -> bool:
     return all(high <= s or low >= e for s, e in row_spans)
 
@@ -194,8 +187,6 @@ def _label_candidates(res: dict) -> list[tuple]:
         cands.append((rank, ev["t"], f"{ev['kind']}{mark} {ev['label']}"))
     return cands
 
-
-# ---------------------------------------------------------------- spectrogram maths
 
 def _triangle_bank() -> tuple[numpy.ndarray, numpy.ndarray]:
     """Unit-area triangular filters on log-spaced centres, and those centres."""
@@ -275,8 +266,6 @@ def _stroke(pane, x, y0, y1, **style) -> None:
     pane.plot([x, x], [y0, y1], **style)
 
 
-# ---------------------------------------------------------------- the drawing
-
 class _Page:
     """One sheet being drawn: page sizes, the result, and one axes per lane."""
 
@@ -333,8 +322,6 @@ class _Page:
             self.fig.text(0.008, 1 - y / self.height_in, text, **_AT_LEFT, fontsize=size,
                           fontweight=weight, color=colour)
             y += half
-
-    # ---- lanes
 
     def frames_lane(self, pane) -> int:
         from hark.timeline import video as vid
@@ -467,8 +454,6 @@ class _Page:
                         color=STATUS_COLOURS.get(it.get("status"), _FALLBACK_COLOUR), markeredgecolor="#333333",
                         markeredgewidth=0.4)
 
-    # ---- finishing touches
-
     def kind_chips(self, kinds) -> None:
         x = 1 - 8 / self.width
         small = 0.72 * self.pt
@@ -530,8 +515,6 @@ def build_figure(r: dict, m: numpy.ndarray, width: int):
     return page.fig, counts
 
 
-# ---------------------------------------------------------------- entry point
-
 def _mono(res: dict, path: str) -> numpy.ndarray:
     if res.get("has_audio", True):
         from hark.core import audio
@@ -577,8 +560,6 @@ def sheet(path, out_png=None, video=None, cues=None, start=None, end=None, detai
                text=line + "\n\nTimeline: " + res["summary"])
     return out
 
-
-# ---------------------------------------------------------------- CLI
 
 def _run_cli(args: argparse.Namespace) -> int:
     from hark.core.report import emit

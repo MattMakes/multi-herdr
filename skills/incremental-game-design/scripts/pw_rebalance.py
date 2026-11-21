@@ -30,28 +30,27 @@ HOUR = 3600.0
 KINDS = ("line", "reward", "system", "grant")
 ROLES = ("main", "support", "late", "permanent", "generator", "manual")
 LINE_FAMILIES = ("add", "pct", "mult", "cap")
-MAIN_TIMES = (60.0, 240.0)         # the unlocks of the main lines: m1 and m2 of worked example 2 (1.15, 3.83 min)
-MAIN_DEFAULT = 2                   # the first 2 multiplicative lines of the main currency are main by default
-COST_SECONDS = 20.0                # a line costs 20 s of the income at its unlock: the first purchase follows soon
-UNLOCK_LEAD = 10.0                 # the unlock comes 10 s before the slot, so the first purchase lands in the slot
-PLACE_ROUNDS = 3                   # the rounds of the unlock placement (each round runs active_greedy 1 time)
-BANK_SINK_VALUE = 1.1              # S02.levelled_factor d minimum: the floor step of each level (PV)
-BANK_SINK_GROWTH = 1.15            # S02.levelled_factor b minimum: PO1 to PO5 read each mult line on the economy
-BANK_CUR = "charge"                # the bank currency of the rebalance (the game may use another side currency)
-GEN_VALUE = 0.5                    # the value of the first generator (pw_design.GEN_VALUE, worked example 2)
-PERM_CAP = 1                       # the cap of a line of the reset currency that q cannot carry (a constant factor)
-SIDE_CAP = 1                       # the cap of an uncapped mult line of a side currency (a second clock, BM L7)
-DIFF_LIMIT = 0.20                  # the tolerance of PO2 between the formula and the simulation (pw_proof.DIFF_LIMIT)
-PO3_MARGIN = 1.05                  # the capped lines leave R after the caps 5% above 1 - p (PO3: s after the caps > 1)
-SOLVER_INPUTS = dict(               # the stated inputs of the rebalance (targets file, key targets.solver)
-    q_lines=0.5,                    # the largest share of q that the uncapped lines of the reset currency carry; the
-                                    # reset reward (1 + L)^q carries the rest (BM D8)
-    bank_levels=1,                  # the levels of the bank sink (a persistent constant factor)
-    line_first_cost=100.0,          # the first cost of a line that carries R: group 1 of worked example 2 (BM:398)
-    step_top=None)                  # the largest step of a line; None: the d max of S02.levelled_factor (2)
+MAIN_TIMES = (60.0, 240.0)
+MAIN_DEFAULT = 2
+COST_SECONDS = 20.0
+UNLOCK_LEAD = 10.0
+PLACE_ROUNDS = 3
+BANK_SINK_VALUE = 1.1
+BANK_SINK_GROWTH = 1.15
+BANK_CUR = "charge"
+GEN_VALUE = 0.5
+PERM_CAP = 1
+SIDE_CAP = 1
+DIFF_LIMIT = 0.20
+PO3_MARGIN = 1.05
+SOLVER_INPUTS = dict(
+    q_lines=0.5,
+    bank_levels=1,
+    line_first_cost=100.0,
+    step_top=None)
 
 
-FACTOR_TOL = 0.2                   # PO5 permits T_X within 20% of sigma (pw_proof.TX_TOLERANCE)
+FACTOR_TOL = 0.2
 
 
 class ContentError(Exception):
@@ -64,7 +63,6 @@ def check(bad, msg):
     raise ContentError(msg)
 
 
-# ----------------------------------------------------------------------------- the content file
 def read_content(path):
     try:
         data = _load(path)
@@ -178,7 +176,6 @@ def unlock_rank(e):
     return u.get("stage", 1000 + u.get("resets", 0) * 100 if u else 0)
 
 
-# ----------------------------------------------------------------------------- the plan of each element
 class Element:
     """1 element of the content, its role, its status, and the old and new value of each field."""
 
@@ -309,7 +306,6 @@ class Plan:
         return [x for x in self.els if x.status != "not fitted"]
 
 
-# ----------------------------------------------------------------------------- the structure of the game (ticket 47)
 STRUCTURE_RULES = ("stage_after_reset", "stage_test", "reset_gain_rounding")
 STRUCTURE_NAMES = STRUCTURE_RULES + ("reset_count", "cap:<line id>", "all")
 STRUCTURE_ROWS = {"stage_after_reset": "PO10, PC1, PC4", "stage_test": "PO10, PC1, PC4",
@@ -373,7 +369,7 @@ def structure_changes(plan, m):
 
 def rule_changes(plan, m):
     if not m.get("ladders"):
-        return []                       # a model with no stage ladder has no stage rule
+        return []
     have = model_structure(m)
     return [change(plan, k, RULE_TEXT[k][plan.structure[k]], RULE_TEXT[k][have[k]]) for k in STRUCTURE_RULES
             if plan.structure.get(k) is not None and have[k] != plan.structure[k]]
@@ -547,7 +543,6 @@ def spine_currencies(plan):
                  base_income=base)]
 
 
-# ----------------------------------------------------------------------------- step 2: the parameters
 def main_mults(plan):
     main = plan.cur["main"]
     return [x for x in plan.els if is_main_mult(x.e, main) and x.role == "main" and x.status != "not fitted"]
@@ -775,7 +770,6 @@ def feeds_spine(plan, x):
 
 
 
-# ----------------------------------------------------------------------------- identity of the lines
 def game_step(e):
     """The step of 1 level in the game: d of a mult line, 1 + v of a pct line, and 2 for an add line (its level 2
     doubles its own pool)."""
@@ -1017,7 +1011,7 @@ def generators(plan):
     return [y for y in plan.fitted() if fitter_key(y, plan) in GEN_KEYS]
 
 
-GEN_KEYS = ("main.add.gen", "main.manual", "main.add")   # each add line of the main income keeps the family add
+GEN_KEYS = ("main.add.gen", "main.manual", "main.add")
 
 
 def fit_gen(x, d, k):
@@ -1487,7 +1481,6 @@ FITTERS = {"main.add": fit_gen, "main.pct": fit_line, "main.mult.main": fit_line
            "reward": fit_reward, "system": fit_system, "grant": fit_grant}
 
 
-# ----------------------------------------------------------------------------- the model parts
 def stat_target(plan, stat):
     """The model currency of a game stat or currency, or the id of a purchase."""
     cur = plan.content.get("stats", {}).get(stat, stat)
@@ -1639,7 +1632,7 @@ def main_line_cost(plan, x):
     return x.e["cost"]["base"]
 
 
-SIDE_SPEND = 0.8                   # the single purchases of a side currency cost at most 80% of what the player earns
+SIDE_SPEND = 0.8
 
 
 def side_cost_scale(plan, cur):
@@ -1841,7 +1834,6 @@ def ladder_factor(plan):
     return math.prod(getattr(x, "factor", 1.0) for x in staged)
 
 
-# ----------------------------------------------------------------------------- step 3: the unlock points
 class LifeSim(Sim):
     """A Sim that also keeps the lifetime total of each currency in each sample."""
 
@@ -1880,7 +1872,7 @@ def is_q_line(x, plan):
     return is_line(x.e, plan.cur.get("reset")) and x.model.get("effect") == "mult"
 
 
-R_WINDOW = HOUR                    # a line of R opens in the first hour (BM section 6a item 4)
+R_WINDOW = HOUR
 
 
 def movable(plan):
@@ -1985,7 +1977,7 @@ def freeze_one(plan, gen_cost, i):
     plan.costs[i] = float("%.3g" % max(gen_cost, plan.income_at(t) * COST_SECONDS))
 
 
-REPAIR_STEPS = 200      # the most moves of the content repair
+REPAIR_STEPS = 200
 
 
 def content_slots(plan, sim, tv, t_end):
@@ -2053,7 +2045,7 @@ def move_into(k, times, content, wins, ctx):
     """Move the element at the start of gap k later, else the element at its end earlier. True when 1 moved."""
     t_end, tv = ctx
     pts = [0.0] + times + [t_end]
-    sides = [j for j in (k - 1, k) if 0 <= j < len(times)]   # the index in times of the element at each side
+    sides = [j for j in (k - 1, k) if 0 <= j < len(times)]
     moves = ((j, try_move(j, pts, wins.get(content[j][0]), tv)) for j in sides)
     j, new = next(((j, new) for j, new in moves if new is not None), (None, None))
     if j is not None:
@@ -2208,7 +2200,6 @@ def place_group(plan, group, where, ctx):
     plan.time_currency.update({x.id: cur for x in group})
 
 
-# ----------------------------------------------------------------------------- report parts
 def diff_rows(plan, m):
     """x.diff_rows: the fields of the model that differ from the game and that no row of the fit names: the first
     cost and the effects (a field-by-field diff of the content and the model)."""
@@ -2419,9 +2410,8 @@ def counts_line(plan):
             f"{bad} not fitted.")
 
 
-# ----------------------------------------------------------------------------- the identity check
 IDENTITY_FIELDS = ("step", "first cost", "cost ratio", "cap", "stat", "unlock", "currency")
-SHAPE_FIELDS = ("step", "cost ratio", "cap", "stat")      # the shape decides a finding; the unlock point does not
+SHAPE_FIELDS = ("step", "cost ratio", "cap", "stat")
 
 
 def line_traits(plan, p):
@@ -2430,7 +2420,7 @@ def line_traits(plan, p):
     e = p["effects"][0] if p["effects"] else {}
     x = plan.by_id.get(p["id"])
     stat = game_stat(x.e) if x is not None and e.get("kind") != "cap" else None
-    stat = stat or e.get("target")                                         # the stat that the game reads
+    stat = stat or e.get("target")
     return {"step": round(e.get("value", 0.0), 4), "first cost": float("%.3g" % p["base_cost"]),
             "cost ratio": round(p["cost_growth"], 4),
             "cap": p.get("max_level"), "stat": stat, "unlock": ", ".join(req_text(r) for r in p.get("requires") or [])
@@ -2475,12 +2465,11 @@ def pair(u, v):
     return dict(a=a, b=b, kind=kind, differs=[f for f in IDENTITY_FIELDS if ta[f] != tb[f]])
 
 
-# ----------------------------------------------------------------------------- the character of the content
-KEEP_TOL = 0.25                    # a field is kept when the design value is within 25% of the game value
-CHAR_KINDS = ("line", "reward")    # the elements with an effect value, a cap or a cost ratio
+KEEP_TOL = 0.25
+CHAR_KINDS = ("line", "reward")
 FIELD_ROWS = {"effect": ("value ratio", "value", "effects", "family", "cost and value", "all"),
               "cap": ("cap", "levels"), "cost ratio": ("cost ratio", "cost formula")}
-CHANGED_SHARE = 0.5                # a design that changes more than half of the elements is not ready
+CHANGED_SHARE = 0.5
 CHAR_REASON = "the rebalance does not keep the game"
 
 
@@ -2720,7 +2709,6 @@ def identity_lines(ident):
     return text + head + rows + [""]
 
 
-# ----------------------------------------------------------------------------- the field map and the rules
 FIELD_KIND = {"purchase": "line", "milestone": "reward", "side_system": "side system", "ladder": "stage rule",
               "prestige": "reset rule", "grant": "stage reward"}
 
@@ -2900,7 +2888,6 @@ def copy_model(m):
     return copy.deepcopy(m)
 
 
-# ----------------------------------------------------------------------------- the game as built (--as-built)
 BUILT_RESET_SYSTEM = "meta"
 
 
@@ -3045,7 +3032,7 @@ def built_ladder(content):
     check(not st.get("levels"), f"--as-built: the stages {st['id']} need levels (the count of stages)")
     req = dict(type=v.get("test", "rate"), currency=built_spine_stats(content)[0], base=v["base"], growth=v["growth"])
     if v.get("table"):
-        req["table"] = list(v["table"])     # the amounts of the first stages; growth goes on from the last entry
+        req["table"] = list(v["table"])
     lad = dict(id="stage", name="Stage {n}", system="main", count=st["levels"], excitement=3, requires=req)
     grants = [built_grant(content, g) for g in content["elements"] if g["kind"] == "grant" and
               (g.get("value") or {}).get("trigger", "stage") == "stage"]
@@ -3114,7 +3101,6 @@ def as_built_model(content):
     return m
 
 
-# ----------------------------------------------------------------------------- fitted means reached
 NOT_REACHED = "not reached: the active player of the simulator does not reach it before the hard end (PC5)"
 
 

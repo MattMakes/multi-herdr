@@ -32,21 +32,17 @@ from pathlib import Path
 from . import evidence, schema, task
 from .sweep import SEVERITIES
 
-RANK = {s: i for i, s in enumerate(SEVERITIES)}  # 0 is the most severe
+RANK = {s: i for i, s in enumerate(SEVERITIES)}
 SCANNER_FILES = ("sweep/acquire.jsonl", "sweep/discover.jsonl", "sweep/scan.jsonl")
 AUDIT = "sweep/audit.jsonl"
 OPAQUE = "sweep/opaque"
 
 PASS, ABORT, PENDING = "pass", "abort", "pending-audit"
 
-# SCR rules whose behavior is not legitimate in a skill: the plan removes it.
-# Every other SCR rule is rewritten, with access stated as a declared capability.
 SCR_REMOVE = frozenset({"SCR-03", "SCR-04", "SCR-05", "SCR-07", "SCR-09", "SCR-10", "SCR-12"})
-# SUP rules: replace with own standard-library code, or remove (never keep).
 SUP_REPLACE = frozenset({"SUP-01", "SUP-02", "SUP-03", "SUP-07"})
 ACQ_REMOVED = frozenset({"ACQ-01", "ACQ-02", "ACQ-03", "ACQ-04", "ACQ-05"})
 
-# A key that names a hit and a verb or field that would close or lower it.
 TARGET_KEYS = ("target", "id", "finding", "scan_id", "hit")
 DISPOSITION_LINE = re.compile(
     r"^[\s>*_#-]*disposition[\s*_]*:[\s*_`]*([a-z]+)", re.IGNORECASE | re.MULTILINE
@@ -56,8 +52,6 @@ DISPOSITION_LINE = re.compile(
 class TriageError(task.TaskError):
     pass
 
-
-# ---- inputs -------------------------------------------------------------------
 
 def _jsonl(path: Path) -> list[str]:
     if not path.is_file():
@@ -87,8 +81,6 @@ def skill_of(file: str | None, skills: list[dict]) -> str | None:
             best = (s["name"], rel)
     return best[0] if best else None
 
-
-# ---- the auditor's lines ---------------------------------------------------------
 
 def _line_schema(kind: str) -> dict:
     root = schema.load_schema("audit-line")
@@ -154,8 +146,6 @@ def parse_audit(path: Path, scanner: dict[str, dict]) -> dict:
     return out
 
 
-# ---- merge ----------------------------------------------------------------------------
-
 def merge(hits: list[dict], audit: dict, skills: list[dict]) -> list[dict]:
     """The merged findings, each with a schema id `<rule>#<n>` (n counts from 1)."""
     raises: dict[str, list[dict]] = {}
@@ -202,8 +192,6 @@ def merge(hits: list[dict], audit: dict, skills: list[dict]) -> list[dict]:
     return [{"id": f"{r['rule']}#{i}", **r} for i, r in enumerate(rows, 1)]
 
 
-# ---- plan -------------------------------------------------------------------------------
-
 def opaque_disposition(c: Path, scan_id: str | None) -> str | None:
     """`replace` or `remove` from sweep/opaque/<scan id>.md, or None.
 
@@ -239,7 +227,7 @@ def plan_one(f: dict, c: Path) -> tuple[str, str]:
             return d, "planned"
         if rule == "OPQ-06":
             return "remove", "planned"
-        return "remove", "unresolved"  # a missing auditor disposition fails GATE 1
+        return "remove", "unresolved"
     if family == "AUD":
         d = f.get("audit_disposition", "rewrite")
         if d == "none":
@@ -259,8 +247,6 @@ def plan(findings: list[dict], c: Path) -> list[dict]:
         })
     return entries
 
-
-# ---- GATE 1 ----------------------------------------------------------------------------
 
 def gate(findings: list[dict], entries: list[dict], licence: dict, skills: list[dict],
          audit_present: bool) -> tuple[str, list[str]]:
@@ -302,8 +288,6 @@ def summary(findings: list[dict], entries: list[dict], result: str, reasons: lis
         "skills": per_skill, "purposes": audit["purposes"],
     }
 
-
-# ---- the stage ----------------------------------------------------------------------------
 
 def run(t: task.Task) -> dict:
     """Run triage on a task. Writes findings.json, mitigation.json, summary.json

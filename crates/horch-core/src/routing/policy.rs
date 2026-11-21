@@ -1,24 +1,13 @@
-//! Telemetry and balancing settings: `<state root>/policy.json` (design
-//! section 10).
-//!
-//! Every key has a compiled default, so the file is optional and may name
-//! only what it changes. An unknown key is an error that names the key: a
-//! typo must not silently keep a default.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
-/// How the spawn gate acts on pool states (OD1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BalanceMode {
-    /// Substitute or refuse as section 13.4 says.
     Auto,
-    /// Print a NOTE, never substitute or refuse.
     Advise,
-    /// Say nothing.
     Off,
 }
 
@@ -88,10 +77,8 @@ pub fn path(state_root: &Path) -> PathBuf {
 
 impl Policy {
     pub fn parse(text: &str) -> Result<Policy> {
-        let policy: Policy = serde_json::from_str(text).map_err(|e| {
-            // serde names the unknown field; keep its words.
-            anyhow::anyhow!("policy.json: {e}")
-        })?;
+        let policy: Policy =
+            serde_json::from_str(text).map_err(|e| anyhow::anyhow!("policy.json: {e}"))?;
         policy.validate()?;
         Ok(policy)
     }
@@ -138,9 +125,6 @@ mod tests {
         assert!(err.contains("tight_usd"), "{err}");
     }
 
-    /// Each rule of `validate` refuses on its own. `tight_used: 1.5` also
-    /// breaks the cross-field rule, so the range rule needs inputs that
-    /// break no other.
     #[test]
     fn quo_05_each_validation_rule_refuses_alone() {
         for (text, why) in [
@@ -165,7 +149,6 @@ mod tests {
             let err = Policy::parse(text).unwrap_err().to_string();
             assert_eq!(err, format!("policy.json: {why}"), "{text}");
         }
-        // The edges of every rule are valid.
         let edge = r#"{"tight_used": 0, "exhausted_used": 0, "pace_min_used": 1, "tick_ms": 100}"#;
         let p = Policy::parse(edge).unwrap();
         assert_eq!(

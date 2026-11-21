@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Prepares a release for .github/workflows/auto-release.yml.
-#
-# Usage: scripts/release-prepare.sh patch|minor|major
-#
-# When CHANGELOG.md has no entries under "## Unreleased", prints nothing and
-# changes nothing: the merge was not user-visible, so it is not a release.
-# Otherwise it bumps [workspace.package] version in Cargo.toml (and the
-# workspace crates in Cargo.lock), renames "## Unreleased" to
-# "## vX.Y.Z - YYYY-MM-DD" under a new empty "## Unreleased", and prints
-# X.Y.Z.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,7 +22,6 @@ case $bump in
   *) echo "unknown bump '$bump'" >&2; exit 2 ;;
 esac
 
-# Only the version line inside [workspace.package].
 awk -v v="$next" '
   /^\[workspace\.package\]/ { p = 1 }
   /^\[/ && !/^\[workspace\.package\]/ { p = 0 }

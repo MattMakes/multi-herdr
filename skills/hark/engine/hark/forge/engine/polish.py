@@ -31,7 +31,6 @@ RING_SMOOTH_DB = 2.0
 HARD_AT = 0.5
 GATE_DB = {"designed": -30.0, "gated": -12.0}
 
-# key: (bad, abs, margin, scale, kind, cap)
 RULES: dict[str, tuple] = {
     "clicks": (1, 0.0, 0.0, 1.0, "hard", 2.0),
     "edge_db": (1, -40.0, 6.0, 10.0, "hard", 2.0),
@@ -47,7 +46,6 @@ RULES: dict[str, tuple] = {
     "evolution_db": (-1, None, 0.35, None, "soft", 2.0),
 }
 
-# key: (bad, kind, margin, scale)
 POLISH: dict[str, tuple] = {
     "attack_ms": (1, "log", 1.5, 1.0),
     "onset_hf_db": (-1, "db", 4.0, 6.0),
@@ -59,8 +57,6 @@ POLISH: dict[str, tuple] = {
 PRINT_KEYS = ("clicks edge_db fold nyq_db dc_db res_db res_hz ring_z trunc_db silence_ms clip_runs evolution_db "
               "attack_ms onset_hf_db bump_db t40_ms crest_db").split()
 
-
-# ---------------------------------------------------------------- helpers
 
 def _as_array(sig: Any) -> np.ndarray:
     if isinstance(sig, (str, os.PathLike)):
@@ -106,8 +102,6 @@ def _fit_slope(vals_y: np.ndarray, step: float) -> float:
     tm = np.arange(len(vals_y)) * step
     return float(np.polyfit(tm, vals_y, 1)[0])
 
-
-# ---------------------------------------------------------------- clicks
 
 def _spike_share(curv: np.ndarray, ky: int) -> np.ndarray:
     fs = curv[: ky * 48].reshape(ky, 48) ** 2
@@ -163,8 +157,6 @@ def _streak_centres(flagged: np.ndarray) -> list[float]:
 def _click_centres(lev: np.ndarray, lev2: np.ndarray, spiky: np.ndarray, gate_db: float) -> list[float]:
     return _streak_centres(_click_mask(lev, lev2, spiky, gate_db))
 
-
-# ---------------------------------------------------------------- aliasing
 
 class _FoldScan:
     """Shared state of the aliasing detector."""
@@ -359,8 +351,6 @@ def aliasing(x: Any, nfft: int = 4096, hop: int = 1024, frames: int = 64, legacy
     return {"fold": round(fold_v, 3), "harmonic_frames": n_harm, "nyq_db": round(air_db, 1)}
 
 
-# ---------------------------------------------------------------- dc, resonances, evolution
-
 def dc(x: Any) -> dict:
     """DC offset and infrasound share."""
     mono = _one_channel(x)
@@ -456,8 +446,6 @@ def evolution(x: Any, G: np.ndarray | None = None) -> dict:
         return {"evolution_db": None, "centroid_oct": None}
     return {"evolution_db": round(evo_v, 2), "centroid_oct": _centre_range(lin, busy)}
 
-
-# ---------------------------------------------------------------- ring
 
 def _db_spectrum(chunk: np.ndarray, fft_n: int) -> tuple[np.ndarray, np.ndarray]:
     wv = chunk * np.hanning(len(chunk))
@@ -565,8 +553,6 @@ def ring(x: Any, legacy: bool = False) -> dict:
     return {"ring_z": None, "ring_ms": round(per_ms, 2), "ring_raw_z": round(zv, 1), "ring_src": reason}
 
 
-# ---------------------------------------------------------------- truncated, silence, clipping
-
 def _cut_db(lev: np.ndarray, pk_ix: int, stop: float) -> float | None:
     tail_part = lev[max(pk_ix, len(lev) - 38):len(lev) - 8]
     rate = _fit_slope(tail_part, 0.005) if len(tail_part) >= 4 else 0.0
@@ -624,8 +610,6 @@ def clipping(x: Any) -> dict:
         streaks += sum(1 for f0v in _streaks(flat_mask) if f0v >= 2)
     return {"clip_runs": streaks, "overs": n_over}
 
-
-# ---------------------------------------------------------------- polish measures
 
 def _rise_frames(mono: np.ndarray, cnt: int) -> tuple[int, int]:
     """The 10 % and 90 % frames (0.25 ms) of the onset."""
@@ -733,8 +717,6 @@ def measure(x: Any, G: np.ndarray | None = None) -> dict:
     acc.update(evolution(lhs, G))
     return acc
 
-
-# ---------------------------------------------------------------- PolishRef
 
 def _under_cost(val: float, refv: list, slack: float, maxc: float, sev: str) -> tuple[float, float | None, str]:
     """Penalty of a measure where low is bad, against the refs' median."""

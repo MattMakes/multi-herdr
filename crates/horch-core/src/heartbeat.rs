@@ -1,12 +1,3 @@
-//! The 1 liveness scheme of horch's background jobs, such as the compaction
-//! job (CTX-15).
-//!
-//! The job rewrites a [`Heartbeat`] file in its job dir every
-//! [`HEARTBEAT_EVERY`] ([`start`]). A reader asks [`liveness`] whether the
-//! job still runs: a fresh heartbeat whose pid is still the job, or a spawn
-//! so recent that the first beat may not be written yet. Each job keeps its
-//! own result files and its own state type on top of this.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,30 +9,20 @@ use serde::{Deserialize, Serialize};
 use crate::fsx;
 use crate::procid;
 
-/// The heartbeat file in a job dir.
 pub const HEARTBEAT_FILE: &str = "heartbeat";
 
-/// How often the job rewrites its heartbeat.
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
 
-/// A heartbeat older than this, or a job that never wrote one this long
-/// after its spawn, is lost.
 pub const STALE_AFTER: Duration = Duration::from_secs(30);
 
-/// `heartbeat`: the job is alive at `at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Heartbeat {
     pub pid: u32,
     pub at: String,
-    /// The job's [`procid::start_time`]. With it, a pid that ended and was
-    /// given to another program is not the job: not alive, not killed.
-    /// `None` in a heartbeat written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<u64>,
 }
 
-/// The heartbeat in `dir`, and whether its pid runs with its start time
-/// ([`procid::alive`]). Never writes.
 pub fn read(dir: &Path) -> (Option<Heartbeat>, bool) {
     let hb: Option<Heartbeat> = std::fs::read(dir.join(HEARTBEAT_FILE))
         .ok()
@@ -50,20 +31,13 @@ pub fn read(dir: &Path) -> (Option<Heartbeat>, bool) {
     (hb, alive)
 }
 
-/// What the heartbeat says about a job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Liveness {
-    /// Nothing was spawned.
     NotStarted,
-    /// The job is alive. `pid` is 0 until the first heartbeat.
     Running { pid: u32 },
-    /// No live, fresh heartbeat.
     Lost,
 }
 
-/// Pure: heartbeat fresh and pid alive → running; a heartbeat otherwise →
-/// lost; no heartbeat and spawned less than `stale_after` ago → running;
-/// not spawned → not started; else lost.
 pub fn liveness(
     hb: Option<&Heartbeat>,
     pid_alive: bool,
@@ -88,7 +62,6 @@ pub fn liveness(
     }
 }
 
-/// The running heartbeat writer of [`start`]. Dropping it stops the writer.
 #[derive(Debug)]
 pub struct Beat {
     stop: Arc<AtomicBool>,
@@ -96,7 +69,6 @@ pub struct Beat {
 }
 
 impl Beat {
-    /// Stop the writer and wait for its thread.
     pub fn stop(mut self) {
         self.halt();
     }
@@ -115,10 +87,6 @@ impl Drop for Beat {
     }
 }
 
-/// Write `heartbeat` in `dir` once now, then rewrite it every
-/// [`HEARTBEAT_EVERY`] until the [`Beat`] is stopped or dropped. The first
-/// beat is written before this returns: a job that ends before the thread
-/// first runs still leaves a heartbeat.
 pub fn start(dir: &Path) -> Beat {
     let dir: PathBuf = dir.to_path_buf();
     let pid = std::process::id();
@@ -142,15 +110,10 @@ pub fn start(dir: &Path) -> Beat {
     }
 }
 
-/// Write one heartbeat for `pid` in `dir`.
 fn beat(dir: &Path, pid: u32) {
     let hb = Heartbeat {
         pid,
-        // A reader kills this job only while its pid has this start time:
-        // never a later program that was given the pid.
         started: procid::start_time(pid),
-        // Wall-clock, never a pinned HORCH_NOW: the reader compares it with
-        // real file times.
         at: crate::clock::stamp(Utc::now()),
     };
     if let Ok(bytes) = serde_json::to_vec(&hb) {
@@ -177,8 +140,6 @@ mod tests {
         );
     }
 
-    /// The first heartbeat exists when `start` returns, even when the job
-    /// stops at once and the thread never beats.
     #[test]
     fn heartbeat_is_written_before_start_returns() {
         let tmp = tempfile::tempdir().unwrap();

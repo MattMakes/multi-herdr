@@ -1,11 +1,3 @@
-//! SPC-03: the collector start handshake. `horch telemetry ensure` does not
-//! wait for the collector it starts, so a slow start is no failure and loses
-//! no event, and a start that never runs is reported and started again by
-//! the next `ensure`.
-//!
-//! A stand-in herdr wraps the fake one and puts a shell prefix before every
-//! `pane run` command: `/bin/sleep 8;` for a slow start (the sealed `PATH` has no `sleep`), `exit 3;` for a start
-//! that never runs. The old `ensure` waited a fixed 5 s, so it failed both.
 #![cfg(unix)]
 
 use std::path::Path;
@@ -25,8 +17,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A herdr that runs every `pane run` command after the shell `prefix`.
-/// Every other call goes to the fake herdr unchanged.
 fn prefixed_herdr(h: &mut Harness, prefix: &str) {
     let real = h.bin.join("herdr");
     let script = format!(
@@ -43,8 +33,6 @@ fn prefixed_herdr(h: &mut Harness, prefix: &str) {
     h.set("HORCH_HERDR_BIN", path.to_string_lossy());
 }
 
-/// One Claude record and its transcript with 1 response, all stamped now,
-/// so retention keeps them whatever the date.
 fn one_session(h: &Harness) {
     let now = horch_core::clock::stamp(horch_core::clock::now());
     let record = serde_json::json!([{
@@ -61,7 +49,6 @@ fn one_session(h: &Harness) {
     std::fs::write(dir.join(format!("{SESSION}.jsonl")), response("msg_early")).unwrap();
 }
 
-/// 1 assistant line of the session, with message id `id`.
 fn response(id: &str) -> String {
     let now = horch_core::clock::stamp(horch_core::clock::now());
     let line = serde_json::json!({
@@ -74,7 +61,6 @@ fn response(id: &str) -> String {
     format!("{line}\n")
 }
 
-/// The message ids in the event store.
 fn stored(h: &Harness) -> Vec<String> {
     horch_core::telemetry::store::read_all(&h.state.join("telemetry"))
         .into_iter()
@@ -82,7 +68,6 @@ fn stored(h: &Harness) -> Vec<String> {
         .collect()
 }
 
-/// Stops the collector when dropped, after an outstanding start ends.
 struct CollectorGuard(std::path::PathBuf);
 
 impl Drop for CollectorGuard {
@@ -91,15 +76,12 @@ impl Drop for CollectorGuard {
         while self.0.join("telemetry/start.json").exists() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(100));
         }
-        // The kill syscall, not a `kill` program: a fork can fail on a
-        // loaded machine, and then nothing is signalled.
         if let Some((pid, start)) = collector(&self.0) {
             horch_core::procid::signal_same(pid, start, libc::SIGTERM);
         }
     }
 }
 
-/// The recorded collector's pid and start time.
 fn collector(state: &Path) -> Option<(u32, u64)> {
     let text = std::fs::read_to_string(state.join("telemetry/collector.json")).ok()?;
     let record: Value = serde_json::from_str(&text).ok()?;
@@ -107,7 +89,6 @@ fn collector(state: &Path) -> Option<(u32, u64)> {
     Some((pid, record["pid_start"].as_u64()?))
 }
 
-/// Wait until a live collector holds the lock and has ended its start.
 fn wait_started(h: &Harness) {
     let start = h.state.join("telemetry/start.json");
     harness::wait_for_or(
@@ -121,9 +102,6 @@ fn wait_started(h: &Harness) {
     );
 }
 
-/// SPC-03: a collector that takes 8 s to start is no failure. `ensure`
-/// exits 0 at once, a second `ensure` sees the start in progress and starts
-/// no other, and an event written before the collector runs is stored.
 #[test]
 fn spc_03_a_slow_collector_start_loses_no_event() {
     let mut h = Harness::new("tstart-slow");
@@ -139,16 +117,12 @@ fn spc_03_a_slow_collector_start_loses_no_event() {
         "{}",
         text(&out)
     );
-    // The collector process sleeps: no lock yet, so this event happens
-    // before any collector runs.
     let transcript = h
         .home
         .join(format!(".claude/projects/-work-slow/{SESSION}.jsonl"));
     let mut lines = std::fs::read_to_string(&transcript).unwrap();
     lines.push_str(&response("msg_late"));
     std::fs::write(&transcript, lines).unwrap();
-    // A second `ensure` starts no other: the start is in progress, or the
-    // collector is live by now.
     let again = h.run(&["telemetry", "ensure"]);
     assert!(again.status.success(), "{}", text(&again));
     let says = String::from_utf8_lossy(&again.stdout);
@@ -176,10 +150,6 @@ fn spc_03_a_slow_collector_start_loses_no_event() {
     assert_eq!(creates, 1, "1 start, never a second one");
 }
 
-/// SPC-03: a start whose process never runs is no failure of that `ensure`.
-/// While it is young the next call reports it starting; once it is older
-/// than the bound, the next `ensure` reports it failed and starts the
-/// collector again, in the same workspace.
 #[test]
 fn spc_03_a_start_that_never_runs_is_reported_and_retried() {
     let mut h = Harness::new("tstart-dead");
@@ -199,7 +169,6 @@ fn spc_03_a_start_that_never_runs_is_reported_and_retried() {
         text(&again)
     );
 
-    // The start is now older than the bound.
     let file = std::fs::File::options().write(true).open(&request).unwrap();
     let old = horch_core::telemetry::start::UNSEEN_AFTER + Duration::from_secs(60);
     file.set_modified(SystemTime::now() - old).unwrap();
@@ -226,8 +195,6 @@ fn spc_03_a_start_that_never_runs_is_reported_and_retried() {
     );
 }
 
-/// Write a start request for pane `w9:p1`, `age` old, and optionally a
-/// marker of the same id with pid `marker_pid`.
 fn failed_start(h: &Harness, age: Duration, marker_pid: Option<u32>) {
     use horch_core::telemetry::start;
     let request = start::Request {
@@ -259,9 +226,6 @@ fn failed_start(h: &Harness, age: Duration, marker_pid: Option<u32>) {
     }
 }
 
-/// SPC-03: `horch quota` reports a failed collector start on stderr: a
-/// request no process marked within the bound, and a marker whose pid
-/// ended. A start in progress is not reported, and `--json` stays JSON.
 #[test]
 fn spc_03_quota_reports_a_failed_collector_start() {
     let h = Harness::new("tstart-quota");

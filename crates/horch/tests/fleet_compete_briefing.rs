@@ -1,6 +1,3 @@
-//! FDS-14: `herdr-run` is the old `herdr-fleet` launcher, and `horch install`
-//! installs it. The briefing tests (FDS-13) live in `cmd/recipes.rs`.
-
 use std::path::PathBuf;
 
 fn repo_file(rel: &str) -> String {

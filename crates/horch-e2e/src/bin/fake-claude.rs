@@ -1,22 +1,3 @@
-//! A recording stand-in for the `claude` CLI.
-//!
-//! Two jobs:
-//! - As a pane agent (`horch pane-launch` / `horch worker`): record argv and
-//!   exit 0.
-//! - As the quota probe (`-p --input-format stream-json ...`): read control
-//!   requests from stdin and answer `get_usage` in the shape Claude Code
-//!   2.1.284 ships.
-//!
-//! Violations: any stdin line of `"type":"user"` (the probe must never start
-//! a model turn), and `ANTHROPIC_API_KEY` in the environment.
-//!
-//! Scenarios: `usage_ok`, `usage_exhausted` (the default for a probe),
-//! `usage_scoped`, `usage_hang` (or `hang`), `usage_garbage` (or `error`).
-//!
-//! `inspect_skills`: a pane launch also writes the `skills/` dir of each
-//! `--plugin-dir`, the plugin manifest names and the `--settings` value to
-//! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
-
 use std::io::BufRead;
 use std::path::Path;
 
@@ -25,7 +6,6 @@ use serde_json::{json, Value};
 
 fn main() {
     let mut call = Call::start("claude");
-    // The operator's rule (CLAUDE.md): nothing horch starts carries the key.
     if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
         call.violate("ANTHROPIC_API_KEY present in the environment");
     }
@@ -48,8 +28,6 @@ fn main() {
         call.flush();
         return;
     }
-    // Written now, and again per line: a probe that times out kills us, so
-    // the log may hold several lines for one pid. The last one is complete.
     call.flush();
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
@@ -75,7 +53,6 @@ fn main() {
                     .to_string());
                 }
                 s => {
-                    // Noise first: a real session prints its init line.
                     say(
                         &json!({"type":"system","subtype":"init","session_id":"probe"}).to_string(),
                     );
@@ -89,8 +66,6 @@ fn main() {
     call.flush();
 }
 
-/// The `get_usage` success payload. Identity fields are included on purpose:
-/// TEL-11 proves horch drops them.
 fn payload(scenario: &str) -> Value {
     let (five, seven, scoped) = match scenario {
         "usage_ok" => (12, 40, 5),
@@ -149,10 +124,6 @@ fn inspect_skills(argv: &[String]) {
     );
 }
 
-/// `claude update`: record the call, then answer as the scenario says.
-/// `update_fail:claude` exits 1 with a coloured error line, and
-/// `update_hang:claude` sleeps 60 s first. Otherwise it prints 1 line and
-/// exits 0.
 fn update(call: &Call) -> ! {
     call.flush();
     if horch_e2e::scenario_has("update_fail:claude") {

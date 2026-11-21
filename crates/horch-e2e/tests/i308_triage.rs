@@ -1,6 +1,3 @@
-//! Worktree triage at the CLI seam (#308): the real `horch` binary, a git
-//! repository and a ledger file in a temp dir.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -47,7 +44,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     out(&o).trim().to_string()
 }
 
-/// A worktree `.worktrees/<name>` that no ledger row names, with 1 commit.
 fn folder(h: &Harness, name: &str) -> PathBuf {
     let path = h.project.join(".worktrees").join(name);
     git_in(
@@ -154,7 +150,6 @@ fn finish_queues_a_task_that_inherits_the_worktree_and_wakes_the_orchestrator() 
         .filter_map(|e| e["text"].as_str())
         .find(|t| t.contains("worktree triage queued T-1 (FINISH)"));
     assert!(woke.is_some(), "{events:#}");
-    // The task's worktree has a worker coming: it is no longer parked.
     assert_eq!(triage_json(&h)["rows"], serde_json::json!([]));
 }
 
@@ -182,8 +177,6 @@ fn archive_restore_and_gc_through_the_cli() {
     );
 }
 
-/// A run `alpha` with task T-1 claimed by a worker that made the worktree
-/// `T1-f` and committed in it. Returns the worker id and the path.
 fn claimed_worktree(h: &Harness) -> (String, PathBuf) {
     ok(h, &["ledger", "run", "new", "alpha"]);
     let dir = h.project.join("tickets");
@@ -229,7 +222,6 @@ fn run_close_refuses_while_a_parked_worktree_has_no_decision() {
     let h = world("i308-close");
     let (_, path) = claimed_worktree(&h);
     ok(&h, &["ledger", "cancel", "T-1", "not needed now"]);
-    // A parked worktree with no decision leaves the run unsettled (TRF-15).
     let o = h.run(&["ledger", "status"]);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o));
     let status = out(&o);
@@ -241,7 +233,6 @@ fn run_close_refuses_while_a_parked_worktree_has_no_decision() {
     assert!(err.contains("horch worktree triage"), "{err}");
     let r = reply(&h, &[("W1", &name_of(&path), "KEEP", "")]);
     ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
-    // Run close also needs a passing gate on the run-branch tip (TRF-20).
     ok(&h, &["ledger", "run", "gate", "--check", "true"]);
     let said = ok(&h, &["ledger", "run", "close"]);
     assert!(said.contains("Run alpha closed as done."), "{said}");
@@ -255,7 +246,6 @@ fn run_close_abandon_cancels_then_refuses_until_the_worktree_is_decided() {
     assert!(!o.status.success(), "{}", text(&o));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("horch worktree triage"), "{err}");
-    // The cancel stands; the run stays active until the decision.
     let t: Value = serde_json::from_str(&ok(&h, &["ledger", "show", "T-1", "--json"])).unwrap();
     assert_eq!(t["task"]["status"], "cancelled", "{t:#}");
     let rows = triage_json(&h);

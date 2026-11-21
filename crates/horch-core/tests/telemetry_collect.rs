@@ -1,6 +1,3 @@
-//! Collector ticks over the fixture corpus: every ledger, every agent, the
-//! crash window, and the snapshot totals from `EXPECTED.md`.
-
 mod common;
 
 use std::collections::BTreeSet;
@@ -67,7 +64,6 @@ fn tel_01_every_agent_is_read() {
             "{unread:?}"
         );
     }
-    // An unread record contributes no events, never a zero row.
     assert!(!ev
         .iter()
         .any(|e| e.record_id == "rec-a6" || e.record_id == "rec-b4"));
@@ -100,7 +96,6 @@ fn tel_08_kind_and_phase_on_events() {
     let a2 = ev.iter().find(|e| e.record_id == "rec-a2").unwrap();
     assert_eq!(a2.kind, "worker");
     assert_eq!(a2.phase.as_deref(), Some("implementation"));
-    // The fixture ledger predates the `plan` field; the task names the plan.
     assert_eq!(a2.plan.as_deref(), Some("golden-prompts-whitespace"));
     assert_eq!(a2.teammate, "sonnet");
     assert_eq!(a2.effort.as_deref(), Some("medium"));
@@ -140,7 +135,6 @@ fn expected_md_whole_file_totals() {
         .find(|r| r.key == "orchestrator")
         .unwrap();
     assert!(close(orch.cost_usd, 0.067428));
-    // The orchestrator is working, so it is live; it sorts first.
     assert_eq!(snap.live[0].record_id, "rec-o1");
     assert!(snap.live.iter().any(|l| l.record_id == "rec-a6" && l.idle));
     assert_eq!(
@@ -149,7 +143,6 @@ fn expected_md_whole_file_totals() {
     );
     let share = snap.insights.orchestrator_share.unwrap();
     assert!(close(share, 0.067428 / 0.1459586), "{share}");
-    // A refusal line in the orchestrator's transcript reached the quota file.
     assert_eq!(
         snap.pools["claude"].refusal_seen_at.as_deref(),
         Some("2026-09-28T17:05:00Z")
@@ -186,7 +179,6 @@ fn tel_07_crash_between_append_and_cursor() {
         store::load_cursors(&dir).is_empty(),
         "cursors were never saved"
     );
-    // Restart: everything is re-read from 0, and the repeats are dropped.
     tick(&w);
     tick(&w);
     let ev = events(&w);
@@ -228,7 +220,6 @@ fn tel_11_no_content_or_identity_in_the_state_dir() {
     }
 }
 
-/// A ledger with 1 Claude record for session `sid`, last updated at `updated`.
 fn ledger_with(w: &World, name: &str, sid: &str, updated: &str) {
     let ledger = serde_json::json!([{
         "record_id": format!("rec-{name}"), "session_id": sid, "agent": "claude", "tier": "sonnet",
@@ -238,7 +229,6 @@ fn ledger_with(w: &World, name: &str, sid: &str, updated: &str) {
     std::fs::write(w.state.join(format!("-{name}.json")), ledger.to_string()).unwrap();
 }
 
-/// A Claude assistant line with usage, from the A2 fixture, as message `id`.
 fn assistant_line(w: &World, id: &str) -> String {
     let text = std::fs::read_to_string(
         w.home
@@ -258,10 +248,6 @@ fn at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
     now() + chrono::Duration::seconds(seconds)
 }
 
-/// NFR-02: a search for a transcript walks the transcript trees, so a
-/// session with no transcript is not searched on every tick. A fresh record
-/// (a new spawn) is searched every tick, and its transcript is read on the
-/// tick it appears. An older one waits `SEARCH_AGAIN_S` between searches.
 #[test]
 fn nfr_02_a_record_with_no_transcript_is_not_searched_every_tick() {
     use horch_core::telemetry::collect::SEARCH_AGAIN_S;
@@ -292,7 +278,6 @@ fn nfr_02_a_record_with_no_transcript_is_not_searched_every_tick() {
     c.tick(at(SEARCH_AGAIN_S + 3)).unwrap();
     assert_eq!(c.searches - before, again + 1, "the old one waits again");
 
-    // The fresh record's transcript appears: read on that tick.
     let dir = w.home.join(".claude/projects/-work-new");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -305,9 +290,6 @@ fn nfr_02_a_record_with_no_transcript_is_not_searched_every_tick() {
     assert!(!snap.unread.iter().any(|u| u.record_id == "rec-new"));
 }
 
-/// A found transcript is kept across ticks while it is a file. When it
-/// moves, the collector searches again, reads it at its new place, and the
-/// store drops what it already holds.
 #[test]
 fn a_cached_transcript_that_moves_is_found_again() {
     let w = world(Part::Whole);
@@ -349,8 +331,6 @@ fn a_cached_transcript_that_moves_is_found_again() {
         .any(|e| e.event_id == "msg_w15_moved" && e.record_id == "rec-a2"));
 }
 
-/// NFR-02: a tick with no new input rewrites no cursor file (it held 1,534
-/// cursors, 2 MB, on the operator's Mac).
 #[cfg(unix)]
 #[test]
 fn a_quiet_tick_does_not_rewrite_the_cursors() {
@@ -381,9 +361,6 @@ fn a_quiet_tick_does_not_rewrite_the_cursors() {
     );
 }
 
-/// NFR-02: a tick whose snapshot content is the same as the file's (all but
-/// `generated_at`) does not rewrite `snapshot.json`. A tick with a new event
-/// rewrites it. The file is compact JSON, and `Snapshot::read` reads it.
 #[cfg(unix)]
 #[test]
 fn nfr_02_an_unchanged_snapshot_is_not_rewritten() {
@@ -404,7 +381,6 @@ fn nfr_02_an_unchanged_snapshot_is_not_rewritten() {
         (first.generated_at.clone(), first.live.len())
     );
 
-    // 1 s earlier: no event crosses a window start (2 s later, one leaves 5h).
     let quiet = c.tick(at(-1)).unwrap();
     assert_eq!(ino(&path), before, "a quiet tick keeps the snapshot file");
     assert_eq!(c.timing.written("snapshot"), 0);
@@ -417,7 +393,6 @@ fn nfr_02_an_unchanged_snapshot_is_not_rewritten() {
     same.generated_at = first.generated_at.clone();
     assert_eq!(same, first);
 
-    // A new collector over the same files finds the content unchanged too.
     let mut again = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
     again.info = c.info.clone();
     again.tick(at(-1)).unwrap();
@@ -443,9 +418,6 @@ fn nfr_02_an_unchanged_snapshot_is_not_rewritten() {
     );
 }
 
-/// NFR-02: a steady tick with no new event writes 0 bytes: no snapshot, no
-/// cursors, no events and no `quota.json` (whose content, all but
-/// `written_at`, did not change). A quota signal still writes `quota.json`.
 #[cfg(unix)]
 #[test]
 fn nfr_02_a_quiet_tick_writes_nothing() {
@@ -463,7 +435,6 @@ fn nfr_02_a_quiet_tick_writes_nothing() {
     assert_eq!(c.timing.written_total(), 0, "{}", c.timing.line());
     assert_eq!(ino(&quota), before, "a quiet tick keeps quota.json");
 
-    // A Claude rate-limit refusal is a quota signal: quota.json changes.
     let refusal = serde_json::json!({
         "type": "assistant", "timestamp": "2026-09-28T17:59:30Z", "error": "rate_limit",
         "message": {"model": "<synthetic>", "id": "msg_nfr02_quota", "content": []}
@@ -481,20 +452,6 @@ fn nfr_02_a_quiet_tick_writes_nothing() {
     assert_ne!(ino(&quota), before, "a refusal rewrites quota.json");
 }
 
-/// NFR-02: the snapshot is rebuilt on every tick; only its write is skipped
-/// when nothing changed. When only time moves, a rollup window start moves
-/// too: the events that leave the window leave its rollup, and the file is
-/// rewritten with them gone.
-///
-/// Oracle, counted by hand from `fixtures/telemetry/EXPECTED.md` (token
-/// total = in + cw5m + cw1h + c.read + out):
-/// - rec-o1 (17:00-17:10): 177 + 1900 + 2000 + 156000 + 695 = 160772.
-/// - rec-a2 (17:25-17:26): 100 + 0 + 2502 + 184363 + 1710 = 188675.
-/// - prime p1 (13:00): 50 + 200 + 1000 + 40 = 1290; p2 (13:01): 20 + 0 + 1200 + 30 = 1250.
-/// - pi (12:53-12:55) and opencode (12:53) are older than both windows.
-///
-/// At 18:00 the 5h window starts at 13:00 and holds all 4 groups: 351987.
-/// At 19:00 it starts at 14:00 and the prime events leave: 349447.
 #[test]
 fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
     let w = world(Part::Whole);
@@ -520,8 +477,6 @@ fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
     assert_eq!(total(&on_disk), total(&moved));
 }
 
-/// A Claude session copied from the A2 fixture, with its own ledger.
-/// Returns the transcript path.
 fn copied_session(w: &World, name: &str, sid: &str, status: &str, updated: &str) -> PathBuf {
     let from = w
         .home
@@ -543,7 +498,6 @@ fn session_ledger(w: &World, name: &str, sid: &str, status: &str, updated: &str)
     std::fs::write(w.state.join(format!("-{name}.json")), ledger.to_string()).unwrap();
 }
 
-/// Set the modification time of `path` to `when`.
 fn age(path: &std::path::Path, when: chrono::DateTime<chrono::Utc>) {
     std::fs::File::options()
         .write(true)
@@ -572,10 +526,6 @@ fn session_events(w: &World, sid: &str) -> Vec<Event> {
         .collect()
 }
 
-/// NFR-02: the cursor of a done record whose transcript has not changed for
-/// a day keeps only its newest message ids (the recent ids were 72% of a
-/// 2.3 MB `cursors.json`). When the transcript grows again, the new message
-/// is counted once and a repeated old line adds nothing.
 #[test]
 fn nfr_02_a_quiet_done_cursor_forgets_its_older_ids() {
     const SID: &str = "44444444-4444-4444-8444-444444444444";
@@ -612,7 +562,6 @@ fn nfr_02_a_quiet_done_cursor_forgets_its_older_ids() {
         "still where it stopped"
     );
 
-    // The last old line again, then 1 new message.
     let text = std::fs::read_to_string(&path).unwrap();
     let last = text
         .lines()
@@ -633,10 +582,6 @@ fn nfr_02_a_quiet_done_cursor_forgets_its_older_ids() {
     assert_eq!(ids.iter().filter(|i| *i == "msg_nfr02_tidy").count(), 1);
 }
 
-/// The review's scenario (R2): a done Claude session's transcript is quiet
-/// for a day, the tidy runs, then Claude writes its last message again with
-/// more tokens. The difference is stored as a correction, not lost as a
-/// repeat of the stored id.
 #[test]
 fn r2_a_correction_after_recent_ids_are_forgotten_is_not_lost() {
     const SID: &str = "77777777-7777-4777-8777-777777777777";
@@ -676,11 +621,6 @@ fn r2_a_correction_after_recent_ids_are_forgotten_is_not_lost() {
     assert_eq!(total(&w), before + 600 - output, "the correction is stored");
 }
 
-/// NFR-02: the cursor of a session with no record in the retention window,
-/// whose transcript has not changed for a day, is dropped; so is the cursor
-/// of a file that is gone. When the session comes back and its transcript
-/// grows, it is read again from the start, and the store drops every event
-/// it already holds: only the new message is added.
 #[test]
 fn nfr_02_a_pruned_cursor_reads_again_from_the_start_without_double_counting() {
     const SID: &str = "55555555-5555-4555-8555-555555555555";
@@ -694,7 +634,6 @@ fn nfr_02_a_pruned_cursor_reads_again_from_the_start_without_double_counting() {
     assert!(stored > 0);
     assert!(cursor_json(&w, SID).is_some() && cursor_json(&w, GONE).is_some());
 
-    // The record leaves the retention window; its transcript is quiet.
     session_ledger(&w, "t2p", SID, "done", "2026-08-01T00:00:00Z");
     age(&path, now() - chrono::Duration::days(2));
     std::fs::remove_file(&gone).unwrap();
@@ -703,7 +642,6 @@ fn nfr_02_a_pruned_cursor_reads_again_from_the_start_without_double_counting() {
     assert!(cursor_json(&w, SID).is_none(), "pruned");
     assert!(cursor_json(&w, GONE).is_none(), "its file is gone");
 
-    // It comes back with 1 new message.
     session_ledger(&w, "t2p", SID, "done", "2026-09-28T19:00:00Z");
     let mut f = std::fs::OpenOptions::new()
         .append(true)
@@ -723,10 +661,6 @@ fn nfr_02_a_pruned_cursor_reads_again_from_the_start_without_double_counting() {
     assert_eq!(unique.len(), ids.len(), "no event twice");
 }
 
-/// The review's scenario (R2): 40 days on, a restart deletes a session's
-/// old event file with its keys, and the tidy drops its quiet cursor. When
-/// the session comes back, its transcript is read from the start: the
-/// events older than the retention window are dropped, not stored again.
 #[test]
 fn r2_a_pruned_cursor_does_not_restore_events_outside_retention() {
     const SID: &str = "88888888-8888-4888-8888-888888888888";
@@ -764,8 +698,6 @@ fn r2_a_pruned_cursor_does_not_restore_events_outside_retention() {
     assert!(c.store.expired_dropped > 0);
 }
 
-/// R2 review: a live record keeps its quiet cursor although its
-/// `updated_at` is older than the retention window.
 #[test]
 fn a_live_record_with_an_old_update_keeps_its_cursor() {
     const SID: &str = "99999999-9999-4999-8999-999999999999";
@@ -785,10 +717,6 @@ fn a_live_record_with_an_old_update_keeps_its_cursor() {
     );
 }
 
-/// The review's scenario (R2): a state root whose path holds a `|`, so the
-/// Prime session id (its file path) does too. The tidy finds the cursor's
-/// file and owner from the cursor's fields, not by splitting its key, and
-/// keeps the cursor of the live session.
 #[test]
 fn r2_a_prime_cursor_survives_when_its_session_path_contains_a_pipe() {
     let tmp = tempfile::tempdir().unwrap();
@@ -824,12 +752,6 @@ fn r2_a_prime_cursor_survives_when_its_session_path_contains_a_pipe() {
     );
 }
 
-/// The screen's project filter on real data: `Collector::project_rollups`
-/// for the project with the most events, against the old path (every event
-/// file read, then `store::rollup`). 3 runs of each; prints the median.
-/// Run on a COPY of a state directory, never the live one:
-/// `HORCH_PERF_STATE=<copy> cargo test --release -p horch-core --test
-/// telemetry_collect -- --ignored --nocapture project_rollups_timing`.
 #[test]
 #[ignore]
 fn project_rollups_timing() {
@@ -849,7 +771,6 @@ fn project_rollups_timing() {
         opencode_db: home.join("opencode.db"),
         sqlite3: PathBuf::from("sqlite3"),
     };
-    // At the newest event, so the windows hold the copy's latest days.
     let dir = horch_core::telemetry::dir(&state);
     let all = store::read_all(&dir);
     let now = clock::parse(all.iter().map(|e| &e.ts).max().unwrap()).unwrap();

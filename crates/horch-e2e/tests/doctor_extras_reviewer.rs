@@ -1,6 +1,3 @@
-//! `horch doctor` warns when a code-sweep reviewer cannot run on this host
-//! (#158).
-
 use horch_e2e::harness::Harness;
 
 fn text(h: &Harness) -> String {

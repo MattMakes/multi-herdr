@@ -1,10 +1,3 @@
-//! `horch worktree list`: the lines it prints for worktrees with no claim.
-//!
-//! The command prints to stdout, so the test runs the real binary against a
-//! temp git repo with 2 changed worktrees under `.worktrees/`: `kept` is a
-//! branch with 1 commit ahead of `main`, and `loose` is a detached checkout
-//! with 1 untracked file.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -24,7 +17,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// `git <args>` in `dir`, with no config of the operator's.
 fn git(root: &Path, dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
@@ -108,9 +100,6 @@ impl World {
     }
 }
 
-/// Each worktree with no claim is 1 line: its path, its branch (`detached`
-/// for none), the commits it is ahead of the branch it was scanned from, and
-/// the lines of `git status --porcelain`. The section is headed `unregistered:`.
 #[test]
 fn list_prints_each_unregistered_worktree_as_one_line() {
     let w = World::new();
@@ -131,7 +120,6 @@ fn list_prints_each_unregistered_worktree_as_one_line() {
     );
 }
 
-/// With nothing to report the section is 1 line.
 #[test]
 fn list_says_none_when_every_worktree_is_clean() {
     let w = World::new();
@@ -146,10 +134,6 @@ fn list_says_none_when_every_worktree_is_clean() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "unregistered: none\n");
 }
 
-/// A claim made by `worktree new` is a line of its own before the section of
-/// the unregistered worktrees: its name, role, state (`open` until it lands),
-/// branch, base, the commits it is ahead, the lines of `git status`, and
-/// whether its branch is in the base.
 #[test]
 fn list_prints_a_claim_with_its_state() {
     let w = World::new();
@@ -167,9 +151,6 @@ fn list_prints_a_claim_with_its_state() {
     assert_eq!(lines[1], "unregistered:");
 }
 
-/// A land whose `worktree remove` fails after the fast-forward still lands
-/// and prints the failure as a `horch: NOTE:` line. When the leftover
-/// worktree then gets an uncommitted file, `list` shows the claim open again.
 #[test]
 fn arc_31_land_cleanup_note_then_list_reopens_the_leftover() {
     let w = World::new();

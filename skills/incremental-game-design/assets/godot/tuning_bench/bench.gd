@@ -1,13 +1,4 @@
 extends Node
-## The autoload `TuningBench`.
-##
-## It loads `res://bench/bench.json`, holds the value k of each control, and starts the simulations.
-## The hotkey (default F2) opens the panel. The bench works only in a debug build, or when `bench.json`
-## has `"release": true`.
-##
-## A simulation never changes the game that runs:
-## - an adapter that is isolated (a game with a core) runs on a thread with its own state;
-## - each other adapter runs in a second Godot process.
 
 const BenchJson := preload("res://addons/tuning_bench/bench_json.gd")
 const Knobs := preload("res://addons/tuning_bench/bench_knobs.gd")
@@ -20,45 +11,30 @@ const DEBOUNCE_S := 0.25
 const POLL_S := 0.05
 const WORK_DIR := "user://tuning_bench"
 const SETTINGS_DIR := "res://bench/settings"
-## The largest count of child processes of the self-check that the panel starts.
 const SELFCHECK_JOBS := 4
 
-## A new result of a run is in `result`.
 signal result_changed()
-## The status line changed.
 signal status_changed()
-## A value k changed from outside the sliders (load, reset, fit).
 signal k_changed()
-## `set_k` set the value of 1 control. The panel moves the slider of that control.
 signal k_set(id: String, value: float)
-## A tool ended. `kind` is "rank", "fit", "selfcheck" or "replay". `payload` is the content of its result file.
 signal task_done(kind: String, payload: Dictionary)
 
-## True when the bench loaded and can run.
 var enabled: bool = false
-## The cause when the bench did not load.
 var error: String = ""
 var bench_path: String = Knobs.DEFAULT_BENCH
 var ctx: Dictionary = {}
-## The value k of each control.
 var k: Dictionary = {}
-## The targets that the designer changed in the panel.
 var target_changes: Dictionary = {}
-## The last result of a run. Empty before the first run. While `pending` is true it is the result of the main
-## player alone (the key "pending_players" lists the players that still run).
 var result: Dictionary = {}
 var pending: bool = false
-## The content of the last self-check result. Empty before the first self-check.
 var check: Dictionary = {}
 var status: String = ""
 var live_note: String = ""
 var running: bool = false
 var last_seconds: float = 0.0
 var mode: String = "process"
-## Two stored settings for the comparison: {"A": {"k", "targets", "result"}, "B": ...}.
 var slots: Dictionary = {}
 
-## Each file of `sources` parsed, with the controls applied. The game can read its numbers from here.
 var data: Dictionary:
 	get:
 		if _data_cache.is_empty() and enabled:
@@ -88,7 +64,6 @@ var _task_started_ms: int = 0
 func _ready() -> void:
 	set_process(false)
 	set_process_input(false)
-	# The command line of the bench runs this project too. The autoload then does nothing.
 	if DisplayServer.get_name() == "headless":
 		return
 	for arg: String in OS.get_cmdline_user_args():
@@ -103,7 +78,6 @@ func _ready() -> void:
 	set_process_input(true)
 
 
-## Load the bench file again. Return false when it does not load. `error` then has the cause.
 func load_bench() -> bool:
 	enabled = false
 	var built: Dictionary = Knobs.build(bench_path)
@@ -133,7 +107,6 @@ func load_bench() -> bool:
 		_adapter = null
 		mode = "process"
 		push_warning("tuning bench: " + str(made["error"]))
-	# The result of the last self-check of the project, when it is there. Meter 8 shows its numbers.
 	if check.is_empty() and FileAccess.file_exists(Knobs.DEFAULT_SELFCHECK):
 		var found: Dictionary = BenchJson.read_file(Knobs.DEFAULT_SELFCHECK)
 		if found["ok"] and found["value"] is Dictionary and str((found["value"] as Dictionary).get("format", "")) == "tuning-bench-check":
@@ -143,8 +116,6 @@ func load_bench() -> bool:
 	return true
 
 
-## Return the line "not reviewed: N numbers in M files" of the ledger, or "" when each number was reviewed.
-## `pw_bench.py` writes the key "review" of `bench.json`.
 func review_line() -> String:
 	var review: Variant = (ctx.get("bench", {}) as Dictionary).get("review", {})
 	if not review is Dictionary or int((review as Dictionary).get("not_reviewed", 0)) <= 0:
@@ -152,9 +123,6 @@ func review_line() -> String:
 	return "not reviewed: %d numbers in %d files" % [int((review as Dictionary)["not_reviewed"]), int((review as Dictionary).get("files", 0))]
 
 
-## Return the line "N texts hold a number", or "" when the ledger has no such text that nobody accepted.
-## `pw_bench.py` writes the key "texts" of `bench.json`: each text of the game that holds a number. An entry
-## with the key "ok" was accepted and does not count.
 func texts_line() -> String:
 	var texts: Variant = (ctx.get("bench", {}) as Dictionary).get("texts", [])
 	if not texts is Array:
@@ -174,7 +142,6 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-## Open or close the panel.
 func toggle_panel() -> void:
 	if _panel == null:
 		open_panel()
@@ -182,7 +149,6 @@ func toggle_panel() -> void:
 		_panel.visible = not _panel.visible
 
 
-## Open the panel. The first open starts a run.
 func open_panel() -> CanvasLayer:
 	if not enabled:
 		return null
@@ -196,13 +162,10 @@ func open_panel() -> CanvasLayer:
 	return _panel
 
 
-## Return the control with this id, or an empty dictionary.
 func control(id: String) -> Dictionary:
 	return (ctx["by_id"] as Dictionary).get(id, {})
 
 
-## Set the value k of 1 control. A run starts after a short pause, so a moving slider starts 1 run only.
-## The panel shows the new value: a script that calls this method moves the slider.
 func set_k(id: String, value: float) -> void:
 	if not enabled or not (ctx["by_id"] as Dictionary).has(id):
 		return
@@ -211,7 +174,6 @@ func set_k(id: String, value: float) -> void:
 	k_set.emit(id, value)
 
 
-## Set each control back to its base value.
 func reset_to_base() -> void:
 	k = Knobs.base_k(ctx)
 	target_changes = {}
@@ -219,7 +181,6 @@ func reset_to_base() -> void:
 	k_changed.emit()
 
 
-## Replace each value k. A missing control gets its base value.
 func use_k(new_k: Dictionary, new_targets: Dictionary = {}) -> void:
 	k = Knobs.base_k(ctx)
 	for id: Variant in new_k:
@@ -230,7 +191,6 @@ func use_k(new_k: Dictionary, new_targets: Dictionary = {}) -> void:
 	k_changed.emit()
 
 
-## Change 1 target, for example ("length_h", "about", 5.0).
 func set_target(key: String, sub: String, value: float) -> void:
 	if not target_changes.has(key):
 		target_changes[key] = {}
@@ -240,7 +200,6 @@ func set_target(key: String, sub: String, value: float) -> void:
 	_set_status("simulating…")
 
 
-## Return the targets with the changes of the designer.
 func targets() -> Dictionary:
 	return Knobs.targets(ctx, target_changes)
 
@@ -248,7 +207,6 @@ func targets() -> Dictionary:
 func _changed() -> void:
 	_data_cache = {}
 	_apply_live()
-	# A run with the old values has no use. Stop it now.
 	_cancel_run()
 	_debounce = DEBOUNCE_S
 	_set_status("simulating…")
@@ -283,7 +241,6 @@ func _process(delta: float) -> void:
 			_old_threads.remove_at(index)
 
 
-## Start a run with the values of now. A run that is in progress stops.
 func request_run() -> void:
 	if not enabled:
 		return
@@ -297,7 +254,6 @@ func request_run() -> void:
 	if mode == "thread":
 		_cancel = {"cancel": false}
 		_thread = Thread.new()
-		# The thread gives the result of the main player with a deferred call. The main thread takes it.
 		var serial: int = _serial
 		var on_partial: Callable = func(partial: Dictionary) -> void: _take_partial.call_deferred(partial, serial)
 		_thread.start(_thread_run.bind(ctx, k.duplicate(), target_changes.duplicate(true), _cancel, check, on_partial))
@@ -321,7 +277,6 @@ static func _thread_run(run_ctx: Dictionary, run_k: Dictionary, run_targets: Dic
 	return Runner.simulate(run_ctx, run_k, run_targets, {"cancel": cancel, "check": run_check, "on_partial": on_partial})
 
 
-## Take the result of the main player while the other players still run. The panel shows it at once.
 func _take_partial(partial: Dictionary, serial: int) -> void:
 	if serial != _serial or not running:
 		return
@@ -403,7 +358,6 @@ func _finish(new_result: Dictionary, problem: String) -> void:
 	result_changed.emit()
 
 
-## Start a tool in a second Godot process: "rank", "fit" (extra: the control id), "selfcheck" or "replay".
 func start_task(kind: String, extra: Array = []) -> bool:
 	if not enabled or _task_pid > 0:
 		return false
@@ -417,7 +371,6 @@ func start_task(kind: String, extra: Array = []) -> bool:
 	var tail: Array = ["--" + kind]
 	tail.append_array(extra)
 	if kind == "selfcheck":
-		# The dead-number check runs 1 game for each number. Child processes do it in parallel.
 		tail.append_array(["--jobs", clampi(OS.get_processor_count() - 1, 1, SELFCHECK_JOBS)])
 	tail.append_array(["--out", _task_out, "--setting", setting_path])
 	_task_pid = OS.create_process(OS.get_executable_path(), _cli_args(tail))
@@ -429,7 +382,6 @@ func start_task(kind: String, extra: Array = []) -> bool:
 	return true
 
 
-## True while a tool runs.
 func task_running() -> bool:
 	return _task_pid > 0
 
@@ -460,7 +412,6 @@ func _poll_task() -> void:
 		return
 	if _task_kind == "selfcheck":
 		check = payload
-		# The default place of the result is in the project: the next start and the command line read it there.
 		if not OS.has_feature("template"):
 			BenchJson.write_file(ProjectSettings.globalize_path(Knobs.DEFAULT_SELFCHECK), payload)
 		request_run()
@@ -470,7 +421,6 @@ func _poll_task() -> void:
 		use_k(fitted, target_changes)
 
 
-## Return the folder of the saved settings. It is in the project when the project folder takes a file.
 func settings_dir() -> String:
 	var dir: String = ProjectSettings.globalize_path(SETTINGS_DIR)
 	if not OS.has_feature("template") and DirAccess.make_dir_recursive_absolute(dir) == OK:
@@ -479,7 +429,6 @@ func settings_dir() -> String:
 	return WORK_DIR + "/settings"
 
 
-## Return the names of the saved settings.
 func setting_names() -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	var dir: DirAccess = DirAccess.open(settings_dir())
@@ -492,7 +441,6 @@ func setting_names() -> PackedStringArray:
 	return out
 
 
-## Save the values of now as a setting. Return the path, or "" when the write fails.
 func save_setting(setting_name: String) -> String:
 	var clean: String = setting_name.strip_edges().validate_filename().replace(" ", "_")
 	if clean == "":
@@ -505,7 +453,6 @@ func save_setting(setting_name: String) -> String:
 	return path
 
 
-## Load a saved setting and start a run.
 func load_setting(setting_name: String) -> bool:
 	var path: String = "%s/%s.json" % [settings_dir(), setting_name]
 	var read: Dictionary = Knobs.read_setting(ctx, path)
@@ -516,13 +463,10 @@ func load_setting(setting_name: String) -> bool:
 	return true
 
 
-## Keep the values and the result of now as "A" or "B".
 func store_slot(slot: String) -> void:
 	slots[slot] = {"k": k.duplicate(), "targets": target_changes.duplicate(true), "result": result}
 
 
-## Write each changed value into the data files of the game. Each file gets a backup copy (.bak) first.
-## Return the list of the files that changed.
 func write_to_data_files() -> PackedStringArray:
 	var written: PackedStringArray = PackedStringArray()
 	var vals: Dictionary = Knobs.values(ctx, k)
@@ -541,7 +485,6 @@ func write_to_data_files() -> PackedStringArray:
 			_set_status("error: cannot write %s" % file)
 			return written
 		written.append(str(file))
-	# The new values are the base now. The player controls keep their values.
 	load_bench()
 	k_changed.emit()
 	_apply_live()

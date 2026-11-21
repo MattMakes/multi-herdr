@@ -19,7 +19,6 @@ TARGETS = {"pro_pop_in": TARGET, "pro_tap": _TAP, "tap": _TAP}
 ALTS = ["a door slam", "a balloon popping", "a wooden knock", "a cork popping"]
 REFSET = "pro_pop_in"
 
-# Q-RANGE-1: att_ms starts at 0.8 and hp reaches 80, so the tap families fit inside the space.
 SPACE = {
     "body_f": (70, 220, "log"), "drop": (0.0, 1.0), "att_ms": (0.8, 22, "log"), "hold_ms": (0.5, 45, "log"),
     "sag_db": (0.0, 12.0), "rel_ms": (3, 40, "log"), "harm": (0.0, 0.35), "sub": (0.0, 0.7), "sat": (0.0, 8.0),
@@ -139,8 +138,6 @@ def family_params(cat: str, fam: str) -> dict:
 
 FAMILIES = {cat: [(name, family_params(cat, name)) for name in boxes] for cat, boxes in BOXES.items()}
 
-
-# ----------------------------------------------------------------- the layers
 
 def _ring(p: dict, r: np.random.Generator, f: float, att: float) -> np.ndarray:
     rg = L.designed_thump(f, BODY_S, att, 0.0, p["ring_ms"] / 1000, drop=0.5 * p["drop"], harm=p["harm"], r=r)

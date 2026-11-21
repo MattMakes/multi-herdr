@@ -1,10 +1,3 @@
-//! `horch ledger`: the task ledger CLI (docs/specs/task-ledger.md, #28).
-//!
-//! Orchestrators queue work (`run new`, `add`, `add-map`, `plan-workers`),
-//! workers claim and report it (`claim`, `progress`, `note`), and anyone reads
-//! the board (`status`, `show`). The old session-ledger plumbing lives under
-//! `horch ledger legacy`.
-
 use horch_core::taskledger::tasks::ONE_OFF_TICKET;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -33,7 +26,6 @@ use horch_core::taskledger::{self, Store};
 use super::sessionscmd::LegacyCommand;
 use crate::output;
 
-/// Exit code of `status` when work remains.
 pub const EXIT_NOT_COMPLETE: u8 = 1;
 
 #[derive(Subcommand)]
@@ -281,8 +273,6 @@ pub enum LedgerCommand {
     Path,
 }
 
-/// The report request of a ledger command in a `horch_access: report`
-/// pane: only `progress`. Every other ledger command is refused there.
 pub fn report_request(command: &LedgerCommand) -> Option<horch_core::messaging::report::Request> {
     match command {
         LedgerCommand::Progress { text } => {
@@ -496,8 +486,6 @@ pub struct TaskArgs {
     check: Option<String>,
 }
 
-/// The project root a command means: the main checkout of the repository
-/// the project dir is in, else the project dir itself.
 pub fn project_root(ctx: &RuntimeContext) -> Result<PathBuf> {
     let dir = ctx.paths.project()?;
     let git = Git::new(&ctx.bins.harness.git);
@@ -506,8 +494,6 @@ pub fn project_root(ctx: &RuntimeContext) -> Result<PathBuf> {
         .unwrap_or_else(|| dir.canonicalize().unwrap_or(dir)))
 }
 
-/// The run a command means: `--run`, else `HORCH_RUN_ID`, else the worker's
-/// run, else the project's 1 active run.
 pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<Run> {
     let explicit = named_run(arg);
     if explicit.is_none() {
@@ -528,14 +514,12 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
     Ok(run)
 }
 
-/// The run `--run` or `HORCH_RUN_ID` names.
 fn named_run(arg: &RunArg) -> Option<String> {
     arg.run
         .clone()
         .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()))
 }
 
-/// The run of the ledger worker in `HORCH_WORKER_ID`, when it has one.
 fn worker_run(ctx: &RuntimeContext, store: &Store) -> Result<Option<Run>> {
     let Some(wid) = worker_id_opt(ctx) else {
         return Ok(None);
@@ -546,8 +530,6 @@ fn worker_run(ctx: &RuntimeContext, store: &Store) -> Result<Option<Run>> {
     w.run_id.map(|r| runs::get(store.conn(), &r)).transpose()
 }
 
-/// Refuse `what` when the caller is a ledger worker: the orchestrator
-/// decides it.
 fn orchestrator_only(ctx: &RuntimeContext, store: &Store, what: &str) -> Result<()> {
     if let Some(wid) = worker_id_opt(ctx) {
         if let Some(w) = workers::find(store.conn(), &wid)? {
@@ -563,7 +545,6 @@ pub(crate) fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
     ctx.worker.as_ref().and_then(|w| w.worker_id.clone())
 }
 
-/// This worker's id, from `HORCH_WORKER_ID`.
 pub fn worker_id(ctx: &RuntimeContext) -> Result<String> {
     worker_id_opt(ctx)
         .context("HORCH_WORKER_ID is not set: run this from a worker pane that horch spawn opened")
@@ -574,10 +555,8 @@ pub(super) fn json(v: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
-/// The dispatch of 1 group of `LedgerCommand` variants.
 type GroupCmd = fn(&RuntimeContext, Store, LedgerCommand) -> Result<ExitCode>;
 
-/// The groups of `LedgerCommand` variants, each with its own dispatch.
 #[derive(Clone, Copy)]
 enum Group {
     Board,
@@ -639,8 +618,6 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         output::println(&ctx.paths.ledger_db.display().to_string());
         return Ok(ExitCode::SUCCESS);
     }
-    // A dry run reads only files: it opens no ledger, so it creates and
-    // migrates nothing (TRF-11).
     if let LedgerCommand::AddMap {
         map: path,
         dry_run: true,
@@ -650,12 +627,10 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         return add_map_dry_run(ctx, path);
     }
     let store = taskledger::open(ctx)?;
-    // One entry per `Group`, in its order.
     let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
     dispatch[group_of(&command) as usize](ctx, store, command)
 }
 
-/// The orchestrator reads and fills the board.
 fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Status { run, json: as_json } = command {
         return status_cmd(ctx, &store, &run, as_json);
@@ -699,7 +674,6 @@ fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
     unreachable!("not a board command")
 }
 
-/// The orchestrator steers tasks and workers.
 fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Fallback { task, reason, run } = command {
         return fallback_cmd(ctx, &mut store, &task, &reason, &run);
@@ -746,7 +720,6 @@ fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -
     unreachable!("not a control command")
 }
 
-/// What a worker does with its task.
 fn worker_side_cmd(
     ctx: &RuntimeContext,
     mut store: Store,
@@ -797,13 +770,10 @@ fn worker_side_cmd(
     unreachable!("not a worker command")
 }
 
-/// `horch ledger done`: `horch done` ([`super::messaging::done`], TRF-45),
-/// and the exit code once the finish is recorded.
 fn done_exit(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<ExitCode> {
     super::messaging::done(ctx, summary, unlanded).map(|()| ExitCode::SUCCESS)
 }
 
-/// Import, unfinished work, the watchdog and worker rows.
 fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Import {
         dry_run,
@@ -929,8 +899,6 @@ fn cancel_cmd(
     wake_dependents(ctx, store, &r, &t)
 }
 
-/// Cancel the task, then stop the worker that held it (TRF-36). The cancel
-/// comes first and lets go of the worker, so the stop queues nothing again.
 fn cancel_and_stop(
     store: &mut Store,
     run: &Run,
@@ -953,7 +921,6 @@ fn cancel_task(store: &mut Store, run: &Run, task: &str, reason: &str) -> Result
     })
 }
 
-/// Name the tasks that wait for a cancelled task, and wake on them.
 fn wake_dependents(
     ctx: &RuntimeContext,
     store: &Store,
@@ -966,8 +933,6 @@ fn wake_dependents(
     Ok(ExitCode::SUCCESS)
 }
 
-/// How a cancel stops the workers it let go of: herdr and the processes of
-/// this machine, or fakes in tests.
 struct Stopper<'a> {
     panes: &'a dyn stop::Panes,
     procs: &'a dyn stop::Processes,
@@ -987,9 +952,6 @@ impl<'a> Stopper<'a> {
     }
 }
 
-/// Stop the workers that held cancelled tasks, by their recorded PIDs and
-/// panes (TRF-36). A worker that cannot be stopped gets a warning, and the
-/// cancel stands.
 fn stop_holders(store: &mut Store, holders: &[String], reason: &str, s: &Stopper) -> Result<()> {
     for (w, r) in stop::stop_cancelled(store, holders, reason, s.panes, s.procs, &s.opts) {
         match r {
@@ -1002,7 +964,6 @@ fn stop_holders(store: &mut Store, holders: &[String], reason: &str, s: &Stopper
     Ok(())
 }
 
-/// The tasks that wait for a cancelled task.
 fn print_waiting(task: &str, waiting: &[tasks::Task]) {
     if waiting.is_empty() {
         return;
@@ -1058,8 +1019,6 @@ fn waive_cmd(
     run: &RunArg,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    // The caller: its worker id, else the run's worker in its pane, so
-    // a worker that unsets HORCH_WORKER_ID is still known.
     let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
     let caller = worker_id_opt(ctx)
         .or_else(|| finish::codesweep::worker_in_pane(store.conn(), &r.run_id, pane.as_deref()));
@@ -1119,7 +1078,6 @@ fn worktree_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The run whose worktree `drop` looks for: `--run`, else the worker's run.
 fn drop_run_id(ctx: &RuntimeContext, store: &Store, wid: &str, run: &RunArg) -> Result<String> {
     if named_run(run).is_some() {
         return Ok(resolve_run(ctx, store, run)?.run_id);
@@ -1173,8 +1131,6 @@ fn print_steps(steps: &[finish::Step]) {
     }
 }
 
-/// The task and worker whose steps to show: the named task's, else this
-/// worker's own.
 fn steps_target(
     ctx: &RuntimeContext,
     store: &Store,
@@ -1189,7 +1145,6 @@ fn steps_target(
     Ok((w.task_id.context("this worker holds no task")?, wid))
 }
 
-/// A task's id and the worker of its current or last attempt.
 fn task_attempt(
     ctx: &RuntimeContext,
     store: &Store,
@@ -1300,7 +1255,6 @@ fn print_unfinished(list: &[import::Unfinished]) {
     output::println("Reopen 1: horch ledger reopen <id> --file <ticket> --primary <persona>. Close 1: horch ledger dismiss <id> \"<reason>\"");
 }
 
-/// The ticket, persona and check of `horch ledger reopen`.
 struct ReopenTicket {
     file: PathBuf,
     primary: String,
@@ -1308,7 +1262,6 @@ struct ReopenTicket {
     check: Option<String>,
 }
 
-/// The run, the new task and the finding that `reopen` works from.
 fn reopen_plan(
     ctx: &RuntimeContext,
     store: &Store,
@@ -1328,8 +1281,6 @@ fn reopen_plan(
     Ok((r, t, f))
 }
 
-/// Queue the reopened task and close the finding; the finding's old
-/// worktree, when it is still on disk, becomes the task's.
 fn queue_reopened(
     store: &mut Store,
     run: &Run,
@@ -1345,7 +1296,6 @@ fn queue_reopened(
             "orchestrator",
             &task.task_id,
         )?;
-        // The old worktree, when it is still on disk, is this task's now.
         if let Some(wt) = &finding.worktree_id {
             if reusable(&finish::worktree(tx, wt)?) {
                 tx.execute(
@@ -1379,7 +1329,6 @@ fn reopen_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Whether a finding's old worktree is still on disk and not cleaned.
 fn reusable(w: &finish::WorktreeRow) -> bool {
     Path::new(&w.path).exists() && w.status != "cleaned"
 }
@@ -1471,9 +1420,6 @@ fn reap_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-/// A run created outside herdr has no workspace (#218). The first
-/// `status` or `plan-workers` from a herdr pane that is not a worker's
-/// records that pane's workspace on the run, so wakes find its orchestrator.
 fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()> {
     let (None, Some(ws), Some(_pane)) = (&run.workspace_id, &ctx.herdr.workspace, &ctx.herdr.pane)
     else {
@@ -1497,7 +1443,6 @@ fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()>
     Ok(())
 }
 
-/// Whether the project has no run, and nothing names one.
 fn no_runs_to_show(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<bool> {
     let explicit = arg.run.is_some() || std::env::var("HORCH_RUN_ID").is_ok_and(|v| !v.is_empty());
     let all = runs::of_project(store.conn(), &project_root(ctx)?)?;
@@ -1513,7 +1458,6 @@ fn print_no_runs(as_json: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Print the board; the exit code is 1 while work remains.
 fn print_status(report: &status::Report, as_json: bool) -> Result<ExitCode> {
     if as_json {
         json(report)?;
@@ -1561,7 +1505,6 @@ fn show(
     show_worker(store, &run, key, as_json)
 }
 
-/// A worker (id or role) with its events and stops.
 fn show_worker(store: &Store, run: &Run, key: &str, as_json: bool) -> Result<ExitCode> {
     let conn = store.conn();
     let w = workers::resolve(conn, &run.run_id, key)
@@ -1576,7 +1519,6 @@ fn show_worker(store: &Store, run: &Run, key: &str, as_json: bool) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
-/// A task with its events, attempts and blockers.
 fn show_task(store: &Store, t: &tasks::Task, as_json: bool) -> Result<ExitCode> {
     let conn = store.conn();
     let events = status::events(conn, "task_id", &t.task_id)?;
@@ -1682,7 +1624,6 @@ fn print_worker(w: &workers::Worker, events: &[status::EventLine]) {
     print_events(events);
 }
 
-/// The grace between TERM and KILL: 10 s, or `HORCH_STOP_GRACE_MS`.
 pub fn stop_grace() -> std::time::Duration {
     std::env::var("HORCH_STOP_GRACE_MS")
         .ok()
@@ -1691,7 +1632,6 @@ pub fn stop_grace() -> std::time::Duration {
         .unwrap_or(std::time::Duration::from_secs(10))
 }
 
-/// Pane host as the stop's pane closer: 1 pane, by its id and recorded backend.
 pub struct HerdrPanes(RuntimeContext);
 
 impl HerdrPanes {
@@ -1772,7 +1712,6 @@ fn close_run_cmd(
     pr_declined: Option<String>,
     s: &Stopper,
 ) -> Result<ExitCode> {
-    // C6 first: an unsettled run gets the settled rule's refusal, before gh.
     let settled = status::unsettled(store.conn(), &r.run_id)?.is_empty();
     let closed = match abandon {
         Some(_) => store.immediate(|tx| runs::close_run(tx, &t.git, r, abandon))?,
@@ -1805,8 +1744,6 @@ fn close_run_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The C5 facts `run close` checks: the run-branch tip, and the PR as gh
-/// reports it.
 fn close_guards(
     t: &finish::Tools,
     r: &Run,
@@ -1825,7 +1762,6 @@ fn close_guards(
     })
 }
 
-/// `horch ledger run gate` (C5, TRF-19).
 fn gate_cmd(
     t: &finish::Tools,
     store: &mut Store,
@@ -1898,7 +1834,6 @@ fn new_run_cmd(
     let is_repo = git.main_root(root).is_some();
     let (run_branch, base, remote) = default_branches(&git, root, is_repo, &a);
     let workspace_id = super::sessionscmd::caller_workspace(ctx);
-    // Refuse before the git work, so a refused run leaves no branch (TRF-34).
     let probe = NewRun {
         slug: a.slug.clone(),
         workspace_id: workspace_id.clone(),
@@ -1930,10 +1865,6 @@ fn new_run_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The finish steps of a new run: `--steps` as given, else the steps of
-/// `--verify`, else of `HORCH_VERIFY` (`env`), else of the default profile.
-/// A bad `HORCH_VERIFY` is an error, not a silent default: it would change
-/// what lands unchecked.
 fn run_steps(
     steps: &[String],
     verify: Option<VerifyProfile>,
@@ -1961,8 +1892,6 @@ fn parse_steps(steps: &[String]) -> Result<Vec<StepName>> {
         .collect()
 }
 
-/// The run branch, base and remote: as named, else `fleet/<slug>`, the
-/// branch checked out, and `origin` when it exists.
 fn default_branches(
     git: &Git,
     root: &Path,
@@ -1998,8 +1927,6 @@ fn report_created(r: &Run) {
     }
 }
 
-/// Create the run branch from `base` when it is missing, refuse an old
-/// branch that lacks the base's commits, and push it to the remote.
 fn run_branches(
     git: &Git,
     root: &Path,
@@ -2014,7 +1941,6 @@ fn run_branches(
         git.run(root, &["branch", run_branch, base])?;
         eprintln!("horch ledger: created run branch {run_branch} from {base}.");
     } else if !git.is_ancestor(root, base, run_branch) {
-        // An earlier run's branch: tasks would land on old code.
         bail!(
             "branch {run_branch} exists and lacks commits of {base}. Delete it \
              (git branch -D {run_branch}) or name another with --branch"
@@ -2032,9 +1958,6 @@ fn run_branches(
     Ok(())
 }
 
-/// Insert the run and the orchestrator's own row: the pane it runs in. It is
-/// never watched for progress (section 9).
-/// `check` is the run's default check (TRF-16).
 fn insert_run(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -2081,12 +2004,8 @@ fn insert_run(
     })
 }
 
-/// A harness and its model, as an orchestrator row records them.
 type HarnessModel = (Option<String>, Option<String>);
 
-/// The harness and model of the orchestrator that runs this command
-/// (report 28 D-c): its session record, which `HORCH_RECORD_ID` names.
-/// `None` when no orchestrator record names a harness.
 fn own_orchestrator_harness(ctx: &RuntimeContext) -> Option<HarnessModel> {
     let id = ctx.worker.as_ref()?.record_id.as_deref()?;
     let record = horch_core::execution::store::ExecutionStore::open_in(ctx)
@@ -2098,8 +2017,6 @@ fn own_orchestrator_harness(ctx: &RuntimeContext) -> Option<HarnessModel> {
         .then(|| (nonempty(&record.agent), nonempty(&record.model)))
 }
 
-/// The harness and model of the newest orchestrator row of `workspace` that
-/// records one: the fleet launch wrote it (TRF-44).
 fn workspace_orchestrator_harness(
     tx: &rusqlite::Connection,
     workspace: Option<&str>,
@@ -2117,7 +2034,6 @@ fn workspace_orchestrator_harness(
     Ok(row.unwrap_or((None, None)))
 }
 
-/// The ticket's first heading, or its file stem.
 fn ticket_title(path: &Path) -> String {
     std::fs::read_to_string(path)
         .ok()
@@ -2129,8 +2045,6 @@ fn ticket_title(path: &Path) -> String {
         })
 }
 
-/// A ticket path as the worker will read it: relative to the project root
-/// when it is inside it.
 fn ticket_path(root: &Path, file: &Path, cwd: &Path) -> Result<String> {
     let abs = if file.is_absolute() {
         file.to_path_buf()
@@ -2147,21 +2061,18 @@ fn ticket_path(root: &Path, file: &Path, cwd: &Path) -> Result<String> {
         .unwrap_or_else(|_| canon.to_string_lossy().into_owned()))
 }
 
-/// The current directory, else the project root.
 fn cwd_or_root(ctx: &RuntimeContext, root: &Path) -> PathBuf {
     ctx.paths
         .current_dir()
         .unwrap_or_else(|_| root.to_path_buf())
 }
 
-/// What a ticket file says about itself; nothing when it cannot be read.
 fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
     std::fs::read_to_string(root.join(file))
         .map(|t| map::ticket_facts(&t))
         .unwrap_or_default()
 }
 
-/// The task `add` queues: what a flag names, else what the ticket says.
 fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
     let review_mode = facts.review_mode();
     let (check_none, land_check) = resolve_check(a.check, facts.check_none, facts.check);
@@ -2198,10 +2109,6 @@ fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> N
     }
 }
 
-/// The task's (check_none, land_check) from a `--check` flag and the
-/// ticket's `**Check:**` line. The flag value `none` means no check, the same
-/// as `**Check:** none`. It is never a shell command, and it overrides a
-/// ticket command. Without the flag, the ticket decides.
 fn resolve_check(
     flag: Option<String>,
     ticket_none: bool,
@@ -2245,16 +2152,11 @@ fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
-/// `horch ledger task` without its `Run next` line: a caller that spawns
-/// the worker itself (the fleet's worktree steward) uses it. It returns the
-/// solo run that holds the task.
 pub(super) fn queue_one_off(ctx: &RuntimeContext, a: TaskArgs) -> Result<Run> {
     let mut store = taskledger::open(ctx)?;
     queue_one_off_in(ctx, &mut store, a).map(|(run, _)| run)
 }
 
-/// Queue the one-off task `a` in the caller's solo run. It returns the run
-/// and the task's persona.
 fn queue_one_off_in(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<(Run, String)> {
     let root = project_root(ctx)?;
     let Some(workspace) = super::sessionscmd::caller_workspace(ctx) else {
@@ -2279,13 +2181,10 @@ fn queue_one_off_in(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Res
     Ok((run, new.primary))
 }
 
-/// The line that starts a worker for a one-off task of `run`.
 fn spawn_line(persona: &str, run: &Run) -> String {
     format!("Run next: horch spawn {persona} --run {}", run.slug)
 }
 
-/// The one-off task: the ticket file's facts when `--file` names one, else
-/// a snapshot that holds only the title.
 fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTask> {
     if a.title.trim().is_empty() {
         bail!("a task needs a title");
@@ -2307,7 +2206,6 @@ fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTas
     Ok(new)
 }
 
-/// The workspace's active solo run, created with its run branch when absent.
 fn solo_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, workspace: &str) -> Result<Run> {
     if let Some(run) = runs::active_solo(store.conn(), root, workspace)? {
         return Ok(run);
@@ -2328,8 +2226,6 @@ fn solo_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, workspace: &st
     Ok(r)
 }
 
-/// `add-map --dry-run`: every problem as `<file>:<line>: <problem>`. It
-/// needs no run and writes nothing.
 fn add_map_dry_run(ctx: &RuntimeContext, path: &Path) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     let path = cwd_or_root(ctx, &root).join(path);
@@ -2400,8 +2296,6 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
     print_claim(ctx, outcome)
 }
 
-/// Claim the next task for `wid`. A shared-checkout task gets its checkout in
-/// the same transaction.
 fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<ClaimOutcome> {
     store.immediate(|tx| {
         let o = tasks::claim(tx, wid)?;
@@ -2412,11 +2306,8 @@ fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<Cla
     })
 }
 
-/// What a claim prints: the line to send when no task fits, else the task and
-/// the project facts.
 fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> {
     match outcome {
-        // The claim ended this worker (TRF-32); horch done closes its pane.
         ClaimOutcome::NoTask { persona, .. } => {
             output::println(&format!(
                 "No task for {persona}. Run this line to close your pane:"
@@ -2435,10 +2326,6 @@ fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> 
     Ok(ExitCode::SUCCESS)
 }
 
-/// A ticket queued from an ignored folder is not in the worker's worktree.
-/// Then the claim names the ticket by its absolute path in the project root.
-/// A tracked ticket keeps its relative path. A shared-checkout task works in
-/// the project root, so its relative path always opens.
 fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claimed) {
     let Some(file) = c.task.task_file.clone() else {
         return;
@@ -2458,12 +2345,9 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
     }
 }
 
-/// Whether the worktree of the claim, or the one cut for it, holds `file`.
 fn worktree_holds(ctx: &RuntimeContext, c: &Claimed, run: &Run, file: &str) -> bool {
     match (&c.worktree, &run.run_branch) {
         (Some(w), _) => Path::new(w).join(file).is_file(),
-        // A new worktree is cut from the run branch: it holds the ticket
-        // only when the branch tracks a file (a blob) at that path.
         (None, Some(b)) => Git::new(&ctx.bins.harness.git)
             .try_run(
                 Path::new(&run.project_root),
@@ -2474,8 +2358,6 @@ fn worktree_holds(ctx: &RuntimeContext, c: &Claimed, run: &Run, file: &str) -> b
     }
 }
 
-/// The code-sweep reviewer personas that cannot run here: not in the roster,
-/// or their harness CLI is not installed.
 pub(super) fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
     let roster = super::load_roster_unwarned(ctx, None).ok();
     ["codex-reviewer", "architect-reviewer"]
@@ -2506,7 +2388,6 @@ pub(super) fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The finish steps' tools: git, gh, node, the sweep skills.
 pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
     let mut roots = vec![
         ctx.paths.home.join(".claude").join("plugins"),
@@ -2520,7 +2401,6 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         complexity_cli: complexity_cli(&roots),
         code_sweep_dir: code_sweep_dir(&roots),
         evidence_root: evidence_root(ctx),
-        // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
         codex: finish::CodexSandbox {
@@ -2531,20 +2411,16 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
     }
 }
 
-/// The path in the variable `key`; an empty one counts as unset.
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
 }
 
-/// The program in the variable `key`, else `default`, found on the PATH.
 fn tool_bin(key: &str, default: &str) -> PathBuf {
     env_path(key).unwrap_or_else(|| PathBuf::from(default))
 }
 
-/// Whether `p` is the folder of the skill `skill`. A plugin holds `<skill>/`;
-/// the skill store holds `skills/<skill>/<source>+<hash>/`.
 fn is_skill_dir(p: &Path, skill: &str) -> bool {
     p.file_name().is_some_and(|n| n == skill)
         || p.parent()
@@ -2552,8 +2428,6 @@ fn is_skill_dir(p: &Path, skill: &str) -> bool {
             .is_some_and(|n| n == skill)
 }
 
-/// The code-sweep skill folder: `HORCH_CODE_SWEEP_DIR`, else the first one
-/// under `roots` that holds `reviewers/`.
 fn code_sweep_dir(roots: &[PathBuf]) -> Option<PathBuf> {
     env_path("HORCH_CODE_SWEEP_DIR").or_else(|| {
         find_dir(roots, |p| {
@@ -2562,8 +2436,6 @@ fn code_sweep_dir(roots: &[PathBuf]) -> Option<PathBuf> {
     })
 }
 
-/// The complexity analyser: `HORCH_COMPLEXITY_CLI`, else the one in the first
-/// complexity-sweep folder under `roots` that holds it.
 fn complexity_cli(roots: &[PathBuf]) -> Option<PathBuf> {
     env_path("HORCH_COMPLEXITY_CLI").or_else(|| {
         find_dir(roots, |p| {
@@ -2573,7 +2445,6 @@ fn complexity_cli(roots: &[PathBuf]) -> Option<PathBuf> {
     })
 }
 
-/// The folder beside the ledger file that holds the evidence of the steps.
 fn evidence_root(ctx: &RuntimeContext) -> PathBuf {
     ctx.paths
         .ledger_db
@@ -2582,7 +2453,6 @@ fn evidence_root(ctx: &RuntimeContext) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("evidence"))
 }
 
-/// The roster's Codex teammates: their check runs in a Codex sandbox.
 pub(super) fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
     let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
         return Vec::new();
@@ -2599,9 +2469,6 @@ pub(super) fn codex_personas(ctx: &RuntimeContext) -> Vec<String> {
         .collect()
 }
 
-/// The `plugins/` folder of each local marketplace checkout that the skill
-/// store installed a skill from. The store cannot hold complexity-sweep (its
-/// npm links are symlinks), but its checkout sits next to code-sweep's.
 fn local_marketplaces(data_root: &Path) -> Vec<PathBuf> {
     let lock = horch_core::skills::catalog::marketplace::Store::new(data_root).lock_path();
     let Ok(lock) = horch_core::skills::catalog::marketplace::Lockfile::read(&lock) else {
@@ -2625,8 +2492,6 @@ fn local_marketplaces(data_root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The first directory under `roots` (at most 10 levels down) that `want`
-/// accepts.
 fn find_dir(roots: &[PathBuf], want: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     roots.iter().find_map(|r| walk(r, 0, &want))
 }
@@ -2642,7 +2507,6 @@ fn walk(dir: &Path, depth: usize, want: &dyn Fn(&Path) -> bool) -> Option<PathBu
         .or_else(|| subs.into_iter().find_map(|p| walk(&p, depth + 1, want)))
 }
 
-/// The directories under `dir`, sorted, but not `node_modules` or `.git`.
 fn sorted_subdirs(dir: &Path) -> Option<Vec<PathBuf>> {
     let mut subs: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
@@ -2658,9 +2522,6 @@ fn sorted_subdirs(dir: &Path) -> Option<Vec<PathBuf>> {
     Some(subs)
 }
 
-/// `horch ledger done` (and `horch done` from a ledger worker): record the
-/// finish, then (in a pane) report, wake whoever must act on it and close
-/// the pane.
 pub fn done_cmd(
     ctx: &RuntimeContext,
     mut store: Store,
@@ -2668,19 +2529,13 @@ pub fn done_cmd(
     unlanded: Option<&str>,
 ) -> Result<()> {
     let wid = worker_id(ctx)?;
-    // The report to the orchestrator and the pane close: `horch done`'s
-    // machinery, when this runs in a worker pane.
     let in_pane = in_worker_pane(ctx);
-    // One push budget for the wakes and the report, inside the agent's
-    // command timeout (#67).
     let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
     if budget.is_some() && in_pane {
         eprintln!("{}", super::messaging::CLOSING);
     }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
-    // The wakes, at most once. In a pane they run after `done` marks the
-    // record done and before its report push, in the same budget (#67).
     let woken = std::cell::Cell::new(c.already);
     let wake = || {
         if woken.replace(true) {
@@ -2694,14 +2549,10 @@ pub fn done_cmd(
         return Ok(());
     }
     let done = super::messaging::done_then(ctx, summary, unlanded, &wake);
-    // A `done` that stopped before the record, or a retry, ran no wake.
     wake();
     done
 }
 
-/// `horch ledger handoff <path>` (trace-fixes C4): hand the task off in 1
-/// transaction, wake the orchestrator, then, in a worker pane, report and
-/// close the pane as `horch done` does.
 pub fn handoff_cmd(ctx: &RuntimeContext, mut store: Store, path: &Path) -> Result<()> {
     let wid = worker_id(ctx)?;
     let file = handoff_file(ctx, path)?;
@@ -2732,8 +2583,6 @@ pub fn handoff_cmd(ctx: &RuntimeContext, mut store: Store, path: &Path) -> Resul
     done
 }
 
-/// The absolute path of the handoff file `path`, relative to the current
-/// directory. The file must exist.
 fn handoff_file(ctx: &RuntimeContext, path: &Path) -> Result<String> {
     let full = if path.is_absolute() {
         path.to_path_buf()
@@ -2750,8 +2599,6 @@ fn handoff_file(ctx: &RuntimeContext, path: &Path) -> Result<String> {
     Ok(full.to_string_lossy().into_owned())
 }
 
-/// Whether `horch done`'s report and pane close run: in a herdr pane of a
-/// worker with a record and a role.
 fn in_worker_pane(ctx: &RuntimeContext) -> bool {
     ctx.herdr.pane.is_some()
         && ctx
@@ -2760,8 +2607,6 @@ fn in_worker_pane(ctx: &RuntimeContext) -> bool {
             .is_some_and(|w| w.record_id.is_some() && w.role.is_some())
 }
 
-/// The wakes of a finished task: the author of a reviewed task, the tasks
-/// that wait for a parked one, and the orchestrator.
 fn wake_after_done(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
     if let Some((parent, Some(role))) = &c.reviews_in_for {
         tell_reviews_in(ctx, store, run, &c.task_id, parent, role);
@@ -2772,7 +2617,6 @@ fn wake_after_done(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::C
     super::taskledger_wake::after_done(ctx, store, run);
 }
 
-/// The line `done` prints for the finished task.
 fn done_line(c: &finish::Completed) -> String {
     let what = if c.unlanded {
         "parked as UNLANDED"
@@ -2782,8 +2626,6 @@ fn done_line(c: &finish::Completed) -> String {
     format!("{} {what}.", c.task)
 }
 
-/// The last review of `parent` is in: tell its author to run finish
-/// through its keyed `reviews-in` row (TRF-51).
 fn tell_reviews_in(
     ctx: &RuntimeContext,
     store: &Store,
@@ -2792,17 +2634,13 @@ fn tell_reviews_in(
     parent: &str,
     role: &str,
 ) {
-    // The author waits for this line until it runs finish (#177).
     if let Err(e) = hold_for_finish(store, review_task_id) {
         eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
     }
     super::taskledger_wake::reviews_in(ctx, store, run, parent, role);
 }
 
-/// A parked task is not cancelled, but the tasks that wait for it cannot
-/// start until a requeue resumes it: wake on those tasks.
 fn wake_unlanded(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
-    // The task is already done here, so a read error only costs the wake.
     match tasks::dependents(store.conn(), &c.task_id) {
         Ok(waiting) => {
             super::taskledger_wake::stalled_dependents(ctx, store, run, &c.task, &waiting)
@@ -2814,8 +2652,6 @@ fn wake_unlanded(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Com
     }
 }
 
-/// After the last review of a task: the author holds its reviewers wait
-/// until it runs `horch ledger finish` ([`workers::hold_for_finish`]).
 fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
     let Some(parent) = tasks::get(store.conn(), review_task_id)?.parent_task_id else {
         return Ok(());
@@ -2826,9 +2662,6 @@ fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
     workers::hold_for_finish(store.conn(), &author)
 }
 
-/// Whether this process is a task-ledger worker that holds (or finished) a
-/// task: `horch done` then goes through [`done_cmd`]. A worker whose task
-/// was cancelled or taken from it ends with the plain `horch done` (#136).
 pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     let Some(wid) = worker_id_opt(ctx) else {
         return false;
@@ -2841,7 +2674,6 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
         })
 }
 
-/// The text a worker reads after a claim.
 pub fn render_claim(c: &Claimed) -> String {
     let t = &c.task;
     let mut out = format!(
@@ -2879,8 +2711,6 @@ pub fn render_claim(c: &Claimed) -> String {
     out
 }
 
-/// The ticket: its snapshot from `add-map` first, then its path (TRF-12). A
-/// task with no snapshot names only the path.
 fn render_ticket(c: &Claimed, out: &mut String) {
     let file = c.task.task_file.as_deref().unwrap_or("-");
     let Some(snapshot) = &c.ticket_snapshot else {
@@ -2907,8 +2737,6 @@ fn render_ticket(c: &Claimed, out: &mut String) {
     ));
 }
 
-/// Where the worker works: an earlier attempt's worktree, a new one, or the
-/// shared checkout.
 fn render_workplace(c: &Claimed, out: &mut String) {
     let t = &c.task;
     match (&c.worktree, t.uses_worktree()) {
@@ -2937,7 +2765,6 @@ fn render_workplace(c: &Claimed, out: &mut String) {
     }
 }
 
-/// The earlier attempts at the task, oldest first.
 fn render_prior(prior: &[tasks::PriorAttempt], out: &mut String) {
     if prior.is_empty() {
         return;
@@ -2962,7 +2789,6 @@ fn render_prior(prior: &[tasks::PriorAttempt], out: &mut String) {
     );
 }
 
-/// A short branch-safe name from a title.
 pub fn slug(title: &str) -> String {
     let mut s: String = title
         .chars()
@@ -2985,16 +2811,11 @@ pub fn slug(title: &str) -> String {
         .to_string()
 }
 
-/// `horch ledger progress` and `horch ledger note`: `horch note`
-/// ([`super::messaging::note_as`], TRF-45) with their event kind.
 fn progress(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<ExitCode> {
     worker_id(ctx)?;
     super::messaging::note_as(ctx, text, kind)
 }
 
-/// Record `kind` with `text` on this worker's task ledger row. True when it
-/// did: a worker without `HORCH_WORKER_ID`, or whose row the ledger does
-/// not have, records nothing.
 pub fn progress_from_worker(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<bool> {
     let Some(wid) = worker_id_opt(ctx) else {
         return Ok(false);
@@ -3007,9 +2828,6 @@ pub fn progress_from_worker(ctx: &RuntimeContext, kind: EventKind, text: &str) -
     Ok(true)
 }
 
-/// The 1 warning of `horch note` for a live session in the context state
-/// `handoff` (TRF-09): it names `horch ledger handoff`. The row is built as
-/// `horch context` builds it. Any read error means no warning.
 pub(crate) fn note_handoff_warning(ctx: &RuntimeContext) -> Option<String> {
     use horch_core::execution::records::SessionLedger;
     let record_id = ctx.worker.as_ref()?.record_id.as_deref()?;
@@ -3035,8 +2853,6 @@ pub(crate) fn note_handoff_warning(ctx: &RuntimeContext) -> Option<String> {
     handoff_warning(row.state, &row.record.role)
 }
 
-/// The `horch note` line for a session in context state `state`: a line
-/// only for `handoff`.
 fn handoff_warning(state: horch_core::compaction::policy::RowState, role: &str) -> Option<String> {
     use horch_core::compaction::policy::{self, RowState};
     (state == RowState::Handoff).then(|| {
@@ -3065,7 +2881,6 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
     }
 }
 
-/// Insert a worker row and print its id.
 fn new_worker(
     ctx: &RuntimeContext,
     store: &mut Store,
@@ -3094,7 +2909,6 @@ fn new_worker(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Record the PIDs of a worker's supervisor and agent.
 fn record_pids(
     store: &mut Store,
     worker: &str,
@@ -3129,9 +2943,6 @@ mod tests {
     use horch_core::taskledger::Store;
     use std::path::Path;
 
-    /// Report 28 D-c: `horch ledger run new` writes the harness on the
-    /// orchestrator row it inserts: from the orchestrator's own session
-    /// record, else from the newest orchestrator row of the workspace.
     #[test]
     fn trf_45_run_new_writes_the_orchestrator_harness() {
         use horch_core::execution::legacy::{LedgerRecordV1, KIND_ORCHESTRATOR};
@@ -3187,7 +2998,6 @@ mod tests {
         };
         let own = (Some("codex".to_string()), Some("gpt-5.6-sol".to_string()));
         assert_eq!(run(&mut store, &ctx, "a"), own);
-        // No own record: the newest orchestrator row of the workspace.
         assert_eq!(run(&mut store, &env(None), "b"), own);
     }
 
@@ -3223,9 +3033,6 @@ mod tests {
         );
     }
 
-    /// The task "t" (ticket `tickets/t.md`, shaped by `shape`) of the run "r1"
-    /// of project root `root` (run branch `branch`), claimed by a new worker,
-    /// with the ledger and the context in `dir`.
     fn claimed(
         dir: &Path,
         root: &Path,
@@ -3260,8 +3067,6 @@ mod tests {
         (ctx, store, *c)
     }
 
-    /// The project root under `dir` (by its canonical path, as a run records
-    /// it), with the ticket `tickets/t.md` in it when `ticket` is true.
     fn project(dir: &Path, ticket: bool) -> std::path::PathBuf {
         let root = dir.join("project");
         std::fs::create_dir_all(root.join("tickets")).unwrap();
@@ -3362,7 +3167,6 @@ mod tests {
             "the claim names the ticket in the project root"
         );
 
-        // A shared task with a worktree is looked at like any other.
         let other = tempfile::tempdir().unwrap();
         let (ctx, store, mut shared) = claimed(other.path(), &root, Some("fleet/r1"), |t| {
             t.worktree_mode = WorktreeMode::Shared
@@ -3380,7 +3184,6 @@ mod tests {
         absolute_ticket_if_missing(&ctx, &store, &mut c);
         assert_eq!(ticket_of(&c), "tickets/t.md", "no branch to cut from");
 
-        // The root is no git repository, so no branch of it holds the ticket.
         let other = tempfile::tempdir().unwrap();
         let (ctx, store, mut c) = claimed(other.path(), &root, Some("fleet/r1"), |_| {});
         absolute_ticket_if_missing(&ctx, &store, &mut c);
@@ -3421,17 +3224,11 @@ mod tests {
         }
     }
 
-    /// Whether `cmd` or a subcommand under it takes `--check`.
     fn takes_check(cmd: &clap::Command) -> bool {
         cmd.get_arguments().any(|a| a.get_long() == Some("check"))
             || cmd.get_subcommands().any(takes_check)
     }
 
-    /// #181: an allow rule runs a codex worker's `horch ledger <sub>` outside
-    /// its sandbox, and `finish` runs a task's check command there. So no
-    /// subcommand that takes `--check` may be allowed, and every allow rule
-    /// names a real subcommand. Read from the clap definition, so a new
-    /// `--check` on an allowed subcommand fails here.
     #[test]
     fn no_allowed_ledger_subcommand_takes_a_check_command() {
         let roster = Roster::builtin().unwrap();
@@ -3494,9 +3291,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A repository whose run branch `fleet/r1` is 1 commit ahead of `main`,
-    /// run r1 with remote `origin` and PR #7, and the finish tools with a
-    /// fake gh that prints `{"state":"<state>"}`.
     fn gated_world(dir: &Path, state: &str) -> (finish::Tools, Store, Run) {
         let root = dir.join("repo");
         std::fs::create_dir(&root).unwrap();
@@ -3520,7 +3314,6 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        // Warm the fake: a new executable's first exec is slow on macOS.
         let _ = std::process::Command::new(&gh).output();
         let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
         let mut t = tools(&ctx);
@@ -3614,7 +3407,6 @@ mod tests {
         super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
         assert_eq!(status_of(&store, &run), "done");
 
-        // No gh: the PR condition is not applicable.
         let dir = tempfile::tempdir().unwrap();
         let (mut t, mut store, run) = gated_world(dir.path(), "OPEN");
         t.gh = dir.path().join("no-such-gh");
@@ -3628,8 +3420,6 @@ mod tests {
         assert_eq!(status_of(&store, &run), "done");
     }
 
-    /// Processes that each run with start time 7 and end on TERM. Each
-    /// signal is recorded with its PID.
     #[derive(Default)]
     struct FakeProcs {
         gone: std::cell::RefCell<Vec<u32>>,
@@ -3653,7 +3443,6 @@ mod tests {
         }
     }
 
-    /// No process and no pane exists.
     struct Nothing;
 
     impl stop::Processes for Nothing {
@@ -3685,7 +3474,6 @@ mod tests {
         }
     }
 
-    /// A stopper that finds nothing to stop.
     fn no_stops() -> super::Stopper<'static> {
         super::Stopper {
             panes: &Nothing,
@@ -3702,8 +3490,6 @@ mod tests {
         }
     }
 
-    /// The task "t" of run "r1", claimed by a worker whose agent (PID 4000)
-    /// and supervisor (PID 4001) run with start time 7.
     fn running(dir: &Path) -> (RuntimeContext, Store, Run, Claimed) {
         let root = dir.join("project");
         std::fs::create_dir_all(&root).unwrap();
@@ -3782,8 +3568,6 @@ mod tests {
         assert_eq!(requeues(&store), 0);
     }
 
-    /// The context of a caller in herdr workspace `workspace` (none: outside
-    /// herdr) whose project is `root`, and the ledger in `dir`.
     fn task_world(dir: &Path, root: &Path, workspace: Option<&str>) -> (RuntimeContext, Store) {
         let mut env = MapEnv::new(root).with("HORCH_PROJECT_DIR", root.to_str().unwrap());
         if let Some(ws) = workspace {
@@ -3857,7 +3641,6 @@ mod tests {
         assert_eq!(t.ticket_snapshot, None);
     }
 
-    /// `horch ledger run new <slug>` as the CLI parses it.
     fn new_run_args(slug: &str) -> super::NewRunArgs {
         #[derive(clap::Parser)]
         struct P {
@@ -3885,7 +3668,6 @@ mod tests {
             .map(|r| r.slug)
             .collect();
         assert_eq!(slugs, ["plan"]);
-        // Another workspace may create its run.
         let (other, mut store) = task_world(dir.path(), &root, Some("w8"));
         super::new_run_cmd(&other, &mut store, &root, new_run_args("next")).unwrap();
     }
@@ -3900,7 +3682,6 @@ mod tests {
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
         super::task_cmd(&ctx, &mut store, task_args("t", None, None)).unwrap();
         super::new_run_cmd(&ctx, &mut store, &root, new_run_args("plan")).unwrap();
-        // The solo run still takes one-off tasks next to the planned run.
         super::task_cmd(&ctx, &mut store, task_args("t2", None, None)).unwrap();
         assert_eq!(runs::of_project(store.conn(), &root).unwrap().len(), 4);
     }
@@ -3915,8 +3696,6 @@ mod tests {
         assert!(runs::of_project(store.conn(), &root).unwrap().is_empty());
     }
 
-    /// The land step of task `title` of the solo run of workspace w7, claimed
-    /// by a new worker, with the checkout `root` on the run branch.
     fn land_one_off(
         dir: &Path,
         ctx: &RuntimeContext,
@@ -3989,7 +3768,6 @@ mod tests {
 
         let (check, land) = land_one_off(dir.path(), &ctx, &mut store, &root);
         assert_eq!(check.status, StepStatus::NotApplicable, "{check:?}");
-        // A worktree task with no worktree changed no file: nothing lands (T-5).
         assert_eq!(land.status, StepStatus::NotApplicable, "{land:?}");
     }
 

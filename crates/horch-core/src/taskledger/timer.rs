@@ -1,16 +1,3 @@
-//! The agent's on-screen "working for N" timer, read from a pane's visible
-//! text (#31).
-//!
-//! The watchdog captures a worker pane (`herdr pane read`) and compares this
-//! timer between checks: a timer that advanced by about the elapsed time
-//! means the agent is still in one long turn. This module only parses text;
-//! it does no I/O.
-//!
-//! Each known status-line shape is 1 entry in `FORMATS`. When a CLI release
-//! changes its wording, add 1 entry and 1 fixture under
-//! `tests/fixtures/screens/`.
-
-/// The agent CLI a screen comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Claude,
@@ -19,8 +6,6 @@ pub enum Agent {
 }
 
 impl Agent {
-    /// The agent CLI whose timer formats a fleet harness prints, or None for
-    /// a harness with no known format (#203).
     pub fn of_harness(harness: &str) -> Option<Agent> {
         match harness {
             "codex" => Some(Agent::Codex),
@@ -30,13 +15,6 @@ impl Agent {
     }
 }
 
-/// How long the agent's on-screen timer says it has been working, in seconds,
-/// or None when the screen shows no running timer. Never Some(0) for "no timer".
-///
-/// Only a line that also says "esc to interrupt" is a running timer; a
-/// finished turn ("Worked for 12m 30s") is not. With several timers on screen
-/// the one nearest the bottom wins. [`Agent::Any`] tries every format; a named
-/// agent tries its own formats first, then the others.
 pub fn working_seconds(screen: &str, agent: Agent) -> Option<u64> {
     let own: Vec<&Format> = FORMATS
         .iter()
@@ -49,47 +27,32 @@ pub fn working_seconds(screen: &str, agent: Agent) -> Option<u64> {
     nearest_bottom(screen, &own).or_else(|| nearest_bottom(screen, &others))
 }
 
-/// The text every running status line carries (matched ignoring ASCII case).
 const RUNNING: &str = "esc to interrupt";
 
-/// The word before the parenthesised timer.
 #[derive(Debug, Clone, Copy)]
 enum Verb {
-    /// Exactly one of these words.
     OneOf(&'static [&'static str]),
-    /// Any alphabetic word followed by `…` or `...`.
     Ellipsis,
 }
 
-/// One status-line shape: `<glyph> <verb> (<duration><separator> ... esc to interrupt)`.
 #[derive(Debug, Clone, Copy)]
 struct Format {
-    /// The CLI that prints it.
     agent: Agent,
-    /// The word before `(`.
     verb: Verb,
-    /// The character that ends the duration inside the parentheses.
     separator: char,
 }
 
-/// Known running-timer formats. Add 1 entry per new shape.
 const FORMATS: &[Format] = &[
-    // Codex CLI (~0.30 and later): `• Working (12m 30s • esc to interrupt)`.
     Format {
         agent: Agent::Codex,
         verb: Verb::OneOf(&["Working", "Thinking"]),
         separator: '•',
     },
-    // Codex CLI (older, ~0.1x-0.2x): `Working (45s · esc to interrupt)`,
-    // sometimes `Thinking` instead of `Working`.
     Format {
         agent: Agent::Codex,
         verb: Verb::OneOf(&["Working", "Thinking"]),
         separator: '·',
     },
-    // Claude Code (~1.x-2.x) spinner line:
-    // `✻ Thinking… (12m 30s · ↑ 4.2k tokens · esc to interrupt)`; the glyph
-    // and the verb vary on every frame.
     Format {
         agent: Agent::Claude,
         verb: Verb::Ellipsis,
@@ -97,7 +60,6 @@ const FORMATS: &[Format] = &[
     },
 ];
 
-/// The timer on the lowest line any of `formats` reads.
 fn nearest_bottom(screen: &str, formats: &[&Format]) -> Option<u64> {
     screen
         .lines()
@@ -106,9 +68,7 @@ fn nearest_bottom(screen: &str, formats: &[&Format]) -> Option<u64> {
 }
 
 impl Format {
-    /// The seconds on `line`, when `line` is a running timer in this format.
     fn read(&self, line: &str) -> Option<u64> {
-        // ASCII lowercasing keeps byte offsets, so `esc` indexes `line` too.
         let esc = line.to_ascii_lowercase().rfind(RUNNING)?;
         let open = line[..esc].rfind('(')?;
         let verb = line[..open].trim_end().rsplit(char::is_whitespace).next()?;
@@ -132,8 +92,6 @@ impl Verb {
     }
 }
 
-/// `45s`, `12m`, `12m 30s`, `1h 02m 03s`, `1h 2m`: units in h, m, s order,
-/// each at most once, zero padding allowed.
 fn parse_duration(text: &str) -> Option<u64> {
     let mut rest = text.trim();
     let mut total: u64 = 0;
@@ -150,12 +108,8 @@ fn parse_duration(text: &str) -> Option<u64> {
     any.then_some(total)
 }
 
-/// The unit letters with their rank (h 2, m 1, s 0) and their seconds.
 const UNITS: [(char, u8, u64); 3] = [('h', 2, 3600), ('m', 1, 60), ('s', 0, 1)];
 
-/// The first `<digits><unit>` of `rest`: the number, the unit's rank, the
-/// unit's seconds, and the text after it. No digits do not parse, so a
-/// missing number is `None`.
 fn next_part(rest: &str) -> Option<(u64, u8, u64, &str)> {
     let end = rest
         .find(|c: char| !c.is_ascii_digit())
@@ -233,7 +187,6 @@ mod tests {
 
     #[test]
     fn named_agent_prefers_its_own_format() {
-        // A Claude line low on screen, a Codex line above it.
         let screen = "• Working (5m 00s • esc to interrupt)\n\
                       ✻ Thinking… (10s · esc to interrupt)\n";
         assert_eq!(working_seconds(screen, Agent::Codex), Some(300));

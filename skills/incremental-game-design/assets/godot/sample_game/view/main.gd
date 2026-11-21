@@ -1,14 +1,4 @@
 extends Control
-## The view of Lamp Road. It is one face of the core.
-##
-## The view builds its lists from the actions of the core. It has no list of its own.
-## It sends an intent with `dispatch` of its session. It never writes the state.
-##
-## The session of the view is the property `session`. The default is the autoload `Session`. A view that is not
-## in the main window (a test, a SubViewport) gets a session of its own before it enters the tree:
-##     var view: Control = preload("res://view/main.tscn").instantiate()
-##     view.session = preload("res://session/game_session.gd").new()
-##     view.add_child(view.session)      # the session then moves its own clock; it never uses the save file
 
 const Core := preload("res://core/game_core.gd")
 const SessionScript := preload("res://session/game_session.gd")
@@ -17,7 +7,6 @@ const GROUPS: Array[String] = ["Lamps", "Upgrades", "Road"]
 const FLASH := Color(1.0, 0.85, 0.35)
 const SUFFIXES: Array[String] = ["", "k", "M", "B", "T", "Qa", "Qi"]
 
-## The session that this view shows. Set it before the view enters the tree. Default: the autoload `Session`.
 var session: Node = null
 
 var _session: Node = null
@@ -33,7 +22,6 @@ func _ready() -> void:
 	if session == null:
 		session = get_node_or_null("/root/Session")
 	if session == null:
-		# A run with no autoload (a script run of a test). The view makes a session of its own.
 		session = SessionScript.new()
 		add_child(session)
 	_session = session
@@ -102,7 +90,6 @@ func _ready() -> void:
 	_refresh()
 
 
-## Read the state and the actions of the core again.
 func _refresh() -> void:
 	var state: Dictionary = _session.get("state")
 	var data: Dictionary = _session.get("data")
@@ -122,7 +109,6 @@ func _refresh() -> void:
 			_buttons[id] = button
 		var price: String = "free" if float(action["cost"]) <= 0.0 else short(float(action["cost"]))
 		if not action.get("bot", true):
-			# A free choice of the player (a switch): it has no price.
 			price = "press to change"
 		var label: String = action["label"]
 		if action.has("level"):
@@ -137,7 +123,6 @@ func _refresh() -> void:
 			_buttons.erase(id)
 
 
-## Show a reaction to an event of the core.
 func _on_event(e: Dictionary) -> void:
 	match str(e["kind"]):
 		"bought":
@@ -166,7 +151,6 @@ func _say(line: String) -> void:
 	_news.text = line
 
 
-## Return a short text for a large number.
 static func short(value: float) -> String:
 	var at: int = 0
 	var shown: float = value

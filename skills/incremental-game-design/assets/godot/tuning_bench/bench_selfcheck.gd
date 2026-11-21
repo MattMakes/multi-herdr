@@ -1,7 +1,4 @@
 extends RefCounted
-## The self-check of the tuning bench. It proves that the bench tells the truth about the game.
-##
-## The checks: repeat, clean start, dead number, unknown source, unclassified, contract, no file written.
 
 const BenchJson := preload("res://addons/tuning_bench/bench_json.gd")
 const Knobs := preload("res://addons/tuning_bench/bench_knobs.gd")
@@ -9,22 +6,15 @@ const Runner := preload("res://addons/tuning_bench/bench_runner.gd")
 const Meters := preload("res://addons/tuning_bench/bench_meters.gd")
 
 const CLI_SCRIPT := "res://addons/tuning_bench/bench_cli.gd"
-## The bench prints 1 line of progress for each count of numbers.
 const PROGRESS_EVERY := 10
-## The folder of the bench in `user://`. The check "No file written" does not look at it.
 const OWN_DIR := "user://tuning_bench/"
-## A file above this size is compared by its size and its time only, not by its content.
 const HASH_LIMIT := 4 * 1024 * 1024
 const POLL_MS := 50
 const NOT_CHECKED := "not checked: the repeat check or the clean start check failed"
-## The largest count of child processes that the dead-number check starts by itself.
 const MAX_DEFAULT_JOBS := 4
-## With no progress line for this time, the check prints a line "still running".
 const HEARTBEAT_MS := 30000
 
 
-## Return the count of processes of the dead-number check when the caller gives none:
-## min(4, count of processors - 1), and at least 1.
 static func default_jobs() -> int:
 	return clampi(OS.get_processor_count() - 1, 1, MAX_DEFAULT_JOBS)
 
@@ -37,8 +27,6 @@ static func _main_player(ctx: Dictionary) -> Dictionary:
 	return players[0]
 
 
-## Return the value that the dead-number check gives to a number: the value x 1.5.
-## A growth role changes only the part above 1. An integer stays an integer and always changes.
 static func moved_value(number: Dictionary, base: Variant) -> Variant:
 	var value: float = float(base)
 	var moved: float = value * 1.5
@@ -54,8 +42,6 @@ static func moved_value(number: Dictionary, base: Variant) -> Variant:
 	return moved
 
 
-## Return the tunable numbers that the globs of `only` select, in the order of the ledger.
-## A glob is a pattern on the number id with `*` and `?`. An empty list selects each number.
 static func select_numbers(ctx: Dictionary, only: Array) -> Array:
 	var out: Array = []
 	for id: Variant in ctx["tunable"]:
@@ -69,8 +55,6 @@ static func select_numbers(ctx: Dictionary, only: Array) -> Array:
 	return out
 
 
-## Return each file below `user://`: path -> [size, modified time, MD5 of the content].
-## The folder of the bench and the folder of the engine log are not in the list.
 static func list_user_files() -> Dictionary:
 	var skip: Array = [OWN_DIR]
 	var log_path: String = str(ProjectSettings.get_setting("debug/file_logging/log_path", "user://logs/godot.log"))
@@ -101,7 +85,6 @@ static func _list_dir(folder: String, skip: Array, out: Dictionary) -> void:
 		out[path] = [size, FileAccess.get_modified_time(path), content]
 
 
-## Return 1 line for each file that is new, changed or gone between 2 lists of `list_user_files`.
 static func changed_files(before: Dictionary, after: Dictionary) -> Array:
 	var out: Array = []
 	var paths: Array = after.keys()
@@ -120,10 +103,6 @@ static func changed_files(before: Dictionary, after: Dictionary) -> Array:
 	return out
 
 
-## Try each number of `ids`: a run with the moved value must differ from the reference run.
-## Return the list of the numbers with no effect. `on_done` is called 1 time after each number.
-## A number with the role `offline` that changes nothing for the main player is tried again with each player
-## that goes away (`away_every_min` and `away_min` above 0).
 static func probe(ctx: Dictionary, adapter: RefCounted, player: Dictionary, reference: Array, ids: Array, on_done: Callable = Callable()) -> Array:
 	var numbers: Dictionary = ctx["numbers"]
 	var base: Dictionary = ctx["base"]
@@ -158,9 +137,6 @@ static func probe(ctx: Dictionary, adapter: RefCounted, player: Dictionary, refe
 	return dead
 
 
-## Try the numbers in `jobs` child processes of Godot. Return {"ok", "error", "dead"}.
-## Each child makes its own adapter and its own reference run, and tries each number whose place in `ids`
-## has the rest `part` after a division by `jobs`.
 static func probe_in_children(ctx: Dictionary, ids: Array, jobs: int, only: Array, talk: bool) -> Dictionary:
 	var folder: String = OS.get_cache_dir().path_join("tuning_bench_probe_%d" % OS.get_process_id())
 	DirAccess.make_dir_recursive_absolute(folder)
@@ -207,7 +183,6 @@ static func probe_in_children(ctx: Dictionary, ids: Array, jobs: int, only: Arra
 			said_ms = Time.get_ticks_msec()
 			print("  dead-number check: %d of %d" % [shown, ids.size()])
 		if talk and Time.get_ticks_msec() - said_ms >= HEARTBEAT_MS:
-			# A run of a large game is long. This line says that the check still works.
 			said_ms = Time.get_ticks_msec()
 			print("  still running: %d of %d numbers tried, %d s" % [count, ids.size(), (said_ms - started_ms) / 1000])
 	for child: Dictionary in children:
@@ -238,7 +213,6 @@ static func _remove_folder(folder: String) -> void:
 	DirAccess.remove_absolute(folder)
 
 
-## The work of 1 child process of `probe_in_children`. Return {"ok", "error", "result"}.
 static func run_probe_part(ctx: Dictionary, only: Array, part: int, jobs: int, progress_path: String) -> Dictionary:
 	var made: Dictionary = Runner.make_adapter(ctx)
 	if not made["ok"]:
@@ -264,10 +238,6 @@ static func run_probe_part(ctx: Dictionary, only: Array, part: int, jobs: int, p
 	return {"ok": true, "error": "", "result": {"format": "tuning-bench-probe", "version": 1, "dead": dead, "tried": mine.size()}}
 
 
-## Run the self-check. Return {"ok", "error", "result"}. `error` is not empty for bad input or an adapter error.
-## Options: "child" (false: do not start a second process for the repeat check), "print" (print the progress),
-## "only" (a list of globs on the number id: the dead-number check tries only these numbers),
-## "jobs" (the count of child processes of the dead-number check; 1 = in this process).
 static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	var bench: Dictionary = ctx["bench"]
 	var numbers: Dictionary = ctx["numbers"]
@@ -277,7 +247,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	var jobs: int = maxi(int(opts.get("jobs", 1)), 1)
 	var files_before: Dictionary = list_user_files()
 
-	# Counts of the ledger.
 	var by_class: Dictionary = {}
 	var balance: int = 0
 	var not_tunable: Array = []
@@ -306,7 +275,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	var player: Dictionary = _main_player(ctx)
 	var data: Dictionary = Knobs.data_for(ctx, {})
 
-	# First run: the contract.
 	if talk:
 		print("  self-check: run 1 of the main player (the contract)")
 	var first: Dictionary = Runner.run(adapter, ctx, data, player, {"strict": true})
@@ -314,7 +282,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 		return {"ok": false, "error": "adapter error: " + "; ".join(PackedStringArray(first["errors"])), "result": {}}
 	var reference: Array = first["log"]
 
-	# Clean start: the second setup in this process must give the same run.
 	if talk:
 		print("  self-check: run 2 in the same process (clean start); run 1 took %d steps" % int(first["steps"]))
 	var second: Dictionary = Runner.run(adapter, ctx, data, player, {})
@@ -323,7 +290,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	if not clean:
 		clean_detail.append("the run after a second setup() differs from the first run: state leaks through setup()")
 
-	# Repeat: a run in a new process must give the same result file.
 	var repeat_ok: bool = true
 	var repeat_detail: Array = []
 	var traces: Dictionary = {player["id"]: first}
@@ -357,7 +323,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	checks.append({"id": "repeat", "name": "Repeat", "ok": repeat_ok, "detail": repeat_detail})
 	checks.append({"id": "clean_start", "name": "Clean start", "ok": clean, "detail": clean_detail})
 
-	# Dead number: each tunable number must change the run.
 	var dead: Array = []
 	var dead_fail: Array = []
 	var tunable: Array = ctx["tunable"]
@@ -387,7 +352,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 		dead_fail.append(NOT_CHECKED)
 	checks.append({"id": "dead_number", "name": "Dead number", "ok": dead_fail.is_empty(), "detail": dead_fail})
 
-	# Unknown source.
 	var unknown: Array = []
 	for id: Variant in ctx["foreign"]:
 		unknown.append("%s: the file %s is not in \"sources\"" % [id, (numbers[id] as Dictionary).get("file", "")])
@@ -395,17 +359,14 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 		unknown.append("%s: the pointer %s gives no number in %s" % [id, (numbers[id] as Dictionary).get("pointer", ""), (numbers[id] as Dictionary).get("file", "")])
 	checks.append({"id": "unknown_source", "name": "Unknown source", "ok": unknown.is_empty(), "detail": unknown})
 
-	# Unclassified.
 	var unclassified_detail: Array = []
 	for id: Variant in unclassified:
 		unclassified_detail.append("%s has the class \"unclassified\"" % id)
 	checks.append({"id": "unclassified", "name": "Unclassified", "ok": unclassified.is_empty(), "detail": unclassified_detail})
 
-	# Contract.
 	var contract: Array = first["contract"]
 	checks.append({"id": "contract", "name": "Contract", "ok": contract.is_empty(), "detail": contract})
 
-	# No file written: the simulation must not make or change a file of the player in `user://`.
 	var written: Array = changed_files(files_before, list_user_files())
 	checks.append({"id": "no_file_written", "name": "No file written", "ok": written.is_empty(), "detail": written})
 
@@ -422,7 +383,6 @@ static func run_check(ctx: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	return {"ok": true, "error": "", "result": result}
 
 
-## Return 1 line for each number with no effect that has no `dead_ok`.
 static func dead_lines(dead: Array) -> Array:
 	var out: Array = []
 	for item: Dictionary in dead:
@@ -431,9 +391,6 @@ static func dead_lines(dead: Array) -> Array:
 	return out
 
 
-## Put the result of a self-check of some numbers (`--only`) into an older result of the same ledger.
-## The numbers that the new check tried replace their old entries. Each other entry stays.
-## An older result of another ledger (another `ledger_hash`) is not used: the new result stays as it is.
 static func merge(ctx: Dictionary, old: Dictionary, new: Dictionary) -> Dictionary:
 	if str(old.get("format", "")) != "tuning-bench-check" or str(old.get("ledger_hash", "")) != str(new.get("ledger_hash", "")):
 		return new
@@ -459,7 +416,6 @@ static func merge(ctx: Dictionary, old: Dictionary, new: Dictionary) -> Dictiona
 			checked.append(id)
 		if by_id.has(id):
 			var item: Dictionary = (by_id[id] as Dictionary).duplicate()
-			# The reason of the bench file of now counts.
 			item.erase("dead_ok")
 			if (numbers[id] as Dictionary).has("dead_ok"):
 				item["dead_ok"] = str((numbers[id] as Dictionary)["dead_ok"])

@@ -59,8 +59,6 @@ def band_centres(edges=NOISE_EDGES, top: float = 22000) -> np.ndarray:
     return K.erb_centres(edges, top)
 
 
-# ================================================================ onsets
-
 def onset_strength(m: np.ndarray, nper: int = 256, hop: int = 32,
                    cap: float = 1.5) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Capped log-spectral flux at lag 2, frame energy (dB) and frame centre samples."""
@@ -152,8 +150,6 @@ def _filter_gaps(got: list, min_gap_ms: float) -> list:
     return acc
 
 
-# ================================================================ fade-out
-
 def fade_out(x: np.ndarray, cands=(0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25),
              gain_db: float = 0.5) -> float:
     """Length (s) of a linear fade at the end of x, or 0 when there is none."""
@@ -208,8 +204,6 @@ def _undo_fade(mv: np.ndarray, fov: float) -> tuple[np.ndarray, int]:
     return yv, cnt - int(0.25 * n_frq)
 
 
-# ================================================================ ESPRIT
-
 def esprit(s: np.ndarray, kmax: int = 16, dyn_db: float = 60) -> tuple[np.ndarray, int]:
     """Poles of a sum of damped exponentials, model order by MDL."""
     s = np.asarray(s)
@@ -251,8 +245,6 @@ def _order_mdl(svals: np.ndarray, pv: int, mcol: int, k_max: int, dyn_db: float)
             winner, k_best = vv, ix
     return k_best
 
-
-# ================================================================ mode candidates
 
 def _cands_per_band(chunk: np.ndarray, k_max: int, n_max: int) -> list[tuple[float, float]]:
     ns_v = len(chunk)
@@ -333,8 +325,6 @@ def _unique_modes(cand_l: list, kept_l: list) -> list:
             poolv.append((fq, tauv))
     return acc
 
-
-# ================================================================ least squares
 
 def _pole_set(freq_l, tau_l) -> np.ndarray:
     fq = np.asarray(freq_l, dtype=float)
@@ -451,8 +441,6 @@ def _append_modes(yv: np.ndarray, begins: np.ndarray, freq_l, tau_l: np.ndarray,
             ix = np.arange(cv0 - sgl, cv1 - sgl)
             yv[cv0:cv1] += np.real(np.exp(np.multiply.outer(ix, lzv)) @ cv[sel_i])
 
-
-# ================================================================ the passes
 
 def _ends_of_strikes(ons_l: list[int], act_end: int) -> list[int]:
     return [ons_l[ii + 1] if ii + 1 < len(ons_l) else act_end for ii in range(len(ons_l))]
@@ -630,8 +618,6 @@ def _grow_modes(workv, hits, end_l, cfg) -> None:
             stv["own"] += _fresh_modes(workv, stv, stop_i, cfg)
 
 
-# ================================================================ strike rows
-
 def _row_set(sel_i, fq, tv, cv, ii, skipv) -> list:
     pick = np.flatnonzero(sel_i == ii)
     rws = []
@@ -740,8 +726,6 @@ def _poles_of_contact(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return fq[good], tauv[good]
 
 
-# ================================================================ noise envelopes
-
 def _power_per_band(x: np.ndarray, mask_l: np.ndarray, fft_n: int) -> np.ndarray:
     cnt = len(x)
     xmat = rfft(x, fft_n)
@@ -823,8 +807,6 @@ def _ratio_side(av: np.ndarray) -> list[float]:
     rhov = np.sqrt((wmat2 @ smat) / np.maximum(wmat2 @ mcol, 1e-300))
     return [round(float(vv), 4) for vv in np.minimum(rhov, 1.5)]
 
-
-# ================================================================ fit
 
 FIT_KNOBS = {"max_strikes": 10, "kmax": 16, "nmax": 384, "passes": 2, "skip_ms": 0.5, "prune_db": -50,
              "max_modes": 80, "onset_rel": 0.2, "noise_tol_db": 1, "analysis_s": 3, "attack_ms": 2.5,
@@ -909,8 +891,6 @@ def _diagnostics(mv, mode_sig, tonal, skip_ms, mode_n) -> dict:
             "resid_db": round(residv, 2)}
 
 
-# ================================================================ face
-
 def check(model: Any) -> None:
     """ValueError when the model is not a modal model of a supported version."""
     check_kind(model, KIND, VERSION)
@@ -954,8 +934,6 @@ def summary(model: dict) -> str:
     return "\n".join(line_l)
 
 
-# ================================================================ quick checks
-
 def mel_distance(x: np.ndarray, y: np.ndarray) -> tuple[float, list[float]]:
     """Mean absolute mel dB at 3 FFT sizes, and the value per size."""
     return mel_db_distance(_to_mono(x), _to_mono(y))
@@ -996,8 +974,6 @@ def rise_ms(x: np.ndarray) -> float:
     ix90 = int(np.argmax(chunk >= 0.9 * ev[ix]))
     return float((ix90 - ix10) * 6 / SR * 1000)
 
-
-# ================================================================ standalone code
 
 def to_code(model: dict, name: str = "sound") -> str:
     """A standalone numpy + scipy script that renders the same samples as ``render``."""

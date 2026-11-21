@@ -14,11 +14,11 @@ from pathlib import Path
 from . import evidence, frontmatter
 
 TARGETS = ("repo", "standalone")
-SKILL_MD_MAX = 12 * 1024  # skills_catalog.rs MAX_SKILL_MD_BYTES
-FOLDER_MAX = 160 * 1024  # skills_catalog.rs MAX_SKILL_DIR_BYTES
-LICENCE_PREFIXES = ("LICENSE", "LICENCE", "NOTICE", "COPYING")  # skills_bundled_no_licence_files
+SKILL_MD_MAX = 12 * 1024
+FOLDER_MAX = 160 * 1024
+LICENCE_PREFIXES = ("LICENSE", "LICENCE", "NOTICE", "COPYING")
 FRONTMATTER_KEYS = ["description", "name"]
-STANDALONE_DOTFILES = [".intake-provenance.json"]  # written by install, never by the writer
+STANDALONE_DOTFILES = [".intake-provenance.json"]
 
 _COMMON = {
     "skill_md_max_bytes": SKILL_MD_MAX,
@@ -122,8 +122,6 @@ def check_skill(folder: Path, rules: dict, budget_exempt: str | None) -> tuple[l
             fails.append(msg + " and has no budget_exempt reason")
     return fails, flags
 
-
-# ---- mode detection (spec 8.1) ----------------------------------------------
 
 MARKERS = ("skills/copied.json", "teammates/_template.md", "crates/horch-core/tests/skills_catalog.rs")
 

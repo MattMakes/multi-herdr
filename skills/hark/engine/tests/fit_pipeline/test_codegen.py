@@ -168,8 +168,6 @@ def _fake_registry(monkeypatch, src: str, recipe: types.ModuleType | None) -> No
     recipes.load = load
     monkeypatch.setitem(sys.modules, "hark.forge.engine.refsets", refsets)
     monkeypatch.setitem(sys.modules, "hark.forge.recipes", recipes)
-    # "from package import name" reads the package attribute first: replace it too, in case an earlier test
-    # imported the real module.
     monkeypatch.setattr(importlib.import_module("hark.forge.engine"), "refsets", refsets, raising=False)
     monkeypatch.setattr(importlib.import_module("hark.forge"), "recipes", recipes, raising=False)
 
@@ -281,7 +279,7 @@ def test_a_15_cli_fit_with_report(sounds, write_wav, tmp_path, monkeypatch, caps
     args = _parser().parse_args(["fit", src, "-o", "out/s1.py", "--report", "--json"])
     assert args.func(args) == 0
     out = capsys.readouterr().out
-    res = json.loads(out[out.index("{"):])  # report.emit prints the JSON over several lines
+    res = json.loads(out[out.index("{"):])
     for ext in (".py", ".wav", ".png", ".json", ".report.json"):
         assert (tmp_path / "out" / f"s1{ext}").exists(), ext
     assert {"kind", "chosen", "quality", "floor", "files", "seconds", "candidates"} <= set(res)

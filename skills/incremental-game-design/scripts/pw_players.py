@@ -41,17 +41,17 @@ from pw_sim import Sim
 HOUR = 3600.0
 IDLE_HOURS = (1, 8, 24, 168)
 QUARTERS = (("25%", 0.25), ("50%", 0.5), ("75%", 0.75), ("end", 1.0))
-HUMAN_DECISION = 2.0                    # seconds of real time between 2 decisions of a human (law L9)
+HUMAN_DECISION = 2.0
 SPEEDS_ALL = (2, 5, 10, 20, 50, 100, 200, 500, 1000)
 SPEEDS_FAST = (10, 100)
 SLOWDOWN_MAX = 1.1
-PURCHASE_RATE_MAX = 30                  # purchases by hand in 1 minute (designer target; the default of row PC6)
+PURCHASE_RATE_MAX = 30
 DEFAULT_PLAY_TEST_SPEED = 10
-VISIT_HORIZON = 40                      # a player with visits plays at most this many visit intervals
+VISIT_HORIZON = 40
 GROWTH_ROWS = 48
-ROUND_SECONDS = 1.0                     # the length of 1 purchase round of a round player
-ROUND_MINUTES = (1, 5)                  # the players that buy only each N minutes (round_1m, round_5m)
-BUYER = "payback"                       # the buyer of the new players (pw_sim.Sim._payback_pick)
+ROUND_SECONDS = 1.0
+ROUND_MINUTES = (1, 5)
+BUYER = "payback"
 
 
 def _active(name, decide, text, reset="model"):
@@ -94,7 +94,6 @@ LEFT_OUT_RESET = ("no reset layer: the reset players ({names}) and the policy ga
                   "no reset")
 
 
-# ----------------------------------------------------------------------------- the play pattern
 def is_continuous(m):
     return m["game"].get("play_pattern") == "continuous"
 
@@ -127,7 +126,6 @@ def closed_out(names):
     return [n for n in names if closed_player(n)] or [n for n in NAMES if closed_player(n)]
 
 
-# ----------------------------------------------------------------------------- choices
 def wanted(m, option):
     """The player names for the option --players: None, 'all', 'fast', 'none' or a comma list."""
     if option is None:
@@ -180,7 +178,7 @@ def reset_rules(values, main=None):
     of values.reward_exponent on the main currency. The model as built copies them into its prestige block
     (references/reverse-engineering.md section 7)."""
     out = {k: values[k] for k in RESET_RULES if k in values}
-    if values.get("reward_exponent") and main:      # income x (1 + lifetime reset currency)^exponent
+    if values.get("reward_exponent") and main:
         out["reward"] = dict(target=main, exponent=values["reward_exponent"])
     return out
 
@@ -205,7 +203,6 @@ def rule_text(rule):
     return "the reset rule of the model" if rule == "model" else f"version 1 profile '{rule}'"
 
 
-# ----------------------------------------------------------------------------- runs
 class Players:
     """The runs of 1 model: 1 Sim for each player, and the base state of the single-wait idle runs."""
 
@@ -283,7 +280,6 @@ def step_time(sim, ax, step, k):
     return None if hit is None else hit[k]
 
 
-# ----------------------------------------------------------------------------- the players block
 def _decisions(sim):
     """Count of moments with a purchase or a reset: the visits of a player who is present all the time."""
     return len({e["t"] for e in sim.events if e["kind"] in ("purchase", "prestige")})
@@ -319,7 +315,6 @@ def player_row(spec, sim, ax):
                 simulated_wall_hours=round(sim.real / HOUR, 3))
 
 
-# ----------------------------------------------------------------------------- idle curve
 def axis_rate(sim, ax):
     """Progress axis steps for each wall hour: to the end of the axis, else to the end of the run."""
     if not ax or not sim.real:
@@ -391,7 +386,6 @@ def idle_curve(pl):
     return out
 
 
-# ----------------------------------------------------------------------------- growth slope
 def _value_at(samples, t):
     before = [s for s in samples if s["t"] <= t + 1e-9]
     return before[-1] if before else None
@@ -447,7 +441,6 @@ def _ended_before(sim, ax, row):
     return end is not None and end < row["hour"]
 
 
-# ----------------------------------------------------------------------------- policy gap and speed
 def common_time(a, b, ax, k):
     """(time of a, time of b) to the highest axis step that both reach, on clock k."""
     top = min(axis_value(a, ax), axis_value(b, ax))
@@ -498,7 +491,6 @@ def speed_test(m, pl, speeds):
                 play_test_speed=play_test, slowdown_at_play_test=at_test)
 
 
-# ----------------------------------------------------------------------------- lines
 def never_bought(m, runs):
     buyers = {p["id"]: [n for n, (_, sim) in runs.items() if p["id"] in sim.ever] for p in m["purchases"]}
     return dict(no_player=sorted(i for i, b in buyers.items() if not b),
@@ -525,7 +517,6 @@ def unbounded(m):
     return dict(lines=lines, currencies=sorted(c for c, uncapped in sinks.items() if all(uncapped)))
 
 
-# ----------------------------------------------------------------------------- bands
 def band_row(name, value, target, default):
     """The status of 1 indicator. target and default are [low, high] or None."""
     band, source = (target, "target") if target else (default, "default" if default else None)
@@ -593,7 +584,6 @@ def busiest_minute(sim):
     return max((minutes.count(k) for k in set(minutes)), default=0)
 
 
-# ----------------------------------------------------------------------------- entry point
 def run_players(m, hours, names, primary=None, v1_runs=None):
     """The players block and the presence block of the analysis JSON. names: a list from wanted()."""
     pl = Players(m, hours, primary, v1_runs)
@@ -615,7 +605,6 @@ def _run_kept(pl, names, gone):
     return set(names) | set(gone) >= set(NAMES), runs
 
 
-# ----------------------------------------------------------------------------- console
 def _num(x, fmt="{:.2f}"):
     return "n/a" if x is None else fmt.format(x)
 

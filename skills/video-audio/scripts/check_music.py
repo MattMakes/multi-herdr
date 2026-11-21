@@ -49,8 +49,6 @@ class CheckError(Exception):
     """An input or required local tool cannot be used."""
 
 
-# ---------------------------------------------------------------- input
-
 def _ffmpeg(args):
     """Run ffmpeg with args and return its stdout bytes."""
     if not shutil.which("ffmpeg"):
@@ -93,8 +91,6 @@ def load_beats(path):
         raise CheckError("beat grid needs bpm > 0")
     return grid
 
-
-# ---------------------------------------------------------------- level continuity
 
 def _db(samples):
     """Return the RMS level of samples in dBFS."""
@@ -145,8 +141,6 @@ def level_check(samples, beats):
             "pass": not (silence or worst)}
 
 
-# ---------------------------------------------------------------- edit plan
-
 def _table_rows(text):
     """Return the cells of each Markdown table line."""
     lines = (line.strip() for line in text.splitlines())
@@ -183,8 +177,6 @@ def read_edits(path):
     edits = [_edit(dict(zip(headers, row))) for row in rows[2:] if len(row) == len(headers)]
     return [edit for edit in edits if edit["film_sec"] > 0]
 
-
-# ---------------------------------------------------------------- edit measures
 
 def _side_pairs(beats, sec, left):
     """Return up to 4 beat intervals on 1 side of sec, or every interval."""
@@ -278,8 +270,6 @@ def _flux_ratio(samples, sec):
     join = min(len(flux) - 1, max(0, (center - lo) // FLUX_FRAME - 1))
     return _join_ratio(flux, join) if flux else 0.0
 
-
-# ---------------------------------------------------------------- edit check
 
 def _bar_ms(grid):
     """Return the length of 1 bar in ms."""
@@ -401,8 +391,6 @@ def write_grid(song_path, out_path):
     write_report(grid, out_path)
     return grid
 
-
-# ---------------------------------------------------------------- self-test
 
 TEST_RATE = 16000
 TEST_SECONDS = 8
@@ -539,8 +527,6 @@ def self_test():
     print("self-test FAILED: " + "; ".join(failures) if failures else "self-test PASSED")
     return 1 if failures else 0
 
-
-# ---------------------------------------------------------------- CLI
 
 def _parser():
     """Return the command-line parser."""

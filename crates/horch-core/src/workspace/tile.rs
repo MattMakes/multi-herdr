@@ -1,70 +1,16 @@
-//! Deterministic placement of every pane in a fleet workspace into one grid.
-//!
-//! # The shape
-//!
-//! ```text
-//! tab 1                              tab 2..N (overflow, no orchestrator)
-//! +-------+--------+--------+        +--------+--------+--------+
-//! |       |   W    |   W    |        |   W    |   W    |   W    |
-//! |   O   +--------+--------+        +--------+--------+--------+
-//! |       |   W    |   W    |        |   W    |   W    |   W    |
-//! +-------+--------+--------+        +--------+--------+--------+
-//! ```
-//!
-//! The orchestrator is the leftmost full-height pane of tab 1 and never moves.
-//! Tab 1 holds 4 workers in 2 columns, each overflow tab 6 in 3 columns, filled
-//! column 1 top, column 1 bottom, column 2 top, column 2 bottom, and so on. That
-//! order IS [`Slot`]'s ordering, so placement, reuse and reporting all read the
-//! same list.
-//!
-//! # Why every pane is parked first
-//!
-//! herdr refuses to move a pane into the tab it already occupies: the reply is
-//! `changed: false, reason: "same_tab"` (`socket-api.md:231`). Repositioning a
-//! pane inside its own tab therefore means moving it out and back, so the plan
-//! has two phases - park every worker in a scratch tab, then place them all from
-//! there - and needs no same-tab case at all. It also means the plan does not
-//! care how scrambled the tab was to begin with.
-//!
-//! Parking uses the same 2-row grid as placement rather than one chain of right
-//! splits, because herdr enforces no minimum pane size: nine chained right
-//! splits measured 46, 23, 11, 5, 2, 1, 0, 0, 0 cells wide without one error.
-//! A chain would hand a live
-//! agent a zero-column terminal on the way past.
-//!
-//! # Why a new column splits the row below it too
-//!
-//! A right split subdivides its own pane's rect and nothing else. Splitting
-//! column 1's half-height top pane to the right therefore opens the new column in
-//! the TOP ROW ONLY, and splitting that new pane DOWN produces two
-//! quarter-height panes - the shape that cannot be
-//! recovered. So column `c >= 2` is opened twice, once against
-//! column `c-1`'s top pane and once against its bottom pane, which is the order
-//! `crates/horch/src/cmd/recipes.rs` has always used by hand.
-
 use std::collections::HashMap;
 
 use crate::workspace::balance::{ResizeDir, ResizeOp};
 use crate::workspace::model::{Direction, FocusDir, Layout, Rect};
 
-/// Label of the tab workers are parked in while the grid is rebuilt. It exists
-/// for at most one run; a run that dies leaves it, and the next run gathers the
-/// panes in it like any others and places them.
 pub(crate) const SCRATCH_LABEL: &str = "horch-tile-scratch";
 
-/// Tab 1 gives one of its columns to the orchestrator, so it holds 2 worker
-/// columns where an overflow tab holds 3.
 pub(crate) const TAB1_COLUMNS: usize = 2;
 pub(crate) const OVERFLOW_COLUMNS: usize = 3;
-/// Two rows everywhere. A 3-row layout is deliberately out of scope.
 pub(crate) const ROWS: usize = 2;
 
-/// A divider within one cell of its target is left alone: the same tolerance
-/// [`crate::workspace::balance`] uses, absorbing border rows and herdr's rounding of a
-/// split ratio to four decimal places.
 pub(crate) const TOLERANCE: i64 = 1;
 
-/// Worker columns on a 1-based tab index.
 pub fn columns(tab_index: usize) -> usize {
     if tab_index <= 1 {
         TAB1_COLUMNS
@@ -73,7 +19,6 @@ pub fn columns(tab_index: usize) -> usize {
     }
 }
 
-/// How many workers a 1-based tab index holds when full.
 pub(crate) fn capacity(tab_index: usize) -> usize {
     columns(tab_index) * ROWS
 }
@@ -93,18 +38,13 @@ impl Row {
     }
 }
 
-/// Where one worker belongs. Ordering is lexicographic (tab, column, row), which
-/// is the fill order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Slot {
-    /// 1-based, in tab-strip order. Tab 1 is the orchestrator's tab.
     pub tab_index: usize,
-    /// 1-based, excluding the orchestrator's column.
     pub column: usize,
     pub row: Row,
 }
 
-/// The first `n` slots in fill order.
 pub(crate) fn slots_for(n: usize) -> Vec<Slot> {
     let mut slots = Vec::with_capacity(n);
     let mut tab_index = 1;
@@ -126,12 +66,10 @@ pub(crate) fn slots_for(n: usize) -> Vec<Slot> {
     slots
 }
 
-/// How many tabs `n` workers need. Always at least one: the orchestrator's.
 pub(crate) fn tab_count(n: usize) -> usize {
     slots_for(n).last().map(|s| s.tab_index).unwrap_or(1)
 }
 
-/// How many workers land on a 1-based tab index, given `n` in the workspace.
 pub(crate) fn workers_on_tab(tab_index: usize, n: usize) -> usize {
     slots_for(n)
         .iter()
@@ -139,36 +77,23 @@ pub(crate) fn workers_on_tab(tab_index: usize, n: usize) -> usize {
         .count()
 }
 
-/// Worker columns a tab ends up with: every column has a top, so it is the
-/// number of workers rounded up.
 fn columns_used(workers: usize) -> usize {
     workers.div_ceil(ROWS)
 }
 
-/// A tab the plan refers to. A tab it creates has no id until the run reaches
-/// the op that creates it, so the plan names it by creation order and the driver
-/// substitutes the id herdr reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TabRef {
     Existing(String),
     Created(usize),
 }
 
-/// One herdr call. Every pane id is known when the plan is made; only tab ids
-/// can be pending.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    /// `herdr pane move <pane> --new-tab --label <label> --no-focus`, creating
-    /// the tab this plan calls `Created(creates)`. The moved pane is the only
-    /// pane in it, which is why this and not `tab create`: `tab create` would add
-    /// a shell pane to dispose of.
     NewTab {
         pane: String,
         label: String,
         creates: usize,
     },
-    /// `herdr pane move <pane> --tab <tab> --split <split> --target-pane <target>
-    /// [--ratio <ratio>] --no-focus`. `ratio` is the share `target` keeps.
     Move {
         pane: String,
         tab: TabRef,
@@ -176,11 +101,11 @@ pub enum Op {
         target: String,
         ratio: Option<f64>,
     },
-    /// `herdr tab focus <tab>`, to put the operator back where they were.
-    FocusTab { tab: TabRef },
+    FocusTab {
+        tab: TabRef,
+    },
 }
 
-/// A worker pane as the live workspace reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worker {
     pub pane: String,
@@ -189,32 +114,20 @@ pub struct Worker {
     pub y: i64,
 }
 
-/// What the workspace looks like now, and who is new.
 #[derive(Debug, Clone)]
 pub struct Fleet {
-    /// Tab ids in tab-strip order.
     pub tabs: Vec<String>,
     pub orchestrator: String,
     pub orchestrator_tab: String,
     pub workers: Vec<Worker>,
-    /// A pane that has just appeared and must be placed LAST however its
-    /// rectangle sorts.
-    ///
-    /// `horch spawn` splits the orchestrator's own pane by default, so the new
-    /// worker lands full-height immediately right of the orchestrator - the
-    /// smallest `x` of any worker. Sorted by geometry it would take column 1 top
-    /// and rotate every other worker one slot along on every single spawn.
     pub newcomer: Option<String>,
 }
 
-/// The whole rearrangement, split into the two phases so a report can name them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     pub park: Vec<Op>,
     pub place: Vec<Op>,
-    /// Worker pane and where it lands, in fill order.
     pub placement: Vec<(String, Slot)>,
-    /// How many tabs the plan creates: the scratch tab plus one per overflow tab.
     pub created_tabs: usize,
 }
 
@@ -228,12 +141,6 @@ impl Plan {
     }
 }
 
-/// Workers in fill order: reading order of where they sit now, so a re-run is
-/// stable and neighbours stay neighbours, with any newcomer appended.
-///
-/// Columns are clustered within [`TOLERANCE`] before being compared, so a
-/// divider that drifted one cell cannot swap a column's two panes on the next
-/// run.
 pub(crate) fn order_workers(fleet: &Fleet) -> Vec<&Worker> {
     let tab_index = |tab_id: &str| {
         fleet
@@ -243,7 +150,6 @@ pub(crate) fn order_workers(fleet: &Fleet) -> Vec<&Worker> {
             .unwrap_or(usize::MAX)
     };
 
-    // Column keys per tab: the x edges that exist there, deduped by tolerance.
     let column_key = |w: &Worker| -> usize {
         let mut xs: Vec<i64> = fleet
             .workers
@@ -280,30 +186,16 @@ pub(crate) fn order_workers(fleet: &Fleet) -> Vec<&Worker> {
     ordered
 }
 
-/// The ratio that leaves equal columns when column `c` of `total` is opened
-/// against column `c-1`.
-///
-/// When column `c` is opened, column `c-1`'s pane still spans everything from
-/// column `c-1` to column `total`, so it must keep one of those
-/// `total - c + 2` shares.
 fn column_ratio(c: usize, total: usize) -> f64 {
     1.0 / (total.saturating_sub(c) + 2) as f64
 }
 
-/// The share of tab 1 the orchestrator keeps: one column of the `n` worker
-/// columns plus itself.
 pub fn orchestrator_share(worker_columns: usize) -> f64 {
     1.0 / (worker_columns + 1) as f64
 }
 
-/// Emit the moves that build a 2-row grid of `panes` in `tab`.
-///
-/// `first` is how the first pane gets there - right of the orchestrator on tab 1,
-/// or into a tab of its own everywhere else - and every later pane splits a pane
-/// this function has already placed.
 fn grid_ops(panes: &[&str], tab: TabRef, total_columns: usize, first: FirstPane) -> Vec<Op> {
     let mut ops = Vec::new();
-    // Panes already placed, by column, so a later op can name its target.
     let mut tops: Vec<&str> = Vec::new();
     let mut bottoms: Vec<&str> = Vec::new();
 
@@ -322,7 +214,6 @@ fn grid_ops(panes: &[&str], tab: TabRef, total_columns: usize, first: FirstPane)
     ops
 }
 
-/// The op that places the first pane of a grid.
 fn first_op(pane: &str, first: &FirstPane) -> Op {
     match first {
         FirstPane::RightOf { target, ratio, tab } => Op::Move {
@@ -340,7 +231,6 @@ fn first_op(pane: &str, first: &FirstPane) -> Op {
     }
 }
 
-/// The op that places a later pane of a grid, against panes already placed.
 fn grid_op(
     pane: &str,
     tab: &TabRef,
@@ -349,12 +239,7 @@ fn grid_op(
     total_columns: usize,
 ) -> Op {
     let (split, target, ratio) = match (column, row) {
-        // Column 1's pane is full height, so DOWN pairs it without touching
-        // anything else.
         (1, _) => (Direction::Down, tops[0], 1.0 / ROWS as f64),
-        // A right split subdivides only the pane it targets, so a new column
-        // is opened once per row: against column c-1's top, then against its
-        // bottom. Never DOWN from the new top pane, which would quarter it.
         (c, Row::Top) => (
             Direction::Right,
             tops[c - 2],
@@ -375,19 +260,18 @@ fn grid_op(
     }
 }
 
-/// How the first pane of a grid arrives.
 enum FirstPane {
-    /// Right of a pane that is already in the tab: the orchestrator.
     RightOf {
         tab: TabRef,
         target: String,
         ratio: Option<f64>,
     },
-    /// In a tab created around it.
-    OwnTab { label: String, creates: usize },
+    OwnTab {
+        label: String,
+        creates: usize,
+    },
 }
 
-/// Plan the whole rearrangement. Pure: it never calls herdr.
 pub fn plan(fleet: &Fleet) -> Plan {
     let ordered = order_workers(fleet);
     let n = ordered.len();
@@ -401,8 +285,6 @@ pub fn plan(fleet: &Fleet) -> Plan {
     }
     let panes: Vec<&str> = ordered.iter().map(|w| w.pane.as_str()).collect();
 
-    // Park: one scratch tab, the same 2-row grid, equal columns so no live pane
-    // is squeezed to nothing on the way through.
     let park = grid_ops(
         &panes,
         TabRef::Created(0),
@@ -413,10 +295,9 @@ pub fn plan(fleet: &Fleet) -> Plan {
         },
     );
 
-    // Place: tab by tab, in fill order.
     let slots = slots_for(n);
     let mut place = Vec::new();
-    let mut created_tabs = 1; // the scratch tab
+    let mut created_tabs = 1;
     let tabs = (1..=tab_count(n)).map(|tab_index| {
         let on_tab: Vec<&str> = panes
             .iter()
@@ -444,8 +325,6 @@ pub fn plan(fleet: &Fleet) -> Plan {
     }
 }
 
-/// The tab a grid goes in, and how its first pane arrives: right of the
-/// orchestrator on tab 1, in a tab of its own on every overflow tab.
 fn tab_start(
     fleet: &Fleet,
     tab_index: usize,
@@ -474,7 +353,6 @@ fn tab_start(
 }
 
 impl TabRef {
-    /// How a plan names the tab before the run has created it.
     pub fn describe(&self) -> String {
         match self {
             TabRef::Existing(id) => id.clone(),
@@ -484,10 +362,6 @@ impl TabRef {
     }
 }
 
-/// The herdr command an op runs, for `horch tile --plan`.
-///
-/// Printed exactly as the driver would run it, so an operator can read the plan
-/// as the commands it stands for - and run one by hand if they want to.
 pub fn command_line(op: &Op) -> String {
     match op {
         Op::NewTab { pane, label, .. } => {
@@ -514,7 +388,6 @@ pub fn command_line(op: &Op) -> String {
     }
 }
 
-/// The grid a plan ends with: one block per tab, every slot named.
 pub(crate) fn render_target(
     plan: &Plan,
     orchestrator: &str,
@@ -539,7 +412,6 @@ pub(crate) fn render_target(
         .collect()
 }
 
-/// A pane as the target grid names it: `role(id)` when the mailbox knows its role.
 fn target_label(roles: &HashMap<String, String>, id: &str) -> String {
     match roles.get(id) {
         Some(role) => format!("{role}({id})"),
@@ -547,7 +419,6 @@ fn target_label(roles: &HashMap<String, String>, id: &str) -> String {
     }
 }
 
-/// One tab's header and its 3-line grid; nothing for a tab with no workers.
 fn render_tab(
     tab_index: usize,
     on_tab: &[&(String, Slot)],
@@ -584,7 +455,6 @@ fn render_tab(
     header + &grid_lines(&cells)
 }
 
-/// The 3 lines of a tab's grid: column heads, top row, bottom row.
 fn grid_lines(cells: &[(String, String, String)]) -> String {
     let widths: Vec<usize> = cells
         .iter()
@@ -607,50 +477,20 @@ fn grid_lines(cells: &[(String, String, String)]) -> String {
     out
 }
 
-/// Where the operator was looking before a rebuild.
-///
-/// Both values come from one gather: the tab from the workspace's
-/// `active_tab_id`, the pane from that tab's `focused_pane_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FocusState {
     pub tab: String,
     pub pane: String,
 }
 
-/// Where the operator should be looking after a rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FocusTarget {
     pub tab: String,
-    /// `None` means leave herdr's choice alone, which is the rule on an overflow
-    /// tab whose remembered pane is gone: there is no pane there worth
-    /// preferring over the one herdr already picked.
     pub pane: Option<String>,
-    /// True when both the tab and the pane are the ones the operator had.
     pub kept: bool,
-    /// Why the view moved, for the one line the command prints. Empty when
-    /// nothing moved.
     pub reason: &'static str,
 }
 
-/// Where to put the view back after tiling, given where it was.
-///
-/// The rule, in this priority:
-///
-/// 1. The viewed tab stays the viewed tab if it still exists. Otherwise it
-///    becomes the tab that now holds the previously focused pane. Otherwise the
-///    orchestrator's tab.
-/// 2. The focused pane stays focused if it is on the viewed tab. Otherwise the
-///    orchestrator pane when the viewed tab is the orchestrator's, and herdr's
-///    own choice on any other tab.
-///
-/// Rule 1's middle case is not a corner case: an overflow tab loses its last
-/// pane to the park phase, so herdr closes it and the tiler creates a fresh one
-/// with a NEW id. Matching the old tab id alone would therefore fail for every
-/// overflow tab, which is exactly what
-/// a live run measured.
-///
-/// Pure: `after` is the snapshot the command already built, and nothing here
-/// calls herdr.
 pub(crate) fn focus_target(
     before: &FocusState,
     after: &[TabShape],
@@ -698,9 +538,6 @@ pub(crate) fn focus_target(
         });
     }
     let orchestrator_here = orchestrator_tab.as_deref() == Some(tab.as_str());
-    // The viewed tab won over the viewed pane, so say which of the two ways
-    // the pane left it: a worker that moved to an overflow tab is still alive
-    // and still watchable, and a worker that closed is not.
     let reason = if !reason.is_empty() {
         reason
     } else if holder(&before.pane).is_some() {
@@ -716,37 +553,17 @@ pub(crate) fn focus_target(
     })
 }
 
-/// One neighbour step from `from` toward `to`, or `None` when they overlap.
-///
-/// herdr has no focus-by-id for an ordinary pane, so this is what
-/// [`crate::workspace::herdr::Herdr::pane_focus_walk`] steers by.
-///
-/// The axis the two rects are SEPARATED on decides the direction; the centre
-/// distance only breaks the tie when they are separated on both, which is a
-/// diagonal neighbour. Centre distance alone is not enough, and the case that
-/// proves it is the ragged bottom row the grid ends with whenever a tab is not
-/// full: the bottom pane spans two columns, so its centre sits LEFT of the
-/// top-right pane above it even though it is directly below. A rule that only
-/// compared centres sent the walk left, then right, then left again, and the
-/// focus never arrived (measured in a live run).
-///
-/// `None` for two rects that overlap on both axes, which means they are the same
-/// pane: no direction leads anywhere.
 pub(crate) fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
     let overlaps_x = spans(from.x, from.x + from.width, to.x, to.x + to.width);
     let overlaps_y = spans(from.y, from.y + from.height, to.y, to.y + to.height);
-    // Twice the centre, so an odd width needs no rounding rule.
     let dx = (to.x * 2 + to.width) - (from.x * 2 + from.width);
     let dy = (to.y * 2 + to.height) - (from.y * 2 + from.height);
     let horizontal = toward(dx, FocusDir::Right, FocusDir::Left);
     let vertical = toward(dy, FocusDir::Down, FocusDir::Up);
     match (overlaps_x, overlaps_y) {
         (true, true) => None,
-        // Side by side in one row, or stacked in one column: only one axis
-        // separates them, and that is the way to step.
         (false, true) => horizontal,
         (true, false) => vertical,
-        // Diagonal. Close the wider gap first; the next step closes the other.
         (false, false) => {
             if wider_axis(dx, dy) {
                 horizontal
@@ -757,12 +574,10 @@ pub(crate) fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
     }
 }
 
-/// Whether the ranges `a0..a1` and `b0..b1` overlap.
 fn spans(a0: i64, a1: i64, b0: i64, b1: i64) -> bool {
     a0 < b1 && b0 < a1
 }
 
-/// The step along an axis for a centre distance `d`, `None` when it is 0.
 fn toward(d: i64, positive: FocusDir, negative: FocusDir) -> Option<FocusDir> {
     match d.signum() {
         0 => None,
@@ -771,12 +586,10 @@ fn toward(d: i64, positive: FocusDir, negative: FocusDir) -> Option<FocusDir> {
     }
 }
 
-/// Whether the horizontal gap is at least the vertical one.
 fn wider_axis(dx: i64, dy: i64) -> bool {
     dx.abs() >= dy.abs()
 }
 
-/// One tab's live geometry, reduced to what the checks and the balance need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TabShape {
     pub tab_id: String,
@@ -804,13 +617,6 @@ fn near(a: i64, b: i64) -> bool {
     (a - b).abs() <= TOLERANCE
 }
 
-/// True when this tab already holds `workers` in the canonical shape.
-///
-/// Geometry only, and widths are deliberately not compared: uneven columns are
-/// what the balance step is for, and a tab that needs only a resize must not be
-/// torn down and rebuilt. `orchestrator` is `Some` on tab 1 and `None` on an
-/// overflow tab, where a lone full-height pane is a worker column and not an
-/// orchestrator.
 pub(crate) fn tab_is_canonical(
     shape: &TabShape,
     orchestrator: Option<&str>,
@@ -834,9 +640,6 @@ pub(crate) fn tab_is_canonical(
         }
 }
 
-/// Take the orchestrator out of `rest`. Returns where the worker area starts,
-/// or `None` when it is missing, not leftmost and full height, or has a pane
-/// to its left.
 fn orchestrator_edge(rest: &mut Vec<&(String, Rect)>, orch: &str, area: Rect) -> Option<i64> {
     let pos = rest.iter().position(|(id, _)| id == orch)?;
     let (_, rect) = *rest.remove(pos);
@@ -848,13 +651,10 @@ fn orchestrator_edge(rest: &mut Vec<&(String, Rect)>, orch: &str, area: Rect) ->
     leftmost_and_full.then_some(rect.x + rect.width)
 }
 
-/// One worker fills the whole worker area.
 fn single_fills((_, r): &(String, Rect), area: Rect, x0: i64, x1: i64) -> bool {
     near(r.height, area.height) && near(r.x, x0) && near(r.x + r.width, x1)
 }
 
-/// 2 workers or more: the rows have the right counts, tile the worker area,
-/// stack to the full height and line up column by column.
 fn grid_fills(rest: &[&(String, Rect)], area: Rect, x0: i64, x1: i64, workers: usize) -> bool {
     let used = columns_used(workers);
     let (tops, bottoms) = split_rows(rest, area);
@@ -863,13 +663,9 @@ fn grid_fills(rest: &[&(String, Rect)], area: Rect, x0: i64, x1: i64, workers: u
         && row_tiles(&tops, x0, x1)
         && row_tiles(&bottoms, x0, x1)
         && rows_stack(&tops, &bottoms, area)
-        // Every column is filled top before bottom, so the bottom panes line up
-        // with the leftmost columns and only the last of them may span the rest.
         && bottoms.iter().zip(&tops).all(|(b, t)| near(b.x, t.x))
 }
 
-/// The worker rects above and below the top edge of the area, each row left
-/// to right.
 fn split_rows(rest: &[&(String, Rect)], area: Rect) -> (Vec<Rect>, Vec<Rect>) {
     let row = |top: bool| {
         let mut row: Vec<Rect> = rest
@@ -883,7 +679,6 @@ fn split_rows(rest: &[&(String, Rect)], area: Rect) -> (Vec<Rect>, Vec<Rect>) {
     (row(true), row(false))
 }
 
-/// A row tiles the worker area exactly once, left to right.
 fn row_tiles(row: &[Rect], x0: i64, x1: i64) -> bool {
     row.first().is_some_and(|r| near(r.x, x0))
         && row.last().is_some_and(|r| near(r.x + r.width, x1))
@@ -892,15 +687,11 @@ fn row_tiles(row: &[Rect], x0: i64, x1: i64) -> bool {
             .all(|w| near(w[0].x + w[0].width, w[1].x) && w[0].y == w[1].y)
 }
 
-/// Two rows, no third: the bottom row starts where the top row ends and they
-/// fill the height between them.
 fn rows_stack(tops: &[Rect], bottoms: &[Rect], area: Rect) -> bool {
     near(bottoms[0].y, area.y + tops[0].height)
         && near(tops[0].height + bottoms[0].height, area.height)
 }
 
-/// True when the whole workspace is already the canonical grid for `workers`
-/// panes, so nothing needs moving and only the balance has to run.
 pub(crate) fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize) -> bool {
     if tabs.len() != tab_count(workers) {
         return false;
@@ -912,21 +703,6 @@ pub(crate) fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize
     })
 }
 
-/// The next resize that moves this tab toward equal columns, or `None` when every
-/// divider is within [`TOLERANCE`].
-///
-/// One op at a time on purpose. [`crate::workspace::balance::plan`] simulates herdr's
-/// proportional rescale so it can emit a whole sequence against predicted
-/// geometry; a driver that re-reads the layout herdr hands back after each
-/// resize needs no prediction, and cannot accumulate rounding. What is reused
-/// from that module is the part that is not obvious: a row is a right-leaning
-/// chain, so divider `k` belongs to a split spanning `[pos[k-1], x1]` and
-/// `--amount` is a fraction of THAT span, and a divider is moved by asking the
-/// pane on the side it should grow into to grow.
-///
-/// Targets come from the grid, not from the pane edges: column boundaries are
-/// `x0 + round(k * w / columns)` whatever each row happens to hold, so a row
-/// with a spanning bottom pane still lines up with the row above it.
 pub(crate) fn balance_op(shape: &TabShape, orchestrator: Option<&str>) -> Option<ResizeOp> {
     let area = shape.area;
     let mut rest: Vec<&(String, Rect)> = shape.panes.iter().collect();
@@ -937,10 +713,6 @@ pub(crate) fn balance_op(shape: &TabShape, orchestrator: Option<&str>) -> Option
     divider.or_else(|| worker_op(&rest, area, x0))
 }
 
-/// Take the orchestrator out of `rest`. Returns where the worker area starts
-/// and the resize that moves its divider to the orchestrator's share, `None`
-/// when the divider is within [`TOLERANCE`] of it. The outer `None` is for a
-/// missing orchestrator.
 fn orchestrator_op(
     rest: &mut Vec<&(String, Rect)>,
     orch: &str,
@@ -954,17 +726,11 @@ fn orchestrator_op(
     if used == 0 || (target - x0).abs() <= TOLERANCE {
         return Some((x0, None));
     }
-    // The orchestrator divider is the root split, so its container is the whole
-    // tab.
     let leftmost = rest.iter().min_by_key(|(_, r)| r.x)?;
     let op = resize_toward((orch, &leftmost.0), x0, target, area.width);
     Some((x0, Some(op)))
 }
 
-/// The resize that moves a divider from `current` to `target`. The pane on the
-/// side the divider should grow into is asked to grow: `grow` holds the pane
-/// left of the divider, then the pane right of it. `container` is the split
-/// that owns the divider, which `--amount` is a fraction of.
 fn resize_toward(grow: (&str, &str), current: i64, target: i64, container: i64) -> ResizeOp {
     let (pane, direction) = if target > current {
         (grow.0, ResizeDir::Right)
@@ -980,8 +746,6 @@ fn resize_toward(grow: (&str, &str), current: i64, target: i64, container: i64) 
     }
 }
 
-/// The first divider of the worker rows, top row first, that is off its
-/// target. `None` when fewer than 2 workers or no width.
 fn worker_op(rest: &[&(String, Rect)], area: Rect, x0: i64) -> Option<ResizeOp> {
     let x1 = area.x + area.width;
     let width = x1 - x0;
@@ -1019,8 +783,6 @@ mod tests {
         }
     }
 
-    /// `n` workers all sitting in tab 1, left to right, so ordering is the
-    /// identity and the ops are the only thing under test.
     fn fleet(n: usize) -> Fleet {
         Fleet {
             tabs: vec!["t1".to_string()],
@@ -1082,8 +844,6 @@ mod tests {
         assert_eq!(plan.created_tabs, 0);
     }
 
-    /// One worker: out to the scratch tab, back beside the orchestrator, which
-    /// keeps half the tab because there is one worker column.
     #[test]
     fn one_worker_parks_once_and_lands_right_of_the_orchestrator() {
         let plan = plan(&fleet(1));
@@ -1108,10 +868,6 @@ mod tests {
         assert_eq!(plan.created_tabs, 1);
     }
 
-    /// The shape verified by hand against herdr 0.8.2: the fourth worker opens
-    /// column 2 in the BOTTOM row, against column 1's bottom pane. A DOWN split
-    /// from column 2's top pane instead would halve a half, which is the
-    /// quarter-height bug.
     #[test]
     fn a_full_tab_1_opens_column_2_in_both_rows_and_never_splits_a_half_pane_down() {
         let plan = plan(&fleet(4));
@@ -1165,8 +921,6 @@ mod tests {
         }
     }
 
-    /// The fifth worker opens tab 2 and takes its first slot; the orchestrator
-    /// goes back to a third of tab 1 because tab 1 still has 2 worker columns.
     #[test]
     fn the_fifth_worker_opens_an_overflow_tab() {
         let plan = plan(&fleet(5));
@@ -1186,8 +940,6 @@ mod tests {
         );
     }
 
-    /// Three workers on an overflow tab are column 1 top, column 1 bottom,
-    /// column 2 top - so its bottom row has one pane spanning two columns.
     #[test]
     fn an_overflow_tab_with_three_workers_leaves_the_last_bottom_slot_free() {
         let plan = plan(&fleet(7));
@@ -1207,8 +959,6 @@ mod tests {
                 ("p7", 2, Row::Top)
             ]
         );
-        // Column 2 opens against column 1's TOP pane only, because column 1's
-        // bottom slot is the one still free.
         assert_eq!(
             plan.place.last().unwrap(),
             &Op::Move {
@@ -1221,8 +971,6 @@ mod tests {
         );
     }
 
-    /// Equal thirds on a 3-column tab need the second column to leave the first
-    /// one a third, then the third column to halve what is left.
     #[test]
     fn an_overflow_tab_opens_its_three_columns_with_equal_width_ratios() {
         let plan = plan(&fleet(10));
@@ -1234,8 +982,6 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // Tab 1: column 2 in both rows (1/2 each) after the orchestrator's 1/3.
-        // Tab 2: column 2 in both rows (1/3), then column 3 in both rows (1/2).
         assert_eq!(
             ratios,
             vec![
@@ -1265,7 +1011,6 @@ mod tests {
         }
     }
 
-    /// Every worker is parked and placed exactly once, whatever the fleet size.
     #[test]
     fn every_worker_is_parked_once_and_placed_once() {
         for n in [1, 4, 5, 10, 11, 16] {
@@ -1286,9 +1031,6 @@ mod tests {
         }
     }
 
-    /// The park grid is 2 rows of equal columns too. Halving one pane again and
-    /// again would drive the later panes to zero width, and herdr allows that
-    /// without complaint.
     #[test]
     fn parking_builds_equal_columns_rather_than_a_chain_of_halves() {
         let plan = plan(&fleet(16));
@@ -1304,7 +1046,6 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // 16 panes in 2 rows is 8 columns; column c keeps 1/(8-c+2).
         let expected: Vec<f64> = (2..=8)
             .flat_map(|c| [1.0 / (8 - c + 2) as f64; 2])
             .collect();
@@ -1329,10 +1070,6 @@ mod tests {
             ["a", "b", "c", "d", "late"],
             "tab order, then column, then top before bottom"
         );
-        // c and d sit one cell apart: a drifted divider must not swap the column.
-        // A re-run sees the panes in another order, a divider drifted a cell
-        // the other way, and names that run against the layout: the order
-        // follows where the panes sit.
         let mut rerun = fleet(0);
         rerun.tabs = f.tabs.clone();
         rerun.workers = vec![
@@ -1349,9 +1086,6 @@ mod tests {
         assert_eq!(again, ["z", "y", "x", "w", "v"]);
     }
 
-    /// `horch spawn` splits the orchestrator's own pane, so the newcomer appears
-    /// at the smallest x of any worker. Ordered by geometry it would take column
-    /// 1 top and shift every other worker along on every spawn.
     #[test]
     fn a_newcomer_is_placed_last_however_its_rectangle_sorts() {
         let mut f = fleet(0);
@@ -1372,9 +1106,6 @@ mod tests {
         );
     }
 
-    /// Rects measured from herdr 0.8.2 in a 184x53 area with the orchestrator on
-    /// a third: the shape the tiler builds must read back as canonical, or every
-    /// spawn would rebuild a grid that was already right.
     fn tab1_2x2() -> TabShape {
         TabShape {
             tab_id: "t1".into(),
@@ -1395,8 +1126,6 @@ mod tests {
         }
     }
 
-    /// The overflow tab of a 7-worker grid, which the tiler rebuilds under a new
-    /// id every time it runs.
     fn overflow_tab(id: &str, panes: &[&str]) -> TabShape {
         let slots = [
             rect(26, 1, 61, 27),
@@ -1418,8 +1147,6 @@ mod tests {
         }
     }
 
-    /// The common case: the operator watched a worker on tab 1, and tab 1 and
-    /// that worker both came through the rebuild.
     #[test]
     fn focus_target_keeps_a_tab_and_pane_that_both_survived() {
         let after = [tab1_2x2()];
@@ -1434,9 +1161,6 @@ mod tests {
         assert_eq!(target.reason, "");
     }
 
-    /// The regression this function exists for. The park phase empties the
-    /// overflow tab, herdr closes it, and the tiler builds a new one with a new
-    /// id - so the view has to follow the PANE, not the tab id.
     #[test]
     fn focus_target_follows_the_pane_when_its_tab_was_rebuilt() {
         let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6", "p7"])];
@@ -1455,8 +1179,6 @@ mod tests {
         );
     }
 
-    /// A worker that closed takes its tab with it. Nothing of the old view is
-    /// left, so the orchestrator's tab and pane are the fallback.
     #[test]
     fn focus_target_falls_back_to_the_orchestrator_when_both_are_gone() {
         let after = [tab1_2x2()];
@@ -1470,9 +1192,6 @@ mod tests {
         assert!(!target.kept);
     }
 
-    /// The tab survived but the pane in it did not. On the orchestrator's tab
-    /// the orchestrator is the answer; on an overflow tab there is no pane worth
-    /// preferring over herdr's own choice.
     #[test]
     fn focus_target_leaves_herdrs_choice_on_an_overflow_tab() {
         let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6"])];
@@ -1502,9 +1221,6 @@ mod tests {
         assert!(!on_overflow.kept);
     }
 
-    /// The viewed tab wins over the viewed pane, and the reason says which way
-    /// the pane left: a worker pushed onto an overflow tab is still alive, a
-    /// worker that closed is not.
     #[test]
     fn focus_target_says_whether_the_pane_moved_or_closed() {
         let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6"])];
@@ -1533,7 +1249,6 @@ mod tests {
         assert_eq!(closed.reason, "the focused pane is gone");
     }
 
-    /// Nothing to aim at means no target at all, rather than a guess.
     #[test]
     fn focus_target_of_an_empty_workspace_is_none() {
         let before = FocusState {
@@ -1562,10 +1277,6 @@ mod tests {
         assert_eq!(step_toward(&here, &here), None, "the same pane");
     }
 
-    /// The ragged bottom row: the bottom pane spans both columns, so its centre
-    /// is LEFT of the top-right pane that sits directly above it. The step must
-    /// still be DOWN, or the walk oscillates between the two top panes and the
-    /// focus never lands.
     #[test]
     fn step_toward_goes_down_to_a_pane_that_spans_the_columns_above_it() {
         let spanning = rect(87, 28, 123, 26);
@@ -1579,15 +1290,12 @@ mod tests {
             Some(FocusDir::Down),
             "from the top-left pane"
         );
-        // And the orchestrator, which is beside the grid and not above it.
         assert_eq!(
             step_toward(&rect(26, 1, 61, 53), &spanning),
             Some(FocusDir::Right)
         );
     }
 
-    /// A diagonal neighbour is reached in two steps, and the first one is across
-    /// the columns because that gap is the wider of the two.
     #[test]
     fn step_toward_crosses_the_columns_before_the_rows() {
         let from = rect(26, 1, 61, 53);
@@ -1614,7 +1322,6 @@ mod tests {
         assert!(is_canonical(&[tab1_2x2()], "orch", 4));
     }
 
-    /// Uneven columns are the balance step's job, not a reason to move panes.
     #[test]
     fn drifted_columns_are_still_canonical() {
         let mut shape = tab1_2x2();
@@ -1629,9 +1336,6 @@ mod tests {
         );
     }
 
-    /// What `horch spawn` leaves behind: a full-height worker between the
-    /// orchestrator and a finished column. Column 1 must be filled before column
-    /// 2 exists, so this is not canonical and the fast path must not take it.
     #[test]
     fn a_fresh_spawn_off_the_orchestrator_is_not_canonical() {
         let shape = TabShape {
@@ -1648,7 +1352,6 @@ mod tests {
         assert!(!tab_is_canonical(&shape, Some("orch"), 3));
     }
 
-    /// The quarter-height shape from the survey: column 2 holds three panes.
     #[test]
     fn the_quarter_height_shape_is_not_canonical() {
         let shape = TabShape {
@@ -1666,9 +1369,6 @@ mod tests {
         assert!(!tab_is_canonical(&shape, Some("orch"), 4));
     }
 
-    /// Three workers on an overflow tab: two tops and one bottom spanning both
-    /// columns, and no orchestrator to exclude. The old `worker_rows` would read
-    /// the spanning pane as ragged and refuse; this is the canonical shape.
     #[test]
     fn an_overflow_tab_with_a_spanning_bottom_pane_is_canonical() {
         let shape = TabShape {
@@ -1682,8 +1382,6 @@ mod tests {
             zoomed: false,
         };
         assert!(tab_is_canonical(&shape, None, 3));
-        // A lone full-height pane on an overflow tab is a worker, not an
-        // orchestrator: one worker there is canonical.
         let single = TabShape {
             tab_id: "t2".into(),
             area: rect(0, 0, 200, 52),
@@ -1734,7 +1432,6 @@ mod tests {
         assert!(out.contains("orchestrator(orch) (1/3 of the tab)"), "{out}");
         assert!(out.contains("sonnet-1(p1)"), "{out}");
         assert!(out.contains("tab 2  3 worker(s), 2 column(s)"), "{out}");
-        // Tab 2 holds p5, p6, p7: column 2's bottom slot is free.
         let bottom = out.lines().rfind(|l| l.starts_with("  bottom")).unwrap();
         assert!(bottom.contains("p6"), "{bottom}");
         assert!(bottom.trim_end().ends_with('-'), "{bottom}");
@@ -1751,8 +1448,6 @@ mod tests {
         assert_eq!(balance_op(&tab1_2x2(), Some("orch")), None);
     }
 
-    /// The orchestrator's own divider is the one the old balance would never
-    /// touch. Here it is a fifth of the tab and has to grow to a third.
     #[test]
     fn a_narrow_orchestrator_column_is_widened_to_its_share() {
         let mut shape = tab1_2x2();
@@ -1769,23 +1464,17 @@ mod tests {
         assert!((op.amount - 24.0 / 184.0).abs() < 1e-9);
     }
 
-    /// A row divider is a fraction of the split that owns it, which spans from
-    /// the previous divider to the right edge - not of the whole row.
     #[test]
     fn a_row_divider_moves_by_a_fraction_of_the_split_that_owns_it() {
         let mut shape = tab1_2x2();
-        // Top row: column 1 swallowed 20 cells of column 2.
         shape.panes[1].1.width = 82;
         shape.panes[2].1 = rect(169, 1, 41, 27);
         let op = balance_op(&shape, Some("orch")).expect("the top row is uneven");
         assert_eq!((op.pane.as_str(), op.direction), ("p3", ResizeDir::Left));
         assert_eq!((op.from_x, op.to_x), (169, 149));
-        // The container is [87, 210], so 20 cells is 20/123.
         assert!((op.amount - 20.0 / 123.0).abs() < 1e-9, "{}", op.amount);
     }
 
-    /// An overflow tab has no orchestrator column to exclude, and its columns are
-    /// measured against the whole tab.
     #[test]
     fn an_overflow_tabs_columns_are_measured_against_the_whole_tab() {
         let shape = TabShape {
@@ -1799,13 +1488,11 @@ mod tests {
             ],
             zoomed: false,
         };
-        // 4 workers is 2 columns, so both rows want their divider at 150.
         let op = balance_op(&shape, None).expect("the top row divider is at 100");
         assert_eq!((op.pane.as_str(), op.direction), ("p5", ResizeDir::Right));
         assert_eq!((op.from_x, op.to_x), (100, 150));
     }
 
-    /// Each rule of the canonical grid, broken alone.
     #[test]
     fn every_broken_grid_rule_is_not_canonical() {
         type Break = Box<dyn Fn(&mut TabShape)>;
@@ -1901,7 +1588,6 @@ mod tests {
     #[test]
     fn the_orchestrator_divider_moves_left_when_the_column_is_too_wide() {
         let mut shape = tab1_2x2();
-        // Orchestrator 61 -> 85 wide; the workers give up the cells.
         shape.panes[0].1.width = 85;
         shape.panes[1].1 = rect(111, 1, 38, 27);
         shape.panes[3].1 = rect(111, 28, 38, 26);
@@ -1927,7 +1613,6 @@ mod tests {
     #[test]
     fn the_bottom_row_is_balanced_after_the_top_row() {
         let mut shape = tab1_2x2();
-        // Top row even; bottom row's divider 20 cells left of its target.
         shape.panes[3].1.width = 42;
         shape.panes[4].1 = rect(129, 28, 81, 26);
         let op = balance_op(&shape, Some("orch")).expect("the bottom row is uneven");
@@ -1955,7 +1640,6 @@ mod tests {
             step_toward(&rect(100, 20, 10, 10), &from),
             Some(FocusDir::Left)
         );
-        // Equal gaps: across first.
         assert_eq!(
             step_toward(&from, &rect(20, 20, 10, 10)),
             Some(FocusDir::Right)

@@ -20,12 +20,12 @@ from hark.forge.engine import dsp
 from hark.forge.recipes.impacts import _common as cm
 
 SR = cm.SR
-_BASE_RATE = 6000              # the low layers are built at this rate, then upsampled
+_BASE_RATE = 6000
 _UPSAMPLE = SR // _BASE_RATE
 _OUT_PEAK = 0.89
 _GEN2_LEN_S = 5.0
 _LAYER_GAIN = 1.25
-_DRUM_RATIOS = (1.0, 1.594, 2.136, 2.296, 2.653, 2.918)   # circular membrane overtones
+_DRUM_RATIOS = (1.0, 1.594, 2.136, 2.296, 2.653, 2.918)
 
 TARGET = "a deep cinematic boom impact"
 TARGETS = {
@@ -38,8 +38,6 @@ REFSET = "impact"
 _REF_DIR = os.environ.get("HARK_REFS", "refs").replace("\\", "/").rstrip("/")
 REFS = [_REF_DIR + "/impact/impact_%02d.wav" % k for k in (1, 2, 3)]
 
-
-# ---------------------------------------------------------------- basic tools
 
 def _samples(seconds: float) -> int:
     return max(1, int(round(seconds * SR)))
@@ -75,7 +73,6 @@ def _bp(sig: np.ndarray, lo: float, hi: float, order: int = 2) -> np.ndarray:
     return _sos(sig, "band", (lo, hi), order)
 
 
-# Coefficients of a cheap 3-pole pink filter.
 _PINK_NUM = np.array([0.049922035, -0.095993537, 0.050612699, -0.004408786])
 _PINK_DEN = np.array([1.0, -2.494956002, 2.017265875, -0.522189400])
 
@@ -139,8 +136,6 @@ def _mix_in(dst: np.ndarray, sig: np.ndarray, at: int) -> None:
         dst[at:at + span] += sig[:span]
 
 
-# ---------------------------------------------------------------- the hall
-
 def _band_decays(noise: np.ndarray, tt: np.ndarray, rt60: float, damp: float, size: float) -> np.ndarray:
     """Split noise into 4 bands; higher bands die sooner as ``damp`` grows."""
     times = (1.25 * rt60, rt60, rt60 * (1 - 0.5 * damp), rt60 * (1 - 0.8 * damp))
@@ -183,8 +178,6 @@ def hall_ir(rt60: float, damp: float, size: float = 0.8, predelay: float = 0.02,
         return resp
     return np.concatenate([np.zeros(_samples(predelay)), resp])
 
-
-# ---------------------------------------------------------------- tone shaping
 
 def _desk_drive(sig: np.ndarray, drive: float, tone: float) -> np.ndarray:
     """Soft tanh drive scaled to the peak, followed by a low-pass at ``tone``."""
@@ -258,8 +251,6 @@ def _rumble_roll(n: int, p: dict, rng: np.random.Generator, newer: bool) -> np.n
     depth = p["roll_depth"]
     return _unit(_raise_rate(body * shape * np.exp(depth * wander - 0.5 * depth ** 2), n))
 
-
-# ---------------------------------------------------------------- generation 2
 
 V2_SPACE, V2_DEFAULTS = cm.spec_rows("""
     pre_len 0.08 1.6 log = 0.7875
@@ -486,8 +477,6 @@ def render_v2(p: dict, rng: np.random.Generator) -> np.ndarray:
     return dsp.fade(out, 0.002, 0.25)
 
 
-# ---------------------------------------------------------------- the air riser
-
 _SWELL_OPTS: dict[str, float] = cm.value_table("""
     f_start 150  f_end 6000  q 1.2  curve 1.5  grow 3.5  width 0.6  room_wet 0.25
     tube 0.5  tube_lo 90  tube_hi 600  flutter 0.25  rev 0.5
@@ -560,8 +549,6 @@ def swell(seconds: float, rng: np.random.Generator, **opts: float) -> np.ndarray
     out = out + opt["room_wet"] * room / np.sqrt(np.sum(resp ** 2))
     return _unit(dsp.fade(_mic(out, rng, -80.0), 0.03, 0.006))
 
-
-# ---------------------------------------------------------------- generation 3
 
 SPACE, DEFAULTS = cm.spec_rows("""
     pre 0.0 1.2 = 0.35
@@ -997,8 +984,6 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     return render_v2(p, rng) if "pre_len" in p else render_v3(p, rng)
 
 
-# ---------------------------------------------------------------- families
-
 def _stack(*layers: dict | str) -> dict:
     """Merge parameter sets left to right; a string layer is read as ``name value`` pairs."""
     out: dict = {}
@@ -1079,7 +1064,6 @@ _PRO_V3 = _members(_PRO_AIRY, {
     "swell": "pre 0.18  pre_level 0.3  body_attack 0.2  gate 0.9  grain_rate 32",
 })
 
-# Tuned values of the fourth pro round, one row per member, in the order of _TUNED_KEYS.
 _TUNED_KEYS = ("crack body_f1 body_attack body sub roll roll_cut roll_hold roll_fall grain_rate grain_depth air "
                "gate gate_db").split()
 _TUNED_ROWS = {
@@ -1186,8 +1170,6 @@ def recipe_for(cat: str = "impact", preset: int | str = 0) -> types.SimpleNamesp
         ALTS=list(ALTS), REFSET=cat, PRESET=name,
     )
 
-
-# ---------------------------------------------------------------- measurement
 
 def _first_true(mask: np.ndarray, fallback: int) -> int:
     hits = np.nonzero(mask)[0]
@@ -1333,7 +1315,6 @@ STUDY: dict[str, dict[str, tuple[float, float]]] = {
         pre_gate -34 -22
     """),
 }
-# Keys whose distance is measured on a straight scale, not in octaves.
 _STRAIGHT = {"tilt", "slope_dBs", "corr", "gate_db40ms", "sh150"}
 _TRACK_SLOT = {"ridge0": 0, "ridge": 1, "ridge1": 2}
 

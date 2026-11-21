@@ -1,6 +1,3 @@
-//! `horch route <teammate>` - what the spawn gate would do right now, with no
-//! spawn (BAL-06). The same `decide()` the gate calls, on the same readings.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -40,7 +37,6 @@ pub fn route(
         GateFlags { exact, force },
     );
 
-    // Every pool the decision could touch: the teammate's and its fallbacks'.
     let pools = touched_pools(&teammate, &roster, &view);
     let refused = matches!(decision, Decision::Refuse { .. });
     if json_out {
@@ -57,7 +53,6 @@ pub fn route(
     })
 }
 
-/// The `--json` view of a decision.
 fn decision_json(
     decision: &Decision,
     teammate: &str,
@@ -82,7 +77,6 @@ fn decision_json(
     })
 }
 
-/// The text view: the decision line, then one line per pool.
 fn print_decision(decision: &Decision, teammate: &str, pools: &[PoolLine]) {
     output::println(
         &decision

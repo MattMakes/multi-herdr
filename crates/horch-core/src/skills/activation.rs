@@ -1,8 +1,3 @@
-//! Which skills a teammate gets in a phase, and why.
-//!
-//! Pure: only the teammate's `skills:`, `available_skills:`, the phase and
-//! the catalog decide. No NLP and no model call.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
@@ -15,30 +10,20 @@ use crate::digest::Digest;
 use crate::ids::SkillId;
 use crate::roster::{Phase, Teammate};
 
-/// Why a skill is in a plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvocationPolicy {
-    /// Named in the teammate's `skills:`; the briefing says it is expected.
     Explicit,
-    /// Brought in by the phase selector.
     Deterministic,
-    /// Named in the teammate's `available_skills:`: materialized, and named
-    /// in the briefing without a description.
     Offered,
-    /// In the catalog, not activated.
     Available,
 }
 
-/// One skill at the exact version a plan resolved it to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedSkillRef {
     pub id: SkillId,
     pub version: SkillVersion,
     pub digest: Digest,
-    /// `bundled`, the marketplace source spec with `@<commit>` for git,
-    /// `operator:<dir>`, or `plugin:<plugin>@<marketplace>` (`@inline` for a
-    /// `plugin_dirs` plugin).
     pub source: String,
     pub policy: InvocationPolicy,
 }
@@ -57,15 +42,8 @@ impl ResolvedSkillRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillActivationPlan {
-    /// Explicit, Deterministic and Offered skills, sorted by id.
     pub activated: Vec<ResolvedSkillRef>,
-    /// Every other catalog skill, sorted by id.
     pub available: Vec<ResolvedSkillRef>,
-    /// External Claude plugins and their named skills, as the teammate
-    /// names them. A plugin skill never activates a catalog skill of the
-    /// same name (SKL-07). It enters `activated` as `<plugin>:<skill>`
-    /// only when the caller extended the catalog with
-    /// `SkillCatalog::with_plugin_skills`, so the ledger records it.
     pub plugin_skills: BTreeMap<String, Vec<String>>,
 }
 
@@ -75,16 +53,6 @@ impl SkillActivationPlan {
     }
 }
 
-/// Teammate `skills:` and operator skills map to Explicit, the phase's
-/// skills to Deterministic, `available_skills:` to Offered, and every other
-/// catalog skill to Available. A skill named more than one way takes the
-/// first of that order. Fails as the legacy selection does: on an unknown
-/// skill, or on skills for a teammate that cannot load them.
-///
-/// Operator skills are Explicit only when `catalog` holds them, that is,
-/// when `SkillResolution::read` extended it (`SkillCatalog::with_host_skills`).
-/// The same holds for plugin skills (`<plugin>:<skill>` entries); a plugin
-/// entry the teammate does not name is neither activated nor available.
 pub(crate) fn plan_activation(
     teammate: &Teammate,
     phase: Option<Phase>,
@@ -114,14 +82,12 @@ pub(crate) fn plan_activation(
     })
 }
 
-/// The skills the phase selector brings in for `phase`. None without a phase.
 fn phased_names(phase: Option<Phase>) -> BTreeSet<String> {
     phase
         .map(|p| phase_skills(p).iter().map(|s| (*s).to_owned()).collect())
         .unwrap_or_default()
 }
 
-/// `<plugin>:<skill>` for every plugin skill the teammate names.
 fn plugin_names(teammate: &Teammate) -> BTreeSet<String> {
     teammate
         .plugin_skills
@@ -130,10 +96,6 @@ fn plugin_names(teammate: &Teammate) -> BTreeSet<String> {
         .collect()
 }
 
-/// The catalog as `(activated, available)`, each in catalog order. A name
-/// takes the first of `explicit`, `phased` and `offered` that holds it, and
-/// is `Available` when none does. A plugin entry is `Explicit` when
-/// `plugin` names it, and in neither list when it does not.
 fn split_catalog(
     catalog: &SkillCatalog,
     explicit: &BTreeSet<String>,

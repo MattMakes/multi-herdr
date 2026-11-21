@@ -37,7 +37,6 @@ class ExtractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for n, b in enumerate(blocks):
                 cbc.write_forms(b, n, Path(tmp))
-            # A class declaration is one whole form; a fragment gets 7 bases x 2.
             self.assertEqual([f.name for f in blocks[1].forms], ["whole"])
             self.assertEqual(len(blocks[0].forms), 14)
             text = (Path(tmp) / blocks[3].forms[0].file).read_text()
@@ -49,7 +48,6 @@ class ExtractTest(unittest.TestCase):
 class BuildTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # C5: sample.md and up/copied.md hold the same blocks, so 1 build serves the 3 runs.
         patch = mock.patch.object(cbc, "check", once(cbc.check))
         patch.start()
         cls.addClassCleanup(patch.stop)
@@ -80,7 +78,6 @@ class BuildTest(unittest.TestCase):
                 "csharp_blocks_check: 2 copied blocks fail in 1 skills, report only (baseline 2, baseline.json)",
                 "  per skill: up 2",
             ])
-            # U-22: a count above the baseline fails.
             baseline.write_text('{"csharp_blocks_check": {"up": 1}}')
             code, out, _ = run(*args)
             self.assertEqual(code, 1)

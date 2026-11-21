@@ -27,21 +27,21 @@ SCHEMA_VERSION = 1
 HOUR = 3600.0
 MINUTE = 60.0
 EPS = 1e-6
-WINDOW = 600.0                 # PR-4: windows of 10 minutes
-JOLT = 1.5                     # FM-4: a jump of x1.5 of the income of c*
-JOLT_SPAN = 60.0               # FM-4: within 60 s, and 60 s between 2 jolts
-SHIFT_START = 60.0             # FM-11: a system with an event in the first 60 s is not a shift
-SHIFT_MERGE = 30.0             # FM-11: shifts within 30 s are 1 shift
-STACK = 30.0                   # PR-12: unlocks within 30 s are stacked
-SLOPE_START = 300.0            # PR-8: the gaps that start after 300 s
-SLOPE_POINTS = 4               # PR-8: no slope for fewer than 4 points
-VERB_HOUR = 3                  # FM-7: the hours after hour 3
-VERB_FLOOR = 3                 # FM-7 guard: a system needs 3 presses in the hour to count as a verb
-VARIETY_PRESSES = 20           # FM-9: the hours with 20 or more presses
-BEAT_WEIGHT = 2                # FM-10: a beat has a weight of 2 or more
-NOVEL_WEIGHT = 3               # FM-12: a reset of weight 3 or more follows a run with a new beat
-LIKELY_DULL = 2                # the result rule: 2 or more counting rows out (no source)
-ENOUGH_ROWS = 6                # the result rule: 6 or more counting rows ok for "no finding"
+WINDOW = 600.0
+JOLT = 1.5
+JOLT_SPAN = 60.0
+SHIFT_START = 60.0
+SHIFT_MERGE = 30.0
+STACK = 30.0
+SLOPE_START = 300.0
+SLOPE_POINTS = 4
+VERB_HOUR = 3
+VERB_FLOOR = 3
+VARIETY_PRESSES = 20
+BEAT_WEIGHT = 2
+NOVEL_WEIGHT = 3
+LIKELY_DULL = 2
+ENOUGH_ROWS = 6
 GAIN_KINDS = ("add", "pct", "mult")
 BASE = pw_players.BASE
 ADVICE = "advice with evidence marks, not a proof"
@@ -124,7 +124,6 @@ def names(ids, n=4):
     return ", ".join(ids[:n]) + (f" and {len(ids) - n} more" if len(ids) > n else "")
 
 
-# ----------------------------------------------------------------------------- the run
 def step_real(sim, ax, step):
     hit = sim.step_clock.get(ax, {}).get(int(step)) if ax else None
     return None if hit is None else hit[0]
@@ -262,7 +261,6 @@ def not_applicable(why):
     return result(None, "", "not applicable", "not applicable", why, "none: the row does not apply")
 
 
-# ----------------------------------------------------------------------------- FM-1 content drought
 def empty_windows(times, end):
     n = max(1, math.ceil(end / WINDOW - EPS))
     full = {min(int(t // WINDOW), n - 1) for t in times if 0 < t <= end + EPS}
@@ -321,7 +319,6 @@ def drought_change(g, bad):
     return (f"Move 1 milestone or 1 line into {span_text(g)} (content), or lower {ctl('C3')}.")
 
 
-# ----------------------------------------------------------------------------- FM-2 felt purchase share
 def felt_gain(p, i, c):
     """The felt gain of the hand purchase i on its target c: the block gain at a count step, None at another level
     of a line with count steps, else the income after against the income before."""
@@ -431,7 +428,6 @@ def felt_change(status, low, small, step):
     return texts[0 if small else 1 if status == "out" else 2]
 
 
-# ----------------------------------------------------------------------------- FM-3 line character
 def cost_key(p):
     return (p["cost_currency"], p["cost_formula"], f"{float(p['base_cost']):.2g}", round(float(p["cost_growth"]), 3))
 
@@ -526,7 +522,6 @@ def character_change(ch, bad):
             "control moves this row.")
 
 
-# ----------------------------------------------------------------------------- FM-4 largest gap between jolts
 def in_spans(spans, t):
     return any(a < t <= b for a, b in spans)
 
@@ -574,7 +569,6 @@ def fm4(p, band):
     return result(mins(g[0]), "min", f"{mins(g[0]):.1f} min", "out" if out else "ok", reason, change, sub, where)
 
 
-# ----------------------------------------------------------------------------- FM-5 end arc
 def end_ratio(times, end):
     late = len({t for t in times if t >= 0.9 * end - EPS})
     alls = len(set(times))
@@ -598,7 +592,6 @@ def fm5(p, band):
                   dict(last_content=last[1], last_minutes=r4(mins(last[0]))))
 
 
-# ----------------------------------------------------------------------------- FM-6 chore and automation
 def auto_cutoffs(p):
     """{line: real seconds when the player stops pressing it}: from_minutes of its automation entry, else its first
     auto purchase, else E."""
@@ -662,7 +655,6 @@ def chore_change(p, line, bad, band):
     return texts[0 if bad[0] else 1 if bad[1] else 2]
 
 
-# ----------------------------------------------------------------------------- FM-7 verbs for each hour
 def has_active(m):
     owners = m["purchases"] + (m.get("milestones") or []) + m["ladders"]
     return any(e.get("active") for x in owners for e in x.get("effects") or [])
@@ -697,7 +689,6 @@ def fm7(p, band):
                   sub, dict(hour=worst + 1))
 
 
-# ----------------------------------------------------------------------------- FM-8 comeback ratio
 def run_of(p, a, b):
     """(start, end, [axis step times]) of the run between the events a and b (-1 and len for the ends)."""
     start = 0.0 if a < 0 else p.events[a]["real"]
@@ -756,7 +747,6 @@ def comeback_change(med, band):
     return f"None needed. {ctl('C9')}, {ctl('C10')} and {ctl('C11')} move this row."
 
 
-# ----------------------------------------------------------------------------- FM-9 purchase variety
 def press_weight(p, line):
     """1 for a press, 1 / n for a press of a line with count steps: the n presses of 1 block are 1 choice."""
     cs = p.steps.get(line)
@@ -787,7 +777,6 @@ def fm9(p, band):
                   dict(hour=h + 1, line=line))
 
 
-# ----------------------------------------------------------------------------- FM-10 felt beat share
 def is_beat(e):
     return e["weight"] >= BEAT_WEIGHT and e["kind"] != "prestige" and not e.get("auto")
 
@@ -827,7 +816,6 @@ def fm10(p, band):
                   dict(flat_kinds=dict(flat)))
 
 
-# ----------------------------------------------------------------------------- FM-11 shift stretch
 def merge_times(times):
     out = []
     for t in sorted(times):
@@ -858,7 +846,6 @@ def fm11(p, band):
                   dict(start_minutes=r4(mins(g[1])), end_minutes=r4(mins(g[2]))))
 
 
-# ----------------------------------------------------------------------------- FM-12 reset novelty share
 def dull_at(resets):
     return next(e["real"] for e in resets if e["weight"] < NOVEL_WEIGHT)
 
@@ -879,7 +866,6 @@ def fm12(p, band):
                   dict(resets=len(resets)), dict(dull_resets=dull[:10]))
 
 
-# ----------------------------------------------------------------------------- the rows
 SPEC_KEYS = ("id", "name", "kind", "fn", "band", "text", "mark", "controls", "evidence", "direction", "guards")
 
 
@@ -936,7 +922,7 @@ DIRECTION = {s["id"]: s["direction"] for s in ROWS}
 
 
 SPEC_OF = {s["id"]: s for s in ROWS}
-FUN_META = ("band_mark",)      # a key of game.targets.fun that is not a band key: the sheet does not read it
+FUN_META = ("band_mark",)
 
 
 def fun_targets(m):
@@ -1062,7 +1048,6 @@ def fun_sheet(m, source=None, build=None, build_path=None):
     return rounded(sheet)
 
 
-# ----------------------------------------------------------------------------- Markdown
 def cell(x):
     return str(x).replace("|", "/").replace("\n", " ")
 
@@ -1107,7 +1092,6 @@ def markdown(s):
     return "\n".join(out + [f"- {t}" for t in PLAY_TEST]) + "\n"
 
 
-# ----------------------------------------------------------------------------- command line
 ARGS = (
     (("model",), dict(help="the model JSON (references/model-schema.md)")),
     (("--build",), dict(metavar="FILE", help="the model of the game as built: the sheet shows it beside the design, "

@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# Live check: C# runs on Godot .NET (U-24). The gate never runs this script.
-#
-# The test host has no Godot .NET, so the Godot skills label every C# line
-# "proof: parse-checked only" (skills/README.md, Godot section). On a host
-# with Godot .NET 4.7, this script proves that a C# scene and a C# signal run
-# headless. It prints one line per step: PASS <step>, FAIL <step>: <reason>
-# or SKIP <step>: <reason>, and exits 1 when a step fails. A missing tool is
-# SKIP. It writes only under .worktrees/_scratch/live-godot-csharp/ and
-# removes the build output at the end. NuGet needs the network.
-#
-# Godot .NET: GODOT_MONO_PATH, else /Applications/Godot_mono.app.
-# Run: scripts/godot/live_csharp.sh
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
@@ -22,7 +10,6 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2"; failed=1; }
 skip() { echo "SKIP $1: $2"; }
 
-# Runs a command with a time bound (macOS has no `timeout`).
 bounded() { local s=$1; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@"; }
 
 if [ -z "$godot" ] || [ ! -x "$godot" ]; then
@@ -91,9 +78,6 @@ cat > main.tscn <<'EOF'
 script = ExtResource("1")
 EOF
 
-# Mixed GDScript and C# project: the code blocks of step 5 of
-# skills/godot-language-choice/SKILL.md, character for character. Only the
-# marker prints are extra lines.
 cat > PathService.cs <<'EOF'
 using Godot;
 
@@ -186,7 +170,6 @@ script = ExtResource("3")
 script = ExtResource("4")
 EOF
 
-# A typed GDScript parameter rejects a plain Godot.Collections.Array from C#.
 cat > typed_sink.gd <<'EOF'
 extends Node
 
@@ -248,7 +231,6 @@ else
   pass "csharp-errors"
 fi
 
-# Mixed scene: GDScript and C# call each other and connect each other's signals.
 if bounded 120 "$godot" --headless --path . --quit-after 10 res://mixed.tscn > "$work/mixed.log" 2>&1; then
   if grep -q '^LIVE_MIX_GD_CALLS_CS 2$' "$work/mixed.log"; then
     pass "mixed-gd-calls-cs"
@@ -265,7 +247,6 @@ if bounded 120 "$godot" --headless --path . --quit-after 10 res://mixed.tscn > "
   else
     fail "mixed-cs-calls-gd" "no LIVE_MIX_CS_CALLS_GD 3 line"
   fi
-  # Both the Hud.OnItemAdded handler of the skill (prints the bare id) and the marker handler must run.
   if grep -q '^LIVE_MIX_GD_SIGNAL_TO_CS sword$' "$work/mixed.log" && grep -q '^sword$' "$work/mixed.log"; then
     pass "mixed-gd-signal-to-cs"
   else
@@ -285,7 +266,6 @@ else
   pass "mixed-errors"
 fi
 
-# Typed array: the expected error goes to its own log, not to mixed.log.
 bounded 120 "$godot" --headless --path . --quit-after 10 res://typed.tscn > "$work/typed.log" 2>&1 || true
 typed_err=$(grep -i 'element type\|typed array' "$work/typed.log" | head -1 || true)
 if [ -n "$typed_err" ] && ! grep -q '^LIVE_MIX_TYPED_TAKEN' "$work/typed.log"; then
@@ -295,11 +275,6 @@ else
   fail "mixed-typed-array-rejected" "no element type error in $work/typed.log"
 fi
 
-# gdUnit4Net: a second project runs C# tests through the `dotnet test` adapter on
-# the .NET engine. gdUnit4Net states Godot 4.3 and 4.4 only and names GodotSharp
-# 4.4.0; this run is the check on Godot .NET 4.7.2. These are the newest stable
-# packages that resolve together (adapter 3.0.0 needs api 5.0.0; adapter 3.1.x
-# needs the prerelease api 5.1.0-rc5).
 gdunit_api=5.0.0
 gdunit_adapter=3.0.0
 gdunit="$work/gdunit"
@@ -340,8 +315,6 @@ public class Health
     public void Damage(int amount) { Value -= amount; }
 }
 EOF
-# The passing test needs the Godot runtime and asserts the engine version, so a
-# pass proves that the adapter started the 4.7.2 engine from GODOT_BIN.
 cat > HealthTest.cs <<'EOF'
 using System.Threading.Tasks;
 using Godot;
@@ -427,9 +400,6 @@ cat > counter.tscn <<'EOF'
 [node name="Counter" type="Node"]
 script = ExtResource("1")
 EOF
-# The adapter rebuilds the Godot project before each run and kills the rebuild at its
-# CompileProcessTimeout (a short default), which ends the run with exit 137 under CPU
-# load. 300000 ms (5 minutes) is the documented runsettings key, set high.
 cat > .runsettings <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <RunSettings>
@@ -445,7 +415,6 @@ cat > .runsettings <<EOF
   </GdUnit4>
 </RunSettings>
 EOF
-# The test host targets net8.0 and this host has only the .NET 10 runtime.
 export DOTNET_ROLL_FORWARD=Major
 gdunit_built=0
 if bounded 600 dotnet build > "$work/gdunit-build.log" 2>&1; then gdunit_built=1; fi

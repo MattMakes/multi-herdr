@@ -1,8 +1,3 @@
-//! The quota probes (design section 11.2): the only routing code that starts
-//! a process. Each harness reports its own limits through its own client, so
-//! horch never holds a credential (D2). [`crate::routing::snapshot::obtain`]
-//! is the only routing path that calls them.
-
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,7 +13,6 @@ use crate::routing::quota::{
     QuotaFile, Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_LOCAL, POOL_ZEN,
 };
 
-/// A child process whose stdout is read line by line with a deadline.
 struct Child {
     child: std::process::Child,
     lines: mpsc::Receiver<String>,
@@ -50,7 +44,6 @@ impl Child {
         stdin.flush()
     }
 
-    /// The next stdout line that `pick` accepts, before `deadline`.
     fn wait_for(&self, deadline: Instant, mut pick: impl FnMut(&Value) -> bool) -> Option<Value> {
         loop {
             let left = deadline.checked_duration_since(Instant::now())?;
@@ -72,14 +65,10 @@ impl Drop for Child {
     }
 }
 
-/// Start the child that `cmd` describes, or say why it did not start.
 fn start(cmd: Command, bin: &Path) -> Result<Child, String> {
     Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))
 }
 
-/// Ask Claude Code for its plan limits (QUO-01). One stdin line, a
-/// `get_usage` control request; no user message; no `ANTHROPIC_API_KEY`.
-/// The scratch dir goes under `temp_root`.
 pub(crate) fn probe_claude(
     bin: &Path,
     timeout: StdDuration,
@@ -92,8 +81,6 @@ pub(crate) fn probe_claude(
     result
 }
 
-/// The command that starts Claude Code in `dir`, to take `get_usage` requests
-/// on stdin.
 fn claude_command(bin: &Path, dir: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.args([
@@ -113,8 +100,6 @@ fn claude_command(bin: &Path, dir: &Path) -> Command {
     cmd
 }
 
-/// Start the `claude` that `cmd` describes, send it the `get_usage` request
-/// and read its reply.
 fn ask_claude(cmd: Command, bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
     let mut child = start(cmd, bin)?;
     let id = "horch-quota-1";
@@ -135,8 +120,6 @@ fn ask_claude(cmd: Command, bin: &Path, timeout: StdDuration) -> Result<Probed, 
     parse_claude_usage(&reply)
 }
 
-/// Ask Codex for its plan limits (QUO-02): `initialize`, `initialized`,
-/// `account/rateLimits/read`, and nothing else.
 pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
     let mut child = start(codex_command(bin), bin)?;
     let deadline = Instant::now() + timeout;
@@ -166,7 +149,6 @@ pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, St
     parse_codex_limits(&reply)
 }
 
-/// The command that starts the Codex app-server.
 fn codex_command(bin: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.arg("app-server");
@@ -176,22 +158,16 @@ fn codex_command(bin: &Path) -> Command {
     cmd
 }
 
-/// Write one JSON line to the app-server.
 fn send_codex(child: &mut Child, bin: &Path, v: Value) -> Result<(), String> {
     child
         .send(&v.to_string())
         .map_err(|e| format!("writing to {} app-server: {e}", bin.display()))
 }
 
-/// The next stdout line that answers request `id`, before `deadline`.
 fn reply_to(child: &Child, deadline: Instant, id: u64) -> Option<Value> {
     child.wait_for(deadline, |v| v.get("id") == Some(&Value::from(id)))
 }
 
-/// Ask agy for its plan quotas: `agy -p /usage --output-format json`. A
-/// slash command in print mode runs no model turn (`num_turns: 0`), so the
-/// probe spends no quota. It runs in `temp_root`: print mode needs no trusted
-/// directory and records none (docs/live-checks/harnesses.md).
 pub(crate) fn probe_google(
     bin: &Path,
     timeout: StdDuration,
@@ -211,7 +187,6 @@ pub(crate) fn probe_google(
     parse_agy_usage(&reply)
 }
 
-/// Run a short command with a deadline; its stdout, or why it failed.
 fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, String> {
     let name = format!(
         "{} {}",
@@ -225,8 +200,6 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
     run_output(&name, cmd, timeout)
 }
 
-/// Run `cmd` with a deadline; its stdout, or why it failed. `name` leads the
-/// error text.
 fn run_output(name: &str, cmd: Command, timeout: StdDuration) -> Result<String, String> {
     match run_with_deadline(cmd, timeout) {
         Err(e) => Err(format!("{name} could not start: {e}")),
@@ -236,12 +209,6 @@ fn run_output(name: &str, cmd: Command, timeout: StdDuration) -> Result<String, 
     }
 }
 
-/// Run `cmd` with no stdin and a deadline: its exit status, stdout and
-/// stderr, or `None` when it did not exit in time (it is killed then).
-///
-/// Threads read both pipes while the child runs. A child that writes more
-/// than the pipe buffer (64 KiB on macOS) blocks until someone reads, so
-/// reading only after the exit would wait for the whole deadline (U-65).
 fn run_with_deadline(
     mut cmd: Command,
     timeout: StdDuration,
@@ -255,8 +222,6 @@ fn run_with_deadline(
     let out = read_on_thread(child.stdout.take());
     let err = read_on_thread(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    // The readers are not joined: a process the child started can still
-    // hold the pipes open.
     let status = match crate::runtime::process::wait_until(
         &mut child,
         deadline,
@@ -273,12 +238,8 @@ fn run_with_deadline(
     Ok(status.map(|status| (status, text(out), text(err))))
 }
 
-/// The deadline of each command of the local health check, unless
-/// `HORCH_LOCAL_PROBE_TIMEOUT_MS` sets another.
 pub(crate) const LOCAL_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 
-/// The local pool's health (QUO-06): `pi --version`, then `ollama list`,
-/// each within `t`.
 pub(crate) fn probe_local(pi: &Path, ollama: &Path, t: StdDuration) -> Result<Vec<String>, String> {
     run_short(pi, &["--version"], t)?;
     let list = run_short(ollama, &["list"], t)?;
@@ -290,16 +251,10 @@ pub(crate) fn probe_local(pi: &Path, ollama: &Path, t: StdDuration) -> Result<Ve
         .collect())
 }
 
-/// What `<bin> --version` showed about a harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionProbe {
-    /// It exited 0. The first line it printed.
     Version(String),
-    /// It ran and failed: it exited non-zero or on a signal. Why, with the
-    /// first error line it printed (`pi --version exited 1: Error
-    /// [ERR_REQUIRE_ESM]: ...`).
     Broken(String),
-    /// It did not start (not installed), timed out, or printed nothing.
     NoAnswer,
 }
 
@@ -319,19 +274,14 @@ impl VersionProbe {
     }
 }
 
-/// The first line a harness prints for `--version`. `None` when it is
-/// broken or gives no answer; [`probe_version`] tells those apart.
 pub fn harness_version(bin: &Path) -> Option<String> {
     probe_version(bin).version()
 }
 
-/// Run `<bin> --version` and judge the answer.
 pub fn probe_version(bin: &Path) -> VersionProbe {
     probe_version_within(bin, VERSION_TIMEOUT)
 }
 
-/// [`probe_version`] with its own deadline: no answer within `timeout` is
-/// [`VersionProbe::NoAnswer`].
 fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
     let mut cmd = Command::new(bin);
     cmd.arg("--version");
@@ -339,7 +289,6 @@ fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
         return VersionProbe::NoAnswer;
     };
     if status.success() {
-        // Some harnesses (Prime) print their version on stderr.
         [out, err]
             .iter()
             .find_map(|t| {
@@ -358,7 +307,6 @@ fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
     }
 }
 
-/// Read `pipe` to its end on a new thread. No pipe reads as empty text.
 fn read_on_thread(
     pipe: Option<impl std::io::Read + Send + 'static>,
 ) -> std::thread::JoinHandle<String> {
@@ -371,7 +319,6 @@ fn read_on_thread(
     })
 }
 
-/// `<name> exited <code>: <first error line>` for a failed command.
 fn failure(name: &str, status: std::process::ExitStatus, err: &str, out: &str) -> String {
     let code = status
         .code()
@@ -383,12 +330,6 @@ fn failure(name: &str, status: std::process::ExitStatus, err: &str, out: &str) -
     }
 }
 
-/// The line of `text` that names the error: the first whose first word is
-/// an error kind (`Error`, `TypeError:`, `error:`), else the first that is
-/// not empty. A Node crash starts with a source location
-/// (`node:internal/modules/cjs/loader:1669`); the `Error [...]` line under
-/// it says what went wrong. Display only: nothing branches on it. Cut to
-/// 200 chars.
 fn first_error_line(text: &str) -> Option<String> {
     let lines = || text.lines().map(str::trim).filter(|l| !l.is_empty());
     let line = lines()
@@ -404,26 +345,18 @@ fn first_error_line(text: &str) -> Option<String> {
     })
 }
 
-/// How long `harness_version` waits for `<bin> --version`.
-/// Generous: a loaded machine can take seconds just to start a binary, and
-/// a missed version fails the dataset preflight.
 const VERSION_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
-/// The newest `rate_limits` snapshot in any rollout under `sessions` (the
-/// Codex fallback, QUO-03), with the time it was written.
 pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Window>)> {
     let mut files = Vec::new();
     collect_rollouts(sessions, &mut files);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
-    // An unreadable file, or a cut multi-byte tail, skips that file only.
     files
         .into_iter()
         .take(20)
         .find_map(|(_, path)| snapshot_in(&std::fs::read(&path).ok()?))
 }
 
-/// The newest line of a rollout that holds a `rate_limits` snapshot, with
-/// the time it was written.
 fn snapshot_in(bytes: &[u8]) -> Option<(String, Vec<Window>)> {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -462,8 +395,6 @@ fn collect_rollouts(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>)
     }
 }
 
-/// Where probes come from. Tests pass fakes through the usual `HORCH_*_BIN`,
-/// which the binary reads into `RuntimeContext::bins`.
 #[derive(Debug, Clone)]
 pub struct ProbeBins {
     pub claude: PathBuf,
@@ -472,18 +403,11 @@ pub struct ProbeBins {
     pub pi: PathBuf,
     pub ollama: PathBuf,
     pub codex_sessions: PathBuf,
-    /// Every harness binary by harness name, for the `--version` health
-    /// check.
     pub harnesses: Vec<(&'static str, PathBuf)>,
-    /// The deadline of each command of the local health check.
     pub local_timeout: StdDuration,
 }
 
 impl ProbeBins {
-    /// The probe programs from resolved [`HarnessBins`], and the codex
-    /// sessions directory the fallback signal reads.
-    ///
-    /// [`HarnessBins`]: crate::runtime::HarnessBins
     pub fn new(bins: &crate::runtime::HarnessBins, codex_sessions: PathBuf) -> Self {
         ProbeBins {
             claude: bins.claude.clone(),
@@ -500,8 +424,6 @@ impl ProbeBins {
         }
     }
 
-    /// The context's programs, codex sessions directory and local health
-    /// deadline.
     pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
         ProbeBins {
             local_timeout: ctx.settings.local_probe_timeout.unwrap_or(LOCAL_TIMEOUT),
@@ -513,13 +435,8 @@ impl ProbeBins {
     }
 }
 
-/// 10 s (section 11.2). `HORCH_PROBE_TIMEOUT_MS` shortens it for tests.
 pub(crate) const PROBE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
-/// Probe every pool and fold the results into `file` (QUO-01..03, 06).
-/// A failed probe keeps the last windows, records the error, and falls back
-/// to the newest on-disk signal. `timeout` is `None` for [`PROBE_TIMEOUT`];
-/// the claude probe's scratch dir goes under `temp_root`.
 pub(crate) fn probe_all(
     file: &mut QuotaFile,
     bins: &ProbeBins,
@@ -556,8 +473,6 @@ pub(crate) fn probe_all(
         zen.source = Some("none".into());
     }
 
-    // Without agy the probe records a start failure, the pool assesses
-    // `unknown`, and routing substitutes an Antigravity teammate's fallback.
     let google = file.pools.entry(POOL_GOOGLE.into()).or_default();
     let found = probe_google(&bins.antigravity, timeout, temp_root);
     record(google, &stamp, antigravity_version, "usage", found);
@@ -570,13 +485,11 @@ pub(crate) fn probe_all(
     );
 }
 
-/// Mark `reading` as probed now, and take the harness's version when known.
 fn stamp_probe(reading: &mut PoolReading, stamp: &str, version: Option<String>) {
     reading.probed_at = Some(stamp.to_string());
     reading.harness_version = version.or(reading.harness_version.take());
 }
 
-/// Keep a probe's windows, read now from `source`, and clear the error.
 fn record_windows(reading: &mut PoolReading, stamp: &str, source: &str, windows: Vec<Window>) {
     reading.windows = windows;
     reading.observed_at = Some(stamp.to_string());
@@ -584,8 +497,6 @@ fn record_windows(reading: &mut PoolReading, stamp: &str, source: &str, windows:
     reading.error = None;
 }
 
-/// Fold one probe into `reading`: its windows, or the error with the last
-/// windows kept.
 fn record(
     reading: &mut PoolReading,
     stamp: &str,
@@ -600,8 +511,6 @@ fn record(
     }
 }
 
-/// A failed Codex probe: record the error, and take the newest rollout
-/// snapshot when it is newer than the reading.
 fn codex_rollout_fallback(codex: &mut PoolReading, error: String, sessions: &Path) {
     codex.error = Some(error);
     let newer = newest_rollout_snapshot(sessions).filter(|(at, _)| {
@@ -617,7 +526,6 @@ fn codex_rollout_fallback(codex: &mut PoolReading, error: String, sessions: &Pat
     }
 }
 
-/// Fold the local pool's health check into `local`.
 fn record_local(local: &mut PoolReading, stamp: &str, found: Result<Vec<String>, String>) {
     local.probed_at = Some(stamp.to_string());
     local.observed_at = Some(stamp.to_string());
@@ -635,10 +543,6 @@ fn record_local(local: &mut PoolReading, stamp: &str, found: Result<Vec<String>,
     }
 }
 
-/// Run every harness's `--version` in parallel and record the health of
-/// each in `file.harnesses`. A failure marks the harness broken; a later
-/// success clears it. No answer (not installed, timed out) is not a
-/// failure: it keeps the last version and clears the error.
 fn probe_harnesses(
     file: &mut QuotaFile,
     bins: &[(&'static str, PathBuf)],
@@ -688,7 +592,6 @@ mod tests {
         assert!(windows.iter().any(|w| w.name == "7d"));
     }
 
-    /// Writes a rollout whose mtime is `age_secs` in the past.
     fn rollout(dir: &Path, name: &str, body: &[u8], age_secs: u64) {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(name);
@@ -702,10 +605,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Codex 0.160: `primary` is the weekly window, `secondary` is null, and
-    /// there is no 5-hour window. A newer rollout from a `codex exec` probe
-    /// holds `rate_limits: null`, and the newest one is cut mid-character.
-    /// The snapshot comes from the next newest rollout that has a window.
     #[test]
     fn quo_03_rollout_snapshot_skips_null_rate_limits_on_codex_0_160() {
         let tmp = tempfile::tempdir().unwrap();
@@ -731,7 +630,6 @@ mod tests {
         assert!((windows[0].used - 0.43).abs() < 1e-9);
     }
 
-    /// Only null snapshots: no answer, not an error.
     #[test]
     fn quo_03_rollout_snapshot_is_none_when_every_rollout_is_null() {
         let tmp = tempfile::tempdir().unwrap();
@@ -756,8 +654,6 @@ mod tests {
         }
     }
 
-    /// A Node crash starts with a source location; the `Error [...]` line
-    /// names the fault.
     #[test]
     fn first_error_line_skips_the_node_source_location() {
         let crash = "node:internal/modules/cjs/loader:1669\n      const err = new ERR_REQUIRE_ESM(filename,\n\nError [ERR_REQUIRE_ESM]: require() of ES Module x.js not supported.\n";
@@ -778,12 +674,6 @@ mod tests {
         assert_eq!(first_error_line(&long).unwrap().chars().count(), 203);
     }
 
-    /// A fake harness that crashes is broken with its error line; one that is
-    /// missing gives no answer; once it works again the error clears.
-    ///
-    /// The fake always exits, so the probes wait for it. With the 15 s
-    /// [`VERSION_TIMEOUT`], a fake starved by a loaded test run gives
-    /// `NoAnswer`, and the test fails.
     #[cfg(unix)]
     #[test]
     fn a_crashing_harness_is_broken_until_it_recovers() {
@@ -806,7 +696,6 @@ mod tests {
             probe_version_within(&bin, UNTIL_IT_EXITS),
             VersionProbe::Broken(broken.into())
         );
-        // `None` whether it is broken or (on a starved run) gives no answer.
         assert_eq!(harness_version(&bin), None);
         let missing = tmp.path().join("absent");
         assert_eq!(probe_version(&missing), VersionProbe::NoAnswer);
@@ -828,9 +717,6 @@ mod tests {
         assert_eq!(pi.probed_at.as_deref(), Some("2026-10-04T10:05:00Z"));
     }
 
-    /// U-65: a harness that prints more than the pipe buffer (64 KiB on
-    /// macOS) before it exits. The probe reads its pipes while it runs, so
-    /// the harness exits and the probe returns its output, not a timeout.
     #[cfg(unix)]
     #[test]
     fn a_harness_that_prints_200_kib_is_read_before_the_timeout() {
@@ -838,7 +724,6 @@ mod tests {
         let timeout = StdDuration::from_secs(20);
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("chatty");
-        // Warm the first-exec scan by syspolicyd before the timed section.
         let warm = crate::test_support::write_warmed(
             &bin,
             &format!(
@@ -858,14 +743,9 @@ mod tests {
         assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
     }
 
-    /// The fakes below always answer or exit, so the probes wait for them: a
-    /// fake starved by a loaded test run (the first-exec scan takes 14 to
-    /// 35 s on macOS) must not give a timeout.
     #[cfg(unix)]
     const UNTIL_THE_FAKE_ANSWERS: StdDuration = StdDuration::from_secs(600);
 
-    /// The shell script `script` as the executable `name` under `dir`,
-    /// warmed. The argument `warm` ends it before its first line.
     #[cfg(unix)]
     fn fake(dir: &Path, name: &str, script: &str) -> PathBuf {
         let bin = dir.join(name);
@@ -878,10 +758,6 @@ mod tests {
         bin
     }
 
-    /// Production gives each command of the local health check 5 s, and
-    /// `probe_local` stops an `ollama list` that runs past its deadline. The
-    /// timeout runs at 300 ms against `sleep 1`, so the test does not wait
-    /// for the 5 s production value.
     #[cfg(unix)]
     #[test]
     fn a_slow_ollama_times_out_at_the_local_deadline_of_5_s_in_production() {
@@ -911,8 +787,6 @@ mod tests {
         );
     }
 
-    /// `HORCH_LOCAL_PROBE_TIMEOUT_MS` sets the local health deadline, and the
-    /// same slow `ollama list` then answers within that longer deadline.
     #[cfg(unix)]
     #[test]
     fn horch_local_probe_timeout_ms_sets_the_local_deadline() {
@@ -926,8 +800,6 @@ mod tests {
             LOCAL_TIMEOUT
         );
 
-        // A slow `ollama list` answers within a longer deadline. It runs at
-        // 2 s against `sleep 0.5`, so the test does not wait for 60 s.
         let tmp = tempfile::tempdir().unwrap();
         let pi = fake(tmp.path(), "pi", "#!/bin/sh\necho 0.70.0\n");
         let ollama = fake(
@@ -941,7 +813,6 @@ mod tests {
         );
     }
 
-    /// A fake that writes to files in `log`: `script` with `@LOG@` filled in.
     #[cfg(unix)]
     fn logging_fake(dir: &Path, name: &str, script: &str, log: &Path) -> PathBuf {
         fake(
@@ -951,9 +822,6 @@ mod tests {
         )
     }
 
-    /// The `get_usage` probe starts `claude` in a scratch dir of its own, sends
-    /// the one request, skips every line that is not the reply to it, and
-    /// removes the scratch dir.
     #[cfg(unix)]
     #[test]
     fn probe_claude_asks_for_usage_from_a_scratch_dir_and_skips_other_lines() {
@@ -1011,8 +879,6 @@ echo '{"type":"control_response","response":{"subtype":"success","request_id":"h
         assert!(!root.join(&scratch).exists(), "the scratch dir is removed");
     }
 
-    /// A harness that does not start, or ends with no reply, gives its
-    /// reason; the scratch dir goes either way.
     #[cfg(unix)]
     #[test]
     fn probe_claude_says_why_it_got_no_usage_and_removes_its_scratch_dir() {
@@ -1037,9 +903,6 @@ echo '{"type":"control_response","response":{"subtype":"success","request_id":"h
         assert!(!scratch.exists());
     }
 
-    /// The app-server probe sends `initialize`, then `initialized` and the
-    /// limits request once the `initialize` reply is in, and skips every line
-    /// that is not the reply to the request it waits for.
     #[cfg(unix)]
     #[test]
     fn probe_codex_sends_the_three_requests_and_skips_other_lines() {
@@ -1096,9 +959,6 @@ echo '{"id":2,"result":{"rateLimits":{"primary":{"windowDurationMins":300,"usedP
         );
     }
 
-    /// Neither probe starts its harness with a forbidden variable
-    /// (CLAUDE.md): each command removes every one, whatever the shell that
-    /// started horch exports.
     #[test]
     fn the_probe_commands_remove_the_forbidden_env() {
         let commands = [
@@ -1113,8 +973,6 @@ echo '{"id":2,"result":{"rateLimits":{"primary":{"windowDurationMins":300,"usedP
         }
     }
 
-    /// A harness that does not start, or ends before it answers the request
-    /// the probe waits for, gives its reason.
     #[cfg(unix)]
     #[test]
     fn probe_codex_says_where_the_app_server_gave_no_reply() {

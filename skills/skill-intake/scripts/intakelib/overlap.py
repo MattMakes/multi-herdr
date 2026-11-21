@@ -25,27 +25,21 @@ KINDS = {"prose": ("word", PROSE_N), "word": ("word", WORD_N), "code": ("code", 
 CODE_EXT = frozenset(".ts .tsx .js .mjs .cjs .py .html .css .sh .hs .rs".split())
 
 ALLOW_WORDS = frozenset({
-    # standard web and Node API names
     "document", "window", "queryselector", "queryselectorall", "addeventlistener", "innerhtml",
     "textcontent", "const", "let", "var", "function", "return", "await", "async", "import", "from",
     "export", "require", "process", "argv", "console", "log", "error", "json", "stringify", "parse",
     "path", "join", "fs", "readfilesync", "writefilesync", "mkdirsync", "existssync", "promises",
     "child", "spawnsync", "execfilesync",
-    # python stdlib names
     "argparse", "argumentparser", "add", "argument", "args", "sys", "exit", "def", "self", "none",
     "true", "false", "if", "else", "for", "in", "not", "and", "or", "pathlib", "subprocess", "run",
     "check", "output", "text", "capture", "re", "compile", "open", "encoding", "utf", "8", "name",
     "main",
-    # placeholder written by normalise() for a command-line flag
     "flag",
-    # python and node standard library names: fixed by the runtime
     "os", "dirname", "abspath", "makedirs", "exist", "ok", "insert", "file", "try", "with", "as",
     "math", "min", "max", "floor", "tmpdir", "node", "url", "resolve", "dir", "recursive", "force",
     "rmsync", "stdio", "ignore", "pipe", "fileurltopath", "pathtofileurl", "date", "now",
-    # node and javascript idioms
     "spawn", "events", "once", "timers", "settimeout", "sleep", "trim", "boolean", "split", "number",
     "h1", "h2", "h3", "h4", "h5", "h6",
-    # argparse option idiom
     "action", "store", "help", "default", "int", "continue", "range",
 })
 MIN_FREE = 3

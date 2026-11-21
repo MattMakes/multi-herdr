@@ -1,16 +1,3 @@
-//! The comment-sweep step (CMS-01..CMS-06, docs/specs/comment-sweep.md):
-//! the comments a task added go before it lands. A worker never starts
-//! subagents, so the sweep is a review task that a `comment-remover` worker
-//! claims. Unlike a code-sweep reviewer, it edits: it deletes comments in
-//! the author's work folder and commits there. The author waits, as it
-//! waits for reviewers. The commit moves the tree, so `check` runs again
-//! before the land.
-//!
-//! The sweep state belongs to the task, not the worker: a replacement
-//! reuses it. A later commit of the author is swept too, from the last
-//! swept tree, at most [`MAX_SWEEPS`] times in a task. A sweep that the
-//! orchestrator cancels passes the step: the cancel is its ruling.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -22,40 +9,26 @@ use crate::taskledger::store::Store;
 use crate::taskledger::tasks::{self, NewTask, Task};
 use crate::taskledger::workers;
 
-/// The teammate that claims a sweep.
 pub const PERSONA: &str = "comment-remover";
 
-/// The most sweeps of 1 task: the first, and 1 of what the author
-/// committed after it.
 pub const MAX_SWEEPS: u32 = 2;
 
 const EXCLUDE_DELETED_FILES: &str = "--diff-filter=d";
 
-/// The priority of a sweep: the author waits for it, so it goes before
-/// ordinary work, like a code-sweep review.
 const AHEAD_OF_WORK: i64 = -500;
 
-/// The wait of the author, the same kind as the wait for reviewers: the
-/// watchdog treats both alike.
 const WAIT: &str = "reviewers";
 
-/// File endings with no comment to remove: prose, data and images.
 const NOT_CODE: &[&str] = &[
     ".md", ".txt", ".json", ".lock", ".csv", ".snap", ".svg", ".png", ".jpg", ".jpeg", ".gif",
     ".webp", ".ico", ".pdf",
 ];
 
-/// The sweeps of 1 task so far.
 #[derive(Debug, Serialize, Deserialize)]
 struct State {
-    /// The number of the last sweep queued.
     sweep: u32,
-    /// Its task.
     task_id: String,
-    /// The report its worker writes.
     report: String,
-    /// The tree when `finish` first saw the sweep ended: the next sweep
-    /// starts there. `None` while the sweep is open.
     swept: Option<String>,
 }
 
@@ -76,14 +49,11 @@ fn save(cx: &Ctx<'_>, state: &State) -> Result<()> {
     Ok(())
 }
 
-/// Whether `file` can hold a comment worth a sweep.
 pub fn is_code(file: &str) -> bool {
     let lower = file.to_lowercase();
     !NOT_CODE.iter().any(|end| lower.ends_with(end))
 }
 
-/// The ticket of a sweep: the facts of this task. How to sweep is the
-/// persona's own text.
 fn ticket_text(cx: &Ctx<'_>, diff: &Path, files: &[String], report: &Path) -> String {
     format!(
         "# Comment sweep {short}\n\n\
@@ -127,8 +97,6 @@ fn wait(store: &Store, cx: &Ctx<'_>, task_id: &str) -> Result<()> {
     )
 }
 
-/// Queue sweep `number` of the change since `since` (a tree), else since
-/// the task's diff base. `not_applicable` when that change has no code file.
 fn queue(
     store: &mut Store,
     cx: &Ctx<'_>,
@@ -190,7 +158,6 @@ fn ended(task: &Task) -> bool {
     task.status == TaskStatus::Done.as_str() || task.status == TaskStatus::Cancelled.as_str()
 }
 
-/// The outcome of the sweep that `state` names, once its task ended.
 fn passed(state: &State, sweep: &Task, tree: &str) -> Outcome {
     let report = Some(PathBuf::from(&state.report)).filter(|p| p.is_file());
     let out = if sweep.status == TaskStatus::Cancelled.as_str() {

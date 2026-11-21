@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Compare plain and workspace-local Godot state in a Codex sandbox.
 set -u
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)

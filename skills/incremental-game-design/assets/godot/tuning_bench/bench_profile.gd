@@ -1,13 +1,8 @@
 extends "res://addons/tuning_bench/bench_adapter.gd"
-## The profile of a run: this adapter stands in front of the adapter of the game and measures the real time of
-## each contract function. `bench_cli.gd --run --profile` uses it. A run with no profile does not use it.
-##
-## The cost of the measure is about 0.2 microseconds for each call. The result of the run does not change.
 
 const NAMES: Array[String] = ["setup", "step", "actions", "do_action", "rate", "progress", "wealth", "active", "away", "events", "max_step"]
 
 var inner: RefCounted = null
-## Function name -> [count of calls, microseconds].
 var spent: Dictionary = {}
 
 
@@ -15,19 +10,16 @@ func wrap(adapter: RefCounted) -> void:
 	inner = adapter
 	bench_config = adapter.bench_config
 	bench_seed = adapter.bench_seed
-	# The 2 adapters share 1 list of errors.
 	bench_errors = adapter.bench_errors
 	clear()
 
 
-## Set each count back to 0.
 func clear() -> void:
 	spent = {}
 	for name: String in NAMES:
 		spent[name] = [0, 0]
 
 
-## Return the counts and set them back to 0.
 func take() -> Dictionary:
 	var out: Dictionary = spent
 	clear()
@@ -125,8 +117,6 @@ func isolated() -> bool:
 	return inner.isolated()
 
 
-## Return the lines of the profile table of 1 player. `spent_now` is a result of `take`; `total_usec` is the
-## real time of the run of that player. The row "(bench)" is the time outside the adapter: the bot and the meters.
 static func lines(title: String, spent_now: Dictionary, total_usec: int) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	var total: float = maxf(float(total_usec), 1.0)

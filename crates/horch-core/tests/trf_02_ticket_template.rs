@@ -1,6 +1,3 @@
-//! TRF-02: the ticket-writer template's example ticket and MAP parse under
-//! the C1 rules (`docs/specs/ticket-format.md`) with no error.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::taskledger::map;
@@ -10,7 +7,6 @@ fn template() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// The first fenced block after the line `marker`, without its fences.
 fn fenced_after(text: &str, marker: &str) -> String {
     let mut lines = text.lines().skip_while(|l| l.trim() != marker);
     assert!(
@@ -26,8 +22,6 @@ fn fenced_after(text: &str, marker: &str) -> String {
     body.join("\n") + "\n"
 }
 
-/// Write the example MAP into `dir`, and the example ticket at every ticket
-/// file the MAP links.
 fn lay_out(dir: &Path, ticket: &str, map_text: &str) -> PathBuf {
     let tickets = dir.join("docs/tickets/example");
     std::fs::create_dir_all(&tickets).unwrap();

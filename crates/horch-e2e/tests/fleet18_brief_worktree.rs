@@ -1,4 +1,3 @@
-//! Remaining fleet briefing and worktree contracts at the public seam.
 use horch_core::{execution::SessionMode, prompts, roster::Roster};
 use horch_e2e::harness::Harness;
 fn worker() -> String {
@@ -141,7 +140,6 @@ fn g56_facts_reach_claim_and_launch_context_and_are_project_scoped() {
     assert!(horch_core::project_notes::read(&h.state, &other)
         .unwrap()
         .is_empty());
-    // Claim is idempotent for this worker and prints project knowledge each time.
     let claim = worker_ok(&h, &w, &["ledger", "claim"]);
     assert!(claim.contains("Use BSD sed"), "{claim}");
     let r = Roster::builtin().unwrap();
@@ -164,7 +162,6 @@ fn g56_facts_reach_claim_and_launch_context_and_are_project_scoped() {
 #[test]
 fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     let (h, w) = ledger_world("g69-ops");
-    // The PR ref must differ from the run branch: ignoring --from fails this test.
     std::fs::write(h.project.join("pr-only.txt"), "PR branch content\n").unwrap();
     git(&h, &h.project, &["add", "pr-only.txt"]);
     git(&h, &h.project, &["commit", "-q", "-m", "PR branch"]);
@@ -239,7 +236,6 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     assert!(horch_core::taskledger::finish::worktree_of(s.conn(), task)
         .unwrap()
         .is_none());
-    // Dirt is always preserved, including when keeping the branch.
     std::fs::write(path.join("dirty.txt"), "keep me").unwrap();
     assert!(!as_worker(
         &h,
@@ -342,8 +338,6 @@ fn g69_open_scratch_does_not_block_finish_or_done() {
     worker_ok(&h, &w, &["ledger", "worktree", "new", "task"]);
     let made = worker_ok(&h, &w, &["ledger", "worktree", "scratch", "inspect"]);
     let path = tree_path(&made);
-    // Select just the check step for this run: no task check means N/A. This
-    // exercises actual finish and done without an unrelated PR remote or sweep.
     let mut s = horch_core::taskledger::store::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
     s.immediate(|tx| {
         tx.execute("UPDATE runs SET finish_steps='[\"check\"]'", [])?;
@@ -531,8 +525,6 @@ fn g57_compacting_orchestrator_types_its_command_card() {
         })
         .filter_map(|a| a.get(3).and_then(|v| v.as_str()))
         .collect();
-    // Sanctioned actual compact argument (#57): keep the real run identity and
-    // decisions-log path; roster and ownership come from the task ledger.
     let compact_lines: Vec<_> = lines
         .iter()
         .filter(|l| l.starts_with("/compact "))
@@ -582,8 +574,6 @@ fn g58_claude_workers_share_read_only_preapprovals() {
         if t.agent.as_str() == "claude"
             && matches!(t.base.as_deref(), Some("fleet-worker" | "report-worker"))
         {
-            // A report pane runs no `horch` command but progress, tell and
-            // done, so it pre-approves none of the others.
             let report = t.horch_access == horch_core::roster::HorchAccess::Report;
             let want: Vec<String> = expected
                 .iter()
@@ -595,7 +585,6 @@ fn g58_claude_workers_share_read_only_preapprovals() {
         }
     }
     assert_eq!(names.len(), 88);
-    // sound-engineer runs on claude; audio-reviewer runs on agy.
     assert!(names.contains(&"sound-engineer"), "{names:?}");
     assert!(!names.contains(&"audio-reviewer"), "{names:?}");
     for pattern in expected {

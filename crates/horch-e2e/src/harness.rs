@@ -1,12 +1,3 @@
-//! A sealed world for one end-to-end test.
-//!
-//! Each [`Harness`] gets a fresh temp directory holding a fake home, a state
-//! root, a temp dir for mailboxes, and a `bin/` of fakes named like the real
-//! programs (`claude`, `codex`, `herdr`, `opencode`, `prime-agent`, `pi`,
-//! `ollama`). `horch` runs with a cleared environment whose PATH is that
-//! `bin/` alone, and every `HORCH_*_BIN` points into it, so no real harness, no
-//! real herdr and no file outside the temp dir can be reached (NFR-01).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -16,11 +7,6 @@ use serde_json::Value;
 
 use crate::bin_dir;
 
-/// Run `cmd` once, untimed, and return its output. macOS scans a new
-/// executable at its first exec, for seconds: a warm keeps that scan out of
-/// the call under test. On Linux a test thread that forks while another
-/// writes a script can hold it open for writing, so exec fails with "Text
-/// file busy" until that child execs; retry only that error until it does.
 pub fn warm(cmd: &mut Command) -> std::io::Result<Output> {
     for _ in 0..100 {
         match cmd.output() {
@@ -33,7 +19,6 @@ pub fn warm(cmd: &mut Command) -> std::io::Result<Output> {
     cmd.output()
 }
 
-/// The fakes, by the name of the program each stands in for.
 pub const FAKES: [(&str, &str); 10] = [
     ("agy", "fake-antigravity"),
     ("claude", "fake-claude"),
@@ -55,21 +40,13 @@ pub struct Harness {
     pub bin: PathBuf,
     pub log: PathBuf,
     pub project: PathBuf,
-    /// Extra environment for every `horch` this harness runs.
     pub env: BTreeMap<String, String>,
-    /// Variables the sealed environment sets by default that this harness
-    /// leaves out ([`Harness::without`]).
     removed: BTreeSet<String>,
-    /// The real `git`, by absolute path, once [`Harness::with_git`] found it.
     git: Option<PathBuf>,
 }
 
-/// The commit date of the fixture repo, and of every commit made through the
-/// harness environment, so a commit hash is the same in every run.
 pub const GIT_DATE: &str = "2026-09-28T12:00:00+00:00";
 
-/// The default `HORCH_FAULT` of the sealed environment: a 100 ms delivery
-/// probe budget.
 pub const DELIVERY_PROBE_FAULT: &str = "delivery-probe-ms:100";
 
 fn exe(name: &str) -> String {
@@ -77,10 +54,6 @@ fn exe(name: &str) -> String {
 }
 
 impl Harness {
-    /// On unix the preferred root is `/tmp/horch-e2e-<name>-<pid>-<n>`, with
-    /// `<name>` cut to its first 12 characters and `<n>` in hex. When the
-    /// process cannot write there, `TMPDIR` is used only if Prime's longest
-    /// daemon socket path stays below macOS's 104-byte limit.
     pub fn new(name: &str) -> Self {
         let short: String = name.chars().take(12).collect();
         let dir_name = format!("horch-e2e-{short}-{}-{:x}", std::process::id(), unique());
@@ -128,8 +101,6 @@ impl Harness {
         });
         check_built_fakes();
         warm_built_fakes();
-        // A fake that starts slowly under load must not fail the local health
-        // check: its deadline is the e2e deadline here, not production's 5 s.
         h.set(
             "HORCH_LOCAL_PROBE_TIMEOUT_MS",
             DEADLINE.as_millis().to_string(),
@@ -137,22 +108,11 @@ impl Harness {
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));
-            // A link, not a copy: macOS scans every new executable on its
-            // first run, and under load many fresh copies at once take
-            // seconds to start. A link to the built file is scanned once.
-            // So nothing may write through these names: use `write_bin`.
-            // On unix a symlink, not a hard link: syspolicyd scans an exec
-            // late under load and reads the file by a path it finds from
-            // the inode. With hard links that can be another harness's
-            // link, already deleted; syspolicyd then kills the process with
-            // SIGKILL ("Malware rejection"). The built file is never deleted.
             let to = h.bin.join(exe(name));
             if link_fake(&from, &to).is_err() {
                 std::fs::copy(&from, &to).expect("copying a fake");
             }
         }
-        // The one real program the tests use, on a fixture database only.
-        // A symlink, not a copy: macOS kills a copied system binary (137).
         if let Some(sqlite) = find_on_real_path("sqlite3") {
             #[cfg(unix)]
             let _ = std::os::unix::fs::symlink(sqlite, h.bin.join(exe("sqlite3")));
@@ -162,21 +122,6 @@ impl Harness {
         h
     }
 
-    /// Give this harness a real git repository: 2 files and 1 commit on branch
-    /// `main`, in the project dir.
-    ///
-    /// `git` is found by absolute path on the real `PATH` and is never put on
-    /// the sealed `PATH`; `HORCH_GIT_BIN` names it. The environment pins
-    /// everything that could change a commit hash or read the operator's
-    /// config: an empty `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM=1`, the
-    /// author, the committer and both dates. Real git touches only temp dirs.
-    ///
-    /// Without `git` the harness is returned as it was and [`Harness::git_bin`]
-    /// is `None`, unless `HORCH_REQUIRE_GIT=1`, which makes that a panic.
-    ///
-    /// The sealed home also records Claude's and Codex's trust in the
-    /// project, as the operator does once, so dataset preflight (PRE-14)
-    /// passes. [`Harness::untrust_project`] removes it.
     pub fn with_git(mut self) -> Self {
         let Some(git) = find_on_real_path("git").filter(|p| p.is_absolute()) else {
             assert!(
@@ -205,7 +150,6 @@ impl Harness {
         std::fs::write(self.project.join("README.md"), "# alpha\n").expect("writing a fixture");
         std::fs::write(self.project.join("notes.txt"), "one\ntwo\n").expect("writing a fixture");
         self.git = Some(git);
-        // `symbolic-ref` rather than `init -b`: older git has no `-b`.
         for args in [
             &["init", "--quiet"][..],
             &["symbolic-ref", "HEAD", "refs/heads/main"],
@@ -223,9 +167,6 @@ impl Harness {
         self
     }
 
-    /// Record Claude's (`~/.claude.json`) and Codex's
-    /// (`$CODEX_HOME/config.toml`) trust in the project root, in the sealed
-    /// home, by its canonical path as the harnesses record it.
     pub fn trust_project(&self) {
         let root = self
             .project
@@ -249,31 +190,24 @@ impl Harness {
         .expect("writing the codex trust fixture");
     }
 
-    /// Remove the trust [`Harness::trust_project`] recorded.
     pub fn untrust_project(&self) {
         let _ = std::fs::remove_file(self.home.join(".claude.json"));
         let _ = std::fs::remove_file(self.home.join(".codex").join("config.toml"));
     }
 
-    /// The real `git`, by absolute path, after [`Harness::with_git`].
     pub fn git_bin(&self) -> Option<&Path> {
         self.git.as_deref()
     }
 
-    /// A `git` command in the project dir with the pinned environment.
-    /// Panics before [`Harness::with_git`].
     pub fn git_cmd(&self, args: &[&str]) -> Command {
         let git = self.git.as_ref().expect("call with_git() first");
         let mut cmd = Command::new(git);
         cmd.args(args);
         self.seal(&mut cmd);
-        // `seal` clears the environment already; the scrub keeps it so if a
-        // caller adds variables later.
         horch_marketplace::git::scrub_repo_env(&mut cmd);
         cmd
     }
 
-    /// The commit at `HEAD` of the project repo. `None` without git.
     pub fn head_sha(&self) -> Option<String> {
         self.git.as_ref()?;
         let out = self.git_cmd(&["rev-parse", "HEAD"]).output().ok()?;
@@ -282,14 +216,10 @@ impl Harness {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// NFR-01: whether `horch` may start the program at `path`. Allowed are
-    /// the files in the fakes dir and the one real `git` that
-    /// [`Harness::with_git`] found. Nothing else is.
     pub fn allows_program(&self, path: &Path) -> bool {
         path.starts_with(&self.bin) || self.git.as_deref() == Some(path)
     }
 
-    /// The `horch` binary under test, built next to the fakes.
     pub fn horch_bin() -> PathBuf {
         let path = bin_dir().join(exe("horch"));
         assert!(
@@ -304,7 +234,6 @@ impl Harness {
         self.bin.join(exe("sqlite3")).is_file()
     }
 
-    /// A `horch` command in the sealed environment.
     pub fn horch(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(Self::horch_bin());
         cmd.args(args);
@@ -312,21 +241,16 @@ impl Harness {
         cmd
     }
 
-    /// The session records of the project with slug `slug`, rendered as its
-    /// JSON ledger was (TRF-45: no code writes that file now; the records
-    /// live in `<state>/ledger.sqlite3`, an old JSON ledger read only).
     pub fn stored_ledger(&self, slug: &str) -> Result<String, String> {
         horch_core::execution::store::ExecutionStore::for_project(&self.state, slug)
             .stored_json()
             .map_err(|e| format!("{e:#}"))
     }
 
-    /// Run `horch`, returning its output.
     pub fn run(&self, args: &[&str]) -> Output {
         self.horch(args).output().expect("running horch")
     }
 
-    /// Apply the sealed environment to any command.
     pub fn seal(&self, cmd: &mut Command) {
         cmd.env_clear();
         cmd.current_dir(&self.project);
@@ -353,19 +277,9 @@ impl Harness {
             "HORCH_FAKE_LOG".into(),
             self.log.to_string_lossy().into_owned(),
         );
-        // Fake panes never show an agent, so `horch tell` gives a fresh role
-        // no grace here (the grace has its own tests in horch-core).
         env.insert("HORCH_TELL_GRACE_MS".into(), "0".into());
-        // Most scenarios run no worker in a pane, so `horch spawn` does not
-        // wait for one to register (tests/startup_error.rs sets the wait).
         env.insert("HORCH_SPAWN_WAIT_MS".into(), "0".into());
-        // `horch fleet` runs no agent CLI updater: a test asserts the exact
-        // calls each fake saw. tests/update.rs uses `allow_updates`.
         env.insert("HORCH_NO_UPDATE".into(), "1".into());
-        // The fake herdr never runs the delivery probe's typed command, so
-        // the probe of `horch fleet` and `horch doctor` waits its full
-        // budget. 100 ms, not production's 5 s. A test of the probe sets its
-        // own `HORCH_FAULT`; `unset` brings this default back.
         env.insert("HORCH_FAULT".into(), DELIVERY_PROBE_FAULT.into());
         env.insert(
             "CODEX_HOME".into(),
@@ -392,7 +306,6 @@ impl Harness {
                 self.bin.join(exe(name)).to_string_lossy().into_owned(),
             );
         }
-        // Windows needs these to start any process at all.
         for key in ["SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC"] {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.into(), v);
@@ -407,9 +320,6 @@ impl Harness {
         cmd.envs(env);
     }
 
-    /// Put an executable `name` with `contents` in `bin/` and return its
-    /// path. An existing entry is removed first, never written through: it
-    /// can be a link to a built fake.
     pub fn write_bin(&self, name: &str, contents: &[u8]) -> PathBuf {
         let path = self.bin.join(name);
         let _ = std::fs::remove_file(&path);
@@ -423,8 +333,6 @@ impl Harness {
         path
     }
 
-    /// [`Harness::write_bin`], then [`warm`] it with the argument `warm`,
-    /// which the script must answer with exit 0.
     pub fn write_warmed(&self, name: &str, contents: &[u8]) -> PathBuf {
         let path = self.write_bin(name, contents);
         let out = warm(Command::new(&path).arg("warm"))
@@ -443,29 +351,20 @@ impl Harness {
         self
     }
 
-    /// Leave `key` out of the sealed environment, also when the harness sets
-    /// it by default (`HORCH_CLAUDE_BIN`, `HORCH_NO_UPDATE`, `HORCH_FAULT`). A later
-    /// [`Harness::set`] of the same key still wins.
     pub fn without(&mut self, key: &str) -> &mut Self {
         self.env.remove(key);
         self.removed.insert(key.to_string());
         self
     }
 
-    /// Let `horch fleet` run the agent CLI update step: remove the default
-    /// `HORCH_NO_UPDATE=1`.
     pub fn allow_updates(&mut self) -> &mut Self {
         self.without("HORCH_NO_UPDATE")
     }
 
-    /// Every call the fakes recorded so far.
     pub fn calls(&self) -> Vec<Value> {
         crate::read_log(&self.log)
     }
 
-    /// Calls of one fake (`"herdr"`, `"claude"`, ...), one per call: a fake
-    /// that logs as it goes writes several lines with one `call_id`, and the
-    /// last is whole. A record without a `call_id` is keyed by its pid.
     pub fn calls_of(&self, fake: &str) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::new();
         for call in self
@@ -489,41 +388,33 @@ impl Harness {
         crate::violations(&self.log)
     }
 
-    /// Copy a fixture file or directory tree into the harness.
     pub fn copy_in(&self, from: &Path, to: &Path) {
         copy_tree(from, to);
     }
 
-    /// Every file under the harness state dir, for the TEL-11 sentinel scan.
     pub fn state_files(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
         walk(&self.state, &mut out);
         out
     }
 
-    /// Default `herdr-core` socket path inside the sealed home.
     pub fn hc_socket(&self) -> PathBuf {
         self.home
             .join(".local/state/herdr-core/default/default.sock")
     }
 
-    /// Default `herdr-app` socket path inside the sealed home.
     pub fn app_socket(&self) -> PathBuf {
         self.home.join(".config/herdr-app/herdr-app.sock")
     }
 
-    /// Every call recorded in `<state>/fake-hc.log`.
     pub fn hc_calls(&self) -> Vec<Value> {
         crate::read_log(&crate::hc_fake::log_file_in(&self.state))
     }
 
-    /// Current `<state>/fake-hc.json` document.
     pub fn hc_state(&self) -> Value {
         crate::hc_fake::load_in(&self.state)
     }
 
-    /// Set a fake `hc` terminal's status (`(app, state)`) and `status_ms`
-    /// under `<state>/fake-hc.lock/`.
     pub fn set_hc_terminal_status(
         &self,
         address: &str,
@@ -551,7 +442,6 @@ impl Harness {
         crate::hc_fake::save_in(&self.state, &state);
     }
 
-    /// Set the screen text returned by `fake-hc read <address>`.
     pub fn set_hc_terminal_screen(&self, address: &str, text: &str) {
         let _lock = crate::hc_fake::StateLock::acquire_in(&self.state);
         let mut state = crate::hc_fake::load_in(&self.state);
@@ -561,13 +451,11 @@ impl Harness {
         crate::hc_fake::save_in(&self.state, &state);
     }
 
-    /// Simulate closing the Herdr app window while keeping `herdr-core` up.
     pub fn close_hc_window(&self) {
         let _ = std::fs::write(crate::hc_fake::window_closed_in(&self.state), b"1");
         let _ = std::fs::remove_file(self.app_socket());
     }
 
-    /// Simulate reopening the Herdr app window.
     pub fn open_hc_window(&self) {
         let _ = std::fs::remove_file(crate::hc_fake::window_closed_in(&self.state));
         if let Some(parent) = self.app_socket().parent() {
@@ -576,7 +464,6 @@ impl Harness {
         let _ = std::fs::write(self.app_socket(), b"");
     }
 
-    /// Simulate `herdr-core` not running (removes its socket and marks stopped).
     pub fn stop_hc_core(&self) {
         let _ = std::fs::remove_file(self.hc_socket());
         let _ = std::fs::write(crate::hc_fake::core_stopped_in(&self.state), b"1");
@@ -586,8 +473,6 @@ impl Harness {
 #[cfg(unix)]
 const UNIX_SOCKET_PATH_LIMIT: usize = 104;
 
-/// Select the harness root after probing its preferred `/tmp` path.
-/// Prime launch ids contain 12 hex characters.
 #[cfg(unix)]
 fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bool) -> PathBuf {
     if preferred_writable {
@@ -615,8 +500,6 @@ impl Drop for Harness {
     fn drop(&mut self) {
         let leaked = match reap(&self.root, &self.log) {
             Ok(leaked) => leaked,
-            // A test that passes while its processes cannot be seen can
-            // leave one running for hours: fail it, unless it already fails.
             Err(error) if !std::thread::panicking() => panic!(
                 "teardown could not list the processes of this test ({error}); a leaked process would go unseen"
             ),
@@ -642,25 +525,8 @@ impl Drop for Harness {
     }
 }
 
-/// How long teardown waits for the harness's processes to end after it
-/// signals them.
 const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// End every process this harness started, and return the ones that
-/// leaked.
-///
-/// A test that fails before `horch done`, or never closes a pane, leaves
-/// fake-herdr `exec` pane commands running: `horch worker` and a `stay`
-/// fake run for ever. Teardown sends SIGTERM to the process group of every
-/// pane that fake-herdr recorded and that is still the same group (the
-/// leader's start time matches, see [`horch_core::procid::is_same_group`]), and
-/// to the group of every process whose command line or environment names
-/// the harness root (a fake, a pane whose start was never recorded, the
-/// detached mail courier, which redelivers until `horch inbox`
-/// acknowledges). A process of those groups, or one that names the root,
-/// that still runs after [`REAP_GRACE`] leaked: it gets SIGKILL and is
-/// returned. The error is that the processes could not be listed within
-/// [`REAP_GRACE`].
 #[cfg(unix)]
 fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
     use crate::process::{commands_with_environment, signal_groups, try_processes, Process};
@@ -675,7 +541,6 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(Value::Null);
-    // With the separator: one harness root can be a prefix of another's.
     let mut marks = vec![format!("{}/", root.display())];
     if let Ok(canonical) = std::fs::canonicalize(root) {
         marks.push(format!("{}/", canonical.display()));
@@ -729,8 +594,6 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         return Ok(Vec::new());
     }
     signal_groups(&groups, "TERM");
-    // A group id stays ours while the group has members: no other process
-    // can be given it.
     let left = |signalled: &[u32]| -> std::io::Result<Vec<Process>> {
         let environments = commands_with_environment();
         Ok(listed(try_processes, REAP_GRACE)?
@@ -741,8 +604,6 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
             .collect())
     };
     let until = std::time::Instant::now() + REAP_GRACE;
-    // The pids that ran when the first SIGTERM went out. With its group:
-    // every process, in the group it was in, that has had one since.
     let first: Vec<u32> = all.iter().map(|p| p.pid).collect();
     let mut signalled: Vec<(u32, u32)> = all.iter().map(|p| (p.pid, p.pgid)).collect();
     loop {
@@ -750,11 +611,6 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         if left.is_empty() {
             return Ok(Vec::new());
         }
-        // A process can start after a SIGTERM went out, even in a group
-        // that got it: a pane command that starts the mail courier on its
-        // way out. A process can also leave its group before the SIGTERM
-        // reaches it: the courier, forked into the pane's group, starts its
-        // own session before it execs. Its new group gets SIGTERM too.
         let late: Vec<&Process> = left
             .iter()
             .filter(|p| !signalled.contains(&(p.pid, p.pgid)))
@@ -799,18 +655,14 @@ fn reap(_root: &Path, _log: &Path) -> std::io::Result<Vec<String>> {
     Ok(Vec::new())
 }
 
-/// The file in each harness root that names the test process that owns it:
-/// `<pid> <start time>`.
 const OWNER_FILE: &str = ".horch-e2e-owner";
 
-/// `TMPDIR`, or the platform temp dir.
 fn tmpdir() -> PathBuf {
     std::env::var_os("TMPDIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// The dirs that hold harness roots.
 fn harness_parents() -> Vec<PathBuf> {
     #[cfg(unix)]
     return vec![PathBuf::from("/tmp"), tmpdir()];
@@ -818,20 +670,12 @@ fn harness_parents() -> Vec<PathBuf> {
     return vec![std::env::temp_dir()];
 }
 
-/// Record this test process as the owner of `root`.
 fn write_owner(root: &Path) {
     let pid = std::process::id();
     let started = horch_core::procid::start_time(pid).unwrap_or(0);
     let _ = std::fs::write(root.join(OWNER_FILE), format!("{pid} {started}"));
 }
 
-/// Stop the processes of every harness root in `parent` whose owner test
-/// process has ended. A test binary that is killed before teardown leaves
-/// its processes: the detached mail courier redelivers for hours (audit
-/// Q3). Teardown's [`reap`] finds them by the root in their environment.
-/// The owner file is then removed, so each root is stopped once. The dir
-/// stays: `HORCH_E2E_KEEP` can have kept it. Returns the processes that
-/// outlived SIGTERM.
 fn stop_stale_harnesses(parent: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return Vec::new();
@@ -859,10 +703,6 @@ fn stop_stale_harnesses(parent: &Path) -> Vec<String> {
     leaked
 }
 
-/// What `list` returns, tried again every 50 ms while it fails, for at most
-/// `grace`. A `ps` that cannot fork on a loaded machine must not read as
-/// "no process runs": teardown would then signal nothing, report no leak,
-/// and leave a process running for hours.
 #[cfg(unix)]
 fn listed<T>(
     list: impl Fn() -> std::io::Result<T>,
@@ -882,8 +722,6 @@ fn listed<T>(
     }
 }
 
-/// List processes for the full leak scan. A sandbox can deny `ps`; then
-/// signal the pane groups fake-herdr recorded and skip only the leak scan.
 #[cfg(unix)]
 fn process_list_or_sandbox<T>(
     list: impl Fn() -> std::io::Result<T>,
@@ -912,13 +750,8 @@ fn process_list_or_sandbox<T>(
     }
 }
 
-/// The size of each built fake when this test process first saw it.
 static BUILT_SIZES: std::sync::OnceLock<Vec<(PathBuf, u64)>> = std::sync::OnceLock::new();
 
-/// Every built fake exists, is not empty, and has the size it had when this
-/// test process started. The harness links them into `bin/`, so a test
-/// that writes through a linked name changes the built file itself; this
-/// fails that test instead of letting later tests run a broken fake.
 fn check_built_fakes() {
     let built = bin_dir();
     let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -948,17 +781,6 @@ fn check_built_fakes() {
     }
 }
 
-/// Run every built fake once, untimed, before the first test uses it.
-///
-/// macOS scans a new executable at its first exec (syspolicyd `GK
-/// performScan` and an XProtect pass). The scans run one at a time, about
-/// 0.2 s each, so with 30 new executables at once the last waits 5.5 s
-/// (T-24). The harness links the built fakes into `bin/`, so the first call
-/// of a fake inside a test would carry that wait into a timed probe. The
-/// first harness of a test process pays the scan here, and the others wait
-/// on the same [`std::sync::Once`]. The exit status does not matter: a fake
-/// answers an unknown argument at once and writes no log without
-/// `HORCH_FAKE_LOG`.
 fn warm_built_fakes() {
     static WARMED: std::sync::Once = std::sync::Once::new();
     WARMED.call_once(|| {
@@ -976,17 +798,12 @@ fn warm_built_fakes() {
     });
 }
 
-/// The one deadline of every e2e wait. A passing run never reaches it, so it
-/// is generous: under the parallel full suite on a 4-CPU Linux VM, one step
-/// of a debug build can take 10 times as long as it takes alone.
 pub const DEADLINE: Duration = Duration::from_secs(120);
 
-/// Poll `f` until it returns a value, for at most [`DEADLINE`].
 pub fn wait_for<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
     wait_for_or(what, f, String::new)
 }
 
-/// [`wait_for`], with `context` in the panic message.
 pub fn wait_for_or<T>(
     what: &str,
     mut f: impl FnMut() -> Option<T>,
@@ -1006,7 +823,6 @@ pub fn wait_for_or<T>(
     );
 }
 
-/// The repository root, from this crate's manifest dir.
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -1015,13 +831,10 @@ pub fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The telemetry fixture corpus.
 pub fn fixtures() -> PathBuf {
     repo_root().join("crates/horch-core/tests/fixtures/telemetry")
 }
 
-/// Link a built fake into a harness `bin/`: a symlink on unix, a hard link
-/// elsewhere.
 fn link_fake(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     return std::os::unix::fs::symlink(from, to);
@@ -1129,8 +942,6 @@ mod tests {
         assert_eq!(signals.into_inner(), [(vec![7, 9], "TERM".into())]);
     }
 
-    /// A `ps` that failed to fork once is asked again, so teardown still
-    /// sees the processes.
     #[test]
     fn a_list_that_fails_once_is_tried_again() {
         let calls = Cell::new(0);
@@ -1149,8 +960,6 @@ mod tests {
         assert_eq!(calls.get(), 2);
     }
 
-    /// A `ps` that never runs is an error after the grace, never an empty
-    /// list that reads as "nothing runs".
     #[test]
     fn a_list_that_keeps_failing_is_an_error_after_the_grace() {
         let got = listed(
@@ -1160,10 +969,6 @@ mod tests {
         assert_eq!(got.unwrap_err().to_string(), "fork failed");
     }
 
-    /// A detached mail courier with pending orchestrator mail in
-    /// `root/state`, started as horch starts it: in its own process group,
-    /// with the root only in its environment. Returns its pid, read from
-    /// its lock.
     fn courier_in(root: &Path) -> u32 {
         let state = root.join("state");
         horch_core::messaging::mail::Mail::under(&state, "w1")
@@ -1180,7 +985,6 @@ mod tests {
                 "\"$0\" mail courier --workspace w1 </dev/null >/dev/null 2>&1 &",
             ])
             .arg(super::Harness::horch_bin());
-        // Never the test's own group: teardown does not signal that.
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         assert!(cmd.status().unwrap().success());
         let lock = state.join("mail/w1/courier.lock");
@@ -1192,8 +996,6 @@ mod tests {
                 .ok()?;
             String::from_utf8_lossy(&out.stdout).trim().parse().ok()
         });
-        // The sandbox fallback can signal only the groups fake-herdr recorded.
-        // This fixture starts no fake-herdr, so record the courier's real group.
         // SAFETY: getpgid only reads process metadata for the known live pid.
         let group = unsafe { libc::getpgid(pid as libc::pid_t) };
         assert!(group > 1, "courier {pid} has invalid process group {group}");
@@ -1205,10 +1007,6 @@ mod tests {
         pid
     }
 
-    /// Q3: a harness root whose owner test process has ended gets its
-    /// processes stopped; a root whose owner runs is left alone. Both
-    /// owners are this process's pid. Only the start time differs, so no
-    /// pid can be reused by another process during the test.
     #[test]
     fn a_harness_of_an_ended_test_process_has_its_processes_stopped() {
         let parent = super::tmpdir().join(format!("h-stale-{:x}", super::unique()));

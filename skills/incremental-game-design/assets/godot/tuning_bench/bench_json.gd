@@ -1,8 +1,4 @@
 extends RefCounted
-## JSON helpers of the tuning bench.
-##
-## The parser of Godot makes each number a float. This parser keeps an integer as an integer.
-## The bench needs that: an integer number of the game stays an integer after a control changes it.
 
 var _s: String = ""
 var _i: int = 0
@@ -10,7 +6,6 @@ var _n: int = 0
 var error: String = ""
 
 
-## Parse a JSON text. Return null when the text is not correct. `error` then has the cause.
 func parse(text: String) -> Variant:
 	_s = text
 	_i = 0
@@ -164,7 +159,6 @@ func _number() -> Variant:
 	return token.to_int()
 
 
-## Parse a text. Return {"ok": bool, "error": String, "value": Variant}.
 static func parse_text(text: String) -> Dictionary:
 	var parser: RefCounted = load("res://addons/tuning_bench/bench_json.gd").new()
 	var value: Variant = parser.call("parse", text)
@@ -172,7 +166,6 @@ static func parse_text(text: String) -> Dictionary:
 	return {"ok": err == "", "error": err, "value": value}
 
 
-## Read and parse a file. Return {"ok": bool, "error": String, "value": Variant}.
 static func read_file(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {"ok": false, "error": "the file %s does not exist" % path, "value": null}
@@ -187,7 +180,6 @@ static func read_file(path: String) -> Dictionary:
 	return out
 
 
-## Write a value as JSON. The write is atomic: a reader sees the old file or the full new file.
 static func write_file(path: String, value: Variant, sort_keys: bool = true) -> bool:
 	var text: String = JSON.stringify(value, "  ", sort_keys) + "\n"
 	var dir: String = path.get_base_dir()
@@ -214,7 +206,6 @@ static func _tokens(pointer: String) -> PackedStringArray:
 	return out
 
 
-## Get the value at a JSON pointer. Return [found, value].
 static func pointer_get(doc: Variant, pointer: String) -> Array:
 	var node: Variant = doc
 	for token: String in _tokens(pointer):
@@ -236,7 +227,6 @@ static func pointer_get(doc: Variant, pointer: String) -> Array:
 	return [true, node]
 
 
-## Set the value at a JSON pointer. Return false when the pointer does not exist.
 static func pointer_set(doc: Variant, pointer: String, value: Variant) -> bool:
 	var tokens: PackedStringArray = _tokens(pointer)
 	if tokens.is_empty():
@@ -269,7 +259,6 @@ static func pointer_set(doc: Variant, pointer: String, value: Variant) -> bool:
 	return false
 
 
-## Round a number to 6 significant digits. The result files then stay short and stable.
 static func sig(value: float) -> float:
 	if value == 0.0 or is_nan(value) or is_inf(value):
 		return 0.0 if is_nan(value) else value
@@ -283,6 +272,5 @@ static func sig(value: float) -> float:
 	return roundf(value * up) / up
 
 
-## Round a time to 1 millisecond.
 static func ms(value: float) -> float:
 	return roundf(value * 1000.0) / 1000.0

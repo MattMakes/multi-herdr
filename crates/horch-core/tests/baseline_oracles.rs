@@ -1,10 +1,3 @@
-//! A0 behavior oracles: what the pre-refactor code does, frozen in
-//! `tests/oracles/` (ARC-01).
-//!
-//! The oracle files never change. Later phases move the call sites in this
-//! file, never the expected files. `HORCH_BLESS=1` writes them; that is for
-//! the A0 baseline only, and a diff here means behavior changed.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -23,8 +16,6 @@ use horch_core::runtime::{ProcessEnv, RuntimeContext};
 use horch_core::skills::Bundle;
 use serde_json::{json, Value};
 
-// ─── bless helper ───────────────────────────────────────────────────────────
-
 fn oracles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracles")
 }
@@ -33,8 +24,6 @@ fn blessing() -> bool {
     std::env::var("HORCH_BLESS").ok().as_deref() == Some("1")
 }
 
-/// Write `actual` under `HORCH_BLESS=1`; otherwise compare it with the
-/// frozen file, which must exist.
 fn check_oracle(rel: &str, actual: &str) {
     let path = oracles().join(rel);
     if blessing() {
@@ -64,9 +53,6 @@ fn check_oracle(rel: &str, actual: &str) {
     }
 }
 
-/// Teammates added after the A0 freeze. They have no oracle file and the
-/// oracle loops skip them; a missing file for any other teammate still
-/// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
     "addictive-game-design-reviewer",
     "antigravity",
@@ -149,8 +135,6 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "worktree-steward",
 ];
 
-/// The roster names the oracles cover: every teammate except a listed new
-/// one with no launch oracle.
 fn oracle_names(roster: &Roster) -> Vec<String> {
     roster
         .names()
@@ -169,14 +153,8 @@ fn pretty(v: &Value) -> String {
     s
 }
 
-// ─── pinned environment ─────────────────────────────────────────────────────
-
-/// Serializes every test that touches process-wide environment.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Variables the builders and loaders read today, and what each is pinned to.
-/// `<TMP>` and `<HOME>` stand for the temp dirs below. [`World::new`] also
-/// pins the state and data roots, outside this list.
 const PINNED: [(&str, Option<&str>); 20] = [
     ("HOME", Some("<HOME>")),
     ("PATH", Some("<TMP>/bin")),
@@ -203,8 +181,6 @@ const PINNED: [(&str, Option<&str>); 20] = [
     ),
 ];
 
-/// The operator's settings as the fake home holds them: one enabled plugin,
-/// one disabled, a status line, and a second skill-creator install.
 const SETTINGS_JSON: &str = r#"{"enabledPlugins":{"alpha@oracle-market":true,"beta@oracle-market":false},"statusLine":{"type":"command","command":"oracle-status"}}"#;
 const INSTALLED_PLUGINS_JSON: &str =
     r#"{"version":2,"plugins":{"skill-creator@oracle-fork":[{"installPath":"~/plugins/sc"}]}}"#;
@@ -213,7 +189,6 @@ const PROMPT: &str = "ORACLE PROMPT: do the task.";
 const FRESH_ID: &str = "00000000-0000-4000-8000-000000000001";
 const RESUME_ID: &str = "00000000-0000-4000-8000-000000000002";
 
-/// A temp world with the environment pinned. Restores it on drop.
 struct World {
     _guard: MutexGuard<'static, ()>,
     _tmp: tempfile::TempDir,
@@ -227,8 +202,6 @@ impl World {
     fn new() -> World {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        // Canonical, so a bundle path (canonicalized by `Bundle::install`)
-        // and the home share one prefix.
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
         let state = root.join("state");
@@ -253,10 +226,6 @@ impl World {
                 None => std::env::remove_var(key),
             }
         }
-        // The state and data roots point into the temp world, so no launch
-        // reads the host's real state (a Codex v1 model catalog, for one).
-        // Kept out of PINNED: `pinned_header` writes PINNED into every frozen
-        // oracle as `_pinned_env`, so a new key there changes every oracle.
         let roots = [
             ("HORCH_STATE_DIR", Some(state.clone())),
             ("HORCH_DATA_DIR", Some(root.join("data"))),
@@ -285,14 +254,11 @@ impl World {
         }
     }
 
-    /// Stable placeholders for every machine-specific path.
     fn scrub(&self, s: &str, bundle: Option<&Path>) -> String {
         let mut out = s.to_string();
         if let Some(b) = bundle {
             out = out.replace(&*b.to_string_lossy(), "<BUNDLE>");
         }
-        // The launch workdir is this test's own directory (a Codex relay
-        // names it in `mcp_servers.horch.cwd`), which differs per checkout.
         if let Ok(cwd) = std::env::current_dir() {
             out = out.replace(&*cwd.to_string_lossy(), "<CWD>");
         }
@@ -341,24 +307,17 @@ const PHASES: [Phase; 4] = [
     Phase::Validation,
 ];
 
-// ─── oracle 1: launch argv and env ──────────────────────────────────────────
-
 fn bundle_root(bundle: &Bundle) -> PathBuf {
     bundle.skills_dir().parent().unwrap().to_path_buf()
 }
 
-/// How a launch oracle builds one command.
 type Build =
     dyn Fn(&Teammate, Session<'_>, Option<&Bundle>) -> anyhow::Result<std::process::Command>;
 
-/// The launch environment the process environment describes, as the
-/// binary's bootstrap builds it. [`World`] sets that environment.
 fn launch_env() -> LaunchEnv {
     LaunchEnv::from_context(&RuntimeContext::from_env(&ProcessEnv).unwrap())
 }
 
-/// The public entry point every caller used at A0, with the launch
-/// environment now given.
 fn legacy_build(
     t: &Teammate,
     session: Session<'_>,
@@ -367,8 +326,6 @@ fn legacy_build(
     launch::command_with_skills_in(&launch_env(), t, session, PROMPT, None, bundle)
 }
 
-/// The A4 path: the teammate's harness adapter builds the command, with the
-/// skills bundle applied around it as `command_with_skills_in` does.
 fn adapter_build(
     t: &Teammate,
     session: Session<'_>,
@@ -451,8 +408,6 @@ fn launch_oracle_with(world: &World, t: &Teammate, build: &Build) -> Value {
     })
 }
 
-/// HDF-04 (finding 5): every `env` key of `_base/harness-defaults.md` is
-/// pinned to null, so no oracle depends on the machine's value for it.
 #[test]
 fn hdf_04_oracle_world_pins_every_default_env_key() {
     let roster = Roster::builtin().unwrap();
@@ -496,9 +451,6 @@ fn oracle_hc_launch_matches() {
     }
 }
 
-/// ARC-09: every teammate's argv and env, built through its harness
-/// adapter, equal the frozen A0 launch oracle. Compare-only: this test never
-/// writes an oracle, even under `HORCH_BLESS=1`.
 #[test]
 fn arc_09_argv_matches_baseline() {
     let world = World::new();
@@ -516,8 +468,6 @@ fn arc_09_argv_matches_baseline() {
     assert!(checked >= 33, "only {checked} teammates checked");
 }
 
-// ─── oracle 2: routing decisions ────────────────────────────────────────────
-
 fn quota_fixtures() -> Vec<(String, PathBuf)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry/quota");
     let mut out: Vec<(String, PathBuf)> = std::fs::read_dir(&dir)
@@ -531,7 +481,6 @@ fn quota_fixtures() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// The time every quota fixture is judged at, as the QUO unit tests do.
 const ROUTING_NOW: &str = "2026-09-28T18:00:00Z";
 
 fn quota_view(path: &Path) -> QuotaView {
@@ -540,8 +489,6 @@ fn quota_view(path: &Path) -> QuotaView {
     QuotaView::new(file, now, Policy::default(), true)
 }
 
-/// The object `horch route --json` prints, built the way `cmd/route.rs`
-/// builds it.
 fn route_json(
     t: &Teammate,
     roster: &Roster,
@@ -644,11 +591,8 @@ fn oracle_routing_matches() {
     );
 }
 
-// ─── oracle 3: legacy ledgers ───────────────────────────────────────────────
-
 const LEDGERS: [&str; 4] = ["bash-era", "pre-effort", "pr14-substituted", "orchestrator"];
 
-/// Every field, defaults included, so a skipped-on-disk default is visible.
 fn record_json(r: &Record) -> Value {
     json!({
         "record_id": r.record_id,
@@ -689,14 +633,10 @@ fn oracle_ledgers_match() {
             &format!("ledgers/{name}.loaded.json"),
             &pretty(&json!(loaded)),
         );
-        // The exact bytes the store writes for these records:
-        // `serde_json::to_string_pretty`, no trailing newline.
         let saved = ExecutionStore::render_json(&records).unwrap();
         check_oracle(&format!("ledgers/{name}.saved.json"), &saved);
     }
 }
-
-// ─── oracle 4: skills briefings ─────────────────────────────────────────────
 
 #[test]
 fn oracle_skills_match() {
@@ -719,10 +659,6 @@ fn oracle_skills_match() {
     }
 }
 
-// ─── ARC-01 ─────────────────────────────────────────────────────────────────
-
-/// Counts at the A0 freeze. The roster had 33 teammates and the quota corpus
-/// 12 fixtures.
 const TEAMMATES_AT_A0: usize = 33;
 const QUOTA_FIXTURES_AT_A0: usize = 12;
 
@@ -741,14 +677,11 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 fn arc_01_baseline_oracles_present() {
     let cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch/tests/oracles");
     let expect = [
-        // 33 A0 teammates plus orchestrator-hc.json and worker-hc.json (HCB-11).
         (oracles().join("launch"), TEAMMATES_AT_A0 + 2),
         (oracles().join("routing"), QUOTA_FIXTURES_AT_A0 + 1),
         (oracles().join("ledgers"), LEDGERS.len() * 3),
         (oracles().join("skills"), TEAMMATES_AT_A0 * PHASES.len()),
-        // skills, skills --json, and text plus JSON for each phase.
         (cli.join("skills"), 2 + 2 * PHASES.len()),
-        // text plus JSON for each ledger fixture.
         (cli.join("sessions"), 2 * LEDGERS.len()),
     ];
     for (dir, count) in expect {

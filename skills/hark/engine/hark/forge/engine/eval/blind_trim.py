@@ -18,14 +18,12 @@ import numpy as np
 
 SR = 48000
 
-# Playback layout of a trial, in seconds.
 LEAD = 1.0
 GAP = 1.2
 BETWEEN = 2.5
 TAIL = 1.0
 COMPAT = 1.3
 
-# Trim levels and the margins added to them.
 END_DB = -50.0
 ON_DB = -50.0
 HEAD_MARGIN = 1.0
@@ -33,7 +31,6 @@ REACH_MARGIN = 3.0
 FLOOR_MARGIN = 10.0
 LEVEL_CAP = -6.0
 
-# Fades.
 FADE_MIN_S = 0.005
 FADE_DB = 6.0
 FADE_IN_S = 0.004
@@ -46,7 +43,6 @@ CLEAN_REACH = -30.0
 CLEAN_HEAD = -30.0
 SHORT_S = 1.0
 
-# Loudness match.
 WIN = {"short": 0.1, "long": 0.4}
 TARGET = {"short": -15.0, "long": -16.0}
 TP_MAX = -1.0
@@ -54,7 +50,7 @@ FAIL = {"loud_lu": 0.5, "true_peak": TP_MAX + 0.05, "floor_margin": 6.0, "prerol
         "edge_loud": -20.0, "exposed_ms": 100.0, "exposed_floor": -70.0}
 WARN = {"length_ratio": 1.6, "tp_diff": 6.0, "other_lu": 2.0, "floor_dbfs": -60.0, "mono": 0.995, "wide": 0.9,
         "exposed_ms": 30.0}
-MANIFEST: Path | None = None  # path of the refset manifest; blind_v2 sets it
+MANIFEST: Path | None = None
 
 _MS = int(0.001 * SR)
 
@@ -67,8 +63,6 @@ def _channels(x: Any) -> np.ndarray:
 def _to_db(power: Any, guard: float = 1e-20) -> Any:
     return 10 * np.log10(power + guard)
 
-
-# ---------------------------------------------------------------- reading files
 
 def load_audio(path: Any, start: float | None = None, stop: float | None = None) -> np.ndarray:
     """Two float64 channels at 48 kHz (a mono file is duplicated, extra channels dropped), optionally [start, stop)."""
@@ -86,8 +80,6 @@ def load_audio(path: Any, start: float | None = None, stop: float | None = None)
         return data[:, :2]
     return np.column_stack([data[:, 0], data[:, 0]])
 
-
-# ---------------------------------------------------------------- measurements
 
 def frames_db(x: np.ndarray, ms: float) -> np.ndarray:
     """dB of the channel-averaged power in each complete frame; a clip shorter than one frame gives one value."""
@@ -181,8 +173,6 @@ def stereo_corr(x: np.ndarray) -> float:
     scale = math.sqrt(float(np.sum(left ** 2) * np.sum(right ** 2)) + 1e-30)
     return float(np.sum(left * right) / scale)
 
-
-# ---------------------------------------------------------------- per-file facts
 
 def _path_key(p: Any) -> str:
     return os.path.normcase(os.path.normpath(str(p).replace("\\", "/")))
@@ -295,8 +285,6 @@ def facts(p: str, is_ref: bool) -> tuple[float, bool]:
     return extent, bool(_trims_cleanly(info, audio))
 
 
-# ---------------------------------------------------------------- trimming a pair
-
 def pair_levels(a: dict, b: dict) -> tuple[float, float]:
     """(L_on, L_end): levels both clips reach on their own, kept above any floor and capped at -6 dB."""
     both = (a, b)
@@ -379,8 +367,6 @@ def _level_facts(info: dict, kept: bool) -> dict:
             "floor_db": _maybe_round(info["floor"]), "kept_file_end": kept, "end_fade_s": info["fade_s"],
             "top_db": round(info["top"], 2)}
 
-
-# ---------------------------------------------------------------- loudness match and checks
 
 def match_pair(real: np.ndarray, made: np.ndarray, cls: str) -> tuple[float, float, float]:
     """(made gain, shared gain, peak-cap reduction) in dB: equal loudest spans, true peaks at most -1 dBTP."""

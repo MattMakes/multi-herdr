@@ -51,3 +51,6 @@ the way to take comments out. It sorts each one into 1 of 4 categories. All
   list of the `comment-pruning` skill allows a public contract doc, a note
   on an outside program and a ticket link. The lint counts all 3, so `check`
   rejects them on new lines before the sweep runs.
+- **`scripts/live/context.sh` keeps 15 step banners (`# ---- A2 ...`).**
+  `crates/horch/tests/context_cli.rs` finds a step by its banner. They are
+  the whole baseline after the first sweep, and issue #463 removes them.

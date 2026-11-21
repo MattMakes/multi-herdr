@@ -1,21 +1,7 @@
-//! Bakes `teammates/` into the binary.
-//!
-//! `horch install` is a plain binary copy, so a fleet must be spawnable without
-//! the repo checked out. The compiled-in copies are the fallback layer of the
-//! roster; a runtime directory overlays them when one is present.
-//!
-//! The list is globbed rather than hand-written so that "adding a file to the
-//! folder adds a teammate" holds for the compiled binary too, and a file can
-//! never be added on disk yet forgotten in Rust.
-
 use std::fmt::Write as _;
 use std::path::Path;
 
 fn main() {
-    // Read at run time, not with `env!`: cargo reuses a compiled build
-    // script across checkouts at different paths (path dependencies hash
-    // without their absolute path), and an `env!` value would point every
-    // later build at the checkout that first compiled this script.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
     let crate_dir = Path::new(&manifest_dir);
     let root = crate_dir.parent().unwrap().parent().unwrap();
@@ -72,8 +58,6 @@ fn main() {
         writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
     }
     bundled.push_str("];\n");
-    // The files of `BUNDLED_SKILL_FILES` with an execute bit, so a bundle
-    // writes them executable.
     let executable: Vec<&str> = files
         .iter()
         .filter(|(_, absolute)| is_executable(Path::new(absolute)))
@@ -84,14 +68,11 @@ fn main() {
         writeln!(bundled, "    {relative:?},").unwrap();
     }
     bundled.push_str("];\n");
-    // The tree digest of each bundled skill, so no process digests the
-    // compiled-in files at run time.
     bundled.push_str("pub(crate) static BUNDLED_SKILL_DIGESTS: &[(&str, [u8; 32])] = &[\n");
     for (name, digest) in skill_digests(&files, &executable) {
         writeln!(bundled, "    ({name:?}, {digest:?}),").unwrap();
     }
     bundled.push_str("];\n");
-    // Which files of each bundled skill were copied into this repository.
     let copied = skills.join("copied.json");
     println!("cargo:rerun-if-changed={}", copied.display());
     writeln!(
@@ -107,7 +88,6 @@ fn main() {
     .unwrap();
 }
 
-/// Whether the file at `path` has any execute bit. Always false off Unix.
 fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -121,12 +101,6 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// The tree digest of every skill in `files` (sorted `(relative, absolute)`
-/// pairs), by the rule of `skills::catalog`: a skill is a top-level
-/// `<name>/SKILL.md`; its digest is sha256 over the sorted lines
-/// `<path under <name>/>\0<hex sha256 of the bytes>\n`. The line of a
-/// file in `executable` ends `\0x\n` instead, so the execute bit is part
-/// of the digest and a skill without one keeps the marketplace digest.
 pub(crate) fn skill_digests(
     files: &[(String, String)],
     executable: &[&str],
@@ -139,7 +113,6 @@ pub(crate) fn skill_digests(
         .collect()
 }
 
-/// The digest of the files below `<name>/` in `files`: see [`skill_digests`].
 fn tree_digest(name: &str, files: &[(String, String)], executable: &[&str]) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
     let prefix = format!("{name}/");
@@ -172,7 +145,6 @@ fn tree_digest(name: &str, files: &[(String, String)], executable: &[&str]) -> [
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
-        // Dotfiles (`.DS_Store`, `.git`) are never part of a skill.
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
@@ -195,7 +167,6 @@ fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)
     }
 }
 
-/// Emit one `&[(name, contents)]` table for every `*.md` in `dir` passing `keep`.
 fn emit(out: &mut String, ident: &str, dir: &Path, keep: fn(&str) -> bool) {
     let mut entries: Vec<(String, String)> = Vec::new();
     if let Ok(read) = std::fs::read_dir(dir) {
@@ -212,7 +183,6 @@ fn emit(out: &mut String, ident: &str, dir: &Path, keep: fn(&str) -> bool) {
             entries.push((stem, path.display().to_string()));
         }
     }
-    // Sorted so the generated file is stable across filesystems.
     entries.sort();
 
     writeln!(out, "pub(crate) static {ident}: &[(&str, &str)] = &[").unwrap();
