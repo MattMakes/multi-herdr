@@ -84,11 +84,9 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 
 fn usage(call: &Call) -> ! {
     call.flush();
-    let argon_left = if scenario_has("agy_argon_exhausted") {
-        0.0
-    } else {
-        1.0
-    };
+    let left = |scenario: &str| if scenario_has(scenario) { 0.0 } else { 1.0 };
+    let argon_left = left("agy_argon_exhausted");
+    let neon_left = left("agy_neon_exhausted");
     let bucket = |id: &str, window: &str, left: f64| {
         json!({"id": id, "window": window, "remaining_fraction": left,
                "reset_time": "2026-10-27T18:48:25Z"})
@@ -102,6 +100,8 @@ fn usage(call: &Call) -> ! {
                 bucket("3p-weekly", "weekly", 1.0), bucket("3p-5h", "5h", 1.0)]},
             {"name": "Gemini 4 Argon", "buckets": [
                 bucket("gemini-argon-wtu-weekly", "weekly", argon_left)]},
+            {"name": "Gemini 4 Neon", "buckets": [
+                bucket("gemini-neon-wtu-weekly", "weekly", neon_left)]},
         ]}}
     })
     .to_string());

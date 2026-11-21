@@ -27,12 +27,14 @@ must be inside the workspace or added with `--add-dir`.
 ## Standalone invocation
 
 Use this when a session cannot attach the audio itself, or for 1 extra blind
-listen of 1 file in a clean context. This is the probe's best invocation:
+listen of 1 file in a clean context. This is the probe's best invocation,
+with the model the fleet runs since 2026-11-21 (Gemini 4 Neon). The probe
+ran on `gemini-4-argon-high`; nobody has run it on Neon yet:
 
 ```sh
 env -u ANTHROPIC_API_KEY agy -p "<prompt that names the absolute path of a WAV file>" \
   --add-dir <folder that holds the file> \
-  --model gemini-4-argon-high \
+  --model gemini-4-neon-high \
   --output-format json \
   --print-timeout 240s
 ```

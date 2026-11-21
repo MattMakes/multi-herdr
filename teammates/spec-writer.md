@@ -1,15 +1,19 @@
 ---
 name: spec-writer
-brief_description: Argon/medium on agy. Turns a rough idea into a spec file with test seams. Step 1 of idea-to-tickets.
+brief_description: Neon/medium on agy. Turns a rough idea into a spec file with test seams. Step 1 of idea-to-tickets.
 base: fleet-worker
 agent: antigravity
-# Gemini 4 Argon. Pro plans give it its own weekly bucket in `agy /usage`,
-# which the google pool probe reads (routing/quota.rs:parse_agy_usage).
-model: gemini-4-argon
-# medium: the operator's choice for spec and ticket writing. agy takes
-# low|medium|high for Argon; every agy teammate states its effort.
+# Gemini 4 Neon since 2026-11-21, by operator request (it was Gemini 4
+# Argon). The google pool probe (routing/quota.rs:parse_agy_usage) limits it
+# by its own group in `agy /usage` when agy reports one, and by the shared
+# Gemini buckets when it does not. The model id and the group name are from
+# secondary sources and are not yet checked on the operator's Mac
+# (docs/adr/0196-agy-teammates-run-gemini-4-neon.md).
+model: gemini-4-neon
+# medium: the operator's choice for spec and ticket writing. Every agy
+# teammate states its effort.
 effort: medium
-# When Argon has no quota left, or agy is missing, the same persona runs on
+# When Neon has no quota left, or agy is missing, the same persona runs on
 # Opus in Claude Code (horch route spec-writer).
 fallbacks: [opus]
 # auto = --sandbox --dangerously-skip-permissions: no approval prompt in a pane

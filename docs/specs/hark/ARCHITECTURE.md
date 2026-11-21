@@ -727,7 +727,7 @@ bank-kit-sfx 3.5 is exact, with section 2 paths. Fixes:
 
 ```python
 AGY_VERDICT = "HEARS"                     # from docs/specs/hark/agy-audio-probe.md
-AGY_DEFAULT_MODEL = "gemini-4-argon-high" # used when --model and HARK_LLM_MODEL are unset
+AGY_DEFAULT_MODEL = "gemini-4-neon-high"  # used when --model and HARK_LLM_MODEL are unset
 AGY_TIMEOUT_S = 240
 class AgyProvider: name = "agy"; ...      # surfaces.md 1.3 provider contract
 ```

@@ -1806,7 +1806,7 @@ Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
    horch ledger add-map docs/tickets/<slug>/MAP.md. Then run horch ledger
    plan-workers and spawn what it names. The ledger starts each ticket when
    its blockers are done, and serializes tickets whose Own paths overlap.
-Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+Both writers run on Gemini 4 Neon (the google pool) and fall back to opus
 "###,
         ),
         (
@@ -1815,7 +1815,7 @@ Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
 sign-in error, run horch quota --refresh, then spawn the same teammate again.
 Both writers talk only in file paths: read the file, not the message.
 "###,
-            r###"SUBSTITUTED: line tells you it happened. If an Argon pane reports a quota or
+            r###"SUBSTITUTED: line tells you it happened. If a Neon pane reports a quota or
 sign-in error, run horch quota --refresh, then run the same spawn line again.
 Both writers talk only in file paths: read the file, not the message.
 "###,

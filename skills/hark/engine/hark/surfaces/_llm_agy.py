@@ -18,7 +18,7 @@ from typing import Any
 
 from hark.surfaces._flow import raise_if
 
-AGY_DEFAULT_MODEL = "gemini-4-argon-high"
+AGY_DEFAULT_MODEL = "gemini-4-neon-high"
 
 
 AGY_TIMEOUT_S = 240

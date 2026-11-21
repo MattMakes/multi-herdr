@@ -234,3 +234,8 @@ in print mode. `routing/quota_probe.rs:probe_google` runs it.
 Not covered: the reply when the login has expired or the quota is spent.
 `parse_agy_usage` treats any `status` other than `SUCCESS` as a probe error,
 so the pool is then `unknown` and the Argon teammates run on their fallback.
+
+Update 2026-11-21: `spec-writer`, `ticket-writer` and `audio-reviewer` now run
+Gemini 4 Neon ([ADR 0196](../adr/0196-agy-teammates-run-gemini-4-neon.md)).
+This check has not been re-run on Neon: how `agy /usage` names Neon's group
+and buckets is not known.

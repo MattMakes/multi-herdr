@@ -36,7 +36,7 @@ shortened to 1 line. Each file keeps it above its new `effort: medium`.
 | `apple-accessibility-auditor` | claude | sonnet | high | medium | A missed finding costs a review round, the same as qa-engineer. |
 | `architect-reviewer` | claude | opus | high | medium | A missed finding costs a review round, which cost more than the review itself in cezaar#40's baseline (reviewers+judges were 71% of worker spend at xhigh); not xhigh: diminishing returns above high. |
 | `astra-creative` | codex | gpt-6-astra | high | medium | Open design is where reasoning depth pays. |
-| `audio-reviewer` | antigravity | gemini-4-argon | high | medium | The probe ran at high, and a missed defect costs a fix round. |
+| `audio-reviewer` | antigravity | gemini-4-neon (it was gemini-4-argon at high) | high | medium | The probe ran at high, and a missed defect costs a fix round. |
 | `blender-qa` | claude | sonnet | high | medium | A missed finding costs a review round, the same as qa-engineer. |
 | `codex-reviewer` | codex | gpt-5.6-sol | high | medium | Like the claude reviewers, a missed finding costs a review round (cezaar#40); not xhigh or max: diminishing returns above high. |
 | `codex-swift-reviewer` | codex | gpt-5.6-sol | high | medium | Like the claude reviewers, a missed finding costs a review round (cezaar#40); not xhigh or max: diminishing returns above high. |
@@ -81,7 +81,7 @@ By old level and model:
 | high | fable | `fable-creative`, `game-design-juicer` | 2 |
 | high | gpt-5.6-sol | `codex-reviewer`, `codex-swift-reviewer` | 2 |
 | high | gpt-6-astra | `astra-creative` | 1 |
-| high | gemini-4-argon | `audio-reviewer` | 1 |
+| high | gemini-4-argon (now gemini-4-neon) | `audio-reviewer` | 1 |
 | max | sonnet | `sonnet-sweep` | 1 |
 | max | opus | `opus-verify` | 1 |
 | | | total | 39 |
@@ -90,7 +90,8 @@ By old level and model:
 `opus-hardening` ("Opus/high"), `opus-verify` ("Opus/max"), `sonnet-bugfix`
 ("Sonnet/high") and `sonnet-sweep` ("Sonnet/max") now say "medium" in
 `brief_description` and in the first line of the persona. `audio-reviewer`
-says "Argon/medium" in `brief_description`.
+says "Neon/medium" in `brief_description`: it moved from Gemini 4 Argon to
+Gemini 4 Neon on the same day (ADR 0196).
 
 ## Seats above the ceiling by model, awaiting sign-off
 

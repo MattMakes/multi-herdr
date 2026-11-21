@@ -259,12 +259,14 @@ fn g55_real_logged_in_replies_have_known_expected_windows() {
             assert_eq!(parsed.windows[0].used, 0.85);
             assert_eq!(parsed.ordinary_usage_allowed, Some(true));
         } else {
-            assert_eq!(parsed.windows.len(), 9);
+            assert_eq!(parsed.windows.len(), 11);
             assert!(parsed.windows.iter().all(|w| w.used == 0.0));
-            assert!(parsed
-                .windows
-                .iter()
-                .any(|w| w.scope_model.as_deref() == Some("argon")));
+            for scope in ["argon", "neon"] {
+                assert!(parsed
+                    .windows
+                    .iter()
+                    .any(|w| w.scope_model.as_deref() == Some(scope)));
+            }
         }
     }
 }

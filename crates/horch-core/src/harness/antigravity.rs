@@ -11,7 +11,7 @@ use crate::runtime::RuntimeContext;
 pub const ANTIGRAVITY_FORBIDDEN_ENV: [&str; 3] =
     ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
 
-pub const EFFORT_SUFFIXES: [&str; 3] = ["-low", "-medium", "-high"];
+pub const EFFORT_SUFFIXES: [&str; 4] = ["-low", "-medium", "-high", "-xhigh"];
 
 pub(crate) fn conversations_cache(home: &Path) -> PathBuf {
     home.join(".gemini/antigravity-cli/cache/last_conversations.json")

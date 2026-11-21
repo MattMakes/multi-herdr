@@ -1,10 +1,12 @@
 ---
 name: ticket-writer
-brief_description: Argon/medium on agy. Breaks a resolved spec into ticket files plus MAP.md. Step 2 of idea-to-tickets.
+brief_description: Neon/medium on agy. Breaks a resolved spec into ticket files plus MAP.md. Step 2 of idea-to-tickets.
 base: fleet-worker
 agent: antigravity
-# Gemini 4 Argon, the same pool and fallback as spec-writer.
-model: gemini-4-argon
+# Gemini 4 Neon since 2026-11-21 (it was Gemini 4 Argon), the same pool and
+# fallback as spec-writer. The model id is not yet checked on the operator's
+# Mac (docs/adr/0196-agy-teammates-run-gemini-4-neon.md).
+model: gemini-4-neon
 effort: medium
 fallbacks: [opus]
 # auto = --sandbox --dangerously-skip-permissions: no approval prompt in a pane

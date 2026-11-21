@@ -101,6 +101,7 @@ records (a title that states the decision, 1 or 2 paragraphs, then
 - [0065](0065-detached-children-start-a-new-session.md) Detached children start a new session
 - [0066](0066-the-task-ledger-path-is-independent-of-the-state-root.md) The task ledger path is independent of the state root
 - [0067](0067-usage-limits-are-read-only-through-each-harness-client.md) Usage limits are read only through each harness's own client
+- [0196](0196-agy-teammates-run-gemini-4-neon.md) The agy teammates run Gemini 4 Neon, and `neon` is a quota scope
 
 ## Skills, sweeps, compaction and files
 
