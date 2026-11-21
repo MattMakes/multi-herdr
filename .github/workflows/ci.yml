@@ -12,7 +12,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
-    # CI run 4: macOS took 93 min, Linux 74 min.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -67,8 +66,6 @@ jobs:
     runs-on: windows-latest
     # Until Phase P of fleetd: many tests do not run on Windows yet. The gate of Phase P removes this line.
     continue-on-error: true
-    # CI run 4: 280 of 384 test binaries ran in 21 min before the hang. No
-    # complete run exists; 120 min is above the full macOS run (93 min).
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

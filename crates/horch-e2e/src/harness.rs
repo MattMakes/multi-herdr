@@ -1344,7 +1344,6 @@ pub fn output_within(cmd: &mut Command, limit: Duration) -> Output {
             status.filter(|_| out_reader.is_finished() && err_reader.is_finished())
         {
             let _ = (out_reader.join(), err_reader.join());
-            // The child is reaped: `wait` gives the status that `try_wait` kept.
             let status = child.wait().unwrap_or(status);
             let take = |text: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *text.lock().unwrap());
             return Output {
@@ -1466,7 +1465,6 @@ mod tests {
         }
     }
 
-    /// The panic message of `output_within(sh -c script, limit)`.
     #[cfg(unix)]
     fn bounded_panic(script: &str, limit: Duration) -> String {
         let mut cmd = std::process::Command::new("sh");
@@ -1489,8 +1487,6 @@ mod tests {
         assert_eq!(out.stderr, b"err\n");
     }
 
-    /// The hang of CI run 4: the child exits, and a process that it
-    /// started holds its stdout for hours. `output()` waits for it.
     #[cfg(unix)]
     #[test]
     fn a_pipe_that_a_grandchild_holds_open_ends_the_wait_with_a_panic() {

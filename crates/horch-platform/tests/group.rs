@@ -177,12 +177,6 @@ fn detach_and_kill_group_id_are_not_supported_on_windows() {
     assert!(group::is_same_group(std::process::id(), 0).is_err());
 }
 
-/// The hang of CI run 4 on Windows: a process that reads the output of
-/// `horch tell` through a pipe waited until the detached mail courier
-/// ended, because the courier inherited the stdout and stderr of `horch
-/// tell`. This test runs itself as that parent: the helper starts a
-/// detached child that runs 60 s, writes its pid and exits. The pipe of the
-/// helper must close when the helper exits.
 #[test]
 fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
     const HELPER: &str = "HORCH_PLATFORM_DETACHED_CHILD_PID_FILE";
@@ -230,7 +224,6 @@ fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
     assert!(!pid.trim().is_empty(), "the helper wrote no pid");
 }
 
-/// A child that runs 60 s.
 fn long_child() -> Command {
     #[cfg(unix)]
     {
@@ -246,7 +239,6 @@ fn long_child() -> Command {
     }
 }
 
-/// End the detached child of [`long_child`] by its pid.
 fn stop(pid: &str) {
     let Ok(pid) = pid.parse::<u32>() else { return };
     #[cfg(unix)]
