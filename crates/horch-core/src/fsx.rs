@@ -397,6 +397,11 @@ impl DirLockGuard {
 
 impl Drop for DirLockGuard {
     fn drop(&mut self) {
+        // The release holds the breaker guard, as a breaker does: between a
+        // breaker's stale check and its removal, a holder that outlived
+        // `stale_after` cannot release and let a next holder take the lock
+        // that the breaker then removes.
+        let _guard = wait_for_guard(&self.path);
         // A holder that outlived `stale_after` may have had its lock broken
         // and taken by another process; that lock is not ours to remove.
         if let Some(nonce) = &self.nonce {
@@ -404,7 +409,26 @@ impl Drop for DirLockGuard {
                 return;
             }
         }
-        remove_lock(&self.path);
+        let nonce = self.nonce.as_deref();
+        remove_lock(&self.path, |owner| {
+            nonce.is_none() || owner.is_some_and(|o| Some(o.nonce.as_str()) == nonce)
+        });
+    }
+}
+
+/// The [`BreakerGuard`] of `lock`. A breaker holds it for microseconds, so
+/// this waits up to [`BREAKER_STALE_AFTER`]; then `None`, and the owner
+/// check of [`remove_lock`] is the only check.
+fn wait_for_guard(lock: &Path) -> Option<BreakerGuard> {
+    let start = Instant::now();
+    loop {
+        if let Some(guard) = BreakerGuard::take(lock) {
+            return Some(guard);
+        }
+        if start.elapsed() >= BREAKER_STALE_AFTER {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -414,18 +438,30 @@ fn read_owner(lock: &Path) -> Option<LockOwner> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// Remove a lock directory. It is renamed first, so a process that takes
-/// the lock in the meantime is not removed with it.
-fn remove_lock(path: &Path) -> bool {
+/// Remove the lock directory at `path` when its owner passes `is_ours`.
+/// The directory is renamed first, in 1 atomic step, and the owner is read
+/// from the renamed directory. A lock that another process took at `path`
+/// after the caller's check fails `is_ours` and is put back, not removed.
+fn remove_lock(path: &Path, is_ours: impl FnOnce(Option<&LockOwner>) -> bool) -> bool {
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let mut tomb = path.as_os_str().to_owned();
     tomb.push(format!(".gone-{}", &nonce[..12]));
     let tomb = PathBuf::from(tomb);
-    let moved = std::fs::rename(path, &tomb).is_ok();
-    if moved {
+    if std::fs::rename(path, &tomb).is_err() {
+        return false;
+    }
+    if is_ours(read_owner(&tomb).as_ref()) {
+        let _ = std::fs::remove_dir_all(&tomb);
+        return true;
+    }
+    if rename_noreplace(&tomb, path).is_err() {
+        eprintln!(
+            "horch: lock {} was taken while another lock was put back",
+            path.display()
+        );
         let _ = std::fs::remove_dir_all(&tomb);
     }
-    moved
+    false
 }
 
 /// How long a lock without an `owner` file counts as being set up.
@@ -575,22 +611,27 @@ fn age(path: &Path) -> Option<Duration> {
 /// of `stale_after` and the holder's own, so a waiter never breaks a live
 /// holder's lock before the holder's limit.
 fn is_stale(path: &Path, stale_after: Duration) -> bool {
+    stale_owner(path, stale_after).is_some()
+}
+
+/// [`is_stale`], with the owner that was judged: `Some(None)` for a stale
+/// lock without an owner file.
+fn stale_owner(path: &Path, stale_after: Duration) -> Option<Option<LockOwner>> {
     let age = age(path);
     let owner = read_owner(path);
     let limit = owner
         .as_ref()
         .and_then(|o| o.stale_after_s)
         .map_or(stale_after, |s| stale_after.max(Duration::from_secs(s)));
-    if age.is_some_and(|a| a >= limit) {
-        return true;
-    }
-    match owner {
-        // A pid on another host cannot be checked from here.
-        Some(o) => o.host == host_name() && !crate::procid::alive(o.pid, o.started),
-        // A holder between `create_dir` and writing its owner is live for a
-        // moment; only an old, ownerless lock is stale.
-        None => age.is_some_and(|a| a >= OWNERLESS_GRACE),
-    }
+    let stale = age.is_some_and(|a| a >= limit)
+        || match &owner {
+            // A pid on another host cannot be checked from here.
+            Some(o) => o.host == host_name() && !crate::procid::alive(o.pid, o.started),
+            // A holder between `create_dir` and writing its owner is live for a
+            // moment; only an old, ownerless lock is stale.
+            None => age.is_some_and(|a| a >= OWNERLESS_GRACE),
+        };
+    stale.then_some(owner)
 }
 
 /// How long a breaker directory may live. Breaking takes microseconds, so
@@ -611,6 +652,12 @@ const BREAKER_STALE_AFTER: Duration = Duration::from_secs(5);
 /// a third had just made, and 2 breakers would run again. The directory
 /// stays so that binaries from before the guard are still excluded.
 fn break_lock(path: &Path, stale_after: Duration) -> bool {
+    break_lock_with(path, stale_after, || {})
+}
+
+/// [`break_lock`], with `judged` run once after the lock is judged stale
+/// and before it is removed.
+fn break_lock_with(path: &Path, stale_after: Duration, judged: impl FnOnce()) -> bool {
     let Some(_guard) = BreakerGuard::take(path) else {
         return false;
     };
@@ -618,7 +665,11 @@ fn break_lock(path: &Path, stale_after: Duration) -> bool {
     breaker.push(".break");
     let breaker = PathBuf::from(breaker);
     let broke = if std::fs::create_dir(&breaker).is_ok() {
-        let broke = is_stale(path, stale_after) && remove_lock(path);
+        let broke = stale_owner(path, stale_after).is_some_and(|stale| {
+            judged();
+            let stale = stale.map(|o| o.nonce);
+            remove_lock(path, |owner| owner.map(|o| &o.nonce) == stale.as_ref())
+        });
         let _ = std::fs::remove_dir(&breaker);
         broke
     } else {
@@ -1242,6 +1293,45 @@ mod tests {
         // The guard keeps its dir private: its debug text shows the field.
         let held = format!("{guard:?}");
         assert!(held.contains("dir: None"), "{held}");
+    }
+
+    /// A holder that outlived its `stale_after` releases its lock after a
+    /// breaker judged that lock stale and before the breaker removes it,
+    /// and a next holder takes the lock in that window. The breaker removes
+    /// only the lock it judged: the next holder keeps its lock.
+    #[cfg(unix)]
+    #[test]
+    fn dirlock_break_keeps_a_lock_taken_after_its_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let lock = dir.join("events.lock");
+        let hour = Duration::from_secs(3600);
+        // With stale_after zero, the old holder's lock is stale at once.
+        let old = DirLock::acquire(&dir, "events", Duration::ZERO, Duration::from_secs(1)).unwrap();
+        let (taken, wait) = std::sync::mpsc::channel();
+        let mut next = None;
+        break_lock_with(&lock, Duration::ZERO, || {
+            next = Some(std::thread::spawn(move || {
+                drop(old);
+                let held = DirLock::acquire(&dir, "events", hour, Duration::from_secs(20));
+                let _ = taken.send(());
+                held
+            }));
+            // A release that does not wait for this breaker ends here, and
+            // the next holder has its lock. A release that waits for it
+            // does not end: then this wait only ends the window.
+            let _ = wait.recv_timeout(Duration::from_millis(500));
+        });
+        let next = next
+            .unwrap()
+            .join()
+            .unwrap()
+            .expect("the next holder gets the lock");
+        let owner = read_owner(&lock).expect("the next holder keeps its lock");
+        assert_eq!(Some(&owner.nonce), next.nonce.as_ref());
+        drop(next);
+        assert!(!lock.exists());
+        assert!(stages(tmp.path()).is_empty(), "{:?}", stages(tmp.path()));
     }
 
     #[test]
