@@ -195,8 +195,6 @@ fn seed_blocked_task(
     })
 }
 
-/// The limits of `run` that `horch ledger run new` took as flags
-/// (`--max-attempts`, `--heartbeat-stale`): `None` keeps the default.
 fn seed_limits(h: &Harness, run: &Run, max_attempts: Option<i64>, heartbeat_stale_s: Option<i64>) {
     let mut store = Store::open(&h.ledger_db()).unwrap();
     store
@@ -1600,7 +1598,6 @@ impl AgentShell {
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new("/bin/sh");
         h.seal(&mut cmd);
-        // Its own process group: the stop of a cancel kills the group.
         let child = cmd
             .arg("-c")
             .arg("while [ ! -f \"$0/go.sh\" ]; do /bin/sleep 0.05; done; . \"$0/go.sh\"")
@@ -2670,7 +2667,6 @@ fn outbox(h: &Harness) -> Vec<String> {
     rows.map(|r| r.unwrap()).collect()
 }
 
-/// The task `short` is parked unlanded: held, with 1 attempt (D16).
 fn seed_parked_task(h: &Harness, short: &str) {
     let store = Store::open(&h.ledger_db()).unwrap();
     let moved = store
@@ -2684,9 +2680,6 @@ fn seed_parked_task(h: &Harness, short: &str) {
     assert_eq!(moved, 1, "{short} is a task of the ledger");
 }
 
-/// The text of each open needs-you item of `kind`, by key. fleetd writes
-/// each wake of the old orchestrator as 1 item by the key of its subject
-/// (FM-16, taskledger/wakes.rs).
 fn needs_you(h: &Harness, kind: &str) -> Vec<String> {
     let store = Store::open(&h.ledger_db()).unwrap();
     let mut stmt = store
@@ -2697,8 +2690,6 @@ fn needs_you(h: &Harness, kind: &str) -> Vec<String> {
     rows.map(|r| r.unwrap()).collect()
 }
 
-/// 1 forced pass of fleetd, while the test fleetd is down. It names the
-/// first run of the ledger, since fleetd can add runs of its own.
 fn pass(h: &Harness) {
     let slug: String = Store::open(&h.ledger_db())
         .unwrap()
@@ -2843,8 +2834,6 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
     watch(Some(later(150)));
     assert_eq!(worker_status(&h, &id).0, "claiming");
     assert!(outbox(&h).is_empty(), "{:?}", outbox(&h));
-    // Past it: the worker stays live and the watch writes no wake. The
-    // wake of a pre-claim row goes to fleetd (FM-16, taskledger/wakes.rs).
     watch(Some(later(200)));
     watch(Some(later(300)));
     assert!(outbox(&h).is_empty(), "{:?}", outbox(&h));
@@ -2869,9 +2858,6 @@ fn replacing_a_live_worker_is_refused_as_retired_and_leaves_the_worker_live() {
 
 // ─── #168: a task that kills every worker is held, not retried forever ──────
 
-/// T-1 is bound to a new worker of `persona` (FR-5) whose agent exits with
-/// no result, and the pass of fleetd ends the attempt (RR-6). The fleet
-/// clock first leaves the backoff of the task.
 fn claim_and_fail(h: &Harness, persona: &str) -> String {
     let (not_before, clock): (Option<i64>, i64) = {
         let store = Store::open(&h.ledger_db()).unwrap();
@@ -2905,15 +2891,12 @@ fn a_task_whose_attempts_all_fail_is_failed_and_its_replan_requeues_it() {
     seed_limits(&h, &run, Some(2), None);
     queue(&h, "01-a", "sonnet-x", &[]);
 
-    // 1 failed attempt: queued again, as before.
     claim_and_fail(&h, "sonnet-x");
     let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
     assert_eq!(t["task"]["status"], "queued", "{t}");
     assert!(t["task"]["held_reason"].is_null(), "{t}");
     let rows_before = outbox(&h).len();
 
-    // 2 failed attempts: failed (rung 6). No task can start, and 1
-    // QUESTION asks for the replan and names both ends.
     claim_and_fail(&h, "sonnet-x");
     let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
     assert_eq!(t["task"]["status"], "failed", "{t}");
@@ -2947,21 +2930,16 @@ fn a_task_whose_attempts_all_fail_is_failed_and_its_replan_requeues_it() {
     let err = close_run(&h, &the_run(&h), None).unwrap_err();
     assert!(format!("{err:#}").contains("T-1 (failed)"), "{err:#}");
 
-    // The replan requeues it 1 time: claimable again, its history kept.
     ok(&h, &["task", "requeue", "T-1", "ticket fixed"]);
     let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
     assert_eq!(t["task"]["replans"], 1, "{t}");
     let agent = Stand::new();
-    // The tree of the failed attempts is orphaned, and a pass of fleetd
-    // rescues it before a new attempt binds (design: Worktrees, row
-    // `orphaned`).
     let b = wait_push("the rescue of the tree of T-1", || {
         try_bind(&h, "sonnet-x", Some(agent.0.id())).ok()
     });
     assert_eq!(b.task_id, t["task"]["task_id"], "{b:?}");
     assert_eq!(b.attempt, 3, "{b:?}");
     drop(agent);
-    // The limit counts attempts since the requeue: 1 failure queues it again.
     pass(&h);
     let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
     assert_eq!(t["task"]["status"], "queued", "{t}");
@@ -2999,8 +2977,6 @@ fn a_cancel_names_the_tasks_that_wait_for_it() {
         st.contains("[T-1 was cancelled and cannot run again: drop the dependency, or cancel this task. A new task from its ticket does not end this wait]"),
         "{st}"
     );
-    // FM-16: no wake goes to an orchestrator. The pass of fleetd opens 1
-    // needs-you item for the cancelled blocker.
     pass(&h);
     assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
     let items = needs_you(&h, "blocker");
@@ -3011,7 +2987,6 @@ fn a_cancel_names_the_tasks_that_wait_for_it() {
         ),
         "{items:?}"
     );
-    // Neither dependent can start.
     assert!(try_bind(&h, "opus-b", None).is_err(), "T-2 waits for T-1");
 }
 
@@ -3021,14 +2996,7 @@ fn a_parked_unlanded_task_names_its_dependents_and_a_stuck_run_is_reported_once(
     seed_run(&h, "a", None, "w1:p1");
     queue(&h, "01-a", "opus-a", &[]);
     queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
-    // `done --unlanded` parks no task any more: fleetd runs the finish steps
-    // of an attempt and lands its task branch (design.md, Phase 4), so no
-    // command reaches the parked state. The test seeds it, as the unit test
-    // of the watchdog duties does.
     seed_parked_task(&h, "T-1");
-    // FM-16: no wake goes to an orchestrator. The pass of fleetd opens 1
-    // needs-you item for the parked blocker, and 1 for the stuck run: no
-    // worker is live, nothing can start, T-2 is open.
     for _ in 0..3 {
         pass(&h);
     }
@@ -3096,15 +3064,10 @@ fn rev(h: &Harness, what: &str) -> String {
         .to_string()
 }
 
-/// The refs of the remote, as `git ls-remote` prints them.
 fn remote_refs(h: &Harness) -> String {
     git_in(h, &h.project.clone(), &["ls-remote", "origin"])
 }
 
-/// The world of a test of 1 task: the run `alpha` with the finish steps
-/// `steps`, and T-1 bound to a worker of `opus` whose tree has 1 commit.
-/// `check` is the land check of T-1, and `fleet_toml` adds keys to the
-/// `fleet.toml` of the test fleetd.
 fn check_world(
     name: &str,
     steps: &[StepName],
@@ -3120,8 +3083,6 @@ fn check_world(
         new.land_check = Some(check.to_string());
     });
     let c = bind_claimed(&h, "opus", "c.txt");
-    // The stand-in agent is also the supervisor of its worker, so that a
-    // stop of the worker reaches its process.
     let pid = c.agent.pid();
     Store::open(&h.ledger_db())
         .unwrap()
@@ -3139,7 +3100,6 @@ fn check_world(
     (h, c)
 }
 
-/// The status of the worktree of the task `short` in `horch ledger status`.
 fn worktree_status(h: &Harness, short: &str) -> String {
     let st = json_of(h, &["ledger", "status", "--json"]);
     st["worktrees"]
@@ -3165,11 +3125,6 @@ fn a_cancelled_task_does_not_land_or_turn_done() {
             );
             let before = (rev(&h, "fleet/alpha"), remote_refs(&h));
 
-            // Known fault: the cancel of a bound attempt never completes (the pass
-            // reports I1: no pass rule moves the task). fleetd stops the process of
-            // the live attempt first, so the worker can write no result for the
-            // task, and moves the task to `cancelled` in the pass that sees the
-            // process gone (design.md, "A cancel").
             let o = ok(&h, &["ledger", "cancel", "T-1", "operator dropped it"]);
             assert!(
                 o.contains("T-1 cancelled.") || o.contains("T-1 is not cancelled yet"),
@@ -3188,15 +3143,12 @@ fn a_cancelled_task_does_not_land_or_turn_done() {
             let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
             assert_eq!(t["task"]["status"], "cancelled", "{t}");
 
-            // The worktree is abandoned, kept on disk, and listed as unfinished.
             let st = out(&h.run(&["ledger", "status"]));
             assert!(st.contains("T-1   abandoned"), "{st}");
             assert!(c.path.join("c.txt").exists());
             let unf = ok(&h, &["ledger", "unfinished"]);
             assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
 
-            // `cancelled` is terminal (fleetd-p2 MAP.md, Q22): the door refuses a
-            // requeue, and the kept worktree stays unfinished.
             let o = h.run(&["ledger", "requeue", "T-1", "wanted after all"]);
             assert!(!o.status.success(), "{}", text(&o));
             assert!(text(&o).contains(": cancelled -> ready"), "{}", text(&o));
@@ -3207,7 +3159,6 @@ fn a_cancelled_task_does_not_land_or_turn_done() {
     );
 }
 
-/// The check job of the task `task_id`, once fleetd has queued it.
 fn check_job_of(h: &Harness, task_id: &str) -> Option<i64> {
     let store = Store::open_read_only(&h.ledger_db()).unwrap();
     store
@@ -3223,9 +3174,6 @@ fn check_job_of(h: &Harness, task_id: &str) -> Option<i64> {
 #[test]
 fn a_cancel_during_the_check_lands_nothing() {
     horch_e2e::expected::check(file!(), "a_cancel_during_the_check_lands_nothing", || {
-        // The check of T-1 runs until the test says go: the cancel arrives
-        // before the verifier can move the task to done. A check writes only in
-        // its tree (SR-4).
         let hold = "/usr/bin/touch started; while [ ! -f go ]; do /bin/sleep 0.1; done";
         let (h, c) = check_world(
             "tl-cancel-lock",
@@ -3260,8 +3208,6 @@ fn a_cancel_during_the_check_lands_nothing() {
     });
 }
 
-/// #160: a worker's finish returns at once while a long check runs.
-/// fleetd runs the check (Phase 4), so the worker waits for no result.
 #[test]
 fn a_finish_returns_at_once_while_a_long_check_runs() {
     let hold = "/usr/bin/touch started; while [ ! -f go ]; do /bin/sleep 0.1; done";
