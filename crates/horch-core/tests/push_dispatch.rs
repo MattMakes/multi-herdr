@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use horch_core::fleetd::fleet_runtime::adapters::config_file;
+use horch_core::fleetd::fleet_runtime::adapters::{config_file, effects};
 use horch_core::fleetd::fleet_runtime::application::holds::{missing_fast_gate, readings, Counts};
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
@@ -30,13 +30,14 @@ use horch_core::fleetd::fleet_runtime::domain::health::{self, Finding, Floors, R
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::fleet_runtime::domain::pass::{observe_launch, Launch, LaunchStep, Proc};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::integration::adapters::project_file;
 use horch_core::fleetd::task_execution::adapters::leases_store;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::commands;
 use horch_core::fleetd::task_execution::application::dispatch::{
-    bind, choices, dispatch_due, write_missing_task_files, write_task_files, Bound, CheckSandboxes,
-    DispatchCtx, Dispatched,
+    bind, choices, dispatch_due, read_base_tips, write_missing_task_files, write_task_files,
+    BaseTips, Bound, CheckSandboxes, DispatchCtx, Dispatched,
 };
 use horch_core::fleetd::task_execution::application::lease;
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
@@ -288,6 +289,19 @@ impl World {
             needs_you: &NeedsYouList,
         };
         create::finish_reserved(&mut conn, &ctx, &TestJobs, id).unwrap();
+    }
+}
+
+/// The context of a bind of the fleet pass: the base tips of its part 1.
+fn tips_ctx<'a>(config: &'a FleetConfig, tips: &'a BaseTips) -> DispatchCtx<'a> {
+    DispatchCtx {
+        jobs: JobCtx {
+            guard: None,
+            config,
+            needs_you: &NeedsYouList,
+        },
+        clock: FleetSeconds(0),
+        git: tips,
     }
 }
 
@@ -761,4 +775,66 @@ fn lease_starts_at_the_launch_not_at_the_bind() {
     let row = leases_store::get(w.store.conn(), &id).unwrap().unwrap();
     assert_eq!(row.attempt_id, b.attempt_id);
     assert_eq!(row.expires_at, late.0 + lease::claim_lease_s());
+}
+
+/// R4-F4 (SR-4, RR-5): the bind runs no git in the write transaction. The
+/// base tips are read before it, through the sandboxed fleetd gateway, and
+/// the bind takes the tip of that read: a later move of the branch does
+/// not change it, and no git can read the repository while `tx` is open.
+/// A task with no tip of that read fails only its own bind.
+#[test]
+fn bind_uses_pre_read_sandboxed_base_tips_and_runs_no_git_in_write_tx() {
+    let mut w = World::new();
+    w.git = Git::new("/nonexistent/git-must-not-run-inside-tx");
+    let id = w.add(task("pre-read"));
+    let gw = CliGitGateway::new(effects::integration_git(&w.fleet_root, &[w.root.clone()]));
+
+    git(&w.root, &["config", "core.fsmonitor", "evil"]);
+    let refused = read_base_tips(w.store.conn(), &gw).unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("core.fsmonitor"),
+        "{refused:#}"
+    );
+    git(&w.root, &["config", "--unset", "core.fsmonitor"]);
+
+    let none = BaseTips::new();
+    let ctx = tips_ctx(&w.config, &none);
+    let d = w
+        .store
+        .immediate(|tx| dispatch_due(tx, &ctx, &Holds::default(), &AllSandboxes, 100))
+        .unwrap();
+    assert_eq!(d.failed.len(), 1, "{:?}", d.failed);
+    assert_eq!(d.failed[0].0, id);
+    assert!(d.failed[0].1.contains(RUN_BRANCH), "{}", d.failed[0].1);
+    assert_eq!(w.task_status(&id), "ready");
+    assert!(w.attempts(&id).is_empty());
+
+    let tip = git(&w.root, &["rev-parse", RUN_BRANCH]);
+    let tips = read_base_tips(w.store.conn(), &gw).unwrap();
+    let key = (w.run.project_root.clone(), RUN_BRANCH.to_string());
+    assert_eq!(tips, BaseTips::from([(key, tip.clone())]));
+
+    git(
+        &w.root,
+        &["commit", "--quiet", "--allow-empty", "-m", "later"],
+    );
+    git(&w.root, &["branch", "--force", RUN_BRANCH, "HEAD"]);
+    let ctx = tips_ctx(&w.config, &tips);
+    let dot_git = w.root.join(".git");
+    let hidden = w.root.join(".git-hidden-in-tx");
+    let b = w
+        .store
+        .immediate(|tx| {
+            std::fs::rename(&dot_git, &hidden)?;
+            let b = bind(tx, &ctx, &id, "opus", &NewWorker::default());
+            std::fs::rename(&hidden, &dot_git)?;
+            b
+        })
+        .unwrap();
+
+    assert_eq!(w.task_status(&id), "leased");
+    let row = trees::of_task(w.store.conn(), &id).unwrap().unwrap();
+    assert_eq!(Some(row.worktree_id), b.worktree.map(|t| t.worktree_id));
+    assert_eq!(row.base, RUN_BRANCH);
+    assert_eq!(row.base_commit, Some(tip));
 }

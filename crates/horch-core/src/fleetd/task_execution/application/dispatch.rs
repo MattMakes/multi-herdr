@@ -15,12 +15,15 @@
 //!   persona.
 //! - [`dispatch_due`]: fleetd binds the chosen tasks of 1 pass, at most
 //!   its work budget. A bind that fails rolls back only its own rows.
+//! - [`read_base_tips`]: before its write transaction, fleetd reads the
+//!   base tip of each new tree through its sandboxed git gateway (SR-4), so
+//!   no git runs in that transaction (RR-5, review R4-F4).
 //! - [`write_task_files`] and [`write_missing_task_files`]: after the
 //!   commit, `task.yaml` and `START.md` of an attempt. A crash between the
 //!   commit and the files leaves an attempt in `launching` with no files,
 //!   and the next pass writes them. The writer never rewrites a file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -35,6 +38,7 @@ use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::ideas::application::park_cancel::PARKED;
 use crate::fleetd::ideas::application::questions;
 use crate::fleetd::integration::application::landing;
+use crate::fleetd::integration::application::ports::IntegrationGitGateway;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, AttemptFiles,
@@ -88,8 +92,39 @@ pub struct DispatchCtx<'a> {
     pub jobs: JobCtx<'a>,
     /// The fleet clock now.
     pub clock: FleetSeconds,
-    /// The git of the base tip of a new tree.
-    pub git: &'a Git,
+    /// Where the bind reads the base tip of a new tree. The fleet pass
+    /// gives the tips that it read before its write transaction.
+    pub git: &'a dyn BaseTipSource,
+}
+
+/// The tip of each base branch of a new tree, by project root and branch.
+pub type BaseTips = BTreeMap<(String, String), String>;
+
+/// Where a bind reads the tip of the base branch `base` of the project
+/// `root`.
+pub trait BaseTipSource {
+    fn base_tip(&self, root: &str, base: &str) -> Result<String>;
+}
+
+/// A bind outside the fleet pass: 1 `git rev-parse` of the base.
+impl BaseTipSource for Git {
+    fn base_tip(&self, root: &str, base: &str) -> Result<String> {
+        self.rev(Path::new(root), base)
+    }
+}
+
+/// The tips of [`read_base_tips`]: the bind runs no git.
+impl BaseTipSource for BaseTips {
+    fn base_tip(&self, root: &str, base: &str) -> Result<String> {
+        self.get(&(root.to_string(), base.to_string()))
+            .cloned()
+            .with_context(|| {
+                format!(
+                    "fleetd read no tip of the base branch {base} in {root} before the \
+                     transaction: the bind waits for a pass that reads it"
+                )
+            })
+    }
 }
 
 /// The tree that a bind names.
@@ -315,7 +350,12 @@ fn tree_base(conn: &Connection, run: &Run, task: &Task) -> Result<String> {
 
 /// The row of a new tree of `task`, from the tip of its base branch
 /// ([`tree_base`]).
-fn new_tree(conn: &Connection, git: &Git, task: &Task, worker_id: &str) -> Result<NewWorktree> {
+fn new_tree(
+    conn: &Connection,
+    tips: &dyn BaseTipSource,
+    task: &Task,
+    worker_id: &str,
+) -> Result<NewWorktree> {
     let run = runs::get(conn, &task.run_id)?;
     let root = Path::new(&run.project_root);
     let base = tree_base(conn, &run, task)?;
@@ -323,7 +363,7 @@ fn new_tree(conn: &Connection, git: &Git, task: &Task, worker_id: &str) -> Resul
     // Beside the run branch, not under it: git cannot hold both `fleet/x`
     // and `fleet/x/T1-y`.
     let branch = format!("{}-{name}", run.run_branch.as_deref().unwrap_or("fleet"));
-    let base_commit = git.rev(root, &base)?;
+    let base_commit = tips.base_tip(&run.project_root, &base)?;
     Ok(NewWorktree {
         worktree_id: util::new_id(),
         task_id: Some(task.task_id.clone()),
@@ -342,6 +382,32 @@ fn new_tree(conn: &Connection, git: &Git, task: &Task, worker_id: &str) -> Resul
         status: WorktreeStatus::Open,
         mode: None,
     })
+}
+
+/// The tip of the base branch of each ready task that needs a new tree,
+/// read through the sandboxed git gateway `gw` before the write
+/// transaction opens. A task whose base is not known, or whose base branch
+/// has no tip, gets no tip: its bind fails with the cause.
+pub fn read_base_tips(conn: &Connection, gw: &dyn IntegrationGitGateway) -> Result<BaseTips> {
+    let mut bases = BTreeSet::new();
+    for id in task_ids(conn, &[TaskStatus::Ready])? {
+        let task = tasks::get(conn, &id)?;
+        if !task.uses_worktree() || task_tree(conn, &id)?.is_some() {
+            continue;
+        }
+        let run = runs::get(conn, &task.run_id)?;
+        if let Ok(base) = tree_base(conn, &run, &task) {
+            bases.insert((run.project_root, base));
+        }
+    }
+    let mut tips = BaseTips::new();
+    for (root, base) in bases {
+        let name = format!("refs/heads/{base}");
+        if let Some(tip) = gw.tip(Path::new(&root), &name)? {
+            tips.insert((root, base), tip);
+        }
+    }
+    Ok(tips)
 }
 
 /// A branch-safe name of at most 40 characters.

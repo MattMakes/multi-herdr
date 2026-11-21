@@ -139,7 +139,7 @@ use crate::fleetd::task_execution::adapters::attempt_files::{
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
-use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
+use crate::fleetd::task_execution::application::dispatch::{self, BaseTips, DispatchCtx};
 use crate::fleetd::task_execution::application::judge_pair::{self, Settled};
 use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
@@ -382,8 +382,8 @@ impl RunDuties for NoDuties {
 /// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
 #[derive(Clone, Copy)]
 pub struct TaskWork<'a> {
-    /// The tools of the finish steps: the git of the binds and of the
-    /// tips, and the review steps of the verifier.
+    /// The tools of the finish steps: the git of the tips, and the review
+    /// steps of the verifier.
     pub tools: &'a Tools,
     /// The check sandbox of each persona (SR-4).
     pub sandboxes: &'a WorkerSandboxes,
@@ -552,6 +552,9 @@ struct Read {
     /// The tip of the task branch of each task that the verifier or a
     /// repair result reads, by task id. A task with no tip waits.
     tips: BTreeMap<String, String>,
+    /// The base tip of each new tree that the dispatch can bind, read
+    /// through the sandboxed git gateway before the write transaction.
+    base_tips: BaseTips,
     /// The lines of what part 1 could not do.
     failed: Vec<String>,
     /// The facts of Phase 7.
@@ -1021,7 +1024,7 @@ impl<'a> Pass<'a> {
         // before it ended.
         let config = &self.settings.config;
         let owner = User::current().context("reading the user of fleetd")?;
-        let (attempts, failed) = scanned_attempts(&root, &rows, &scanned);
+        let (attempts, mut failed) = scanned_attempts(&root, &rows, &scanned);
         let limits = outbox_ingest::Limits::of(config);
         let outbox_reads = outbox_ingest::read(conn, &root, &attempts, &owner, &limits)?;
         let wrappers =
@@ -1066,6 +1069,18 @@ impl<'a> Pass<'a> {
             Some(w) => task_tips(conn, &w.tools.git, &results)?,
             None => BTreeMap::new(),
         };
+        // No git runs in the write transaction of part 2 (RR-5, R4-F4).
+        let base_tips = match &self.work {
+            Some(_) => {
+                let roots: Vec<PathBuf> = repos.iter().map(PathBuf::from).collect();
+                let gw = CliGitGateway::new(effects::integration_git(&root, &roots));
+                dispatch::read_base_tips(conn, &gw).unwrap_or_else(|e| {
+                    failed.push(format!("the base tips of the dispatch: {e:#}"));
+                    BaseTips::new()
+                })
+            }
+            None => BaseTips::new(),
+        };
         let p7 = self.read_p7(conn, deadline, &stamp, &wrappers)?;
         let mut sent = effects::read_doorbells(&self.settings.fleet_root);
         sent.retain(|id, _| {
@@ -1098,6 +1113,7 @@ impl<'a> Pass<'a> {
             job_files,
             token_fault,
             tips,
+            base_tips,
             failed,
             p7,
         })
@@ -1332,7 +1348,12 @@ impl<'a> Pass<'a> {
             let gw =
                 CliGitGateway::new(effects::integration_git(&self.settings.fleet_root, &repos));
             let gates = sync_gate_holds(&self.job_ctx(), &tx, &gw);
-            work = self.dispatch_rows(&tx, w, &holds, &personas, clock, &read.stamp)?;
+            let binds = DispatchCtx {
+                jobs: self.job_ctx(),
+                clock,
+                git: &read.base_tips,
+            };
+            work = self.dispatch_rows(&tx, w, &binds, &holds, &personas, &read.stamp)?;
             if let Err(e) = gates {
                 work.failed.push(format!("the gate holds: {e:#}"));
             }
@@ -1403,26 +1424,22 @@ impl<'a> Pass<'a> {
     /// the binds of the ready tasks, at most `pass_budget`; the hold and
     /// the needs-you item of a persona with no check sandbox; the resolver
     /// and fix attempts that are due; and the stops and launches of the
-    /// push attempts in `launching` (ticket 10).
+    /// push attempts in `launching` (ticket 10). `ctx` gives the base tips
+    /// of part 1, so no bind runs git in `tx`.
     fn dispatch_rows(
         &self,
         tx: &Transaction<'_>,
         w: &TaskWork<'_>,
+        ctx: &DispatchCtx<'_>,
         holds: &[Hold],
         paced: &BTreeMap<String, String>,
-        clock: FleetSeconds,
         stamp: &str,
     ) -> Result<WorkRows> {
         let budget = PassBudget::new(self.settings.config.pass_budget).rows();
-        let ctx = DispatchCtx {
-            jobs: self.job_ctx(),
-            clock,
-            git: &w.tools.git,
-        };
         let mut d = dispatch::dispatch_due(
             tx,
-            &ctx,
-            &dispatch_holds(holds, paced, project_holds(tx)?, clock),
+            ctx,
+            &dispatch_holds(holds, paced, project_holds(tx)?, ctx.clock),
             w.sandboxes,
             budget,
         )?;
@@ -1435,7 +1452,7 @@ impl<'a> Pass<'a> {
             }
             cursors_store::save(tx, DISPATCH, &cursor)?;
         }
-        repair::start_due(tx, &ctx, budget)?;
+        repair::start_due(tx, ctx, budget)?;
         let plan = push::plan(tx, ctx.jobs.guard, &|r| w.launches.alive(r))?;
         Ok(WorkRows {
             stops: plan.stops,
