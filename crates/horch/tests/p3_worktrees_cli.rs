@@ -90,11 +90,6 @@ impl World {
         World::start("")
     }
 
-    /// The tree of T1 in a fleetd that lists its trees each 5 s. A rescue
-    /// waits for a `worktree_list` result with the HEAD of the tree, and the
-    /// first list runs before `worktree_add` makes the folder. With the
-    /// default period of 60 s, [`World::rescued`] used 65 to 74 s of its
-    /// 120 s wait (T-290).
     fn with_a_rescuable_tree() -> World {
         World::start("worktree_list_period_s = 5\n")
     }
