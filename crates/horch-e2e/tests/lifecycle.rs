@@ -92,8 +92,6 @@ fn with_agy(h: &mut Harness) {
     h.set("HORCH_QUOTA_FILE", path.to_string_lossy());
 }
 
-/// The calls of the fakes, and each attempt with the moves of the ledger,
-/// so a failed wait names how an attempt ended.
 fn context(h: &Harness) -> String {
     let calls = h
         .calls()
@@ -118,8 +116,6 @@ fn context(h: &Harness) -> String {
     )
 }
 
-/// The rows of `sql`, or the error as 1 row: the context of a failed wait
-/// must not panic.
 fn try_rows(h: &Harness, sql: &str) -> Vec<String> {
     let read = || -> rusqlite::Result<Vec<String>> {
         let conn = rusqlite::Connection::open(h.ledger_db())?;
