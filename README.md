@@ -125,16 +125,17 @@ on your machine; layers 5 and 6 run on GitHub.
 +--------------------------------------------------------------------------+
 | 4 full gate            horch ledger run gate, before the merge           |
 |   HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate                   |
-|   scripts/phase-gate.sh, 13 steps: the spec-marker scan, fmt, build,     |
-|   clippy (debug and --release), rustdoc, every test, teammates --check,  |
-|   check-req-coverage.sh, check-deps.sh, the telemetry e2e, the Godot     |
-|   skill checks                                                           |
+|   scripts/phase-gate.sh, 14 steps: the spec-marker scan, the comment     |
+|   ban, fmt, build, clippy (debug and --release), rustdoc, every test,    |
+|   teammates --check, check-req-coverage.sh, check-deps.sh, the           |
+|   telemetry e2e, the Godot skill checks                                  |
 +--------------------------------------------------------------------------+
   v
 +--------------------------------------------------------------------------+
 | 5 CI on the PR         GitHub, .github/workflows/ci.yml                  |
 |   test (ubuntu-latest), test (macos-15)  cargo test --workspace --locked |
 |   build-windows       cargo build --workspace --locked                   |
+|   comments            scripts/comments/comment_lint.py check             |
 |   docs                cargo doc --workspace --no-deps --all-features     |
 |                       --locked, with RUSTDOCFLAGS=-D warnings            |
 |   release-lint        cargo clippy --workspace --bins --release          |

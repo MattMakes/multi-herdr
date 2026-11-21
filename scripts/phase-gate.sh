@@ -46,6 +46,11 @@ no_spec_todo() {
   fi
 }
 
+comment_ban() {
+  python3 -m unittest discover -s scripts/comments/tests
+  python3 scripts/comments/comment_lint.py check
+}
+
 # Godot skills: every engine API name in
 # skills/godot-* must exist in Godot 4.7.2, and every gdscript block must
 # parse. A failing block or a deprecated API name (GW13) in a copied file (a
@@ -74,6 +79,7 @@ godot_skills() {
 }
 
 step no_spec_todo
+step comment_ban
 step cargo fmt --all --check
 step cargo build --workspace --all-targets
 step cargo build --workspace --bins
