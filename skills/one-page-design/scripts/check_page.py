@@ -428,7 +428,11 @@ def make_preview(page_path, png_path, size):
     w_in, h_in = size if size else FALLBACK_SIZE
     window = f"{round((w_in + 1) * SCREEN_PPI)},{round((h_in + 1) * SCREEN_PPI)}"
     target = Path(png_path).resolve()
+    # On macOS, Chrome copies its app into a code_sign_clone folder at each
+    # start, and a killed Chrome leaves the copy on the disk. The feature
+    # switch stops the copy.
     argv = [chrome, "--headless", "--hide-scrollbars",
+            "--disable-features=MacAppCodeSignClone",
             "--window-size=" + window, "--screenshot=" + str(target),
             Path(page_path).resolve().as_uri()]
     try:

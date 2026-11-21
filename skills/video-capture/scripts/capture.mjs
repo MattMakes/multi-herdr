@@ -102,9 +102,13 @@ const prelude = `(() => {
 // ---- Chrome + CDP ----
 const userDir = mkdtempSync(join(tmpdir(), 'cap-chrome-'));
 const chromePath = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
+// during its start leaves that copy on the disk, and macOS records each copy as one more
+// "Google Chrome" in its privacy lists. --disable-features=MacAppCodeSignClone stops the copy.
 const chromeArgs = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDir}`,
   '--hide-scrollbars', '--mute-audio', '--no-first-run', '--no-default-browser-check',
-  '--force-color-profile=srgb', '--font-render-hinting=none', '--disable-lcd-text', 'about:blank'];
+  '--force-color-profile=srgb', '--font-render-hinting=none', '--disable-lcd-text',
+  '--disable-features=MacAppCodeSignClone', 'about:blank'];
 // Chrome can deadlock in its own start-up fork, before it prints the DevTools URL. Give each start 15 s,
 // then kill that Chrome and its child processes and start again, 3 tries in total.
 function onChromeLog(log, ok, chunk) { // resolve with the DevTools URL once Chrome prints it
