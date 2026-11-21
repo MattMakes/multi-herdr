@@ -1003,7 +1003,8 @@ mod tests {
         let app_bin = dir.path().join("herdr-app");
         let sock = dir.path().join("default.sock");
         std::fs::write(&sock, b"").unwrap();
-        let hc_body = r#"if [ "$1" = warm ]; then exit 0; fi
+        let hc_body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
 d=$(dirname "$0")
 printf 'hc %s\n' "$*" >> "$d/calls"
 case "$1" in
@@ -1014,7 +1015,8 @@ get)
   t2) printf '{"address":"t2","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"codex","state":"working"},"status_ms":20}\n';;
   esac;;
 esac"#;
-        let app_body = r#"if [ "$1" = warm ]; then exit 0; fi
+        let app_body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
 d=$(dirname "$0")
 printf 'app %s\n' "$*" >> "$d/calls"
 case "$1" in

@@ -40,7 +40,10 @@ fn hcb_13_doctor_passes_on_hc_with_both_programs() {
 #[test]
 fn hcb_13_doctor_refuses_an_old_hc() {
     let mut h = world("hcb13-old-hc");
-    let old_hc = h.write_bin("hc", b"#!/bin/sh\necho 'hc 0.1.20'\nexit 0\n");
+    let old_hc = h.write_warmed(
+        "hc",
+        b"#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho 'hc 0.1.20'\nexit 0\n",
+    );
     h.set("HORCH_HC_BIN", old_hc.to_string_lossy());
     let o = h.run(&["--backend", "hc", "doctor"]);
     let text = combined(&o);
@@ -50,7 +53,10 @@ fn hcb_13_doctor_refuses_an_old_hc() {
 
     // Also verify old herdr-app is refused naming found and needed versions.
     let mut h2 = world("hcb13-old-app");
-    let old_app = h2.write_bin("herdr-app", b"#!/bin/sh\necho 'herdr-app 0.1.15'\nexit 0\n");
+    let old_app = h2.write_warmed(
+        "herdr-app",
+        b"#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho 'herdr-app 0.1.15'\nexit 0\n",
+    );
     h2.set("HORCH_HERDR_APP_BIN", old_app.to_string_lossy());
     let o2 = h2.run(&["--backend", "hc", "doctor"]);
     let text2 = combined(&o2);

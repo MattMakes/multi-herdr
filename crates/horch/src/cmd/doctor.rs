@@ -2070,9 +2070,13 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
         let old_hc = bin_dir.join("hc");
-        std::fs::write(&old_hc, "#!/bin/sh\necho 'hc 0.1.20'\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&old_hc, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(crate::test_support::write_warmed(
+            &old_hc,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho 'hc 0.1.20'\n",
+            &["warm"],
+        )
+        .status
+        .success());
 
         let env = horch_core::runtime::MapEnv::new(tmp.path())
             .with("HOME", &tmp.path().to_string_lossy())

@@ -599,7 +599,8 @@ mod tests {
         let app_bin = dir.path().join("herdr-app");
         let sock = dir.path().join("default.sock");
         std::fs::write(&sock, b"").unwrap();
-        let body = r#"if [ "$1" = warm ]; then exit 0; fi
+        let body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
 d=$(dirname "$0")
 printf '%s\n' "$*" >> "$d/calls"
 case "$3" in

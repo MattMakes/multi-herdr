@@ -26,6 +26,7 @@ fn install_sealed_wrapper(h: &Harness, name: &str, scenario: &str) -> PathBuf {
     let wrapper = wrapper_dir.join(name);
     let script = format!(
         "#!/bin/sh\n\
+         if [ \"$1\" = \"__warm__\" ]; then exit 0; fi\n\
          export HOME='{home}'\n\
          export PATH='{bin}:/usr/bin:/bin'\n\
          export HORCH_STATE_DIR='{state}'\n\
@@ -45,6 +46,9 @@ fn install_sealed_wrapper(h: &Harness, name: &str, scenario: &str) -> PathBuf {
     );
     std::fs::write(&wrapper, script).unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let warmed = horch_e2e::harness::warm(Command::new(&wrapper).arg("__warm__"))
+        .expect("warming sealed wrapper");
+    assert!(warmed.status.success());
     wrapper
 }
 
