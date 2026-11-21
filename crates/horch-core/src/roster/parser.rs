@@ -25,7 +25,9 @@ pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// Split `---\n<frontmatter>\n---\n<body>`.
+/// Split `---\n<frontmatter>\n---\n<body>`. A Windows checkout gives the
+/// compiled-in roster files CRLF line ends, so the line end of the opening
+/// fence, `\n` or `\r\n`, is the line end of the closing fence.
 pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
     let nl = if text.starts_with("---\r\n") {
         "\r\n"
