@@ -60,7 +60,16 @@ fn world(test: &str, name: &str, agent: &str, model: &str, skills: &[&str]) -> H
 }
 
 fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
-    let out = spawn_attempt(h, name);
+    launch_spawned(h, name, spawn_attempt(h, name), before_worker)
+}
+
+fn serve_quiet_fleetd(h: &Harness) {
+    attempt::limit_jobs(&h.fleet_root());
+    h.serve_fleetd();
+    attempt::wait_for_quiet_jobs(&h.ledger_db());
+}
+
+fn launch_spawned(h: &Harness, name: &str, out: Output, before_worker: impl FnOnce()) -> Value {
     assert!(out.status.success(), "spawn {name}: {}", text(&out));
     let pane = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -298,8 +307,10 @@ fn skl_06_e2e_marketplace_offline() {
     let said = text(&check);
     assert!(!said.contains("unknown bundled skill 'demo'"), "{said}");
 
+    serve_quiet_fleetd(&h);
     h.set("HORCH_GIT_BIN", "/nonexistent");
-    let r = launch(&h, "skl-market", || {});
+    let out = attempt::spawn_served_attempt(&h, "skl-market");
+    let r = launch_spawned(&h, "skl-market", out, || {});
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }
