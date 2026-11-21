@@ -20,6 +20,23 @@
   compaction that Claude Code starts by itself. The hooks are in
   `teammates/_base/harness-defaults.md`. They are unit-tested and were not
   yet run in a live fleet.
+- The fleet ceiling is Opus 5.5 at medium effort. 39 teammates that ran at
+  `high` or `max` now run at `medium`; their models did not change. A
+  teammate runs above the ceiling only with a `signoff: "<yyyy-mm-dd> <who>:
+  <why>"` line that the operator writes in its file. `horch teammates
+  --check` fails an effort above medium without one, and warns about the 3
+  worker seats on a top-tier model (`fable-creative`, `astra-creative`,
+  `game-design-juicer`) until the operator decides them. The orchestrator no
+  longer raises the effort of a spawn by itself. The list of changed
+  teammates, with the reason each one had, is in
+  `docs/fleet-ceiling-2026-11-21.md`.
+- The Antigravity teammates (`spec-writer`, `ticket-writer`,
+  `audio-reviewer`) and `hark llm` run Gemini 4 Neon in place of Gemini 4
+  Argon. `neon` is a quota scope of the google pool, and `horch cost` prices
+  the Neon ids. The Neon model ids, its price and the name of its quota
+  group come from secondary sources: check them with the steps in
+  `docs/adr/0196-agy-teammates-run-gemini-4-neon.md`. The audio probe has
+  not run on Neon yet.
 
 ## v0.5.2 - 2026-11-21
 

@@ -52,7 +52,7 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
    - Paid — `sonnet`, `opus`, `codex-sol`, `codex-terra`, `codex-luna`, `prime`. Send anything the project already trusts these providers with. Within it, cost falls from `opus`/`codex-sol` to `sonnet`/`codex-terra` to `codex-luna`: give a complete, mechanical plan to the cheapest one that can follow it.
    - Free, and trains on input — `opencode-ultra`, `opencode-pickle`, `opencode-lightning`. Public and open-source work only. Never proprietary source, credentials, customer data, or unreleased plans.
    - Local — `pi`. Use for anything that must not leave the machine.
-4. Effort is set per teammate in its frontmatter, tuned to the role. `horch spawn <teammate> --effort <level>` overrides it for one spawn: raise it for a fix that already failed review, lower it for a mechanical task. For a different kind of reasoning, spawn a stronger teammate instead.
+4. Effort is set per teammate in its frontmatter, tuned to the role. `horch spawn <teammate> --effort <level>` overrides it for one spawn: lower it for a mechanical task. Go above medium ONLY if the operator asks you. For a different kind of reasoning, spawn a stronger teammate instead.
 5. For ledger add and ticket maps, Codex fleet_write permits project/.git writes and network; plan mode only reads.
 6. The top tier is reserved. `horch spawn` refuses Fable and Astra for any worker but the 2 council seats (§10). Add `--model fable` ONLY when the operator asks; say so in the spawn report.
 7. Select a phase with `--phase research|plan|implementation|validation` when the assignment differs from the teammate's default.
