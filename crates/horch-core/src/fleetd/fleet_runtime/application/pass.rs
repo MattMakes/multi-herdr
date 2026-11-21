@@ -552,8 +552,6 @@ struct Read {
     /// The tip of the task branch of each task that the verifier or a
     /// repair result reads, by task id. A task with no tip waits.
     tips: BTreeMap<String, String>,
-    /// The base tip of each new tree that the dispatch can bind, read
-    /// through the sandboxed git gateway before the write transaction.
     base_tips: BaseTips,
     /// The lines of what part 1 could not do.
     failed: Vec<String>,
@@ -1424,8 +1422,7 @@ impl<'a> Pass<'a> {
     /// the binds of the ready tasks, at most `pass_budget`; the hold and
     /// the needs-you item of a persona with no check sandbox; the resolver
     /// and fix attempts that are due; and the stops and launches of the
-    /// push attempts in `launching` (ticket 10). `ctx` gives the base tips
-    /// of part 1, so no bind runs git in `tx`.
+    /// push attempts in `launching` (ticket 10).
     fn dispatch_rows(
         &self,
         tx: &Transaction<'_>,

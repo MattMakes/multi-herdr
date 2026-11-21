@@ -92,8 +92,7 @@ pub struct DispatchCtx<'a> {
     pub jobs: JobCtx<'a>,
     /// The fleet clock now.
     pub clock: FleetSeconds,
-    /// Where the bind reads the base tip of a new tree. The fleet pass
-    /// gives the tips that it read before its write transaction.
+    /// Where the bind reads the base tip of a new tree.
     pub git: &'a dyn BaseTipSource,
 }
 
@@ -106,14 +105,12 @@ pub trait BaseTipSource {
     fn base_tip(&self, root: &str, base: &str) -> Result<String>;
 }
 
-/// A bind outside the fleet pass: 1 `git rev-parse` of the base.
 impl BaseTipSource for Git {
     fn base_tip(&self, root: &str, base: &str) -> Result<String> {
         self.rev(Path::new(root), base)
     }
 }
 
-/// The tips of [`read_base_tips`]: the bind runs no git.
 impl BaseTipSource for BaseTips {
     fn base_tip(&self, root: &str, base: &str) -> Result<String> {
         self.get(&(root.to_string(), base.to_string()))

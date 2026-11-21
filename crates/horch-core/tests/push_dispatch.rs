@@ -292,7 +292,6 @@ impl World {
     }
 }
 
-/// The context of a bind of the fleet pass: the base tips of its part 1.
 fn tips_ctx<'a>(config: &'a FleetConfig, tips: &'a BaseTips) -> DispatchCtx<'a> {
     DispatchCtx {
         jobs: JobCtx {
@@ -777,11 +776,6 @@ fn lease_starts_at_the_launch_not_at_the_bind() {
     assert_eq!(row.expires_at, late.0 + lease::claim_lease_s());
 }
 
-/// R4-F4 (SR-4, RR-5): the bind runs no git in the write transaction. The
-/// base tips are read before it, through the sandboxed fleetd gateway, and
-/// the bind takes the tip of that read: a later move of the branch does
-/// not change it, and no git can read the repository while `tx` is open.
-/// A task with no tip of that read fails only its own bind.
 #[test]
 fn bind_uses_pre_read_sandboxed_base_tips_and_runs_no_git_in_write_tx() {
     let mut w = World::new();
