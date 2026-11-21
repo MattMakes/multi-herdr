@@ -29,6 +29,7 @@
 //!
 //! Each state change goes through `transition()`.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -53,6 +54,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{
     self, after_abandoned, AfterAbandoned, Kind, Outcome, Process, Seen, State,
 };
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::ideas::adapters::sqlite as needs_you_store;
 use crate::fleetd::integration::adapters::executors as integration;
 use crate::fleetd::task_execution::adapters::ingested_store::{
     self as ingested, ACCEPTED, REJECTED,
@@ -331,7 +333,7 @@ pub fn observe(
         }
     }
     tell_group_left(ctx, tx, clock)?;
-    tell_locks_left(ctx, tx)?;
+    record_locks_left(ctx, tx)?;
     Ok(seen)
 }
 
@@ -558,17 +560,37 @@ fn tell_group_left(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
 /// 1 needs-you item for each `.lock` file that stays after the `SIGKILL` of
 /// a git of fleetd at its time limit (T-369). Git fails at once on a held
 /// lock, so the item names the file. fleetd does not delete it: it cannot
-/// prove that no other git holds it. The open of an open item only writes
-/// its text again, so each lock file has 1 item. When the file is gone, the
-/// item is resolved. Both are safe to repeat after a rollback of the pass.
-fn tell_locks_left(ctx: &JobCtx<'_>, tx: &Connection) -> Result<()> {
+/// prove that no other git holds it.
+///
+/// The open item is the row of the lock (A24, D254-F3): it is written in
+/// `tx`, so a restart of fleetd after the commit keeps it. The paths of
+/// this process ([`worktree_git::locks_left_after_stops`]) get an item when
+/// they have none. Each open item whose file is gone is resolved. 1 set read
+/// gives the open items, and a write goes only to a new item or a resolved
+/// one. [`observe`] calls it, and the pass calls it after the git of
+/// integration in part 2 and after the git effects of part 3.
+pub fn record_locks_left(ctx: &JobCtx<'_>, tx: &Connection) -> Result<()> {
+    let prefix = format!("{}:git_lock:", jobs::NEEDS_YOU_KIND);
+    let open: BTreeSet<String> = needs_you_store::open_keys(tx, jobs::NEEDS_YOU_KIND)?
+        .into_iter()
+        .filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned))
+        .collect();
+    for path in &open {
+        if !Path::new(path).exists() {
+            ctx.needs_you.resolve_item(tx, &format!("{prefix}{path}"))?;
+            worktree_git::forget_lock_left(Path::new(path));
+        }
+    }
     for lock in worktree_git::locks_left_after_stops() {
         let path = lock.display().to_string();
-        let key = format!("{}:git_lock:{path}", jobs::NEEDS_YOU_KIND);
         if !lock.exists() {
-            ctx.needs_you.resolve_item(tx, &key)?;
+            worktree_git::forget_lock_left(&lock);
             continue;
         }
+        if open.contains(&path) {
+            continue;
+        }
+        let key = format!("{prefix}{path}");
         let text = format!(
             "A git of fleetd ran past its time limit, and SIGKILL ended it. Its lock \
              file {path} stays. While it stays, each git that takes this lock fails at \

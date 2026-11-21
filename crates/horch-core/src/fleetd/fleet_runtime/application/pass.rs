@@ -842,6 +842,11 @@ impl<'a> Pass<'a> {
             report.done.extend(duty.done.into_iter().map(Done::Duty));
             report.failed.extend(duty.failed);
         }
+        if let Err(e) = self.record_locks_left(conn) {
+            report
+                .failed
+                .push(format!("the items of the git locks: {e:#}"));
+        }
         let kept = |pid, start| {
             decided.may_stop.contains(&(pid, start)) || pending.contains(&(pid, start))
         };
@@ -865,6 +870,24 @@ impl<'a> Pass<'a> {
         }
         self.full_passes += 1;
         Ok(report)
+    }
+
+    /// The needs-you item of each `.lock` file that a git of part 3 left, in
+    /// 1 short transaction after the git effects: the first write after the
+    /// error of a git that ran outside a transaction (D254-F3).
+    ///
+    /// Limit: a crash of fleetd between the `SIGKILL` of the git and this
+    /// commit loses the item. The operator then sees the path in the failed
+    /// line of each later pass whose git takes the lock: that git fails at
+    /// once with "File exists", and the error of git names the `.lock` file.
+    fn record_locks_left(&self, conn: &mut Connection) -> Result<()> {
+        if crate::fleetd::worktree_custody::adapters::git::locks_left_after_stops().is_empty() {
+            return Ok(());
+        }
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        jobs::record_locks_left(&self.job_ctx(), &tx)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// The start of this fleetd after the lock and the generation (Phase
@@ -1397,6 +1420,9 @@ impl<'a> Pass<'a> {
             Some(_) => self.integrate(&tx, clock, &read.stamp)?,
             None => Integrated::default(),
         };
+        // After the savepoint of integration: a git error rolls back the
+        // rows of its duty, not the item of its lock (D254-F3).
+        jobs::record_locks_left(&ctx, &tx)?;
         rules.check_i1()?;
         let breaches = self.check_invariants(&tx, &read.worktrees)?;
         self.queue_lists(&ctx, &tx, &read.repos, clock)?;

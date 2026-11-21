@@ -1091,6 +1091,62 @@ fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item(
     assert_eq!(items, 1, "1 row for the lock");
 }
 
+/// The item of a lock that a killed git of the pass left is a row of that
+/// pass: a restart of fleetd between the pass of the timeout and the next
+/// pass keeps it. The git hangs in the duty `trial_merges`, whose savepoint
+/// rolls back, and the item is still there: its write is outside the
+/// savepoint. The child process of the pass exits after 1 pass, and a new
+/// fleetd of this process, which never ran that git, keeps the item 1 time
+/// and resolves it when the file is gone (D254-F3).
+#[test]
+fn a_git_lock_notice_survives_a_fleetd_restart() {
+    let w = three_done();
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    to_passed_gate(&w, &mut p, &mut conn);
+    drop(p);
+    let lock = w.repo().join(".git/refs/heads/fleet/held.lock");
+    let on_hang = format!("trap '' TERM; : > '{}'", lock.display());
+    let bin = hang_once_git(&w, "diff", &on_hang);
+    let out = pass_with_git(&w, &bin);
+    assert!(
+        out.contains("PASS-FAILED [\"the duty trial_merges: "),
+        "the duty rolls back: {out}"
+    );
+    assert!(lock.exists(), "the lock stays");
+    let key = format!("job_abandoned:git_lock:{}", lock.display());
+    let open_items = |conn: &Connection| {
+        needs_you::open_keys(conn, "job_abandoned")
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains(":git_lock:"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        open_items(&conn),
+        vec![key.clone()],
+        "the pass wrote the item"
+    );
+
+    let mut p = fleetd(&w, &f, Faults::default());
+    run(&mut p, &mut conn);
+    run(&mut p, &mut conn);
+    assert_eq!(open_items(&conn), vec![key.clone()], "the item stays open");
+    fs::remove_file(&lock).unwrap();
+    run(&mut p, &mut conn);
+    assert_eq!(open_items(&conn), Vec::<String>::new(), "resolved");
+    let items: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM needs_you WHERE key = ?1",
+            [&key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(items, 1, "1 row for the lock");
+}
+
 #[test]
 fn a_failed_read_of_the_project_file_gives_a_failed_line_of_the_pass() {
     let w = three_done();

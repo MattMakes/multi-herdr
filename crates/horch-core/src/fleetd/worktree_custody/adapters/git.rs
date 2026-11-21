@@ -804,9 +804,9 @@ fn locks_left(writable: &[PathBuf]) -> String {
 }
 
 /// Each `.lock` file that stayed after the stop of a git of this process at
-/// its time limit. The pass opens 1 needs-you item for each while the file
-/// stays (`jobs::observe`). A restart of fleetd forgets them: then only the
-/// error of each later git that takes the lock names the file.
+/// its time limit, until the pass writes its needs-you item, the row of the
+/// lock (`jobs::record_locks_left`, D254-F3). A path stays here until its
+/// file is gone, so a pass that rolls back writes the item again.
 static LOCKS_LEFT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
 /// The `.lock` files that stayed after a stop of a git of this process at
@@ -816,6 +816,14 @@ pub fn locks_left_after_stops() -> Vec<PathBuf> {
         .lock()
         .map(|left| left.iter().cloned().collect())
         .unwrap_or_default()
+}
+
+/// Forget the `.lock` file `path` of [`locks_left_after_stops`]: its file
+/// is gone.
+pub fn forget_lock_left(path: &Path) {
+    if let Ok(mut left) = LOCKS_LEFT.lock() {
+        left.remove(path);
+    }
 }
 
 /// The group of this job process while 1 of its sandboxed git calls runs,
