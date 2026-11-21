@@ -1,14 +1,16 @@
 ---
 name: audio-reviewer
-brief_description: Argon/high on agy. Listens to WAV files, measures with hark, writes a blind 7-axis SFX or mix review.
+brief_description: Argon/medium on agy. Listens to WAV files, measures with hark, writes a blind 7-axis SFX or mix review.
 base: fleet-worker
 agent: antigravity
 # Gemini 4 Argon hears audio through agy's file-reading tool. The probe
 # (docs/specs/hark/agy-audio-probe.md) found gemini-4-argon-high the best
 # model. agy takes the bare id plus --effort.
 model: gemini-4-argon
-# high: the probe ran at high, and a missed defect costs a fix round.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: the probe ran at high, and a missed defect costs a fix
+# round.
+effort: medium
 # No fallback: no Claude or Codex model hears audio, so a fallback could not
 # do this work. When the Argon pool is out, `horch route` refuses and the
 # orchestrator waits.
