@@ -267,8 +267,6 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
 fn end_connection(instance: &Instance, cut: bool) {
     let pipe = instance.pipe.as_raw_handle();
     if !cut {
-        // A cancelled flush, or a flush with no watchdog, leaves the unread
-        // bytes to the disconnect.
         let _ = cancel_after(DRAIN_LIMIT, || {
             // SAFETY: `pipe` is open while `instance` holds it, and the
             // caller holds `instance` until this function returns.
@@ -390,9 +388,6 @@ impl Stream {
     }
 }
 
-/// True for the errors of a pipe whose other side ended the connection: a
-/// closed handle (`ERROR_BROKEN_PIPE`) or a server disconnect
-/// (`ERROR_PIPE_NOT_CONNECTED`).
 fn is_end(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32)
         || error.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32)
@@ -803,11 +798,8 @@ mod tests {
         });
     }
 
-    /// The time limit of a test that a fault of the channel can hang.
     const TEST_LIMIT: Duration = Duration::from_secs(30);
 
-    /// Run `test` on its own thread, and fail when it does not end within
-    /// `limit`: a hang fails the test and does not stop the test binary.
     fn within(limit: Duration, test: impl FnOnce() + Send + 'static) {
         let (done, finished) = mpsc::channel::<()>();
         let body = thread::spawn(move || {
@@ -829,14 +821,9 @@ mod tests {
             let listener = bind(&name).unwrap();
             thread::scope(|scope| {
                 let server = scope.spawn(|| echo(&listener, 2));
-                // This client sends 1 line, never reads the reply and keeps
-                // its handle open.
                 let silent = connect(&name, far_deadline()).unwrap();
                 (&silent).write_all(b"silent\n").unwrap();
 
-                // The server ends that connection after DRAIN_LIMIT. Without
-                // that limit, this connect stops at its deadline with
-                // TimedOut. The next client gets all of its reply.
                 let next = connect(&name, far_deadline()).unwrap();
                 assert_eq!(ask(&next, "next\n"), "next\n");
                 assert_eq!(server.join().unwrap(), ["silent\n", "next\n"]);
@@ -855,14 +842,11 @@ mod tests {
                 let client = connect(&name, far_deadline()).unwrap();
                 (&client).write_all(b"ping\n").unwrap();
 
-                // The server disconnects after the reply. The read after the
-                // reply is the end of the stream, not error 233.
                 let mut reply = Vec::new();
                 (&client).read_to_end(&mut reply).unwrap();
                 assert_eq!(reply, b"ping\n");
                 assert_eq!(server.join().unwrap(), ["ping\n"]);
 
-                // A read with a timeout also reads the end.
                 set_read_timeout(&client, Duration::from_secs(5)).unwrap();
                 assert_eq!((&client).read(&mut [0u8; 8]).unwrap(), 0);
             });
