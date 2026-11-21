@@ -141,6 +141,30 @@ fn resume_plan(record: &LedgerRecordV1) -> ExecutionPlan {
     plan(&req, "unused", Some(record))
 }
 
+/// Spawn `plan` with no role as another `horch spawn` process would: its
+/// own store, mailbox and workspace client on the folders of `ctx`.
+fn spawn_apart(
+    ctx: &RuntimeContext,
+    project: &Path,
+    plan: ExecutionPlan,
+) -> Result<String, SpawnError> {
+    let store = ExecutionStore::open(&ctx.paths, project);
+    let mailbox = Mailbox::in_context(ctx, "w1");
+    let fake = FakeWorkspace::new();
+    fake.workspace_create("w1", None, false).unwrap();
+    let tile = |_: &str, _: TilingMode| {};
+    let service = ExecutionService {
+        ctx,
+        store: &store,
+        workspace: &fake,
+        mailbox: &mailbox,
+        tile: &tile,
+        ledger_worker: None,
+        task_yaml: None,
+    };
+    service.spawn(plan, None).map(|o| o.pane)
+}
+
 impl World {
     fn spawn(&self, plan: ExecutionPlan, role: Option<&str>) -> Result<String, SpawnError> {
         let tile = |_: &str, _: TilingMode| {};
@@ -224,6 +248,32 @@ fn a_fresh_spawn_pushes_its_record_after_the_existing_ones() {
     assert_eq!(ids, ["exec-1", "exec-2"]);
     let roles: Vec<_> = records.iter().map(|r| r.role.as_str()).collect();
     assert_eq!(roles, ["sonnet-1", "sonnet-2"]);
+}
+
+#[test]
+fn parallel_spawns_with_no_role_get_distinct_roles() {
+    let w = world();
+    let (ctx, project) = (&w.ctx, w._tmp.path().join("project"));
+    let project = project.as_path();
+    for round in 0..5 {
+        let outs: Vec<Result<String, SpawnError>> = std::thread::scope(|s| {
+            let spawns: Vec<_> = (0..4)
+                .map(|i| {
+                    s.spawn(move || spawn_apart(ctx, project, fresh(&format!("exec-{round}-{i}"))))
+                })
+                .collect();
+            spawns.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        for out in outs {
+            out.unwrap();
+        }
+    }
+    let records = w.store.read().unwrap();
+    let mut roles: Vec<_> = records.iter().map(|r| r.role.clone()).collect();
+    assert_eq!(roles.len(), 20, "{roles:?}");
+    roles.sort();
+    roles.dedup();
+    assert_eq!(roles.len(), 20, "each spawn has its own role: {roles:?}");
 }
 
 #[test]

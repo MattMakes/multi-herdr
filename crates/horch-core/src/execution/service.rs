@@ -26,6 +26,13 @@ use crate::runtime::RuntimeContext;
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::paneshell::PaneShell;
 
+/// How many numbers a spawn with no explicit role tries.
+const ROLE_TRIES: usize = 64;
+/// A role-claim lock older than this is broken: a claim takes milliseconds.
+const CLAIM_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long a spawn waits for the role-claim lock.
+const CLAIM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Why a spawn did not start a worker.
 #[derive(Debug)]
 pub enum SpawnError {
@@ -168,11 +175,14 @@ impl ExecutionService<'_> {
         }
     }
 
-    /// Allocate the role and write the `Planned` record, under the ledger
-    /// lock, so two spawns cannot take one role.
+    /// Allocate the role and write the `Planned` record, under the
+    /// role-claim lock of the workspace. The record store is optimistic
+    /// (RR-5) and the role counter is a plain file, so without the lock 2
+    /// spawns can take 1 role.
     fn insert(&self, plan: ExecutionPlan, role: Option<&str>) -> Result<ExecutionPlan, SpawnError> {
         let workspace = WorkspaceId::new(self.mailbox.workspace_id())
             .map_err(|e| SpawnError::Store(e.into()))?;
+        let _claim = self.claim_lock().map_err(SpawnError::Store)?;
         let outcome = self
             .store
             .update(|records| self.claim(records, plan.clone(), role, &workspace));
@@ -183,8 +193,25 @@ impl ExecutionService<'_> {
         }
     }
 
-    /// Name the role, check that it is free and write the record, inside the
-    /// ledger lock. A taken role is the inner error.
+    /// The lock `role-claim-<workspace>.lock` beside the mailbox folder,
+    /// held by 1 spawn of the workspace at a time.
+    fn claim_lock(&self) -> Result<crate::fsx::DirLockGuard> {
+        let dir = self.mailbox.dir();
+        let parent = dir
+            .parent()
+            .ok_or_else(|| anyhow!("the mailbox {} has no parent folder", dir.display()))?;
+        let name = format!("role-claim-{}", self.mailbox.workspace_id());
+        Ok(crate::fsx::DirLock::acquire(
+            parent,
+            &name,
+            CLAIM_STALE_AFTER,
+            CLAIM_TIMEOUT,
+        )?)
+    }
+
+    /// Name the role, check that it is free and write the record. A taken
+    /// explicit role is the inner error. With no explicit role, the next
+    /// free `<teammate>-<n>`, at most [`ROLE_TRIES`] numbers.
     fn claim(
         &self,
         records: &mut Vec<LedgerRecordV1>,
@@ -192,21 +219,29 @@ impl ExecutionService<'_> {
         role: Option<&str>,
         workspace: &WorkspaceId,
     ) -> Result<Result<ExecutionPlan, PlanError>> {
-        let role = self.role_name(role, &plan.launch.teammate.name)?;
-        if self.mailbox.role_taken(&role) || planned_role(records, workspace, &role) {
-            return Ok(Err(PlanError::RoleTaken(role)));
-        }
+        let taken =
+            |role: &str| self.mailbox.role_taken(role) || planned_role(records, workspace, role);
+        let role = match role {
+            Some(role) if taken(role) => return Ok(Err(PlanError::RoleTaken(role.to_string()))),
+            Some(role) => role.to_string(),
+            None => {
+                let teammate = &plan.launch.teammate.name;
+                let mut role = String::new();
+                for _ in 0..ROLE_TRIES {
+                    role = format!("{teammate}-{}", self.mailbox.next_seq(teammate)?);
+                    if !taken(&role) {
+                        break;
+                    }
+                }
+                if taken(&role) {
+                    return Ok(Err(PlanError::RoleTaken(role)));
+                }
+                role
+            }
+        };
         let plan = finish_plan(plan, RoleName::new(role)?, workspace);
         upsert(records, from_execution(&plan.execution), plan.resumed)?;
         Ok(Ok(plan))
-    }
-
-    /// The explicit role, or the next `<teammate>-<n>`.
-    fn role_name(&self, role: Option<&str>, teammate: &str) -> Result<String> {
-        match role {
-            Some(role) => Ok(role.to_string()),
-            None => Ok(format!("{teammate}-{}", self.mailbox.next_seq(teammate)?)),
-        }
     }
 
     /// Build the brief and write it to the mailbox.
