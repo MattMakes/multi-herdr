@@ -49,7 +49,7 @@ pub struct WorkerDeps {
 }
 
 /// Register the handler of each kind of this module in `handlers`.
-pub fn register(handlers: &mut Handlers, _deps: &WorkerDeps) {
+pub fn register(handlers: &mut Handlers, deps: &WorkerDeps) {
     handlers.insert(Kind::SpawnGateNote, |tx, p| {
         spawn_gate_note(tx, &record(Kind::SpawnGateNote, p)?)
     });

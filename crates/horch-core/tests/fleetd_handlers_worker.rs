@@ -13,12 +13,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use horch_core::fleetd::fleet_runtime::adapters::clock_store;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{register, WorkerDeps};
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers};
 use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
+use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
+use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
+use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -115,6 +121,27 @@ fn world() -> World {
 }
 
 impl World {
+    /// The bind of `task` to 1 push attempt in `launching` of a new
+    /// `spawning` worker, as the dispatch of fleetd does it. Gives its
+    /// worker.
+    fn bind(&mut self, task: &str) -> String {
+        let tx = self.conn.transaction().unwrap();
+        let config = FleetConfig::default();
+        let git = Git::new("git");
+        let ctx = DispatchCtx {
+            jobs: JobCtx {
+                guard: Some(Generation(1)),
+                config: &config,
+                needs_you: &NeedsYouList,
+            },
+            clock: clock_store::read(&tx).unwrap(),
+            git: &git,
+        };
+        let bound = dispatch::bind(&tx, &ctx, task, "opus", &NewWorker::default()).unwrap();
+        tx.commit().unwrap();
+        bound.worker_id
+    }
+
     fn add(&self, title: &str, mode: WorktreeMode) -> String {
         let mut t = NewTask::work(title, &format!("docs/{title}.md"), "opus");
         t.ticket_snapshot = Some("# A ticket\n".into());
