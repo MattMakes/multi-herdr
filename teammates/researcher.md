@@ -14,7 +14,7 @@ fallbacks: [codex-sol]
 # thinking token (cezaar#40 researchers).
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 subagent_model: haiku
 inherit_plugins: false

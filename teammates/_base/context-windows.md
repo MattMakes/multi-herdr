@@ -8,7 +8,7 @@ description: >
 # Fleet default native auto-compact settings (docs/specs/context-policy.md).
 # Key: <harness>/<teammate name> first, then <harness>/<model>.
 windows:
-  claude/orchestrator: 300000
+  claude/orchestrator: 200000
   claude/opus: 200000
   claude/sonnet: 150000
   codex/gpt-5.6-sol: 200000
@@ -46,8 +46,11 @@ other harness takes the fresh-session route.
 
 ## Threshold
 
-horch watches `threshold = min(300000, floor(0.8 x native trigger))`.
-When the native trigger is unknown, the threshold is 300000.
+horch watches `threshold = min(135000, floor(0.8 x native trigger))`.
+When the native trigger is unknown, the threshold is 135000.
+The base is 135000 so that a session writes its handoff and is compacted
+at about 150000 tokens (operator request 2026-11-21: 90% of the work in the
+first 150000 tokens). A teammate's `compact_at` replaces the base.
 `horch teammates --check` fails a window that leaves less than 20000 tokens between threshold and native trigger.
 It checks every `windows` key by itself, whichever teammate it reaches.
 

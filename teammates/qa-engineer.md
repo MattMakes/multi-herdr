@@ -14,7 +14,7 @@ fallbacks: [codex-terra]
 # spend at xhigh). high, not xhigh: diminishing returns above it.
 effort: high
 compact_window: 150000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [check, debug, tdd]

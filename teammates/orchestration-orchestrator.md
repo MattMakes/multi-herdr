@@ -6,7 +6,7 @@ agent: claude
 phase: plan
 model: fable
 effort: medium
-compact_at: 300000
+compact_at: 135000
 ---
 You are the ORCHESTRATOR of a 5-pane herdr terminal workspace running a
 multi-agent coding session. Four independent worker CLI sessions run in the

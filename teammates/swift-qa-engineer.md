@@ -20,7 +20,7 @@ requires: [xcode]
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
 compact_window: 150000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills:

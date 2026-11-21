@@ -14,7 +14,7 @@ fallbacks: [codex-sol]
 # wrong "patched-around" verdict costs a rewrite of code that was right.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 # Edit stays allowed: fixing a site at its root is half of this seat's job.
 # The persona and the skill keep an audit read-only.
 permission_mode: auto

@@ -15,7 +15,7 @@ fallbacks: [codex-sol]
 # is pursued at full depth for a long time.
 effort: max
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [check, security-review]

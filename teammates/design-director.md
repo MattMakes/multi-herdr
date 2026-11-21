@@ -14,7 +14,7 @@ fallbacks: [codex-sol]
 # direction costs a build round per builder.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 skills: [art-direction, ui-taste, brand-identity]
 

@@ -118,7 +118,7 @@ effort: medium
 #   and its source. An operator overlay in ~/.config/horch/teammates/<name>.md
 #   replaces this whole entry, so copy these 2 lines into it.
 compact_window: 200000  # the fleet window for claude/opus
-compact_at: 300000
+compact_at: 135000
 
 # claude only. Sets CLAUDE_CODE_SUBAGENT_MODEL, i.e. the model this teammate's
 # OWN subagents run on. Only worth setting when the teammate delegates heavily

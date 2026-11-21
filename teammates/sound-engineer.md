@@ -16,7 +16,7 @@ system_prompt: sr_eng_system_prompt
 # high: each sound is a search over candidates, aimed and checked by ear.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [hark, sound-sourcing]

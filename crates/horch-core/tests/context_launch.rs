@@ -556,3 +556,49 @@ fn ctx_05_recorded_applied_matches_the_command() {
         assert_eq!(d.applied, codex_limit_flag(&args).is_some(), "{args:?}");
     }
 }
+
+#[test]
+fn ctx_28_every_claude_launch_carries_the_context_hooks() {
+    let w = World::new();
+    let ctx = w.ctx(&[]);
+    let env = LaunchEnv::from_context(&ctx);
+    let roster = Roster::builtin().unwrap();
+    let command_of = |hooks: &Value, event: &str| {
+        hooks[event][0]["hooks"][0]["command"]
+            .as_str()
+            .map(str::to_string)
+    };
+    for name in ["opus", "sonnet", "orchestrator", "architect-reviewer"] {
+        let teammate = roster.require(name).unwrap();
+        let cmd =
+            launch::command_with_skills_in(&env, teammate, Session::Unmanaged, "p", None, None)
+                .unwrap();
+        let settings = settings_arg(&argv(&cmd)).unwrap_or_else(|| panic!("{name}: no overlay"));
+        let hooks = &settings["hooks"];
+        assert_eq!(
+            command_of(hooks, "PostToolBatch").as_deref(),
+            Some("horch hook context"),
+            "{name}"
+        );
+        assert_eq!(
+            command_of(hooks, "PreCompact").as_deref(),
+            Some("horch hook pre-compact"),
+            "{name}"
+        );
+        assert_eq!(
+            command_of(hooks, "SessionStart").as_deref(),
+            Some("horch hook post-compact"),
+            "{name}"
+        );
+        assert_eq!(hooks["SessionStart"][0]["matcher"], "compact", "{name}");
+        assert_eq!(
+            hooks.as_object().map(|o| o.len()),
+            Some(3),
+            "{name}: only the 3 context hooks"
+        );
+    }
+    let codex = roster.require("codex-sol").unwrap();
+    let cmd =
+        launch::command_with_skills_in(&env, codex, Session::Unmanaged, "p", None, None).unwrap();
+    assert!(!argv(&cmd).iter().any(|a| a.contains("horch hook")));
+}

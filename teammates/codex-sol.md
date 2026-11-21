@@ -12,7 +12,7 @@ fallbacks: [opus]
 # builder level cezaar#40 settled on; raise it per spawn with --effort.
 effort: medium
 compact_window: 200000
-compact_at: 160000
+compact_at: 135000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]

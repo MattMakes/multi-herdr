@@ -1263,14 +1263,14 @@ mod tests {
             &[
                 ("role", "sonnet-1"),
                 ("tokens", "311225"),
-                ("threshold", "300000"),
+                ("threshold", "135000"),
                 ("handoff", handoff),
             ],
         );
         assert_eq!(f.typed(&pane), [want]);
         assert_eq!(
             f.w.events("r-1", EVENT_REQUESTED),
-            ["tokens 311225 threshold 300000"]
+            ["tokens 311225 threshold 135000"]
         );
 
         let again = f.run("sonnet-1", |a| a.request = true);
@@ -1411,14 +1411,14 @@ mod tests {
             f.w.history("r-1").last().unwrap(),
             &(
                 "compact-requested".to_string(),
-                "tokens 311225 threshold 300000".to_string()
+                "tokens 311225 threshold 135000".to_string()
             )
         );
         assert_eq!(
             f.w.history("r-2").last().unwrap(),
             &(
                 "context-warned".to_string(),
-                "tokens 311225 threshold 300000".to_string()
+                "tokens 311225 threshold 135000".to_string()
             )
         );
     }

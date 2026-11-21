@@ -13,7 +13,7 @@ fallbacks: [codex-terra]
 # round, so this seat gets the depth to confirm the cause before it edits.
 effort: high
 compact_window: 150000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [debug, tdd]

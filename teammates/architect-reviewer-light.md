@@ -14,7 +14,7 @@ fallbacks: [codex-sol]
 # round 1 at high already reviewed the whole change (trace-fixes TRF-30).
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 
 # Review is read-only, enforced by denying the editing tools. Not plan mode:
 # ExitPlanMode asks a human to approve, and there is no human at this pane.

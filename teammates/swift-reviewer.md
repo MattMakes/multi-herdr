@@ -21,7 +21,7 @@ fallbacks: [codex-sol]
 # architect-reviewer.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 
 # Review is read-only, enforced by denying the editing tools, the same as
 # architect-reviewer.

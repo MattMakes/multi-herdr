@@ -703,6 +703,14 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
 }
 
 pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
+    context_warning(src, record_id, "warning")
+}
+
+pub(crate) fn hook_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
+    context_warning(src, record_id, "request")
+}
+
+fn context_warning(src: &Sources, record_id: &str, worker_key: &str) -> Result<Option<String>> {
     let record = src.ledger.get(record_id)?;
     let Some((row, tokens)) = warn_row(src, record) else {
         return Ok(None);
@@ -710,7 +718,7 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
     let key = if row.record.is_orchestrator() {
         "warning-orchestrator"
     } else {
-        "warning"
+        worker_key
     };
     let tokens = tokens.to_string();
     let threshold = row.threshold.to_string();
@@ -1479,7 +1487,7 @@ mod tests {
             let vars = BTreeMap::from([
                 ("role", "sonnet-1"),
                 ("tokens", "311225"),
-                ("threshold", "300000"),
+                ("threshold", "135000"),
                 ("handoff", "ai_docs/handoffs/sonnet-1-whats-next.md"),
             ]);
             prompts::context_message(&w.roster, "warning", &vars).unwrap()
@@ -1499,7 +1507,7 @@ mod tests {
                 first.as_deref(),
                 Some(
                     "NOTE: Context warning. Your context is 311225 tokens. Your threshold is \
-                     300000 tokens. This horch note call is your stopping point. Do not start \
+                     135000 tokens. This horch note call is your stopping point. Do not start \
                      new work. Write ai_docs/handoffs/sonnet-1-whats-next.md with the \
                      horch:handoff skill. Then run: horch note \"handoff: \
                      ai_docs/handoffs/sonnet-1-whats-next.md\". Then send: horch tell \
@@ -1559,7 +1567,7 @@ mod tests {
                 "r-1",
                 "2026-10-06T10:00:00Z",
                 policy::EVENT_WARNED,
-                "tokens 311225 threshold 300000",
+                "tokens 311225 threshold 135000",
             );
             assert_eq!(note_in(&w, "r-1", "x"), None, "asked in this cycle");
             w.event_at(

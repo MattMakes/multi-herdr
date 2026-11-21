@@ -11,7 +11,7 @@ fallbacks: [opus]
 # round 1 at high already reviewed the whole change (trace-fixes TRF-30).
 effort: medium
 compact_window: 200000
-compact_at: 160000
+compact_at: 135000
 skills: [code-review, security-review]
 available_skills: [codebase-design]
 # auto, not plan: plan maps to `-s read-only -a on-request`, and an approval

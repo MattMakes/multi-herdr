@@ -17,7 +17,7 @@ fallbacks: []
 # medium: it writes from an approved behavior spec.
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 mcp_servers: {}

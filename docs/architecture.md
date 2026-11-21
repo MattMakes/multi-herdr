@@ -91,6 +91,7 @@ in `harness/capabilities.rs`.
 | `cost/` | the report tables and rendering of `horch cost` |
 | `delivery_probe.rs` | the delivery checks of `horch fleet` and `horch doctor` |
 | `doctor.rs` | `horch doctor` |
+| `hook.rs` | `horch hook` (hidden; answers the 3 Claude Code context hooks of a fleet pane) |
 | `install.rs` | `horch install` (copies `horch`, and deletes a retired `multi-herdr-dataset`) |
 | `layoutcmd.rs` | `horch layout` |
 | `sessionscmd.rs` | `horch sessions`, `horch ledger legacy` (the old session-ledger plumbing) |

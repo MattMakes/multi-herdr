@@ -255,7 +255,7 @@ work. These commands are on your PATH:
                 "worker-{name}-{label} should end its horch note bullet exactly once"
             );
             assert_eq!(
-                trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
+                ctx_hooks_worker_block(trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
                     .replace(note_end, &format!("{note_end}{skills_read}"))
                     .replace(
                         lifecycle_end,
@@ -265,7 +265,7 @@ work. These commands are on your PATH:
                     )
                     .replace(old_wait_words, new_wait_words)
                     .replace(old_wait_reply, new_wait_reply)
-                    .replace(old_scope_wait, new_scope_wait)), label == "idle"),
+                    .replace(old_scope_wait, new_scope_wait)), label == "idle")),
                 got,
                 "worker-{name}-{label} drifted outside the named sanctioned blocks"
             );
@@ -566,7 +566,10 @@ The task ledger holds the work. You queue tasks. Workers claim them.
         .replace(context, &format!("{usage_limits}{context_watch}{context}"))
         .replace(old_blocked_wait, new_blocked_wait);
     assert_eq!(
-        trf_46_orchestrator_blocks(fleet18_orchestrator_blocks(expected), false),
+        ctx_hooks_orchestrator_block(trf_46_orchestrator_blocks(
+            fleet18_orchestrator_blocks(expected),
+            false
+        )),
         got,
         "the orchestrator briefing changed outside the named sanctioned blocks"
     );
@@ -1206,6 +1209,47 @@ fn cms_blocks(mut expected: String, blocks: &[(&str, &str)]) -> String {
         expected = expected.replace(old, new);
     }
     expected
+}
+
+fn ctx_hooks_block(expected: String, was: &str, added: &str) -> String {
+    assert_eq!(
+        expected.matches(was).count(),
+        1,
+        "sanctioned block preimage missing"
+    );
+    expected.replace(was, &format!("{was}{added}"))
+}
+
+fn ctx_hooks_worker_block(expected: String) -> String {
+    ctx_hooks_block(
+        expected,
+        r###""NOTE: Context warning", do steps 2 to 5 at once. That call is your
+stopping point.
+"###,
+        r###"In a Claude Code pane, the "NOTE: Your context is" line also comes by
+itself after a tool call when you reach your threshold. Do steps 1 to 5.
+After every compaction, a line that starts "NOTE: Handoff" gives you your
+handoff file. Continue from its next step. Do not read the file again.
+"###,
+    )
+}
+
+fn ctx_hooks_orchestrator_block(expected: String) -> String {
+    ctx_hooks_block(
+        expected,
+        r###"   turn for it. Go on with your work and try again at the next stopping
+   point.
+"###,
+        r###"In a Claude Code pane, hooks do 3 things with no command from you:
+- A worker at its threshold gets its "NOTE: Your context is" line after a
+  tool call. Its row then shows "requested". Do not ask it again before
+  the row is stale.
+- You get a line that starts "NOTE: Context warning" after a tool call
+  when your own row is "over". Do steps 1 to 3 at your next stopping point.
+- After every compaction, the session gets a line that starts
+  "NOTE: Handoff", then its handoff file. Do not read the file again.
+"###,
+    )
 }
 
 fn trf_46_worker_blocks(mut expected: String, idle: bool) -> String {

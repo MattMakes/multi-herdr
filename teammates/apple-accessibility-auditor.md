@@ -19,7 +19,7 @@ fallbacks: [codex-terra]
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
 compact_window: 150000
-compact_at: 300000
+compact_at: 135000
 
 # An audit is read-only, enforced by denying the editing tools, the same as
 # architect-reviewer.

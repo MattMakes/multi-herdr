@@ -16,7 +16,7 @@ fallbacks: [codex-sol]
 # always complete specs. Raise one spawn with --effort.
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

@@ -18,7 +18,7 @@ fallbacks: []
 # Opus, not Sonnet (trace-fixes T-58).
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 mcp_servers: {}

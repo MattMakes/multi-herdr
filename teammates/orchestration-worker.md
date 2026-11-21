@@ -6,7 +6,7 @@ agent: claude
 phase: implementation
 permission_mode: auto
 effort: medium
-compact_at: 300000
+compact_at: 135000
 ---
 You are worker '{role}' in a herdr multi-agent coding workspace. An
 orchestrator (a separate Claude session, running Fable) runs beside you in

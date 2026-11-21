@@ -15,7 +15,7 @@ fallbacks: [codex-sol]
 # Not for first drafts: reasoning tokens spent on preliminary ideas are waste.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [debug, security-review, tdd]

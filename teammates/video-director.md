@@ -15,7 +15,7 @@ system_prompt: sr_eng_system_prompt
 # high, like the other planners: every builder works from this plan.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [video-direction, video-storyboard]

@@ -151,7 +151,7 @@ part_a() {
     skip "A2 scratch config dir" "claude printed no window in a scratch CLAUDE_CONFIG_DIR (no sign-in there?)"
   else
     local key want tm
-    for key in claude/sonnet:150000:sonnet claude/opus:200000:opus claude/orchestrator:300000:orchestrator; do
+    for key in claude/sonnet:150000:sonnet claude/opus:200000:opus claude/orchestrator:200000:orchestrator; do
       want=${key#*:}; want=${want%%:*}; tm=${key##*:}
       local row; row=$(awk -v t="$tm" 'NR > 1 && $1 == t' "$S/windows-scratch.txt")
       local m s src; read -r _ _ m s src _ <<<"$row"

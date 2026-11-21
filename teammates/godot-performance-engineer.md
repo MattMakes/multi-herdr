@@ -24,7 +24,7 @@ fallbacks: [codex-sol]
 # hot-spot costs a second capture. Same as ue-qa-engineer.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills:

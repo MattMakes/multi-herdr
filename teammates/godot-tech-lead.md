@@ -21,7 +21,7 @@ fallbacks: [codex-sol]
 # autoload costs every builder after it.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills:

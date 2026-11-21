@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::execution::legacy::{LedgerWindow, LedgerWindowSource};
 use crate::harness::capabilities::TriggerRule;
 
-pub const BASE_THRESHOLD: u64 = 300_000;
+pub const BASE_THRESHOLD: u64 = 135_000;
 
 pub const HEADROOM_FLOOR: u64 = 20_000;
 

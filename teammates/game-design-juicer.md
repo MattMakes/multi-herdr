@@ -15,7 +15,7 @@ fallbacks: [opus]
 # high on the opus fallback.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [game-juice]

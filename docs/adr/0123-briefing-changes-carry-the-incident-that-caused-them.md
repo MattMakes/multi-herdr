@@ -47,3 +47,8 @@ worker briefing differs from its golden in exactly 9 places.
   worker run any check command outside its sandbox. It is replaced by 1
   allow rule per worker subcommand and 3 forbidden rules for the
   subcommands that take a check command.
+- Context hooks block (2026-11-21, operator request; ADR 0197): Claude Code
+  panes get the context ask and the handoff file from hooks. Both briefings
+  say so in 1 block each, so a worker does not wait for a line from the
+  orchestrator and does not read its handoff file a second time
+  (`ctx_hooks_worker_block`, `ctx_hooks_orchestrator_block`).

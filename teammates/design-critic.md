@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 # high, like the other reviewers: a missed finding costs a fix round.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 
 # Review is read-only, enforced by denying the editing tools, as on
 # architect-reviewer. Write stays: the critique is a file, and the persona

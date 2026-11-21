@@ -11,7 +11,7 @@ model: gpt-6-astra
 # high: open design is where reasoning depth pays. Raise one spawn with
 # --effort.
 effort: high
-compact_at: 300000
+compact_at: 135000
 skills: [creative-council]
 # auto, not plan: plan maps to `-s read-only -a on-request`, and an approval
 # prompt stalls a pane nobody watches. codex has no per-tool deny, so "write

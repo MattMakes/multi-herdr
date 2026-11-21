@@ -18,7 +18,7 @@ requires: [xcode]
 # at the orchestrator.
 effort: medium
 compact_window: 150000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills:

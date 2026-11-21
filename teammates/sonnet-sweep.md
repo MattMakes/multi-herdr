@@ -15,7 +15,7 @@ fallbacks: [codex-terra]
 # Opus at high costs fewer tokens than this seat.
 effort: max
 compact_window: 150000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills: [execute, check]

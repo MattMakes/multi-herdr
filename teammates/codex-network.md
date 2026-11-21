@@ -12,7 +12,7 @@ fallbacks: [opus]
 # same builder level as codex-sol.
 effort: medium
 compact_window: 200000
-compact_at: 160000
+compact_at: 135000
 # Every codex write pane now runs the fleet_write profile, which has the
 # network on and keeps writes inside the pane's folder, so this teammate no
 # longer differs from codex-sol in what it can reach. acceptEdits maps to

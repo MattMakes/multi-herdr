@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 # high: plans and product calls are where a wrong turn is expensive.
 effort: high
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 subagent_model: haiku
 

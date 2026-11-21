@@ -1372,6 +1372,15 @@ mod tests {
         }
     }
 
+    fn fleet_hooks() -> serde_json::Value {
+        let run = |event: &str| serde_json::json!({"type": "command", "command": format!("horch hook {event}"), "timeout": 20});
+        serde_json::json!({
+            "PostToolBatch": [{"hooks": [run("context")]}],
+            "PreCompact": [{"hooks": [run("pre-compact")]}],
+            "SessionStart": [{"matcher": "compact", "hooks": [run("post-compact")]}],
+        })
+    }
+
     #[test]
     fn claude_fresh_carries_session_and_mode() {
         let (_home, env) = fake_home("{}");
@@ -1399,7 +1408,7 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"hooks":{"PostToolBatch":[{"hooks":[{"command":"horch hook context","timeout":20,"type":"command"}]}],"PreCompact":[{"hooks":[{"command":"horch hook pre-compact","timeout":20,"type":"command"}]}],"SessionStart":[{"hooks":[{"command":"horch hook post-compact","timeout":20,"type":"command"}],"matcher":"compact"}]},"includeCoAuthoredBy":false,"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -2349,6 +2358,7 @@ mod tests {
                 "remoteControlAtStartup": false,
                 "includeCoAuthoredBy": false,
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
+                "hooks": fleet_hooks(),
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                     "herdr-orchestrator": "off",
@@ -2375,6 +2385,7 @@ mod tests {
             serde_json::json!({"remoteControlAtStartup": false,
                 "includeCoAuthoredBy": false,
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
+                "hooks": fleet_hooks(),
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                 "herdr-orchestrator": "off",
@@ -2410,6 +2421,7 @@ mod tests {
                 "remoteControlAtStartup": false,
                 "includeCoAuthoredBy": false,
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
+                "hooks": fleet_hooks(),
                 "enabledPlugins": {"skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                     "dev-prime": "off",

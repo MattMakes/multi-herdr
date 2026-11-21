@@ -6,6 +6,7 @@ pub mod context;
 pub mod cost;
 pub mod delivery_probe;
 pub mod doctor;
+pub mod hook;
 pub mod install;
 pub mod layoutcmd;
 pub mod mail;

@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+- Every fleet session now works in the first 150,000 tokens of its window.
+  horch asks a session to write its handoff at 135,000 tokens (it was
+  300,000 for Claude and 160,000 for Codex `gpt-5.6-sol`), so the session is
+  compacted at about 150,000. Every teammate file states the new
+  `compact_at`. The fleet window of the Claude orchestrator is 200,000 (it
+  was 300,000). Your own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still wins over the
+  fleet window.
+- Claude Code panes use 3 hooks for compaction, with no turn of the
+  orchestrator. After a batch of tool calls, `horch hook context` asks a
+  session that is over its threshold to write its handoff file. Before a
+  compaction, `horch hook pre-compact` gives the summary its keep-list.
+  After a compaction, `horch hook post-compact` puts the handoff file back
+  into the context, so the session does not read it again. This also covers a
+  compaction that Claude Code starts by itself. The hooks are in
+  `teammates/_base/harness-defaults.md`. They are unit-tested and were not
+  yet run in a live fleet.
+
 ## v0.5.2 - 2026-11-21
 
 - Fix: the video, design and `ui-prop-tester` tools no longer leave copies of

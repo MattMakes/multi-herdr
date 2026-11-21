@@ -199,6 +199,10 @@ A line that starts "NOTE: Your context is" asks you to prepare:
 If horch ledger progress prints a line that starts
 "NOTE: Context warning", do steps 2 to 5 at once. That call is your
 stopping point.
+In a Claude Code pane, the "NOTE: Your context is" line also comes by
+itself after a tool call when you reach your threshold. Do steps 1 to 5.
+After every compaction, a line that starts "NOTE: Handoff" gives you your
+handoff file. Continue from its next step. Do not read the file again.
 If it prints a line that starts "NOTE: Context handoff", you are still
 over your threshold after 1 compaction. Do not wait for a compaction.
 Write your handoff file, then run the horch ledger handoff line it prints.

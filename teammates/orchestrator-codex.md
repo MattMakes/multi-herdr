@@ -8,7 +8,7 @@ phase: plan
 skills: [orchestrate, make-videos]
 model: gpt-6-astra
 effort: medium
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 # Worker reports reach this pane through `horch channel serve`.
 # The relay delivers reports without terminal text injection.

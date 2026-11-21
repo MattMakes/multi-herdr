@@ -657,17 +657,26 @@ The native window, first match wins:
    `<harness>/<model>`): the fallback for overlays and substitutions.
 4. The harness default.
 
-The values in the files are the thresholds of 2026-10-07 on the operator's
-machine: 300000 for Claude (the operator's 500000 window), 160000 for Codex
-`gpt-5.6-sol`, 120000 for `gpt-5.6-terra`, and the computed value for pi,
-Prime and opencode. `horch context --windows` shows each teammate's
-`compact_at` and its source (`teammate` or `fleet base`) beside the
-threshold.
+The values in the files are those of 2026-11-21. The operator asked that
+every worker does 90% of its work in the first 150000 tokens, so
+`compact_at` is 135000 everywhere: a session that is asked at 135000
+finishes its step, writes its handoff and is compacted at about 150000.
+Where 80% of the native trigger is lower, the file states that lower number
+(120000 for Codex `gpt-5.6-terra`, 112000 for `opencode-pickle`). Before
+that date the Claude value was 300000 and Codex `gpt-5.6-sol` was 160000.
+`compact_window` is 200000 for every Claude teammate on opus or fable, the
+orchestrator included, and 150000 on sonnet. `horch context --windows` shows
+each teammate's `compact_at` and its source (`teammate` or `fleet base`)
+beside the threshold.
+
+In a Claude Code pane 3 hooks do the asking and the reading back, with no
+turn of the orchestrator: see "Harness defaults" and
+`docs/specs/context-policy.md` §4.6.
 
 `horch teammates --check` fails:
 
 - a built-in teammate on a watched harness without `compact_at`. An
-  overlay file without it gets a warning, and the fleet base 300000
+  overlay file without it gets a warning, and the fleet base 135000
   applies;
 - a window that leaves less than 20000 tokens (the headroom floor) between
   the threshold and the native trigger.

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check (part C) has run: OpenCode compacts in place; pi and Prime stay on the fresh route. Slice 3 (`compact_at`, the native count; u11a) is implemented. |
+| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check (part C) has run: OpenCode compacts in place; pi and Prime stay on the fresh route. Slice 3 (`compact_at`, the native count; u11a) is implemented. Slice 4 (2026-11-21, operator request): the watch base is 135,000, and every Claude Code pane gets 3 hooks that ask for the handoff, feed the summary and give the handoff back (§4.6). |
 | Date | 2026-10-06 |
 | Authors | product-lead-1 (requirements), staff-engineer-1 and staff-engineer-2 (design), architect-reviewer-1 (review), backend-developer units u0 to u7 (build). |
 | Evidence | The W1 requirements and design (`ai_docs/plans/wave2/w1/requirements.md`, `design.md`), the 14 review decisions (`review-decisions.md`), and the live check `scripts/live/context.sh` with its result in [`docs/live-checks/context.md`](../live-checks/context.md). [SEEN] marks a fact read on the operator's Mac on 2026-10-06. |
@@ -45,9 +45,9 @@ Non-goals (this time):
 - N1. A watcher process or daemon, or a push signal from herdr. The
   orchestrator's checkpoints and a worker's own `horch note` cover working
   sessions.
-- N2. Harness hooks and extensions (Claude `SessionStart`/`PreCompact`,
-  Codex `hooks.json`, an OpenCode compaction plugin, a pi extension, a Prime
-  `compact` skill).
+- N2. Harness hooks and extensions for Codex (`hooks.json`), OpenCode (a
+  compaction plugin), pi and Prime (a `compact` skill). Claude Code hooks
+  were a non-goal until slice 4; they are now §4.6.
 - N3. Changing the operator's `~/.claude/settings.json`,
   `~/.codex/config.toml` or any global harness config. Fleet values land per
   launch.
@@ -65,7 +65,7 @@ Non-goals (this time):
 
 ```
 native trigger  = the harness's own auto-compact trigger (rules below)
-base            = the teammate's compact_at, else 300,000 (CTX-21)
+base            = the teammate's compact_at, else 135,000 (CTX-21)
 threshold       = min(base, floor(0.8 x native))          base when native is unknown
 headroom        = native - threshold                      at least 20,000 (roster check)
 ```
@@ -78,13 +78,19 @@ Native trigger rules (`compaction::window::native_trigger`):
 | codex | Codex limit | with the transcript's window `w`: `min(setting or no limit, floor(w x 18 / 19))`; without `w`: the setting (unknown when also unset) |
 | pi, prime | window minus reserve | `min(setting or W, W) - 16,384`; `W` from the model table (`anthropic/claude-opus-5-5` and `anthropic/claude-opus-5` 1,000,000, `ollama/qwen3.8` 262,144) |
 | opencode | per model | `opencode/big-pickle` 140,000; `opencode/nemotron-3.5-lightning-free` 230,144; `opencode/nemotron-3-ultra-free` 968,000 |
-| antigravity, none | unknown | threshold 300,000; the row is `not-read` |
+| antigravity, none | unknown | threshold 135,000; the row is `not-read` |
 
 `compact_at` is a teammate frontmatter key only (no env variable).
 `horch teammates --check` rejects a value outside 50,000 to 1,000,000.
 `horch context`, `horch context --windows`, `horch compact` and the
 `horch note` check all use the same base. The tables below assume no
 `compact_at`.
+
+The base is 135,000 because the operator asked (2026-11-21) that every
+worker does 90% of its work in the first 150,000 tokens of its window. A
+session that is asked at 135,000 finishes its step, writes its handoff
+(about 10,000 to 40,000 tokens, not measured) and is compacted at about
+150,000. Before slice 4 the base was 300,000.
 
 The 0.8 factor leaves the session room to finish its step and write a
 handoff (about 10,000 to 40,000 tokens, not measured), and the orchestrator
@@ -101,23 +107,29 @@ The operator sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000` in
 
 | tier (teammates) | setting | source | native trigger | threshold | headroom |
 |---|---|---|---|---|---|
-| Claude orchestrator, every flavor | 500,000 | operator `~/.claude/settings.json` | 467,000 | 300,000 | 167,000 |
-| Claude `opus` (48) | 500,000 | operator | 467,000 | 300,000 | 167,000 |
-| Claude `sonnet` (13) | 500,000 | operator | 467,000 | 300,000 | 167,000 |
-| Codex `gpt-5.6-sol` (5) | 200,000 | fleet, key `codex/gpt-5.6-sol` | 200,000 | 160,000 | 40,000 |
-| Codex `gpt-5.6-terra` (1) | 150,000 | fleet, key `codex/gpt-5.6-terra` | 150,000 | 120,000 | 30,000 |
-| Codex `gpt-5.6-luna` (1) | - | harness | 244,800 with window 258,400 (unknown before the first `token_count`) | 195,840 (300,000 while unknown) | 48,960 |
+| Claude orchestrator, every flavor | 500,000 | operator `~/.claude/settings.json` | 467,000 | 135,000 | 332,000 |
+| Claude `opus` | 500,000 | operator | 467,000 | 135,000 | 332,000 |
+| Claude `sonnet` | 500,000 | operator | 467,000 | 135,000 | 332,000 |
+| Codex `gpt-5.6-sol` | 200,000 | fleet, key `codex/gpt-5.6-sol` | 200,000 | 135,000 | 65,000 |
+| Codex `gpt-5.6-terra` | 150,000 | fleet, key `codex/gpt-5.6-terra` | 150,000 | 120,000 | 30,000 |
+| Codex `gpt-5.6-luna` | - | harness | 244,800 with window 258,400 (unknown before the first `token_count`) | 135,000 | 109,800 |
 | `orchestrator-codex` on `gpt-6-astra` | - | harness | as luna | as luna | as luna |
-| `orchestrator-codex` on `gpt-5.6-sol` (`horch fleet sol`) | 200,000 | fleet, key `codex/gpt-5.6-sol`: Codex has no orchestrator key, so the Codex orchestrator takes its model's window | 200,000 | 160,000 | 40,000 |
-| `opencode-ultra` (slice 2) | - | harness | 968,000 | 300,000 | 668,000 |
-| `opencode-lightning` (slice 2) | - | harness | 230,144 | 184,115 | 46,029 |
+| `orchestrator-codex` on `gpt-5.6-sol` (`horch fleet sol`) | 200,000 | fleet, key `codex/gpt-5.6-sol`: Codex has no orchestrator key, so the Codex orchestrator takes its model's window | 200,000 | 135,000 | 65,000 |
+| `opencode-ultra` (slice 2) | - | harness | 968,000 | 135,000 | 833,000 |
+| `opencode-lightning` (slice 2) | - | harness | 230,144 | 135,000 | 95,144 |
 | `opencode-pickle` (slice 2) | - | harness | 140,000 | 112,000 | 28,000 |
-| `pi` `ollama/qwen3.8` (slice 2) | - | harness | 245,760 | 196,608 | 49,152 |
-| `prime` `anthropic/claude-opus-5-5` (slice 2) | 200,000 | fleet (`compact_window` in `teammates/prime.md`) | 183,616 | 146,892 | 36,724 |
+| `pi` `ollama/qwen3.8` (slice 2) | - | harness | 245,760 | 135,000 | 110,760 |
+| `prime` `anthropic/claude-opus-5-5` (slice 2) | 200,000 | fleet (`compact_window` in `teammates/prime.md`) | 183,616 | 135,000 | 48,616 |
 | `antigravity` | - | - | unknown | none (`not-read`) | - |
 
-The operator's 500k Claude window plus the 300k watch is the policy the
-operator asked for.
+The settings in this table were read on 2026-10-06; the thresholds are those
+of slice 4. The operator's 500k Claude window is the operator's own value, so
+horch does not change it (G4): on this machine a Claude pane is asked at
+135,000 and compacted by horch at its next stopping point, and Claude Code's
+own auto-compact stays far above, at 467,000. To make about 150,000 a hard
+limit there too, the operator lowers or removes
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `~/.claude/settings.json`; the fleet
+values of §3.2 then apply.
 
 ### 3.2 Fleet defaults (where the operator sets nothing)
 
@@ -127,13 +139,17 @@ teammate's own `compact_window` wins over the file.
 
 | key | setting | native trigger | threshold | headroom |
 |---|---|---|---|---|
-| `claude/orchestrator` | 300,000 | 267,000 | 213,600 | 53,400 |
+| `claude/orchestrator` | 200,000 | 167,000 | 133,600 | 33,400 |
 | `claude/opus` | 200,000 | 167,000 | 133,600 | 33,400 |
 | `claude/sonnet` | 150,000 | 117,000 | 93,600 | 23,400 |
-| Claude with no value anywhere | - | 967,000 | 300,000 | 667,000 |
-| `codex/gpt-5.6-sol` | 200,000 | 200,000 | 160,000 | 40,000 |
+| Claude with no value anywhere | - | 967,000 | 135,000 | 832,000 |
+| `codex/gpt-5.6-sol` | 200,000 | 200,000 | 135,000 | 65,000 |
 | `codex/gpt-5.6-terra` | 150,000 | 150,000 | 120,000 | 30,000 |
-| `prime` (`compact_window: 200000`, slice 2) | 200,000 | 183,616 | 146,892 | 36,724 |
+| `prime` (`compact_window: 200000`, slice 2) | 200,000 | 183,616 | 135,000 | 48,616 |
+
+`claude/orchestrator` was 300,000 before slice 4. With the hooks of §4.6 a
+native compaction keeps the task state, so the orchestrator's backstop can
+sit as low as a worker's.
 
 Example of the floor: a Claude window of 100,000 gives native 67,000,
 threshold 53,600 and headroom 13,400, so the roster check fails it.
@@ -368,6 +384,63 @@ message as the argument, so the keep-list holds there even when a harness
 ignores the block. The live check plants a canary in the block and reports
 per harness whether a summary honours it.
 
+### 4.6 Claude Code hooks (slice 4; CTX-28, CTX-29, CTX-30)
+
+Every Claude pane that horch launches gets 3 hooks through the `--settings`
+overlay. They are data: the `hooks` entry in
+`teammates/_base/harness-defaults.md`. Each runs `horch hook <event>`, which
+reads the hook input on stdin, finds its session by `HORCH_RECORD_ID`, prints
+at most 1 text and always exits 0. A pane with no record id (a report
+worker, the smoke agent) gets no output. The facts below were read from the
+Claude Code hooks reference and checked in the 2.1.330 CLI on 2026-11-21.
+
+| step | Claude Code event | command | what it does |
+|---|---|---|---|
+| 1. ask for the handoff | `PostToolBatch` (after each batch of tool calls, before the next model request) | `horch hook context` | Builds the session's row as `horch context` does. When the state is `over`, it records `context-warned` and returns the `request` line (a worker) or `warning-orchestrator` (the orchestrator) as `hookSpecificOutput.additionalContext`, so the model reads it in its next request. Once per compaction cycle, by rule A. The row then shows `requested` |
+| 2. feed the summary | `PreCompact` (`manual` and `auto`) | `horch hook pre-compact` | When the compaction has no argument (Claude Code's own auto-compact, or a bare `/compact`), it prints the `instructions` or `instructions-orchestrator` keep-list; Claude Code uses the stdout as instructions for the summary. When `custom_instructions` is set (the horch job types the keep-list itself) it prints nothing. It never blocks |
+| 3. give the handoff back | `SessionStart`, matcher `compact` | `horch hook post-compact` | After every compaction, native or horch-driven, it prints the `hydrate` line and then the handoff file, cut at 8,000 characters with the path of the rest. Claude Code adds the stdout to the context before the next prompt. With no current handoff file (missing, or older than the newest ask, or with no ask older than 60 minutes: the rule of CTX-14) it prints `hydrate-missing` |
+
+The order the operator asked for is: before the compaction, write the
+handoff; compact; after it, read the handoff back. Step 1 is the "before":
+a `PreCompact` hook is a command and cannot make the model write a file, and
+`PostCompact` output is not added to the context, so the ask moves 1 step
+earlier and the read-back uses `SessionStart`. Because the threshold is at
+most 0.8 of the native trigger (§3), step 1 always comes before Claude Code's
+own auto-compact.
+
+What does not change: the worker still writes its handoff with the
+`horch:handoff` skill, records it with `horch note` (which starts the
+compaction job, §4.1) and sends `COMPACT-READY`; the orchestrator's
+checkpoint (`horch context --over`) stays as the watch for every other
+harness and as the fallback when a pane has no hooks. A hooked worker's row
+is `requested` when the orchestrator looks, so the orchestrator spends no
+turn on the ask. The `resume` line now tells the session to read its handoff
+only when no `NOTE: Handoff` line is above it.
+
+Why `PreCompact` never blocks. Exit code 2 blocks a compaction, but a
+blocked auto-compact is counted: the 2.1.330 CLI stops trying after 3 blocks
+in a row, and a blocked reactive compaction fails the request. The model also
+needs 2 requests after a block before it can have written the file. So a
+block could switch auto-compact off for the session.
+
+Limits:
+
+- A teammate with a settings *file* (not inline JSON) replaces the whole
+  overlay and gets no hooks. A teammate turns 1 hook off by setting the same
+  key path, for example `settings: {"hooks": {"PostToolBatch": []}}`.
+- Claude Code holds hooks back until the workspace trust dialog is accepted;
+  horch already accepts it for fleet panes (`harness/trust.rs`).
+- `disableAllHooks` or `allowManagedHooksOnly` in the operator's or the
+  organization's settings switches the 3 hooks off. The protocol of §4.1
+  still works then.
+- The transcript can lag the conversation in memory, so the ask can come 1
+  batch late.
+- Hook stdout is capped at 10,000 characters by Claude Code; horch cuts the
+  handoff at 8,000.
+- The hooks have not run in a live fleet yet: `scripts/live/context.sh` has
+  no step for them. Until that check passes on the operator's machine, treat
+  §4.6 as built and unit-tested, not as proved.
+
 ## 5. CLI contract
 
 ```
@@ -387,11 +460,11 @@ row is `threshold(policy::watch_base(<the teammate's compact_at>), native)`.
 
 ```
 ROLE          HARNESS  MODEL             CONTEXT     WINDOW   NATIVE  SOURCE          THRESHOLD  LAST COMPACT              COMPACTIONS  STATE
-orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  0n/1h        ok
-codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             160,000  -                         0n/0h        over
-opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  1n/0h        pending
-sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    300,000  -                         0n/0h        over
-sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    300,000  -                         -            no-transcript
+orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    135,000  2026-09-20T10:05:00.000Z  0n/1h        ok
+codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             135,000  -                         0n/0h        over
+opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    135,000  2026-09-20T10:05:00.000Z  1n/0h        pending
+sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    135,000  -                         0n/0h        over
+sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    135,000  -                         -            no-transcript
 reasons:
   sonnet-2: no-transcript: no transcript found
 ```
@@ -595,7 +668,8 @@ operator may copy the whole file to
 placeholders `{role}`, `{tokens}`, `{threshold}`, `{handoff}`, `{pre}`,
 `{post}`, `{step}`, `{reason}`, `{log}`. Each message is 1 line (a newline
 would submit early). Keys: `request`, `warning`, `warning-orchestrator`,
-`instructions`, `instructions-orchestrator`, `resume`, `reported`, `failed`.
+`instructions`, `instructions-orchestrator`, `resume`, `resume-orchestrator`,
+`hydrate`, `hydrate-orchestrator`, `hydrate-missing`, `reported`, `failed`.
 Operators do not copy this file; `horch teammates --check` warns when an
 overlay replaces it. The briefings name these prefixes, and each starts (or
 is in) the matching message:
@@ -605,6 +679,7 @@ is in) the matching message:
 | `NOTE: Your context is` | starts `request` |
 | `NOTE: Context warning` | starts `warning`, `warning-orchestrator` |
 | `NOTE: COMPACT-READY` | `request` and `warning` contain `[{role}] NOTE: COMPACT-READY {handoff}` |
+| `NOTE: Handoff` | starts `hydrate`, `hydrate-orchestrator`, `hydrate-missing`; `resume` and `resume-orchestrator` name it |
 | `[horch] NOTE:` | starts `reported` |
 | `[horch] BLOCKED:` | starts `failed` |
 
@@ -772,7 +847,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-04 | An unreadable session shows `no-session`, `no-transcript`, `not-read` or `unknown`, never a number, with a 1-line reason. | W1 | ctx_04_no_session_id_is_no_session, ctx_04_missing_transcript_is_no_transcript, ctx_04_harness_without_reader_is_not_read, ctx_04_states_print_a_reason_line, ctx_04_opencode_without_sqlite3_is_not_read |
 | CTX-05 | Every fleet pane runs with its effective native window: the operator's value where any operator source sets one, else the fleet default of its tier. horch never overrides an operator value and never edits operator files. The launch records the decision. Prime (slice 2): each launch gets its own agent dir (§3.3): source dir from the teammate env, then the inherited value, then `~/.prime/agent`, a launch dir under the state root ignored; `*.lock` and `*.tmp` not linked; `auth.json` always linked; `apiKeys` dropped; bounded reads of regular files only; the dir removed when the daemon stops; old dirs swept. Prime daemon (0.10.0): the socket in `<launch>/prime-agent-<uid>/` (path at most 103 bytes), stopped with `TMPDIR=<launch>/ prime-agent shutdown --force --json` (counted only when `stopped` names the socket), else SIGTERM only to a pid `status` names twice that started after the launch; no pid: left running with a log line; both launch dir layouts swept; never a daemon horch did not start. | W1 | ctx_05_claude_settings_chain_precedence, ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value, ctx_05_codex_operator_limit_from_profile_or_top_level, ctx_05_codex_fleet_limit_flag_only_without_operator_value, ctx_05_launch_records_window_decision, ctx_05_old_ledger_loads, ctx_05_recorded_applied_matches_the_command, ctx_05_prime_agent_dir_links_and_fleet_models, ctx_05_prime_operator_override_wins, ctx_05_prime_inherited_agent_dir_is_the_source, ctx_05_prime_launch_records_the_applied_window, ctx_05_prime_teammate_agent_dir_is_the_source, ctx_05_prime_inherited_launch_dir_is_ignored, ctx_05_prime_transient_entries_and_missing_auth, ctx_05_prime_settings_copy_drops_api_keys, ctx_05_prime_project_fifo_does_not_block, ctx_05_prime_finish_removes_the_agent_dir, ctx_05_prime_launch_sweeps_old_agent_dirs, ctx_05_prime_each_launch_reserves_its_own_socket_and_sessions, ctx_05_prime_install_refuses_a_long_socket_path, ctx_05_prime_shutdown_counts_only_when_it_names_this_socket, ctx_05_prime_finish_stops_with_a_scoped_shutdown, ctx_05_prime_finish_stops_only_a_daemon_this_launch_started, ctx_05_prime_status_with_no_pid_leaves_the_files, ctx_05_prime_finish_without_a_daemon_runs_no_stop, ctx_05_prime_sweep_handles_both_layouts, ctx_05_prime_finish_pane_stops_only_that_panes_daemon |
 | CTX-06 | The window a pane uses is proved per tier by a re-runnable live check that reads the harness's own report (`/autocompact` for Claude) and compares it with `horch context --windows`. | W1 | ctx_06_windows_view_lists_claude_and_codex_teammates, ctx_06_live_check_covers_every_tier |
-| CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 300,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
+| CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 135,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
 | CTX-08 | The roster check fails a teammate whose fleet window leaves headroom below 20,000. | W1 | ctx_08_roster_check_fails_headroom_below_floor |
 | CTX-09 | `horch context --over` prints every row whose state is not `ok`, then 1 `<state>: <id>` instruction line per state shown, else exactly `no session is over its threshold`, exit 0. The orchestrator briefing names it at 2 checkpoints and has 1 instruction per id; the Codex orchestrator may run it. | W1 | trf_08_over_lists_every_non_ok_state_with_its_instruction_id, trf_09_over_shows_a_row_still_over_after_1_compaction_as_handoff, trf_46_every_context_state_has_an_instruction, ctx_09_over_prints_compact_lost, over_prints_the_age_of_a_requested_and_a_stale_ask, over_lists_a_compact_failed_row_with_its_step, a_request_on_a_stale_row_types_and_records_again, a_stale_row_with_two_asks_is_not_asked_a_third_time, ctx_09_over_with_none_prints_exact_line, ctx_09_orchestrator_briefing_names_the_checkpoints |
 | CTX-10 | `horch note` warns a session at or over its threshold, once per compaction cycle, after recording the note; a check failure changes nothing; the rule is `policy::should_warn`; a failed cache write does not hide the reading. Live check B2 passes for `workspace-write` Codex panes; for a `read-only` Codex pane the orchestrator checkpoint is the only watch. | W1 | ctx_10_rule_a_cycle_starts_at_newest_compaction, ctx_10_should_warn_is_classify_over, ctx_10_cache_write_failure_keeps_the_reading, ctx_10_note_warns_once_over_threshold, ctx_10_note_silent_on_unknown_pending_or_error, ctx_10_note_warns_again_after_compaction, ctx_10_note_warns_with_a_read_only_cache_dir |
@@ -786,13 +861,16 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-18 | The orchestrator compacts itself by the same protocol, on both flavors. | W1 | ctx_18_compact_targets_the_orchestrator_pane_and_record, ctx_18_orchestrator_briefing_has_self_compaction |
 | CTX-19 | Every fleet briefing carries exactly 1 compaction-instructions block; the orchestrator's names the roster and the ownership map. | W1 | ctx_19_every_fleet_briefing_has_one_keep_list_block |
 | CTX-20 | The live check proves per harness whether a summary honours the block (canary); horch-driven compaction passes the keep-list as the argument where accepted. | W1 | ctx_20_compact_line_has_keep_list_only_where_accepted, ctx_20_live_check_plants_a_canary |
-| CTX-21 | A teammate's `compact_at` (frontmatter only, no env variable) sets its watch base in place of 300,000; `horch teammates --check` rejects a value outside 50,000 to 1,000,000; `horch context`, `horch context --windows`, `horch compact` and the `horch note` check use it. | W1 | ctx_21_compact_at_range_checked, ctx_21_compact_at_sets_base |
+| CTX-21 | A teammate's `compact_at` (frontmatter only, no env variable) sets its watch base in place of 135,000; `horch teammates --check` rejects a value outside 50,000 to 1,000,000; `horch context`, `horch context --windows`, `horch compact` and the `horch note` check use it. | W1 | ctx_21_compact_at_range_checked, ctx_21_compact_at_sets_base |
 | CTX-22 | Events `compact-requested`, `context-warned`, `compacted` (`<pre> -> <post> tokens; handoff <path>`), `compact-failed` (`step <step>: <reason>`). | W1 | ctx_22_job_records_compacted_with_exact_text, ctx_22_request_and_warning_event_texts |
 | CTX-23 | A successful compaction sends exactly 1 `[horch] NOTE: <role> compacted. ...` line. | W1 | ctx_23_job_reports_success_once |
 | CTX-24 | `horch context --json` prints a JSON array, 1 object per row, with the 24 keys of §5.1 in that order; an unknown value is `null`, never a guess; `pane` and `pane_status` come from 1 `herdr pane list` call per workspace and are `null` when herdr does not answer; `--json` ignores `--over`; `--windows` wins. | W1 | ctx_24_json_has_every_key_and_nulls, ctx_24_json_pane_from_one_pane_list |
 | CTX-25 | Each row counts the session's compactions: COMPACTIONS `<native>n/<horch>h` in the table, `native_compactions` and `horch_compactions` in `--json`. A marker is horch-driven when a `compacted` event is at or after it and at most 15 minutes after it; each event matches 1 marker; the rest are native. | W1 | ctx_25_counts_native_and_horch_compactions, ctx_25_cli_counts_native_and_horch_compactions |
 | CTX-26 | `horch context` with 10 sessions under 1 s; the `horch note` check under 0.5 s. | W1 | ctx_26_tail_read_is_bounded, ctx_26_marker_cache_reads_only_new_bytes |
 | CTX-27 | No CTX code reads, sets or passes `ANTHROPIC_API_KEY`; `runtime/context.rs` captures no `FORBIDDEN_ENV` name; live checks unset it. | W1 | ctx_27_no_api_key_in_context_policy_code |
+| CTX-28 | Every Claude pane horch launches carries the 3 context hooks of §4.6 in its `--settings` overlay, from the `hooks` entry of `harness-defaults.md`. `horch hook context` returns the `request` line (a worker) or `warning-orchestrator` (the orchestrator) as `PostToolBatch` `additionalContext` when the session's row is `over`, records `context-warned`, and is silent for the rest of the compaction cycle and under the threshold. `horch hook` always exits 0 and prints nothing in a pane with no record id. | W1 | ctx_28_every_claude_launch_carries_the_context_hooks, ctx_28_the_hook_asks_once_with_the_request_line, ctx_28_the_hook_is_silent_under_the_threshold |
+| CTX-29 | `horch hook pre-compact` prints the `instructions` or `instructions-orchestrator` keep-list for a compaction with no argument and nothing when `custom_instructions` is set. It never blocks a compaction. | W1 | ctx_29_pre_compact_is_silent_when_the_command_carries_instructions, ctx_29_pre_compact_prints_the_keep_list_for_a_bare_compaction |
+| CTX-30 | `horch hook post-compact` prints the `hydrate` line (or `hydrate-orchestrator`) and the handoff file, cut at 8,000 characters with the path of the rest, when the file passes the freshness rule of CTX-14; else the `hydrate-missing` line. The `resume` lines tell a session to read its handoff only when no `NOTE: Handoff` line is above. | W1 | ctx_30_hydration_cuts_a_long_handoff_and_names_the_file, ctx_30_post_compact_prints_a_fresh_handoff_or_says_it_is_missing, ctx_30_the_orchestrator_gets_its_own_first_line |
 
 ### 10.2 HDF: harness defaults
 
@@ -814,7 +892,7 @@ changes that the operator's decision (the operator's tuned window wins) made:
   `horch context` shows SOURCE `operator`; in a scratch `CLAUDE_CONFIG_DIR`
   with no window, the launch argv carries the fleet value and
   `/autocompact` with that argv prints `150k` (sonnet), `200k` (opus),
-  `300k` (orchestrator). Live check A2 runs both halves.
+  `200k` (orchestrator; `300k` before slice 4). Live check A2 runs both halves.
 - CTX-07.1: the table values come from §3.1 and §3.2 of this spec, not
   from the requirements table.
 

@@ -128,11 +128,11 @@ fn ctx_01_cli_table_from_fixture_home() {
     let table = w.stdout(&["context"], &[]);
     let want = "\
 ROLE          HARNESS  MODEL             CONTEXT     WINDOW   NATIVE  SOURCE          THRESHOLD  LAST COMPACT              COMPACTIONS  STATE
-orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  1n/0h        ok
-codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             160,000  -                         0n/0h        over
-opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  1n/0h        pending
-sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    300,000  -                         0n/0h        over
-sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    300,000  -                         -            no-transcript
+orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    135,000  2026-09-20T10:05:00.000Z  1n/0h        ok
+codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             135,000  -                         0n/0h        over
+opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    135,000  2026-09-20T10:05:00.000Z  1n/0h        pending
+sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    135,000  -                         0n/0h        over
+sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    135,000  -                         -            no-transcript
 reasons:
   sonnet-2: no-transcript: no transcript found
 ";
@@ -163,7 +163,7 @@ reasons:
         "{over}"
     );
 
-    let warning = "NOTE: Context warning. Your context is 311225 tokens. Your threshold is 300000 tokens. \
+    let warning = "NOTE: Context warning. Your context is 311225 tokens. Your threshold is 135000 tokens. \
 This horch note call is your stopping point. Do not start new work. \
 Write ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. \
 Then run: horch note \"handoff: ai_docs/handoffs/sonnet-1-whats-next.md\". \
@@ -191,7 +191,7 @@ Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch led
         .filter(|(e, _)| e == "context-warned")
         .map(|(_, t)| t.as_str())
         .collect();
-    assert_eq!(warned, ["tokens 311225 threshold 300000"]);
+    assert_eq!(warned, ["tokens 311225 threshold 135000"]);
 
     let requested = w.stdout(&["context", "--over"], &[]);
     let row = requested
@@ -255,7 +255,7 @@ fn ctx_06_live_check_covers_every_tier() {
     for tier in [
         "claude/sonnet:150000",
         "claude/opus:200000",
-        "claude/orchestrator:300000",
+        "claude/orchestrator:200000",
     ] {
         assert!(a2.contains(tier), "A2 checks the fleet value {tier}");
     }
@@ -574,7 +574,7 @@ fn ctx_24_json_has_every_key_and_nulls() {
         .as_str()
         .unwrap()
         .ends_with("/.claude/settings.json"));
-    assert_eq!(s1["threshold"], 300_000);
+    assert_eq!(s1["threshold"], 135_000);
     assert_eq!(s1["last_compaction"], serde_json::Value::Null);
     assert_eq!(s1["state"], "over");
     assert_eq!(s1["reason"], serde_json::Value::Null);
@@ -680,7 +680,7 @@ fn ctx_21_compact_at_sets_base() {
     assert_eq!(cell(&table, "low-2", "STATE"), "over", "\n{table}");
     assert_eq!(
         cell(&table, "sonnet-1", "THRESHOLD"),
-        "300,000",
+        "135,000",
         "\n{table}"
     );
 
@@ -771,7 +771,7 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
     let windows = w.stdout(&["context", "--windows"], &[]);
     assert_eq!(
         cell(&windows, "no-base", "COMPACT_AT"),
-        "300,000",
+        "135,000",
         "\n{windows}"
     );
     assert_eq!(
@@ -781,7 +781,7 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
     );
     assert_eq!(
         cell(&windows, "codex-sol", "COMPACT_AT"),
-        "160,000",
+        "135,000",
         "\n{windows}"
     );
     assert_eq!(
@@ -791,7 +791,7 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
     );
     assert_eq!(
         cell(&windows, "codex-sol", "THRESHOLD"),
-        "160,000",
+        "135,000",
         "\n{windows}"
     );
     let head: Vec<&str> = windows.lines().next().unwrap().split_whitespace().collect();

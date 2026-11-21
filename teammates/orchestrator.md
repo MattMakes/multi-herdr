@@ -15,8 +15,8 @@ phase: plan
 skills: [orchestrate, skill-creator, make-videos]
 model: fable
 effort: medium
-compact_window: 300000
-compact_at: 300000
+compact_window: 200000
+compact_at: 135000
 # Auto mode: a classifier approves routine actions, so the orchestrator does
 # not stall on a prompt while the operator is away from the pane.
 permission_mode: auto

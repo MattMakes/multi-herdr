@@ -14,7 +14,7 @@ fallbacks: [codex-sol]
 # carries the method. Raise one spawn with --effort.
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 skills: [one-page-design]
 

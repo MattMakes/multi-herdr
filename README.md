@@ -1007,10 +1007,18 @@ horch compact sonnet-1 --request     # ask a worker to write its handoff and rep
 horch compact sonnet-1               # then compact it in place (Claude, Codex); a detached job
 ```
 
-The watch threshold is `min(300,000, 0.8 x the harness's own auto-compact
-trigger)`, so it always fires before the harness compacts. A worker's own
-`horch note` also prints a warning when it is over. The handoff goes to
-`ai_docs/handoffs/<role>-whats-next.md`.
+The watch threshold is `min(135,000, 0.8 x the harness's own auto-compact
+trigger)`, so it always fires before the harness compacts, and a session is
+compacted at about 150,000 tokens: 90% of its work stays in the first
+150,000. A worker's own `horch note` also prints a warning when it is over.
+The handoff goes to `ai_docs/handoffs/<role>-whats-next.md`.
+
+A Claude Code pane does this through 3 hooks, with no turn of the
+orchestrator. After a batch of tool calls, `horch hook context` asks a
+session that is over its threshold to write its handoff. Before any
+compaction, `horch hook pre-compact` gives the summary its keep-list. After
+any compaction, `horch hook post-compact` puts the handoff file back into
+the context. The hooks are data in `teammates/_base/harness-defaults.md`.
 
 Your settings win: where your own config sets a native window
 (`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `~/.claude/settings.json`,

@@ -21,7 +21,7 @@ requires: [git-lfs]
 # wrote it. Same as backend-developer.
 effort: medium
 compact_window: 200000
-compact_at: 300000
+compact_at: 135000
 permission_mode: auto
 inherit_plugins: false
 skills:

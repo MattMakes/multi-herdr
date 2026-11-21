@@ -581,6 +581,14 @@ enum ToolCommand {
     #[command(hide = true)]
     Worker { role: String },
 
+    /// Answer a Claude Code hook of a fleet pane. Reads the hook input on
+    /// stdin. Always exits 0.
+    #[command(hide = true)]
+    Hook {
+        #[arg(value_enum)]
+        event: cmd::hook::HookEvent,
+    },
+
     /// Turn the current pane into an orchestrator or a fixed-recipe worker.
     /// Used by `horch fleet` and `horch orchestration`.
     #[command(hide = true)]
@@ -782,6 +790,9 @@ fn plain_command(argv: &[String]) -> String {
 fn run() -> Result<std::process::ExitCode> {
     let cli = Cli::parse();
     let mut ctx = bootstrap::context_with_backend(cli.backend.as_deref())?;
+    if let Command::Tool(ToolCommand::Hook { event }) = &cli.command {
+        return Ok(cmd::hook::hook(&ctx, *event));
+    }
     if let Some(socket) = ctx.report_socket.clone() {
         return done(cmd::messaging::report_mode(
             &socket,
@@ -874,7 +885,7 @@ impl Command {
         !matches!(
             self,
             Command::Launch(LaunchCommand::Channel { .. } | LaunchCommand::Mail { .. })
-                | Command::Tool(ToolCommand::Worker { .. })
+                | Command::Tool(ToolCommand::Worker { .. } | ToolCommand::Hook { .. })
                 | Command::Grid(GridCommand::Tile { .. } | GridCommand::Balance { .. })
                 | Command::Messaging(MessagingCommand::Inbox { roles: false, .. })
         )
@@ -883,10 +894,11 @@ impl Command {
     fn watched(&self) -> bool {
         !matches!(
             self,
-            Command::Tool(ToolCommand::Worker { .. } | ToolCommand::Install { .. })
-                | Command::Grid(GridCommand::Ledger {
-                    command: cmd::taskledger::LedgerCommand::Watch { .. }
-                })
+            Command::Tool(
+                ToolCommand::Worker { .. } | ToolCommand::Install { .. } | ToolCommand::Hook { .. }
+            ) | Command::Grid(GridCommand::Ledger {
+                command: cmd::taskledger::LedgerCommand::Watch { .. }
+            })
         )
     }
 }
@@ -1170,6 +1182,7 @@ impl ToolCommand {
             ToolCommand::SelfUpdate { check } => cmd::selfupdate::self_update(ctx, check),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
             ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
+            ToolCommand::Hook { event } => Ok(cmd::hook::hook(ctx, event)),
             ToolCommand::PaneLaunch {
                 role,
                 kind,
@@ -1686,6 +1699,7 @@ mod tests {
             ("self-update", false),
             ("smoke", false),
             ("worker", true),
+            ("hook", true),
             ("pane-launch", true),
             ("register", true),
         ];
@@ -1700,6 +1714,8 @@ mod tests {
         assert!(inbox_roles.reminds() && !inbox_mail.reminds());
         assert!(!parse(&["horch", "tile"]).reminds());
         assert!(!parse(&["horch", "worker", "r"]).watched());
+        let hook = parse(&["horch", "hook", "pre-compact"]);
+        assert!(!hook.reminds() && !hook.watched() && !hook.adopts_identity());
         assert!(!parse(&["horch", "install"]).watched());
         assert!(!parse(&["horch", "ledger", "watch"]).watched());
         assert!(parse(&["horch", "ledger", "path"]).watched());

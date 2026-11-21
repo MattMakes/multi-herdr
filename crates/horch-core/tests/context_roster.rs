@@ -5,7 +5,7 @@ use horch_core::harness::HarnessKind;
 use horch_core::prompts::context_message;
 use horch_core::roster::{Roster, Teammate};
 
-const MESSAGE_KEYS: [&str; 9] = [
+const MESSAGE_KEYS: [&str; 12] = [
     "request",
     "warning",
     "warning-orchestrator",
@@ -13,6 +13,9 @@ const MESSAGE_KEYS: [&str; 9] = [
     "instructions-orchestrator",
     "resume",
     "resume-orchestrator",
+    "hydrate",
+    "hydrate-orchestrator",
+    "hydrate-missing",
     "reported",
     "failed",
 ];
@@ -142,7 +145,7 @@ fn fleet_window_takes_teammate_then_model_key() {
     };
     assert_eq!(
         window("orchestrator", "opus"),
-        Some((300_000, "context-policy windows claude/orchestrator".into()))
+        Some((200_000, "context-policy windows claude/orchestrator".into()))
     );
     assert_eq!(
         window("opus", "opus"),
@@ -842,7 +845,7 @@ fn ctx_21_overlay_without_compact_at_warns() {
         missing,
         vec![
             "bare: compact_at is missing (the token count where horch asks it to hand off; \
-             see teammates/README.md); the fleet base 300000 applies"
+             see teammates/README.md); the fleet base 135000 applies"
                 .to_string()
         ]
     );
