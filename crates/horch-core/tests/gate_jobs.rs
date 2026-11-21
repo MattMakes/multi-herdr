@@ -493,21 +493,6 @@ fn text(row: &JobRow) -> String {
     outcome(row).map(|o| o.text).unwrap_or_default()
 }
 
-/// Whether `pid` runs. A zombie (state `Z`) is dead: a killed process stays a
-/// zombie, and `kill -0` still succeeds on it, until its parent or the
-/// subreaper of its sandbox reaps it. On Linux CI that reaper can be slow or
-/// absent, so the state decides, not `kill -0`.
-fn alive(pid: &str) -> bool {
-    let out = Command::new("ps")
-        .args(["-o", "stat=", "-p", pid])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    let state = String::from_utf8_lossy(&out.stdout);
-    let state = state.trim();
-    out.status.success() && !state.is_empty() && !state.starts_with('Z')
-}
-
 // ─── the gate tree ──────────────────────────────────────────────────────
 
 #[test]
@@ -890,10 +875,14 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     w.config.job_limit_s.fast_gate = 10;
     w.gate_tree();
     let tree = w.gate_path();
-    let pid_file = tree.join("sleep.pid");
-    let gates = "[gates]\nfast = \"sleep 600 & echo $! > sleep.pid; wait\"\nfull = \"true\"\n";
+    let beat_file = tree.join("beat");
+    let marker = format!("gate-group-marker-{}", std::process::id());
+    let gates = format!(
+        "[gates]\nfast = \"sh -c 'sleep 600; :' {marker} & i=0; \
+         while :; do i=$((i+1)); echo $i > beat; sleep 0.1; done\"\nfull = \"true\"\n"
+    );
     let main = w.main.clone();
-    let tip = w.tip_with("slow", gates, "slow");
+    let tip = w.tip_with("slow", &gates, "slow");
     let bundle = w.bundle(&main).to_string();
     let id = w.new_gate(Kind::FastGate, &bundle, &tip, &main);
 
@@ -929,16 +918,18 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     assert_eq!(w.job(id).deadline, Some(FleetSeconds(10)));
 
     let until = Instant::now() + Duration::from_secs(60);
-    let sleep_pid = loop {
-        if let Ok(text) = std::fs::read_to_string(&pid_file) {
-            if !text.trim().is_empty() {
-                break text.trim().to_string();
-            }
+    let first = loop {
+        if let Some(beat) = beat(&beat_file) {
+            break beat;
         }
         assert!(Instant::now() < until, "the gate command started");
         std::thread::sleep(Duration::from_millis(50));
     };
-    assert!(alive(&sleep_pid));
+    while beat(&beat_file) == Some(first) {
+        assert!(Instant::now() < until, "the heartbeat of the gate advances");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!marked(&marker).is_empty(), "the gate command runs");
 
     // At the deadline the pass stops the job process; its group goes too.
     let facts = w.facts();
@@ -960,8 +951,55 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     );
 
     let until = Instant::now() + Duration::from_secs(10);
-    while alive(&sleep_pid) {
-        assert!(Instant::now() < until, "the gate group was killed");
+    loop {
+        let left = marked(&marker);
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "the gate group was killed: {left:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
+    let stopped = beat(&beat_file);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(beat(&beat_file), stopped, "the heartbeat of the gate stops");
+}
+
+/// The count in the heartbeat file of a gate, once the gate wrote it.
+fn beat(path: &Path) -> Option<u64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// The host processes with `marker` in their command line, as
+/// `<pid> <command line>`.
+#[cfg(target_os = "linux")]
+fn marked(marker: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let line = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if line.contains(marker) {
+            found.push(format!("{} {line}", entry.file_name().to_string_lossy()));
+        }
+    }
+    found
+}
+
+/// The host processes with `marker` in their command line, as
+/// `<pid> <command line>`.
+#[cfg(not(target_os = "linux"))]
+fn marked(marker: &str) -> Vec<String> {
+    let out = Command::new("ps")
+        .args(["-axww", "-o", "pid=,command="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.contains(marker))
+        .map(|line| line.trim().to_string())
+        .collect()
 }

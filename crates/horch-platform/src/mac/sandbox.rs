@@ -31,7 +31,12 @@ pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
 
 /// The `-D` parameters and the `-p` profile of `sandbox-exec`. `rules` are
 /// in order: the last rule that matches an act wins.
-pub(crate) fn args(rules: &[Rule<'_>], _temp: bool, network: Network) -> Vec<OsString> {
+pub(crate) fn args(
+    rules: &[Rule<'_>],
+    _temp: bool,
+    network: Network,
+    _own_pids: bool,
+) -> Vec<OsString> {
     let mut profile = String::from(
         "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\"))",
     );

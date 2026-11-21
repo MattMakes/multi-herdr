@@ -17,7 +17,8 @@
 //!   denied read or connect path, and each file write below a denied write
 //!   path. Seatbelt refuses the act (`EPERM`), also for a path that does
 //!   not exist yet.
-//! - Linux: `bwrap` (bubblewrap), when it is on the `PATH` of the command.
+//! - Linux: `bwrap` (bubblewrap), when it is on the `PATH` of the command,
+//!   and the `setsid` of util-linux in `/usr/bin` or `/bin`.
 //!   It puts an empty file (`/dev/null`) over a denied read or connect file
 //!   and an empty tmpfs over a denied folder: a read of the token gives no
 //!   bytes, and a connect to the socket is refused (`ECONNREFUSED`). It
@@ -56,15 +57,32 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// It gives [`NotSupported`] with a reason when this host has no sandbox:
 /// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
 /// macOS when [`SANDBOX_EXEC`] is missing.
+///
+/// The command keeps the PIDs of the host, so a process that reports its
+/// own PID, as a worker wrapper does, can use it. On Linux a kill of the
+/// group of the caller does not end the command. A job uses
+/// [`sandboxed_job`].
 pub fn sandboxed<C: Start>(
     cmd: C,
     writable: &[PathBuf],
     denied: &Denials,
 ) -> Result<C, NotSupported> {
-    sandboxed_on(cmd, writable, denied, Network::Open)
+    sandboxed_on(cmd, writable, denied, Network::Open, false)
 }
 
-/// [`sandboxed`] with [`Network::Local`]: the command has no off-host
+/// [`sandboxed`] for a job that its host stops: on Linux the command gets
+/// a new PID namespace, and a KILL of the group that the sandbox leads
+/// ends each process of the sandbox. A PID that the command reads of
+/// itself is a PID of that namespace, not of the host.
+pub fn sandboxed_job<C: Start>(
+    cmd: C,
+    writable: &[PathBuf],
+    denied: &Denials,
+) -> Result<C, NotSupported> {
+    sandboxed_on(cmd, writable, denied, Network::Open, true)
+}
+
+/// [`sandboxed_job`] with [`Network::Local`]: the command has no off-host
 /// network (SR-3: no agent messages anyone outside the fleet). It gives
 /// [`NotSupported`] on a host where the platform layer cannot hold this
 /// rule, and never opens the network instead.
@@ -73,7 +91,7 @@ pub fn sandboxed_local<C: Start>(
     writable: &[PathBuf],
     denied: &Denials,
 ) -> Result<C, NotSupported> {
-    sandboxed_on(cmd, writable, denied, Network::Local)
+    sandboxed_on(cmd, writable, denied, Network::Local, true)
 }
 
 fn sandboxed_on<C: Start>(
@@ -81,6 +99,7 @@ fn sandboxed_on<C: Start>(
     writable: &[PathBuf],
     denied: &Denials,
     network: Network,
+    own_pids: bool,
 ) -> Result<C, NotSupported> {
     let temp = resolved(&std::env::temp_dir());
     let reach = Reach {
@@ -90,7 +109,7 @@ fn sandboxed_on<C: Start>(
         denied,
         network,
     };
-    wrapped(cmd, &reach, Some(&temp))
+    wrapped(cmd, &reach, Some(&temp), own_pids)
 }
 
 /// The network rule of [`sandboxed_hiding`].
@@ -107,8 +126,10 @@ pub enum Network {
     /// sockets. Each connection to another host is refused. On macOS a
     /// Seatbelt rule denies each outbound IP connection but `localhost`.
     /// On Linux the command gets a new network namespace, where `bwrap`
-    /// brings up the loopback interface. Windows has no sandbox, so it
-    /// gives [`NotSupported`].
+    /// brings up the loopback interface. That loopback is not the loopback
+    /// of the host: a listener of the command connects, a listener on the
+    /// host loopback refuses. Windows has no sandbox, so it gives
+    /// [`NotSupported`].
     Local,
 }
 
@@ -177,10 +198,10 @@ pub struct Denials {
 ///   folder holds only the next part of the bound path, and its metadata
 ///   is of the new folder, not of the real one.
 ///
-/// The rest is as in [`sandboxed`]: the command and its settings, and
-/// [`NotSupported`] on a host with no sandbox.
+/// The rest is as in [`sandboxed_job`]: the command and its settings, the
+/// PID namespace on Linux, and [`NotSupported`] on a host with no sandbox.
 pub fn sandboxed_hiding<C: Start>(cmd: C, reach: &Reach<'_>) -> Result<C, NotSupported> {
-    wrapped(cmd, reach, None)
+    wrapped(cmd, reach, None, true)
 }
 
 /// 1 rule of a sandbox on 1 resolved path.
@@ -208,7 +229,12 @@ impl<'a> Rule<'a> {
     }
 }
 
-fn wrapped<C: Start>(cmd: C, reach: &Reach<'_>, temp: Option<&Path>) -> Result<C, NotSupported> {
+fn wrapped<C: Start>(
+    cmd: C,
+    reach: &Reach<'_>,
+    temp: Option<&Path>,
+    own_pids: bool,
+) -> Result<C, NotSupported> {
     let cmd = cmd.std(TOKEN);
     let program = os::program(path_of(cmd).as_deref())?;
     let all = |paths: &[PathBuf]| paths.iter().map(|p| resolved(p)).collect::<Vec<_>>();
@@ -225,7 +251,7 @@ fn wrapped<C: Start>(cmd: C, reach: &Reach<'_>, temp: Option<&Path>) -> Result<C
     // The longest path last, so its rule wins: the last rule wins on
     // macOS, and the last mount covers the ones before it on Linux.
     rules.sort_by_key(Rule::key);
-    let args = os::args(&rules, temp.is_some(), reach.network);
+    let args = os::args(&rules, temp.is_some(), reach.network, own_pids);
     Ok(C::from_std(wrap(&program, &args, cmd), TOKEN))
 }
 
@@ -317,7 +343,7 @@ fn resolved(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::net::{TcpListener, TcpStream};
     use std::process::Command;
     use std::time::Duration;
 
@@ -325,22 +351,30 @@ mod tests {
     /// (RFC 5737, TEST-NET-1). A connect to it never reaches a webhook.
     const OFF_HOST: &str = "192.0.2.1:9";
     const TARGET: &str = "SANDBOX_CHILD_TARGET";
+    /// The target of the child test that connects to a loopback listener
+    /// of its own, inside the sandbox.
+    const INSIDE: &str = "inside";
 
     #[test]
     #[ignore = "run by the sandbox tests, inside a sandbox"]
     fn connect_child() {
-        let target: SocketAddr = std::env::var(TARGET).expect(TARGET).parse().unwrap();
+        let target = std::env::var(TARGET).expect(TARGET);
+        let listener = (target == INSIDE).then(|| TcpListener::bind("127.0.0.1:0").unwrap());
+        let target = match &listener {
+            Some(listener) => listener.local_addr().unwrap(),
+            None => target.parse().unwrap(),
+        };
         match TcpStream::connect_timeout(&target, Duration::from_secs(3)) {
             Ok(_) => println!("RESULT connected"),
             Err(e) => println!("RESULT refused {:?} {:?}", e.kind(), e.raw_os_error()),
         }
     }
 
-    fn connect_in_local_sandbox(target: SocketAddr) -> Option<String> {
+    fn connect_in_local_sandbox(target: &str) -> Option<String> {
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args(["--exact", "sandbox::tests::connect_child", "--ignored"])
             .args(["--nocapture", "--test-threads=1"])
-            .env(TARGET, target.to_string());
+            .env(TARGET, target);
         let mut cmd = match sandboxed_local(cmd, &[], &Denials::default()) {
             Ok(cmd) => cmd,
             Err(_) => {
@@ -365,16 +399,87 @@ mod tests {
         )
     }
 
+    /// The count in the heartbeat file of a sandboxed command.
+    fn beat(path: &std::path::Path) -> Option<u64> {
+        std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    }
+
+    /// Wait up to 10 s for the heartbeat at `path` to change from `from`.
+    fn beats_after(path: &std::path::Path, from: Option<u64>) -> bool {
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < until {
+            if beat(path).is_some() && beat(path) != from {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    /// A sandboxed command lives while its sandbox lives, also when the
+    /// thread that started it ended. A kill of the group that the sandbox
+    /// leads ends each process of the sandbox, as the job hosts kill it.
+    /// On Linux the command runs in a new session there.
     #[test]
-    fn local_network_allows_loopback_and_refuses_an_off_host_address() {
-        let webhook = TcpListener::bind("127.0.0.1:0").unwrap();
-        let Some(line) = connect_in_local_sandbox(webhook.local_addr().unwrap()) else {
+    fn sandboxed_command_outlives_its_start_thread_and_ends_with_its_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = resolved(dir.path());
+        let heart = dir.join("beat");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("(i=0; while :; do i=$((i+1)); echo $i > beat; sleep 0.1; done) & wait")
+            .current_dir(&dir);
+        let Ok(cmd) = sandboxed_job(cmd, std::slice::from_ref(&dir), &Denials::default()) else {
+            assert!(
+                host_problem(None).is_some(),
+                "no sandbox on a host with one"
+            );
             return;
         };
-        assert_eq!(line, "connected");
-        assert!(webhook.accept().is_ok(), "the webhook got no connection");
+        let mut child = std::thread::spawn(move || {
+            let mut cmd = cmd;
+            crate::group::new_group(&mut cmd);
+            cmd.spawn().unwrap()
+        })
+        .join()
+        .unwrap();
+        assert!(beats_after(&heart, None), "the command started");
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(child.try_wait().unwrap(), None, "the sandbox lives");
+        assert!(beats_after(&heart, beat(&heart)), "the command lives");
 
-        let line = connect_in_local_sandbox(OFF_HOST.parse().unwrap()).unwrap();
+        assert!(crate::group::kill_child_group(&mut child));
+        child.wait().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let stopped = beat(&heart);
+        assert!(
+            !beats_after(&heart, stopped),
+            "the heartbeat stops with the sandbox"
+        );
+    }
+
+    #[test]
+    fn local_network_allows_loopback_and_refuses_an_off_host_address() {
+        let Some(line) = connect_in_local_sandbox(INSIDE) else {
+            return;
+        };
+        assert_eq!(line, "connected", "a loopback listener in the sandbox");
+
+        let webhook = TcpListener::bind("127.0.0.1:0").unwrap();
+        let line = connect_in_local_sandbox(&webhook.local_addr().unwrap().to_string()).unwrap();
+        if cfg!(target_os = "linux") {
+            // The new network namespace has its own loopback: a listener on
+            // the loopback of the host is not in it.
+            assert!(
+                line.starts_with("refused ConnectionRefused"),
+                "a listener of the host loopback: {line}"
+            );
+        } else {
+            assert_eq!(line, "connected");
+            assert!(webhook.accept().is_ok(), "the webhook got no connection");
+        }
+
+        let line = connect_in_local_sandbox(OFF_HOST).unwrap();
         assert!(line.starts_with("refused"), "{line}");
         assert!(
             !line.contains("TimedOut"),
