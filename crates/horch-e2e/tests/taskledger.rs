@@ -2875,7 +2875,9 @@ fn claim_and_fail(h: &Harness, persona: &str) -> String {
         h.advance_fleet_clock(nb - clock);
     }
     let agent = Stand::new();
-    let b = bind(h, persona, Some(agent.0.id()));
+    let b = wait_push("the rescue of the tree of the last attempt", || {
+        try_bind(h, persona, Some(agent.0.id())).ok()
+    });
     drop(agent);
     pass(h);
     b.worker_id
