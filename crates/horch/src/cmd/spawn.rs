@@ -1,13 +1,3 @@
-//! `horch spawn` - the port of `bin/horch-spawn`.
-//!
-//! Creates a new herdr pane running a worker agent, either as a FRESH session or
-//! RESUMING a previous session id from the project ledger. Prints the new pane id
-//! on stdout (human detail goes to stderr) so callers can chain splits when
-//! building layouts. The rules live in `execution::plan` and the steps in
-//! `execution::service`; this reads the inputs and prints. Then it waits up to
-//! [`SPAWN_WAIT`] for the worker to register, and fails with the worker's
-//! startup error when the worker dies first.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -35,51 +25,28 @@ use horch_core::workspace::PaneHost;
 
 use super::taskledger_spawn::Prepared;
 
-/// How long `horch spawn` waits for its worker to register or to leave a
-/// startup error (`HORCH_SPAWN_WAIT_MS` overrides it). After it, the spawn
-/// succeeds with a warning, and a worker that registers later still works.
 pub const SPAWN_WAIT: Duration = Duration::from_secs(15);
 
-/// How often the wait looks for the registration and the error file.
 const SPAWN_POLL: Duration = Duration::from_millis(100);
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
-    /// Task text. Empty, except for a `spawn_only` controller's brief to a
-    /// report role ([`check_task_text`]); every other spawn refuses it.
     pub task: String,
     pub resume: Option<String>,
     pub phase: Option<Phase>,
-    /// Effort for this spawn only, over the teammate file's (or the record's).
     pub effort: Option<String>,
-    /// The operator's model for this spawn only, over the teammate file's.
     pub model: Option<String>,
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
-    /// `Disabled` leaves the grid alone. `HORCH_TILE=0` says the same thing
-    /// for every spawn.
     pub tiling: TilingMode,
-    /// Never substitute a fallback teammate (the usage-limit gate).
     pub exact: bool,
-    /// Never refuse over usage limits.
     pub force: bool,
-    /// The dead task-ledger worker this spawn replaces.
     pub replaces: Option<String>,
-    /// The task-ledger run to join (`--run`).
     pub run: Option<String>,
-    /// The push attempt that fleetd bound (`--attempt`): the spawn opens
-    /// its pane and binds nothing.
     pub attempt: Option<String>,
 }
 
-/// The teammate `horch spawn`'s positional arguments name.
-///
-/// The two forms are `horch spawn <teammate>` and `horch spawn --resume <id>`.
-/// Task text is refused (TRF-43, D1): pull is the only dispatch model, so a
-/// worker gets its work by `horch ledger claim`. The refusal prints the
-/// `horch ledger task` command that queues the same work. This is the view
-/// of a spawn with no `spawn_only` controller ([`check_task_text`]).
 #[cfg(test)]
 pub fn resolve_positionals(positionals: &[String], resume: Option<&str>) -> Result<Option<String>> {
     let (teammate, task) = split_positionals(positionals, resume)?;
@@ -89,9 +56,6 @@ pub fn resolve_positionals(positionals: &[String], resume: Option<&str>) -> Resu
     Ok(teammate)
 }
 
-/// The teammate and the task text of `horch spawn`'s positionals, with no
-/// refusal of the task text. [`spawn`] refuses it unless
-/// [`check_task_text`] allows it.
 pub fn split_positionals(
     positionals: &[String],
     resume: Option<&str>,
@@ -111,17 +75,10 @@ pub fn split_positionals(
     }
 }
 
-/// Whether this spawn carries task text.
 fn has_task_text(args: &SpawnArgs) -> bool {
     !args.task.trim().is_empty()
 }
 
-/// The 1 exception to TRF-43: a `spawn_only` controller sends a brief to a
-/// role whose pane has `horch_access: report`. A report pane cannot run
-/// `horch ledger claim` (its socket takes only progress, tell and done), so
-/// the brief is its task. `controller` comes from [`spawn_only_check`]: the
-/// caller's registered pane, its horch-written brief and that teammate's
-/// globs, never a flag or a variable. Every other task text is refused.
 fn check_task_text(
     args: &SpawnArgs,
     controller: Option<&str>,
@@ -137,8 +94,6 @@ fn check_task_text(
     bail!(refuse_task_text(args.teammate.as_deref(), &args.task))
 }
 
-/// The refusal of a spawn with task text: the `horch ledger task` command
-/// that queues `task` for `teammate` instead.
 fn refuse_task_text(teammate: Option<&str>, task: &str) -> String {
     format!(
         "horch spawn takes no task text: a worker claims its task from the task ledger. \
@@ -149,16 +104,11 @@ fn refuse_task_text(teammate: Option<&str>, task: &str) -> String {
     )
 }
 
-/// `text` as 1 POSIX shell word.
 fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Spawn a worker pane, returning its pane id so callers can chain splits.
-/// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
 pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
-    // fleetd launches each attempt (ticket 48 of fleetd-p6): only its own
-    // spawns still run.
     if !super::taskledger_spawn::launched_by_fleetd(&args) {
         bail!("{}", super::taskledger_spawn::retired_line());
     }
@@ -169,7 +119,6 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         }
     }
     let ctx = &resolved;
-    // Before the ledger row: a refused caller leaves nothing behind.
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let caller = caller(ctx);
     let controller = spawn_only_check(caller.as_ref(), &args, roster_dir.as_deref(), &Procs::os())?;
@@ -180,9 +129,6 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         check_task_text(&args, controller.as_deref(), target)?;
     }
     let sandboxed = sandboxed(caller.as_ref());
-    // The task ledger: when this spawn joins a run, the worker gets a row
-    // and the task to claim one. A controller's role joins the
-    // controller's run and works from its brief (T-38).
     let controller_row = controller
         .as_ref()
         .and(caller.as_ref())
@@ -191,14 +137,11 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         Prepared::NoRun => None,
         Prepared::Pane(l) => Some(*l),
     };
-    // A push attempt is bound to a ready task, and an idea-lead attempt has
-    // its idea, so neither is over the plan.
     let result = match ledger.as_ref() {
         Some(l) if !brief && l.claims() => refuse_over_plan(ctx, l)
             .and_then(|()| spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed)),
         _ => spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed),
     };
-    // No row outlives a spawn that failed before its worker ran (#190).
     if let (Err(e), Some(l)) = (&result, &ledger) {
         let reason = match e.downcast_ref::<SpawnError>() {
             Some(SpawnError::Refused { line, .. }) => line.clone(),
@@ -209,15 +152,10 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     result
 }
 
-/// The task of this spawn's worker: the first line of its ledger row when
-/// it joins a run, a `--resume` spawn too (TRF-33): the line that names
-/// `START.md` of its push attempt. Else none.
 pub(crate) fn worker_task(ledger: Option<&super::taskledger_spawn::LedgerSpawn>) -> String {
     ledger.map(|l| l.first_line.clone()).unwrap_or_default()
 }
 
-/// Refuse a claiming spawn that its run's plan does not need (gap G-A): the
-/// workers of its persona on their way already cover the startable tasks.
 fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpawn) -> Result<()> {
     let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
         return Ok(());
@@ -228,7 +166,6 @@ fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpa
     }
 }
 
-/// What `spawn_worker` reads before it plans, and the steps after it use.
 struct SpawnContext {
     roster: Roster,
     herdr: PaneHost,
@@ -270,8 +207,6 @@ fn spawn_worker(
     launch(ctx, &sc, plan, args.role.as_deref(), ledger, sandboxed)
 }
 
-/// 1 spawn-gate decision, as the task ledger records it (TRF-41). The
-/// record is for measurement only: nothing reads it to decide a spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GateRecord {
     teammate: String,
@@ -281,8 +216,6 @@ struct GateRecord {
 }
 
 impl GateRecord {
-    /// The gate decision of a planned spawn. `None` when no gate spoke: no
-    /// gate ran, or the gate let the teammate run with no note.
     fn of(planned: &Result<ExecutionPlan>) -> Option<GateRecord> {
         match planned {
             Ok(p) if p.gate_line.is_some() => p.execution.routing.as_ref().map(Self::spoken),
@@ -294,7 +227,6 @@ impl GateRecord {
         }
     }
 
-    /// A NOTE, or a SUBSTITUTED when another teammate's settings run.
     fn spoken(r: &RoutingProvenance) -> GateRecord {
         let substituted = r.resolved != r.requested;
         let reason = r.reason.clone().unwrap_or_default();
@@ -310,7 +242,6 @@ impl GateRecord {
         }
     }
 
-    /// A REFUSED. Its pool names every pool the gate found closed.
     fn refused(d: &RoutingDecision) -> Option<GateRecord> {
         let RoutingDecision::Refuse {
             requested,
@@ -329,7 +260,6 @@ impl GateRecord {
         })
     }
 
-    /// The event text: `spawn gate: teammate=<t> outcome=<o> pool=<p> reason=<r>`.
     fn text(&self) -> String {
         format!(
             "spawn gate: teammate={} outcome={} pool={} reason={}",
@@ -338,10 +268,6 @@ impl GateRecord {
     }
 }
 
-/// Record 1 ledger event for a gate decision, about the run and the worker
-/// this spawn joins (`about`), if any, with 1 `spawn_gate_note` request.
-/// Best effort: a failed request prints a warning and never changes the
-/// spawn.
 fn record_gate(ctx: &RuntimeContext, about: Option<(&str, &str)>, rec: &GateRecord) {
     let mut payload = serde_json::json!({ "text": rec.text() });
     if let Some((run, worker)) = about {
@@ -353,29 +279,20 @@ fn record_gate(ctx: &RuntimeContext, about: Option<(&str, &str)>, rec: &GateReco
     }
 }
 
-/// The worker that runs this `horch spawn`: the role registered on this
-/// pane, in the pane's own workspace, and the teammate its brief resolved.
-/// `HORCH_ROLE` is not read. No pane, no registered role or no readable
-/// brief: no caller (the orchestrator, an operator shell).
 struct Caller {
     role: String,
     teammate: Teammate,
     teammates_dir: Option<String>,
-    /// The caller's task-ledger row, from its brief.
     worker_id: Option<String>,
-    /// The agent process that horch recorded on that row at launch
-    /// (ADR 0002). `None` without a row or a recorded pid.
     agent: Option<Agent>,
 }
 
-/// A process that horch recorded: its pid and its start time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Agent {
     pid: u32,
     started: Option<u64>,
 }
 
-/// The agent process recorded on worker row `worker_id`, when it has one.
 fn recorded_agent(ctx: &RuntimeContext, worker_id: &str) -> Option<Agent> {
     let store = horch_core::taskledger::open_existing_read_only(ctx).ok()??;
     let w = horch_core::taskledger::workers::find(store.conn(), worker_id).ok()??;
@@ -385,18 +302,11 @@ fn recorded_agent(ctx: &RuntimeContext, worker_id: &str) -> Option<Agent> {
     })
 }
 
-/// The process facts that the controller check reads. [`Procs::os`] reads
-/// them from the OS; a test gives a fake tree.
 struct Procs<'a> {
-    /// The process that runs this spawn.
     me: u32,
-    /// The parent of a pid. `None` when it cannot be read.
     parent: &'a dyn Fn(u32) -> Option<u32>,
-    /// A sandbox-safe parent query, tried when `parent` is blocked.
     parent_fallback: &'a dyn Fn(u32) -> Option<u32>,
-    /// Whether a pid runs with the given start time.
     same: &'a dyn Fn(u32, u64) -> bool,
-    /// A sandbox-safe identity query, tried when `same` is blocked.
     same_fallback: &'a dyn Fn(u32, u64) -> bool,
 }
 
@@ -412,13 +322,8 @@ impl Procs<'static> {
     }
 }
 
-/// The most parent steps that [`runs_in`] walks: deeper than any pane's
-/// process tree, and a stop for a parent loop.
 const MAX_TREE_DEPTH: usize = 64;
 
-/// Whether the process that runs this spawn is `agent` or a descendant of
-/// it, and `agent` still runs with its recorded start time. A pid alone
-/// does not name a process (ADR 0002), so an unknown start time fails.
 fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
     let Some(Agent {
         pid: agent,
@@ -443,8 +348,6 @@ fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
     false
 }
 
-/// The parent of `pid`, from the OS. Where no parent can be read
-/// (Windows), no caller passes as a controller.
 fn parent_pid(pid: u32) -> Option<u32> {
     horch_platform::process::parent(pid).ok().flatten()
 }
@@ -475,28 +378,16 @@ fn caller(ctx: &RuntimeContext) -> Option<Caller> {
     })
 }
 
-/// Whether a sandboxed worker runs this spawn.
 fn sandboxed(caller: Option<&Caller>) -> bool {
     caller.is_some_and(|c| c.teammate.sandbox.is_some())
 }
 
-/// Run the state sweep, unless a sandboxed worker runs this spawn: its
-/// sandbox denies the removal of skill bundles (ticket 28). A skipped
-/// sweep writes no stamp, so the next spawn outside a sandbox sweeps on
-/// time.
 fn sweep_state(ctx: &RuntimeContext, sandboxed: bool) {
     if !sandboxed {
         horch_core::sweep::run_due(ctx);
     }
 }
 
-/// Refuse what the caller's `spawn_only` does not allow: a name that
-/// matches no glob, `--resume`, and a roster folder other than the one its
-/// brief names. A brief (task text) also needs the caller to run in the
-/// agent process that horch recorded for the controller's ledger row
-/// ([`runs_in`]): `HERDR_PANE_ID`, which any worker can set, is not enough
-/// (TRF-43). Returns the controller for the new worker's brief: the
-/// caller's role when it has `spawn_only`, else none.
 fn spawn_only_check(
     caller: Option<&Caller>,
     args: &SpawnArgs,
@@ -539,9 +430,7 @@ fn spawn_only_check(
     Ok(Some(c.role.clone()))
 }
 
-/// The record a resume continues, when the request has one.
 fn resume_record(req: &SpawnRequest, sc: &SpawnContext) -> Result<Option<Record>> {
-    // A record whose pane closed without `horch done` ends here, so it resumes.
     if let Some(key) = req.resume.as_deref() {
         sc.store.end_if_pane_closed(key, &sc.herdr)?;
     }
@@ -550,7 +439,6 @@ fn resume_record(req: &SpawnRequest, sc: &SpawnContext) -> Result<Option<Record>
     Ok(existing)
 }
 
-/// Gate, mint ids, read skills and plan. Print the gate line.
 fn plan_request(
     ctx: &RuntimeContext,
     req: &SpawnRequest,
@@ -590,8 +478,6 @@ fn plan_request(
     Ok(plan)
 }
 
-/// Refuse a spawn whose pool runs ahead of its usage window (OR-4): the pool
-/// that routing chose is paced until its window catches up.
 fn refuse_on_pacing(view: &QuotaView, plan: &ExecutionPlan) -> Result<()> {
     let launch = &plan.launch;
     match horch_core::fleetd::fleet_runtime::application::holds::pacing(
@@ -607,7 +493,6 @@ fn refuse_on_pacing(view: &QuotaView, plan: &ExecutionPlan) -> Result<()> {
     }
 }
 
-/// Start the planned worker, then wait for it and report it.
 fn launch(
     ctx: &RuntimeContext,
     sc: &SpawnContext,
@@ -616,8 +501,6 @@ fn launch(
     ledger: Option<&super::taskledger_spawn::LedgerSpawn>,
     sandboxed: bool,
 ) -> Result<String> {
-    // Advisory probes belong after validation: a refused/headless request
-    // must not contact herdr or create diagnostic state.
     fleet_warnings(ctx, true);
 
     let tile = |pane: &str, tiling: TilingMode| tile_pane(ctx, sc, pane, tiling);
@@ -659,7 +542,6 @@ fn launch(
     Ok(out.pane)
 }
 
-/// The request `horch spawn` plans, from its arguments.
 fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
     let mut req = SpawnRequest::worker(
         args.teammate
@@ -682,7 +564,6 @@ fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
     Ok(req)
 }
 
-/// The roster, the workspace, the mailbox, the project and the store.
 fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let roster = super::load_roster(ctx, roster_dir.as_deref())?;
@@ -691,10 +572,7 @@ fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
         "horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
     )?;
     std::fs::create_dir_all(mailbox.dir())?;
-    // Read once, so the ledger this process writes and the one the worker
-    // later reads (its brief carries the project) are the same file.
     let project = ctx.paths.project()?;
-    // The project's facts add the teammate's `skills_when` skills at planning.
     let roster = roster.with_project_facts(horch::project::project_facts(&project));
     let store = ExecutionStore::open_in(ctx)?;
     Ok(SpawnContext {
@@ -706,8 +584,6 @@ fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     })
 }
 
-/// A competition record, from an older ledger, is never resumed: the
-/// competition rounds that ran it are removed.
 fn refuse_competition_record(existing: Option<&Record>) -> Result<()> {
     let Some(r) = existing.filter(|r| r.round_id.is_some()) else {
         return Ok(());
@@ -725,7 +601,6 @@ fn refuse_competition_record(existing: Option<&Record>) -> Result<()> {
     )
 }
 
-/// The quota view and balance mode, when the request spends quota.
 fn gate_inputs(
     ctx: &RuntimeContext,
     req: &SpawnRequest,
@@ -742,9 +617,6 @@ fn gate_inputs(
     Ok(Some((view, policy.balance_mode)))
 }
 
-/// Planning reads no files, so the operator and plugin skills of the
-/// teammate that will launch are read here. Then the record lists them,
-/// as the launch bundle does.
 fn read_skills(
     ctx: &RuntimeContext,
     req: &SpawnRequest,
@@ -764,7 +636,6 @@ fn read_skills(
     )
 }
 
-/// Plan the launch. A refusal prints its REFUSED line before it fails.
 fn plan(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan> {
     plan::plan_launch(req, inputs)
         .map_err(SpawnError::from)
@@ -776,10 +647,6 @@ fn plan(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan> {
         .map_err(anyhow::Error::from)
 }
 
-/// Lay the grid out, which also puts the pane where it belongs: a split
-/// halves its parent, and the tiler moves the worker into the next free
-/// slot and evens every column. Best effort: a grid that will not lay out
-/// must not fail a spawn whose worker is already running.
 fn open_hc_pane(ctx: &RuntimeContext, sc: &SpawnContext, _plan: &ExecutionPlan) -> Result<String> {
     use horch_core::workspace::place::{self, Placement, TabPanes};
 
@@ -849,9 +716,6 @@ fn tile_pane(ctx: &RuntimeContext, sc: &SpawnContext, pane: &str, tiling: Tiling
     }
 }
 
-/// Wait for the worker to register. A pane line starts with `exec`, so a
-/// worker that fails at startup closes its pane and takes its stderr with
-/// it. It leaves the error in a file instead, and this wait reads it.
 fn wait_for_start(
     ctx: &RuntimeContext,
     sc: &SpawnContext,
@@ -865,8 +729,6 @@ fn wait_for_start(
     }
     let (role, pane) = (&out.plan.execution.role, &out.pane);
     let mut registered = || sc.mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
-    // The worker keys its error by this record, or by its pane when it
-    // could not read its brief (#192).
     let keys = [
         StartupKey::Record(out.plan.execution.id.as_str()),
         StartupKey::Pane(pane.as_str()),
@@ -889,7 +751,6 @@ fn wait_for_start(
     }
 }
 
-/// End the record of a worker that failed at startup, and clean up after it.
 fn record_failed_start(
     ctx: &RuntimeContext,
     sc: &SpawnContext,
@@ -905,8 +766,6 @@ fn record_failed_start(
     if let Err(e) = sc.store.end_live(id, state) {
         eprintln!("horch spawn: recording the failed start of {id} failed: {e:#}");
     }
-    // The pane closed with the worker, or the worker closed it;
-    // this close is for a pane that did neither.
     let _ = sc.herdr.pane_close(&out.pane);
     sc.mailbox.unregister(out.plan.execution.role.as_str());
     if let Some(l) = ledger {
@@ -914,7 +773,6 @@ fn record_failed_start(
     }
 }
 
-/// The line `horch spawn` prints on stderr when the worker is up.
 fn spawned_line(out: &SpawnOutcome) -> String {
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
     let what = format!("{} {}", launch.teammate.agent, launch.model);
@@ -929,7 +787,6 @@ fn spawned_line(out: &SpawnOutcome) -> String {
     }
 }
 
-/// Advisory collision/load diagnostics; abandoned workspaces do not count.
 pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     let prefix = if as_note { "NOTE:" } else { "WARNING:" };
     if let Some(warning) = ctx.paths.ledger_isolation_warning() {
@@ -940,7 +797,6 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
     if let Some(workspaces) = hosts.workspace_list_union() {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
-        // A read only: a scratch fleet must not create the ledger (#199).
         if let Ok(Some(store)) = horch_core::taskledger::open_existing_read_only(ctx) {
             if let Ok(root) = super::taskledger::project_root(ctx) {
                 if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
@@ -1050,9 +906,6 @@ mod tests {
         assert!(err.contains("--resume"), "{err}");
     }
 
-    /// Teammate names come from a directory, not a closed enum, so argv parsing
-    /// accepts any word and the roster is what rejects it - with a list of what
-    /// actually exists on this machine, which a compiled-in enum could not give.
     #[test]
     fn an_unknown_teammate_lists_the_valid_ones() {
         let name = resolve_positionals(&["haiku".into()], None).unwrap();
@@ -1099,14 +952,11 @@ mod tests {
         }
     }
 
-    /// The recorded agent of the fake tree below: pid 40, start time 7.
     const AGENT: Agent = Agent {
         pid: 40,
         started: Some(7),
     };
 
-    /// A fake process tree: 1 <- 40 (the agent, start time 7) <- 41 <- 42,
-    /// and 1 <- 90 <- 91. `me` is the process that runs the spawn.
     fn tree_check(me: u32, agent: Option<Agent>) -> bool {
         let parent = |pid: u32| match pid {
             40 | 90 => Some(1),
@@ -1128,7 +978,6 @@ mod tests {
         )
     }
 
-    /// A process tree in which every caller is the recorded agent.
     fn in_tree() -> Procs<'static> {
         Procs {
             me: AGENT.pid,
@@ -1139,7 +988,6 @@ mod tests {
         }
     }
 
-    /// A process tree in which no caller descends from a recorded agent.
     fn outside_tree() -> Procs<'static> {
         Procs {
             me: 91,
@@ -1150,7 +998,6 @@ mod tests {
         }
     }
 
-    /// The importer in a ledger run, with its agent pid recorded.
     fn importer_in_run() -> Caller {
         let mut c = importer(&["intake-*"]);
         c.worker_id = Some("w-ctl".into());
@@ -1158,9 +1005,6 @@ mod tests {
         c
     }
 
-    /// A spawn skips the state sweep only when a sandboxed worker runs it
-    /// (ticket 28): an operator shell, the orchestrator and an unsandboxed
-    /// worker sweep.
     #[test]
     fn only_a_sandboxed_caller_skips_the_sweep() {
         let mut boxed = importer(&[]);
@@ -1170,14 +1014,11 @@ mod tests {
         assert!(!sandboxed(None));
     }
 
-    /// A skipped sweep writes no stamp, so the next unsandboxed spawn
-    /// sweeps on time; a sweep that runs writes it.
     #[test]
     fn a_skipped_sweep_writes_no_stamp() {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
-        // A herdr that does not answer leaves all state alone.
         let env = horch_core::runtime::MapEnv::new(tmp.path())
             .with("HOME", &tmp.path().to_string_lossy())
             .with("HORCH_STATE_DIR", &state.to_string_lossy())
@@ -1193,8 +1034,6 @@ mod tests {
         assert!(stamp.exists(), "an unsandboxed spawn sweeps and stamps");
     }
 
-    /// A caller with `spawn_only` spawns a matching teammate, and the new
-    /// worker's controller is the caller's role.
     #[test]
     fn spawn_only_allows_a_matching_name_and_names_the_controller() {
         let c = importer(&["intake-*"]);
@@ -1226,8 +1065,6 @@ mod tests {
         );
     }
 
-    /// The caller cannot point the roster at a folder it wrote: only the
-    /// folder its own brief names passes.
     #[test]
     fn spawn_only_refuses_another_teammates_dir() {
         let c = importer(&["intake-*"]);
@@ -1268,8 +1105,6 @@ mod tests {
         );
     }
 
-    /// A caller without the key, and no caller (the orchestrator or an
-    /// operator shell), spawn as before: any name, any roster, resume.
     #[test]
     fn a_caller_without_spawn_only_is_unchanged() {
         let c = importer(&[]);
@@ -1283,8 +1118,6 @@ mod tests {
         }
     }
 
-    /// TRF-43's 1 exception: `skill-importer` (spawn_only `intake-*`) sends a
-    /// brief to `intake-writer`, a `horch_access: report` pane.
     #[test]
     fn trf_43_spawn_only_controller_may_send_a_brief() {
         let roster = Roster::builtin().unwrap();
@@ -1302,15 +1135,9 @@ mod tests {
         let target = roster.get("intake-writer");
         assert_eq!(target.unwrap().horch_access, HorchAccess::Report);
         check_task_text(&a, controller.as_deref(), target).unwrap();
-        // No task text needs no exception.
         check_task_text(&args(Some("opus"), None), None, roster.get("opus")).unwrap();
     }
 
-    /// TRF-43: the controller is the process that horch recorded at launch,
-    /// not the pane id. A caller with the controller's `HERDR_PANE_ID` (so
-    /// `caller` finds the controller's role) but outside its agent's process
-    /// tree gets the TRF-43 refusal. So does a controller row with no
-    /// recorded agent.
     #[test]
     fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
         let mut a = args(Some("intake-writer"), None);
@@ -1331,8 +1158,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(err, want);
-        // Without task text, spawn_only only limits the caller: no identity
-        // check applies.
         let plain = args(Some("intake-writer"), None);
         let got = spawn_only_check(
             Some(&importer_in_run()),
@@ -1344,9 +1169,6 @@ mod tests {
         assert_eq!(got.as_deref(), Some("skill-importer-1"));
     }
 
-    /// TRF-43: a controller outside every run has no ledger row, so horch
-    /// recorded no agent for it. Its brief is refused, and the refusal says
-    /// how to run it in a run.
     #[test]
     fn trf_43_a_controller_outside_every_run_cannot_send_a_brief() {
         let mut a = args(Some("intake-writer"), None);
@@ -1367,9 +1189,6 @@ mod tests {
         assert_eq!(err, want);
     }
 
-    /// TRF-43: the caller passes only when it is the recorded agent or a
-    /// descendant of it, and the agent still runs with its recorded start
-    /// time (ADR 0002: a pid alone does not name a process).
     #[test]
     fn trf_43_the_caller_must_descend_from_the_recorded_agent() {
         assert!(tree_check(42, Some(AGENT)), "a grandchild of the agent");
@@ -1389,9 +1208,6 @@ mod tests {
         assert!(!tree_check(42, None), "no recorded agent");
     }
 
-    /// Claude's macOS sandbox blocks the full process-info query for its
-    /// agent process. The sandbox-safe query still proves the agent's exact
-    /// start time before the caller's parent walk passes.
     #[test]
     fn trf_43_a_blocked_agent_query_uses_the_sandbox_safe_query() {
         let parent = |pid: u32| match pid {
@@ -1409,9 +1225,6 @@ mod tests {
         assert!(runs_in(Some(AGENT), &procs));
     }
 
-    /// The sandbox blocks the full process-info query for the caller's
-    /// ancestors, so the walk asks the sandbox-safe parent query. Before
-    /// that fallback, this walk stopped at 42 and refused the brief.
     #[test]
     fn trf_43_a_blocked_parent_query_uses_the_sandbox_safe_query() {
         let fallback = |pid: u32| match pid {
@@ -1437,9 +1250,6 @@ mod tests {
         assert!(!runs_in(Some(AGENT), &blocked), "no parent, no pass");
     }
 
-    /// A probe for the real Claude Code sandbox: run it there with the
-    /// recorded agent of the caller's ledger row in
-    /// `HORCH_PROBE_AGENT_PID` and `HORCH_PROBE_AGENT_STARTED`.
     #[test]
     #[ignore = "a probe run by hand inside a worker's sandbox"]
     fn trf_43_probe_runs_in_from_env() {
@@ -1478,9 +1288,6 @@ mod tests {
         assert!(passed);
     }
 
-    /// A probe for the real Claude Code sandbox: run it in the controller's
-    /// pane. It prints each step of [`caller`] and of the brief check for
-    /// the teammate in `HORCH_PROBE_TARGET`.
     #[test]
     #[ignore = "a probe run by hand inside a worker's sandbox"]
     fn trf_43_probe_spawn_checks_from_env() {
@@ -1552,8 +1359,6 @@ mod tests {
         checked.unwrap();
     }
 
-    /// TRF-43: the real process tree. This test process descends from its
-    /// parent, and it does not descend from a process that started after it.
     #[test]
     fn trf_43_the_os_process_tree_names_the_parent() {
         let me = std::process::id();
@@ -1579,9 +1384,6 @@ mod tests {
         assert!(!in_child, "a child is no ancestor");
     }
 
-    /// Every other task text keeps the TRF-43 refusal: no controller, a
-    /// controller's brief to a pane with full horch access, an unknown
-    /// teammate, and a resume.
     #[test]
     fn trf_43_task_text_refused_outside_spawn_only() {
         let roster = Roster::builtin().unwrap();
@@ -1610,7 +1412,6 @@ mod tests {
             Some("skill-importer-1"),
             roster.get("intake-writer"),
         );
-        // A caller without spawn_only is no controller, so its brief is refused.
         let plain = importer(&[]);
         let controller = spawn_only_check(
             Some(&plain),
@@ -1680,9 +1481,6 @@ mod trf_41_tests {
         }
     }
 
-    /// A ledger with 1 run, 1 startable `opus` task and 1 worker row, and
-    /// an in-process fleetd that serves its channel.
-    /// The server ends before its folder goes: fields drop in order.
     struct World {
         _fleetd: ChannelServer,
         _dir: tempfile::TempDir,
@@ -1716,7 +1514,6 @@ mod trf_41_tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -1760,7 +1557,6 @@ mod trf_41_tests {
         }
     }
 
-    /// The gate events of a run: (actor, kind, worker, text).
     fn gate_events(store: &Store, run: &Run) -> Vec<(String, String, Option<String>, String)> {
         let mut stmt = store
             .conn()
@@ -1858,8 +1654,6 @@ mod trf_41_tests {
             tasks::plan_workers(store.conn(), &run.run_id).unwrap(),
             before
         );
-        // The gate itself takes no ledger: its inputs are the roster and
-        // the quota view, so a record cannot reach a decision.
         let src = include_str!("../../../horch-core/src/routing/decision.rs");
         assert!(
             !src.contains("events"),

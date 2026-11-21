@@ -1,28 +1,3 @@
-//! The ingest of the outbox files of each live attempt: `progress.jsonl` to
-//! its last complete line, and the handoff result, each 1 time.
-//!
-//! Requirements: SR-6, RR-8, FM-23. `docs/specs/fleetd/design.md`,
-//! "Workspace layout and file protocol" (protocol rules 1, 2 and 7) and
-//! "Ledger" (`ingested`); `docs/tickets/fleetd-p5/MAP.md`, Q3 and Q4.
-//!
-//! - Part 1 of a pass calls [`read`] for the outboxes of its outbox scan.
-//!   Each file passes the owner and mode checks of the protected file
-//!   reader. A path with a `rejected` row is not read again.
-//! - Part 2 calls [`ingest()`] in its transaction. `result.json` and the
-//!   question files go to [`super::ingest`]. Each file is ingested 1 time:
-//!   a message by its `ingested` row, the log by its offset, which moves
-//!   only from the offset that part 1 read.
-//! - A progress line becomes the rows of `horch ledger progress`: the
-//!   progress of the worker, its event, and the activity of a live attempt
-//!   on the fleet clock. A line that fails is skipped with 1 event.
-//! - A `context-warned` line becomes 1 `context-warned` event of the session
-//!   record of the worker (G5): a process of the attempt cannot write it.
-//! - The handoff result (Q4) ends its attempt with the outcome
-//!   `handed_off`, burns no attempt, and moves the task to `ready`. The
-//!   handoff path is kept only when its real path is inside the worktree or
-//!   the task folder of the attempt; `START.md` of the next attempt names
-//!   it ([`handoff_of`]).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -54,7 +29,6 @@ use crate::taskledger::model::{
 use crate::taskledger::util::{self, About};
 use crate::taskledger::{tasks, workers};
 
-/// The size and line limits of the outbox files (`fleet.toml`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub result_max_bytes: u64,
@@ -82,46 +56,31 @@ impl Limits {
     }
 }
 
-/// A valid handoff `result.json` (Q4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Handoff {
-    /// The path of `result.json`.
     pub path: PathBuf,
     pub sha256: String,
-    /// The real path of the handoff file, or why fleetd does not use it.
     pub file: Result<String, String>,
 }
 
-/// What part 1 read from the outbox of 1 attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboxRead {
     pub attempt: AttemptRef,
-    /// `result.json` that is not a handoff, and the question files.
     pub messages: Vec<FileRead>,
     pub handoff: Option<Handoff>,
     pub progress: Option<ProgressFile>,
 }
 
-/// What 1 ingest did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// The tasks that a result moved to `verifying`.
     pub to_verifying: Vec<String>,
-    /// The tasks that a question moved to `blocked_on_user`.
     pub to_blocked: Vec<String>,
-    /// The tasks whose attempt handed off.
     pub handed_off: Vec<String>,
-    /// The files that this ingest recorded as rejected.
     pub rejected: Vec<PathBuf>,
-    /// The progress lines that this ingest recorded.
     pub progress_lines: u64,
-    /// The progress lines that this ingest skipped, each with 1 event.
     pub skipped_lines: u64,
 }
 
-/// Part 1: read the new outbox files of each of `attempts` under
-/// `fleet_root`. `owner` is the user that owns the ledger. An outbox with
-/// nothing new is left out.
 pub fn read(
     conn: &Connection,
     fleet_root: &Path,
@@ -170,7 +129,6 @@ pub fn read(
     Ok(out)
 }
 
-/// The sha256 and the handoff path of a valid handoff `result.json`.
 fn handoff_path(file: &FileRead) -> Option<(&str, &str)> {
     match &file.read {
         Read::Valid {
@@ -184,8 +142,6 @@ fn handoff_path(file: &FileRead) -> Option<(&str, &str)> {
     }
 }
 
-/// The folders that may hold the handoff file of `attempt`: its task
-/// folder, and the worktree of its task when it has one.
 fn handoff_roots(conn: &Connection, fleet_root: &Path, a: &AttemptRef) -> Result<Vec<PathBuf>> {
     let mut roots = vec![fleet_root.join("tasks").join(&a.task_id)];
     if let Some(tree) = trees::of_task(conn, &a.task_id)? {
@@ -194,9 +150,6 @@ fn handoff_roots(conn: &Connection, fleet_root: &Path, a: &AttemptRef) -> Result
     Ok(roots)
 }
 
-/// The offset to read the log `path` from: 0 with no row, the recorded
-/// offset of an accepted log. `None`: the log is rejected and is not read
-/// again.
 fn log_offset(conn: &Connection, path: &Path) -> Result<Option<u64>> {
     let row: Option<(String, Option<i64>)> = conn
         .query_row(
@@ -214,16 +167,12 @@ fn log_offset(conn: &Connection, path: &Path) -> Result<Option<u64>> {
     })
 }
 
-/// Part 2: record each file of `reads` 1 time and act on it, in the open
-/// transaction `tx`. The fleetd of generation `guard` writes. A question
-/// gets the time limit `question_limit_s`.
 pub fn ingest(
     tx: &Connection,
     guard: Option<Generation>,
     reads: &[OutboxRead],
     question_limit_s: u64,
 ) -> Result<Report> {
-    // The message ingest checks the transaction and the generation first.
     let messages: Vec<ingest::OutboxRead> = reads
         .iter()
         .map(|r| ingest::OutboxRead {
@@ -255,14 +204,10 @@ pub fn ingest(
     Ok(report)
 }
 
-/// The outcome of a handed-off attempt: the word of today.
 fn handed_off_word() -> &'static str {
     EndReason::HandedOff.as_str()
 }
 
-/// A valid handoff result of `a`: the attempt ends `handed_off`, its worker
-/// ends `handed_off` with the handoff file when fleetd keeps it, and its
-/// `running` task moves to `ready` with its attempt given back.
 fn hand_off(
     tx: &Connection,
     guard: Option<Generation>,
@@ -303,8 +248,6 @@ fn hand_off(
             workers::end(tx, &worker, WorkerStatus::Incomplete, word, None)?;
         }
     }
-    // No attempt is burned: the next claim adds 1 to `attempts`, and the
-    // floor moves with it.
     tx.execute(
         "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
             updated_at = ?2
@@ -321,15 +264,10 @@ fn hand_off(
     )
 }
 
-/// The handoff file that `START.md` of the next attempt of `task_id` names:
-/// the kept handoff file of its last ended attempt, when that attempt
-/// ended `handed_off` or `context_limit` (fleetd-p7 ticket 18).
 pub fn handoff_of(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     Ok(handoffs_of(conn, [task_id])?.remove(task_id))
 }
 
-/// [`handoff_of`] of each task of `task_ids`, by task: 1 statement for any
-/// count of tasks. A task with no handoff is not in the map.
 pub fn handoffs_of<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str>,
@@ -366,8 +304,6 @@ pub fn handoffs_of<'a>(
     Ok(out)
 }
 
-/// Record the log `p` of `a` from the offset that part 1 read. A second
-/// ingest of the same read finds another offset and does nothing.
 fn ingest_progress(
     tx: &Connection,
     a: &AttemptRef,
@@ -410,9 +346,6 @@ fn ingest_progress(
     Ok(())
 }
 
-/// Write the `ingested` row of the log `path`: offset `to` and `outcome`,
-/// only when the row is new or is accepted at offset `from`. True when it
-/// wrote.
 fn move_offset(
     tx: &Connection,
     path: &Path,
@@ -440,7 +373,6 @@ fn move_offset(
     Ok(new == 1)
 }
 
-/// The worker and the state of the attempt `a`.
 fn attempt_row(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String)>> {
     Ok(tx
         .query_row(
@@ -465,10 +397,6 @@ fn record_warned(tx: &Connection, worker: &str, text: &str) -> Result<()> {
     record_history_in(tx, &record_id, EVENT_WARNED, text, &util::now())
 }
 
-/// The rows of `horch ledger progress` for 1 line: the progress of the
-/// worker and its event, and the activity of a live attempt on the fleet
-/// clock (`docs/tickets/fleetd-p2/MAP.md`, Q7). A line of an ended attempt
-/// gets its event only.
 fn record_line(
     tx: &Connection,
     a: &AttemptRef,
@@ -491,7 +419,6 @@ fn record_line(
     util::event(tx, &about, Actor::Worker, event_kind(kind), text)
 }
 
-/// The 1 event of a skipped line.
 fn skipped(tx: &Connection, a: &AttemptRef, worker: &str, line: &Line, reason: &str) -> Result<()> {
     let run = tasks::get(tx, &a.task_id)?.run_id;
     let about = About {

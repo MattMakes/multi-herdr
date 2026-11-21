@@ -1,36 +1,3 @@
-//! The takeover of the old watchdogs at the start of fleetd.
-//!
-//! `docs/specs/fleetd/design.md`, "Migration plan" item 3 ("Phase 1 stops
-//! the old watchdog"), and the table "What a release does to a run in
-//! flight", row Phase 1. Before Phase 1, each active run had 1 watchdog
-//! process (`horch ledger watch`). The run records it in 2 places:
-//!
-//! - the owner file of the lock folder `<locks>/watchdog-<run>.lock`
-//!   (`taskledger::watchdog::lock`);
-//! - the columns `runs.watchdog_pid` and `runs.watchdog_started`
-//!   (`taskledger::watchdog::record_start` and `checkin`).
-//!
-//! At each start, before its first pass, fleetd calls [`take_over`]. For
-//! each recorded watchdog of each active run:
-//!
-//! - when the process with the recorded PID has the recorded start time,
-//!   fleetd stops it: a polite stop, then a kill after `stop_grace_s`;
-//! - when a process has the recorded PID but the record has no start time,
-//!   fleetd cannot tell the watchdog from another program with a reused
-//!   PID. It sends no signal, and the record stays;
-//! - else the recorded watchdog is gone, and fleetd sends no signal. A PID
-//!   with another start time names another program.
-//!
-//! Then 1 transaction checks the generation of this fleetd, clears the
-//! record of each run whose watchdogs are gone, and writes 1 event with
-//! the cause [`CAUSE`] for each recorded watchdog that is gone. Last, the
-//! lock folder of each watchdog that no longer runs is removed.
-//!
-//! 1 control path: fleetd runs a pass only when [`all_gone`] holds for the
-//! result. Else it runs no pass, and its next start tries again. The pass
-//! then does the duties of the watchdog for the run. A live worker goes
-//! on: the takeover touches only the watchdog.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -46,32 +13,22 @@ use crate::taskledger::runs::Run;
 use crate::taskledger::store::Store;
 use crate::taskledger::{util, watchdog};
 
-/// The cause of the event of each recorded watchdog that fleetd took over.
 pub const CAUSE: &str = "old_watchdog_stopped";
 
-/// The time between 2 reads of a process that fleetd stops.
 const WAIT_STEP: Duration = Duration::from_millis(50);
 
-/// How long fleetd waits for the end of a process after its kill.
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
-/// The processes of this machine, as the takeover reads and stops them.
 pub trait Processes {
-    /// The start time of the process `pid`, or `None` when no process has
-    /// the pid or its start time cannot be read.
     fn start_time(&self, pid: u32) -> Option<u64>;
 
-    /// Whether a process has the pid `pid`.
     fn exists(&self, pid: u32) -> bool {
         self.start_time(pid).is_some()
     }
 
-    /// Stop `pid` while it runs with start time `started`: a polite stop,
-    /// then a kill after `grace`. True when the process ended.
     fn stop(&self, pid: u32, started: u64, grace: Duration) -> bool;
 }
 
-/// The processes of this machine, through the platform layer.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Os;
 
@@ -96,7 +53,6 @@ impl Processes for Os {
     }
 }
 
-/// Wait up to `wait` until `pid` with start time `started` has ended.
 fn ended(pid: u32, started: u64, wait: Duration) -> bool {
     let until = Instant::now() + wait;
     loop {
@@ -111,50 +67,34 @@ fn ended(pid: u32, started: u64, wait: Duration) -> bool {
     }
 }
 
-/// What fleetd did about 1 recorded watchdog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// It ran, and fleetd stopped it by its PID and start time.
     Stopped,
-    /// It did not run: fleetd cleared its record with no signal.
     NotRunning,
-    /// It still runs after its kill. Its record stays, and the next start
-    /// of fleetd tries again.
     StillRuns,
-    /// A process has its PID, but the record has no start time: fleetd
-    /// cannot tell it from another program with a reused PID. It sends no
-    /// signal, the record stays, and the next start of fleetd tries again.
     Unconfirmed,
 }
 
 impl Outcome {
-    /// Whether the recorded watchdog no longer runs.
     pub fn gone(self) -> bool {
         matches!(self, Outcome::Stopped | Outcome::NotRunning)
     }
 }
 
-/// Whether each recorded watchdog of `taken` no longer runs: fleetd may run
-/// its passes with 1 control path.
 pub fn all_gone(taken: &[TakenOver]) -> bool {
     taken.iter().all(|t| t.outcome.gone())
 }
 
-/// 1 recorded watchdog of an active run, and what fleetd did about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TakenOver {
     pub run_id: String,
     pub slug: String,
     pub pid: u32,
-    /// The recorded start time. `None` when the record has none: then
-    /// fleetd cannot prove the process is the watchdog, and sends no
-    /// signal.
     pub pid_start: Option<u64>,
     pub outcome: Outcome,
 }
 
 impl TakenOver {
-    /// 1 line for the output of fleetd.
     pub fn describe(&self) -> String {
         match self.outcome {
             Outcome::Stopped => format!(
@@ -177,13 +117,10 @@ impl TakenOver {
     }
 }
 
-/// The lock folder of the watchdog of `run_id` in `locks`.
 fn lock_folder(locks: &Path, run_id: &str) -> PathBuf {
     locks.join(format!("watchdog-{run_id}.lock"))
 }
 
-/// The process that the owner file of the lock folder `lock` names: its
-/// PID and its start time.
 fn lock_owner(lock: &Path) -> Option<(u32, Option<u64>)> {
     let v: serde_json::Value =
         serde_json::from_slice(&std::fs::read(lock.join("owner")).ok()?).ok()?;
@@ -191,8 +128,6 @@ fn lock_owner(lock: &Path) -> Option<(u32, Option<u64>)> {
     Some((pid, v["started"].as_u64()))
 }
 
-/// The watchdog processes that `run` records, each 1 time: the lock owner
-/// first, then the columns of the run.
 fn recorded(run: &Run, locks: &Path) -> Vec<(u32, Option<u64>)> {
     let columns = run.watchdog_pid.and_then(|pid| {
         let pid = u32::try_from(pid).ok()?;
@@ -213,13 +148,10 @@ fn recorded(run: &Run, locks: &Path) -> Vec<(u32, Option<u64>)> {
     found
 }
 
-/// Whether `pid` runs with the start time `started`.
 fn runs(procs: &dyn Processes, pid: u32, started: Option<u64>) -> bool {
     started.is_some_and(|s| procs.start_time(pid) == Some(s))
 }
 
-/// Whether the process `pid` with the recorded start time `started` can
-/// still run. With no start time, any process with the pid can be it.
 fn may_run(procs: &dyn Processes, pid: u32, started: Option<u64>) -> bool {
     match started {
         Some(_) => runs(procs, pid, started),
@@ -227,8 +159,6 @@ fn may_run(procs: &dyn Processes, pid: u32, started: Option<u64>) -> bool {
     }
 }
 
-/// Stop the recorded watchdog `pid` when it runs with its recorded start
-/// time `started`.
 fn stop_one(procs: &dyn Processes, pid: u32, started: Option<u64>, grace: Duration) -> Outcome {
     match started {
         Some(s) if runs(procs, pid, started) => {
@@ -243,9 +173,6 @@ fn stop_one(procs: &dyn Processes, pid: u32, started: Option<u64>, grace: Durati
     }
 }
 
-/// Take over each old watchdog of the active runs of `store`, as the
-/// module doc says. `locks` is the lock folder of the ledger, and `grace`
-/// is `stop_grace_s`. Returns 1 item for each recorded watchdog.
 pub fn take_over(
     store: &mut Store,
     generation: Generation,
@@ -268,7 +195,6 @@ pub fn take_over(
     if taken.is_empty() {
         return Ok(taken);
     }
-    // A run with a watchdog that may still run keeps its record.
     let kept: BTreeSet<&str> = taken
         .iter()
         .filter(|t| !t.outcome.gone())
@@ -294,8 +220,6 @@ pub fn take_over(
     Ok(taken)
 }
 
-/// Remove the lock folder `lock` of a watchdog that no longer runs. A
-/// watchdog that ended on its polite stop removes it itself.
 fn remove_lock(lock: &Path) -> Result<()> {
     match std::fs::remove_dir_all(lock) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -305,7 +229,6 @@ fn remove_lock(lock: &Path) -> Result<()> {
     }
 }
 
-/// The event of the takeover of 1 recorded watchdog.
 fn event(tx: &Connection, t: &TakenOver) -> Result<()> {
     let data = serde_json::json!({
         "pid": t.pid,
@@ -338,12 +261,10 @@ mod tests {
     use crate::fleetd::fleet_runtime::adapters::fleetd_row;
     use crate::taskledger::runs::{self, NewRun};
 
-    /// The processes of a test: a map of PID to start time, and the stops.
     #[derive(Default)]
     struct Fake {
         live: RefCell<Vec<(u32, u64)>>,
         stops: RefCell<Vec<(u32, u64, Duration)>>,
-        /// Each process survives its stop.
         unkillable: bool,
     }
 
@@ -396,8 +317,6 @@ mod tests {
             self.dir.path().join("locks")
         }
 
-        /// Record the watchdog `pid` with start time `started` as the lock
-        /// owner and on the run.
         fn record(&self, pid: u32, started: u64) {
             let lock = lock_folder(&self.locks(), &self.run_id);
             std::fs::create_dir_all(&lock).unwrap();
@@ -406,8 +325,6 @@ mod tests {
             watchdog::record_start(self.store.conn(), &self.run_id, pid, Some(started)).unwrap();
         }
 
-        /// Record `pid` as the watchdog of the run with no start time, as a
-        /// starter that could not read it wrote it.
         fn record_no_start(&self, pid: u32) {
             let lock = lock_folder(&self.locks(), &self.run_id);
             std::fs::create_dir_all(&lock).unwrap();
@@ -428,13 +345,11 @@ mod tests {
             .unwrap()
         }
 
-        /// The recorded watchdog columns of the run.
         fn columns(&self) -> (Option<i64>, Option<i64>) {
             let run = runs::get(self.store.conn(), &self.run_id).unwrap();
             (run.watchdog_pid, run.watchdog_started)
         }
 
-        /// The `data_json` of each event with the cause of the takeover.
         fn events(&self) -> Vec<serde_json::Value> {
             let mut stmt = self
                 .store
@@ -476,7 +391,6 @@ mod tests {
         let mut w = World::new();
         w.record(4242, 77);
         let procs = Fake::default();
-        // The PID names a later program.
         procs.live.borrow_mut().push((4242, 78));
         let taken = w.take_over(&procs);
         assert!(
@@ -508,7 +422,6 @@ mod tests {
         let events = w.events();
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0]["signalled"], false);
-        // A second start finds nothing to take over.
         assert!(w.take_over(&procs).is_empty());
     }
 
@@ -535,7 +448,6 @@ mod tests {
         let mut w = World::new();
         w.record_no_start(4242);
         let procs = Fake::default();
-        // A process has the PID: the watchdog, or a program with a reused PID.
         procs.live.borrow_mut().push((4242, 78));
         let taken = w.take_over(&procs);
         assert!(
@@ -549,7 +461,6 @@ mod tests {
         assert_eq!(w.columns(), (Some(4242), None), "the record stays");
         assert!(lock_folder(&w.locks(), &w.run_id).exists());
         assert!(w.events().is_empty(), "no takeover event");
-        // Once no process has the PID, the next start clears the record.
         procs.live.borrow_mut().clear();
         let taken = w.take_over(&procs);
         assert_eq!(taken[0].outcome, Outcome::NotRunning);

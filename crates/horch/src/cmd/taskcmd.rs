@@ -1,13 +1,3 @@
-//! `horch task requeue` and `horch task cancel`: the commands of the
-//! operator on 1 task (`docs/specs/fleetd/design.md`, "The task state
-//! machine" and "A cancel").
-//!
-//! Each command sends 1 request to fleetd (`task_requeue`, `task_cancel`)
-//! and writes no row itself (RR-5). [`send_requeue`] and [`send_cancel`]
-//! are the send of `horch ledger requeue` and `horch ledger cancel` too.
-//! fleetd applies the request: with a live attempt, the pass of fleetd
-//! stops its processes and cancels the task when they are gone.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -41,7 +31,6 @@ pub enum TaskCommand {
     },
 }
 
-/// `horch task`.
 pub fn run(ctx: &RuntimeContext, command: TaskCommand) -> Result<ExitCode> {
     match command {
         TaskCommand::Requeue { task, reason, run } => send_requeue(ctx, &task, &reason, &run),
@@ -49,8 +38,6 @@ pub fn run(ctx: &RuntimeContext, command: TaskCommand) -> Result<ExitCode> {
     }
 }
 
-/// `horch task requeue` and `horch ledger requeue`: 1 `task_requeue`
-/// request.
 pub(super) fn send_requeue(
     ctx: &RuntimeContext,
     task: &str,
@@ -64,7 +51,6 @@ pub(super) fn send_requeue(
     })
 }
 
-/// `horch task cancel` and `horch ledger cancel`: 1 `task_cancel` request.
 pub(super) fn send_cancel(
     ctx: &RuntimeContext,
     task: &str,
@@ -78,9 +64,6 @@ pub(super) fn send_cancel(
     })
 }
 
-/// The payload of a request on 1 task: the project, the run that `--run`
-/// or `HORCH_RUN_ID` names, the workspace, the task and the reason. fleetd
-/// resolves the run as the command of today does.
 fn task_payload(ctx: &RuntimeContext, task: &str, reason: &str, run: &RunArg) -> Result<Value> {
     let named = run
         .run

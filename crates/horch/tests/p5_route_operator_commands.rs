@@ -1,16 +1,3 @@
-//! `horch job requeue`, `horch task`, `horch worktree restore` and
-//! `triage apply`, `horch feature abandon` and `horch branch abandon` send
-//! 1 request to fleetd and write no row themselves (RR-5, FM-24; ticket 25
-//! of fleetd-p5).
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root,
-//! and the watchdog off. The test process plays fleetd: it writes the
-//! `fleetd` row with its own PID and start time, makes the operator token,
-//! and serves the channel in-process with the task and custody handlers.
-//!
-//! The tests are unix only: the socket path must be short.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -51,9 +38,6 @@ struct Out {
     err: String,
 }
 
-/// A fleet in temporary folders: a git project with 1 commit on `main`
-/// and the run branch, a ledger with the run `r1` and its feature, and
-/// the channel served by this process as fleetd.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -63,7 +47,6 @@ struct World {
 
 impl World {
     fn new() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("ro")
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -120,7 +103,6 @@ impl World {
         w
     }
 
-    /// The channel with the task and custody handlers of fleetd.
     fn serve(&self) -> ChannelServer {
         let mut handlers = Handlers::new();
         let config = FleetConfig::default();
@@ -187,7 +169,6 @@ impl World {
         }
     }
 
-    /// `horch` with `args`, which must exit 0.
     fn ok(&self, args: &[&str]) -> Out {
         self.ok_with(args, &[])
     }
@@ -210,7 +191,6 @@ impl World {
         self.conn().execute_batch(sql).unwrap();
     }
 
-    /// The kind and state of each `requests` row, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -235,7 +215,6 @@ impl World {
             .unwrap()
     }
 
-    /// 2 queued tasks of the run: T-1 and T-2.
     fn tasks(&self) {
         let mut store = Store::open(&self.ledger()).unwrap();
         store
@@ -250,8 +229,6 @@ impl World {
             .unwrap();
     }
 
-    /// A task `title` with its branch row in `building`, and the branch in
-    /// git with 1 commit. Gives the branch and its tip.
     fn task_branch(&self, title: &str) -> (String, String) {
         let branch = format!("{RUN_BRANCH}-{title}");
         let config = FleetConfig::default();
@@ -279,7 +256,6 @@ impl World {
         (branch, tip)
     }
 
-    /// The landing state and the rescue ref of the row of `branch`.
     fn branch_row(&self, branch: &str) -> (String, Option<String>) {
         let row = rows::branch(&self.conn(), branch).unwrap().unwrap();
         (row.landing_state.unwrap(), row.rescue_ref)
@@ -321,7 +297,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A `push` job of `F-1` that ended abandoned 3 times. Gives its id.
 fn held_job(w: &World) -> i64 {
     let id = jobs_store::insert(
         &w.conn(),
@@ -361,7 +336,6 @@ fn job_requeue_sends_job_requeue() {
         "4|0|queued"
     );
 
-    // A refused request prints `refused: <reason>` and exits 1.
     let o = w.horch_with(&["job", "requeue", &held.to_string()], &[]);
     assert_eq!(o.code, 1, "{}", o.err);
     assert!(
@@ -395,7 +369,6 @@ fn task_requeue_and_cancel_send_their_kinds() {
 fn worktree_restore_and_triage_send_their_kinds() {
     let w = World::new();
     let proj = w.proj();
-    // A folder that git knows and the ledger does not: triage row W1.
     let tree = proj.join(".worktrees").join("feat");
     git(
         &proj,
@@ -417,7 +390,6 @@ fn worktree_restore_and_triage_send_their_kinds() {
     let o = w.ok(&["worktree", "triage", "apply", reply.to_str().unwrap()]);
     assert!(o.out.starts_with("W1 feat KEEP"), "{}", o.out);
 
-    // An archive ref of a folder that is gone.
     let tip = git(&proj, &["rev-parse", "main"]);
     git(&proj, &["update-ref", "refs/horch/archive/old", &tip]);
     let o = w.ok(&["worktree", "restore", "old"]);
@@ -439,9 +411,6 @@ fn worktree_restore_and_triage_send_their_kinds() {
     );
 }
 
-/// `ARCHIVE` is 1 `worktree_triage` request, and fleetd queues 1
-/// `triage_apply` job for it (T-888). The command runs no git write: the
-/// folder stays until the job runs.
 #[test]
 fn worktree_triage_archive_sends_1_request_and_queues_1_job() {
     let w = World::new();
@@ -527,8 +496,6 @@ fn feature_branch_and_rescue_commands_send_their_kinds() {
         )),
         "abandoned"
     );
-    // `horch rescue drop` sends 1 `rescue_drop` request, then deletes the
-    // ref (T-885).
     w.ok(&["rescue", "drop", &rescue]);
     assert_eq!(
         w.requests(),
@@ -542,8 +509,6 @@ fn feature_branch_and_rescue_commands_send_their_kinds() {
     );
 }
 
-/// `HORCH_ROLE` and `HORCH_WORKER_ID` decide nothing in the command: each
-/// command sends its request, and fleetd decides.
 #[test]
 fn each_operator_command_that_sets_horch_role_is_still_decided_by_fleetd() {
     let w = World::new();

@@ -1,13 +1,3 @@
-//! `horch balance` - make every worker column the same width.
-//!
-//! Equal columns are not decoration. `horch layout` decides whether the grid is
-//! ragged by comparing the two rows' exact integer pane edges, so once a divider
-//! drifts it reports phantom columns and advises a split that makes the grid
-//! worse. Keeping the columns even keeps both rows on the same integers.
-//!
-//! The planning is pure and lives in [`horch_core::workspace::balance`]; the herdr calls
-//! live in [`horch_core::workspace::arrange`]. This is the command.
-
 use anyhow::Result;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
@@ -52,10 +42,6 @@ const NOT_SETTLED: &str = "not a settled 2-row grid (a column is half built or h
                            leaving the columns alone\n";
 const ALREADY_EVEN: &str = "worker columns are already even; nothing to do\n";
 
-/// What the command says. Distinguish "level already" from "not a shape worth
-/// touching": a column that is half built or half drained leaves the rows with
-/// different column counts, and evening one row alone would move it off the
-/// other row's integers.
 fn balance_text(
     ctx: &RuntimeContext,
     herdr: &PaneHost,

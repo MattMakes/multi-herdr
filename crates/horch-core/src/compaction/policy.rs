@@ -1,7 +1,3 @@
-//! The fleet's compaction rules (CTX-10 to CTX-14, CTX-20). Pure: the
-//! callers read the transcript, the ledger and the job dir, and pass what
-//! they found.
-
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
@@ -12,31 +8,19 @@ use crate::harness::capabilities::CompactionCaps;
 use crate::telemetry::context::{CompactionMark, Reading};
 use crate::telemetry::readers::Unreadable;
 
-/// Ledger event: the orchestrator asked a worker to prepare (CTX-11).
 pub const EVENT_REQUESTED: &str = "compact-requested";
-/// Ledger event: `horch note` warned a session over its threshold (CTX-10).
 pub const EVENT_WARNED: &str = "context-warned";
-/// Ledger event: the job confirmed a compaction (CTX-22).
 pub const EVENT_COMPACTED: &str = "compacted";
-/// Ledger event: a compaction failed or was lost (CTX-15).
 pub const EVENT_FAILED: &str = "compact-failed";
 
-/// A `compacted` event this long after a marker, or less, confirms that
-/// horch drove the compaction (CTX-25).
 pub const HORCH_MATCH_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// The newest ask of a cycle older than this, with no new ask, `compacted`
-/// event or transcript marker after it, is stale (#75).
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(20 * 60);
 
-/// `--request` types the line this many times in 1 cycle. The next stale or
-/// failed row uses the fresh route (#75).
 pub const MAX_REQUESTS: usize = 2;
 
-/// Without an ask, a handoff older than this is stale (CTX-14).
 pub const HANDOFF_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
-/// The state of 1 row of `horch context`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowState {
     CompactLost,
@@ -46,8 +30,6 @@ pub enum RowState {
     Unknown,
     Compacting,
     Pending,
-    /// Still at or over the threshold after 1 compaction: the session goes
-    /// to the handoff route, not a new cycle (TRF-09).
     Handoff,
     CompactFailed,
     RequestStale,
@@ -56,7 +38,6 @@ pub enum RowState {
     Ok,
 }
 
-/// The names `horch context` prints, in declaration order of [`RowState`].
 const ROW_STATE_NAMES: [&str; 13] = [
     "compact-lost",
     "no-session",
@@ -73,9 +54,6 @@ const ROW_STATE_NAMES: [&str; 13] = [
     "ok",
 ];
 
-/// The instruction id of each state, in declaration order of [`RowState`]
-/// (TRF-08). The briefing keys its instruction for a state by this id, so
-/// an id never changes once published. `ok` has no instruction.
 const INSTRUCTION_IDS: [Option<&str>; 13] = [
     Some("ctx-compact-lost"),
     Some("ctx-no-session"),
@@ -93,7 +71,6 @@ const INSTRUCTION_IDS: [Option<&str>; 13] = [
 ];
 
 impl RowState {
-    /// Every state, in declaration order.
     pub const ALL: [RowState; 13] = [
         RowState::CompactLost,
         RowState::NoSession,
@@ -110,20 +87,16 @@ impl RowState {
         RowState::Ok,
     ];
 
-    /// The kebab-case name `horch context` prints.
     pub fn as_str(self) -> &'static str {
         ROW_STATE_NAMES[self as usize]
     }
 
-    /// The stable id of the briefing instruction for this state (TRF-08);
-    /// None for `ok`, which needs no action.
     pub fn instruction_id(self) -> Option<&'static str> {
         INSTRUCTION_IDS[self as usize]
     }
 }
 
 impl From<&Unreadable> for RowState {
-    /// The state of a row whose transcript does not read.
     fn from(why: &Unreadable) -> Self {
         match why {
             Unreadable::NoSessionId => RowState::NoSession,
@@ -134,19 +107,13 @@ impl From<&Unreadable> for RowState {
     }
 }
 
-/// What the job dir of the role says (`jobfile::liveness`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobLiveness {
-    /// No job and no starting job.
     None,
-    /// A job runs, or has just been spawned.
     Live,
-    /// `job.json` exists and its process is gone: killed, or its heartbeat
-    /// stopped. `step` is the step `job.json` names.
     Lost { step: String },
 }
 
-/// What 1 row is classified from.
 #[derive(Debug, Clone, Copy)]
 pub struct RowInputs<'a> {
     pub reading: Result<&'a Reading, &'a Unreadable>,
@@ -156,16 +123,6 @@ pub struct RowInputs<'a> {
     pub now: DateTime<Utc>,
 }
 
-/// First match: compact-lost (job Lost), no-session, not-read,
-/// no-transcript, unknown (Failed, or tokens None and not pending),
-/// compacting (job Live), pending, handoff, compact-failed, request-stale,
-/// requested, over, ok.
-///
-/// `compact-lost` is first: a lost job is a failure the orchestrator must
-/// see whatever the reading says (review finding 1). `requested` means
-/// asked in this compaction cycle, whatever the tokens. `compact-failed`
-/// means a job failed after the newest ask of the cycle; `request-stale`
-/// means the newest ask is older than [`REQUEST_DEADLINE`] (#75).
 pub fn classify(i: &RowInputs) -> RowState {
     if matches!(i.job, JobLiveness::Lost { .. }) {
         return RowState::CompactLost;
@@ -176,7 +133,6 @@ pub fn classify(i: &RowInputs) -> RowState {
     }
 }
 
-/// The state of a row whose transcript reads, after the lost-job check.
 fn classify_reading(r: &Reading, i: &RowInputs) -> RowState {
     if r.tokens.is_none() && !r.pending {
         RowState::Unknown
@@ -196,9 +152,6 @@ fn classify_reading(r: &Reading, i: &RowInputs) -> RowState {
     }
 }
 
-/// TRF-09: the newest compaction left the session at or over its threshold,
-/// and it is still there. A second compaction would not help, so the row
-/// outranks every ask of the cycle: no new cycle starts.
 fn still_over_after_compaction(i: &RowInputs, r: &Reading) -> bool {
     let over = |n: Option<u64>| n.is_some_and(|n| n >= i.threshold);
     over(r.tokens)
@@ -208,9 +161,6 @@ fn still_over_after_compaction(i: &RowInputs, r: &Reading) -> bool {
         ))
 }
 
-/// The token count right after the newest compaction: the post count of the
-/// newest `compacted` event when it is at or after the newest marker (horch
-/// drove it), else the marker's post count. None when neither knows it.
 pub fn post_compaction_tokens(
     history: &[HistoryEntry],
     last: Option<&CompactionMark>,
@@ -227,21 +177,16 @@ pub fn post_compaction_tokens(
         .or_else(|| last.and_then(|m| m.post_tokens))
 }
 
-/// The text of a `compacted` event: `<pre> -> <post> tokens; handoff <path>`,
-/// `unknown` for a count the job did not read.
 pub fn compacted_text(pre: Option<u64>, post: Option<u64>, handoff: &str) -> String {
     let n = |n: Option<u64>| n.map_or_else(|| "unknown".into(), |n| n.to_string());
     format!("{} -> {} tokens; handoff {handoff}", n(pre), n(post))
 }
 
-/// The post count of a [`compacted_text`]; None when it is `unknown`.
 fn compacted_post(text: &str) -> Option<u64> {
     let (_, rest) = text.split_once(" -> ")?;
     rest.split_once(" tokens")?.0.parse().ok()
 }
 
-/// `compact-failed`, `request-stale` or `requested` when the cycle holds an
-/// ask (#75); None when it holds none.
 fn ask_state(i: &RowInputs, last: Option<&CompactionMark>) -> Option<RowState> {
     if failed_after_ask(i.history, last).is_some() {
         return Some(RowState::CompactFailed);
@@ -256,29 +201,17 @@ fn ask_state(i: &RowInputs, last: Option<&CompactionMark>) -> Option<RowState> {
     })
 }
 
-/// The `horch note` warning rule (CTX-10), in core so it cannot drift from
-/// [`classify`] (review finding 8). `Over` already means: tokens known, not
-/// pending, no live or lost job, and not asked in this cycle.
 pub fn should_warn(i: &RowInputs) -> bool {
     classify(i) == RowState::Over
 }
 
-/// The watch base for a teammate: `compact_at`, else [`BASE_THRESHOLD`].
-/// It takes the value, not the teammate, so `compaction` does not import
-/// `roster`.
 pub fn watch_base(compact_at: Option<u64>) -> u64 {
     compact_at.unwrap_or(BASE_THRESHOLD)
 }
 
-/// CTX-25: how many of the markers at `marks_at` were native and how many
-/// horch drove, as `(native, horch)`. A marker is horch-driven when a
-/// `compacted` event is at or after it and at most [`HORCH_MATCH_WINDOW`]
-/// after it; each event matches 1 marker. Times compare as UTC instants. A
-/// marker with no readable time is native.
 pub fn count_compactions(marks_at: &[String], history: &[HistoryEntry]) -> (usize, usize) {
     let mut marks: Vec<Option<DateTime<Utc>>> =
         marks_at.iter().map(|m| crate::clock::parse(m)).collect();
-    // `None` first: unreadable marks never match, so their place is free.
     marks.sort();
     let mut events: Vec<DateTime<Utc>> = history
         .iter()
@@ -287,8 +220,6 @@ pub fn count_compactions(marks_at: &[String], history: &[HistoryEntry]) -> (usiz
         .collect();
     events.sort();
     let window = chrono::Duration::from_std(HORCH_MATCH_WINDOW).expect("15 minutes");
-    // Oldest mark first, each takes the oldest free event in its window: no
-    // other order matches more marks, because every window has one length.
     let mut next = 0;
     let mut horch = 0;
     for mark in marks.iter().flatten() {
@@ -303,10 +234,6 @@ pub fn count_compactions(marks_at: &[String], history: &[HistoryEntry]) -> (usiz
     (marks_at.len() - horch, horch)
 }
 
-/// Rule A (CTX-10, CTX-11.2): the cycle starts at the later of the newest
-/// `compacted` event and `last.at`, compared as UTC instants, never as
-/// strings. Asked = a `compact-requested` or `context-warned` event at or
-/// after the cycle start (any, when there is no start).
 pub fn already_asked(history: &[HistoryEntry], last: Option<&CompactionMark>) -> bool {
     let start = cycle_start(history, last);
     history
@@ -318,24 +245,16 @@ pub fn already_asked(history: &[HistoryEntry], last: Option<&CompactionMark>) ->
         })
 }
 
-/// The start of the current compaction cycle: the later of the newest
-/// `compacted` event and `last.at`.
 fn cycle_start(history: &[HistoryEntry], last: Option<&CompactionMark>) -> Option<DateTime<Utc>> {
     let marked = last.and_then(|m| crate::clock::parse(&m.at));
     newest(history, &[EVENT_COMPACTED]).max(marked)
 }
 
-/// The newest ask (`compact-requested` or `context-warned`) of the current
-/// cycle, as an instant.
 pub fn cycle_ask(history: &[HistoryEntry], last: Option<&CompactionMark>) -> Option<DateTime<Utc>> {
     let start = cycle_start(history, last);
     newest(history, &[EVENT_REQUESTED, EVENT_WARNED]).filter(|ask| start.is_none_or(|s| *ask >= s))
 }
 
-/// The newest `compact-failed` event of the current cycle that is later than
-/// the cycle's newest ask. With no ask in the cycle there is none: the
-/// failure of a compaction nobody asked for does not change the row. A new
-/// ask or a marker ends it (#75).
 pub fn failed_after_ask<'a>(
     history: &'a [HistoryEntry],
     last: Option<&CompactionMark>,
@@ -351,18 +270,15 @@ pub fn failed_after_ask<'a>(
         .map(|(_, e)| e)
 }
 
-/// How long ago the newest ask of the cycle was made, when there is one.
 pub fn ask_age(
     history: &[HistoryEntry],
     last: Option<&CompactionMark>,
     now: DateTime<Utc>,
 ) -> Option<Duration> {
     let ask = cycle_ask(history, last)?;
-    // An ask stamped after `now` (clock skew) has age 0.
     Some((now - ask).to_std().unwrap_or_default())
 }
 
-/// The newest ask of the cycle is older than [`REQUEST_DEADLINE`].
 fn ask_is_stale(
     history: &[HistoryEntry],
     last: Option<&CompactionMark>,
@@ -371,7 +287,6 @@ fn ask_is_stale(
     ask_age(history, last, now).is_some_and(|age| age > REQUEST_DEADLINE)
 }
 
-/// How many times `--request` asked in the current cycle.
 pub fn request_count(history: &[HistoryEntry], last: Option<&CompactionMark>) -> usize {
     let start = cycle_start(history, last);
     history
@@ -384,7 +299,6 @@ pub fn request_count(history: &[HistoryEntry], last: Option<&CompactionMark>) ->
         .count()
 }
 
-/// The newest time of the `events` in `history`.
 fn newest(history: &[HistoryEntry], events: &[&str]) -> Option<DateTime<Utc>> {
     history
         .iter()
@@ -393,8 +307,6 @@ fn newest(history: &[HistoryEntry], events: &[&str]) -> Option<DateTime<Utc>> {
         .max()
 }
 
-/// `ai_docs/handoffs/<role>-whats-next.md` (CTX-12). Role characters
-/// outside `[A-Za-z0-9._-]` become `-`.
 pub fn handoff_path(role: &str) -> String {
     let safe: String = role
         .chars()
@@ -409,18 +321,11 @@ pub fn handoff_path(role: &str) -> String {
     format!("ai_docs/handoffs/{safe}-whats-next.md")
 }
 
-/// Why a handoff file is not accepted (CTX-14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandoffProblem {
     Missing,
-    /// No ask, and the file is older than [`HANDOFF_MAX_AGE`].
-    Stale {
-        minutes: u64,
-    },
-    /// The file is not later than the newest ask of the record.
-    BeforeAsk {
-        asked_at: String,
-    },
+    Stale { minutes: u64 },
+    BeforeAsk { asked_at: String },
 }
 
 impl std::fmt::Display for HandoffProblem {
@@ -437,11 +342,6 @@ impl std::fmt::Display for HandoffProblem {
     }
 }
 
-/// CTX-14 (review finding 14). The caller resolves [`handoff_path`] against
-/// the record's `workdir` (else the project dir), never its own cwd.
-/// `asked_at` is [`asked_at`] of that record's history. With it: Ok only
-/// when the file exists and its mtime is later than `asked_at`. Without it:
-/// Ok when the file exists and is at most 60 minutes old.
 pub fn handoff_fresh(
     mtime: Option<SystemTime>,
     asked_at: Option<SystemTime>,
@@ -466,16 +366,10 @@ pub fn handoff_fresh(
     }
 }
 
-/// The newest `compact-requested` or `context-warned` event of a record, as
-/// an instant. `note` and other events do not count.
 pub fn asked_at(history: &[HistoryEntry]) -> Option<SystemTime> {
     newest(history, &[EVENT_REQUESTED, EVENT_WARNED]).map(SystemTime::from)
 }
 
-/// The line typed into the pane: `/compact <instructions>` where the
-/// harness takes them, `/compact` where it does not, None where it has no
-/// command. Instructions with a line break are refused (None): a second
-/// line would be typed as a prompt.
 pub fn compact_line(caps: CompactionCaps, instructions: &str) -> Option<String> {
     let keep = instructions.trim();
     if !caps.has_command() {
@@ -577,7 +471,6 @@ mod tests {
             state(&history, "2026-09-20T10:06:00Z"),
             RowState::CompactFailed
         );
-        // The failure outranks the deadline.
         assert_eq!(
             state(&history, "2026-09-20T12:00:00Z"),
             RowState::CompactFailed
@@ -698,7 +591,6 @@ mod tests {
             Some(Duration::from_secs(15 * 60))
         );
         assert_eq!(ask_age(&[], None, at("2026-09-20T10:25:00Z")), None);
-        // An ask after `now` (clock skew) has age 0.
         assert_eq!(
             ask_age(&history, None, at("2026-09-20T10:05:00Z")),
             Some(Duration::ZERO)
@@ -741,7 +633,6 @@ mod tests {
         let none = JobLiveness::None;
         let live = JobLiveness::Live;
 
-        // A lost job outranks every reading, even an unreadable one.
         assert_eq!(
             row(Err(&Unreadable::NoSessionId), &lost, &[]),
             RowState::CompactLost
@@ -763,22 +654,17 @@ mod tests {
             row(Err(&Unreadable::Failed("x".into())), &none, &[]),
             RowState::Unknown
         );
-        // No tokens and not pending is unknown, even with a live job.
         assert_eq!(row(Ok(&blank), &none, &[]), RowState::Unknown);
         assert_eq!(row(Ok(&blank), &live, &[]), RowState::Unknown);
-        // A live job outranks pending and every ask.
         assert_eq!(row(Ok(&pending_blank), &live, &[]), RowState::Compacting);
         assert_eq!(row(Ok(&over), &live, &failed), RowState::Compacting);
-        // Pending outranks an ask.
         assert_eq!(row(Ok(&pending), &none, &failed), RowState::Pending);
         assert_eq!(row(Ok(&pending_blank), &none, &[]), RowState::Pending);
-        // An ask outranks the threshold, in both directions.
         assert_eq!(row(Ok(&over), &none, &failed), RowState::CompactFailed);
         assert_eq!(row(Ok(&ok), &none, &asked), RowState::Requested);
         assert_eq!(row(Ok(&over), &none, &asked), RowState::Requested);
         assert_eq!(row(Ok(&over), &none, &[]), RowState::Over);
         assert_eq!(row(Ok(&ok), &none, &[]), RowState::Ok);
-        // The threshold is inclusive.
         let mut edge = over_reading();
         edge.tokens = Some(300_000);
         assert_eq!(row(Ok(&edge), &none, &[]), RowState::Over);
@@ -883,7 +769,6 @@ mod tests {
             with_mark(&history, m.clone(), "2026-09-20T10:06:00Z"),
             RowState::Handoff
         );
-        // A new ask does not start a new cycle: the row stays handoff.
         let asked_again = [
             history[0].clone(),
             history[1].clone(),
@@ -895,9 +780,6 @@ mod tests {
         );
     }
 
-    /// TRF-09, ported from the ticket 01 L3 repro: 2 asks and 2 compactions,
-    /// the marker still over. Before the fix the row was `over` and the
-    /// `horch note` warning started a 3rd cycle.
     #[test]
     fn trf_09_l3_repro_over_after_compaction_starts_no_new_cycle() {
         let history = [
@@ -934,7 +816,6 @@ mod tests {
             with_mark(&history, m, "2026-09-20T12:00:00Z"),
             RowState::Over
         );
-        // An unknown post count is not proof: the row is over.
         let unknown = [ev(
             "2026-09-20T10:05:00Z",
             EVENT_COMPACTED,
@@ -951,7 +832,6 @@ mod tests {
         let history = [compacted_at("2026-09-20T10:05:00Z", 330_000, 305_000)];
         let m = Some(mark("2026-09-20T11:00:00Z", Some(9_000)));
         assert_eq!(post_compaction_tokens(&history, m.as_ref()), Some(9_000));
-        // Still over by tokens, but the newest compaction worked: over.
         assert_eq!(
             with_mark(&history, m, "2026-09-20T11:30:00Z"),
             RowState::Over
@@ -985,21 +865,17 @@ mod tests {
     #[test]
     fn compact_line_covers_its_four_outcomes() {
         let with = caps(CompactCommand::WithInstructions, 1);
-        // No command: none.
         assert_eq!(
             compact_line(caps(CompactCommand::Unknown, 1), "keep x"),
             None
         );
         assert_eq!(compact_line(caps(CompactCommand::Bare, 0), "keep x"), None);
-        // A command without instructions types the bare line.
         assert_eq!(
             compact_line(caps(CompactCommand::Bare, 1), "keep x").as_deref(),
             Some("/compact")
         );
-        // A line break is refused.
         assert_eq!(compact_line(with, "a\nb"), None);
         assert_eq!(compact_line(with, "a\rb"), None);
-        // Instructions are trimmed; blank ones give the bare line.
         assert_eq!(
             compact_line(with, "  keep x  ").as_deref(),
             Some("/compact keep x")
@@ -1021,7 +897,6 @@ mod tests {
             handoff_fresh(ago(20), ago(10), now),
             Err(HandoffProblem::BeforeAsk { .. })
         ));
-        // Equal times are not later than the ask.
         assert!(matches!(
             handoff_fresh(ago(10), ago(10), now),
             Err(HandoffProblem::BeforeAsk { .. })

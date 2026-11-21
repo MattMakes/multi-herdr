@@ -1,4 +1,3 @@
-# The gates of this repository (docs/specs/fleetd/design.md, "Between features").
 [gates]
 fast = "cargo test --workspace --locked --lib --bins"
 full = "cargo test --workspace --locked"

@@ -1,16 +1,3 @@
-//! horch idea note (ticket 25 of fleetd-p6): the sub-orchestrator records
-//! each question and answer as 1 file of its idea folder, and fleetd
-//! ingests each file 1 time.
-//!
-//! `docs/specs/fleetd/design.md`, "Ideas" (The interview; How a worker's
-//! question is resolved, step 4), "Workspace layout and file protocol"
-//! (protocol rules 1, 5 and 7), A35; FM-31, RR-12, SR-6.
-//!
-//! Each test uses a temp ledger and a temp fleet root. The process chain is
-//! a fake: no test reads a real process.
-//!
-//! Unix only: the protected file reader refuses each file on Windows, where
-//! the platform gives no mode.
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -33,14 +20,11 @@ const IDEA: &str = "I-0007";
 const OTHER_IDEA: &str = "I-0008";
 const AT: &str = "2026-11-18T12:00:00Z";
 
-/// The PID of the worker command in each test, and of its parent chain:
-/// command -> agent -> wrapper -> 1.
 const COMMAND: u32 = 300;
 const AGENT: u32 = 200;
 const WRAPPER: u32 = 100;
 const WRAPPER_START: u64 = 5;
 
-/// A fake process table: the parent and the start time of each PID.
 struct Chain {
     parent: HashMap<u32, u32>,
     start: HashMap<u32, u64>,
@@ -98,8 +82,6 @@ fn owner() -> User {
 }
 
 impl World {
-    /// Record the live attempt `id` of `task` or of `idea`, whose wrapper
-    /// is [`WRAPPER`].
     fn live(&self, id: &str, task: Option<&str>, idea: Option<&str>) {
         self.conn
             .execute(
@@ -117,14 +99,12 @@ impl World {
             .unwrap();
     }
 
-    /// Record the live sub-orchestrator attempt of [`IDEA`].
     fn sub_orchestrator(&self) -> String {
         let id = format!("{IDEA}/A1");
         self.live(&id, None, Some(IDEA));
         id
     }
 
-    /// The writer of the worker command [`COMMAND`] for `idea`.
     fn writer(&self, idea: &str) -> anyhow::Result<NoteWriter> {
         NoteWriter::of_process(COMMAND, &self.ideas, idea, &self.conn, &chain())
     }
@@ -133,7 +113,6 @@ impl World {
         self.ideas.join(idea).join(NOTES)
     }
 
-    /// Part 1 and part 2 of 1 pass, in 1 committed transaction.
     fn pass(&mut self) -> Report {
         let reads = self.read();
         let tx = self.conn.transaction().unwrap();
@@ -163,7 +142,6 @@ impl World {
         .unwrap()
     }
 
-    /// The `ingested` row of `path`: its outcome and its reason.
     fn ingested(&self, path: &Path) -> (String, Option<String>) {
         self.conn
             .query_row(
@@ -201,7 +179,6 @@ fn answer_body() -> NoteBody {
     }
 }
 
-/// Write `json` as note `n` of `idea` with mode 0600, as a raw writer can.
 fn write_raw(w: &World, idea: &str, n: u32, json: &serde_json::Value) -> PathBuf {
     let dir = w.notes(idea);
     fs::create_dir_all(&dir).unwrap();
@@ -219,7 +196,6 @@ fn sub_orchestrator_answer_arrives_as_an_idea_note_file() {
 
     let path = w.writer(IDEA).unwrap().write(answer_body()).unwrap();
 
-    // 1 file in notes/ of its idea, mode 0600 in a folder of mode 0700.
     assert_eq!(path, w.notes(IDEA).join("1.json"));
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(&path), 0o600);
@@ -231,11 +207,9 @@ fn sub_orchestrator_answer_arrives_as_an_idea_note_file() {
     assert_eq!(file["question"], "T-0007-03/A1/Q1");
     assert_eq!(file["case"], "covered");
     assert_eq!(file["cite"], "assumptions.md:2");
-    // The command writes no ledger row and no request (A35).
     assert_eq!(w.count("ingested"), 0);
     assert_eq!(w.count("requests"), 0);
 
-    // fleetd passes the answer on 1 time.
     let first = w.pass();
     let expected = Note {
         idea: IDEA.into(),
@@ -248,7 +222,6 @@ fn sub_orchestrator_answer_arrives_as_an_idea_note_file() {
     assert_eq!(w.ingested(&path).0, "accepted");
     let second = w.pass();
     assert!(second.answers.is_empty(), "{second:?}");
-    // An answer note does not touch interview.md.
     assert!(!w.ideas.join(IDEA).join("interview.md").exists());
 }
 
@@ -266,8 +239,6 @@ fn interview_note_appends_to_interview_md_once() {
         .unwrap();
     assert_eq!(second, w.notes(IDEA).join("2.json"));
 
-    // A pass whose transaction does not commit: the next pass must not
-    // append the same answers again.
     let reads = w.read();
     {
         let tx = w.conn.transaction().unwrap();
@@ -305,7 +276,6 @@ fn note_of_another_idea_is_rejected() {
             "text": "No.",
         }),
     );
-    // A note of the right idea, from an attempt of another idea.
     w.live("I-0008/A1", None, Some(OTHER_IDEA));
     let foreign = write_raw(
         &w,
@@ -330,7 +300,6 @@ fn note_of_another_idea_is_rejected() {
     assert_eq!(outcome, "rejected");
     assert!(reason.unwrap().contains("I-0008/A1"));
     assert!(!w.ideas.join(IDEA).join("interview.md").exists());
-    // A rejected path is not read again.
     assert!(w.read().iter().all(|r| r.notes.is_empty()));
 }
 
@@ -338,7 +307,6 @@ fn note_of_another_idea_is_rejected() {
 fn note_that_is_a_symlink_is_rejected() {
     let mut w = world();
     let attempt = w.sub_orchestrator();
-    // A valid note outside notes/, and a link to it in notes/.
     let target = write_raw(
         &w,
         IDEA,
@@ -368,23 +336,19 @@ fn note_that_is_a_symlink_is_rejected() {
 fn idea_note_outside_a_sub_orchestrator_attempt_is_refused() {
     let w = world();
 
-    // No live attempt in the parent chain.
     let none = w.writer(IDEA).unwrap_err().to_string();
     assert!(none.contains(NO_LIVE_ATTEMPT), "{none}");
 
-    // The attempt in the chain is a task attempt, not a sub-orchestrator.
     w.live("T-0007-03/A1", Some("T-0007-03"), None);
     let task = w.writer(IDEA).unwrap_err().to_string();
     assert!(task.contains(NOT_THE_SUB_ORCHESTRATOR), "{task}");
     w.conn.execute("DELETE FROM attempts", []).unwrap();
 
-    // The sub-orchestrator of another idea.
     w.live("I-0008/A1", None, Some(OTHER_IDEA));
     let other = w.writer(IDEA).unwrap_err().to_string();
     assert!(other.contains(NOT_THE_SUB_ORCHESTRATOR), "{other}");
     assert!(other.contains(OTHER_IDEA), "{other}");
 
-    // No note file is written.
     assert!(!w.notes(IDEA).exists());
 }
 
@@ -438,7 +402,6 @@ fn ask_note_with_a_line_break_or_too_long_is_rejected() {
         });
         assert!(refused.is_err(), "the writer refuses {question:?}");
     }
-    // A raw writer can skip the writer check: the reader rejects the note.
     let path = write_raw(
         &w,
         IDEA,
@@ -502,7 +465,6 @@ fn ask_note_with_unreadable_amendments_is_rejected_and_the_pass_goes_on() {
     let mut w = world();
     w.sub_orchestrator();
     let writer = w.writer(IDEA).unwrap();
-    // amendments/ is a file, not a folder: it cannot be listed.
     let amendments = w.ideas.join(IDEA).join("amendments");
     fs::remove_dir_all(&amendments).unwrap();
     fs::write(&amendments, "not a folder").unwrap();

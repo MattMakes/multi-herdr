@@ -1,6 +1,3 @@
-//! The concern group for Windows. Windows has no process groups. A job
-//! object holds a contained child and its descendants.
-
 use crate::NotSupported;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
@@ -23,14 +20,12 @@ use windows_sys::Win32::System::Threading::{
 
 const NOT_SUPPORTED: NotSupported = NotSupported::new("group", "windows");
 
-/// No process groups: the command is unchanged.
 pub(crate) fn new_group(_cmd: &mut Command) {}
 
 pub(crate) fn kill_group_id(_pgid: u32) -> Result<bool, NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
-/// The child only.
 pub(crate) fn kill_child_group(child: &mut Child) -> bool {
     child.kill().is_ok()
 }
@@ -39,7 +34,6 @@ pub(crate) fn term_child_group(_child: &mut Child) -> bool {
     false
 }
 
-/// `try_wait`: Windows has no wait without a reap.
 pub(crate) fn exited_without_reap(child: &mut Child) -> std::io::Result<bool> {
     Ok(child.try_wait()?.is_some())
 }
@@ -48,25 +42,6 @@ pub(crate) fn detach(_cmd: &mut Command) -> Result<(), NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
-/// Spawn `cmd` while the std handles of this process are not inheritable.
-///
-/// std calls `CreateProcessW` with handle inheritance on, so a child gets
-/// every inheritable handle of this process. A std handle that this process
-/// got from its parent is inheritable. The handle list of the start info
-/// (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) would name only the 3 handles of
-/// the child, but stable std has no way to pass it (`raw_attribute` is
-/// unstable), and a direct `CreateProcessW` gives no `std::process::Child`.
-/// So the flag of the parent handles changes for the spawn. Another spawn
-/// of this process is not changed by it: std passes a duplicate of an
-/// inherited std handle, made inheritable, to each child. The lock keeps 2
-/// spawns of this function from restoring a flag that the other cleared.
-///
-/// It fails closed: when the flag of a valid std handle cannot be read or
-/// cleared, nothing spawns, because the child would hold the pipe of the
-/// caller. A failed restore after the spawn returns the child and writes the
-/// failure to stderr: the child already runs, and an error would make the
-/// caller lose it. A flag that stays cleared changes no later std spawn,
-/// which passes its own inheritable duplicate.
 pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -165,9 +140,6 @@ pub(crate) fn is_group_leader(_pgid: u32, _started: u64) -> Result<bool, NotSupp
     Err(NOT_SUPPORTED)
 }
 
-/// The process tree of a child. The job kills every process in it when the
-/// last handle closes, so a descendant that holds a pipe cannot outlive the
-/// child on any path.
 pub(crate) struct Contained(HANDLE);
 
 impl Contained {
@@ -220,8 +192,6 @@ impl Drop for Contained {
     }
 }
 
-/// Let the suspended `child` run: resume its only thread. std keeps the main
-/// thread handle to itself, so find the thread by its owner process.
 fn resume_main_thread(child: &Child) -> std::io::Result<()> {
     // SAFETY: a snapshot of all threads; the handle is closed below.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };

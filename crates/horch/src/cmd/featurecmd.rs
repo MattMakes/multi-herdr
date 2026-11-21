@@ -1,21 +1,3 @@
-//! `horch feature abandon <feature>`: the operator ends a feature
-//! (`docs/specs/fleetd/design.md`, "The feature state machine", row
-//! `abandoned`; "A cancel"; I10; FM-43; ticket 40 of
-//! `docs/tickets/fleetd-p4/`).
-//!
-//! The command writes a rescue ref of each task branch of the feature that
-//! is not landed and reads it back, then sends 1 `feature_abandon` request
-//! (RR-5). fleetd checks each ref in git, then in 1 transaction moves each
-//! such branch to `abandoned`, cancels each task of the run that is not
-//! terminal, and moves the feature to `abandoned`. A task with a live
-//! attempt waits for its stop: the pass of fleetd stops its processes and
-//! cancels it when they are gone. A crash before the request is completed
-//! by the next abandon, with the same rescue refs.
-//!
-//! It refuses to run inside a fleet attempt (SR-5; ticket 23 of
-//! fleetd-p6). fleetd decides who may send the request (SR-8): the command
-//! reads no role.
-
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -43,7 +25,6 @@ pub enum FeatureCommand {
     },
 }
 
-/// `horch feature`.
 pub fn run(ctx: &RuntimeContext, command: FeatureCommand) -> Result<ExitCode> {
     match command {
         FeatureCommand::Abandon { feature } => {
@@ -62,8 +43,6 @@ pub fn run(ctx: &RuntimeContext, command: FeatureCommand) -> Result<ExitCode> {
     }
 }
 
-/// The payload of the abandon of `feature`: the rescue ref of each branch
-/// that is not landed, written and read back first (I10), with its tip.
 fn rescued(ctx: &RuntimeContext, feature: &str) -> Result<Value> {
     let store = taskledger::open_existing_read_only(ctx)?.with_context(|| {
         format!(
@@ -81,13 +60,11 @@ fn rescued(ctx: &RuntimeContext, feature: &str) -> Result<Value> {
     Ok(json!({ "feature": feature, "branches": branches }))
 }
 
-/// The result of a `feature_abandon` request.
 #[derive(Deserialize)]
 struct Abandoned {
     feature: String,
     already: bool,
     branches: Vec<Branch>,
-    /// The workers of the live attempts of the cancelled tasks.
     to_stop: Vec<String>,
 }
 
@@ -97,8 +74,6 @@ struct Branch {
     rescue_ref: Option<String>,
 }
 
-/// The lines of an abandon: each branch, the feature, and the stops that
-/// the pass of fleetd does.
 fn lines(done: &Abandoned) -> Vec<String> {
     let mut out: Vec<String> = done
         .branches

@@ -41,7 +41,6 @@ fn fake_herdr(root: &Path, agent: u32) -> PathBuf {
     std::fs::write(&bin, script).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // macOS scans a new executable at its first exec: warm it.
     assert!(Command::new(&bin).arg("warm").status().unwrap().success());
     std::fs::remove_file(&calls).unwrap();
     bin

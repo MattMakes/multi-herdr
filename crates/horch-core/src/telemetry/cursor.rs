@@ -1,12 +1,3 @@
-//! Where each reader stopped, so a restart resumes instead of re-reading.
-//!
-//! A cursor belongs to one input: a transcript file, or one OpenCode session
-//! in the database. Only complete lines (ending in `\n`) are consumed; a
-//! partial last line waits for the next tick. When the file's identity
-//! changes (a new inode: a rewrite or rotation) or it shrinks below the
-//! offset, the cursor starts over at 0 with fresh reader state. Re-reading is
-//! safe because every event has a stable id and the store drops repeats.
-
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -15,27 +6,20 @@ use serde::{Deserialize, Serialize};
 
 use super::TokenClasses;
 
-/// How many recent Claude message ids a cursor remembers. Repeats of one id
-/// are adjacent (one line per content block), so a handful is plenty.
 pub(crate) const RECENT_IDS: usize = 8;
 
-/// One message id a reader has emitted, with what it has emitted so far.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seen {
     pub id: String,
     pub tokens: TokenClasses,
-    /// Corrections emitted for this id, which numbers the next one.
     #[serde(default)]
     pub corrections: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cursor {
-    /// The input: a file path, or the OpenCode database.
     #[serde(default)]
     pub path: String,
-    /// The session the input belongs to. The cursor's key in
-    /// `cursors.json` names it too, but a session id can hold a `|`.
     #[serde(default)]
     pub agent: String,
     #[serde(default)]
@@ -46,28 +30,21 @@ pub struct Cursor {
     pub ino: u64,
     #[serde(default)]
     pub offset: u64,
-    /// Ticks in a row with no new input.
     #[serde(default)]
     pub quiet_ticks: u32,
 
-    // Claude: the last few message ids (section 7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<Seen>,
 
-    // Codex: the latest turn context, and which counting mode the file is in.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// `Some(true)`: count `token_usage_record` lines; `Some(false)`: count
-    /// differences of `token_count` totals; `None`: not decided yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_total: Option<TokenClasses>,
 
-    // OpenCode: the newest `time_updated` seen, and what each message has
-    // emitted so far (a message can be updated after it completes).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub since_ms: i64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -78,14 +55,11 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
-/// A file's identity: `(dev, ino)` on Unix. Stable Rust has no file index on
-/// Windows, so there the creation time stands in for the inode.
 pub(crate) fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
     horch_platform::fs::file_identity(meta)
 }
 
 impl Cursor {
-    /// Remember `tokens` emitted for `id`, keeping the last [`RECENT_IDS`].
     pub(crate) fn remember(&mut self, seen: Seen) {
         self.recent.retain(|s| s.id != seen.id);
         self.recent.push(seen);
@@ -99,10 +73,6 @@ impl Cursor {
         self.recent.iter().find(|s| s.id == id)
     }
 
-    /// Fill the agent, session id and path that a cursor saved before they
-    /// were fields leaves empty, from its key `agent|session id|path`. The
-    /// agent ends at the first `|`. A known path ends the key; else the path
-    /// starts after the last `|`.
     pub(crate) fn fill_from_key(&mut self, key: &str) {
         let Some((agent, rest)) = key.split_once('|') else {
             return;
@@ -129,14 +99,6 @@ impl Cursor {
     }
 }
 
-/// Feed every new complete line of `path` to `f`, with the byte offset the
-/// line starts at, and advance the cursor past it. Returns whether any line
-/// was consumed. A cursor for a different file identity, or past the end of
-/// a shrunken file, is reset first. It stops after the line for which `f`
-/// returns false. The cursor then points at the start of the first unread
-/// line, so the next call resumes there: no line is read twice and none is
-/// skipped (NFR-02: the collector's first read of a large history goes in
-/// batches).
 pub(crate) fn poll_lines_until(
     path: &Path,
     cursor: &mut Cursor,
@@ -162,14 +124,9 @@ pub(crate) fn poll_lines_until(
 }
 
 thread_local! {
-    /// The line buffer of [`poll_lines_until`], kept from call to call
-    /// (NFR-02 peak RSS). A transcript line can be megabytes long; a new
-    /// buffer per call grew by doubling each time, and macOS kept every
-    /// freed block of more than 1 MB resident in its cache.
     static LINE: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
-/// The loop of [`poll_lines_until`]; whether a line was consumed.
 fn read_lines(
     reader: &mut impl BufRead,
     buf: &mut Vec<u8>,
@@ -181,7 +138,6 @@ fn read_lines(
         buf.clear();
         let n = reader.read_until(b'\n', buf)?;
         if n == 0 || buf.last() != Some(&b'\n') {
-            // End of file, or a partial line still being written.
             break;
         }
         let at = cursor.offset;
@@ -196,10 +152,6 @@ fn read_lines(
     Ok(consumed_any)
 }
 
-/// Start `cursor` over when it belongs to another file (`dev`, `ino` or
-/// `path` differ) or to the earlier, longer state of this one (`len` is below
-/// its offset). The agent and the session id stay: they name the owner of
-/// the input, not its contents.
 fn reset_if_moved(cursor: &mut Cursor, dev: u64, ino: u64, len: u64, path: String) {
     if cursor.dev != dev || cursor.ino != ino || len < cursor.offset || cursor.path != path {
         *cursor = Cursor {
@@ -246,9 +198,6 @@ mod tests {
         assert_eq!(c.quiet_ticks, 1);
     }
 
-    /// NFR-02: a file read in batches of at most 3 lines gives every line
-    /// once, in order, in 3 batches; after each batch the cursor is at the
-    /// start of the first unread line. A blank line counts toward no batch.
     #[test]
     fn nfr_02_a_file_read_in_3_batches_gives_every_line_once() {
         let tmp = tempfile::tempdir().unwrap();
@@ -272,7 +221,6 @@ mod tests {
         }
         assert_eq!(read, whole);
         assert_eq!(whole.len(), 7);
-        // "ccc" ends at 10, "f" at 17, "g" at 19: the next unread line starts there.
         assert_eq!(batches, vec![(3, 10), (3, 17), (1, 19)]);
     }
 
@@ -284,21 +232,15 @@ mod tests {
         let mut c = Cursor::default();
         assert_eq!(lines_of(&p, &mut c).len(), 2);
         c.model = "kept only for this file".into();
-        // Truncated below the offset: start over, with fresh reader state.
         std::fs::write(&p, "x\n").unwrap();
         assert_eq!(lines_of(&p, &mut c), vec![(0, "x".into())]);
         assert!(c.model.is_empty());
-        // Replaced by a new file (new inode): start over too.
         let q = tmp.path().join("new.jsonl");
         std::fs::write(&q, "fresh\nlines\n").unwrap();
         std::fs::rename(&q, &p).unwrap();
         assert_eq!(lines_of(&p, &mut c).len(), 2);
     }
 
-    /// A reset keeps whose cursor it is (agent and session), takes the
-    /// file's identity and path, drops the reader state and restarts the
-    /// count of quiet ticks. A cursor for another path resets too, even on
-    /// the same file identity.
     #[test]
     fn tel_07_a_reset_keeps_the_owner_and_restarts_the_quiet_count() {
         let tmp = tempfile::tempdir().unwrap();
@@ -313,14 +255,12 @@ mod tests {
         let (dev, ino) = (c.dev, c.ino);
         assert_eq!(c.path, p.to_string_lossy());
 
-        // The same file, nothing new: no reset, 1 more quiet tick.
         c.model = "kept while the file is the same".into();
         c.quiet_ticks = 4;
         assert_eq!(lines_of(&p, &mut c), vec![]);
         assert_eq!((c.offset, c.quiet_ticks), (8, 5));
         assert_eq!(c.model, "kept while the file is the same");
 
-        // Only the path differs: start over.
         c.path = "/elsewhere".into();
         assert_eq!(lines_of(&p, &mut c).len(), 2);
         assert_eq!(c.path, p.to_string_lossy());
@@ -329,7 +269,6 @@ mod tests {
         assert!(c.model.is_empty());
         assert_eq!((c.offset, c.quiet_ticks), (8, 0));
 
-        // An emptied file resets too, and its first quiet tick counts as 1.
         c.quiet_ticks = 5;
         std::fs::write(&p, "").unwrap();
         assert_eq!(lines_of(&p, &mut c), vec![]);
@@ -367,9 +306,6 @@ mod tests {
         assert!(c.recalled("m0").is_none());
     }
 
-    /// NFR-02 peak RSS: the line buffer is kept from call to call, so a
-    /// long line grows it once; the lines and offsets of the next files are
-    /// the same as from a fresh buffer.
     #[test]
     fn nfr_02_the_line_buffer_is_kept_and_reads_the_same() {
         let tmp = tempfile::tempdir().unwrap();

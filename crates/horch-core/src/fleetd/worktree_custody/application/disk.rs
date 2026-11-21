@@ -1,21 +1,3 @@
-//! The use case of the disk budget of the worktrees.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" ("Disk"), FM-28, OR-1; MAP.md of fleetd-p3, Q8, Q9 and Q20.
-//! A tree is spare when the idea of its task is `merged` or `cancelled`
-//! (ticket 33 of fleetd-p6): a row has no idea, so its task names it.
-//! [`disk_budget`] runs in part 2 of a pass, after `reconcile_worktrees`.
-//! It reads the sizes that the `worktree_list` job stored and runs no git.
-//!
-//! It queues 1 `worktree_remove` job for each tree of the decision (Q9).
-//! The job runs outside the pass, and its guard checks the tree again at
-//! its removal.
-//!
-//! The hold: when the total stays above the budget after each tree of the
-//! decision, 1 needs-you item is open with the total and the budget. It is
-//! resolved when the decision no longer holds. [`decision`] is also the
-//! read of the global hold `WorktreeDisk` (`holds()` of fleet runtime).
-
 use std::collections::BTreeMap;
 
 use anyhow::Result;
@@ -37,23 +19,14 @@ use crate::fleetd::worktree_custody::domain::disk::{
 };
 use crate::taskledger::store::one_snapshot;
 
-/// What 1 call of [`disk_budget`] found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
-    /// The sum of the measured sizes of all trees, in bytes.
     pub total: u64,
-    /// The budget, in bytes.
     pub budget: u64,
-    /// The trees of the decision that got a new `worktree_remove` run,
-    /// oldest first.
     pub removals: Vec<String>,
-    /// The cause of the hold when the total stays above the budget: new
-    /// dispatch holds, and the needs-you item is open.
     pub hold: Option<String>,
 }
 
-/// 1 row that is not `removed`, with the state of the idea of its task and
-/// whether its automatic removal failed.
 #[cfg_attr(test, derive(Debug, PartialEq))]
 struct Measured {
     id: String,
@@ -65,7 +38,6 @@ struct Measured {
     removal_failed: bool,
 }
 
-/// The decision of the budget of `budget_gb` GB for the trees in `conn`.
 pub fn decision(conn: &Connection, budget_gb: u64) -> Result<Decision> {
     let rows = measured(conn)?;
     let trees: Vec<Tree<'_>> = rows
@@ -83,9 +55,6 @@ pub fn decision(conn: &Connection, budget_gb: u64) -> Result<Decision> {
     Ok(rules::decide(&trees, budget_gb))
 }
 
-/// The disk budget in `tx`, at `clock` (part 2 of a pass): queue the
-/// removal of each tree of the decision, and open or resolve the needs-you
-/// item of the hold.
 pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Report> {
     let d = decision(tx, ctx.config.worktree_disk_budget_gb)?;
     let removals = queue_removals(ctx, tx, &d, clock)?;
@@ -98,9 +67,6 @@ pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
     })
 }
 
-/// Queue 1 `worktree_remove` run of each tree of `d`, oldest first. A
-/// tree with an active run, or whose same removal failed, is not queued
-/// again. Give the trees with a new run.
 fn queue_removals(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -132,8 +98,6 @@ fn queue_removals(
     Ok(removals)
 }
 
-/// Open the needs-you item of the hold of `d` with the total and the
-/// budget, or resolve it when `d` does not hold.
 fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()> {
     if !d.hold {
         ctx.needs_you.resolve_item(tx, NEEDS_YOU_KEY)?;
@@ -184,10 +148,6 @@ fn tree_facts(conn: &Connection) -> Result<Vec<TreeFacts>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// 4 statements for any count of trees, on 1 snapshot: the disk budget
-/// sums the bytes of all trees, so this read stays whole. The trees, the
-/// ideas of their tasks, the states of those ideas and the last removal
-/// of each tree are 1 set read each, of the context that owns the table.
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
     one_snapshot(conn, || {
         let trees = tree_facts(conn)?;

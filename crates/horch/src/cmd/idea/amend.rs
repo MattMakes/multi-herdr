@@ -1,7 +1,3 @@
-//! `horch idea amend <id> <text>`: add text to an idea
-//! (`docs/specs/fleetd/design.md`, "Ideas"). It sends `idea_amend` to
-//! fleetd. After merge, fleetd makes a new idea that amends it.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -18,7 +14,6 @@ pub struct AmendArgs {
     pub text: String,
 }
 
-/// `horch idea amend`.
 pub fn run(ctx: &RuntimeContext, args: AmendArgs) -> Result<ExitCode> {
     let mut payload = Map::new();
     payload.insert("idea".into(), json!(args.id));

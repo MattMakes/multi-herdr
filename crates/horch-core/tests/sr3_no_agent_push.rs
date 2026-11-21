@@ -1,15 +1,3 @@
-//! SR-3 (ticket 22 of fleetd-p4): no agent pushes. Each worker gets a git
-//! hooks path whose `pre-push` hook refuses, and the profiles of Claude Code
-//! and Codex deny `git push`, `gh pr merge` and `gh release`. They also deny
-//! the external messages: `gh issue comment`, `gh pr comment`,
-//! `gh pr review` and `gh discussion`. horch's own
-//! git calls set `-c core.hooksPath=/dev/null`, and a `-c` value wins over
-//! the `GIT_CONFIG_*` values of the environment, so the old finish path
-//! still pushes. The other hooks of the repository still run for an agent.
-//!
-//! These tests run git in temporary repositories with no global or system
-//! config. The real `claude` and `codex` never run.
-
 use std::path::Path;
 
 use horch_core::fleetd::worker_profiles::domain::launch_env::{
@@ -19,11 +7,8 @@ use horch_core::harness::{CommandSpec, HarnessKind, LaunchEnv, Session};
 use horch_core::roster::Teammate;
 use horch_core::runtime::{MapEnv, RuntimeContext};
 
-/// The environment variable that tells the child test where its repository is.
 const CHILD_REPO: &str = "SR3_CHILD_REPO";
 
-/// `git <args>` in `dir`, with no global or system config and no git
-/// variable of this process. `extra` is added last.
 fn git(dir: &Path, args: &[&str], extra: &[(String, String)]) -> std::process::Output {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir).args(args);
@@ -52,8 +37,6 @@ fn show(out: &std::process::Output) -> String {
     )
 }
 
-/// A repository `work` with 1 commit on `main` and the bare remote
-/// `remote.git` as `origin`, both under `root`.
 fn repo_with_remote(root: &Path) -> std::path::PathBuf {
     let work = root.join("work");
     let remote = root.join("remote.git");
@@ -79,7 +62,6 @@ fn repo_with_remote(root: &Path) -> std::path::PathBuf {
     work
 }
 
-/// Whether the remote of `root` has the branch `main`.
 fn remote_has_main(root: &Path) -> bool {
     ok(&git(
         &root.join("remote.git"),
@@ -88,8 +70,6 @@ fn remote_has_main(root: &Path) -> bool {
     ))
 }
 
-/// The agent hooks of a fleet root under `root`, written as a launch
-/// writes them, and the environment of an agent that uses them.
 fn agent_hooks(root: &Path) -> Vec<(String, String)> {
     let fleet_root = root.join("fleet");
     let dir = horch_core::harness::launch::write_agent_hooks(&fleet_root).unwrap();
@@ -121,8 +101,6 @@ fn agent_push_is_refused_by_the_pre_push_hook() {
     }
 }
 
-/// The repository's own hooks still run for an agent: its `pre-commit`
-/// stops a commit, from `.git/hooks` and from its own `core.hooksPath`.
 #[test]
 fn a_failing_project_pre_commit_hook_stops_an_agent_commit() {
     let tmp = tempfile::tempdir().unwrap();
@@ -171,10 +149,6 @@ fn a_failing_project_pre_commit_hook_stops_an_agent_commit() {
     );
 }
 
-/// The old path of a claim attempt pushes through horch's own git calls,
-/// which set `-c core.hooksPath=/dev/null`. In the environment of an agent
-/// (a worker runs `horch ledger finish` in its shell), that push still
-/// works: as a plain git call and through `vcs::network::output`.
 #[test]
 fn horch_old_path_push_with_dev_null_hooks_still_works() {
     let tmp = tempfile::tempdir().unwrap();
@@ -201,8 +175,6 @@ fn horch_old_path_push_with_dev_null_hooks_still_works() {
         &[]
     )));
 
-    // The child test runs `network::output` with the agent environment as
-    // its own process environment.
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child
         .args([
@@ -241,7 +213,6 @@ fn network_push_child() {
     assert_eq!(out.status, 0, "{}", String::from_utf8_lossy(&out.stderr));
 }
 
-/// The launch environment of a test fleet under `root`.
 fn launch_env(root: &Path) -> LaunchEnv {
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -257,8 +228,6 @@ fn launch_env(root: &Path) -> LaunchEnv {
     LaunchEnv::from_context(&RuntimeContext::from_env(&env).unwrap())
 }
 
-/// The `permissions.deny` list of the `--settings` overlay of a Claude
-/// launch of `teammate`.
 fn claude_deny(root: &Path, teammate: &Teammate) -> Vec<String> {
     let cmd = HarnessKind::Claude
         .adapter()
@@ -311,9 +280,6 @@ fn claude_profile_denies_git_push_and_external_messages_by_default() {
     assert_eq!(DENIED_COMMANDS.len(), 7);
 }
 
-/// The rendered rules of a Codex worker launch: its private `CODEX_HOME`
-/// holds `rules/horch.rules`, and each denied command has a `forbidden`
-/// `prefix_rule`. Windows shares 1 rules file and gets no forbidden rule.
 #[cfg(unix)]
 #[test]
 fn codex_profile_forbids_git_push_and_external_messages_by_default() {
@@ -371,8 +337,6 @@ fn codex_profile_forbids_git_push_and_external_messages_by_default() {
     }
 }
 
-/// An address that no host answers (RFC 5737, TEST-NET-1): a webhook at
-/// this address never gets a message, so the test sends none.
 const OFF_HOST_WEBHOOK: &str = "http://192.0.2.1:9/hook";
 const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
 
@@ -471,8 +435,6 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
     let Some(spec) = &launches[0] else {
         return;
     };
-    // The loopback works in the sandbox, so the off-host refusal below is
-    // the network rule and not a sandbox with no network at all.
     let out = run_check(spec);
     assert!(ok(&out), "{}", show(&out));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -505,8 +467,6 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
         assert!(webhook.join().unwrap().contains("hello"), "no request");
     }
 
-    // A webhook on another host: the check fails with exit 7 (curl could
-    // not connect), never with a timeout, and says why.
     let out = run_check(launches[2].as_ref().unwrap());
     assert_eq!(out.status.code(), Some(7), "{}", show(&out));
     let stderr = String::from_utf8_lossy(&out.stderr);

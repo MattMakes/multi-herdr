@@ -1,18 +1,3 @@
-//! The worktree reconciler acts: each pass queues 1 `rescue` job for each
-//! `orphaned` tree with no verified rescue ref, and 1 `worktree_remove`
-//! job for each `landed` tree, and nothing else (docs/specs/fleetd/design.md,
-//! "Migration plan" item 5, "Worktrees: leased, reconciled, never lost",
-//! "Rescue before any cleanup", FM-25, FM-27; MAP.md of fleetd-p3, Q8 and
-//! Q9; docs/tickets/fleetd-p3/18-reconciler-acts.md).
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root
-//! (`<temp>/fleet`, the fleet root of the temp ledger). [`World::pass`]
-//! gives the reconciler the facts of part 1 as the pass reads them: the
-//! folder of each row, the folders of `<repo>/.worktrees/` and the result
-//! of the `worktree_list` executor. A job process is `true`, started
-//! through the launcher; the executor runs in the test process with the
-//! recorded pid, as `horch job run` runs it.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -53,20 +38,14 @@ use rusqlite::{params, Connection, TransactionBehavior};
 
 const CLOCK: FleetSeconds = FleetSeconds(1_000);
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     _temp: tempfile::TempDir,
     top: PathBuf,
     conn: Connection,
     config: FleetConfig,
-    /// The repository, as its canonical path.
     repo: PathBuf,
 }
 
-/// A temp ledger of the current schema at generation 1, a fleet root, and
-/// a temp repository with 1 commit on `main` that holds `a.txt` and
-/// `.gitignore`.
 fn world() -> World {
     assert!(
         std::env::var_os("FLEET_ROOT").is_none(),
@@ -100,8 +79,6 @@ fn world() -> World {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -140,7 +117,6 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// The context of a writer that is not fleetd.
 fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     JobCtx {
         guard: None,
@@ -149,7 +125,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// The sandbox profiles of a test: no check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -163,7 +138,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// Each file of `tree` but `.git`, with its text, in path order.
 fn files(tree: &Path) -> Vec<(String, String)> {
     fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for e in std::fs::read_dir(dir).unwrap() {
@@ -190,8 +164,6 @@ impl World {
         self.repo.join(".worktrees").join(name)
     }
 
-    /// A tree `name` on the branch `fleet/<name>`, made by git from `main`,
-    /// with a row in `state` of the task `task`.
     fn tree(&mut self, name: &str, task: Option<&str>, state: &str) -> PathBuf {
         let path = self.tree_path(name);
         let branch = format!("fleet/{name}");
@@ -226,8 +198,6 @@ impl World {
         path
     }
 
-    /// An `orphaned` tree `name` with a commit, a modified tracked file, a
-    /// staged new file, an untracked file and an ignored file.
     fn orphan_with_work(&mut self, name: &str) -> PathBuf {
         let path = self.tree(name, None, "orphaned");
         write(&path.join("b.txt"), "b\n");
@@ -241,9 +211,6 @@ impl World {
         path
     }
 
-    /// A tree `name` with 1 commit of `<name>.txt` on its branch, merged
-    /// into `main`, in the state `landed` at that commit, as the land step
-    /// leaves it.
     fn landed(&mut self, name: &str) -> PathBuf {
         let path = self.tree(name, None, "orphaned");
         let file = format!("{name}.txt");
@@ -265,7 +232,6 @@ impl World {
         path
     }
 
-    /// A run of the repository in `status`, and 1 task of it.
     fn task_of_run(&mut self, status: &str) -> String {
         let new = NewRun {
             slug: "r1".into(),
@@ -274,7 +240,6 @@ impl World {
             ..Default::default()
         };
         let run: Run = runs::create(&self.conn, &self.repo, &new).unwrap();
-        // FR-12: a task needs an idea in flight of the feature of its run.
         horch_core::taskledger::schema::run_idea(
             &self.conn,
             &run.run_id,
@@ -311,9 +276,6 @@ impl World {
         self.top.join("fleet")
     }
 
-    /// The facts of part 1 of a pass: the folder of each row, each folder
-    /// of `<repo>/.worktrees/`, and the result of the `worktree_list`
-    /// executor on the repository.
     fn facts(&self) -> Facts {
         let rows = trees::in_states(&self.conn, &WorktreeState::ALL).unwrap();
         let folders = rows
@@ -355,8 +317,6 @@ impl World {
         }
     }
 
-    /// Part 2 of 1 pass on `facts`: the reconciler, then the disk budget,
-    /// in 1 transaction.
     fn pass_on(&mut self, facts: &Facts) -> Report {
         let config = self.config.clone();
         let tx = self
@@ -369,7 +329,6 @@ impl World {
         report
     }
 
-    /// 1 pass with the facts of the disk now.
     fn pass(&mut self) -> Report {
         let facts = self.facts();
         self.pass_on(&facts)
@@ -379,7 +338,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Each run of `kind` of the tree `name`: (id, state).
     fn jobs_of(&self, kind: Kind, name: &str) -> Vec<(i64, State)> {
         let mut stmt = self
             .conn
@@ -403,8 +361,6 @@ impl World {
             .unwrap()
     }
 
-    /// Start the run `id` with the process `true` through the launcher, as
-    /// part 3 of a pass starts it.
     fn start(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -424,7 +380,6 @@ impl World {
         self.job(id)
     }
 
-    /// The run `id` to its end with the executor of `horch job run`.
     fn run(&mut self, id: i64) -> JobRow {
         let pid = self.start(id).pid.unwrap();
         let config = self.config.clone();
@@ -439,8 +394,6 @@ impl World {
         self.observe_end(id)
     }
 
-    /// The run `id` started, then its process gone with `result` written:
-    /// the pass observes its end.
     fn end_with(&mut self, id: i64, result: &serde_json::Value) -> JobRow {
         self.start(id);
         jobs_store::set_result(&self.conn, id, &result.to_string()).unwrap();
@@ -482,10 +435,6 @@ fn text(job: &JobRow) -> String {
     outcome(job).map(|o| o.text).unwrap_or_default()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// FM-25: the pass queues 1 rescue job of an orphan; the job writes a
-/// rescue ref, and the next pass reads it back as verified: `rescued`.
 #[test]
 fn orphan_gets_1_rescue_job_and_becomes_rescued_after_its_verification() {
     let mut w = world();
@@ -514,7 +463,6 @@ fn orphan_gets_1_rescue_job_and_becomes_rescued_after_its_verification() {
         result_data(&ended).unwrap()["commit"].as_str().unwrap(),
         "the row has the ref of the run"
     );
-    // A rescued tree with no task is never removed by fleetd (Q8).
     let report = w.pass();
     assert!(
         report.rescues.is_empty() && report.removals.is_empty(),
@@ -524,8 +472,6 @@ fn orphan_gets_1_rescue_job_and_becomes_rescued_after_its_verification() {
     assert!(path.is_dir());
 }
 
-/// FM-25: the rescue saves each commit, modified file, staged file and
-/// untracked file of the orphan, and the tree keeps each one as it was.
 #[test]
 fn orphan_with_dirty_untracked_files_and_commits_keeps_each_one_after_the_pass() {
     let mut w = world();
@@ -573,8 +519,6 @@ fn orphan_with_dirty_untracked_files_and_commits_keeps_each_one_after_the_pass()
     assert!(w.jobs_of(Kind::WorktreeRemove, "orphan").is_empty());
 }
 
-/// FM-27: the pass queues 1 remove job of a landed tree; the job removes
-/// it, and the next pass reads the row as `removed`.
 #[test]
 fn landed_tree_gets_1_remove_job_and_becomes_removed() {
     let mut w = world();
@@ -587,7 +531,6 @@ fn landed_tree_gets_1_remove_job_and_becomes_removed() {
     let runs = w.jobs_of(Kind::WorktreeRemove, "done");
     assert_eq!(runs.len(), 1, "{runs:?}");
     assert_eq!(w.all_jobs(), 1, "only the remove job");
-    // The second pass queues no second removal while the first is queued.
     let again = w.pass();
     assert!(again.removals.is_empty(), "{again:?}");
     assert_eq!(w.jobs_of(Kind::WorktreeRemove, "done").len(), 1);
@@ -605,9 +548,6 @@ fn landed_tree_gets_1_remove_job_and_becomes_removed() {
     assert_eq!(w.all_jobs(), 1);
 }
 
-/// Q8: a rescued tree whose idea is in flight stays, also over the disk
-/// budget; a rescued tree of a cancelled idea is removed for space, by the
-/// budget and not by the reconciler (ticket 33 of fleetd-p6).
 #[test]
 fn rescued_tree_of_an_active_run_is_not_removed() {
     let mut w = world();
@@ -634,15 +574,12 @@ fn rescued_tree_of_an_active_run_is_not_removed() {
         "untracked\n"
     );
 
-    // The same tree once its run is done: its idea is still in flight.
     w.conn
         .execute("UPDATE runs SET status = 'done'", [])
         .unwrap();
     w.pass();
     assert!(w.jobs_of(Kind::WorktreeRemove, "kept").is_empty());
 
-    // The same tree once its idea is cancelled: the budget queues its
-    // removal.
     w.conn
         .execute("UPDATE ideas SET state = 'cancelled'", [])
         .unwrap();
@@ -651,8 +588,6 @@ fn rescued_tree_of_an_active_run_is_not_removed() {
     assert_eq!(w.jobs_of(Kind::WorktreeRemove, "kept").len(), 1);
 }
 
-/// The index `jobs_one_active`: a rescue that is queued or running is not
-/// queued again.
 #[test]
 fn rescue_job_is_queued_once_while_it_runs() {
     let mut w = world();
@@ -673,9 +608,6 @@ fn rescue_job_is_queued_once_while_it_runs() {
     assert_eq!(w.all_jobs(), 1);
 }
 
-/// FM-25, FM-27: a rescue that fails keeps the tree `orphaned` with 1
-/// needs-you item; no removal is queued, and the same rescue is not
-/// queued again.
 #[test]
 fn failed_rescue_leaves_the_tree_orphaned_and_queues_no_removal() {
     let mut w = world();
@@ -709,9 +641,6 @@ fn failed_rescue_leaves_the_tree_orphaned_and_queues_no_removal() {
     assert_eq!(w.rescue_refs(), "");
 }
 
-/// A plain folder in `<repo>/.worktrees/` that `git worktree list` does
-/// not name gets no row and no job; the pass reports it. A tree that git
-/// names is adopted only once a `worktree_list` result names it.
 #[test]
 fn plain_folder_in_the_work_dir_gets_no_row_and_no_job() {
     let mut w = world();
@@ -724,7 +653,6 @@ fn plain_folder_in_the_work_dir_gets_no_row_and_no_job() {
         &["worktree", "add", "-q", "-b", "hand", &hand_s, "main"],
     );
 
-    // No passed worktree_list result yet: nothing is adopted.
     let mut no_list = w.facts();
     no_list.lists.clear();
     let report = w.pass_on(&no_list);
@@ -756,9 +684,6 @@ fn plain_folder_in_the_work_dir_gets_no_row_and_no_job() {
     );
 }
 
-/// FM-25 for a reused tree: a rescued tree that the next attempt took and
-/// left orphaned at the same HEAD gets a new rescue of its new work. The
-/// passed rescue of the first orphan, and its ref, do not count for it.
 #[test]
 fn reused_tree_orphaned_again_at_the_same_head_gets_a_new_rescue() {
     let mut w = world();
@@ -769,7 +694,6 @@ fn reused_tree_orphaned_again_at_the_same_head_gets_a_new_rescue() {
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
     w.pass();
     let old_ref = w.row("reused").rescue_ref.expect("the first rescue ref");
-    // The next attempt takes the tree, edits a file, and dies.
     w.set_state("reused", "active");
     w.set_state("reused", "orphaned");
     write(&path.join("a.txt"), "edited again\n");
@@ -798,9 +722,6 @@ fn reused_tree_orphaned_again_at_the_same_head_gets_a_new_rescue() {
     );
 }
 
-/// FM-27: the guard refuses the removal of a landed tree with an untracked
-/// file. The tree stays with 1 needs-you item, and the same removal is not
-/// queued again on each pass.
 #[test]
 fn refused_removal_keeps_the_tree_and_is_not_queued_again() {
     let mut w = world();

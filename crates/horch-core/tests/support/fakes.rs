@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The variables cargo sets for a test process. A nested build that sees
-/// them has another fingerprint, and builds each crate again.
 const CARGO_RUN_VARS: &[&str] = &[
     "CARGO_MANIFEST_DIR",
     "CARGO_MANIFEST_PATH",
@@ -14,8 +12,6 @@ const CARGO_RUN_VARS: &[&str] = &[
     "OUT_DIR",
 ];
 
-/// cargo 1.100 runs a test from `<profile>/build/<package>/<hash>/out/`,
-/// an older cargo from `<profile>/deps/` (T-59).
 fn built_dir_of(exe: &Path) -> PathBuf {
     let dir = exe.parent().expect("exe dir");
     let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
@@ -67,9 +63,6 @@ fn build_command(built: &Path, fakes: &[&str]) -> Command {
     cmd
 }
 
-/// The first call builds `fakes` and starts each 1 time: macOS holds a new
-/// binary at its first launch, for minutes, and no bounded wait of a test
-/// counts that hold.
 pub fn fake(fakes: &[&str], name: &str) -> PathBuf {
     static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let dir = built_dir_of(&std::env::current_exe().unwrap());

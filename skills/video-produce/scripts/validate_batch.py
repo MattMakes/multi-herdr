@@ -44,8 +44,8 @@ import tempfile
 
 WORKFLOWS = ("launch-film", "app-explainer", "ab")
 FORMATS = ("short", "long")
-LENGTHS = (15, 30, 60, 90)  # short only
-LONG_RANGE = (180, 900)  # long only
+LENGTHS = (15, 30, 60, 90)
+LONG_RANGE = (180, 900)
 ASPECTS = ("16:9", "9:16", "1:1")
 FILM_KEYS = {"slug", "request", "workflow", "folder", "format", "length_sec", "aspects"}
 SHARED_KEYS = {"brand", "voice", "notes"}
@@ -239,7 +239,6 @@ def self_test():
         if len(errors) != 1:
             failures.append(f"{name}: expected 1 error, got {errors}")
     with tempfile.TemporaryDirectory() as tmp:
-        # Dry run of 2 films: 1 passes in round 2, 1 fails round 1 with no share kit.
         launch = os.path.join(tmp, "video", "launch-v3")
         demo = os.path.join(tmp, "video", "cli-demo")
         write(os.path.join(launch, "qa", "critique-round-1.md"), "VERDICT: FAIL\nAverage score: 3.50 / 5.\n")

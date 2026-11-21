@@ -24,7 +24,7 @@ from intakelib import index, roles
 from intakelib import task as tasklib
 from intakelib.task import read_json, write_json
 
-SOURCE = "wordtally-pack"  # the local source folder name: a source name (spec 3.8)
+SOURCE = "wordtally-pack"
 STUB = """#!{python} -I
 import json, os, sys, time
 log = os.environ.get("STUB_LOG")
@@ -147,7 +147,6 @@ class BriefTest(RolesCase):
 
     def test_each_brief_is_in_its_side_root(self):
         t = self.task()
-        # The analyst reads its brief in C and writes its status file in D (T-34).
         for role, root, status in (("auditor", t.c, t.c), ("analyst", t.c, t.d), ("sanitizer", t.d, t.d),
                                    ("writer", t.k, t.k), ("reviewer", t.k, t.k)):
             out = self.brief(t, role)
@@ -295,7 +294,7 @@ class SpawnTest(RolesCase):
         t = self.task()
         self.spawn(t, "analyst", expect=roles.SPAWN_FAILED, STUB_SPAWN_EXIT="1")
         self.assertFalse((t.c / "roles.jsonl").exists())
-        self.spawn(t, "analyst")  # nothing is active
+        self.spawn(t, "analyst")
 
     def test_one_role_at_a_time(self):
         t = self.task()
@@ -345,7 +344,7 @@ class RoleResultTest(RolesCase):
         for doc in bad:
             t, w = self.started()
             if doc.get("outputs") == ["/etc/hosts"]:
-                doc["outputs"] = [str(t.d / "drafts" / "x.json")]  # in the task, outside K
+                doc["outputs"] = [str(t.d / "drafts" / "x.json")]
             self.result(self.status(w["status_file"], **doc), expect=roles.BAD_RESULT)
             self.assertEqual(self.roles(t)[0]["state"], "error", doc)
 
@@ -362,7 +361,7 @@ class RoleResultTest(RolesCase):
     def test_a_missing_or_unknown_status_file_fails(self):
         t, w = self.started()
         self.result(Path(w["status_file"]), expect=roles.BAD_RESULT)
-        self.assertEqual(self.roles(t)[0]["state"], "running")  # the role may still be working
+        self.assertEqual(self.roles(t)[0]["state"], "running")
         self.result(self.status(str(t.k / "status" / "writer-9.json"), role="writer", status="ok",
                                 outputs=[], error=None), expect=roles.BAD_RESULT)
         self.result(self.status(str(self.tmp / "status.json"), role="writer"), expect=roles.BAD_RESULT)
@@ -436,7 +435,7 @@ class PlainTest(RolesCase):
         self.result(self.status(b["status_file"], role="writer", status="ok", outputs=[], error=None))
         self.assertFalse((tasklib.default_base() / "active-role.json").exists())
         self.assertEqual(self.prompt("reviewer", other["brief"])[0], 0)
-        self.assertEqual(self.calls(), [])  # plain mode never calls horch
+        self.assertEqual(self.calls(), [])
 
     def test_prompt_lists_the_files_under_the_read_folders_as_json_strings(self):
         with tempfile.TemporaryDirectory() as d:
@@ -552,8 +551,6 @@ class RealWritePathsTest(RolesCase):
                     self.assertIn("output outside the", r.stderr)
 
 
-    # T-32: a role may list its own status file in outputs, and only that status file.
-
     def result_with(self, role: str, plain: bool, extra):
         t = self.task()
         status = self.start(t, role, plain)
@@ -646,7 +643,6 @@ class TeammateSandboxTest(RolesCase):
                     self.assertFalse(inside(p, "denyRead"), f"read path {p}")
                 for p in writes:
                     self.assertTrue(inside(p, "allowWrite"), f"write path {p}")
-                # The domain write set names the status file and only sides the role can write.
                 side = next(s for s in tasklib.SIDES if tasklib.is_within(Path(out["status_file"]), t.root(s)))
                 rel = domain.SHORT[side] + "/" + str(Path(out["status_file"]).relative_to(t.root(side)))
                 self.assertTrue(domain._allowed(rel, domain.WRITE_SETS[role]), f"{rel} not in the write set")

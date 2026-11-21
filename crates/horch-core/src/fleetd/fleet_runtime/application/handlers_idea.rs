@@ -1,29 +1,3 @@
-//! The handlers of the idea request kinds: each operator request of horch
-//! idea reaches its use case (`IdeasCommands`, `ddd/08-code/ideas/design.md`
-//! section 4): `idea_add` (also `--direct` and `--to`), `idea_amend`,
-//! `idea_approve`, `idea_revise`, `idea_park` and `idea_cancel`.
-//!
-//! Requirements: RR-8, SR-8 for the idea kinds (ticket 22 of fleetd-p6).
-//! `idea_note` is a worker kind: the channel refuses it before a handler.
-//!
-//! Each handler calls its use case in the transaction of its request, so 1
-//! `request_id` has 1 effect. The error of a use case is the reason of the
-//! refusal, and its rows roll back.
-//!
-//! A handler does no effect (rule A24). The result of each request holds
-//! `effects`: each file and ref to write after the commit, with its text.
-//! The `requests` row commits the result, and the pass writes them from it:
-//!
-//! - `idea_md`: the id of an idea whose idea.md the pass writes from its
-//!   `added` event (`intake::pending_idea_files`);
-//! - `ticket`: `path` in the idea folder and `text` of a `--direct` ticket;
-//! - `plan_yaml`: the text of plan.yaml of a `--direct` idea;
-//! - `approval_json`: `text` and `sha256` of approval.json;
-//! - `amendment`: `n` and `text` of the next amendment file;
-//! - `branch`: `repo`, `name` and `tip` of the ref of a new feature.
-//!
-//! Each effect names its idea in `effects.idea`.
-
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -62,21 +36,14 @@ use crate::fleetd::worktree_custody::application::create::fleet_clock;
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
-/// The source of the idea.md of an idea of `horch idea add`.
 pub const ADD_SOURCE: &str = "horch idea add";
 
-/// What the idea handlers read beside the ledger.
 pub struct IdeaHandlers {
-    /// The generation of the fleetd that applies the requests.
     pub guard: Generation,
     pub config: Arc<FleetConfig>,
-    /// The folder of the idea folders.
     pub ideas: PathBuf,
-    /// The owner of the idea folders.
     pub owner: User,
-    /// The profiles of the roster now: a `--direct` judge task gets 1.
     pub roster: Arc<dyn Fn() -> Vec<RosterProfile> + Send + Sync>,
-    /// The git reads of a new feature branch of `--direct`.
     pub git: Arc<dyn IntegrationGitGateway + Send + Sync>,
 }
 
@@ -94,10 +61,8 @@ impl IdeaHandlers {
     }
 }
 
-/// 1 idea handler, with what it reads beside the ledger.
 type IdeaHandler = fn(&IdeaHandlers, &Connection, &Value) -> Result<Value>;
 
-/// Register the handler of each operator idea kind in `handlers`.
 pub fn register(handlers: &mut Handlers, ctx: IdeaHandlers) {
     let ctx = Arc::new(ctx);
     let entries: [(Kind, IdeaHandler); 6] = [
@@ -114,7 +79,6 @@ pub fn register(handlers: &mut Handlers, ctx: IdeaHandlers) {
     }
 }
 
-/// The payload of `kind`, with no unknown field.
 fn parse<T: DeserializeOwned>(kind: &str, payload: &Value) -> Result<T> {
     serde_json::from_value(payload.clone()).with_context(|| format!("a bad {kind} payload"))
 }
@@ -126,7 +90,6 @@ fn operator(text: &str) -> Cause<'_> {
     }
 }
 
-/// The result of a request on `idea`: `values` and its `effects`.
 fn result(idea: &str, mut values: Map<String, Value>, mut effects: Map<String, Value>) -> Value {
     effects.insert("idea".into(), json!(idea));
     values.insert("idea".into(), json!(idea));
@@ -146,11 +109,6 @@ fn branch_effect(branch: &BranchRef) -> Value {
     json!({ "repo": branch.repo, "name": branch.name, "tip": branch.tip })
 }
 
-// ─── idea_add ───────────────────────────────────────────────────────────
-
-/// `horch idea add`: the idea in `captured`, in a new feature of the
-/// project or in the feature of `--to`. With `--direct`, the ticket file
-/// must still have the sha256 of the request.
 fn add(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let add = idea_add(payload)?;
     let target = match &add.target {
@@ -183,7 +141,6 @@ fn add(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     }
 }
 
-/// The `idea_add` payload: each field is 1 text, as ticket 06 defines it.
 fn idea_add(payload: &Value) -> Result<IdeaAdd> {
     let object = payload.as_object().context("a bad idea_add payload")?;
     let mut fields = Vec::with_capacity(object.len());
@@ -196,9 +153,6 @@ fn idea_add(payload: &Value) -> Result<IdeaAdd> {
     Ok(IdeaAdd::from_fields(&fields)?)
 }
 
-/// The text of the `--direct` ticket file `path`. It refuses a file over
-/// [`INPUT_MAX_BYTES`], a file that is not UTF-8, and a file whose sha256 is
-/// not `sha256`, the sha256 of the request.
 fn read_ticket(path: &Path, sha256: &str) -> Result<String> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("reading the ticket file {}", path.display()))?;
@@ -223,8 +177,6 @@ fn read_ticket(path: &Path, sha256: &str) -> Result<String> {
         .with_context(|| format!("the ticket file {} is not UTF-8", path.display()))
 }
 
-/// `AddDirectIdea` of the ticket `text`. A new feature branch starts at the
-/// tip of the primary branch of the project.
 fn add_direct(
     h: &IdeaHandlers,
     tx: &Connection,
@@ -246,9 +198,6 @@ fn add_direct(
     add_direct_idea(tx, &h.jobs(), &direct, text, target, cause)
 }
 
-/// The tip of the primary branch of `project`: its fetched tip when a
-/// fetch that is not stale recorded it, else its local tip. No tip refuses
-/// the request.
 fn primary_tip(h: &IdeaHandlers, tx: &Connection, project: &Project<'_>) -> Result<String> {
     let repo = project.root.to_string_lossy();
     if let Some(row) = feature_rows::remote_tip(tx, &repo, project.primary_branch)? {
@@ -291,9 +240,6 @@ fn direct_result(added: &DirectAdded) -> Value {
     result(id, values, effects)
 }
 
-// ─── idea_amend, idea_revise ────────────────────────────────────────────
-
-/// The payload of `horch idea amend` and `horch idea revise`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdeaText {
@@ -301,8 +247,6 @@ struct IdeaText {
     text: String,
 }
 
-/// `horch idea amend`: the next amendment of the idea, or a new idea in a
-/// new feature of the same project for a merged or cancelled idea.
 fn amend(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let a: IdeaText = parse("idea_amend", payload)?;
     let row = ideas_store::idea(tx, &a.idea)?
@@ -334,8 +278,6 @@ fn amend(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     }
 }
 
-/// `horch idea revise`: your text for an idea in `awaiting_approval`; the
-/// idea goes back to `clarifying`.
 fn revise(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let a: IdeaText = parse("idea_revise", payload)?;
     let folder = h.folder(&a.idea)?;
@@ -351,10 +293,6 @@ fn revise(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     }
 }
 
-// ─── idea_approve ───────────────────────────────────────────────────────
-
-/// The payload of `horch idea approve`: the sha256 of assumptions.md that
-/// the command printed to you.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdeaApprove {
@@ -362,8 +300,6 @@ struct IdeaApprove {
     sha256: String,
 }
 
-/// `horch idea approve`: the idea moves to `specifying` when its
-/// assumptions.md still has the sha256 that you read.
 fn approve(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let a: IdeaApprove = parse("idea_approve", payload)?;
     let folder = h.folder(&a.idea)?;
@@ -379,9 +315,6 @@ fn approve(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> 
     }
 }
 
-// ─── idea_park, idea_cancel ─────────────────────────────────────────────
-
-/// The payload of `horch idea park` and `horch idea cancel`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdeaReason {
@@ -389,8 +322,6 @@ struct IdeaReason {
     reason: String,
 }
 
-/// `horch idea park`: the idea moves to `parked`, after the rescue of each
-/// of its trees that holds work.
 fn park(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let a: IdeaReason = parse("idea_park", payload)?;
     let rescues = park_cancel::park(&h.jobs(), tx, &a.idea, &a.reason, fleet_clock(tx)?)?;
@@ -400,9 +331,6 @@ fn park(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     Ok(result(&a.idea, values, Map::new()))
 }
 
-/// `horch idea cancel <idea> "<reason>"`: the cancel of each open task of
-/// the idea; the idea moves to `cancelled` when each task is terminal. The
-/// pass stops each process of a task in `stop`.
 fn cancel(h: &IdeaHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let a: IdeaReason = parse("idea_cancel", payload)?;
     if a.reason.trim().is_empty() {

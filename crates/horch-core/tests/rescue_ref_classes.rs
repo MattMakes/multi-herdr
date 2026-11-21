@@ -1,13 +1,3 @@
-//! Rescue refs of branches and the 2 classes of rescue refs
-//! (docs/specs/fleetd/design.md, "No work is lost", I10, FM-40, RR-16;
-//! docs/tickets/fleetd-p4/24-rescue-ref-classes.md).
-//!
-//! Each test makes its own temporary git repository and ledger. The
-//! `worktree_list` executor reads the facts of each rescue ref, and the pass
-//! part `collect` decides the class, the expiry and the budget item with no
-//! git call. The deletion is a short effect after the commit. No test reads
-//! the real clock for a decision: each test gives `now`.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -40,21 +30,15 @@ const FEATURE: &str = "F-1";
 const FEATURE_BRANCH: &str = "fleet/r1";
 const TASK_BRANCH: &str = "fleet/r1-T-1";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
     store: Store,
     config: FleetConfig,
     repo: PathBuf,
-    /// The first commit of `main`.
     base: String,
 }
 
-/// A temp ledger with 1 run, the feature [`FEATURE`] on [`FEATURE_BRANCH`]
-/// and its task branch [`TASK_BRANCH`]; a temp repository with 1 commit on
-/// `main`, and both branches at that commit.
 fn world() -> World {
     assert!(
         std::env::var_os("FLEET_ROOT").is_none(),
@@ -87,7 +71,6 @@ fn world() -> World {
                 primary_branch: "main",
             };
             rows::insert_feature(tx, None, &feature, cause("feature"))?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -142,8 +125,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = git_out(dir, args);
     assert!(
@@ -192,18 +173,14 @@ impl World {
         }
     }
 
-    /// The git of fleetd: it can write only the git folder of the
-    /// repository.
     fn writer(&self) -> CliWorktreeGit {
         CliWorktreeGit::new("git", self.root.join("fleet")).writing(&[self.repo.join(".git")])
     }
 
-    /// The gateway of the deletion: it can write the git folder.
     fn gateway(&self) -> CliGitGateway {
         CliGitGateway::new(self.writer())
     }
 
-    /// A gateway that can only read, so each ref write fails.
     fn read_only_gateway(&self) -> CliGitGateway {
         CliGitGateway::new(
             CliWorktreeGit::new("git", self.root.join("fleet"))
@@ -211,7 +188,6 @@ impl World {
         )
     }
 
-    /// The tip of `rev`, or `None` when it does not exist.
     fn tip(&self, rev: &str) -> Option<String> {
         let out = git_out(&self.repo, &["rev-parse", "--verify", "-q", rev]);
         out.status
@@ -219,7 +195,6 @@ impl World {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Commit `files` on `branch` with no checkout, and give the new tip.
     fn commit_on(&self, branch: &str, files: &[(&str, &[u8])], msg: &str) -> String {
         let parent = self.tip(branch).unwrap();
         let index = self.root.join("test-index");
@@ -265,7 +240,6 @@ impl World {
         commit
     }
 
-    /// Force `branch` to `tip`, as a forced update does.
     fn force(&self, branch: &str, tip: &str) {
         git(
             &self.repo,
@@ -273,8 +247,6 @@ impl World {
         );
     }
 
-    /// Write the rescue ref of the tip of `branch`, as fleetd does before it
-    /// moves the branch, and record it on the row.
     fn rescue(&mut self, branch: &str) -> String {
         let tip = self.tip(branch).unwrap();
         let name = refs_git::write_branch_rescue(&self.writer(), &self.repo, branch, &tip).unwrap();
@@ -292,8 +264,6 @@ impl World {
         name
     }
 
-    /// The facts of the rescue refs, as the `worktree_list` job of the
-    /// repository reads them.
     fn facts(&self) -> Vec<RefFacts> {
         let row = JobRow {
             id: 1,
@@ -319,8 +289,6 @@ impl World {
         refs_git::facts_of(ran.data.as_ref().unwrap()).expect("the result names the rescue refs")
     }
 
-    /// 1 pass part: read the facts, then decide in 1 transaction that
-    /// commits.
     fn collect(&mut self, now: DateTime<Utc>) -> Collection {
         let lists = [RepoFacts {
             repo: self.repo.display().to_string(),
@@ -339,7 +307,6 @@ impl World {
             .unwrap()
     }
 
-    /// The effect after the commit: each deletion of `c`.
     fn delete_all(&self, c: &Collection) -> Vec<Deleted> {
         c.deletions
             .iter()
@@ -347,8 +314,6 @@ impl World {
             .collect()
     }
 
-    /// Move the feature to `to`, and give a time that is not before the
-    /// stamp of the move.
     fn end_feature(&mut self, to: &str) -> DateTime<Utc> {
         self.store
             .immediate(|tx| {
@@ -389,7 +354,6 @@ fn days(n: i64) -> Duration {
     Duration::days(n)
 }
 
-/// Bytes that git cannot compress: `n` bytes of a simple generator.
 fn noise(n: usize) -> Vec<u8> {
     let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
     (0..n)
@@ -402,13 +366,10 @@ fn noise(n: usize) -> Vec<u8> {
         .collect()
 }
 
-// ─── the writer ─────────────────────────────────────────────────────────
-
 #[test]
 fn branch_rescue_ref_is_create_only_and_read_back() {
     let mut w = world();
     let tip = w.commit_on(TASK_BRANCH, &[("c.txt", b"c\n")], "c");
-    // A ref that another writer made first keeps its tip.
     let first = "refs/horch/rescue/branch/fleet-r1-T-1/1";
     git(&w.repo, &["update-ref", first, &w.base, ""]);
 
@@ -420,11 +381,9 @@ fn branch_rescue_ref_is_create_only_and_read_back() {
     let row = rows::branch(w.conn(), TASK_BRANCH).unwrap().unwrap();
     assert_eq!(row.rescue_ref.as_deref(), Some(name.as_str()));
 
-    // A tip that is not a commit writes nothing.
     let bad = refs_git::write_branch_rescue(&w.writer(), &w.repo, TASK_BRANCH, &"0".repeat(40));
     assert!(bad.is_err());
     assert_eq!(w.tip("refs/horch/rescue/branch/fleet-r1-T-1/3"), None);
-    // A branch name that cannot name a ref folder writes nothing.
     let bad = refs_git::write_branch_rescue(&w.writer(), &w.repo, "a b", &tip);
     assert!(bad.is_err());
 }
@@ -440,8 +399,6 @@ fn second_rescue_of_1_branch_does_not_overwrite_the_first() {
     assert_ne!(first, second);
     assert_eq!(w.tip(&first).as_deref(), Some(tip1.as_str()));
     assert_eq!(w.tip(&second).as_deref(), Some(tip2.as_str()));
-    // A rescue of the same tip again names the newest ref and writes no
-    // new one.
     assert_eq!(w.rescue(TASK_BRANCH), second);
     let all = git(
         &w.repo,
@@ -450,14 +407,11 @@ fn second_rescue_of_1_branch_does_not_overwrite_the_first() {
     assert_eq!(all.lines().count(), 2, "{all}");
 }
 
-// ─── the class ──────────────────────────────────────────────────────────
-
 #[test]
 fn ref_with_work_in_no_landed_branch_is_unique() {
     let mut w = world();
     w.commit_on(TASK_BRANCH, &[("c.txt", b"c\n")], "c");
     let name = w.rescue(TASK_BRANCH);
-    // A forced update drops the commit from the branch.
     w.force(TASK_BRANCH, &w.base.clone());
 
     assert_eq!(w.class_of(&name), Class::Unique);
@@ -471,7 +425,6 @@ fn ref_whose_work_landed_is_superseded() {
     w.force(TASK_BRANCH, &w.base.clone());
     assert_eq!(w.class_of(&name), Class::Unique);
 
-    // A squash merge puts the same content on the feature branch.
     w.commit_on(FEATURE_BRANCH, &[("c.txt", b"c\n")], "squash");
     assert_eq!(w.class_of(&name), Class::Superseded);
 }
@@ -481,7 +434,6 @@ fn ref_whose_work_is_in_a_newer_tip_of_its_branch_is_superseded() {
     let mut w = world();
     w.commit_on(TASK_BRANCH, &[("c.txt", b"c\n")], "c");
     let name = w.rescue(TASK_BRANCH);
-    // A rebase onto a new feature tip: a new commit with the same content.
     w.commit_on(FEATURE_BRANCH, &[("b.txt", b"b\n")], "b");
     w.force(TASK_BRANCH, &w.tip(FEATURE_BRANCH).unwrap());
     w.commit_on(TASK_BRANCH, &[("c.txt", b"c\n")], "c again");
@@ -489,9 +441,6 @@ fn ref_whose_work_is_in_a_newer_tip_of_its_branch_is_superseded() {
     assert_eq!(w.class_of(&name), Class::Superseded);
 }
 
-// ─── the expiry ─────────────────────────────────────────────────────────
-
-/// A superseded ref of the task branch: its work is on the feature branch.
 fn superseded_ref(w: &mut World) -> String {
     w.commit_on(TASK_BRANCH, &[("c.txt", b"c\n")], "c");
     let name = w.rescue(TASK_BRANCH);
@@ -507,7 +456,6 @@ fn superseded_ref_expires_30_days_after_its_feature_ended() {
     let name = superseded_ref(&mut w);
     let tip = w.tip(&name).unwrap();
 
-    // An open feature: no expiry, also after a long time.
     let c = w.collect(Utc::now() + days(365));
     assert!(c.deletions.is_empty(), "{c:?}");
     assert_eq!((c.superseded.count, c.unique.count), (1, 0));
@@ -524,7 +472,6 @@ fn superseded_ref_expires_30_days_after_its_feature_ended() {
     assert_eq!(w.delete_all(&c), vec![Deleted::Deleted]);
     assert_eq!(w.tip(&name), None);
 
-    // The next pass sees the ref gone and plans nothing.
     let c = w.collect(ended + days(31));
     assert!(c.deletions.is_empty(), "{c:?}");
 }
@@ -545,8 +492,6 @@ fn unique_ref_is_never_deleted_by_the_expiry() {
     assert!(w.tip(&name).is_some());
 }
 
-// ─── the budget ─────────────────────────────────────────────────────────
-
 #[test]
 fn over_the_unique_budget_opens_1_item_and_deletes_nothing() {
     let mut w = world();
@@ -566,14 +511,11 @@ fn over_the_unique_budget_opens_1_item_and_deletes_nothing() {
     assert_eq!(w.open_budget_items(), 1);
     assert!(w.tip(&name).is_some());
 
-    // Under a larger budget, the item ends.
     w.config.rescue_unique_budget_mb = 100;
     let c = w.collect(ended + days(402));
     assert!(!c.over_budget);
     assert_eq!(w.open_budget_items(), 0);
 }
-
-// ─── the deletion and its faults ────────────────────────────────────────
 
 #[test]
 fn failed_deletion_is_done_again_on_the_next_pass() {
@@ -583,7 +525,6 @@ fn failed_deletion_is_done_again_on_the_next_pass() {
 
     let c = w.collect(ended + days(30));
     assert_eq!(c.deletions.len(), 1);
-    // The effect fails: git cannot write the git folder.
     assert!(rescue_refs::delete(&w.read_only_gateway(), &c.deletions[0]).is_err());
     assert!(w.tip(&name).is_some());
 
@@ -591,7 +532,6 @@ fn failed_deletion_is_done_again_on_the_next_pass() {
     assert_eq!(c.deletions.len(), 1);
     assert_eq!(w.delete_all(&c), vec![Deleted::Deleted]);
     assert_eq!(w.tip(&name), None);
-    // A second effect of the same plan finds the ref gone.
     assert_eq!(w.delete_all(&c), vec![Deleted::Gone]);
 }
 
@@ -607,8 +547,6 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     let ended = w.end_feature("merged");
     let now = ended + days(30);
 
-    // Fault point 1: the pass dies before its commit. Nothing is written,
-    // and no effect runs.
     let lists = [RepoFacts {
         repo: w.repo.display().to_string(),
         refs: Some(w.facts()),
@@ -623,19 +561,16 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     assert_eq!(w.open_budget_items(), 0);
     assert!(w.tip(&name).is_some());
 
-    // Fault point 2: the pass commits and dies before the effect.
     let c = w.collect(now);
     assert_eq!(c.deletions.len(), 1);
     assert_eq!(w.open_budget_items(), 1);
     assert!(w.tip(&name).is_some());
 
-    // The next pass completes the effect 1 time.
     let c = w.collect(now);
     assert_eq!(c.deletions.len(), 1);
     assert_eq!(w.delete_all(&c), vec![Deleted::Deleted]);
     assert_eq!(w.tip(&name), None);
     assert_eq!(w.open_budget_items(), 1);
-    // No tip and no unique work is lost.
     assert_eq!(w.tip(&unique).as_deref(), Some(tip.as_str()));
     let c = w.collect(now + days(1));
     assert!(c.deletions.is_empty(), "{c:?}");
@@ -645,13 +580,10 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
 fn crash_after_the_ref_write_and_before_the_row_writes_no_second_ref() {
     let mut w = world();
     let tip = w.commit_on(TASK_BRANCH, &[("c.txt", b"c\n")], "c");
-    // The writer dies after the ref write, before the row records it.
     let name = refs_git::write_branch_rescue(&w.writer(), &w.repo, TASK_BRANCH, &tip).unwrap();
     let row = rows::branch(w.conn(), TASK_BRANCH).unwrap().unwrap();
     assert_eq!(row.rescue_ref, None);
 
-    // The next rescue of the same tip names the same ref, and the row
-    // records it.
     assert_eq!(w.rescue(TASK_BRANCH), name);
     let row = rows::branch(w.conn(), TASK_BRANCH).unwrap().unwrap();
     assert_eq!(row.rescue_ref.as_deref(), Some(name.as_str()));

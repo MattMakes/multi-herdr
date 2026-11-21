@@ -1,16 +1,8 @@
-//! The hold of the termination handler (T-369): a signal that comes in the
-//! hold acts at its end, 1 time, also after a panic.
-
 use horch_platform::signal;
 
-/// The env var that makes this test binary run [`hold_helper`]: the group
-/// to kill, the mode and the file that the helper writes in the hold.
 #[cfg(unix)]
 const HELPER: &str = "HORCH_PLATFORM_HOLD_HELPER";
 
-/// Run [`hold_helper`] in `mode` with a group that it watches. The helper
-/// must end by `SIGTERM`, the group by `SIGKILL`, and the helper must have
-/// written its file in the hold, after the signals came.
 #[cfg(unix)]
 fn held_then_ended(mode: &str) {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -44,8 +36,6 @@ fn held_then_ended(mode: &str) {
     assert_eq!(reaped.signal(), Some(libc::SIGKILL), "the group is killed");
 }
 
-/// A `SIGTERM` and then a `SIGINT` in the hold: the first acts at the end
-/// of the hold, 1 time, and the second is not acted on.
 #[cfg(unix)]
 #[test]
 fn a_signal_in_the_hold_acts_at_its_end_one_time() {
@@ -64,7 +54,6 @@ fn only_the_end_of_the_last_hold_acts() {
     held_then_ended("nested");
 }
 
-/// The helper of the tests above. It does nothing in a normal test run.
 #[cfg(unix)]
 #[test]
 fn hold_helper() {

@@ -1,18 +1,3 @@
-//! The reserve, the observation, and the attach of a worktree to a new owner.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" (rows `reserved` and `created`) and "Supervision, liveness and
-//! reconciliation" ("the row first, then the effect, then the
-//! observation"); FR-11; `ddd/08-code/worktree-custody/design.md` §3
-//! (`CreateWorktree`) and §6 (`worktree-created`, `task-leased`).
-//!
-//! A tree is a ledger row before it exists. [`create_worktree`] writes the
-//! row in `reserved` and queues its `worktree_add` job in 1 transaction.
-//! The job runs `git worktree add` with no transaction open. [`observe`]
-//! reads the ended run in 1 transaction: the pass and a command both call
-//! it. Until Phase 4 the worker commands run the job themselves
-//! ([`create_and_wait`], MAP.md of fleetd-p3, Q1 and Q17).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -52,71 +37,43 @@ use crate::taskledger::model::{Actor, WorkerStatus};
 use crate::taskledger::sql_words::WORKTREES_GONE;
 use crate::taskledger::workers;
 
-// ─── the request ────────────────────────────────────────────────────────
-
-/// 1 request for the tree of a task, or for a scratch tree.
 #[derive(Debug, Clone)]
 pub struct Lease<'a> {
-    /// The task of the tree; `None` for a scratch tree (row W4).
     pub task_id: Option<&'a str>,
     pub worker_id: &'a str,
-    /// The `live` attempt of the worker; `None` when the worker has none
-    /// (MAP.md of fleetd-p3, Q23).
     pub attempt: Option<&'a str>,
-    /// The base that the request names (`--from`). An existing tree of
-    /// the task on another base is refused.
     pub from: Option<&'a str>,
-    /// The new row, when the task has no tree. `None` when the command
-    /// found a tree of the task first.
     pub new: Option<&'a NewWorktree>,
 }
 
-/// What [`create_worktree`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateOutcome {
-    /// The tree of the task, now of the worker.
     Attached(WorktreeRow),
-    /// The tree of the task is `orphaned`: rescue it, then attach it.
     NeedsRescue(WorktreeRow),
-    /// The row is `reserved`; `job` is its `worktree_add` run.
     Reserved { row: WorktreeRow, job: i64 },
 }
 
-/// What [`attach`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attach {
-    /// The row has the new owner.
     Attached(WorktreeRow),
-    /// The row is `orphaned` and did not change: its rescue comes first.
     NeedsRescue(WorktreeRow),
 }
 
-/// The event of a made tree (`contract: worktree-created`): exactly these
-/// 4 facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeCreated {
     pub worktree_id: String,
-    /// `None` for a scratch tree.
     pub task_id: Option<String>,
     pub path: String,
     pub branch: String,
 }
 
-/// What [`observe`] did with the row of the tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Observed {
-    /// The row moved from `reserved` to `created`, then to `active`.
     Created(WorktreeCreated),
-    /// The run failed, so the `reserved` row is gone. The text is the
-    /// reason of the run.
     Dropped(String),
-    /// The row stays as it was, for this reason.
     Kept(String),
 }
 
-// ─── the use cases ──────────────────────────────────────────────────────
-
-/// The cause of a write of a worker command.
 fn by_worker(text: &str) -> Cause<'_> {
     Cause {
         actor: Actor::Worker,
@@ -124,15 +81,6 @@ fn by_worker(text: &str) -> Cause<'_> {
     }
 }
 
-/// The tree of `lease`, in `tx`, at `clock`:
-/// - The task has a row that is not `removed` (row W2): no new row. The
-///   row moves to the worker ([`attach`]). A `reserved` row gives its
-///   active `worktree_add` run.
-/// - Else 1 row in `reserved`, owned by the attempt of the request, and 1
-///   `worktree_add` run in `queued`.
-///
-/// A second call with the same request finds the row and its run, so it
-/// has the effect of 1 (`idempotent: task-leased`).
 pub fn create_worktree(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -164,8 +112,6 @@ pub fn create_worktree(
     reserved(ctx, tx, row, clock)
 }
 
-/// The row of `task_id` that is not `removed` and that no drop or cleanup
-/// ended; `None` for a scratch request.
 fn task_tree(tx: &Connection, task_id: Option<&str>) -> Result<Option<WorktreeRow>> {
     let Some(task_id) = task_id else {
         return Ok(None);
@@ -173,8 +119,6 @@ fn task_tree(tx: &Connection, task_id: Option<&str>) -> Result<Option<WorktreeRo
     Ok(store::of_task(tx, task_id)?.filter(|r| !WORKTREES_GONE.contains(&r.status)))
 }
 
-/// The `worktree_add` run of the `reserved` row `row`: its active run, or
-/// a new one.
 fn reserved(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -185,8 +129,6 @@ fn reserved(
     Ok(CreateOutcome::Reserved { row, job })
 }
 
-/// The id of the `worktree_add` run of the `reserved` row `row` to wait
-/// for ([`queued_run`]).
 fn add_run(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -202,8 +144,6 @@ fn add_run(
     queued_run(ctx, tx, &key, &row.repo_root, clock)
 }
 
-/// The id of the run of `key` to wait for: a new run, the active run, or
-/// the run whose result is used again. A held key is an error.
 fn queued_run(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -224,16 +164,6 @@ fn queued_run(
     }
 }
 
-/// Move the row `row` to the worker `worker` and its attempt `attempt`, in
-/// `tx`:
-/// - `created` or `rescued`: the row moves to `active`.
-/// - `reserved`, `active`, `landing` or `landed`: only the owner changes.
-/// - `orphaned`: no change; [`Attach::NeedsRescue`].
-///
-/// It refuses a row that another live attempt owns (FM-14), and a row
-/// whose removal can run (`refuse_while_removal_active`).
-///
-/// The claim calls it too (ticket 11 of fleetd-p3).
 pub fn attach(
     tx: &Connection,
     row: &WorktreeRow,
@@ -262,10 +192,6 @@ pub fn attach(
     Ok(Attach::Attached(row))
 }
 
-/// Refuse a new owner of `row` while its owner attempt holds it: the
-/// attempt is not `attempt`, is not ended, and the worker of the row is
-/// live (FM-14). An attempt whose worker row ended (a handoff, a reap) is
-/// ending: the pass reaps it, and it holds no tree.
 fn refuse_live_owner(tx: &Connection, row: &WorktreeRow, attempt: Option<&str>) -> Result<()> {
     let Some(owner) = row.owner_attempt.as_deref().filter(|o| Some(*o) != attempt) else {
         return Ok(());
@@ -286,11 +212,6 @@ fn refuse_live_owner(tx: &Connection, row: &WorktreeRow, attempt: Option<&str>) 
     Ok(())
 }
 
-/// Refuse a new owner of `row` while its `worktree_remove` run is `queued`
-/// or `running`, or `passed` before a pass observed it. A claim and a
-/// removal never both pass: `queue_remove` refuses a row that is not
-/// `landed` or `rescued`, and the writer lock of SQLite orders the 2
-/// transactions.
 fn refuse_while_removal_active(tx: &Connection, row: &WorktreeRow) -> Result<()> {
     let id = row.worktree_id.as_str();
     let Some(run) = remove::latest_removal(tx, id, &row.path)? else {
@@ -306,11 +227,6 @@ fn refuse_while_removal_active(tx: &Connection, row: &WorktreeRow) -> Result<()>
     Ok(())
 }
 
-/// The owner of `row` gives it up, in `tx`: the row has no worker and no
-/// owner attempt. An `active` row moves to `created` (the design row
-/// `active`: retried, back to `created`), so the next attempt of its task
-/// takes it. Each other state stays. Handoff calls it (ticket 11 of
-/// fleetd-p3).
 pub fn release(tx: &Connection, row: &WorktreeRow, why: &str) -> Result<()> {
     let id = row.worktree_id.as_str();
     tx.execute(
@@ -333,17 +249,6 @@ pub fn release(tx: &Connection, row: &WorktreeRow, why: &str) -> Result<()> {
     Ok(())
 }
 
-/// Observe the `worktree_add` run `job`, in `tx`:
-/// - `passed`, and the folder of the `reserved` row exists: the row moves
-///   to `created`, then to `active` with the owner of the request. The
-///   gate tree of a feature has no owner: it stays `created`.
-/// - `failed`, or `passed` with no folder: the `reserved` row is
-///   dropped, with the cause `worktree_add_failed`. A run that refused a
-///   branch that another tree holds also opens 1 needs-you item.
-/// - `abandoned`, `queued` or `running`: the row stays `reserved`. The
-///   rule of abandoned runs gives the next run.
-///
-/// A row that is no longer `reserved` stays as it is.
 pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observed> {
     if job.kind != Kind::WorktreeAdd {
         bail!(
@@ -362,9 +267,6 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
     let reason = outcome(job).map(|o| o.text).unwrap_or_default();
     match job.state {
         State::Passed if Path::new(&row.path).is_dir() => created(ctx, tx, row),
-        // The effect did not hold: a kept row would wait for a folder that
-        // no run makes again, as the next run keeps the branch of this run
-        // and fails (review F1). The branch stays for the reconciler.
         State::Passed => {
             drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
             Ok(Observed::Dropped(format!(
@@ -394,13 +296,8 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
     }
 }
 
-/// The kind of the needs-you item of a job kind that ran no git because the
-/// host has no sandbox.
 pub const GIT_SANDBOX_KIND: &str = "git_sandbox";
 
-/// Open the needs-you item of the job kind `kind` that ran no git because
-/// the host has no sandbox: 1 item for each kind, not 1 for each job. The
-/// entity is `id`, the subject of the first such job.
 pub fn open_no_sandbox(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -423,23 +320,16 @@ pub fn open_no_sandbox(
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// The kind of the needs-you item of a branch that a `worktree_add` run
-/// refused.
 pub const BRANCH_REFUSED_KIND: &str = "worktree_branch_refused";
 
-/// The branch that the failed run `job` refused.
 fn branch_refused(job: &JobRow) -> Option<BranchRefused> {
     serde_json::from_value(result_data(job)?).ok()
 }
 
-/// The reason of the failed run `job` that ran no git because the host has
-/// no sandbox.
 fn no_sandbox(job: &JobRow) -> Option<NoSandbox> {
     serde_json::from_value(result_data(job)?).ok()
 }
 
-/// Open the needs-you item of the refused branch: the operator frees the
-/// branch or moves its work, then the same request attaches or makes it.
 fn open_branch_refused(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -468,10 +358,6 @@ fn open_branch_refused(
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// A tree with no worker and no owner attempt stays `created`, which the
-/// reconciler does not orphan: no attempt holds it (design, the row
-/// `created`). These are the gate tree of a feature (ticket 28 of
-/// fleetd-p4, Q18) and the tree of `horch worktree restore` (T-887).
 fn stays_created(row: &WorktreeRow) -> bool {
     row.worker_id.is_none() && row.owner_attempt.is_none()
 }
@@ -521,32 +407,22 @@ fn created(ctx: &JobCtx<'_>, tx: &Connection, row: WorktreeRow) -> Result<Observ
     }))
 }
 
-// ─── the command ────────────────────────────────────────────────────────
-
-/// What runs a job to its end for a command, with no transaction open.
 pub trait RunJob {
-    /// Run the job `job_id` to its end, and give its ended row. A run that
-    /// ended already is given as it is.
     fn run_job(&self, ctx: &JobCtx<'_>, conn: &mut Connection, job_id: i64) -> Result<JobRow>;
 }
 
-/// The job process `horch job run <id>`, started through the launcher by
-/// [`run_now`].
 #[derive(Debug, Clone)]
 pub struct JobProcess {
     horch: PathBuf,
 }
 
 impl JobProcess {
-    /// The job process of the `horch` binary `horch`.
     pub fn new(horch: impl Into<PathBuf>) -> JobProcess {
         JobProcess {
             horch: horch.into(),
         }
     }
 
-    /// The job process of this binary. This process must be `horch`: a
-    /// `horch` from PATH is never used.
     pub fn of_this_process() -> Result<JobProcess> {
         let exe = ProcessEnv
             .current_exe()
@@ -574,23 +450,12 @@ impl RunJob for JobProcess {
     }
 }
 
-/// The config of the fleet of the ledger `ledger`: `fleet.toml` in
-/// `$FLEET_ROOT`, else in the folder `fleet` beside the ledger file (the
-/// rule of `Paths`).
 pub fn fleet_config(ledger: &Path) -> Result<FleetConfig> {
     let root = nonempty_path(&ProcessEnv, "FLEET_ROOT")
         .unwrap_or_else(|| ledger.parent().unwrap_or(Path::new("")).join("fleet"));
     config_file::load(&root)
 }
 
-/// The tree of `lease`, made or taken, from a worker command. It gives
-/// the id of the row, `active` and owned by the attempt of the request:
-/// 1. 1 transaction: [`create_worktree`].
-/// 2. An `orphaned` tree: its `rescue` job runs, then [`attach`].
-/// 3. A `reserved` row: its `worktree_add` job runs through `jobs` with no
-///    transaction open, then 1 transaction for [`observe`].
-///
-/// It returns only after the job passed (MAP.md of fleetd-p3, Q17).
 pub fn create_and_wait(
     conn: &mut Connection,
     ctx: &JobCtx<'_>,
@@ -622,11 +487,6 @@ pub fn create_and_wait(
     }
 }
 
-/// Finish the tree of the `reserved` row `id`, as [`create_and_wait`]
-/// does: its ended `worktree_add` run, its active run, or a new one, runs
-/// to its end and is observed. A stop between the run and its observation
-/// leaves the row `reserved`. A row that the pass moved on first is given
-/// as it is. It gives the id of the tree.
 pub fn finish_reserved(
     conn: &mut Connection,
     ctx: &JobCtx<'_>,
@@ -638,8 +498,6 @@ pub fn finish_reserved(
     if row.state != WorktreeState::Reserved {
         return Ok(row.worktree_id);
     }
-    // A `worktree_add` run is not used again: an ended run that the stop
-    // left unobserved is observed, not run a second time.
     let last = jobs_store::latest(&tx, Kind::WorktreeAdd, id, &worktree_add_key(&row))?;
     let job = match last {
         Some(r) if matches!(r.state, State::Passed | State::Failed) => r.id,
@@ -649,8 +507,6 @@ pub fn finish_reserved(
     wait_added(conn, ctx, jobs, &row, job)
 }
 
-/// Run the `worktree_add` run `job` of the `reserved` row `row` to its
-/// end with no transaction open, then observe it in 1 transaction.
 fn wait_added(
     conn: &mut Connection,
     ctx: &JobCtx<'_>,
@@ -668,7 +524,6 @@ fn wait_added(
             "git worktree add failed, so the ledger keeps no worktree {}: {reason}",
             row.path
         ),
-        // The pass observed the run first.
         (_, Some(now)) if now.state == WorktreeState::Active => Ok(now.worktree_id),
         (_, Some(now)) if now.state == WorktreeState::Created && stays_created(&now) => {
             Ok(now.worktree_id)
@@ -681,11 +536,6 @@ fn wait_added(
     }
 }
 
-/// Give the tree `id` that a restore made to the operator: `active` to
-/// `created`, with no owner. The reconciler leaves a `created` tree as it
-/// is, but it orphans an `active` tree with no owner (MAP.md of fleetd-p3,
-/// Q10 and Q23). `horch worktree restore` calls it for a rescue ref and for
-/// a triage ref.
 pub fn give_to_operator(tx: &Connection, id: &str) -> Result<()> {
     let cause = Cause {
         actor: Actor::Operator,
@@ -703,9 +553,6 @@ pub fn give_to_operator(tx: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The verified rescue of the `orphaned` tree `row`: its `rescue` job runs
-/// through `jobs`, then 1 transaction observes it. Triage calls it too
-/// before the removal of a tree (fleetd-p3 ticket 13).
 pub fn rescue_now(
     conn: &mut Connection,
     ctx: &JobCtx<'_>,
@@ -749,8 +596,6 @@ fn immediate(conn: &mut Connection) -> Result<Transaction<'_>> {
         .context("taking the task ledger's write lock")
 }
 
-/// The fleet clock. A ledger that no fleetd ever ticked has no `fleetd`
-/// row: its clock is 0.
 pub fn fleet_clock(conn: &Connection) -> Result<FleetSeconds> {
     match clock_store::read(conn) {
         Ok(clock) => Ok(clock),
@@ -766,11 +611,6 @@ pub fn fleet_clock(conn: &Connection) -> Result<FleetSeconds> {
     }
 }
 
-/// The job runner of a unit test: the job process is `true`, started
-/// through the launcher, and the executor runs in the test process with
-/// the recorded pid, as `horch job run <id>` runs it. A test never starts
-/// a `horch` binary. `tests/common/test_jobs.rs` is the same runner for the
-/// integration tests.
 #[cfg(test)]
 pub(crate) struct TestJobs;
 
@@ -842,8 +682,6 @@ mod tests {
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    /// A gate tree with no worker and no owner stays `created`, as
-    /// [`created`] leaves it, so the command that asked for it gets its id.
     #[test]
     fn create_and_wait_gives_a_gate_tree_that_stays_created() {
         let dir = tempfile::tempdir().unwrap();
@@ -900,7 +738,6 @@ mod tests {
         assert!(path.is_dir());
     }
 
-    /// A git repository with 1 commit and a run on it, in `dir`.
     fn repo_and_run(dir: &Path) -> (Store, runs::Run, String) {
         let root = dir.join("repo");
         std::fs::create_dir(&root).unwrap();
@@ -919,7 +756,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
                 Ok(run)
             })
@@ -927,8 +763,6 @@ mod tests {
         (ledger_store, run, tip)
     }
 
-    /// The new row of a tree `name` on its own branch, as a restore makes
-    /// it: no task, and the worker `worker_id`.
     fn new_tree(run: &runs::Run, tip: &str, name: &str, worker_id: Option<String>) -> NewWorktree {
         let path = Path::new(&run.project_root).join(".worktrees").join(name);
         NewWorktree {
@@ -955,7 +789,6 @@ mod tests {
         }
     }
 
-    /// The state of the row `id` after 1 reconcile with no new facts.
     fn reconciled(ledger_store: &mut Store, id: &str) -> WorktreeState {
         use crate::fleetd::worktree_custody::application::reconcile::{reconcile_worktrees, Facts};
         let config = fleet_config(ledger_store.path()).unwrap();
@@ -970,9 +803,6 @@ mod tests {
         store::get(ledger_store.conn(), id).unwrap().unwrap().state
     }
 
-    /// The tree of `horch worktree restore` has no worker and no owner
-    /// attempt: it stays `created` (design, the row `created`: no attempt
-    /// holds it), and the reconciler does not orphan it (T-887).
     #[test]
     fn a_tree_with_no_worker_and_no_owner_stays_created_and_is_not_orphaned() {
         let dir = tempfile::tempdir().unwrap();
@@ -984,10 +814,6 @@ mod tests {
         assert_eq!(reconciled(&mut ledger_store, &id), WorktreeState::Created);
     }
 
-    /// The tree of a task attempt, as dispatch binds it, still moves to
-    /// `active` when its `worktree_add` job passes: the worker is not live
-    /// yet and the attempt is `launching`. The reconciler does not orphan
-    /// it, as the attempt holds it.
     #[test]
     fn a_tree_of_a_launching_attempt_goes_to_active_and_is_not_orphaned() {
         use crate::taskledger::tasks::{self, NewTask};

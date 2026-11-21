@@ -1,5 +1,3 @@
-//! In-memory [`WorkspaceClient`] for hermetic tests.
-
 use std::cell::RefCell;
 
 use anyhow::{anyhow, Result};
@@ -7,30 +5,24 @@ use anyhow::{anyhow, Result};
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::model::{Direction, NewWorkspace, Pane};
 
-/// One recorded call: the method name and its arguments, rendered as text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeCall {
     pub method: &'static str,
     pub args: Vec<String>,
 }
 
-/// What `pane_get` says about a pane's agent: `(agent, agent_status)`.
 type AgentState = (Option<String>, Option<String>);
 
 #[derive(Debug, Default)]
 struct State {
-    /// `(workspace id, pane id)` in creation order.
     panes: Vec<(String, String)>,
     workspaces: Vec<String>,
     screens: Vec<(String, String)>,
-    /// `(pane, agent, status)` sequences: each `pane_get` takes the next
-    /// pair, and the last one stays.
     agents: Vec<(String, Vec<AgentState>)>,
     calls: Vec<FakeCall>,
     failures: Vec<(&'static str, String)>,
     next_pane: u32,
     next_workspace: u32,
-    /// The server does not answer: every call fails.
     unreachable: bool,
 }
 
@@ -44,7 +36,6 @@ impl FakeWorkspace {
         Self::default()
     }
 
-    /// Make the next call of `method` fail with `message`. The failure fires once.
     pub fn fail_next(&self, method: &'static str, message: &str) {
         self.state
             .borrow_mut()
@@ -52,22 +43,16 @@ impl FakeWorkspace {
             .push((method, message.to_owned()));
     }
 
-    /// Make the server stop answering (`false`) or answer again (`true`).
-    /// While it does not answer, every call fails.
     pub fn set_reachable(&self, reachable: bool) {
         self.state.borrow_mut().unreachable = !reachable;
     }
 
-    /// Set the text that `pane_read` returns for `pane`.
     pub fn set_screen(&self, pane: &str, text: &str) {
         let mut st = self.state.borrow_mut();
         st.screens.retain(|(p, _)| p != pane);
         st.screens.push((pane.to_owned(), text.to_owned()));
     }
 
-    /// Script what `pane_get` reports about the agent in `pane`: one
-    /// `(agent, status)` per call, the last one repeating. `None` is a pane
-    /// where herdr detects no agent.
     pub fn set_agent_states(&self, pane: &str, states: &[(Option<&str>, Option<&str>)]) {
         let mut st = self.state.borrow_mut();
         st.agents.retain(|(p, _)| p != pane);
@@ -91,7 +76,6 @@ impl FakeWorkspace {
             .collect()
     }
 
-    /// Log the call, then fire an injected failure for it if one waits.
     fn enter(&self, method: &'static str, args: &[&str]) -> Result<()> {
         let mut st = self.state.borrow_mut();
         st.calls.push(FakeCall {
@@ -121,7 +105,6 @@ impl FakeWorkspace {
         }
     }
 
-    /// The next scripted `(agent, status)` of `pane`; none when unscripted.
     fn agent_state(&self, pane: &str) -> AgentState {
         let mut st = self.state.borrow_mut();
         let Some((_, states)) = st.agents.iter_mut().find(|(p, _)| p == pane) else {
@@ -159,7 +142,6 @@ impl WorkspaceClient for FakeWorkspace {
 
     fn pane_list(&self, workspace: &str) -> Result<Vec<Pane>> {
         self.enter("pane_list", &[workspace])?;
-        // Collected first: building a pane borrows the state again.
         let listed: Vec<(String, String)> = self
             .state
             .borrow()
@@ -320,9 +302,6 @@ mod tests {
         fake.pane_run("p1", "ls").unwrap();
     }
 
-    /// While the server does not answer, that error comes first and a
-    /// queued failure waits for the server to answer again. Every call is
-    /// logged, the ones that fail too.
     #[test]
     fn an_unreachable_server_hides_a_queued_failure_and_every_call_is_logged() {
         let fake = FakeWorkspace::new();
@@ -345,8 +324,6 @@ mod tests {
         assert!(runs.iter().all(|c| c.args == ["p1", "ls"]), "{runs:?}");
     }
 
-    /// A queued failure fires for the method it names, the first time that
-    /// method is called, and for no other.
     #[test]
     fn a_queued_failure_waits_for_its_own_method() {
         let fake = FakeWorkspace::new();

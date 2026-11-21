@@ -63,8 +63,6 @@ BELLS: dict[str, tuple[tuple[float, ...], tuple[float, ...]]] = {
 }
 
 
-# ---------------------------------------------------------------- basics
-
 def rng(seed: int) -> Generator:
     """The forge generator for one seed."""
     return default_rng(int(seed) & 0xFFFFFFFF)
@@ -121,8 +119,6 @@ def _half_cos_ramp(num: int) -> ndarray:
     return 0.5 - 0.5 * cos(linspace(0.0, pi, num))
 
 
-# ---------------------------------------------------------------- noise, envelopes
-
 def _tilt_fft(src: ndarray, expo: float) -> ndarray:
     bins = np.fft.rfft(src)
     hz = np.fft.rfftfreq(len(src), 1.0 / SR)
@@ -171,8 +167,6 @@ def contact(seconds: float, r: Generator, bright: float = 0.7) -> ndarray:
     return bump + hiss
 
 
-# ---------------------------------------------------------------- resonators
-
 def modal(freqs: Sequence[float], decays: Sequence[float], amps: Sequence[float], seconds: float,
           r: Generator, jitter: float = 0.003, glide: float = 0.0) -> ndarray:
     """Add up exponentially decaying sines, one per (frequency, decay, level) triple."""
@@ -210,8 +204,6 @@ def excite(resonance: ndarray, excitation: ndarray) -> ndarray:
     sig = fftconvolve(asarray(excitation, float), asarray(resonance, float))
     return sig[: len(resonance)]
 
-
-# ---------------------------------------------------------------- filters
 
 def _safe_hz(hz: Any) -> Any:
     return clip(asarray(hz, float), 10.0, 0.95 * NYQ)
@@ -301,8 +293,6 @@ def svf(x: ndarray, cutoff: Any, q: Any = 0.7, mode: str = "band") -> ndarray:
     return _tpt_varying(sig, *_tpt_gains(cut, res_arr), mode)
 
 
-# ---------------------------------------------------------------- room, mic, stereo
-
 def _first_order(src: ndarray, ftype: str, hz: float) -> ndarray:
     return butter(src, ftype, hz, order=1)
 
@@ -381,8 +371,6 @@ def stereo(x: ndarray, r: Generator, width: float = 0.3, pan: float = 0.0) -> nd
     return column_stack([(mono + spread) * gl, (mono - spread) * gr])
 
 
-# ---------------------------------------------------------------- finishing
-
 def fade(x: ndarray, fin: float = 0.001, fout: float = 0.02) -> ndarray:
     """Raised-cosine fade in and fade out."""
     sig = array(x, dtype=float, copy=True)
@@ -427,8 +415,6 @@ def normalize(x: ndarray, peak_db: float = -1.0) -> ndarray:
     sig = asarray(x, float)
     return sig * _db_gain(peak_db) / (_absmax(sig) + 1e-12)
 
-
-# ---------------------------------------------------------------- curves, oscillators
 
 def _stretch_to(amp: ndarray, num: int) -> ndarray:
     return amp if len(amp) == num else interp(linspace(0, len(amp) - 1, num), arange(len(amp)), amp)
@@ -522,8 +508,6 @@ def shepard(seconds: float, r: Generator, up: bool = True, rate: float = 0.5, f_
     return sig / _energy(sig)
 
 
-# ---------------------------------------------------------------- air
-
 def wander(seconds: float, r: Generator, rate: float = 4.0, octaves: int = 3) -> ndarray:
     """Smooth random control signal, mean 0 and unit standard deviation."""
     num = n_of(seconds)
@@ -566,8 +550,6 @@ def air(seconds: float, r: Generator, center: float = 1200.0, lo_db: float = 6.0
     bed = bed * exp(1.1 * flutter * gust)
     return bed / _energy(bed)
 
-
-# ---------------------------------------------------------------- designed sources
 
 def _transient_tick(num: int, gen: Generator) -> ndarray:
     kn = min(num, n_of(0.012))
@@ -658,8 +640,6 @@ def fm(fc: float, ratio: float, index: float, seconds: float, decay: float = 1.0
     sig[:ramp_n] *= _half_cos_ramp(ramp_n)
     return fade(sig, 0.0, 0.15 * seconds)
 
-
-# ---------------------------------------------------------------- layering
 
 def onset(x: ndarray, db: float = -24.0) -> float:
     """Time of the first sample within db of the peak; 0.0 for silence."""

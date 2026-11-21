@@ -1,18 +1,3 @@
-//! The pass of Phase 4, part 1: dispatch, the launch of push attempts, the
-//! outbox scan and its ingest, the verifier, the review steps and the
-//! repair attempts in the reconcile pass
-//! (docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md).
-//!
-//! `docs/specs/fleetd/design.md`, "The reconcile pass", "Order inside 1
-//! pass", "A pass has a work budget", PL-5, RR-4 and FM-11.
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root,
-//! and runs the passes as library calls with no herdr snapshot. No test
-//! starts a `horch` binary: a launch appends 1 line to a file, and a job
-//! process is a script whose result file the test writes. No test reads the
-//! load, the limits or the clock of this machine: there is no health hold,
-//! the numbers come from a test `FleetConfig`, and the time of a budget
-//! comes from a test clock.
 #![cfg(unix)]
 
 use std::cell::Cell;
@@ -56,13 +41,8 @@ use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// The folder of the world of a child process of a crash test.
 const CHILD: &str = "HORCH_P4A_CHILD";
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp git repository `project` on `main`, a ledger at generation 1, a
-/// fleet root and 1 run whose verification profile is the check alone.
 struct World {
     _temp: Option<tempfile::TempDir>,
     dir: PathBuf,
@@ -116,7 +96,6 @@ fn world() -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &project, &new_run).unwrap();
-    // A task needs an idea in flight of the feature of its run (FR-12).
     schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     fs::create_dir_all(dir.join("fleet")).unwrap();
     drop(conn);
@@ -126,7 +105,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The world of the folder `dir` that [`world`] made.
     fn reopen(dir: &Path) -> World {
         let conn = open(&dir.join("ledger.sqlite3"));
         let run_id: String = conn
@@ -147,8 +125,6 @@ impl World {
             codex: CodexSandbox::default(),
             jobs: None,
         };
-        // Each persona has a check sandbox: the host facts do not decide a
-        // test.
         let mut sandboxes = WorkerSandboxes::on_path(
             CodexSandbox::default(),
             dir.join("fleet"),
@@ -184,8 +160,6 @@ impl World {
         }
     }
 
-    /// The program of each job process: it runs for `JOB_S` seconds and
-    /// writes no result file. The test writes the result file.
     fn job_program(&self) -> PathBuf {
         let path = self.dir.join("job.sh");
         if !path.exists() {
@@ -195,7 +169,6 @@ impl World {
         path
     }
 
-    /// 1 ready task of the shared checkout with the check `true`.
     fn ready_task(&self, title: &str) -> String {
         let mut t = NewTask::work(title, &format!("{title}.md"), "dev");
         t.worktree_mode = WorktreeMode::Shared;
@@ -217,7 +190,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// The push attempts of `task`: id and state, oldest first.
     fn attempts(&self, task: &str) -> Vec<(String, String)> {
         let mut stmt = self
             .conn
@@ -231,7 +203,6 @@ impl World {
             .unwrap()
     }
 
-    /// The 1 push attempt of `task` and its `A<n>`.
     fn attempt(&self, task: &str) -> (String, String) {
         let attempts = self.attempts(task);
         assert_eq!(attempts.len(), 1, "{attempts:?}");
@@ -256,7 +227,6 @@ impl World {
             .collect()
     }
 
-    /// Wait until the launches file has `n` lines; the launch is a process.
     fn wait_launches(&self, n: usize) -> Vec<String> {
         let end = Instant::now() + Duration::from_secs(10);
         while self.launched().len() < n && Instant::now() < end {
@@ -265,8 +235,6 @@ impl World {
         self.launched()
     }
 
-    /// The spawn of the attempt opened its pane, and the wrapper of the
-    /// attempt writes its first heartbeat.
     fn heartbeat(&self, task: &str, attempt: &str, seq: u64) {
         self.conn
             .execute(
@@ -294,7 +262,6 @@ impl World {
         write_0600(&path, serde_json::to_string(&hb).unwrap().as_bytes());
     }
 
-    /// The agent of the attempt writes a valid `result.json`.
     fn result(&self, task: &str, attempt: &str) {
         let result = ResultFile {
             task: task.into(),
@@ -314,7 +281,6 @@ impl World {
         write_0600(&outbox.join("result.json"), result.to_json().as_bytes());
     }
 
-    /// The `task_check` runs of `task`.
     fn checks(&self, task: &str) -> Vec<jobs_store::JobRow> {
         let mut stmt = self
             .conn
@@ -330,7 +296,6 @@ impl World {
             .collect()
     }
 
-    /// The job process of the check of `task` ends: its result file.
     fn end_check(&self, task: &str, passed: bool) {
         let checks = self.checks(task);
         let row = checks.last().expect("a task_check run");
@@ -352,7 +317,6 @@ fn write_0600(path: &Path, bytes: &[u8]) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-/// The outside of the tests: no herdr snapshot and no health hold.
 struct Fake;
 
 impl Outside for Fake {
@@ -373,8 +337,6 @@ impl Outside for Fake {
     }
 }
 
-/// The spawn of a push attempt: 1 line with the attempt id in the
-/// launches file.
 struct Spawns {
     file: PathBuf,
 }
@@ -424,11 +386,6 @@ fn spawns(w: &World) -> Spawns {
     }
 }
 
-// ─── bind and launch ────────────────────────────────────────────────────
-
-/// A ready task is bound in part 2, and its task files and its launch
-/// come after the commit, in part 3 of the same pass. The next pass does
-/// not launch it again.
 #[test]
 fn pass_binds_a_ready_task_and_launches_it_after_the_commit() {
     let w = world();
@@ -470,8 +427,6 @@ fn pass_binds_a_ready_task_and_launches_it_after_the_commit() {
     assert_eq!(w.launched(), vec![id], "no second launch");
 }
 
-/// A ready task goes through bind, launch, the first heartbeat, its
-/// result, its check and the review steps to `done`, by passes alone.
 #[test]
 fn ready_task_reaches_done_by_passes_alone() {
     let w = world();
@@ -508,10 +463,6 @@ fn ready_task_reaches_done_by_passes_alone() {
     assert_eq!(files.len(), 1, "1 verdict file");
 }
 
-// ─── order inside 1 pass ────────────────────────────────────────────────
-
-/// A valid `result.json` of the pass wins over the expiry of the lease in
-/// the same pass: the task goes to `verifying`, not `stalled`.
 #[test]
 fn result_in_the_pass_wins_over_the_lease_expiry() {
     let w = world();
@@ -529,7 +480,6 @@ fn result_in_the_pass_wins_over_the_lease_expiry() {
     ));
     assert_eq!(leases, 1, "the attempt took the lease");
 
-    // The lease is past its end at this pass, and the result is in.
     w.conn
         .execute(
             "UPDATE leases SET expires_at = 0 WHERE task_id = ?1",
@@ -546,10 +496,6 @@ fn result_in_the_pass_wins_over_the_lease_expiry() {
     assert_eq!(stalled, 0, "no expiry moved the task");
 }
 
-// ─── PL-5 ───────────────────────────────────────────────────────────────
-
-/// The pass queues the check as a `task_check` job, starts its process
-/// after the commit, and returns while the job runs.
 #[test]
 fn pass_queues_the_check_and_does_not_wait() {
     let w = world();
@@ -563,7 +509,6 @@ fn pass_queues_the_check_and_does_not_wait() {
     run(&mut p, &mut conn);
     w.result(&task, &n);
 
-    // The job program runs for 30 s.
     let began = Instant::now();
     run(&mut p, &mut conn);
     assert!(
@@ -576,22 +521,14 @@ fn pass_queues_the_check_and_does_not_wait() {
     assert_eq!(checks[0].state, State::Running, "the job runs");
     assert_eq!(w.status(&task), "verifying", "the task waits for the job");
 
-    // A pass while the job runs queues no second run.
     run(&mut p, &mut conn);
     assert_eq!(w.checks(&task).len(), 1);
     assert_eq!(w.status(&task), "verifying");
 }
 
-// ─── the outbox scan ────────────────────────────────────────────────────
-
-/// The scan of outboxes reads at most its time budget in 1 pass. A new
-/// fleetd continues at the cursor of the last: each outbox is read in
-/// turn, and none is read twice.
 #[test]
 fn outbox_scan_continues_at_its_cursor_after_a_restart() {
     let mut w = world();
-    // 6 bound attempts, each with a valid result. The 1 shared checkout
-    // takes 1 task at a time, so the test binds them.
     let mut tasks = Vec::new();
     for i in 0..6 {
         let t = w.ready_task(&format!("t{i}"));
@@ -616,9 +553,6 @@ fn outbox_scan_continues_at_its_cursor_after_a_restart() {
         w.result(t, &n);
     }
 
-    // Each test clock step is 1 ms, and the scan budget is 3 ms: each scan
-    // reads 2 items, then stops. File events are dropped, so only the
-    // cursor gives the order.
     w.config.scan_budget_ms = 3;
     let ingested = |w: &World| w.count("SELECT count(*) FROM ingested");
     let stepper = || {
@@ -645,7 +579,6 @@ fn outbox_scan_continues_at_its_cursor_after_a_restart() {
         )
         .unwrap();
 
-    // A restart: a new fleetd goes on after the cursor.
     {
         let mut p = pass(&w, &sp, faults.clone()).with_clock(stepper());
         run(&mut p, &mut conn);
@@ -667,10 +600,6 @@ fn outbox_scan_continues_at_its_cursor_after_a_restart() {
     assert_eq!(ingested(&w), 6, "each outbox in turn");
 }
 
-// ─── horch ledger watch --once ──────────────────────────────────────────
-
-/// `horch ledger watch --once` is 1 pass of a new fleetd: its start, then
-/// 1 run. That 1 pass binds the ready task and launches it.
 #[test]
 fn watch_once_runs_the_phase4_pass() {
     let w = world();
@@ -688,10 +617,6 @@ fn watch_once_runs_the_phase4_pass() {
     assert_eq!(w.wait_launches(1), vec![id]);
 }
 
-// ─── crash points ───────────────────────────────────────────────────────
-
-/// Not a test of its own: 1 pass of a child process of a crash test, with
-/// the fault of `HORCH_FAULT`. It runs only with [`CHILD`].
 #[test]
 fn child_pass() {
     let Some(dir) = std::env::var_os(CHILD) else {
@@ -716,8 +641,6 @@ fn crash(w: &World, fault: &str) {
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE), "the fault {fault}");
 }
 
-/// A crash before the commit of the bind leaves no row and no effect. The
-/// next pass binds the task 1 time and launches it 1 time.
 #[test]
 fn crash_before_the_commit_of_the_bind_binds_and_launches_once_on_the_next_pass() {
     let w = world();
@@ -740,9 +663,6 @@ fn crash_before_the_commit_of_the_bind_binds_and_launches_once_on_the_next_pass(
     assert_eq!(w.launched(), vec![id], "1 launch");
 }
 
-/// A crash after the commit of the bind and before its effects leaves the
-/// attempt in `launching` with no files and no launch. The next pass
-/// writes its files and launches it 1 time, and binds no second attempt.
 #[test]
 fn crash_after_the_commit_of_the_bind_launches_once_on_the_next_pass() {
     let w = world();

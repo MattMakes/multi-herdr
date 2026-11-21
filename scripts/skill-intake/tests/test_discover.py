@@ -44,7 +44,6 @@ class DiscoverTest(DiscoverCase):
         self.assertEqual(json.loads(d.stdout), {"skills": ["pdf-editor"]})
 
     def test_rank_beats_sort_order(self):
-        # ".agents" and "a" sort before ".claude" and "plugin"; the rank must still decide.
         files = {f"{w}/x/SKILL.md": fixtures.skill_md("x") for w in ("a", ".agents/skills", "plugin/skills", "a/skills")}
         src = fixtures.build(self.tmp / "r", files)
         self.assertEqual(discover.discover(src)["skills"][0]["rel_path"], "plugin/skills/x")
@@ -56,7 +55,7 @@ class DiscoverTest(DiscoverCase):
         files = {f"{d}/s-{i}/SKILL.md": fixtures.skill_md(f"s-{i}") for i, d in enumerate(sorted(discover.SKIP_DIRS))}
         files["ok/SKILL.md"] = fixtures.skill_md("ok")
         files["deep/a/b/real/SKILL.md"] = fixtures.skill_md("real")
-        files["ok/nested/SKILL.md"] = fixtures.skill_md("nested")  # inside a skill: not searched
+        files["ok/nested/SKILL.md"] = fixtures.skill_md("nested")
         src = fixtures.build(self.tmp / "s", files)
         self.assertEqual([str(p) for p in discover.find(src)], ["deep/a/b/real", "ok"])
 
@@ -72,7 +71,6 @@ class DiscoverTest(DiscoverCase):
         names = {s["name"]: s["rel_path"] for s in out["skills"]}
         self.assertEqual(names, {"my-cool-skill": "My.Cool_Skill", "bad-front": "Bad-Front",
                                  "good-name": "fm", "skill-1": "___"})
-        # "___" cannot be normalized: INJ-09, and the name skill-<n>.
         by_name = {s["name"]: s for s in out["skills"]}
         self.assertEqual(by_name["skill-1"]["description"], {"untrusted": "quoted \\u{200B} desc"})
         rows = [json.loads(x) for x in (c / "sweep" / "discover.jsonl").read_text().splitlines()]
@@ -93,7 +91,6 @@ class DiscoverTest(DiscoverCase):
         self.assertEqual(sorted(r["file"] for r in rows),
                          ["My Skill", "\\u{4E2D}\\u{6587}", "caf\u00e9", "ok dir/inner"])
         self.assertEqual({r["rule"] for r in rows}, {"ACQ-05"})
-        # The skipped skills' files are in no skill, so they are out of scope.
         self.assertIn("My Skill/SKILL.md", out["out_of_scope"])
 
     def test_rel_path_is_raw_and_opens_under_the_quarantine(self):

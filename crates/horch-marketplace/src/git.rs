@@ -1,9 +1,3 @@
-//! The low-level git runner. Every git process this crate starts goes
-//! through `GitRunner::run` or `GitRunner::output`, in an explicit directory,
-//! with prompts, system config and hooks off. The core crate's VCS layer
-//! wraps this module later, so it stays general: any argv, any directory.
-//! [`GitRunner::with_sandbox`] runs each child in the platform sandbox.
-
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
@@ -17,17 +11,6 @@ use horch_platform::sandbox::{Denials, Network, Reach};
 use horch_platform::start::{self, Command};
 use horch_platform::NotSupported;
 
-/// Removed from every git child, so the `-C` directory alone selects the
-/// repository and its config. A caller inside a git hook, or under
-/// `git rebase --exec`, has `GIT_DIR` set: on 2026-10-03 a gate run under
-/// `git rebase -x` let test fixtures `git init` and commit into the real
-/// repository. Every git child that horch or its tests start removes these
-/// with [`scrub_repo_env`].
-///
-/// The list holds every name of `git rev-parse --local-env-vars` (a test
-/// checks the host git), plus `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES`.
-/// [`scrub_repo_env`] also removes the numbered `GIT_CONFIG_KEY_<n>` and
-/// `GIT_CONFIG_VALUE_<n>`.
 pub const REPO_ENV: [&str; 18] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CEILING_DIRECTORIES",
@@ -49,14 +32,9 @@ pub const REPO_ENV: [&str; 18] = [
     "GIT_WORK_TREE",
 ];
 
-/// The prefixes of the numbered config variables that `GIT_CONFIG_COUNT`
-/// counts.
 pub const REPO_ENV_NUMBERED: [&str; 2] = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
 
-/// A git child that [`scrub_repo_env`] cleans: a [`start::Command`], or
-/// the `std` command of a caller that has not moved to it yet (SR-7).
 pub trait GitChild {
-    /// The names that the command sets or removes.
     fn env_names(&self) -> Vec<OsString>;
     fn remove_env(&mut self, key: &OsStr);
 }
@@ -79,9 +57,6 @@ impl GitChild for std::process::Command {
     }
 }
 
-/// Remove every [`REPO_ENV`] variable and every `GIT_CONFIG_KEY_<n>` and
-/// `GIT_CONFIG_VALUE_<n>` from `cmd`, a git child: those this process has
-/// and those set on `cmd`. Call it after any `env` call.
 pub fn scrub_repo_env(cmd: &mut impl GitChild) {
     for k in REPO_ENV {
         cmd.remove_env(OsStr::new(k));
@@ -99,20 +74,14 @@ pub fn scrub_repo_env(cmd: &mut impl GitChild) {
     }
 }
 
-/// Set on every git child.
 const FIXED_ENV: [(&str, &str); 3] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("LC_ALL", "C"),
     ("GIT_CONFIG_NOSYSTEM", "1"),
 ];
 
-/// Passed as `-c` before every subcommand.
 const FIXED_CONFIG: [&str; 1] = ["core.hooksPath=/dev/null"];
 
-/// The files that show which repository `git_dir` is: its config, `HEAD`,
-/// `packed-refs` and every loose ref, as one text. The [`REPO_ENV`]
-/// regression tests compare it before and after git runs with `GIT_DIR`
-/// aimed at `git_dir`.
 pub fn repo_state(git_dir: &Path) -> String {
     let mut out = String::new();
     for name in ["config", "HEAD", "packed-refs"] {
@@ -140,17 +109,8 @@ pub fn repo_state(git_dir: &Path) -> String {
     out + &refs.join("\n")
 }
 
-/// The sandbox host: it wraps a command so that it reaches only what a
-/// [`Reach`] allows: it writes below the writable paths, reads the whole
-/// disk but the hidden paths, can read the readable paths in them again,
-/// and cannot read, write or connect to a Unix socket below a hidden path.
-/// [`horch_platform::sandbox::sandboxed_hiding`] is the real one; a test
-/// gives a fake answer.
 pub type SandboxHost = fn(Command, &Reach<'_>) -> Result<Command, NotSupported>;
 
-/// The variables of this process that a sandboxed git gets. It gets no
-/// other variable of this process, so a program that git starts cannot
-/// read a secret of fleetd from its environment.
 pub const SANDBOX_KEPT_ENV: [&str; 9] = [
     "PATH",
     "HOME",
@@ -163,8 +123,6 @@ pub const SANDBOX_KEPT_ENV: [&str; 9] = [
     "TZ",
 ];
 
-/// The whole environment of the sandboxed `cmd`: the variables of
-/// [`SANDBOX_KEPT_ENV`] of this process, then the changes of `cmd`.
 fn sandboxed_env(cmd: &Command) -> Vec<(OsString, OsString)> {
     let mut env: Vec<(OsString, OsString)> = SANDBOX_KEPT_ENV
         .iter()
@@ -179,15 +137,11 @@ fn sandboxed_env(cmd: &Command) -> Vec<(OsString, OsString)> {
     env
 }
 
-/// The sandbox of every child: what it can reach (see [`SandboxHost`]),
-/// its network rule, and the host that wraps it. The child gets only the
-/// environment of [`SANDBOX_KEPT_ENV`] and of the runner.
 #[derive(Debug, Clone)]
 pub struct GitSandbox {
     pub writable: Vec<PathBuf>,
     pub readable: Vec<PathBuf>,
     pub hidden: Vec<PathBuf>,
-    /// The acts that the child cannot do, whatever the paths allow.
     pub denied: Denials,
     pub network: Network,
     pub host: SandboxHost,
@@ -197,23 +151,19 @@ pub struct GitSandbox {
 pub struct GitRunner {
     bin: PathBuf,
     env: Vec<(OsString, OsString)>,
-    /// The `GIT_INDEX_FILE` of every child, set after the scrub.
     index: Option<PathBuf>,
-    /// The sandbox of every child, when it has one.
     sandbox: Option<GitSandbox>,
     limit: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
 pub struct GitOutput {
-    /// The exit code; -1 when a signal ended git.
     pub status: i32,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
 
 impl GitOutput {
-    /// Stdout as UTF-8 (lossy), with the trailing newline trimmed.
     pub fn stdout_text(&self) -> String {
         String::from_utf8_lossy(&self.stdout).trim_end().to_owned()
     }
@@ -221,18 +171,9 @@ impl GitOutput {
 
 #[derive(Debug)]
 pub enum GitError {
-    /// `run` was called with an empty directory path.
     NoDir,
-    /// `with_index_file` was given a path that is not absolute.
     RelativeIndex(PathBuf),
-    /// The runner has a sandbox and this host has none, so git did not run.
     NoSandbox(NotSupported),
-    /// Git ran past the time limit of the runner and was stopped: `SIGTERM`
-    /// to its group, then `SIGKILL` to the group after [`TERM_GRACE`].
-    /// `by_term`: the child ended in the grace, so a git that got the
-    /// signal could remove its `.lock` files. Else the `SIGKILL` ended it,
-    /// and a `.lock` file can stay. In a sandbox the child can be the
-    /// sandbox and not git: then only the `SIGKILL` of the group ends git.
     TimedOut {
         args: Vec<String>,
         limit: Duration,
@@ -307,8 +248,6 @@ impl std::error::Error for GitError {
 }
 
 impl GitRunner {
-    /// `bin` is the git executable. The caller resolves it (for example from
-    /// `HORCH_GIT_BIN`); this crate never reads the process environment.
     pub fn new(bin: impl Into<PathBuf>) -> Self {
         Self {
             bin: bin.into(),
@@ -319,37 +258,22 @@ impl GitRunner {
         }
     }
 
-    /// Stop every child at `limit`: `SIGTERM` to its own group first, so
-    /// that git removes its `.lock` files, then `SIGKILL` to the group after
-    /// [`TERM_GRACE`]. The result is [`GitError::TimedOut`]. Each child then
-    /// leads a group that this runner made for it ([`Contained`]), so the
-    /// stop reaches no other process. With no limit a child runs until it
-    /// ends.
     pub fn with_time_limit(mut self, limit: Duration) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Run every child in `sandbox`. A host with no sandbox gives
-    /// [`GitError::NoSandbox`], and git does not run.
     pub fn with_sandbox(mut self, sandbox: GitSandbox) -> Self {
         self.sandbox = Some(sandbox);
         self
     }
 
-    /// Add one variable to every child, for example `GIT_CONFIG_GLOBAL` in
-    /// a hermetic test. The fixed variables still win.
     pub fn with_env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.env
             .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
         self
     }
 
-    /// Give every child the private index file `path` as `GIT_INDEX_FILE`.
-    /// The scrub removes a `GIT_INDEX_FILE` of the environment or of
-    /// [`GitRunner::with_env`]; this one is set after the scrub. The caller
-    /// owns `path`, keeps it outside every project, and deletes the file
-    /// when it is done. A path that is not absolute is an error.
     pub fn with_index_file(mut self, path: impl Into<PathBuf>) -> Result<Self, GitError> {
         let path = path.into();
         if !path.is_absolute() {
@@ -363,7 +287,6 @@ impl GitRunner {
         &self.bin
     }
 
-    /// Run `git <args>` in `dir` and return its output whatever the exit code.
     pub fn output(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
         self.output_with(dir, args, &mut group::exited_without_reap)
     }
@@ -389,8 +312,6 @@ impl GitRunner {
         if let Some(index) = &self.index {
             cmd.env("GIT_INDEX_FILE", index);
         }
-        // The directory again as `-C`, so the repository never depends on
-        // how git searches from its working directory.
         let at = std::path::absolute(dir).map_err(|source| GitError::Spawn {
             bin: self.bin.clone(),
             source,
@@ -400,8 +321,6 @@ impl GitRunner {
             cmd.arg("-c").arg(c);
         }
         cmd.args(args);
-        // The sandbox keeps the program, arguments, environment and folder
-        // of `cmd`, so stdio is set on the command that runs.
         if let Some(sandbox) = &self.sandbox {
             let env = sandboxed_env(&cmd);
             let reach = Reach {
@@ -439,7 +358,6 @@ impl GitRunner {
         }
     }
 
-    /// Run `git <args>` in `dir`; a non-zero exit is an error.
     pub fn run(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
         let out = self.output(dir, args)?;
         if out.status != 0 {
@@ -453,13 +371,8 @@ impl GitRunner {
     }
 }
 
-/// The wait after the `SIGTERM` of a child at its time limit, before the
-/// `SIGKILL` of its group. Git removes its `.lock` files at once on
-/// `SIGTERM`.
 pub const TERM_GRACE: Duration = Duration::from_secs(1);
 
-/// The longest sleep between 2 looks at a child under a time limit. The
-/// first look comes after 1 ms, so a short git call waits little.
 const LOOK_MAX: Duration = Duration::from_millis(20);
 
 enum Limited {
@@ -467,9 +380,6 @@ enum Limited {
     Stopped { by_term: bool },
 }
 
-/// The child of a limited git and its group, held from the spawn to the
-/// reap. A drop while armed kills the group and reaps the child, so an
-/// early return leaves no git that keeps a `.lock` (D254-F2).
 struct Held {
     child: Child,
     contained: Contained,
@@ -477,8 +387,6 @@ struct Held {
 }
 
 impl Held {
-    /// The reap of the child, then no kill at the drop: with the child
-    /// reaped, its pid can go to another process.
     fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
         let status = self.child.wait()?;
         self.armed = false;
@@ -496,10 +404,6 @@ impl Drop for Held {
     }
 }
 
-/// Run `cmd` with its stdout and stderr read, and stop its group at
-/// `limit`. The child stays unreaped until its group is stopped, so its pid
-/// names its group and no other process. `exited` looks at the child
-/// without a reap.
 fn output_within(
     cmd: &mut Command,
     limit: Duration,
@@ -531,8 +435,6 @@ fn output_within(
     };
     let mut look = Duration::from_millis(1);
     let ended = loop {
-        // The readers end when each process with the pipes ends, also a
-        // process that git leaves in its group.
         if exited(&mut held.child)? && stdout.is_finished() && stderr.is_finished() {
             break true;
         }
@@ -558,10 +460,6 @@ fn output_within(
     Ok(Limited::Stopped { by_term })
 }
 
-/// `SIGTERM` to the group of the child of `held`, a wait of [`TERM_GRACE`]
-/// for the child to end, then `SIGKILL` to the group. The kill also comes
-/// when the child ended in the grace, for a process that it left in its
-/// group. Whether the child ended in the grace.
 fn stop(
     held: &mut Held,
     exited: &mut dyn FnMut(&mut Child) -> io::Result<bool>,
@@ -645,8 +543,6 @@ mod tests {
         assert!(!dir.path().join(".git").exists(), "git did not run");
     }
 
-    /// A fake git in `dir`: the shell `body`, after it records its pid and
-    /// the pid of its child `sleep 600` in `pids`.
     fn fake_git(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
         let pids = dir.join("pids");
         let bin = dir.join("fake-git");
@@ -674,14 +570,10 @@ mod tests {
         }
     }
 
-    /// No process group on Windows, and the fake git is a shell script.
     fn no_groups() -> bool {
         group::kill_group_id(0).is_err()
     }
 
-    /// The first look at the child waits for the pids file, the ready
-    /// mark that the fake writes after `body`: on a loaded host the shell
-    /// can start later than the limit, and a TERM before its `trap` ends it.
     fn run_when_ready(
         dir: &Path,
         body: &str,
@@ -741,7 +633,6 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let started = Instant::now();
-        // The child `sleep` gets the ignored TERM too.
         let (got, pids, _) = run_when_ready(dir.path(), "trap '' TERM", None);
         let took = started.elapsed();
         let e = got.unwrap_err();

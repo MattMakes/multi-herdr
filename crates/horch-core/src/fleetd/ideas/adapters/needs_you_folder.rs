@@ -1,11 +1,3 @@
-//! The needs-you folder `/fleet/needs-you/`: 1 file for each open item,
-//! removed when the item ends.
-//!
-//! The folder mirrors the open items of the `needs_you` table (OR-3). Each
-//! open item has the file `<kind>-<row>.md`, written atomically. A `.md`
-//! file whose item is not open is removed. A pass mirrors at most
-//! `pass_budget` files, in the turn order of its [`Cursor`].
-
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
@@ -16,22 +8,14 @@ use crate::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use crate::fleetd::ideas::domain::needs_you::Item;
 use crate::fsx;
 
-/// What 1 pass of the mirror did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Mirrored {
-    /// The files written for an item that had no file.
     pub new: usize,
-    /// The files written again because their item changed.
     pub updated: usize,
-    /// The files removed because their item is not open.
     pub removed: usize,
-    /// The count of open items.
     pub open: usize,
 }
 
-/// The file name of `item`: `<kind>-<row>.md`. The row is the key after
-/// `<kind>:`. Each character that is not ASCII alphanumeric, `-` or `_`
-/// becomes `-`.
 pub fn file_name(item: &Item) -> String {
     let prefix = format!("{}:", item.kind);
     let row = item.key.strip_prefix(&prefix).unwrap_or(&item.entity_id);
@@ -49,7 +33,6 @@ pub fn file_name(item: &Item) -> String {
     format!("{}-{}.md", safe(&item.kind), safe(row))
 }
 
-/// The text of the file of `item`.
 fn body(item: &Item) -> String {
     format!(
         "# {kind}: {entity} {id}\n\n{text}\n\nkey: {key}\nopen since: {since}\n",
@@ -62,11 +45,6 @@ fn body(item: &Item) -> String {
     )
 }
 
-/// Mirror `open` into `dir` for 1 pass. The pass takes at most `budget`
-/// file names, in the turn order of `cursor`, from the open items and the
-/// `.md` files in `dir`. It writes the file of each open item whose text
-/// differs, and removes each file that no open item has. The caller saves
-/// `cursor` in the transaction of its pass.
 pub fn mirror(
     dir: &Path,
     open: &[Item],
@@ -109,8 +87,6 @@ pub fn mirror(
     Ok(done)
 }
 
-/// The names of the `.md` files in `dir`. A hidden name (a temp file of
-/// [`fsx::write_atomic`]) is not one.
 fn md_files(dir: &Path) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {

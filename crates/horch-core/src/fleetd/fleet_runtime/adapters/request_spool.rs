@@ -1,32 +1,3 @@
-//! The request files in `<fleet root>/run/requests/`: the folder and file
-//! modes, the checks of each file, its `requests` row, then its archive
-//! after the row is committed.
-//!
-//! Requirements: SR-5, SR-6, RR-8, FM-15, FM-23. Ticket 14 of fleetd-p5 fills it.
-//!
-//! When fleetd is down, a `horch` command writes its request as the file
-//! `<request_id>.json` (mode 0600) in the request folder (mode 0700).
-//! [`scan`] reads each file 1 time:
-//!
-//! 1. It makes the request folder and `archive/` with mode 0700 when they
-//!    are missing. A folder with another owner or a wider mode is not read,
-//!    and 1 needs-you item names it until you correct it.
-//! 2. It skips `*.tmp` (a write that is not complete) and each path that
-//!    `ingested` records.
-//! 3. It reads the file through the protected file reader, and parses it.
-//!    A file that fails is recorded in `ingested` as rejected, with its
-//!    reason, and stays where it is. 1 needs-you item names it.
-//! 4. It authorizes the request as a request file of the owner of the
-//!    file, and gives it to [`handle`], which commits its `requests` row.
-//! 5. When fleetd refused the request, 1 needs-you item names it, because
-//!    no caller waits for its reply. Only then it moves the file to
-//!    `archive/`.
-//!
-//! A crash before the commit leaves the file, and the next scan reads it
-//! again. A crash after the commit leaves the file too: the next scan finds
-//! the row by its `request_id`, gets the stored result with no second
-//! effect, and only archives the file.
-
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -52,81 +23,45 @@ use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::ingested_store;
 use crate::taskledger::util;
 
-/// The kind of the needs-you item of a request folder that fleetd does not
-/// read.
 pub const FOLDER_REFUSED: &str = "request_folder_refused";
 
-/// The kind of the needs-you item of a request file that failed a check of
-/// the protected file reader or of its parse. The file stays where it is.
 pub const FILE_REJECTED: &str = "request_file_rejected";
 
-/// The kind of the needs-you item of a request file whose request fleetd
-/// refused. The file stays in `archive/` for its recovery.
 pub const REQUEST_REFUSED: &str = "request_file_refused";
 
-/// The folder of the request files whose row is committed, inside the
-/// request folder.
 const ARCHIVE: &str = "archive";
 
-/// The fault point after the commit of the `requests` row of a request
-/// file, before its archive (`p5_requests.rs`).
 pub const ABORT_BEFORE_REQUEST_ARCHIVE: &str = "abort-before-request-archive";
 
-/// The end of the name of a request file that its writer has not renamed.
 const TMP: &str = ".tmp";
 
-/// What a scan of the request folder needs to know.
 #[derive(Clone, Copy, Debug)]
 pub struct Spool<'a> {
-    /// The fleet root that holds `run/requests/`.
     pub fleet_root: &'a Path,
-    /// The user that owns the ledger. Each request file has this owner.
-    /// A test gives another user, because it cannot make a file of
-    /// another user (Q13).
     pub owner: &'a User,
-    /// The operator token, or `None` when the token file failed its checks:
-    /// then no operator request is authorized.
     pub token: Option<&'a Token>,
-    /// The size limit of a request file (`request_max_bytes`).
     pub max_bytes: u64,
-    /// The generation of this fleetd. Each write checks it first.
     pub guard: Generation,
 }
 
-/// What 1 scan of the request folder did.
 #[derive(Debug, PartialEq)]
 pub enum ScanOutcome {
-    /// The request folder or `archive/` failed its owner or mode check, or
-    /// could not be made. No file was read.
     FolderRefused { reason: String },
-    /// The files that the scan read, in the order read.
     Read(Scan<FileFact>),
 }
 
-/// 1 request file that a scan read.
 #[derive(Debug, PartialEq)]
 pub struct FileFact {
-    /// The name of the file in the request folder.
     pub name: String,
-    /// What fleetd did with it.
     pub handled: Handled,
 }
 
-/// What fleetd did with 1 request file.
 #[derive(Debug, PartialEq)]
 pub enum Handled {
-    /// Its `requests` row is committed with this outcome, and the file is
-    /// in `archive/`.
     Archived(Outcome),
-    /// The file failed a check, with this reason. `ingested` records it,
-    /// and the file stays.
     Rejected(String),
 }
 
-/// Read the request files of `spool` from `cursor` until the deadline of
-/// `clock`, and apply each with `handlers`. The cursor steps past each file
-/// read. An error of the ledger, a lost generation or a failed archive
-/// stops the scan; the file of that error stays for the next scan.
 pub fn scan(
     conn: &mut Connection,
     spool: &Spool<'_>,
@@ -172,9 +107,6 @@ pub fn scan(
     }))
 }
 
-/// Read, check, apply and archive the request file `name` of `dir`.
-/// `None` when the scan does not read it: `ingested` records its path, or
-/// it was removed after the listing.
 fn read_file(
     conn: &mut Connection,
     spool: &Spool<'_>,
@@ -257,8 +189,6 @@ fn read_file(
     Ok(Some(Handled::Archived(reply.outcome)))
 }
 
-/// The request of the bytes of the file `name`. The name is
-/// `<request_id>.json` of its own request.
 fn parse(name: &str, bytes: &[u8], max_bytes: u64) -> Result<Request, String> {
     let request = parse_request(bytes, max_bytes).map_err(|e| e.to_string())?;
     let id = request.request_id.as_str();
@@ -270,8 +200,6 @@ fn parse(name: &str, bytes: &[u8], max_bytes: u64) -> Result<Request, String> {
     Ok(request)
 }
 
-/// True when `given` is the operator token. No token file, or no token in
-/// the request, is not valid.
 fn token_valid(token: Option<&Token>, given: Option<&str>) -> bool {
     match (token, given) {
         (Some(token), Some(given)) => token.matches(given),
@@ -279,8 +207,6 @@ fn token_valid(token: Option<&Token>, given: Option<&str>) -> bool {
     }
 }
 
-/// Make the request folder and `archive/` when they are missing, then check
-/// each. The error is the reason, as the user reads it.
 fn ready_folders(dir: &Path) -> Result<(), String> {
     let me = User::current().map_err(|e| format!("the user of fleetd is unknown: {e}"))?;
     let archive = dir.join(ARCHIVE);
@@ -292,16 +218,10 @@ fn ready_folders(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Make `folder` and each missing parent with access for its owner only
-/// (mode 0700 on unix). A folder that exists keeps its access: the check
-/// refuses a wide one.
 fn make_folder(folder: &Path) -> io::Result<()> {
     platform::create_dir_owner_only(folder)
 }
 
-/// Check that `folder` is a folder and not a link, that `owner` owns it,
-/// and that only its owner has access to it (mode 0700 or narrower on
-/// unix). The owner is the user of fleetd, which makes the folder.
 fn check_folder(folder: &Path, owner: &User) -> Result<(), String> {
     let handle = platform::open_no_follow(folder)
         .map_err(|e| format!("the open without a link failed: {e}"))?;
@@ -320,8 +240,6 @@ fn check_folder(folder: &Path, owner: &User) -> Result<(), String> {
     platform::check_owner_only(&handle, &meta, 0o700)
 }
 
-/// The names in `dir` that can be request files: not `archive/` and not a
-/// `*.tmp` file, in order.
 fn request_names(dir: &Path) -> io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -334,8 +252,6 @@ fn request_names(dir: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-/// Open the needs-you item `key` of the request folder `dir`, with `text`.
-/// An item that is open with the same text stays as it is.
 fn open_folder_item(tx: &Transaction<'_>, key: &str, dir: &Path, text: &str) -> anyhow::Result<()> {
     let id = dir.display().to_string();
     needs_you::open_item(
@@ -375,8 +291,6 @@ fn open_refused_item(
     )
 }
 
-/// Move the request file `from` to `to` in `archive/`, and make the move
-/// durable in both folders where the OS can sync a folder.
 fn archive(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)?;
     for folder in [to.parent(), from.parent()].into_iter().flatten() {
@@ -388,8 +302,6 @@ fn archive(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Run `f` in 1 immediate transaction that first checks `guard`. It
-/// commits when `f` returns `Ok`, and rolls back otherwise.
 fn write<T>(
     conn: &mut Connection,
     guard: Generation,
@@ -404,8 +316,6 @@ fn write<T>(
     Ok(out)
 }
 
-/// The text of `user`: the `caller` of the `requests` row of a request
-/// file, and the user in a reason.
 fn user_text(user: &User) -> String {
     match user {
         User::Uid(uid) => format!("uid {uid}"),

@@ -1,10 +1,6 @@
-//! The gates of a project in its `fleet.toml` (docs/specs/fleetd/design.md,
-//! "Between features"; docs/tickets/fleetd-p4/04-project-gates.md).
-
 use horch_core::fleetd::integration::adapters::project_file::{self, FolderReader};
 use horch_core::fleetd::integration::domain::project::{Pr, ProjectFileReader, Remote};
 
-/// The project file `text` in a new project folder.
 fn project(text: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("fleet.toml"), text).unwrap();
@@ -24,7 +20,6 @@ fn missing_fast_gate_is_none() {
     let s = project_file::parse("[gates]\nfull = \"cargo test\"\n").unwrap();
     assert_eq!(s.fast_gate(), None);
     assert_eq!(s.full_gate(), Some("cargo test"));
-    // No file at the tip: no gate.
     let dir = tempfile::tempdir().unwrap();
     let s = project_file::load(&FolderReader::new(dir.path()), "HEAD").unwrap();
     assert_eq!(s.fast_gate(), None);

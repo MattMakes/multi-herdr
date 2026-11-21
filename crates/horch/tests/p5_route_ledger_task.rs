@@ -1,16 +1,3 @@
-//! The operator task and worker commands of `horch ledger` send 1 request
-//! to fleetd and write no row themselves (RR-5, FM-24; ticket 22 of
-//! fleetd-p5).
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root,
-//! and the watchdog off. The test process plays fleetd: it writes the
-//! `fleetd` row with its own PID and start time, makes the operator token,
-//! and serves the channel in-process with the handlers of the run, task,
-//! worker and custody kinds.
-//!
-//! The tests are unix only: the socket path must be short.
-
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -68,8 +55,6 @@ impl RefTips for HeadOnly {
     }
 }
 
-/// A fleet in temporary folders. With [`World::up`], the test process
-/// serves the channel as fleetd.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -77,10 +62,7 @@ struct World {
 }
 
 impl World {
-    /// The ledger, the `fleetd` row of this process and the token, and no
-    /// server: fleetd is down.
     fn down() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("rt")
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -108,7 +90,6 @@ impl World {
         w
     }
 
-    /// [`World::down`], then the channel served by this process.
     fn up() -> World {
         let mut w = World::down();
         let mut handlers = Handlers::new();
@@ -145,7 +126,6 @@ impl World {
         self.root.join("ledger.sqlite3")
     }
 
-    /// The evidence folder that the command and the handlers read.
     fn evidence(&self) -> PathBuf {
         self.root.join("evidence")
     }
@@ -158,7 +138,6 @@ impl World {
         self.root.join("proj")
     }
 
-    /// `horch` with `args` and the extra environment `env`.
     fn horch_with(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
         let root = &self.root;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -188,7 +167,6 @@ impl World {
         }
     }
 
-    /// `horch` with `args` and `env`, which must exit 0.
     fn ok_with(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
         let o = self.horch_with(args, env);
         assert_eq!(
@@ -218,7 +196,6 @@ impl World {
         self.conn().query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// The kind and state of each `requests` row, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -268,7 +245,6 @@ impl World {
         }
     }
 
-    /// A run `r1` with the task T-1 of [`TICKET`].
     fn run_with_task(&self) {
         let run_id = self.run(None);
         let mut store = Store::open(&self.ledger()).unwrap();
@@ -283,9 +259,6 @@ impl World {
             .unwrap();
     }
 
-    /// A worker of the run that holds T-1 and has a live attempt whose
-    /// wrapper is this test process: each `horch` that this test starts is
-    /// in that attempt.
     fn attempt_of_this_process(&self) {
         let conn = self.conn();
         let run: String = conn
@@ -321,7 +294,6 @@ impl Drop for World {
     }
 }
 
-/// The start time of this test process.
 fn this_start() -> i64 {
     let start = horch_platform::process::start_time(std::process::id())
         .expect("the start time of the test");
@@ -350,7 +322,6 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// The value of the line `<key>: <value>` of `out`.
 fn line_value(out: &str, key: &str) -> String {
     out.lines()
         .find_map(|l| l.strip_prefix(&format!("{key}: ")))
@@ -367,7 +338,6 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     assert!(o.out.contains("T-1 is queued again."), "{}", o.out);
     assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "ready");
 
-    // Round 1 of the code sweep of T-1, whose report names F1.
     let task_id = w.one("SELECT task_id FROM tasks WHERE seq = 1");
     let round = w.evidence().join(&task_id).join("round-1");
     std::fs::create_dir_all(&round).unwrap();
@@ -484,7 +454,6 @@ fn worktree_drop_sends_worktree_drop() {
     let o = w.ok_with(&["ledger", "worktree", "scratch", "try"], &env);
     let path = line_value(&o.out, "path");
     let branch = line_value(&o.out, "branch");
-    // The `worktree_add` job of the scratch tree, as the job process runs it.
     git(
         &proj,
         &["worktree", "add", "-q", "-b", &branch, &path, "main"],

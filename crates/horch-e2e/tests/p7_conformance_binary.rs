@@ -1,16 +1,3 @@
-//! The production conformance suite through the `horch` binary passes for
-//! each exec CLI (ai_docs/plans/fleetd-build/tickets/53; design, "Docs sync
-//! and adapter conformance", FR-8, SR-1, SR-8).
-//!
-//! A test fleetd finds the fake CLIs on its `PATH`, queues a `docs_sync`
-//! run and then a `conformance` run for each, and each run is a `horch job
-//! run` process. The suite launches each CLI with the reference profile of
-//! the job, as fleetd launches a worker of that CLI. Each fake runs with the
-//! scenario `conformance` only: it acts on the prompt of each check as a
-//! real agent does.
-//!
-//! No test uses the network: `HORCH_TEST_DOCS_FIXTURE` makes the fetch port
-//! of the docs read each page from a local folder.
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
@@ -32,11 +19,8 @@ use horch_core::taskledger::{schema, Store};
 use horch_e2e::harness::{fixtures, repo_root, wait_for_or, warm, Harness, DEADLINE};
 use rusqlite::Connection;
 
-/// The `fleet.toml` of the test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The docs sources with an exec adapter, the fake of each, the version
-/// text of the fake and the agent of its profiles.
 const EXEC_CLIS: [(&str, &str, &str, HarnessKind); 3] = [
     (
         "claude",
@@ -44,7 +28,6 @@ const EXEC_CLIS: [(&str, &str, &str, HarnessKind); 3] = [
         "2.1.284 (Claude Code)",
         HarnessKind::Claude,
     ),
-    // The lowest Codex on which the operator boundary is proven on macOS.
     (
         "codex",
         "fake-codex",
@@ -72,7 +55,6 @@ fn put(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// The text of a string value `"..."` of 1 line of `docs-sources.toml`.
 fn quoted(value: &str) -> String {
     value
         .trim()
@@ -83,8 +65,6 @@ fn quoted(value: &str) -> String {
         .to_string()
 }
 
-/// The file of a URL in the fixture: its host and path, and `index.html`
-/// for a path that ends with `/`.
 fn fixture_path(fixture: &Path, url: &str) -> PathBuf {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let mut path = fixture.join(rest);
@@ -94,10 +74,6 @@ fn fixture_path(fixture: &Path, url: &str) -> PathBuf {
     path
 }
 
-/// The pages of each docs source of `docs-sources.toml` under `fixture`:
-/// the sitemap fixture of agent-docs-sync for herdr, an `llms.txt` with
-/// each included page for the others, and a local repository for each
-/// `also_git`. The file has 1 key on each line, so a line split is enough.
 fn docs_fixture(h: &Harness, fixture: &Path) {
     let herdr = repo_root().join("crates/agent-docs-sync/tests/fixtures/herdr");
     let file = repo_root().join("crates/agent-docs-sync/docs-sources.toml");
@@ -163,8 +139,6 @@ fn docs_fixture(h: &Harness, fixture: &Path) {
 
 fn install(dir: &Path, cli: &str, fake: &str, version: &str) {
     let built = horch_e2e::bin_dir().join(fake);
-    // Codex answers `codex features list` with the `network_proxy` feature,
-    // which denies the connect to the command channel.
     let features = if cli == "codex" {
         "case \"$1\" in features) echo 'network_proxy  experimental  true'; exit 0 ;; esac\n"
     } else {
@@ -174,19 +148,14 @@ fn install(dir: &Path, cli: &str, fake: &str, version: &str) {
         "#!/bin/sh\n{features}HORCH_FAKE_SCENARIO='conformance,version:{version}' exec '{}' \"$@\"\n",
         built.display()
     );
-    // `<bin>/<cli>` is a link to the built fake: remove the link, so the
-    // write does not change the fake.
     let path = dir.join(cli);
     let _ = std::fs::remove_file(&path);
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // macOS scans a new executable at its first exec: keep that scan out of
-    // the waits of the test.
     let warmed = warm(std::process::Command::new(&path).arg("--version")).unwrap();
     assert!(warmed.status.success(), "{}", text(&warmed));
 }
 
-/// A test fleetd with the fake CLIs on its `PATH` and the docs fixture.
 fn fleetd(name: &str) -> Harness {
     let h = world(name);
     h.serve_fleetd();
@@ -213,8 +182,6 @@ fn world(name: &str) -> Harness {
     let docs = h.root.join("docs-fixture");
     docs_fixture(&h, &docs);
     h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-    // The docs sync of Codex clones its `also_git` repository with the
-    // `git` of the `PATH`.
     let git = h.git_bin().expect("the git of with_git").to_path_buf();
     std::os::unix::fs::symlink(git, h.bin.join("git")).unwrap();
     for (cli, fake, version, _) in EXEC_CLIS {
@@ -231,8 +198,6 @@ fn world(name: &str) -> Harness {
     h
 }
 
-/// The run `r1` of the project with its idea in flight (FR-12), and the
-/// seat of its orchestrator in the pane `w1:p1`.
 fn seed_run(h: &Harness) {
     let store = Store::open(&h.ledger_db()).unwrap();
     let conn = store.conn();
@@ -272,7 +237,6 @@ fn ledger(h: &Harness) -> Connection {
     conn
 }
 
-/// The state of the first ended run of `kind` of `cli`, if one ended.
 fn ended(h: &Harness, kind: &str, cli: &str) -> Option<String> {
     ledger(h)
         .query_row(
@@ -284,7 +248,6 @@ fn ended(h: &Harness, kind: &str, cli: &str) -> Option<String> {
         .ok()
 }
 
-/// Each failed check of each `conformance.json` of `cli`, with its evidence.
 fn failed_checks(h: &Harness, cli: &str) -> Vec<String> {
     let docs = h.fleet_root().join("docs").join(cli);
     let mut failed = Vec::new();
@@ -304,7 +267,6 @@ fn failed_checks(h: &Harness, cli: &str) -> Vec<String> {
     failed
 }
 
-/// The jobs, the output of fleetd and the launch log.
 fn diagnostics(h: &Harness) -> String {
     let conn = ledger(h);
     let mut stmt = conn
@@ -326,7 +288,6 @@ fn diagnostics(h: &Harness) -> String {
     )
 }
 
-/// Each profile of the built-in roster whose agent is `agent`.
 fn profiles_of(agent: HarnessKind) -> BTreeSet<String> {
     let roster = Roster::builtin().unwrap();
     roster
@@ -337,17 +298,8 @@ fn profiles_of(agent: HarnessKind) -> BTreeSet<String> {
         .collect()
 }
 
-/// The checks that fail for Antigravity by design: agy has no sandbox
-/// (`antigravity::operator_boundary` is not supported, and a worker never
-/// runs without its sandbox, design A37), its launch uses the HOME of the
-/// operator, and it renders no MCP server of a profile. Its profiles stay
-/// unhealthy until agy gets a sandbox.
 const AGY_FAILS: [&str; 3] = ["Private home honoured", "Exact MCP set", "Sandbox boundary"];
 
-/// FR-8: fleetd runs the production conformance suite for each exec CLI
-/// through the binary. The runs of Claude Code and Codex pass, and their
-/// profiles are healthy. The run of Antigravity fails only the checks of
-/// [`AGY_FAILS`], and its profiles are unhealthy.
 #[test]
 fn conformance_passes_for_claude_and_codex_and_agy_fails_only_by_design() {
     let h = fleetd("p7-conformance-binary");
@@ -443,10 +395,6 @@ fn ended_again(h: &Harness, kind: &str, cli: &str) -> Option<String> {
         .ok()
 }
 
-/// Wait until `f` gives a value, for [`DEADLINE`] after the bound of 1
-/// conformance suite: the runner ends each of its launches with no stream
-/// event after [`FIRST_EVENT_LIMIT`], so a loaded host can take that long
-/// for each check.
 fn until_suite_ends<T>(
     what: &str,
     mut f: impl FnMut() -> Option<T>,
@@ -468,14 +416,6 @@ fn until_suite_ends<T>(
     );
 }
 
-/// The world of T-333: passes of `horch ledger watch --once` and no fleetd,
-/// so no command channel serves the fleet. Claude Code and Codex are
-/// conformant by design, and Antigravity has no sandbox on any OS (A37).
-/// "Operator boundary" is not proved because fleetd is not ready: it marks
-/// no profile unhealthy and adds no drift idea. The run of an unsupported
-/// CLI adds no drift idea and no needs-you item either. Then a fleetd with
-/// a channel server runs the conformance job of each CLI with a check that
-/// is not proved 1 more time, and that run passes.
 #[test]
 fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
     let h = world("p7-conformance-no-fleetd");
@@ -526,8 +466,6 @@ fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
         passes.len(),
         diagnostics(&h)
     );
-    // OR-3: at most 1 item for the unsupported CLI, by its key. The design
-    // gives it none: `horch status` shows its profiles as not available.
     let agy_items = count(
         &h,
         "SELECT COUNT(*) FROM needs_you WHERE key LIKE '%agy%' OR entity_id LIKE '%agy%'

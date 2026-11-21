@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# Live check, blender-3d-print skill. Builds fixture meshes inside Blender (no
-# binary fixtures in git), then runs the skill's scripts/print_check.py and
-# scripts/print_fix.py headless on each one and checks the exit code and the
-# JSON report. Result file: docs/live-checks/blender-3d-print.md.
-# Needs Blender (BLENDER_PATH, or `blender` on PATH, or /Applications/Blender.app)
-# and python3. No network. Starts no model session.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 unset ANTHROPIC_API_KEY 2>/dev/null || true
@@ -19,7 +13,6 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2"; FAILED=1; }
 skip() { echo "SKIP $1: $2"; }
 
-# 1. Blender version.
 BLENDER=""
 for c in "${BLENDER_PATH:-}" "$(command -v blender 2>/dev/null || true)" /Applications/Blender.app/Contents/MacOS/Blender; do
   if [ -n "$c" ] && [ -x "$c" ]; then BLENDER=$c; break; fi
@@ -31,7 +24,6 @@ fi
 pass "blender-version: $("$BLENDER" --version 2>/dev/null | head -1) at $BLENDER"
 run_blender() { "$BLENDER" --background --factory-startup --python-exit-code 2 --python "$@" 2>&1; }
 
-# 2. Fixtures. Each is 1 STL (or .blend) in $SCRATCH/in.
 cat >"$SCRATCH/fixtures.py" <<'PY'
 import sys, bpy, bmesh
 from mathutils import Matrix
@@ -103,12 +95,10 @@ else
   exit 1
 fi
 
-# json_ok <file> <python expression on r>: r is the JSON report, c maps a check name to its entry.
 json_ok() {
   python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); c={x["name"]: x for x in r["checks"]}; sys.exit(0 if eval(sys.argv[2]) else 1)' "$1" "$2"
 }
 
-# check <step> <fixture> <expected exit> <JSON condition> [extra args]
 check() {
   local step=$1 in=$2 want=$3 cond=$4; shift 4
   local js="$SCRATCH/out/$step.json" got out
@@ -120,7 +110,6 @@ check() {
   else pass "$step: exit $got, $out"; fi
 }
 
-# fix <step> <fixture> <expected exit> <JSON condition> [extra args]
 fix() {
   local step=$1 in=$2 want=$3 cond=$4; shift 4
   local js="$SCRATCH/out/$step.json" got out
@@ -132,7 +121,6 @@ fix() {
   else pass "$step: exit $got, $res; fixes: $(grep -E '^(FIX|WARN) ' <<<"$out" | grep -vE ': 0 |^FIX (export|apply-transforms|drop-to-bed)' | cut -d: -f1 | sed 's/^[A-Z]* //' | tr '\n' ' ')"; fi
 }
 
-# 3. Each fixture fails the check it targets, and the fix makes it pass.
 check check-clean-cube clean_cube.stl 0 'r["result"]=="PASS" and not [x for x in r["checks"] if x["status"] not in ("PASS","INFO")]'
 check check-open-box open_box.stl 1 'r["failed"]==["manifold"] and c["manifold"]["value"]["boundary_edges"]==4'
 fix   fix-open-box open_box.stl 0 'any(f["step"]=="fill-holes" for f in r["fixes"])'
@@ -146,7 +134,6 @@ check check-metres-scale metres_005.stl 1 '"scale" in r["failed"] and c["scale"]
 check check-metres-blend metres_005.blend 0 'abs(r["stats"]["bbox_mm"][0]-50)<0.01'
 fix   fix-metres-scale metres_005.stl 0 'abs(r["stats"]["bbox_mm"][0]-50)<0.01' --scale 1000
 
-# 4. The opt-in fixes.
 check check-tee tee.stl 0 'c["overhang"]["value"]["area_mm2"]>600'
 fix   fix-orient tee.stl 0 'c["overhang"]["status"]=="PASS" and c["bed"]["status"]=="PASS"' --orient
 fix   fix-solidify sheet.stl 0 'abs(r["stats"]["bbox_mm"][2]-1.2)<0.01' --solidify-mm 1.2
@@ -154,7 +141,6 @@ fix   fix-decimate sphere.stl 0 'r["stats"]["tris"]<=1000' --target-tris 1000
 fix   fix-hollow clean_cube.stl 0 'r["stats"]["volume_mm3"]<8000*0.6 and r["stats"]["shells"]==1' --process resin --hollow-mm 2 --drain-mm 3
 fix   fix-voxel-remesh two_cubes.stl 0 'r["stats"]["shells"]==1' --remesh-voxel-mm 0.5
 
-# 5. The fix never writes to its input.
 cp "$SCRATCH/in/clean_cube.stl" "$SCRATCH/out/same.stl"
 before=$(shasum "$SCRATCH/out/same.stl")
 out=$(run_blender "$SKILL/print_fix.py" -- --in "$SCRATCH/out/same.stl" --out "$SCRATCH/out/same.stl"; echo "EXIT $?")
@@ -163,7 +149,6 @@ if grep -q '^EXIT 2' <<<"$out" && [ "$before" = "$(shasum "$SCRATCH/out/same.stl
 else
   fail "fix-refuses-input" "$(grep -E '^(ERROR|EXIT)' <<<"$out" | tr '\n' ' ')"
 fi
-# 6. 3MF needs no add-on: write it, check the 3 parts, read it again, compare with the STL export.
 fix   export-stl sphere.stl 0 'r["stats"]["tris"]>100'
 js3="$SCRATCH/out/export-3mf.json"
 out=$(run_blender "$SKILL/print_fix.py" -- --in "$SCRATCH/in/sphere.stl" --out "$SCRATCH/out/sphere.3mf" --json "$js3"; echo "EXIT $?")
@@ -212,7 +197,6 @@ PY
   fi
 fi
 
-# 7. A script that raises must not look like success: Blender returns 0 for it unless --python-exit-code is set.
 echo 'raise RuntimeError("deliberate crash")' >"$SCRATCH/crash.py"
 got=0; run_blender "$SCRATCH/crash.py" >/dev/null || got=$?
 if [ "$got" = 2 ]; then pass "crashed-script-exit: exit 2"; else fail "crashed-script-exit" "exit $got, want 2"; fi

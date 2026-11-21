@@ -1,15 +1,3 @@
-//! The pass of Phase 3: the worktree facts in part 1, the reconciler in
-//! part 2, a `worktree_list` job in each period, and 1 git writer for each
-//! repository (docs/specs/fleetd/design.md, "Supervision, liveness and
-//! reconciliation", "Worktrees: leased, reconciled, never lost", "Features,
-//! landing and integration"; RR-10, FM-12;
-//! docs/tickets/fleetd-p3/10-pass-wiring-phase3.md).
-//!
-//! Each test has its own temp ledger, fleet root and repositories. The job
-//! process of each job is this test binary again, with the test
-//! [`child_job`]: it runs the executor of its job with the git of its world.
-//! The job processes are shell scripts, so the tests run on Unix only.
-
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -55,22 +43,14 @@ use horch_core::taskledger::{schema, util};
 use horch_platform::channel::User;
 use rusqlite::{params, Connection};
 
-/// The variable that makes [`child_job`] run: the id of its job.
 const CHILD_JOB: &str = "FLEETD_P3_JOB";
-/// The ledger of the job process of [`child_job`].
 const CHILD_DB: &str = "FLEETD_P3_DB";
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp ledger at generation 1 and a fleet root. Its repositories are
-/// folders of the temp folder, each with an active run.
 struct World {
     _temp: tempfile::TempDir,
-    /// The temp folder, as its canonical path.
     top: PathBuf,
     conn: Connection,
     config: FleetConfig,
-    /// The git of each job process.
     git: PathBuf,
 }
 
@@ -126,8 +106,6 @@ impl World {
         self.top.join("ledger.sqlite3")
     }
 
-    /// The folder `name` with its work directory `.worktrees/`, and an
-    /// active run in it. No git repository.
     fn project(&mut self, name: &str) -> (String, Run) {
         let path = self.top.join(name);
         std::fs::create_dir_all(path.join(".worktrees")).unwrap();
@@ -138,7 +116,6 @@ impl World {
             ..Default::default()
         };
         let run = runs::create(&self.conn, &path, &new_run).unwrap();
-        // FR-12: a task needs an idea in flight of the feature of its run.
         horch_core::taskledger::schema::run_idea(
             &self.conn,
             &run.run_id,
@@ -149,7 +126,6 @@ impl World {
         (path.display().to_string(), run)
     }
 
-    /// [`World::project`] as a git repository with 1 commit on `main`.
     fn repo(&mut self, name: &str) -> (String, Run) {
         let (path, run) = self.project(name);
         let dir = Path::new(&path);
@@ -163,7 +139,6 @@ impl World {
         (path, run)
     }
 
-    /// Each git call of a job process sleeps 60 s first.
     fn slow_git(&mut self) {
         let real = String::from_utf8(Command::new("which").arg("git").output().unwrap().stdout)
             .unwrap()
@@ -177,8 +152,6 @@ impl World {
         self.git = path;
     }
 
-    /// The program of each job process: `<it> job run <id>` runs
-    /// [`child_job`] for the job `<id>`.
     fn job_program(&self) -> PathBuf {
         let path = self.top.join("job.sh");
         let exe = std::env::current_exe().unwrap();
@@ -213,8 +186,6 @@ impl World {
         Pass::new(self.settings(), ports)
     }
 
-    /// A `reserved` row `id` in `<repo>/.worktrees/<id>` and its queued
-    /// `worktree_add` job, in 1 transaction. The id of the job.
     fn reserved(&mut self, repo: &str, id: &str) -> i64 {
         let path = format!("{repo}/.worktrees/{id}");
         let new = NewWorktree {
@@ -240,7 +211,6 @@ impl World {
         job_id
     }
 
-    /// An `orphaned` row `id` of `repo` at `path`.
     fn orphan(&mut self, repo: &str, id: &str, path: &str) {
         let new = NewWorktree {
             base_commit: Some("b0".to_string()),
@@ -266,8 +236,6 @@ impl World {
         }
     }
 
-    /// A new task, bound to a new worker with a live attempt whose
-    /// processes do not run: (task id, worker id, attempt id).
     fn claimed(&mut self, run: &Run) -> (String, String, String) {
         let mut t = NewTask::work("t1", "t1.md", "opus");
         t.worktree_mode = WorktreeMode::Shared;
@@ -299,7 +267,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// The runs of the `worktree_list` job of `repo`, oldest first.
     fn lists(&self, repo: &str) -> Vec<JobRow> {
         let mut stmt = self
             .conn
@@ -315,7 +282,6 @@ impl World {
         ids.into_iter().map(|id| self.job(id)).collect()
     }
 
-    /// Wait until the job `id` ended.
     fn ended(&self, id: i64) -> JobRow {
         let until = Instant::now() + Duration::from_secs(30);
         let conn = open(&self.db());
@@ -355,8 +321,6 @@ impl World {
     }
 }
 
-/// Each job process ends with its world: the group of each recorded pid
-/// gets a kill.
 impl Drop for World {
     fn drop(&mut self) {
         let Ok(mut stmt) = self
@@ -394,11 +358,6 @@ fn run(pass: &mut Pass<'_>, w: &mut World) -> PassReport {
     pass.run(&mut w.conn).unwrap()
 }
 
-// ─── the fakes ──────────────────────────────────────────────────────────
-
-/// The worktree facts and the repositories as the composition root of
-/// fleetd gives them: the folder of each row that is not `removed`, and the
-/// entries of the work directory of each repository. No herdr.
 struct Trees;
 
 impl Outside for Trees {
@@ -454,8 +413,6 @@ impl Outside for Trees {
     }
 }
 
-/// The launcher, with the job id of each launch and, when it has a tree
-/// to watch, the state of that tree in the ledger at the launch.
 struct Watching {
     db: PathBuf,
     tree: Option<String>,
@@ -478,7 +435,6 @@ impl Watching {
 
 impl ProcessHost for Watching {
     fn launch(&self, spec: &LaunchSpec) -> Result<Launched, LaunchError> {
-        // The job process runs as `<horch> job run <id>`.
         let [job, run, id] = &spec.args[..] else {
             panic!("a job launch is `job run <id>`: {:?}", spec.args);
         };
@@ -495,9 +451,6 @@ impl ProcessHost for Watching {
     }
 }
 
-/// The job process: it runs the executor of the job [`CHILD_JOB`] on the
-/// ledger [`CHILD_DB`], as `horch job run <id>` does. In a normal test run
-/// it does nothing.
 #[test]
 fn child_job() {
     let Some(id) = std::env::var_os(CHILD_JOB) else {
@@ -516,12 +469,6 @@ fn child_job() {
     jobs::run_job(&ctx(&config), &conn, id, std::process::id(), &checks).unwrap();
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// FM-12: a `git worktree add` of 60 s runs in its job process. Each pass
-/// in that time ends within `pass_time_budget_s` and writes its heartbeat,
-/// and the `worktree_list` job of the repository, which only reads git,
-/// starts beside it.
 #[test]
 fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
     let mut w = world();
@@ -564,15 +511,9 @@ fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
     assert!(host.jobs().contains(&add) && host.jobs().contains(&lists[0].id));
 }
 
-/// The scan of the worktree folders reads at most what its budget allows,
-/// from its cursor in `pass_cursors`. A new `Pass` (a restart) continues
-/// after the saved cursor: 12 rows whose folders are gone, 4 for each scan,
-/// are each seen within 3 passes, and none twice.
 #[test]
 fn worktree_scan_continues_at_its_cursor_after_a_restart() {
     let mut w = world();
-    // A clock that moves 1 ms at each reading: a scan of 5 ms reads 4
-    // folders.
     w.config.scan_budget_ms = 5;
     let (repo, _) = w.project("a");
     for n in 1..=12 {
@@ -601,9 +542,6 @@ fn worktree_scan_continues_at_its_cursor_after_a_restart() {
     assert_eq!(seen, vec![4, 8, 12], "each pass reads the next 4 folders");
 }
 
-/// RR-10: 1 `worktree_list` job for each repository in each period of
-/// `worktree_list_period_s` on the fleet clock, also after the run of the
-/// period ended.
 #[test]
 fn worktree_list_job_is_queued_once_per_period_per_repository() {
     let mut w = world();
@@ -632,9 +570,6 @@ fn worktree_list_job_is_queued_once_per_period_per_repository() {
     }
 }
 
-/// Q12: the pass starts at most 1 `worktree_add`, `worktree_remove` or
-/// `rescue` job of 1 repository at a time; another repository has its
-/// own writer.
 #[test]
 fn only_1_git_writing_job_of_1_repository_starts_in_1_pass() {
     let mut w = world();
@@ -660,9 +595,6 @@ fn only_1_git_writing_job_of_1_repository_starts_in_1_pass() {
     assert_eq!(w.job(a2).state, State::Queued);
 }
 
-/// RR-10: a tree made by hand with `git worktree add`, outside the work
-/// directory, is adopted as `orphaned` from the result of the
-/// `worktree_list` job of its period.
 #[test]
 fn pass_adopts_a_hand_made_worktree_within_1_list_period() {
     let mut w = world();
@@ -692,9 +624,6 @@ fn pass_adopts_a_hand_made_worktree_within_1_list_period() {
     assert_eq!(w.lists(&repo).len(), 1, "within 1 period");
 }
 
-/// FM-25: the attempt that owns an `active` tree has no process. The pass
-/// ends the attempt and marks the tree `orphaned` in part 2, so the tree
-/// is `orphaned` before the first launch of part 3.
 #[test]
 fn pass_marks_the_tree_of_a_dead_owner_orphaned_before_any_dispatch() {
     let mut w = world();
@@ -731,9 +660,6 @@ fn pass_marks_the_tree_of_a_dead_owner_orphaned_before_any_dispatch() {
     );
 }
 
-/// The `worktree_list` job reads the dirty flag of each tree and writes
-/// nothing in it: its `git status` takes no optional lock, so it never
-/// rewrites the index of a tree while its worker runs git there.
 #[test]
 fn worktree_list_job_writes_no_index_of_a_tree() {
     let mut w = world();
@@ -743,8 +669,6 @@ fn worktree_list_job_writes_no_index_of_a_tree() {
         Path::new(&repo),
         &["worktree", "add", "-q", "-b", "feat", &tree],
     );
-    // A new mtime with the same content: a git status that may write
-    // refreshes the stat data of the index.
     std::thread::sleep(Duration::from_millis(1100));
     std::fs::write(Path::new(&tree).join("a.txt"), "a\n").unwrap();
     let index = Path::new(&repo).join(".git/worktrees/T1-feat/index");

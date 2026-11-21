@@ -1,8 +1,3 @@
-//! `horch request <request_id>`: the state and the result of 1 request
-//! (RR-8). It reads the `requests` row read-only and changes nothing, so it
-//! has no request kind. A request file that fleetd did not read yet waits
-//! in `<fleet root>/run/requests/`.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -22,7 +17,6 @@ pub struct RequestArgs {
     pub json: bool,
 }
 
-/// The columns of a `requests` row, in the order of the table.
 const COLUMNS: [&str; 12] = [
     "request_id",
     "kind",
@@ -59,7 +53,6 @@ pub fn run(ctx: &RuntimeContext, args: RequestArgs) -> Result<ExitCode> {
     Ok(ExitCode::from(1))
 }
 
-/// The `requests` row of `id`, column by column. No ledger has no row.
 fn read_row(ctx: &RuntimeContext, id: &str) -> Result<Option<Map<String, Value>>> {
     let Some(store) = open_existing_read_only(ctx)? else {
         return Ok(None);
@@ -82,8 +75,6 @@ fn read_row(ctx: &RuntimeContext, id: &str) -> Result<Option<Map<String, Value>>
     Ok(row)
 }
 
-/// The text form: the state, then the result or the reason, then the kind,
-/// the class, the caller and the `auth` text. A missing value prints `-`.
 fn describe(id: &str, row: &Map<String, Value>) -> String {
     let text = |name: &str| row.get(name).and_then(Value::as_str).unwrap_or("-");
     let mut out = format!("request {id}: {}\n", text("state"));

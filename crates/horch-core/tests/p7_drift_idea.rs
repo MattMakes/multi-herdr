@@ -1,13 +1,3 @@
-//! A drift becomes an idea: a failed conformance run adds 1 idea "Update
-//! the <tool> adapter for <version>" with CHANGES.md and the failed checks,
-//! and you see it in `needs-you/` (docs/specs/fleetd/design.md, "Docs sync
-//! and adapter conformance", step 4; FM-19; FR-8;
-//! docs/tickets/fleetd-p7/27-drift-idea.md).
-//!
-//! Each test makes its own temporary ledger, git repository, fleet root and
-//! needs-you folder. No test touches this repository or the live ledger,
-//! and no test starts a process other than git.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -74,8 +64,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// A report of claude 2.1.0 with the adapter hash `hash`: `Shared write`
-/// fails when `failed`, and each other check passes.
 fn report(hash: &str, failed: bool) -> ConformanceReport {
     let shared = if failed {
         CheckResult::fail(Check::SharedWrite, "result.json was not written")
@@ -95,7 +83,6 @@ fn report(hash: &str, failed: bool) -> ConformanceReport {
 }
 
 impl World {
-    /// `add_drift_idea` for `report` in 1 committed write transaction.
     fn drift(&self, report: &ConformanceReport) -> Option<Added> {
         let ctx = JobCtx {
             guard: None,
@@ -151,7 +138,6 @@ fn idempotent_adapter_conformance_failed_adds_no_second_idea() {
     assert!(w.drift(&report("h1", true)).is_some());
     assert!(w.drift(&report("h1", true)).is_none());
     assert_eq!(w.idea_count(), 1);
-    // The same version with another adapter is another request.
     assert!(w.drift(&report("h2", true)).is_some());
     assert_eq!(w.idea_count(), 2);
 }

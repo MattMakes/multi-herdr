@@ -1,9 +1,3 @@
-//! The execution store and the `execution::records` ledger over it (A6: ARC-17, SKL-04).
-//!
-//! Old ledgers load, resume and save byte for byte; an old binary reads a
-//! typed state as the right legacy `status`; concurrent writers do not lose
-//! records.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,15 +22,12 @@ fn oracle_ledger(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/oracles/ledgers/{name}"))
 }
 
-/// A store at `<tmp>/<slug>.json` holding a copy of the A0 fixture `name`.
 fn fixture_store(tmp: &Path, name: &str) -> ExecutionStore {
     let store = ExecutionStore::for_project(tmp, &format!("/oracle/{name}")).with_writer(writer());
     std::fs::copy(oracle_ledger(&format!("{name}.json")), store.path()).unwrap();
     store
 }
 
-/// The writer of fleetd: a test of the store writes on the path of the
-/// `session_records` handler, in process (T-884).
 fn writer() -> Arc<LedgerWriter> {
     Arc::new(LedgerWriter::fleetd())
 }
@@ -46,8 +37,6 @@ fn ledger() -> (tempfile::TempDir, SessionLedger) {
     let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj").with_writer(writer());
     (tmp, l)
 }
-
-// ─── ARC-17 ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn arc_17_legacy_ledgers_load_and_resume() {
@@ -87,8 +76,6 @@ fn arc_17_legacy_ledgers_load_and_resume() {
     assert!(resumed >= 3, "only {resumed} fixtures had a worker record");
 }
 
-/// The store writes `to_string_pretty` with no trailing newline, the same
-/// bytes as the A0 `.saved.json` oracle, so no normalization is needed.
 #[test]
 fn arc_17_roundtrip_byte_identical() {
     let tmp = tempfile::tempdir().unwrap();
@@ -102,14 +89,11 @@ fn arc_17_roundtrip_byte_identical() {
             "{name}: a load and save changed the bytes:\n{}",
             String::from_utf8_lossy(&saved)
         );
-        // A second pass is stable too.
         store.update(|_| Ok(())).unwrap();
         assert_eq!(store.stored_json().unwrap().into_bytes(), want, "{name}");
     }
 }
 
-/// The pre-A6 `ledger::Record`, copied as it was, to read new ledgers the
-/// way an old binary does.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OldRecord {
@@ -209,7 +193,6 @@ fn arc_17_old_reader_sees_compat_status() {
         assert_eq!(r.status, want, "{state:?}");
     }
 
-    // A new reader gets the typed state back exactly.
     let new = l.read().unwrap();
     for (r, state) in new.iter().zip(&statuses) {
         assert_eq!(r.execution_status(), *state);
@@ -224,7 +207,6 @@ fn arc_17_old_reader_sees_compat_status() {
         .collect();
     assert_eq!(live, ["r1", "r2"], "only Starting and Running are live");
 
-    // The documented shape: a nested object under `state`.
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(
         value[11]["state"],
@@ -232,7 +214,6 @@ fn arc_17_old_reader_sees_compat_status() {
     );
     assert_eq!(value[11]["status"], "done");
 
-    // The legacy setters keep `status` and `state` in step.
     l.resume("r11", "sonnet-2", "").unwrap();
     assert_eq!(
         l.get("r11").unwrap().execution_status(),
@@ -245,8 +226,6 @@ fn arc_17_old_reader_sees_compat_status() {
         (STATUS_DONE, ExecutionStatus::Done)
     );
 }
-
-// ─── SKL-04 ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn skl_04_execution_records_skill_refs() {
@@ -287,13 +266,10 @@ fn skl_04_execution_records_skill_refs() {
     l.store().set_skills("s1", skills.clone()).unwrap();
     assert_eq!(l.get("r1").unwrap().skills, skills);
 
-    // The skills survive an unrelated write through the facade.
     l.note("r1", "halfway").unwrap();
     assert_eq!(l.get("r1").unwrap().skills, skills);
     assert!(l.store().set_skills("missing", Vec::new()).is_err());
 }
-
-// ─── locking ────────────────────────────────────────────────────────────────
 
 #[test]
 fn eight_first_openers_of_a_new_ledger_all_succeed() {
@@ -353,10 +329,6 @@ fn store_dirlock_excludes_concurrent_writers() {
     assert!(!root.join("-p.json.lock").exists(), "the lock is released");
 }
 
-// ─── `execution::records` tests that touch the file directly ────────────────
-//
-// Moved from `ledger.rs` unchanged; `execution/records.rs` now holds that code.
-
 #[test]
 fn effort_is_recorded_rendered_and_optional_on_disk() {
     let (_t, l) = ledger();
@@ -381,8 +353,6 @@ fn effort_is_recorded_rendered_and_optional_on_disk() {
     assert!(l.set_effort("missing", Some("low")).is_err());
 }
 
-/// A killed pane can leave the lock dir behind; the ledger must recover
-/// rather than hang forever.
 #[test]
 fn a_stale_lock_is_broken_rather_than_deadlocking() {
     let (_t, l) = ledger();
@@ -402,12 +372,9 @@ fn a_stale_lock_is_broken_rather_than_deadlocking() {
     })
     .unwrap();
     assert!(l.get("r1").is_ok());
-    // ~15s of spinning before the break, then success.
     assert!(started.elapsed() < Duration::from_secs(45));
 }
 
-/// The identity fields default in, round-trip, and stay off disk when
-/// unset, so a worker record written today reads like one from before.
 #[test]
 fn tel_08_insert_fills_plan_project_and_workspace() {
     let (_t, l) = ledger();
@@ -444,7 +411,6 @@ fn tel_08_insert_fills_plan_project_and_workspace() {
     assert_eq!(l.get("r1").unwrap().plan, None);
 }
 
-/// Records written by the bash implementation must still load.
 #[test]
 fn reads_a_ledger_written_by_the_bash_version() {
     let tmp = tempfile::tempdir().unwrap();
@@ -467,7 +433,6 @@ fn reads_a_ledger_written_by_the_bash_version() {
     assert_eq!(r.role, "codex-sol-1");
     assert_eq!(r.phase, None);
     assert_eq!(r.session_id, None);
-    // And it stays writable.
     l.note("3f2b", "still going").unwrap();
     assert_eq!(l.get("3f2b").unwrap().history.len(), 2);
 }

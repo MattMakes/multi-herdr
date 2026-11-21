@@ -1,16 +1,3 @@
-//! The git calls of the rescue refs (ticket 24).
-//!
-//! `docs/specs/fleetd/design.md`, "No work is lost" (Rescue refs have 2
-//! classes, and fleetd owns both), I10, RR-16; MAP.md of fleetd-p4, Q16 and
-//! Q17:
-//! - [`write_branch_rescue`] writes the rescue ref of a branch tip before
-//!   the branch moves: create-only, then read back.
-//! - [`read_facts`] reads the by-content facts of each rescue ref. The
-//!   `worktree_list` job calls it, so the pass reads no git.
-//!
-//! Each git call goes through `CliWorktreeGit`, so git runs in the sandbox
-//! and starts no hook (the fleetd git rule).
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -26,49 +13,27 @@ use crate::fleetd::worktree_custody::domain::rescue_class::{
     self as class, Owner, Parsed, RefOwner,
 };
 
-/// The key of the rescue ref facts in the data of a `worktree_list` run.
 pub const DATA_KEY: &str = "rescue_refs";
 
-/// The key of the error text when the job could not list the rescue refs.
 pub const ERROR_KEY: &str = "rescue_refs_error";
 
-/// The tries of the create-only ref write while other writers take each
-/// next `n` first.
 const REF_TRIES: usize = 16;
 
-/// The facts of 1 rescue ref, as the `worktree_list` job reads them. A fact
-/// that git or the ledger could not give is `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefFacts {
-    /// The full name of the ref.
     pub name: String,
     pub tip: String,
-    /// The branch of the owner of the ref.
     pub branch: Option<String>,
-    /// The feature of that branch.
     pub feature: Option<String>,
-    /// The disk size of the objects that only the ref keeps: no branch
-    /// reaches them.
     pub bytes: Option<u64>,
-    /// Its changes are in a newer tip of its branch: a newer rescue ref of
-    /// the same owner, or the branch itself.
     pub in_newer_tip: Option<bool>,
-    /// Its changes are in a landed branch: the feature branch or the
-    /// primary branch of its feature.
     pub in_landed: Option<bool>,
 }
 
-/// The rescue ref facts in the data of a passed `worktree_list` run, or
-/// `None` when the run did not read them.
 pub fn facts_of(data: &serde_json::Value) -> Option<Vec<RefFacts>> {
     serde_json::from_value(data.get(DATA_KEY)?.clone()).ok()
 }
 
-/// Write `refs/horch/rescue/branch/<name>/<n>` = `tip` for the branch
-/// `branch`, with the next `n`, and read it back. The write is create-only,
-/// so a ref that exists is never overwritten. When the newest rescue ref of
-/// the branch already names `tip`, no new ref is written and its name is
-/// given. `tip` must be the full id of a commit.
 pub fn write_branch_rescue(
     git: &CliWorktreeGit,
     repo: &Path,
@@ -113,8 +78,6 @@ pub fn write_branch_rescue(
     bail!("each of {REF_TRIES} new rescue refs of {branch} existed before its write")
 }
 
-/// Each ref below `pattern` (`git for-each-ref` rules), by name, with its
-/// tip.
 fn refs_below(
     git: &CliWorktreeGit,
     repo: &Path,
@@ -131,10 +94,6 @@ fn refs_below(
         .collect())
 }
 
-/// The facts of each rescue ref of the repository `repo`. `owner_of` gives
-/// the branch and the feature of the owner of a ref from the ledger. Only
-/// the list of the refs is an error: a fact of 1 ref that git cannot give
-/// is `None`, and so the ref stays `unique`.
 pub fn read_facts(
     git: &CliWorktreeGit,
     repo: &Path,
@@ -174,7 +133,6 @@ pub fn read_facts(
                 landed.push(branch_tip(&gw, repo, &f.primary));
             }
         }
-        // The ref is not newer than itself.
         newer.retain(|t| t.as_deref() != Some(tip.as_str()));
         out.push(RefFacts {
             name: (*name).clone(),
@@ -191,16 +149,10 @@ pub fn read_facts(
     Ok(out)
 }
 
-/// The tip of the branch `name`, or `None` when it does not exist or git
-/// could not read it. A target with no tip holds nothing, so it can only
-/// keep a ref `unique`.
 fn branch_tip(gw: &CliGitGateway, repo: &Path, name: &str) -> Option<String> {
     gw.tip(repo, &format!("refs/heads/{name}")).ok().flatten()
 }
 
-/// Whether the changes of `tip` are in 1 of `targets` by content (I8). A
-/// target that does not exist holds nothing. `None` when no target holds
-/// them and git could not answer for 1 target.
 fn any_holds(
     gw: &CliGitGateway,
     repo: &Path,
@@ -218,8 +170,6 @@ fn any_holds(
     known.then_some(false)
 }
 
-/// The disk size of the objects that `tip` reaches and no branch reaches.
-/// `tip` is an object id that `git for-each-ref` printed.
 fn only_bytes(git: &CliWorktreeGit, repo: &Path, tip: &str) -> Result<u64> {
     let out = git.git(
         repo,

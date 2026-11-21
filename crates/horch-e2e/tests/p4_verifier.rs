@@ -1,12 +1,3 @@
-//! The e2e tests of the verifier of Phase 4 (`docs/specs/fleetd/design.md`,
-//! FM-9 (the part test of Phase 4), RR-3, SR-4;
-//! `docs/tickets/fleetd-p4/51-p4-verifier-e2e.md`).
-//!
-//! Each process runs with temporary `HORCH_DATA_DIR`, `HORCH_STATE_DIR`,
-//! `HORCH_LEDGER_DB` and `FLEET_ROOT`. The load, the limits and the clock of
-//! this machine are not read: the harness gives the machine facts through
-//! `HORCH_MACHINE_FILE`, and the test `fleet.toml` gives the pass period.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -24,12 +15,8 @@ use serde_json::Value;
 
 const PERSONA: &str = "opus";
 
-/// The 1 file that the fake agent commits, `fake-<fake>.txt` (`agent.rs`).
 const FAKE_FILE: &str = "fake-claude.txt";
 
-/// Link `bwrap` of this host into the `bin/` of `h`, so that fleetd and its
-/// jobs find the Linux sandbox on their sealed `PATH`. macOS needs no link:
-/// its sandbox is `/usr/bin/sandbox-exec`.
 fn link_bwrap(h: &Harness) {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -145,7 +132,6 @@ impl World {
         std::fs::create_dir_all(&dir).unwrap();
         let ticket = dir.join("t0.md");
         std::fs::write(&ticket, "# t0\n").unwrap();
-        // The run branch exists before the run, as `horch idea` makes it.
         World::git(h, &h.project, &["branch", "fleet/r1", "main"]);
         let store = Store::open(&h.root.join("ledger.sqlite3")).unwrap();
         let conn = store.conn();
@@ -162,7 +148,6 @@ impl World {
             },
         )
         .unwrap();
-        // FR-12: a task needs an idea in flight of the feature of its run.
         schema::run_idea(conn, &run.run_id, &horch_core::clock::now_stamp(), true)
             .unwrap()
             .expect("the idea of r1");
@@ -239,7 +224,6 @@ impl World {
             .ok()
     }
 
-    /// Each status that the task had, in order, with the text of its event.
     fn moves(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -257,7 +241,6 @@ impl World {
         rows
     }
 
-    /// The path of `verdict-<n>.json` of the task.
     fn verdict_path(&self, n: u32) -> PathBuf {
         self.h
             .fleet_root()
@@ -266,7 +249,6 @@ impl World {
             .join(format!("verdict-{n}.json"))
     }
 
-    /// Wait for `verdict-<n>.json` and read it.
     fn verdict(&self, n: u32) -> Value {
         let path = self.verdict_path(n);
         wait_for_or(
@@ -277,7 +259,6 @@ impl World {
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
     }
 
-    /// Whether a `task_check` job ended: it is neither queued nor running.
     fn check_job_ended(&self) -> bool {
         self.conn()
             .query_row(
@@ -290,7 +271,6 @@ impl World {
             > 0
     }
 
-    /// The facts of the ledger and of fleetd, for a failure message.
     fn evidence(&self) -> String {
         let conn = self.conn();
         let jobs: Vec<String> = conn
@@ -311,7 +291,6 @@ impl World {
     }
 }
 
-/// The task is not done, and no event moved it to `done`.
 fn assert_not_done(w: &World) {
     assert_ne!(w.task_status(), "done", "{}", w.evidence());
     assert!(
@@ -340,7 +319,6 @@ fn passing_code_task_reaches_done_only_through_the_verifier() {
         || (w.task_status() == "done").then_some(()),
         || w.evidence(),
     );
-    // The only move to `done` names the verdict that judged the tip.
     let to_done: Vec<_> = w
         .moves()
         .into_iter()
@@ -457,7 +435,6 @@ fn fm9_docs_task_without_its_section_stays_not_done() {
     let w = World::new(
         "p4v-fm9-docs",
         &Spec {
-            // The check passes, so only the structural check can fail.
             check: "true",
             kind: WorkKind::Docs,
             own: &["guide.md"],
@@ -470,8 +447,6 @@ fn fm9_docs_task_without_its_section_stays_not_done() {
         || (w.attempt().and_then(|a| a.1).as_deref() == Some("rejected")).then_some(()),
         || w.evidence(),
     );
-    // The check passed (verdict 1), so the structural check gave the
-    // failure (verdict 2).
     let checked = w.verdict(1);
     assert_eq!(checked["decision"], "passed", "{checked}");
     let verdict = w.verdict(2);
@@ -485,8 +460,6 @@ fn fm9_docs_task_without_its_section_stays_not_done() {
 
 #[test]
 fn sr4_check_that_writes_outside_its_paths_is_refused() {
-    // A folder outside each writable path of a check: not in the worktree,
-    // not in the fleet root, not in the temp folder of the harness.
     let outside = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let escaped = outside.path().join("escaped.txt");
     let check = format!(
@@ -503,11 +476,7 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
         },
     );
     w.start_fleetd();
-    // The sandbox of the check on the `PATH` that fleetd and its jobs get.
     if let Some(gap) = horch_platform::sandbox::host_problem(Some(w.h.bin.as_os_str())) {
-        // Orchestrator answer Q-A, rule 3: a host with no sandbox (Linux
-        // without `bwrap`) gives NotSupported, and the check does not run at
-        // all. SR-4 holds by refusal, not by a denied write.
         wait_for_or(
             "the task_check job to end with no sandbox",
             || w.check_job_ended().then_some(()),
@@ -523,8 +492,6 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
     }
     let verdict = w.verdict(1);
     assert_eq!(verdict["decision"], "failed", "{verdict}");
-    // The check ran in its sandbox: its write inside the worktree stands,
-    // and its write outside is refused.
     assert!(
         w.worktree().join("written-inside.txt").is_file(),
         "the check did not run, so its refusal proves nothing\n{verdict}\n{}",
@@ -536,7 +503,6 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
         escaped.display(),
         w.evidence()
     );
-    // The sandbox refuses with EPERM on macOS and EROFS on Linux.
     let reason = verdict["reason"].as_str().unwrap();
     assert!(
         reason.lines().any(|l| l.starts_with("horch: SR-4")),
@@ -549,8 +515,6 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
     assert_not_done(&w);
 }
 
-/// An off-host address (TEST-NET-1). The own LAN address of this host is on
-/// the host, as loopback is, and the macOS sandbox lets a check connect to it.
 const OFF_HOST_URL: &str = "http://192.0.2.1:9/";
 const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
 
@@ -649,8 +613,6 @@ fn sr3_check_that_connects_off_host_is_refused() {
     let verdict = w.verdict(1);
     stop.store(true, Ordering::SeqCst);
     assert_eq!(verdict["decision"], "failed", "{verdict}");
-    // The loopback works in the sandbox, so the off-host refusal below is
-    // the network rule and not a sandbox with no network at all.
     assert!(
         w.worktree().join("loopback-ok.txt").is_file(),
         "the check did not reach loopback, so its refusal proves nothing\n{verdict}\n{}",

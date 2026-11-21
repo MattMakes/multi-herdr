@@ -1,5 +1,3 @@
-//! ARC-14: every record a launch writes says how routing chose it.
-
 #![cfg(unix)]
 
 use horch_core::execution::records::SessionLedger;

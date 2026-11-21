@@ -1,10 +1,5 @@
-//! The machine probe: load, memory, disk, the process limits and the host
-//! name (PL-2), with the gap of Windows as `NotSupported` (row S12).
-
 use horch_platform::machine::{self, Tool};
 
-/// A fixed probe command output, so the test does not depend on the
-/// commands of the host. A failed command is `None` in the `Run` contract.
 #[cfg(unix)]
 fn run(tool: Tool, args: &[&str]) -> Option<String> {
     let text = match (tool, args) {
@@ -26,7 +21,6 @@ fn load_memory_disk_and_limit_are_known() {
     let load = machine::load_average().unwrap();
     assert!(load.is_some_and(|l| l >= 0.0), "{load:?}");
 
-    // macOS reads the fixed command output, and Linux reads /proc/meminfo.
     let memory = machine::memory(&run).unwrap();
     let total = memory.total.expect("total memory");
     let available = memory.available.expect("available memory");
@@ -110,9 +104,6 @@ fn user_process_count_is_at_least_1() {
 #[cfg(unix)]
 #[test]
 fn user_open_file_count_grows_when_this_process_opens_files() {
-    // Other processes of the user open and close files at the same time,
-    // so 1 sample can hide the 20 files. The test passes when 1 of 20
-    // samples shows all 20 files.
     let count = || {
         machine::user_open_file_count()
             .unwrap()
@@ -135,7 +126,6 @@ fn user_open_file_count_grows_when_this_process_opens_files() {
 #[cfg(unix)]
 #[test]
 fn the_system_open_file_limit_is_at_least_the_count_of_the_system() {
-    // A sandbox can deny the sysctl: `None` is a valid result.
     let Some(limit) = machine::system_open_file_limit().unwrap() else {
         return;
     };
@@ -148,9 +138,6 @@ fn the_system_open_file_limit_is_at_least_the_count_of_the_system() {
 #[cfg(unix)]
 #[test]
 fn system_open_file_count_is_at_least_the_count_of_the_user() {
-    // A sandbox can deny the sysctl: `None` is a valid result. Files open
-    // and close between the 2 reads, so the count of the user is read
-    // first and gets a margin of 1000 files.
     let user = machine::user_open_file_count()
         .unwrap()
         .expect("open file count");
@@ -163,7 +150,6 @@ fn system_open_file_count_is_at_least_the_count_of_the_user() {
 #[cfg(target_os = "macos")]
 #[test]
 fn the_kernel_free_memory_of_macos_is_at_most_the_memory_size() {
-    // A sandbox can deny the sysctl: `None` is a valid result.
     let Some(free) = machine::kernel_free_memory().unwrap() else {
         return;
     };

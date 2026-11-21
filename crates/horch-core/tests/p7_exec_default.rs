@@ -1,18 +1,3 @@
-//! Exec mode is the default worker mode (fleetd-p7 ticket 19; FR-6,
-//! FM-18; `docs/tickets/fleetd-p7/MAP.md`, Q3 and Q5).
-//!
-//! - A profile whose file names no mode runs exec when its CLI has an exec
-//!   adapter, and interactive otherwise.
-//! - The orchestrator seats, the top-tier seats and `idea-lead` stay
-//!   interactive.
-//! - An attempt keeps the mode of its launch: it is exec only when its
-//!   attempt folder holds the exec stream `transcript.jsonl`.
-//! - An exec attempt has no background wait. An interactive attempt keeps
-//!   it.
-//!
-//! Each test uses a temporary ledger and fleet root. No test starts an
-//! agent CLI.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::execution::lifecycle::TRANSCRIPT_JSONL;
@@ -75,7 +60,6 @@ fn orchestrator_seats_and_idea_lead_are_interactive() {
     }
 }
 
-/// A temporary ledger with 1 claimed worker of `opus` and its attempt.
 struct Fleet {
     _dir: tempfile::TempDir,
     store: Store,
@@ -98,7 +82,6 @@ impl Fleet {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -132,7 +115,6 @@ impl Fleet {
         let n = attempt
             .rsplit_once('/')
             .map_or(attempt.as_str(), |(_, a)| a);
-        // The fleet root of a ledger with no `FLEET_ROOT`: `fleet` beside it.
         let attempt_dir = attempt_dir(&dir.path().join("fleet"), &task_id, n);
         std::fs::create_dir_all(&attempt_dir).unwrap();
         Fleet {
@@ -143,7 +125,6 @@ impl Fleet {
         }
     }
 
-    /// The wrapper opened the exec stream of the attempt.
     fn exec_stream(&self) {
         std::fs::write(self.attempt_dir.join(TRANSCRIPT_JSONL), "").unwrap();
     }
@@ -191,12 +172,9 @@ fn background_wait_still_holds_for_an_interactive_attempt() {
 
 #[test]
 fn live_interactive_attempt_keeps_its_mode_after_the_update() {
-    // The attempt launched interactive, before the update: no exec stream.
     let f = Fleet::new();
     f.declare_background_wait();
-    // After the update, the profile of its persona is exec.
     assert_eq!(builtin_mode("opus"), Mode::Exec);
-    // The live attempt keeps its interactive treatment and its wait.
     assert_eq!(
         workers::attempt_mode(f.store.conn(), &f.worker),
         Mode::Interactive

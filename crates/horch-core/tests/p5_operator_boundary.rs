@@ -1,8 +1,3 @@
-//! The wrapper of a worker reads no operator token and sends no request of
-//! class operator (T-899, SR-8; ticket 61 of fleetd-build).
-//!
-//! Unix only: the channel is a Unix socket, and the tests use unix modes.
-
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -36,7 +31,6 @@ struct Fleet {
 
 impl Fleet {
     fn new() -> Fleet {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let dir = tempfile::Builder::new()
             .prefix("ob")
             .permissions(std::fs::Permissions::from_mode(0o700))

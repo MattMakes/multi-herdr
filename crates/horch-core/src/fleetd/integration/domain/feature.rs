@@ -1,16 +1,3 @@
-//! The state machine of a feature (ticket 36 of fleetd-p4, ticket 34 of
-//! fleetd-p6).
-//!
-//! `docs/specs/fleetd/design.md`, "The feature state machine", "Between
-//! features" (The full gate; Merged), I8. A feature leaves `open` for
-//! `ready` when each of its ideas is `integrating`, `cancelled` or `parked`
-//! and the full gate passed on its current tips.
-//!
-//! [`next`] gives the move of a feature from the facts that fleetd read
-//! for it. `merged` and `abandoned` are terminal: fleetd decides `merged`
-//! 1 time and reads no fact of a terminal feature again (I8).
-
-/// The state of a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureState {
     Open,
@@ -20,7 +7,6 @@ pub enum FeatureState {
 }
 
 impl FeatureState {
-    /// The word of the state in the ledger.
     pub fn as_str(self) -> &'static str {
         match self {
             FeatureState::Open => "open",
@@ -30,7 +16,6 @@ impl FeatureState {
         }
     }
 
-    /// The state of the word `word`.
     pub fn parse(word: &str) -> Option<FeatureState> {
         [
             FeatureState::Open,
@@ -42,63 +27,39 @@ impl FeatureState {
         .find(|s| s.as_str() == word)
     }
 
-    /// Whether the state is terminal: fleetd reads no fact for it.
     pub fn is_terminal(self) -> bool {
         matches!(self, FeatureState::Merged | FeatureState::Abandoned)
     }
 }
 
-/// The verdict of the full gate on the current feature tip over the
-/// current primary tip. A verdict on a tip that moved is not this verdict:
-/// it is stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullGate {
-    /// No verdict on these tips yet.
     NotJudged,
     Passed,
     Failed,
 }
 
-/// The facts of 1 feature that is not terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Facts {
-    /// The feature has at least 1 idea, and each idea of the feature is
-    /// `integrating`, `cancelled` or `parked`. An idea in `integrating` has
-    /// each task branch `landed` or `abandoned`.
     pub ideas_settled: bool,
-    /// At least 1 task branch of the feature is `landed`. A feature with no
-    /// landed branch has no changes of its own: it is not ready, and its
-    /// tip in the primary branch is not a merge.
     pub has_landed_work: bool,
     pub full_gate: FullGate,
-    /// git shows the changes of the feature tip in the primary tip by
-    /// content (I8).
     pub changes_in_primary: bool,
 }
 
 impl Facts {
-    /// The feature waits only for its full gate.
     fn settled(&self) -> bool {
         self.ideas_settled && self.has_landed_work
     }
 }
 
-/// What fleetd does with a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Next {
     Stay,
     Enter(FeatureState),
-    /// Queue the full gate on the current tips. The feature stays `open`.
     RunFullGate,
 }
 
-/// The move of a feature in `state` with the facts `facts`.
-///
-/// - `open` or `ready`, and its changes are in the primary tip → `merged`.
-/// - `open`: settled and the full gate passed → `ready`; settled and no
-///   verdict → run the full gate.
-/// - `ready`: no longer settled, or no pass on the current tips (a tip
-///   moved) → `open`.
 pub fn next(state: FeatureState, facts: &Facts) -> Next {
     if state.is_terminal() {
         return Next::Stay;

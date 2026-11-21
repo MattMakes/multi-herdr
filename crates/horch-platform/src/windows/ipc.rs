@@ -1,10 +1,3 @@
-//! The concern ipc for Windows: no local stream socket.
-//!
-//! Each function gives [`NotSupported`]. That gap is the row "Sockets and
-//! pipes" of `docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
-//! section 6, and its S11: the worker channel relay and the report socket
-//! need Unix sockets. No value of [`Stream`] or [`Listener`] can exist.
-
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};

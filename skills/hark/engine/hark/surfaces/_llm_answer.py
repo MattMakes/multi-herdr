@@ -24,9 +24,6 @@ def _g(v: float) -> str:
     return f"{v:g}"
 
 
-# finding the JSON ----------------------------------------------------
-
-
 def _string_end(text: str, at: int) -> int:
     """Index of the quote that closes the string opened at ``at``; the text length when none does."""
     at += 1
@@ -78,9 +75,6 @@ def parse_json(text: str) -> dict | None:
             if found is not None:
                 return found
     return None
-
-
-# fixing the shape ----------------------------------------------------
 
 
 def seconds_of(v: Any) -> float | None:
@@ -170,9 +164,6 @@ def normalize(obj: dict, offset: float = 0.0, clip_len: float = 1e9) -> dict[str
     if reply:
         shaped["answer"] = reply
     return shaped
-
-
-# writing it as text --------------------------------------------------
 
 
 def _trim_note(clip: dict[str, Any] | None) -> str:

@@ -1,5 +1,3 @@
-//! The concern group for macOS.
-
 use std::process::Child;
 
 pub(crate) use crate::unix::group::{

@@ -1,5 +1,3 @@
-//! `NotSupported` is the explicit value of a gap of an OS (PL-6).
-
 use horch_platform::NotSupported;
 
 #[test]

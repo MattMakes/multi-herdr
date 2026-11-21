@@ -1,15 +1,3 @@
-//! The landing state machine of a task branch (ticket 25).
-//!
-//! `docs/specs/fleetd/design.md`, "Landing a task branch on its feature
-//! branch" (the state table; F9), "A cancelled task does not block its
-//! idea", "What a release does to a run in flight" (row Phase 4):
-//! - [`next`]: where the branch goes from the state of its task. `building`
-//!   follows the task to `verifying`, `verifying` to `ready` or back to
-//!   `building`. A cancelled task's branch gets a rescue ref, then
-//!   `abandoned`.
-//! - [`owner`] and [`limit_s`]: the owner and the time limit of each state.
-
-/// The landing state of a task branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LandingState {
     Building,
@@ -34,7 +22,6 @@ impl LandingState {
         LandingState::Abandoned,
     ];
 
-    /// The word of the state in `branches.landing_state`.
     pub fn as_str(self) -> &'static str {
         match self {
             LandingState::Building => "building",
@@ -48,18 +35,15 @@ impl LandingState {
         }
     }
 
-    /// The state of the word `word`.
     pub fn parse(word: &str) -> Option<LandingState> {
         Self::ALL.into_iter().find(|s| s.as_str() == word)
     }
 
-    /// `landed` and `abandoned` have no exit.
     pub fn is_terminal(self) -> bool {
         matches!(self, LandingState::Landed | LandingState::Abandoned)
     }
 }
 
-/// The owner of a branch in `state`: the column "Owner" of the table.
 pub fn owner(state: LandingState) -> &'static str {
     match state {
         LandingState::Building => "worker",
@@ -68,21 +52,13 @@ pub fn owner(state: LandingState) -> &'static str {
     }
 }
 
-/// The time limit keys of the landing states, in seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// `landing_ready_limit_s`.
     pub ready_s: u64,
-    /// `landing_repair_limit_s`: `conflicted` and `gate_failed`.
     pub repair_s: u64,
-    /// The limit of the `bundle_build` job plus the limit of the
-    /// `fast_gate` job plus `landing_job_margin_s`.
     pub in_bundle_s: u64,
 }
 
-/// The time limit of a branch in `state`. `building` and `verifying` have
-/// the time limits of their task, which the stall ladder watches; a
-/// terminal state has none.
 pub fn limit_s(state: LandingState, limits: &Limits) -> Option<u64> {
     match state {
         LandingState::Ready => Some(limits.ready_s),
@@ -92,51 +68,31 @@ pub fn limit_s(state: LandingState, limits: &Limits) -> Option<u64> {
     }
 }
 
-/// The due time of a branch that enters `state` at the fleet clock
-/// `entered`, or `None` for a state with no limit of its own.
 pub fn due_at(state: LandingState, entered: i64, limits: &Limits) -> Option<i64> {
     let limit = i64::try_from(limit_s(state, limits)?).unwrap_or(i64::MAX);
     Some(entered.saturating_add(limit))
 }
 
-/// Whether a branch in `state`, due at `due_at`, is past its limit at the
-/// fleet clock `clock`.
 pub fn overdue(state: LandingState, due_at: i64, clock: i64, limits: &Limits) -> bool {
     limit_s(state, limits).is_some() && clock >= due_at
 }
 
-/// The state of the task of a branch, as the landing reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskFact {
-    /// An attempt holds the task: `leased`, `running`, `stalled`,
-    /// `blocked_on_user` or `waiting_quota`.
     Working,
     Verifying,
     Done,
     Cancelled,
-    /// No attempt holds the task: `pending`, `ready`, `failed` or
-    /// `escalated`.
     Between,
 }
 
-/// What [`next`] decides for 1 branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Next {
-    /// The branch stays in its state.
     Stay,
-    /// The branch moves through each state in order.
     Moves(Vec<LandingState>),
-    /// A rescue ref of the branch first, then `abandoned`.
     Rescue,
 }
 
-/// Where a branch in `state` goes when its task is in `task`.
-///
-/// - F9: a cancelled task lands nothing. Each state that is not terminal
-///   gets a rescue ref, then `abandoned`.
-/// - `building` follows the task to `verifying` and `ready`, and
-///   `verifying` goes back to `building` when a new attempt holds the
-///   task. The other states move by the bundle use cases.
 pub fn next(state: LandingState, task: TaskFact) -> Next {
     if state.is_terminal() {
         return Next::Stay;

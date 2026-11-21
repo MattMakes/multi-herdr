@@ -17,13 +17,13 @@ import sys
 
 SCHEMA = "playlog-analysis/1"
 MINUTE = 60.0
-WINDOW_S = 90.0                # the window before an event, in real seconds: 1 heartbeat (60 s) and a margin
-BIN_MIN = 10.0                 # the bin width of the quit-point histogram, in minutes
-MIN_MARKS = 50                 # TC 6.5: 50 marks or more over 5 sessions for 1 developer (inferred lower limit)
+WINDOW_S = 90.0
+BIN_MIN = 10.0
+MIN_MARKS = 50
 MIN_MARK_SESSIONS = 5
-MIN_QUITS = 20                 # TC 6.5: 20 quits or more (inferred lower limit)
-MIN_GROUP = 5                  # TC 6.5: a group needs about 5 samples for a median to mean anything
-MIN_SPLIT = 0.75               # the share of the samples on the correct side of an edge (inferred)
+MIN_QUITS = 20
+MIN_GROUP = 5
+MIN_SPLIT = 0.75
 GOOD, DRAG, NOTE = "good", "drag", "note"
 ADVICE = ("A proposed band is advice from a small sample. It shows the taste of the players who marked, not a "
           "proof. The counts are beside each proposal.")
@@ -34,7 +34,6 @@ def value(name, unit, row=None, key=None):
     return dict(name=name, unit=unit, row=row, band_key=key)
 
 
-# The keys of the object "fun". "s" values show as minutes. A value with a band key can go into game.targets.fun.
 VALUES = {
     "fm1_now": value("content drought", "s", "FM-1", "max"),
     "fm1_h1": value("largest content gap in hour 1", "s", "FM-1", "max_h1"),
@@ -67,8 +66,6 @@ SIDE_OF_KEY = {"max": "above", "min": "below"}
 class PlaylogError(Exception):
     """A log that the script cannot read: the message names the file and the line."""
 
-
-# ----------------------------------------------------------------------------- reading
 
 def parse_line(path, number, text):
     try:
@@ -194,8 +191,6 @@ def other_samples(samples, q, window):
     return [fun for t, fun in samples if t < rt_of(q) - window]
 
 
-# ----------------------------------------------------------------------------- values
-
 def shown(key, raw):
     """A value of the log in the unit of the report: seconds become minutes."""
     if not isinstance(raw, (int, float)) or isinstance(raw, bool):
@@ -245,8 +240,6 @@ def value_table(groups):
         table[key] = dict(meta, unit=shown_unit(key), **{g: summary(values_of(funs, key)) for g, funs in groups.items()})
     return table
 
-
-# ----------------------------------------------------------------------------- band edges
 
 def correct_count(edge, side, high, low):
     """The samples on the correct side: `high` above the edge and `low` at or below it, or the reverse."""
@@ -343,8 +336,6 @@ def quit_proposals(sessions, table, groups):
     return dict(enough=True, reason=None, edges=edges)
 
 
-# ----------------------------------------------------------------------------- targets
-
 def target_note(rec):
     meta = VALUES.get(rec["value"], {})
     key = meta.get("band_key")
@@ -378,8 +369,6 @@ def band_mark(c):
     return (f"play data (developer: {c['drag']} F8 and {c['good']} F7 marks over {c['sessions_with_marks']} "
             f"sessions; small sample)")
 
-
-# ----------------------------------------------------------------------------- the result
 
 def histogram(sessions, bin_min):
     minutes = [s["quit"]["minute"] for s in sessions if s["quit"]]
@@ -423,8 +412,6 @@ def summarise(sessions, folder, window, bin_min):
                 proposals=dict(marks=marks, quits=quits), targets=targets, advice=ADVICE,
                 sessions=[{k: v for k, v in s.items() if k != "others"} for s in sessions])
 
-
-# ----------------------------------------------------------------------------- the report
 
 def cell(s):
     return "-" if not s["n"] else f"{s['median']:g} [{s['min']:g} to {s['max']:g}] n={s['n']}"

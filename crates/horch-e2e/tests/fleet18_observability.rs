@@ -1,4 +1,3 @@
-//! Behavioral coverage for fleet pitfalls #49–55.
 use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness, DEADLINE};
 use horch_e2e::ledger_seed::{seed_run, seed_task, seed_worker};
@@ -16,7 +15,7 @@ fn g49_offline_stale_cache_survives_age_pipe_and_no_update() {
     let mut h = Harness::new("g49-stale");
     std::fs::write(h.state.join("self-check.json"), json!({"checked_at":"2020-01-01T00:00:00Z","latest_tag":"v99.0.0","html_url":"https://example.invalid/release"}).to_string()).unwrap();
     h.set("HORCH_RELEASE_API", "http://192.0.2.1:1");
-    h.run(&["inbox"]); // Warm macOS first-exec scanning before measuring the offline path.
+    h.run(&["inbox"]);
     let start = std::time::Instant::now();
     let o = h.run(&["inbox"]);
     assert_eq!(err(&o).matches("stale horch").count(), 1, "{}", err(&o));
@@ -156,8 +155,6 @@ fn g54_doctor_warns_on_proxy_host() {
 #[test]
 fn g55_unknown_pool_reason_is_visible() {
     let mut h = Harness::new("g55-reason");
-    // A stale reading has no error and a table row without its reason: only
-    // the `claude: <reason>` line says why the pool is unknown.
     let telemetry = h.state.join("telemetry");
     std::fs::create_dir_all(&telemetry).unwrap();
     std::fs::copy(
@@ -178,7 +175,6 @@ fn g55_unknown_pool_reason_is_visible() {
     let value: serde_json::Value = serde_json::from_str(&out(&j)).unwrap();
     assert_eq!(value["pools"]["claude"]["state"], "unknown");
     assert_eq!(value["pools"]["claude"]["reason"], why);
-    // A probe error is the reason, in the row and on its own line.
     h.set(
         "HORCH_QUOTA_FILE",
         fixtures()
@@ -310,9 +306,6 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     assert!(o.status.success(), "{} {}", out(&o), err(&o));
     out(&o)
 }
-/// Start the test fleetd of `h` with 1 pass each second. It ingests the
-/// wrapper files of each attempt (`session.json`, `heartbeat.json`). The
-/// drop of `h` stops it.
 fn serve_fast_fleetd(h: &Harness) {
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
@@ -374,9 +367,6 @@ fn serve_state_fleetd(h: &mut Harness) {
     h.serve_fleetd();
 }
 
-/// A launch is 4 serial process starts (spawn, pane, supervisor, agent)
-/// beside the conformance jobs of fleetd. At load 50 it took 29.7 s from
-/// the task row to the agent start, so it gets the harness DEADLINE.
 const LAUNCH_WAIT: std::time::Duration = DEADLINE;
 
 fn wait<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
@@ -394,9 +384,6 @@ fn wait_up_to<T>(what: &str, limit: std::time::Duration, mut f: impl FnMut() -> 
     panic!("timed out waiting for {what}");
 }
 
-/// `horch ledger stop` stops a spawned worker by the agent PID that fleetd
-/// ingested from `heartbeat.json` of its attempt: the wrapper writes no
-/// ledger row (RR-5).
 #[test]
 fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     horch_e2e::expected::check(
@@ -436,14 +423,8 @@ fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     );
 }
 
-/// A run with 2 queued tasks, and fleetd, which launches a worker for each
-/// at the same time. Returns when both worker rows have their session and
-/// transcript.
 fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
     let mut h = fleet(name, "exec,stay");
-    // The session records and the task ledger share 1 file below the state
-    // folder, as in production: fleetd ends a session record in the
-    // transaction of the exit.json ingest.
     let db = h.state.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     interactive_terra(&mut h);
@@ -454,11 +435,9 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
         std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
         seed_task(&h, &run, &file, "codex-terra");
     }
-    // fleetd dispatches both tasks in 1 pass (Phase 4).
     serve_fast_fleetd(&h);
     let workers = wait_up_to("two session transcripts", LAUNCH_WAIT, || {
         let state: serde_json::Value =
-            // The running tasks keep the run open, so status exits 1 (TRF-15).
             serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
         let ws: Vec<_> = state["workers"]
             .as_array()?
@@ -478,9 +457,6 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
     (h, workers)
 }
 
-/// Stop the agents of `workers` by their exact PID and start time, which
-/// protects cleanup from PID reuse, and wait until their session records
-/// are no longer live: fleetd ends each one at the ingest of exit.json.
 fn stop_and_wait_for_exit(h: &Harness, workers: &[serde_json::Value]) {
     for w in workers {
         let pid = w["agent_pid"].as_u64().unwrap() as u32;
@@ -501,7 +477,6 @@ fn stop_and_wait_for_exit(h: &Harness, workers: &[serde_json::Value]) {
     });
 }
 
-/// Stop each live agent that the ledger of `h` knows.
 fn stop_live_agents(h: &Harness) {
     let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
     let mut query=store.conn().prepare("SELECT agent_pid,agent_started FROM workers WHERE status IN ('spawning','starting','claiming','working') AND agent_pid IS NOT NULL").unwrap();
@@ -568,8 +543,6 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     h.seal(&mut warm);
     let warmed = horch_e2e::harness::warm(warm.arg("warm")).unwrap();
     assert!(warmed.status.success());
-    // Observe the daemon warning before later version checks complete.
-    // Their own 15s budgets are independent of Docker's 2s timeout.
     use std::io::BufRead;
     let mut child = h
         .horch(&["doctor"])
@@ -596,9 +569,6 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     while std::time::Instant::now() < deadline {
         if let Ok(line) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
             if line.contains("Docker daemon version timed out") {
-                // Doctor kills Docker 2s after it spawns it. Under load the
-                // fake's shell may not run before that kill, so the marker
-                // can be absent. Check the delay only when Docker started.
                 if let Ok(modified) = std::fs::metadata(&marker).and_then(|m| m.modified()) {
                     let since = modified.elapsed().unwrap_or_default();
                     assert!(
@@ -922,7 +892,6 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
                 1,
                 "{lines:?}"
             );
-            // FR-7: each other line waits in mail, and the pane gets the mail line.
             assert!(
                 lines.contains(&horch_core::messaging::delivery::MAIL_LINE),
                 "{lines:?}"
@@ -941,7 +910,6 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
                     .contains("Read ai_docs/handoffs/sonnet-1-whats-next.md now. Then continue")),
                 "{worker_mail:?}"
             );
-            // #57: only the orchestrator resume carries the command card.
             assert!(
                 !worker_mail
                     .iter()
@@ -1113,7 +1081,6 @@ fn g54_sandbox_warning_matches_launch_on_unsupported_host() {
     std::fs::create_dir_all(&roster).unwrap();
     std::fs::write(roster.join("sandbox-test.md"),"---\nname: sandbox-test\nbrief_description: Sandboxed worker\nagent: claude\nmodel: sonnet\nsandbox:\n  enabled: true\n---\nworker\n").unwrap();
     h.set("HORCH_TEAMMATES_DIR", roster.to_string_lossy());
-    // The sealed PATH holds the bwrap and socat of the host (T-240).
     let path_without_sandbox_tools = h.bin.to_string_lossy().into_owned();
     h.set("PATH", path_without_sandbox_tools);
     let o = h.run(&["doctor"]);
@@ -1165,7 +1132,6 @@ fn g55_real_captures_scrub_personal_identifiers_preserve_functional_limits() {
             .skip(1)
             .any(|suffix| suffix.bytes().take_while(u8::is_ascii_hexdigit).count() >= 16)
     }
-    // A representative synthetic identifier proves the detector is active.
     assert!(has_reset_credit_id(
         "id: RateLimitResetCredit_0123456789abcdef0123456789abcdef"
     ));

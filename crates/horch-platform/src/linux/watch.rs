@@ -1,5 +1,3 @@
-//! The concern watch for Linux: `inotify` with a non-blocking fd.
-
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -12,15 +10,11 @@ const MASK: u32 =
 
 const HEADER: usize = std::mem::size_of::<libc::inotify_event>();
 
-/// The most reads of the queue in 1 call of `changed`. A busy folder
-/// cannot hold the call: the events after the last read wait for the next
-/// call.
 const MAX_READS: usize = 16;
 
 #[derive(Debug)]
 pub(crate) struct Watcher {
     fd: OwnedFd,
-    /// Each watch descriptor with its folder.
     dirs: HashMap<libc::c_int, PathBuf>,
 }
 
@@ -46,7 +40,6 @@ impl Watcher {
         if wd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // A second add of the same folder gives the same descriptor.
         self.dirs.insert(wd, dir.to_path_buf());
         Ok(())
     }
@@ -70,8 +63,6 @@ impl Watcher {
             // SAFETY: `buf` is writable for its full length, and the fd is
             // non-blocking, so the read returns at once.
             let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-            // `EAGAIN` ends the queue. Another error is a missed hint: the
-            // pass scans each folder anyway.
             let Ok(n) = usize::try_from(n) else { break };
             if n == 0 {
                 break;
@@ -98,8 +89,6 @@ impl Watcher {
             .filter(|(wd, _)| overflow || wds.contains(*wd))
             .map(|(_, dir)| dir.clone())
             .collect();
-        // The kernel removed these watches, and it can give the descriptor
-        // to a new watch. So they leave the map.
         for wd in gone {
             self.dirs.remove(&wd);
         }

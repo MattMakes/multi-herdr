@@ -1,13 +1,3 @@
-//! The sub-orchestrators: 1 for each feature that is not merged or
-//! abandoned, a fresh process for each phase, started when missing and
-//! stopped when extra (docs/specs/fleetd/design.md, "Ideas: the dispatcher
-//! and sub-orchestrators": How many sub-orchestrators, A fresh process for
-//! every phase; I7, I13, FM-16, FM-31; docs/tickets/fleetd-p6/28-sub-orch.md).
-//!
-//! Each test makes its own temporary ledger. No test reads the clock, the
-//! load or the limits of the machine, and no test starts a process: the
-//! facts of a pass (the processes and the herdr panes) are given.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -30,19 +20,14 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::Store;
 use rusqlite::{params, Connection};
 
-/// The feature and the idea that the first task of the run gets.
 const FEATURE: &str = "F-0001";
 const FIRST: &str = "I-0001";
-/// A second idea of [`FEATURE`].
 const SECOND: &str = "I-0002";
-/// The pane of the sub-orchestrator of [`FEATURE`], as herdr names it.
 const PANE: &str = "w1:p1";
-/// The process that the launch of the first attempt recorded.
 const P1: Recorded = Recorded {
     pid: 4101,
     pid_start: Some(11),
 };
-/// The process of a second attempt.
 const P2: Recorded = Recorded {
     pid: 4102,
     pid_start: Some(12),
@@ -51,7 +36,6 @@ const P2: Recorded = Recorded {
 struct World {
     dir: tempfile::TempDir,
     store: Store,
-    /// The 1 task of the run, of the idea [`FIRST`].
     task: String,
 }
 
@@ -62,8 +46,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A temp ledger with 1 run and its 1 task: the feature [`FEATURE`] with
-/// the idea [`FIRST`] in `in_progress`.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -82,7 +64,6 @@ fn world() -> World {
     let run = store
         .immediate(|tx| {
             let run = runs::create(tx, dir.path(), &new_run)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -101,8 +82,6 @@ fn world() -> World {
     World { dir, store, task }
 }
 
-/// The facts of a pass: each process of `alive` alive, each of `dead`
-/// dead, and the herdr panes `panes`.
 fn facts(alive: &[Recorded], dead: &[Recorded], panes: &[(&str, InPane)]) -> Facts {
     let mut processes = BTreeMap::new();
     for p in alive {
@@ -118,7 +97,6 @@ fn facts(alive: &[Recorded], dead: &[Recorded], panes: &[(&str, InPane)]) -> Fac
     }
 }
 
-/// `p` runs in a pane.
 fn runs_in(p: Recorded) -> InPane {
     InPane::Runs {
         pid: p.pid,
@@ -135,7 +113,6 @@ impl World {
         self.dir.path().join("ideas")
     }
 
-    /// The pass of the use case with the facts `facts`.
     fn keep(&mut self, facts: &Facts) -> Kept {
         let ideas = self.ideas();
         let ctx = Keep {
@@ -150,7 +127,6 @@ impl World {
             .unwrap()
     }
 
-    /// A new idea `id` of `feature`, moved through `path` from `captured`.
     fn idea(&mut self, id: &str, feature: &str, path: &[&str]) {
         let new = NewIdea {
             id,
@@ -191,7 +167,6 @@ impl World {
             .unwrap();
     }
 
-    /// An open worker question on the task of the run.
     fn question(&self) {
         let q = Question {
             id: format!("{}/A1/Q1", self.task),
@@ -206,7 +181,6 @@ impl World {
         questions_store::insert(self.conn(), &q).unwrap();
     }
 
-    /// The launch of the attempt `id` is seen: its process `p` in `pane`.
     fn launched(&mut self, id: &str, p: Recorded, pane: &str) {
         self.conn()
             .execute(
@@ -219,8 +193,6 @@ impl World {
             .unwrap();
     }
 
-    /// A second live attempt `id` of `idea`, outside the use case, with
-    /// its own worker, process `p` and pane `pane`.
     fn extra_attempt(&self, id: &str, idea: &str, p: Recorded, pane: &str) {
         let run: String = self
             .conn()
@@ -247,7 +219,6 @@ impl World {
             .unwrap();
     }
 
-    /// The sub-orchestrator attempts that are not ended: (id, idea).
     fn live(&self) -> Vec<(String, String)> {
         let mut stmt = self
             .conn()
@@ -332,8 +303,6 @@ fn i7_missing_sub_orchestrator_is_started_extra_is_stopped() {
         (s.feature.as_str(), s.idea.as_str(), s.phase.as_str()),
         (FEATURE, SECOND, "clarifying")
     );
-    // The first instruction is the launch argument: the idea, the phase and
-    // the folder (FR-7). The pane of the feature is new.
     assert_eq!(s.folder, w.ideas().join(SECOND));
     assert_eq!(s.pane, None);
     assert_eq!(s.pane_name, "idea-0001");
@@ -387,8 +356,6 @@ fn i7_two_ideas_of_1_feature_share_1_live_sub_orchestrator() {
     assert_eq!(started_ids(&k), vec!["I-0001/supervising/1"]);
     w.launched("I-0001/supervising/1", P1, PANE);
 
-    // A second idea of the feature starts its interview: the 1 live process
-    // of the feature is now its process, and it owns the open question.
     w.idea(SECOND, FEATURE, &["clarifying"]);
     w.idea("I-0003", FEATURE, &[]);
     let f = facts(&[P1], &[], &[(PANE, runs_in(P1))]);
@@ -405,7 +372,6 @@ fn i7_two_ideas_of_1_feature_share_1_live_sub_orchestrator() {
     assert_eq!(w.i7(), vec![]);
     assert_eq!(w.i13(), vec![]);
 
-    // The next pass changes nothing.
     let k = w.keep(&f);
     assert_eq!(k, Kept::default());
 }
@@ -413,7 +379,6 @@ fn i7_two_ideas_of_1_feature_share_1_live_sub_orchestrator() {
 #[test]
 fn i13_open_feature_without_sub_orchestrator_gets_one() {
     let mut w = world();
-    // A second feature with only a captured idea has no work.
     let second = w
         .store
         .immediate(|tx| {
@@ -429,7 +394,6 @@ fn i13_open_feature_without_sub_orchestrator_gets_one() {
         })
         .unwrap();
     w.idea("I-0009", &second, &[]);
-    // The idea of the run waits for no one: its process may stop.
     assert_eq!(w.i13(), vec![]);
     assert_eq!(w.keep(&Facts::default()), Kept::default());
 
@@ -469,7 +433,6 @@ fn i13_a_process_stopped_by_the_idle_rule_is_not_started_again() {
     assert_eq!(w.i13(), vec![]);
     assert_eq!(w.keep(&Facts::default()), Kept::default());
 
-    // A worker question starts it again from the folder.
     w.question();
     let k = w.keep(&Facts::default());
     assert_eq!(started_ids(&k), vec!["I-0002/clarifying/2"]);
@@ -483,13 +446,10 @@ fn each_phase_gets_a_fresh_process() {
     w.launched("I-0002/clarifying/1", P1, PANE);
     let f1 = facts(&[P1], &[], &[(PANE, runs_in(P1))]);
 
-    // awaiting_approval and a revise are the clarifying phase: the process
-    // waits for you.
     w.move_idea(SECOND, "awaiting_approval");
     assert_eq!(w.keep(&f1), Kept::default());
     assert_eq!(w.i7(), vec![]);
 
-    // The approval starts the specifying phase in the same pane.
     w.move_idea(SECOND, "specifying");
     let k = w.keep(&f1);
     assert_eq!(k.ended, vec![ended("I-0002/clarifying/1", "stopped")]);
@@ -519,7 +479,6 @@ fn dead_sub_orchestrator_restarts_in_the_same_phase() {
     w.keep(&Facts::default());
     w.launched("I-0002/clarifying/1", P1, PANE);
 
-    // The process died mid-interview; herdr still names its pid in the pane.
     let k = w.keep(&facts(&[], &[P1], &[(PANE, InPane::Gone(P1.pid))]));
     assert_eq!(k.ended, vec![ended("I-0002/clarifying/1", "no_result")]);
     assert_eq!(started_ids(&k), vec!["I-0002/clarifying/2"]);
@@ -566,8 +525,6 @@ fn an_unproven_pane_is_not_closed() {
     w.launched("I-0001/supervising/1", P1, PANE);
     w.move_feature(FEATURE, "abandoned");
 
-    // herdr names another process in the pane: no fact proves that the pane
-    // is the pane of the attempt.
     let other = Recorded {
         pid: 4999,
         pid_start: Some(99),

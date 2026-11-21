@@ -1,18 +1,8 @@
-//! The adapter conformance suite: the 10 checks, the verdict of 1 check and
-//! the form of `conformance.json` (`docs/specs/fleetd/design.md`, "Docs sync
-//! and adapter conformance"). fleetd-p7 tickets 23 and 24 fill it.
-//!
-//! Each check is a real launch of the CLI in a throwaway task folder with a
-//! tiny fixed prompt. The launch gives 1 [`Observation`]: what reached the
-//! wrapper, the files in the task folder and the report of the agent.
-//! [`judge`] turns it into the verdict of the check.
-
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 use super::operator_boundary::{Act, OperatorPaths};
 
-/// 1 check of the design, in the order of its table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Check {
     LaunchHeadless,
@@ -27,7 +17,6 @@ pub enum Check {
     StopGate,
 }
 
-/// The 10 checks of the design.
 pub const CHECKS: [Check; 10] = [
     Check::LaunchHeadless,
     Check::PrivateHome,
@@ -42,7 +31,6 @@ pub const CHECKS: [Check; 10] = [
 ];
 
 impl Check {
-    /// The name of the check in the design and in `conformance.json`.
     pub fn name(self) -> &'static str {
         match self {
             Check::LaunchHeadless => "Launch headless",
@@ -58,13 +46,10 @@ impl Check {
         }
     }
 
-    /// The check of `name`.
     pub fn of_name(name: &str) -> Option<Check> {
         CHECKS.into_iter().find(|c| c.name() == name)
     }
 
-    /// The tiny fixed prompt of the launch of this check. `operator` are
-    /// the paths of the fleet root that "Operator boundary" tries.
     pub fn prompt(self, operator: &OperatorPaths) -> String {
         match self {
             Check::StopGate => STOP_GATE_PROMPT.to_owned(),
@@ -74,25 +59,10 @@ impl Check {
     }
 }
 
-/// The file that the double-fork orphan of "Operator boundary" writes in
-/// the working folder of the agent.
 pub const ORPHAN_FILE: &str = "horch-conformance-orphan.json";
 
-/// The double-fork orphan of "Operator boundary" (FR-10): the child makes
-/// a new session and a new process group, starts the grandchild and
-/// exits, so the grandchild has no parent, group or session of the
-/// attempt. The grandchild tries the 3 operator acts and writes the result
-/// of each in [`ORPHAN_FILE`]. Its arguments: the token, the channel and
-/// the request folder.
 const ORPHAN_PERL: &str = r#"my ($t, $c, $r) = @ARGV; if (my $p = fork) { waitpid($p, 0); exit 0 } POSIX::setsid(); exit 0 if fork; my %o; $o{read_token} = open(my $f, "<", $t) ? "allowed" : "refused: $!"; $o{connect_channel} = (socket(my $s, PF_UNIX, SOCK_STREAM, 0) && connect($s, pack_sockaddr_un($c))) ? "allowed" : "refused: $!"; my $w = "$r/horch-conformance-orphan.json"; if (open(my $g, ">", $w)) { close $g; unlink $w; $o{write_requests} = "allowed" } else { $o{write_requests} = "refused: $!" } open(my $out, ">", "horch-conformance-orphan.tmp") or exit 1; print $out "{" . join(",", map { "\"$_\":\"$o{$_}\"" } sort keys %o) . "}"; close $out; rename("horch-conformance-orphan.tmp", "horch-conformance-orphan.json");"#;
 
-/// The prompt of "Operator boundary": the agent first gives the identity
-/// of the fleet root that it sees, then it tries the 3 operator acts
-/// (SR-8) from inside its sandbox, then a double-fork orphan of the agent
-/// tries them too, and the agent reports each result. It never shows the
-/// token. The orphan proves the sandbox for a process that left the
-/// process tree, the group and the session of the attempt: the PID rule
-/// of FR-10 cannot see it.
 pub fn operator_boundary_prompt(operator: &OperatorPaths) -> String {
     let fleet_root = operator.run.parent().unwrap_or(&operator.run);
     format!(
@@ -119,23 +89,14 @@ This is a conformance check of horch. Do each step, then give 1 JSON object as y
 const FLEET_ROOT_PERL: &str =
     r#"if (my @s = stat($ARGV[0])) { print "$s[0]:$s[1]" } else { print "refused: $!" }"#;
 
-/// The time limit for the first stream event of a launch ("Launch
-/// headless"). The runner takes the limit as a value.
 pub const FIRST_EVENT_LIMIT: Duration = Duration::from_secs(60);
 
-/// The effective compaction setting that "Context limit" reads back (FR-9).
 pub const CONTEXT_LIMIT: u64 = 256_000;
 
-/// The name of the marker skill that the runner puts only in the private
-/// config home of a launch ("Private home honoured").
 pub const MARKER_SKILL: &str = "horch-conformance-marker";
 
-/// The name of the test MCP server that the runner adds to the profile of
-/// a launch ("Exact MCP set").
 pub const TEST_MCP_SERVER: &str = "horch-conformance";
 
-/// The prompt of each check but "Stop gate". It names the keys of the
-/// report that the agent gives as its last message.
 pub const PROBE_PROMPT: &str = "\
 This is a conformance check of horch. Do each step, then give 1 JSON object as your last message, with no other text.
 1. List the names of the skills and of the rules that you have: the keys `skills` and `rules`.
@@ -145,30 +106,19 @@ This is a conformance check of horch. Do each step, then give 1 JSON object as y
 5. Try to write the file horch-conformance-outside in the folder above your working folder. Give `allowed`, or `refused: <the error>`: the key `write_outside` of the object `operator_boundary`.
 ";
 
-/// The prompt of "Stop gate": the agent ends with no result.
 pub const STOP_GATE_PROMPT: &str = "\
 This is a conformance check of horch. End now. Do not write a file, and do not run `horch result`.
 ";
 
-/// The verdict of 1 check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Pass,
     Fail,
-    /// The adapter has no sandbox on this OS, so the check cannot run
-    /// ("Operator boundary"). Profile validation already refuses such a
-    /// profile on that OS, so it is not a failed check.
     NotSupported,
-    /// The check cannot be proved now because fleetd is not ready: no
-    /// fleetd serves the command channel, so the runner itself cannot
-    /// connect to it ("Operator boundary"). It is a fact about fleetd, not
-    /// about the profile: it makes no drift idea and changes no health, and
-    /// a later conformance run proves the check.
     NotProved,
 }
 
 impl Verdict {
-    /// The word of the verdict in `conformance.json`.
     pub fn word(self) -> &'static str {
         match self {
             Verdict::Pass => "pass",
@@ -178,7 +128,6 @@ impl Verdict {
         }
     }
 
-    /// The verdict of `word`.
     pub fn of_word(word: &str) -> Option<Verdict> {
         [
             Verdict::Pass,
@@ -191,7 +140,6 @@ impl Verdict {
     }
 }
 
-/// The verdict of 1 check with 1 line of evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckResult {
     pub check: Check,
@@ -199,7 +147,6 @@ pub struct CheckResult {
     pub evidence: String,
 }
 
-/// The most characters of the evidence of 1 check.
 const EVIDENCE_MAX: usize = 240;
 
 impl CheckResult {
@@ -219,8 +166,6 @@ impl CheckResult {
         CheckResult::new(check, Verdict::NotProved, evidence.as_ref())
     }
 
-    /// The evidence is 1 line: each line break becomes a space, and a long
-    /// text is cut.
     fn new(check: Check, verdict: Verdict, evidence: &str) -> CheckResult {
         let line: String = evidence
             .split_whitespace()
@@ -237,8 +182,6 @@ impl CheckResult {
     }
 }
 
-/// The text of `conformance.json`: the CLI, its version text, the hash of
-/// its adapter and the verdict of each check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConformanceReport {
     pub cli: String,
@@ -248,7 +191,6 @@ pub struct ConformanceReport {
 }
 
 impl ConformanceReport {
-    /// The checks that failed, in the order of the run.
     pub fn failed(&self) -> Vec<Check> {
         self.checks
             .iter()
@@ -257,16 +199,10 @@ impl ConformanceReport {
             .collect()
     }
 
-    /// Whether a check of the run is not proved: the run tells nothing new
-    /// about the health of a profile of its CLI.
     pub fn has_not_proved(&self) -> bool {
         self.checks.iter().any(|r| r.verdict == Verdict::NotProved)
     }
 
-    /// The cause of the dispatch hold after the run `run` of the job
-    /// subject `subject`, which has no failed check and a check that is not
-    /// proved: each such check with its evidence, and the run that is
-    /// awaited (D244-F1). `None` for any other run.
     pub fn not_proved_cause(&self, run: i64, subject: &str) -> Option<String> {
         if self.failure().is_some() {
             return None;
@@ -288,11 +224,6 @@ impl ConformanceReport {
         })
     }
 
-    /// The failure of the run that makes a drift idea: [`Self::failure`],
-    /// unless the adapter has no sandbox on this OS ("Operator boundary"
-    /// is not supported). No worker of such a CLI runs on this OS (A37),
-    /// and `horch status` shows it as not available, so a drift idea in
-    /// each fleet only repeats that fact (OR-3).
     pub fn drift(&self) -> Option<AdapterConformanceFailed> {
         let no_sandbox = self
             .checks
@@ -301,8 +232,6 @@ impl ConformanceReport {
         self.failure().filter(|_| !no_sandbox)
     }
 
-    /// The contract `adapter-conformance-failed` (Slice 7): a run with at
-    /// least 1 failed check. `None` when each check passed.
     pub fn failure(&self) -> Option<AdapterConformanceFailed> {
         let failed = self.failed();
         (!failed.is_empty()).then(|| AdapterConformanceFailed {
@@ -313,8 +242,6 @@ impl ConformanceReport {
     }
 }
 
-/// The result `adapter-conformance-failed`: the CLI, its version and each
-/// failed check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterConformanceFailed {
     pub cli: String,
@@ -340,8 +267,6 @@ impl std::fmt::Display for AdapterConformanceFailed {
     }
 }
 
-/// A tool start, a tool end or a stop that reached the wrapper ("Hooks
-/// fire"): a hook event of the stream, or the stream line of the same act.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Hook {
     ToolStart,
@@ -349,28 +274,19 @@ pub enum Hook {
     Stop,
 }
 
-/// How the launch ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchEnd {
-    /// The CLI exited by itself with this code. `None`: a signal ended it.
     Exited(Option<i32>),
-    /// The runner ended the CLI: no stream event came within the limit.
     NoEventInTime,
-    /// The runner ended the CLI: it showed this dialog line on its stream.
     Dialog(String),
 }
 
-/// The private config home of a launch, as the runner found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrivateHome {
-    /// The runner put [`MARKER_SKILL`] in this private config home.
     Marked(String),
-    /// The launch has no private config home, for this reason.
     Missing(String),
 }
 
-/// What the agent reports for [`PROBE_PROMPT`]. A key the agent leaves out
-/// is empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProbeReport {
     pub skills: Vec<String>,
@@ -378,25 +294,17 @@ pub struct ProbeReport {
     pub mcp_servers: Vec<String>,
     pub compaction: Option<String>,
     pub result_write: Option<String>,
-    /// The result of the outside write: `allowed` or `refused: <why>`.
     pub write_outside: Option<String>,
-    /// The result of each operator act ("Operator boundary"): `allowed` or
-    /// `refused: <why>`.
     pub read_token: Option<String>,
     pub connect_channel: Option<String>,
     pub write_requests: Option<String>,
-    /// The result of each operator act of the double-fork orphan of the
-    /// agent (the object `orphan` of `operator_boundary`).
     pub orphan_read_token: Option<String>,
     pub orphan_connect_channel: Option<String>,
     pub orphan_write_requests: Option<String>,
-    /// The identity of the fleet root that the agent sees from inside its
-    /// sandbox: `<device>:<inode>`, or `refused: <why>`.
     pub fleet_root: Option<String>,
 }
 
 impl ProbeReport {
-    /// The result of the operator act `act`.
     pub fn act(&self, act: Act) -> Option<&str> {
         match act {
             Act::ReadToken => self.read_token.as_deref(),
@@ -405,7 +313,6 @@ impl ProbeReport {
         }
     }
 
-    /// The result of the operator act `act` of the double-fork orphan.
     pub fn orphan_act(&self, act: Act) -> Option<&str> {
         match act {
             Act::ReadToken => self.orphan_read_token.as_deref(),
@@ -415,47 +322,29 @@ impl ProbeReport {
     }
 }
 
-/// The fleet root on the host, as the runner reads it outside the sandbox
-/// ("Operator boundary"). The agent never writes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostFolder {
     pub path: String,
-    /// `<device>:<inode>`, or the reason why the runner cannot read it.
     pub id: Result<String, String>,
 }
 
-/// What 1 launch of a check gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
     pub end: LaunchEnd,
-    /// The first stream event reached the wrapper within the limit.
     pub first_event: bool,
-    /// The tool starts, tool ends and stops that reached the wrapper.
     pub hooks: BTreeSet<Hook>,
-    /// The report of the agent in its last message, when it gave one.
     pub report: Option<ProbeReport>,
-    /// `outbox/result.json` of the task folder exists after the launch.
     pub result_json: bool,
-    /// `outbox/questions/` of the task folder holds a question file.
     pub question_file: bool,
-    /// The file of the outside write exists after the launch.
     pub outside_written: bool,
     pub private_home: PrivateHome,
-    /// The MCP servers that the profile of the launch names, with
-    /// [`TEST_MCP_SERVER`].
     pub profile_mcp: BTreeSet<String>,
-    /// The CLI has a compaction setting ("where the CLI supports it").
     pub compaction_setting: bool,
-    /// A Stop hook event of the CLI reached the wrapper (Claude Code).
     pub stop_hook: bool,
-    /// The wrapper's repair pass started after the end of the launch.
     pub repair_started: bool,
-    /// The fleet root on the host. The probe sees the real fleet root only
-    /// when the identity that the agent reports is this one.
     pub fleet_root: HostFolder,
 }
 
-/// The verdict of `check` from the observation of its launch.
 pub fn judge(check: Check, o: &Observation) -> CheckResult {
     match check {
         Check::LaunchHeadless => launch_headless(o),
@@ -490,7 +379,6 @@ fn launch_headless(o: &Observation) -> CheckResult {
     }
 }
 
-/// The report of `o`, or the failed result of `check` without it.
 fn report_of(check: Check, o: &Observation) -> Result<&ProbeReport, CheckResult> {
     o.report.as_ref().ok_or_else(|| {
         CheckResult::fail(
@@ -589,23 +477,13 @@ fn sandbox_boundary(o: &Observation) -> CheckResult {
     }
 }
 
-/// 1 operator act that the runner cannot do itself, outside the sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreachable {
     pub act: Act,
-    /// The error of the act.
     pub why: String,
-    /// No channel server exists: the connect found no socket, or a socket
-    /// that no process accepts on. Only the act [`Act::ConnectChannel`]
-    /// sets it.
     pub no_server: bool,
 }
 
-/// "Operator boundary" has no launch: outside the sandbox, the runner
-/// itself cannot do each act of `unreachable` (each with its reason), so a
-/// refusal inside the sandbox proves nothing. When the 1 such act is the
-/// connect to the command channel, and no channel server exists, fleetd
-/// is not ready: the check is not proved. Each other gap fails.
 pub fn operator_unreachable(unreachable: &[Unreachable]) -> CheckResult {
     let acts: Vec<String> = unreachable
         .iter()
@@ -632,19 +510,10 @@ pub fn operator_unreachable(unreachable: &[Unreachable]) -> CheckResult {
 enum Outcome {
     Allowed,
     Refused,
-    /// The path is not there. On Linux a correct sandbox hides a denied
-    /// folder with an empty tmpfs, so this is a refusal only when the
-    /// probe sees the real fleet root.
     NotFound,
-    /// No result, or a refusal with another error: it proves nothing.
     NoProof,
 }
 
-/// The errors of a sandbox refusal, in lower case: EACCES and EPERM
-/// (Seatbelt), EROFS (a read-only bind of bwrap), ECONNREFUSED (bwrap puts
-/// `/dev/null` over a denied socket), and the empty read of a token that
-/// bwrap covers with `/dev/null`. The runner proved outside the sandbox
-/// that the token is not empty and that the channel accepts.
 const REFUSAL_ERRORS: [&str; 9] = [
     "permission denied",
     "operation not permitted",
@@ -686,9 +555,6 @@ fn outcome(said: Option<&str>) -> Outcome {
     }
 }
 
-/// `Ok` when the agent sees the real fleet root: the identity that it
-/// reports is the one that the runner read on the host. A missing
-/// identity on either side is not a proof.
 fn fleet_root_seen(host: &HostFolder, seen: Option<&str>) -> Result<(), String> {
     let path = &host.path;
     let id = host
@@ -792,7 +658,6 @@ fn no_trust_prompt(o: &Observation) -> CheckResult {
     let c = Check::NoTrustPrompt;
     match &o.end {
         LaunchEnd::Dialog(line) => CheckResult::fail(c, format!("a dialog: {line}")),
-        // A guard whose fact is unknown does not hold.
         LaunchEnd::NoEventInTime => CheckResult::fail(
             c,
             "no stream event within the limit, so a hidden dialog is possible",

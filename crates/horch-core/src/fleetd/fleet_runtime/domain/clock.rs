@@ -1,43 +1,18 @@
-//! The fleet clock: 1 count of seconds that stops while the machine sleeps
-//! and while fleetd is down (`docs/specs/fleetd/design.md`, "Supervision,
-//! liveness and reconciliation", "One fleet clock for each timer").
-//!
-//! Each pass adds the awake time since the last pass of the same process,
-//! at most 2 pass periods. So a late pass of a live fleetd adds at most 2
-//! pass periods. A sleep adds nothing, because the awake clock stops in
-//! it. A downtime of fleetd adds nothing: the new process has no reading,
-//! so its first tick adds 0. Each deadline of the
-//! fleet (a job time limit, a backoff, a start timeout) is a value on this
-//! clock.
-
-/// A value on the fleet clock, in seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FleetSeconds(pub i64);
 
-/// 1 reading of the awake clock of the platform layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwakeReading {
-    /// The id of the boot of the reading.
     pub boot_id: String,
-    /// The awake time since that boot, in milliseconds.
     pub awake_ms: u64,
 }
 
-/// The result of 1 tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tick {
-    /// The new value of the fleet clock.
     pub clock: FleetSeconds,
-    /// The awake reading that the next tick counts from. Below the cap it
-    /// keeps the part of a second that this tick did not add, so the clock
-    /// does not lose a fraction of a second at each pass.
     pub mark: AwakeReading,
 }
 
-/// Add to `clock` the awake time from `last` to `now`, at most 2 times
-/// `pass_period_s`. With no `last` (the first tick of a process), with
-/// readings of different boots, or with `now` before `last`, the tick adds
-/// 0.
 pub fn tick(
     clock: FleetSeconds,
     last: Option<&AwakeReading>,
@@ -84,8 +59,6 @@ mod tests {
 
     #[test]
     fn fleet_clock_does_not_advance_during_sleep_or_downtime() {
-        // A gap of 1 h of awake time (a downtime of fleetd) adds at most
-        // 2 pass periods: 10 s.
         let t = tick(
             FleetSeconds(100),
             Some(&at("b", 1_000)),
@@ -94,7 +67,6 @@ mod tests {
         );
         assert_eq!(t.clock, FleetSeconds(110));
         assert_eq!(t.mark, at("b", 1_000 + 3_600_000));
-        // A sleep: the awake clock did not move, so the tick adds 0.
         let t = tick(
             FleetSeconds(100),
             Some(&at("b", 1_000)),
@@ -124,7 +96,6 @@ mod tests {
 
     #[test]
     fn tick_keeps_the_part_of_a_second_for_the_next_tick() {
-        // 2 passes of 5.6 s add 11 s in total, not 10 s.
         let first = tick(
             FleetSeconds(0),
             Some(&at("b", 0)),

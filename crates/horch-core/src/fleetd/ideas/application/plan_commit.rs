@@ -1,23 +1,3 @@
-//! Plan commit: validate plan.yaml, write plan.verdict.json, and commit the
-//! tasks of a valid plan in 1 transaction.
-//!
-//! `validate_plan` is the use case `ValidatePlan`
-//! (`ddd/08-code/ideas/design.md`, section 3; FR-3, FM-1, FM-10). No AI
-//! creates a task: the sub-orchestrator writes plan.yaml and its tickets
-//! in the idea folder, and fleetd reads them with the checks of SR-6, runs
-//! the plan validator, and then:
-//!
-//! - refuses the plan: 1 is added to `phase_attempts`, the idea stays in
-//!   `ticketing`, and plan.verdict.json lists each problem, so the
-//!   sub-orchestrator runs ticketing again with them;
-//! - or commits the plan in 1 transaction: the requirements, each task
-//!   through `add_planned_tasks` of task execution, the `task_covers` rows,
-//!   `plan_sha256` on the idea, and the move of the idea to `in_progress`.
-//!   A failure at any point commits nothing.
-//!
-//! plan.verdict.json is written after the commit (connect N4), atomically,
-//! and fleetd is its only writer.
-
 use std::path::{Component, Path};
 
 use anyhow::{bail, Context, Result};
@@ -44,66 +24,44 @@ use crate::taskledger::map::{ticket_facts, ticket_problems};
 use crate::taskledger::model::{Actor, EventKind, WorkKind};
 use crate::taskledger::{runs, util, Store};
 
-/// The plan of an idea, in its folder.
 pub const PLAN_YAML: &str = "plan.yaml";
 
-/// The verdict of fleetd on plan.yaml, in the idea folder.
 pub const VERDICT_FILE: &str = "plan.verdict.json";
 
-/// The state in which an idea has a plan to validate.
 const TICKETING: &str = "ticketing";
 
-/// The state of an idea with a committed plan.
 const IN_PROGRESS: &str = "in_progress";
 
-/// The rule name of a problem of reading the files of the plan.
 const READ: &str = "read";
 
-/// The mode of plan.verdict.json.
 const VERDICT_MODE: u32 = 0o600;
 
-/// What the plan commit needs besides the ledger.
 pub struct PlanCommit<'a> {
-    /// The `ideas/` folder of the fleet root.
     pub ideas: &'a Path,
-    /// The user that owns the ledger, and so each file of an idea folder.
     pub owner: &'a User,
-    /// The profiles of the roster.
     pub roster: &'a [RosterProfile],
-    /// The gates that the project declares.
     pub gates: &'a DeclaredGates,
-    /// The generation of fleetd, or `None` outside fleetd.
     pub guard: Option<Generation>,
-    /// Opens the needs-you item of a refused move of the door.
     pub refusals: &'a dyn RecordRefusal,
 }
 
-/// The result of 1 plan commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// The plan is in the ledger. `tasks` holds (key, task id) of each task,
-    /// in the order of plan.yaml.
     Committed {
         plan_sha256: String,
         tasks: Vec<(String, String)>,
     },
-    /// The plan is refused, with each problem. Nothing of it is in the
-    /// ledger.
-    Refused { problems: Vec<Problem> },
+    Refused {
+        problems: Vec<Problem>,
+    },
 }
 
-/// The plan as fleetd read it from the idea folder.
 struct ReadPlan {
     plan: Plan,
     sha256: String,
-    /// The text of the ticket of each task, by the index of the task.
     tickets: Vec<Option<String>>,
 }
 
-/// Validate the plan.yaml of the idea `idea_id`, which is in `ticketing`,
-/// and commit it or refuse it. An idea in another state is an error that
-/// writes nothing. A failure of the ledger commits nothing and writes no
-/// verdict.
 pub fn validate_plan(store: &mut Store, ctx: &PlanCommit<'_>, idea_id: &str) -> Result<Verdict> {
     let idea = ideas_store::idea(store.conn(), idea_id)?
         .with_context(|| format!("the ledger has no idea {idea_id}"))?;
@@ -145,8 +103,6 @@ pub fn validate_plan(store: &mut Store, ctx: &PlanCommit<'_>, idea_id: &str) -> 
     })
 }
 
-/// Read plan.yaml and each ticket that it names with the checks of SR-6.
-/// Each problem of reading is a problem of the verdict.
 fn read_plan(dir: &Path, owner: &User, idea: &IdeaRow) -> (Option<ReadPlan>, Vec<Problem>) {
     let mut problems = Vec::new();
     let bytes = match read_file(dir, owner, PLAN_YAML) {
@@ -217,7 +173,6 @@ fn read_plan(dir: &Path, owner: &User, idea: &IdeaRow) -> (Option<ReadPlan>, Vec
     (Some(read), problems)
 }
 
-/// The text of the ticket `rel`, a relative path inside the idea folder.
 pub(crate) fn read_ticket(dir: &Path, owner: &User, rel: &str) -> Result<String, String> {
     let inside = !rel.is_empty()
         && Path::new(rel)
@@ -230,8 +185,6 @@ pub(crate) fn read_ticket(dir: &Path, owner: &User, rel: &str) -> Result<String,
     String::from_utf8(bytes).map_err(|_| "the file is not UTF-8 text".into())
 }
 
-/// The bytes of the file `rel` of the idea folder `dir`, read with the
-/// checks of SR-6, or the reason of the first check that fails.
 pub(crate) fn read_file(dir: &Path, owner: &User, rel: &str) -> Result<Vec<u8>, String> {
     let path = dir.join(rel);
     if let Err(e) = std::fs::symlink_metadata(&path) {
@@ -247,10 +200,6 @@ pub(crate) fn read_file(dir: &Path, owner: &User, rel: &str) -> Result<Vec<u8>, 
     read_protected(&path, &rule).map_err(|r| r.reason)
 }
 
-/// The facts of the plan rules: the requirements, the approved assumptions
-/// and the answers from the idea folder, and the roster and the gates from
-/// the caller. A `--direct` idea with no requirements.yaml has 1
-/// requirement, its approved ticket ([`direct_requirement`]).
 pub(crate) fn plan_facts(
     conn: &Connection,
     folder: &IdeaFolder,
@@ -282,8 +231,6 @@ pub(crate) fn plan_facts(
     })
 }
 
-/// Record the refusal: 1 more phase attempt and 1 event of the idea, in 1
-/// transaction, then plan.verdict.json with each problem.
 fn refuse(
     store: &mut Store,
     ctx: &PlanCommit<'_>,
@@ -328,8 +275,6 @@ fn refuse(
     Ok(Verdict::Refused { problems })
 }
 
-/// Commit the plan `read` of `idea` in `tx`. Returns (key, task id) of each
-/// task.
 fn commit(
     tx: &Connection,
     ctx: &PlanCommit<'_>,
@@ -397,7 +342,6 @@ fn commit(
     Ok(ids)
 }
 
-/// The task of the port `AddPlannedTasks` for the plan task `task`.
 pub(crate) fn planned_task(
     task: &PlannedTask,
     ticket: Option<&str>,
@@ -430,8 +374,6 @@ pub(crate) fn planned_task(
     }
 }
 
-/// The Own paths of `task`: its `outputs`, then the `**Own:**` paths of
-/// its ticket that are not outputs.
 fn own_paths(task: &PlannedTask, ticket: Option<&str>) -> Vec<String> {
     let mut own = task.outputs.clone();
     for path in ticket.map(|t| ticket_facts(t).own).unwrap_or_default() {
@@ -442,7 +384,6 @@ fn own_paths(task: &PlannedTask, ticket: Option<&str>) -> Vec<String> {
     own
 }
 
-/// The task as committed: each field of plan.yaml.
 fn spec_json(task: &PlannedTask) -> serde_json::Value {
     let acceptance: Vec<serde_json::Value> = task
         .acceptance
@@ -474,7 +415,6 @@ fn spec_json(task: &PlannedTask) -> serde_json::Value {
     })
 }
 
-/// Write plan.verdict.json in the idea folder `dir`, atomically.
 fn write_verdict(dir: &Path, verdict: &serde_json::Value) -> Result<()> {
     let mut text = serde_json::to_string_pretty(verdict)?;
     text.push('\n');

@@ -1,9 +1,3 @@
-//! Worker worktree claims and loss-resistant landing.
-//!
-//! A [`Landing`] keeps one durable registry per repository. Landing is
-//! serialized with that registry's lock, so concurrent workers always rebase
-//! and fast-forward in a linear order.
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,7 +16,6 @@ const LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_HEARTBEAT: Duration = Duration::from_secs(60);
 
-/// The durable state of a worktree claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClaimState {
@@ -31,7 +24,6 @@ pub enum ClaimState {
     Unlanded,
 }
 
-/// A durable ownership record for one worker worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
     pub id: String,
@@ -47,25 +39,19 @@ pub struct Claim {
     pub state: ClaimState,
     pub landed_commit: Option<String>,
     pub reason: Option<String>,
-    /// What happened to the claim after it was made, oldest first. Only a
-    /// reopen writes an event today.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ClaimEvent>,
 }
 
-/// One entry in the history of a claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimEvent {
     #[serde(with = "rfc3339")]
     pub at: DateTime<Utc>,
-    /// The kind of event, for example `reopened`.
     pub event: String,
-    /// Why it happened.
     pub text: String,
 }
 
 impl Claim {
-    /// A new open claim, created now.
     fn open(
         role: &str,
         name: &str,
@@ -101,7 +87,6 @@ impl Claim {
     }
 }
 
-/// Live facts about a registered claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimStatus {
     pub ahead: usize,
@@ -110,7 +95,6 @@ pub struct ClaimStatus {
     pub exists: bool,
 }
 
-/// A linked worktree which is not present in the claim registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unregistered {
     pub path: PathBuf,
@@ -119,18 +103,12 @@ pub struct Unregistered {
     pub dirty: usize,
 }
 
-/// A linked worktree the scan could not read, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
     pub path: PathBuf,
-    /// `prunable` (git cannot reach its gitdir) or `folder missing`.
     pub reason: &'static str,
 }
 
-/// What [`Landing::unregistered`] found, and what it had to leave out.
-///
-/// A skipped path is named, never dropped in silence: a deleted folder used
-/// to fail the whole scan, and `done` then reported nothing at all.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnregisteredScan {
     pub entries: Vec<Unregistered>,
@@ -143,34 +121,27 @@ impl UnregisteredScan {
     }
 }
 
-/// A linked worktree as `git worktree list --porcelain` describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Worktree {
     path: PathBuf,
     branch: Option<String>,
-    /// git's reason, when the folder or its gitdir is gone.
     prunable: Option<String>,
 }
 
-/// The result of a successful landing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landed {
     pub branch: String,
     pub base: String,
     pub commit: String,
     pub commits: usize,
-    /// The cleanup steps that failed after the fast-forward, on 1 line,
-    /// each with the command to finish it. The land itself succeeded.
     pub cleanup_note: Option<String>,
 }
 
-/// Worktree registry and landing operations.
 #[derive(Debug, Clone)]
 pub struct Landing {
     runner: GitRunner,
     state_root: PathBuf,
     env: Vec<(OsString, OsString)>,
-    /// Worktree paths the task ledger owns, which the scan never reports.
     recorded: Vec<PathBuf>,
     lock_stale_after: Duration,
     lock_timeout: Duration,
@@ -197,15 +168,11 @@ impl Landing {
         }
     }
 
-    /// Paths the task ledger records as worktrees. Its worktrees are not in
-    /// the claim registry, so without this every worker's `done` lists the
-    /// other workers' in-flight worktrees as unregistered.
     pub fn with_recorded_worktrees(mut self, paths: Vec<PathBuf>) -> Self {
         self.recorded = paths;
         self
     }
 
-    /// Add an environment variable to every git child process.
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.runner = self.runner.with_env(key, value);
         self.env.push((key.into(), value.into()));
@@ -220,7 +187,6 @@ impl Landing {
         self
     }
 
-    /// Create and register `wt/<role>-<name>` from the current base branch.
     pub fn create(
         &self,
         dir: &Path,
@@ -243,7 +209,6 @@ impl Landing {
         self.register(&repo, claims, claim)
     }
 
-    /// Add `claim` to the registry `claims` and write it.
     fn register(&self, repo: &Repo, mut claims: Vec<Claim>, claim: Claim) -> Result<Claim> {
         claims.push(claim.clone());
         self.write_unlocked(repo, &claims).with_context(|| {
@@ -255,7 +220,6 @@ impl Landing {
         Ok(claim)
     }
 
-    /// Refuse a name that a claim, a folder or a branch already uses.
     fn check_free(
         &self,
         repo: &Repo,
@@ -280,7 +244,6 @@ impl Landing {
         Ok(())
     }
 
-    /// `git worktree add -b <branch> <path> <base>`, with a retry hint.
     fn add_worktree(&self, repo: &Repo, path: &Path, branch: &str, base: &str) -> Result<()> {
         let path_arg = path_text(path)?;
         self.run(
@@ -298,7 +261,6 @@ impl Landing {
         Ok(())
     }
 
-    /// Land one open claim owned by `role` into its base branch.
     pub fn land(
         &self,
         dir: &Path,
@@ -318,20 +280,13 @@ impl Landing {
         claims[index].reason = None;
         self.write_unlocked(&repo, &claims)
             .with_context(|| self.registry_hint(&claim, &repo, &result.commit))?;
-        // The base already moved, so a cleanup failure is a note, not an
-        // error: an error here told the worker the land had failed.
         result.cleanup_note = self.clean_up(&repo, &claim, set_upstream);
         Ok(result)
     }
 
-    /// Set the upstream when `set_upstream`, remove the worktree and delete
-    /// the branch of the landed `claim`. Runs every step, and returns the
-    /// failures on 1 line, or `None` when every step passed.
     fn clean_up(&self, repo: &Repo, claim: &Claim, set_upstream: bool) -> Option<String> {
         let path = claim.path.to_string_lossy();
         let mut steps: Vec<(&str, Vec<&str>)> = Vec::new();
-        // `branch -d` checks the upstream when one exists. Set it when the
-        // repository's current checkout is unrelated to the landed base.
         if set_upstream {
             steps.push((
                 "branch --set-upstream-to",
@@ -355,8 +310,6 @@ impl Landing {
         (!failures.is_empty()).then(|| failures.join("; "))
     }
 
-    /// The error context when a landing is done but its registry write
-    /// failed.
     fn registry_hint(&self, claim: &Claim, repo: &Repo, commit: &str) -> String {
         format!(
             "landed {} at {}, but the registry update failed; inspect {}",
@@ -366,7 +319,6 @@ impl Landing {
         )
     }
 
-    /// Read live status for `claim`.
     pub fn status(&self, claim: &Claim) -> Result<ClaimStatus> {
         if claim.path.is_dir() {
             self.status_of_live(claim)
@@ -387,7 +339,6 @@ impl Landing {
         })
     }
 
-    /// Status of a claim whose folder is gone: its branch may still exist.
     fn status_of_removed(&self, claim: &Claim) -> Result<ClaimStatus> {
         let repo = claim.path.parent().and_then(Path::parent).ok_or_else(|| {
             anyhow!(
@@ -412,7 +363,6 @@ impl Landing {
         })
     }
 
-    /// The number of commits on the claim branch that its base lacks.
     fn commits_ahead(&self, dir: &Path, claim: &Claim) -> Result<usize> {
         Ok(self
             .lines(
@@ -422,8 +372,6 @@ impl Landing {
             .len())
     }
 
-    /// Return all registered claims for the repository containing `dir`,
-    /// after `reopen_landed` ran on them.
     pub fn reconcile(&self, dir: &Path) -> Result<Vec<Claim>> {
         let repo = self.repo(dir)?;
         let (_guard, mut claims) = self.lock_and_load(&repo)?;
@@ -433,10 +381,6 @@ impl Landing {
         Ok(claims)
     }
 
-    /// Reopen each landed claim of `record_id`, in every registry, whose
-    /// worktree still holds work. `horch done` runs it before its open-claim
-    /// check. A registry with no landed claim of the record whose folder
-    /// still exists is read without git and without its lock.
     pub fn reopen_landed_for_record(&self, record_id: &str) -> Result<()> {
         let registry_dir = self.state_root.join("worktrees");
         let of_record = |claim: &Claim| claim.record_id.as_deref() == Some(record_id);
@@ -467,10 +411,6 @@ impl Landing {
         Ok(())
     }
 
-    /// Put each landed claim in `claims` that `wanted` selects back to open
-    /// when its worktree folder still exists and holds work, with a
-    /// `reopened` event. A check that fails reopens only its own claim, with
-    /// the error in the event. Returns whether a claim changed.
     fn reopen_landed(&self, claims: &mut [Claim], wanted: impl Fn(&Claim) -> bool) -> bool {
         let mut changed = false;
         for claim in claims
@@ -493,10 +433,6 @@ impl Landing {
         changed
     }
 
-    /// Why the landed `claim` still holds work in its worktree folder, or
-    /// `None` when it holds none. Work is an uncommitted file, or a claim
-    /// branch tip or worktree HEAD (any branch, or detached) that the base
-    /// does not contain. A folder that is no longer a worktree holds none.
     fn reopen_reason(&self, claim: &Claim) -> Result<Option<String>> {
         let dir = &claim.path;
         let top = PathBuf::from(self.text(dir, &["rev-parse", "--show-toplevel"])?);
@@ -536,14 +472,12 @@ impl Landing {
         Ok(Some(text))
     }
 
-    /// Return all registered claims for the repository containing `dir`.
     pub fn claims(&self, dir: &Path) -> Result<Vec<Claim>> {
         let repo = self.repo(dir)?;
         let _guard = self.lock(&repo)?;
         self.load_unlocked(&repo)
     }
 
-    /// Return open claims owned by one ledger record.
     pub fn open_claims_for_record(&self, dir: &Path, record_id: &str) -> Result<Vec<Claim>> {
         Ok(self
             .claims(dir)?
@@ -552,7 +486,6 @@ impl Landing {
             .collect())
     }
 
-    /// Return whether any registry has an open claim owned by one ledger record.
     pub fn record_has_open_claims(&self, record_id: &str) -> Result<bool> {
         let registry_dir = self.state_root.join("worktrees");
         let mut found = false;
@@ -569,7 +502,6 @@ impl Landing {
         Ok(found)
     }
 
-    /// Mark a claim unlanded without removing its branch or worktree.
     pub fn mark_unlanded(&self, dir: &Path, claim_id: &str, reason: &str) -> Result<Claim> {
         let repo = self.repo(dir)?;
         let (_guard, mut claims) = self.lock_and_load(&repo)?;
@@ -587,12 +519,6 @@ impl Landing {
         Ok(result)
     }
 
-    /// List changed linked worktrees which have no registry claim.
-    ///
-    /// Only worktrees under the repo's `.worktrees/` folder are fleet
-    /// worktrees: the operator's own checkouts anywhere on disk are not
-    /// reported. A path git cannot read is skipped and named, so one deleted
-    /// folder does not fail the scan.
     pub fn unregistered(&self, dir: &Path) -> Result<UnregisteredScan> {
         let repo = self.repo(dir)?;
         let base = self.attached_branch(dir, "scan unregistered worktrees")?;
@@ -605,7 +531,6 @@ impl Landing {
         Ok(scan)
     }
 
-    /// The linked worktrees under the `.worktrees/` folder of `repo`.
     fn fleet_worktrees(&self, repo: &Repo) -> Result<Vec<Worktree>> {
         let root = repo.top.join(".worktrees");
         Ok(self
@@ -615,8 +540,6 @@ impl Landing {
             .collect())
     }
 
-    /// Add `worktree` to `scan`: skipped when git cannot read it, left out
-    /// when it is claimed or private, an entry when it holds a change.
     fn scan_worktree(
         &self,
         scan: &mut UnregisteredScan,
@@ -638,14 +561,11 @@ impl Landing {
         Ok(())
     }
 
-    /// Whether a registry claim or the task ledger owns the worktree `path`.
     fn is_claimed(&self, registered: &[Claim], path: &Path) -> bool {
         registered.iter().any(|claim| claim.path == path)
             || self.recorded.contains(&path.to_path_buf())
     }
 
-    /// `worktree` as an [`Unregistered`] entry, or `None` when it holds no
-    /// change: no commit past `base` and no dirty entry.
     fn changed_worktree(&self, worktree: Worktree, base: &str) -> Result<Option<Unregistered>> {
         let dirty = line_count(&self.text(&worktree.path, &["status", "--porcelain"])?);
         if worktree.branch.is_none() && dirty == 0 {
@@ -682,8 +602,6 @@ impl Landing {
             .map_err(|error| note_rebased(error, claim, &old_branch, &new_branch))
     }
 
-    /// Refuse a missing or dirty worktree, and a base checked out in more
-    /// than 1 worktree. Returns the checkout of the base, if any.
     fn check_landable(&self, repo: &Repo, claim: &Claim) -> Result<Option<PathBuf>> {
         if !claim.path.is_dir() {
             bail!("worktree {} does not exist", claim.path.display());
@@ -717,8 +635,6 @@ impl Landing {
         Ok(base_checkouts.into_iter().next())
     }
 
-    /// Abort the failed `rebase` and check that the branch is back at
-    /// `old_branch`. Returns the error that names the failure.
     fn abort_rebase(&self, claim: &Claim, old_branch: &str, rebase: &GitOutput) -> anyhow::Error {
         let conflicts = self
             .text_allow_failure(&claim.path, &["diff", "--name-only", "--diff-filter=U"])
@@ -748,7 +664,6 @@ impl Landing {
         Ok(())
     }
 
-    /// Run the landing check `check`, if any, in the claim worktree.
     fn run_landing_check(
         &self,
         claim: &Claim,
@@ -766,9 +681,6 @@ impl Landing {
         }
     }
 
-    /// Fast-forward the base to the rebased branch. Also returns whether
-    /// the cleanup must set the upstream: when no worktree has the base
-    /// checked out.
     fn finish_land(
         &self,
         repo: &Repo,
@@ -794,8 +706,6 @@ impl Landing {
         Ok((landed, base_checkout.is_none()))
     }
 
-    /// Move the base to the claim branch: a `merge --ff-only` in the base
-    /// checkout, or a `fetch .` when no worktree has the base checked out.
     fn fast_forward(&self, repo: &Repo, claim: &Claim, base_checkout: Option<&Path>) -> Result<()> {
         match base_checkout {
             Some(path) => self.run(path, &["merge", "--ff-only", &claim.branch])?,
@@ -926,14 +836,11 @@ impl Landing {
             .collect())
     }
 
-    /// The branch checked out at `dir`. A detached HEAD is the error
-    /// "cannot <doing> from a detached HEAD".
     fn attached_branch(&self, dir: &Path, doing: &str) -> Result<String> {
         self.current_branch(dir)?
             .ok_or_else(|| anyhow!("cannot {doing} from a detached HEAD"))
     }
 
-    /// Take the registry lock of `repo` and read its claims.
     fn lock_and_load(&self, repo: &Repo) -> Result<(fsx::DirLockGuard, Vec<Claim>)> {
         let guard = self.lock(repo)?;
         Ok((guard, self.load_unlocked(repo)?))
@@ -984,7 +891,6 @@ impl Landing {
                             .to_owned(),
                     );
                 } else if let Some(value) = line.strip_prefix("prunable") {
-                    // `prunable <reason>` on git 2.36 and later.
                     prunable = Some(value.trim().to_owned());
                 }
             }
@@ -1015,8 +921,6 @@ impl Landing {
     }
 }
 
-/// The 1 open claim of `role`, named `name` when given. Its index in
-/// `claims`.
 fn select_open(claims: &[Claim], role: &str, name: Option<&str>) -> Result<usize> {
     let matches: Vec<usize> = claims
         .iter()
@@ -1042,7 +946,6 @@ fn select_open(claims: &[Claim], role: &str, name: Option<&str>) -> Result<usize
     ))
 }
 
-/// The commands that finish a failed landing by hand.
 fn hand_land_hint(claim: &Claim, repo: &Repo) -> String {
     format!(
         "Kept branch {} and worktree when they still exist. Continue by hand:\ngit -C {} status\ngit -C {} rebase {}\ngit -C {} merge --ff-only {}\ngit -C {} worktree remove {}\ngit -C {} branch -d {}",
@@ -1059,7 +962,6 @@ fn hand_land_hint(claim: &Claim, repo: &Repo) -> String {
     )
 }
 
-/// Add the old tip to `error` when the rebase moved the branch.
 fn note_rebased(error: anyhow::Error, claim: &Claim, old: &str, new: &str) -> anyhow::Error {
     if old == new {
         error
@@ -1074,7 +976,6 @@ fn note_rebased(error: anyhow::Error, claim: &Claim, old: &str, new: &str) -> an
     }
 }
 
-/// What a failed rebase says: its conflicting files, else git's stderr.
 fn rebase_detail(conflicts: &str, rebase: &GitOutput) -> String {
     if conflicts.is_empty() {
         stderr(rebase)
@@ -1086,8 +987,6 @@ fn rebase_detail(conflicts: &str, rebase: &GitOutput) -> String {
     }
 }
 
-/// A worktree git cannot read, and why: every git call inside a worktree
-/// whose folder or gitdir is gone exits 128.
 fn unreadable(worktree: &Worktree) -> Option<&'static str> {
     if worktree.prunable.is_some() {
         Some("prunable")
@@ -1098,8 +997,6 @@ fn unreadable(worktree: &Worktree) -> Option<&'static str> {
     }
 }
 
-/// Whether `path` is under a `_`-prefixed folder of the fleet worktrees
-/// folder `root`: a private worktree, never reported.
 fn is_private_worktree(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root)
         .ok()
@@ -1107,7 +1004,6 @@ fn is_private_worktree(root: &Path, path: &Path) -> bool {
         .is_some_and(|part| part.as_os_str().to_string_lossy().starts_with('_'))
 }
 
-/// The entries of `dir`, or `None` when it does not exist.
 fn read_dir_if_exists(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
     match std::fs::read_dir(dir) {
         Ok(entries) => Ok(Some(entries)),
@@ -1116,7 +1012,6 @@ fn read_dir_if_exists(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
     }
 }
 
-/// The claims in the registry file `path`.
 fn registry_claims(path: &Path) -> Result<Vec<Claim>> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("reading claim registry {}", path.display()))?;
@@ -1136,12 +1031,10 @@ fn path_text(path: &Path) -> Result<&str> {
         .with_context(|| format!("path {} is not valid UTF-8", path.display()))
 }
 
-/// Whether `claim` is landed and its worktree folder still exists.
 fn has_leftover(claim: &Claim) -> bool {
     claim.state == ClaimState::Landed && claim.path.is_dir()
 }
 
-/// `error` and its causes on 1 line.
 fn one_line(error: &anyhow::Error) -> String {
     format!("{error:#}")
         .split_whitespace()
@@ -1481,10 +1374,6 @@ mod tests {
 
     #[test]
     fn arc_31_long_check_keeps_the_lock() {
-        // The check holds until the test releases it. The test ages the
-        // lock past its stale age by hand and waits for the heartbeat to
-        // refresh it: no wall-clock margin, which a loaded test run (a slow
-        // fsync in the refresh) broke at a 0.4 s stale age.
         let fixture = Fixture::new();
         let stale = Duration::from_secs(3600);
         let landing = configured_landing(&fixture.state, &fixture.config).with_lock_timing(
@@ -1514,7 +1403,6 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if !done() {
-                // A failed assert must not leave the check looping forever.
                 fs::write(&release, "").unwrap();
                 panic!("{what}");
             }
@@ -1529,13 +1417,10 @@ mod tests {
         let mtime = || fs::metadata(&lock).and_then(|m| m.modified()).ok();
         let aged = std::time::SystemTime::now() - stale * 2;
         fs::File::open(&lock).unwrap().set_modified(aged).unwrap();
-        // Without the heartbeat the lock stays stale.
         wait_for("the heartbeat refreshed the lock", &|| {
             mtime().is_some_and(|t| t > aged + stale)
         });
         let second = landing.create(&fixture.repo, "worker-2", None, "two");
-        // Release before any assert: a failed assert must not leave the
-        // check looping forever.
         fs::write(&release, "").unwrap();
         let error = second.unwrap_err();
         assert!(error.to_string().contains("timed out"), "{error:#}");
@@ -1697,8 +1582,6 @@ mod tests {
         assert_eq!(found.entries[0].ahead, 1);
     }
 
-    /// P27: one deleted folder used to fail the whole scan, so `done` reported
-    /// nothing at all. It is skipped and named, and the rest is still read.
     #[test]
     fn arc_31_unregistered_skips_a_deleted_folder_and_names_it() {
         let fixture = Fixture::new();
@@ -1746,8 +1629,6 @@ mod tests {
         );
     }
 
-    /// P30: the operator's own checkouts anywhere on disk are not fleet
-    /// worktrees, however dirty they are.
     #[test]
     fn arc_31_unregistered_ignores_worktrees_outside_the_worktrees_folder() {
         let fixture = Fixture::new();
@@ -1770,9 +1651,6 @@ mod tests {
         assert!(found.skipped.is_empty(), "skipped: {:?}", found.skipped);
     }
 
-    /// A task-ledger worktree is not in the claim registry, so without the
-    /// ledger's paths every worker's `done` lists its peers' work as
-    /// UNREGISTERED.
     #[test]
     fn arc_31_unregistered_skips_recorded_worktrees() {
         let fixture = Fixture::new();
@@ -1792,7 +1670,6 @@ mod tests {
         let landing = configured_landing(&fixture.state, &fixture.config)
             .with_recorded_worktrees(vec![path.canonicalize().unwrap()]);
         assert!(landing.unregistered(&fixture.repo).unwrap().is_empty());
-        // Without the ledger's paths it is still reported.
         assert_eq!(
             fixture
                 .landing
@@ -1976,8 +1853,6 @@ mod tests {
         );
     }
 
-    /// Land `name` of role `worker` with a locked worktree, so `worktree
-    /// remove` fails and the worktree stays on disk after the land.
     fn land_leftover(fixture: &Fixture, record: Option<&str>, name: &str) -> Claim {
         let claim = fixture.create("worker", record, name);
         fixture.commit_file(&claim.path, &format!("{name}.txt"), "landed\n", "landed");

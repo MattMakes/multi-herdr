@@ -1,13 +1,3 @@
-//! The check of a task runs only in the sandbox profile of its worker
-//! (docs/specs/fleetd/design.md, SR-4, SR-7, "Architecture and roles":
-//! the acceptance commands run in the sandbox profile of the task's
-//! worker, never with the rights of fleetd; preservation-04-behavior.md
-//! row F10; docs/tickets/fleetd-p4/18-check-runs-in-the-worker-sandbox.md).
-//!
-//! Each test uses a temp ledger, a temp fleet root and temp worktrees. A
-//! check runs through the launcher, as the job process runs it. No test
-//! reads the load, the limits or the clock of this machine.
-
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -45,15 +35,11 @@ use horch_core::taskledger::{schema, util};
 use horch_platform::NotSupported;
 use rusqlite::{params, Connection, TransactionBehavior};
 
-/// The Codex persona of each test.
 const CODEX: &str = "codex-dev";
-/// A persona of another CLI.
 const CLAUDE: &str = "claude-dev";
 
 struct World {
     dir: tempfile::TempDir,
-    /// A folder outside each writable path of a check: not in the temp
-    /// folder, not in a worktree, not in the fleet root.
     outside: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
@@ -61,7 +47,6 @@ struct World {
     run: Run,
 }
 
-/// A temp ledger of the current schema, a fleet root and 1 run.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
@@ -81,7 +66,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -100,7 +84,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The adapter of this world, on a host with the sandbox `gap`.
     fn sandboxes(&self, codex: CodexSandbox, gap: Option<NotSupported>) -> WorkerSandboxes {
         WorkerSandboxes {
             codex,
@@ -112,7 +95,6 @@ impl World {
         }
     }
 
-    /// The adapter of this world on this host.
     fn host_sandboxes(&self) -> WorkerSandboxes {
         WorkerSandboxes::on_path(
             self.codex(&self.dir.path().join("codex")),
@@ -129,7 +111,6 @@ impl World {
         }
     }
 
-    /// A ready task of `persona` with no worker.
     fn ready(&mut self, title: &str, persona: &str) -> String {
         let new = NewTask::work(title, &format!("{title}.md"), persona);
         tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator)
@@ -137,9 +118,6 @@ impl World {
             .task_id
     }
 
-    /// A task with the check `check`, held by attempt 1 of a worker of
-    /// `persona` and `harness`. A worktree task gets a worktree folder; a
-    /// shared-checkout task works in the project root.
     fn task(&mut self, check: &str, persona: &str, harness: &str, mode: WorktreeMode) -> String {
         let mut new = NewTask::work("check", "check.md", persona);
         new.land_check = Some(check.into());
@@ -192,16 +170,12 @@ impl World {
             .join(format!("wt-{task}"))
     }
 
-    /// The folder of attempt 1 of `task`, made.
     fn attempt(&self, task: &str) -> PathBuf {
         let dir = attempt_dir(&self.fleet_root, task, "A1");
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// Queue the `task_check` job of `task`, start its job process (`true`)
-    /// through the launcher, then run the executor as that process, with
-    /// the check started through `host` in the profiles `profiles`.
     fn check(
         &mut self,
         task: &str,
@@ -275,8 +249,6 @@ impl World {
     }
 }
 
-/// A process host that records each spec, then starts it through the
-/// launcher of fleetd.
 #[derive(Default)]
 struct Recording {
     specs: RefCell<Vec<LaunchSpec>>,
@@ -363,8 +335,6 @@ fn the_check_sandbox_finds_its_tool_on_the_given_path() {
     }
 }
 
-/// The outcome of a check that did not run: no verdict, and the SR-4
-/// cause.
 fn assert_not_run(state: State, o: &Outcome) {
     assert_eq!(state, State::Failed, "{}", o.text);
     assert!(!o.verdict, "{}", o.text);
@@ -375,7 +345,6 @@ fn assert_not_run(state: State, o: &Outcome) {
 fn check_runs_in_the_worker_sandbox_not_with_fleetd_rights() {
     let mut w = world();
     let escaped = w.outside.path().join("escaped");
-    // The test process, with the rights of fleetd, can write there.
     std::fs::write(&escaped, "probe").unwrap();
     std::fs::remove_file(&escaped).unwrap();
 
@@ -397,7 +366,6 @@ fn check_runs_in_the_worker_sandbox_not_with_fleetd_rights() {
 fn codex_worker_check_keeps_codex_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let mut w = world();
-    // A stand-in for `codex`: it records its args and runs nothing.
     let args = w.dir.path().join("codex-args");
     let bin = w.dir.path().join("codex");
     let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display());
@@ -433,8 +401,6 @@ fn claude_worker_check_runs_in_the_platform_sandbox() {
     let mut w = world();
     let sandboxes = w.host_sandboxes();
 
-    // A worktree task: the check writes its worktree and its attempt
-    // folder.
     let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
     let attempt = w.attempt(&task);
     let check = format!(
@@ -471,7 +437,6 @@ fn claude_worker_check_runs_in_the_platform_sandbox() {
     );
     drop(specs);
 
-    // A shared-checkout task: the project root is its writable path.
     let root = PathBuf::from(&w.run.project_root);
     let task = w.task("touch made-in-root", CLAUDE, "claude", WorktreeMode::Shared);
     let (state, o) = w.check(&task, &sandboxes, &Launcher);
@@ -516,7 +481,6 @@ fn not_supported_persona_is_not_dispatched_and_opens_1_item_per_persona() {
         );
     }
 
-    // 2 passes: still 1 item for the persona, not 1 for each task.
     for _ in 0..2 {
         let tx = w
             .conn
@@ -634,8 +598,6 @@ fn check_that_swaps_its_output_file_for_a_link_cannot_feed_the_verdict() {
     let mut w = world();
     let secret = w.outside.path().join("secret");
     std::fs::write(&secret, "the-secret-bytes").unwrap();
-    // The check puts a link to `secret` in place of each check output
-    // file, then fails. Only this world sees its fleet root.
     let check = format!(
         "for f in '{dir}'/*.out; do rm -f \"$f\"; ln -s '{secret}' \"$f\"; done; exit 1",
         dir = w.fleet_root.join("run/checks").display(),

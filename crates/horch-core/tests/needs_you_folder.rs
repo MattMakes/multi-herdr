@@ -1,9 +1,3 @@
-//! The needs-you folder and the herdr notification (OR-3, FM-29, FM-35):
-//! the mirror of the open items of the `needs_you` table in
-//! `<fleet root>/needs-you/`, and 1 herdr report for a new open item.
-//! Each test uses a temporary ledger, a temporary folder and a scripted
-//! `herdr`.
-
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use horch_core::fleetd::ideas::adapters::needs_you_folder::{self, Mirrored};
 use horch_core::fleetd::ideas::adapters::notify::{self, Notice};
@@ -60,7 +54,6 @@ impl World {
         assert!(done, "{key} was not open");
     }
 
-    /// 1 pass of the mirror, with a budget that holds every row.
     fn pass(&mut self, now: &str) -> Mirrored {
         let items = needs_you::open_items(self.store.conn()).unwrap();
         needs_you_folder::mirror(
@@ -137,7 +130,6 @@ fn rows_past_the_budget_wait_for_the_next_pass() {
     assert_eq!(w.files().len(), 3);
 }
 
-/// A scripted `herdr` that appends each call to `calls.log`.
 #[cfg(unix)]
 fn scripted_herdr(dir: &std::path::Path) -> (PaneHost, std::path::PathBuf) {
     let log = dir.join("calls.log");

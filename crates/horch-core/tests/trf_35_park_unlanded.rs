@@ -1,7 +1,3 @@
-//! TRF-35: `done --unlanded` parks the task with its worktree; dependents
-//! stay blocked on it; `requeue` and triage `FINISH` resume it on the same
-//! worktree (trace-fixes D16, ticket 21).
-
 mod i308_support;
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
@@ -21,8 +17,6 @@ use horch_core::taskledger::triage::{self, reply, Measure};
 use horch_core::taskledger::workers::NewWorker;
 use i308_support::{commit, World};
 
-/// A run on `main` with T-1 and T-2 (blocked by T-1), and a worker that
-/// is bound to T-1 and committed 1 file in its worktree `feat`.
 fn parked_world() -> (World, Run, String, PathBuf) {
     let mut w = World::new();
     let root = w.root.clone();
@@ -39,7 +33,6 @@ fn parked_world() -> (World, Run, String, PathBuf) {
                     ..Default::default()
                 },
             )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -65,7 +58,6 @@ fn parked_world() -> (World, Run, String, PathBuf) {
     (w, run, worker, path)
 }
 
-/// Bind T-1 to a new started worker, as fleetd does (FR-5).
 fn bind_t1(w: &mut World, run: &Run) -> Bound {
     let task = t1(w, run).task_id;
     let new = NewWorker {
@@ -87,7 +79,6 @@ fn t1(w: &World, run: &Run) -> tasks::Task {
     tasks::resolve(w.store.conn(), &run.run_id, "T-1").unwrap()
 }
 
-/// The status, task and worker of the worktree at `path`.
 fn worktree(w: &World, path: &Path) -> (String, Option<String>) {
     w.store
         .conn()
@@ -120,7 +111,6 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     let c = finish::complete(&mut w.store, &worker, "tried", Some("a red check")).unwrap();
     assert!(c.unlanded);
 
-    // Parked: queued and held, no worker, not finished; the worktree stays.
     let t = t1(&w, &run);
     assert!(t.is_parked(), "{t:?}");
     assert_eq!(t.status, "escalated");
@@ -134,11 +124,9 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     );
     assert!(path.exists());
 
-    // A retried done reports the same park.
     let again = finish::complete(&mut w.store, &worker, "tried", Some("a red check")).unwrap();
     assert!(again.already && again.unlanded);
 
-    // Nothing starts: T-1 is held, and T-2 stays blocked on it.
     assert!(tasks::startable(w.store.conn(), &run.run_id)
         .unwrap()
         .is_empty());
@@ -149,7 +137,6 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
         "T-1 is parked unlanded. Run horch ledger requeue T-1 to resume it"
     );
 
-    // requeue resumes T-1 on the same worktree; T-2 still waits for it.
     let back = w
         .store
         .immediate(|tx| tasks::requeue_by_operator(tx, &t, "fixed the check"))
@@ -172,8 +159,6 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     assert_eq!(task_count(&w), 2);
 }
 
-/// The lease rows of `task_id`, and the state and outcome of each of its
-/// attempts.
 fn lease_and_attempts(w: &World, task_id: &str) -> (i64, Vec<(String, Option<String>)>) {
     let conn = w.store.conn();
     let leases = conn
@@ -194,9 +179,6 @@ fn lease_and_attempts(w: &World, task_id: &str) -> (i64, Vec<(String, Option<Str
     (leases, attempts)
 }
 
-/// The park releases the lease and ends the attempt of its worker in the
-/// transaction of `done`, so the bind after `requeue` needs no fleetd
-/// pass (RR-17, FM-14).
 #[test]
 fn trf_35_done_unlanded_releases_the_lease_and_ends_the_attempt() {
     let (mut w, run, worker, _path) = parked_world();

@@ -1,39 +1,3 @@
-//! horch idea add --direct: a plan of 1 work task, plus its judge task for
-//! a judgment kind (ticket 17 of fleetd-p6).
-//!
-//! `docs/specs/fleetd/design.md`, "Everything is an idea, with a fast
-//! lane"; FR-10, FR-12; MAP.md of fleetd-p6, Q6 and Q8. A ticket that you
-//! wrote skips research and the interview:
-//!
-//! - [`add_direct_idea`] (`AddDirectIdea`) writes, in the caller's write
-//!   transaction, the idea in `captured` (`AddIdea`, with the ticket as its
-//!   text), the branch name of a new feature from the ticket title
-//!   (`NameFeatureBranch`), and your approval: `approved_sha256` is the
-//!   sha256 of the copied ticket, because the ticket stands for your
-//!   approval. The caller commits, then writes the files of
-//!   [`DirectAdded`]: idea.md, `tickets/01-<name>.md`, plan.yaml,
-//!   approval.json and the feature branch.
-//! - plan.yaml has 1 work task: its profile from the Persona line and its
-//!   check from the Check line. For a judgment kind fleetd adds the judge
-//!   task: kind `judge`, `judges:` the work task, and the first profile of
-//!   another provider of the roster with a sandbox on this OS that can
-//!   judge: healthy, not of a reserved top tier, and accepted by the
-//!   profile rules of the plan validator. The judge task has 1 output, its
-//!   verdict file, and a generated ticket `tickets/02-<key>-judge.md` with
-//!   the verdict format ([`write_judge_ticket`]).
-//! - [`start_direct`] moves the idea to `ticketing` under the rule of the
-//!   feature, then validates its plan (`ValidatePlan`). A refused plan
-//!   opens 1 needs-you item with the reason, and the idea stays in
-//!   `ticketing`.
-//! - [`direct_requirement`] gives the plan validator the 1 requirement of a
-//!   `--direct` idea: the approved ticket, which cites itself.
-//! - [`is_direct`] reads from the ledger whether an idea is a `--direct`
-//!   idea, and [`files_written`] tells whether the effects after the
-//!   commit wrote its files. The dispatcher decides from both (ticket 58
-//!   of fleetd-build): plan.yaml alone is an effect after the commit (A24),
-//!   so a pass before the effects saw no plan.yaml and moved the idea to
-//!   `clarifying`.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -79,67 +43,42 @@ use crate::taskledger::map::ticket_facts;
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{runs, util, Store};
 
-/// The source of the idea.md of a `--direct` idea.
 pub const SOURCE: &str = "horch idea add --direct";
 
-/// The folder of the copied ticket, in the idea folder.
 pub const TICKETS: &str = "tickets";
 
-/// The id of the 1 requirement of a `--direct` idea.
 pub const REQUIREMENT: &str = "R1";
 
-/// The kind of the needs-you item of a refused `--direct` plan.
 pub const PLAN_REFUSED_KIND: &str = "direct_plan_refused";
 
-/// The state of an idea with a plan to validate.
 const TICKETING: &str = "ticketing";
 
-/// The states in which an idea of a feature plans: while 1 idea of the
-/// feature is in one of them, another waits in `captured`.
 const PLANNING: [&str; 3] = ["clarifying", "specifying", "ticketing"];
 
-/// The mode of the tickets folder, and of each file that fleetd writes.
 const FILE_MODE: u32 = 0o600;
 
-/// The key of the needs-you item of the refused plan of `idea`.
 pub fn plan_refused_key(idea: &str) -> String {
     format!("{PLAN_REFUSED_KIND}:{idea}")
 }
 
-/// What [`add_direct_idea`] needs besides the ledger.
 pub struct Direct<'a> {
-    /// The profiles of the roster: the judge task gets 1 of them.
     pub roster: &'a [RosterProfile],
-    /// The git of the project, to name a new feature branch.
     pub git: &'a dyn IntegrationGitGateway,
-    /// The fetched tip of the primary branch: a new feature branch starts
-    /// there.
     pub primary_tip: &'a str,
-    /// The fleet clock.
     pub clock: FleetSeconds,
 }
 
-/// What [`add_direct_idea`] wrote, and the files to write after the commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectAdded {
-    /// The idea, its feature and its idea.md.
     pub idea: Added,
-    /// The copied ticket, a path in the idea folder.
     pub ticket: String,
-    /// The text of the copied ticket.
     pub ticket_text: String,
-    /// The text of plan.yaml.
     pub plan: String,
-    /// approval.json.
     pub approval: ApprovalFile,
-    /// The branch of a new feature, to create.
     pub branch: Option<BranchRef>,
 }
 
 impl DirectAdded {
-    /// The effects after the commit: the idea folder with idea.md, the
-    /// copied ticket, plan.yaml and approval.json, then the branch of a new
-    /// feature. Each write gives the same result when it runs again.
     pub fn write(&self, ideas: &Path, owner: User, git: &dyn IntegrationGitGateway) -> Result<()> {
         write_idea_file(ideas, owner.clone(), &self.idea.file)?;
         let folder = IdeaFolder::new(ideas, &self.idea.file.id, owner)?;
@@ -160,10 +99,6 @@ impl DirectAdded {
     }
 }
 
-/// `AddDirectIdea`: the ticket `ticket` that you wrote becomes an idea in
-/// `captured` in the feature of `target`, with its plan and your approval,
-/// in `tx`. A ticket with no `# NN: Title` heading is refused, and writes
-/// nothing. The caller commits, then runs [`DirectAdded::write`].
 pub fn add_direct_idea(
     tx: &Connection,
     ctx: &JobCtx<'_>,
@@ -221,7 +156,6 @@ pub fn add_direct_idea(
     })
 }
 
-/// The branch of the new feature `feature`, named from the ticket title.
 fn name_branch(
     tx: &Connection,
     ctx: &JobCtx<'_>,
@@ -246,7 +180,6 @@ fn name_branch(
     }
 }
 
-/// The work task of a `--direct` plan, from its ticket.
 struct WorkTask<'a> {
     key: String,
     title: String,
@@ -257,8 +190,6 @@ struct WorkTask<'a> {
     first_own: Option<String>,
 }
 
-/// The text of plan.yaml: the work task, and its judge task when its kind
-/// is a judgment kind. The plan validator reports each problem of it.
 fn plan_yaml(
     idea: &Added,
     repo: &str,
@@ -302,10 +233,6 @@ fn judge_ticket_rel(key: &str) -> String {
     format!("{TICKETS}/02-{key}-judge.md")
 }
 
-/// Write the generated ticket of the judge task of the plan.yaml in the
-/// idea folder `dir`, from the judge task of the plan. A plan with no judge
-/// task, or a judge task with another ticket, writes nothing. The write
-/// gives the same result when it runs again.
 pub fn write_judge_ticket(dir: &Path) -> Result<()> {
     let Ok(text) = std::fs::read_to_string(dir.join(PLAN_YAML)) else {
         return Ok(());
@@ -375,8 +302,6 @@ fn verdict_file(work: &WorkTask<'_>) -> String {
     }
 }
 
-/// The profile of the judge of a task of the profile `author` (MAP.md, Q8):
-/// the first profile of the roster of another provider with a sandbox on
 fn judge_profile(
     author: &str,
     roster: &[RosterProfile],
@@ -474,23 +399,13 @@ fn judge_gap(conn: &Connection, ctx: &PlanCommit<'_>, idea: &str) -> Result<Opti
     )))
 }
 
-/// What [`start_direct`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Started {
-    /// The plan is in the ledger, and the idea is in `in_progress`.
     Committed(Verdict),
-    /// The plan is refused: the idea stays in `ticketing`, and 1 needs-you
-    /// item gives the reason.
     Refused(Vec<Problem>),
-    /// Another idea of the feature plans: the idea waits in `captured`.
     Waiting,
 }
 
-/// Move the `--direct` idea `idea` from `captured` to `ticketing` when no
-/// other idea of its feature is in `clarifying`, `specifying` or
-/// `ticketing`, then validate its plan. An idea already in `ticketing` is
-/// validated again. An idea in another state is an error that writes
-/// nothing.
 pub fn start_direct(store: &mut Store, ctx: &PlanCommit<'_>, idea: &str) -> Result<Started> {
     let moved = store.immediate(|tx| {
         let row = ideas_store::idea(tx, idea)?
@@ -534,7 +449,6 @@ pub fn start_direct(store: &mut Store, ctx: &PlanCommit<'_>, idea: &str) -> Resu
     }
 }
 
-/// Whether an idea of `feature` other than `idea` plans now.
 fn planning(tx: &Connection, feature: &str, idea: &str) -> Result<bool> {
     let n: i64 = tx.query_row(
         "SELECT count(*) FROM ideas WHERE feature_id = ?1 AND id <> ?2 AND state IN (?3, ?4, ?5)",
@@ -544,7 +458,6 @@ fn planning(tx: &Connection, feature: &str, idea: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
-/// Open the needs-you item of the refused plan of `idea`, with each problem.
 fn open_refused(tx: &Connection, idea: &str, problems: &[Problem]) -> Result<()> {
     let reasons: Vec<String> = problems
         .iter()
@@ -569,10 +482,6 @@ fn open_refused(tx: &Connection, idea: &str, problems: &[Problem]) -> Result<()>
     )
 }
 
-/// The 1 requirement of the `--direct` idea `idea`, for the plan validator:
-/// the approved ticket, which cites itself (MAP.md, Q6). `None` for an idea
-/// of the normal flow: it has assumptions.md, or its approval.json that
-/// fleetd wrote names no ticket of [`TICKETS`].
 pub fn direct_requirement(
     conn: &Connection,
     guard: Option<Generation>,
@@ -596,9 +505,6 @@ pub fn direct_requirement(
     }))
 }
 
-/// Whether `idea` is a `--direct` idea: its `added` event, which the
-/// request commits with the idea row, has the source [`SOURCE`]. An idea
-/// with no `added` event (a backfilled idea) is not one.
 pub fn is_direct(conn: &Connection, idea: &str) -> Result<bool> {
     let Some(data) = fact_data(conn, Entity::Idea, idea, EventKind::Added, ADDED_CAUSE)? else {
         return Ok(false);
@@ -608,9 +514,6 @@ pub fn is_direct(conn: &Connection, idea: &str) -> Result<bool> {
     Ok(v["source"].as_str() == Some(SOURCE))
 }
 
-/// Whether the effects after the commit wrote the files of the `--direct`
-/// idea in its folder `dir`: plan.yaml, and approval.json, which the
-/// effects write after the ticket and plan.yaml.
 pub fn files_written(dir: &Path) -> bool {
     dir.join(PLAN_YAML).exists() && dir.join(APPROVAL_JSON).exists()
 }

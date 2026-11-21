@@ -1,41 +1,3 @@
-//! Shared machinery for the `horch` multi-agent orchestration CLI.
-//!
-//! Each module owns one part of the domain. Callers import an item from the
-//! module that owns it: there are no re-export shims (ARC-25), and an item
-//! nothing outside this crate uses is `pub(crate)`.
-//!
-//! | module          | owns                                                        |
-//! |-----------------|-------------------------------------------------------------|
-//! | [`ids`]         | typed identities (`ExecutionId`, `RoleName`, `PaneId`, ...) |
-//! | [`clock`]       | the one clock horch reads (`HORCH_NOW` pins it)             |
-//! | [`fsx`]         | durable file writes and the cross-process directory lock    |
-//! | [`procid`]      | process identity: a pid with its start time                 |
-//! | [`exeid`]       | which binary a long-lived horch process runs                |
-//! | [`heartbeat`]   | the liveness of background jobs (compaction)                |
-//! | [`runtime`]     | the process boundary: `RuntimeContext`, paths, binaries     |
-//! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
-//! | [`prompts`]     | rendering briefings from `teammates/`                       |
-//! | [`skills`]      | skill catalogs, activation plans and launch bundles         |
-//! | [`sweep`]       | the removal of stale state whose owner is gone              |
-//! | [`harness`]     | the agent CLIs (claude, codex, OpenCode, pi, Prime, Antigravity) and launch |
-//! | [`routing`]     | quota-aware routing: policy, quota view, decisions          |
-//! | [`execution`]   | executions: model, session ledger record and store, spawn plan, lifecycle |
-//! | [`messaging`]   | the worker brief, the mailbox and message delivery          |
-//! | [`project_notes`] | durable project facts and the host line of every brief    |
-//! | [`taskledger`]  | the SQLite task ledger: runs, tasks, claims, finish, stop   |
-//! | [`fleetd`]      | the fleet daemon: 1 folder for each context of `ddd/08-code` |
-//! | [`workspace`]   | the herdr client, layout, tiling and balancing              |
-//! | [`compaction`]  | context windows, thresholds, row states, the compaction job |
-//! | [`telemetry`]   | live per-pane token telemetry and the collector             |
-//! | [`usage`]       | what a run cost, read back from each harness's own records  |
-//! | [`vcs`]         | typed git and worker landing                                |
-//! | [`digest`]      | sha256 digests over canonical JSON                          |
-//! | [`testkit`]     | the in-repo PRNG and property-test runner                   |
-//!
-//! Nothing here shells out to `bash`, `jq`, `node`, or `just`. The external
-//! processes are `herdr`, the agent CLI a worker launches, `git`, and
-//! `sqlite3` for OpenCode's usage database.
-
 #![warn(unreachable_pub)]
 
 pub mod clock;
@@ -64,7 +26,6 @@ pub mod usage;
 pub mod vcs;
 pub mod workspace;
 
-/// Mint a session or record id.
 pub fn mint_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }

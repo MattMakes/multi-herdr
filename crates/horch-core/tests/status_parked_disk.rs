@@ -1,6 +1,3 @@
-//! `horch ledger status` shows the parked worktrees and their disk from the
-//! value `horch worktree triage` stored. It never walks a folder (#308).
-
 mod i308_support;
 
 #[cfg(unix)]
@@ -35,12 +32,10 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
     (dir, store, run)
 }
 
-/// A stamp `ago` before now, as the ledger writes it.
 fn ago(ago: Duration) -> String {
     clock::stamp(clock::now() - ago)
 }
 
-/// 1 unlanded worktree of `run` at `path`, with the stored measurement.
 fn parked(store: &Store, run: &Run, path: &Path, measured: Option<(i64, String)>) {
     let conn = store.conn();
     let id = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -74,13 +69,10 @@ fn parked_line(store: &Store, run: &Run) -> String {
 #[test]
 fn status_sums_the_stored_bytes_and_walks_no_folder() {
     let (dir, store, run) = ledger();
-    // A folder that nobody can read: a walk would find 0 bytes here, and
-    // the stored 5 GB must still count.
     let locked = dir.path().join("locked");
     write(&locked, "big.bin", &"x".repeat(1000));
     #[cfg(unix)]
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-    // A folder with a real tree, much smaller than its stored 1 GB.
     let tree = dir.path().join("tree");
     for i in 0..40 {
         write(&tree, &format!("d{}/f{i}.txt", i % 4), &"y".repeat(4096));
@@ -111,8 +103,6 @@ fn status_reads_the_bytes_of_the_live_row_and_not_of_a_removed_row_at_its_path()
     let (dir, store, run) = ledger();
     let tree = dir.path().join("tree");
     write(&tree, "f.txt", "y");
-    // The history of the folder: a row that triage trashed, with its own
-    // measurement.
     store
         .conn()
         .execute(
@@ -191,7 +181,6 @@ fn triage_stores_the_bytes_that_status_then_shows() {
         [],
     )
     .unwrap();
-    // Before triage: nothing stored.
     assert!(parked_line(&w.store, &run).contains("disk not measured"));
 
     let rows = triage::collect(conn, &w.git, &w.root, Measure::Full).unwrap();
@@ -206,7 +195,6 @@ fn triage_stores_the_bytes_that_status_then_shows() {
         .unwrap();
     assert_eq!(stored.0 as u64, measured);
     assert!(clock::parse(&stored.1).is_some(), "{stored:?}");
-    // The stored value is what status shows, even after the folder grows.
     write(&feat, "notes/more.txt", &"z".repeat(50_000));
     let line = parked_line(&w.store, &run);
     assert!(
@@ -217,7 +205,6 @@ fn triage_stores_the_bytes_that_status_then_shows() {
         "{line}"
     );
 
-    // `Measure::Ids` measures nothing and stores nothing.
     conn.execute("UPDATE worktrees SET bytes_measured_at = 'marker'", [])
         .unwrap();
     triage::collect(conn, &w.git, &w.root, Measure::Ids).unwrap();

@@ -1,7 +1,3 @@
-//! `horch ideas [--json]`: the board of every idea, its state and what it
-//! waits on, then the open needs-you items (`docs/specs/fleetd/design.md`,
-//! "Ideas"; OR-3). It opens the ledger read-only.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -17,7 +13,6 @@ pub struct BoardArgs {
     pub json: bool,
 }
 
-/// `horch ideas`.
 pub fn run(ctx: &RuntimeContext, args: BoardArgs) -> Result<ExitCode> {
     let board = match taskledger::open_existing_read_only(ctx)? {
         Some(store) => idea_board(store.conn())?,
@@ -34,7 +29,6 @@ pub fn run(ctx: &RuntimeContext, args: BoardArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// 1 line for each idea, then the section "Needs you".
 fn text(board: &IdeaBoard) -> String {
     let mut out = String::new();
     if board.ideas.is_empty() {

@@ -1,13 +1,3 @@
-//! The gate tests of Phase 1 for the reconcile pass (`docs/specs/fleetd/design.md`,
-//! RR-4, RR-7, FM-11, and "Migration plan" item 3: "the fact scans of
-//! 10,000 outboxes and worktree folders keep the heartbeat under 30 s and go
-//! on at their cursors after a restart").
-//!
-//! Each test runs the `horch` binary with a real fleetd in stand-in mode
-//! (`docs/tickets/fleetd-p1/MAP.md`, Q8) on the ledger of its harness. A
-//! `sleep` child of the test is the agent of each worker, and only fleetd
-//! sees that an agent died.
-
 #![cfg(unix)]
 
 use std::fs::File;
@@ -30,15 +20,11 @@ use serde_json::Value;
 
 const SIGKILL: i32 = 9;
 
-/// The fault points of the pass (`crates/horch-core/src/runtime/fault.rs`).
 const ABORT_AFTER_COMMIT: &str = "abort-after-commit";
 const DROP_WATCH_EVENTS: &str = "drop-watch-events";
 
-/// The hang limit of the design: `horch fleetd check` restarts a fleetd
-/// whose heartbeat is older than this, in awake time.
 const HANG_LIMIT_MS: u64 = 30_000;
 
-/// 1 pass each second, so that a test waits less.
 const FAST_PASSES: &str = "pass_period_s = 1\n";
 
 fn text(o: &Output) -> String {
@@ -64,8 +50,6 @@ fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     p
 }
 
-/// A harness with its own ledger file and a git repository, and the
-/// `fleet.toml` text `config` in its fleet root.
 fn world(name: &str, config: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -81,13 +65,10 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The fleet root of the harness: the folder `fleet` next to its ledger
-/// (MAP.md, Q4).
 fn fleet_root(h: &Harness) -> PathBuf {
     h.root.join("fleet")
 }
 
-/// Poll `f` every 100 ms for at most `secs` seconds.
 fn wait_until<T>(what: &str, secs: u64, f: impl FnMut() -> Option<T>) -> T {
     wait_until_or(what, secs, f, String::new)
 }
@@ -147,10 +128,6 @@ fn evidence(h: &Harness) -> String {
     out
 }
 
-// ─── fleetd ─────────────────────────────────────────────────────────────
-
-/// The PID and start time of the fleetd that the `fleetd` row of the ledger
-/// names (design, "Ledger"). `None` while no row exists.
 fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     let store = Store::open_read_only(db).ok()?;
     let (pid, started): (i64, i64) = store
@@ -162,16 +139,12 @@ fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()))
 }
 
-/// Stop the process `pid` only while it is the one that started at `started`.
 fn stop(pid: u32, started: Option<u64>) {
     if let Some(started) = started.or_else(|| procid::start_time(pid)) {
         procid::signal_same(pid, started, SIGKILL);
     }
 }
 
-/// Each fleetd of a test: the processes that the test started, and the one
-/// that the `fleetd` row names. Drop stops them all, also when the test
-/// fails.
 struct Fleetds {
     db: PathBuf,
     children: Vec<Child>,
@@ -187,7 +160,6 @@ impl Fleetds {
         }
     }
 
-    /// The fleetd that the `fleetd` row names, recorded for the teardown.
     fn current(&mut self) -> Option<(u32, Option<u64>)> {
         let row = fleetd_row(&self.db)?;
         if !self.seen.contains(&row) {
@@ -196,7 +168,6 @@ impl Fleetds {
         Some(row)
     }
 
-    /// `SIGKILL` the fleetd that the test started last, and reap it.
     fn kill_last(&mut self) {
         let child = self.children.last_mut().expect("a fleetd runs");
         child.kill().unwrap();
@@ -217,8 +188,6 @@ impl Drop for Fleetds {
     }
 }
 
-/// `horch fleetd` in the sealed environment of `h`, with the fault points
-/// `fault` armed on this process only.
 fn spawn_fleetd(h: &Harness, fleetds: &mut Fleetds, fault: Option<&str>) -> u32 {
     let n = fleetds.children.len();
     let out = h.root.join(format!("fleetd-{n}.stdout"));
@@ -240,7 +209,6 @@ fn spawn_fleetd(h: &Harness, fleetds: &mut Fleetds, fault: Option<&str>) -> u32 
     pid
 }
 
-/// The output of the fleetd that the test started as its `n`-th.
 fn fleetd_output(h: &Harness, n: usize) -> String {
     let read = |ext: &str| {
         std::fs::read_to_string(h.root.join(format!("fleetd-{n}.{ext}"))).unwrap_or_default()
@@ -248,8 +216,6 @@ fn fleetd_output(h: &Harness, n: usize) -> String {
     format!("stdout: {}\nstderr: {}", read("stdout"), read("stderr"))
 }
 
-/// Start `horch fleetd` with the fault points `fault`, and wait until the
-/// `fleetd` row names it. Returns its PID.
 fn start_fleetd(h: &Harness, fleetds: &mut Fleetds, fault: Option<&str>) -> u32 {
     let pid = spawn_fleetd(h, fleetds, fault);
     let n = fleetds.children.len() - 1;
@@ -274,21 +240,17 @@ fn start_fleetd(h: &Harness, fleetds: &mut Fleetds, fault: Option<&str>) -> u32 
     }
 }
 
-/// The heartbeat of fleetd (MAP.md, Q20), when one is written.
 fn heartbeat(h: &Harness) -> Option<Value> {
     let path = fleet_root(h).join("run").join("heartbeat.json");
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-/// The awake time of a heartbeat, in ms.
 fn awake_ms(hb: &Value) -> u64 {
     hb["awake"]["awake_ms"]
         .as_u64()
         .unwrap_or_else(|| panic!("a heartbeat with no awake time: {hb}"))
 }
 
-/// Watch the heartbeat of the fleetd `pid` until it wrote `passes` more
-/// heartbeats. Returns the largest awake time between 2 heartbeats, in ms.
 fn watch_heartbeats(h: &Harness, pid: u32, passes: usize) -> u64 {
     let mut last: Option<u64> = None;
     let mut gaps = Vec::new();
@@ -312,16 +274,10 @@ fn watch_heartbeats(h: &Harness, pid: u32, passes: usize) -> u64 {
     gaps.into_iter().max().unwrap_or(0)
 }
 
-/// Wait until the fleetd `pid` wrote 2 more heartbeats: at least 1 whole
-/// pass ran after this call.
 fn after_a_whole_pass(h: &Harness, pid: u32) {
     watch_heartbeats(h, pid, 2);
 }
 
-// ─── agents and workers ─────────────────────────────────────────────────
-
-/// The agent of a worker: a `sleep` child of the test. Drop kills it, so a
-/// failed assertion leaks no process.
 struct Agent(Child);
 
 impl Agent {
@@ -333,7 +289,6 @@ impl Agent {
         self.0.id()
     }
 
-    /// `SIGKILL`, then reap it, so that no zombie looks alive.
     fn kill(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -480,9 +435,6 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
     w.agent.kill();
 }
 
-/// A run of `tasks` tasks for `opus`, whose check passes. The watchdog
-/// numbers of the run never reap a quiet worker during a test: only a dead
-/// agent ends an attempt.
 fn plan(h: &Harness, tasks: usize) {
     let run = seed_run(h, "alpha", None, "w1:p1");
     Store::open(&db(h))
@@ -501,7 +453,6 @@ fn plan(h: &Harness, tasks: usize) {
     }
 }
 
-/// The status of the task `seq`.
 fn task_status(h: &Harness, seq: i64) -> String {
     Store::open_read_only(&db(h))
         .unwrap()
@@ -524,14 +475,11 @@ fn live_attempts(h: &Harness) -> i64 {
         .unwrap()
 }
 
-/// The end state of 1 task.
 #[derive(Debug, PartialEq, Eq)]
 struct TaskOutcome {
     seq: i64,
     status: String,
-    /// The `attempts` count of the task row.
     attempts: i64,
-    /// The state and the outcome of each attempt row of the task, in order.
     ends: Vec<(String, Option<String>)>,
 }
 
@@ -566,13 +514,6 @@ fn outcomes(h: &Harness) -> Vec<TaskOutcome> {
         .collect()
 }
 
-/// The 3 tasks of the plan, run to their end with a fleetd that has the
-/// fault points `fault`. The agent of the worker of task 2 dies, so task 2
-/// completes only when fleetd ends its attempt and queues it again. Only
-/// fleetd ends the attempt of each task after its agent exits. With
-/// `kill_fleetd`, fleetd gets `SIGKILL` after task 1 is done; the agent of
-/// task 2 dies and task 3 is done while no fleetd runs; then fleetd starts
-/// again.
 fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutcome> {
     let mut fleetds = Fleetds::new(h);
     let mut pid = start_fleetd(h, &mut fleetds, fault);
@@ -609,7 +550,6 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
         30,
         || matches!(task_status(h, 2).as_str(), "queued" | "ready").then_some(()),
     );
-    // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
     h.advance_fleet_clock(30);
     let (mut w4, s4) = bind(h);
     assert_eq!(s4, 2, "the new worker is bound to task 2");
@@ -653,10 +593,6 @@ fn plan_done() -> Vec<TaskOutcome> {
     ]
 }
 
-// ─── pass cursors ───────────────────────────────────────────────────────
-
-/// 1 row of `pass_cursors`: `after_key`, `lap_started_at` and
-/// `prev_lap_started_at`.
 type CursorRow = (Option<String>, String, Option<String>);
 
 fn cursor(h: &Harness, kind: &str) -> Option<CursorRow> {
@@ -671,16 +607,10 @@ fn cursor(h: &Harness, kind: &str) -> Option<CursorRow> {
         .ok()
 }
 
-/// The scans of 10,000 folders of each kind.
 const FOLDERS: usize = 10_000;
 
-/// The kinds of `pass_cursors` of the 2 folder scans.
 const FOLDER_SCANS: [&str; 2] = ["outboxes", "worktree_folders"];
 
-/// `FOLDERS` tasks of the run of `h`, each `running` with 1 live attempt of
-/// its own worker, whose agent is `agent`; and `FOLDERS` open worktrees.
-/// Each attempt has its outbox and each worktree its folder, each with 1
-/// small file, and no git work. The keys sort in the order of their number.
 fn seed_folders(h: &Harness, agent: &Agent) {
     let root = fleet_root(h);
     let pid = agent.pid();
@@ -696,7 +626,6 @@ fn seed_folders(h: &Harness, agent: &Agent) {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
-            // FR-12: each task belongs to an idea.
             let idea = horch_core::taskledger::schema::run_idea(tx, &run, &now, true)?
                 .expect("a run that gets a task gets an idea");
             let mut task = tx.prepare(
@@ -744,8 +673,6 @@ fn seed_folders(h: &Harness, agent: &Agent) {
         .unwrap();
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[derive(Default)]
 struct HeartbeatGaps {
     last: Option<(u64, u64)>,
@@ -768,9 +695,6 @@ impl HeartbeatGaps {
     }
 }
 
-/// Wait until the `pass_cursors` row of each kind of [`FOLDER_SCANS`]
-/// differs from its row in `before`: a pass stored each folder cursor again.
-/// Returns the new rows.
 fn cursors_moved(
     h: &Harness,
     before: &[Option<CursorRow>],
@@ -784,18 +708,6 @@ fn cursors_moved(
     })
 }
 
-/// The gate test of PL-5 and FM-12 for the fact scans: with 10,000 outboxes
-/// and 10,000 worktree folders, each heartbeat comes less than 30 s of
-/// awake time after the one before, and `horch fleetd check` finds the
-/// heartbeat fresh. Each folder scan goes on after the key at its stored
-/// cursor after a `SIGKILL` and a new start, in the same lap.
-///
-/// The kill comes after 3 passes that each moved each cursor, not after a
-/// fixed time, so the test does not depend on the speed of the host. Then
-/// the test moves each stored cursor to the key of the middle folder, in the
-/// same lap. The first pass after the new start must move each cursor past
-/// that key. A scan budget of 1 ms reads far fewer than the 5,000 keys before
-/// the middle, so a scan that starts again at the first folder cannot pass.
 #[test]
 fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart()
 {
@@ -873,10 +785,6 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
     });
 }
 
-/// RR-4: the watcher reports no file event, and the plan still ends with
-/// each task done. The pass every second finds the dead agent and queues
-/// its task again, and the scans read the outboxes and worktree folders at
-/// their cursors.
 #[test]
 fn rr4_tasks_complete_with_all_file_watch_events_dropped() {
     let h = world("p1-rr4", FAST_PASSES);
@@ -916,8 +824,6 @@ const LONG_PERIOD_S: u64 = 300;
 
 const WAKE_WAIT_S: u64 = 15;
 
-/// A commit that changes a row. SQLite writes no page for an UPDATE that
-/// keeps each value, so such a commit leaves `PRAGMA data_version` as it is.
 fn commit_to_ledger(h: &Harness) {
     Store::open(&db(h))
         .unwrap()
@@ -980,9 +886,6 @@ fn rr4_file_request_and_job_events_wake_pass_before_period() {
     woke_by(&h, pid, before, "a job result file");
 }
 
-/// RR-7: the same plan, once with 1 fleetd and once with fleetd killed by
-/// `SIGKILL` in the middle and started again, ends in the same state: each
-/// task done, with the same attempts. No task is lost or done 2 times.
 #[test]
 fn rr7_fleetd_killed_mid_run_ends_as_a_clean_run() {
     let clean = run_plan(&world("p1-rr7-clean", FAST_PASSES), None, false);
@@ -991,13 +894,9 @@ fn rr7_fleetd_killed_mid_run_ends_as_a_clean_run() {
     assert_eq!(killed, clean, "the run with fleetd killed mid-run");
 }
 
-/// A process that appends 1 line to `file` for each polite stop that it
-/// gets, then exits. It leads its own process group. Drop kills it.
 struct Polite(Child);
 
 impl Polite {
-    /// Start it, and wait until its shell has set the trap of the polite
-    /// stop: a stop before the trap would end it with no line.
     fn start(file: &Path) -> Polite {
         let ready = file.with_extension("ready");
         let polite = Polite(
@@ -1034,7 +933,6 @@ fn lines(path: &Path) -> usize {
     std::fs::read_to_string(path).map_or(0, |t| t.lines().count())
 }
 
-/// The count of events that move `entity` `id` from `from` to `to`.
 fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64 {
     Store::open_read_only(&db(h))
         .unwrap()
@@ -1048,7 +946,6 @@ fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64
         .unwrap()
 }
 
-/// The state and the run number of the job `id`.
 fn job(h: &Harness, id: i64) -> (String, i64) {
     Store::open_read_only(&db(h))
         .unwrap()

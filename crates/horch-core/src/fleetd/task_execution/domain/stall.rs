@@ -1,40 +1,21 @@
-//! The stall ladder of a live attempt (`docs/specs/fleetd/design.md`,
-//! "Supervision, liveness and reconciliation": "Liveness comes from
-//! outside the model" and "Stall ladder", rungs 1 to 5).
-//!
-//! Facts in, 1 decision out. No I/O. Each timer is a time on the fleet
-//! clock, so a sleep of the machine fires no rung. The facts come from
-//! outside the model: the process, the activity and the herdr status of
-//! the pane. The heartbeat is a fact of the lease. A usage limit is never
-//! a stall.
-
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::Seen;
 
-/// The 1 line that fleetd types into an idle pane at rungs 1 and 2. It
-/// holds no task data (FR-7).
 pub const DOORBELL: &str =
     "[horch] NOTE: Your task has no result yet. Continue it, or finish it with its finish command.";
 
-/// The time from 1 doorbell to the next rung, in seconds of the fleet
-/// clock.
 pub const DOORBELL_GAP_S: u64 = 120;
 
-/// The most bytes of the screen excerpt of a needs-you item of rung 4.
 pub const EXCERPT_MAX_BYTES: usize = 2048;
 
-/// The herdr status of a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneStatus {
     Working,
-    /// The agent waits on a dialog: a login, trust or error prompt.
     Blocked,
-    /// The agent waits at its prompt.
     Idle,
 }
 
 impl PaneStatus {
-    /// The status of a herdr status word. Another word is no status.
     pub fn parse(word: &str) -> Option<PaneStatus> {
         match word {
             "working" => Some(PaneStatus::Working),
@@ -45,47 +26,29 @@ impl PaneStatus {
     }
 }
 
-/// The pane of an attempt, as part 1 of a pass saw it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pane {
     pub id: String,
-    /// `None` when herdr gave no status, or a word that is not a status.
     pub status: Option<PaneStatus>,
-    /// The visible text of the pane.
     pub screen: Option<String>,
 }
 
-/// The facts of 1 live attempt. Each time is a time on the fleet clock,
-/// in seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Facts {
-    /// The fleet clock of this pass.
     pub clock: i64,
-    /// The agent process of the attempt.
     pub process: Seen,
-    /// The last activity (`attempts.active_at`). `None`: no activity yet.
     pub active_at: Option<i64>,
-    /// The claim of the task by the attempt.
     pub claimed_at: i64,
-    /// The pane of the attempt, when it has one.
     pub pane: Option<Pane>,
-    /// The pool of the persona of the attempt is limited.
     pub pool_limited: bool,
-    /// The worker has an open `questions` row.
     pub open_question: bool,
-    /// The end of a declared wait of the worker (`worker_waits.due_at`).
     pub waiting_until: Option<i64>,
-    /// The profile runs the agent in an interactive pane.
     pub interactive: bool,
-    /// The task of the attempt is `running`.
     pub task_running: bool,
-    /// `stall_after_s` of the profile.
     pub stall_after_s: u64,
-    /// The time of each doorbell of the attempt, oldest first.
     pub doorbells: Vec<i64>,
 }
 
-/// The agent state of 1 attempt, with the words of the design.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentState {
     Starting,
@@ -98,7 +61,6 @@ pub enum AgentState {
 }
 
 impl AgentState {
-    /// The word of the design.
     pub fn as_str(self) -> &'static str {
         match self {
             AgentState::Starting => "starting",
@@ -112,38 +74,18 @@ impl AgentState {
     }
 }
 
-/// What the ladder does to 1 attempt in this pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// Nothing.
     None,
-    /// Rung 1 or 2: type [`DOORBELL`] into the pane `pane`.
     Doorbell { pane: String, rung: u8 },
-    /// End the attempt with `outcome`. `stop`: stop its process group.
     End { outcome: Outcome, stop: bool },
-    /// Rung 4: end the attempt `stalled`, stop its process group, and open
-    /// 1 needs-you item with `excerpt`.
     NeedsYou { excerpt: String },
 }
 
-/// Whether the fleet clock `clock` is at least `after_s` past `since`.
 fn reached(clock: i64, since: i64, after_s: u64) -> bool {
     clock >= since.saturating_add_unsigned(after_s)
 }
 
-/// The agent state of the attempt of `f`. The first match wins:
-/// 1. `exited`: the process is gone.
-/// 2. `usage_limited`: the pool of the persona is limited.
-/// 3. `waiting_approval`: herdr shows the pane `blocked`.
-/// 4. `working`: activity within `stall_after_s`, or a declared wait
-///    before its end.
-/// 5. `idle_no_result`: an interactive pane that herdr shows `idle`, while
-///    the task is `running`.
-/// 6. `hung`: the process is alive, with no activity for `stall_after_s`
-///    since the last activity, or since the claim when there was none.
-/// 7. `starting`: no other state. The attempt has no activity yet within
-///    `stall_after_s` of its claim, or part 1 did not read its process.
-///    The ladder waits for a fact.
 pub fn agent_state(f: &Facts) -> AgentState {
     if f.process == Seen::Dead {
         return AgentState::Exited;
@@ -172,15 +114,6 @@ pub fn agent_state(f: &Facts) -> AgentState {
     AgentState::Starting
 }
 
-/// The decision of the ladder for the attempt of `f`:
-/// - `idle_no_result`: rung 1 rings the doorbell. Rung 2 rings it again
-///   [`DOORBELL_GAP_S`] after rung 1. Rung 3 ends the attempt `stalled`
-///   [`DOORBELL_GAP_S`] after rung 2.
-/// - `hung`: rung 3 at once.
-/// - `waiting_approval`: rung 4.
-/// - `exited`: rung 5. An open question gives `asked`, else a limited
-///   pool gives `quota`, else `no_result`.
-/// - `usage_limited`: the outcome `quota`, and a stop of the process.
 pub fn decide(f: &Facts) -> Decision {
     let stalled = Decision::End {
         outcome: Outcome::Stalled,
@@ -218,7 +151,6 @@ pub fn decide(f: &Facts) -> Decision {
     }
 }
 
-/// Rung 5: the outcome of an attempt whose process is gone.
 fn exit_outcome(f: &Facts) -> Outcome {
     if f.open_question {
         Outcome::Asked
@@ -229,8 +161,6 @@ fn exit_outcome(f: &Facts) -> Outcome {
     }
 }
 
-/// The end of `screen`, at most [`EXCERPT_MAX_BYTES`] bytes, cut on a
-/// character boundary. The prompt of a dialog is at the end of a screen.
 fn excerpt(screen: Option<&str>) -> String {
     let screen = screen.unwrap_or_default();
     let mut start = screen.len().saturating_sub(EXCERPT_MAX_BYTES);
@@ -240,50 +170,23 @@ fn excerpt(screen: Option<&str>) -> String {
     screen[start..].to_string()
 }
 
-/// What the pass does with a `stalled` task. The design moves a `stalled`
-/// task on only after the process group of its attempt is stopped (the
-/// state table, row `stalled`, and FM-14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Settle {
-    /// A process of the old attempt can be alive: the task stays `stalled`.
     Wait,
-    /// The pass saw each process of the old attempts dead: rung 6.
     Rung6,
-    /// Past the stop bound, a process of the old attempt is alive, or the
-    /// pass cannot tell: the task stays `stalled`, and the operator gets 1
-    /// needs-you item.
     Stuck,
 }
 
-/// The stop bound: the time from the stall to the end of its stop, in
-/// seconds of the fleet clock. It holds the polite stop and its grace
-/// `stop_grace_s`, the hard stop within 1 pass of `pass_period_s`, the
-/// grace of the hard stop, and 1 more pass that reads the facts.
 pub fn stop_bound_s(stop_grace_s: u64, pass_period_s: u64) -> u64 {
     stop_grace_s.saturating_add(pass_period_s).saturating_mul(2)
 }
 
-/// What the pass knows of 1 process of the attempts of a `stalled` task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OldProcess {
-    /// What the pass saw of the process.
     pub seen: Seen,
-    /// The fleet clock of the sent mark of its hard stop: part 3 sent the
-    /// hard stop at this time. `None`: no proof of a hard stop.
     pub killed_at: Option<i64>,
 }
 
-/// The decision for a `stalled` task at the fleet clock `clock`. `old`
-/// holds each process of the attempts of the task. `bound_at` is the end
-/// of the stop bound on the fleet clock.
-/// - Each process is stopped, or there is no process: rung 6 at once.
-/// - Else wait. Past `bound_at`: [`Settle::Stuck`].
-///
-/// A process is stopped when the pass saw it dead. A process that the pass
-/// cannot tell (`Unknown`: the platform cannot read its start time, or the
-/// pass did not read it) is stopped only with proof: the sent mark of its
-/// hard stop, and its grace `stop_grace_s` after that mark. A stop that
-/// was decided but did not run is no proof (A24).
 pub fn settle(old: &[OldProcess], clock: i64, bound_at: i64, stop_grace_s: u64) -> Settle {
     let stopped = |p: &OldProcess| match p.seen {
         Seen::Dead => true,
@@ -305,9 +208,6 @@ mod tests {
 
     const CLAIM: i64 = 1_000;
 
-    /// A live attempt in an interactive pane that herdr shows `working`,
-    /// claimed at [`CLAIM`] with activity at the claim, at the clock of the
-    /// claim.
     fn facts() -> Facts {
         Facts {
             clock: CLAIM,
@@ -334,7 +234,6 @@ mod tests {
         f
     }
 
-    /// An idle pane with no activity since the claim, at `clock`.
     fn idle_at(clock: i64) -> Facts {
         let mut f = with_status(facts(), PaneStatus::Idle);
         f.clock = clock;
@@ -355,8 +254,6 @@ mod tests {
         }
     }
 
-    /// The first fleet second at or after `from` at which `f` with that
-    /// clock decides something, up to `from + limit`.
     fn first_action(f: &Facts, from: i64, limit: i64) -> Option<(i64, Decision)> {
         (from..=from + limit).find_map(|clock| {
             let at = Facts { clock, ..f.clone() };
@@ -402,7 +299,6 @@ mod tests {
 
     #[test]
     fn first_match_wins() {
-        // A dead process with a limited pool and a blocked pane is exited.
         let mut f = with_status(facts(), PaneStatus::Blocked);
         f.pool_limited = true;
         f.process = Seen::Dead;
@@ -411,13 +307,10 @@ mod tests {
         assert_eq!(agent_state(&f), AgentState::UsageLimited);
         f.pool_limited = false;
         assert_eq!(agent_state(&f), AgentState::WaitingApproval);
-        // An idle pane with recent activity is working.
         assert_eq!(agent_state(&idle_at(CLAIM + 299)), AgentState::Working);
-        // An idle pane of a task that is not running is not idle_no_result.
         let mut f = idle_at(CLAIM + 300);
         f.task_running = false;
         assert_eq!(agent_state(&f), AgentState::Hung);
-        // An idle pane of an exec profile is not idle_no_result.
         let mut f = idle_at(CLAIM + 300);
         f.interactive = false;
         assert_eq!(agent_state(&f), AgentState::Hung);
@@ -485,13 +378,11 @@ mod tests {
 
     #[test]
     fn hung_ends_the_attempt_at_once() {
-        // A pane that herdr still shows working, with no activity.
         let f = facts();
         assert_eq!(
             first_action(&f, CLAIM, 1_000),
             Some((CLAIM + 300, stalled()))
         );
-        // No pane at all.
         let f = Facts {
             pane: None,
             ..facts()
@@ -504,9 +395,6 @@ mod tests {
 
     #[test]
     fn rr1_stopped_worker_is_hung_after_stall_after_s_with_no_activity() {
-        // `kill -STOP` at the last activity: the process is alive, its
-        // heartbeat ages, herdr keeps its last status, and no activity
-        // comes.
         let last = CLAIM + 500;
         let at = |clock: i64| Facts {
             clock,
@@ -523,7 +411,6 @@ mod tests {
 
     #[test]
     fn fm3_idle_claim_is_caught_within_stall_after_plus_lease() {
-        // The agent claims and does nothing: no output, no pane status.
         let lease_s = 120;
         let f = Facts {
             pane: None,
@@ -537,9 +424,6 @@ mod tests {
 
     #[test]
     fn sleep_past_a_rung_fires_it_only_after_the_rest_of_its_fleet_time() {
-        // Rung 1 rang at 1300. The machine sleeps 8 h: the fleet clock
-        // moves at most 10 s in the pass after the wake. Rung 2 waits for
-        // the rest of its 120 s on the fleet clock.
         let mut f = idle_at(CLAIM + 310);
         f.doorbells = vec![CLAIM + 300];
         assert_eq!(decide(&f), Decision::None);
@@ -547,7 +431,6 @@ mod tests {
         assert_eq!(decide(&f), Decision::None);
         f.clock = CLAIM + 420;
         assert_eq!(decide(&f), doorbell(2));
-        // The same for the stall timer itself.
         let quiet = Facts {
             clock: CLAIM + 299,
             ..facts()
@@ -612,7 +495,6 @@ mod tests {
                 excerpt: "screen".into()
             }
         );
-        // The end of a long screen, cut on a character boundary.
         let screen = format!("{}é{}", "a".repeat(3_000), "b".repeat(2_047));
         f.pane.as_mut().unwrap().screen = Some(screen);
         let Decision::NeedsYou { excerpt } = decide(&f) else {
@@ -644,17 +526,14 @@ mod tests {
         let dead = p(Seen::Dead, None);
         let alive = p(Seen::Alive, Some(10));
         let unknown = p(Seen::Unknown, None);
-        // The hard stop was sent at 10, and its grace is 20 s.
         let unknown_killed = p(Seen::Unknown, Some(10));
         let at = |old: &[OldProcess], clock: i64| settle(old, clock, 100, 20);
         assert_eq!(at(&[], 10), Settle::Rung6);
         assert_eq!(at(&[dead, dead], 10), Settle::Rung6);
         assert_eq!(at(&[dead, alive], 10), Settle::Wait);
         assert_eq!(at(&[dead, alive], 100), Settle::Stuck);
-        // No proof of a hard stop: never stopped, also past the bound.
         assert_eq!(at(&[dead, unknown], 99), Settle::Wait);
         assert_eq!(at(&[dead, unknown], 100), Settle::Stuck);
-        // The proof of the hard stop, and its grace passed.
         assert_eq!(at(&[dead, unknown_killed], 29), Settle::Wait);
         assert_eq!(at(&[dead, unknown_killed], 30), Settle::Rung6);
         assert_eq!(at(&[alive, unknown_killed], 100), Settle::Stuck);

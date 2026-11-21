@@ -1,10 +1,3 @@
-//! `task.yaml` and `START.md` name the idea of the task, its
-//! `requirements.yaml` and the decisions file of the feature, so each
-//! worker reads them before it starts (RR-12; docs/specs/fleetd/design.md,
-//! "Workspace layout and file protocol" (Example: task.yaml) and "Ideas"
-//! (How a worker's question is resolved, step 6); MAP.md, Q15;
-//! docs/tickets/fleetd-p6/49-task-files.md).
-
 use std::path::{Path, PathBuf};
 
 use horch_core::fleetd::task_execution::adapters::task_files::{
@@ -14,8 +7,6 @@ use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
 
 const TICKET: &str = "docs/tickets/p6/07-retry.md";
 
-/// The facts of attempt `A1` of task `T7` of idea `I-0007` of feature
-/// `F-0003`, with a worktree under `root`.
 fn facts(root: &Path) -> TaskFacts {
     TaskFacts {
         task: "T7".into(),
@@ -39,7 +30,6 @@ fn facts(root: &Path) -> TaskFacts {
     }
 }
 
-/// Write `text` to `path`, with its folders.
 fn put(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -61,7 +51,6 @@ fn start(files: &AttemptFiles) -> String {
     std::fs::read_to_string(&files.start_md).unwrap()
 }
 
-/// The `read_first` list of a `task.yaml`.
 fn read_first(y: &serde_yaml::Value) -> Vec<String> {
     y["read_first"]
         .as_sequence()
@@ -100,7 +89,6 @@ fn task_yaml_names_its_idea_and_requirements() {
         files.task_yaml
     );
 
-    // A task of a run in flight with no idea folder lists only its ticket.
     let root = tempfile::tempdir().unwrap();
     let mut f = facts(root.path());
     f.covers.clear();
@@ -109,7 +97,6 @@ fn task_yaml_names_its_idea_and_requirements() {
     assert_eq!(read_first(&y), [TICKET]);
     assert_eq!(y["covers"].as_sequence().map(Vec::len), Some(0));
 
-    // A task with no idea has a null idea.
     let root = tempfile::tempdir().unwrap();
     let mut f = facts(root.path());
     f.idea = None;
@@ -145,8 +132,6 @@ fn start_md_lists_the_decisions_file_of_the_feature() {
         "the ticket snapshot comes first: {text}"
     );
 
-    // With no idea folder and no decisions file, START.md names no file
-    // of an idea.
     let root = tempfile::tempdir().unwrap();
     let f = facts(root.path());
     let text = start(&write_attempt_files(root.path(), &f, &[]).unwrap());
@@ -176,7 +161,6 @@ fn fix_attempt_lists_the_verdict() {
     let text = start(&files);
     assert!(text.contains(&format!("- `{}`", shown(&verdict))), "{text}");
 
-    // An attempt that is not a fix attempt names no verdict.
     let root = tempfile::tempdir().unwrap();
     let f = facts(root.path());
     let text = start(&write_attempt_files(root.path(), &f, &[]).unwrap());

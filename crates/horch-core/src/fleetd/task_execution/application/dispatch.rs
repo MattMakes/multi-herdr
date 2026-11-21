@@ -1,28 +1,3 @@
-//! The use case of a push dispatch and its bind (ticket 08).
-//!
-//! `docs/specs/fleetd/design.md`, "The task state machine" (`ready`,
-//! `leased`), FR-5, FM-2, FM-14, "Holds on dispatch are visible" and I4.
-//!
-//! - [`bind`]: the 1 function that binds a ready task to a new attempt, in
-//!   1 transaction, before any pane or process exists. The task goes
-//!   `ready -> leased`, 1 new worker row of the persona and 1 attempt in
-//!   `launching` with `via = push` are written, and the tree of the task
-//!   is named: the tree of the last attempt, or a new `reserved` row with
-//!   its `worktree_add` job. No lease and no start timeout start here:
-//!   both start at the launch.
-//! - [`choices`]: the choice of the rules of `domain/dispatch.rs` on the
-//!   rows, with the holds of the caller and the check sandbox of each
-//!   persona.
-//! - [`dispatch_due`]: fleetd binds the chosen tasks of 1 pass, at most
-//!   its work budget. A bind that fails rolls back only its own rows.
-//! - [`read_base_tips`]: before its write transaction, fleetd reads the
-//!   base tip of each new tree through its sandboxed git gateway (SR-4), so
-//!   no git runs in that transaction (RR-5, review R4-F4).
-//! - [`write_task_files`] and [`write_missing_task_files`]: after the
-//!   commit, `task.yaml` and `START.md` of an attempt. A crash between the
-//!   commit and the files leaves an attempt in `launching` with no files,
-//!   and the next pass writes them. The writer never rewrites a file.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -67,17 +42,13 @@ use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::util;
 use crate::taskledger::workers::{self, NewWorker};
 
-/// The check sandbox of each persona (ticket 18). A persona whose check
-/// sandbox is NotSupported on this host gets no dispatch (SR-4).
 pub trait CheckSandboxes {
     fn supported(&self, persona: &str) -> bool;
 }
 
-/// The cause of the hold of a persona with no check sandbox.
 pub const NO_CHECK_SANDBOX: &str =
     "no check sandbox on this host: its check cannot run in the worker sandbox (SR-4)";
 
-/// The task states whose task holds its paths: a task bound or at work.
 const HOLDING: [TaskStatus; 6] = [
     TaskStatus::Leased,
     TaskStatus::Running,
@@ -87,21 +58,14 @@ const HOLDING: [TaskStatus; 6] = [
     TaskStatus::WaitingQuota,
 ];
 
-/// What a bind and a dispatch read and write with.
 pub struct DispatchCtx<'a> {
-    /// The job context of the `worktree_add` job of a new tree.
     pub jobs: JobCtx<'a>,
-    /// The fleet clock now.
     pub clock: FleetSeconds,
-    /// Where the bind reads the base tip of a new tree.
     pub git: &'a dyn BaseTipSource,
 }
 
-/// The tip of each base branch of a new tree, by project root and branch.
 pub type BaseTips = BTreeMap<(String, String), String>;
 
-/// Where a bind reads the tip of the base branch `base` of the project
-/// `root`.
 pub trait BaseTipSource {
     fn base_tip(&self, root: &str, base: &str) -> Result<String>;
 }
@@ -125,38 +89,28 @@ impl BaseTipSource for BaseTips {
     }
 }
 
-/// The tree that a bind names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundTree {
     pub worktree_id: String,
     pub path: String,
     pub branch: String,
-    /// The `worktree_add` job of a `reserved` row; `None` when the tree
-    /// exists.
     pub add_job: Option<i64>,
 }
 
-/// 1 task bound to 1 new attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bound {
     pub task_id: String,
     pub attempt_id: String,
-    /// The number of the attempt, `n` of `A<n>`.
     pub attempt: i64,
     pub worker_id: String,
     pub persona: String,
-    /// `None` for a task of the shared checkout.
     pub worktree: Option<BoundTree>,
 }
 
-/// What 1 dispatch pass did.
 #[derive(Debug, Default)]
 pub struct Dispatched {
     pub bound: Vec<Bound>,
-    /// Each ready task that a hold keeps `ready`, with its hold.
     pub held: Vec<(String, Hold)>,
-    /// Each chosen task whose bind failed, with the error. Its rows did
-    /// not change.
     pub failed: Vec<(String, String)>,
 }
 
@@ -167,13 +121,6 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// Bind the ready task `task_id` to a new attempt of `persona`, in the open
-/// transaction `tx`. `worker` gives the fields of the new worker row that
-/// the caller chooses (workspace, predecessor, resumed session); the bind
-/// sets its run, kind, persona and target task.
-///
-/// FM-14: the bind is a compare-and-set on `ready`, so 2 binds of 1 task
-/// give 1 attempt. It refuses a task with an attempt that is not ended.
 pub fn bind(
     tx: &Connection,
     ctx: &DispatchCtx<'_>,
@@ -253,7 +200,6 @@ pub fn bind(
     } else {
         None
     };
-    // Every branch is a ledger row before it exists (ticket 25).
     if let Some(tree) = &worktree {
         landing::bind_branch(&ctx.jobs, tx, task_id, &tree.branch, ctx.clock)?;
     }
@@ -267,7 +213,6 @@ pub fn bind(
     })
 }
 
-/// The id of an attempt of `task_id` that is not ended, if any.
 fn open_attempt(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM attempts WHERE task_id = ?1 AND state <> 'ended' ORDER BY rowid LIMIT 1",
@@ -276,15 +221,10 @@ fn open_attempt(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     Ok(rows.next().transpose()?)
 }
 
-/// The tree of `task` that a new attempt takes: the row of an earlier
-/// attempt that no drop or cleanup ended.
 fn task_tree(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
     Ok(trees::of_task(conn, task_id)?.filter(|r| !WORKTREES_GONE.contains(&r.status)))
 }
 
-/// Name the tree of the attempt `attempt` of `task`: the tree of the last
-/// attempt moves to it, or a new `reserved` row with its `worktree_add`
-/// job.
 fn bind_tree(
     tx: &Connection,
     ctx: &DispatchCtx<'_>,
@@ -320,7 +260,6 @@ fn bind_tree(
     })
 }
 
-/// The base branch of the trees of `run`: the run branch, else the base.
 fn base_branch(run: &Run) -> Result<String> {
     run.run_branch
         .clone()
@@ -328,10 +267,6 @@ fn base_branch(run: &Run) -> Result<String> {
         .context("the run has no run branch: create runs in a git repository")
 }
 
-/// The base branch of a new tree of `task`. A judge task starts from the
-/// task branch of the task it judges, so the judge reads the result before
-/// it lands (The judge pair, step 2). Each other task starts from the run
-/// branch.
 fn tree_base(conn: &Connection, run: &Run, task: &Task) -> Result<String> {
     let Some(judged) = judged_task(&task.kind, task.parent_task_id.as_deref()) else {
         return base_branch(run);
@@ -346,8 +281,6 @@ fn tree_base(conn: &Connection, run: &Run, task: &Task) -> Result<String> {
     }
 }
 
-/// The row of a new tree of `task`, from the tip of its base branch
-/// ([`tree_base`]).
 fn new_tree(
     conn: &Connection,
     tips: &dyn BaseTipSource,
@@ -358,8 +291,6 @@ fn new_tree(
     let root = Path::new(&run.project_root);
     let base = tree_base(conn, &run, task)?;
     let name = format!("T{}-{}", task.seq, slug(&task.title));
-    // Beside the run branch, not under it: git cannot hold both `fleet/x`
-    // and `fleet/x/T1-y`.
     let branch = format!("{}-{name}", run.run_branch.as_deref().unwrap_or("fleet"));
     let base_commit = tips.base_tip(&run.project_root, &base)?;
     Ok(NewWorktree {
@@ -367,8 +298,6 @@ fn new_tree(
         task_id: Some(task.task_id.clone()),
         worker_id: Some(worker_id.to_string()),
         repo_root: run.project_root.clone(),
-        // The run slug keeps apart the trees of 2 runs of 1 project: each
-        // run numbers its tasks from T1.
         path: root
             .join(".worktrees")
             .join(format!("{}-{name}", run.slug))
@@ -382,10 +311,6 @@ fn new_tree(
     })
 }
 
-/// The tip of the base branch of each ready task that needs a new tree,
-/// read through the sandboxed git gateway `gw` before the write
-/// transaction opens. A task whose base is not known, or whose base branch
-/// has no tip, gets no tip: its bind fails with the cause.
 pub fn read_base_tips(conn: &Connection, gw: &dyn IntegrationGitGateway) -> Result<BaseTips> {
     let rows = ReadyRows::read(conn)?;
     let mut bases = BTreeSet::new();
@@ -408,7 +333,6 @@ pub fn read_base_tips(conn: &Connection, gw: &dyn IntegrationGitGateway) -> Resu
     Ok(tips)
 }
 
-/// A branch-safe name of at most 40 characters.
 fn slug(title: &str) -> String {
     let s: String = title
         .chars()
@@ -423,9 +347,6 @@ fn slug(title: &str) -> String {
     s.trim_matches('-').chars().take(40).collect()
 }
 
-// ─── the choice ─────────────────────────────────────────────────────────
-
-/// The ids of the tasks in the states `states`, in seq order of each run.
 #[cfg(test)]
 fn task_ids(conn: &Connection, states: &[TaskStatus]) -> Result<Vec<String>> {
     let words: Vec<String> = states.iter().map(|s| word(*s)).collect();
@@ -440,8 +361,6 @@ fn task_ids(conn: &Connection, states: &[TaskStatus]) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// The persona of the next attempt of `t`: `claimable_by`, else its
-/// primary.
 fn persona_of(t: &Task) -> String {
     t.claimable_by
         .clone()
@@ -454,8 +373,6 @@ struct LiveTree {
     branch: String,
 }
 
-/// The rows of the ready tasks, read in a fixed number of statements for
-/// any count of ready tasks (A32: no statement for each row of a pass).
 struct ReadyRows {
     tasks: Vec<Task>,
     cancelled: BTreeSet<String>,
@@ -467,15 +384,10 @@ struct ReadyRows {
 }
 
 impl ReadyRows {
-    /// The rows of 1 moment: the statements run on 1 snapshot, so a task
-    /// that fleetd makes ready or binds between 2 statements is in every
-    /// set or in none.
     fn read(conn: &Connection) -> Result<ReadyRows> {
         Self::read_with(conn, || Ok(()))
     }
 
-    /// [`ReadyRows::read`], with `between` called after the read of the
-    /// ready tasks and before the other reads: the hook of the read race test.
     fn read_with(conn: &Connection, between: impl FnOnce() -> Result<()>) -> Result<ReadyRows> {
         one_snapshot(conn, || Self::read_now(conn, between))
     }
@@ -599,8 +511,6 @@ fn live_trees(conn: &Connection, ready: &[Task]) -> Result<BTreeMap<String, Live
     Ok(out)
 }
 
-/// 2 statements for any count of tasks, on 1 snapshot: a bind compares its
-/// Own files with each running task, so this read stays whole.
 fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
     one_snapshot(conn, || running_tasks_now(conn))
 }
@@ -628,11 +538,6 @@ fn running_tasks_now(conn: &Connection) -> Result<Vec<RunningTask>> {
         .collect())
 }
 
-/// The choice for each ready task now, in dispatch order. `holds` are the
-/// holds of the caller; each unhealthy profile, and each persona of a
-/// ready task whose check sandbox `sandboxes` does not support, is held
-/// too. `target` names the task that goes first: the target of a spawn,
-/// or the task of the worker that a replacement replaces (L2).
 pub fn choices(
     conn: &Connection,
     holds: &Holds,
@@ -642,8 +547,6 @@ pub fn choices(
     one_snapshot(conn, || choices_now(conn, holds, sandboxes, target))
 }
 
-/// [`choices`] on the snapshot of its caller: the ready and the running
-/// tasks are of 1 moment.
 fn choices_now(
     conn: &Connection,
     holds: &Holds,
@@ -654,12 +557,9 @@ fn choices_now(
     let mut ready = Vec::new();
     let mut parked = Vec::new();
     for t in std::mem::take(&mut rows.tasks) {
-        // Its cancel waits for the stop of an attempt: it binds no more.
         if rows.cancelled.contains(&t.task_id) {
             continue;
         }
-        // No new task of a parked idea is dispatched (MAP.md of
-        // fleetd-p6, Q10).
         if let Some(idea) = rows.parked.get(&t.task_id) {
             let hold = Hold::IdeaParked { idea: idea.clone() };
             parked.push(Choice::Held {
@@ -672,8 +572,6 @@ fn choices_now(
     }
     let running = running_tasks(conn)?;
     let mut holds = holds.clone();
-    // A task of an unhealthy profile waits: no fallback applies (MAP.md
-    // of fleetd-p7, Q15).
     holds
         .unhealthy
         .extend(health::unhealthy_profiles(conn)?.into_keys());
@@ -689,11 +587,6 @@ fn choices_now(
     Ok(parked)
 }
 
-/// 1 dispatch pass of fleetd, in the open transaction `tx`: bind each
-/// chosen task, at most `budget` of them. Each bind runs in its own
-/// savepoint, so a bind that fails rolls back only its own rows and the
-/// pass goes on. After the commit, the caller writes the task files of
-/// each bound attempt ([`write_task_files`]).
 pub fn dispatch_due(
     tx: &Connection,
     ctx: &DispatchCtx<'_>,
@@ -728,8 +621,6 @@ pub fn dispatch_due(
     Ok(out)
 }
 
-/// The worker row of a dispatch by fleetd: its pane goes to the workspace
-/// of the run.
 fn dispatched_worker(conn: &Connection, task_id: &str) -> Result<NewWorker> {
     let task = tasks::get(conn, task_id)?;
     let run = runs::get(conn, &task.run_id)?;
@@ -738,8 +629,6 @@ fn dispatched_worker(conn: &Connection, task_id: &str) -> Result<NewWorker> {
         ..NewWorker::default()
     })
 }
-
-// ─── the task files ─────────────────────────────────────────────────────
 
 struct AttemptRows {
     id: String,
@@ -928,16 +817,11 @@ impl FileRows {
             extra,
             idea,
             feature,
-            // The fix attempt of a judged task gives its verdict file (ticket 41).
             verdict: None,
         })
     }
 }
 
-/// Write `task.yaml` and `START.md` of the attempt `attempt_id` under
-/// `fleet_root`, after the commit of its bind. `secrets` are the values
-/// that the SR-2 lint refuses. A file that exists with the same bytes is
-/// accepted, so a second write changes nothing.
 pub fn write_task_files(
     conn: &Connection,
     fleet_root: &Path,
@@ -947,8 +831,6 @@ pub fn write_task_files(
     write_task_files_in(conn, fleet_root, None, attempt_id, secrets)
 }
 
-/// [`write_task_files`], and `START.md` gives the project facts of
-/// `state_root` for the project of the run (G56). `None`: no facts section.
 pub fn write_task_files_in(
     conn: &Connection,
     fleet_root: &Path,
@@ -983,10 +865,6 @@ fn write_with_facts(
     )?)
 }
 
-/// Write the 2 files of each attempt of a push dispatch in `launching`
-/// that has no `task.yaml`: a crash came between its commit and its files.
-/// Gives each such attempt with the result of its write. An idea-lead
-/// attempt has `via` push and no task, so it has no task files (T-890).
 pub fn write_missing_task_files(
     conn: &Connection,
     fleet_root: &Path,
@@ -995,8 +873,6 @@ pub fn write_missing_task_files(
     write_missing_task_files_in(conn, fleet_root, None, secrets)
 }
 
-/// [`write_missing_task_files`], and each `START.md` gives the project
-/// facts of `state_root` (G56). `None`: no facts section.
 pub fn write_missing_task_files_in(
     conn: &Connection,
     fleet_root: &Path,
@@ -1191,11 +1067,6 @@ mod ready_rows_race_tests {
         Ok(())
     }
 
-    /// A second connection commits between the read of the ready tasks and
-    /// the other reads: it binds the only ready task of `r1` and adds a
-    /// ready task of `r2`. The reader sees 1 moment: each task it gives has
-    /// its run, and the new task is in the tasks and in the Own files, or in
-    /// neither.
     #[test]
     fn ready_rows_read_one_moment_while_another_connection_commits() {
         let tmp = tempfile::tempdir().unwrap();

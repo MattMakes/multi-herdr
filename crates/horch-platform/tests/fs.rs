@@ -1,6 +1,3 @@
-//! The concern fs: file locks, file permissions and file identity (PL-2),
-//! with the gaps of Windows as `NotSupported` (PL-6).
-
 use std::path::Path;
 
 use horch_platform::fs;
@@ -15,10 +12,8 @@ mod unix {
 
     use horch_platform::fs;
 
-    /// The umask is of the process: the tests that change it run 1 at a time.
     static UMASK: Mutex<()> = Mutex::new(());
 
-    /// Run `f` with the current umask, then again with the umask `0o022`.
     fn with_both_umasks(f: impl Fn(&str)) {
         let _held = UMASK.lock().unwrap_or_else(|e| e.into_inner());
         f("current");
@@ -108,7 +103,6 @@ mod unix {
         match rx.recv_timeout(Duration::from_secs(5)) {
             Ok(opened) => opened.unwrap(),
             Err(_) => {
-                // Release the blocked reader, then fail.
                 let _writer = OpenOptions::new().write(true).open(&fifo);
                 panic!("open of a FIFO with no writer blocked");
             }
@@ -192,7 +186,6 @@ mod unix {
 }
 
 #[test]
-// Windows renames with a plain rename, which replaces an empty dir.
 #[cfg_attr(
     windows,
     ignore = "preservation-06 section 6, row File locks: plain rename on Windows"
@@ -203,8 +196,6 @@ fn rename_noreplace_refuses_an_existing_target() {
     let to = dir.path().join("lock");
     std::fs::create_dir(&from).unwrap();
     std::fs::write(from.join("owner"), b"me").unwrap();
-    // An empty dir: the lock of an older binary before its owner write. A
-    // plain rename replaces it.
     std::fs::create_dir(&to).unwrap();
     assert!(fs::rename_noreplace(&from, &to).is_err());
     assert!(from.join("owner").exists(), "the source stays");
@@ -264,10 +255,8 @@ fn modes_and_owner_are_not_supported_on_windows() {
     assert!(fs::owner_and_mode(&meta).is_err());
     assert!(fs::mode_of(&meta).is_err());
     assert!(fs::current_uid().is_err());
-    // "Exists" is the rule for the exec bit on Windows.
     assert!(fs::is_executable(&meta));
     fs::make_executable(&path).unwrap();
-    // The guard holds nothing, so a second take also succeeds.
     let lock = dir.path().join("ledger.lock");
     let _first = fs::BreakerGuard::take(&lock).unwrap();
     assert!(fs::BreakerGuard::take(&lock).is_some());

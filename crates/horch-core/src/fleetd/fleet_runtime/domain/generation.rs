@@ -1,21 +1,9 @@
-//! The generation of the `fleetd` row: who holds the fleetd lock.
-//!
-//! Each start of fleetd takes the fleetd lock and then adds 1 to the
-//! generation of the `fleetd` row. Each write transaction of fleetd checks
-//! that the generation of the row is still its own. So a fleetd of an older
-//! generation writes nothing (`docs/specs/fleetd/design.md`, "One fleetd for
-//! each ledger"; FM-12, RR-7).
-
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 
-/// The generation that a start takes when the row holds `found`: 1 when no
-/// fleetd ever started, else 1 more.
 pub fn next(found: Option<Generation>) -> Generation {
     Generation(found.map_or(1, |g| g.0 + 1))
 }
 
-/// Whether the fleetd of generation `held` still owns the ledger, where the
-/// row holds `found`.
 pub fn is_current(held: Generation, found: Option<Generation>) -> bool {
     found == Some(held)
 }

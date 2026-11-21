@@ -1,48 +1,33 @@
-//! Waking the orchestrator from the task ledger (section 9, trace-fixes C3):
-//! a wake is 1 outbox row first, then a drain moves each undelivered row
-//! into durable mail, as `horch tell orchestrator` sends, tagged `[horch]`.
-//! A failed send leaves the row for the next drain. A wake never fails the
-//! ledger operation that wrote it.
-
 use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::ids::WorkspaceId;
 use horch_core::messaging::mail;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::model::{Actor, EventKind};
-use horch_core::taskledger::outbox::{self, Row, Scope};
-use horch_core::taskledger::runs::Run;
-use horch_core::taskledger::util::{self, About};
-use horch_core::taskledger::Store;
-// The wakes that only the tests of this module write: the CLI writes no
-// outbox row (RR-5, T-885), and the pass of fleetd writes each wake.
 #[cfg(test)]
 use horch_core::taskledger::model::OutboxEvent;
+use horch_core::taskledger::model::{Actor, EventKind};
+use horch_core::taskledger::outbox::{self, Row, Scope};
 #[cfg(test)]
 use horch_core::taskledger::outbox::{Wake, Written};
+use horch_core::taskledger::runs::Run;
+use horch_core::taskledger::util::{self, About};
 #[cfg(test)]
 use horch_core::taskledger::wakes::{self, settled_wake, startable_wake, tagged};
+use horch_core::taskledger::Store;
 #[cfg(test)]
 use horch_core::taskledger::{runs, tasks};
 #[cfg(test)]
 use rusqlite::Transaction;
 
-/// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr). A wake is
-/// still written; its send fails, so the row stays undelivered.
 fn disabled() -> bool {
     std::env::var("HORCH_NO_WAKE").is_ok_and(|v| v == "1")
 }
 
-/// Wake the run's orchestrator with the free-text line `text`. Every call
-/// is a new wake, as before the outbox. The event comes from the text
-/// ([`event_of`]); a caller that knows its event uses [`wake_as`].
 #[cfg(test)]
 pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
     let wake = Wake::new(event_of(text), util::new_id(), tagged(text));
     wake_as(ctx, store, run, |_| Ok(Some(wake)));
 }
 
-/// The outbox event of a free-text wake. The column allows only the C3
-/// events: a stall or suspect line about a worker is `held`.
 #[cfg(test)]
 fn event_of(text: &str) -> OutboxEvent {
     if text.contains("was reaped") {
@@ -54,10 +39,6 @@ fn event_of(text: &str) -> OutboxEvent {
     }
 }
 
-/// Write the wake that `decide` returns, right after the ledger commit and
-/// before any send, then drain the run's outbox. `decide` reads the board
-/// in the same transaction as the write. The result is what was written;
-/// an error is printed, never returned.
 #[cfg(test)]
 pub fn wake_as(
     ctx: &RuntimeContext,
@@ -80,9 +61,6 @@ pub fn wake_as(
     written
 }
 
-/// Drain the outbox rows of `run` into durable mail. `new` is the row that
-/// the caller just wrote: only its failed send is printed and recorded.
-/// An older row failed before, and fails again in silence.
 pub fn drain_run(ctx: &RuntimeContext, store: &Store, run: &Run, new: Option<&str>) {
     let drained = outbox::drain(store, Scope::Run(&run.run_id), |row| {
         send_row(ctx, store, run, row, new == Some(row.id.as_str()))
@@ -92,9 +70,6 @@ pub fn drain_run(ctx: &RuntimeContext, store: &Store, run: &Run, new: Option<&st
     }
 }
 
-/// Send 1 outbox row to the orchestrator of `run` as durable mail, and
-/// record the result. `Ok`: the mail is written, and the courier delivers
-/// it if the push did not. `Err`: nothing is queued; the row stays.
 fn send_row(
     ctx: &RuntimeContext,
     store: &Store,
@@ -103,9 +78,6 @@ fn send_row(
     first: bool,
 ) -> anyhow::Result<()> {
     let line = &row.text;
-    // The run's workspace wins (#218): the caller can be a pane of another
-    // workspace, or a watchdog started from one. The caller's workspace
-    // counts only for a run with no workspace.
     let mut ctx = ctx.clone();
     if let Some(id) = run
         .workspace_id
@@ -122,8 +94,6 @@ fn send_row(
     let sent = if disabled() {
         Err(anyhow::anyhow!("wakes are off (HORCH_NO_WAKE=1)"))
     } else {
-        // The row id keys the mail: a replay after a crash before
-        // `mark_delivered` reuses the first mail and writes no 2nd file.
         mail::keyed(&row.id, || {
             super::messaging::tell_as(&ctx, Some("horch".into()), "orchestrator", line)
         })
@@ -155,15 +125,11 @@ fn send_row(
     sent.map(|_| ())
 }
 
-/// The settled wake line of `run`, or `None` while the run is not settled
-/// (C6: `status::unsettled`, the rule `run close` uses).
 #[cfg(test)]
 pub(crate) fn settled_note(store: &Store, run: &Run) -> anyhow::Result<Option<String>> {
     wakes::settled_line(store.conn(), run)
 }
 
-/// After a task finishes: wake the orchestrator when tasks can start that
-/// no live worker is on its way to claim, or when the run is settled.
 #[cfg(test)]
 pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
     if wake_as(ctx, store, run, |tx| settled_wake(tx, run)) != Written::Nothing {
@@ -173,15 +139,11 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
     nudge_stuck(ctx, store, run);
 }
 
-/// Wake the orchestrator once when the run has open tasks, none can start
-/// and no worker is live: nothing else would ever wake it (#119).
 #[cfg(test)]
 pub fn nudge_stuck(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| wakes::stuck_wake(tx, run));
 }
 
-/// Wake the orchestrator when workers should be spawned now: 1 row per
-/// board state, so a repeat in the same state writes no new row.
 #[cfg(test)]
 pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| startable_wake(tx, run));
@@ -197,7 +159,6 @@ mod trf_15_tests {
 
     use super::*;
 
-    /// 1 worktree row: (status, folder on disk, triage decision, settled).
     const CASES: &[(&str, bool, Option<&str>, bool)] = &[
         ("open", true, None, false),
         ("landing", true, None, false),
@@ -228,7 +189,6 @@ mod trf_15_tests {
                             ..Default::default()
                         },
                     )?;
-                    // FR-12: a task needs an idea in flight of the feature of its run.
                     horch_core::taskledger::schema::run_idea(
                         tx,
                         &run.run_id,
@@ -288,8 +248,6 @@ mod trf_21_tests {
 
     use super::*;
 
-    /// A ledger, a run with no workspace, and a context with no workspace
-    /// and no herdr pane: a send to the orchestrator fails.
     fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ledger.sqlite3");
@@ -313,7 +271,6 @@ mod trf_21_tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -350,7 +307,6 @@ mod trf_21_tests {
             .unwrap()
     }
 
-    /// Give the run the workspace `w1`: a send now reaches durable mail.
     fn give_workspace(store: &Store, run: &Run) -> Run {
         store
             .conn()
@@ -379,7 +335,6 @@ mod trf_21_tests {
         let (_dir, ctx, store, run) = world();
         wake(&ctx, &store, &run, "NOTE: T-1 needs you.");
 
-        // The first send fails: the row stays, and the failure is recorded.
         let r = rows(&store, &run);
         assert_eq!(r.len(), 1, "{r:?}");
         assert_eq!(r[0].0, "[horch] NOTE: T-1 needs you.");
@@ -390,11 +345,9 @@ mod trf_21_tests {
         assert!(w[0].contains("it stays in the outbox"), "{w:?}");
         assert!(orchestrator_mail(&ctx).is_empty());
 
-        // A drain that fails again records nothing new.
         drain_run(&ctx, &store, &run, None);
         assert_eq!(woke(&store, &run).len(), 1);
 
-        // The next drain after the cause is gone delivers into durable mail.
         let run = give_workspace(&store, &run);
         drain_run(&ctx, &store, &run, None);
         let r = rows(&store, &run);
@@ -406,14 +359,10 @@ mod trf_21_tests {
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(w[1].contains("the run's workspace w1"), "{w:?}");
 
-        // A delivered row is not sent again.
         drain_run(&ctx, &store, &run, None);
         assert_eq!(orchestrator_mail(&ctx).len(), 1);
     }
 
-    /// A crash after the send queued the mail and before `mark_delivered`
-    /// leaves the row undelivered. The next drain sends it again, and the
-    /// mailbox still holds 1 pending file with the first mail id.
     #[test]
     fn trf_21_replayed_row_reuses_its_mail() {
         let (_dir, ctx, store, run) = world();
@@ -423,7 +372,6 @@ mod trf_21_tests {
         let first = mail.pending().unwrap();
         assert_eq!(first.len(), 1, "{first:?}");
 
-        // The crash: the row is undelivered again, and its mail stays.
         store
             .conn()
             .execute(
@@ -444,7 +392,6 @@ mod trf_21_tests {
         let again = mail.pending().unwrap();
         assert_eq!(again[0].id, first[0].id, "the replay reuses the mail id");
 
-        // A replay after the orchestrator acknowledged the mail queues nothing.
         mail.ack_all().unwrap();
         store
             .conn()
@@ -484,16 +431,12 @@ mod trf_21_tests {
         after_done(&ctx, &store, &run);
         assert_eq!(settled(&store), 1, "1 row per settle");
 
-        // A new task done is a new settled state: 1 more row.
         done(&mut store, "beta");
         after_done(&ctx, &store, &run);
         after_done(&ctx, &store, &run);
         assert_eq!(settled(&store), 2);
     }
 
-    /// Report 45: a crash after the send published the mail and before
-    /// `mark_delivered`. The replay finds the mail of the row published and
-    /// pushes nothing: the first send pushed it, and the courier has it.
     #[test]
     fn trf_51_replayed_published_row_pushes_nothing() {
         let (_dir, ctx, store, run) = world();

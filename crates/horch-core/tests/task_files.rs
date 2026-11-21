@@ -1,8 +1,3 @@
-//! `task.yaml` and `inbox/START.md` of an attempt: rendered from the ledger,
-//! written 1 time and atomically, and never with a secret in them
-//! (docs/specs/fleetd/design.md, "Workspace layout and file protocol", SR-2;
-//! docs/tickets/fleetd-p4/07-task-yaml-and-start-md.md).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -33,7 +28,6 @@ use horch_marketplace::git::scrub_repo_env;
 
 const SNAPSHOT: &str = "# 07: a ticket\n\n**Check:** `cargo test`\n\nDo the work.\n";
 
-/// The facts of attempt `A2` of task `T7`, with a worktree under `root`.
 fn facts(root: &Path) -> TaskFacts {
     TaskFacts {
         task: "T7".into(),
@@ -61,7 +55,6 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
-/// Every name in `dir`, sorted.
 fn names(dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -80,7 +73,6 @@ fn task_yaml_has_each_key_and_1_value_per_line() {
     assert_eq!(files.task_yaml, dir.join("task.yaml"));
     let text = read(&files.task_yaml);
 
-    // The 2 lines that crates/horch-e2e/tests/p0_dispatch.rs reads.
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     assert!(lines.contains(&"attempt: A2"), "{text}");
     assert!(
@@ -131,7 +123,6 @@ fn task_yaml_has_each_key_and_1_value_per_line() {
     let outbox = dir.join("outbox");
     assert_eq!(y["report_to"], format!("{}/", outbox.display()).as_str());
 
-    // A task with no check and no kind still has each key.
     let root2 = tempfile::tempdir().unwrap();
     let mut bare = facts(root2.path());
     bare.check = None;
@@ -169,7 +160,6 @@ fn start_md_holds_the_ticket_and_the_result_line() {
         "{text}"
     );
 
-    // A resolver or a fix attempt gets its extra section after the fixed part.
     let root2 = tempfile::tempdir().unwrap();
     let mut fix = facts(root2.path());
     fix.extra = Some("## Conflict\n\nResolve src/a.rs.\n".into());
@@ -191,13 +181,11 @@ fn existing_file_is_never_rewritten() {
     let yaml = read(&first.task_yaml);
     let start = read(&first.start_md);
 
-    // The same render again is safe to repeat: the files stay as they are.
     let again = write_attempt_files(root.path(), &f, &[]).unwrap();
     assert_eq!(again, first);
     assert_eq!(read(&first.task_yaml), yaml);
     assert_eq!(read(&first.start_md), start);
 
-    // Another render for the same attempt is refused, and changes no file.
     let mut changed = facts(root.path());
     changed.goal = "another goal".into();
     changed.ticket_snapshot = "# another ticket\n".into();
@@ -213,7 +201,6 @@ fn half_written_file_is_never_read() {
     let f = facts(root.path());
     let dir = attempt_dir(root.path(), &f.task_id, "A2");
 
-    // A crash left a half-written temp file of an earlier write.
     std::fs::create_dir_all(dir.join("inbox")).unwrap();
     std::fs::write(dir.join("task.yaml.tmp"), "task: T7\natt").unwrap();
     std::fs::write(dir.join("inbox").join("START.md.tmp"), "# 07").unwrap();
@@ -223,13 +210,10 @@ fn half_written_file_is_never_read() {
     assert!(!y["report_to"].as_str().unwrap().is_empty());
     assert!(read(&files.start_md).starts_with(SNAPSHOT));
 
-    // The writer leaves no temp file of its own: a folder holds the whole
-    // file or no file.
     assert_eq!(names(&dir), ["inbox", "task.yaml", "task.yaml.tmp"]);
     assert_eq!(names(&dir.join("inbox")), ["START.md", "START.md.tmp"]);
 }
 
-/// The attempt folder of `f` under `root` holds no file.
 fn no_file_written(root: &Path, f: &TaskFacts) {
     let dir: PathBuf = attempt_dir(root, &f.task_id, &f.attempt);
     assert!(!dir.join("task.yaml").exists());
@@ -240,7 +224,6 @@ fn no_file_written(root: &Path, f: &TaskFacts) {
     }
 }
 
-/// Each file under `dir`.
 fn walk(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir).unwrap() {
@@ -259,7 +242,6 @@ fn sr2_profile_env_value_in_a_task_file_is_refused() {
     let value = "ghp_s3cr3tV4lue0fTheProfile";
     let profile = [Secret::profile("GH_TOKEN", value)];
 
-    // In the ticket snapshot: START.md would hold it.
     let root = tempfile::tempdir().unwrap();
     let mut f = facts(root.path());
     f.ticket_snapshot = format!("{SNAPSHOT}Use {value} to push.\n");
@@ -280,7 +262,6 @@ fn sr2_profile_env_value_in_a_task_file_is_refused() {
     );
     no_file_written(root.path(), &f);
 
-    // In the check: task.yaml would hold it. No file of the 2 is written.
     let root = tempfile::tempdir().unwrap();
     let mut f = facts(root.path());
     f.check = Some(format!("GH=\"{value}\" cargo test"));
@@ -291,8 +272,6 @@ fn sr2_profile_env_value_in_a_task_file_is_refused() {
     assert_eq!(refusal.file, "task.yaml");
     no_file_written(root.path(), &f);
 
-    // A line that assigns a *_KEY, *_TOKEN or *_SECRET is refused, with
-    // no profile value at all.
     for line in [
         "export DEPLOY_KEY=abc",
         "GITHUB_TOKEN=xyz",
@@ -310,7 +289,6 @@ fn sr2_profile_env_value_in_a_task_file_is_refused() {
         no_file_written(root.path(), &f);
     }
 
-    // Text that only names a variable, or a short value, is not a secret.
     let root = tempfile::tempdir().unwrap();
     let mut f = facts(root.path());
     f.ticket_snapshot = format!("{SNAPSHOT}Set GH_TOKEN in the profile. Use 1 worker.\n");
@@ -320,8 +298,6 @@ fn sr2_profile_env_value_in_a_task_file_is_refused() {
 
 #[test]
 fn sr2_forbidden_env_name_in_a_task_file_is_refused() {
-    // The value of a variable named in FORBIDDEN_ENV. The test gives a fake
-    // value; it reads no variable of the process.
     let name = FORBIDDEN_ENV[0];
     let value = "fake-forbidden-value-0123456789";
     let secrets = [Secret::forbidden(name, value)];
@@ -340,7 +316,6 @@ fn sr2_forbidden_env_name_in_a_task_file_is_refused() {
     assert!(!shown.contains(value), "{shown}");
     no_file_written(root.path(), &f);
 
-    // The name alone is no secret: a ticket can tell a worker not to use it.
     let root = tempfile::tempdir().unwrap();
     let mut f = facts(root.path());
     f.ticket_snapshot = format!("{SNAPSHOT}Never use {name}.\n");

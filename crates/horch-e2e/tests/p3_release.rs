@@ -1,23 +1,3 @@
-//! The release test of Phase 3 (`docs/specs/fleetd/design.md`, "What a
-//! release does to a run in flight", row Phase 3;
-//! `docs/tickets/fleetd-p3/MAP.md`, Q9 and Q19).
-//!
-//! A live tree and a dirty orphan tree start on Phase 2. After the update,
-//! the live tree is `active`, the orphan is listed, and nothing is removed.
-//! The acting reconciler (ticket 18) rescues the orphan: the test waits for
-//! that rescue job, and its ref holds the 3 changes of the orphan.
-//!
-//! The Phase 2 ledger is built by the real migration steps up to
-//! [`schema::PHASE_2_VERSION`], then the rows of a run in flight are
-//! written as a Phase 2 binary left them, in the git repository of the
-//! harness. The live agent is a stand-in: a `sleep` child of the test. The
-//! old supervisor is a stand-in too: the test writes
-//! `workers.last_checkin_at` each 30 s (`runs.heartbeat_every_s`).
-//!
-//! The fleet clock counts the awake time of 1 fleetd process, so a
-//! `horch ledger watch --once` process adds 0 to it. The test moves the
-//! fleet clock by the same step as `HORCH_NOW`.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -30,35 +10,24 @@ use horch_core::{clock, procid};
 use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::Connection;
 
-/// The fleet clock of the Phase 2 `fleetd` row at the update.
 const CLOCK: i64 = 5000;
-/// The default `liveness.lease_s` of the design.
 const LEASE_S: i64 = 120;
-/// The checkin period of the old supervisor (`runs.heartbeat_every_s`).
 const STEP_S: i64 = 30;
-/// The default `worktree_list_period_s`.
 const LIST_PERIOD_S: i64 = 60;
-/// The passes after the update: 3 periods of the `worktree_list` job.
 const PASSES: i64 = 3 * LIST_PERIOD_S / STEP_S;
-/// The wall time of the first checkin of the old supervisor.
-const T0: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
+const T0: i64 = 1_893_456_000;
 
 const RUN: &str = "zeta";
 
-/// The live task, its attempt, its worker and its tree.
 const TASK_A: &str = "T-1";
 const ATTEMPT_A: &str = "T-1/A1";
 const WORKER_A: &str = "w-live";
 const TREE_A: &str = "wt-a";
-/// The task whose worker is dead, its ended attempt, its worker and its
-/// dirty tree.
 const TASK_B: &str = "T-2";
 const ATTEMPT_B: &str = "T-2/A1";
 const WORKER_B: &str = "w-dead";
 const TREE_B: &str = "wt-b";
 
-/// The 3 changes of the orphan: the content of the modified file
-/// `notes.txt` of the harness, and the untracked file and its content.
 const MODIFIED: &str = "one\ntwo\nthree, not committed\n";
 const UNTRACKED: &str = "draft.txt";
 const UNTRACKED_TEXT: &str = "a draft, never added\n";
@@ -72,14 +41,10 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// `secs` after the Unix epoch as a ledger timestamp, the form of
-/// `HORCH_NOW`.
 fn rfc3339(secs: i64) -> String {
     clock::stamp(clock::from_epoch_ms(secs * 1000).unwrap())
 }
 
-/// A harness with its own ledger file and a git repository, and no
-/// watchdog.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", db(&h).to_string_lossy());
@@ -92,8 +57,6 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The stand-in agent: a `sleep` process, killed and waited on drop, so a
-/// failed assertion leaks no process.
 struct Agent {
     child: Child,
     started: u64,
@@ -122,7 +85,6 @@ impl Drop for Agent {
     }
 }
 
-/// `git` in `dir`; it must pass. Gives the trimmed stdout.
 fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     let mut c = h.git_cmd(args);
     c.current_dir(dir);
@@ -131,9 +93,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// A real tree `<project>/.worktrees/<name>` on a new branch, with 1
-/// commit of the file `<name>.txt`. Gives the path, as the ledger writes
-/// it, and the commit.
 fn tree_with_1_commit(h: &Harness, name: &str) -> (PathBuf, String) {
     let project = std::fs::canonicalize(&h.project).unwrap();
     let path = project.join(".worktrees").join(name);
@@ -329,8 +288,6 @@ fn phase_2_ledger(h: &Harness, agent: &Agent, wrapper: &Wrapper, (tree_a, tree_b
         )
         .unwrap();
     }
-    // The Phase 2 fleetd stopped for the update: its PID and start time
-    // name no live process.
     conn.execute(
         "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
             VALUES (1, 1, 7, 1, ?1, ?2, ?1)",
@@ -345,7 +302,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The checkin of the old supervisor at the wall time `at`.
 fn checkin(h: &Harness, at: i64) {
     let conn = Connection::open(db(h)).unwrap();
     conn.execute(
@@ -355,12 +311,10 @@ fn checkin(h: &Harness, at: i64) {
     .unwrap();
 }
 
-/// Run `horch` at the wall time `at`.
 fn horch_at(h: &Harness, at: i64, args: &[&str]) -> Output {
     run_at(h.horch(args), at, args)
 }
 
-/// Run `horch` at the wall time `at` as the worker [`WORKER_A`].
 fn worker_at(h: &Harness, wrapper: &mut Wrapper, at: i64, args: &[&str]) -> Output {
     let mut cmd = h.horch(args);
     cmd.env("HORCH_WORKER_ID", WORKER_A);
@@ -377,7 +331,6 @@ fn run_at(mut cmd: Command, at: i64, args: &[&str]) -> Output {
     o
 }
 
-/// `(state, owner_attempt, rescue_ref)` of the tree `id`.
 fn tree_row(conn: &Connection, id: &str) -> (String, Option<String>, Option<String>) {
     conn.query_row(
         "SELECT state, owner_attempt, rescue_ref FROM worktrees WHERE worktree_id = ?1",
@@ -387,7 +340,6 @@ fn tree_row(conn: &Connection, id: &str) -> (String, Option<String>, Option<Stri
     .unwrap()
 }
 
-/// Each job: `kind subject state`, for the message of a failed wait.
 fn jobs(h: &Harness) -> String {
     let conn = Connection::open(db(h)).unwrap();
     let mut stmt = conn
@@ -405,8 +357,6 @@ fn scalar_text(conn: &Connection, sql: &str, key: &str) -> String {
     conn.query_row(sql, [key], |r| r.get(0)).unwrap()
 }
 
-/// Each file and each commit of both trees is in place: A at `head_a`, B
-/// at `head_b` with its modified and its untracked file.
 fn assert_trees_kept(
     h: &Harness,
     (a, head_a): (&Path, &str),
@@ -444,8 +394,6 @@ fn assert_trees_kept(
     );
 }
 
-/// The rescue ref `r` of B holds the 3 changes: its parent is B's commit,
-/// and its files hold the modified and the untracked file.
 fn assert_rescue_holds_3_changes(h: &Harness, r: &str, head_b: &str) {
     assert!(r.starts_with("refs/horch/rescue/"), "{r}");
     let project = &h.project;
@@ -483,8 +431,6 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     h.serve_fleetd();
     h.stop_fleetd();
 
-    // 3 periods of the worktree_list job: the old supervisor checks in,
-    // the agent records progress, and fleetd runs 1 pass, each 30 s.
     let mut seen = Vec::new();
     for _ in 0..PASSES {
         now += STEP_S;
@@ -500,9 +446,6 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
         );
         seen.push(text(&o));
     }
-    // More passes at the same time, with no other bound than the wait:
-    // a pass reads the result of the worktree_list job, queues the rescue
-    // of B, and a later pass observes the end of that rescue job.
     now += STEP_S;
     h.advance_fleet_clock(STEP_S);
     checkin(&h, now);

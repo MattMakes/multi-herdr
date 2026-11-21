@@ -1,10 +1,3 @@
-//! The complexity-sweep step (#38): the `complexity-sweep` skill's analyser
-//! on the TypeScript, JavaScript and Python files the branch changed, and
-//! clippy's `cognitive_complexity` lint on its Rust files (TRF-07). It
-//! passes only when no function the branch changed has a violation. horch
-//! alone decides "not applicable": when no changed file is in a language
-//! either reads.
-
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -17,10 +10,6 @@ use super::{Ctx, Outcome};
 
 mod config;
 
-/// The extensions the analyser parses: TypeScript and JavaScript (its core
-/// is `ts-morph`), and Python. It has no Rust or GDScript parser: it reads
-/// those files as TypeScript and reports functions that do not exist, so
-/// they are not sent to it (#204). Rust goes to clippy instead.
 pub const EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py"];
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +46,6 @@ pub struct Violation {
     pub threshold: f64,
 }
 
-/// The new-side line ranges `git diff -U0` reports per file.
 pub fn changed_lines(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
     let mut out: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
     let mut file: Option<String> = None;
@@ -71,8 +59,6 @@ pub fn changed_lines(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
     out
 }
 
-/// The new-side line range of 1 hunk header; `None` for any other line and
-/// for a hunk that adds no line.
 fn hunk_range(line: &str) -> Option<(u64, u64)> {
     let rest = line.strip_prefix("@@ ")?;
     let plus = &rest.split_whitespace().find(|t| t.starts_with('+'))?[1..];
@@ -83,7 +69,6 @@ fn hunk_range(line: &str) -> Option<(u64, u64)> {
     (count > 0).then(|| (start, start + count - 1))
 }
 
-/// `p` relative to `root`, as `git diff` names it.
 fn rel(p: &str, root: &Path) -> String {
     Path::new(p)
         .strip_prefix(root)
@@ -91,9 +76,6 @@ fn rel(p: &str, root: &Path) -> String {
         .unwrap_or_else(|_| p.trim_start_matches("./").to_string())
 }
 
-/// The violations in functions whose span (its line to the line before the
-/// next function in the file) holds a changed line. `starts` holds the
-/// sorted first lines of the functions of each file.
 fn keep_changed(
     found: Vec<Violation>,
     starts: &BTreeMap<String, Vec<u64>>,
@@ -115,7 +97,6 @@ fn keep_changed(
     out
 }
 
-/// The analyser's violations in functions the branch changed.
 pub fn in_changed_functions(
     json: &str,
     changed: &BTreeMap<String, Vec<(u64, u64)>>,
@@ -139,9 +120,6 @@ pub fn in_changed_functions(
     Ok(keep_changed(found, &starts, changed))
 }
 
-// ---- Rust: clippy's cognitive_complexity lint (TRF-07) ----
-
-/// The lint that measures a Rust function.
 const CLIPPY_LINT: &str = "clippy::cognitive_complexity";
 
 #[derive(Debug, Deserialize)]
@@ -180,10 +158,6 @@ struct SpanText {
     text: String,
 }
 
-/// The `cognitive_complexity` findings in `cargo clippy --message-format=json`
-/// output, once each (a file in 2 targets is reported twice). The value and
-/// the threshold come from the message, "... of (26/25)", so the threshold
-/// is the one clippy used: `clippy.toml` when present, else its default.
 pub fn clippy_violations(json: &str, root: &Path) -> Vec<Violation> {
     let mut out: Vec<Violation> = Vec::new();
     for line in json.lines() {
@@ -221,15 +195,12 @@ pub fn clippy_violations(json: &str, root: &Path) -> Vec<Violation> {
     out
 }
 
-/// The value and the threshold of "the function has a cognitive complexity
-/// of (26/25)".
 fn score(message: &str) -> Option<(f64, f64)> {
     let inner = message.rsplit_once('(')?.1.split_once(')')?.0;
     let (value, threshold) = inner.split_once('/')?;
     Some((value.trim().parse().ok()?, threshold.trim().parse().ok()?))
 }
 
-/// The function name the primary span marks.
 fn name(span: &Span) -> String {
     let Some(t) = span.text.first() else {
         return String::new();
@@ -241,7 +212,6 @@ fn name(span: &Span) -> String {
         .collect()
 }
 
-/// The 1-based lines of `source` that start a `fn` item.
 fn fn_starts(source: &str) -> Vec<u64> {
     source
         .lines()
@@ -251,7 +221,6 @@ fn fn_starts(source: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Whether `line` starts a `fn` item: only qualifiers come before `fn`.
 fn starts_fn(line: &str) -> bool {
     const QUALIFIERS: &[&str] = &["const", "async", "unsafe", "extern", "default", "\"C\""];
     for w in line.split_whitespace() {
@@ -265,7 +234,6 @@ fn starts_fn(line: &str) -> bool {
     false
 }
 
-/// The changed `.rs` files, when `dir` is a cargo project.
 fn rust_sources(names: &str, dir: &Path) -> Vec<String> {
     if !dir.join("Cargo.toml").is_file() {
         return Vec::new();
@@ -277,24 +245,15 @@ fn rust_sources(names: &str, dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// What 1 tool of the step gave: whether it exited 0, and its stderr. Its
-/// stdout is in the file that the runner got.
 pub struct ToolRun {
     pub success: bool,
     pub stderr: String,
 }
 
-/// What starts the tools of the step: `cargo clippy` and the analyser.
-/// Both run code of the branch (a build script, a config), so fleetd
-/// starts them in the sandbox profile of the task's worker (SR-4).
 pub trait ToolRunner {
-    /// Run `program` with `args` in `dir`, and wait for it. Its stdout goes
-    /// to the file `stdout`.
     fn run(&self, program: &Path, args: &[OsString], dir: &Path, stdout: &Path) -> Result<ToolRun>;
 }
 
-/// The tools in this process, with its rights: the finish of a worker,
-/// which runs as that worker.
 pub struct InProcess;
 
 impl ToolRunner for InProcess {
@@ -311,8 +270,6 @@ impl ToolRunner for InProcess {
     }
 }
 
-/// The args of `cargo clippy` with only the cognitive-complexity lint,
-/// capped at warn so a `#![deny(...)]` in the code does not stop the build.
 fn clippy_args() -> Vec<OsString> {
     [
         "clippy",
@@ -333,8 +290,6 @@ fn clippy_args() -> Vec<OsString> {
     .collect()
 }
 
-/// Run clippy in `dir` and return its findings in the changed Rust files,
-/// before the changed-function filter. Its JSON goes to `evidence`.
 fn analyse_rust(
     runner: &dyn ToolRunner,
     dir: &Path,
@@ -360,7 +315,6 @@ fn analyse_rust(
     Ok(Ok(clippy_violations(&json, dir)))
 }
 
-/// The first lines of the functions in each of `files`.
 fn rust_starts(dir: &Path, files: &[String]) -> BTreeMap<String, Vec<u64>> {
     files
         .iter()
@@ -371,7 +325,6 @@ fn rust_starts(dir: &Path, files: &[String]) -> BTreeMap<String, Vec<u64>> {
         .collect()
 }
 
-/// The files of `git diff --name-only` in a language the analyser reads.
 fn sources(names: &str) -> Vec<String> {
     names
         .lines()
@@ -385,8 +338,6 @@ fn sources(names: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the analyser prints on stderr, with exit 2, when every file it got
-/// is excluded by its config (tests, for example).
 const NO_SOURCES: &str = "No source files found matching the provided patterns";
 
 struct Analyser<'a> {
@@ -419,7 +370,6 @@ impl Analyser<'_> {
     }
 }
 
-/// The failed outcome that names the first 10 violations.
 fn violations(found: &[Violation], evidence: &[PathBuf]) -> Outcome {
     let list: Vec<String> = found
         .iter()
@@ -444,9 +394,6 @@ fn violations(found: &[Violation], evidence: &[PathBuf]) -> Outcome {
 }
 
 impl Analyser<'_> {
-    /// Run the analyser on `files` and return the analysis, `None` when
-    /// its config excluded every file, or the failed outcome when it
-    /// printed nothing for another reason. Its JSON goes to `evidence`.
     fn run(
         &self,
         files: &[String],
@@ -454,8 +401,6 @@ impl Analyser<'_> {
         evidence: &Path,
     ) -> Result<std::result::Result<Option<String>, Outcome>> {
         let (program, args) = self.command(files, config);
-        // The report goes to a file, not a pipe: node exits before a piped
-        // stdout drains, and a pipe keeps only the first 64 KiB.
         let out = self
             .runner
             .run(program, &args, self.dir, evidence)
@@ -474,12 +419,6 @@ impl Analyser<'_> {
         Ok(Ok(Some(json)))
     }
 
-    /// Run the analyser once per nearest config of `files` (T-35): each
-    /// file is judged by the config nearest to it, and a file without one
-    /// by the defaults. The first report goes to `<seq>-complexity.json`,
-    /// the next to `<seq>-complexity-2.json`, and so on. The reports with
-    /// their evidence paths, or the first failed outcome. A group whose
-    /// files the analyser excluded gives no report.
     fn run_groups(
         &self,
         files: &[String],
@@ -503,8 +442,6 @@ impl Analyser<'_> {
     }
 }
 
-/// The violations in changed functions of the Rust `files`, from clippy
-/// in `dir`: the found list, or the failed outcome when clippy failed.
 pub fn rust_violations(
     runner: &dyn ToolRunner,
     dir: &Path,
@@ -516,12 +453,10 @@ pub fn rust_violations(
         .map(|found| keep_changed(found, &rust_starts(dir, files), changed)))
 }
 
-/// The step, with its tools in this process.
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     step_with(cx, &InProcess)
 }
 
-/// The step, with its tools started by `runner`.
 pub fn step_with(cx: &Ctx<'_>, runner: &dyn ToolRunner) -> Result<Outcome> {
     let git = &cx.tools.git;
     let base = cx.diff_base()?;
@@ -647,8 +582,6 @@ mod tests {
         assert_eq!(fn_starts(src), vec![2, 3, 6]);
     }
 
-    /// A git repository with a cargo crate whose `tangled` function is over
-    /// the threshold `clippy.toml` sets (2); `simple` is under it.
     fn crate_repo() -> (tempfile::TempDir, Git) {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
@@ -708,7 +641,6 @@ pub fn tangled(v: &[u32]) -> u32 {
         .unwrap();
     }
 
-    /// The violations in the changed functions of `base...HEAD`.
     fn judge(git: &Git, d: &Path) -> Vec<Violation> {
         let names = git
             .run(
@@ -730,14 +662,10 @@ pub fn tangled(v: &[u32]) -> u32 {
         let (dir, git) = crate_repo();
         let d = dir.path();
 
-        // A change in `simple` only: `tangled` is over the threshold but
-        // unchanged, so the step passes.
         std::fs::write(d.join("src/lib.rs"), LIB.replace("x + 1", "x + 2")).unwrap();
         commit(&git, d);
         assert_eq!(judge(&git, d), Vec::<Violation>::new());
 
-        // A change inside `tangled`: 1 violation that names it, with the
-        // threshold from clippy.toml.
         std::fs::write(
             d.join("src/lib.rs"),
             LIB.replace("x + 1", "x + 2").replace("n += 1", "n += 2"),
@@ -758,8 +686,6 @@ pub fn tangled(v: &[u32]) -> u32 {
         );
     }
 
-    /// A fake analyser, run as `/bin/sh <script>`: 1 violation per file,
-    /// whose metric names the `--config` it got, or "default".
     const FAKE: &str = r#"cfg=default
 files=
 while [ $# -gt 0 ]; do
@@ -832,18 +758,14 @@ printf ']}\n'
         );
     }
 
-    /// A fake analyser that excludes every file, as the real one does for
-    /// tests: no stdout, the message on stderr, exit 2.
     const EXCLUDES_ALL: &str =
         "echo 'No source files found matching the provided patterns.' >&2\nexit 2\n";
 
-    /// A fake analyser that crashes: no stdout, another error, exit 1.
     const CRASHES: &str = "echo 'TypeError: x is undefined' >&2\nexit 1\n";
 
     #[test]
     fn a_group_with_no_analysable_files_gives_no_report_but_a_crash_fails() {
         let top = tempfile::tempdir().unwrap();
-        // The reports, or the failed outcome.
         let run = |script: &str| -> (Vec<(PathBuf, String)>, Option<Outcome>) {
             let cli = top.path().join("cli.js");
             std::fs::write(&cli, script).unwrap();

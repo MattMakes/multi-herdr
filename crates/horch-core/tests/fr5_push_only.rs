@@ -1,15 +1,3 @@
-//! FR-5: the supervisor assigns tasks to workers (push), and no agent
-//! queries the ledger for open tasks. The choice of a task is
-//! `dispatch::choices` (the rules of `dispatch::choose`), and only the bind
-//! module and the dispatch point call it, before the pane exists: fleetd
-//! (`dispatch_due`). `horch spawn` no longer chooses a task (ticket 48 of
-//! fleetd-p6). `horch status` calls `choices` only to read the holds of
-//! each task (`holds.rs`) and binds nothing.
-//!
-//! `pick_task`, the search of `horch ledger claim`, and `tasks::claim` are
-//! gone (T-871). `CLAIM_TASK`, the first line that told a worker to search,
-//! is gone.
-
 use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
@@ -31,8 +19,6 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Each `.rs` file under `crates/*/src`, with its path relative to the
-/// workspace root.
 fn sources() -> Vec<(String, String)> {
     let root = workspace_root();
     let mut files = Vec::new();
@@ -55,7 +41,6 @@ fn sources() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The lines of `text` before its test module, each with its comment cut.
 fn code_lines(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut lines = text.lines().peekable();
@@ -76,8 +61,6 @@ fn code_lines(text: &str) -> Vec<String> {
     out
 }
 
-/// Whether `line` calls `name`: `name(` with no identifier character
-/// before it, and not its definition `fn name(`.
 fn calls(line: &str, name: &str) -> bool {
     let pattern = format!("{name}(");
     line.match_indices(&pattern).any(|(i, _)| {
@@ -87,7 +70,6 @@ fn calls(line: &str, name: &str) -> bool {
     })
 }
 
-/// Each `file:line` of production code that calls `name`.
 fn callers(name: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     for (file, text) in sources() {

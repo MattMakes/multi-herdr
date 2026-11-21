@@ -84,17 +84,17 @@ ERROR = re.compile(r"^(.*?\.cs)\((\d+),(\d+)\): error (\w+): (.*?)(?: \[[^\]]*\]
 
 @dataclass
 class Form:
-    name: str  # "whole", "members Node", "statements Node2D", ...
-    file: str  # file name in the project
-    first_line: int  # project line of the block's first code line
-    errors: list[tuple[int, str]] = field(default_factory=list)  # (project line, "CS0103: msg")
-    stage: int = 0  # the build pass that found the errors; a later pass went deeper
+    name: str
+    file: str
+    first_line: int
+    errors: list[tuple[int, str]] = field(default_factory=list)
+    stage: int = 0
 
 
 @dataclass
 class Block:
     path: Path
-    line: int  # markdown line of the first code line
+    line: int
     code: str
     forms: list[Form] = field(default_factory=list)
 
@@ -156,7 +156,6 @@ def has_type_decl(lines: list[str]) -> bool:
 def write_forms(block: Block, n: int, src: Path) -> None:
     usings, rest = split_usings(block.code)
     if usings:
-        # The block names its usings: add only Godot, which every script needs.
         header = ([] if "using Godot;" in usings else ["using Godot;"]) + usings
     else:
         header = [f"using {u};" for u in USINGS]
@@ -225,9 +224,6 @@ def check(blocks: list[Block], project: Path, scratch: Path, timeout: int) -> tu
         write_forms(b, n, src)
         for f in b.forms:
             by_file[f.file] = f
-    # csc stops at the first stage with errors (syntax, then declarations,
-    # then method bodies), so one build cannot report every form. Each pass
-    # removes the forms that got errors, and the next pass goes deeper.
     code, log = 0, ""
     for stage in range(1, MAX_PASSES + 1):
         code, log = build(project, scratch, timeout)
@@ -239,7 +235,6 @@ def check(blocks: list[Block], project: Path, scratch: Path, timeout: int) -> tu
         if not bad:
             break
     else:
-        # No clean pass: the forms that are left were never fully compiled.
         for form in by_file.values():
             form.errors.append((form.first_line, f"not checked: no clean build in {MAX_PASSES} passes"))
     return code, log

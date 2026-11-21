@@ -1,9 +1,3 @@
-//! The schema step of Phase 5 (docs/specs/fleetd/design.md, "Ledger" and
-//! "Migration plan" item 7; docs/tickets/fleetd-p5/02-schema-phase5.md): the
-//! table `requests` of each command request (RR-8, SR-8) and the table
-//! `polite_stops` (MAP.md of fleetd-p5, Q12). The release backfill of
-//! Phase 5 is empty.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -12,11 +6,8 @@ use horch_core::taskledger::store::{self, migrate_refusal};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
-/// The version before the Phase 5 step.
 const BEFORE: i64 = schema::PHASE_5_VERSION - 1;
 
-/// A ledger at [`BEFORE`] at `path`, built by the real steps, with 1 run,
-/// 1 task, 1 worker and 1 attempt.
 fn phase_4_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, BEFORE).unwrap();
@@ -41,8 +32,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The migration of the file at `path` up to the Phase 5 step, with foreign
-/// keys on as `Store::open` sets them.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -50,8 +39,6 @@ fn migrate(path: &Path) -> Connection {
     conn
 }
 
-/// A [`phase_4_file`] ledger, migrated: its folder (kept alive) and a
-/// connection.
 fn migrated() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -60,8 +47,6 @@ fn migrated() -> (tempfile::TempDir, Connection) {
     (dir, conn)
 }
 
-/// Each column of `table`: name, declared type, not null, primary key
-/// position.
 fn columns(conn: &Connection, table: &str) -> Vec<(String, String, bool, i64)> {
     conn.prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info(?1) ORDER BY cid")
         .unwrap()
@@ -73,7 +58,6 @@ fn columns(conn: &Connection, table: &str) -> Vec<(String, String, bool, i64)> {
         .unwrap()
 }
 
-/// Each row of each table, by table.
 type Dump = BTreeMap<String, Vec<Vec<Value>>>;
 
 fn dump(conn: &Connection) -> Dump {
@@ -102,7 +86,6 @@ fn dump(conn: &Connection) -> Dump {
     out
 }
 
-/// 1 `requests` row with `class` and `state`.
 fn request(conn: &Connection, id: &str, class: &str, state: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "INSERT INTO requests (request_id, kind, payload_json, payload_sha256, caller, class, auth,

@@ -1,12 +1,3 @@
-//! `horch ask "<question>"`: the worker writes 1 question file,
-//! `outbox/questions/<n>.json`, of its own attempt (the `fleet ask` helper
-//! of `docs/specs/fleetd/design.md`, protocol rule 5;
-//! `docs/tickets/fleetd-p5/MAP.md`, Q3 and Q5).
-//!
-//! The command finds its attempt by its parent chain, through the outbox
-//! writer. It reads no environment variable for the attempt, and it opens
-//! the ledger only to read. `n` is 1 more than the highest file there.
-
 use std::process::ExitCode;
 
 use anyhow::{bail, Result};
@@ -25,7 +16,6 @@ pub struct AskArgs {
     pub question: Vec<String>,
 }
 
-/// `horch ask`.
 pub fn run(ctx: &RuntimeContext, args: AskArgs) -> Result<ExitCode> {
     let question = args.question.join(" ");
     if question.trim().is_empty() {
@@ -43,10 +33,6 @@ pub fn run(ctx: &RuntimeContext, args: AskArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The outbox writer of the own attempt of this process: the live attempt
-/// whose wrapper is in its parent chain. The inner `Err` says why this
-/// process has no attempt; no ledger file is no attempt too. The ledger is
-/// opened only to read.
 pub(crate) fn own_writer(ctx: &RuntimeContext) -> Result<Result<OutboxWriter, NoLiveAttempt>> {
     let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
         return Ok(Err(NoLiveAttempt { detail: None }));

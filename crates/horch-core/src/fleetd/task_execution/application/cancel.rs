@@ -1,35 +1,3 @@
-//! The commands of the operator on 1 task: `horch task cancel` and
-//! `horch task requeue` (`docs/specs/fleetd/design.md`, "The task state
-//! machine" and "A cancel"). The rules are in
-//! [`domain::cancel`](crate::fleetd::task_execution::domain::cancel).
-//!
-//! The cancel is crash safe (`docs/tickets/fleetd-p2/MAP.md`, Q11):
-//!
-//! - [`request`]: with no live attempt, the task moves to `cancelled` at
-//!   once. With a live attempt, 1 transaction writes the reason in
-//!   `tasks.cancel_requested`, ends the attempt with the outcome `killed`
-//!   and the cause [`TASK_CANCELLED`], ends its worker row and lets go of
-//!   it. Rung 6 and the bind skip such a task.
-//! - After the commit, the caller stops each held worker. When its
-//!   processes are gone, [`complete`] moves the task to `cancelled` in a
-//!   second transaction.
-//! - When the caller does not see the processes gone (a timeout, or the
-//!   caller dies), the pass calls [`complete_cancels`].
-//!
-//! A cancel never leaves a judgment task with no judge task (A cancel;
-//! `docs/tickets/fleetd-p6/43-judge-cancel.md`): the cancel of a judged
-//! task cancels its judge task in the same transaction, and [`request`]
-//! refuses the cancel of a judge task while the task it judges is not
-//! `cancelled`. [`request_each`] cancels a set of tasks, for the cancel of
-//! an idea, a feature or a replan.
-//!
-//! [`requeue`]: `escalated` -> `ready` with the attempt count at 0, and
-//! `failed` -> `ready` for its 1 replan. Both also requeue the abandoned
-//! `task_check` job of the task.
-//!
-//! Before Phase 5 the commands write the ledger directly through
-//! `transition()`.
-
 use std::collections::BTreeSet;
 
 use anyhow::{bail, Result};
@@ -53,19 +21,13 @@ use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{util, workers};
 
-/// What [`request`] did. `judges` is the cancel of each judge task of the
-/// task, in the same transaction: the caller stops their workers too.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cancel {
-    /// The task is `cancelled`. `holder` is the worker that held it with
-    /// no attempt row: the caller stops it after the commit, as today.
     Cancelled {
         task: Task,
         holder: Option<String>,
         judges: Vec<Cancel>,
     },
-    /// The task waits for the stop of the workers `held`, with
-    /// `cancel_requested` set.
     Stopping {
         task: Task,
         held: Vec<String>,
@@ -74,22 +36,18 @@ pub enum Cancel {
 }
 
 impl Cancel {
-    /// The task of this cancel.
     pub fn task(&self) -> &Task {
         match self {
             Cancel::Cancelled { task, .. } | Cancel::Stopping { task, .. } => task,
         }
     }
 
-    /// The cancel of each judge task of the task.
     pub fn judges(&self) -> &[Cancel] {
         match self {
             Cancel::Cancelled { judges, .. } | Cancel::Stopping { judges, .. } => judges,
         }
     }
 
-    /// The workers that the caller stops after the commit: those of the
-    /// task and those of each of its judge tasks, sorted and once each.
     pub fn to_stop(&self) -> Vec<String> {
         let mut out: Vec<String> = match self {
             Cancel::Cancelled { holder, .. } => holder.iter().cloned().collect(),
@@ -110,12 +68,10 @@ impl Cancel {
     }
 }
 
-/// 1 attempt of a task, with its process.
 struct AttemptOf {
     id: String,
     worker_id: String,
     holds: bool,
-    /// It ended with the outcome `killed`, as a cancel ends it.
     killed: bool,
     process: Option<Recorded>,
 }
@@ -128,8 +84,6 @@ fn recorded(pid: Option<i64>, start: Option<i64>) -> Option<Recorded> {
     })
 }
 
-/// The attempts of task `task_id`. An attempt with no process of its own
-/// has the agent of its worker.
 fn attempts_of(conn: &Connection, task_id: &str) -> Result<Vec<AttemptOf>> {
     let mut stmt = conn.prepare(
         "SELECT a.id, a.worker_id, a.state, a.outcome, COALESCE(a.pid, w.agent_pid),
@@ -151,8 +105,6 @@ fn attempts_of(conn: &Connection, task_id: &str) -> Result<Vec<AttemptOf>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// The processes of the attempts of task `task_id`: a cancel of the task
-/// completes when each is gone.
 pub fn watched(conn: &Connection, task_id: &str) -> Result<Vec<Recorded>> {
     let mut out: Vec<Recorded> = attempts_of(conn, task_id)?
         .into_iter()
@@ -163,10 +115,6 @@ pub fn watched(conn: &Connection, task_id: &str) -> Result<Vec<Recorded>> {
     Ok(out)
 }
 
-/// `horch task cancel` of `task` for `reason`, in the open transaction
-/// `tx`. `done` and `cancelled` refuse with the reason of the door. A judge
-/// task whose judged task is not `cancelled` is refused: the cancel of the
-/// judged task cancels its judge task.
 pub fn request(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
     if let Some(judged) = judged_task(&task.kind, task.parent_task_id.as_deref()) {
         let judged = tasks::get(tx, judged)?;
@@ -187,12 +135,6 @@ pub fn request(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
     Ok(out)
 }
 
-/// The cancel of each task of `each` that is not terminal, in the open
-/// transaction `tx`: the cancel of an idea, a feature or a replan. A judge
-/// task whose judged task is in `each` follows the cancel of its judged
-/// task, so its place in `each` does not matter. Gives the outcome of each
-/// task that it cancelled; a judge task is in the outcome of its judged
-/// task.
 pub fn request_each(tx: &Connection, each: &[Task], reason: &str) -> Result<Vec<Cancel>> {
     let ids: BTreeSet<&str> = each.iter().map(|t| t.task_id.as_str()).collect();
     let mut out = Vec::new();
@@ -209,7 +151,6 @@ pub fn request_each(tx: &Connection, each: &[Task], reason: &str) -> Result<Vec<
     Ok(out)
 }
 
-/// The judge tasks of task `task_id` that are not terminal, in id order.
 fn judges_of(tx: &Connection, task_id: &str) -> Result<Vec<Task>> {
     let ids: Vec<String> = {
         let mut stmt =
@@ -227,7 +168,6 @@ fn judges_of(tx: &Connection, task_id: &str) -> Result<Vec<Task>> {
     Ok(out)
 }
 
-/// The cancel of 1 task, with no judge rule.
 fn cancel_one(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
     let attempts = attempts_of(tx, &task.task_id)?;
     let requested = tasks::cancel_requested(tx, &task.task_id)?;
@@ -244,8 +184,6 @@ fn cancel_one(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
             })
         }
         CancelPath::StopFirst if requested.is_some() => {
-            // A cancel that waits already: stop each attempt that it ended
-            // again.
             let held = attempts
                 .into_iter()
                 .filter(|a| a.killed)
@@ -262,7 +200,6 @@ fn cancel_one(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
     }
 }
 
-/// The refusal of the move of `task` to `cancelled`, as the door words it.
 fn refused(task: &Task, reason: &str) -> DoorError {
     DoorError::Refused {
         entity: Entity::Task,
@@ -274,10 +211,6 @@ fn refused(task: &Task, reason: &str) -> DoorError {
     }
 }
 
-/// The first transaction of a cancel with a live attempt: each attempt
-/// that holds its worker ends `killed`, its worker row ends `stopped`, the
-/// task lets go of its worker and its lease, and `cancel_requested` holds
-/// the reason.
 fn stop_first(
     tx: &Connection,
     task: &Task,
@@ -328,10 +261,6 @@ fn stop_first(
     })
 }
 
-/// The second transaction of the cancel of task `task_id`: when each
-/// process of its attempts is dead in `facts`, the task moves to
-/// `cancelled` and `cancel_requested` is cleared. `None` while a process
-/// is not seen dead, or when no cancel of the task waits.
 pub fn complete(tx: &Connection, task_id: &str, facts: &Facts) -> Result<Option<Task>> {
     let Some(reason) = tasks::cancel_requested(tx, task_id)? else {
         return Ok(None);
@@ -348,8 +277,6 @@ pub fn complete(tx: &Connection, task_id: &str, facts: &Facts) -> Result<Option<
     Ok(Some(task))
 }
 
-/// The pass: [`complete`] for each task with `cancel_requested`. Gives the
-/// ids of the tasks that moved to `cancelled`.
 pub fn complete_cancels(tx: &Connection, facts: &Facts) -> Result<Vec<String>> {
     let ids: Vec<String> = {
         let mut stmt = tx.prepare(
@@ -367,12 +294,6 @@ pub fn complete_cancels(tx: &Connection, facts: &Facts) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// `horch task requeue` of `task` for `reason`, in the open transaction
-/// `tx`: `escalated` -> `ready` with the attempt count at 0, or the 1
-/// replan of a `failed` task. A parked task resumes on its worktree (row
-/// L5). A `done` task whose branch waits for a resolver or fix attempt
-/// gets `repair_attempts` at 0 and 1 more attempt (ticket 34). Each other
-/// state refuses.
 pub fn requeue(tx: &Connection, jobs: &JobCtx<'_>, task: &Task, reason: &str) -> Result<Task> {
     if task.status == TaskStatus::Done.as_str() {
         return repair::requeue(tx, jobs.guard, task, reason);
@@ -383,7 +304,6 @@ pub fn requeue(tx: &Connection, jobs: &JobCtx<'_>, task: &Task, reason: &str) ->
             requeue_task_check(tx, jobs, &task.task_id)?;
             Ok(t)
         }
-        // `cancelled` is terminal: the door refuses and records it (Q22).
         RequeuePath::Door => tasks::requeue_by_operator(tx, task, reason),
         RequeuePath::ReplanUsed => bail!(
             "{} is {} after its 1 replan; it escalates to the operator, so it is not requeued now",
@@ -398,10 +318,6 @@ pub fn requeue(tx: &Connection, jobs: &JobCtx<'_>, task: &Task, reason: &str) ->
     }
 }
 
-/// The exit of the `task_check` job of task `task_id`: when its last run
-/// ended `abandoned`, queue 1 more run with its count of abandoned runs at
-/// 0, as `horch job requeue` does. A check with a verdict, or no check,
-/// gets no run.
 fn requeue_task_check(tx: &Connection, ctx: &JobCtx<'_>, task_id: &str) -> Result<()> {
     let Some(last) = jobs_store::last(tx, Kind::TaskCheck, task_id)? else {
         return Ok(());
@@ -433,8 +349,6 @@ mod tests {
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::Store;
 
-    /// A child `sleep`: the agent process of an attempt. It is killed and
-    /// reaped when the test ends.
     struct Sleep(Child);
 
     impl Sleep {
@@ -450,7 +364,6 @@ mod tests {
             }
         }
 
-        /// The stop: kill and reap it.
         fn stop(&mut self) {
             self.0.kill().unwrap();
             self.0.wait().unwrap();
@@ -471,7 +384,6 @@ mod tests {
         task: String,
     }
 
-    /// A run with 1 ready task of `dev`.
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -482,7 +394,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -507,7 +418,6 @@ mod tests {
     }
 
     impl Fixture {
-        /// A new worker of `dev` in pane `w0:p1`.
         fn new_worker(&self) -> NewWorker {
             NewWorker {
                 run_id: self.run.run_id.clone(),
@@ -517,8 +427,6 @@ mod tests {
             }
         }
 
-        /// The task is bound to a worker with agent `agent`: 1 live
-        /// attempt.
         fn claimed(&mut self, agent: Recorded) -> String {
             bind_live(
                 self.store.conn(),
@@ -530,7 +438,6 @@ mod tests {
             .worker_id
         }
 
-        /// Set the stored task word, as a test setup.
         fn set_status(&self, word: &str) {
             self.store
                 .conn()
@@ -592,7 +499,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// The task fails its attempts and is held for the operator.
         fn escalated(&mut self) {
             let w = self.claimed(Recorded {
                 pid: 4_000,
@@ -607,14 +513,12 @@ mod tests {
         }
     }
 
-    /// What a pass saw of `p`.
     fn facts(p: Recorded, seen: Seen) -> Facts {
         let mut f = Facts::default();
         f.processes.insert(p, seen);
         f
     }
 
-    /// Each task state that is not terminal, from the 1 list of states.
     fn not_terminal() -> impl Iterator<Item = &'static str> {
         TaskStatus::ALL
             .iter()
@@ -622,9 +526,6 @@ mod tests {
             .map(|s| s.as_str())
     }
 
-    /// `ddd/08-code/implementation-plan.md`, Slice 2: from each state that
-    /// is not terminal, a task with a live attempt is `cancelled` only
-    /// after the process of the attempt is gone.
     #[test]
     fn cancel_from_each_non_terminal_state_stops_the_process_group_before_the_move() {
         for state in not_terminal() {
@@ -650,11 +551,9 @@ mod tests {
             let worker = workers::get(f.store.conn(), &w).unwrap();
             assert_eq!(worker.status, "stopped", "{state}");
 
-            // The process still runs: no move.
             assert_eq!(f.complete(&facts(p, Seen::Alive)), None, "{state}");
             assert_eq!(f.task().status, state, "{state}");
 
-            // The stop, then the move.
             agent.stop();
             let done = f.complete(&facts(p, Seen::Dead)).expect(state);
             assert_eq!(done.status, "cancelled", "{state}");
@@ -687,7 +586,6 @@ mod tests {
         ));
         let id = f.task.clone();
 
-        // Rung 6: no retry of the attempt that the cancel ended.
         let how = f
             .store
             .immediate(|tx| tasks::requeue(tx, &id, "its worker ended"))
@@ -696,7 +594,6 @@ mod tests {
         assert_eq!(f.task().status, "running");
         assert_eq!(f.task().attempts, 1);
 
-        // No bind, also of a ready task (the restart on a fallback).
         f.set_status("ready");
         let err = bind_live(f.store.conn(), &f.task, &f.new_worker(), None).unwrap_err();
         assert!(
@@ -706,8 +603,6 @@ mod tests {
         assert_eq!(f.task().status, "ready");
     }
 
-    /// The command died after the first transaction: the pass completes
-    /// the cancel when it sees the process gone.
     #[test]
     fn pass_completes_a_cancel_when_the_process_is_gone() {
         let mut f = fixture();
@@ -739,9 +634,6 @@ mod tests {
         assert_eq!(f.cancel_requested(), None);
     }
 
-    /// The command died after the first transaction, before its stop: the
-    /// attempt and its worker row are ended, so I5 of the pass stops the
-    /// process that they name, and then the pass completes the cancel.
     #[test]
     fn i5_stops_the_process_that_a_dead_cancel_left() {
         use crate::fleetd::task_execution::application::commands;
@@ -768,8 +660,6 @@ mod tests {
         assert_eq!(f.task().status, "running");
     }
 
-    /// A second cancel of a task whose cancel waits stops its attempts
-    /// again and writes nothing new.
     #[test]
     fn a_second_cancel_stops_again() {
         let mut f = fixture();
@@ -805,7 +695,6 @@ mod tests {
                 )
             );
             assert_eq!(f.task().status, state);
-            // The refusal is on record: 1 event and 1 needs-you item.
             let refusals: i64 = f
                 .store
                 .conn()
@@ -819,8 +708,6 @@ mod tests {
         }
     }
 
-    /// `preservation-04-behavior.md`, row L8: the requeue of an escalated
-    /// task by the operator sets its attempt count to 0.
     #[test]
     fn pres_04_l8_operator_requeue_resets_the_attempt_count() {
         let mut f = fixture();

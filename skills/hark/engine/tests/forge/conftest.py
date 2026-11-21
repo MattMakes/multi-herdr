@@ -12,8 +12,6 @@ import numpy as np
 SR = 48000
 
 
-# ---------------------------------------------------------------- test recipe
-
 TINY = "forgetest_tiny"
 
 
@@ -53,8 +51,6 @@ def tiny(monkeypatch):
     return mod
 
 
-# ---------------------------------------------------------------- model-free test critic
-
 class ToyCritic:
     """A model-free critic: prefers a spectral centroid near 1500 Hz."""
 
@@ -83,8 +79,6 @@ def toy_critic():
     """Factory of model-free critics: toy_critic(flat=False, refs=None)."""
     return ToyCritic
 
-
-# ---------------------------------------------------------------- stub listen services
 
 class StubServices:
     """Deterministic stand-ins for the listen models (no ML). Counts embeddings."""

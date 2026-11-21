@@ -1,8 +1,3 @@
-//! #125: herdr resumes agent panes by itself after a server restart. A
-//! resumed worker pane runs its agent without `horch worker`, so it has no
-//! `HORCH_ROLE`, `HORCH_RECORD_ID` or `HORCH_WORKSPACE_ID`. horch finds its
-//! registered identity, and `horch fleet` and `horch doctor` warn that the
-//! restore is on.
 #![cfg(unix)]
 
 use std::process::Output;
@@ -24,7 +19,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// Workspace `w1` with its root pane `w1:p1`, as `horch fleet` leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name);
     h.set(
@@ -103,8 +97,6 @@ fn running_worker(h: &Harness) -> (String, String, String) {
     (pane, role.into(), id.into())
 }
 
-/// `horch` as an agent that herdr resumed in `pane` runs it: herdr's pane
-/// id, and none of the variables `horch worker` gives its agent.
 fn restored(h: &Harness, pane: &str, args: &[&str]) -> Output {
     h.horch(args)
         .env("HERDR_PANE_ID", pane)
@@ -156,8 +148,6 @@ fn stop_fleetd_and_jobs(h: &Harness) {
 fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
     let h = fleet("r125-restored", "exec,stay");
     let (pane, role, id) = running_worker(&h);
-    // herdr resumed the agent: it shows the agent, and the pane is still
-    // registered for the role.
     herdr(
         &h,
         &[
@@ -193,7 +183,6 @@ fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
 
     let inbox = restored(&h, &pane, &["inbox"]);
     assert!(inbox.status.success(), "{}", text(&inbox));
-    // The open question is listed; the mail itself is not printed.
     assert!(
         !String::from_utf8_lossy(&inbox.stdout).contains(&format!("[{role}] QUESTION")),
         "{}",
@@ -220,8 +209,6 @@ fn an_operator_shell_on_a_registered_pane_id_stays_the_operator() {
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     std::fs::write(mailbox.join("sonnet-1.id"), "w1:p1").unwrap();
-    // The orchestrator's pane runs no agent herdr detects: an untagged line
-    // is the operator's, and its inbox acknowledges.
     let tell = restored(&h, "w1:p1", &["tell", "orchestrator", "NOTE: from me"]);
     assert!(tell.status.success(), "{}", text(&tell));
     assert!(
@@ -229,8 +216,6 @@ fn an_operator_shell_on_a_registered_pane_id_stays_the_operator() {
         "{}",
         text(&tell)
     );
-    // FR-7: the operator line waits in mail too, untagged and from the
-    // operator, not from the role of the pane.
     let mail = pending(&h);
     assert_eq!(mail.len(), 1, "{mail:?}");
     assert_eq!(mail[0].from, "operator");
@@ -266,7 +251,6 @@ fn doctor_and_fleet_warn_while_herdr_resumes_agents_on_restore() {
         config.display(),
         horch_core::harness::launch::FORBIDDEN_ENV[0]
     );
-    // No config file: herdr's default resumes.
     assert!(doctor_text(&h).contains(&pinned), "{}", doctor_text(&h));
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(&config, "[session]\nresume_agents_on_restore = true\n").unwrap();
@@ -283,7 +267,6 @@ fn doctor_and_fleet_warn_while_herdr_resumes_agents_on_restore() {
         "{}",
         doctor_text(&h)
     );
-    // HERDR_CONFIG_PATH names another file, as for herdr itself.
     let other = h.root.join("herdr-other.toml");
     std::fs::write(&other, "").unwrap();
     h.set("HERDR_CONFIG_PATH", other.to_string_lossy());

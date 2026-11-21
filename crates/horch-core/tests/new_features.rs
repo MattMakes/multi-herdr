@@ -1,13 +1,3 @@
-//! New features: a feature row for each idea with no `--to`, its internal
-//! run, a checked kebab-case branch name, and the branch created after its
-//! row (docs/specs/fleetd/design.md, "Features", "A merge with ideas in
-//! flight"; Ledger, `features`; "Between features", "Parallel is the
-//! default"; docs/tickets/fleetd-p6/15-new-features.md, MAP.md Q5 and Q7).
-//!
-//! Each test makes its own temporary ledger and git repository. No test
-//! touches this repository or the live ledger, and no test starts a
-//! process other than git.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -95,7 +85,6 @@ impl World {
         git(&self.repo, &["rev-parse", "main"])
     }
 
-    /// Run `f` in 1 committed write transaction.
     fn write<T>(&self, f: impl FnOnce(&Connection) -> T) -> T {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
             .unwrap();
@@ -104,14 +93,11 @@ impl World {
         out
     }
 
-    /// OpenFeature in 1 committed transaction: the id of the new feature.
     fn open(&self) -> String {
         let project = self.project();
         self.write(|tx| nf::open_feature(tx, &self.ctx(), &project, cause("idea added")).unwrap())
     }
 
-    /// NameFeatureBranch of `feature` in 1 committed transaction, on the
-    /// tip of `main`. The ref is not created.
     fn name(&self, feature: &str, source: NameSource<'_>) -> Named {
         let git = self.gateway();
         let tip = self.main_tip();
@@ -130,7 +116,6 @@ impl World {
         })
     }
 
-    /// A new feature with its idea, the idea in `clarifying`.
     fn clarifying_idea(&self, idea: &str) -> String {
         let feature = self.open();
         self.write(|tx| {
@@ -220,8 +205,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-// ─── tests ──────────────────────────────────────────────────────────────
-
 #[test]
 fn idea_without_to_opens_a_new_feature() {
     let w = world();
@@ -233,7 +216,6 @@ fn idea_without_to_opens_a_new_feature() {
     assert_eq!(row.branch, None, "no branch before the name");
     let idea = ideas::idea(&w.conn, "I-0001").unwrap().unwrap();
     assert_eq!(idea.feature_id, feature);
-    // The internal run (MAP.md, Q5): its id gives the feature id.
     let run = runs::feature_run(&w.conn, &feature).unwrap().unwrap();
     let rowid: i64 = w
         .conn
@@ -261,8 +243,6 @@ fn idea_without_to_opens_a_new_feature() {
     assert_eq!(created, 1, "the feature row is created through the 1 door");
 }
 
-/// Rust names cannot start with a digit: the ticket's
-/// `2_ideas_open_2_features_in_1_workspace`.
 #[test]
 fn two_ideas_open_2_features_in_1_workspace() {
     let w = world();
@@ -310,7 +290,6 @@ fn feature_row_and_branch_row_exist_before_the_ref() {
             name: "retry-sync",
         },
     ));
-    // The commit is done, and the ref is not created yet.
     let row = w.feature(&feature);
     assert_eq!(row.name.as_deref(), Some("retry-sync"));
     assert_eq!(row.branch.as_deref(), Some("fleet/retry-sync"));
@@ -324,7 +303,6 @@ fn feature_row_and_branch_row_exist_before_the_ref() {
     assert_eq!(effect.repo, w.repo);
     assert_eq!(effect.name, "refs/heads/fleet/retry-sync");
     assert_eq!(effect.tip, w.main_tip());
-    // The effect after the commit.
     assert!(nf::create_ref(&w.gateway(), &effect).unwrap());
     assert_eq!(w.ref_tip("refs/heads/fleet/retry-sync"), Some(w.main_tip()));
 }
@@ -333,7 +311,6 @@ fn feature_row_and_branch_row_exist_before_the_ref() {
 fn crash_after_the_commit_creates_the_ref_once() {
     let w = world();
     let feature = w.open();
-    // fleetd commits the rows, then stops before the effect.
     drop(w.name(
         &feature,
         NameSource::Direct {
@@ -341,21 +318,18 @@ fn crash_after_the_commit_creates_the_ref_once() {
         },
     ));
     assert_eq!(w.ref_tip("refs/heads/fleet/retry-sync"), None);
-    // The next fleetd finds the row with no ref and creates it.
     let pending = nf::pending_refs(&w.conn, &w.gateway()).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].name, "refs/heads/fleet/retry-sync");
     assert_eq!(pending[0].tip, w.main_tip());
     assert!(nf::create_ref(&w.gateway(), &pending[0]).unwrap());
     assert_eq!(w.ref_tip("refs/heads/fleet/retry-sync"), Some(w.main_tip()));
-    // A task lands on the branch: it moves.
     git(&w.repo, &["checkout", "-q", "fleet/retry-sync"]);
     std::fs::write(w.repo.join("b.txt"), "b\n").unwrap();
     git(&w.repo, &["add", "b.txt"]);
     git(&w.repo, &["commit", "-q", "-m", "landed"]);
     git(&w.repo, &["checkout", "-q", "main"]);
     let moved = git(&w.repo, &["rev-parse", "fleet/retry-sync"]);
-    // Nothing is pending, and the effect again does not move the ref.
     assert!(nf::pending_refs(&w.conn, &w.gateway()).unwrap().is_empty());
     assert!(!nf::create_ref(&w.gateway(), &pending[0]).unwrap());
     assert_eq!(w.ref_tip("refs/heads/fleet/retry-sync"), Some(moved));
@@ -381,7 +355,6 @@ fn direct_name_gets_a_number_suffix_when_it_exists() {
         }
     }
     assert_eq!(names, ["retry-sync", "retry-sync-2", "retry-sync-3"]);
-    // A branch that git has and the ledger does not is taken too.
     git(&w.repo, &["branch", "fleet/dark-mode", "main"]);
     let feature = w.open();
     let effect = accepted(w.name(&feature, NameSource::Direct { title: "Dark mode" }));
@@ -419,7 +392,6 @@ fn non_kebab_name_is_refused() {
         assert_eq!((row.name, row.branch), (None, None), "{name:?}");
         let idea = ideas::idea(&w.conn, "I-0002").unwrap().unwrap();
         assert_eq!(idea.state, "clarifying");
-        // 1 needs-you item, with the newest reason.
         let items: Vec<_> = needs_you::open_items(&w.conn)
             .unwrap()
             .into_iter()
@@ -429,14 +401,12 @@ fn non_kebab_name_is_refused() {
         assert_eq!(items[0].key, feature_name_key("I-0002"));
         assert_eq!(items[0].entity_id, "I-0002");
         assert_eq!(items[0].text, reason);
-        // 1 doorbell to the sub-orchestrator for each refusal.
         let bells = w.events("doorbell", "idea", "I-0002");
         assert_eq!(bells.len(), n + 1);
         let data: serde_json::Value = serde_json::from_str(&bells[n]).unwrap();
         assert_eq!(data["owner"], format!("idea-lead:{feature}"));
         assert_eq!(data["text"], reason.as_str());
     }
-    // A valid name is accepted and ends the item.
     accepted(w.name(
         &feature,
         NameSource::SubOrchestrator {
@@ -483,7 +453,6 @@ fn to_a_ready_feature_moves_it_to_open() {
         },
     ));
     w.move_feature(&feature, "ready");
-    // By id and by name.
     for to in [feature.as_str(), "retry-sync"] {
         let joined = w.write(|tx| nf::join_feature(tx, &w.ctx(), to, cause("idea added")).unwrap());
         assert_eq!(joined, feature);

@@ -1,5 +1,3 @@
-//! End-to-end: `horch doctor` on `hc` and `herdr` (HCB-13).
-
 use horch_e2e::harness::{fixtures, Harness};
 
 fn world(name: &str) -> Harness {
@@ -51,7 +49,6 @@ fn hcb_13_doctor_refuses_an_old_hc() {
     assert!(text.contains("0.1.20"), "must name found version: {text}");
     assert!(text.contains("0.1.21"), "must name needed version: {text}");
 
-    // Also verify old herdr-app is refused naming found and needed versions.
     let mut h2 = world("hcb13-old-app");
     let old_app = h2.write_warmed(
         "herdr-app",
@@ -83,7 +80,6 @@ fn hcb_13_doctor_warns_when_the_window_is_closed() {
         "{text}"
     );
 
-    // Stopping herdr-core turns doctor into exit 1 with the core message.
     h.stop_hc_core();
     let o_dead = h.run(&["--backend", "hc", "doctor"]);
     let dead_text = combined(&o_dead);
@@ -97,7 +93,6 @@ fn hcb_13_doctor_warns_when_the_window_is_closed() {
 #[test]
 fn hcb_13_doctor_on_herdr_is_unchanged() {
     let mut h = world("hcb13-herdr");
-    // Remove hc from PATH/overrides to verify `not found: hc` as well as `also found: hc`.
     let o_both = h.run(&["--backend", "herdr", "doctor"]);
     let both_text = combined(&o_both);
     assert!(o_both.status.success(), "{both_text}");

@@ -1,14 +1,3 @@
-//! The triage decisions `ARCHIVE`, `DELETE`, `LAND` and `PR` as 1 fleetd
-//! job kind, `triage_apply` (ai_docs/plans/fleetd-build/tickets/
-//! 50-triage-decisions-as-fleetd-jobs.md; RR-5, RR-13, SR-3).
-//!
-//! Each test sends 1 `worktree_triage` request through `requests::handle`
-//! to a temp ledger at generation 1. The handler queues 1 `triage_apply`
-//! job. The test starts the job process as `true` through the launcher,
-//! runs the executor on a read-only connection, as `horch job run` runs it,
-//! and ends the run from its result file, as a pass of fleetd ends it.
-//! Git is the host git on a temp repository. `gh` is a fake script. No
-//! test calls the real `gh` or a real remote.
 #![cfg(unix)]
 
 #[path = "common/warm.rs"]
@@ -44,7 +33,6 @@ use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-/// The decisions of this file read no ref through the handler.
 struct NoRefs;
 
 impl RefTips for NoRefs {
@@ -53,7 +41,6 @@ impl RefTips for NoRefs {
     }
 }
 
-/// No worker of a test has a sandbox profile.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -62,9 +49,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// The fake `gh` of this test binary: `HORCH_GH_BIN` names it, so no test
-/// can reach the real `gh`. It appends its arguments to `../gh.log` from
-/// its folder (the main checkout), and prints the URL of a pull request.
 fn fake_gh() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -81,7 +65,6 @@ fn fake_gh() {
     });
 }
 
-/// Run the host git in `dir`. A failure fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -123,8 +106,6 @@ fn commit(dir: &Path, file: &str, body: &str) -> String {
     git(dir, &["rev-parse", "HEAD"])
 }
 
-/// A repository on `main` with 1 commit, a temp ledger at generation 1
-/// beside it, and the handlers of the custody kinds.
 struct World {
     _tmp: tempfile::TempDir,
     top: PathBuf,
@@ -189,8 +170,6 @@ fn world() -> World {
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 impl World {
-    /// A linked worktree `.worktrees/<name>` on a new branch `name` from
-    /// `main`, with 1 commit of its own.
     fn tree(&self, name: &str) -> PathBuf {
         let path = self.root.join(".worktrees").join(name);
         git(
@@ -213,8 +192,6 @@ impl World {
         triage::collect(&self.conn, &Git::new("git"), &self.root, Measure::Ids).unwrap()
     }
 
-    /// The `worktree_triage` request of `decision` on the row of `name`,
-    /// as the command sends it.
     fn send(&mut self, name: &str, decision: &str, direction: &str) -> Outcome {
         self.send_all(&[(name, decision, direction)])
     }
@@ -267,8 +244,6 @@ impl World {
         .outcome
     }
 
-    /// Send `decision` on `name`, then run its job to its end. Give the
-    /// ended job.
     fn decide(&mut self, name: &str, decision: &str, direction: &str) -> JobRow {
         let result = match self.send(name, decision, direction) {
             Outcome::Applied(v) => v,
@@ -280,8 +255,6 @@ impl World {
         self.run(id)
     }
 
-    /// Start the job `id` as `true`, run its executor on a read-only
-    /// connection, then end it from its result file.
     fn run(&mut self, id: i64) -> JobRow {
         self.run_editing(id, |_| {})
     }
@@ -333,7 +306,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// The columns `cols` of the newest ledger row of the folder `path`.
     fn tree_row(&self, path: &Path, cols: &str) -> Vec<Option<String>> {
         let n = cols.split(',').count();
         self.conn
@@ -357,7 +329,6 @@ impl World {
     }
 }
 
-/// The count of rows of each table that a decision changes.
 fn counts(conn: &Connection) -> Vec<(i64, i64)> {
     ["worktrees", "events", "jobs", "needs_you"]
         .iter()
@@ -375,8 +346,6 @@ fn counts(conn: &Connection) -> Vec<(i64, i64)> {
 fn text(job: &JobRow) -> String {
     jobs::outcome(job).map(|o| o.text).unwrap_or_default()
 }
-
-// ─── the 4 decisions ────────────────────────────────────────────────────
 
 #[test]
 fn archive_through_the_request_the_job_and_the_ingest() {
@@ -493,11 +462,6 @@ fn pr_through_the_request_the_job_and_the_ingest_with_a_fake_gh() {
     assert_eq!(row[2].as_deref(), Some("removed"));
 }
 
-// ─── the refusals of RR-13 ──────────────────────────────────────────────
-
-/// A refused decision ends its job `passed` with the decision failed: the
-/// row is `cleanup_failed` with the reason and no decision, and the folder,
-/// the branch and the refs stay.
 fn assert_refused(w: &World, tree: &Path, job: &JobRow, why: &str) {
     assert_eq!(job.state, State::Passed, "{}", text(job));
     assert!(text(job).contains(why), "{}", text(job));
@@ -561,8 +525,6 @@ fn unpublished_unique_commits_are_refused_and_stay() {
 fn a_moved_head_is_refused_and_stays() {
     let mut w = world();
     let tree = w.tree("moved");
-    // The triage row records the branch moved; then the HEAD of the folder
-    // moves to another branch before the job runs.
     let row = w.rows().into_iter().find(|r| r.name == "moved").unwrap();
     assert_eq!(row.branch.as_deref(), Some("moved"));
     let result = match w.send("moved", "ARCHIVE", "") {
@@ -574,10 +536,6 @@ fn a_moved_head_is_refused_and_stays() {
     assert_refused(&w, &tree, &job, "not its recorded branch moved");
 }
 
-/// A removal that fails after the rescue keeps the verified rescue ref:
-/// the failed fact names it, and the ingest moves the row to `rescued`
-/// with it before it records the failure (T-887). git refuses to remove a
-/// locked tree.
 #[test]
 fn a_failed_removal_after_the_rescue_keeps_the_rescue_ref() {
     let mut w = world();
@@ -627,8 +585,6 @@ fn refused_second_item_fact_does_not_roll_back_first_item_completed_rescue_and_r
     assert!(reason.contains("refs/heads/main"), "{reason}");
 }
 
-// ─── the job input ──────────────────────────────────────────────────────
-
 #[test]
 fn a_reply_of_keep_only_queues_no_job() {
     let mut w = world();
@@ -650,11 +606,6 @@ fn a_reply_of_keep_only_queues_no_job() {
     assert_eq!(w.tree_row(&tree, "decision")[0].as_deref(), Some("KEEP"));
 }
 
-// ─── the schema step ────────────────────────────────────────────────────
-
-/// The step of Phase 5 builds `jobs` again: a ledger before it refuses a
-/// `triage_apply` row; after it, each job row keeps its id and columns, the
-/// kind is allowed, and the index of 1 open run of 1 kind and subject holds.
 #[test]
 fn phase_5_step_adds_the_triage_apply_kind_and_keeps_each_job_row() {
     use horch_core::taskledger::schema;

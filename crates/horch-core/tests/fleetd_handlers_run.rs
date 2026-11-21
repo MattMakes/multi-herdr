@@ -1,13 +1,3 @@
-//! The handlers of the run and plan request kinds that stay after Phase 6,
-//! `ledger_import` and `ledger_gc`, write the rows of the commands of today
-//! (docs/tickets/fleetd-p5/17-handlers-run.md; RR-5, RR-8). Ticket 47 of
-//! fleetd-p6 retires the other kinds of the file.
-//!
-//! Each test sends requests through `requests::handle` to a temp ledger at
-//! generation 1, with a temp project folder. The test plays the command: it
-//! gathers the facts that the command gathers (the sha256 of a file, the
-//! import facts) and puts them in the payload.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -25,8 +15,6 @@ use horch_core::taskledger::{import, schema, util};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-/// A temp ledger at generation 1, a temp project folder, and the handlers
-/// of this ticket.
 struct World {
     temp: tempfile::TempDir,
     conn: Connection,
@@ -89,13 +77,11 @@ impl World {
         .unwrap()
     }
 
-    /// Send 1 new request; its outcome.
     fn send(&mut self, kind: Kind, payload: Value) -> Outcome {
         let req = self.request(kind, payload);
         self.send_request(&req).outcome
     }
 
-    /// Send 1 new request that must apply; its result.
     fn applied(&mut self, kind: Kind, payload: Value) -> Value {
         match self.send(kind, payload) {
             Outcome::Applied(v) => v,
@@ -103,7 +89,6 @@ impl World {
         }
     }
 
-    /// Send 1 new request that must be refused; its reason.
     fn refused(&mut self, kind: Kind, payload: Value) -> String {
         match self.send(kind, payload) {
             Outcome::Refused(r) => r,
@@ -115,8 +100,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// An old session ledger and 1 worktree claim under `state/`, and the
-    /// import facts that the command gathers.
     fn old_state(&self) -> (PathBuf, Value) {
         let state = self.temp.path().join("state");
         std::fs::create_dir_all(state.join("worktrees")).unwrap();
@@ -145,7 +128,6 @@ impl World {
     }
 }
 
-/// The rows of a table that the tests compare.
 fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Option<String>>> {
     let mut stmt = conn.prepare(sql).unwrap();
     let n = stmt.column_count();
@@ -183,7 +165,6 @@ fn ledger_import_and_gc_write_the_rows_of_today() {
     assert_eq!(v["report"]["sessions"], 2);
     assert_eq!(v["report"]["worktrees"], 1);
 
-    // The command of today, on a twin ledger, writes the same rows.
     let twin = w.temp.path().join("twin.sqlite3");
     let mut store = Store::open(&twin).unwrap();
     let today = import::import(&mut store, &Git::new("git"), &state, false).unwrap();
@@ -192,7 +173,6 @@ fn ledger_import_and_gc_write_the_rows_of_today() {
         assert_eq!(rows(&w.conn, sql), rows(store.conn(), sql), "{sql}");
     }
 
-    // An old file that changed after the facts were read is refused.
     let (_, payload) = w.old_state();
     std::fs::write(state.join("-repo.json"), "[]").unwrap();
     let reason = w.refused(Kind::LedgerImport, payload);
@@ -201,8 +181,6 @@ fn ledger_import_and_gc_write_the_rows_of_today() {
         "{reason}"
     );
 
-    // gc deletes git refs, which are no ledger rows: the request records
-    // them and writes no other row.
     let events = w.count("SELECT count(*) FROM events");
     let v = w.applied(
         Kind::LedgerGc,
@@ -212,8 +190,6 @@ fn ledger_import_and_gc_write_the_rows_of_today() {
     assert_eq!(w.count("SELECT count(*) FROM events"), events);
 }
 
-/// The count of rows of each table that a handler of this file writes,
-/// and the workspace of each run.
 fn effects(conn: &Connection) -> (Vec<i64>, Option<String>) {
     let counts = [
         "runs",

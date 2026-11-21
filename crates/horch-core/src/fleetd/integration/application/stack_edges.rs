@@ -1,39 +1,3 @@
-//! The end of a stack edge: rescue, rebase and free the upper feature when
-//! its lower feature is `merged` or `abandoned`.
-//!
-//! `docs/specs/fleetd/design.md`, "Between features" (A stack edge ends with
-//! its lower feature; Continuous rebase), I10, FM-42;
-//! `docs/tickets/fleetd-p6/38-stack-edges.md`. The owner of each step is
-//! fleetd. [`follow`] is the pass part. For each `open` or `ready` feature
-//! whose `stacked_on` names a `merged` or `abandoned` feature:
-//!
-//! 1. The target: the fetched primary tip. For an `abandoned` lower feature
-//!    the rebase also takes out each commit of the tip of its branch
-//!    (`git rebase --onto <primary> <lower tip>`). A lower branch that git
-//!    does not have puts 1 item on the needs-you list, and nothing moves.
-//! 2. When the upper branch is on the target (`rebase::is_on`), fleetd
-//!    clears `stacked_on`, with its event. The branch then has a new tip with
-//!    no gate result, so the fast gate (of each new bundle) and the full gate
-//!    run again by their own rules, and the rebase rule queues the push of
-//!    the new tip. The push moves the base of the pull request to the
-//!    primary branch (`pr = gh`), or changes the needs-you item of the
-//!    compare URL (`pr = manual`).
-//! 3. Else, as the rebase rule of Phase 4: no rebase while a rebase of the
-//!    branch is active or the gate tree is busy (FM-37); the gate tree is
-//!    made first; the rescue ref of the upper tip is written after the
-//!    commit of the pass and recorded on the branch row (I10); then 1
-//!    `rebase` job with the 2 tips and the cut as its input key.
-//! 4. A run of that key that ended in a conflict opens 1 resolver task, on
-//!    the path of the resolver tasks of a stack (`stacks.rs`): the youngest
-//!    idea in flight of the upper feature owns it, and it lands on the
-//!    branch of the upper feature. With no idea in flight, 1 item goes on
-//!    the needs-you list. The edge stays until the branch is on the target.
-//!
-//! Each step reads the rows and git again, so a crash at any point repeats
-//! the step. A pull request of the lower feature that is closed and not
-//! merged ends no edge: the feature is still in flight, and the fetch job
-//! puts the pull request on the needs-you list.
-
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -60,32 +24,22 @@ use crate::fleetd::task_execution::application::planned_tasks::{
 use crate::taskledger::model::{Actor, EventKind, WorkKind};
 use crate::taskledger::{runs, util};
 
-/// The plan of an idea, in its folder: the file that a resolver task reads
-/// first.
 const PLAN_YAML: &str = "plan.yaml";
 
-/// The kind of a resolver task: a code kind.
 const RESOLVER_KIND: WorkKind = WorkKind::Feature;
 
-/// The kind of the needs-you item of a stack edge that cannot end.
 pub const STACK_EDGE_KIND: &str = "stack_edge";
 
-/// The key of the needs-you item of the stack edge of `upper`.
 pub fn stack_edge_key(upper: &str) -> String {
     format!("{STACK_EDGE_KIND}:{upper}")
 }
 
-/// What [`follow`] works with: the rebase rule, and the facts of a
-/// resolver task.
 pub struct Edges<'a> {
     pub rebases: &'a Rebases<'a>,
-    /// The `ideas/` folder of the fleet root.
     pub ideas: &'a Path,
-    /// The profile of a resolver task.
     pub profile: &'a str,
 }
 
-/// How the lower feature of an edge ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum End {
     Merged,
@@ -101,7 +55,6 @@ impl End {
     }
 }
 
-/// 1 stack edge whose lower feature ended.
 struct Edge {
     upper: String,
     lower: String,
@@ -115,22 +68,14 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The pass part, in `tx`, at `clock`: act on each stack edge whose lower
-/// feature is `merged` or `abandoned`. Gives the rescue effects to run
-/// after the commit (`rebase::run`, then `rebase::observe`).
 pub fn follow(e: &Edges<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Vec<Effect>> {
     follow_in(e, tx, clock, None)
 }
 
-/// The upper feature of each stack edge whose lower feature is `merged` or
-/// `abandoned`, by id.
 pub fn ended_uppers(tx: &Connection) -> Result<Vec<String>> {
     Ok(ended_edges(tx)?.into_iter().map(|e| e.upper).collect())
 }
 
-/// [`follow`] for the stack edge of the upper feature `upper` only, or for
-/// each edge with `None`: the pass gives each upper feature the profile of
-/// its own resolver tasks.
 pub fn follow_in(
     e: &Edges<'_>,
     tx: &Connection,
@@ -149,8 +94,6 @@ pub fn follow_in(
     Ok(effects)
 }
 
-/// Each `open` or `ready` feature on a `merged` or `abandoned` feature, by
-/// id of the upper feature.
 fn ended_edges(tx: &Connection) -> Result<Vec<Edge>> {
     let mut stmt = tx.prepare(
         "SELECT u.id, l.id, l.state FROM features u JOIN features l ON l.id = u.stacked_on
@@ -243,8 +186,6 @@ fn follow_one(
     Ok(None)
 }
 
-/// The tip of the branch of the feature `lower`, or `None` when it has no
-/// branch in git.
 fn lower_tip(e: &Edges<'_>, tx: &Connection, tips: &Tips, lower: &str) -> Result<Option<String>> {
     let Some(branch) = rows::feature(tx, lower)?.and_then(|f| f.branch) else {
         return Ok(None);
@@ -254,7 +195,6 @@ fn lower_tip(e: &Edges<'_>, tx: &Connection, tips: &Tips, lower: &str) -> Result
         .tip(&tips.repo, &format!("refs/heads/{branch}"))
 }
 
-/// Put the stack edge of `upper` on the needs-you list with `text`.
 fn wait(e: &Edges<'_>, tx: &Connection, upper: &str, text: &str) -> Result<()> {
     let key = stack_edge_key(upper);
     let item = NewItem {
@@ -267,8 +207,6 @@ fn wait(e: &Edges<'_>, tx: &Connection, upper: &str, text: &str) -> Result<()> {
     e.rebases.jobs.needs_you.open_item(tx, &item)
 }
 
-/// Clear `stacked_on` of the upper feature of `edge`, with its event, and
-/// end the needs-you item of the edge.
 fn end_edge(e: &Edges<'_>, tx: &Connection, edge: &Edge) -> Result<()> {
     let guard = e.rebases.jobs.guard;
     check_writable(tx, guard)?;
@@ -306,9 +244,6 @@ fn end_edge(e: &Edges<'_>, tx: &Connection, edge: &Edge) -> Result<()> {
     Ok(())
 }
 
-/// Act on the failed rebase run `last` of the upper branch `branch`: a
-/// conflict opens 1 resolver task, 1 time for the run. Another failure
-/// changes nothing: its tips moved, so a new key follows.
 fn conflicted(
     e: &Edges<'_>,
     tx: &Connection,
@@ -365,8 +300,6 @@ fn conflicted(
     Ok(())
 }
 
-/// Whether an idea of `feature` has a committed task with the plan key
-/// `key`.
 fn resolver_exists(tx: &Connection, feature: &str, key: &str) -> Result<bool> {
     for idea in ideas_store::of_feature(tx, feature)? {
         for task in committed_tasks(tx, &idea.id)? {
@@ -380,7 +313,6 @@ fn resolver_exists(tx: &Connection, feature: &str, key: &str) -> Result<bool> {
     Ok(false)
 }
 
-/// The facts of 1 conflicted rebase of an upper branch.
 struct RebaseFacts<'a> {
     edge: &'a Edge,
     branch: &'a str,
@@ -389,8 +321,6 @@ struct RebaseFacts<'a> {
     rescue: Option<&'a str>,
 }
 
-/// The plan entry of the resolver task `key` of the conflicted rebase
-/// `f`, which fleetd writes for the idea `idea`.
 fn resolver_task(e: &Edges<'_>, idea: &str, key: &str, f: &RebaseFacts<'_>) -> PlannedTask {
     let upper = f.edge.upper.as_str();
     let parts = rebase::read_key(&f.job.input_key);
@@ -445,7 +375,6 @@ fn resolver_task(e: &Edges<'_>, idea: &str, key: &str, f: &RebaseFacts<'_>) -> P
     }
 }
 
-/// The ticket of the resolver task of the conflicted rebase `f`.
 fn resolver_ticket(title: &str, f: &RebaseFacts<'_>) -> String {
     let upper = f.edge.upper.as_str();
     let lower = f.edge.lower.as_str();

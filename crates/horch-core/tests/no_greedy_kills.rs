@@ -1,15 +1,5 @@
-//! No greedy kills (docs/adr/0002, #35): nothing in this repository stops a
-//! process by a name, a pattern or text from a transcript. A worker is
-//! stopped only by `horch ledger stop`, which signals the exact PIDs its
-//! ledger row records.
-//!
-//! The scan covers the Rust sources, the scripts, the justfile, the teammate
-//! briefings and the bundled skills. A line that only forbids a greedy kill
-//! is listed in [`ALLOWED`] with its reason; the list only shrinks.
-
 use std::path::{Path, PathBuf};
 
-/// (path from the repo root, a substring of the line, why it may stay).
 const ALLOWED: &[(&str, &str, &str)] = &[
     (
         "skills/godot-build-verify/SKILL.md",
@@ -64,7 +54,6 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Why `line` is a greedy kill, or `None`.
 fn greedy(line: &str) -> Option<&'static str> {
     let l = line.to_lowercase();
     if l.contains("pkill") {
@@ -88,7 +77,6 @@ fn greedy(line: &str) -> Option<&'static str> {
     None
 }
 
-/// Whether `word` stands alone in `l` (not inside `skill`).
 fn has_word(l: &str, word: &str) -> bool {
     l.match_indices(word).any(|(i, _)| {
         let before = l[..i].chars().next_back();
@@ -170,7 +158,6 @@ fn the_scan_catches_a_planted_pattern_kill() {
     assert!(greedy("kill $(pgrep -f horch)").is_some());
     assert!(greedy("ps aux | grep codex | awk '{print $2}' | xargs kill").is_some());
     assert!(!allowed("teammates/x.md", "pkill -f worker"));
-    // Stopping 1 recorded PID is fine.
     assert!(greedy("kill \"$pid\"").is_none());
     assert!(greedy("kill \"$(cat \"{temp_dir}/game.pid\")\"").is_none());
     assert!(greedy("oc=\"$(pgrep -P \"$sp\" | head -1)\"").is_none());

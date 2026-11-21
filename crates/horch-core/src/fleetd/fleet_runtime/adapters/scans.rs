@@ -1,126 +1,72 @@
-//! The fact scans of a pass, each in its budget.
-//!
-//! Part 1 of a pass runs 4 scans (`docs/tickets/fleetd-p1/MAP.md`, Q4):
-//! processes, outboxes, worktree folders and requests. Phase 6 adds the
-//! scan of the idea folders, which the idea duties run after part 2. Each scan walks its
-//! items in turn order from its [`Cursor`], looks at its [`Deadline`]
-//! between 2 items, and stops there. The next pass continues at the
-//! cursor. A folder that file watching reports goes first; it does not move
-//! the cursor.
-//!
-//! The caller gives the items of the processes, outboxes and worktree
-//! folders scans: the rows that name them belong to other contexts
-//! (Q13). The requests scan lists its folder itself.
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget};
 
-/// The time of a scan: its deadline, the monotonic clock it reads between
-/// 2 items, and the calendar stamp of a new lap.
 pub struct ScanClock<'a> {
-    /// Where the scan stops.
     pub deadline: Deadline,
-    /// The monotonic clock.
     pub now: &'a mut dyn FnMut() -> Instant,
-    /// The ledger stamp of this pass, for `lap_started_at`.
     pub stamp: &'a str,
 }
 
-/// The facts that 1 scan read in 1 pass.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Scan<F> {
-    /// 1 fact for each item read, in the order read.
     pub facts: Vec<F>,
-    /// True when the deadline stopped the scan before the end of its lap.
     pub stopped_at_budget: bool,
 }
 
-/// A process that a row names.
 #[derive(Clone, Debug)]
 pub struct ProcessItem {
-    /// The key of the row, for the cursor.
     pub key: String,
-    /// The recorded pid.
     pub pid: u32,
-    /// The recorded start time; `None` checks the pid alone.
     pub pid_start: Option<u64>,
 }
 
-/// Whether the process of a row is alive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessFact {
-    /// The key of the row.
     pub key: String,
-    /// What the scan knows of the process.
     pub liveness: Liveness,
 }
 
-/// What a scan knows of a recorded process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Liveness {
-    /// A process has the pid and, when one is recorded, the start time.
     Alive,
-    /// No process has the pid, or a process with another start time has it.
     Dead,
-    /// A process has the pid, and its start time cannot be read. The scan
-    /// does not know whether it is the recorded process, so it is not dead.
     Unknown,
 }
 
-/// A folder that a row names: an outbox or a worktree folder.
 #[derive(Clone, Debug)]
 pub struct FolderItem {
-    /// The key of the row, for the cursor.
     pub key: String,
-    /// The folder.
     pub path: PathBuf,
 }
 
-/// The listing of an outbox folder. Ingestion comes in Phase 4.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Listing {
-    /// The folder does not exist.
     Missing,
-    /// The names in the folder, in order.
     Names(Vec<String>),
-    /// The folder exists and cannot be read; the text of the error.
     Unreadable(String),
 }
 
-/// The listing of 1 outbox.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboxFact {
-    /// The key of the row.
     pub key: String,
-    /// The folder listing.
     pub listing: Listing,
 }
 
-/// Whether the folder of 1 worktree exists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderFact {
-    /// The key of the row.
     pub key: String,
-    /// Whether the folder exists.
     pub presence: Presence,
 }
 
-/// Whether a folder exists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Presence {
-    /// The folder exists.
     Present,
-    /// Nothing exists at the path.
     Missing,
-    /// The path cannot be read, or it is not a folder; the text of the
-    /// error. The folder is not known to be missing.
     Unreadable(String),
 }
 
-/// The outbox folder of attempt `attempt` of task `task_id`:
-/// `<fleet root>/tasks/<task id>/attempts/<attempt>/outbox/`.
 pub fn outbox_dir(fleet_root: &Path, task_id: &str, attempt: &str) -> PathBuf {
     fleet_root
         .join("tasks")
@@ -130,12 +76,10 @@ pub fn outbox_dir(fleet_root: &Path, task_id: &str, attempt: &str) -> PathBuf {
         .join("outbox")
 }
 
-/// The request folder: `<fleet root>/run/requests/`.
 pub fn requests_dir(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join("requests")
 }
 
-/// Whether each process is alive, by its pid and start time.
 pub fn scan_processes(
     items: &[ProcessItem],
     cursor: &mut Cursor,
@@ -154,7 +98,6 @@ pub fn scan_processes(
     )
 }
 
-/// The folder listing of each outbox. A watched folder goes first.
 pub fn scan_outboxes(
     items: &[FolderItem],
     watched: &[PathBuf],
@@ -175,7 +118,6 @@ pub fn scan_outboxes(
     )
 }
 
-/// Whether each worktree folder exists. A watched folder goes first.
 pub fn scan_worktree_folders(
     items: &[FolderItem],
     watched: &[PathBuf],
@@ -196,9 +138,6 @@ pub fn scan_worktree_folders(
     )
 }
 
-/// The names of the request files in `<fleet root>/run/requests/`, in turn
-/// order. No folder gives no requests. The requests themselves come in
-/// Phase 5.
 pub fn scan_requests(
     fleet_root: &Path,
     cursor: &mut Cursor,
@@ -212,10 +151,6 @@ pub fn scan_requests(
     Ok(walk(&names, |n| n, &[], cursor, clock, Clone::clone))
 }
 
-/// The idea folders of `<fleet root>/ideas/` (`ideas`), in turn order: each
-/// folder name goes to `read`, which reads the files of the folder. No
-/// folder gives no facts. The idea folders scan of Phase 6 has the time
-/// budget of the fact scans of Phase 1 (ticket 51 of fleetd-p6).
 pub fn scan_idea_folders<F>(
     ideas: &Path,
     cursor: &mut Cursor,
@@ -230,17 +165,12 @@ pub fn scan_idea_folders<F>(
     Ok(walk(&names, |n| n, &[], cursor, clock, read))
 }
 
-/// The liveness of process `pid` with the recorded start time `pid_start`.
 fn process_liveness(pid: u32, pid_start: Option<u64>) -> Liveness {
     let alive = horch_platform::process::alive(pid);
-    // The start time is read only when it is compared.
     let read = || horch_platform::process::start_time(pid);
     liveness(alive, pid_start, read)
 }
 
-/// The liveness from the facts of the OS: whether the pid exists, the
-/// recorded start time, and the start time that the OS gives (`None` when
-/// the query fails).
 fn liveness(alive: bool, recorded: Option<u64>, read: impl FnOnce() -> Option<u64>) -> Liveness {
     if !alive {
         return Liveness::Dead;
@@ -255,8 +185,6 @@ fn liveness(alive: bool, recorded: Option<u64>, read: impl FnOnce() -> Option<u6
     }
 }
 
-/// Whether folder `path` exists. An error other than "not found" is not a
-/// missing folder.
 fn presence(path: &Path) -> Presence {
     match std::fs::metadata(path) {
         Ok(m) if m.is_dir() => Presence::Present,
@@ -266,8 +194,6 @@ fn presence(path: &Path) -> Presence {
     }
 }
 
-/// The indexes of the items in or under a watched path, in the order
-/// watched, each once.
 fn watched_first(items: &[FolderItem], watched: &[PathBuf]) -> Vec<usize> {
     let mut first = Vec::new();
     for path in watched {
@@ -280,7 +206,6 @@ fn watched_first(items: &[FolderItem], watched: &[PathBuf]) -> Vec<usize> {
     first
 }
 
-/// The names in folder `dir`, in order.
 fn listing(dir: &Path) -> Listing {
     match std::fs::read_dir(dir) {
         Ok(entries) => {
@@ -299,18 +224,12 @@ fn listing(dir: &Path) -> Listing {
     }
 }
 
-/// A CLI of the docs sources (`docs-sources.toml`) and the path of its
-/// binary: 1 item of the scan of the CLI binaries of Phase 7.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliPath {
     pub cli: String,
     pub path: PathBuf,
 }
 
-/// The scan of the CLI binaries (fleetd-p7 ticket 30): `read` of at most
-/// `budget` items in turn order from the cursor, until the deadline. An
-/// item that `read` cannot read gives no fact, and the next lap reads it
-/// again.
 pub fn scan_cli_binaries<F>(
     items: &[CliPath],
     budget: PassBudget,
@@ -336,8 +255,6 @@ pub fn scan_cli_binaries<F>(
     }
 }
 
-/// Read the items at `first`, then 1 lap of the others from the cursor,
-/// until the deadline. Only the lap moves the cursor.
 fn walk<T, F>(
     items: &[T],
     key: impl Fn(&T) -> &str,

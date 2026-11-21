@@ -1,42 +1,18 @@
-//! The entity states and the rules of `transition()` (OR-2).
-//!
-//! `transition()` moves 1 row of 1 entity to a new state. [`EXITS`] is the
-//! table of allowed moves. A move that is not in it is refused
-//! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door").
-
-/// The kinds of row that `transition()` moves: the entities of Phase 1
-/// (`docs/tickets/fleetd-p1/MAP.md`, Q5), the worktree of Phase 3
-/// (`docs/tickets/fleetd-p3/MAP.md`, Q3), and the task branch, the bundle
-/// and the feature of Phase 4 (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`),
-/// and the idea of Phase 6 (`docs/tickets/fleetd-p6/04-door.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Entity {
-    /// `tasks.status`.
     Task,
-    /// `workers.status`.
     Worker,
-    /// `attempts.state`.
     Attempt,
-    /// `jobs.state`.
     Job,
-    /// `needs_you.state`.
     NeedsYou,
-    /// `worktrees.state`. `worktrees.status` keeps the words and the writes
-    /// of today (`docs/tickets/fleetd-p3/MAP.md`, Q3).
     Worktree,
-    /// `branches.landing_state`. A feature branch row has no landing state,
-    /// so it is not a row of this entity.
     TaskBranch,
-    /// `bundles.state`.
     Bundle,
-    /// `features.state`.
     Feature,
-    /// `ideas.state`.
     Idea,
 }
 
 impl Entity {
-    /// Every entity.
     pub const ALL: [Entity; 10] = [
         Entity::Task,
         Entity::Worker,
@@ -50,7 +26,6 @@ impl Entity {
         Entity::Idea,
     ];
 
-    /// The word of `events.entity` and of `needs_you.entity`.
     pub fn as_str(self) -> &'static str {
         match self {
             Entity::Task => "task",
@@ -67,8 +42,6 @@ impl Entity {
     }
 }
 
-/// The name of the entity in a text: the text of each event and each
-/// message that gives a state names the entity with it (OR-2).
 impl std::fmt::Display for Entity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -78,23 +51,16 @@ impl std::fmt::Display for Entity {
     }
 }
 
-/// The generation of the `fleetd` row: the number of the fleetd that holds
-/// the lock. Ticket 14 gives its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Generation(pub i64);
 
-/// What `transition()` does with a move from `from` to `to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
-    /// The row is already in `to`: no write and no event.
     Unchanged,
-    /// The table allows the move.
     Allowed,
-    /// The table does not allow the move.
     Refused,
 }
 
-/// The decision for a move of a row of `entity` from `from` to `to`.
 pub fn decide(entity: Entity, from: &str, to: &str) -> Decision {
     if from == to {
         Decision::Unchanged
@@ -105,70 +71,36 @@ pub fn decide(entity: Entity, from: &str, to: &str) -> Decision {
     }
 }
 
-/// Whether the move of a row of `entity` from `from` to `to` is a resume:
-/// a parked idea goes back to the state that it left, and only to that
-/// state (`docs/tickets/fleetd-p6/MAP.md`, Q10). `transition()` refuses a
-/// resume to another state. A cancel is not a resume.
 pub fn is_resume(entity: Entity, from: &str, to: &str) -> bool {
     entity == Entity::Idea && from == "parked" && to != "cancelled"
 }
 
-/// The cause of the event of a refused move.
 pub fn refused_cause(cause: &str) -> String {
     format!("illegal_transition: {cause}")
 }
 
-/// The kind of the needs-you item of a refused move.
 pub const REFUSED_KIND: &str = "illegal_transition";
 
-/// The key of the needs-you item of a refused move of 1 row.
 pub fn refused_key(entity: Entity, id: &str) -> String {
     format!("{REFUSED_KIND}:{}:{id}", entity.as_str())
 }
 
-/// The task exits that the code of today writes and the 12-state table of
-/// the design does not have. Each stays until its phase removes its writer.
 pub const TASK_EXITS_OF_TODAY: [(Entity, &str, &str); 3] = [
-    // taskledger/finish/mod.rs mark_done: `horch ledger done` of a running
-    // task. Phase 4 moves `done` to the verifier, from `verifying` only.
     (Entity::Task, "running", "done"),
-    // taskledger/tasks.rs requeue (the hold at `max_attempts`) and
-    // finish/mod.rs mark_done (`done --unlanded`). Phase 2 rung 6
-    // (ticket 10) goes through `failed`; Phase 4 moves the unlanded park
-    // to the verifier.
     (Entity::Task, "running", "escalated"),
     (Entity::Task, "verifying", "escalated"),
 ];
 
-/// The allowed moves: entity, from, to. The task moves are the 12-state
-/// task table of the design ("The task state machine", the column "Leaves
-/// when") and [`TASK_EXITS_OF_TODAY`]. The moves of worker are the moves
-/// that the code of today makes; each comment names its site. The moves of
-/// attempt, job and needs-you item are the exits of their state tables in
-/// the design and in ticket 10. The moves of worktree are the column
-/// "Leaves when" of the worktree table of the design, with the choices of
-/// `docs/tickets/fleetd-p3/MAP.md`, Q10. The moves of task branch, bundle
-/// and feature are the column "Leaves when" of their tables in the design
-/// ("Landing a task branch on its feature branch", "The bundle state
-/// machine", "The feature state machine"). The moves of idea are the
-/// column "Leaves when" of "The idea state machine" of the design, with the
-/// choices of `docs/tickets/fleetd-p6/MAP.md`, Q9 and Q10.
 pub const EXITS: &[(Entity, &str, &str)] = &[
-    // The task table of the design. `done` and `cancelled` are terminal;
-    // each other state has an exit to `cancelled` (A cancel).
     (Entity::Task, "pending", "ready"),
     (Entity::Task, "pending", "cancelled"),
-    // `ready -> running` is the claim of Phase 2 (MAP.md, Q5).
     (Entity::Task, "ready", "leased"),
     (Entity::Task, "ready", "running"),
     (Entity::Task, "ready", "cancelled"),
-    // `ready` and `failed` are rung 6 after `timed_out` or `crashed`.
     (Entity::Task, "leased", "running"),
     (Entity::Task, "leased", "ready"),
     (Entity::Task, "leased", "failed"),
     (Entity::Task, "leased", "cancelled"),
-    // `ready` is rung 6 and the restart on a fallback; `failed` is rung 6
-    // with no attempt left.
     (Entity::Task, "running", "verifying"),
     (Entity::Task, "running", "blocked_on_user"),
     (Entity::Task, "running", "ready"),
@@ -180,9 +112,6 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Task, "stalled", "failed"),
     (Entity::Task, "stalled", "verifying"),
     (Entity::Task, "stalled", "cancelled"),
-    // `ready` is the outcome `rejected`, rung 6 and a fix round. `pending`
-    // is a judge task in a fix round of its judge pair (The judge pair,
-    // step 5).
     (Entity::Task, "verifying", "done"),
     (Entity::Task, "verifying", "ready"),
     (Entity::Task, "verifying", "pending"),
@@ -192,127 +121,77 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Task, "blocked_on_user", "cancelled"),
     (Entity::Task, "waiting_quota", "ready"),
     (Entity::Task, "waiting_quota", "cancelled"),
-    // `failed -> ready` is the 1 replan (MAP.md, Q12).
     (Entity::Task, "failed", "ready"),
     (Entity::Task, "failed", "escalated"),
     (Entity::Task, "failed", "cancelled"),
-    // `horch ledger requeue` of an escalated task.
     (Entity::Task, "escalated", "ready"),
     (Entity::Task, "escalated", "cancelled"),
-    // The task exits of today that the design does not have.
     TASK_EXITS_OF_TODAY[0],
     TASK_EXITS_OF_TODAY[1],
     TASK_EXITS_OF_TODAY[2],
-    // taskledger/workers.rs supervisor_started: `horch worker` runs.
     (Entity::Worker, "spawning", "starting"),
-    // taskledger/workers.rs agent_started: the agent child runs.
     (Entity::Worker, "starting", "claiming"),
-    // taskledger/tasks.rs take_task: check_claimer takes each live state.
-    // spawning also from orchestrator.rs (the orchestrator row and its
-    // register) and cmd/taskledger.rs (the orchestrator row).
     (Entity::Worker, "spawning", "working"),
     (Entity::Worker, "starting", "working"),
     (Entity::Worker, "claiming", "working"),
-    // taskledger/finish/mod.rs mark_done (working), runs.rs close (the
-    // orchestrator), cmd/messaging.rs end_taskless_row (each live state).
     (Entity::Worker, "spawning", "done"),
     (Entity::Worker, "starting", "done"),
     (Entity::Worker, "claiming", "done"),
     (Entity::Worker, "working", "done"),
-    // taskledger/stop.rs end_row (`stopped`) and tasks.rs cancel: each
-    // live state.
     (Entity::Worker, "spawning", "stopped"),
     (Entity::Worker, "starting", "stopped"),
     (Entity::Worker, "claiming", "stopped"),
     (Entity::Worker, "working", "stopped"),
-    // taskledger/stop.rs reap and workers.rs hand_off (each live state),
-    // supervisor.rs exit_rule (working), orchestrator.rs
-    // end_without_respawn.
     (Entity::Worker, "spawning", "incomplete"),
     (Entity::Worker, "starting", "incomplete"),
     (Entity::Worker, "claiming", "incomplete"),
     (Entity::Worker, "working", "incomplete"),
-    // taskledger/workers.rs launch_failed and sweep_preclaim,
-    // supervisor.rs exit_rule, orchestrator.rs end_without_respawn
-    // (spawning).
     (Entity::Worker, "spawning", "launch_failed"),
     (Entity::Worker, "starting", "launch_failed"),
-    // taskledger/tasks.rs no_task (check_claimer takes each live state;
-    // a working worker gets its own task back), supervisor.rs exit_rule
-    // and workers.rs sweep_preclaim (claiming).
     (Entity::Worker, "spawning", "no_task"),
     (Entity::Worker, "starting", "no_task"),
     (Entity::Worker, "claiming", "no_task"),
-    // The launch is observed; the launch fails; the process ends.
     (Entity::Attempt, "launching", "live"),
     (Entity::Attempt, "launching", "ended"),
     (Entity::Attempt, "live", "ended"),
-    // A job starts and ends. A new run is a new row.
     (Entity::Job, "queued", "running"),
     (Entity::Job, "running", "passed"),
     (Entity::Job, "running", "failed"),
     (Entity::Job, "running", "abandoned"),
-    // fleetd/ideas: an item ends, and a new write of its key opens it again.
     (Entity::NeedsYou, "open", "resolved"),
     (Entity::NeedsYou, "open", "superseded"),
     (Entity::NeedsYou, "resolved", "open"),
     (Entity::NeedsYou, "superseded", "open"),
-    // The worktree table of the design. A row starts in `reserved` (a tree
-    // that fleetd makes) or `orphaned` (a folder that the reconciler
-    // adopts). The drop of a `reserved` row is not a move: the door deletes
-    // the row (MAP.md of fleetd-p3, Q18). `removed` is terminal.
     (Entity::Worktree, "reserved", "created"),
     (Entity::Worktree, "created", "active"),
-    // An operator triage of a tree with no owner: it is rescued before
-    // its removal (fleetd-p3 ticket 13).
     (Entity::Worktree, "created", "orphaned"),
-    // `created` is `done --unlanded`; `orphaned` is a dead owner.
     (Entity::Worktree, "active", "created"),
     (Entity::Worktree, "active", "landing"),
     (Entity::Worktree, "active", "orphaned"),
-    // `rescued` is the rescue of an abandoned branch (Phase 4).
     (Entity::Worktree, "landing", "landed"),
     (Entity::Worktree, "landing", "rescued"),
     (Entity::Worktree, "landed", "removed"),
-    // An operator triage of a landed tree that the cleanup did not remove.
     (Entity::Worktree, "landed", "orphaned"),
     (Entity::Worktree, "orphaned", "rescued"),
-    // An operator triage ARCHIVE or DELETE of a tree whose folder is gone:
-    // the answer to the FM-27 escalation. Only triage makes it, behind the
-    // guard `worktree_custody::domain::worktree::settle_refusal`; the scan
-    // `fitness_only_custody_and_triage_move_a_worktree_to_removed` keeps
-    // other callers out (fleetd-p3 ticket 13, review F1).
     (Entity::Worktree, "orphaned", "removed"),
-    // `active` is the next claim.
     (Entity::Worktree, "rescued", "active"),
     (Entity::Worktree, "rescued", "removed"),
-    // The task branch table of the design. `landed` and `abandoned` are
-    // terminal. Each other state leaves to `abandoned`: `horch feature
-    // abandon` moves each branch of the feature that is not landed, a
-    // cancelled task moves its `building` or `verifying` branch, and
-    // `horch branch abandon` moves a `conflicted` or `gate_failed` branch.
     (Entity::TaskBranch, "building", "verifying"),
     (Entity::TaskBranch, "building", "abandoned"),
-    // `building` is a failed check with a new attempt.
     (Entity::TaskBranch, "verifying", "ready"),
     (Entity::TaskBranch, "verifying", "building"),
     (Entity::TaskBranch, "verifying", "abandoned"),
     (Entity::TaskBranch, "ready", "in_bundle"),
     (Entity::TaskBranch, "ready", "abandoned"),
-    // `ready` is a dropped bundle or a clean part of a bisect.
     (Entity::TaskBranch, "in_bundle", "landed"),
     (Entity::TaskBranch, "in_bundle", "ready"),
     (Entity::TaskBranch, "in_bundle", "gate_failed"),
     (Entity::TaskBranch, "in_bundle", "conflicted"),
     (Entity::TaskBranch, "in_bundle", "abandoned"),
-    // A resolver attempt passes its check.
     (Entity::TaskBranch, "conflicted", "ready"),
     (Entity::TaskBranch, "conflicted", "abandoned"),
-    // A fix attempt passes its check.
     (Entity::TaskBranch, "gate_failed", "verifying"),
     (Entity::TaskBranch, "gate_failed", "abandoned"),
-    // The bundle table of the design. `landed`, `failed` and `dropped` are
-    // terminal.
     (Entity::Bundle, "building", "gating"),
     (Entity::Bundle, "building", "dropped"),
     (Entity::Bundle, "gating", "passed"),
@@ -320,18 +199,12 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Bundle, "gating", "dropped"),
     (Entity::Bundle, "passed", "landed"),
     (Entity::Bundle, "passed", "dropped"),
-    // The feature table of the design. `merged` and `abandoned` are
-    // terminal. `open -> merged` is a merge with ideas in flight.
     (Entity::Feature, "open", "ready"),
     (Entity::Feature, "open", "merged"),
     (Entity::Feature, "open", "abandoned"),
     (Entity::Feature, "ready", "open"),
     (Entity::Feature, "ready", "merged"),
     (Entity::Feature, "ready", "abandoned"),
-    // The idea table of the design. `merged` and `cancelled` are terminal.
-    // Each other state leaves to `parked` and `cancelled` (`horch idea park`
-    // or `cancel`, an escalation, 7 days with no answer).
-    // `ticketing` is an idea added with `--direct`.
     (Entity::Idea, "captured", "clarifying"),
     (Entity::Idea, "captured", "ticketing"),
     (Entity::Idea, "captured", "parked"),
@@ -339,19 +212,15 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Idea, "clarifying", "awaiting_approval"),
     (Entity::Idea, "clarifying", "parked"),
     (Entity::Idea, "clarifying", "cancelled"),
-    // `clarifying` is `horch idea revise`.
     (Entity::Idea, "awaiting_approval", "specifying"),
     (Entity::Idea, "awaiting_approval", "clarifying"),
     (Entity::Idea, "awaiting_approval", "parked"),
     (Entity::Idea, "awaiting_approval", "cancelled"),
-    // `awaiting_approval` is an amend after the approval (MAP.md, Q9).
     (Entity::Idea, "specifying", "ticketing"),
     (Entity::Idea, "specifying", "awaiting_approval"),
     (Entity::Idea, "specifying", "parked"),
     (Entity::Idea, "specifying", "cancelled"),
     (Entity::Idea, "ticketing", "in_progress"),
-    // `awaiting_approval` from `ticketing`, `in_progress` and
-    // `integrating` is an amend after the approval (MAP.md, Q9).
     (Entity::Idea, "ticketing", "awaiting_approval"),
     (Entity::Idea, "ticketing", "parked"),
     (Entity::Idea, "ticketing", "cancelled"),
@@ -359,14 +228,11 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Idea, "in_progress", "awaiting_approval"),
     (Entity::Idea, "in_progress", "parked"),
     (Entity::Idea, "in_progress", "cancelled"),
-    // `in_progress` is a new task from a replan.
     (Entity::Idea, "integrating", "merged"),
     (Entity::Idea, "integrating", "in_progress"),
     (Entity::Idea, "integrating", "awaiting_approval"),
     (Entity::Idea, "integrating", "parked"),
     (Entity::Idea, "integrating", "cancelled"),
-    // A resume goes back to the state that the idea left, and only to it
-    // ([`is_resume`]; MAP.md, Q10).
     (Entity::Idea, "parked", "captured"),
     (Entity::Idea, "parked", "clarifying"),
     (Entity::Idea, "parked", "awaiting_approval"),
@@ -397,7 +263,6 @@ mod tests {
         moves
     }
 
-    /// The 12 states of the design table.
     const TASK_STATES: [&str; 12] = [
         "pending",
         "ready",
@@ -413,7 +278,6 @@ mod tests {
         "cancelled",
     ];
 
-    /// The column "Leaves when" of the 12-state task table of the design.
     fn design_task_exits() -> Vec<(&'static str, &'static str)> {
         vec![
             ("pending", "ready"),
@@ -516,7 +380,6 @@ mod tests {
 
     #[test]
     fn every_held_state_has_an_exit_that_frees_the_task() {
-        // RR-2: no path leaves a task held with no exit.
         for held in [
             "leased",
             "running",
@@ -580,18 +443,12 @@ mod tests {
         assert_eq!(exits_of(Entity::Worker), sorted(today));
     }
 
-    /// The 8 states of the worktree table of the design, as the CHECK of
-    /// `worktrees.state` lists them.
     const WORKTREE_STATES: [&str; 8] = [
         "reserved", "created", "active", "landing", "landed", "removed", "orphaned", "rescued",
     ];
 
     #[test]
     fn allowed_transitions_of_worktree_equal_the_design_table() {
-        // The column "Leaves when", with the choices of MAP.md of
-        // fleetd-p3, Q10. The drop of a `reserved` row is not a move. Triage
-        // orphans a `created` or `landed` tree before its rescue, and
-        // settles a tree whose folder is gone (ticket 13).
         let design = vec![
             ("reserved", "created"),
             ("created", "active"),
@@ -683,7 +540,6 @@ mod tests {
             refused_key(Entity::Task, "T-3"),
             "illegal_transition:task:T-3"
         );
-        // The key holds the column word; a text holds the name.
         assert_eq!(
             refused_key(Entity::TaskBranch, "fleet/a"),
             "illegal_transition:task_branch:fleet/a"

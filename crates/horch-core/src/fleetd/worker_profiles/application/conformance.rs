@@ -1,6 +1,3 @@
-//! Run the conformance suite of an adapter through a port and record each
-//! verdict. fleetd-p7 tickets 23 and 24 fill it.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -9,22 +6,12 @@ use crate::fleetd::worker_profiles::domain::conformance::{
     Unreachable, Verdict, CHECKS,
 };
 
-/// The real launch of 1 check: its fixed prompt in a fresh throwaway task
-/// folder, through the launcher and the wrapper.
 pub trait ConformanceLaunch {
-    /// The observation of the launch of `check`. An error is a launch that
-    /// did not start, with its reason.
     fn launch(&mut self, check: Check) -> Result<Observation, String>;
 
-    /// Whether "Operator boundary" can run: `Err` with the reason when the
-    /// adapter of the profile has no sandbox on this OS, else each operator
-    /// act that this process cannot do itself, outside the sandbox, with
-    /// its reason.
     fn operator_boundary(&mut self) -> Result<Vec<Unreachable>, String>;
 }
 
-/// The CLI under test: its name, its version text and the hash of its
-/// adapter (fleetd-p7 ticket 25).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuiteSubject {
     pub cli: String,
@@ -32,12 +19,6 @@ pub struct SuiteSubject {
     pub adapter_hash: String,
 }
 
-/// The verdict of 1 check: its launch, then its rule. A launch that did not
-/// start fails the check with its reason. "Operator boundary" has no
-/// launch when the adapter has no sandbox on this OS (`not supported` with
-/// the reason), or when this process cannot do 1 of the acts itself (`not
-/// proved` when the 1 act is the connect to a channel with no server, else
-/// fail).
 pub fn run_check(port: &mut dyn ConformanceLaunch, check: Check) -> CheckResult {
     if check == Check::OperatorBoundary {
         match port.operator_boundary() {
@@ -54,8 +35,6 @@ pub fn run_check(port: &mut dyn ConformanceLaunch, check: Check) -> CheckResult 
     }
 }
 
-/// Run each check of the suite of 1 exec CLI, in the order of the design,
-/// and give the report of `conformance.json`.
 pub fn run_suite(subject: SuiteSubject, port: &mut dyn ConformanceLaunch) -> ConformanceReport {
     let checks = CHECKS.into_iter().map(|c| run_check(port, c)).collect();
     ConformanceReport {
@@ -66,7 +45,6 @@ pub fn run_suite(subject: SuiteSubject, port: &mut dyn ConformanceLaunch) -> Con
     }
 }
 
-/// The form of `conformance.json`.
 #[derive(Serialize, Deserialize)]
 struct ReportJson {
     cli: String,
@@ -75,8 +53,6 @@ struct ReportJson {
     checks: Vec<CheckJson>,
 }
 
-/// 1 check in `conformance.json`: its name, `pass`, `fail` or `not
-/// supported`, and 1 line of evidence.
 #[derive(Serialize, Deserialize)]
 struct CheckJson {
     name: String,
@@ -84,7 +60,6 @@ struct CheckJson {
     evidence: String,
 }
 
-/// The text of `conformance.json` for `report`.
 pub fn conformance_json(report: &ConformanceReport) -> String {
     let json = ReportJson {
         cli: report.cli.clone(),
@@ -105,7 +80,6 @@ pub fn conformance_json(report: &ConformanceReport) -> String {
     text
 }
 
-/// The report of the text of a `conformance.json`.
 pub fn read_conformance_json(text: &str) -> Result<ConformanceReport, String> {
     let json: ReportJson = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let checks = json
@@ -131,8 +105,6 @@ pub fn read_conformance_json(text: &str) -> Result<ConformanceReport, String> {
     })
 }
 
-/// The report of the agent in its last message `text`: the JSON object from
-/// its first `{` to its last `}`. `None` when there is none.
 pub fn read_probe_report(text: &str) -> Option<ProbeReport> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;

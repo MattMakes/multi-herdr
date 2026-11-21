@@ -1,15 +1,5 @@
-//! The verdict file of a judge task: 1 verdict, each finding ranked, and
-//! the outcome critical_open.
-//!
-//! The file has a `## Verdict` section with 1 word, `pass` or
-//! `critical_open`, and a `## Findings` list. Each item of the list starts
-//! with its rank in brackets: `[CRITICAL]`, `[HIGH]`, `[MEDIUM]` or `[LOW]`
-//! (docs/tickets/fleetd-p6/MAP.md, Q18). The verdict is `critical_open`
-//! exactly when the list has a CRITICAL item (RR-3).
-
 use super::retry::Outcome;
 
-/// The rank of 1 finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rank {
     Critical,
@@ -19,7 +9,6 @@ pub enum Rank {
 }
 
 impl Rank {
-    /// The rank of a `[WORD]` tag, or `None` for an unknown word.
     fn from_tag(word: &str) -> Option<Rank> {
         match word {
             "CRITICAL" => Some(Rank::Critical),
@@ -31,22 +20,18 @@ impl Rank {
     }
 }
 
-/// The 1 word of the `## Verdict` section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerdictWord {
     Pass,
     CriticalOpen,
 }
 
-/// 1 item of the `## Findings` list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
     pub rank: Rank,
-    /// The text after the rank tag, trimmed.
     pub text: String,
 }
 
-/// A verdict file that passed its structural check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
     pub word: VerdictWord,
@@ -54,8 +39,6 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// The outcome of the judge attempt: `critical_open` for an open
-    /// CRITICAL item, which burns no attempt, and `None` for `pass`.
     pub fn outcome(&self) -> Option<Outcome> {
         match self.word {
             VerdictWord::Pass => None,
@@ -64,18 +47,12 @@ impl Verdict {
     }
 }
 
-/// 1 fault of a verdict file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerdictError {
-    /// The `## Verdict` sections hold `count` words, not 1.
     VerdictWords { count: usize },
-    /// The 1 verdict word is not `pass` or `critical_open`.
     UnknownVerdict { word: String },
-    /// The finding at 1-based `line` has no known rank tag.
     FindingWithoutRank { line: usize },
-    /// A CRITICAL item is open and the verdict is `pass`.
     CriticalNotOpen,
-    /// The verdict is `critical_open` and no item is CRITICAL.
     CriticalOpenWithoutCritical,
 }
 
@@ -101,7 +78,6 @@ impl std::fmt::Display for VerdictError {
     }
 }
 
-/// The section a line belongs to.
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
     Other,
@@ -109,7 +85,6 @@ enum Section {
     Findings,
 }
 
-/// Parse a verdict file and run its structural check. Returns each fault.
 pub fn parse_verdict(text: &str) -> Result<Verdict, Vec<VerdictError>> {
     let mut errors = Vec::new();
     let mut words: Vec<&str> = Vec::new();
@@ -154,7 +129,6 @@ pub fn parse_verdict(text: &str) -> Result<Verdict, Vec<VerdictError>> {
     }
 }
 
-/// The 1 verdict word, or `None` with its fault recorded.
 fn verdict_word(words: &[&str], errors: &mut Vec<VerdictError>) -> Option<VerdictWord> {
     match words {
         ["pass"] => Some(VerdictWord::Pass),
@@ -172,8 +146,6 @@ fn verdict_word(words: &[&str], errors: &mut Vec<VerdictError>) -> Option<Verdic
     }
 }
 
-/// The text of a top-level list item (`- `, `* ` or `1. `), or `None` for
-/// any other line. An indented line continues the item above it.
 fn list_item(line: &str) -> Option<&str> {
     if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
         return Some(rest);
@@ -185,7 +157,6 @@ fn list_item(line: &str) -> Option<&str> {
     line[digits..].strip_prefix(". ")
 }
 
-/// The finding of a list item that starts with a known rank tag.
 fn finding(item: &str) -> Option<Finding> {
     let rest = item.trim_start().strip_prefix('[')?;
     let (tag, text) = rest.split_once(']')?;

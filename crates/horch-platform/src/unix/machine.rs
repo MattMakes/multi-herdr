@@ -1,13 +1,9 @@
-//! The concern machine for the code of macOS and Linux.
-
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::machine::{Disk, Run, Tool};
 
-// `getrlimit` takes a platform-specific integer type for the resource, so a
-// macro keeps each call site on its own `libc` constant.
 macro_rules! rlimit {
     ($resource:expr) => {{
         // SAFETY: `limit` is a zeroed out-parameter that `getrlimit` fills in.
@@ -52,7 +48,6 @@ fn statvfs(path: &Path) -> Option<libc::statvfs> {
     }
 }
 
-// The statvfs fields are `u32` on some unix targets, so the casts stay.
 #[allow(clippy::unnecessary_cast)]
 pub(crate) fn disk(path: &Path) -> Option<Disk> {
     statvfs(path).map(|stat| {

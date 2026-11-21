@@ -1,27 +1,3 @@
-//! The e2e tests of untrusted files of Phase 5 (`docs/specs/fleetd/design.md`,
-//! Migration plan item 7; SR-5, SR-6, FM-23, preservation 04 M5;
-//! `docs/tickets/fleetd-p5/44-p5-untrusted-files-e2e.md`).
-//!
-//! A running fleetd refuses each bad file with its reason, records it as
-//! rejected in `ingested`, does not read it again, and keeps its heartbeat.
-//!
-//! Each test runs the development `horch fleetd` on its own ledger and fleet
-//! root, with temporary `HORCH_DATA_DIR`, `HORCH_STATE_DIR`,
-//! `HORCH_LEDGER_DB` and `FLEET_ROOT`, and with `HORCH_TEST_ASSERT_READ_ONLY=1`
-//! for each `horch` process. The worker of each attempt is a `sleep` child
-//! of the test. A test waits for a row, a file or a heartbeat, never for a
-//! time.
-//!
-//! 2 facts cannot come from this Mac without root: a file of another user,
-//! and a channel peer of another user. They come through the test seams of
-//! the code that fleetd runs (Q13 of `docs/tickets/fleetd-p5/MAP.md`):
-//!
-//! - the owner: the `owner` of [`Spool`] (ticket 07), given to the scan of
-//!   the request folder of fleetd. Then a real fleetd runs on the same
-//!   ledger and does not read the rejected file again.
-//! - the peer user: `peer_user` of the channel server [`Options`]
-//!   (ticket 13). The client is the real `horch task cancel`.
-
 #![cfg(unix)]
 
 use std::fs::{self, OpenOptions, Permissions};
@@ -55,28 +31,17 @@ use horch_platform::channel::User;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-/// The slug of the 1 run of each test.
 const RUN: &str = "r1";
 
-/// The `fleet.toml` of each test: 1 pass each second, and small limits of
-/// `progress.jsonl`, so that a file over its limit is small.
 const FLEET_TOML: &str = "pass_period_s = 1\n\
                           progress_max_bytes = 2048\n\
                           progress_line_max_bytes = 512\n";
 
-/// The `progress_max_bytes` of [`FLEET_TOML`].
 const PROGRESS_MAX_BYTES: usize = 2048;
 
-/// The user of the channel peer that the seam gives: not the user of the
-/// test.
 const OTHER_UID: u32 = 4_242_424;
 
-// ─── the fleet of 1 test ────────────────────────────────────────────────
-
-/// 1 test: a harness with its own ledger and fleet root, the fleetds that
-/// it started, and the `sleep` agents of its attempts.
 struct Fleet {
-    // The fleetds stop before the harness removes its folder.
     fleetds: Fleetds,
     h: Harness,
     run: Run,
@@ -84,10 +49,8 @@ struct Fleet {
     started: usize,
 }
 
-/// A live attempt of a running task.
 struct Attempt {
     task: String,
-    /// The attempt id, `<task>/A1`.
     id: String,
 }
 
@@ -98,7 +61,6 @@ impl Attempt {
 }
 
 impl Fleet {
-    /// A harness with a migrated ledger, 1 run and the test `fleet.toml`.
     fn new(name: &str) -> Fleet {
         let mut h = Harness::new(name);
         let db = h.root.join("ledger.sqlite3");
@@ -121,7 +83,6 @@ impl Fleet {
             },
         )
         .unwrap();
-        // FR-12: each task belongs to an idea.
         schema::run_idea(&conn, &run.run_id, &util::now(), true)
             .unwrap()
             .expect("a run that gets a task gets an idea");
@@ -149,9 +110,6 @@ impl Fleet {
         conn
     }
 
-    /// A task of the run, claimed by a worker whose agent is a new `sleep`
-    /// child: its live push attempt `<task>/A1`, with its outbox (mode 0700,
-    /// as a worker command makes it).
     fn live_attempt(&mut self) -> Attempt {
         let agent = Command::new("/bin/sleep").arg("600").spawn().unwrap();
         let pid = agent.id();
@@ -162,10 +120,8 @@ impl Fleet {
             .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
         let mut new = NewTask::work(&format!("t{n}"), &format!("tickets/t{n}.md"), "dev");
-        // The claim made no tree: the task works in the shared checkout.
         new.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
         let task = tasks::add(&conn, run, &new, Actor::Orchestrator).unwrap();
-        // fleetd binds the task to the worker and its live attempt (FR-5).
         horch_core::taskledger::testing::bind_live(
             &conn,
             &task.task_id,
@@ -200,9 +156,6 @@ impl Fleet {
         attempt
     }
 
-    /// Start `horch fleetd` and wait until its first pass ended. fleetd
-    /// writes 1 heartbeat at its start, before it makes the operator token
-    /// and the request folder, and 1 at the end of each pass.
     fn start_fleetd(&mut self) -> u32 {
         let name = format!("fleetd-{}", self.started);
         self.started += 1;
@@ -214,8 +167,6 @@ impl Fleet {
         pid
     }
 
-    /// The awake time of the last heartbeat, in ms, when the fleetd `pid`
-    /// wrote it.
     fn heartbeat(&self, pid: u32) -> Option<u64> {
         let hb: Value =
             serde_json::from_slice(&fs::read(heartbeat_path(&self.root())).ok()?).ok()?;
@@ -225,10 +176,6 @@ impl Fleet {
         hb["awake"]["awake_ms"].as_u64()
     }
 
-    /// Wait until the fleetd `pid` wrote `n` more heartbeats. fleetd writes
-    /// 1 at the end of each pass, so at least `n - 1` whole passes ran
-    /// after this call began. A fleetd that stops its heartbeat fails the
-    /// test: fleetd stays healthy.
     fn passes(&self, pid: u32, n: usize) {
         let mut last = self.heartbeat(pid);
         let mut seen = 0;
@@ -242,8 +189,6 @@ impl Fleet {
         });
     }
 
-    /// The `ingested` row of the file whose path ends with `suffix`: its
-    /// outcome, its reason and its time.
     fn ingested(&self, suffix: &str) -> Option<(String, Option<String>, String)> {
         let rows: Vec<(String, String, Option<String>, String)> = {
             let conn = self.conn();
@@ -265,8 +210,6 @@ impl Fleet {
         row
     }
 
-    /// Wait for the `rejected` row of the file whose path ends with
-    /// `suffix`, and give its reason.
     fn rejected(&self, suffix: &str) -> String {
         let (outcome, reason, _) = wait_for(&format!("the ingested row of {suffix}"), || {
             self.ingested(suffix)
@@ -275,7 +218,6 @@ impl Fleet {
         reason.expect("a rejected row has its reason")
     }
 
-    /// The state and reason of the `requests` row of `request_id`.
     fn request(&self, request_id: &str) -> Option<(String, Option<String>)> {
         self.conn()
             .query_row(
@@ -287,7 +229,6 @@ impl Fleet {
             .unwrap()
     }
 
-    /// The status of the task `task`.
     fn task_status(&self, task: &str) -> String {
         self.conn()
             .query_row("SELECT status FROM tasks WHERE task_id = ?1", [task], |r| {
@@ -296,7 +237,6 @@ impl Fleet {
             .unwrap()
     }
 
-    /// The state of the attempt `id`.
     fn attempt_state(&self, id: &str) -> String {
         self.conn()
             .query_row("SELECT state FROM attempts WHERE id = ?1", [id], |r| {
@@ -305,7 +245,6 @@ impl Fleet {
             .unwrap()
     }
 
-    /// The texts of the progress events of the task `task`.
     fn progress_texts(&self, task: &str) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn
@@ -321,7 +260,6 @@ impl Fleet {
         texts
     }
 
-    /// The generation of the `fleetd` row.
     fn generation(&self) -> Generation {
         Generation(
             self.conn()
@@ -332,8 +270,6 @@ impl Fleet {
         )
     }
 
-    /// Run `horch task cancel <task> <reason> --run r1`, the real client of
-    /// the channel and of the request folder.
     fn cancel(&self, task: &str) -> Output {
         self.h
             .horch(&["task", "cancel", task, "untrusted-files test", "--run", RUN])
@@ -341,8 +277,6 @@ impl Fleet {
             .unwrap()
     }
 
-    /// With no fleetd running, `horch task cancel` writes its request file.
-    /// Gives its path.
     fn queued_cancel(&self, task: &str) -> PathBuf {
         let before = self.request_files();
         let o = self.cancel(task);
@@ -356,7 +290,6 @@ impl Fleet {
         new.pop().unwrap()
     }
 
-    /// The request files in the request folder, not the archive.
     fn request_files(&self) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(requests_dir(&self.root())) else {
             return Vec::new();
@@ -369,8 +302,6 @@ impl Fleet {
         files
     }
 
-    /// Start 1 fleetd to make the token and the request folder, then stop
-    /// it, so that fleetd is down.
     fn fleetd_made_then_down(&mut self) -> (u32, u64) {
         self.start_fleetd();
         self.fleetds.kill_current()
@@ -386,9 +317,6 @@ impl Drop for Fleet {
     }
 }
 
-/// The `fleetd` row names the test process while it lives, and the fleetd
-/// `down` again when it drops, so that the drop of [`Fleetds`] never
-/// signals the test.
 struct TestIsFleetd<'a> {
     f: &'a Fleet,
     down: (u32, u64),
@@ -427,7 +355,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The `request_id` of a request file: its name without `.json`.
 fn request_id(path: &Path) -> String {
     let name = path.file_name().unwrap().to_string_lossy();
     name.strip_suffix(".json")
@@ -442,7 +369,6 @@ fn uid() -> u32 {
     }
 }
 
-/// Write `bytes` to the new file `path` with exactly `mode`.
 fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
     let mut file = OpenOptions::new()
         .write(true)
@@ -451,11 +377,9 @@ fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
         .open(path)
         .unwrap();
     file.write_all(bytes).unwrap();
-    // The umask can narrow the mode of the create; set it exactly.
     fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
 }
 
-/// A valid `result.json` of `task` that names the attempt `attempt`.
 fn result_json(task: &str, attempt: &str) -> String {
     ResultFile {
         task: task.into(),
@@ -472,7 +396,6 @@ fn result_json(task: &str, attempt: &str) -> String {
     .to_json()
 }
 
-/// 1 valid progress line of `a` with the text `text`.
 fn progress_line(a: &Attempt, text: &str) -> String {
     ProgressLine {
         task: a.task.clone(),
@@ -485,12 +408,9 @@ fn progress_line(a: &Attempt, text: &str) -> String {
     .unwrap()
 }
 
-/// The end of the path of the file `name` of the outbox of `a`.
 fn outbox_suffix(a: &Attempt, name: &str) -> String {
     format!("tasks/{}/attempts/A1/outbox/{name}", a.task)
 }
-
-// ─── SR-5: request files and the channel ────────────────────────────────
 
 #[test]
 fn request_file_of_another_owner_is_refused_with_a_reason() {
@@ -500,8 +420,6 @@ fn request_file_of_another_owner_is_refused_with_a_reason() {
     let file = f.queued_cancel(&a.task);
     let id = request_id(&file);
 
-    // The scan of the request folder of fleetd, with a ledger owner that is
-    // not the owner of the file (the seam of Q13).
     let me = uid();
     let other = User::Uid(me + 1);
     let token = token_file::read(&f.root()).unwrap();
@@ -544,8 +462,6 @@ fn request_file_of_another_owner_is_refused_with_a_reason() {
     assert_eq!(f.rejected(&format!("run/requests/{name}")), reason);
     assert_eq!(f.request(&id), None, "a refused file has no requests row");
 
-    // A real fleetd, whose owner check this file passes, does not read the
-    // rejected path again.
     let pid = f.start_fleetd();
     f.passes(pid, 2);
     assert_eq!(f.request(&id), None, "fleetd read the rejected file again");
@@ -581,9 +497,6 @@ fn request_from_another_user_on_the_channel_is_refused() {
     let a = f.live_attempt();
     let down = f.fleetd_made_then_down();
 
-    // The test is fleetd now: the channel server of fleetd, with a peer
-    // user that is not the user of the ledger (the seam of ticket 13). The
-    // client checks that the server is the process of the `fleetd` row.
     let _fleetd = TestIsFleetd::new(&f, down);
     let server = ChannelServer::start_with(
         &f.root(),
@@ -627,8 +540,6 @@ fn request_from_another_user_on_the_channel_is_refused() {
     );
     assert_eq!(f.task_status(&a.task), "running");
 }
-
-// ─── SR-6: the files of a worker ────────────────────────────────────────
 
 #[test]
 fn symlinked_result_is_rejected_and_fleetd_stays_healthy() {
@@ -689,24 +600,19 @@ fn result_with_the_attempt_id_of_another_attempt_is_rejected() {
     assert_eq!(f.attempt_state(&a.id), "live");
 }
 
-// ─── FM-23: half-written files, and a path read 1 time ──────────────────
-
 #[test]
 fn half_written_files_are_never_read() {
     let mut f = Fleet::new("p5-half");
     let a = f.live_attempt();
     let b = f.live_attempt();
     f.fleetd_made_then_down();
-    // A request file before its rename.
     let request = f.queued_cancel(&b.task);
     let id = request_id(&request);
     let request_tmp = request.with_extension("json.tmp");
     fs::rename(&request, &request_tmp).unwrap();
-    // A result before its rename.
     let result = a.outbox(&f).join("result.json");
     let result_tmp = a.outbox(&f).join("result.json.tmp");
     write_mode(&result_tmp, result_json(&a.task, "A1").as_bytes(), 0o600);
-    // A log whose last line is not complete.
     let first = progress_line(&a, "the first line");
     let second = progress_line(&a, "the second line");
     let (head, tail) = second.split_at(second.len() / 2);
@@ -729,7 +635,6 @@ fn half_written_files_are_never_read() {
     assert_eq!(f.task_status(&a.task), "running");
     assert_eq!(f.task_status(&b.task), "running");
 
-    // Each write completes: fleetd reads each file 1 time.
     let mut append = OpenOptions::new().append(true).open(&log).unwrap();
     append.write_all(tail.as_bytes()).unwrap();
     drop(append);
@@ -763,8 +668,6 @@ fn rejected_path_is_not_read_again() {
     let reason = f.rejected(&suffix);
     let (_, _, at) = f.ingested(&suffix).unwrap();
 
-    // A valid file at the rejected path is not read: not by this fleetd,
-    // and not by the next one.
     fs::remove_file(&result).unwrap();
     write_mode(&result, result_json(&a.task, "A1").as_bytes(), 0o600);
     f.passes(pid, 2);

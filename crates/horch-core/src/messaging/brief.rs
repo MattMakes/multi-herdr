@@ -1,15 +1,3 @@
-//! The brief: everything a worker pane needs to know about itself, written by
-//! `horch spawn` and read by `horch worker`.
-//!
-//! The bash implementation wrote a shell fragment of `export`s quoted with
-//! `printf %q`; JSON avoids that quoting problem entirely and has the same
-//! meaning on Windows.
-//!
-//! Schema 1 is the brief before A2: no `schema` key, and only the claude and
-//! codex binary overrides. Schema 2 adds `schema`, `workdir` and every
-//! `HORCH_*_BIN` override in `bin_overrides`. A schema 2 brief still writes
-//! `claude_bin` and `codex_bin`, so an older worker binary can read it.
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +6,6 @@ use crate::harness::HarnessKind;
 use crate::roster::Teammate;
 use crate::runtime::{Backend, BinOverrides};
 
-/// The schema this binary writes.
 pub const SCHEMA: u32 = 2;
 
 fn schema_v1() -> u32 {
@@ -31,82 +18,44 @@ fn is_herdr(b: &Backend) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Brief {
-    /// 1 for a brief without the key; this binary writes [`SCHEMA`].
     #[serde(default = "schema_v1")]
     pub schema: u32,
     pub role: String,
-    /// The teammate's name, i.e. the `teammates/<name>.md` this worker is.
     pub teammate: String,
     pub agent: String,
     pub model: String,
     pub record_id: String,
-    /// Fresh or resumed, and the session id when it is known at spawn. Claude
-    /// session ids are minted at spawn; codex only reveals its id after launch.
-    /// On disk this is still the `session_id` string (empty until known) and
-    /// the `resume` flag.
     #[serde(flatten, with = "session_wire")]
     pub session: SessionMode,
     #[serde(default)]
     pub task: String,
     pub project_dir: String,
-    /// Set only when the caller overrode the ledger location.
     #[serde(default)]
     pub state_dir: Option<String>,
-    /// Schema 1 agent-CLI overrides. A pane is a fresh shell that does not
-    /// inherit the spawning process's environment, so these have to travel in
-    /// the brief to reach the worker at all. [`Brief::overrides`] folds them
-    /// into [`Brief::bin_overrides`].
     #[serde(default)]
     pub claude_bin: Option<String>,
     #[serde(default)]
     pub codex_bin: Option<String>,
-    /// The teammate resolved at spawn time, carried so the worker renders the
-    /// briefing the spawner actually chose. A worker's cwd is the target
-    /// project, not this repo, so re-reading the roster in the pane could
-    /// resolve a different file - or none at all.
     #[serde(default)]
     pub resolved: Option<Teammate>,
-    /// Where the roster was read from at spawn time. A pane does not inherit
-    /// `$HORCH_TEAMMATES_DIR`, so the path travels here or the worker falls
-    /// back to the compiled-in copies and silently ignores local edits.
     #[serde(default)]
     pub teammates_dir: Option<String>,
-    /// Schema 2: the directory the agent works in, when it is not the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
-    /// Schema 2: every `HORCH_*_BIN` override the spawner ran with.
     #[serde(default, skip_serializing_if = "BinOverrides::is_empty")]
     pub bin_overrides: BinOverrides,
-    /// Who `horch done` reports to. A brief without the key reports to the
-    /// orchestrator, as every brief did before B3; a candidate reports to
-    /// nobody.
     #[serde(default = "report_to_orchestrator")]
     pub report_to: ReportTarget,
-    /// This worker's row in the task ledger, when the project has an active
-    /// run. The worker records its PIDs, checkins and session there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
-    /// The task ledger file, when the spawner overrode it
-    /// (`HORCH_LEDGER_DB`). A pane does not inherit the variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger_db: Option<String>,
-    /// The fleet root the spawner resolved, an absolute path. A pane does
-    /// not inherit `FLEET_ROOT`. A brief without the key uses the folder
-    /// `fleet` beside its ledger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet_root: Option<String>,
-    /// The role that spawned this worker under its `spawn_only` (the
-    /// skill-importer controller). A `report` pane may `tell` only this role.
-    /// `horch done` still reports as `report_to` says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller: Option<String>,
-    /// The absolute path of `task.yaml` of the push attempt of this worker
-    /// (`<fleet root>/tasks/<task id>/attempts/<A n>/task.yaml`).
-    /// `horch result` finds its attempt by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_yaml: Option<String>,
-    /// Which pane host owns this worker's workspace. Absent on older briefs,
-    /// which are `herdr`.
     #[serde(default, skip_serializing_if = "is_herdr")]
     pub backend: Backend,
 }
@@ -120,16 +69,12 @@ impl Brief {
         self.agent.parse().map_err(anyhow::Error::msg)
     }
 
-    /// Parse a brief of either schema, with the schema 1 overrides folded
-    /// into [`Brief::bin_overrides`].
     pub(crate) fn from_json(raw: &str) -> Result<Brief> {
         let mut brief: Brief = serde_json::from_str(raw)?;
         brief.bin_overrides = brief.overrides();
         Ok(brief)
     }
 
-    /// Every binary override: `bin_overrides`, with `claude_bin` and
-    /// `codex_bin` filling the gaps.
     pub fn overrides(&self) -> BinOverrides {
         let mut out = BinOverrides {
             claude: self.claude_bin.as_ref().map(Into::into),
@@ -140,8 +85,6 @@ impl Brief {
         out
     }
 
-    /// Record `overrides` in both schemas: the full set in `bin_overrides`,
-    /// and the claude and codex values in their schema 1 fields.
     pub(crate) fn set_overrides(&mut self, overrides: BinOverrides) {
         let text =
             |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -150,15 +93,10 @@ impl Brief {
         self.bin_overrides = overrides;
     }
 
-    /// The directory the agent works in.
     pub(crate) fn workdir_or_project(&self) -> &str {
         self.workdir.as_deref().unwrap_or(&self.project_dir)
     }
 
-    /// The environment the worker's agent receives, and with it every
-    /// `horch` command the agent runs: who it is (`horch note` and
-    /// `horch done` find their record by it), where the ledger and roster
-    /// are, and every binary override. Applied to the child command only.
     pub(crate) fn transport_env(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = [
             ("HORCH_ROLE", self.role.as_str()),
@@ -196,8 +134,6 @@ impl Brief {
         if let Some(path) = &self.task_yaml {
             out.push(("HORCH_TASK_YAML".into(), path.clone()));
         }
-        // The agent runs `horch spawn` and `horch done` from inside this pane;
-        // they must resolve the same roster this worker was briefed from.
         if let Some(dir) = &self.teammates_dir {
             out.push(("HORCH_TEAMMATES_DIR".into(), dir.clone()));
         }
@@ -208,7 +144,6 @@ impl Brief {
     }
 }
 
-/// The brief's on-disk session fields, which predate [`SessionMode`].
 mod session_wire {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -279,8 +214,6 @@ mod tests {
         }
     }
 
-    /// Today's brief file, byte for byte the shape a pre-A2 `horch spawn`
-    /// wrote, still reads: as schema 1, with its two overrides folded in.
     #[test]
     fn arc_07_brief_v1_readable() {
         let v1 = r#"{
@@ -315,10 +248,8 @@ mod tests {
         let env = b.transport_env();
         assert!(env.contains(&("HORCH_CLAUDE_BIN".into(), "/bin/fake-claude".into())));
         assert!(env.contains(&("HORCH_CODEX_BIN".into(), "/bin/fake-codex".into())));
-        // The skill store travels in the pane command, not the brief.
         assert!(!env.iter().any(|(k, _)| k == "HORCH_DATA_DIR"));
 
-        // The oldest briefs have neither override nor task.
         let older = r#"{"role":"old","teammate":"sonnet","agent":"claude","model":"sonnet",
             "record_id":"r1","session_id":"s1","resume":false,"project_dir":"/tmp/proj"}"#;
         let b = Brief::from_json(older).unwrap();
@@ -326,7 +257,6 @@ mod tests {
         assert!(b.bin_overrides.is_empty());
     }
 
-    /// A schema 2 brief keeps the schema 1 keys, so an older worker reads it.
     #[test]
     fn a_v2_brief_round_trips_and_keeps_the_v1_keys() {
         let mut b = brief();
@@ -389,9 +319,6 @@ mod tests {
         assert!(!env.contains_key("HORCH_DATA_DIR"));
     }
 
-    /// `horch result` finds its push attempt by `HORCH_TASK_YAML`, so the
-    /// brief of a push attempt carries the path into the agent's env. A
-    /// brief with no push attempt sets no such variable.
     #[test]
     fn transport_env_carries_the_task_yaml_of_a_push_attempt() {
         let mut b = brief();

@@ -8,12 +8,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-# Archive unpack of release assets (`.zip`), on every OS.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-# Unpacks the unix release archive, a `.tar.gz`.
 tar = { version = "0.4", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 

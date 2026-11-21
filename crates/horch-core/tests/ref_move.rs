@@ -1,16 +1,3 @@
-//! The ref move: a `passed` bundle moves the feature ref by compare-and-set
-//! from its base tip to its candidate tip; the next pass observes the move
-//! before the bundle and its members are `landed`; a failed compare-and-set
-//! drops the bundle (docs/specs/fleetd/design.md, I8, I9, FM-37, F9, "The
-//! bundle state machine", "A moved tip drops a bundle";
-//! docs/tickets/fleetd-p4/31-ref-move-by-compare-and-set.md).
-//!
-//! Each test has its own temporary ledger, fleet root and git repository.
-//! No test reads the load, the limits or the clock of the machine: the fleet
-//! clock is a number that the test gives, and the config is the default.
-//! The bundle starts in `passed`, as the bundle use cases leave it after a
-//! pass of its fast gate.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -45,8 +32,6 @@ const FEATURE_REF: &str = "refs/heads/fleet/r1";
 const A: &str = "fleet/r1-a";
 const B: &str = "fleet/r1-b";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -54,7 +39,6 @@ struct World {
     conn: Connection,
     run: Run,
     config: FleetConfig,
-    /// The task id of each task branch, by branch name.
     tasks: Vec<(String, String)>,
 }
 
@@ -132,7 +116,6 @@ fn world() -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -173,8 +156,6 @@ impl World {
         git(&self.repo, &["rev-parse", rev])
     }
 
-    /// Commit `file` on `branch`, made from the feature branch when it is
-    /// new. Gives the new tip.
     fn commit_on(&self, branch: &str, file: &str) -> String {
         let exists = git_out(&self.repo, &["rev-parse", "--verify", "-q", branch])
             .status
@@ -205,8 +186,6 @@ impl World {
         task.clone()
     }
 
-    /// A task, its git branch `name` with 1 commit of `file`, and its task
-    /// branch row moved to `ready`, as the landing moves it.
     fn ready_branch(&mut self, name: &str, file: &str) {
         self.commit_on(name, file);
         let n = self.tasks.len() + 1;
@@ -233,9 +212,6 @@ impl World {
         self.tasks.push((name.to_string(), task));
     }
 
-    /// 1 bundle of `members` on the feature tip, built and gated, in
-    /// `passed` at the fleet clock `clock`, as the bundle use cases leave
-    /// it. Gives its id.
     fn passed_bundle(&mut self, members: &[&str], clock: i64) -> i64 {
         let base = self.tip(FEATURE_BRANCH);
         let list: Vec<Member> = members
@@ -300,8 +276,6 @@ impl World {
         id
     }
 
-    /// 1 pass of the ref move at the fleet clock `clock`, committed. Gives
-    /// the moves to run after the commit.
     fn pass(&mut self, clock: i64) -> Vec<Move> {
         let config = self.config.clone();
         let ctx = ctx(&config);
@@ -316,8 +290,6 @@ impl World {
         moves
     }
 
-    /// 1 pass whose process stops before the commit: its transaction rolls
-    /// back. Gives the moves that it would run.
     fn pass_that_crashes_before_the_commit(&mut self, clock: i64) -> Vec<Move> {
         let config = self.config.clone();
         let ctx = ctx(&config);
@@ -332,7 +304,6 @@ impl World {
         moves
     }
 
-    /// Run `mv` after the commit of its pass.
     fn run(&self, mv: &Move) -> Ran {
         ref_move::run(&self.conn, &self.gateway(), mv).unwrap()
     }
@@ -361,8 +332,6 @@ impl World {
         tasks::cancel(&self.conn, &task, "the operator cancels it").unwrap();
     }
 
-    /// The count of the transition events of the row `id` of `entity` into
-    /// `to`.
     fn entered(&self, entity: &str, id: &str, to: &str) -> i64 {
         self.conn
             .query_row(
@@ -389,8 +358,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// A world with the ready task branches `a` and `b` in 1 `passed` bundle at
-/// the fleet clock 10. Gives the world, the bundle id and the base tip.
 fn passed_ab() -> (World, i64, String) {
     let mut w = world();
     w.ready_branch(A, "a1.txt");
@@ -400,14 +367,11 @@ fn passed_ab() -> (World, i64, String) {
     (w, id, base)
 }
 
-// ─── the tests of the ticket ────────────────────────────────────────────
-
 #[test]
 fn passed_bundle_moves_the_feature_ref_from_the_base_tip() {
     let (mut w, id, base) = passed_ab();
     let candidate = w.bundle(id).candidate_tip.unwrap();
 
-    // Part 2 of the pass decides the move and moves nothing itself.
     let moves = w.pass(20);
     assert_eq!(moves.len(), 1, "moves: {moves:?}");
     let mv = &moves[0];
@@ -423,7 +387,6 @@ fn passed_bundle_moves_the_feature_ref_from_the_base_tip() {
         "seen_tip is the expected old tip"
     );
 
-    // After the commit, the move is 1 compare-and-set from the base tip.
     assert_eq!(w.run(mv), Ran::Moved);
     assert_eq!(w.tip(FEATURE_BRANCH), candidate);
     let landed = w.gateway();
@@ -433,7 +396,6 @@ fn passed_bundle_moves_the_feature_ref_from_the_base_tip() {
             .unwrap());
     }
 
-    // The move is safe to repeat: the ref is no longer at the base tip.
     assert_eq!(
         w.run(mv),
         Ran::Mismatch {
@@ -450,13 +412,11 @@ fn move_is_observed_before_landed() {
     let moves = w.pass(20);
     assert_eq!(w.run(&moves[0]), Ran::Moved);
 
-    // The effect alone lands nothing: the rows wait for the observation.
     assert_eq!(w.bundle(id).state, "passed");
     for m in [A, B] {
         assert_eq!(w.landing_state(m), "in_bundle");
     }
 
-    // The next pass reads the ref at the candidate tip.
     let moves = w.pass(30);
     assert!(moves.is_empty(), "moves: {moves:?}");
     assert_eq!(w.bundle(id).state, "landed");
@@ -465,8 +425,6 @@ fn move_is_observed_before_landed() {
     }
     assert_eq!(w.seen_tip().as_deref(), Some(candidate.as_str()));
 
-    // `landed` is terminal and not checked again: a later move of the
-    // feature tip changes nothing of the bundle or its members.
     w.commit_on(FEATURE_BRANCH, "later.txt");
     let before = w.events();
     assert!(w.pass(40).is_empty());
@@ -484,7 +442,6 @@ fn passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are_read
     let moves = w.pass(20);
     assert_eq!(moves.len(), 1);
 
-    // Someone commits on the feature branch between the pass and the move.
     let theirs = w.commit_on(FEATURE_BRANCH, "theirs.txt");
     assert_eq!(
         w.run(&moves[0]),
@@ -495,7 +452,6 @@ fn passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are_read
     assert_eq!(w.tip(FEATURE_BRANCH), theirs, "the lost race moves nothing");
     assert_ne!(w.tip(FEATURE_BRANCH), candidate);
 
-    // The next pass drops the bundle and records the new tip.
     let moves = w.pass(30);
     assert!(moves.is_empty(), "moves: {moves:?}");
     assert_eq!(w.bundle(id).state, "dropped");
@@ -505,8 +461,6 @@ fn passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are_read
     assert_eq!(w.seen_tip().as_deref(), Some(theirs.as_str()));
     assert_ne!(theirs, base);
 
-    // I9: a gate result on a stale tip moves no ref. The tip moves before
-    // the pass of a second `passed` bundle: no move is decided at all.
     let id2 = w.passed_bundle(&[A, B], 40);
     let other = w.commit_on(FEATURE_BRANCH, "other.txt");
     assert!(w.pass(50).is_empty());
@@ -520,8 +474,6 @@ fn passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are_read
 
 #[test]
 fn cancelled_member_task_moves_no_ref() {
-    // F9 after the commit: the task of a member is cancelled between the
-    // pass and the move. The move checks once more and moves nothing.
     let (mut w, id, base) = passed_ab();
     let moves = w.pass(20);
     assert_eq!(moves.len(), 1);
@@ -529,15 +481,12 @@ fn cancelled_member_task_moves_no_ref() {
     assert_eq!(w.run(&moves[0]), Ran::Cancelled { task: w.task_of(B) });
     assert_eq!(w.tip(FEATURE_BRANCH), base);
 
-    // The next pass drops the bundle: no move, and the member of the live
-    // task goes back to `ready`.
     let moves = w.pass(30);
     assert!(moves.is_empty(), "moves: {moves:?}");
     assert_eq!(w.tip(FEATURE_BRANCH), base);
     assert_eq!(w.bundle(id).state, "dropped");
     assert_eq!(w.landing_state(A), "ready");
 
-    // A task cancelled before the pass: the pass decides no move.
     let mut w = world();
     w.ready_branch(A, "a1.txt");
     w.ready_branch(B, "b1.txt");
@@ -557,15 +506,12 @@ fn crash_after_the_move_before_the_observation_lands_once() {
     let moves = w.pass(20);
     assert_eq!(w.run(&moves[0]), Ran::Moved);
 
-    // fleetd stops after the move and before the commit of the
-    // observation: the rows stay as they were.
     assert!(w.pass_that_crashes_before_the_commit(30).is_empty());
     assert_eq!(w.bundle(id).state, "passed");
     for m in [A, B] {
         assert_eq!(w.landing_state(m), "in_bundle");
     }
 
-    // The next pass reads the ref again and lands the bundle 1 time.
     assert!(w.pass(40).is_empty());
     assert!(w.pass(50).is_empty());
     assert_eq!(w.tip(FEATURE_BRANCH), candidate);
@@ -579,8 +525,6 @@ fn crash_after_the_move_before_the_observation_lands_once() {
 
 #[test]
 fn crash_before_the_commit_or_before_the_move_moves_the_ref_1_time() {
-    // A fault before the commit of the pass: no move runs, and the rows
-    // stay. The next pass decides the same move.
     let (mut w, id, base) = passed_ab();
     let candidate = w.bundle(id).candidate_tip.unwrap();
     let lost = w.pass_that_crashes_before_the_commit(20);
@@ -588,15 +532,12 @@ fn crash_before_the_commit_or_before_the_move_moves_the_ref_1_time() {
     assert_eq!(w.tip(FEATURE_BRANCH), base);
     assert_eq!(w.bundle(id).state, "passed");
 
-    // A fault after the commit and before the move: the next pass decides
-    // the same move again, from the same base tip.
     let first = w.pass(30);
     assert_eq!(first, lost);
     assert_eq!(w.tip(FEATURE_BRANCH), base);
     let again = w.pass(40);
     assert_eq!(again, first);
 
-    // The move runs 1 time, and the bundle lands 1 time.
     assert_eq!(w.run(&again[0]), Ran::Moved);
     assert!(w.pass(50).is_empty());
     assert_eq!(w.tip(FEATURE_BRANCH), candidate);
@@ -609,9 +550,6 @@ fn crash_before_the_commit_or_before_the_move_moves_the_ref_1_time() {
 
 #[test]
 fn member_whose_changes_are_not_in_the_feature_by_content_is_not_landed() {
-    // I8: a member is `landed` only when its changes are in the feature
-    // branch by content. A member that has a new commit after the build is
-    // not, and it goes back to `ready`.
     let (mut w, id, _) = passed_ab();
     let moves = w.pass(20);
     w.commit_on(B, "b2.txt");
@@ -629,7 +567,6 @@ fn passed_bundle_past_its_limit_has_1_needs_you_item() {
     let key = overdue_key(id);
     let items = |w: &World| open_keys(&w.conn, OVERDUE_KIND).unwrap();
 
-    // The move is decided but never runs, so the bundle stays `passed`.
     w.pass(10 + limit - 1);
     assert!(items(&w).is_empty());
     w.pass(10 + limit);
@@ -641,7 +578,6 @@ fn passed_bundle_past_its_limit_has_1_needs_you_item() {
         "1 item, not 1 for each pass"
     );
 
-    // The bundle leaves `passed`: the item ends.
     let moves = w.pass(10 + limit + 70);
     assert_eq!(w.run(&moves[0]), Ran::Moved);
     w.pass(10 + limit + 80);
@@ -649,10 +585,6 @@ fn passed_bundle_past_its_limit_has_1_needs_you_item() {
     assert!(items(&w).is_empty());
 }
 
-/// T-402, run B: the old path landed the member and git no longer has its
-/// branch. The bundle lands at the feature tip with no move, and the member
-/// is `landed` by the tip that the ledger recorded for it, not sent back to
-/// `ready` for a new bundle.
 #[test]
 fn member_that_git_lost_lands_by_its_recorded_tip() {
     let mut w = world();

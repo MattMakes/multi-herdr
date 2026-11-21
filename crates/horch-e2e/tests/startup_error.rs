@@ -1,6 +1,3 @@
-//! End-to-end: a worker that dies before it registers still shows its error
-//! (W13 C4).
-
 use std::process::Output;
 use std::time::{Duration, Instant};
 
@@ -237,7 +234,6 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
     );
     assert_eq!(startup_errors(&h), Vec::<std::path::PathBuf>::new());
 
-    // The record ends as a failed launch, with the worker's error.
     let r = records(&h)
         .into_iter()
         .find(|r| r["role"] == "sonnet-1")

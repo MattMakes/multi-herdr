@@ -1,44 +1,3 @@
-//! A recording stand-in for the `codex` CLI.
-//!
-//! As a pane agent it records argv and exits 0. As `codex app-server` it
-//! speaks the JSON-RPC lines the quota probe uses, in the shape Codex 0.158.0
-//! ships.
-//!
-//! Violation: any method other than `initialize`, `initialized` and
-//! `account/rateLimits/read`. A thread or a turn is never allowed.
-//!
-//! Scenarios: `limits_weekly` (the default), `limits_5h_weekly`,
-//! `limits_not_allowed`, `hang`, `error`. `inspect_skills`: a pane launch
-//! also writes `$CODEX_HOME/skills` and the files under it to
-//! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
-//! A pane launch also plays the Phase 4 keys `bound`, `commit`, `ask`,
-//! `result` and `noresult` (`horch_e2e::agent`).
-//! It then plays the Phase 6 keys of the fake idea-lead and the fake judge
-//! (`horch_e2e::idea_agent`).
-//!
-//! As a pane agent, the scenario `stay` makes a launch behave like the codex
-//! TUI: a fresh launch writes a rollout file for its cwd under
-//! `$HOME/.codex/sessions/`, then the launch sleeps until killed. The session
-//! id is a UUID derived from the canonical cwd, recorded as `session_id`; a
-//! `resume <id>` launch records `resumed` and writes nothing.
-//!
-//! A pane launch plays the Phase 5 report keys after the Phase 4 keys, each
-//! as a tool command of the real Codex: `report_progress` runs
-//! `horch ledger progress`, `report_done` runs `horch ledger done`, and
-//! `report_result` runs `horch result`. A command that an allow rule of
-//! `$CODEX_HOME/rules/` matches runs outside the sandbox, and a forbidden
-//! rule refuses it. Each other command runs with writes confined to the cwd
-//! and the roots of the last `-c permissions.<p>.workspace_roots=` pair,
-//! with the `TMPDIR` of `shell_environment_policy.set.TMPDIR`. Each key logs
-//! its exit code, output, `sandboxed` and `writable`. `rules` logs the rules.
-//! The sandbox is the one of the platform (`horch_platform::sandbox`).
-//!
-//! As `codex sandbox ... -C <dir> -- <command>` it runs the command as a
-//! child with writes confined to `dir` and the profile's workspace roots,
-//! records them as `sandbox_writable`, and exits with the command's code.
-//! On macOS the confinement is Seatbelt, as in the real CLI. Elsewhere it is
-//! the job sandbox of the platform (`horch_platform::sandbox::sandboxed_job`).
-
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -50,9 +9,6 @@ const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/rea
 
 fn main() {
     horch_e2e::probe::child_entry();
-    // horch reads the model catalog before each Codex launch with
-    // multi_agent off (4278edc). Answer like the real CLI and record no
-    // call: it is a lookup, not an agent run.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("models")
@@ -119,7 +75,6 @@ fn main() {
                     "code": -32603, "message": "not signed in"}})
                 .to_string()),
                 s => {
-                    // A notification first: a real server may send them any time.
                     say(&json!({"method": "account/rateLimits/updated",
                                 "params": {"rateLimits": {"primary": null}}})
                     .to_string());
@@ -136,11 +91,8 @@ fn window(used: i64, mins: i64, resets: i64) -> Value {
     json!({"usedPercent": used, "windowDurationMins": mins, "resetsAt": resets})
 }
 
-/// The `account/rateLimits/read` result. `accountId` is there on purpose:
-/// TEL-11 proves horch drops it.
 fn result(scenario: &str) -> Value {
     let (primary, secondary, allowed) = match scenario {
-        // An older plan shape: 5h in the first slot, the week in the second.
         "limits_5h_weekly" => (
             window(20, 300, 1_790_620_000),
             window(40, 10_080, 1_791_054_949),
@@ -163,7 +115,6 @@ fn result(scenario: &str) -> Value {
     })
 }
 
-/// The private home's `skills` entry, and every file under it, relative.
 fn inspect_skills() {
     let home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
     let skills = home.as_ref().map(|h| h.join("skills"));
@@ -191,7 +142,6 @@ fn list_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-/// The `stay` launch: record or write the session, then block until killed.
 fn stay(call: &mut Call) {
     if call.argv.first().map(String::as_str) == Some("resume") {
         if let Some(id) = call.argv.iter().skip(1).find(|arg| {
@@ -205,13 +155,10 @@ fn stay(call: &mut Call) {
         let id = write_rollout();
         call.extra.insert("session_id".into(), json!(id));
     }
-    // Eager: a `stay` launch is killed, so nothing is written after it.
     call.flush();
     hang();
 }
 
-/// Write `rollout-<stamp>-<uuid>.jsonl` naming this process's cwd, the file
-/// horch's session discovery reads. Returns the uuid.
 fn write_rollout() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
@@ -242,10 +189,6 @@ fn write_rollout() -> String {
     id
 }
 
-/// `codex update`: record the call, then answer as the scenario says.
-/// `update_fail:codex` exits 1 with a coloured error line, and
-/// `update_hang:codex` sleeps 60 s first. Otherwise it prints 1 line and
-/// exits 0.
 fn update(call: &Call) -> ! {
     call.flush();
     if horch_e2e::scenario_has("update_fail:codex") {
@@ -259,7 +202,6 @@ fn update(call: &Call) -> ! {
     std::process::exit(0);
 }
 
-/// The Phase 5 report keys of a pane launch: see the module doc.
 fn report(call: &mut Call) {
     let keys: [(&str, &[&str]); 3] = [
         (
@@ -306,8 +248,6 @@ fn report(call: &mut Call) {
     call.flush();
 }
 
-/// Run `argv` as Codex runs a tool command: a forbidden rule refuses it, an
-/// allow rule runs it unconfined, else it runs confined to `writable`.
 fn tool_command(
     argv: &[String],
     rules: &[(Vec<String>, String)],
@@ -350,8 +290,6 @@ fn tool_command(
     }
 }
 
-/// The prefix rules of `$CODEX_HOME/rules/*.rules`: each pattern and its
-/// decision (`allow` when the rule sets none).
 fn rules() -> Vec<(Vec<String>, String)> {
     let Some(home) = std::env::var_os("CODEX_HOME") else {
         return Vec::new();
@@ -385,8 +323,6 @@ fn rules() -> Vec<(Vec<String>, String)> {
     rules
 }
 
-/// The value of the last `-c` pair of `argv` whose text contains `key`,
-/// from the end of `key` on.
 fn last_config<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
     argv.windows(2)
         .rev()
@@ -394,7 +330,6 @@ fn last_config<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
         .find_map(|w| w[1].split_once(key).map(|(_, value)| value))
 }
 
-/// Each double-quoted string of `text`, with no escape in it.
 fn quoted(text: &str) -> Vec<String> {
     text.split('"')
         .skip(1)
@@ -403,14 +338,12 @@ fn quoted(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The path of `name` in a folder of `PATH`.
 fn on_path(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
 }
 
-/// `codex sandbox [opts] -- <command>`: see the module doc.
 fn sandbox(call: &mut Call) -> ! {
     let args = call.argv[1..].to_vec();
     let Some(split) = args.iter().position(|a| a == "--") else {
@@ -425,7 +358,6 @@ fn sandbox(call: &mut Call) -> ! {
         let value = opts.next();
         match opt.as_str() {
             "-C" => writable.extend(value.cloned()),
-            // `permissions.<p>.workspace_roots={"<root>"=true}`
             "-c" => writable.extend(
                 value
                     .and_then(|pair| pair.split_once(".workspace_roots="))
@@ -445,14 +377,11 @@ fn sandbox(call: &mut Call) -> ! {
     std::process::exit(code);
 }
 
-/// `command` under a Seatbelt profile that denies every write outside
-/// `writable` and `/dev`.
 #[cfg(target_os = "macos")]
 fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     let allow: String = writable
         .iter()
         .map(|p| {
-            // Seatbelt matches resolved paths: /var is /private/var.
             let real = std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
             format!(" (subpath {:?})", real.to_string_lossy())
         })
@@ -465,9 +394,6 @@ fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     cmd
 }
 
-/// `command` in the job sandbox of the platform: writes only to `writable`
-/// and the temp folder, and a PID namespace that a KILL of the job group
-/// ends. With no platform sandbox the command runs unconfined.
 #[cfg(not(target_os = "macos"))]
 fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     let plain = || {

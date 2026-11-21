@@ -1,9 +1,3 @@
-//! Telemetry reads executions through the store (A6: ARC-23).
-//!
-//! Live rows come from the typed status: only a starting or running
-//! execution is live, a failed launch never is, a ledger written before the
-//! typed status still loads, and the dataset tree is never read as a ledger.
-
 mod common;
 
 use std::path::Path;
@@ -46,7 +40,6 @@ fn record(id: &str, state: Option<ExecutionStatus>) -> LedgerRecordV1 {
     r
 }
 
-/// One record in every typed state, keyed by the role it runs as.
 fn typed_records() -> Vec<LedgerRecordV1> {
     vec![
         record("planned", Some(ExecutionStatus::Planned)),
@@ -69,7 +62,6 @@ fn typed_records() -> Vec<LedgerRecordV1> {
     ]
 }
 
-/// A ledger in the format before the typed status: no `state` key.
 const OLD_LEDGER: &str = r#"[
   {
     "record_id": "old-working",
@@ -99,8 +91,6 @@ const OLD_LEDGER: &str = r#"[
   }
 ]"#;
 
-/// A state root with the typed ledger, the old ledger, and a valid-looking
-/// ledger inside the dataset tree.
 fn state_root(root: &Path) {
     let typed = ExecutionStore::for_project(root, "/work/typed");
     std::fs::write(
@@ -158,7 +148,6 @@ fn arc_23_telemetry_reads_executions() {
     std::fs::create_dir_all(&root).unwrap();
     state_root(&root);
 
-    // The store reads both ledgers and skips the dataset tree.
     let ledgers = store::read_all_ledgers(&root);
     assert_eq!(ledgers.len(), 2, "{ledgers:?}");
     let all = read_ledgers(&root);
@@ -166,12 +155,10 @@ fn arc_23_telemetry_reads_executions() {
     assert!(!ids.contains(&"dataset"), "dataset tree read: {ids:?}");
     assert_eq!(all.len(), 8, "{ids:?}");
 
-    // The old ledger loads; its legacy words resolve to typed states.
     let old_working = all.iter().find(|r| r.record_id == "old-working").unwrap();
     assert!(old_working.state.is_none());
     assert_eq!(old_working.execution_status(), ExecutionStatus::Running);
 
-    // A collector tick: live rows only for Starting and Running.
     let home = tmp.path().join("home");
     let mut c = Collector::open_at(&root, common::locations(&home), Probing::Never, now()).unwrap();
     let snap = c.tick(now()).unwrap();
@@ -180,18 +167,14 @@ fn arc_23_telemetry_reads_executions() {
         vec!["old-working", "running", "starting"],
         "Planned, Done, Failed and LaunchFailed are not live"
     );
-    // The legacy word stays in the row.
     assert!(snap.live.iter().all(|r| r.status == "working"));
 
-    // Every terminal state counts as done; Planned does not.
     let done = done_record_ids(&all);
     let mut done: Vec<&str> = done.iter().map(String::as_str).collect();
     done.sort();
     assert_eq!(done, vec!["done", "failed", "launch-failed", "old-done"]);
 }
 
-/// A recent event shows a finished record as a live row, as before. A
-/// failed one never shows: no agent runs for it.
 #[test]
 fn arc_23_failed_executions_are_never_live() {
     let records = typed_records();
@@ -220,7 +203,6 @@ fn arc_23_failed_executions_are_never_live() {
         .iter()
         .map(|r| (r.record_id.as_str(), r.idle))
         .collect();
-    // Starting and Running have no recent event, so they are idle.
     assert!(idle.contains(&("starting", true)), "{idle:?}");
     assert!(idle.contains(&("done", false)), "{idle:?}");
 }

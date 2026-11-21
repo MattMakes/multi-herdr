@@ -1,20 +1,3 @@
-//! The gate tests of Phase 3 that the unit tests cannot show end to end
-//! (`docs/specs/fleetd/design.md`, FR-11, RR-10, FM-26, FM-27, FM-28 and
-//! "Migration plan" item 5; `docs/tickets/fleetd-p3/MAP.md`, Q8, Q9, Q15,
-//! Q17 and Q20).
-//!
-//! Each test runs the real `horch` binary with its own git repository,
-//! ledger and state folders in a temp dir. Most tests pass 1 fleetd pass at
-//! a time with `horch ledger watch --once`, and move the fleet clock by
-//! [`PASS_S`] before each pass, so a time of the design reads as fleet
-//! seconds. The jobs that a pass starts run outside it; each step waits
-//! until they end, so a job takes 0 fleet seconds. The slow `worktree_add`
-//! test runs a fleetd of this build.
-//!
-//! Each test checks at its end that each modified file, each untracked file
-//! and each commit that did not land is still in its tree or on a rescue
-//! ref.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -29,16 +12,10 @@ use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 const PASS_S: i64 = 5;
-/// `worktree_list_period_s` of the `fleet.toml` of the test world (RR-10):
-/// 2 steps, so a list period is still longer than a pass.
 const LIST_PERIOD_S: i64 = 10;
-/// The "Caught within" time of FM-26 and FM-27.
 const CAUGHT_S: i64 = 60;
-/// `pass_time_budget_s` of the default `fleet.toml`.
 const PASS_TIME_BUDGET_S: u64 = 20;
-/// The time of the slow `git worktree add`.
 const SLOW_ADD_S: u64 = 60;
-/// The size of a big file in a tree: above a disk budget of 1 GB.
 const BIG: u64 = 3 << 29;
 
 fn text(o: &Output) -> String {
@@ -97,8 +74,6 @@ fn path_without_docs_clis(h: &mut Harness) {
     h.set("PATH", path.to_string_lossy());
 }
 
-/// [`world`] in the herdr workspace `w1` (root pane `w1:p1`), for a worker
-/// in its own pane and for `horch spawn`.
 fn fleet(name: &str) -> Harness {
     let mut h = world(name);
     h.set(
@@ -171,15 +146,11 @@ fn queue(h: &Harness, run: &Run, name: &str) {
     );
 }
 
-/// The next task is bound to a new worker (FR-5). Gives the worker and the
-/// task id.
 fn bind_next(h: &Harness) -> (String, String) {
     let b = horch_e2e::bind::bind(h, "opus", None);
     (b.worker_id, b.task_id)
 }
 
-/// The stand-in agents of a test: each is killed when dropped, so a failed
-/// assertion leaks none.
 struct Agents(Vec<Child>);
 
 impl Drop for Agents {
@@ -191,8 +162,6 @@ impl Drop for Agents {
     }
 }
 
-/// A worker in its own pane with a `sleep` process as its live agent, bound
-/// to the next task (FR-5). Gives the worker and the task id.
 fn live_bind(h: &Harness, agents: &mut Agents) -> (String, String) {
     let split: Value = serde_json::from_str(&herdr(h, &["pane", "split", "w1:p1"])).unwrap();
     let pane = split["result"]["pane"]["pane_id"].as_str().unwrap();
@@ -210,7 +179,6 @@ fn live_bind(h: &Harness, agents: &mut Agents) -> (String, String) {
     (b.worker_id, b.task_id)
 }
 
-/// The values of the first column of `sql`, as text; `NULL` is "".
 fn query(h: &Harness, sql: &str) -> Vec<String> {
     let store = Store::open(&ledger(h)).unwrap();
     let mut stmt = store.conn().prepare(sql).unwrap();
@@ -235,8 +203,6 @@ fn exec(h: &Harness, sql: &str) {
         .unwrap();
 }
 
-/// `path` as the ledger writes it: with each link of the project folder
-/// resolved (`/tmp` is `/private/tmp` on macOS).
 fn stored(h: &Harness, path: &Path) -> String {
     let project = std::fs::canonicalize(&h.project).unwrap();
     match path.strip_prefix(&h.project) {
@@ -245,7 +211,6 @@ fn stored(h: &Harness, path: &Path) -> String {
     }
 }
 
-/// 1 column of the newest row of the folder `path`, or `None` with no row.
 fn column(h: &Harness, path: &Path, name: &str) -> Option<String> {
     query(
         h,
@@ -261,7 +226,6 @@ fn state(h: &Harness, path: &Path) -> Option<String> {
     column(h, path, "state")
 }
 
-/// The moves of the row `id` through the door, as `<from>><to>`.
 fn moves(h: &Harness, id: &str) -> Vec<String> {
     query(
         h,
@@ -273,7 +237,6 @@ fn moves(h: &Harness, id: &str) -> Vec<String> {
     )
 }
 
-/// The open needs-you items of `kind`, as `<key> <entity_id>`.
 fn needs_you(h: &Harness, kind: &str) -> Vec<String> {
     query(
         h,
@@ -284,7 +247,6 @@ fn needs_you(h: &Harness, kind: &str) -> Vec<String> {
     )
 }
 
-/// The worktree rows, the jobs and the open needs-you items, for a failure.
 fn board(h: &Harness) -> String {
     let rows = query(
         h,
@@ -326,7 +288,6 @@ fn fleet_clock(h: &Harness) -> i64 {
     .map_or(0, |c| c.parse().unwrap())
 }
 
-/// 1 fleetd pass, then a wait until each job that it started has ended.
 fn pass(h: &Harness) -> Output {
     let slug = query(
         h,
@@ -352,14 +313,11 @@ fn pass(h: &Harness) -> Output {
     o
 }
 
-/// Move the fleet clock by 1 pass period, and run 1 pass.
 fn step(h: &Harness) -> Output {
     h.advance_fleet_clock(PASS_S);
     pass(h)
 }
 
-/// Run steps until `done` holds, for at most `limit_s` fleet seconds.
-/// Gives the fleet seconds that it took.
 fn until(h: &Harness, what: &str, limit_s: i64, done: impl Fn(&Harness) -> bool) -> i64 {
     let start = fleet_clock(h);
     let mut last = String::new();
@@ -377,7 +335,6 @@ fn until(h: &Harness, what: &str, limit_s: i64, done: impl Fn(&Harness) -> bool)
     }
 }
 
-/// The passed `worktree_list` runs.
 fn lists_passed(h: &Harness) -> usize {
     query(
         h,
@@ -386,16 +343,12 @@ fn lists_passed(h: &Harness) -> usize {
     .len()
 }
 
-/// The work of 1 tree that must not be lost: its files with their bytes,
-/// and its commits that did not land.
 struct Work {
     tree: PathBuf,
     files: Vec<(String, Vec<u8>)>,
     commits: Vec<String>,
 }
 
-/// 1 commit of `<name>.txt`, then a modified tracked file and an untracked
-/// file, in the tree `tree`.
 fn work_in(h: &Harness, tree: &Path, name: &str) -> Work {
     let committed = format!("{name}.txt");
     std::fs::write(tree.join(&committed), format!("{name} committed\n")).unwrap();
@@ -421,8 +374,6 @@ fn work_in(h: &Harness, tree: &Path, name: &str) -> Work {
     }
 }
 
-/// A tree that `git worktree add` makes by hand at
-/// `<project>/.worktrees/<name>` on the new branch `branch`, with work.
 fn hand_tree(h: &Harness, name: &str, branch: &str) -> Work {
     let project = h.project.clone();
     let tree = project.join(".worktrees").join(name);
@@ -441,8 +392,6 @@ fn hand_tree(h: &Harness, name: &str, branch: &str) -> Work {
     work_in(h, &tree, name)
 }
 
-/// Whether `rev` holds each file of `work` with its bytes, and each of its
-/// commits.
 fn holds(h: &Harness, dir: &Path, rev: &str, work: &Work) -> bool {
     let files = work.files.iter().all(|(file, bytes)| {
         let o = h
@@ -459,7 +408,6 @@ fn holds(h: &Harness, dir: &Path, rev: &str, work: &Work) -> bool {
             .all(|c| git_ok(h, dir, &["merge-base", "--is-ancestor", c, rev]))
 }
 
-/// Whether the folder of `work` holds each of its files and commits.
 fn in_tree(h: &Harness, work: &Work) -> bool {
     work.tree.is_dir()
         && work
@@ -482,7 +430,6 @@ fn rescue_refs(h: &Harness) -> Vec<String> {
     refs.lines().map(str::to_string).collect()
 }
 
-/// Each work of `works` is still in its tree or on a rescue ref.
 fn assert_kept(h: &Harness, works: &[&Work]) {
     let project = h.project.clone();
     let refs = rescue_refs(h);
@@ -506,8 +453,6 @@ fn run_branch(h: &Harness, slug: &str) -> String {
     .unwrap()
 }
 
-/// A file of `bytes` bytes with no data on disk (a sparse file): the size
-/// of a folder counts it, and git ignores it by `.gitignore`.
 fn big_file(path: &Path, bytes: u64) {
     std::fs::File::create(path).unwrap().set_len(bytes).unwrap();
 }
@@ -526,7 +471,6 @@ fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
     let branch = format!("{}-T1-own", run_branch(&h, "fr11"));
     let work = hand_tree(&h, "T1-own", &branch);
 
-    // The first `worktree_list` run after the add, then the next pass.
     until(
         &h,
         "a worktree_list run after the add",
@@ -559,13 +503,7 @@ fn rr10_hand_made_worktree_is_adopted_within_1_list_period() {
     let h = world("p3-rr10");
     seed(&h, "rr10", None);
     pass(&h);
-    // The tree comes after the `worktree_list` run of this period: the
-    // longest wait.
     let work = hand_tree(&h, "by-hand", "by-hand");
-    // 1 period, and the pass that reads the run of the next period. The
-    // fleet clock also adds the awake time of the job waits of `pass`, and
-    // under load that time is more than the margin, so the bound counts
-    // the fleet seconds that the steps of the test add.
     let mut steps = 0;
     while state(&h, &work.tree).is_none() {
         assert!(
@@ -601,7 +539,6 @@ fn fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref() {
         "{rescue} does not hold the files and the commit\n{}",
         board(&h)
     );
-    // A rescued tree with no task is never removed (Q8, Q15).
     for _ in 0..(LIST_PERIOD_S / PASS_S) {
         step(&h);
     }
@@ -805,7 +742,6 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     )
     .unwrap();
 
-    // A run that is done, with a rescued tree of its task above the budget.
     let old_run = seed(&h, "old", None);
     queue(&h, &old_run, "old");
     let branch = format!("{}-T1-old", run_branch(&h, "old"));
@@ -824,7 +760,6 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
          WHERE id = (SELECT idea_id FROM tasks WHERE title = 'old')",
     );
 
-    // A live run with an active tree.
     let live_run = seed(&h, "live", None);
     let mut agents = Agents(Vec::new());
     let (_, task) = h.without_fleetd(|| {
@@ -864,8 +799,6 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     );
     assert!(needs_you(&h, "worktree_disk").is_empty(), "{}", board(&h));
 
-    // Over the budget with only an active tree: dispatch holds, the tree
-    // stays.
     big_file(&active.join("live.big"), BIG);
     until(&h, "the disk hold", 2 * LIST_PERIOD_S, |h| {
         !needs_you(h, "worktree_disk").is_empty()
@@ -899,8 +832,6 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     assert_kept(&h, &[&old, &live]);
 }
 
-/// A `git` that sleeps [`SLOW_ADD_S`] before `git worktree add`, and runs
-/// the real `git` at once for each other command.
 fn slow_git(h: &mut Harness) {
     let path = std::env::var_os("PATH").expect("a PATH");
     let real = std::env::split_paths(&path)
@@ -923,7 +854,6 @@ fn slow_git(h: &mut Harness) {
     h.set("HORCH_GIT_BIN", script.to_string_lossy());
 }
 
-/// The awake time of the last heartbeat of the fleetd `pid`, in ms.
 fn heartbeat(h: &Harness, pid: u32) -> Option<u64> {
     let path = h.root.join("fleet").join("run").join("heartbeat.json");
     let hb: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
@@ -943,7 +873,6 @@ fn now_ms() -> i64 {
     i64::try_from(since.as_millis()).unwrap()
 }
 
-/// Wait until the fleetd `pid` wrote its first heartbeat.
 fn wait_for_heartbeat(h: &Harness, pid: u32) {
     let until = Instant::now() + Duration::from_secs(60);
     while heartbeat(h, pid).is_none() {
@@ -952,13 +881,10 @@ fn wait_for_heartbeat(h: &Harness, pid: u32) {
     }
 }
 
-/// What a command did while the test watched the heartbeat.
 struct Watched {
     out: String,
     took: Duration,
-    /// The longest time with no new heartbeat.
     longest_still: Duration,
-    /// When the command exited, in ms after the Unix epoch.
     exited_ms: i64,
 }
 
@@ -997,9 +923,6 @@ fn add_watching_heartbeat(h: &Harness, task: &str, pid: u32) -> Watched {
     }
 }
 
-/// The 1 `worktree_add` run of the tree at `path` passed, took the slow
-/// add, and ended before `exited_ms`: the command gave the path only after
-/// the job passed (Q17).
 fn assert_add_job_passed_before(h: &Harness, path: &Path, exited_ms: i64) {
     let id = column(h, path, "worktree_id").unwrap();
     let job = query(

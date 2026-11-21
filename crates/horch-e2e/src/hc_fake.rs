@@ -1,10 +1,3 @@
-//! Shared state, locking, logging and detached process helpers for `fake-hc`
-//! and `fake-herdr-app`.
-//!
-//! Both programs read and write `<state dir>/fake-hc.json` under a directory
-//! lock (`<state dir>/fake-hc.lock/`) and append one JSON line per call to
-//! `<state dir>/fake-hc.log`.
-
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,11 +5,8 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-/// Environment variable set on the detached process-group copy of a fake call.
 pub const DETACHED_ENV: &str = "HORCH_FAKE_HC_DETACHED";
 
-/// Host environment variables recorded on each `fake-hc` / `fake-herdr-app`
-/// call so tests can assert which variables reached the child.
 const HOST_VARS: [&str; 12] = [
     "HORCH_BACKEND",
     "HERDR_PANE_ID",
@@ -34,8 +24,6 @@ const HOST_VARS: [&str; 12] = [
 
 static KILL: Mutex<Vec<(u64, Option<u64>)>> = Mutex::new(Vec::new());
 
-/// Run the current fake executable in its own process group on Unix so a pane
-/// closing itself cannot leave `<state dir>/fake-hc.lock` stale.
 pub fn detach_into_own_group() {
     #[cfg(unix)]
     if std::env::var_os(DETACHED_ENV).is_none() {
@@ -55,7 +43,6 @@ pub fn detach_into_own_group() {
     std::env::remove_var(DETACHED_ENV);
 }
 
-/// Flush any queued process-group kills after releasing [`StateLock`].
 pub fn flush_kills() {
     for (pgid, started) in std::mem::take(&mut *KILL.lock().unwrap()) {
         kill_group(pgid, started);
@@ -66,8 +53,6 @@ pub fn queue_kill(pgid: u64, started: Option<u64>) {
     KILL.lock().unwrap().push((pgid, started));
 }
 
-/// Resolve `<state dir>` from `HORCH_STATE_DIR`, falling back to `<parent of
-/// HORCH_FAKE_LOG>/state`.
 pub fn state_dir() -> Option<PathBuf> {
     std::env::var_os("HORCH_STATE_DIR")
         .map(PathBuf::from)
@@ -97,7 +82,6 @@ pub fn term_out_in(dir: &Path, address: &str) -> PathBuf {
     dir.join(format!("fake-hc.term-{address}.out"))
 }
 
-/// Append one call record to `<state dir>/fake-hc.log`.
 pub fn log_call(program: &str, argv: &[String]) {
     let Some(dir) = state_dir() else {
         return;
@@ -133,7 +117,6 @@ pub fn log_call(program: &str, argv: &[String]) {
     }
 }
 
-/// Directory lock `<state dir>/fake-hc.lock/`.
 pub struct StateLock(Option<PathBuf>);
 
 const NO_PID_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -322,8 +305,6 @@ pub fn find_terminal_mut<'a>(state: &'a mut Value, address: &str) -> Option<&'a 
         .find(|t| t["address"].as_str() == Some(address))
 }
 
-/// Public JSON shape returned by `hc get --json <t>`, `hc kill --json <t>`,
-/// and `hc label --json <t>`.
 pub fn public_terminal(t: &Value) -> Value {
     json!({
         "address": t["address"],
@@ -343,8 +324,6 @@ pub fn public_terminal(t: &Value) -> Value {
     })
 }
 
-/// Adopt live terminals whose `herdr.space` and `herdr.tab` labels match an
-/// existing space/tab, and prune non-live or removed terminals from tabs.
 pub fn sync_spaces_with_terminals(state: &mut Value) {
     let live_terms: Vec<(String, Option<String>, Option<String>)> = state["terminals"]
         .as_array()
@@ -419,7 +398,6 @@ pub fn sync_spaces_with_terminals(state: &mut Value) {
     }
 }
 
-/// Queue process-group termination for `address`, if `exec` recorded one.
 pub fn remove_terminal_pid(state: &mut Value, address: &str) {
     let started = state["started"]
         .as_object_mut()
@@ -474,7 +452,6 @@ fn default_socket() -> PathBuf {
     home.join(".local/state/herdr-core/default/default.sock")
 }
 
-/// Execute `command` detached in `address` when the `exec` scenario is active.
 pub fn exec_in_terminal(state: &mut Value, address: &str, cwd: &str, command: &str) {
     let shell_pair = if cfg!(windows) {
         ("powershell", "-Command")

@@ -1,5 +1,4 @@
 #!/bin/zsh
-# Blocks until: a worker must be spawned, a worker has a question, a task is in an odd state, or a run is settled. Max ~9 min.
 cd /Users/MASCOTT/projects/mh/multi-herdr
 for i in {1..16}; do
   p=""

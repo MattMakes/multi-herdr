@@ -39,9 +39,6 @@ class LiveCsharpTest(unittest.TestCase):
         ).stdout
         if "mono" in version:
             self.skipTest("the Godot found is a .NET build")
-        # live_csharp.sh checks for dotnet on PATH before the Godot version,
-        # so a stub dotnet that exits 0 lets the version check run on a host
-        # without dotnet.
         with tempfile.TemporaryDirectory() as stub_dir:
             stub = Path(stub_dir) / "dotnet"
             stub.write_text("#!/bin/sh\nexit 0\n")

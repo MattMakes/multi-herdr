@@ -1,11 +1,6 @@
-//! `horch skills read` (SKL-09): a worker prints a catalog skill's file
-//! that its bundle does not hold. Every command runs with a temp home and
-//! data root.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// A temp home, state root and data root, and a `horch` that sees only them.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -62,7 +57,6 @@ fn repo_skill(rel: &str) -> String {
     .unwrap()
 }
 
-/// SKL-09: without a file, `read` prints the bundled SKILL.md byte for byte.
 #[test]
 fn skl_09_read_prints_skill_md() {
     let w = World::new();
@@ -70,8 +64,6 @@ fn skl_09_read_prints_skill_md() {
     assert_eq!(got, repo_skill("godot-save-load/SKILL.md"));
 }
 
-/// SKL-09: a file relative to the skill directory prints that file, for a
-/// bundled skill and for an installed marketplace skill.
 #[test]
 fn skl_09_read_prints_a_named_file() {
     let w = World::new();
@@ -106,7 +98,6 @@ fn skl_09_read_prints_a_named_file() {
     );
 }
 
-/// SKL-09: `--files` lists the skill's files, one per line, sorted.
 #[test]
 fn skl_09_read_lists_files() {
     let w = World::new();
@@ -121,8 +112,6 @@ fn skl_09_read_lists_files() {
     assert_eq!(got.lines().collect::<Vec<_>>(), want);
 }
 
-/// SKL-09: an unknown skill or file, an absolute path and a `..` path exit
-/// 1 with a message on stderr, and print nothing on stdout.
 #[test]
 fn skl_09_read_rejects_unknown_and_dotdot() {
     let w = World::new();

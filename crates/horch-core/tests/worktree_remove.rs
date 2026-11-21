@@ -1,16 +1,3 @@
-//! The `worktree_remove` job and its guard: only a landed tree or a tree on
-//! a verified rescue ref is removed (docs/specs/fleetd/design.md, "Worktrees:
-//! leased, reconciled, never lost", "Rescue before any cleanup", RR-9,
-//! RR-13, FM-27; preservation-04 rows W6 and W8;
-//! docs/tickets/fleetd-p3/07-worktree-remove-job-and-guard.md).
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root
-//! (`<temp>/fleet`, the fleet root of the temp ledger). A job process is
-//! `true`, started through the launcher; the executor runs in the test
-//! process with the recorded pid, as `horch job run` runs it. A fault test
-//! runs the executor with a gateway that fails or changes 1 fact and writes
-//! its result on the run.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -47,24 +34,17 @@ use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     dir: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
-    /// The repository, as its canonical path.
     repo: PathBuf,
 }
 
-/// A temp ledger of the current schema, and a temp repository with 1
-/// commit on `main` that holds `a.txt` and `.gitignore`.
 fn world() -> World {
     world_in(tempfile::tempdir().unwrap())
 }
 
-/// [`world`] in a temp folder below HOME, where the repository of a user
-/// is. The folder goes at the end of the test.
 fn world_below_home() -> World {
     let home = std::env::var_os("HOME").expect("HOME is set");
     world_in(tempfile::tempdir_in(home).unwrap())
@@ -94,8 +74,6 @@ fn world_in(dir: tempfile::TempDir) -> World {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = git_out(dir, args);
     assert!(
@@ -143,7 +121,6 @@ fn make_executable(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// The context of a writer that is not fleetd.
 fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     JobCtx {
         guard: None,
@@ -152,7 +129,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// The sandbox profiles of a test: no check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -178,8 +154,6 @@ impl World {
         self.repo.join(".worktrees").join(name)
     }
 
-    /// A tree `name` on the branch `fleet/<name>`, made by git from `main`,
-    /// with an `orphaned` row of the worker `worker`.
     fn tree(&mut self, name: &str, worker: Option<&str>) -> PathBuf {
         let path = self.tree_path(name);
         let branch = format!("fleet/{name}");
@@ -209,9 +183,6 @@ impl World {
         path
     }
 
-    /// A tree `name` with 1 commit of `<name>.txt` on its branch, in the
-    /// state `landed` at that commit, as the land step leaves it. With
-    /// `merged`, `main` is fast-forwarded to the commit.
     fn landed(&mut self, name: &str, merged: bool) -> PathBuf {
         let path = self.tree(name, None);
         let file = format!("{name}.txt");
@@ -235,8 +206,6 @@ impl World {
         path
     }
 
-    /// A tree `name` with a commit, a modified tracked file, an untracked
-    /// file and an ignored file, saved by a passed rescue job: `rescued`.
     fn rescued(&mut self, name: &str) -> PathBuf {
         let path = self.tree(name, None);
         write(&path.join("b.txt"), "b\n");
@@ -321,13 +290,10 @@ impl World {
         }
     }
 
-    /// Queue the `worktree_remove` run of the tree `name` with
-    /// `queue_remove`, in 1 transaction.
     fn queue_remove(&mut self, name: &str) -> Result<Queued, String> {
         self.queue_remove_keeping(name, false)
     }
 
-    /// [`World::queue_remove`] with `keep_branch`.
     fn queue_remove_keeping(&mut self, name: &str, keep_branch: bool) -> Result<Queued, String> {
         let row = self.row(name);
         let config = self.config.clone();
@@ -355,8 +321,6 @@ impl World {
         }
     }
 
-    /// Start the run `id` with the process `true` through the launcher, as
-    /// part 3 of a pass starts it.
     fn start(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -376,7 +340,6 @@ impl World {
         self.job(id)
     }
 
-    /// The run `id` to its end with the executor of `horch job run`.
     fn run(&mut self, id: i64) -> JobRow {
         let pid = self.start(id).pid.unwrap();
         let config = self.config.clone();
@@ -391,9 +354,6 @@ impl World {
         self.job(id)
     }
 
-    /// The run `id` to its end with the removal of the tree `name` through
-    /// the gateway `gw`: the result is written on the run, and the pass
-    /// observes that its process is gone.
     fn run_with(&mut self, id: i64, name: &str, gw: &dyn RemovalGateway) -> JobRow {
         self.start(id);
         let row = self.row(name);
@@ -423,7 +383,6 @@ impl World {
         self.job(id)
     }
 
-    /// The observation of the ended remove run `id`, in 1 transaction.
     fn observe(&mut self, id: i64) -> Observed {
         let job = self.job(id);
         let config = self.config.clone();
@@ -436,7 +395,6 @@ impl World {
         seen
     }
 
-    /// Queue, run and observe the removal of the tree `name`.
     fn remove(&mut self, name: &str) -> (JobRow, Observed) {
         let id = self.queued_remove(name);
         let ended = self.run(id);
@@ -444,15 +402,12 @@ impl World {
         (ended, seen)
     }
 
-    /// The real gateway of a job of this world. Git can write the git
-    /// folder of the repository and the folder of its trees.
     fn gateway(&self) -> CliRemoval {
         let fleet = self.dir.path().join("fleet");
         let writable = [self.repo.join(".git"), self.repo.join(".worktrees")];
         CliRemoval::new(CliWorktreeGit::new("git", &fleet).writing(&writable), fleet)
     }
 
-    /// A `live` attempt `id` of a new worker whose agent process is `pid`.
     fn attempt(&mut self, id: &str, pid: u32) -> String {
         let tx = self
             .conn
@@ -511,7 +466,6 @@ fn open_items(w: &World) -> Vec<Item> {
     needs_you::open_items(&w.conn).unwrap()
 }
 
-/// Each file of `tree` but `.git`, with its bytes, sorted.
 fn files(tree: &Path) -> Vec<(String, Vec<u8>)> {
     fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
         for e in std::fs::read_dir(dir).unwrap() {
@@ -537,8 +491,6 @@ fn stash_list(w: &World) -> String {
     git(&w.repo, &["stash", "list"])
 }
 
-/// What a refusal must keep: the folder with each file, each commit of the
-/// branch and the stash list.
 struct Kept {
     path: PathBuf,
     files: Vec<(String, Vec<u8>)>,
@@ -568,8 +520,6 @@ impl Kept {
     }
 }
 
-/// Run the removal of `name`, which must be refused with a reason that
-/// holds `why`, and check that it kept everything.
 fn assert_refused(w: &mut World, name: &str, why: &str) -> JobRow {
     let path = w.tree_path(name);
     let before = kept(w, &path);
@@ -582,8 +532,6 @@ fn assert_refused(w: &mut World, name: &str, why: &str) -> JobRow {
     assert_eq!(w.row(name).state, state, "the row stays");
     ended
 }
-
-// ─── RR-9: the rescue ref is read back before the removal ───────────────
 
 #[test]
 fn rr9_rescue_ref_is_read_back_before_removal() {
@@ -612,8 +560,6 @@ fn rr9_rescue_ref_is_read_back_before_removal() {
         "the event of the removal counts the ignored files: {events:?}"
     );
 
-    // The rescue ref stays and restores each file but the ignored one,
-    // byte for byte.
     let back = w.dir.path().join("back");
     git(
         &w.repo,
@@ -634,8 +580,6 @@ fn rr9_rescue_ref_is_read_back_before_removal() {
     assert!(git(&w.repo, &["branch", "--list", "fleet/t1"]).contains("fleet/t1"));
 }
 
-/// The sandbox hides HOME from git, but git can read the metadata of each
-/// folder above the repository and the fleet root.
 #[test]
 fn remove_deletes_the_tree_of_a_repository_below_home() {
     let mut w = world_below_home();
@@ -651,9 +595,6 @@ fn remove_deletes_the_tree_of_a_repository_below_home() {
 
 #[test]
 fn remove_deletes_an_ignored_file_written_after_the_rescue() {
-    // design.md, "Rescue before any cleanup": ignored files are not saved.
-    // MAP.md of fleetd-p3, Q6: Phase 3 has no rescue_include. So an
-    // ignored file does not stop the removal, and it is counted.
     let mut w = world();
     let path = w.rescued("t1");
     write(&path.join("app.log"), "ignored\n");
@@ -663,25 +604,20 @@ fn remove_deletes_an_ignored_file_written_after_the_rescue() {
     assert!(!path.exists());
 }
 
-// ─── RR-13 / W6: the refusals of today's drop ───────────────────────────
-
 #[test]
 fn pres_04_w6_drop_refuses_dirty_stash_unique_or_moved_head() {
     let mut w = world();
 
-    // 1. A dirty tree: a modified tracked file.
     let path = w.landed("dirty", true);
     write(&path.join("dirty.txt"), "changed\n");
     assert_refused(&mut w, "dirty", "modified or untracked file");
 
-    // 2. A branch that a stash entry names. The tree itself is clean.
     let path = w.landed("stash", true);
     write(&path.join("stash.txt"), "stashed\n");
     git(&path, &["stash", "push", "-q", "-m", "keep me"]);
     assert!(stash_list(&w).contains("On fleet/stash: keep me"));
     assert_refused(&mut w, "stash", "a stash entry names the branch");
 
-    // 3. Unique commits: a commit after the landed commit.
     let path = w.landed("unique", true);
     write(&path.join("c.txt"), "c\n");
     git(&path, &["add", "c.txt"]);
@@ -689,8 +625,6 @@ fn pres_04_w6_drop_refuses_dirty_stash_unique_or_moved_head() {
     assert_refused(&mut w, "unique", "is not the landed commit");
     assert!(git(&w.repo, &["log", "--oneline", "fleet/unique"]).contains("after landing"));
 
-    // 4. A HEAD that moves during the checks: a commit made while the
-    // stash list is read.
     let path = w.landed("moved", true);
     let before = kept(&w, &path);
     let id = w.queued_remove("moved");
@@ -715,34 +649,27 @@ fn pres_04_w6_drop_refuses_dirty_stash_unique_or_moved_head() {
 fn remove_refuses_a_rescued_tree_that_changed_after_its_rescue() {
     let mut w = world();
 
-    // A file written after the rescue.
     let path = w.rescued("new");
     write(&path.join("late.txt"), "late\n");
     assert_refused(&mut w, "new", "a file changed after the rescue");
 
-    // A tracked file changed after the rescue.
     let path = w.rescued("changed");
     write(&path.join("b.txt"), "b changed later\n");
     assert_refused(&mut w, "changed", "a file changed after the rescue");
 
-    // An untracked file of the rescue changed after it.
     let path = w.rescued("untracked");
     write(&path.join("new/u.txt"), "untracked, then changed\n");
     assert_refused(&mut w, "untracked", "a file changed after the rescue");
 
-    // A file deleted after the rescue.
     let path = w.rescued("deleted");
     std::fs::remove_file(path.join("new/u.txt")).unwrap();
     assert_refused(&mut w, "deleted", "a file changed after the rescue");
 
-    // A commit after the rescue: the HEAD is not the parent of the rescue
-    // commit.
     let path = w.rescued("commit");
     git(&path, &["add", "-A"]);
     git(&path, &["commit", "-q", "-m", "after the rescue"]);
     assert_refused(&mut w, "commit", "is not the parent of the rescue commit");
 
-    // A stash entry of the branch after the rescue.
     let path = w.rescued("stash");
     git(&path, &["stash", "push", "-q", "-m", "keep me"]);
     git(&path, &["stash", "apply", "-q"]);
@@ -753,7 +680,6 @@ fn remove_refuses_a_rescued_tree_that_changed_after_its_rescue() {
 fn remove_refuses_a_rescued_tree_that_a_process_uses() {
     let mut w = world();
 
-    // A process with its working folder in the tree.
     let path = w.rescued("cwd");
     let mut child = Command::new("sleep")
         .arg("60")
@@ -769,7 +695,6 @@ fn remove_refuses_a_rescued_tree_that_a_process_uses() {
     child.kill().unwrap();
     child.wait().unwrap();
 
-    // A live process of the owner attempt, with its working folder outside.
     let mut child = Command::new("sleep")
         .arg("60")
         .current_dir(w.dir.path())
@@ -787,14 +712,10 @@ fn remove_refuses_a_rescued_tree_that_a_process_uses() {
     child.kill().unwrap();
     child.wait().unwrap();
 
-    // The owner process has ended: the removal passes.
     let (ended, _) = w.remove("owner");
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
 }
 
-/// An owner attempt that records no process is unknown while it is not
-/// ended, and not live when it is ended (a launch that stalled before its
-/// process was recorded).
 #[test]
 fn remove_of_a_rescued_tree_whose_owner_attempt_ended_with_no_process_passes() {
     let mut w = world();
@@ -841,8 +762,6 @@ fn remove_refuses_a_rescued_tree_that_an_attempt_takes_during_the_checks() {
 fn remove_refuses_a_rescued_tree_while_the_owner_group_has_a_process() {
     use std::os::unix::process::CommandExt;
     let mut w = world();
-    // The owner leads its own process group, and its child outlives it with
-    // a working folder outside the tree.
     let mut leader = Command::new("sh")
         .args(["-c", "sleep 60 & wait"])
         .current_dir(w.dir.path())
@@ -858,7 +777,6 @@ fn remove_refuses_a_rescued_tree_while_the_owner_group_has_a_process() {
             ["t1", worker.as_str()],
         )
         .unwrap();
-    // The leader is gone; its child `sleep` still runs in the group.
     std::thread::sleep(Duration::from_millis(200));
     leader.kill().unwrap();
     leader.wait().unwrap();
@@ -925,7 +843,6 @@ fn remove_keeps_a_branch_that_is_not_merged() {
         "the branch stays"
     );
 
-    // A merged branch is deleted with `git branch -d`.
     let path = w.landed("merged", true);
     let (ended, _) = w.remove("merged");
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
@@ -959,7 +876,6 @@ fn queue_remove_refuses_an_active_orphaned_or_reserved_row() {
         .unwrap();
     assert_eq!(runs, 0, "no run is queued");
 
-    // A landed row is queued, with the worktree id and its path.
     w.set_state("t1", "landed");
     let id = w.queued_remove("t1");
     let job = w.job(id);
@@ -983,7 +899,6 @@ fn failed_remove_keeps_the_row_and_opens_1_needs_you_item() {
     assert_eq!(items[0].kind, "remove_failed");
     assert!(items[0].text.contains(&text(&ended)), "{}", items[0].text);
 
-    // The same failure again keeps 1 item.
     assert_refused(&mut w, "t1", "modified or untracked file");
     let count = open_items(&w)
         .iter()
@@ -991,7 +906,6 @@ fn failed_remove_keeps_the_row_and_opens_1_needs_you_item() {
         .count();
     assert_eq!(count, 1);
 
-    // A passed removal ends the item.
     git(&path, &["checkout", "-q", "--", "t1.txt"]);
     let (ended, seen) = w.remove("t1");
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
@@ -1022,8 +936,6 @@ fn abandoned_remove_keeps_the_row() {
     assert!(path.is_dir());
 }
 
-// ─── the fleetd git rule ────────────────────────────────────────────────
-
 #[test]
 fn remove_runs_no_hook_or_program_of_the_project() {
     let mut w = world();
@@ -1052,14 +964,12 @@ fn remove_runs_no_hook_or_program_of_the_project() {
         &["config", "core.fsmonitor", &monitor.display().to_string()],
     );
 
-    // A key of the repository that starts a program stops the job.
     let (ended, _) = w.remove("t1");
     assert_eq!(ended.state, State::Failed);
     assert!(text(&ended).contains("core.fsmonitor"), "{}", text(&ended));
     assert!(path.is_dir(), "it changes nothing");
     assert!(!monitor_marker.exists(), "no fsmonitor ran");
 
-    // With the key removed, the jobs pass, and no hook runs.
     git(&w.repo, &["config", "--unset", "core.fsmonitor"]);
     let (ended, _) = w.remove("t1");
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
@@ -1071,10 +981,6 @@ fn remove_runs_no_hook_or_program_of_the_project() {
     assert!(!monitor_marker.exists(), "no fsmonitor ran");
 }
 
-// ─── the fault gateways ─────────────────────────────────────────────────
-
-/// Forward each call of [`RemovalGateway`] but `stashes`, `move_tree` and
-/// `remove` to `inner()`.
 macro_rules! forward_but_stashes {
     () => {
         forward_but_stashes!(base);
@@ -1119,7 +1025,6 @@ macro_rules! forward_but_stashes {
     };
 }
 
-/// A gateway that cannot read the stash list.
 struct NoStashes(CliRemoval);
 
 impl NoStashes {
@@ -1135,8 +1040,6 @@ impl RemovalGateway for NoStashes {
     }
 }
 
-/// A gateway that makes a commit in `tree` while it reads the stash list,
-/// so the HEAD moves during the checks.
 struct MovesHead {
     inner: CliRemoval,
     tree: PathBuf,
@@ -1159,8 +1062,6 @@ impl RemovalGateway for MovesHead {
     }
 }
 
-/// A gateway that moves the row of the tree to `active` with a new owner
-/// attempt while it reads the stash list, as a claim that takes the tree.
 struct Adopts {
     inner: CliRemoval,
     db: PathBuf,
@@ -1185,8 +1086,6 @@ impl RemovalGateway for Adopts {
     }
 }
 
-// ─── the quarantine of a rescued tree (review F5 of T-287) ──────────────
-
 fn quarantine(w: &World, name: &str) -> PathBuf {
     w.repo
         .join(".worktrees")
@@ -1206,8 +1105,6 @@ fn remove_keeps_a_write_through_the_old_path_after_the_decision() {
     };
     let ended = w.run_with(id, "t1", &gw);
     assert_eq!(ended.state, State::Passed, "{}", text(&ended));
-    // The writer that made the folder again keeps its file; the tree is
-    // gone.
     assert_eq!(
         std::fs::read_to_string(path.join("late/late.txt")).unwrap(),
         "written after the decision\n"
@@ -1276,12 +1173,9 @@ fn remove_keeps_the_tree_in_quarantine_when_the_move_back_fails() {
     );
     assert_eq!(w.row("t1").state, WorktreeState::Rescued);
 
-    // The next run moves the tree back first, then refuses its new file.
     assert_refused_after_restore(&mut w, "t1");
 }
 
-/// The next run of `name`, whose tree is in quarantine with a new file:
-/// the tree comes back to its path, and the removal is refused.
 fn assert_refused_after_restore(w: &mut World, name: &str) {
     let (ended, _) = w.remove(name);
     assert_eq!(ended.state, State::Failed, "{}", text(&ended));
@@ -1299,8 +1193,6 @@ fn assert_refused_after_restore(w: &mut World, name: &str) {
 
 #[test]
 fn remove_continues_after_a_crash_after_the_rename() {
-    // A crash right after the rename, before git recorded the new path:
-    // the worst case of a crash in `git worktree move`.
     let mut w = world();
     let path = w.rescued("t1");
     let q = quarantine(&w, "t1");
@@ -1311,8 +1203,6 @@ fn remove_continues_after_a_crash_after_the_rename() {
     assert!(!path.exists() && !q.exists());
     assert!(!git(&w.repo, &["worktree", "list"]).contains("t1"));
 
-    // The same crash with a file written in quarantine: the tree comes
-    // back, and the removal is refused.
     let path = w.rescued("t2");
     let q = quarantine(&w, "t2");
     std::fs::rename(&path, &q).unwrap();
@@ -1320,10 +1210,6 @@ fn remove_continues_after_a_crash_after_the_rename() {
     assert_refused_after_restore(&mut w, "t2");
 }
 
-/// A gateway with faults around the quarantine: `on_remove` writes
-/// through the old path of the tree just before the removal;
-/// `into_quarantine` writes a file into the quarantine folder just after
-/// the move; `fail_move_back` fails each move out of quarantine.
 struct Quarantine {
     inner: CliRemoval,
     on_remove: Option<PathBuf>,
@@ -1370,10 +1256,6 @@ impl RemovalGateway for Quarantine {
     }
 }
 
-/// 1 tree has at most 1 open removal: while a run of 1 `keep_branch` is
-/// queued or running, `queue_remove` gives that run back for the same
-/// input and refuses the other input. After the run ends, the other input
-/// is queued.
 #[test]
 fn queue_remove_keeps_at_most_1_open_removal_of_a_tree() {
     let mut w = world();

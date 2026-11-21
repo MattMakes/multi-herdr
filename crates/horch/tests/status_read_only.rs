@@ -111,10 +111,6 @@ impl World {
         out
     }
 
-    /// The bytes of the ledger and of its WAL. A missing WAL and an empty
-    /// one are the same: a read-only connection opens the WAL and SQLite
-    /// creates the file empty. The shm is left out: a reader writes its
-    /// read mark there.
     fn files(&self) -> Vec<Option<Vec<u8>>> {
         let main = std::fs::read(self.ledger()).ok();
         let wal = std::fs::read(path_with(&self.ledger(), "-wal"))

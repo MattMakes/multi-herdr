@@ -39,8 +39,6 @@ def say(*parts, file=None):
     print(text.encode("ascii", "replace").decode("ascii"), file=file or sys.stdout)
 
 
-# ------------------------------------------------------------------ file checks
-
 def _ffprobe_json(fpath: str):
     """(parsed ffprobe JSON, None) or (None, error text)."""
     cmd = ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", fpath]
@@ -127,7 +125,7 @@ def _fetch(url: str):
     try:
         with urllib.request.urlopen(req, timeout=60) as row_:
             body = row_.read(MAX_FETCH + 1)
-    except Exception as ent:  # network errors are notes, not crashes
+    except Exception as ent:
         return None, f"fetch failed: {ent}"[:200]
     if len(body) > MAX_FETCH:
         return None, "remote file is over 200 MB: not compared"
@@ -143,8 +141,6 @@ def fetch_compare(url: str, fpath: str) -> dict:
     remote, local = hashlib.sha1(body).hexdigest(), sha1_file(fpath)
     return {"bytes_match_download_url": remote == local, "sha1_local": local, "sha1_remote": remote}
 
-
-# ------------------------------------------------------------------ checks per entry
 
 _FS_PAGE = re.compile(r"freesound\.org/people/([^/]+)/sounds/(\d+)", re.I)
 _FS_PREVIEW = re.compile(r"previews/(\d+)/(\d+)_(\d+)-(hq|lq)\.(ogg|mp3)", re.I)
@@ -369,8 +365,6 @@ def severity(record: dict) -> str:
         return "blocker" if record["problems"] else ("warning" if record["warnings"] else "ok")
     return "info" if (record["problems"] or record["warnings"]) else "ok"
 
-
-# ------------------------------------------------------------------ run
 
 def load_used(report: str | None, base_dir: str) -> set | None:
     if not report:

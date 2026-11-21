@@ -1,25 +1,3 @@
-//! The use cases of the rescue refs and their classes (ticket 24).
-//!
-//! `docs/specs/fleetd/design.md`, "No work is lost" (Rescue refs have 2
-//! classes, and fleetd owns both), I10, FM-40, RR-16; MAP.md of fleetd-p4,
-//! Q16 and Q17:
-//! - [`record_branch_rescue`]: `branches.rescue_ref` names the last rescue
-//!   ref of the branch.
-//! - [`collect`]: a pass part with no git call. It decides the class of each
-//!   rescue ref from the facts of the last `worktree_list` run, opens or
-//!   ends the needs-you item of the `unique` budget, and plans the deletion
-//!   of each `superseded` ref whose feature ended `retention_days` ago.
-//! - [`delete`]: the short effect after the commit, `git update-ref -d
-//!   <ref> <old>`. The next `worktree_list` run shows it; a ref that is still
-//!   there is planned again by the next pass.
-//!
-//! - [`plan_drop`], [`record_drop`] and [`drop_ref`]: `horch rescue drop
-//!   <ref>` (ticket 43). You plan the drop of 1 ref, its event commits, and
-//!   then the ref is deleted and read back.
-//!
-//! No use case of fleetd deletes a `unique` ref: only your drop does (I10).
-//! Over the budget, fleetd deletes nothing (FM-40).
-
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
@@ -41,22 +19,18 @@ use crate::fleetd::worktree_custody::domain::rescue_class::{
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::store::one_snapshot;
 
-/// The rescue ref facts of 1 repository, from its last passed
-/// `worktree_list` run. `refs` is `None` when the run could not list them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoFacts {
     pub repo: String,
     pub refs: Option<Vec<RefFacts>>,
 }
 
-/// The count and the bytes of 1 class.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
     pub count: u64,
     pub bytes: u64,
 }
 
-/// 1 planned deletion: `git update-ref -d <name> <tip>` in `repo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deletion {
     pub repo: String,
@@ -64,31 +38,21 @@ pub struct Deletion {
     pub tip: String,
 }
 
-/// What 1 call of [`collect`] found and planned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Collection {
     pub unique: Tally,
     pub superseded: Tally,
-    /// The `unique` class is over `rescue_unique_budget_mb`.
     pub over_budget: bool,
-    /// The deletions to run after the commit.
     pub deletions: Vec<Deletion>,
 }
 
-/// What 1 deletion did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Deleted {
-    /// git deleted the ref.
     Deleted,
-    /// The ref did not exist: an earlier effect deleted it.
     Gone,
-    /// The ref names another tip, so it stays.
     Moved(String),
 }
 
-/// Record `rescue_ref` as the last rescue ref of the branch row `branch`,
-/// with 1 event, in `tx`. `false` when the ledger has no row of the branch.
-/// A row that already names `rescue_ref` does not change.
 pub fn record_branch_rescue(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -114,9 +78,6 @@ pub fn record_branch_rescue(
     Ok(true)
 }
 
-/// The branch and the feature of the owner `owner` of a rescue ref, from
-/// the ledger. `None` when the ledger has no row, or when more than 1
-/// branch has the folder name of a branch ref.
 pub fn owner_of(conn: &Connection, owner: &RefOwner) -> Result<Option<Owner>> {
     let branch = match owner {
         RefOwner::Branch(folder) => {
@@ -144,7 +105,6 @@ pub fn owner_of(conn: &Connection, owner: &RefOwner) -> Result<Option<Owner>> {
     Ok(Some(Owner { branch, feature }))
 }
 
-/// The class of the ref of `facts`.
 pub fn class(facts: &RefFacts) -> Class {
     rules::classify(&Content {
         in_newer_tip: facts.in_newer_tip,
@@ -152,13 +112,6 @@ pub fn class(facts: &RefFacts) -> Class {
     })
 }
 
-/// Decide the class of each rescue ref of `lists`, in `tx`, with no git
-/// call:
-/// - over `rescue_unique_budget_mb`, 1 needs-you item is open; under it,
-///   with the facts of each repository, the item ends. Nothing is deleted
-///   for the budget.
-/// - each `superseded` ref whose feature is `merged` or `abandoned` since
-///   `retention_days` before `now` gets 1 [`Deletion`].
 pub fn collect(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -213,9 +166,6 @@ pub fn collect(
     Ok(c)
 }
 
-/// When each feature of `ids` that is `merged` or `abandoned` moved to 1
-/// of those states, in Unix seconds, by id. A feature that is open or
-/// ready, or with no such move, is not in the map.
 fn features_ended_s<'a>(
     conn: &Connection,
     ids: impl IntoIterator<Item = &'a str>,
@@ -242,9 +192,6 @@ fn features_ended_s<'a>(
     })
 }
 
-/// Delete the ref of `d` only when it still names `d.tip`: `git update-ref
-/// -d <ref> <old>`. Run it after the commit of [`collect`]. An error leaves
-/// the ref, and the next pass plans it again.
 pub fn delete(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> {
     let repo = std::path::Path::new(&d.repo);
     Ok(match git.delete_ref(repo, &d.name, &d.tip)? {
@@ -254,8 +201,6 @@ pub fn delete(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> 
     })
 }
 
-/// The plan of `horch rescue drop <ref>`: the ref, its tip, its class and
-/// the bytes that only it keeps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropPlan {
     pub deletion: Deletion,
@@ -263,9 +208,6 @@ pub struct DropPlan {
     pub bytes: Option<u64>,
 }
 
-/// Plan the drop of the rescue ref `name` of `repo` from `refs`, the facts
-/// of its rescue refs. A name outside `refs/horch/rescue/`, or a ref that
-/// `refs` does not have, is an error.
 pub fn plan_drop(repo: &str, name: &str, refs: &[RefFacts]) -> Result<DropPlan> {
     if rules::parse(name).is_none() {
         bail!("{name} is not a rescue ref: horch rescue drop deletes only a ref {REF_PREFIX}<owner>/<n>");
@@ -284,14 +226,10 @@ pub fn plan_drop(repo: &str, name: &str, refs: &[RefFacts]) -> Result<DropPlan> 
     })
 }
 
-/// The cause of the event of your drop of a ref at `tip`.
 fn drop_cause(tip: &str) -> String {
     format!("the operator drops the rescue ref at {tip}")
 }
 
-/// Record your drop of `plan` with 1 event about the ref, in `tx`, before
-/// the effect. `false`, with no write, when that event of the ref at that
-/// tip exists: an earlier drop committed it and died before its effect.
 pub fn record_drop(tx: &Connection, plan: &DropPlan) -> Result<bool> {
     let d = &plan.deletion;
     let cause = drop_cause(&d.tip);
@@ -318,9 +256,6 @@ pub fn record_drop(tx: &Connection, plan: &DropPlan) -> Result<bool> {
     Ok(true)
 }
 
-/// The effect after the commit of [`record_drop`]: [`delete`], then read
-/// the ref back. A ref at another tip stays, and is an error. So is a ref
-/// that git still reads back.
 pub fn drop_ref(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> {
     let done = delete(git, d)?;
     if let Deleted::Moved(tip) = &done {

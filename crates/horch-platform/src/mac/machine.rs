@@ -1,5 +1,3 @@
-//! The concern machine for macOS.
-
 use std::path::Path;
 
 use crate::machine::{parse_vm_stat, Disk, Gpu, Memory, Run, Tool};
@@ -32,8 +30,6 @@ pub(crate) fn max_open_files() -> Result<Option<u64>, NotSupported> {
     Ok(unix::max_open_files())
 }
 
-/// `kern.memorystatus_level` percent of `hw.memsize`: the memory that the
-/// kernel counts as free, with the file cache that it can free.
 pub(crate) fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
     let percent =
         sysctl::<libc::c_int>(c"kern.memorystatus_level").filter(|p| (0..=100).contains(p));
@@ -41,22 +37,18 @@ pub(crate) fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
     Ok(percent.zip(total).map(|(p, total)| total / 100 * p as u64))
 }
 
-/// `kern.maxfiles`: the open file limit of the system.
 pub(crate) fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
     Ok(sysctl::<libc::c_int>(c"kern.maxfiles")
         .filter(|v| *v > 0)
         .map(|v| v as u64))
 }
 
-/// `kern.num_files`: the count of open files of the system.
 pub(crate) fn system_open_file_count() -> Result<Option<u64>, NotSupported> {
     Ok(sysctl::<libc::c_int>(c"kern.num_files")
         .filter(|v| *v >= 0)
         .map(|v| v as u64))
 }
 
-/// The value of the sysctl `name` of type `T` (`c_int` or `u64`), or
-/// `None` when the read fails or the size differs.
 fn sysctl<T: Copy + Default>(name: &std::ffi::CStr) -> Option<T> {
     let mut value = T::default();
     let mut size = size_of::<T>();
@@ -96,14 +88,12 @@ pub(crate) fn user_open_file_count() -> Result<Option<u64>, NotSupported> {
     Ok(user_pids().map(|pids| pids.into_iter().map(open_file_count).sum()))
 }
 
-/// The pids of the processes with the real uid of this process.
 fn user_pids() -> Option<Vec<libc::pid_t>> {
     // SAFETY: a null buffer of size 0 asks only for the count of pids.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     if count <= 0 {
         return None;
     }
-    // Room for the processes that start between the 2 calls.
     let mut pids: Vec<libc::pid_t> = vec![0; count as usize + 64];
     let bytes = (pids.len() * size_of::<libc::pid_t>()) as libc::c_int;
     // SAFETY: `pids` holds `bytes` bytes, and the call writes at most that.
@@ -118,7 +108,6 @@ fn user_pids() -> Option<Vec<libc::pid_t>> {
     Some(pids)
 }
 
-/// The real uid of a process, or `None` when it exited or the read fails.
 fn real_uid(pid: libc::pid_t) -> Option<libc::uid_t> {
     let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
     // SAFETY: `info` is a zeroed out-parameter of `size` bytes that
@@ -137,7 +126,6 @@ fn real_uid(pid: libc::pid_t) -> Option<libc::uid_t> {
     (written == size).then_some(info.pbi_ruid)
 }
 
-/// The count of open files of a process, or 0 when the read fails.
 fn open_file_count(pid: libc::pid_t) -> u64 {
     // SAFETY: a null buffer of size 0 asks only for the size of the list.
     let bytes =

@@ -1,18 +1,3 @@
-//! The use case that moves a task on a usage limit (RR-11, FM-5): the
-//! rows of [`exit`]
-//! and [`released`].
-//!
-//! - [`on_quota`]: the pass calls it for each attempt that ended with the
-//!   outcome `quota` (the stall ladder stopped its process). The attempt
-//!   burns nothing: `attempt_floor` goes up by 1, and `tasks.attempts`
-//!   does not change. The task goes `running -> ready` for the fallback of
-//!   another pool, or `running -> waiting_quota` with its lease paused.
-//! - [`release_reset_pools`]: the pass calls it for the tasks in
-//!   `waiting_quota`. A task whose pool reset goes to `ready`.
-//!
-//! The pool reading comes only from the quota file or the probe result
-//! in a [`QuotaView`] (`preservation-06`, row S13).
-
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -28,11 +13,8 @@ use crate::taskledger::model::{Actor, TaskStatus};
 use crate::taskledger::workers;
 use crate::taskledger::{tasks, util};
 
-/// The cause of `running -> ready` on the fallback of another pool.
 pub const USAGE_LIMIT_FALLBACK: &str = "usage_limit_fallback";
-/// The cause of `running -> waiting_quota`.
 pub const USAGE_LIMIT: &str = "usage_limit";
-/// The cause of `waiting_quota -> ready`.
 pub const POOL_RESET: &str = "pool_reset";
 
 fn cause(text: &str) -> Cause<'_> {
@@ -42,8 +24,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// The pool readings of the personas: the roster, the quota file or probe
-/// result, and `pool_full_use` of `fleet.toml`.
 pub struct Pools<'a> {
     pub roster: &'a Roster,
     pub quota: &'a QuotaView,
@@ -51,8 +31,6 @@ pub struct Pools<'a> {
 }
 
 impl Pools<'_> {
-    /// The reading of the pool of `persona`, with the windows that limit
-    /// its model. `None` for a persona that is not in the roster.
     pub fn reading(&self, persona: &str) -> Option<Reading> {
         let t = self.roster.get(persona)?;
         let agent = t.agent.as_str();
@@ -86,15 +64,10 @@ impl Pools<'_> {
         })
     }
 
-    /// The calendar time of the readings, in Unix seconds.
     fn now(&self) -> i64 {
         self.quota.now.timestamp()
     }
 
-    /// The fallback of a task of `persona`: the task's own `fallback`
-    /// when it is set, else the first entry of `fallbacks` of the persona
-    /// (`docs/tickets/fleetd-p2/MAP.md`, Q8). A persona with a
-    /// `no_fallback_reason` never restarts on another persona.
     fn fallback(&self, persona: &str, of_task: Option<&str>) -> Option<String> {
         let t = self.roster.get(persona);
         if t.is_some_and(|t| t.no_fallback_reason.is_some()) {
@@ -106,16 +79,12 @@ impl Pools<'_> {
     }
 }
 
-/// Where [`on_quota`] moved a task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Moved {
-    /// `ready` for the fallback `persona`: the push dispatch binds it.
     Restart { persona: String },
-    /// `waiting_quota`, with the lease paused.
     Wait,
 }
 
-/// The fields of 1 attempt that the quota rule reads.
 struct Attempt {
     task_id: Option<String>,
     worker_id: String,
@@ -140,9 +109,6 @@ fn attempt(conn: &Connection, id: &str) -> Result<Attempt> {
     .with_context(|| format!("no attempt {id}"))
 }
 
-/// `move-to-fallback` for the attempt `attempt_id`, which ended with the
-/// outcome `quota`, in the open transaction `tx`. `None`: its task already
-/// moved (it is not `running` with the worker of the attempt).
 pub fn on_quota(
     tx: &Connection,
     guard: Option<Generation>,
@@ -168,8 +134,6 @@ pub fn on_quota(
     }
     let old = workers::get(tx, &a.worker_id)?;
     let (decided, own_pool) = decide(&old, &task, pools);
-    // No attempt is burned: the next claim adds 1 to `attempts`, and the
-    // floor moves with it.
     tx.execute(
         "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
             updated_at = ?2
@@ -182,7 +146,6 @@ pub fn on_quota(
             move_to_fallback(tx, guard, &task, fb, &why).map(Some)
         }
         Exit::Wait => {
-            // The lease stays, and `waiting_quota` pauses it.
             let to = TaskStatus::WaitingQuota.as_str();
             let why = cause(USAGE_LIMIT);
             transition(tx, guard, Entity::Task, &task_id, to, why, &NeedsYouList)?;
@@ -191,8 +154,6 @@ pub fn on_quota(
     }
 }
 
-/// The exit of `task`, whose worker `old` hit a usage limit, and the pool
-/// of `old`.
 fn decide(old: &workers::Worker, task: &tasks::Task, pools: &Pools<'_>) -> (Exit, String) {
     let persona = old.persona.clone().unwrap_or_default();
     let own = pools.reading(&persona);
@@ -229,11 +190,6 @@ fn move_to_fallback(
     Ok(Moved::Restart { persona: fb })
 }
 
-/// Move each task in `waiting_quota` whose pool reset to `ready`, in the
-/// open transaction `tx`; `transition()` deletes its lease. The pool is the pool of
-/// the persona that claims the task next (`claimable_by`). A persona that
-/// is not in the roster has no pool to wait on. Returns the ids of the
-/// moved tasks.
 pub fn release_reset_pools(
     tx: &Connection,
     guard: Option<Generation>,
@@ -316,8 +272,6 @@ mod tests {
         }
     }
 
-    /// `dev` on claude with the fallback `alt` on codex; `same` on claude;
-    /// `pinned` on claude with a reason for no fallback.
     fn roster() -> Roster {
         let mut r = Roster::builtin().unwrap();
         r.insert_for_test(teammate(
@@ -352,7 +306,6 @@ mod tests {
         }
     }
 
-    /// A quota file with `claude` and `codex` at the used shares given.
     fn quota(claude: PoolReading, codex: PoolReading) -> QuotaView {
         let mut pools = BTreeMap::new();
         pools.insert("claude".to_string(), claude);
@@ -373,9 +326,6 @@ mod tests {
         worker: String,
     }
 
-    /// A run with 1 task of `persona` (with the task fallback `fallback`)
-    /// bound to 1 worker of `persona`. Its attempt then ended with the
-    /// outcome `quota`, as the stall ladder ends it.
     fn fixture(persona: &str, fallback: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -389,7 +339,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -431,7 +380,6 @@ mod tests {
             attempt_id(&self.task, 1)
         }
 
-        /// The stall ladder ends the attempt `quota` and the worker row.
         fn end_with_quota(&mut self) {
             let reap = Reap {
                 attempt: self.first_attempt(),
@@ -553,25 +501,20 @@ mod tests {
             .query_row("SELECT count(*) FROM attempts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(attempts, 1, "only the attempt that hit the limit");
-        // A second report of the same attempt moves nothing.
         assert_eq!(f.on_quota(&claude_full()), None);
     }
 
     #[test]
     fn fallback_on_the_same_pool_or_no_fallback_waits() {
-        // The task's own fallback wins over the persona's: `same` is on
-        // claude too.
         let mut f = fixture("dev", Some("same"));
         assert_eq!(f.on_quota(&claude_full()), Some(Moved::Wait));
         assert_eq!(f.task().status, "waiting_quota");
-        // Both pools limited: the task waits.
         let mut f = fixture("dev", None);
         assert_eq!(f.on_quota(&both_full()), Some(Moved::Wait));
     }
 
     #[test]
     fn persona_with_a_no_fallback_reason_waits_in_waiting_quota() {
-        // Even a fallback of the task on another pool does not move it.
         let mut f = fixture("pinned", Some("alt"));
         assert_eq!(f.on_quota(&claude_full()), Some(Moved::Wait));
         let t = f.task();
@@ -594,7 +537,6 @@ mod tests {
             last,
             ("running".into(), "waiting_quota".into(), USAGE_LIMIT.into())
         );
-        // A pass far past the deadline neither expires nor renews it.
         let limits = |_: &str| Limits {
             lease_s: 120,
             stall_after_s: 300,
@@ -615,9 +557,7 @@ mod tests {
         assert!(expired.is_empty());
         assert_eq!(f.lease(), Some(lease));
         assert_eq!(f.task().status, "waiting_quota");
-        // Not reset yet: the task waits.
         assert!(f.release(&claude_full()).is_empty());
-        // The calendar time passes `reset_at`: ready, and the lease goes.
         let after_reset = quota(pool(1.0, Some("2026-11-17T11:00:00Z")), pool(0.1, None));
         assert_eq!(f.release(&after_reset), vec![f.task.clone()]);
         assert_eq!(f.task().status, "ready");
@@ -639,12 +579,8 @@ mod tests {
         assert_eq!(f.release(&ok), vec![f.task.clone()]);
     }
 
-    /// The effects of a restart in a test: which processes live, and each
-    /// spec that the launch got.
     #[test]
     fn pres_06_s13_quota_probe_holds_no_credential() {
-        // The reading is the quota file and nothing else: a pool that the
-        // file does not name has no window and no limit.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("quota.json");
         let file = QuotaFile {
@@ -673,8 +609,6 @@ mod tests {
         assert_eq!(dev.windows[0].used, 1.0);
         let alt = pools.reading("alt").unwrap();
         assert_eq!((alt.pool.as_str(), alt.windows.len()), ("codex", 0));
-        // The code of this module reads no environment, starts no process
-        // and opens no keychain: each reading comes through `QuotaView`.
         let src = include_str!("quota.rs");
         let code: Vec<&str> = src
             .split("#[cfg(test)]")

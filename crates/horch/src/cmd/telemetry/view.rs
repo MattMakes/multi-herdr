@@ -1,10 +1,3 @@
-//! The screen's view state, its keys, and the frame (section 12.4).
-//!
-//! [`draw`] is a pure function of a snapshot and a [`ViewState`]; [`on_key`]
-//! and [`on_wheel`] are pure functions of a state and an input. [`render`]
-//! draws 1 frame into a `ratatui` `TestBackend` and returns its text, which
-//! is what the goldens compare and what `horch telemetry render` prints.
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -25,18 +18,13 @@ use super::{
     unpriced_line, COMPACT_STATE, MIN_SIZE, VIEW_WINDOWS,
 };
 
-/// The live panes table.
 pub const LIVE: usize = 0;
-/// The rollup table (not in the `live` window).
 pub const ROLLUP: usize = 1;
 
-/// The rows the mouse wheel scrolls per step.
 const WHEEL_ROWS: usize = 3;
 
-/// `? help  q quit` come first: a narrow footer cuts the rest.
 const FOOTER: &str = "? help  q quit  Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh";
 
-/// The help popup's keys: they fit a 60x12 terminal.
 const HELP_KEYS: &[&str] = &[
     "Tab  Shift-Tab   focus the other table",
     "↓ j  ↑ k         move the selection 1 row",
@@ -50,7 +38,6 @@ const HELP_KEYS: &[&str] = &[
     "q  Ctrl-C        quit",
 ];
 
-/// The rest of the help, shown when the terminal has room for it.
 const HELP_MORE: &[&str] = &[
     "",
     "groups:  teammate, phase, agent, project, plan, kind",
@@ -61,34 +48,24 @@ const HELP_MORE: &[&str] = &[
     "7d      the live panes, and the rollup of the last 7 days",
 ];
 
-/// The status line after `r`, until the next update.
 pub const REFRESHING: &str = "refreshing…";
 
-/// A terminal of this many rows or fewer is short: 1 line per pool, and 1
-/// line of facts.
 const SHORT_ROWS: u16 = 24;
 
-/// The scroll and selection of 1 table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TableState {
-    /// The selected row.
     pub sel: usize,
-    /// The first row on the screen.
     pub offset: usize,
-    /// The selected row's key, so that the selection follows its row when
-    /// the rows change. `None` after a move: `sel` is then the truth.
     pub key: Option<String>,
 }
 
 impl TableState {
-    /// Select row `sel` (clamped) and scroll so that it shows.
     fn select(&mut self, sel: usize, n: usize, page: usize) {
         self.sel = sel.min(n.saturating_sub(1));
         self.key = None;
         self.fit(n, page);
     }
 
-    /// Scroll so that the selection shows, and no page shows past the end.
     fn fit(&mut self, n: usize, page: usize) {
         let page = page.max(1);
         if self.sel < self.offset {
@@ -100,7 +77,6 @@ impl TableState {
         self.offset = self.offset.min(n.saturating_sub(page));
     }
 
-    /// After new rows: keep the selection on its key, else clamp it.
     pub fn sync(&mut self, keys: &[String], page: usize) {
         if let Some(i) = self
             .key
@@ -117,27 +93,15 @@ impl TableState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ViewState {
-    /// Index into [`GROUPS`].
     pub group: usize,
-    /// Index into [`VIEW_WINDOWS`].
     pub window: usize,
-    /// Only this project's rows, when set.
     pub project: Option<String>,
-    /// One line of status (an error from the last tick).
     pub status: Option<String>,
-    /// `collector` or `viewer`, on a live screen.
     pub mode: Option<&'static str>,
-    /// The table that the keys move: [`LIVE`] or [`ROLLUP`].
     pub focus: usize,
-    /// The scroll and selection of [`LIVE`] and [`ROLLUP`].
     pub tables: [TableState; 2],
-    /// The help popup shows. It is modal: only `?`, `Esc`, `q` and Ctrl-C
-    /// act while it is open.
     pub help: bool,
-    /// A project is set, and its filtered snapshot is not there yet: the
-    /// rollup shows `loading <project>…`, never the global rollup.
     pub loading: bool,
-    /// Draw colors (not when `NO_COLOR` is set).
     pub color: bool,
 }
 
@@ -166,12 +130,10 @@ impl ViewState {
         })
     }
 
-    /// The window shows a rollup table.
     pub fn has_rollup(&self) -> bool {
         self.window_name() != "live"
     }
 
-    /// After new rows: each table keeps its selected key, or clamps.
     pub fn sync(&mut self, rows: &Rows) {
         for t in [LIVE, ROLLUP] {
             self.tables[t].sync(&rows.keys[t], rows.page[t]);
@@ -182,7 +144,6 @@ impl ViewState {
     }
 }
 
-/// What the screen loop does after an input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     None,
@@ -192,8 +153,6 @@ pub enum Action {
     Quit,
 }
 
-/// What [`on_key`] needs to know of the frame: each table's row keys and
-/// page height, and the projects `p` cycles through.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Rows {
     pub keys: [Vec<String>; 2],
@@ -221,7 +180,6 @@ impl Rows {
     }
 }
 
-/// The key that a live row keeps its selection by: the pane's record.
 fn live_key(r: &LiveRow) -> String {
     if r.record_id.is_empty() {
         format!("{}\t{}", r.project.as_deref().unwrap_or("-"), r.role)
@@ -230,12 +188,10 @@ fn live_key(r: &LiveRow) -> String {
     }
 }
 
-/// The rows a table area shows: less its title line and its column header.
 fn page(r: Rect) -> usize {
     (r.height as usize).saturating_sub(2).max(1)
 }
 
-/// A table motion key.
 fn is_motion(code: KeyCode) -> bool {
     matches!(
         code,
@@ -250,7 +206,6 @@ fn is_motion(code: KeyCode) -> bool {
     )
 }
 
-/// `q` or Ctrl-C.
 fn is_quit(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     matches!(
@@ -259,21 +214,16 @@ fn is_quit(key: &KeyEvent) -> bool {
     )
 }
 
-/// The key counts: a press, or a repeat of a motion key; and, behind the
-/// modal help, only the keys that leave it.
 fn counts(s: &ViewState, key: &KeyEvent) -> bool {
-    // A held motion key repeats; an action key acts once per press.
     let pressed = match key.kind {
         KeyEventKind::Press => true,
         KeyEventKind::Repeat => is_motion(key.code),
         KeyEventKind::Release => false,
     };
-    // The help is modal.
     let allowed = !s.help || is_quit(key) || matches!(key.code, KeyCode::Char('?') | KeyCode::Esc);
     pressed && allowed
 }
 
-/// A motion key on one table with `n` rows and pages of `pg` rows.
 fn move_selection(table: &mut TableState, code: KeyCode, n: usize, pg: usize) {
     match code {
         KeyCode::Down | KeyCode::Char('j') => table.select(table.sel + 1, n, pg),
@@ -291,7 +241,6 @@ fn move_selection(table: &mut TableState, code: KeyCode, n: usize, pg: usize) {
     }
 }
 
-/// `?` toggles the help; Esc closes the help, else clears the project.
 fn on_help_or_esc(s: &mut ViewState, code: KeyCode) -> Action {
     if code == KeyCode::Char('?') {
         s.help = !s.help;
@@ -308,7 +257,6 @@ fn on_help_or_esc(s: &mut ViewState, code: KeyCode) -> Action {
     }
 }
 
-/// Tab, `g` and `w`: change the focus, the group or the window.
 fn on_view_key(s: &mut ViewState, code: KeyCode) {
     match code {
         KeyCode::Char('g') => {
@@ -322,7 +270,6 @@ fn on_view_key(s: &mut ViewState, code: KeyCode) {
                 s.focus = LIVE;
             }
         }
-        // 2 tables at most: next and previous are the same one.
         _ => {
             if s.has_rollup() {
                 s.focus = 1 - s.focus.min(1);
@@ -331,7 +278,6 @@ fn on_view_key(s: &mut ViewState, code: KeyCode) {
     }
 }
 
-/// A key on the screen. Pure.
 pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Action) {
     if !counts(&s, &key) {
         return (s, Action::None);
@@ -342,7 +288,6 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
     (s, if quiet { Action::None } else { action })
 }
 
-/// What a counted key does to the state.
 fn dispatch(s: &mut ViewState, key: &KeyEvent, rows: &Rows) -> Action {
     let t = s.focus;
     match key.code {
@@ -360,7 +305,6 @@ fn dispatch(s: &mut ViewState, key: &KeyEvent, rows: &Rows) -> Action {
     }
 }
 
-/// `p` cycles the project filter; `r` asks for a refresh.
 fn on_data_key(s: &mut ViewState, code: KeyCode, rows: &Rows) -> Action {
     match code {
         KeyCode::Char('p') => {
@@ -375,11 +319,7 @@ fn on_data_key(s: &mut ViewState, code: KeyCode, rows: &Rows) -> Action {
     }
 }
 
-/// A mouse wheel step over table `t`: scroll it. The selection stays on its
-/// row while that row is visible, and is clamped to the view when it is
-/// not. Pure.
 pub fn on_wheel(mut s: ViewState, t: usize, down: bool, rows: &Rows) -> (ViewState, Action) {
-    // The help is modal: the wheel does nothing behind it.
     if s.help {
         return (s, Action::None);
     }
@@ -406,7 +346,6 @@ pub fn on_wheel(mut s: ViewState, t: usize, down: bool, rows: &Rows) -> (ViewSta
     (s, action)
 }
 
-/// The table under the screen cell `(col, row)`, if any.
 pub fn table_at(
     snap: &Snapshot,
     view: &ViewState,
@@ -425,7 +364,6 @@ pub fn table_at(
     }
 }
 
-/// Every project the snapshot names, sorted.
 fn projects(snap: &Snapshot) -> Vec<String> {
     let mut projects: Vec<String> = snap.live.iter().filter_map(|l| l.project.clone()).collect();
     for rollup in snap.rollups.values() {
@@ -442,15 +380,12 @@ fn projects(snap: &Snapshot) -> Vec<String> {
     projects
 }
 
-/// The projects the `p` key cycles through: none (all), then each one.
 fn next_project(projects: &[String], current: Option<String>) -> Option<String> {
     match current {
         None => projects.first().cloned(),
         Some(c) => projects.iter().skip_while(|p| **p != c).nth(1).cloned(),
     }
 }
-
-// ─── the frame ──────────────────────────────────────────────────────────────
 
 fn live_rows<'a>(snap: &'a Snapshot, view: &ViewState) -> Vec<&'a LiveRow> {
     snap.live
@@ -469,7 +404,6 @@ fn rollup_rows<'a>(snap: &'a Snapshot, view: &ViewState) -> &'a [RollupRow] {
         .unwrap_or(&[])
 }
 
-/// Where each part of the frame goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Areas {
     header: Rect,
@@ -480,7 +414,6 @@ struct Areas {
     footer: Rect,
 }
 
-/// A terminal of [`SHORT_ROWS`] rows or fewer.
 fn short(area: Rect) -> bool {
     area.height <= SHORT_ROWS
 }
@@ -488,11 +421,8 @@ fn short(area: Rect) -> bool {
 fn areas(snap: &Snapshot, view: &ViewState, area: Rect) -> Areas {
     let row = |y: u16, h: u16| Rect::new(area.x, area.y + y, area.width, h);
     let h = area.height;
-    // The pool table has as many lines at any time.
     let pools_want = pool_lines(snap, area, snapshot_time(snap)).len() as u16;
     let facts_want = fact_lines(snap, view, area).len() as u16;
-    // The header and the footer take 1 line each; then the pools, then the
-    // facts give way to the tables' minimum of 3 lines each.
     let tables_min = if view.has_rollup() { 6 } else { 3 };
     let mut rest = h.saturating_sub(2);
     let pools_h = pools_want.min(rest.saturating_sub(tables_min));
@@ -528,11 +458,7 @@ fn areas(snap: &Snapshot, view: &ViewState, area: Rect) -> Areas {
     }
 }
 
-/// The pool lines: the `horch quota` table, or on a short terminal 1 line
-/// per pool.
 fn pool_lines(snap: &Snapshot, area: Rect, now: DateTime<Utc>) -> Vec<String> {
-    // No probe reads the Google pool yet, so the screen shows it only when
-    // a reading exists; `horch quota` always lists it.
     let only = &[quota::POOL_GOOGLE];
     let width = area.width as usize;
     if short(area) {
@@ -542,22 +468,16 @@ fn pool_lines(snap: &Snapshot, area: Rect, now: DateTime<Utc>) -> Vec<String> {
     }
 }
 
-/// The time the snapshot names. On disk that is its last content change,
-/// not its last tick: the live screen draws at `clock::now()` instead.
 pub fn snapshot_time(snap: &Snapshot) -> DateTime<Utc> {
     clock::parse(&snap.generated_at).unwrap_or_else(clock::now)
 }
 
-/// The facts under the tables, not clipped: status, UNPRICED, UNREAD,
-/// insights.
 fn facts(snap: &Snapshot, view: &ViewState) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(s) = &view.status {
         out.push(format!("! {s}"));
     }
     let window = view.window_name();
-    // The live view counts the last 5 hours' unpriced events. While a
-    // project loads, the snapshot's rollups are the global ones: no line.
     let priced_window = if window == "live" { "5h" } else { window };
     if let Some(line) = snap
         .rollups
@@ -579,7 +499,6 @@ fn facts(snap: &Snapshot, view: &ViewState) -> Vec<String> {
     out
 }
 
-/// The insights on 1 line, or none when there is no insight.
 fn insight_line(i: &Insights) -> Option<String> {
     let facts: Vec<String> = [
         i.orchestrator_share
@@ -595,8 +514,6 @@ fn insight_line(i: &Insights) -> Option<String> {
     (!facts.is_empty()).then(|| facts.join(" · "))
 }
 
-/// The fact lines: 1 per fact, or on a short terminal all of them on 1
-/// line. Each is clipped to the width.
 fn fact_lines(snap: &Snapshot, view: &ViewState, area: Rect) -> Vec<String> {
     let width = area.width as usize;
     let facts = facts(snap, view);
@@ -606,8 +523,6 @@ fn fact_lines(snap: &Snapshot, view: &ViewState, area: Rect) -> Vec<String> {
     facts.iter().map(|f| clip(f, width)).collect()
 }
 
-/// The text each project shows: its base name, or, when 2 projects share
-/// a base name, its parent folder and its base name.
 fn project_labels(snap: &Snapshot) -> std::collections::BTreeMap<String, String> {
     let projects = projects(snap);
     let tail = |p: &str, n: usize| {
@@ -637,7 +552,6 @@ fn project_labels(snap: &Snapshot) -> std::collections::BTreeMap<String, String>
     out
 }
 
-/// A project's label, or its base name when the snapshot does not name it.
 fn label(labels: &std::collections::BTreeMap<String, String>, p: Option<&str>) -> String {
     p.and_then(|p| labels.get(p).cloned())
         .unwrap_or_else(|| project_name(p))
@@ -662,8 +576,6 @@ fn header(snap: &Snapshot, view: &ViewState, width: usize, now: DateTime<Utc>) -
             .map(|p| label(&project_labels(snap), Some(p)))
             .unwrap_or_else(|| "all".into())
     ));
-    // The left part gives way first: the view's group and window must show.
-    // It drops the fleets, then the panes, and keeps the clock.
     let clock = now.format("%H:%MZ");
     let panes = format!(
         "{} live pane{}",
@@ -686,21 +598,12 @@ fn header(snap: &Snapshot, view: &ViewState, width: usize, now: DateTime<Utc>) -
     clip(&format!("{left}{}{right}", " ".repeat(gap)), width)
 }
 
-// ─── columns ────────────────────────────────────────────────────────────────
-
-/// How a column gives way on a narrow terminal and takes room on a wide
-/// one.
 #[derive(Debug, Clone, Copy)]
 struct Col {
     head: &'static str,
-    /// The width before any growth; a column whose longest value is shorter
-    /// takes that.
     cap: usize,
-    /// Dropped in this order (0 first) when the width is short.
     drop: Option<u8>,
-    /// After every drop, shortened in this order down to `.1` characters.
     shrink: Option<(u8, usize)>,
-    /// Takes the spare width in this order, up to its longest value.
     grow: Option<u8>,
 }
 
@@ -714,9 +617,6 @@ const fn col(head: &'static str, cap: usize) -> Col {
     }
 }
 
-/// The live table. Money (`$`) and the state flags never go; the rest go in
-/// the order plan, c.read, phase, fresh, model, then the role and the
-/// project shorten.
 const LIVE_COLS: [Col; 11] = [
     Col {
         shrink: Some((1, 6)),
@@ -755,8 +655,6 @@ const LIVE_COLS: [Col; 11] = [
     col("state", usize::MAX),
 ];
 
-/// The rollup table: `$/DONE`, then `cache hit` go first; then the key
-/// shortens. Its head is the table title.
 const ROLLUP_COLS: [Col; 6] = [
     Col {
         shrink: Some((0, 10)),
@@ -776,10 +674,6 @@ const ROLLUP_COLS: [Col; 6] = [
     },
 ];
 
-/// The width of each column, or `None` for a dropped one, with 1 space
-/// between every 2 columns: drop, then shrink, until the columns fit
-/// `width`; then grow into the spare width. A column whose cells are all
-/// empty takes no room.
 fn fit_columns(
     cols: &[Col],
     heads: &[String],
@@ -836,8 +730,6 @@ fn fit_columns(
     w
 }
 
-/// 1 line of cells in their columns: each cut with `…` to its width, 1
-/// space between every 2.
 fn table_line(cells: &[String], widths: &[Option<usize>], width: usize) -> String {
     let parts: Vec<String> = cells
         .iter()
@@ -894,7 +786,6 @@ fn rollup_cells(r: &RollupRow, total: f64, key: String) -> Vec<String> {
     ]
 }
 
-/// `rows A-B of N` for a table scrolled to `offset` with `shown` rows.
 fn range(offset: usize, shown: usize, n: usize) -> String {
     if n == 0 {
         "rows 0 of 0".into()
@@ -903,8 +794,6 @@ fn range(offset: usize, shown: usize, n: usize) -> String {
     }
 }
 
-/// What [`draw_table`] shows: the title, the column header, the rows and the
-/// note for an empty table.
 struct TableBody<'a> {
     title: &'a str,
     head: String,
@@ -912,9 +801,6 @@ struct TableBody<'a> {
     note: Option<String>,
 }
 
-/// 1 scrollable table: a title line, a column header, and the rows from
-/// `table.offset`. `lines` holds each row's text and its own style; `note`
-/// shows under the header when there is no row.
 fn draw_table(
     buf: &mut Buffer,
     area: Rect,
@@ -964,9 +850,6 @@ fn draw_table(
     ratatui::widgets::Widget::render(Paragraph::new(text), inner, buf);
 }
 
-/// A pool line, with its state (the characters from `at`) colored: ok
-/// green, tight yellow, exhausted red. The text is the same with or without
-/// color.
 fn pool_line(line: String, color: bool, at: (usize, usize)) -> Line<'static> {
     let state: String = line.chars().skip(at.0).take(at.1 - at.0).collect();
     let fg = match state
@@ -994,21 +877,17 @@ fn pool_line(line: String, color: bool, at: (usize, usize)) -> Line<'static> {
     }
 }
 
-/// 1 frame of the screen at time `now` (the header clock and the pools'
-/// relative times). Pure.
 pub fn draw(frame: &mut Frame, snap: &Snapshot, view: &ViewState, now: DateTime<Utc>) {
     let area = frame.area();
     draw_buf(frame.buffer_mut(), area, snap, view, now);
 }
 
-/// The pool lines, with each state colored.
 fn pool_paragraph(
     snap: &Snapshot,
     view: &ViewState,
     area: Rect,
     now: DateTime<Utc>,
 ) -> Vec<Line<'static>> {
-    // Every pool line form puts the state at these characters.
     let (state_at, first) = if short(area) {
         ((COMPACT_STATE, COMPACT_STATE + 12), 0)
     } else {
@@ -1027,7 +906,6 @@ fn pool_paragraph(
         .collect()
 }
 
-/// The live panes table.
 fn draw_live(
     buf: &mut Buffer,
     r: Rect,
@@ -1050,8 +928,6 @@ fn draw_live(
         .zip(cells)
         .enumerate()
         .map(|(i, (r, mut cells))| {
-            // A project shows once per run of rows, and on the first row
-            // on the screen.
             let project = std::mem::take(&mut cells[0]);
             if i == offset || last_project.as_deref() != Some(project.as_str()) {
                 cells[0] = project.clone();
@@ -1079,7 +955,6 @@ fn draw_live(
     );
 }
 
-/// The rollup table.
 fn draw_rollup(
     buf: &mut Buffer,
     r: Rect,
@@ -1128,7 +1003,6 @@ fn draw_rollup(
     );
 }
 
-/// [`draw`] into a buffer.
 pub fn draw_buf(
     buf: &mut Buffer,
     area: Rect,
@@ -1176,8 +1050,6 @@ pub fn draw_buf(
     }
 }
 
-/// The help popup, centered: the keys, and the groups and windows when the
-/// terminal has room for them. Every line is clipped to the popup.
 fn draw_help(buf: &mut Buffer, area: Rect) {
     let wide = |lines: &[&str]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 4;
     let more: Vec<&str> = HELP_KEYS.iter().chain(HELP_MORE).copied().collect();
@@ -1208,7 +1080,6 @@ fn draw_help(buf: &mut Buffer, area: Rect) {
     );
 }
 
-/// The text of a buffer: 1 line per row, trailing spaces trimmed.
 pub fn buffer_text(buf: &Buffer) -> Vec<String> {
     let area = buf.area;
     (area.y..area.y + area.height)
@@ -1222,9 +1093,6 @@ pub fn buffer_text(buf: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// 1 frame drawn into a `TestBackend` of `width` x `height`, as text
-/// (SPC-04). The snapshot's `generated_at` is the frame's time, so a
-/// golden stays fixed.
 pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec<String> {
     let backend = TestBackend::new(width.max(MIN_SIZE.0), height.max(MIN_SIZE.1));
     let mut terminal = Terminal::new(backend).expect("a TestBackend never fails");
@@ -1257,7 +1125,6 @@ mod tests {
         on_key(s, key(code), r).0
     }
 
-    /// The other motion keys, `g`, `w`, `p` and Esc with a project.
     #[test]
     fn spc_07_up_pageup_home_and_the_view_keys() {
         let r = rows(30, 30, 10);
@@ -1304,7 +1171,6 @@ mod tests {
         assert_eq!((none.project, b), (None, Action::SetProject(None)));
     }
 
-    /// The insights show in a fixed order, only those that exist.
     #[test]
     fn spc_04_the_insight_line_lists_the_known_insights() {
         let snap = Snapshot {
@@ -1325,7 +1191,6 @@ mod tests {
         assert!(facts(&Snapshot::default(), &ViewState::default()).is_empty());
     }
 
-    /// SPC-07: `j` on the last row stays there.
     #[test]
     fn spc_07_j_at_the_last_row_stays() {
         let r = rows(5, 0, 20);
@@ -1341,8 +1206,6 @@ mod tests {
         assert_eq!(s.tables[LIVE].sel, 3);
     }
 
-    /// SPC-07: `PgDn` on 87 rows with a page of 20 shows rows 21-40; `End`
-    /// shows the last page; `Home` the first.
     #[test]
     fn spc_07_page_down_and_end() {
         let r = rows(87, 0, 20);
@@ -1359,8 +1222,6 @@ mod tests {
         assert_eq!((s.tables[LIVE].offset, s.tables[LIVE].sel), (0, 0));
     }
 
-    /// SPC-07: `Tab` cycles the focus over the tables that exist: 1 in the
-    /// `live` window, 2 in the others.
     #[test]
     fn spc_07_tab_cycles_over_the_tables_that_exist() {
         let r = rows(5, 5, 20);
@@ -1374,13 +1235,10 @@ mod tests {
         assert_eq!((s.tables[ROLLUP].sel, s.tables[LIVE].sel), (1, 0));
         let s = press(s, KeyCode::BackTab, &r);
         assert_eq!(s.focus, LIVE);
-        // `w` to `live` moves the focus off a rollup that is gone.
         let s = press(press(s, KeyCode::Tab, &r), KeyCode::Char('w'), &r);
         assert_eq!((s.window_name(), s.focus), ("live", LIVE));
     }
 
-    /// SPC-07: a selection keeps its row key across an update that inserts
-    /// a row above it; a key that is gone clamps.
     #[test]
     fn spc_07_selection_keeps_its_row_key_across_an_update() {
         let mut r = rows(5, 0, 20);
@@ -1400,7 +1258,6 @@ mod tests {
         );
     }
 
-    /// SPC-07: `Esc` closes the help before it clears the project filter.
     #[test]
     fn spc_07_esc_closes_help_before_it_clears_the_project() {
         let r = rows(5, 0, 20);
@@ -1417,8 +1274,6 @@ mod tests {
         assert_eq!((s.project, action), (None, Action::SetProject(None)));
     }
 
-    /// SPC-07: the wheel scrolls the table and keeps the selection on the
-    /// screen.
     #[test]
     fn spc_07_wheel_scrolls_and_keeps_the_selection_visible() {
         let r = rows(30, 0, 10);
@@ -1436,8 +1291,6 @@ mod tests {
         assert_eq!(action, Action::None);
     }
 
-    /// The live screen draws at the time it is given, not at the snapshot's
-    /// `generated_at` (the last content change on disk).
     #[test]
     fn spc_04_the_header_clock_is_the_given_time() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1457,8 +1310,6 @@ mod tests {
         assert!(!head.contains(&at.format("%H:%MZ").to_string()), "{head}");
     }
 
-    /// `p` cycles none, each project, none; `q` and Ctrl-C quit; `r`
-    /// refreshes.
     #[test]
     fn spc_04_keys_p_q_r() {
         let r = rows(1, 0, 20);
@@ -1481,8 +1332,6 @@ mod tests {
         KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
     }
 
-    /// SPC-07 (R1): a held motion key repeats; a held action key acts once;
-    /// a release does nothing.
     #[test]
     fn spc_07_motion_keys_repeat_and_action_keys_do_not() {
         let r = rows(30, 0, 10);
@@ -1506,9 +1355,6 @@ mod tests {
         }
     }
 
-    /// SPC-04 (R1, Q1): the help is modal. Only `?`, `Esc`, `q` and Ctrl-C
-    /// act while it is open; a motion key, `g`, `w`, `p`, `r` and the wheel
-    /// change nothing behind it.
     #[test]
     fn spc_04_the_help_is_modal() {
         let r = rows(30, 30, 10);
@@ -1544,8 +1390,6 @@ mod tests {
         assert!(!press(open, KeyCode::Char('?'), &r).help);
     }
 
-    /// SPC-04 (Q1): `r` shows `refreshing…` until the next update replaces
-    /// the status.
     #[test]
     fn spc_04_r_shows_refreshing() {
         let r = rows(1, 0, 20);
@@ -1559,9 +1403,6 @@ mod tests {
         assert!(text.contains("! refreshing…"), "{text}");
     }
 
-    /// SPC-07 (Q1): the wheel scrolls the view; the selection stays on its
-    /// row while that row shows, and is clamped to the view when it does
-    /// not.
     #[test]
     fn spc_07_the_wheel_keeps_a_visible_selection() {
         let r = rows(30, 0, 10);
@@ -1589,8 +1430,6 @@ mod tests {
         buffer_text(&buf).join("\n")
     }
 
-    /// SPC-04 (Q1): the help fits a 60x12 terminal: every key line shows
-    /// whole, inside the popup's border.
     #[test]
     fn spc_04_the_help_fits_60x12() {
         let snap = fixture("snapshot-fixture.json");
@@ -1607,7 +1446,6 @@ mod tests {
             lines[0].contains("help") && lines[11].contains('┘'),
             "{text}"
         );
-        // A big terminal shows the groups and the windows too.
         let text = draw_text(&snap, &view, 120, 40);
         assert!(
             text.contains("windows:") && text.contains("groups:"),
@@ -1615,8 +1453,6 @@ mod tests {
         );
     }
 
-    /// SPC-04 (R1): while a project loads, the rollup shows `loading
-    /// <project>…` and no global row, and the header names the project.
     #[test]
     fn spc_04_a_loading_project_shows_no_global_rollup() {
         let snap = fixture("snapshot-fixture.json");
@@ -1632,8 +1468,6 @@ mod tests {
         assert!(!text.contains("412.00"), "{text}");
     }
 
-    /// Q1: 1 space between every 2 columns, also when a cell fills its
-    /// column or is cut.
     #[test]
     fn spc_04_columns_have_a_gutter() {
         let cells = vec!["lawn-mower-man".to_string(), "orchestrator".into()];
@@ -1646,9 +1480,6 @@ mod tests {
         assert_eq!(table_line(&cells, &widths, 80), "lawn-mowe… orchestrator");
     }
 
-    /// Q1: drops go plan, c.read, phase, fresh, model; then the role and
-    /// the project shorten; spare width goes to the role, the project, then
-    /// the plan, up to their longest value.
     #[test]
     fn spc_04_the_column_rule() {
         let heads: Vec<String> = LIVE_COLS.iter().map(|c| c.head.to_string()).collect();
@@ -1681,9 +1512,7 @@ mod tests {
         };
         let (names, _, total) = kept(200);
         assert_eq!(names.len(), 11);
-        // Every value whole at 200: 18+21+8+5+26+5+6+4+8+7+17 + 10 gutters.
         assert_eq!(total, 135);
-        // 120: all fit at their caps; the 1 spare column goes to the role.
         let (names, w, total) = kept(120);
         assert_eq!((names.len(), w[1], total), (11, Some(17), 120));
         let (names, w, total) = kept(100);

@@ -1,17 +1,9 @@
-//! `horch usage`: how it reads its flags and which stored events it keeps.
-//!
-//! The command prints to stdout, so these tests run the real binary in a
-//! sealed world: a temp home and state root, a pinned clock and a Claude
-//! transcript of 3 calls (17:00, 17:01 and 17:02 on 2026-09-28) for the 1
-//! ledger record of the project `/p`.
-
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use horch_core::telemetry::store::GROUPS;
 use serde_json::Value;
 
-/// `HORCH_NOW` of every run, so a `--window` has 1 start.
 const NOW: &str = "2026-09-29T12:00:00Z";
 
 struct World {
@@ -73,7 +65,6 @@ impl World {
             .unwrap()
     }
 
-    /// The `--json` report of a run that must succeed.
     fn report(&self, args: &[&str]) -> Value {
         let mut all = vec!["--json"];
         all.extend_from_slice(args);
@@ -91,7 +82,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The events a report counts.
 fn events(report: &Value) -> u64 {
     report["total"]["events"].as_u64().unwrap()
 }
@@ -112,7 +102,6 @@ fn usage_names_the_flag_that_is_wrong() {
             vec!["--window", "3w"],
             "--window takes 5h, today or 7d".to_string(),
         ),
-        // A `--since` that does not parse is not rescued by a good `--window`.
         (
             vec!["--since", "yesterday", "--window", "7d"],
             "--since: 'yesterday' is not a date or an RFC 3339 time".to_string(),
@@ -129,7 +118,6 @@ fn usage_names_the_flag_that_is_wrong() {
 #[test]
 fn usage_since_wins_over_window_and_a_window_is_its_start() {
     let w = World::new();
-    // `--since` is used as it is, and the `--window` beside it is not read.
     let both = w.report(&["--since", "2026-09-28", "--window", "3w"]);
     assert_eq!(both["since"], "2026-09-28T00:00:00Z");
     assert_eq!(both["window"], "3w");
@@ -163,7 +151,6 @@ fn usage_keeps_the_events_since_the_start_and_in_the_project() {
 
     assert_eq!(events(&w.report(&["--project", "/p"])), 3);
     assert_eq!(events(&w.report(&["--project", "/other"])), 0);
-    // Both filters apply.
     let both = ["--since", "2026-09-28T17:00:30Z", "--project"];
     assert_eq!(events(&w.report(&[both[0], both[1], both[2], "/p"])), 2);
     assert_eq!(events(&w.report(&[both[0], both[1], both[2], "/other"])), 0);

@@ -1,5 +1,3 @@
-//! The concern shell: the pane shell, the check shell and the case of a path.
-
 use horch_platform::shell::{self, ShellDialect};
 
 #[cfg(unix)]

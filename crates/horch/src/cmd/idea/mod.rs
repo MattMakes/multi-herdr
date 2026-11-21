@@ -1,8 +1,3 @@
-//! `horch idea` and `horch ideas`: the operator captures, approves and
-//! steers ideas, and the sub-orchestrator records notes
-//! (`docs/specs/fleetd/design.md`, "Ideas"). 1 file for each subcommand.
-//! Each write command sends its request to fleetd with the channel client.
-
 pub mod add;
 pub mod amend;
 pub mod approve;
@@ -50,7 +45,6 @@ pub enum IdeaCommand {
     Cancel(cancel::CancelArgs),
 }
 
-/// `horch idea`.
 pub fn run(ctx: &RuntimeContext, command: IdeaCommand) -> Result<ExitCode> {
     match command {
         IdeaCommand::Add(args) => add::run(ctx, args),
@@ -64,10 +58,6 @@ pub fn run(ctx: &RuntimeContext, command: IdeaCommand) -> Result<ExitCode> {
     }
 }
 
-/// Send 1 operator request of `kind` with the channel client, or write a
-/// request file when fleetd is down. An applied request gives its result
-/// to `print`, and exits 0. A refused request prints its reason on stderr,
-/// and exits 1. A queued request prints its id and its file, and exits 0.
 fn send(
     ctx: &RuntimeContext,
     command: &str,
@@ -96,17 +86,10 @@ fn send(
     }
 }
 
-/// The text of `key` in the result of a request, else `-`.
 fn text<'a>(result: &'a Value, key: &str) -> &'a str {
     result.get(key).and_then(Value::as_str).unwrap_or("-")
 }
 
-/// The first guard of `horch idea approve`, `horch idea add --direct` and
-/// `horch feature abandon` (SR-5, FR-10): `Some(exit 1)` when this process
-/// is a fleet process: the rule [`fleet_process`] of the channel server,
-/// never an environment variable. A fact that is unknown refuses too: a
-/// guard whose fact is unknown does not hold. This guard only gives an
-/// early message. The checks of fleetd at the server stay the wall.
 pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -> Option<ExitCode> {
     let reason = match attempt_fact(ctx) {
         Fact::No => return None,

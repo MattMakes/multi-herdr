@@ -1,12 +1,3 @@
-//! horch idea add --direct: a ticket that you wrote becomes an idea, then 1
-//! validated plan with 1 work task, plus its judge task for a judgment kind
-//! (docs/specs/fleetd/design.md, "Everything is an idea, with a fast lane";
-//! FR-10, FR-12; docs/tickets/fleetd-p6/17-direct.md, MAP.md Q6 and Q8).
-//!
-//! Each test makes its own temporary ledger, git repository and idea
-//! folder. No test touches this repository or the live ledger, and no test
-//! starts a process other than git.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -46,7 +37,6 @@ use serde_json::Value;
 
 const CLOCK: FleetSeconds = FleetSeconds(1_000);
 
-/// A ticket in format C1 of a code kind.
 const FEATURE_TICKET: &str = "# 03: Retry sync with backoff
 
 <!-- horch-ticket: 1 -->
@@ -60,7 +50,6 @@ const FEATURE_TICKET: &str = "# 03: Retry sync with backoff
 Retry with backoff.
 ";
 
-/// A ticket in format C1 of a judgment kind.
 const DOCS_TICKET: &str = "# 04: Document the retries
 
 <!-- horch-ticket: 1 -->
@@ -74,7 +63,6 @@ const DOCS_TICKET: &str = "# 04: Document the retries
 Write docs/sync.md.
 ";
 
-/// A ticket in format C1 with no check.
 const NO_CHECK_TICKET: &str = "# 05: Tidy the sync log
 
 <!-- horch-ticket: 1 -->
@@ -175,8 +163,6 @@ impl World {
         )
     }
 
-    /// `AddDirectIdea` in 1 committed write transaction, then its files
-    /// and its branch, as fleetd does after the commit.
     fn add(&mut self, ticket: &str, to: Option<&str>) -> DirectAdded {
         let gateway = self.gateway();
         let tip = git(&self.repo, &["rev-parse", "main"]);
@@ -209,8 +195,6 @@ impl World {
         added
     }
 
-    /// The move to `ticketing` under the rule of the feature, then the plan
-    /// validation.
     fn start(&mut self, idea: &str) -> Started {
         let ideas = self.ideas();
         let owner = owner();
@@ -233,8 +217,6 @@ impl World {
         self.ideas().join(idea)
     }
 
-    /// (kind, primary_persona, parent_task_id, spec_json) of each task of
-    /// `idea`, in the order of its plan.
     fn tasks(&self, idea: &str) -> Vec<(String, String, Option<String>, Value)> {
         let mut stmt = self
             .store
@@ -277,7 +259,6 @@ fn intake_test_direct_idea_produces_1_validated_plan_with_1_work_task() {
     let idea = added.idea.file.id.clone();
     assert_eq!(w.idea(&idea).state, "captured");
 
-    // The feature gets its branch name from the ticket title (ticket 15).
     let feature = features::feature(w.store.conn(), &added.idea.feature)
         .unwrap()
         .unwrap();
@@ -296,7 +277,6 @@ fn intake_test_direct_idea_produces_1_validated_plan_with_1_work_task() {
     )
     .is_empty());
 
-    // fleetd copies the ticket, and its approval stands for yours (Q6).
     let copied = "tickets/01-retry-sync-with-backoff.md";
     assert_eq!(added.ticket, copied);
     let text = std::fs::read_to_string(w.folder(&idea).join(copied)).unwrap();
@@ -359,8 +339,6 @@ fn direct_idea_of_a_judgment_kind_gets_its_judge_task() {
     let (_, judge_profile, judge_parent, judge_spec) = &rows[1];
     assert_eq!(work_profile, "coder-claude");
     assert_eq!(work_spec["kind"], "docs");
-    // The judge is on another provider of the roster (Q8), and judges the
-    // work task.
     assert_eq!(judge_profile, "coder-codex");
     assert_eq!(judge_spec["kind"], "judge");
     let work_key = work_spec["key"].as_str().unwrap();
@@ -400,7 +378,6 @@ fn direct_plan_without_check_is_refused_and_goes_to_needs_you() {
 #[test]
 fn direct_idea_waits_in_captured_while_another_idea_of_its_feature_is_ticketing() {
     let mut w = world();
-    // The first idea stays in `ticketing`: its plan is refused.
     let first = w.add(NO_CHECK_TICKET, None);
     let first_id = first.idea.file.id.clone();
     assert!(matches!(w.start(&first_id), Started::Refused(_)));
@@ -413,7 +390,6 @@ fn direct_idea_waits_in_captured_while_another_idea_of_its_feature_is_ticketing(
     assert_eq!(w.idea(&second_id).state, "captured");
     assert!(w.tasks(&second_id).is_empty());
 
-    // An idea of another feature does not wait.
     let other = w.add(FEATURE_TICKET, None);
     assert_ne!(other.idea.feature, first.idea.feature);
     assert!(matches!(
@@ -427,8 +403,6 @@ fn idea_with_approved_assumptions_and_no_requirements_yaml_is_refused() {
     let mut w = world();
     let added = w.add(FEATURE_TICKET, None);
     let idea = added.idea.file.id.clone();
-    // Make it an idea of the normal flow: approved assumptions.md, and no
-    // requirements.yaml.
     let folder = IdeaFolder::new(&w.ideas(), &idea, owner()).unwrap();
     let assumptions = "# Assumptions\n\nfeature: retry-sync-with-backoff\n1. [confirmed] Retry.\n";
     folder.write_assumptions(assumptions).unwrap();

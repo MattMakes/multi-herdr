@@ -1,24 +1,3 @@
-//! The e2e tests of FM-38 through the binary (`docs/specs/fleetd/design.md`,
-//! FM-38, "Landing a task branch on its feature branch": `conflicted` and
-//! `gate_failed`; `docs/tickets/fleetd-p4/54-p4-repair-e2e.md`).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder. The test writes the run, its idea, its seat and 1 queued task,
-//! then runs each pass of fleetd itself with `horch ledger watch --once`,
-//! so it knows the order of the passes. The fake herdr runs the pane of
-//! each attempt, and the fake `claude` plays its agent in exec mode.
-//!
-//! The fake agent has no key that merges or edits a file. So the test does
-//! the edit of a resolver or a fix attempt in the worktree between 2
-//! passes, before the result of the attempt can be read, and the fake of
-//! the attempt only runs `horch result`. fleetd does the rest: it binds the
-//! attempt, writes its `START.md`, launches it, runs the check, and lands
-//! the branch.
-//!
-//! The tests read no real load, limit or clock: the harness gives the
-//! machine through `HORCH_MACHINE_FILE`, and the backoff and the lease
-//! expiry come from moves of the fleet clock.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -38,39 +17,24 @@ use horch_core::vcs::network::OTHER_BOUND;
 use horch_e2e::harness::{fixtures, Harness, DEADLINE};
 use rusqlite::{Connection, OptionalExtension};
 
-/// The persona of the task. Its fake agent is `fake-claude`.
 const PERSONA: &str = "opus";
 
-/// The 1 file that the fake agent commits (`agent.rs`). The conflict and
-/// the gate failure of each test are in this file.
 const FAKE_FILE: &str = "fake-claude.txt";
 
-/// The feature branch of the run.
 const FEATURE: &str = "fleet/alpha";
 
-/// The scenario of the first attempt: it commits [`FAKE_FILE`] and runs
-/// `horch result`.
 const WORK: &str = "exec,commit,result";
 
-/// The scenario of a repair attempt whose edit the test makes: it only
-/// runs `horch result`.
 const RESULT_ONLY: &str = "exec,result";
 
-/// The scenario of a repair attempt that fails: it exits with no result.
 const NO_RESULT: &str = "exec,exit_without_result";
 
-/// The line that the fast gate of [`gate_failed_branch_gets_a_fix_attempt_with_the_gate_output`]
-/// prints when it fails.
 const GATE_LINE: &str = "gate: fake-claude.txt has no FIXED line";
 
-/// The lease of an attempt with no heartbeat expires after 120 s on the
-/// fleet clock.
 const PAST_THE_LEASE_S: i64 = 121;
 
-/// The first backoff of rung 6 on the fleet clock.
 const FIRST_BACKOFF_S: i64 = 30;
 
-/// The statuses of a live worker row.
 const LIVE: [&str; 4] = ["spawning", "starting", "claiming", "working"];
 
 fn text(o: &Output) -> String {
@@ -82,27 +46,16 @@ fn text(o: &Output) -> String {
     )
 }
 
-// ─── the world of 1 test ────────────────────────────────────────────────
-
-/// 1 fleet in workspace `w1` whose panes run their commands, with 1 run on
-/// [`FEATURE`] and 1 task.
 struct World {
     h: Harness,
     task_id: String,
 }
 
 impl World {
-    /// A world whose project declares the fast gate `fast`, and whose run
-    /// has `max_attempts`.
     fn new(name: &str, fast: &str, max_attempts: Option<i64>) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its worker finds the same paths there.
         let fleet = h.state.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
-        // A pass each second. The load of the build host does not hold
-        // dispatch.
         std::fs::write(
             fleet.join("fleet.toml"),
             "pass_period_s = 1\nhealth_max_load_per_cpu = 1000000.0\n",
@@ -133,13 +86,8 @@ impl World {
         git_ok(&h, &project, &["commit", "--quiet", "-m", "gates"]);
         git_ok(&h, &project, &["branch", FEATURE, "main"]);
         let task_id = seed(&h, max_attempts);
-        // The workspace has the name of the project folder as its label,
-        // as `horch fleet` names it: a push launch splits its first pane.
         let ws = h.fleet_workspace();
         h.set("HORCH_WORKSPACE_ID", ws);
-        // The test fleetd: it applies the spawn requests, launches each
-        // attempt, and runs a pass each second. The drop of the harness
-        // stops it.
         h.serve_fleetd();
         World { h, task_id }
     }
@@ -151,10 +99,6 @@ impl World {
         conn
     }
 
-    /// Wait while the test fleetd runs its passes, until `f` gives a value.
-    /// A step can wait behind 1 `fetch` job of the repository (1 git writer
-    /// at a time), and the design bounds a fetch by its time limit and the
-    /// stop grace. So the wait is [`DEADLINE`] after that bound.
     fn until<T>(&self, what: &str, mut f: impl FnMut(&World) -> Option<T>) -> T {
         let bound = OTHER_BOUND + Duration::from_secs(FleetConfig::default().stop_grace_s);
         let wait = DEADLINE + bound;
@@ -172,21 +116,14 @@ impl World {
         );
     }
 
-    /// Stop the test fleetd after its current pass, run `f` while no pass
-    /// runs, then start the test fleetd again with the environment of now.
     fn paused<T>(&self, f: impl FnOnce(&World) -> T) -> T {
         self.h.without_fleetd(|| f(self))
     }
 
-    /// The fake scenario of each pane that the test fleetd launches after
-    /// its next start: a pane gets the environment of fleetd.
     fn scenario(&mut self, scenario: &str) {
         self.h.set("HORCH_FAKE_SCENARIO", scenario);
     }
 
-    /// Move the fleet clock forward by `seconds`, in place of a wait for
-    /// it. A pass adds its awake time to the stored value, so the move
-    /// stays.
     fn advance_clock(&self, seconds: i64) {
         let moved = self
             .conn()
@@ -206,8 +143,6 @@ impl World {
             .unwrap()
     }
 
-    /// Wait until the fleet clock moved `n` more seconds: at least `n - 1`
-    /// more passes of 1 s ran.
     fn passes(&self, n: i64) {
         let until = self.fleet_clock() + n;
         self.until(&format!("{n} more seconds of the fleet clock"), |w| {
@@ -225,8 +160,6 @@ impl World {
             .unwrap()
     }
 
-    /// The name, the landing state and `repair_attempts` of the branch of
-    /// the task, when it has a row.
     fn branch(&self) -> Option<(String, String, i64)> {
         self.conn()
             .query_row(
@@ -243,7 +176,6 @@ impl World {
         self.branch().map(|b| b.1).unwrap_or_default()
     }
 
-    /// The ids of the attempts of the task, oldest first.
     fn attempts(&self) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn
@@ -255,12 +187,10 @@ impl World {
             .collect()
     }
 
-    /// The id of attempt `n` (1 is the first), when it exists.
     fn attempt(&self, n: usize) -> Option<String> {
         self.attempts().get(n - 1).cloned()
     }
 
-    /// The worker of attempt `n` is not live.
     fn worker_ended(&self, n: usize) -> bool {
         let Some(id) = self.attempt(n) else {
             return false;
@@ -277,23 +207,19 @@ impl World {
         !LIVE.contains(&status.as_str())
     }
 
-    /// The kind of the repair attempt `n`.
     fn kind(&self, n: usize) -> Option<RepairKind> {
         let id = self.attempt(n)?;
         repair_kind(&self.conn(), &id).unwrap()
     }
 
-    /// The folder of attempt `n` under the fleet root.
     fn attempt_folder(&self, n: usize) -> PathBuf {
         attempt_dir(&self.h.fleet_root(), &self.task_id, &format!("A{n}"))
     }
 
-    /// The text of `name` in the folder of attempt `n`, when it exists.
     fn attempt_file(&self, n: usize, name: &str) -> Option<String> {
         std::fs::read_to_string(self.attempt_folder(n).join(name)).ok()
     }
 
-    /// The worktree that `task.yaml` of attempt `n` names.
     fn worktree(&self, n: usize) -> PathBuf {
         let yaml = self
             .attempt_file(n, "task.yaml")
@@ -305,7 +231,6 @@ impl World {
         PathBuf::from(value.trim().trim_matches('"'))
     }
 
-    /// The open needs-you items of kind `kind`: key and text.
     fn open_items(&self, kind: &str) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -320,8 +245,6 @@ impl World {
             .collect()
     }
 
-    /// The moves of the task out of `done`: none while a resolver or a fix
-    /// attempt runs.
     fn moves_out_of_done(&self) -> i64 {
         self.conn()
             .query_row(
@@ -333,12 +256,6 @@ impl World {
             .unwrap()
     }
 
-    /// Run the first attempt to its end. The fake commits [`FAKE_FILE`] in
-    /// the worktree and says "done". When its commit exists, the test
-    /// fleetd stops, and `before_land` runs: it is the only time between
-    /// the commit and the first bundle. The test fleetd starts again with
-    /// the fake scenario `next` for each later attempt. Then the task gets
-    /// to `done`.
     fn first_attempt_done(
         &mut self,
         next: &str,
@@ -352,8 +269,6 @@ impl World {
         });
         self.scenario(next);
         self.paused(|w| {
-            // A pass queues the check job only after it reads result.json,
-            // and a later pass reads its result, so no bundle exists yet.
             assert!(
                 !["ready", "in_bundle", "landed"].contains(&w.landing_state().as_str()),
                 "the branch moved on before the test: {}",
@@ -367,10 +282,6 @@ impl World {
         worktree
     }
 
-    /// Each job: its state, start, pid, deadline and run, and its result
-    /// file `<fleet root>/run/jobs/<id>-<run>.json` with whether it exists.
-    /// A `running` job also shows whether its process lives, so a slow job
-    /// leaves the evidence of what it waits for.
     fn jobs(&self, conn: &Connection) -> String {
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, kind, state, COALESCE(started_at, '-'), pid, deadline, run, \
@@ -422,8 +333,6 @@ impl World {
         out
     }
 
-    /// What a failed wait shows: the rows of the task, its branch and its
-    /// bundles, the needs-you items and the jobs.
     fn diagnostics(&self) -> String {
         let conn = self.conn();
         let rows = |sql: &str| -> Vec<String> {
@@ -455,10 +364,6 @@ impl World {
     }
 }
 
-/// Write the rows that the orchestrator's commands wrote before Phase 6
-/// retired them: the run on [`FEATURE`], its idea in flight (FR-12), its
-/// seat in pane `w1:p1` and 1 queued task with the check `true`. Gives the
-/// task id.
 fn seed(h: &Harness, max_attempts: Option<i64>) -> String {
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
@@ -473,8 +378,6 @@ fn seed(h: &Harness, max_attempts: Option<i64>) -> String {
             workspace_id: Some("w1".into()),
             base_branch: Some("main".into()),
             run_branch: Some(FEATURE.into()),
-            // The verification profile `minimal`: the check, then land, so
-            // no review step runs.
             finish_steps: VerifyProfile::Minimal.steps(),
             thresholds: Thresholds {
                 max_attempts,
@@ -487,7 +390,6 @@ fn seed(h: &Harness, max_attempts: Option<i64>) -> String {
     schema::run_idea(conn, &run.run_id, &horch_core::clock::now_stamp(), true)
         .unwrap()
         .expect("the idea of alpha");
-    // The pane that fleetd splits for the launch of an attempt.
     let seat = workers::insert(
         conn,
         &NewWorker {
@@ -508,17 +410,12 @@ fn seed(h: &Harness, max_attempts: Option<i64>) -> String {
         .task_id
 }
 
-/// The last 40 lines of the file at `path`.
 fn tail(path: &Path) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(40)..].join("\n")
 }
 
-// ─── git ────────────────────────────────────────────────────────────────
-
-/// Run git in `dir` with no hook; its trimmed stdout, or `None` when it
-/// fails or `dir` does not exist yet.
 fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = h.git_cmd(&[&["-c", "core.hooksPath=/dev/null"][..], args].concat());
     cmd.current_dir(dir);
@@ -528,7 +425,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// [`git_in`], and fail the test when git fails.
 fn git_ok(h: &Harness, dir: &Path, args: &[&str]) -> String {
     let mut cmd = h.git_cmd(&[&["-c", "core.hooksPath=/dev/null"][..], args].concat());
     cmd.current_dir(dir);
@@ -537,8 +433,6 @@ fn git_ok(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Commit `body` as `file` on [`FEATURE`] with no checkout, by
-/// compare-and-set from its tip, as a landing of another task does.
 fn commit_on_feature(h: &Harness, file: &str, body: &str) -> String {
     let project = h.project.clone();
     let index = h.root.join("feature-index");
@@ -573,7 +467,6 @@ fn commit_on_feature(h: &Harness, file: &str, body: &str) -> String {
     new
 }
 
-/// `ancestor` is in the history of `rev`.
 fn is_ancestor(h: &Harness, ancestor: &str, rev: &str) -> bool {
     git_in(
         h,
@@ -583,20 +476,11 @@ fn is_ancestor(h: &Harness, ancestor: &str, rev: &str) -> bool {
     .is_some()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// FM-38, `conflicted`: the task branch conflicts with its feature branch
-/// after its worker exited. fleetd starts 1 resolver attempt of the `done`
-/// task in its worktree, with the conflict files in `START.md`. Its result
-/// passes the check, and the branch lands. The task stays `done`.
 #[test]
 fn fm38_conflicted_branch_gets_a_resolver_attempt_and_lands() {
     let mut w = World::new("p4-repair-resolve", "true", None);
     let mut feature_commit = String::new();
-    // The resolver attempt only says "done". The test makes its merge.
     let worktree = w.first_attempt_done(RESULT_ONLY, |w, _| {
-        // Another landing adds the same file to the feature with other
-        // text, after the worktree left the feature tip.
         feature_commit = commit_on_feature(&w.h, FAKE_FILE, "the feature side\n");
     });
     let work_commit = git_ok(&w.h, &worktree, &["rev-parse", "HEAD"]);
@@ -604,9 +488,6 @@ fn fm38_conflicted_branch_gets_a_resolver_attempt_and_lands() {
     let (branch, _, _) = w.until("the branch of the task to be conflicted", |w| {
         w.branch().filter(|b| b.1 == "conflicted")
     });
-    // The resolution of the agent of the resolver attempt, while no pass
-    // runs: merge the feature, keep both sides, commit. The fake of the
-    // attempt does not write to the worktree.
     w.paused(|w| {
         assert_eq!(w.task_status(), "done", "{}", w.diagnostics());
         assert!(
@@ -623,7 +504,6 @@ fn fm38_conflicted_branch_gets_a_resolver_attempt_and_lands() {
         git_ok(&w.h, &worktree, &["commit", "--quiet", "--no-edit"]);
     });
 
-    // `task.yaml` is written after `START.md`.
     w.until("the task files of the resolver attempt A2", |w| {
         w.attempt_file(2, "task.yaml")
     });
@@ -671,14 +551,9 @@ fn fm38_conflicted_branch_gets_a_resolver_attempt_and_lands() {
     }
 }
 
-/// FM-38 and the test of the gate of Phase 4: a failed resolver attempt
-/// adds 1 to `repair_attempts` and starts the next one after the backoff.
-/// At `max_attempts` of the task no attempt starts, and 1 needs-you item
-/// opens. The task stays `done`.
 #[test]
 fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     let mut w = World::new("p4-repair-limit", "true", Some(2));
-    // Each resolver attempt exits with no result.
     w.first_attempt_done(NO_RESULT, |w, _| {
         commit_on_feature(&w.h, FAKE_FILE, "the feature side\n");
     });
@@ -686,7 +561,6 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
         w.branch().filter(|b| b.1 == "conflicted")
     });
 
-    // A2 fails: its agent exits with no result, and its lease expires.
     w.until("the resolver attempt A2", |w| w.kind(2));
     w.until("the worker of A2 to end", |w| {
         w.worker_ended(2).then_some(())
@@ -695,7 +569,6 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     w.until("repair_attempts 1 after the failure of A2", |w| {
         w.branch().filter(|b| b.2 == 1)
     });
-    // The backoff of 30 s on the fleet clock holds the next attempt.
     assert_eq!(
         w.attempts().len(),
         2,
@@ -704,7 +577,6 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     );
     w.advance_clock(FIRST_BACKOFF_S);
 
-    // A3 is the next resolver attempt, and it fails also.
     assert_eq!(
         w.until("the resolver attempt A3", |w| w.kind(3)),
         RepairKind::Resolver
@@ -721,7 +593,6 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
             .then_some(())
     });
 
-    // More passes and a long time start no attempt and no second item.
     w.advance_clock(3600);
     w.passes(3);
     let items = w.open_items(REPAIR_LIMIT_KIND);
@@ -746,24 +617,17 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     assert_eq!(w.moves_out_of_done(), 0, "{}", w.diagnostics());
 }
 
-/// FM-38, `gate_failed`: the fast gate fails on the task branch after its
-/// worker exited. fleetd starts 1 fix attempt of the `done` task in its
-/// worktree, with the output of the gate in `START.md`. Its result passes
-/// the check, and the branch lands. The task stays `done`.
 #[test]
 fn gate_failed_branch_gets_a_fix_attempt_with_the_gate_output() {
-    // Only shell builtins: the PATH of a gate has no `grep`.
     let fast = format!(
         r#"while read -r l; do [ "$l" = FIXED ] && exit 0; done < {FAKE_FILE}; echo '{GATE_LINE}'; exit 1"#
     );
     let mut w = World::new("p4-repair-fix", &fast, None);
-    // The fix attempt only says "done". The test makes its fix.
     let worktree = w.first_attempt_done(RESULT_ONLY, |_, _| {});
     w.until("the branch of the task to fail the gate", |w| {
         (w.landing_state() == "gate_failed").then_some(())
     });
 
-    // The fix of the agent of the fix attempt, while no pass runs.
     let fix_commit = w.paused(|w| {
         assert_eq!(w.task_status(), "done", "{}", w.diagnostics());
         let mut body = std::fs::read_to_string(worktree.join(FAKE_FILE)).unwrap();
@@ -778,7 +642,6 @@ fn gate_failed_branch_gets_a_fix_attempt_with_the_gate_output() {
         git_ok(&w.h, &worktree, &["rev-parse", "HEAD"])
     });
 
-    // `task.yaml` is written after `START.md`.
     w.until("the task files of the fix attempt A2", |w| {
         w.attempt_file(2, "task.yaml")
     });

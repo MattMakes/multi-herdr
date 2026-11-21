@@ -1,5 +1,3 @@
-//! The concern group for Linux.
-
 use std::process::Child;
 
 pub(crate) use crate::unix::group::{

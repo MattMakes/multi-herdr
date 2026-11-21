@@ -1,10 +1,3 @@
-//! `horch request <request_id>` (RR-8, ticket 16 of fleetd-p5): the state
-//! and the result of 1 request, read from its `requests` row or from its
-//! request file that waits for fleetd.
-//!
-//! Each test runs the real binary with its own ledger, state and fleet
-//! folders, and the watchdog off.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -40,7 +33,6 @@ impl World {
         self.root.join("fleet")
     }
 
-    /// 1 `requests` row, as fleetd writes it.
     #[allow(clippy::too_many_arguments)]
     fn row(
         &self,
@@ -139,13 +131,11 @@ fn refused_request_prints_its_reason() {
 #[test]
 fn unknown_request_exits_1() {
     let w = World::new();
-    // No ledger file at all.
     let o = w.horch(&["request", "r-9"]);
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
     assert_has(&o.err, "no request r-9");
     assert!(!w.ledger().exists(), "the read made the ledger");
 
-    // A ledger with another request.
     w.row("r-1", "spawn", "u", None, "pending", None, None);
     let o = w.horch(&["request", "r-9"]);
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);

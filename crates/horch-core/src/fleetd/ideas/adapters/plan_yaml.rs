@@ -1,12 +1,3 @@
-//! The reader of plan.yaml.
-//!
-//! It reads plan.yaml into a `Plan`, and each ticket that a task names,
-//! with the C1 checks of `taskledger::map::ticket_problems`. A file that is
-//! not YAML of the plan shape (an unknown field, a value of the wrong type)
-//! is an error. A value that YAML allows and the plan rules refuse (an
-//! unknown kind, an empty field, a ticket that is not C1) stays in the
-//! `Plan`, for the plan validator to report.
-
 use std::path::{Component, Path};
 
 use anyhow::{Context, Result};
@@ -60,12 +51,10 @@ struct TaskKeys {
     no_decisions: bool,
 }
 
-/// 1 acceptance item: exactly 1 of its keys.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AcceptanceKeys {
     run: Option<String>,
-    /// The file first, then each section.
     sections: Option<Vec<String>>,
 }
 
@@ -75,8 +64,6 @@ struct BudgetKeys {
     max_minutes: Option<u32>,
 }
 
-/// Read the plan.yaml at `path` and each ticket that it names. A ticket path
-/// is relative to the folder of plan.yaml.
 pub fn read(path: &Path) -> Result<Plan> {
     let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let mut plan = parse(&text).with_context(|| format!("{}", path.display()))?;
@@ -89,8 +76,6 @@ pub fn read(path: &Path) -> Result<Plan> {
     Ok(plan)
 }
 
-/// Parse the text of a plan.yaml. Each ticket is named, not read: its
-/// `problems` are empty.
 pub fn parse(text: &str) -> Result<Plan> {
     let keys: PlanKeys = serde_yaml::from_str(text).context("plan.yaml")?;
     let fable_approved = match keys.fable.as_deref() {
@@ -158,9 +143,6 @@ fn task(keys: TaskKeys) -> Result<PlannedTask> {
     })
 }
 
-/// What is wrong with the ticket `rel` of the plan folder `folder`: it is
-/// not a relative path inside the folder, it cannot be read, or each C1
-/// problem with its line.
 fn ticket_file_problems(folder: &Path, rel: &str) -> Vec<String> {
     let inside = !rel.is_empty()
         && Path::new(rel)

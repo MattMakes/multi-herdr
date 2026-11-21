@@ -1,5 +1,3 @@
-//! The concern path for Linux.
-
 pub use crate::unix::path::{
     clear_link, copy_symlink, for_child, is_reparse_point, passwd_home,
     private_link_home_supported, set_junction, symlink, CONFIG_BASE_VAR, HOME_VAR,

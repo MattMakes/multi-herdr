@@ -103,7 +103,7 @@ class ArgvTest(IntakeTestCase):
 
     def test_t14_no_command_runs_a_quarantine_file(self):
         code, out = self.intake("run", "o/r", "--base", self.base)
-        self.assertEqual(code, 4, out)  # OPQ hits have no auditor disposition yet
+        self.assertEqual(code, 4, out)
         c = Path(self.task_dir(out))
         code, out = self.intake("acquire", "o/r", "--base", self.base)
         self.assertEqual(code, 0, out)
@@ -161,9 +161,8 @@ class ArgvTest(IntakeTestCase):
         self.assertEqual(code, 0, out)
         self.assertTrue((skills / "bin-fixture" / "SKILL.md").is_file())
 
-        # The repo target: candidates, then install without and with a mapping (ticket 11).
         repo = fixtures.f_repo(self.tmp / "checkout", REPO)
-        fixtures.git(repo, "checkout", "-q", "-b", "fleet/argv")  # install refuses the default branch
+        fixtures.git(repo, "checkout", "-q", "-b", "fleet/argv")
         code, out = self.intake("candidates", "--task", str(c), "--repo", str(repo))
         self.assertEqual(code, 0, out)
         self.assertEqual(self.intake("cr", "context", "--task", str(c), "--target", "repo")[0], 0)
@@ -177,7 +176,6 @@ class ArgvTest(IntakeTestCase):
         self.assertEqual(code, 0, out)
         self.assertTrue((repo / "skills" / "bin-fixture" / "SKILL.md").is_file())
 
-        # Role orchestration: fleet mode by the real rule, with a stub horch.
         horch = self.tmp / "bin" / "horch"
         horch.parent.mkdir()
         horch.write_text(HORCH_STUB)
@@ -197,7 +195,6 @@ class ArgvTest(IntakeTestCase):
         code, out = self.intake("brief", "reviewer", "--task", str(c))
         self.assertEqual(self.intake("subagent-prompt", "reviewer", "--brief", json.loads(out)["brief"])[0], 0)
 
-        # Every command that exists at this point ran.
         commands = set(self.cli.COMMANDS) - {"cr"}
         cr_actions = {"init", "index", "role", "scan", "handoff", "context", "verify", "status", "validate"}
         self.assertEqual(self.ran, commands | {f"cr {a}" for a in cr_actions})

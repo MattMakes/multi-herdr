@@ -52,8 +52,6 @@ TEAMMATES_BEFORE = "## The effort-matrix personas"
 TEAMS_SECTION = "## The domain teams"
 
 
-# ---- small text helpers ----------------------------------------------------------
-
 def plain(text: str) -> str:
     """Escape every code point that is not plain (spec 3.6) except newlines, with no cap."""
     return "".join(ch if ch == "\n" or evidence._plain(ord(ch)) else evidence._code(ord(ch)) for ch in text)
@@ -194,8 +192,6 @@ def remove_from_list(text: str, key: str, names: list[str]) -> str:
     return text
 
 
-# ---- inputs ----------------------------------------------------------------------
-
 def parse_mapping(path: Path, repo: Path) -> dict:
     """Read and check the mapping answer. Every error is a caller mistake (exit 2)."""
     try:
@@ -288,8 +284,6 @@ def load_state(t: task.Task, repo: Path) -> dict:
     return state
 
 
-# ---- source facts (escaped) ------------------------------------------------------
-
 def source_line(prov: dict) -> tuple[str, str, str]:
     """(source, licence, version) for the docs, escaped and without machine paths. The
     version is `commit <sha>` for git, else `sha256 <content hash>`."""
@@ -306,8 +300,6 @@ def source_line(prov: dict) -> tuple[str, str, str]:
         version = f"sha256 `{evidence.escape((prov.get('archive_sha256') or prov.get('content_sha256') or '')[:12])}`"
     return where, licence, version
 
-
-# ---- the answer-independent set --------------------------------------------------
 
 def write_copied(repo: Path, names: dict[str, str], exempt: dict[str, str], changed: Changed) -> None:
     doc = json.loads(_read(repo, COPIED))
@@ -438,8 +430,6 @@ def render_sweep(t: task.Task, cr: str, vdoc: dict) -> str:
             out.append("")
     return "\n".join(out).rstrip("\n") + "\n"
 
-
-# ---- the mapping-dependent set ---------------------------------------------------
 
 def sibling_lines(repo: Path) -> dict[str, list[str]]:
     """The shared read-only allowed_tools lines (#58) and the compaction amounts of the first
@@ -589,8 +579,6 @@ def changelog(text: str, line: str, marker: str) -> str:
         lines[start:end] = ["\n", line + "\n", "\n"]
     return "".join(lines)
 
-
-# ---- the stage -------------------------------------------------------------------
 
 def install_skills(t: task.Task, repo: Path, state: dict, prov: dict, vdoc: dict,
                    resolve_text: str | None) -> tuple[list[dict], list[str], list[str]]:

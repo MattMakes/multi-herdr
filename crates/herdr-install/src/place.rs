@@ -1,28 +1,12 @@
-//! Putting the downloaded release where Herdr expects it.
-//!
-//! Unix is simple: one binary at `~/.local/bin/herdr`, matching `install.sh`.
-//!
-//! Windows is not, and the complexity is load-bearing. The official installer
-//! unpacks each version into its own directory and points a `current` junction
-//! plus a visible bin directory at it, precisely so an update never has to
-//! overwrite a `herdr.exe` that is currently running. The Windows asset is also a
-//! zip carrying an app-local ConPTY runtime next to the binary, so the whole
-//! archive has to be extracted, not just the executable.
-//!
-//! Path computation lives in pure functions so it can be verified off Windows.
-
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-/// The executable's name on this platform.
 pub fn exe_name() -> String {
     horch_platform::rest::exe_name("herdr")
 }
 
-/// Where a Unix install puts the binary: `$HERDR_INSTALL_DIR`, else
-/// `~/.local/bin`.
 pub fn unix_install_dir(home: &Path, override_dir: Option<&Path>) -> PathBuf {
     match override_dir {
         Some(dir) => dir.to_path_buf(),
@@ -30,23 +14,14 @@ pub fn unix_install_dir(home: &Path, override_dir: Option<&Path>) -> PathBuf {
     }
 }
 
-/// The directories a Windows install touches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsLayout {
-    /// `~/.herdr/packages/standalone/releases`
     pub releases_dir: PathBuf,
-    /// The versioned directory this install unpacks into.
     pub release_dir: PathBuf,
-    /// The `current` junction, retargeted after a successful unpack.
     pub current_dir: PathBuf,
-    /// The junction that goes on PATH.
     pub visible_bin: PathBuf,
 }
 
-/// Compute the Windows install layout.
-///
-/// Mirrors the official installer so `herdr update` keeps working against the same
-/// directories.
 pub fn windows_layout(
     herdr_home: &Path,
     local_app_data: Option<&Path>,
@@ -70,10 +45,6 @@ pub fn windows_layout(
     }
 }
 
-/// Write a bare binary to `target`, replacing whatever is there.
-///
-/// Staged then renamed: overwriting a running binary fails on Windows and can
-/// crash a live process on Unix.
 pub fn place_binary(bytes: &[u8], target: &Path) -> Result<()> {
     let dir = target.parent().context("install target has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -96,10 +67,6 @@ pub fn make_executable(path: &Path) -> Result<()> {
         .with_context(|| format!("marking {} executable", path.display()))
 }
 
-/// Extract a zip into `dest`, refusing entries that escape it.
-///
-/// `enclosed_name` is what rejects `../` and absolute paths, so a hostile archive
-/// cannot write outside the release directory.
 pub fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .context("the download is not a valid zip archive")?;
@@ -118,8 +85,6 @@ pub fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write one archive entry to `out_path`: a directory is created, a file is
-/// written, and an `.exe` is marked executable.
 fn write_entry(entry: &mut zip::read::ZipFile<'_>, out_path: &Path) -> Result<()> {
     if entry.is_dir() {
         std::fs::create_dir_all(out_path)?;
@@ -140,7 +105,6 @@ fn write_file(entry: &mut impl Read, out_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Swap `staging` into place as `release_dir`, keeping a backup until it succeeds.
 pub fn promote_release(staging: &Path, release_dir: &Path) -> Result<()> {
     if let Some(parent) = release_dir.parent() {
         std::fs::create_dir_all(parent)?;
@@ -170,8 +134,6 @@ fn backup_path(release_dir: &Path) -> PathBuf {
     ))
 }
 
-/// Drop the backup after a good swap; after a failed one, put the previous release
-/// back rather than leaving nothing installed.
 fn finish_swap(
     result: std::io::Result<()>,
     release_dir: &Path,
@@ -189,8 +151,6 @@ fn finish_swap(
     Ok(())
 }
 
-/// Delete release directories other than the one just installed, keeping `keep`
-/// of the most recently modified.
 pub fn prune_old_releases(releases_dir: &Path, current: &Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(releases_dir) else {
         return;
@@ -242,8 +202,6 @@ mod tests {
         );
     }
 
-    /// The versioned-directory plus junction scheme is what lets an update land
-    /// while herdr.exe is running, so the paths must match the official installer.
     #[test]
     fn windows_layout_matches_the_official_installer() {
         let layout = windows_layout(
@@ -279,8 +237,6 @@ mod tests {
         assert_eq!(layout.visible_bin, PathBuf::from(r"D:\tools\herdr"));
     }
 
-    /// A hostile version string must not be able to escape the releases dir: the
-    /// release directory is always exactly one component below it.
     #[test]
     fn windows_release_dir_stays_directly_inside_releases() {
         for version in ["../../etc/evil", r"..\..\evil", "0.8.0"] {
@@ -314,7 +270,6 @@ mod tests {
         place_binary(b"v2", &target).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"v2");
 
-        // No staging leftovers.
         let leftovers: Vec<_> = std::fs::read_dir(target.parent().unwrap())
             .unwrap()
             .filter_map(|e| e.ok())
@@ -334,8 +289,6 @@ mod tests {
         assert_ne!(mode & 0o111, 0, "mode was {mode:o}");
     }
 
-    /// The whole archive must land, not just herdr.exe: the ConPTY runtime beside
-    /// it is a runtime dependency.
     #[test]
     fn extract_zip_writes_every_entry_including_nested_ones() {
         let tmp = tempfile::tempdir().unwrap();
@@ -364,7 +317,6 @@ mod tests {
         assert!(tmp.path().join("docs").join("readme.txt").exists());
     }
 
-    /// Zip-slip: an entry pointing outside the destination must abort the install.
     #[test]
     fn extract_zip_refuses_path_traversal() {
         let tmp = tempfile::tempdir().unwrap();
@@ -399,7 +351,6 @@ mod tests {
         promote_release(&staging, &release).unwrap();
         assert_eq!(std::fs::read(release.join("herdr.exe")).unwrap(), b"new");
         assert!(!staging.exists());
-        // The backup is cleaned up on success.
         let leftovers: Vec<_> = std::fs::read_dir(release.parent().unwrap())
             .unwrap()
             .filter_map(|e| e.ok())
@@ -421,7 +372,6 @@ mod tests {
         assert!(!staging.exists());
     }
 
-    /// If the new release cannot be moved in, the previous one must come back.
     #[test]
     fn promote_release_restores_the_previous_release_when_the_swap_fails() {
         let tmp = tempfile::tempdir().unwrap();
@@ -445,7 +395,6 @@ mod tests {
             let dir = releases.join(name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("herdr.exe"), name).unwrap();
-            // Distinct mtimes so ordering is deterministic.
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 

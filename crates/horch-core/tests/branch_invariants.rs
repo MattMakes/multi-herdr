@@ -1,16 +1,3 @@
-//! I11 and I12: a fleet branch with no row is adopted as an orphan and
-//! never deleted; a branch is deleted only when it is landed or rescued and
-//! no `git stash` entry names it (docs/specs/fleetd/design.md, "No work is
-//! lost" items 4 and 5; preservation-04-behavior.md row W6;
-//! docs/tickets/fleetd-p4/44-orphan-branches-and-deletion-guard.md).
-//!
-//! Each test makes its own temporary git repository and ledger. The
-//! `worktree_list` executor reads the fleet branches, the stash names and
-//! the rescue refs; the pass part decides with no git call; the deletion is
-//! a short effect after the commit. No test reads the load, the limits or
-//! the clock of the machine: the config is the default and the fleet clock
-//! is a number that the test gives.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -39,13 +26,9 @@ use horch_core::taskledger::Store;
 use rusqlite::Connection;
 
 const F1_BRANCH: &str = "fleet/r1";
-/// A run branch outside `fleet/`.
 const F2_BRANCH: &str = "work";
-/// The task branch with a row.
 const TASK: &str = "fleet/r1-T1-a";
 const CLOCK: FleetSeconds = FleetSeconds(1000);
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _dir: tempfile::TempDir,
@@ -53,15 +36,10 @@ struct World {
     store: Store,
     config: FleetConfig,
     repo: PathBuf,
-    /// The features of [`F1_BRANCH`] and [`F2_BRANCH`].
     f1: String,
     f2: String,
 }
 
-/// A temp ledger with 2 runs of 1 repository, their features on
-/// [`F1_BRANCH`] and [`F2_BRANCH`], and the task branch [`TASK`] of the
-/// first in `building`; a temp repository with 1 commit on `main`, and
-/// each of these branches at that commit.
 fn world() -> World {
     assert!(
         std::env::var_os("FLEET_ROOT").is_none(),
@@ -79,8 +57,6 @@ fn world() -> World {
     for b in [F1_BRANCH, F2_BRANCH, TASK] {
         git(&repo, &["branch", b]);
     }
-    // Adding the first task of a run makes its feature and the row of its
-    // branch.
     let mut task_id = String::new();
     for (slug, branch) in [("r1", F1_BRANCH), ("w", F2_BRANCH)] {
         let new_run = NewRun {
@@ -91,7 +67,6 @@ fn world() -> World {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, &repo, &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -156,8 +131,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = git_out(dir, args);
     assert!(
@@ -206,17 +179,14 @@ impl World {
         }
     }
 
-    /// A git that can write the git folder of the repository.
     fn writer(&self) -> CliWorktreeGit {
         CliWorktreeGit::new("git", self.root.join("fleet")).writing(&[self.repo.join(".git")])
     }
 
-    /// The gateway of the deletion effect.
     fn gateway(&self) -> CliGitGateway {
         CliGitGateway::new(self.writer())
     }
 
-    /// The tip of `rev`, or `None` when it does not exist.
     fn tip(&self, rev: &str) -> Option<String> {
         let out = git_out(&self.repo, &["rev-parse", "--verify", "-q", rev]);
         out.status
@@ -224,7 +194,6 @@ impl World {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Commit 1 new file on `branch` with no checkout, and give the new tip.
     fn commit_on(&self, branch: &str, file: &str) -> String {
         let parent = self.tip(branch).unwrap();
         let blob = {
@@ -282,7 +251,6 @@ impl World {
         tip
     }
 
-    /// Make a stash entry that names `branch`, and leave `main` checked out.
     fn stash_on(&self, branch: &str) {
         git(&self.repo, &["checkout", "-q", branch]);
         std::fs::write(self.repo.join("a.txt"), "stashed work\n").unwrap();
@@ -290,14 +258,10 @@ impl World {
         git(&self.repo, &["checkout", "-q", "main"]);
     }
 
-    /// Drop each stash entry.
     fn clear_stash(&self) {
         git(&self.repo, &["stash", "clear"]);
     }
 
-    /// Move the task branch `name` from `building` to `to` through the 1
-    /// door. A branch lands only from a bundle: `landed` goes through
-    /// `verifying`, `ready` and `in_bundle` first.
     fn move_branch(&mut self, name: &str, to: &str) {
         let path: &[&str] = match to {
             "landed" => &["verifying", "ready", "in_bundle", "landed"],
@@ -321,8 +285,6 @@ impl World {
             .unwrap();
     }
 
-    /// Write the rescue ref of `branch` at its tip, and record it in the
-    /// row. Gives the name of the ref.
     fn rescue(&mut self, branch: &str) -> String {
         let tip = self.tip(branch).unwrap();
         let name = refs_git::write_branch_rescue(&self.writer(), &self.repo, branch, &tip).unwrap();
@@ -340,8 +302,6 @@ impl World {
         name
     }
 
-    /// 1 run of the `worktree_list` job of the repository, through its
-    /// executor: the facts that a pass reads.
     fn list(&self) -> Vec<RepoListing> {
         let subject = self.repo.display().to_string();
         let row = JobRow {
@@ -373,7 +333,6 @@ impl World {
         vec![listing]
     }
 
-    /// The pass part in `tx`: adopt the orphans, then decide the deletions.
     fn decide(&self, tx: &Connection, lists: &[RepoListing]) -> (Vec<Orphan>, Vec<Deletion>) {
         let ctx = self.ctx();
         let orphans = branches::adopt_orphans(&ctx, tx, lists, CLOCK).unwrap();
@@ -381,7 +340,6 @@ impl World {
         (orphans, deletions)
     }
 
-    /// 1 pass part that commits.
     fn pass(&self, lists: &[RepoListing]) -> (Vec<Orphan>, Vec<Deletion>) {
         let tx = self.conn().unchecked_transaction().unwrap();
         let out = self.decide(&tx, lists);
@@ -389,7 +347,6 @@ impl World {
         out
     }
 
-    /// Run each deletion after the commit.
     fn delete_all(&self, deletions: &[Deletion]) -> Vec<Ran> {
         let gw = self.gateway();
         deletions
@@ -410,8 +367,6 @@ impl World {
 fn names(deletions: &[Deletion]) -> Vec<&str> {
     deletions.iter().map(|d| d.branch.as_str()).collect()
 }
-
-// ─── I11 ────────────────────────────────────────────────────────────────
 
 #[test]
 fn orphan_fleet_branch_is_adopted_and_reported_and_not_deleted() {
@@ -454,7 +409,6 @@ fn orphan_fleet_branch_is_adopted_and_reported_and_not_deleted() {
     assert!(deletions.is_empty(), "{deletions:?}");
     assert!(w.delete_all(&deletions).is_empty());
 
-    // The next pass adopts nothing again, and deletes no orphan.
     let lists = w.list();
     let (orphans, deletions) = w.pass(&lists);
     let again: Vec<&str> = orphans.iter().map(|o| o.branch.as_str()).collect();
@@ -471,8 +425,6 @@ fn orphan_fleet_branch_is_adopted_and_reported_and_not_deleted() {
     assert_eq!(w.tip(lost).as_deref(), Some(lost_tip.as_str()));
 }
 
-// ─── I12 ────────────────────────────────────────────────────────────────
-
 #[test]
 fn stash_entry_blocks_the_deletion_of_its_branch() {
     let mut w = world();
@@ -487,12 +439,10 @@ fn stash_entry_blocks_the_deletion_of_its_branch() {
     );
     assert!(w.tip(TASK).is_some());
 
-    // The stash is dropped: the branch is deleted.
     w.clear_stash();
     let (_, deletions) = w.pass(&w.list());
     assert_eq!(names(&deletions), vec![TASK]);
 
-    // A stash entry made after the listing still blocks the effect.
     w.stash_on(TASK);
     assert_eq!(w.delete_all(&deletions), vec![Ran::Stashed]);
     assert!(w.tip(TASK).is_some());
@@ -502,18 +452,15 @@ fn stash_entry_blocks_the_deletion_of_its_branch() {
 fn unlanded_unrescued_branch_is_never_deleted() {
     let mut w = world();
     w.commit_on(TASK, "t.txt");
-    // building, with work.
     let (_, deletions) = w.pass(&w.list());
     assert!(deletions.is_empty(), "{deletions:?}");
 
-    // A rescue ref at an older tip does not save the newer work.
     w.rescue(TASK);
     let newer = w.commit_on(TASK, "u.txt");
     w.move_branch(TASK, "abandoned");
     let (_, deletions) = w.pass(&w.list());
     assert!(deletions.is_empty(), "{deletions:?}");
 
-    // The feature is merged: the branch holds work that is not saved.
     w.store
         .immediate(|tx| {
             transition(
@@ -531,7 +478,6 @@ fn unlanded_unrescued_branch_is_never_deleted() {
     let (_, deletions) = w.pass(&w.list());
     assert!(deletions.is_empty(), "{deletions:?}");
     assert_eq!(w.tip(TASK).as_deref(), Some(newer.as_str()));
-    // No feature branch is deleted.
     assert!(w.tip(F1_BRANCH).is_some());
 }
 
@@ -545,7 +491,6 @@ fn landed_branch_with_no_stash_is_deleted() {
     assert_eq!(names(&deletions), vec![TASK]);
     assert_eq!(w.delete_all(&deletions), vec![Ran::Deleted]);
     assert_eq!(w.tip(TASK), None);
-    // The next listing has no such branch, so nothing is due.
     let (_, deletions) = w.pass(&w.list());
     assert!(deletions.is_empty(), "{deletions:?}");
     assert!(w.row(TASK).is_some(), "the row stays");
@@ -569,8 +514,6 @@ fn abandoned_branch_with_a_rescue_ref_at_its_tip_is_deleted() {
     );
 }
 
-// ─── crash ──────────────────────────────────────────────────────────────
-
 #[test]
 fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     let mut w = world();
@@ -580,8 +523,6 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     git(&w.repo, &["branch", orphan]);
     let lists = w.list();
 
-    // Fault point 1: the pass dies before its commit. Nothing is written,
-    // and no effect runs.
     {
         let tx = w.conn().unchecked_transaction().unwrap();
         let (orphans, deletions) = w.decide(&tx, &lists);
@@ -593,20 +534,16 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     assert!(w.open_orphan_items().is_empty());
     assert_eq!(w.tip(TASK).as_deref(), Some(tip.as_str()));
 
-    // Fault point 2: the pass commits and dies before the effect.
     let (orphans, deletions) = w.pass(&lists);
     assert_eq!(orphans.len(), 1);
     assert_eq!(names(&deletions), vec![TASK]);
     assert!(w.row(orphan).unwrap().orphan);
     assert_eq!(w.tip(TASK).as_deref(), Some(tip.as_str()));
 
-    // The next pass, on the same listing, completes the effect 1 time.
     let (orphans, deletions) = w.pass(&lists);
     assert!(orphans.is_empty(), "the orphan is adopted 1 time");
     assert_eq!(w.delete_all(&deletions), vec![Ran::Deleted]);
     assert_eq!(w.tip(TASK), None);
-    // A pass on a stale listing gives the effect again: git has no such
-    // branch, so nothing more happens.
     let (_, deletions) = w.pass(&lists);
     assert_eq!(
         w.delete_all(&deletions),
@@ -623,7 +560,6 @@ fn branch_that_moved_after_the_listing_is_not_deleted() {
     let (_, deletions) = w.pass(&w.list());
     assert_eq!(names(&deletions), vec![TASK]);
 
-    // New work arrives on the branch before the effect runs.
     let newer = w.commit_on(TASK, "late.txt");
     assert_eq!(
         w.delete_all(&deletions),

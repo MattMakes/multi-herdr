@@ -1,8 +1,3 @@
-//! Typed wrapper around `hc` (`herdr-core`) and `herdr-app`.
-//!
-//! Verified against `hc 0.1.21` and `herdr-app 0.1.16` (see
-//! `docs/live-checks/hc-backend.md`).
-
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
@@ -21,10 +16,6 @@ use crate::workspace::model::{
     Direction, Focus, FocusDir, Layout, Move, NewWorkspace, Pane, Resize, Tab, Workspace,
 };
 
-/// An `hc` command that exited non-zero (or reported a finished terminal on a
-/// live-only lookup), decoded from `hc`'s `{"error":{"kind":...,"message":...}}`
-/// stderr envelope so callers branch on `kind` rather than message text
-/// (ARC-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HcFailed {
     pub command: String,
@@ -33,7 +24,6 @@ pub struct HcFailed {
 }
 
 impl HcFailed {
-    /// True when the target terminal no longer exists as a live pane.
     pub fn is_gone(&self) -> bool {
         matches!(self.kind.as_str(), "not_found" | "finished")
     }
@@ -206,8 +196,6 @@ fn missing_app(err: std::io::Error) -> anyhow::Error {
     }
 }
 
-/// Handle to `hc` and `herdr-app`, with socket paths resolved from
-/// [`RuntimeContext`].
 #[derive(Debug, Clone)]
 pub struct HcApp {
     hc: PathBuf,
@@ -219,8 +207,6 @@ pub struct HcApp {
 }
 
 impl HcApp {
-    /// Build an [`HcApp`] handle from [`RuntimeContext`] without reading the
-    /// ambient environment (ARC-05).
     pub fn from_context(ctx: &RuntimeContext) -> Self {
         let core_socket = ctx.inherited.hc_terminal_socket.clone().unwrap_or_else(|| {
             ctx.paths
@@ -241,7 +227,6 @@ impl HcApp {
         }
     }
 
-    /// Construct directly with explicit binary and core-socket paths.
     pub fn new(
         hc: impl Into<PathBuf>,
         app: impl Into<PathBuf>,
@@ -275,7 +260,6 @@ impl HcApp {
         self
     }
 
-    /// Fix a single deadline across a multi-child operation (`pane_list`).
     fn scoped(&self) -> Self {
         let deadline = match (self.timeout, self.deadline) {
             (Some(t), Some(d)) => Some(Instant::now().checked_add(t).map_or(d, |te| d.min(te))),
@@ -292,8 +276,6 @@ impl HcApp {
     fn hc_command<S: AsRef<OsStr>>(&self, args: &[S]) -> start::Command {
         let mut command = start::command(&self.hc);
         command.env("HC_TERMINAL_SOCKET", &self.core_socket);
-        // Strip caller terminal identity so `hc send` from inside an agent
-        // terminal delivers unwrapped text instead of `<hc from="...">...</hc>`.
         command.env_remove("HC_TERMINAL_ID");
         command.env_remove("HC_SCOPE");
         command.args(args);
@@ -382,8 +364,6 @@ impl HcApp {
             .with_context(|| format!("could not parse herdr-app response: {}", stdout.trim()))
     }
 
-    /// True when the `herdr-core` socket exists and `hc server status` exits 0.
-    /// Checking the socket first guarantees this probe never starts a core.
     pub fn server_reachable(&self) -> bool {
         if !self.core_socket.exists() {
             return false;
@@ -853,8 +833,6 @@ impl HcApp {
     }
 }
 
-/// True when `herdr-app` exited non-zero (`HcFailed { kind: "herdr_app", .. }`)
-/// and NOT when a timeout / push deadline stopped the call.
 fn is_app_unavailable(err: &anyhow::Error) -> bool {
     err.downcast_ref::<HcFailed>()
         .is_some_and(|f| f.kind == "herdr_app")
@@ -1478,8 +1456,6 @@ esac"#,
             ),
             "exit 1",
         );
-        // Even if the test host itself runs inside an `hc` terminal with
-        // HC_TERMINAL_ID and HC_SCOPE set, `hc_command` scrubs both.
         hc.agent_prompt("t19", "hello").unwrap();
         assert_eq!(
             std::fs::read_to_string(env_log.path()).unwrap().trim(),

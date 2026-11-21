@@ -1,15 +1,3 @@
-//! `horch feature abandon <feature>`: fleetd writes a verified rescue ref
-//! of each branch of the feature that is not landed, moves each such branch
-//! to `abandoned`, cancels each task of the run that is not terminal (a
-//! live attempt is stopped first), and moves the feature to `abandoned`
-//! (docs/specs/fleetd/design.md, "The feature state machine", "A cancel",
-//! I10, FM-43; docs/tickets/fleetd-p4/40-horch-feature-abandon.md).
-//!
-//! Each test has its own temporary ledger, fleet root and git repository.
-//! No test reads the load, the limits or the clock of the machine: the fleet
-//! clock is the `fleetd` row of the temp ledger, the config is the default,
-//! and a recorded process is a number with the fact that the test gives.
-
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,8 +38,6 @@ const RUN_BRANCH: &str = "fleet/r1";
 const RESCUE_PREFIX: &str = "refs/horch/rescue/branch/";
 const WHY: &str = "the operator abandons the feature";
 
-/// The recorded agent of the worker of the live attempt. No process of
-/// this machine is read: the test gives what the pass sees of it.
 const AGENT: Recorded = Recorded {
     pid: 4_000_001,
     pid_start: Some(7),
@@ -93,8 +79,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A temp repository with `main` and the run branch, a temp ledger with the
-/// fleet clock, 1 run and its feature `F-0001` (Q5: the run rowid is 1).
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
@@ -132,7 +116,6 @@ fn world() -> World {
                 text: "feature accepted",
             };
             rows::insert_feature(tx, None, &new, cause)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(tx, &run.run_id, &horch_core::taskledger::util::now(), true)?;
             Ok(run)
         })
@@ -148,8 +131,6 @@ fn world() -> World {
     }
 }
 
-/// A rescue port that dies after `left` rescues: fleetd dies in the middle
-/// of step 1.
 struct DiesAfter<'a> {
     git: GitBranchRescues<'a>,
     left: RefCell<usize>,
@@ -166,9 +147,6 @@ impl BranchRescues for DiesAfter<'_> {
     }
 }
 
-/// A rescue port that records the state of the branch, of the feature and
-/// of the task of the branch at each rescue: nothing moves before its
-/// rescue ref exists.
 struct SeenRescues<'a> {
     git: GitBranchRescues<'a>,
     db: PathBuf,
@@ -195,9 +173,6 @@ impl World {
             .writing(&[self.repo.join(".git")])
     }
 
-    /// A new task `title` of `persona` with its branch row in `building`,
-    /// and the branch in git with 1 commit of its own. Gives (task, branch,
-    /// tip).
     fn task(&mut self, title: &str, persona: &str) -> (String, String, String) {
         let branch = format!("{RUN_BRANCH}-{title}");
         let new = NewTask::work(title, &format!("tickets/{title}.md"), persona);
@@ -227,7 +202,6 @@ impl World {
         (task, branch, tip)
     }
 
-    /// The branch row moves along `path` through the 1 door.
     fn walk(&mut self, branch: &str, path: &[&str]) {
         let config = self.config.clone();
         self.store
@@ -256,7 +230,6 @@ impl World {
             .unwrap();
     }
 
-    /// A task whose branch is `landed` and which is `done`.
     fn landed(&mut self, title: &str) -> (String, String, String) {
         let (task, branch, tip) = self.task(title, "dev");
         self.walk(&branch, &["verifying", "ready", "in_bundle", "landed"]);
@@ -264,8 +237,6 @@ impl World {
         (task, branch, tip)
     }
 
-    /// The ready task of `persona` is bound to a worker of `persona`: 1
-    /// live attempt. Gives the worker id.
     fn claimed(&mut self, persona: &str) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -282,8 +253,6 @@ impl World {
                 |r| r.get(0),
             )
             .unwrap();
-        // The test made the branch of the task itself: the bind reserves
-        // no second tree and branch.
         conn.execute(
             "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
             [&task],
@@ -328,7 +297,6 @@ impl World {
         tasks::get(self.store.conn(), task).unwrap().status
     }
 
-    /// The rescue refs in git.
     fn rescue_refs(&self) -> Vec<String> {
         git(
             &self.repo,
@@ -339,8 +307,6 @@ impl World {
         .collect()
     }
 
-    /// `branch` moved to `abandoned` 1 time, and its rescue ref keeps
-    /// `tip`.
     fn assert_abandoned_once(&self, branch: &str, tip: &str) {
         assert_eq!(self.state(branch), "abandoned");
         assert_eq!(self.moves("task_branch", branch, "abandoned"), 1);
@@ -348,7 +314,6 @@ impl World {
         assert_eq!(git(&self.repo, &["rev-parse", &rescue]), tip);
     }
 
-    /// The count of moves of the `entity` `id` to `to`.
     fn moves(&self, entity: &str, id: &str, to: &str) -> i64 {
         self.store
             .conn()
@@ -362,7 +327,6 @@ impl World {
     }
 }
 
-/// What the pass sees of the agent of the live attempt.
 fn facts(seen: Seen) -> Facts {
     let mut f = Facts::default();
     f.processes.insert(AGENT, seen);
@@ -413,7 +377,6 @@ fn abandon_rescues_each_unlanded_branch_first() {
     names.sort();
     assert_eq!(names, [a.as_str(), b.as_str()]);
 
-    // A second abandon moves nothing and writes no second ref.
     let again = w.abandon(&GitBranchRescues { git: &git_port }).unwrap();
     assert!(again.already);
     assert!(again.branches.is_empty());
@@ -433,8 +396,6 @@ fn abandon_cancels_each_open_task_after_its_stop() {
 
     let out = w.abandon(&GitBranchRescues { git: &git_port }).unwrap();
 
-    // The task with a live attempt waits for the stop of its process; the
-    // other open task is cancelled at once; a done task stays done.
     assert_eq!(w.task_status(&live), "running", "no cancel before the stop");
     assert!(tasks::cancel_requested(w.store.conn(), &live)
         .unwrap()
@@ -453,7 +414,6 @@ fn abandon_cancels_each_open_task_after_its_stop() {
     let rescue = w.rescue_ref(&live_branch).unwrap();
     assert_eq!(git(&w.repo, &["rev-parse", &rescue]), live_tip);
 
-    // The process still runs: the pass does not cancel the task.
     let moved = w
         .store
         .immediate(|tx| cancel::complete_cancels(tx, &facts(Seen::Alive)))
@@ -461,7 +421,6 @@ fn abandon_cancels_each_open_task_after_its_stop() {
     assert!(moved.is_empty());
     assert_eq!(w.task_status(&live), "running");
 
-    // The process is gone: the pass cancels the task 1 time.
     let moved = w
         .store
         .immediate(|tx| cancel::complete_cancels(tx, &facts(Seen::Dead)))
@@ -539,7 +498,6 @@ fn branch_with_no_rescue_ref_is_not_moved() {
     let git_port = w.git_port();
     let port = GitBranchRescues { git: &git_port };
     let rescued = commands::rescue_feature(w.store.conn(), &port, &w.repo, FEATURE).unwrap();
-    // A branch is bound after step 1: it has no rescue ref yet.
     let (_, late, _) = w.task("late", "dev");
 
     let config = w.config.clone();
@@ -560,7 +518,6 @@ fn branch_with_no_rescue_ref_is_not_moved() {
     assert_eq!(w.task_status(&task), "ready");
     assert_eq!(w.feature_state(), "open");
 
-    // The next abandon rescues both, then moves both.
     w.abandon(&port).unwrap();
     assert_eq!(w.rescue_refs().len(), 2);
     assert_eq!(
@@ -568,8 +525,6 @@ fn branch_with_no_rescue_ref_is_not_moved() {
         ("abandoned".into(), "abandoned".into())
     );
 }
-
-// ─── the feature_abandon request of fleetd (Phase 5) ────────────────────
 
 fn handlers(w: &World) -> Handlers {
     let mut h = Handlers::new();
@@ -625,8 +580,6 @@ fn feature_abandon_request_verifies_each_rescue_ref_before_the_moves() {
     let h = handlers(&w);
     let entry = |branch: &str, rescue: &str, tip: &str| json!({"branch": branch, "rescue_ref": rescue, "tip": tip});
 
-    // Each payload that git or the ledger does not confirm is refused, and
-    // nothing moves.
     let bad = [
         json!({"feature": FEATURE, "branches": [entry(&a, &a_ref, &a_tip)]}),
         json!({"feature": FEATURE, "branches": [entry(&a, &a_ref, &b_tip), entry(&b, &b_ref, &b_tip)]}),
@@ -668,7 +621,6 @@ fn crash_in_the_middle_completes_on_the_next_pass() {
     let git_port = w.git_port();
     let port = GitBranchRescues { git: &git_port };
 
-    // Fault point 1: fleetd dies in step 1, after the rescue of 1 branch.
     let dies = DiesAfter {
         git: GitBranchRescues { git: &git_port },
         left: RefCell::new(1),
@@ -683,8 +635,6 @@ fn crash_in_the_middle_completes_on_the_next_pass() {
     assert_eq!(w.feature_state(), "open");
     assert_eq!(w.task_status(&a_task), "ready");
 
-    // Fault point 2: step 1 completes, and fleetd dies before the commit
-    // of the intended rows.
     let rescued = commands::rescue_feature(w.store.conn(), &port, &w.repo, FEATURE).unwrap();
     assert_eq!(rescued.len(), 3);
     let second = w.rescue_refs();
@@ -693,17 +643,12 @@ fn crash_in_the_middle_completes_on_the_next_pass() {
     assert_eq!(w.feature_state(), "open", "nothing moved");
     assert_eq!(w.state(&a), "building");
 
-    // Fault point 3: the commit, and fleetd dies before the stop of the
-    // live attempt (the use case commits; the caller stops after it).
     let done = w.abandon(&port).unwrap();
     assert_eq!(done.to_stop(), std::slice::from_ref(&worker));
     assert_eq!(w.rescue_refs(), second, "no second ref for the same tip");
     assert_eq!(w.feature_state(), "abandoned");
     assert_eq!(w.task_status(&live), "running", "it waits for its stop");
 
-    // The next pass: a new abandon gives the worker to stop again and moves
-    // nothing again; the pass of fleetd cancels the task when its process
-    // is gone.
     let again = w.abandon(&port).unwrap();
     assert!(again.already);
     assert_eq!(again.to_stop(), [worker]);
@@ -713,7 +658,6 @@ fn crash_in_the_middle_completes_on_the_next_pass() {
         .unwrap();
     assert_eq!(moved, std::slice::from_ref(&live));
 
-    // Each effect happened 1 time, and no tip is lost.
     assert_eq!(w.rescue_refs(), second);
     w.assert_abandoned_once(&a, &a_tip);
     w.assert_abandoned_once(&b, &b_tip);

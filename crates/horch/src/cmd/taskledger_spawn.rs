@@ -1,13 +1,3 @@
-//! `horch spawn`'s task-ledger side (#34): the worker row exists before the
-//! pane opens, its id travels in the brief, and the role and pane are
-//! recorded once the split is done.
-//!
-//! The command changes no row itself (RR-5, ticket 23 of fleetd-p5): each
-//! change is 1 request to fleetd, and each read opens the ledger read-only.
-//! Only the spawns of fleetd run: `horch spawn --attempt` of a bound
-//! attempt (ticket 10 of fleetd-p4) and the restart on a fallback. Each
-//! other spawn is refused (ticket 48 of fleetd-p6).
-
 use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
@@ -32,15 +22,10 @@ use serde_json::{Map, Value};
 use super::spawn::SpawnArgs;
 use super::taskledger::{project_root, RunArg};
 
-/// The first line of the pane of a push attempt (Q8 of
-/// `docs/tickets/fleetd-p4/MAP.md`): 1 fixed format with the absolute path
-/// of its `START.md`, because a pane has no task folder as its cwd.
 pub fn start_line(start_md: &Path) -> String {
     format!("Read {} and continue.", start_md.display())
 }
 
-/// The line of `horch spawn`, retired by ticket 48 of fleetd-p6: fleetd
-/// launches each attempt.
 pub(crate) fn retired_line() -> String {
     retired("spawn").expect("spawn is a retired kind").line()
 }
@@ -49,10 +34,6 @@ pub(crate) fn launched_by_fleetd(args: &SpawnArgs) -> bool {
     args.attempt.is_some()
 }
 
-/// Send 1 request of `kind` with `payload` to fleetd (ticket 15). Gives the
-/// result of an applied request, or `None` when the request waits in a
-/// request file because fleetd is down: the client printed that line. A
-/// refused request is the error `refused: <reason>`.
 pub(crate) fn request(ctx: &RuntimeContext, kind: Kind, payload: Value) -> Result<Option<Value>> {
     let Value::Object(payload) = payload else {
         bail!("the payload of {} is not an object", kind.as_str());
@@ -66,7 +47,6 @@ pub(crate) fn request(ctx: &RuntimeContext, kind: Kind, payload: Value) -> Resul
     }
 }
 
-/// A payload object from the fields that have a value.
 fn payload(fields: &[(&str, Option<&str>)]) -> Value {
     let map: Map<String, Value> = fields
         .iter()
@@ -75,52 +55,27 @@ fn payload(fields: &[(&str, Option<&str>)]) -> Value {
     Value::Object(map)
 }
 
-/// What `horch spawn` does after its ledger side.
 pub enum Prepared {
-    /// The spawn joins no task-ledger run.
     NoRun,
-    /// The spawn opens the pane of this worker row.
     Pane(Box<LedgerSpawn>),
 }
 
-/// A spawn's worker row.
 pub struct LedgerSpawn {
     pub run: Run,
     pub worker_id: String,
     pub first_line: String,
-    /// The push attempt of the worker, with its files.
     pub push: Option<Pushed>,
-    /// The worker is the idea-lead of an idea-lead attempt (T-890).
     pub idea_lead: bool,
 }
 
-/// The push attempt that fleetd bound and that a spawn opens the pane of
-/// (`--attempt`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pushed {
     pub attempt_id: String,
     pub task_id: String,
     pub files: AttemptFiles,
-    /// The session that the CLI of the attempt resumes (RR-12): the
-    /// `resumed_from_session` that fleetd wrote on the worker row before the
-    /// launch, of the form of [`launch::session_id_ok`]. No argument sets it.
     pub resume: Option<String>,
 }
 
-/// The ledger side of a spawn that joins a task-ledger run: it names one
-/// with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, its
-/// workspace has an active run, or a `spawn_only` controller in an active
-/// run sends a role its brief. [`Prepared::NoRun`] otherwise: a controller
-/// outside every run sends its brief outside every run too.
-///
-/// - `--attempt`: the attempt that fleetd bound; its task files are
-///   written, and no row changes.
-/// - else the spawn is refused with the line of the retired `spawn` kind:
-///   fleetd launches each attempt (ticket 48 of fleetd-p6).
-///
-/// `controller` is the caller's ledger row when the caller has
-/// `spawn_only` and passed its check (T-38). Only such a spawn carries task
-/// text: `horch spawn` refuses every other (TRF-43).
 pub fn prepare(
     ctx: &RuntimeContext,
     args: &SpawnArgs,
@@ -174,12 +129,6 @@ pub fn prepare(
     })))
 }
 
-/// The idea-lead attempt `attempt` that fleetd started (T-890): an attempt
-/// with no task whose rows make it an idea-lead attempt
-/// ([`idea_lead_launch`]). It is in `launching`, and its worker is a
-/// `spawning` row of `run` and `persona` with no agent. Gives its worker and
-/// the brief of its idea, the first line of its pane. `None` for each
-/// other attempt: [`bound_attempt`] refuses an attempt with no task.
 fn idea_lead_attempt(
     ctx: &RuntimeContext,
     store: &Store,
@@ -211,9 +160,6 @@ fn idea_lead_attempt(
     Ok(Some((l.worker_id, l.brief)))
 }
 
-/// The push attempt `attempt` that fleetd bound (`--attempt`), with its
-/// `task.yaml` and `START.md` written. Gives its worker row and the
-/// attempt.
 fn push(
     ctx: &RuntimeContext,
     store: &Store,
@@ -243,10 +189,6 @@ fn push(
     ))
 }
 
-/// The push attempt `attempt` that fleetd bound, for `--attempt`: it is in
-/// `launching`, it began with a push dispatch, and its worker is a
-/// `spawning` row of `run` and `persona` with no agent. Gives its worker,
-/// the attempt and its task.
 fn bound_attempt(
     store: &Store,
     attempt: &str,
@@ -292,10 +234,6 @@ fn bound_attempt(
     Ok((worker_id, attempt.to_string(), task))
 }
 
-/// Refuse a spawn while a health guard holds new dispatch (OR-5), before
-/// any row is written. The refusal names each hold with its floor and its
-/// reading. A guard with no reading prints 1 note and does not hold
-/// (`preservation-06`, row S12).
 fn refuse_on_hold(ctx: &RuntimeContext) -> Result<()> {
     let mut held = Vec::new();
     for finding in holds::holds(ctx)? {
@@ -316,11 +254,6 @@ fn refuse_on_hold(ctx: &RuntimeContext) -> Result<()> {
     )
 }
 
-/// Whether this spawn joins a task-ledger run. `None`: it does not. `Some`
-/// holds the run it joins: the run `--run` (or `HORCH_RUN_ID`) names, the run
-/// of the worker `--replaces` names, else the 1 active run of the caller's
-/// herdr workspace (TRF-34). A planned run there wins over solo runs. A spawn never joins the run of another
-/// workspace unless it names that run.
 fn ledger_run_wanted(
     ctx: &RuntimeContext,
     store: &Store,
@@ -336,7 +269,6 @@ fn ledger_run_wanted(
     )
 }
 
-/// [`ledger_run_wanted`] with its inputs read.
 fn run_to_join(
     store: &Store,
     root: &Path,
@@ -353,7 +285,6 @@ fn run_to_join(
         }
     }
     let active = active_runs(store, root)?;
-    // A solo run never makes the workspace's planned run ambiguous (TRF-34).
     let own = runs::planned_first(
         active
             .iter()
@@ -383,8 +314,6 @@ fn run_to_join(
     }
 }
 
-/// Say that a spawn joins no run, because each active run of the
-/// project belongs to another workspace than the caller's.
 fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
     if active.is_empty() {
         return;
@@ -406,10 +335,6 @@ fn note_other_workspaces(active: &[Run], workspace: Option<&str>) {
     );
 }
 
-/// The run a role joins (T-38, decision Q4): the active run of the
-/// `spawn_only` controller's ledger row, when the spawn has task text and
-/// names no run. Only a controller passes `controller`, so every other
-/// spawn with task text keeps #89.
 fn controller_run(
     store: &Store,
     args: &SpawnArgs,
@@ -428,14 +353,12 @@ fn controller_run(
     Ok((run.status == RunStatus::Active.as_str()).then_some(run))
 }
 
-/// The run `--run` or `HORCH_RUN_ID` names.
 fn explicit_run(args: &SpawnArgs) -> Option<String> {
     args.run
         .clone()
         .or_else(|| std::env::var("HORCH_RUN_ID").ok().filter(|v| !v.is_empty()))
 }
 
-/// The active runs of the project.
 fn active_runs(store: &Store, root: &Path) -> Result<Vec<Run>> {
     let all = runs::of_project(store.conn(), root)?;
     Ok(all
@@ -444,7 +367,6 @@ fn active_runs(store: &Store, root: &Path) -> Result<Vec<Run>> {
         .collect())
 }
 
-/// A closed run takes no new worker.
 fn ensure_active(run: &Run) -> Result<()> {
     ensure!(
         run.status == RunStatus::Active.as_str(),
@@ -455,8 +377,6 @@ fn ensure_active(run: &Run) -> Result<()> {
     Ok(())
 }
 
-/// The persona of the new worker: the teammate, or the tier of the
-/// execution `--resume` names.
 fn spawn_persona(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<String> {
     match (&args.teammate, &args.resume) {
         (Some(t), _) => Ok(t.clone()),
@@ -465,7 +385,6 @@ fn spawn_persona(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<String> {
     }
 }
 
-/// Refuse to replace a worker that is still live.
 fn ensure_replaceable(store: &Store, args: &SpawnArgs, run: &Run) -> Result<()> {
     let Some(prev) = &args.replaces else {
         return Ok(());
@@ -483,15 +402,10 @@ fn ensure_replaceable(store: &Store, args: &SpawnArgs, run: &Run) -> Result<()> 
 }
 
 impl LedgerSpawn {
-    /// The worker claims its task: no push attempt and no idea-lead
-    /// attempt gave it its work.
     pub fn claims(&self) -> bool {
         self.push.is_none() && !self.idea_lead
     }
 
-    /// The pane is open and runs `horch worker <role>`: 1 `worker_launched`
-    /// request records it. A failed record prints a warning and never fails
-    /// the spawn.
     pub fn spawned(
         &self,
         ctx: &RuntimeContext,
@@ -519,8 +433,6 @@ impl LedgerSpawn {
         );
     }
 
-    /// The spawn failed before the worker ran: 1 `worker_launch_failed`
-    /// request ends its row.
     pub fn launch_failed(&self, ctx: &RuntimeContext, reason: &str) {
         let sent = payload(&[
             ("run_id", Some(&self.run.run_id)),
@@ -533,10 +445,6 @@ impl LedgerSpawn {
     }
 }
 
-/// An in-process fleetd for the tests of `horch spawn`: the channel server
-/// of ticket 13 with the worker handlers of ticket 19, on the ledger and
-/// the fleet root of a test context. The `fleetd` row names this process,
-/// so the client of the channel accepts the server.
 #[cfg(test)]
 pub(crate) mod test_fleetd {
     use std::time::Duration;
@@ -549,7 +457,6 @@ pub(crate) mod test_fleetd {
     use horch_core::runtime::RuntimeContext;
     use horch_core::taskledger::util;
 
-    /// Serve the channel of `ctx` until the server is dropped.
     pub fn serve(ctx: &RuntimeContext) -> ChannelServer {
         let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
         conn.busy_timeout(Duration::from_secs(10)).unwrap();
@@ -607,7 +514,6 @@ mod trf_33_34_tests {
         }
     }
 
-    /// A ledger with 1 active run per (slug, workspace) in project `root`.
     fn world(runs_of: &[(&str, Option<&str>)]) -> (tempfile::TempDir, Store, Vec<Run>) {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -625,7 +531,6 @@ mod trf_33_34_tests {
                                 ..Default::default()
                             },
                         )?;
-                        // FR-12: a task needs an idea in flight of the feature of its run.
                         horch_core::taskledger::schema::run_idea(
                             tx,
                             &run.run_id,
@@ -640,8 +545,6 @@ mod trf_33_34_tests {
         (dir, store, made)
     }
 
-    /// A machine fixture with `free_gb` GB of free disk; each other
-    /// reading is healthy.
     fn machine_file(dir: &Path, free_gb: u64) -> std::path::PathBuf {
         let path = dir.join(format!("machine-{free_gb}.json"));
         let gb: u64 = 1 << 30;
@@ -702,8 +605,6 @@ mod trf_33_34_tests {
         );
         assert_eq!(workers(), 0, "a refused spawn writes no row");
 
-        // A normal probe passes the guard. A spawn that fleetd did not
-        // launch is then refused with the line of the retired kind.
         let err = prepare(&ctx_with(200), &spawn, None)
             .err()
             .expect("a retired spawn");
@@ -711,8 +612,6 @@ mod trf_33_34_tests {
         assert_eq!(workers(), 0);
     }
 
-    /// A resume spawn joins the run of its workspace, so it binds a task
-    /// as each worker spawn does (TRF-33).
     #[test]
     fn trf_33_a_resume_spawn_joins_the_run_of_its_workspace() {
         let (dir, store, made) = world(&[("r1", Some("w1"))]);
@@ -720,7 +619,6 @@ mod trf_33_34_tests {
         resume.resume = Some("s-1".into());
         let joined = run_to_join(&store, dir.path(), None, Some("w1"), &resume).unwrap();
         assert_eq!(joined, Some(Some(made[0].run_id.clone())));
-        // A spawn outside every run gets no task.
         assert_eq!(super::super::spawn::worker_task(None), "");
     }
 
@@ -734,13 +632,10 @@ mod trf_33_34_tests {
         };
         assert_eq!(join(Some("w1"), None), Some(Some(made[0].run_id.clone())));
         assert_eq!(join(Some("w2"), None), Some(Some(made[1].run_id.clone())));
-        // Another workspace's 1 active run is not joined.
         assert_eq!(join(Some("w3"), None), None);
         assert_eq!(join(None, None), None);
-        // --run reaches another workspace's run.
         assert_eq!(join(Some("w1"), Some("r2")), Some(Some("r2".to_string())));
 
-        // 1 run of another workspace only: still not joined.
         let (dir, store, _) = world(&[("r9", Some("w9"))]);
         assert_eq!(
             run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
@@ -748,8 +643,6 @@ mod trf_33_34_tests {
         );
     }
 
-    /// TRF-34: a solo run (`horch ledger task`) beside the workspace's
-    /// planned run does not make a plain spawn ambiguous.
     #[test]
     fn trf_34_a_plain_spawn_joins_the_planned_run_beside_a_solo_run() {
         let (dir, store, made) = world(&[("solo-w1", Some("w1")), ("plan", Some("w1"))]);
@@ -765,10 +658,8 @@ mod trf_33_34_tests {
             .unwrap()
         };
         assert_eq!(join(None), Some(Some(made[1].run_id.clone())));
-        // --run still reaches the solo run.
         assert_eq!(join(Some("solo-w1")), Some(Some("solo-w1".to_string())));
 
-        // A solo run alone is still joined.
         let (dir, store, made) = world(&[("solo-w1", Some("w1"))]);
         assert_eq!(
             run_to_join(&store, dir.path(), None, Some("w1"), &bare).unwrap(),
@@ -813,15 +704,12 @@ mod trf_33_34_tests {
         }
     }
 
-    /// Ticket 19's `refuse_over_plan` guard: a `--replaces` spawn after a
-    /// reap that requeued the task is not refused.
     #[test]
     fn trf_33_a_replaces_spawn_after_a_reap_and_requeue_is_not_refused() {
         let (dir, mut store, made) = world(&[("r1", Some("w1"))]);
         let run = made[0].clone();
         store
             .immediate(|tx| {
-                // No git repository: the task works in the shared checkout.
                 let mut alpha = NewTask::work("alpha", "tickets/a.md", "opus");
                 alpha.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
                 tasks::add(tx, &run, &alpha, Actor::Orchestrator)
@@ -844,7 +732,6 @@ mod trf_33_34_tests {
                 })
                 .unwrap()
         };
-        // fleetd binds the task to the first worker (FR-5).
         let task = tasks::of_run(store.conn(), &run.run_id).unwrap()[0]
             .task_id
             .clone();
@@ -895,9 +782,6 @@ mod tests {
 
     use super::*;
 
-    /// T-38 step 3: the watchdog's pre-claim sweep reports a `claiming`
-    /// worker past the claim grace, but never a role that `prepare` marked.
-    /// The role is not ended either: its supervisor checks in.
     #[test]
     fn a_marked_role_is_never_reported_as_a_worker_that_did_not_claim() {
         let dir = tempfile::tempdir().unwrap();
@@ -912,7 +796,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -930,7 +813,6 @@ mod tests {
                 Ok((run, role, plain))
             })
             .unwrap();
-        // The verdict of the `spawn` handler for a role (ticket 19).
         s.immediate(|tx| {
             util::event(
                 tx,
@@ -983,7 +865,6 @@ mod push_tests {
 
     const HEALTHY: &str = r#"{"os":"macos","arch":"arm64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":256,"max_processes":100000}"#;
 
-    /// The server ends before its folder goes: fields drop in order.
     struct World {
         _fleetd: Option<ChannelServer>,
         dir: tempfile::TempDir,
@@ -991,8 +872,6 @@ mod push_tests {
         run: Run,
     }
 
-    /// A ledger with the active run `r1` in temp folders, and a healthy
-    /// machine fixture.
     fn world() -> World {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("machine.json"), HEALTHY).unwrap();
@@ -1008,7 +887,6 @@ mod push_tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -1048,8 +926,6 @@ mod push_tests {
             RuntimeContext::from_env(&env).unwrap()
         }
 
-        /// A ready shared-checkout task of `persona`, so no git tree is
-        /// needed.
         fn task(&mut self, title: &str, persona: &str) -> String {
             let mut new = NewTask::work(title, &format!("tickets/{title}.md"), persona);
             new.worktree_mode = WorktreeMode::Shared;
@@ -1086,8 +962,6 @@ mod push_tests {
         }
     }
 
-    /// The bind of the 1 ready task of persona `dev` to 1 push attempt in
-    /// `launching`, as the dispatch of fleetd does it. Gives its worker.
     fn bind(w: &World) -> String {
         let task: String = w
             .store
@@ -1116,7 +990,6 @@ mod push_tests {
         bound.worker_id
     }
 
-    /// The attempt of the worker `worker`.
     fn attempt_of(w: &World, worker: &str) -> String {
         w.store
             .conn()
@@ -1128,8 +1001,6 @@ mod push_tests {
             .unwrap()
     }
 
-    /// A spawn that fails before its agent runs records it with 1
-    /// `worker_launch_failed` request: its worker row ends `launch_failed`.
     #[test]
     fn a_failed_spawn_records_launch_failed_through_fleetd() {
         let mut w = world();
@@ -1154,9 +1025,6 @@ mod push_tests {
         );
     }
 
-    /// `--attempt` opens the pane of an attempt that fleetd bound: it binds
-    /// nothing, sends no request, and refuses an attempt that began with a
-    /// claim.
     #[test]
     fn spawn_of_a_bound_attempt_binds_nothing() {
         let mut w = world();
@@ -1197,11 +1065,6 @@ mod push_tests {
         assert!(err.to_string().contains("began with a claim"), "{err:#}");
     }
 
-    /// `horch result` finds its attempt by `HORCH_TASK_YAML`. The pane of
-    /// an attempt that fleetd launches with `--attempt` gets the variable
-    /// from these files (`spawn::launch`, the brief of the pane): the
-    /// `task.yaml` of that attempt, under the fleet root, and the first
-    /// line names its `START.md`.
     #[test]
     fn spawn_of_a_bound_attempt_names_its_task_yaml() {
         let mut w = world();
@@ -1225,9 +1088,6 @@ mod push_tests {
             )
         );
     }
-    /// 1 attempt `id` with no task, in `state`, of the idea of `r1` and a
-    /// new `spawning` worker of `persona`, as the sub-orchestrators write
-    /// an idea-lead attempt (T-890).
     fn taskless_attempt(w: &World, id: &str, persona: &str, state: AttemptState) {
         use horch_core::fleetd::task_execution::adapters::sqlite as attempts_store;
         use horch_core::fleetd::task_execution::domain::task::AttemptRow;
@@ -1258,7 +1118,6 @@ mod push_tests {
         attempts_store::set_idea(conn, &row.id, &idea).unwrap();
     }
 
-    /// The id of the only attempt.
     fn only_attempt(w: &World) -> String {
         w.store
             .conn()
@@ -1266,8 +1125,6 @@ mod push_tests {
             .unwrap()
     }
 
-    /// `--attempt` opens the pane of an idea-lead attempt in `launching`:
-    /// no task files, and the first line is the brief of its idea.
     #[test]
     fn spawn_of_an_idea_lead_attempt_starts_on_the_brief_of_its_idea() {
         let w = world();
@@ -1283,8 +1140,6 @@ mod push_tests {
         assert_eq!(w.count("SELECT COUNT(*) FROM requests"), 0);
     }
 
-    /// `--attempt` refuses each attempt with no task that is not an
-    /// idea-lead attempt in `launching`.
     #[test]
     fn spawn_refuses_an_attempt_with_no_task_that_is_not_a_launching_idea_lead() {
         let w = world();

@@ -1,12 +1,3 @@
-//! TRF-46: the briefings describe pull dispatch only, and every non-ok
-//! `horch context --over` state has an instruction in them.
-//!
-//! Pull is the only dispatch model (trace-fixes D1): `horch assign` and
-//! task-text spawns are gone, so no briefing may tell an agent to use them.
-//! `horch context --over` prints 1 instruction id per state it shows
-//! (TRF-08); each id must name an instruction in the orchestrator briefing
-//! and in the worker briefing.
-
 use horch_core::compaction::policy::RowState;
 use horch_core::execution::SessionMode;
 use horch_core::prompts;
@@ -53,12 +44,8 @@ fn workers(r: &Roster) -> Vec<(String, String)> {
     out
 }
 
-/// The first line of the pane of a push attempt (Q8 of
-/// `docs/tickets/fleetd-p4/MAP.md`).
 const PUSH_LINE: &str = "Read /fleet/tasks/T-0001-01/attempts/A1/inbox/START.md and continue.";
 
-/// The section of `text` that starts with the heading `heading`, up to the
-/// next `== ` heading.
 fn section<'a>(text: &'a str, heading: &str) -> &'a str {
     let at = text
         .find(heading)
@@ -75,7 +62,6 @@ fn repo_file(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The push phrases a briefing must not hold, with the line they are on.
 fn push_phrases(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     for line in text.lines() {
@@ -84,7 +70,6 @@ fn push_phrases(text: &str) -> Vec<String> {
                 found.push(format!("{phrase:?} in: {line}"));
             }
         }
-        // `horch spawn <persona> "<task>"`: a spawn that carries task text.
         let mut rest = line;
         while let Some(at) = rest.find("horch spawn") {
             let after = &rest[at + "horch spawn".len()..];
@@ -153,7 +138,6 @@ fn trf_46_every_context_state_has_an_instruction() {
     }
 }
 
-/// The ids of the instruction lines `- <id>[, <id>...]: <what to do>`.
 fn instructed_ids(text: &str) -> Vec<&str> {
     text.lines()
         .filter_map(|l| {
@@ -166,13 +150,6 @@ fn instructed_ids(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// FR-5, FM-6, FR-7 and RR-5, the text side: the push section tells a
-/// worker to read `START.md`, to commit in the tree it names, and to report
-/// only through the files of its outbox: `horch ledger progress`,
-/// `horch result` or `horch ledger done`, `horch ask` and
-/// `horch ledger handoff`. It never tells it to search for work, to make a
-/// worktree or to run the finish steps. From Phase 5 no worker claims, so no
-/// worker briefing has a claim section.
 #[test]
 fn the_push_attempt_section_names_start_md_and_the_outbox_files() {
     let r = roster();
@@ -219,8 +196,6 @@ fn the_push_attempt_section_names_start_md_and_the_outbox_files() {
     }
 }
 
-/// From Phase 5 no worker claims (fleetd-p5 ticket 27): no worker briefing
-/// has the claim section, or a line that tells a worker to claim.
 #[test]
 fn no_worker_briefing_has_a_claim_section() {
     let r = roster();

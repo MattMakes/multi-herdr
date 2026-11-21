@@ -1,22 +1,3 @@
-//! The tasks of a committed or replanned plan, with the idea of each task
-//! and the requirements that it covers.
-//!
-//! `add_planned_tasks` is the port `AddPlannedTasks` of task execution: the
-//! ideas context does not write the `tasks` table, so the plan commit calls
-//! this function inside the transaction that it opens
-//! (docs/tickets/fleetd-p6/14-plan-commit.md). Each task goes in the
-//! internal run of the feature of its idea (MAP.md of fleetd-p6, Q5). An
-//! `after:` key is a `task_deps` row. A `judges:` key is the judge link of
-//! ticket 40: the judge task is a task of kind `work` whose
-//! `parent_task_id` is the judged task (see `judged_task`), and not a
-//! `task_deps` row. Each new row gets its event through `created()` of the
-//! 1 door.
-//!
-//! `replace_planned_task` is the replace path of the port, for the replan
-//! of a `failed` task (docs/tickets/fleetd-p6/31-replan.md; MAP.md, Q20):
-//! the old task follows A cancel, the new tasks go in, and each task that
-//! waited on the old task waits on the new task with its key.
-
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
@@ -32,41 +13,27 @@ use crate::taskledger::runs::Run;
 use crate::taskledger::tasks::{self, ticket_sha, Task};
 use crate::taskledger::util;
 
-/// 1 task of a valid plan, as the plan commit gives it.
 #[derive(Debug, Clone)]
 pub struct PlannedTask {
-    /// The key of the task in plan.yaml, unique in the plan.
     pub key: String,
     pub title: String,
-    /// The file that the worker reads: the ticket, else plan.yaml.
     pub task_file: String,
-    /// The ticket text at commit time; its sha256 is stored with it.
     pub ticket_snapshot: Option<String>,
-    /// The `**Kind:**` of today for the kinds that it knows; the kind of
-    /// the plan is in `spec_json`.
     pub work_kind: Option<WorkKind>,
     pub profile: String,
-    /// The `run:` commands of the acceptance check, or `None`.
     pub land_check: Option<String>,
-    /// The task as committed.
     pub spec_json: String,
-    /// The keys of the tasks that must be done and landed first.
     pub after: Vec<String>,
-    /// For a judge task: the key of the task it judges.
     pub judges: Option<String>,
-    /// The paths that the task owns: its Own rows in `task_files`.
     pub own: Vec<String>,
 }
 
-/// 1 task of a committed plan, as the ledger holds it.
 #[derive(Debug, Clone)]
 pub struct CommittedTask {
     pub task_id: String,
     pub idea_id: String,
     pub status: String,
-    /// For a judge task: the id of the task it judges (`judged_task`).
     pub judged: Option<String>,
-    /// The task as committed (`PlannedTask::spec_json`).
     pub spec_json: String,
 }
 
@@ -85,13 +52,11 @@ fn committed(r: &rusqlite::Row<'_>) -> rusqlite::Result<CommittedTask> {
     })
 }
 
-/// The task `task_id` when it is a task of a committed plan.
 pub fn committed_task(conn: &Connection, task_id: &str) -> Result<Option<CommittedTask>> {
     let sql = format!("{COMMITTED} AND task_id = ?1");
     Ok(conn.query_row(&sql, [task_id], committed).optional()?)
 }
 
-/// Each task of a committed plan of the idea `idea_id`, oldest first.
 pub fn committed_tasks(conn: &Connection, idea_id: &str) -> Result<Vec<CommittedTask>> {
     let sql = format!("{COMMITTED} AND idea_id = ?1 ORDER BY rowid");
     let mut stmt = conn.prepare(&sql)?;
@@ -99,12 +64,6 @@ pub fn committed_tasks(conn: &Connection, idea_id: &str) -> Result<Vec<Committed
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Insert each task of `tasks` for the idea `idea_id` in `run`, in the
-/// caller's transaction `tx`: its row, its `task_deps` rows, its judge link
-/// and its event. A task with no dependency is `ready`; the others are
-/// `pending`. Returns (key, task id) of each task, in the order of `tasks`.
-/// A key that names no task of `tasks`, or a cycle, inserts nothing that
-/// the caller keeps: it gives an error, and the caller rolls back.
 pub fn add_planned_tasks(
     tx: &Connection,
     guard: Option<Generation>,
@@ -116,29 +75,13 @@ pub fn add_planned_tasks(
     add_in(tx, guard, run, idea_id, tasks, &BTreeMap::new(), cause)
 }
 
-/// The `failed` task that a replan replaces.
 pub struct Replaced<'a> {
-    /// The task as the replan read it.
     pub old: &'a Task,
-    /// Its key in the plan.
     pub key: &'a str,
-    /// The reason of its cancel.
     pub reason: &'a str,
-    /// The other tasks of the idea that are not `cancelled`: key -> task id.
     pub live: &'a BTreeMap<String, String>,
 }
 
-/// The replace path: the replan of the `failed` task `replaced.old` (or of
-/// the task in `blocked_on_user` with a `replan` answer) of the
-/// idea `idea_id` by `tasks`, in the caller's transaction `tx`. The old
-/// task follows A cancel, and its `replans` goes up by 1. Each task of
-/// `tasks` goes in as `add_planned_tasks` adds it, with the replan of the
-/// old task used (its `replans` + 1), so a replan never starts a second
-/// one. An `after:` or `judges:` key that names no task of `tasks` names a
-/// task of `replaced.live`. Each task that is not `cancelled` and waits on
-/// the old task waits on the task of `tasks` with its key instead. A task
-/// that changed after the replan read it gives an error. Returns (key,
-/// task id) of each task, in the order of `tasks`.
 pub fn replace_planned_task(
     tx: &Connection,
     guard: Option<Generation>,
@@ -156,8 +99,6 @@ pub fn replace_planned_task(
         live,
     } = *replaced;
     let now = tasks::get(tx, &old.task_id)?;
-    // A task in `blocked_on_user` has a replan when its question has a
-    // `replan` answer (ticket 32 of fleetd-p6); it leaves to `cancelled`.
     let replannable = [
         TaskStatus::Failed.as_str(),
         TaskStatus::BlockedOnUser.as_str(),
@@ -212,10 +153,6 @@ pub fn replace_planned_task(
     Ok(ids)
 }
 
-/// The retry of a replan of the task `task_id` in `blocked_on_user` uses
-/// its 1 replan: `replans` goes up by 1, in the caller's transaction `tx`.
-/// The answer of its question then moves it to `ready` (ticket 32 of
-/// fleetd-p6).
 pub fn use_replan(tx: &Connection, guard: Option<Generation>, task_id: &str) -> Result<()> {
     check_writable(tx, guard)?;
     tx.execute(
@@ -225,8 +162,6 @@ pub fn use_replan(tx: &Connection, guard: Option<Generation>, task_id: &str) -> 
     Ok(())
 }
 
-/// Insert `tasks` as `add_planned_tasks` does; a key that names no task of
-/// `tasks` names a task of `live`.
 fn add_in(
     tx: &Connection,
     guard: Option<Generation>,
@@ -246,8 +181,6 @@ fn add_in(
         bail!("2 planned tasks share a key");
     }
     let mut ids: Vec<Option<String>> = vec![None; tasks.len()];
-    // A task goes in after each task that it names, so that each
-    // `task_deps` row and each judge link points at an existing row.
     while ids.iter().any(Option::is_none) {
         let mut progress = false;
         for (i, task) in tasks.iter().enumerate() {
@@ -274,9 +207,6 @@ fn add_in(
         .collect())
 }
 
-/// The ids of the `after:` tasks and of the judged task of `task`, or
-/// `None` while 1 of them is not inserted yet. A key of `tasks` comes
-/// first; else the key names a task of `live`.
 fn named_ids(
     task: &PlannedTask,
     index: &BTreeMap<&str, usize>,
@@ -312,7 +242,6 @@ fn named_ids(
     Ok(Some((deps, judged)))
 }
 
-/// Insert the row of `task` and its `task_deps` rows. Returns its id.
 fn insert(
     tx: &Connection,
     run: &Run,

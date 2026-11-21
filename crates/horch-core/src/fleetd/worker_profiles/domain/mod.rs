@@ -1,5 +1,3 @@
-//! The domain layer of worker profiles: rules with no I/O.
-
 pub mod conformance;
 pub mod docs_jobs;
 pub mod health;

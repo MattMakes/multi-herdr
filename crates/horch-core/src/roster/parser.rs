@@ -1,12 +1,9 @@
-//! Reading one `---` frontmatter file into a [`Teammate`] or a [`Base`].
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use super::{Base, Teammate};
 
-/// `*.md` in one directory as `(stem, path)`, sorted, skipping READMEs.
 pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)
@@ -25,9 +22,6 @@ pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// Split `---\n<frontmatter>\n---\n<body>`. A Windows checkout gives the
-/// compiled-in roster files CRLF line ends, so the line end of the opening
-/// fence, `\n` or `\r\n`, is the line end of the closing fence.
 pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
     let nl = if text.starts_with("---\r\n") {
         "\r\n"
@@ -132,8 +126,6 @@ mod tests {
     #[test]
     fn a_crlf_file_parses_to_the_same_teammate_and_base_as_its_lf_form() {
         let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-        // A Windows checkout can give these files CRLF already: take the
-        // LF form first, or the CRLF form would hold `\r\r\n`.
         let lf = std::fs::read_to_string(teammates.join("opus.md"))
             .unwrap()
             .replace("\r\n", "\n");

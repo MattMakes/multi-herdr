@@ -1,5 +1,3 @@
-//! The concern service for the code of macOS and Linux.
-
 use std::io;
 use std::path::{Path, PathBuf};
 

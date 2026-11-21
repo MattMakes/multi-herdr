@@ -1,6 +1,3 @@
-//! `horch ledger legacy`: every subcommand arm of the legacy session ledger,
-//! with a temp state dir.
-
 use std::process::{Command, Output};
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
@@ -12,7 +9,6 @@ struct World {
 }
 
 impl World {
-    /// A short folder under `/tmp`: `sun_path` holds about 104 bytes on macOS.
     fn new() -> World {
         let root = if cfg!(unix) {
             std::path::PathBuf::from("/tmp")
@@ -96,7 +92,6 @@ fn the_legacy_subcommands_write_read_and_report_a_session() {
         list.starts_with("[done] t (dev)  session=s1  record=r1\n"),
         "{list}"
     );
-    // TRF-45: `path` prints 1 path, the task ledger file.
     let path = w.ok(&["path"]);
     assert_eq!(path.lines().count(), 1, "{path}");
     assert_eq!(

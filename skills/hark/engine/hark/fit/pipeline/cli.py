@@ -16,9 +16,6 @@ KIND_CHOICES = ("auto", "modal", "spectral", "sines", "gesture", "hybrid")
 SR = 48000
 
 
-# ---------------------------------------------------------------- paths and files
-
-
 def _with_slash(pv: str) -> str:
     return str(pv).replace("\\", "/")
 
@@ -63,9 +60,6 @@ _JSON_FLAG = (
 def _to_json_safe(ov: Any) -> Any:
     cnv = next((fnv for types, fnv in _JSON_FLAG if isinstance(ov, types)), None)
     return ov if cnv is None else cnv(ov)
-
-
-# ---------------------------------------------------------------- fit mode
 
 
 def _row_list(model: dict) -> list:
@@ -183,9 +177,6 @@ def _pipeline_fit(path_l: dict, tm0: float, path: str, **ov: Any) -> dict:
     return result
 
 
-# ---------------------------------------------------------------- morph mode
-
-
 def _paths_of_morph(pa_path: str, pb_path: str, output: str | None, dir_out: str | None,
                  wav_path: str | None) -> dict:
     stemv = f"{_stem_of(pa_path)}__{_stem_of(pb_path)}_morph".replace("_fit", "")
@@ -249,9 +240,6 @@ def run_morph(path_a: str, path_b: str, amount: float = 0.5, output: str | None 
     return result
 
 
-# ---------------------------------------------------------------- forge mode
-
-
 def _refs_of_forge(recipe: Any, refset: str | None) -> tuple[str | None, list | None]:
     """The refset (given, else the recipe's), and the recipe's REFS when no refset exists."""
     refset = refset or getattr(recipe, "REFSET", None)
@@ -281,9 +269,6 @@ def run_forge(recipe_path: str, out_dir: str | None = None, refset: str | None =
     result = {key_: val for key_, val in dict(result).items() if key_ != "history"}
     result["text"] = _text_of_forge(result, acc)
     return result
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def _fit_args(args: argparse.Namespace) -> dict:

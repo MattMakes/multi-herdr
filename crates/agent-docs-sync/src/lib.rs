@@ -1,12 +1,3 @@
-//! `agent-docs-sync` - mirror the docs of each agent CLI as local markdown.
-//!
-//! [`sync`] fetches the pages of 1 source of `docs-sources.toml` into
-//! `<out>/<tool>/<version>/`, reports what changed, removes local pages that
-//! are gone, and writes a manifest of page hashes. It then writes
-//! `<out>/<tool>/CHANGES.md` against the previous version and copies the
-//! `docs/` folder of an `also_git` repository. The caller gives the version
-//! text and the fetch port; the only process this crate starts is git.
-
 mod changes;
 mod clean;
 mod git;
@@ -27,15 +18,12 @@ pub use git::GIT_DIR;
 use sitemap::Sitemap;
 pub use sources::{parse_sources, sources, Kind, Source};
 
-/// The manifest of page hashes in each version folder.
 pub const MANIFEST_FILE: &str = "manifest.json";
 
-/// The fetch port: the text at a URL.
 pub trait Fetch {
     fn get(&self, url: &str) -> Result<String>;
 }
 
-/// The production fetch port, over HTTPS.
 pub struct HttpFetch;
 
 impl Fetch for HttpFetch {
@@ -49,34 +37,28 @@ impl Fetch for HttpFetch {
     }
 }
 
-/// What happened to 1 file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Added,
     Updated,
     Unchanged,
     Removed,
-    /// The page was not written; the text says why.
     Failed(String),
 }
 
-/// 1 file of a sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageReport {
     pub file: String,
     pub outcome: Outcome,
 }
 
-/// The result of 1 sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
-    /// `<out>/<tool>/<version>`.
     pub dir: PathBuf,
     pub pages: Vec<PageReport>,
 }
 
 impl Report {
-    /// The pages that were not written.
     pub fn failed(&self) -> Vec<&PageReport> {
         self.pages
             .iter()
@@ -85,27 +67,18 @@ impl Report {
     }
 }
 
-/// `manifest.json`: the sha256 of each page in a version folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub tool: String,
     pub version: String,
-    /// File name to lowercase hex sha256.
     pub pages: BTreeMap<String, String>,
 }
 
-/// 1 page to write: its file name and its URL, or why it has none.
 struct Wanted {
     file: String,
     url: Result<String>,
 }
 
-/// Mirror the pages of `source` into `<out>/<tool>/<version>/`.
-///
-/// A page that fails is reported, and the others are still written. Stale
-/// pages are removed only when no page failed. The `also_git` clone is the
-/// report entry [`GIT_DIR`]. An error means that the page list itself could
-/// not be read, or that CHANGES.md could not be written.
 pub fn sync(source: &Source, version: &str, fetch: &dyn Fetch, out: &Path) -> Result<Report> {
     check_version(version)?;
     let dir = out.join(&source.tool).join(version);
@@ -125,7 +98,6 @@ pub fn sync(source: &Source, version: &str, fetch: &dyn Fetch, out: &Path) -> Re
     let any_failed = pages
         .iter()
         .any(|p| matches!(p.outcome, Outcome::Failed(_)));
-    // Pruning deletes local docs, so only do it from a complete picture.
     if !any_failed {
         pages.extend(remove_stale(&dir, &wanted)?);
     }
@@ -140,7 +112,6 @@ pub fn sync(source: &Source, version: &str, fetch: &dyn Fetch, out: &Path) -> Re
     Ok(Report { dir, pages })
 }
 
-/// The version text names a folder, so it must be 1 plain path component.
 fn check_version(version: &str) -> Result<()> {
     if version.is_empty() || version == "." || version == ".." || version.contains(['/', '\\']) {
         bail!("the version text {version:?} cannot name a folder");
@@ -148,14 +119,12 @@ fn check_version(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// The English pages under `/docs/` of the sitemap, following an index 1 level.
 fn sitemap_pages(source: &Source, fetch: &dyn Fetch) -> Result<Vec<Wanted>> {
     let mut urls = Vec::new();
     match sitemap::parse(&fetch.get(&source.url)?)? {
         Sitemap::Urls(found) => urls.extend(found),
         Sitemap::Index(children) => {
             for child in children {
-                // 1 level of indirection is all the sitemap spec allows.
                 if let Sitemap::Urls(found) = sitemap::parse(&fetch.get(&child)?)? {
                     urls.extend(found);
                 }
@@ -179,7 +148,6 @@ fn sitemap_pages(source: &Source, fetch: &dyn Fetch) -> Result<Vec<Wanted>> {
         .collect())
 }
 
-/// The included pages of the `llms.txt` index, in the order of `include`.
 fn llms_pages(source: &Source, fetch: &dyn Fetch) -> Result<Vec<Wanted>> {
     let links = llms::links(&fetch.get(&source.url)?, &source.url);
     let suffix = source.md_suffix.as_deref();
@@ -211,7 +179,6 @@ fn write_wanted(wanted: &Wanted, kind: Kind, fetch: &dyn Fetch, dir: &Path) -> O
     written.unwrap_or_else(|e| Outcome::Failed(format!("{e:#}")))
 }
 
-/// Compare `markdown` with what is on disk and write it when it differs.
 fn write_page(target: &Path, markdown: &str) -> Result<Outcome> {
     let outcome = match std::fs::read_to_string(target).ok() {
         Some(current) if current == markdown => Outcome::Unchanged,
@@ -224,7 +191,6 @@ fn write_page(target: &Path, markdown: &str) -> Result<Outcome> {
     Ok(outcome)
 }
 
-/// Remove the markdown files of `dir` that no wanted page maps to.
 fn remove_stale(dir: &Path, wanted: &[Wanted]) -> Result<Vec<PageReport>> {
     let expected: BTreeSet<&str> = wanted.iter().map(|w| w.file.as_str()).collect();
     let mut removed = Vec::new();
@@ -241,7 +207,6 @@ fn remove_stale(dir: &Path, wanted: &[Wanted]) -> Result<Vec<PageReport>> {
     Ok(removed)
 }
 
-/// The names of the `.md` files of `dir`, sorted.
 fn markdown_files(dir: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -256,7 +221,6 @@ fn markdown_files(dir: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-/// Write `manifest.json` with the hash of each page now in `dir`.
 fn write_manifest(tool: &str, version: &str, dir: &Path) -> Result<()> {
     let mut pages = BTreeMap::new();
     for file in markdown_files(dir)? {

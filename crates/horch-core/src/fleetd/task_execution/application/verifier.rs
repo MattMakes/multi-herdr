@@ -1,35 +1,3 @@
-//! The verifier of an attempt, with its review and structural steps
-//! (tickets 19, 20 and 21 of fleetd-p4) and the judge pair (ticket 41 of
-//! fleetd-p6).
-//!
-//! `docs/specs/fleetd/design.md`, "Architecture and roles" (Verifier; Done
-//! for each kind of task; The judge pair), "The task state machine"
-//! (`verifying`), RR-3, FM-9, FM-33 and "The kinds of job" (`task_check`).
-//!
-//! - Part 2 of a pass calls [`verify`]. For each task in `verifying` whose
-//!   newest attempt is a push attempt, it queues 1 `task_check` job keyed
-//!   by the tip of the task branch and the hash of the check, and never
-//!   waits for it. A claim attempt is not touched: its old finish runs.
-//! - A later pass reads the ended job. A verdict that did not fail gives a
-//!   [`Verified`] for the review steps of a code kind or the structural
-//!   check of a judgment kind or a judge task. A failed verdict ends the
-//!   attempt with the outcome `rejected` and burns 1 attempt (rung 6).
-//! - A verdict stands only for the tip that it judged (F5). New commits
-//!   queue a new check job.
-//! - Part 3 calls [`write_verdicts`] after the commit: each verdict is a
-//!   row first, then its file `verdict-<n>.json`.
-//! - [`done`] is the only move of a task from `verifying` to `done`, and it
-//!   needs a [`Verified`] that still stands. A code kind also needs each of
-//!   its review steps passed or not applicable. A judgment kind also needs
-//!   its judge task `done` (`application::judge_pair`).
-//! - Part 3 calls [`review()`] after the commit: the review steps of each
-//!   code kind whose check passed (`application::review`, ticket 20).
-//! - Part 3 calls [`structural()`] after the commit: the structural check of
-//!   each judgment kind and judge task whose check passed
-//!   (`domain::structural`). A judgment kind then waits in `verifying` for
-//!   its judge task. The verdict file of a judge task goes to the judge
-//!   pair (`application::judge_pair::settle`).
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -65,42 +33,28 @@ use crate::taskledger::store::Store;
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{finish, util, workers};
 
-/// What [`verify`] reads.
 pub struct Verifier<'a> {
     pub jobs: &'a JobCtx<'a>,
-    /// The fleet clock of the pass.
     pub clock: FleetSeconds,
-    /// The tip of the task branch of each task, read in part 1 of the pass.
-    /// A task with no tip waits for a later pass.
     pub tips: &'a BTreeMap<String, String>,
-    /// The numbers of rung 6 of a task.
     pub policy: &'a dyn Fn(&Task) -> Policy,
 }
 
-/// What 1 [`verify`] did, by task id.
 #[derive(Debug, Default)]
 pub struct Report {
-    /// The tasks whose check job is queued or running.
     pub queued: Vec<String>,
-    /// The tasks whose check job is held at `abandoned_run_limit`.
     pub held: Vec<String>,
-    /// The tasks whose attempt ended `rejected`.
     pub rejected: Vec<String>,
-    /// The tasks whose verdict did not fail, with their next step.
     pub passed: Vec<Passed>,
-    /// The review tasks that their findings file moved to `done`.
     pub reviews_done: Vec<String>,
 }
 
-/// A task whose verdict did not fail.
 #[derive(Debug)]
 pub struct Passed {
     pub verified: Verified,
     pub next: Next,
 }
 
-/// The hash of the check command `check`: sha256, in hex. No command gives
-/// `none`.
 pub fn check_hash(check: Option<&str>) -> String {
     let Some(check) = check else {
         return "none".into();
@@ -111,7 +65,6 @@ pub fn check_hash(check: Option<&str>) -> String {
         .collect()
 }
 
-/// The newest attempt of a task in `verifying`.
 pub(crate) struct Attempt {
     task_id: String,
     id: String,
@@ -120,7 +73,6 @@ pub(crate) struct Attempt {
     via: String,
 }
 
-/// The attempt `id`.
 pub(crate) fn attempt(conn: &Connection, id: &str) -> Result<Attempt> {
     conn.query_row(
         "SELECT task_id, id, worker_id, state, via FROM attempts WHERE id = ?1",
@@ -138,7 +90,6 @@ pub(crate) fn attempt(conn: &Connection, id: &str) -> Result<Attempt> {
     .with_context(|| format!("no attempt {id}"))
 }
 
-/// The verifier part of a pass, in the open transaction `tx`.
 pub fn verify(v: &Verifier<'_>, tx: &Connection) -> Result<Report> {
     if tx.is_autocommit() {
         bail!("the verifier writes its rows in 1 open transaction of the ledger");
@@ -203,7 +154,6 @@ fn end_review_by_findings(
     }
 }
 
-/// The newest attempt of each task in `verifying`.
 fn newest_attempts(tx: &Connection) -> Result<Vec<Attempt>> {
     let mut stmt = tx.prepare(
         "SELECT t.task_id, a.id, a.worker_id, a.state, a.via
@@ -234,7 +184,6 @@ fn verify_one(
     report: &mut Report,
 ) -> Result<()> {
     let task = tasks::get(tx, &a.task_id)?;
-    // The check of today's finish: the task's own, else the run's default.
     let check = task
         .land_check
         .clone()
@@ -263,7 +212,6 @@ fn verify_one(
         kind,
     };
     let next = next_step(work_kind.as_deref());
-    // The verdict of this attempt, tip and check stands: decide no more.
     if let Some(last) = verdict_file::newest(tx, &task.task_id)? {
         if last.judged(&facts) {
             if let Some(verified) = last.verified() {
@@ -308,8 +256,6 @@ fn verify_one(
     Ok(())
 }
 
-/// A failed verdict: the attempt `a` ends with the outcome `rejected`, its
-/// worker row ends, and rung 6 burns 1 attempt of `task`.
 pub(crate) fn reject(
     tx: &Connection,
     guard: Option<Generation>,
@@ -323,8 +269,6 @@ pub(crate) fn reject(
     Ok(())
 }
 
-/// The attempt `a` ends with the outcome `rejected` for the failed
-/// `verdict`, and its worker row ends. Gives the reason.
 pub(crate) fn end_attempt(
     tx: &Connection,
     guard: Option<Generation>,
@@ -337,8 +281,6 @@ pub(crate) fn end_attempt(
     Ok(why)
 }
 
-/// The attempt `a` ends with `outcome` for the reason `text`, and its
-/// worker row ends.
 pub(crate) fn end_with(
     tx: &Connection,
     guard: Option<Generation>,
@@ -356,15 +298,8 @@ pub(crate) fn end_with(
     )
 }
 
-/// The outcome of an attempt whose result the verifier passed
-/// (`docs/specs/fleetd/design.md`, the `attempts` table). It burns no
-/// attempt, and it is not an outcome of rung 6.
 pub const VERIFIED: &str = "verified";
 
-/// The attempt `a` ends with the outcome word `outcome` for the reason
-/// `text`, and its worker row ends with `status`. An attempt that ended
-/// first, at the exit of its process, gets `outcome` in place of the
-/// outcome of that exit.
 fn end_as(
     tx: &Connection,
     guard: Option<Generation>,
@@ -390,8 +325,6 @@ fn end_as(
     Ok(())
 }
 
-/// The outcome of an attempt whose worker said that its work cannot land
-/// (`horch ledger done --unlanded`, RR-14). It burns no attempt.
 pub const UNLANDED: &str = "unlanded";
 
 pub(crate) fn park_unlanded(
@@ -448,11 +381,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// The step after the check of `task`, by its kind: the ticket kind of
-/// `work_kind`, else the kind of its plan in `spec_json`. The ledger's
-/// `work_kind` holds only the kinds of today, so a planned `judge`,
-/// `research`, `design` or `creative` task has its kind in `spec_json`
-/// only.
 fn next_of(conn: &Connection, task: &Task) -> Result<Next> {
     Ok(next_step(work_kind_of(conn, task)?.as_deref()))
 }
@@ -466,9 +394,6 @@ fn work_kind_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
     )?)
 }
 
-/// Whether `verified` still stands for `task` in `verifying`: its verdict
-/// is the newest of the task, its attempt is the newest attempt, and `tip`
-/// is the tip that the verdict judged.
 fn stands(tx: &Connection, task: &Task, verified: &Verified, tip: &str) -> Result<bool> {
     if task.status != TaskStatus::Verifying.as_str() {
         return Ok(false);
@@ -484,14 +409,9 @@ fn stands(tx: &Connection, task: &Task, verified: &Verified, tip: &str) -> Resul
     if !verified.stands(&newest, tip) || attempt.as_deref() != Some(verified.attempt()) {
         return Ok(false);
     }
-    // A judgment kind and a judge task stand only on a passed structural
-    // check (ticket 21).
     Ok(next_of(tx, task)? != Next::Structural || structural::is_pass(&newest))
 }
 
-/// Whether the newest verdict of `task_id` is a passed structural check of
-/// its newest attempt: the `judges:` dependency of its judge task waits for
-/// it (I2; ticket 40 of fleetd-p6).
 pub fn structural_passed(conn: &Connection, task_id: &str) -> Result<bool> {
     let Some(newest) = verdict_file::newest(conn, task_id)? else {
         return Ok(false);
@@ -506,10 +426,6 @@ pub fn structural_passed(conn: &Connection, task_id: &str) -> Result<bool> {
     Ok(structural::is_pass(&newest) && attempt.as_deref() == Some(newest.attempt.as_str()))
 }
 
-/// The passed structural check of `task_id` that stands for `tip`, from
-/// its newest verdict, in `tx`. `None` when the task is not in
-/// `verifying`, or its newest verdict is not a passed structural check of
-/// its newest attempt at `tip`.
 pub(crate) fn standing(tx: &Connection, task_id: &str, tip: &str) -> Result<Option<Verified>> {
     let task = tasks::get(tx, task_id)?;
     let Some(verified) = verdict_file::newest(tx, task_id)?.and_then(|v| v.verified()) else {
@@ -519,12 +435,6 @@ pub(crate) fn standing(tx: &Connection, task_id: &str, tip: &str) -> Result<Opti
     Ok((structural && stands(tx, &task, &verified, tip)?).then_some(verified))
 }
 
-/// Move the task of `verified` from `verifying` to `done`, in the open
-/// transaction `tx`, when `verified` still stands: its verdict is the
-/// newest of the task, its attempt is the newest attempt, and `tip` is the
-/// tip that the verdict judged. Its attempt ends with the outcome
-/// [`VERIFIED`] in the same transaction. The fleetd of generation `guard`
-/// writes. `false` when it moved nothing.
 pub fn done(
     tx: &Connection,
     guard: Option<Generation>,
@@ -536,16 +446,10 @@ pub fn done(
         return Ok(false);
     }
     let through = match next_of(tx, &task)? {
-        // A code kind moves to done only after its review steps (ticket
-        // 20).
         Next::Review => review::steps_through(tx, &task, verified.attempt())?,
-        // A judge task moves to done when the judge pair settles its
-        // verdict with no open CRITICAL item.
         Next::Structural if judged_task(&task.kind, task.parent_task_id.as_deref()).is_some() => {
             true
         }
-        // A judgment kind moves to done only after its judge task (The
-        // judge pair, step 4).
         Next::Structural => judge_pair::judge_done(tx, &task.task_id)?,
     };
     if !through {
@@ -574,11 +478,6 @@ pub fn done(
     }
 }
 
-/// Part 3 of a pass, after the commit of part 2 (ticket 20): the review
-/// steps of each task of `passed` whose next step is [`Next::Review`], in
-/// `store` with no transaction open. The structural check of a judgment
-/// kind runs in [`structural()`] (ticket 21). Gives what each review did, by
-/// task.
 pub fn review(
     r: &review::Review<'_>,
     store: &mut Store,
@@ -592,30 +491,14 @@ pub fn review(
     Ok(out)
 }
 
-/// What the structural check of 1 task did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Structural {
-    /// The check failed: the attempt ended `rejected` and burned 1
-    /// attempt. The reason names each failure.
     Rejected(String),
-    /// The verified value no longer stands, or the task left `verifying`:
-    /// nothing moved.
     Stale,
-    /// The check of a judgment kind passed: the task waits in `verifying`
-    /// for its judge task (The judge pair, step 1).
     WaitsForJudge,
-    /// The check of the verdict file of a judge task passed: what the judge
-    /// pair did.
     Judged(Settled),
 }
 
-/// Part 3 of a pass, after the commit of part 2: the structural check of
-/// each task of `passed` whose next step is [`Next::Structural`], in
-/// `store` with no transaction open. A check that fails records a failed
-/// verdict, and the attempt ends `rejected` and burns 1 attempt. A check
-/// that passes records a passed verdict. Then a judgment kind waits for its
-/// judge task, and the verdict file of a judge task goes to the judge pair
-/// in the same transaction. Gives what each check did, by task.
 pub fn structural(
     r: &review::Review<'_>,
     store: &mut Store,
@@ -643,7 +526,6 @@ fn structural_one(
         return Ok(Structural::Stale);
     }
     let judge = judged_task(&task.kind, task.parent_task_id.as_deref()).is_some();
-    // The check of a judgment kind passed in an earlier pass: it waits.
     if !judge && structural::is_pass(&newest) {
         return Ok(Structural::WaitsForJudge);
     }
@@ -698,8 +580,6 @@ fn structural_one(
     Ok(Structural::Judged(settled))
 }
 
-/// The structural check of the outputs of a judge task, and its verdict
-/// when the check passed. A check that finds no verdict file fails.
 fn judge_check(outputs: &[Output]) -> (Checked, Option<JudgeVerdict>) {
     let mut checked = structural::check_judge(outputs);
     if !checked.passed() {
@@ -714,10 +594,6 @@ fn judge_check(outputs: &[Output]) -> (Checked, Option<JudgeVerdict>) {
     (checked, verdict)
 }
 
-/// The tip of the judged branch of the judge task `judge` that the judge
-/// branch holds at `tip`: the tip that the newest verdict of the judged
-/// task judged, when it is `tip` or an ancestor of `tip`. `None` when the
-/// judge branch does not hold it, so the verdict judged another result.
 fn held_tip(tools: &Tools, conn: &Connection, judge: &Task, tip: &str) -> Result<Option<String>> {
     let Some(judged) = judged_task(&judge.kind, judge.parent_task_id.as_deref()) else {
         return Ok(None);
@@ -736,12 +612,8 @@ fn held_tip(tools: &Tools, conn: &Connection, judge: &Task, tip: &str) -> Result
     Ok(holds.then_some(judged_tip))
 }
 
-/// Why a task with no worktree and base commit fails its structural check.
 const NO_BASE: &str = "the task has no worktree with a base commit, so its commits are not known";
 
-/// The outputs of `task` at `tip`: the files of its `Own` that its commits
-/// since the base of its worktree changed, with their text at `tip`.
-/// `None` when the task has no worktree with a base commit.
 fn outputs_of(
     tools: &Tools,
     conn: &Connection,
@@ -777,8 +649,6 @@ fn outputs_of(
     Ok(Some(outputs))
 }
 
-/// Part 3 of a pass, after the commit: write the file of each committed
-/// verdict that has none. Gives the files.
 pub fn write_verdicts(conn: &mut Connection, fleet_root: &Path) -> Result<Vec<PathBuf>> {
     verdict_file::write_unwritten(conn, fleet_root)
 }

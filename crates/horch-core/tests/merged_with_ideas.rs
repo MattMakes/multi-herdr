@@ -1,15 +1,3 @@
-//! A merge with ideas in flight: fleetd records the feature as `merged` and
-//! moves each idea in flight to a new feature, with a rescue ref and a
-//! rebase of each task branch (docs/specs/fleetd/design.md, "Features" (A
-//! merge with ideas in flight); I7, I10, I13; FM-41;
-//! docs/tickets/fleetd-p6/35-merged-with-ideas.md).
-//!
-//! Each test has its own temporary ledger and git repository. No test reads
-//! the load, the limits or the clock of the machine: the fleet clock is a
-//! number that the test gives, and the config is the default. The rebase
-//! job does not run here: the test reads its row. The task, idea and
-//! landing state machines do not run here: the test writes their states.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -36,11 +24,8 @@ use rusqlite::{params, Connection};
 
 const OLD: &str = "F-0001";
 const RUN_BRANCH: &str = "fleet/r1";
-/// The idea that the first task of the run gets (`schema::run_idea`).
 const SETTLED: &str = "I-0001";
-/// The idea in flight when you merge the pull request.
 const MOVED: &str = "I-0002";
-/// The new feature: the internal run of the old feature has rowid 1.
 const NEW: &str = "F-0002";
 const NEW_BRANCH: &str = "fleet/r1-2";
 
@@ -88,9 +73,6 @@ fn worktree_git(fleet: &Path, repo: &Path) -> CliWorktreeGit {
     CliWorktreeGit::new("git", fleet).writing(&[repo.join(".git")])
 }
 
-/// A repository with `main` and the run branch at the same commit, a temp
-/// ledger with the fleet clock at 0, the run and its feature `F-0001` in
-/// `open`, and the fetched tip of `main`.
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
@@ -125,7 +107,6 @@ fn world() -> World {
     };
     let tx = conn.transaction().unwrap();
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -150,10 +131,6 @@ fn world() -> World {
     w
 }
 
-/// The world when you merge the pull request of `F-0001`: the idea
-/// `I-0001` is `integrating` with its task branch `landed`, and the idea
-/// `I-0002` is `in_progress` with the task branch of `two` in `building`.
-/// Gives (task, branch) of `two`.
 fn merged_with_an_idea_in_flight() -> (World, String, String) {
     let w = world();
     let (one, one_branch) = w.task("one", SETTLED);
@@ -175,7 +152,6 @@ impl World {
         }
     }
 
-    /// 1 pass of `MoveIdeasToNewFeature`, committed.
     fn move_ideas(&self) -> Vec<Moved> {
         let ctx = self.ctx();
         let m = MergedWithIdeas {
@@ -188,8 +164,6 @@ impl World {
         moved
     }
 
-    /// The effects after the commit: the ref of each new feature branch,
-    /// then the rescue and the rebase of each moved task branch.
     fn effects(&mut self) -> Vec<String> {
         for r in nf::pending_refs(&self.conn, &self.git).unwrap() {
             nf::create_ref(&self.git, &r).unwrap();
@@ -197,7 +171,6 @@ impl World {
         self.complete()
     }
 
-    /// The rescue and the rebase of each moved task branch.
     fn complete(&mut self) -> Vec<String> {
         let wgit = worktree_git(&self.fleet, &self.repo);
         let rescues = GitBranchRescues { git: &wgit };
@@ -253,7 +226,6 @@ impl World {
         !git(&self.repo, &["for-each-ref", "--format=%(refname)", name]).is_empty()
     }
 
-    /// Each rescue ref, as (ref, tip).
     fn rescue_refs(&self) -> Vec<(String, String)> {
         let out = git(
             &self.repo,
@@ -271,7 +243,6 @@ impl World {
             .collect()
     }
 
-    /// Each `rebase` job, as (subject, input key).
     fn rebase_jobs(&self) -> Vec<(String, String)> {
         let mut stmt = self
             .conn
@@ -281,7 +252,6 @@ impl World {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// 1 commit on `branch` that writes `text` to `file`. Gives its tip.
     fn commit_on(&self, branch: &str, file: &str, text: &str) -> String {
         git(&self.repo, &["checkout", "--quiet", branch]);
         std::fs::write(self.repo.join(file), text).unwrap();
@@ -292,8 +262,6 @@ impl World {
         tip
     }
 
-    /// The fetched tip of `main` is the local tip of `main`, as a passed
-    /// fetch writes it.
     fn fetched_main(&self) {
         let tip = self.tip("main");
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -301,15 +269,12 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// You merge the pull request of the run branch with a squash merge,
-    /// and a fetch sees it.
     fn merge(&self) {
         git(&self.repo, &["merge", "--quiet", "--squash", RUN_BRANCH]);
         git(&self.repo, &["commit", "--quiet", "-m", "squash"]);
         self.fetched_main();
     }
 
-    /// A new idea `id` of `F-0001` in `state`.
     fn idea(&self, id: &str, state: &str) {
         let new = NewIdea {
             id,
@@ -322,8 +287,6 @@ impl World {
         self.idea_state(id, state);
     }
 
-    /// The idea `id` is in `state` (the idea state machine is not under
-    /// test here).
     fn idea_state(&self, id: &str, state: &str) {
         self.conn
             .execute(
@@ -333,9 +296,6 @@ impl World {
             .unwrap();
     }
 
-    /// A new task `title` of the idea `idea`, with its branch from the run
-    /// branch and 1 commit in git, and its branch row in `building`. Gives
-    /// (task, branch).
     fn task(&self, title: &str, idea: &str) -> (String, String) {
         let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator)
@@ -357,8 +317,6 @@ impl World {
         (task, branch)
     }
 
-    /// The task `task` is `status`, and its branch is `landing` (the task
-    /// and landing state machines are not under test here).
     fn settle(&self, task: &str, status: &str, branch: &str, landing: &str) {
         self.conn
             .execute(
@@ -374,8 +332,6 @@ impl World {
             .unwrap();
     }
 
-    /// An open worker question of `task` on `F-0001`, owned by its
-    /// sub-orchestrator.
     fn question(&self, id: &str, task: &str, state: &str) {
         self.conn
             .execute(
@@ -393,7 +349,6 @@ impl World {
             .unwrap();
     }
 
-    /// The (feature, owner) of the question `id`.
     fn question_owner(&self, id: &str) -> (String, String) {
         self.conn
             .query_row(
@@ -426,19 +381,14 @@ fn open_feature_merged_by_content_moves_ideas_in_flight_to_a_new_feature() {
     let new = rows::feature(&w.conn, NEW).unwrap().unwrap();
     assert_eq!(new.state, "open");
     assert_eq!(new.branch.as_deref(), Some(NEW_BRANCH));
-    // The row of the new branch exists before the branch (I11).
     let row = rows::branch(&w.conn, NEW_BRANCH).unwrap().unwrap();
     assert_eq!(row.seen_tip.as_deref(), Some(main_tip.as_str()));
     assert!(!w.has_ref(&format!("refs/heads/{NEW_BRANCH}")));
-    // The idea in flight moves; the settled idea stays.
     assert_eq!(w.feature_of_idea(MOVED), NEW);
     assert_eq!(w.feature_of_idea(SETTLED), OLD);
-    // Its task belongs to the internal run of the new feature, so it starts
-    // and lands on the new feature branch.
     let new_run = runs::feature_run(&w.conn, NEW).unwrap().unwrap();
     assert_eq!(new_run.run_branch.as_deref(), Some(NEW_BRANCH));
     assert_eq!(w.run_of_task(&two), new_run.run_id);
-    // Its open question has the new owner (I13).
     assert_eq!(
         w.question_owner("q-open"),
         (NEW.to_string(), format!("idea-lead:{NEW}"))
@@ -493,7 +443,6 @@ fn moved_idea_keeps_its_sub_orchestrator_and_pane() {
 #[test]
 fn each_task_branch_of_a_moved_idea_gets_a_rescue_ref_before_its_rebase() {
     let (mut w, _, two_branch) = merged_with_an_idea_in_flight();
-    // A landed and an abandoned branch of the moved idea are not rebased.
     let (gone, gone_branch) = w.task("gone", MOVED);
     w.settle(&gone, "cancelled", &gone_branch, "abandoned");
     let (old, old_branch) = w.task("old", MOVED);
@@ -515,7 +464,6 @@ fn each_task_branch_of_a_moved_idea_gets_a_rescue_ref_before_its_rebase() {
         vec![two_branch.as_str()]
     );
     assert_eq!(pending[0].feature, NEW);
-    // Step 1: the rescue ref of the tip, and no job yet.
     let wgit = worktree_git(&w.fleet, &w.repo);
     let rescues = GitBranchRescues { git: &wgit };
     let rescued = mwi::rescue(&w.git, &rescues, &pending[0]).unwrap().unwrap();
@@ -523,7 +471,6 @@ fn each_task_branch_of_a_moved_idea_gets_a_rescue_ref_before_its_rebase() {
     assert_eq!(w.rescue_refs(), vec![(name.clone(), two_tip.clone())]);
     assert_eq!(rescued.tip.as_deref(), Some(two_tip.as_str()));
     assert!(w.rebase_jobs().is_empty());
-    // Step 2: the move and the rebase job onto the new feature branch.
     let ctx = w.ctx();
     let tx = w.conn.unchecked_transaction().unwrap();
     assert!(mwi::record_move(&ctx, &tx, &rescued, FleetSeconds(0)).unwrap());
@@ -550,14 +497,11 @@ fn crash_between_commit_and_rebase_loses_no_tip() {
     let two_tip = w.tip(&two_branch);
     let main_tip = w.tip("main");
 
-    // The transaction commits, then fleetd stops before any effect.
     w.move_ideas();
     let wgit = worktree_git(&w.fleet, &w.repo);
     let rescues = GitBranchRescues { git: &wgit };
     let pending = mwi::pending_moves(&w.conn).unwrap();
     assert_eq!(pending.len(), 1);
-    // The new feature branch is not there yet: the rescue waits for it and
-    // writes nothing.
     assert!(mwi::rescue(&w.git, &rescues, &pending[0])
         .unwrap()
         .is_none());
@@ -565,11 +509,9 @@ fn crash_between_commit_and_rebase_loses_no_tip() {
     let refs = nf::pending_refs(&w.conn, &w.git).unwrap();
     assert_eq!(refs.len(), 1);
     nf::create_ref(&w.git, &refs[0]).unwrap();
-    // The rescue ref is written, then fleetd stops before the move.
     mwi::rescue(&w.git, &rescues, &pending[0]).unwrap().unwrap();
     assert_eq!(w.rescue_refs().len(), 1);
 
-    // The next start completes each effect 1 time.
     assert_eq!(w.complete(), vec![two_branch.clone()]);
     assert!(w.complete().is_empty());
 
@@ -599,7 +541,6 @@ fn no_branch_lands_on_a_merged_feature() {
     let (four, four_branch) = w.task("four", MOVED);
     w.settle(&three, "done", &three_branch, "in_bundle");
     w.settle(&four, "done", &four_branch, "ready");
-    // A bundle of the old feature passed its gate, and its ref move waits.
     let old_tip = w.tip(RUN_BRANCH);
     let tx = w.conn.unchecked_transaction().unwrap();
     let bundle = rows::insert_bundle(
@@ -637,7 +578,6 @@ fn no_branch_lands_on_a_merged_feature() {
         "the bundle of the merged feature never moves its ref"
     );
     assert_eq!(w.landing_state(&three_branch), "ready");
-    // A pass of the bundles builds nothing on the merged feature.
     let ctx = w.ctx();
     let b = Bundles {
         jobs: &ctx,
@@ -675,13 +615,11 @@ fn idempotent_pull_request_merged() {
     w.settle(&one, "done", &one_branch, "landed");
     w.idea(MOVED, "in_progress");
     w.task("two", MOVED);
-    // No merge yet: nothing moves.
     assert!(w.move_ideas().is_empty());
     assert_eq!(w.feature_state(OLD), "open");
     w.merge();
     let mut w = w;
 
-    // 2 passes see the same merge.
     assert_eq!(w.move_ideas().len(), 1);
     assert!(w.move_ideas().is_empty());
     assert_eq!(w.effects().len(), 1);

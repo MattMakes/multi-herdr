@@ -1,7 +1,3 @@
-//! End-to-end: the worker brief carries every binary override to the worker
-//! pane, and the worker hands them to its agent through the child's
-//! environment only.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -11,7 +7,6 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-/// The overrides only the brief can carry: the worker below runs without them.
 const CARRIED: [&str; 3] = ["HORCH_OPENCODE_BIN", "HORCH_PI_BIN", "HORCH_SQLITE3_BIN"];
 
 fn text(o: &Output) -> String {
@@ -75,7 +70,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
     h.set("HORCH_FAKE_SCENARIO", "exec");
-    // Distinct values, so the brief cannot have picked up a default.
     let fakes: Vec<(&str, PathBuf)> = CARRIED
         .iter()
         .map(|key| (*key, h.bin.join(format!("fake-for-{key}"))))
@@ -102,9 +96,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         let o = h.git_cmd(args).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", text(&o));
     }
-    // A pane of a real herdr does not inherit the environment of the
-    // process that launched it, so the pane run of this wrapper drops the 3
-    // overrides: the brief is their only way to the worker.
     let fake = h.bin.join("herdr");
     let wrapper = h.write_warmed(
         "herdr-bare-pane",
@@ -131,7 +122,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
     seed_task(&h, &run, &ticket, "sonnet");
     h.serve_fleetd();
 
-    // The brief on disk: schema 2, every override, the v1 keys kept.
     let brief_path = wait_for_or(
         "the brief of the worker",
         || briefs(&h).into_iter().next(),
@@ -158,7 +148,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         "a v1 worker still finds the claude override"
     );
 
-    // The agent the worker launched received them from the transport env.
     let tasks = h.fleet_root().join("tasks").to_string_lossy().into_owned();
     let claude = wait_for_or(
         "the worker launched claude",
@@ -180,7 +169,6 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         assert!(keys.iter().any(|k| k == key), "{key} not in {keys:?}");
     }
     assert!(!keys.iter().any(|k| k == "ANTHROPIC_API_KEY"), "{keys:?}");
-    // fake-claude flags an `ANTHROPIC_API_KEY` in its environment.
     assert_eq!(claude["violations"], serde_json::json!([]), "{claude}");
     stop_fleetd_and_jobs(&h);
 }

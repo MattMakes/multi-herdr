@@ -1,8 +1,3 @@
-//! `horch self-update` against a local release server (design C3).
-//!
-//! Hermetic: the environment is cleared, `HORCH_RELEASE_API` points at a
-//! `TcpListener` on 127.0.0.1, and every path is in a temp dir. The archive's
-//! `horch` is a shell script that writes its arguments to a marker file.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -12,12 +7,10 @@ use std::process::{Command, Output};
 
 use sha2::{Digest, Sha256};
 
-/// The archive the server offers: the one for the target `build.rs` saw.
 fn archive_name() -> String {
     format!("multi-herdr-v99.0.0-{}.tar.gz", env!("HORCH_TARGET"))
 }
 
-/// An archive of the named binaries, each holding `script`.
 fn tar_gz(script: &str, names: &[&str]) -> Vec<u8> {
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut builder = tar::Builder::new(gz);
@@ -42,8 +35,6 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Serve `/releases/latest`, `/dl/<archive>` and `/dl/SHA256SUMS` until the
-/// test ends. Returns the API base URL.
 fn serve(archive: Vec<u8>, sums_hex: String) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -158,8 +149,6 @@ fn self_update_refuses_an_archive_that_lacks_a_binary_and_installs_nothing() {
     assert!(!root.join("marker").exists());
 }
 
-/// Run `horch <args>` with a terminal on stderr: the boot update step skips
-/// without one. `script` gives it a pty (BSD and util-linux spell it apart).
 fn horch_in_pty(root: &Path, api: &str, args: &[&str]) -> Output {
     let horch = env!("CARGO_BIN_EXE_horch");
     let mut cmd = Command::new("/usr/bin/script");
@@ -186,8 +175,6 @@ fn horch_in_pty(root: &Path, api: &str, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// A release `horch` that logs each call with `HORCH_SELF_UPDATED`, and on
-/// `install --dir <dir>` copies itself there, as the real install does.
 fn logging_release(root: &Path) -> Vec<u8> {
     let marker = root.join("marker");
     let script = format!(
@@ -198,9 +185,6 @@ fn logging_release(root: &Path) -> Vec<u8> {
     tar_gz(&script, &ALL_BINARIES)
 }
 
-/// `horch fleet` installs a newer release before anything else, then
-/// restarts the same command on the new horch, marked so it does not update
-/// again.
 #[test]
 fn fleet_installs_a_newer_release_and_restarts_on_it() {
     let (_tmp, root, _) = setup(&ALL_BINARIES);
@@ -222,8 +206,6 @@ fn fleet_installs_a_newer_release_and_restarts_on_it() {
     assert!(all.contains("-> v99.0.0; restarting"), "{all}");
 }
 
-/// A failed update never stops the fleet: nothing is installed and the
-/// command goes on with this version.
 #[test]
 fn fleet_continues_on_this_version_when_the_update_fails() {
     let (_tmp, root, _) = setup(&ALL_BINARIES);

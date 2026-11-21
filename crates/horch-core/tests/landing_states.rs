@@ -1,15 +1,3 @@
-//! The landing state machine of a task branch: the branch follows its task,
-//! each state has a time limit on the fleet clock, a cancelled task's branch
-//! gets a rescue ref and then `abandoned`, and no branch goes from
-//! `building` to `landed` (docs/specs/fleetd/design.md, "Landing a task branch on its feature
-//! branch", "A cancelled task does not block its idea", "What a release
-//! does to a run in flight", row Phase 4;
-//! docs/tickets/fleetd-p4/25-landing-state-machine.md).
-//!
-//! Each test has its own temporary ledger, fleet root and git repository.
-//! No test reads the load, the limits or the clock of the machine: the fleet
-//! clock is a number that the test gives, and the config is the default.
-
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -110,7 +98,6 @@ fn world() -> World {
     };
     let tx = conn.transaction().unwrap();
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -129,7 +116,6 @@ fn world() -> World {
     }
 }
 
-/// A rescue port that counts its calls and records nothing in git.
 #[derive(Default)]
 struct CountingRescues {
     calls: RefCell<Vec<String>>,
@@ -151,8 +137,6 @@ impl World {
         }
     }
 
-    /// A new task `title` with its branch row in `building`, as the bind of
-    /// its first push attempt writes it. Gives (task, branch).
     fn task(&mut self, title: &str) -> (String, String) {
         let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator)
@@ -166,8 +150,6 @@ impl World {
         (task, branch)
     }
 
-    /// 1 attempt of `task` that began by `via` (`claim` or `push`), with its
-    /// worker. Gives the worker id.
     fn attempt(&self, task: &str, via: &str) -> String {
         let worker = workers::insert(
             &self.conn,
@@ -196,8 +178,6 @@ impl World {
         worker
     }
 
-    /// The task `task` is in `status` (the task's own state machine is not
-    /// under test here).
     fn set_task(&self, task: &str, status: &str) {
         self.conn
             .execute(
@@ -207,8 +187,6 @@ impl World {
             .unwrap();
     }
 
-    /// The branch row moves to `to` through the 1 door, as the use case of
-    /// another ticket moves it (the bundle, the bisect).
     fn put(&self, branch: &str, to: &str, clock: i64) {
         let ctx = self.jobs();
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -217,7 +195,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 pass of `follow` at `clock`.
     fn follow(&mut self, clock: i64) -> Vec<Effect> {
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -232,7 +209,6 @@ impl World {
         effects
     }
 
-    /// Run each effect with `port` and record what it did.
     fn settle(&mut self, effects: &[Effect], port: &dyn BranchRescues, clock: i64) {
         for e in effects {
             let done = landing::run(e, port).unwrap();
@@ -274,7 +250,6 @@ impl World {
         .collect()
     }
 
-    /// The open needs-you items of the landing time limits.
     fn overdue_items(&self) -> Vec<String> {
         open_items(&self.conn)
             .unwrap()
@@ -284,7 +259,6 @@ impl World {
             .collect()
     }
 
-    /// A git branch `branch` with 1 commit of its own. Gives its tip.
     fn git_branch(&self, branch: &str) -> String {
         git(&self.repo, &["branch", branch, RUN_BRANCH]);
         git(&self.repo, &["checkout", "--quiet", branch]);
@@ -349,12 +323,10 @@ fn failed_check_with_a_new_attempt_moves_verifying_back_to_building() {
     w.follow(10);
     assert_eq!(w.state(&branch), "verifying");
 
-    // The check failed: rung 6 sends the task back, and no attempt runs.
     w.set_task(&task, "ready");
     w.follow(20);
     assert_eq!(w.state(&branch), "verifying");
 
-    // The next attempt is bound.
     w.attempt(&task, "push");
     w.set_task(&task, "leased");
     w.follow(30);
@@ -418,7 +390,6 @@ fn rescue_survives_a_crash_before_and_after_the_commit() {
     let git_port = w.git_port();
     let port = GitBranchRescues { git: &git_port };
 
-    // Fault point 1: the pass dies before its commit. Nothing is written.
     {
         let config = w.config.clone();
         let ctx = JobCtx {
@@ -435,12 +406,10 @@ fn rescue_survives_a_crash_before_and_after_the_commit() {
     assert_eq!(w.state(&branch), "building");
     assert!(w.rescue_refs().is_empty());
 
-    // Fault point 2: the pass commits, and dies before the effect.
     let lost = w.follow(20);
     assert_eq!(lost.len(), 1);
     assert!(w.rescue_refs().is_empty());
 
-    // Fault point 3: the effect runs, and fleetd dies before it records it.
     let effects = w.follow(30);
     assert_eq!(effects, lost, "the next pass plans the same effect");
     for e in &effects {
@@ -448,7 +417,6 @@ fn rescue_survives_a_crash_before_and_after_the_commit() {
     }
     assert_eq!(w.state(&branch), "building");
 
-    // The next pass completes the effect 1 time.
     let effects = w.follow(40);
     w.settle(&effects, &port, 41);
     let refs = w.rescue_refs();
@@ -464,7 +432,6 @@ fn rescue_survives_a_crash_before_and_after_the_commit() {
 
 #[test]
 fn cancel_after_a_branch_left_building_lands_nothing() {
-    // F9: a task cancelled at any point before the ref move lands nothing.
     let mut w = world();
     let (task, branch) = w.task("a");
     w.attempt(&task, "push");
@@ -509,7 +476,6 @@ fn ready_branch_past_30_min_opens_1_needs_you_item() {
         .unwrap();
     assert_eq!(opened, 1, "a second pass opens nothing more");
 
-    // The branch leaves `ready`: the item ends.
     w.put(&branch, "in_bundle", 2000);
     w.follow(2001);
     assert!(w.overdue_items().is_empty());
@@ -542,9 +508,6 @@ fn each_state_with_a_limit_is_due_by_its_key() {
     assert!(w.overdue_items().is_empty(), "gate_failed is not due yet");
 }
 
-/// T-871 removed the interim edge `building -> landed` of the old claim
-/// path. The door refuses it, and the branch of an attempt of an old
-/// ledger (`via = claim`) lands only through a bundle, as a push branch.
 #[test]
 fn no_branch_goes_from_building_to_landed() {
     assert!(!EXITS.contains(&(Entity::TaskBranch, "building", "landed")));
@@ -588,7 +551,6 @@ fn first_push_bind_writes_the_branch_row_once() {
     assert_eq!(row.feature_id, FEATURE);
     assert_eq!(row.task_id.as_deref(), Some(task.as_str()));
     assert_eq!(row.landing_state.as_deref(), Some("building"));
-    // A second bind of the task keeps the row.
     w.set_task(&task, "verifying");
     w.attempt(&task, "push");
     w.follow(5);

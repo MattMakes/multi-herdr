@@ -1,7 +1,3 @@
-//! The e2e tests of exec mode (fleetd-p7 ticket 33; FM-20, FR-6 part,
-//! FR-9 part, RR-11; `docs/specs/fleetd/design.md`, "Worker profiles and
-//! adapters" (Exec or interactive)).
-
 #![cfg(unix)]
 
 use std::path::PathBuf;

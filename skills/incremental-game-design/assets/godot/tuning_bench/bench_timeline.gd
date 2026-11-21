@@ -1,9 +1,4 @@
 extends Control
-## The timeline of the tuning bench: 1 game of the active player on 1 picture.
-##
-## The x axis is the time. The phases are bands. The income is a line on a log scale.
-## Each purchase is a mark with the colour of its impact. A purchase that the game made by itself (auto-buy)
-## is a mark at the top of the row "buys". Each new thing is a tick. The mouse over a band shows its phase.
 
 const Meters := preload("res://addons/tuning_bench/bench_meters.gd")
 
@@ -30,11 +25,9 @@ const MAX_POINTS := 1500
 
 var _result: Dictionary = {}
 var _impact_target: Dictionary = {}
-## The bands of the last draw: [x0, x1, text of the tooltip].
 var _bands: Array = []
 
 
-## Show a result of a run. `targets` gives the limits of the impact classes.
 func show_result(result: Dictionary, targets: Dictionary) -> void:
 	_result = result
 	_impact_target = targets.get("impact", {}) if targets.get("impact", null) is Dictionary else {}
@@ -55,7 +48,6 @@ func _draw() -> void:
 	var strips_y: float = plot.end.y + 22.0
 	var full_bottom: float = strips_y + STRIP * 3.0
 
-	# The phases as bands, over the plot and the 3 strips.
 	_bands = []
 	var band_at: int = 0
 	for phase: Array in timeline.get("phases", []):
@@ -64,14 +56,12 @@ func _draw() -> void:
 		draw_rect(Rect2(x0, plot.position.y, x1 - x0, full_bottom - plot.position.y), BANDS[band_at % BANDS.size()])
 		var label: String = str(names.get(phase[0], phase[0]))
 		_bands.append([x0, x1, "%s: %s to %s" % [label, _clock(float(phase[1])), _clock(float(phase[2]))]])
-		# A name that is wider than its band is cut at a letter and ends with "…". The tooltip has the full name.
 		var fitted: String = fit_label(font, label, x1 - x0 - LABEL_PAD * 2.0)
 		if fitted != "":
 			draw_string(font, Vector2(x0 + LABEL_PAD, plot.position.y - 8.0), fitted, HORIZONTAL_ALIGNMENT_LEFT, -1.0, FONT_SIZE, Color.WHITE)
 		band_at += 1
 	draw_rect(plot, Color(1.0, 1.0, 1.0, 0.25), false, 1.0)
 
-	# The time axis.
 	var hours: float = length / 3600.0
 	var hour_step: float = 1.0
 	if hours > 12.0:
@@ -86,7 +76,6 @@ func _draw() -> void:
 		draw_string(font, Vector2(x - 14.0, plot.end.y + 15.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, FONT_SIZE, DIM)
 		mark += hour_step
 
-	# The income line on a log scale.
 	var series: Array = timeline.get("rate", [])
 	var low: float = INF
 	var high: float = 0.0
@@ -115,7 +104,6 @@ func _draw() -> void:
 			var value: float = maxf(float(point[1]), low)
 			var x: float = plot.position.x + plot.size.x * float(point[0]) / length
 			var y: float = plot.end.y - plot.size.y * (log(value) / log(10.0) - log_low) / (log_high - log_low)
-			# The income is constant between 2 points: draw a step.
 			if index % stride == 0 or index == series.size() - 1:
 				if not points.is_empty():
 					points.append(Vector2(x, last_y))
@@ -126,7 +114,6 @@ func _draw() -> void:
 			draw_polyline(points, LINE, 1.5, true)
 	draw_string(font, Vector2(plot.position.x + 6.0, plot.position.y + 15.0), "income for each second (log scale)", HORIZONTAL_ALIGNMENT_LEFT, -1.0, FONT_SIZE, LINE)
 
-	# Strip 1: the purchases. Strip 2: the new things. Strip 3: the walls and the resets.
 	var rows: Array[String] = ["buys", "new", "walls"]
 	for row: int in range(3):
 		var y: float = strips_y + STRIP * float(row)
@@ -156,7 +143,6 @@ func _draw() -> void:
 		var x: float = plot.position.x + plot.size.x * float(time) / length
 		draw_dashed_line(Vector2(x, plot.position.y), Vector2(x, full_bottom), RESET, 1.0, 4.0)
 
-	# The legend.
 	var y0: float = full_bottom + 22.0
 	var x0: float = 8.0
 	x0 = _legend(font, x0, y0, IMPACT["low"], "low impact")
@@ -178,8 +164,6 @@ func _draw() -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, -1.0, FONT_SIZE, DIM)
 
 
-## Return the label of a band that fits into `width`: the full text, a text that ends with "…", or "" when
-## not even 1 letter fits.
 static func fit_label(font: Font, text: String, width: float) -> String:
 	if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, FONT_SIZE).x <= width:
 		return text
@@ -196,7 +180,6 @@ static func _clock(seconds: float) -> String:
 	return "%.1f min" % (seconds / 60.0)
 
 
-## The mouse is over a band: show the full name of the phase and its time.
 func _get_tooltip(at_position: Vector2) -> String:
 	for band: Array in _bands:
 		if at_position.x >= float(band[0]) and at_position.x < float(band[1]):

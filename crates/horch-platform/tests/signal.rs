@@ -1,9 +1,6 @@
-//! The concern signal: signals and the stop of a process.
-
 use horch_platform::{process, signal};
 use std::process::{Child, Command};
 
-/// A child that runs until it is stopped.
 fn long_child() -> Child {
     #[cfg(unix)]
     let child = Command::new("sleep").arg("30").spawn();
@@ -15,13 +12,11 @@ fn long_child() -> Child {
     child.expect("start a long child")
 }
 
-/// The pid and the start time of `child`.
 fn identity(child: &Child) -> (u32, u64) {
     let pid = child.id();
     (pid, process::start_time(pid).expect("the child runs"))
 }
 
-/// The signal goes only to the process with the recorded start time.
 #[cfg(unix)]
 #[test]
 fn signal_same_signals_only_the_recorded_process() {
@@ -47,7 +42,6 @@ fn signal_same_signals_only_the_recorded_process() {
     );
 }
 
-/// Windows has no signals: `signal_same` sends nothing and says so.
 #[cfg(windows)]
 #[test]
 fn signal_same_is_not_supported_on_windows() {
@@ -63,7 +57,6 @@ fn signal_same_is_not_supported_on_windows() {
     );
 }
 
-/// A stop goes only to the process with the recorded start time.
 #[test]
 fn stop_same_stops_only_the_recorded_process() {
     use signal::Stop;
@@ -85,7 +78,6 @@ fn stop_same_stops_only_the_recorded_process() {
     assert!(!signal::stop_same(pid, started, Stop::Kill), "gone");
 }
 
-/// SIGTERM reaches the handler of the child, which then exits 0 by itself.
 #[cfg(unix)]
 #[test]
 fn terminate_politely_ends_a_child_that_handles_sigterm() {
@@ -128,7 +120,6 @@ fn terminate_politely_is_not_supported_on_windows() {
     );
 }
 
-/// The flag is set by SIGTERM, and the process lives on.
 #[cfg(unix)]
 #[test]
 fn termination_flag_is_set_by_sigterm() {
@@ -142,7 +133,6 @@ fn termination_flag_is_set_by_sigterm() {
     assert!(FLAG.load(Ordering::SeqCst));
 }
 
-/// A SIGHUP does not end the process after `outlive_hangup`.
 #[cfg(unix)]
 #[test]
 fn outlive_hangup_survives_sighup() {
@@ -151,14 +141,9 @@ fn outlive_hangup_survives_sighup() {
     assert_eq!(unsafe { libc::raise(libc::SIGHUP) }, 0);
 }
 
-/// The env var that makes this test binary run the helper below.
 #[cfg(unix)]
 const HELPER: &str = "HORCH_PLATFORM_SIGNAL_HELPER";
 
-/// SIGTERM to a process that watches a group kills the group with SIGKILL,
-/// and the process then ends by SIGTERM, as without the handler. A helper
-/// run of this test binary takes the signal, because the handler ends the
-/// process that gets it.
 #[cfg(unix)]
 #[test]
 fn kill_group_on_termination_kills_the_group_and_ends_by_the_signal() {
@@ -188,7 +173,6 @@ fn kill_group_on_termination_kills_the_group_and_ends_by_the_signal() {
     assert_eq!(reaped.signal(), Some(libc::SIGKILL), "the group is killed");
 }
 
-/// The helper of the test above. It does nothing in a normal test run.
 #[cfg(unix)]
 #[test]
 fn kill_group_helper() {

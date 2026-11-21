@@ -1,5 +1,3 @@
-//! `horch skills path`: stable paths for bundled and installed skill files.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

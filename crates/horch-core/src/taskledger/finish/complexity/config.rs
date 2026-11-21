@@ -1,14 +1,6 @@
-//! The analyser config of each changed file: the nearest `static-analysis`
-//! config from the file's folder up to the work dir (T-35). The analyser
-//! itself reads a config only from its current directory, so the step runs
-//! it once per config with `--config`.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The file names cosmiconfig 9 (the analyser's config loader) searches in
-/// 1 folder, in its order, for the module name `static-analysis`.
-/// `package.json` counts only when it has a `static-analysis` field.
 const SEARCH_PLACES: &[&str] = &[
     "package.json",
     ".static-analysisrc",
@@ -33,7 +25,6 @@ const SEARCH_PLACES: &[&str] = &[
     "static-analysis.config.mjs",
 ];
 
-/// The config cosmiconfig takes from `folder`, when it holds one.
 fn config_in(folder: &Path) -> Option<PathBuf> {
     SEARCH_PLACES
         .iter()
@@ -41,7 +32,6 @@ fn config_in(folder: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file() && (!p.ends_with("package.json") || has_field(p)))
 }
 
-/// Whether the `package.json` at `path` has a `static-analysis` field.
 fn has_field(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()
@@ -49,9 +39,6 @@ fn has_field(path: &Path) -> bool {
         .is_some_and(|v| v.get("static-analysis").is_some())
 }
 
-/// The nearest config of `file` (relative to `dir`): the first folder from
-/// the file's folder up to `dir` that holds one. `None` when no folder
-/// holds one.
 pub(super) fn nearest(dir: &Path, file: &str) -> Option<PathBuf> {
     let mut folder = dir.join(file).parent()?.to_path_buf();
     loop {
@@ -64,9 +51,6 @@ pub(super) fn nearest(dir: &Path, file: &str) -> Option<PathBuf> {
     }
 }
 
-/// `files` grouped by their nearest config, in a stable order: the group
-/// without a config first, then by config path. Each group keeps the order
-/// of `files`.
 pub(super) fn groups(dir: &Path, files: &[String]) -> Vec<(Option<PathBuf>, Vec<String>)> {
     let mut by: BTreeMap<Option<PathBuf>, Vec<String>> = BTreeMap::new();
     for f in files {
@@ -88,7 +72,6 @@ mod tests {
     fn t_35_the_nearest_config_wins_and_the_search_stops_at_the_work_dir() {
         let top = tempfile::tempdir().unwrap();
         let dir = top.path().join("repo");
-        // A config above the work dir is not the work dir's config.
         write(&top.path().join(".static-analysisrc.json"), "{}");
         write(&dir.join("a/.static-analysisrc.json"), "{}");
         write(&dir.join("a/b/.config/static-analysisrc.yml"), "x: 1");

@@ -1,6 +1,3 @@
-//! The judge pairing rule of the plan validator (ticket 12 of fleetd-p6;
-//! FR-4, FM-33, the cancel rule of a judge pair).
-
 use horch_core::fleetd::ideas::domain::plan::{Acceptance, Kind, Plan, PlannedTask};
 use horch_core::fleetd::ideas::domain::plan_rules_judges::{check, RULE};
 use horch_core::fleetd::ideas::domain::plan_validator::{
@@ -17,7 +14,6 @@ fn profile(name: &str, provider: &str) -> RosterProfile {
     }
 }
 
-/// A roster with 2 claude profiles and 1 codex profile.
 fn facts() -> PlanFacts {
     PlanFacts {
         roster: vec![
@@ -79,17 +75,14 @@ fn plan_without_paired_judge_is_refused() {
         "{problems:?}"
     );
 
-    // The validator runs the rule.
     let all = PlanValidator::validate(&p, &facts());
     assert_eq!(judge_problems(&all).len(), 1, "{all:?}");
 
-    // Each judgment kind needs a judge.
     for kind in Kind::ALL.into_iter().filter(|k| k.is_judgment()) {
         let p = plan(vec![task("j", kind, "writer-claude")]);
         assert_eq!(check(&p, &facts()).len(), 1, "{kind:?}");
     }
 
-    // With its judge the plan passes the rule.
     let p = plan(vec![
         task("doc", Kind::Docs, "writer-claude"),
         judge("doc-judge", "doc", "judge-codex"),
@@ -110,7 +103,6 @@ fn judge_of_a_code_task_is_refused() {
     assert_eq!(problems[0].task.as_deref(), Some("code-judge"));
     assert!(problems[0].message.contains("not of a judgment kind"));
 
-    // A judge of an unknown key, and a judge that names no task.
     let mut lost = judge("lost-judge", "nowhere", "judge-codex");
     let p = plan(vec![lost.clone()]);
     assert_eq!(check(&p, &facts()).len(), 1);
@@ -120,7 +112,6 @@ fn judge_of_a_code_task_is_refused() {
     assert_eq!(problems.len(), 1);
     assert!(problems[0].message.contains("judges:"));
 
-    // Only a judge task names `judges:`.
     let mut code = task("code", Kind::Feature, "writer-claude");
     code.judges = Some("doc".into());
     let p = plan(vec![
@@ -132,7 +123,6 @@ fn judge_of_a_code_task_is_refused() {
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(problems[0].task.as_deref(), Some("code"));
 
-    // 2 judges of 1 task.
     let p = plan(vec![
         task("doc", Kind::Docs, "writer-claude"),
         judge("doc-judge", "doc", "judge-codex"),
@@ -154,7 +144,6 @@ fn judge_on_the_same_provider_is_refused_when_another_exists() {
     assert_eq!(problems[0].task.as_deref(), Some("doc-judge"));
     assert!(problems[0].message.contains("codex"), "{problems:?}");
 
-    // A roster of 1 provider: the same provider is allowed.
     let one = PlanFacts {
         roster: vec![
             profile("writer-claude", "claude"),
@@ -183,7 +172,6 @@ fn replan_that_leaves_a_judgment_task_without_judge_is_refused() {
     ]);
     assert!(check(&before, &facts()).is_empty());
 
-    // The replan replaces the judge task and keeps the judged task.
     let mut after = before.clone();
     after.tasks.retain(|t| t.key != "doc-judge");
     after

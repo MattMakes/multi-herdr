@@ -1,11 +1,3 @@
-//! The schema step of Phase 7 (docs/specs/fleetd/design.md, "Migration
-//! plan" item 9, "Worker profiles and adapters" (The health of a profile),
-//! FM-20, and "What a release does to a run in flight", row Phase 7;
-//! docs/tickets/fleetd-p7/02-schema.md): `events.kind` accepts the event
-//! words `profile_unhealthy` and `profile_healthy` (MAP.md of fleetd-p7,
-//! Q10), and an attempt can end with the outcome `context_limit` (Q2). The
-//! step changes no row ("Ledger: None").
-
 use std::path::Path;
 
 use horch_core::fleetd::task_execution::domain::retry::Outcome;
@@ -13,10 +5,8 @@ use horch_core::taskledger::schema;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 
-/// The version before the Phase 7 step.
 const BEFORE: i64 = schema::PHASE_7_VERSION - 1;
 
-/// The 2 event words of the health of a profile.
 const HEALTH_WORDS: [&str; 2] = ["profile_unhealthy", "profile_healthy"];
 
 fn user_version(conn: &Connection) -> i64 {
@@ -24,7 +14,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The stored text of the table or index `name`.
 fn stored_sql(conn: &Connection, name: &str) -> String {
     conn.query_row(
         "SELECT sql FROM sqlite_master WHERE name = ?1",
@@ -34,7 +23,6 @@ fn stored_sql(conn: &Connection, name: &str) -> String {
     .unwrap()
 }
 
-/// The names of the tables of the ledger, `sqlite_sequence` included.
 fn tables(conn: &Connection) -> Vec<String> {
     conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .unwrap()
@@ -44,15 +32,6 @@ fn tables(conn: &Connection) -> Vec<String> {
         .unwrap()
 }
 
-/// A ledger at [`BEFORE`] at `path`, built by the real steps, whose
-/// `events` table an older binary built: its kind `CHECK` has no word of
-/// [`HEALTH_WORDS`]. Each table has 1 row or more.
-///
-/// The rows of each table but `events` are generic: 1 value of the column
-/// type in each column, with the checks and the foreign keys off while they
-/// are written. The step must keep each row as it is, so a row need not
-/// follow the rules. `events` has real rows, because the step copies them
-/// into a table with its `CHECK`.
 fn phase_6_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, BEFORE).unwrap();
@@ -100,10 +79,7 @@ fn phase_6_file(path: &Path) {
         .unwrap();
 }
 
-/// Build `events` again with the kind `CHECK` of a binary before Phase 7.
-/// A ledger keeps the `CHECK` of the binary that built its `events` table.
 fn as_an_older_binary(conn: &Connection) {
-    // The stored name can be `events` or `"events"`, after a rename.
     let table = stored_sql(conn, "events");
     let (_, columns) = table.split_once('(').unwrap();
     let mut older = format!("CREATE TABLE events_old ({columns}");
@@ -128,7 +104,6 @@ ALTER TABLE events_old RENAME TO events;
     .unwrap();
 }
 
-/// A [`phase_6_file`] ledger: its folder (kept alive) and a connection.
 fn before() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -138,8 +113,6 @@ fn before() -> (tempfile::TempDir, Connection) {
     (dir, conn)
 }
 
-/// [`before`], migrated to the Phase 7 step with foreign keys on, as
-/// `Store::open` sets them.
 fn migrated() -> (tempfile::TempDir, Connection) {
     let (dir, mut conn) = before();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -156,9 +129,6 @@ fn event(conn: &Connection, kind: &str) -> rusqlite::Result<usize> {
     )
 }
 
-/// Each row of each table as text, sorted, by table. Each row holds its
-/// key, so the sort hides no change; it ignores only the rowid order of
-/// `sqlite_sequence`, which a rebuilt table writes again.
 fn all_rows(conn: &Connection) -> Vec<(String, Vec<String>)> {
     tables(conn)
         .into_iter()
@@ -273,13 +243,11 @@ fn p7_migration_changes_no_row() {
         assert_eq!(new, old, "{table}");
     }
     assert_eq!(schema_of_other_tables(&conn), other);
-    // The deleted event keeps its id: the next event gets the id after it.
     event(&conn, "profile_healthy").unwrap();
     let last: i64 = conn
         .query_row("SELECT max(event_id) FROM events", [], |r| r.get(0))
         .unwrap();
     assert_eq!(last, 4);
-    // The step wrote a backup of the previous version first.
     let copies = schema::backups_in(dir.path());
     assert_eq!(copies.len(), 1, "{copies:?}");
     let name = copies[0]
@@ -301,7 +269,6 @@ fn p7_newer_schema_is_refused() {
     {
         let mut conn = Connection::open(&path).unwrap();
         schema::migrate(&mut conn).unwrap();
-        // The newest version is the Phase 7 step, with its words.
         for word in HEALTH_WORDS {
             event(&conn, word).unwrap_or_else(|e| panic!("{word}: {e}"));
         }

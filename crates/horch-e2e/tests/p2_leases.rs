@@ -1,26 +1,3 @@
-//! The e2e tests of the Phase 2 gate (fleetd design, Migration plan item
-//! 4): a stopped worker is caught within 1 lease (RR-1), an expired lease
-//! never leaves a task assigned (RR-2), retries are bounded (RR-6), a cancel
-//! stops the process of a live attempt before the task is `cancelled`, and
-//! 2 workers never hold 1 task (FM-14).
-//!
-//! Each test runs the `horch` binary on its own ledger, with 1 forced pass
-//! of fleetd for each `horch ledger watch --once`. The tests move 2 clocks
-//! together, in steps, and no test sleeps for a lease:
-//! - the calendar clock, with `HORCH_NOW` on each `horch` command. The age
-//!   of the wrapper heartbeat is on this clock.
-//! - the fleet clock, in the ledger ([`Harness::advance_fleet_clock`]).
-//!   Each `horch` command is a new fleetd process, whose first tick adds 0.
-//!
-//! The stand-in worker has no supervisor: its last heartbeat is the start
-//! of its agent. The tests read the stored task words
-//! (`docs/tickets/fleetd-p2/MAP.md`, Q3).
-//!
-//! RR-1 is Unix only: `kill -STOP` has no Windows form (MAP.md, Q17). On
-//! Windows the unit tests of the heartbeat and the stall ladder hold the
-//! RR-1 row. Windows has no polite stop either, so FM-14 shows the old
-//! process in its grace only on Unix.
-
 use std::path::PathBuf;
 use std::process::Output;
 use std::time::Duration;
@@ -34,17 +11,12 @@ use horch_e2e::ledger_seed::{seed_run, seed_task};
 
 const RUN: &str = "p2";
 
-/// The design lease of a profile, in seconds of the fleet clock.
 const LEASE_S: i64 = 120;
 
-/// `heartbeat_max_age_s` of `fleet.toml`, the design default.
 const HEARTBEAT_MAX_AGE_S: i64 = 30;
 
-/// The step of the 2 clocks between 2 passes, in seconds.
 const STEP_S: i64 = 10;
 
-/// `stop_grace_s` of the tests: the time on the fleet clock from the polite
-/// stop of a process to its kill.
 const GRACE_S: i64 = 600;
 
 fn text(o: &Output) -> String {
@@ -56,13 +28,9 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A fleet with its own ledger file, a git repository and no watchdog, and
-/// the 2 clocks of the test.
 struct Fleet {
     h: Harness,
-    /// The calendar time of the start of the test.
     base: String,
-    /// The seconds that the test moved both clocks.
     offset: u64,
 }
 
@@ -89,13 +57,11 @@ impl Fleet {
         self.h.root.join("ledger.sqlite3")
     }
 
-    /// The calendar time of the test: the start plus the moves.
     fn now(&self) -> String {
         let base = horch_core::clock::parse(&self.base).unwrap();
         horch_core::clock::stamp(base + Duration::from_secs(self.offset))
     }
 
-    /// Run `horch` at the calendar time of the test, as `worker` if any.
     fn run_as(&self, worker: Option<&str>, args: &[&str]) -> Output {
         let mut cmd = self.h.horch(args);
         cmd.env("HORCH_NOW", self.now());
@@ -111,7 +77,6 @@ impl Fleet {
         text(&o)
     }
 
-    /// 1 forced pass of fleetd, while the test fleetd is down.
     fn pass(&self) -> String {
         let o = self.h.without_fleetd(|| {
             self.run_as(
@@ -125,13 +90,11 @@ impl Fleet {
         text(&o)
     }
 
-    /// Move both clocks `s` seconds forward.
     fn advance_clocks(&mut self, s: i64) {
         self.h.advance_fleet_clock(s);
         self.offset += u64::try_from(s).unwrap();
     }
 
-    /// Move both clocks `s` seconds forward, then run 1 pass.
     fn pass_after(&mut self, s: i64) -> String {
         self.advance_clocks(s);
         self.pass()
@@ -157,15 +120,12 @@ impl Fleet {
         self.pass();
     }
 
-    /// A new worker of `opus` with `agent` and no supervisor, bound to T-1
-    /// (FR-5). Returns its id.
     fn claimed(&self, agent: &Agent) -> String {
         let w = bind(&self.h, "opus", Some(agent.pid)).worker_id;
         assert_eq!(self.task().status, "running");
         w
     }
 
-    /// The stored facts of T-1.
     fn task(&self) -> Task {
         let store = Store::open(&self.db()).unwrap();
         store
@@ -188,7 +148,6 @@ impl Fleet {
             .unwrap()
     }
 
-    /// 1 number from the ledger.
     fn number(&self, sql: &str) -> i64 {
         let store = Store::open(&self.db()).unwrap();
         store.conn().query_row(sql, [], |r| r.get(0)).unwrap()
@@ -202,12 +161,10 @@ impl Fleet {
         self.number("SELECT COUNT(*) FROM leases")
     }
 
-    /// The fleet clock at which the lease of T-1 expires.
     fn lease_expiry(&self) -> i64 {
         self.number("SELECT expires_at FROM leases")
     }
 
-    /// The attempt of worker `w` and its state.
     fn attempt_of(&self, w: &str) -> (String, String) {
         let store = Store::open(&self.db()).unwrap();
         store
@@ -220,12 +177,10 @@ impl Fleet {
             .unwrap()
     }
 
-    /// The attempts of T-1 that are not ended.
     fn open_attempts(&self) -> i64 {
         self.number("SELECT COUNT(*) FROM attempts WHERE task_id IS NOT NULL AND state <> 'ended'")
     }
 
-    /// The id of the first transition event of `entity` `id` to `to`.
     fn moved(&self, entity: &str, id: &str, to: &str) -> Option<i64> {
         let store = Store::open(&self.db()).unwrap();
         store
@@ -239,9 +194,6 @@ impl Fleet {
             .ok()
     }
 
-    /// Passes, each [`STEP_S`] after the last, until T-1 is not `running`,
-    /// at most `limit_s`. Before each pass, `before` sees the fleet. Gives
-    /// the fleet clock of the pass that moved it, and the outputs.
     fn passes_until_not_running(
         &mut self,
         limit_s: i64,
@@ -262,7 +214,6 @@ impl Fleet {
     }
 }
 
-/// The stored facts of T-1.
 #[derive(Debug)]
 struct Task {
     id: String,
@@ -273,23 +224,16 @@ struct Task {
     not_before: Option<i64>,
 }
 
-/// A task word that holds the task for an attempt.
 fn assigned(status: &str) -> bool {
     matches!(status, "leased" | "running")
 }
 
-/// The stand-in agent: a process whose end is seen at once, because on
-/// Unix a thread of the test reaps it and on Windows no zombie stays. On
-/// Unix it leads its own process group, as a real agent does, so the stop
-/// of fleetd reaches its whole group. Drop kills it (on Unix, its group),
-/// so a failed assertion leaks no process.
 struct Agent {
     pid: u32,
     start: u64,
 }
 
 impl Agent {
-    /// A process that sleeps.
     fn start() -> Agent {
         #[cfg(unix)]
         return Agent::spawn("/bin/sleep 600");
@@ -297,9 +241,6 @@ impl Agent {
         return Agent::spawn_windows();
     }
 
-    /// A process group whose leader ignores the polite stop (`SIGTERM`):
-    /// only the kill after the grace ends the group. Windows has no polite
-    /// stop, so there it is [`Agent::start`].
     fn stubborn() -> Agent {
         #[cfg(unix)]
         return Agent::spawn("/bin/sh -c 'trap \"\" TERM; while :; do /bin/sleep 1; done'");
@@ -307,11 +248,6 @@ impl Agent {
         return Agent::start();
     }
 
-    /// `process_group(0)` starts the agent in its own process group. A
-    /// thread waits on the child, so no zombie stays after its end. `exec`
-    /// replaces `/bin/sh` with the command, so the command leads the group.
-    /// Without `exec`, `dash` (the `/bin/sh` of Debian) stays the group
-    /// leader. (`set -m` in `sh -c` makes no group in `dash`.)
     #[cfg(unix)]
     fn spawn(command: &str) -> Agent {
         use std::os::unix::process::CommandExt;
@@ -329,8 +265,6 @@ impl Agent {
         Agent::of(pid)
     }
 
-    /// `ping` for 600 s. Windows keeps no zombie, and the test holds no
-    /// handle to it.
     #[cfg(windows)]
     fn spawn_windows() -> Agent {
         let child = std::process::Command::new("ping")
@@ -357,13 +291,10 @@ impl Agent {
         horch_core::procid::alive(self.pid, Some(self.start))
     }
 
-    /// Whether the agent and each process of its group are gone. Windows
-    /// has no process groups: there it is the agent alone.
     fn gone(&self) -> bool {
         !self.alive() && horch_core::procid::group_members(self.pid).is_empty()
     }
 
-    /// Send `sig` to the group of the agent, while the agent leads it.
     #[cfg(unix)]
     fn signal_group(&self, sig: libc::c_int) {
         if horch_core::procid::is_same_group(self.pid, self.start) {
@@ -373,7 +304,6 @@ impl Agent {
         }
     }
 
-    /// `kill -STOP`: the process stays, with no output and no progress.
     #[cfg(unix)]
     fn freeze(&self) {
         self.signal_group(libc::SIGSTOP);
@@ -399,7 +329,6 @@ impl Agent {
         horch_core::procid::stop_same(self.pid, self.start, horch_core::procid::Stop::Kill);
     }
 
-    /// Kill the agent and wait until it is gone.
     fn kill(&self) {
         self.stop();
         wait_for("the end of the agent", || self.gone().then_some(()));
@@ -475,7 +404,6 @@ fn rr2_expired_lease_never_leaves_the_task_assigned() {
     let (attempt, state) = f.attempt_of(&w);
     assert_eq!(state, "ended", "attempt {attempt}\n{log}");
     assert_eq!(f.open_attempts(), 0, "{log}");
-    // The next passes leave it unassigned and with no lease.
     for _ in 0..3 {
         let o = f.pass_after(STEP_S);
         let t = f.task();
@@ -484,9 +412,7 @@ fn rr2_expired_lease_never_leaves_the_task_assigned() {
     }
 }
 
-/// The phases of RR-6, each 1 failed attempt at a time.
 impl Fleet {
-    /// Wait out the backoff of rung 6. A bind in the backoff gets no task.
     fn through_backoff(&mut self) {
         let Some(nb) = self.task().not_before.filter(|nb| *nb > self.clock()) else {
             return;
@@ -518,8 +444,6 @@ impl Fleet {
         log
     }
 
-    /// Fail attempts until T-1 is not `ready`. Each status on the way is
-    /// asserted against the limit `max`.
     fn fail_until_not_ready(&mut self, max: i64, log: &mut Vec<String>) {
         while self.task().status == "ready" {
             log.push(self.failed_attempt());
@@ -540,14 +464,11 @@ fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
     let mut f = Fleet::new("p2-rr6");
     f.run_with_task(Some(MAX));
     let mut log = Vec::new();
-    // The first MAX attempts fail: the task is `failed`.
     f.fail_until_not_ready(MAX, &mut log);
     let t = f.task();
     assert_eq!(t.status, "failed", "{t:?}\n{}", log.join("\n"));
     assert_eq!(t.attempts, MAX, "{t:?}\n{}", log.join("\n"));
-    // The replan.
     log.push(f.ok(&["task", "requeue", "T-1", "replan", "--run", RUN]));
-    // The next MAX attempts fail: the task is `escalated`.
     f.fail_until_not_ready(MAX, &mut log);
     let log = log.join("\n");
     let t = f.task();
@@ -574,7 +495,6 @@ fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
         ["held", "task_escalated"],
         "the escalation item and the question of the held task name the escalated task, and no other item does\n{log}"
     );
-    // An escalated task gets no attempt by itself.
     let o = f.pass_after(3600);
     assert_eq!(f.task().status, "escalated", "{o}");
     assert_eq!(f.task().attempts, 2 * MAX, "{o}");
@@ -614,7 +534,6 @@ fn cancel_of_a_blocked_on_user_task_is_immediate() {
     let (attempt, _) = f.attempt_of(&w);
     let t = f.task();
     let clock = FleetSeconds(f.clock());
-    // The worker asks a question, then exits: rung 5 gives `asked`.
     let now = f.now();
     let ask = Ask {
         task_id: &t.id,
@@ -639,8 +558,6 @@ fn cancel_of_a_blocked_on_user_task_is_immediate() {
 #[test]
 fn cancel_of_a_waiting_quota_task_is_immediate() {
     let mut f = Fleet::new("p2-cancel-quota");
-    // The claude pool of opus and the codex pool of its fallback are full
-    // until 2099.
     let fixture = fixtures().join("quota/all-exhausted.json");
     let quota = std::fs::read_to_string(fixture)
         .unwrap()
@@ -675,8 +592,6 @@ fn fm14_no_second_attempt_starts_while_the_old_process_lives() {
     assert_eq!(state, "ended", "{}", log.join("\n"));
     #[cfg(unix)]
     assert!(old.alive(), "the old process lives in its grace");
-    // A new worker tries to bind after each pass, while the old process
-    // lives in its grace and after the kill.
     let mut agents = Vec::new();
     for _ in 0..=(GRACE_S / 60 + 2) {
         log.push(f.pass_after(60));

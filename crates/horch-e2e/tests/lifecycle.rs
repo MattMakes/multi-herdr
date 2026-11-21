@@ -10,7 +10,6 @@ use serde_json::Value;
 
 const FORBIDDEN: &str = horch_platform::start::FORBIDDEN_ENV[0];
 
-/// The keys that move agy off the operator's Google login.
 const AGY_KEYS: [&str; 3] = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
 
 fn text(o: &Output) -> String {
@@ -315,9 +314,6 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
     assert!(!names.contains(&FORBIDDEN), "the probe has {FORBIDDEN}");
 }
 
-/// F7 (G3): the worker loads the roster in its pane, and an overlay file
-/// that does not load gives one `warning:` line there. The worker still
-/// launches its agent.
 #[test]
 fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
     let h = world("f7-worker", "exec");

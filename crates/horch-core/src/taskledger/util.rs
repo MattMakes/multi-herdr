@@ -1,5 +1,3 @@
-//! Small helpers every task ledger module uses.
-
 use anyhow::Result;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
@@ -8,25 +6,20 @@ use crate::fleetd::fleet_runtime::application::ledger::{self, Cause, DoorError};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 
-/// A fresh row id.
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// "Now" as the ledger writes it: the one clock (`HORCH_NOW` pins it).
 pub fn now() -> String {
     crate::clock::now_stamp()
 }
 
-/// Seconds from `from` to `to`, both ledger stamps; `None` when one does not
-/// parse.
 pub fn seconds_between(from: &str, to: &str) -> Option<i64> {
     let a = crate::clock::parse(from)?;
     let b = crate::clock::parse(to)?;
     Some((b - a).num_seconds())
 }
 
-/// The ids an event is about.
 #[derive(Debug, Clone, Default)]
 pub struct About<'a> {
     pub run: Option<&'a str>,
@@ -34,7 +27,6 @@ pub struct About<'a> {
     pub worker: Option<&'a str>,
 }
 
-/// Append 1 event.
 pub fn event(
     conn: &Connection,
     about: &About<'_>,
@@ -58,10 +50,6 @@ pub fn event(
     Ok(())
 }
 
-/// Run `f` in 1 transaction of `conn`: the open transaction of the
-/// caller, else a new `BEGIN IMMEDIATE` that commits when `f` succeeds.
-/// When `f` fails, this transaction rolls back, and a refused move of the
-/// error is recorded after it ([`record_refusal_after_rollback`]).
 pub fn atomic<T>(conn: &Connection, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
     if !conn.is_autocommit() {
         return f(conn);
@@ -80,10 +68,6 @@ pub fn atomic<T>(conn: &Connection, f: impl FnOnce(&Connection) -> Result<T>) ->
     }
 }
 
-/// After the opener of a transaction rolled it back for `err`: when `err`
-/// is a refused move, write its event and its needs-you item in a second
-/// transaction, so that the refusal is on record (OR-2). A failure of that
-/// write is logged, and the caller returns `err`.
 pub fn record_refusal_after_rollback(conn: &Connection, err: &anyhow::Error) {
     let Some(refused) = err.downcast_ref::<DoorError>() else {
         return;
@@ -102,35 +86,20 @@ pub fn record_refusal_after_rollback(conn: &Connection, err: &anyhow::Error) {
     }
 }
 
-/// Why a task or a worker changes its status: the cause of its
-/// `transition` event. [`Why::cause`] is the only writer of the cause text,
-/// and [`shown_kind_sql`] and [`shown_text_sql`] are its only readers.
 #[derive(Debug, Clone, Copy)]
 pub enum Why<'a> {
-    /// The change had the event `kind` with `text` before. The views show
-    /// its `transition` event by that kind and that text, as before.
     Event(EventKind, &'a str),
-    /// The change had no event before. The views show a `transition`
-    /// event.
     Rule(Rule, &'a str),
 }
 
-/// A command or a rule that changes a status and had no event before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
-    /// A worker ends (`workers::end`).
     End,
-    /// A worker hands off its task.
     Handoff,
-    /// A spawn failed before `horch worker` ran.
     LaunchFailed,
-    /// `horch worker` runs.
     SupervisorStarted,
-    /// The agent of a worker runs.
     AgentStarted,
-    /// `horch ledger finish` starts to land a running task.
     Finish,
-    /// Each task that a `pending` task waits for is done.
     DependenciesMet,
 }
 
@@ -148,11 +117,9 @@ impl Rule {
     }
 }
 
-/// Between the name and the text of a cause.
 const SEP: &str = ": ";
 
 impl Why<'_> {
-    /// The cause text: `<name>: <text>`.
     pub fn cause(self) -> String {
         let (name, text) = match self {
             Why::Event(kind, text) => (kind.as_str(), text),
@@ -162,9 +129,6 @@ impl Why<'_> {
     }
 }
 
-/// Move the row `id` of `entity` to `to` through `transition()`, the 1
-/// door, in the open transaction of `conn`, by `actor` for `why`. A refused
-/// move is an error.
 pub fn transition(
     conn: &Connection,
     entity: Entity,
@@ -179,14 +143,10 @@ pub fn transition(
     Ok(())
 }
 
-/// The name of a cause, in SQL; an empty text when `cause` has no
-/// [`SEP`].
 fn cause_name_sql() -> String {
     format!("substr(cause, 1, instr(cause, '{SEP}') - 1)")
 }
 
-/// The condition, in SQL, that an event is a `transition` with a
-/// [`Why::Event`] cause.
 fn shows_event_sql() -> String {
     let words: Vec<String> = EventKind::ALL
         .iter()
@@ -201,8 +161,6 @@ fn shows_event_sql() -> String {
     )
 }
 
-/// The kind that a view shows for an event, in SQL: the kind of a
-/// [`Why::Event`] cause, else the column `kind`.
 pub fn shown_kind_sql() -> String {
     format!(
         "CASE WHEN {} THEN {} ELSE kind END",
@@ -211,8 +169,6 @@ pub fn shown_kind_sql() -> String {
     )
 }
 
-/// The text that a view shows for an event, in SQL: the text of a
-/// [`Why::Event`] cause, else the column `text`.
 pub fn shown_text_sql() -> String {
     format!(
         "CASE WHEN {} THEN substr(cause, instr(cause, '{SEP}') + {}) ELSE text END",
@@ -221,33 +177,24 @@ pub fn shown_text_sql() -> String {
     )
 }
 
-/// The SQL condition that a view shows an event with the kind of the
-/// parameter `p` (for example `?2`).
 pub fn kind_is(p: &str) -> String {
     format!("({} = {p})", shown_kind_sql())
 }
 
-/// This machine's name, for `workers.host`. A PID names a process only on
-/// the host that recorded it.
 pub fn host_name() -> String {
     crate::runtime::machine::host_name()
 }
 
-/// Whether 2 repo-relative paths overlap: equal, or 1 is a directory that
-/// holds the other. `src/a` and `src/a/b.rs` overlap; `src/a` and `src/ab`
-/// do not.
 pub fn paths_overlap(a: &str, b: &str) -> bool {
     let a = a.trim_end_matches('/');
     let b = b.trim_end_matches('/');
     a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
 }
 
-/// A JSON array of strings, for a TEXT column.
 pub fn json_list(items: &[String]) -> String {
     serde_json::to_string(items).unwrap_or_else(|_| "[]".into())
 }
 
-/// The strings of a JSON-array TEXT column; empty on anything else.
 pub fn parse_json_list(text: Option<&str>) -> Vec<String> {
     text.and_then(|t| serde_json::from_str(t).ok())
         .unwrap_or_default()
@@ -266,8 +213,6 @@ mod tests {
         assert!(!paths_overlap("src/a.rs", "src/b.rs"));
     }
 
-    /// The kind and the text that the views show for an event of
-    /// `kind`, `text` and `cause`.
     fn shown(kind: &str, cause: Option<&str>) -> (String, String) {
         let conn = Connection::open_in_memory().unwrap();
         conn.query_row(

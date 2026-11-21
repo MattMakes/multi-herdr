@@ -1,14 +1,3 @@
-//! The `rescue` job: a rescue ref under `refs/horch/rescue/`, read back and
-//! verified, never overwritten (docs/specs/fleetd/design.md, "Rescue before
-//! any cleanup", RR-9, RR-16, FM-25; docs/tickets/fleetd-p3/06-verified-rescue-job.md).
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root
-//! (`<temp>/fleet`, the fleet root of the temp ledger). A job process is a
-//! small command (`true`, `sleep`) started through the launcher; the
-//! executor runs in the test process with the recorded pid, as `horch job
-//! run` runs it. A fault test runs the rescue with a git wrapper and writes
-//! its result on the run.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -41,24 +30,17 @@ use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use rusqlite::{Connection, TransactionBehavior};
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     dir: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
-    /// The repository, as its canonical path.
     repo: PathBuf,
 }
 
-/// A temp ledger of the current schema, and a temp repository with 1
-/// commit on `main` that holds `a.txt` and `.gitignore`.
 fn world() -> World {
     world_in(tempfile::tempdir().unwrap())
 }
 
-/// [`world`] in a temp folder below HOME, where the repository of a user
-/// is. The folder goes at the end of the test.
 fn world_below_home() -> World {
     let home = std::env::var_os("HOME").expect("HOME is set");
     world_in(tempfile::tempdir_in(home).unwrap())
@@ -88,8 +70,6 @@ fn world_in(dir: tempfile::TempDir) -> World {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -133,7 +113,6 @@ fn make_executable(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// The context of a writer that is not fleetd.
 fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     JobCtx {
         guard: None,
@@ -142,7 +121,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// The sandbox profiles of a test: no check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -156,8 +134,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// What the test compares before and after a rescue: the HEAD, the branch,
-/// the index, the status and each file of the tree.
 #[derive(Debug, PartialEq, Eq)]
 struct TreeView {
     head: String,
@@ -210,8 +186,6 @@ impl World {
         self.repo.join(".worktrees").join(name)
     }
 
-    /// A tree `name` on the branch `fleet/<name>`, made by git, with an
-    /// `orphaned` row: a tree with no live owner.
     fn orphan(&mut self, name: &str) -> PathBuf {
         let path = self.tree_path(name);
         let branch = format!("fleet/{name}");
@@ -245,7 +219,6 @@ impl World {
         path
     }
 
-    /// A `live` attempt `id` of a worker of a new run.
     fn attempt(&mut self, id: &str) {
         let tx = self
             .conn
@@ -278,7 +251,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Queue a `rescue` run of the tree `name`, keyed by its path and HEAD.
     fn queue(&mut self, name: &str) -> i64 {
         let path = self.tree_path(name);
         let key = rescue_key(
@@ -303,8 +275,6 @@ impl World {
         }
     }
 
-    /// Start the run `id` at `clock` with the process `program args`
-    /// through the launcher, as part 3 of a pass starts it.
     fn start(&mut self, id: i64, program: &str, args: &[&str], clock: i64) -> JobRow {
         let spec = LaunchSpec {
             program: program.into(),
@@ -330,7 +300,6 @@ impl World {
         self.job(id)
     }
 
-    /// The run `id` to its end with the executor of `horch job run`.
     fn run(&mut self, id: i64) -> JobRow {
         let pid = self.start(id, "true", &[], 0).pid.unwrap();
         let config = self.config.clone();
@@ -345,15 +314,11 @@ impl World {
         self.job(id)
     }
 
-    /// The run `id` to its end with the rescue of the tree `name` through
-    /// the git binary `bin`: the result is written on the run, and the pass
-    /// observes that its process is gone.
     fn run_with_git(&mut self, id: i64, name: &str, bin: &Path) -> JobRow {
         let git = CliWorktreeGit::new(bin, self.fleet_root());
         self.run_with(id, name, &git)
     }
 
-    /// [`World::run_with_git`] through the adapter `git`.
     fn run_with(&mut self, id: i64, name: &str, git: &CliWorktreeGit) -> JobRow {
         self.start(id, "true", &[], 0);
         let ran = rescue_git::rescue(git, &self.fleet_root(), &self.row(name));
@@ -362,8 +327,6 @@ impl World {
         self.job(id)
     }
 
-    /// 1 observation of the `running` runs by the pass at `clock`, with
-    /// `liveness` for the process of the run `id`.
     fn see(&mut self, id: i64, liveness: Liveness, clock: i64) -> jobs::Observed {
         let facts = [ProcessFact {
             key: id.to_string(),
@@ -379,7 +342,6 @@ impl World {
         seen
     }
 
-    /// The observation of the ended rescue run `id`, in 1 transaction.
     fn observe(&mut self, id: i64) -> Observed {
         let job = self.job(id);
         let config = self.config.clone();
@@ -392,8 +354,6 @@ impl World {
         seen
     }
 
-    /// A git that runs the real git after `script`, a shell fragment that
-    /// sees the arguments in `$*`.
     fn git_wrapper(&self, script: &str) -> PathBuf {
         let real = Command::new("sh")
             .args(["-c", "command -v git"])
@@ -410,7 +370,6 @@ impl World {
     }
 }
 
-/// The `result_json` that `horch job run` writes for `ran`.
 fn result_json(ran: &Ran) -> String {
     serde_json::json!({
         "passed": ran.outcome.passed,
@@ -429,7 +388,6 @@ fn saved(job: &JobRow) -> Rescue {
     serde_json::from_value(result_data(job).expect("a passed rescue names its ref")).unwrap()
 }
 
-/// The paths of the files of `rev`.
 fn files_of(dir: &Path, rev: &str) -> Vec<String> {
     let out = git(dir, &["ls-tree", "-r", "--name-only", rev]);
     out.lines().map(str::to_string).collect()
@@ -439,8 +397,6 @@ fn open_items(w: &World) -> Vec<Item> {
     needs_you::open_items(&w.conn).unwrap()
 }
 
-/// 1 commit, 1 modified tracked file and 1 untracked file in the tree
-/// `path`.
 fn work_in(path: &Path) {
     write(&path.join("b.txt"), "b\n");
     git(path, &["add", "b.txt"]);
@@ -448,8 +404,6 @@ fn work_in(path: &Path) {
     write(&path.join("a.txt"), "a2\n");
     write(&path.join("u.txt"), "u\n");
 }
-
-// ─── FM-25, RR-9 ────────────────────────────────────────────────────────
 
 #[test]
 fn fm_killed_worker_dirty_untracked_files_on_verified_rescue_ref() {
@@ -489,8 +443,6 @@ fn fm_killed_worker_dirty_untracked_files_on_verified_rescue_ref() {
     assert_eq!(view(&tree, "fleet/t1"), before, "the tree did not change");
 }
 
-/// The sandbox hides HOME from git, but git can read the metadata of each
-/// folder above the repository and the fleet root.
 #[test]
 fn rescue_job_saves_the_tree_of_a_repository_below_home() {
     let mut w = world_below_home();
@@ -509,7 +461,6 @@ fn rescue_job_saves_the_tree_of_a_repository_below_home() {
 fn rescue_keeps_the_branch_and_the_index_of_the_tree() {
     let mut w = world();
     let tree = w.orphan("t1");
-    // A staged new file, and a file with a staged and an unstaged change.
     write(&tree.join("s.txt"), "s\n");
     write(&tree.join("a.txt"), "staged\n");
     git(&tree, &["add", "s.txt", "a.txt"]);
@@ -538,8 +489,6 @@ fn rescue_keeps_the_branch_and_the_index_of_the_tree() {
     );
     assert_eq!(git(&w.repo, &["branch", "--list", "fleet/*"]), "+ fleet/t1");
 }
-
-// ─── RR-16 ──────────────────────────────────────────────────────────────
 
 #[test]
 fn rr16_second_rescue_of_1_tree_does_not_overwrite_the_first_ref() {
@@ -576,7 +525,6 @@ fn rescue_ref_is_read_back_before_the_tree_is_rescued() {
     let mut w = world();
     let tree = w.orphan("t1");
     work_in(&tree);
-    // A ref write that git reports and that does not read back.
     let bin = w.git_wrapper(
         r#"case "$*" in *rev-parse*refs/horch/rescue/*)
   echo 0123456789012345678901234567890123456789; exit 0;;
@@ -593,8 +541,6 @@ esac"#,
     assert_eq!(row.state, WorktreeState::Orphaned);
     assert_eq!(row.rescue_ref, None);
 
-    // With a ref that reads back, the run passes, and only the observation
-    // of the run moves the row.
     let id = w.queue("t1");
     let job = w.run(id);
     assert_eq!(job.state, State::Passed, "{}", text(&job));
@@ -610,9 +556,6 @@ fn failed_rescue_verification_keeps_the_tree() {
     let mut w = world();
     let tree = w.orphan("t1");
     work_in(&tree);
-    // A file changes between step 1 and step 4: just before the `add` of
-    // the second private index. Git in the sandbox cannot write the tree,
-    // so the change comes from the test, between 2 git calls.
     let late = tree.join("late.txt");
     let adds = std::sync::atomic::AtomicUsize::new(0);
     let file = late.clone();
@@ -637,7 +580,6 @@ fn failed_rescue_verification_keeps_the_tree() {
     assert_eq!(items[0].key, "rescue_failed:t1");
     assert_eq!(items[0].kind, "rescue_failed");
     assert!(tree.join("u.txt").is_file() && late.is_file());
-    // The private index files are gone.
     let folder = w.fleet_root().join("tmp").join("t1");
     let left: Vec<_> = std::fs::read_dir(&folder).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
@@ -661,7 +603,6 @@ fn rescue_with_a_fleet_root_in_the_project_makes_nothing_there() {
 fn rescue_refuses_a_fleet_root_with_a_parent_component() {
     let mut w = world();
     let tree = w.orphan("t1");
-    // A link to the project below a `..` of a folder that does not exist.
     std::os::unix::fs::symlink(&w.repo, w.dir.path().join("project-link")).unwrap();
 
     refused_rescue(&w, &w.repo.join("sub/../fleet"), "has a `..`");
@@ -698,7 +639,6 @@ fn rescue_with_a_git_older_than_2_41_saves_nothing_and_says_why() {
     let mut w = world();
     let tree = w.orphan("t1");
     work_in(&tree);
-    // git 2.39 has no `--attr-source`: this git says it is 2.39.5.
     let old = w.dir.path().join("old-git");
     std::fs::write(
         &old,
@@ -753,15 +693,11 @@ fn job_end_drops_the_index_folder_of_the_tree() {
     assert!(fleet.join("tmp").is_dir());
 }
 
-/// The rescue of the tree `t1` with the fleet root `root`, which fails with
-/// `reason`.
 fn refused_rescue(w: &World, root: &Path, reason: &str) {
     let ran = rescue_git::rescue(&CliWorktreeGit::new("git", root), root, &w.row("t1"));
     assert!(!ran.outcome.passed);
     assert!(ran.outcome.text.contains(reason), "{}", ran.outcome.text);
 }
-
-// ─── the time limit and abandoned runs (Q25) ────────────────────────────
 
 #[test]
 fn rescue_job_at_its_limit_is_not_rescued_and_runs_again_after_its_backoff() {
@@ -773,12 +709,10 @@ fn rescue_job_at_its_limit_is_not_rescued_and_runs_again_after_its_backoff() {
     let grace = i64::try_from(w.config.stop_grace_s).unwrap();
     w.start(id, "sleep", &["30"], 0);
 
-    // Past its limit and its grace, the pass stops the run.
     let seen = w.see(id, Liveness::Alive, limit + grace + 1);
     assert_eq!(seen.stops.len(), 1, "{seen:?}");
     assert!(!seen.stops[0].kill, "the first stop is the TERM");
     jobs::stop(&seen.stops[0]);
-    // Its process is gone with no result.
     let at = limit + grace + 2;
     let seen = w.see(id, Liveness::Dead, at);
     assert_eq!(seen.ended, [(id, State::Abandoned)]);
@@ -788,7 +722,6 @@ fn rescue_job_at_its_limit_is_not_rescued_and_runs_again_after_its_backoff() {
     assert_eq!(row.state, WorktreeState::Orphaned);
     assert_eq!(row.rescue_ref, None);
     assert!(tree.join("u.txt").is_file());
-    // The next run waits for its backoff.
     let next = jobs_store::active(&w.conn, Kind::Rescue, "t1")
         .unwrap()
         .expect("the next run");
@@ -842,8 +775,6 @@ fn rescue_job_abandoned_3_times_opens_1_needs_you_item() {
     assert_eq!(row.rescue_ref, None);
 }
 
-// ─── the manifest and ignored files ─────────────────────────────────────
-
 #[test]
 fn rescue_writes_its_manifest_with_ref_head_count_size_and_attempt() {
     let mut w = world();
@@ -860,7 +791,6 @@ fn rescue_writes_its_manifest_with_ref_head_count_size_and_attempt() {
     assert_eq!(job.state, State::Passed, "{}", text(&job));
     let path = w.fleet_root().join("rescue").join("t1-1.json");
     let manifest: Rescue = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    // `.gitignore` (25 bytes), `a.txt` (3) and `u.txt` (2).
     let expected = Rescue {
         rescue_ref: "refs/horch/rescue/t1/1".into(),
         commit: git(&tree, &["rev-parse", "refs/horch/rescue/t1/1"]),
@@ -900,8 +830,6 @@ fn ignored_files_are_not_in_the_rescue_ref() {
     assert!(tree.join("build/out.bin").is_file() && tree.join("x.log").is_file());
 }
 
-// ─── the fleetd git rule ────────────────────────────────────────────────
-
 #[test]
 fn rescue_job_runs_no_hook_or_program_of_the_project() {
     let mut w = world();
@@ -929,7 +857,6 @@ fn rescue_job_runs_no_hook_or_program_of_the_project() {
     assert_eq!(job.state, State::Passed, "{}", text(&job));
     assert!(!marker.exists(), "a hook ran");
 
-    // A key of the project that starts a program stops the rescue.
     write(&tree.join("u.txt"), "u2\n");
     let before = view(&tree, "fleet/t1");
     let monitor = w.dir.path().join("monitor.sh");

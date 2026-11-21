@@ -1,7 +1,4 @@
 #!/bin/sh
-# Install multi-herdr from a GitHub release. No Rust toolchain needed.
-#   HORCH_VERSION      tag to install, for example v0.2.0 (default: latest)
-#   HORCH_INSTALL_DIR  directory for the binaries (default: horch's own default)
 set -eu
 
 REPO="MattMakes/multi-herdr"

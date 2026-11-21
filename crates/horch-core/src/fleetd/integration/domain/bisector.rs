@@ -1,51 +1,28 @@
-//! The bisector of a failed bundle (ticket 30).
-//!
-//! `docs/specs/fleetd/design.md`, "The bundle" and "The bundle state
-//! machine" (`failed`): on a failure of its fast gate, a bundle moves to
-//! `failed`, and fleetd bisects it. Each half is a child bundle, built and
-//! gated in the same way. A bundle of 1 member that fails finds its failing
-//! branch, and that branch goes to `gate_failed`. A bundle that passes goes
-//! to `passed`, and its members land.
-//! - [`split`]: the 2 halves of the members, in queue order.
-//! - [`decide`]: what a `gating` bundle does with the verdict of its fast
-//!   gate.
-
-/// The verdict of the fast gate of a bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// The gate has no verdict yet.
     Pending,
     Passed,
     Failed,
 }
 
-/// What a `gating` bundle does with the verdict of its fast gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// The gate has no verdict yet: the bundle stays `gating`.
     Wait,
-    /// The bundle goes to `passed`, and its members land.
     Pass,
-    /// The bundle goes to `failed`, and each half is 1 child bundle.
     Split {
         left: Vec<String>,
         right: Vec<String>,
     },
-    /// The bundle goes to `failed`, and its 1 member is the failing branch:
-    /// it goes to `gate_failed`.
-    GateFailed { member: String },
+    GateFailed {
+        member: String,
+    },
 }
 
-/// The 2 halves of `members`, in queue order. The first half has the
-/// smaller count when the count is odd.
 pub fn split(members: &[String]) -> (Vec<String>, Vec<String>) {
     let (left, right) = members.split_at(members.len() / 2);
     (left.to_vec(), right.to_vec())
 }
 
-/// The decision of a `gating` bundle of `members` with the fast gate
-/// verdict `verdict`. A failed bundle with no member has no branch to find,
-/// so it waits; the time limit of `gating` names it.
 pub fn decide(verdict: Verdict, members: &[String]) -> Decision {
     match (verdict, members) {
         (Verdict::Pending, _) | (Verdict::Failed, []) => Decision::Wait,

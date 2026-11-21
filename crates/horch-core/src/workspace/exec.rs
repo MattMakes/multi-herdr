@@ -1,6 +1,3 @@
-//! Bounded child execution: timeout, deadline, output cap and process-group
-//! containment shared by [`super::herdr`] and `hc`.
-
 use std::io::Read;
 use std::process::{Child, Output, Stdio};
 use std::sync::mpsc;
@@ -10,17 +7,13 @@ use std::time::{Duration, Instant};
 use horch_platform::group::{Contained, NotResumed};
 use horch_platform::start;
 
-/// Whether `stderr` is herdr's `{"error":{"code":"timeout",...}}`.
 pub(crate) fn is_timeout(stderr: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(stderr.trim())
         .is_ok_and(|v| v["error"]["code"].as_str() == Some("timeout"))
 }
 
-/// The most a bounded call reads from each of stdout and stderr.
 const OUTPUT_CAP: u64 = 1024 * 1024;
 
-/// The error for a call that reached its stop: the push deadline when
-/// `at_deadline`, else `timeout`.
 pub(crate) fn stop_error(at_deadline: bool, timeout: Duration) -> std::io::Error {
     let message = if at_deadline {
         "herdr did not answer inside the push budget".to_string()
@@ -34,10 +27,8 @@ pub(crate) fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io:
     std::io::Error::new(kind, message)
 }
 
-/// A reader's channel and its thread.
 type Reader = (mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>);
 
-/// The error for a stream that read past [`OUTPUT_CAP`], if one did.
 pub(crate) fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> {
     collected
         .iter()
@@ -51,9 +42,6 @@ pub(crate) fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> 
         })
 }
 
-/// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
-/// reader ends when the pipe closes or the cap is hit; a caller waits for it
-/// only for [`READER_GRACE`].
 fn read_capped(pipe: Option<impl Read + Send + 'static>) -> std::io::Result<Reader> {
     let (sender, receiver) = mpsc::channel();
     let handle = std::thread::Builder::new().spawn(move || {
@@ -70,9 +58,6 @@ fn read_capped(pipe: Option<impl Read + Send + 'static>) -> std::io::Result<Read
     Ok((receiver, handle))
 }
 
-/// The most a finished call waits for its reader threads after the child is
-/// killed. A reader still blocked then is left to end with its pipe: a
-/// descendant that escaped containment can hold the pipe open.
 const READER_GRACE: Duration = Duration::from_millis(200);
 
 fn join_readers(handles: Vec<JoinHandle<()>>) {
@@ -87,17 +72,6 @@ fn join_readers(handles: Vec<JoinHandle<()>>) {
     }
 }
 
-/// Kill and reap `child`. A failure of either is a warning, not an error:
-/// the call has already failed and the caller goes on.
-///
-/// On macOS and Linux the child leads its own process group, so one signal
-/// also ends every descendant that holds a pipe. The leader is still
-/// unreaped here, so its pid cannot belong to another process: the group
-/// signal reaches only this call's descendants.
-///
-/// On Windows this kills the child only. The job of [`kill_tree_and_reap`]
-/// kills its descendants. When the job cannot be set up, the child is still
-/// suspended and has started no descendant, so the child alone is enough.
 fn kill_and_reap(child: &mut Child) -> std::io::Result<()> {
     if !horch_platform::group::kill_child_group(child) {
         eprintln!("horch: could not kill herdr");
@@ -105,8 +79,6 @@ fn kill_and_reap(child: &mut Child) -> std::io::Result<()> {
     reap_within(child, REAP_GRACE).inspect_err(|e| eprintln!("horch: could not reap herdr: {e}"))
 }
 
-/// Kill every process in `job`, then kill and reap `child`, as
-/// [`kill_and_reap`] does. A failed kill of the job is a warning.
 fn kill_tree_and_reap(job: &Contained, child: &mut Child) -> std::io::Result<()> {
     if !job.terminate() {
         eprintln!("horch: could not kill the herdr process tree");
@@ -114,11 +86,8 @@ fn kill_tree_and_reap(job: &Contained, child: &mut Child) -> std::io::Result<()>
     kill_and_reap(child)
 }
 
-/// The most a failed call waits for its killed child to be reaped.
 const REAP_GRACE: Duration = Duration::from_secs(1);
 
-/// Reap `child` by polling, never by a blocking wait: a child that does not
-/// exit within `grace` is an error, so the call still returns.
 fn reap_within(child: &mut Child, grace: Duration) -> std::io::Result<()> {
     let until = Instant::now() + grace;
     loop {
@@ -138,8 +107,6 @@ fn reap_within(child: &mut Child, grace: Duration) -> std::io::Result<()> {
     }
 }
 
-/// An error of [`Contained::start`], with herdr named where the platform
-/// names only the child process.
 fn name_herdr(error: std::io::Error) -> std::io::Error {
     if error
         .get_ref()
@@ -151,12 +118,6 @@ fn name_herdr(error: std::io::Error) -> std::io::Error {
     }
 }
 
-/// Run `command` with one `timeout` for the exit and for both pipes. The
-/// call stops at the earlier of `timeout` and the absolute `deadline`. On
-/// that stop, or when either pipe passes the cap, the child is killed and the
-/// call fails. On Windows the child starts suspended inside a job, and the
-/// whole tree is killed. Every platform then waits at most [`READER_GRACE`]
-/// for the readers.
 pub(crate) fn output_within(
     mut command: start::Command,
     timeout: Duration,
@@ -173,8 +134,6 @@ pub(crate) fn output_within(
         )
     })?;
     let stop = deadline.map_or(timeout_end, |deadline| deadline.min(timeout_end));
-    // On Windows the child starts suspended, so it cannot start a descendant
-    // before the job holds it.
     Contained::prepare(&mut command);
     let mut child = command.spawn()?;
     let job = match Contained::start(&child) {
@@ -253,9 +212,6 @@ mod tests {
     use super::*;
     use crate::workspace::herdr::Herdr;
 
-    /// A fake herdr that runs `body`, already run once. macOS scans a new
-    /// executable at its first exec for seconds (up to 35 s under load),
-    /// which would race every timed call. The warm run exits before `body`.
     #[cfg(unix)]
     fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -294,8 +250,6 @@ mod tests {
         let (dir, script) = script_in("sleep 30 &\necho $! > \"$(dirname \"$0\")/pid\"\nexit 0");
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1500));
         assert!(herdr.pane_list("w1").is_err());
-        // A loaded machine can kill the script before it writes its pid:
-        // then no process was left to leak.
         let Ok(pid) = std::fs::read_to_string(dir.path().join("pid")) else {
             return;
         };
@@ -314,8 +268,6 @@ mod tests {
         assert!(gone, "descendant {pid} is still running");
     }
 
-    /// A stream that never ends is read only to 1 byte past the cap, so the
-    /// call can stop it: no timing is involved.
     #[test]
     fn a_reader_stops_1_byte_past_the_cap_of_an_endless_stream() {
         let (receiver, handle) = read_capped(Some(std::io::repeat(0))).unwrap();
@@ -324,9 +276,6 @@ mod tests {
         assert_eq!(bytes.len() as u64, OUTPUT_CAP + 1);
     }
 
-    /// A herdr that prints past the cap on either stream fails the call with
-    /// InvalidData. [`script_in`] warms the script, so the scan at its first
-    /// exec does not race the call's timeout.
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
@@ -339,8 +288,6 @@ mod tests {
         }
     }
 
-    /// Output past the cap on stdout or on stderr fails the call with
-    /// InvalidData; output at the cap does not.
     #[test]
     fn output_past_the_cap_on_either_stream_is_invalid_data() {
         let at_cap = Some(vec![0; OUTPUT_CAP as usize]);
@@ -365,7 +312,6 @@ mod tests {
         let started = Instant::now();
         let error = output_within(command, Duration::from_millis(1000), None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        // The call joins its readers: it returns only once the tree is dead.
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 
@@ -424,8 +370,6 @@ mod tests {
         assert!(!alive.status.success(), "herdr {pid} is still running");
     }
 
-    /// A herdr call that outlives the deadline is killed and fails at once;
-    /// one that answers in time returns its output (#67).
     #[cfg(unix)]
     #[test]
     fn a_call_past_the_deadline_is_killed() {
@@ -442,7 +386,6 @@ mod tests {
         assert_eq!(quick.output(&["x"]).unwrap(), "hi\n");
     }
 
-    /// With a timeout and a deadline, the earlier one stops the call.
     #[cfg(unix)]
     #[test]
     fn a_deadline_before_the_timeout_stops_the_call() {

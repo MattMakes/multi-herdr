@@ -1,6 +1,3 @@
-//! `horch cost --text`: one report as markdown tables, in the shapes of
-//! `ai_docs/reports/wave2/baseline.md`.
-
 use horch_core::usage::Missing;
 
 use super::tables::{SkillUse, TableRow};
@@ -10,7 +7,6 @@ fn money(x: f64) -> String {
     format!("${x:.2}")
 }
 
-/// `1234567` as `1,234,567`.
 fn commas(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();

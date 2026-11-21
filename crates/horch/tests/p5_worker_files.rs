@@ -1,20 +1,3 @@
-//! The worker commands of `horch ledger` write the outbox of their own
-//! attempt and open no ledger for a write (RR-5, FR-7; ticket 27 of
-//! fleetd-p5, `docs/tickets/fleetd-p5/MAP.md` Q3 and Q4).
-//!
-//! - `progress` and `note` append 1 line to `outbox/progress.jsonl`.
-//! - `done` and `finish` write `outbox/result.json` with `status: completed`.
-//! - `handoff` writes `outbox/result.json` with `status: blocked`,
-//!   `reason: handoff` and the path.
-//! - `claim` and `worktree new` are refused with 1 line.
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root.
-//! The stand-in wrapper is a real `sh` process: the test records it as the
-//! wrapper of a live attempt, then the `sh` runs `horch` as its child. No
-//! test sets `HORCH_WORKER_ID`: the command finds its attempt by its parent
-//! chain only.
-
 #![cfg(unix)]
 
 use std::io::Write as _;
@@ -32,8 +15,6 @@ const TASK: &str = "T-1";
 const REFUSAL: &str =
     "fleetd binds each task and makes its worktree; this command is not for a worker";
 
-/// A temp ledger with the schema of today, in WAL mode as the live ledger,
-/// and a fleet root.
 struct World {
     temp: tempfile::TempDir,
 }
@@ -73,8 +54,6 @@ impl World {
         self.task_dir().join("attempts").join("A1").join("outbox")
     }
 
-    /// Record the live attempt `T-1/A1` whose wrapper is `pid`, and make its
-    /// attempt folder, as fleetd does. Its outbox is not made.
     fn live(&self, pid: u32) {
         let start = process::start_time(pid).expect("the start time of the wrapper");
         let conn = Connection::open(self.ledger()).unwrap();
@@ -94,7 +73,6 @@ impl World {
         std::fs::create_dir_all(self.outbox().parent().unwrap()).unwrap();
     }
 
-    /// The development `horch` with `args` and only temporary folders.
     fn horch(&self, args: &[&str]) -> Command {
         let root = self.root();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -115,9 +93,6 @@ impl World {
         cmd
     }
 
-    /// Start a stand-in wrapper `sh` that runs `script` with `args` after 1
-    /// line on its stdin, and record it as the wrapper of the live attempt
-    /// `T-1/A1`. `$HORCH_BIN` in `script` is the development `horch`.
     fn wrapper(&self, script: &str, args: &[&str]) -> Child {
         let horch = self.horch(&[]);
         let mut sh = Command::new("sh");
@@ -138,15 +113,12 @@ impl World {
         wrapper
     }
 
-    /// Run `horch args` as the child of a stand-in wrapper of `T-1/A1`.
     fn in_attempt(&self, args: &[&str]) -> Output {
         go(self.wrapper(r#"read go; "$HORCH_BIN" "$@"; exit $?"#, args))
     }
 }
 
-/// Send the line that starts the wrapper, and wait for its end.
 fn go(mut wrapper: Child) -> Output {
-    // The wrapper does not give its stdin to the child.
     wrapper.stdin.take().unwrap().write_all(b"go\n").unwrap();
     wrapper.wait_with_output().unwrap()
 }
@@ -206,8 +178,6 @@ fn progress_appends_1_line_and_opens_no_writable_ledger() {
         r#"read go; "$HORCH_BIN" "$@"; exit $?"#,
         &["ledger", "progress", "step 1 is done"],
     );
-    // fleetd holds the write lock: a command that writes the ledger waits
-    // for it and fails. A read goes on in WAL mode.
     let mut fleetd = Connection::open(w.ledger()).unwrap();
     let lock = fleetd
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -287,7 +257,6 @@ fn handoff_with_a_path_outside_the_attempt_is_refused() {
         "{}",
         text(&o.stderr)
     );
-    // A relative path is refused too: the path must be absolute.
     std::fs::create_dir_all(w.task_dir()).unwrap();
     std::fs::write(w.task_dir().join("handoff.md"), "# next\n").unwrap();
     let o = w.in_attempt(&["ledger", "handoff", "handoff.md"]);
@@ -317,14 +286,10 @@ fn worktree_new_from_a_worker_is_refused() {
 #[test]
 fn progress_and_done_work_when_the_ledger_file_is_read_only() {
     let w = world();
-    // fleetd holds the ledger open, as on a live fleet, so its WAL files
-    // exist. The sandbox of the worker makes each of them read-only.
     let fleetd = Connection::open(w.ledger()).unwrap();
     fleetd
         .execute_batch("CREATE TABLE IF NOT EXISTS t (x); INSERT INTO t VALUES (1);")
         .unwrap();
-    // The wrapper runs progress, then done. Its row is written before the
-    // ledger is made read-only.
     let wrapper = w.wrapper(
         r#"read go; "$HORCH_BIN" ledger progress "step 2" && "$HORCH_BIN" ledger done "all steps are done"; exit $?"#,
         &[],
@@ -340,8 +305,6 @@ fn progress_and_done_work_when_the_ledger_file_is_read_only() {
     for f in &files {
         mode(f, 0o444);
     }
-    // 0444 on the folder would deny the lookup of the file, and so each
-    // read. A read-only folder keeps its search bit.
     mode(&dir, 0o555);
     let o = go(wrapper);
     mode(&dir, 0o755);

@@ -1,22 +1,3 @@
-//! What `horch worker` (the supervisor, the wrapper of an attempt) reports
-//! about its agent (section 4.6, #34). From Phase 5 it writes no ledger row
-//! (RR-5): it writes 3 files into the folder of its attempt,
-//! `<fleet root>/tasks/<task>/attempts/<n>/`, and fleetd reads them
-//! (`docs/specs/fleetd/design.md`, "Workspace layout and file protocol",
-//! protocol rules 1 to 3):
-//!
-//! - [`HEARTBEAT_JSON`]: a snapshot, every `heartbeat_every_s`, with a `seq`
-//!   that grows by 1 on each write (RR-8).
-//! - [`EXIT_JSON`]: the exit of the agent, 1 time.
-//! - [`SESSION_JSON`]: the session id of the CLI and its harness, 1 time,
-//!   when the wrapper finds it.
-//!
-//! Each file is written as `<name>.tmp` with mode 0600, fsynced, renamed to
-//! its name, and then the folder is fsynced. The wrapper opens the ledger
-//! read-only, only to find its attempt. A worker with no attempt (an
-//! operator spawn) writes no file. [`settle`] is the exit rule of the worker
-//! row, for the code that applies the facts of `exit.json`.
-
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -38,30 +19,19 @@ use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::domain::outbox::{DIR_MODE, FILE_MODE, TMP_SUFFIX};
 
-/// The snapshot of the wrapper in the attempt folder.
 pub const HEARTBEAT_JSON: &str = "heartbeat.json";
-/// The exit of the agent in the attempt folder.
 pub const EXIT_JSON: &str = "exit.json";
-/// The session of the agent in the attempt folder.
 pub const SESSION_JSON: &str = "session.json";
 
-/// The content of [`HEARTBEAT_JSON`] (the example of the design). A fact
-/// that the wrapper does not know is `null`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeartbeatFile {
     pub task: String,
     pub attempt: String,
-    /// The PID of the agent, once it started.
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
-    /// The PID of the wrapper that wrote the file. Before its agent starts,
-    /// fleetd records the wrapper of a launched attempt from it (SR-8). A
-    /// wrapper of an older version writes none.
     #[serde(default)]
     pub wrapper: Option<u32>,
-    /// The pane of the wrapper.
     pub mux_pane: Option<String>,
-    /// `running` while the agent process lives, then `exited`.
     pub proc_state: Option<String>,
     pub agent_state: Option<String>,
     pub last_output_at: Option<String>,
@@ -70,72 +40,48 @@ pub struct HeartbeatFile {
     pub written_at: String,
 }
 
-/// The context use of the agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tokens {
     pub context: u64,
     pub limit: u64,
 }
 
-/// The content of [`EXIT_JSON`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitFile {
     pub task: String,
     pub attempt: String,
-    /// The exit code; `null` when a signal ended the agent.
     pub code: Option<i32>,
-    /// The wrapper ran the repair resume of FM-6 before the exit.
     pub repaired: bool,
     pub at: String,
-    /// What the wrapper saw end the agent, when it saw a signal of the
-    /// CLI. A hint from a process that the agent can reach: never a proof
-    /// of success.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_hint: Option<OutcomeHint>,
 }
 
-/// The outcome hint of [`EXIT_JSON`]. A closed list, so no hint can say
-/// that a task is done: only the verified result does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeHint {
-    /// The CLI showed its usage-limit or outage signal (RR-11).
     Quota,
-    /// The context of a CLI with no compaction setting reached the 256k
-    /// limit, and the wrapper ended the CLI (FM-20).
     ContextLimit,
 }
 
-/// The content of [`SESSION_JSON`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFile {
     pub task: String,
     pub attempt: String,
     pub session_id: String,
-    /// The harness of the CLI, as the brief names it.
     pub harness: String,
-    /// The transcript of the session, when the wrapper found it.
     pub transcript: Option<String>,
-    /// The id of the execution record of the session, so that fleetd joins
-    /// the worker row to it. A wrapper of an older version writes none.
     #[serde(default)]
     pub record_id: Option<String>,
     pub written_at: String,
 }
 
-/// What the wrapper knows of its agent. The launch and each heartbeat
-/// writer of 1 wrapper share it, so the `seq` grows over the repair resume.
 #[derive(Debug, Default)]
 pub struct AgentFacts {
-    /// 0 until the agent starts.
     pid: AtomicU32,
-    /// The `seq` of the last heartbeat.
     seq: AtomicU64,
     mux_pane: Option<String>,
-    /// The time of the last activity of the agent: `last_output_at`.
     last_output_at: Mutex<Option<String>>,
-    /// Held over 1 heartbeat write, so 2 writers of 1 wrapper do not mix
-    /// their temporary file or their `seq` order.
     beat: Mutex<()>,
 }
 
@@ -147,17 +93,14 @@ impl AgentFacts {
         })
     }
 
-    /// The agent process `pid` started.
     pub fn agent_started(&self, pid: u32) {
         self.pid.store(pid, Ordering::SeqCst);
     }
 
-    /// The agent showed activity now: an event of its stream.
     pub fn activity(&self) {
         *lock(&self.last_output_at) = Some(util::now());
     }
 
-    /// The pid of the agent, once it started.
     pub fn pid(&self) -> Option<u32> {
         Some(self.pid.load(Ordering::SeqCst)).filter(|&p| p != 0)
     }
@@ -167,12 +110,10 @@ impl AgentFacts {
     }
 }
 
-/// Lock `m`. A writer that panicked left a whole value: take it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The wrapper files of 1 attempt.
 #[derive(Clone, Debug)]
 pub struct AttemptFiles {
     attempt: AttemptRef,
@@ -185,8 +126,6 @@ impl AttemptFiles {
         AttemptFiles { attempt, dir }
     }
 
-    /// The files of the newest attempt of `worker_id` in the ledger `db`,
-    /// which it opens read-only. `None`: the worker has no attempt.
     pub fn of_worker(db: &Path, worker_id: &str, fleet_root: &Path) -> Result<Option<Self>> {
         let store = Store::open_read_only(db)?;
         let row: Option<(String, String)> = store
@@ -209,7 +148,6 @@ impl AttemptFiles {
         }))
     }
 
-    /// The attempt folder.
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -222,7 +160,6 @@ impl AttemptFiles {
         self.attempt.attempt().to_string()
     }
 
-    /// Replace [`HEARTBEAT_JSON`] with the facts of now and the next `seq`.
     pub fn write_heartbeat(&self, facts: &AgentFacts) -> Result<()> {
         let _beat = lock(&facts.beat);
         let pid = facts.pid();
@@ -251,12 +188,10 @@ impl AttemptFiles {
         Ok(())
     }
 
-    /// Write [`EXIT_JSON`]. A second exit is refused.
     pub fn write_exit(&self, code: Option<i32>, repaired: bool) -> Result<()> {
         self.write_exit_hinted(code, repaired, None)
     }
 
-    /// [`AttemptFiles::write_exit`] with the outcome hint `hint`.
     pub fn write_exit_hinted(
         &self,
         code: Option<i32>,
@@ -280,7 +215,6 @@ impl AttemptFiles {
         Ok(())
     }
 
-    /// Write [`SESSION_JSON`] 1 time. False: it exists, and stays.
     pub fn write_session(
         &self,
         session_id: &str,
@@ -301,9 +235,6 @@ impl AttemptFiles {
     }
 }
 
-/// Write `bytes` to `dir/name` through `name.tmp`: mode 0600, fsync,
-/// rename, fsync of `dir`. With `replace` false, an existing file stays and
-/// the result is false. A link at the temp name is removed, not followed.
 fn write_file(dir: &Path, name: &str, bytes: &[u8], replace: bool) -> Result<bool> {
     make_dir(dir)?;
     let path = dir.join(name);
@@ -336,20 +267,16 @@ fn write_file(dir: &Path, name: &str, bytes: &[u8], replace: bool) -> Result<boo
     Ok(true)
 }
 
-/// Create `tmp` (never through a link) with `bytes` and mode 0600, synced.
 fn write_temp(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    // Where the OS has no modes, the file gets the default permissions.
     let _ = horch_platform::fs::create_mode(&mut options, FILE_MODE);
     let mut file = options.open(tmp)?;
-    // The umask may have cleared bits of the mode.
     ok_if_not_supported(horch_platform::fs::set_mode(tmp, FILE_MODE))?;
     file.write_all(bytes)?;
     file.sync_all()
 }
 
-/// Make the attempt folder with mode 0700 when it is missing.
 fn make_dir(dir: &Path) -> Result<()> {
     if dir.is_dir() {
         return Ok(());
@@ -362,8 +289,6 @@ fn make_dir(dir: &Path) -> Result<()> {
         .with_context(|| format!("make {}", dir.display()))
 }
 
-/// An `Unsupported` error of the platform (Windows: no modes, no dir sync)
-/// is not a failure of the write.
 fn ok_if_not_supported(r: io::Result<()>) -> io::Result<()> {
     match r {
         Err(e) if e.kind() == io::ErrorKind::Unsupported => Ok(()),
@@ -371,8 +296,6 @@ fn ok_if_not_supported(r: io::Result<()>) -> io::Result<()> {
     }
 }
 
-/// Write [`EXIT_JSON`] of the newest attempt of `worker_id`. False: the
-/// worker has no attempt, and no file is written.
 pub fn write_exit(
     db: &Path,
     worker_id: &str,
@@ -387,11 +310,8 @@ pub fn write_exit(
     Ok(true)
 }
 
-/// Looks up the session id and transcript path while the agent runs.
 pub type SessionLookup = Box<dyn Fn() -> (Option<String>, Option<String>) + Send>;
 
-/// The checkin thread. Dropping it, or [`Checkins::stop`], ends it within 1
-/// tick.
 pub struct Checkins {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -416,10 +336,6 @@ impl Drop for Checkins {
     }
 }
 
-/// The wrapper heartbeat period in seconds: `heartbeat_every_s` of
-/// `fleet.toml` in `fleet_root`. A file that cannot be read gives the
-/// default, with 1 line that names the file: a heartbeat never stops for a
-/// config error.
 pub fn fleet_period(fleet_root: &Path) -> (u64, Option<String>) {
     use crate::fleetd::fleet_runtime::adapters::config_file;
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -438,9 +354,6 @@ pub fn fleet_period(fleet_root: &Path) -> (u64, Option<String>) {
     }
 }
 
-/// The checkin interval of the worker: the [`fleet_period`], or the run's
-/// `heartbeat_every_s` when it is shorter, so no run beats more slowly than
-/// before.
 pub fn interval(db: &Path, worker_id: &str, fleet_root: &Path) -> Duration {
     let (fleet, warning) = fleet_period(fleet_root);
     if let Some(line) = warning {
@@ -460,19 +373,15 @@ pub fn interval(db: &Path, worker_id: &str, fleet_root: &Path) -> Duration {
     Duration::from_secs(secs)
 }
 
-/// The heartbeat writer of 1 wrapper: [`HEARTBEAT_JSON`] on each beat, and
-/// [`SESSION_JSON`] 1 time when `lookup` knows the session id.
 pub struct HeartbeatWriter {
     db: PathBuf,
     worker_id: String,
     fleet_root: PathBuf,
-    /// The files of the attempt, once the ledger has it.
     files: Option<AttemptFiles>,
     facts: Arc<AgentFacts>,
     harness: String,
     lookup: SessionLookup,
     session_written: bool,
-    /// The id of the execution record of the wrapper, for [`SESSION_JSON`].
     record_id: Option<String>,
 }
 
@@ -498,14 +407,11 @@ impl HeartbeatWriter {
         }
     }
 
-    /// Write `record_id`, the id of the execution record of the wrapper,
-    /// in [`SESSION_JSON`].
     pub fn with_record_id(mut self, record_id: String) -> HeartbeatWriter {
         self.record_id = Some(record_id);
         self
     }
 
-    /// 1 beat. A worker with no attempt yet writes no file.
     pub fn beat(&mut self) -> Result<()> {
         let files = match &self.files {
             Some(files) => files,
@@ -530,14 +436,11 @@ impl HeartbeatWriter {
     }
 }
 
-/// Beat `writer` every `every` until stopped.
 pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkins {
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
         let tick = Duration::from_millis(100).min(every);
-        // The first beat is at once: it names the wrapper before its agent
-        // starts, so that fleetd can record the wrapper (SR-8).
         let mut since = every;
         let mut log = CheckinLog::default();
         loop {
@@ -561,18 +464,8 @@ pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkin
     }
 }
 
-/// The time between 2 reads of the ledger while a wrapper waits for its
-/// record.
 pub const RECORD_POLL: Duration = Duration::from_millis(250);
 
-/// SR-8, FM-32: wait until fleetd has recorded the wrapper `me` (its PID
-/// and start time) of the worker `worker_id`, on the worker row or on an
-/// attempt of the worker that is not ended. The wrapper starts its agent
-/// only after this, so no agent code runs while its attempt has no
-/// recorded process. The wait opens the ledger `db` read-only for each
-/// read. `limit` counts with [`Instant`], which does not count a sleep of
-/// the machine on macOS and Linux. With no record in `limit`, the wait
-/// fails, and the caller starts no agent.
 pub fn wait_recorded(db: &Path, worker_id: &str, me: (u32, u64), limit: Duration) -> Result<()> {
     let until = Instant::now() + limit;
     loop {
@@ -612,28 +505,17 @@ fn is_recorded(db: &Path, worker_id: &str, me: (u32, u64)) -> bool {
         .unwrap_or(false)
 }
 
-/// The longest time 1 repeated checkin error stays silent.
 pub const REPEAT_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// What the checkin thread printed, so 1 error that repeats every checkin
-/// does not fill the pane (TRF-49).
 #[derive(Debug, Default)]
 pub struct CheckinLog {
-    /// The text of the last failure, while checkins fail.
     last_error: Option<String>,
-    /// How many checkins in a row failed with `last_error`.
     repeats: u64,
-    /// How many checkins in a row failed, with any text.
     failures: u64,
-    /// When the last failure line was printed.
     printed_at: Option<Instant>,
 }
 
 impl CheckinLog {
-    /// The line to print for 1 checkin `result` at `now`, if any. A failure
-    /// prints the first time and when its text changes. The same failure
-    /// prints again only after [`REPEAT_EVERY`], with its repeat count. The
-    /// first success after failures prints 1 recovery line.
     pub fn record(&mut self, result: Result<(), String>, now: Instant) -> Option<String> {
         let text = match result {
             Ok(()) => {
@@ -665,24 +547,14 @@ impl CheckinLog {
     }
 }
 
-/// How a worker's agent ended, for the supervisor's report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
-    /// It ran `horch ledger done`, or held no task.
     Clean,
-    /// It held a task without finishing it: the task is queued again.
     Requeued { task: String, persona: String },
-    /// It held a task that has now used up its attempts: the task is
-    /// `failed` and waits for its 1 replan by the orchestrator (rung 6).
     Failed { task: String },
-    /// It held a task that used up its attempts after its replan: the task
-    /// is `escalated`, held for the operator (#168).
     Escalated { task: String },
 }
 
-/// Settle the worker row of `worker_id` after its agent exited with
-/// `code`, in the transaction `tx`: the rule for the facts of
-/// [`EXIT_JSON`].
 pub fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> Result<Ended> {
     let w = workers::get(tx, worker_id)?;
     let status = w.status()?;
@@ -699,12 +571,6 @@ pub fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> 
     Ok(Ended::Clean)
 }
 
-/// The ingest of `exit.json`: [`settle`] the worker row, and end its
-/// session record at `at` in the same transaction `tx`
-/// ([`crate::execution::store::record_exit_in`]). The record is the one
-/// that `session.json` named (`workers.legacy_record_id`). A worker with
-/// no record id, or a record that the ledger file of `tx` does not hold,
-/// ends only its worker row.
 pub fn settle_exit(
     tx: &rusqlite::Connection,
     worker_id: &str,
@@ -718,11 +584,6 @@ pub fn settle_exit(
     Ok(ended)
 }
 
-/// The ingest of `exit.json` of an attempt whose wrapper fleetd records on
-/// the attempt row (a live push attempt): the next pass sees the wrapper
-/// gone and ends the attempt and the worker row by rung 5. So this writes
-/// only the exit code, the exit event and the end of the session record,
-/// in `tx`.
 pub fn exit_seen(
     tx: &rusqlite::Connection,
     worker_id: &str,
@@ -749,8 +610,6 @@ pub fn exit_seen(
     Ok(())
 }
 
-/// End the worker per [`exit_rule`], or only record the exit code. Returns
-/// the reason text of the exit event.
 fn record_exit(
     tx: &rusqlite::Connection,
     worker_id: &str,
@@ -767,7 +626,6 @@ fn record_exit(
     Ok(reason)
 }
 
-/// How the agent ended, as the exit event words it.
 fn exit_text(code: Option<i32>) -> String {
     match code {
         Some(c) => format!("agent exited with code {c}"),
@@ -775,8 +633,6 @@ fn exit_text(code: Option<i32>) -> String {
     }
 }
 
-/// The end status and reason suffix of a worker whose agent exited in
-/// `status`; `None` keeps the row and only records the exit code.
 fn exit_rule(status: WorkerStatus) -> Option<(WorkerStatus, &'static str)> {
     match status {
         WorkerStatus::Working => Some((WorkerStatus::Incomplete, " before horch ledger done")),
@@ -786,7 +642,6 @@ fn exit_rule(status: WorkerStatus) -> Option<(WorkerStatus, &'static str)> {
     }
 }
 
-/// Queue the task of a worker that exited while working, or hold it.
 fn requeue_after_exit(
     tx: &rusqlite::Connection,
     w: &workers::Worker,
@@ -821,7 +676,6 @@ mod tests {
         worker: String,
     }
 
-    /// A worker in `status` (`working` holds a bound task).
     fn fixture(status: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("l.sqlite3");
@@ -836,7 +690,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -872,7 +725,6 @@ mod tests {
         }
     }
 
-    /// Settle the worker as the code that applies `exit.json` does.
     fn agent_exited(db: &Path, worker_id: &str, code: Option<i32>) -> Result<Ended> {
         Store::open(db)?.immediate(|tx| settle(tx, worker_id, code))
     }
@@ -943,7 +795,6 @@ mod tests {
         assert_eq!(exited_text(&f), [reason]);
     }
 
-    /// Set the run's `heartbeat_every_s` of the fixture's worker.
     fn set_run_period(f: &Fixture, secs: i64) {
         f.store
             .conn()
@@ -992,7 +843,6 @@ mod tests {
         let f = fixture("working");
         let fleet = tempfile::tempdir().unwrap();
         let file = fleet.path().join("fleet.toml");
-        // A value out of range, then a file that is a folder.
         std::fs::write(&file, "heartbeat_every_s = 0\n").unwrap();
         let (secs, warning) = fleet_period(fleet.path());
         assert_eq!(secs, 10);
@@ -1030,7 +880,6 @@ mod tests {
             log.record(err(), t0).as_deref(),
             Some("horch worker: checkin failed: the task ledger is schema version 8")
         );
-        // 1 checkin each 30 s for 10 min: silent until the 10 min mark.
         let mut printed = Vec::new();
         for i in 1..=40u64 {
             if let Some(line) = log.record(err(), t0 + Duration::from_secs(30 * i)) {
@@ -1070,7 +919,6 @@ mod tests {
         assert!(log
             .record(Err("b".into()), t0 + Duration::from_secs(3))
             .is_none());
-        // Back to the first text: it changed again, so it prints.
         assert_eq!(
             log.record(Err("a".into()), t0 + Duration::from_secs(4))
                 .as_deref(),
@@ -1091,7 +939,6 @@ mod tests {
             Some("horch worker: checkin recovered after 3 failures")
         );
         assert_eq!(log.record(Ok(()), t0 + Duration::from_secs(6)), None);
-        // A new failure after the recovery prints again.
         assert_eq!(
             log.record(Err("a".into()), t0 + Duration::from_secs(7))
                 .as_deref(),
@@ -1112,8 +959,6 @@ mod tests {
             .unwrap();
     }
 
-    /// SR-8: the wrapper starts its agent only after fleetd recorded the
-    /// wrapper on its worker row.
     #[test]
     fn wrapper_waits_until_fleetd_records_it_on_its_worker_row() {
         let f = fixture("working");
@@ -1141,9 +986,6 @@ mod tests {
         wait_recorded(&f.db, &f.worker, ME, Duration::from_secs(30)).unwrap();
     }
 
-    /// Fail closed: with no record of this wrapper in the limit, the wait
-    /// fails, and the caller starts no agent. A record of another process,
-    /// or of this pid with another start time, is not a record of it.
     #[test]
     fn wrapper_with_no_record_in_the_limit_fails() {
         let f = fixture("working");

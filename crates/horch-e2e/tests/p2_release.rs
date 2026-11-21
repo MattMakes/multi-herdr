@@ -1,20 +1,3 @@
-//! The release test of Phase 2 (`docs/specs/fleetd/design.md`, "What a
-//! release does to a run in flight", row Phase 2;
-//! `docs/tickets/fleetd-p2/MAP.md`, Q6, Q7 and Q21).
-//!
-//! A held task with a live worker starts on Phase 1. After the update, the
-//! worker is not reaped, and the task has 1 lease.
-//!
-//! The Phase 1 ledger is built by the real migration steps up to
-//! [`schema::PHASE_1_VERSION`], then the rows of a run in flight are
-//! written as a Phase 1 binary left them. The live agent is a stand-in: a
-//! `sleep` child of the test. The old supervisor is a stand-in too: the test
-//! writes `workers.last_checkin_at` each 30 s (`runs.heartbeat_every_s`).
-//!
-//! The fleet clock counts the awake time of 1 fleetd process, so a
-//! `horch ledger watch --once` process adds 0 to it. The test moves the
-//! fleet clock by the same step as `HORCH_NOW`.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -27,18 +10,12 @@ use horch_core::{clock, procid};
 use horch_e2e::harness::Harness;
 use rusqlite::Connection;
 
-/// The fleet clock of the Phase 1 `fleetd` row at the update.
 const CLOCK: i64 = 5000;
-/// The default `liveness.lease_s` of the design.
 const LEASE_S: i64 = 120;
-/// The default `liveness.max_wait_s` of the design.
 const MAX_WAIT_S: i64 = 3600;
-/// The checkin period of the old supervisor (`runs.heartbeat_every_s`).
 const STEP_S: i64 = 30;
-/// The passes after the update: 10 min of the fleet clock.
 const PASSES: i64 = 600 / STEP_S;
-/// The wall time of the first checkin of the old supervisor.
-const T0: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
+const T0: i64 = 1_893_456_000;
 
 const RUN: &str = "zeta";
 
@@ -55,14 +32,10 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// `secs` after the Unix epoch as a ledger timestamp, the form of
-/// `HORCH_NOW`.
 fn rfc3339(secs: i64) -> String {
     clock::stamp(clock::from_epoch_ms(secs * 1000).unwrap())
 }
 
-/// A harness with its own ledger file and a git repository, and no
-/// watchdog.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", db(&h).to_string_lossy());
@@ -75,8 +48,6 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The stand-in agent: a `sleep` process, killed and waited on drop, so a
-/// failed assertion leaks no process.
 struct Agent {
     child: Child,
     started: u64,
@@ -237,8 +208,6 @@ fn phase_1_ledger(path: &Path, project: &Path, agent: &Agent, wrapper: &Wrapper)
         (WORKER, &t0, rfc3339(T0 + 24 * 3600)),
     )
     .unwrap();
-    // The Phase 1 fleetd stopped for the update: its PID and start time
-    // name no live process.
     conn.execute(
         "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
             VALUES (1, 1, 7, 1, ?1, ?2, ?1)",
@@ -253,7 +222,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The checkin of the old supervisor at the wall time `at`.
 fn checkin(h: &Harness, at: i64) {
     let conn = Connection::open(db(h)).unwrap();
     conn.execute(
@@ -263,12 +231,10 @@ fn checkin(h: &Harness, at: i64) {
     .unwrap();
 }
 
-/// Run `horch` at the wall time `at`.
 fn horch_at(h: &Harness, at: i64, args: &[&str]) -> Output {
     run_at(h.horch(args), at, args)
 }
 
-/// Run `horch` at the wall time `at` as the worker [`WORKER`].
 fn worker_at(h: &Harness, wrapper: &mut Wrapper, at: i64, args: &[&str]) -> Output {
     let mut cmd = h.horch(args);
     cmd.env("HORCH_WORKER_ID", WORKER);
@@ -285,7 +251,6 @@ fn run_at(mut cmd: Command, at: i64, args: &[&str]) -> Output {
     o
 }
 
-/// The leases of [`TASK`]: `(attempt_id, expires_at)`.
 fn leases(conn: &Connection) -> Vec<(String, i64)> {
     conn.prepare("SELECT attempt_id, expires_at FROM leases WHERE task_id = ?1")
         .unwrap()
@@ -306,7 +271,6 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
     let mut wrapper = Wrapper::start(&h);
     phase_1_ledger(&db(&h), &h.project, &agent, &wrapper);
 
-    // Phase 1: the old supervisor checks in each 30 s.
     let mut now = T0;
     for _ in 0..4 {
         checkin(&h, now);
@@ -338,8 +302,6 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
     drop(conn);
     h.serve_fleetd();
 
-    // 10 min of the fleet clock: the old supervisor checks in, the agent
-    // records progress, and fleetd runs 1 pass, each 30 s.
     let mut seen = Vec::new();
     for _ in 0..PASSES {
         now += STEP_S;

@@ -1,12 +1,3 @@
-//! The rules of Phase 2 in the reconcile pass: leases, the stall ladder,
-//! the quota rule, the cancel, and the order of results, expiries, stops
-//! and restarts (docs/specs/fleetd/design.md, "The reconcile pass";
-//! docs/tickets/fleetd-p2/14-pass-wiring.md).
-//!
-//! Each test uses a temp ledger and a temp fleet root, and runs the pass as
-//! a library call with fakes for herdr and the pool readings. The agent of
-//! each test is a real process in its own process group. A test moves the
-//! fleet clock with `UPDATE fleetd SET fleet_clock_s`.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -43,15 +34,11 @@ use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection, OptionalExtension};
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp ledger at generation 1, a fleet root and 1 run.
 struct World {
     dir: PathBuf,
     _temp: tempfile::TempDir,
     conn: Connection,
     run: Run,
-    /// The `fleet.toml` of each pass.
     config: FleetConfig,
 }
 
@@ -75,7 +62,6 @@ fn world_with(new_run: NewRun) -> World {
     )
     .unwrap();
     let run = runs::create(&conn, &dir, &new_run).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -117,9 +103,6 @@ impl World {
         }
     }
 
-    /// A task of persona `dev` bound to a worker with the agent `agent`
-    /// at the fleet clock of now: 1 live attempt. Gives the task and the
-    /// worker.
     fn claimed_task(&self, agent: &Agent) -> (String, String) {
         let n: i64 = self
             .conn
@@ -151,7 +134,6 @@ impl World {
             .unwrap()
     }
 
-    /// A fresh heartbeat of `worker` on the wall clock.
     fn beat(&self, worker: &str) {
         self.conn
             .execute(
@@ -165,7 +147,6 @@ impl World {
         tasks::get(&self.conn, task).unwrap()
     }
 
-    /// The attempts of `task`, oldest first: id, state and outcome.
     fn attempts(&self, task: &str) -> Vec<(String, String, Option<String>)> {
         let mut stmt = self
             .conn
@@ -177,7 +158,6 @@ impl World {
             .collect()
     }
 
-    /// The count of the events of `task` with the cause `cause`.
     fn caused(&self, task: &str, cause: &str) -> i64 {
         self.conn
             .query_row(
@@ -188,8 +168,6 @@ impl World {
             .unwrap()
     }
 
-    /// 1 pass at about the fleet clock `clock`, with a fresh heartbeat of
-    /// `worker`, by a new fleetd: a pass ticks the clock from the row.
     fn pass_at(&mut self, clock: i64, worker: &str, outside: &dyn Outside) -> PassReport {
         self.pass_with(clock, worker, outside, &NoDuties)
     }
@@ -216,10 +194,6 @@ impl World {
     }
 }
 
-// ─── the agent ──────────────────────────────────────────────────────────
-
-/// An agent process of a test, the leader of its own process group. The
-/// test kills the group when it ends.
 struct Agent(Child);
 
 impl Agent {
@@ -231,7 +205,6 @@ impl Agent {
                 .spawn()
                 .unwrap(),
         );
-        // The shell sets its traps and starts its children first.
         std::thread::sleep(Duration::from_millis(300));
         a
     }
@@ -248,13 +221,11 @@ impl Agent {
         }
     }
 
-    /// Kill and reap the agent.
     fn kill(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 
-    /// Whether it exited within 10 s; reaps it.
     fn exits(&mut self) -> bool {
         wait_for(|| matches!(self.0.try_wait(), Ok(Some(_))))
     }
@@ -282,8 +253,6 @@ fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
     }
     false
 }
-
-// ─── the outside ────────────────────────────────────────────────────────
 
 struct Fake {
     claude_used: Option<f64>,
@@ -364,8 +333,6 @@ impl Outside for Fake {
     }
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn result_in_the_pass_wins_over_the_lease_expiry() {
     let mut w = world();
@@ -378,7 +345,6 @@ fn result_in_the_pass_wins_over_the_lease_expiry() {
             params![task, util::now()],
         )
         .unwrap();
-    // The worker asked and exited; its lease of 120 s expired long ago.
     agent.kill();
     let fake = Fake::new(&w);
     w.pass_at(1_000, &worker, &fake);
@@ -398,12 +364,10 @@ fn idle_worker_is_stalled_and_queued_after_its_backoff() {
     let (task, worker) = w.claimed_task(&agent);
     let fake = Fake::new(&w);
 
-    // Within stall_after_s (300 s) of the claim: the lease renews.
     w.pass_at(100, &worker, &fake);
     assert_eq!(w.task(&task).status, "running");
     assert!(agent.alive());
 
-    // No activity since the claim, past stall_after_s: rung 3.
     w.pass_at(310, &worker, &fake);
     let attempts = w.attempts(&task);
     assert_eq!(attempts[0].1, "ended", "{attempts:?}");
@@ -414,7 +378,6 @@ fn idle_worker_is_stalled_and_queued_after_its_backoff() {
         "the stop comes after the commit"
     );
     assert!(agent.exits(), "the stop of rung 3 ended the agent");
-    // The next pass sees the old process gone: rung 6.
     w.pass_at(315, &worker, &fake);
     let t = w.task(&task);
     assert_eq!(t.status, "ready", "rung 6 queued it again");
@@ -422,13 +385,11 @@ fn idle_worker_is_stalled_and_queued_after_its_backoff() {
     let clock = w.clock();
     assert!(not_before > clock, "{not_before} after {clock}");
 
-    // The task cannot start before its backoff ends.
     assert!(!claimable(&w), "startable in its backoff");
     w.set_clock(not_before);
     assert!(claimable(&w), "not startable after the backoff");
 }
 
-/// The stops of the process group of an agent in 1 pass report.
 fn stops(report: &PassReport) -> Vec<&str> {
     report
         .done
@@ -440,16 +401,10 @@ fn stops(report: &PassReport) -> Vec<&str> {
         .collect()
 }
 
-/// Whether a task of the run can start now: the dispatch can bind it.
 fn claimable(w: &World) -> bool {
     !tasks::startable(&w.conn, &w.run.run_id).unwrap().is_empty()
 }
 
-/// FM-14 (T-271): the agent ignores SIGTERM and `stop_grace_s` is 600 s. The
-/// lease expires, the polite stop does not end the agent, and 120 s later
-/// the task is still `stalled`: no claim starts attempt 2 beside the live
-/// attempt 1. After the hard stop the next pass moves it to `ready`, and
-/// its backoff starts at that move.
 #[test]
 fn stalled_task_stays_stalled_while_the_old_process_lives() {
     let mut w = world();
@@ -458,7 +413,6 @@ fn stalled_task_stays_stalled_while_the_old_process_lives() {
     let (task, worker) = w.claimed_task(&agent);
     let fake = Fake::new(&w);
 
-    // The lease of 120 s from the claim at 0 expired: rung 3.
     let report = w.pass_at(1_000, &worker, &fake);
     assert_eq!(stops(&report).len(), 1, "1 polite stop: {report:?}");
     let attempts = w.attempts(&task);
@@ -473,14 +427,11 @@ fn stalled_task_stays_stalled_while_the_old_process_lives() {
     assert!(!claimable(&w), "no attempt 2 beside a live attempt 1");
     assert_eq!(w.attempts(&task).len(), 1);
 
-    // Past the grace of the polite stop: the hard stop.
     let report = w.pass_at(1_600, &worker, &fake);
     assert_eq!(
         stops(&report),
         ["kill process ".to_string() + &agent.recorded().pid.to_string()]
     );
-    // A pass before the test reaps the agent can send the hard stop again,
-    // but it writes no second mark.
     w.pass_at(1_605, &worker, &fake);
     assert!(agent.exits(), "the hard stop ended it");
 
@@ -510,8 +461,6 @@ fn stalled_task_stays_stalled_while_the_old_process_lives() {
     assert!(claimable(&w));
 }
 
-/// The old process is gone in the pass that sees the lease expired: the
-/// task moves to `ready` in that pass, as before FM-14.
 #[test]
 fn task_whose_old_process_is_gone_moves_in_the_same_pass() {
     let mut w = world();
@@ -526,14 +475,11 @@ fn task_whose_old_process_is_gone_moves_in_the_same_pass() {
     assert_eq!(t.not_before, Some(1_030));
 }
 
-/// A result before the pass wins over the lease expiry: the task is
-/// `verifying`, so the pass gives it no lease rule and no stall rule.
 #[test]
 fn verifying_task_is_not_stalled_by_an_old_lease() {
     let mut w = world();
     let agent = Agent::sleeping();
     let (task, worker) = w.claimed_task(&agent);
-    // The worker ran finish: its result moved the task to verifying.
     w.conn
         .execute(
             "UPDATE tasks SET status = 'verifying' WHERE task_id = ?1",
@@ -549,9 +495,6 @@ fn verifying_task_is_not_stalled_by_an_old_lease() {
     assert_ne!(attempts[0].2.as_deref(), Some("stalled"), "{attempts:?}");
 }
 
-/// A cancel of a `stalled` task waits for the stop of its old process
-/// (T-268): the pass moves it to `cancelled` only after the process is
-/// gone.
 #[test]
 fn cancel_of_a_stalled_task_waits_for_its_old_process() {
     let mut w = world();
@@ -583,8 +526,6 @@ fn usage_limited_worker_restarts_on_the_fallback_and_burns_no_attempt() {
     let mut w = world();
     let mut agent = Agent::sleeping();
     let (task, worker) = w.claimed_task(&agent);
-    // The attempts that count against max_attempts: the claim counts the
-    // attempt in flight.
     let burned = |t: &tasks::Task| t.attempts - t.attempt_floor;
     assert_eq!(burned(&w.task(&task)), 1);
     let fake = Fake::limited(&w);
@@ -602,7 +543,6 @@ fn usage_limited_worker_restarts_on_the_fallback_and_burns_no_attempt() {
     assert!(agent.exits(), "the stop of the old attempt ended the agent");
 }
 
-/// herdr and the transcript: an agent that is alive and shows nothing.
 struct Quiet;
 
 impl Observer for Quiet {
@@ -615,7 +555,6 @@ impl Observer for Quiet {
     }
 }
 
-/// The duty effects: none.
 struct NoEffects;
 
 impl DutyEffects for NoEffects {
@@ -639,7 +578,6 @@ fn stall_rounds_of_today_no_longer_reap_a_worker() {
     });
     let mut agent = Agent::sleeping();
     let (task, worker) = w.claimed_task(&agent);
-    // Claimed 1 h ago on the wall clock, with no progress since.
     let hour = (Utc::now() - chrono::Duration::hours(1))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
@@ -714,14 +652,12 @@ fn background_wait_holds_while_the_agent_child_runs_and_ends_when_it_exits() {
             .unwrap()
     };
 
-    // The child runs: the wait is activity, far past stall_after_s.
     for clock in [100, 200, 300, 400, 500] {
         w.pass_at(clock, &worker, &fake);
         assert_eq!(w.task(&task).status, "running", "at {clock}");
         assert!(wait_row(&w).is_some(), "at {clock}");
     }
 
-    // The child exits: the wait ends at once.
     let pgid = agent.recorded().pid;
     let child: Vec<u32> = horch_core::procid::group_members(pgid)
         .into_iter()
@@ -737,8 +673,6 @@ fn background_wait_holds_while_the_agent_child_runs_and_ends_when_it_exits() {
     assert!(wait_row(&w).is_none(), "the wait ended");
     assert_eq!(w.task(&task).status, "running");
 
-    // The stall ladder then applies with its own stall_after_s, from the
-    // last activity (the wait at 500).
     for clock in [610, 710] {
         w.pass_at(clock, &worker, &fake);
         assert_eq!(w.task(&task).status, "running", "at {clock}");
@@ -779,8 +713,6 @@ fn idle_author_of_a_verifying_task_keeps_its_item_while_off_the_page() {
     let b = Agent::sleeping();
     let (task_a, worker_a) = w.claimed_task(&a);
     let (task_b, worker_b) = w.claimed_task(&b);
-    // Each author ran finish, its waits ended, and its checks gave
-    // no_progress for 1 h.
     let hour_ago = (Utc::now() - chrono::Duration::hours(1))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
@@ -809,7 +741,6 @@ fn idle_author_of_a_verifying_task_keeps_its_item_while_off_the_page() {
             .collect()
     };
     let fake = Fake::new(&w);
-    // 1 live attempt on each page: the 2 passes see 1 author each.
     for clock in [10, 20] {
         w.set_clock(clock);
         let mut settings = w.settings();
@@ -836,9 +767,6 @@ fn idle_author_of_a_verifying_task_keeps_its_item_while_off_the_page() {
     assert!(w.attempts(&task_a)[0].1 == "live" && w.attempts(&task_b)[0].1 == "live");
 }
 
-/// The outside of [`a_doorbell_that_was_not_typed_is_typed_by_the_next_pass`]:
-/// herdr shows the pane idle, and each doorbell is recorded. The first
-/// `fail` doorbells fail, as a crash between the commit and the send does.
 struct Bells {
     inner: Fake,
     typed: std::cell::RefCell<Vec<String>>,
@@ -920,20 +848,15 @@ fn a_doorbell_that_was_not_typed_is_typed_by_the_next_pass() {
         };
         Pass::new(w.settings(), ports).run(&mut w.conn).unwrap()
     };
-    // The lease renews within stall_after_s of the claim.
     for clock in [100, 200, 290] {
         let report = pass(&mut w, clock);
         assert!(report.failed.is_empty(), "{report:?}");
     }
     assert_eq!(doorbell_events(&w), 0);
-    // Idle past stall_after_s: rung 1. Its row commits, and the send is
-    // lost.
     let report = pass(&mut w, 310);
     assert_eq!(report.failed.len(), 1, "{report:?}");
     assert_eq!(doorbell_events(&w), 1);
     assert!(bells.typed.borrow().is_empty());
-    // The next pass types it, 1 time, with no new row: the ladder did not
-    // count the lost doorbell as rung 1, and does not ring rung 2.
     for clock in [320, 330] {
         let report = pass(&mut w, clock);
         assert!(report.failed.is_empty(), "{report:?}");

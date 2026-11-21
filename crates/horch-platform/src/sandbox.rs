@@ -1,37 +1,3 @@
-//! The concern sandbox: the check sandbox (SR-4), the sandbox host of PL-2.
-//!
-//! [`sandboxed`] wraps a command so that it can read the whole disk but
-//! write only in a list of paths and in its temp folder.
-//! [`sandboxed_hiding`] wraps a command so that it can write only in a list
-//! of paths, cannot read, write or connect to a Unix socket below a list of
-//! hidden paths, can read again a list of paths in them, and can have no
-//! network.
-//!
-//! Each call also takes [`Denials`], a required input: the operator acts
-//! that the command cannot do, whatever else the call allows (SR-8). A
-//! worker, a check and a gate cannot read the operator token, connect to
-//! the command channel or write a request file. What each OS denies:
-//!
-//! - macOS: `/usr/bin/sandbox-exec` with a generated Seatbelt profile. It
-//!   denies each file read, file write and Unix socket connect below a
-//!   denied read or connect path, and each file write below a denied write
-//!   path. Seatbelt refuses the act (`EPERM`), also for a path that does
-//!   not exist yet.
-//! - Linux: `bwrap` (bubblewrap), when it is on the `PATH` of the command,
-//!   and the `setsid` of util-linux in `/usr/bin` or `/bin`.
-//!   It puts an empty file (`/dev/null`) over a denied read or connect file
-//!   and an empty tmpfs over a denied folder: a read of the token gives no
-//!   bytes, and a connect to the socket is refused (`ECONNREFUSED`). It
-//!   binds a denied write path read-only, so a write is refused (`EROFS`).
-//!   A denied path that does not exist when the command starts gets no
-//!   mount, so it is not denied.
-//! - Windows: [`NotSupported`]. A check never runs there without its
-//!   sandbox: the caller decides what to do (PL-3).
-//!
-//! The OS module gives the sandbox host program and its arguments. This file puts
-//! the command after them, so each OS keeps the program, arguments,
-//! environment and folder of the command in the same way.
-
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -39,30 +5,8 @@ use crate::os::sandbox as os;
 use crate::start::{self, Sealed, Start, StdCommand, TOKEN};
 use crate::NotSupported;
 
-/// Where macOS keeps `sandbox-exec`, the Seatbelt launcher of the sandbox.
-/// Only macOS uses it.
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// `cmd` in the check sandbox: it can write only in the paths of
-/// `writable`, in its temp folder ([`std::env::temp_dir`]) and in
-/// `/dev/null`, and it can read the rest of the disk. `denied` wins over
-/// each of these.
-///
-/// The returned command is of the kind of `cmd` (a [`start::Command`] or a
-/// `std` command). It keeps the program, the arguments, the environment
-/// changes and the current folder of `cmd`. A command does not show the
-/// rest of its settings, so set stdio, `env_clear` and the OS extensions
-/// on the returned command. Give absolute paths in `writable`.
-///
-/// It gives [`NotSupported`] with a reason when this host has no sandbox:
-/// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
-/// macOS when [`SANDBOX_EXEC`] is missing.
-///
-/// The command keeps the PIDs of the host, so a process that reports its
-/// own PID, as a worker wrapper does, can use it: fleetd checks the peer of
-/// a request by its host PID, parent and group (FR-10). On Linux a kill of the
-/// group of the caller does not end the command. A job uses
-/// [`sandboxed_job`].
 pub fn sandboxed<C: Start>(
     cmd: C,
     writable: &[PathBuf],
@@ -71,10 +15,6 @@ pub fn sandboxed<C: Start>(
     sandboxed_on(cmd, writable, denied, Network::Open, false)
 }
 
-/// [`sandboxed`] for a job that its host stops: on Linux the command gets
-/// a new PID namespace, and a KILL of the group that the sandbox leads
-/// ends each process of the sandbox. A PID that the command reads of
-/// itself is a PID of that namespace, not of the host.
 pub fn sandboxed_job<C: Start>(
     cmd: C,
     writable: &[PathBuf],
@@ -83,10 +23,6 @@ pub fn sandboxed_job<C: Start>(
     sandboxed_on(cmd, writable, denied, Network::Open, true)
 }
 
-/// [`sandboxed_job`] with [`Network::Local`]: the command has no off-host
-/// network (SR-3: no agent messages anyone outside the fleet). It gives
-/// [`NotSupported`] on a host where the platform layer cannot hold this
-/// rule, and never opens the network instead.
 pub fn sandboxed_local<C: Start>(
     cmd: C,
     writable: &[PathBuf],
@@ -113,99 +49,33 @@ fn sandboxed_on<C: Start>(
     wrapped(cmd, &reach, Some(&temp), own_pids)
 }
 
-/// The network rule of [`sandboxed_hiding`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Network {
-    /// The command can use the network.
     Open,
-    /// The command cannot open a network connection. On macOS this
-    /// includes each Unix socket connection. On Linux the command gets a
-    /// new network namespace: it has no network and no abstract Unix
-    /// socket, but it can connect to a Unix socket file that it can see.
     Denied,
-    /// The command can connect to this host only: loopback and Unix
-    /// sockets. Each connection to another host is refused. On macOS a
-    /// Seatbelt rule denies each outbound IP connection but `localhost`.
-    /// On Linux the command gets a new network namespace, where `bwrap`
-    /// brings up the loopback interface. That loopback is not the loopback
-    /// of the host: a listener of the command connects, a listener on the
-    /// host loopback refuses. Windows has no sandbox, so it gives
-    /// [`NotSupported`].
     Local,
 }
 
-/// What a command of [`sandboxed_hiding`] can reach. Give absolute paths.
 #[derive(Debug, Clone, Copy)]
 pub struct Reach<'a> {
-    /// The command can read and write below each of these paths.
     pub writable: &'a [PathBuf],
-    /// The command can read, and not write, below each of these paths.
     pub readable: &'a [PathBuf],
-    /// The command cannot read, write or connect to a Unix socket below
-    /// each of these paths.
     pub hidden: &'a [PathBuf],
-    /// The acts that the command cannot do, whatever the other fields
-    /// allow.
     pub denied: &'a Denials,
     pub network: Network,
 }
 
-/// The acts that a sandboxed command cannot do, whatever the rest of the
-/// call allows: a denial wins over each writable, readable or hidden path,
-/// also over a longer one. Give absolute paths. The module doc names what
-/// each OS denies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Denials {
-    /// The command cannot read these files, or below these folders. It
-    /// cannot write them or connect to a Unix socket below them either.
     pub read: Vec<PathBuf>,
-    /// The command cannot connect to a Unix socket at or below these paths.
-    /// It cannot read or write them either.
     pub connect: Vec<PathBuf>,
-    /// The command cannot write at or below these paths. It can read them
-    /// when the rest of the call lets it.
     pub write: Vec<PathBuf>,
 }
 
-/// `cmd` in a sandbox with no temp folder. It can write only below the
-/// writable paths of `reach` and in `/dev/null`, and it can read the whole
-/// disk but the hidden paths.
-///
-/// For each path the rule of the longest path of `reach` that holds it
-/// applies. So a writable or readable path in a hidden path can be reached
-/// again, and a hidden path in a writable or readable path is hidden. For
-/// 1 path in 2 lists, hidden wins over writable, and writable over
-/// readable.
-///
-/// A program makes the leading folders of a path with a `stat` of each
-/// parent folder. So the command can read the metadata of each folder
-/// from a hidden path down to the parent of a readable or writable path in
-/// it. It cannot list such a folder or read a file in it.
-///
-/// - macOS: Seatbelt checks each file read and write and each Unix socket
-///   connection against the rules, whether the path exists or not. Each
-///   such parent folder allows a metadata read of that folder only, so
-///   the command sees its real mode, owner, size, link count and times.
-/// - Linux: the rules are mounts, from the shortest path to the longest.
-///   A new empty tmpfs covers each hidden folder, and `/dev/null` covers
-///   each hidden file, so a socket file in a hidden folder is gone. A path
-///   that does not exist when the command starts gets no mount: a hidden
-///   one is not covered, a readable one in a hidden folder is not there,
-///   and a writable one is not writable. So give writable paths that
-///   exist. An abstract Unix socket has no path: it is not denied (but see
-///   [`Network::Denied`]). A bound path is a mount point: the command
-///   cannot rename or remove it, only what is in it. bwrap makes each
-///   parent folder of a bound path in the tmpfs of a hidden folder. Such a
-///   folder holds only the next part of the bound path, and its metadata
-///   is of the new folder, not of the real one.
-///
-/// The rest is as in [`sandboxed_job`]: the command and its settings, the
-/// PID namespace on Linux, and [`NotSupported`] on a host with no sandbox.
 pub fn sandboxed_hiding<C: Start>(cmd: C, reach: &Reach<'_>) -> Result<C, NotSupported> {
     wrapped(cmd, reach, None, true)
 }
 
-/// 1 rule of a sandbox on 1 resolved path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rule<'a> {
     Read(&'a Path),
@@ -249,18 +119,11 @@ fn wrapped<C: Start>(
     sealed.extend(all(&reach.denied.connect));
     let read_only = all(&reach.denied.write);
     let mut rules = denying(rules, &sealed, &read_only);
-    // The longest path last, so its rule wins: the last rule wins on
-    // macOS, and the last mount covers the ones before it on Linux.
     rules.sort_by_key(Rule::key);
     let args = os::args(&rules, temp.is_some(), reach.network, own_pids);
     Ok(C::from_std(wrap(&program, &args, cmd), TOKEN))
 }
 
-/// `rules` with the denials put in, so that no other rule undoes them.
-/// Each path of `read_only` gets the rule that denies a write: each
-/// writable rule at or below it becomes readable, and the path itself gets
-/// a readable rule when the rule that reaches it allows a write. Each path
-/// of `sealed` gets a hidden rule, and each other rule at or below it goes.
 fn denying<'a>(
     mut rules: Vec<Rule<'a>>,
     sealed: &'a [PathBuf],
@@ -290,17 +153,10 @@ fn denying<'a>(
     rules
 }
 
-/// Why this host has no sandbox for a command that runs with `path` as its
-/// `PATH`, or `None` when it has one. [`sandboxed`] gives the same
-/// [`NotSupported`] value. Each caller that needs the sandbox host asks
-/// here: macOS needs [`SANDBOX_EXEC`], and Linux needs `bwrap` in an
-/// absolute folder of `path`.
 pub fn host_problem(path: Option<&OsStr>) -> Option<NotSupported> {
     os::program(path).err()
 }
 
-/// The `PATH` that `cmd` runs with: its own when it sets or removes one,
-/// else the `PATH` of this process.
 fn path_of(cmd: &StdCommand) -> Option<OsString> {
     match cmd.get_envs().find(|(key, _)| *key == "PATH") {
         Some((_, value)) => value.map(OsString::from),
@@ -308,7 +164,6 @@ fn path_of(cmd: &StdCommand) -> Option<OsString> {
     }
 }
 
-/// A command that runs `program` with `args`, then the program of `cmd`.
 fn wrap(program: &Path, args: &[OsString], cmd: &StdCommand) -> StdCommand {
     let mut sandboxed = start::command(program).into_std(TOKEN);
     sandboxed
@@ -327,10 +182,6 @@ fn wrap(program: &Path, args: &[OsString], cmd: &StdCommand) -> StdCommand {
     sandboxed
 }
 
-/// `path` as the kernel sees it, with each link resolved. A path that does
-/// not exist yet keeps its resolved nearest existing folder and the rest of
-/// its names. Seatbelt compares the resolved path: on macOS `/tmp` is
-/// `/private/tmp`.
 fn resolved(path: &Path) -> PathBuf {
     if let Ok(path) = path.canonicalize() {
         return path;
@@ -348,8 +199,6 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
-    /// The address of the child test: an address that no host answers
-    /// (RFC 5737, TEST-NET-1). A connect to it never reaches a webhook.
     const OFF_HOST: &str = "192.0.2.1:9";
     const TARGET: &str = "SANDBOX_CHILD_TARGET";
     const INSIDE: &str = "inside";
@@ -413,9 +262,6 @@ mod tests {
         false
     }
 
-    /// A sandboxed command lives while its sandbox lives, also when the
-    /// thread that started it ended. A kill of the group that the sandbox
-    /// leads ends each process of the sandbox, as the job hosts kill it.
     #[test]
     fn sandboxed_command_outlives_its_start_thread_and_ends_with_its_sandbox() {
         let dir = tempfile::tempdir().unwrap();
@@ -464,8 +310,6 @@ mod tests {
         let webhook = TcpListener::bind("127.0.0.1:0").unwrap();
         let line = connect_in_local_sandbox(&webhook.local_addr().unwrap().to_string()).unwrap();
         if cfg!(target_os = "linux") {
-            // The new network namespace has its own loopback: a listener on
-            // the loopback of the host is not in it.
             assert!(
                 line.starts_with("refused ConnectionRefused"),
                 "a listener of the host loopback: {line}"

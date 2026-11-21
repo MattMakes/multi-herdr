@@ -1,11 +1,6 @@
-//! pres 06 S2: `horch doctor` still warns when herdr resumes agent panes on
-//! its own after a server restart. Phase 5 changes what horch types into a
-//! pane (FR-7), and this warning must stay.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// A herdr CLI that answers every call with success and an empty list.
 fn fake_herdr(dir: &Path) -> PathBuf {
     let bin = dir.join("herdr");
     std::fs::write(

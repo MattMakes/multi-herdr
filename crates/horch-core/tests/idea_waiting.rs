@@ -1,11 +1,3 @@
-//! Waiting on you is not a stall (docs/specs/fleetd/design.md, "Ideas":
-//! Waiting on you is not a stall; FM-29, PL-4, OR-3;
-//! docs/tickets/fleetd-p6/29-waiting.md).
-//!
-//! Each test gives the fleet clock and the calendar time to the use case.
-//! No test reads the real clock: a sleep of the machine is a calendar step
-//! with a small fleet clock step.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -34,11 +26,8 @@ use horch_core::taskledger::Store;
 use horch_platform::channel::User;
 use rusqlite::{params, Connection};
 
-/// The feature of the run, with its first idea in `in_progress`.
 const FEATURE: &str = "F-0001";
-/// The idea that waits on you.
 const IDEA: &str = "I-0002";
-/// The first sub-orchestrator attempt of [`IDEA`].
 const ATTEMPT: &str = "I-0002/clarifying/1";
 const PANE: &str = "w1:p1";
 const P1: Recorded = Recorded {
@@ -46,8 +35,6 @@ const P1: Recorded = Recorded {
     pid_start: Some(11),
 };
 
-/// Monday 2026-11-16 10:00 in a fixed zone of UTC+1: inside the working
-/// hours `Mon-Fri 09:00-18:00`.
 const MONDAY_10: &str = "2026-11-16T10:00:00+01:00";
 
 struct World {
@@ -67,8 +54,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// The facts of a pass: `alive` processes, and [`PANE`] with `P1` in it
-/// when `P1` is alive.
 fn facts(alive: &[Recorded]) -> Facts {
     let processes: BTreeMap<Recorded, Seen> = alive.iter().map(|p| (*p, Seen::Alive)).collect();
     let panes = alive
@@ -90,9 +75,6 @@ fn facts(alive: &[Recorded]) -> Facts {
     }
 }
 
-/// A temp ledger with 1 run and its 1 task (the feature [`FEATURE`] with
-/// its first idea in `in_progress`), and [`IDEA`] moved through `path`
-/// from `captured`.
 fn world(path: &[&str]) -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -111,7 +93,6 @@ fn world(path: &[&str]) -> World {
     let run = store
         .immediate(|tx| {
             let run = runs::create(tx, dir.path(), &new_run)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -172,7 +153,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 pass of `StartSubOrchestrator` (ticket 28).
     fn keep(&mut self, facts: &Facts) -> Kept {
         let ideas = self.ideas();
         let ctx = Keep {
@@ -187,8 +167,6 @@ impl World {
             .unwrap()
     }
 
-    /// The first sub-orchestrator of [`IDEA`] starts, and its launch is
-    /// seen: its process `P1` in [`PANE`].
     fn launch(&mut self) {
         let kept = self.keep(&facts(&[]));
         assert_eq!(kept.started.len(), 1, "{kept:?}");
@@ -204,9 +182,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 pass of the waits at fleet clock `clock` and calendar time `now`,
-    /// with the clarifying ideas `asking` whose process waits at its
-    /// prompt, and the processes `alive`.
     fn wait(&mut self, clock: i64, now: &str, asking: &[&str], alive: &[Recorded]) -> Waits {
         let ideas = self.ideas();
         let asking: BTreeSet<String> = asking.iter().map(|s| s.to_string()).collect();
@@ -289,7 +264,6 @@ impl World {
             .unwrap()
     }
 
-    /// (state, outcome) of [`ATTEMPT`].
     fn attempt(&self) -> (String, Option<String>) {
         self.conn()
             .query_row(
@@ -300,7 +274,6 @@ impl World {
             .unwrap()
     }
 
-    /// The state of the needs-you item `key`, if it has a row.
     fn item(&self, key: &str) -> Option<String> {
         self.conn()
             .query_row("SELECT state FROM needs_you WHERE key = ?1", [key], |r| {
@@ -346,7 +319,6 @@ fn waiting_idea_pauses_the_lease() {
     assert_eq!(w.active_at(), Some(1000), "nothing renews a paused lease");
     assert_eq!(w.waiting_since().as_deref(), Some(since.as_str()));
 
-    // Your answer in the pane: the process works again.
     let waits = w.wait(2800, "2026-11-16T10:30:00+01:00", &[], &[P1]);
     assert_eq!(ids(&waits.ended), [IDEA]);
     assert_eq!(w.waiting_since(), None);
@@ -392,7 +364,6 @@ fn a_sleep_does_not_count_for_the_idle_stop() {
     w.ask("Do retries apply to uploads?", 0);
     w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
 
-    // 8 h of calendar time, of which the machine slept all but 60 s.
     let waits = w.wait(1060, "2026-11-16T18:00:00+01:00", &[IDEA], &[P1]);
     assert!(waits.idle_stopped.is_empty(), "{waits:?}");
     assert_eq!(w.attempt().0, "live");
@@ -406,18 +377,17 @@ fn a_sleep_does_not_count_for_the_idle_stop() {
 #[test]
 fn reminder_only_in_working_hours() {
     let mut w = world(&["clarifying", "awaiting_approval"]);
-    // Friday 17:30: the wait starts, and its item is new.
     let waits = w.wait(1000, "2026-11-13T17:30:00+01:00", &[], &[]);
     assert_eq!(ids(&waits.started), [IDEA]);
     assert!(waits.reminded.is_empty());
 
     for (now, reminded) in [
-        ("2026-11-13T18:30:00+01:00", false), // Friday after the hours
-        ("2026-11-14T12:00:00+01:00", false), // Saturday
-        ("2026-11-15T12:00:00+01:00", false), // Sunday
-        ("2026-11-16T08:59:00+01:00", false), // Monday before the hours
+        ("2026-11-13T18:30:00+01:00", false),
+        ("2026-11-14T12:00:00+01:00", false),
+        ("2026-11-15T12:00:00+01:00", false),
+        ("2026-11-16T08:59:00+01:00", false),
         ("2026-11-16T09:00:00+01:00", true),
-        ("2026-11-16T09:30:00+01:00", false), // 30 min after a reminder
+        ("2026-11-16T09:30:00+01:00", false),
         ("2026-11-16T09:59:59+01:00", false),
         ("2026-11-16T10:00:00+01:00", true),
     ] {
@@ -464,7 +434,6 @@ fn idea_parks_after_7_calendar_days() {
     let note = open.iter().find(|i| i.key == parked_key(IDEA)).unwrap();
     assert!(note.text.contains("7 days"), "{}", note.text);
 
-    // The note ends when the idea leaves `parked`.
     w.move_idea("awaiting_approval");
     w.wait(1020, "2026-11-23T11:00:00+01:00", &[], &[]);
     assert_eq!(w.item(&parked_key(IDEA)).as_deref(), Some("resolved"));
@@ -480,7 +449,6 @@ fn approval_starts_the_stopped_process() {
     assert_eq!(ids(&waits.idle_stopped), [ATTEMPT]);
     assert!(w.keep(&facts(&[])).started.is_empty());
 
-    // Your approval moves the idea on.
     w.move_idea("specifying");
     let waits = w.wait(2810, "2026-11-16T10:31:00+01:00", &[], &[]);
     assert_eq!(ids(&waits.ended), [IDEA]);
@@ -497,8 +465,6 @@ fn an_idle_pane_after_clarifying_and_approval_is_not_a_wait() {
     w.launch();
     w.move_idea("awaiting_approval");
     w.move_idea("specifying");
-    // The clarifying process is not the process of the phase: ticket 28
-    // stops it. A process of `specifying` idles at its prompt.
     let waits = w.wait(1000, MONDAY_10, &[IDEA], &[P1]);
     assert!(waits.started.is_empty(), "{waits:?}");
     assert_eq!(w.waiting_since(), None);
@@ -523,12 +489,10 @@ fn an_amendment_ends_the_wait_after_the_idle_stop() {
     let waits = w.wait(2800, "2026-11-16T10:30:00+01:00", &[IDEA], &[P1]);
     assert_eq!(ids(&waits.idle_stopped), [ATTEMPT]);
 
-    // No process: the wait holds.
     let waits = w.wait(2900, "2026-11-16T10:40:00+01:00", &[], &[]);
     assert!(waits.ended.is_empty(), "{waits:?}");
     assert!(w.waiting_since().is_some());
 
-    // `horch idea amend` writes your answer.
     folder
         .write_amendment(1, "Retries apply to uploads too.")
         .unwrap();

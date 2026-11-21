@@ -1,8 +1,3 @@
-//! FR-9 and Phase 7 of `docs/specs/fleetd/design.md`: each Claude and Codex
-//! seat of the repository roster launches with 256000 as its native
-//! compaction window, and `_base/context-windows.md` gives 256000 to each
-//! key. A temp home with no operator settings: the fleet value applies.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::harness::launch::{self, window_decision};
@@ -26,7 +21,6 @@ fn stub_sandbox_tools(bin: &Path) {
     }
 }
 
-/// A context with an empty temp home: no operator window anywhere.
 fn empty_home_ctx(tmp: &Path) -> RuntimeContext {
     let home = tmp.join("home");
     let workdir = tmp.join("project");
@@ -44,7 +38,6 @@ fn empty_home_ctx(tmp: &Path) -> RuntimeContext {
     RuntimeContext::from_env(&env).unwrap()
 }
 
-/// The window that the launch argv of a Claude or Codex seat sets.
 fn window_in_argv(kind: HarnessKind, args: &[String]) -> Option<String> {
     match kind {
         HarnessKind::Claude => {

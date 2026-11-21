@@ -1,6 +1,3 @@
-//! Tasks: queueing, the claimable rule and the claim (sections 4.3 to 4.5,
-//! 5.1, 5.2).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
@@ -28,14 +25,10 @@ use crate::fleetd::task_execution::domain::retry::{self, claimable_at, rung6, Nu
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeRow};
 use crate::fleetd::worktree_custody::application::create;
 
-/// How much a retried task moves ahead of the queue (section 5.4).
 pub const RETRY_PRIORITY_BOOST: i64 = 1000;
 
-/// The ticket file name of a one-off task that has no ticket file. Its
-/// snapshot holds the title.
 pub const ONE_OFF_TICKET: &str = "(one-off: no ticket file)";
 
-/// 1 task row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Task {
     pub task_id: String,
@@ -57,22 +50,13 @@ pub struct Task {
     pub land_check: Option<String>,
     pub kind: String,
     pub parent_task_id: Option<String>,
-    /// The stored word. Its JSON is the shown word `status` and the stored
-    /// word `state` (`status_json`).
     #[serde(flatten, serialize_with = "status_json")]
     pub status: String,
     pub attempts: i64,
-    /// Set while an `escalated` task (shown as `queued`) is held for the
-    /// operator after too many attempts (#168).
     pub held_reason: Option<String>,
-    /// `attempts` at the last operator requeue.
     pub attempt_floor: i64,
-    /// Fleet clock: a `ready` task in a retry backoff is not claimed before
-    /// it (rung 6).
     pub not_before: Option<i64>,
-    /// Fleet clock: the replan limit of a `failed` task.
     pub due_at: Option<i64>,
-    /// The replans of the task: 0, or 1 after its 1 replan.
     pub replans: i64,
     pub current_worker_id: Option<String>,
     pub summary: Option<String>,
@@ -80,22 +64,15 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
     pub finished_at: Option<String>,
-    /// The ticket's `**Kind:**` (C1).
     pub work_kind: Option<String>,
-    /// The ticket's `**Review:**`, or the default of its `Kind` (C1).
     pub review_mode: Option<String>,
-    /// The ticket text as `add-map` queued it. A claim prints it; status
-    /// JSON leaves it out.
     #[serde(skip_serializing)]
     pub ticket_snapshot: Option<String>,
-    /// The sha256 of `ticket_snapshot`, in hex.
     pub ticket_sha: Option<String>,
-    /// The ticket says `**Check:** none`: it has no check on purpose.
     pub check_none: bool,
 }
 
 impl Task {
-    /// `T-<seq>`: the short name people use.
     pub fn short(&self) -> String {
         format!("T-{}", self.seq)
     }
@@ -104,19 +81,14 @@ impl Task {
         TaskStatus::parse(&self.status)
     }
 
-    /// The status word that a reader sees ([`TaskStatus::shown`]).
     pub fn shown_status(&self) -> &str {
         TaskStatus::shown_word(&self.status)
     }
 
-    /// Stored as `pending`, `ready` or `escalated`, all shown as `queued`:
-    /// it waits for its dependencies or a claim, or it is held.
     pub fn is_queued(&self) -> bool {
         is_in(sql_words::TASKS_QUEUED, &self.status)
     }
 
-    /// A worker is on it: stored as `running` or `verifying` (shown as
-    /// `landing`).
     pub fn in_flight(&self) -> bool {
         is_in(sql_words::TASKS_IN_FLIGHT, &self.status)
     }
@@ -129,14 +101,10 @@ impl Task {
         self.worktree_mode == WorktreeMode::Worktree.as_str()
     }
 
-    /// A one-off task with no ticket file and no check, such as the
-    /// worktree steward's: it may finish with no worktree and no change (T-5).
     pub fn is_no_change_one_off(&self) -> bool {
         self.check_none && self.task_file.as_deref() == Some(ONE_OFF_TICKET)
     }
 
-    /// Parked by `done --unlanded`: escalated, held, with its worktree kept
-    /// (trace-fixes D16). `requeue` resumes it on that worktree.
     pub fn is_parked(&self) -> bool {
         parked(&self.status, self.held_reason.as_deref())
     }
@@ -184,7 +152,6 @@ impl Task {
     }
 }
 
-/// What `horch ledger add` queues.
 #[derive(Debug, Clone)]
 pub struct NewTask {
     pub title: String,
@@ -201,22 +168,16 @@ pub struct NewTask {
     pub land_check: Option<String>,
     pub kind: TaskKind,
     pub parent_task_id: Option<String>,
-    /// Task ids or `T-<n>` names in the same run.
     pub blocked_by: Vec<String>,
     pub own: Vec<String>,
     pub no_touch: Vec<String>,
-    /// The ticket's `**Kind:**` (C1).
     pub work_kind: Option<WorkKind>,
-    /// The ticket's review mode: explicit, else the default of its `Kind`.
     pub review_mode: Option<ReviewMode>,
-    /// The ticket text at queue time; its sha256 is stored with it.
     pub ticket_snapshot: Option<String>,
-    /// `**Check:** none`: no check on purpose.
     pub check_none: bool,
 }
 
 impl NewTask {
-    /// A plain work task with the defaults.
     pub fn work(title: &str, task_file: &str, primary: &str) -> NewTask {
         NewTask {
             title: title.to_string(),
@@ -244,8 +205,6 @@ impl NewTask {
     }
 }
 
-/// The JSON of a task status: `status` with the word of today
-/// ([`TaskStatus::shown`]) and `state` with the stored word (MAP.md, Q3).
 fn status_json<S: serde::Serializer>(status: &str, s: S) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeMap;
     let mut map = s.serialize_map(Some(2))?;
@@ -254,13 +213,10 @@ fn status_json<S: serde::Serializer>(status: &str, s: S) -> Result<S::Ok, S::Err
     map.end()
 }
 
-/// Whether the stored word `status` is 1 of `states`.
 fn is_in(states: &[TaskStatus], status: &str) -> bool {
     states.iter().any(|s| s.as_str() == status)
 }
 
-/// The state of a new task: `pending` while a task that it waits for is not
-/// done, else `ready`.
 fn first_state(all_done: bool) -> TaskStatus {
     if all_done {
         TaskStatus::Ready
@@ -269,7 +225,6 @@ fn first_state(all_done: bool) -> TaskStatus {
     }
 }
 
-/// The sha256 of `text`, in lowercase hex.
 pub fn ticket_sha(text: &str) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(text.as_bytes())
@@ -278,8 +233,6 @@ pub fn ticket_sha(text: &str) -> String {
         .collect()
 }
 
-/// The tasks of `run_id` that already queue one of `files` and are not
-/// cancelled. `add-map` refuses these unless it is told `--again` (TRF-13).
 pub fn already_queued(conn: &Connection, run_id: &str, files: &[&str]) -> Result<Vec<Task>> {
     Ok(of_run(conn, run_id)?
         .into_iter()
@@ -288,8 +241,6 @@ pub fn already_queued(conn: &Connection, run_id: &str, files: &[&str]) -> Result
         .collect())
 }
 
-/// Refuse `items` when one of their tickets is already a task in `run_id`
-/// that is not cancelled. The error names each such task and `--again`.
 pub fn refuse_queued(conn: &Connection, run_id: &str, items: &[(String, NewTask)]) -> Result<()> {
     let files: Vec<&str> = items.iter().map(|(_, t)| t.task_file.as_str()).collect();
     let queued = already_queued(conn, run_id, &files)?;
@@ -313,13 +264,10 @@ pub fn refuse_queued(conn: &Connection, run_id: &str, items: &[(String, NewTask)
     )
 }
 
-/// Whether a task with `status` and `held_reason` is parked by `done
-/// --unlanded` ([`Task::is_parked`]).
 pub fn parked(status: &str, held_reason: Option<&str>) -> bool {
     status == TaskStatus::Escalated.as_str() && held_reason == Some(HeldReason::Unlanded.as_str())
 }
 
-/// 1 task by id.
 pub fn get(conn: &Connection, task_id: &str) -> Result<Task> {
     optional(conn.query_row(
         "SELECT * FROM tasks WHERE task_id = ?1",
@@ -329,7 +277,6 @@ pub fn get(conn: &Connection, task_id: &str) -> Result<Task> {
     .with_context(|| format!("no task {task_id}"))
 }
 
-/// A task of `run_id` by id or `T-<n>`.
 pub fn resolve(conn: &Connection, run_id: &str, key: &str) -> Result<Task> {
     let key = key.trim();
     let seq = key
@@ -351,7 +298,6 @@ pub fn resolve(conn: &Connection, run_id: &str, key: &str) -> Result<Task> {
     found.with_context(|| format!("no task '{key}' in this run"))
 }
 
-/// Every task of a run, in `seq` order.
 pub fn of_run(conn: &Connection, run_id: &str) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare("SELECT * FROM tasks WHERE run_id = ?1 ORDER BY seq")?;
     let rows = stmt
@@ -360,7 +306,6 @@ pub fn of_run(conn: &Connection, run_id: &str) -> Result<Vec<Task>> {
     Ok(rows)
 }
 
-/// The tasks `task_id` waits for.
 pub fn blockers(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(
         "SELECT t.* FROM task_deps d JOIN tasks t ON t.task_id = d.blocked_by
@@ -372,8 +317,6 @@ pub fn blockers(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
     Ok(rows)
 }
 
-/// The open tasks that wait for `task_id`, directly or through another
-/// task, in `seq` order.
 pub fn dependents(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(&format!(
         "WITH RECURSIVE down(id) AS (
@@ -389,13 +332,10 @@ pub fn dependents(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
     Ok(rows)
 }
 
-/// `horch ledger unblock`: `task` no longer waits for `blocker`. A pending
-/// task that then waits for nothing that is not done is ready.
 pub fn unblock(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
     util::atomic(conn, |conn| unblock_in(conn, task, blocker))
 }
 
-/// The writes of [`unblock`], in the open transaction of `conn`.
 fn unblock_in(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
     let n = conn.execute(
         "DELETE FROM task_deps WHERE task_id = ?1 AND blocked_by = ?2",
@@ -418,9 +358,6 @@ fn unblock_in(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
     ready_when_met(conn, &task.task_id)
 }
 
-/// When `task_id` is done: each `pending` task that waits for it, with each
-/// of its dependencies done, moves to `ready` (I2), in the caller's
-/// transaction.
 pub fn ready_dependents(conn: &Connection, task_id: &str) -> Result<()> {
     let waiting: Vec<String> = conn
         .prepare("SELECT task_id FROM task_deps WHERE blocked_by = ?1 ORDER BY task_id")?
@@ -432,8 +369,6 @@ pub fn ready_dependents(conn: &Connection, task_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Move the `pending` task `task_id` to `ready` when each task that it
-/// waits for is done.
 fn ready_when_met(conn: &Connection, task_id: &str) -> Result<()> {
     let task = get(conn, task_id)?;
     let met = blockers(conn, task_id)?
@@ -453,7 +388,6 @@ fn ready_when_met(conn: &Connection, task_id: &str) -> Result<()> {
     )
 }
 
-/// The files a task owns or must not touch.
 pub fn files(conn: &Connection, task_id: &str, mode: FileMode) -> Result<Vec<String>> {
     let mut stmt =
         conn.prepare("SELECT path FROM task_files WHERE task_id = ?1 AND mode = ?2 ORDER BY path")?;
@@ -463,8 +397,6 @@ pub fn files(conn: &Connection, task_id: &str, mode: FileMode) -> Result<Vec<Str
     Ok(rows)
 }
 
-/// The files of `mode` of each task in 1 of `statuses`, by task, each list
-/// sorted: 1 statement for any count of tasks.
 pub fn files_of_tasks_in(
     conn: &Connection,
     statuses: &[TaskStatus],
@@ -487,8 +419,6 @@ pub fn files_of_tasks_in(
     Ok(out)
 }
 
-/// Queue 1 task. Blockers must already exist in the run, so a single add
-/// cannot close a cycle; [`add_many`] checks cycles among new tasks.
 pub fn add(conn: &Connection, run: &Run, new: &NewTask, actor: Actor) -> Result<Task> {
     validate(new)?;
     let blockers: Vec<Task> = new
@@ -528,9 +458,6 @@ pub fn add(conn: &Connection, run: &Run, new: &NewTask, actor: Actor) -> Result<
     Ok(task)
 }
 
-/// Queue several tasks whose blockers may name each other by index. Any
-/// invalid task, unknown blocker or cycle queues nothing (the caller runs
-/// this in 1 transaction).
 pub fn add_many(
     conn: &Connection,
     run: &Run,
@@ -556,8 +483,6 @@ pub fn add_many(
     Ok(out)
 }
 
-/// The edges inside the map (node -> the nodes it waits for). Blockers
-/// outside the map must already exist.
 fn dependency_edges(
     conn: &Connection,
     run: &Run,
@@ -581,8 +506,6 @@ fn dependency_edges(
     Ok(edges)
 }
 
-/// Insert in dependency order so every edge points at an existing row.
-/// Returns the new id of each item, by index.
 fn insert_in_order(
     conn: &Connection,
     run: &Run,
@@ -593,7 +516,6 @@ fn insert_in_order(
     let mut ids: Vec<Option<String>> = vec![None; items.len()];
     for &i in order {
         let (_, new) = &items[i];
-        // A blocker of the map is new, so it is not done.
         let blockers: Vec<(String, bool)> = new
             .blocked_by
             .iter()
@@ -620,7 +542,6 @@ fn insert_in_order(
     Ok(ids)
 }
 
-/// Record the `Added` event of every inserted item and return the tasks.
 fn queued_events(
     conn: &Connection,
     run: &Run,
@@ -669,10 +590,6 @@ fn validate(new: &NewTask) -> Result<()> {
     Ok(())
 }
 
-/// FR-12: the idea of a new task of `run`. A task with a parent takes the
-/// idea of its parent; else it takes the youngest idea in flight of the
-/// feature of `run` (`F-<run rowid>`, MAP.md of fleetd-p6, Q5). It reads
-/// only: with no idea, the task is refused.
 fn idea_of_new_task(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
     if let Some(parent) = &new.parent_task_id {
         let idea: Option<String> = conn
@@ -755,8 +672,6 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Res
     Ok(id)
 }
 
-/// The rows of `paths` in `task_files` for the task `task_id`, each with
-/// `mode`. A row that exists stays.
 pub fn add_files(conn: &Connection, task_id: &str, paths: &[String], mode: FileMode) -> Result<()> {
     for p in paths {
         conn.execute(
@@ -767,7 +682,6 @@ pub fn add_files(conn: &Connection, task_id: &str, paths: &[String], mode: FileM
     Ok(())
 }
 
-/// A cycle in `edges` (node -> the nodes it waits for), if any.
 pub fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
@@ -806,7 +720,6 @@ pub fn find_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
     None
 }
 
-/// Nodes with every blocker first. `edges` has no cycle.
 fn topo_order(edges: &[Vec<usize>]) -> Vec<usize> {
     fn visit(n: usize, edges: &[Vec<usize>], done: &mut [bool], out: &mut Vec<usize>) {
         if done[n] {
@@ -826,23 +739,15 @@ fn topo_order(edges: &[Vec<usize>]) -> Vec<usize> {
     out
 }
 
-/// Why a pending or ready task cannot be claimed now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum Wait {
-    /// A blocker is not done.
     BlockedBy { task: String, status: String },
-    /// A blocker was cancelled: it never finishes unless someone acts (#119).
     BlockerCancelled { task: String },
-    /// A blocker is parked unlanded: it resumes only on a requeue (D16).
     BlockerParked { task: String },
-    /// An exclusive task runs, or this exclusive task waits for others.
     Exclusive { running: String },
-    /// A running task owns 1 of this task's files.
     FileHeld { path: String, by: String },
-    /// Another shared-checkout task works in the 1 shared checkout.
     SharedCheckout { running: String },
-    /// A retry waits for the end of its backoff on the fleet clock (rung 6).
     Backoff { seconds: i64 },
 }
 
@@ -870,7 +775,6 @@ impl std::fmt::Display for Wait {
     }
 }
 
-/// The 2 text columns of `sql`, a query of 1 `?1` run id.
 fn pairs(conn: &Connection, sql: &str, run_id: &str) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt
@@ -879,16 +783,14 @@ fn pairs(conn: &Connection, sql: &str, run_id: &str) -> Result<Vec<(String, Stri
     Ok(rows)
 }
 
-/// An exclusive task runs, or `t` is exclusive and others run.
 fn exclusive(t: &Task, work: &[&&Task]) -> Option<Wait> {
-    let blocker = work.iter().find(|a| !a.parallel).or_else(|| {
-        // An exclusive task waits for any running one.
-        (!t.parallel).then(|| work.first()).flatten()
-    });
+    let blocker = work
+        .iter()
+        .find(|a| !a.parallel)
+        .or_else(|| (!t.parallel).then(|| work.first()).flatten());
     blocker.map(|x| Wait::Exclusive { running: x.short() })
 }
 
-/// 1 checkout holds the edits of every shared task: they go 1 by 1.
 fn shared_checkout(t: &Task, work: &[&&Task]) -> Option<Wait> {
     if t.uses_worktree() {
         return None;
@@ -898,14 +800,11 @@ fn shared_checkout(t: &Task, work: &[&&Task]) -> Option<Wait> {
         .map(|a| Wait::SharedCheckout { running: a.short() })
 }
 
-/// The state the claimable rule reads: the run's tasks with their files and
-/// blockers, and the personas that have a live worker.
 struct Board {
     tasks: Vec<Task>,
     own: BTreeMap<String, Vec<String>>,
     deps: BTreeMap<String, Vec<String>>,
     staffed: BTreeSet<String>,
-    /// The fleet clock, or `None` when fleetd never ran.
     clock: Option<FleetSeconds>,
 }
 
@@ -945,7 +844,6 @@ impl Board {
         })
     }
 
-    /// Whether a live or starting worker can claim `t` (TRF-31).
     fn is_staffed(&self, t: &Task) -> bool {
         t.claimable_by
             .as_deref()
@@ -960,9 +858,6 @@ impl Board {
         t.in_flight()
     }
 
-    /// Why `t` cannot start beside the `active` tasks, or `None`. Review
-    /// tasks change no code: they never conflict on files and never wait for
-    /// an exclusive task (that task waits for them).
     fn wait(&self, t: &Task, active: &[&Task]) -> Option<Wait> {
         self.backoff(t).or_else(|| self.blocked_by(t)).or_else(|| {
             let work: Vec<&&Task> = active.iter().filter(|a| !a.is_review()).collect();
@@ -976,7 +871,6 @@ impl Board {
         })
     }
 
-    /// The rest of the retry backoff of `t` on the fleet clock.
     fn backoff(&self, t: &Task) -> Option<Wait> {
         let clock = self.clock?;
         let not_before = t.not_before?;
@@ -985,7 +879,6 @@ impl Board {
         })
     }
 
-    /// The first blocker of `t` that is not done.
     fn blocked_by(&self, t: &Task) -> Option<Wait> {
         self.deps
             .get(&t.task_id)
@@ -1008,7 +901,6 @@ impl Board {
             })
     }
 
-    /// The first file of `t` that a running task owns.
     fn file_held(&self, t: &Task, work: &[&&Task]) -> Option<Wait> {
         let mine = self.own.get(&t.task_id).cloned().unwrap_or_default();
         work.iter().find_map(|a| {
@@ -1027,8 +919,6 @@ impl Board {
         })
     }
 
-    /// Queued tasks in claim order: priority, then seq. A held task waits
-    /// for the operator, not for a worker.
     fn queued(&self) -> Vec<&Task> {
         let mut q: Vec<&Task> = self
             .tasks
@@ -1039,11 +929,6 @@ impl Board {
         q
     }
 
-    /// Every queued task in claim order, with why it cannot start (`None`
-    /// when it can). The tasks are chosen greedily: each one is checked
-    /// against the running tasks and the startable ones before it. A
-    /// startable task holds its slot only when its persona has a live or
-    /// starting worker: no task waits behind one that nobody will claim.
     fn plan(&self) -> Vec<(&Task, Option<Wait>)> {
         let mut active: Vec<&Task> = self.tasks.iter().filter(|t| Self::is_active(t)).collect();
         let mut out = Vec::new();
@@ -1057,7 +942,6 @@ impl Board {
         out
     }
 
-    /// The queued tasks that can all start now.
     fn startable(&self) -> Vec<&Task> {
         self.plan()
             .into_iter()
@@ -1067,13 +951,11 @@ impl Board {
     }
 }
 
-/// The queued tasks that can start now, all together.
 pub fn startable(conn: &Connection, run_id: &str) -> Result<Vec<Task>> {
     let board = Board::load(conn, run_id)?;
     Ok(board.startable().into_iter().cloned().collect())
 }
 
-/// Why each queued task that cannot start now waits.
 pub fn waits(conn: &Connection, run_id: &str) -> Result<Vec<(Task, Wait)>> {
     let board = Board::load(conn, run_id)?;
     Ok(board
@@ -1083,14 +965,9 @@ pub fn waits(conn: &Connection, run_id: &str) -> Result<Vec<(Task, Wait)>> {
         .collect())
 }
 
-/// What `horch ledger finish` and `horch ledger done` print for a push
-/// attempt: fleetd runs its finish steps.
 pub const PUSH_FINISH_REFUSAL: &str =
     "run `horch result` when the work is committed; fleetd runs the finish steps";
 
-/// The task and the attempt number of the push attempt of worker
-/// `worker_id`, if its attempt began with a push dispatch
-/// (`attempts.via = push`).
 pub fn push_attempt_of(conn: &Connection, worker_id: &str) -> Result<Option<(String, i64)>> {
     let row: Option<(Option<String>, Option<i64>)> = optional(conn.query_row(
         "SELECT a.task_id, w.attempt FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
@@ -1104,8 +981,6 @@ pub fn push_attempt_of(conn: &Connection, worker_id: &str) -> Result<Option<(Str
     })
 }
 
-/// The reason of the cancel of task `task_id` that waits for the stop of
-/// an attempt, or `None`. Rung 6 and the bind skip such a task.
 pub fn cancel_requested(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let reason = conn.query_row(
         "SELECT cancel_requested FROM tasks WHERE task_id = ?1",
@@ -1115,9 +990,6 @@ pub fn cancel_requested(conn: &Connection, task_id: &str) -> Result<Option<Strin
     Ok(reason)
 }
 
-/// The reservations of `run_id` (TRF-24): each live worker with no claim
-/// that was spawned for a task, with that task. `except` names a worker
-/// whose reservation does not count.
 fn reservations(
     conn: &Connection,
     run_id: &str,
@@ -1131,27 +1003,17 @@ fn reservations(
         .collect())
 }
 
-/// The tree of `task_id` that an attempt can hold: the newest row that is
-/// not `removed`, with a held status.
 fn held_tree(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
     Ok(trees::of_task(conn, task_id)?.filter(|r| sql_words::WORKTREES_HELD.contains(&r.status)))
 }
 
-/// What [`handoff`] did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandedOff {
-    /// The task, queued again first in line.
     pub task: Task,
-    /// The worker, ended `handed_off`.
     pub worker: Worker,
-    /// The new `startable` outbox row, if its key was new.
     pub wake_id: Option<String>,
 }
 
-/// `horch ledger handoff` (trace-fixes C4), in the caller's transaction:
-/// the worker ends `handed_off` with `path`, its task is queued again in
-/// front of every other queued task and keeps its worktree, and a
-/// `startable` wake is written. `path` must exist.
 pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOff> {
     let w = workers::get(tx, worker_id)?;
     let task = handoff_task(tx, &w)?;
@@ -1167,8 +1029,6 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         Actor::Worker,
         util::Why::Event(EventKind::Requeued, &format!("{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}", w.label(), task.short())),
     )?;
-    // The door released the lease. The ended worker row marks the old
-    // attempt as ending, and the pass reaps it.
     tx.execute(
         &format!(
             "UPDATE tasks SET current_worker_id = NULL, held_reason = NULL,
@@ -1181,7 +1041,6 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         ),
         params![task.task_id, util::now()],
     )?;
-    // The worktree waits for the next claim, which takes it over.
     if let Some(row) = held_tree(tx, &task.task_id)? {
         create::release(tx, &row, "its attempt handed off the task")?;
     }
@@ -1193,7 +1052,6 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
     })
 }
 
-/// The running task `w` holds: the precondition of a handoff.
 fn handoff_task(conn: &Connection, w: &Worker) -> Result<Task> {
     let Some(task_id) = &w.task_id else {
         bail!(
@@ -1217,7 +1075,6 @@ fn handoff_task(conn: &Connection, w: &Worker) -> Result<Task> {
     Ok(task)
 }
 
-/// The `startable` wake of a handoff: spawn 1 replacement.
 fn handoff_wake(w: &Worker, task: &Task, path: &str) -> Wake {
     let persona = task.claimable_by.as_deref().unwrap_or("?");
     Wake::new(
@@ -1234,7 +1091,6 @@ fn handoff_wake(w: &Worker, task: &Task, path: &str) -> Wake {
     )
 }
 
-/// Let the fallback persona claim `task`.
 pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let Some(fb) = &task.fallback_persona else {
         bail!("{} has no fallback persona", task.short());
@@ -1264,11 +1120,6 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     get(conn, &task.task_id)
 }
 
-/// Drop a task: the 1 cancel path (#136). In the caller's transaction the
-/// task lets go of its worker, the worker row ends `stopped`, and an open
-/// worktree becomes `abandoned` (its branch and folder stay). `cancelled`
-/// is terminal: no requeue reopens the task. The worker's process is not
-/// signalled here: after the commit, the caller stops it with [`super::stop::stop_cancelled`] (TRF-36).
 pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     if is_in(sql_words::TASKS_ENDED, &task.status) {
         bail!("{} is already {}", task.short(), task.shown_status());
@@ -1276,7 +1127,6 @@ pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     util::atomic(conn, |conn| cancel_in(conn, task, reason))
 }
 
-/// The writes of [`cancel`], in the open transaction of `conn`.
 fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let why = format!("task cancelled: {reason}");
     util::transition(
@@ -1296,7 +1146,6 @@ fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
          WHERE task_id = ?1",
         params![task.task_id, format!("cancelled: {reason}"), util::now()],
     )?;
-    // A cancel is an exit of `escalated`: its needs-you item is answered.
     needs_you::resolve(conn, &escalated_key(&task.task_id))?;
     if let Some(w) = &task.current_worker_id {
         workers::end(conn, w, WorkerStatus::Stopped, &why, None)?;
@@ -1322,32 +1171,20 @@ fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     get(conn, &task.task_id)
 }
 
-/// What [`requeue`] did with a task whose worker ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Requeue {
-    /// The task was not running, or its cancel waits for the stop of its
-    /// attempt: nothing changed.
     Skipped,
-    /// Queued again, first in line, after its backoff (rung 6).
     Queued,
-    /// `failed`: no attempt left; it waits for its 1 replan by the
-    /// orchestrator of the run (rung 6).
     Failed,
-    /// `escalated`: held for the operator after its replan (rung 6, #168).
     Escalated,
 }
 
-/// The kind of the needs-you item of an escalated task.
 pub const TASK_ESCALATED: &str = "task_escalated";
 
-/// The key of the needs-you item of the escalated task `task_id`.
 pub fn escalated_key(task_id: &str) -> String {
     format!("{TASK_ESCALATED}:{task_id}")
 }
 
-/// Rung 6 for a task whose worker died, with the design numbers: queued
-/// again first in line after its backoff, or `failed`, or `escalated`.
-/// The old callers have no profile, so they use [`Policy::default`].
 pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     let task = get(conn, task_id)?;
     if !task.in_flight() {
@@ -1356,8 +1193,6 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     util::atomic(conn, |conn| rung6_in(conn, &task, why, &Policy::default()))
 }
 
-/// Rung 6 for task `task_id`, whose attempt burned 1, in the open
-/// transaction of `conn`. Refuses a task with no attempt to end.
 pub fn burn_attempt(
     conn: &Connection,
     task_id: &str,
@@ -1381,23 +1216,16 @@ pub fn burn_attempt(
     rung6_in(conn, &task, why, policy)
 }
 
-/// The writes of rung 6 for `task`, in the open transaction of `conn`.
 fn rung6_in(conn: &Connection, task: &Task, why: &str, policy: &Policy) -> Result<Requeue> {
-    // A cancelled task is never retried (ticket 13 of fleetd-p2).
     if cancel_requested(conn, &task.task_id)?.is_some() {
         return Ok(Requeue::Skipped);
     }
-    // The door releases the lease at the move to ready, failed or
-    // escalated. The caller ended the worker row, which marks the old
-    // attempt as ending.
     let run_max = super::runs::get(conn, &task.run_id)?.max_attempts;
     let n = Numbers {
         used: task.attempts - task.attempt_floor,
         limit: retry::limit(policy.retry.max_attempts, run_max),
         replans: task.replans,
     };
-    // With no fleetd row there is no fleet clock to wait on: no backoff
-    // and no replan limit (the pass sets it, see `escalate_overdue`).
     let clock = fleet_clock_now(conn)?;
     let at = clock.map_or(0, |c| c.0);
     match rung6(&n, &policy.retry.backoff_s, policy.replan_limit_s, at) {
@@ -1418,7 +1246,6 @@ fn rung6_in(conn: &Connection, task: &Task, why: &str, policy: &Policy) -> Resul
     }
 }
 
-/// The fleet clock of the `fleetd` row, or `None` when fleetd never ran.
 fn fleet_clock_now(conn: &Connection) -> Result<Option<FleetSeconds>> {
     if door::generation(conn)?.is_none() {
         return Ok(None);
@@ -1426,8 +1253,6 @@ fn fleet_clock_now(conn: &Connection) -> Result<Option<FleetSeconds>> {
     Ok(Some(clock_store::read(conn)?))
 }
 
-/// The 1 wake of a `failed` task to the orchestrator of its run, which
-/// owns its replan before Phase 6 (`docs/tickets/fleetd-p2/MAP.md`, Q12).
 fn replan_wake(conn: &Connection, task: &Task, policy: &Policy) -> Result<Wake> {
     let t = task.short();
     let used = task.attempts - task.attempt_floor;
@@ -1445,7 +1270,6 @@ fn replan_wake(conn: &Connection, task: &Task, policy: &Policy) -> Result<Wake> 
     ))
 }
 
-/// Each `failed` task of the ledger.
 pub fn failed(conn: &Connection) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT * FROM tasks WHERE status = {failed} ORDER BY task_id",
@@ -1457,8 +1281,6 @@ pub fn failed(conn: &Connection) -> Result<Vec<Task>> {
     Ok(rows)
 }
 
-/// The replan limit of the `failed` task `task_id` ends `limit_s` after
-/// fleet clock `clock`.
 pub fn set_replan_due(
     conn: &Connection,
     task_id: &str,
@@ -1473,9 +1295,6 @@ pub fn set_replan_due(
     Ok(())
 }
 
-/// `EscalateTask` of fleetd: hold task `task_id` for the operator, in the
-/// open transaction of `conn`. A task with an attempt to end goes through
-/// `failed`.
 pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
     let task = get(conn, task_id)?;
     if task.status != TaskStatus::Failed.as_str() {
@@ -1484,8 +1303,6 @@ pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
     hold_in(conn, &task)
 }
 
-/// The `data_json` of each event of kind `kind` about task `task_id`,
-/// oldest first.
 pub fn task_facts(
     conn: &Connection,
     task_id: &str,
@@ -1503,8 +1320,6 @@ pub fn task_facts(
     rows.map(|raw| Ok(serde_json::from_str(&raw?)?)).collect()
 }
 
-/// [`task_facts`] of each task of `task_ids`, as (task id, fact), oldest
-/// first: 1 statement for any count of tasks.
 pub fn task_facts_of<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str>,
@@ -1530,10 +1345,6 @@ pub fn task_facts_of<'a>(
     .collect()
 }
 
-/// The answer to question `question_id` frees task `task_id`: a
-/// `blocked_on_user` task moves to `ready`, cause `question_answered`, in
-/// the open transaction of `conn`. Its worktree stays, so the next claim
-/// goes on from the committed work. Whether the task moved.
 pub fn question_answered(conn: &Connection, task_id: &str, question_id: &str) -> Result<bool> {
     if get(conn, task_id)?.status != TaskStatus::BlockedOnUser.as_str() {
         return Ok(false);
@@ -1560,7 +1371,6 @@ pub fn question_answered(conn: &Connection, task_id: &str, question_id: &str) ->
     Ok(true)
 }
 
-/// Queue `task` again, first in line, not claimed before `not_before`.
 fn retry_in(
     conn: &Connection,
     task: &Task,
@@ -1593,7 +1403,6 @@ fn retry_in(
     Ok(())
 }
 
-/// Move `task` to `failed`, with its replan limit `due_at`.
 fn fail_in(conn: &Connection, task: &Task, why: &str, due_at: Option<FleetSeconds>) -> Result<()> {
     let task_id = task.task_id.as_str();
     let used = task.attempts - task.attempt_floor;
@@ -1612,8 +1421,6 @@ fn fail_in(conn: &Connection, task: &Task, why: &str, due_at: Option<FleetSecond
     Ok(())
 }
 
-/// Hold the `failed` `task` for the operator: `escalated` with
-/// `held_reason` (#168) and 1 needs-you item.
 fn hold_in(conn: &Connection, task: &Task) -> Result<()> {
     let task_id = task.task_id.as_str();
     let escalated = TaskStatus::Escalated.as_str();
@@ -1641,8 +1448,6 @@ fn hold_in(conn: &Connection, task: &Task) -> Result<()> {
     )
 }
 
-/// How each attempt at `task` since the last operator requeue ended, oldest
-/// first: the worker's end reason, else its status.
 pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
     Ok(workers::attempts_at(conn, &task.task_id)?
         .into_iter()
@@ -1651,16 +1456,6 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
         .collect())
 }
 
-/// `horch ledger requeue` of a task in 1 of 2 states:
-/// - `escalated`: the operator wants the held task worked on again.
-/// - `failed`: its 1 replan by the orchestrator of the run (MAP.md, Q12).
-///   `replans` goes to 1.
-///
-/// In both, the task moves to `ready`. Its attempt history stays, and it
-/// gets its attempt limit anew (`attempt_floor`). A parked task resumes on
-/// the worktree it parked with. `cancelled` is terminal: the door of
-/// [`util::transition`] refuses the requeue of a cancelled task and records
-/// the refusal.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let held = [TaskStatus::Escalated, TaskStatus::Failed];
     if !is_in(&held, &task.status) && task.status != TaskStatus::Cancelled.as_str() {
@@ -1673,9 +1468,6 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
     util::atomic(conn, |conn| requeue_by_operator_in(conn, task, reason))
 }
 
-/// The writes of [`requeue_by_operator`], in the open transaction of
-/// `conn`. An `escalated` or `failed` task moves to `ready`. The door of
-/// [`util::transition`] refuses a cancelled task.
 fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let now = util::now();
     if task.is_parked() {
@@ -1683,7 +1475,6 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
     }
     let now_row = get(conn, &task.task_id)?;
     let was_cancelled = now_row.status == TaskStatus::Cancelled.as_str();
-    // The requeue of a `failed` task is its 1 replan (MAP.md, Q12).
     let replan = now_row.status == TaskStatus::Failed.as_str();
     let text = if replan {
         format!(
@@ -1710,7 +1501,6 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
         params![task.task_id, now, was_cancelled, replan],
     )?;
     needs_you::resolve(conn, &escalated_key(&task.task_id))?;
-    // The newest abandoned worktree whose folder is still there.
     let kept: Option<(String, String)> = optional(conn.query_row(
         &format!(
             "SELECT worktree_id, path FROM worktrees WHERE task_id = ?1 AND status = {abandoned}
@@ -1742,9 +1532,6 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
     get(conn, &task.task_id)
 }
 
-/// The worktree a parked task kept becomes open again, for the next claim.
-/// Its state stays `created` (`done --unlanded` moved it there), and the
-/// next claim makes it `active` with the new attempt (RR-14).
 fn resume_parked_worktree(conn: &Connection, task: &Task) -> Result<()> {
     conn.execute(
         &format!(
@@ -1758,28 +1545,19 @@ fn resume_parked_worktree(conn: &Connection, task: &Task) -> Result<()> {
     Ok(())
 }
 
-/// 1 persona's line of `horch ledger plan-workers`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PersonaPlan {
     pub persona: String,
     pub startable: i64,
     pub on_the_way: i64,
     pub spawn: i64,
-    /// Workers being replaced: spawn these with `--replaces`.
     pub replaces: Vec<String>,
 }
 
-/// How many workers of each persona to spawn now: the tasks that can start
-/// now, minus the workers of that persona still spawning, starting or
-/// claiming and not stale ([`workers::is_stale`]). A task that a live
-/// worker with no claim was spawned for has its worker on the way already
-/// (TRF-51): it needs no spawn, and that worker covers no other task.
 pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>> {
     plan_workers_except(conn, run_id, None)
 }
 
-/// [`plan_workers`], where the reservation of worker `except` does not
-/// count: the spawn gate asks it for the worker it gates.
 fn plan_workers_except(
     conn: &Connection,
     run_id: &str,
@@ -1798,14 +1576,12 @@ fn plan_workers_except(
         }
         let entry = by.entry(p.clone()).or_default();
         entry.0 += 1;
-        // A task whose last attempt died names that worker for --replaces.
         if let Some(last) = workers::attempts_at(conn, &t.task_id)?.last() {
             if last.status == WorkerStatus::Incomplete.as_str() {
                 entry.1.push(last.worker_id.clone());
             }
         }
     }
-    // A pre-claim row whose process went silent is not on its way (#190).
     let run = super::runs::get(conn, run_id)?;
     let now = util::now();
     let roster = workers::of_run(conn, run_id)?;
@@ -1832,9 +1608,6 @@ fn plan_workers_except(
     Ok(out)
 }
 
-/// Why the spawn of worker `worker_id` (a row in `run_id` with no task) is
-/// refused, or `None`: the other workers of its persona still on their way
-/// already cover the startable tasks of that persona (gap G-A).
 pub fn spawn_refusal(conn: &Connection, run_id: &str, worker_id: &str) -> Result<Option<String>> {
     let w = workers::get(conn, worker_id)?;
     let Some(persona) = w.persona.as_deref() else {
@@ -1843,8 +1616,6 @@ pub fn spawn_refusal(conn: &Connection, run_id: &str, worker_id: &str) -> Result
     let plan = plan_workers_except(conn, run_id, Some(worker_id))?;
     let line = plan.iter().find(|p| p.persona == persona);
     let startable = line.map_or(0, |p| p.startable);
-    // plan_workers counts this new row too, when the persona has a line and
-    // the row is on its way.
     let mine = i64::from(matches!(
         w.status.as_str(),
         "spawning" | "starting" | "claiming"
@@ -1866,7 +1637,6 @@ mod tests {
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::Store;
 
-    /// A store in `dir` with the run "r1".
     fn store_with_run(dir: &std::path::Path) -> (Store, Run) {
         let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
         let new_run = NewRun {
@@ -1876,7 +1646,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir, &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -1891,7 +1660,6 @@ mod tests {
 
     const TEXT: &str = "# 01: A\n\n<!-- horch-ticket: 1 -->\n**Persona:** primary `dev`\n";
 
-    /// A new worker of `persona` in `run`, spawned for `target`.
     pub(super) fn spawn_for(
         store: &mut Store,
         run: &Run,
@@ -1907,8 +1675,6 @@ mod tests {
         store.immediate(|tx| workers::insert(tx, &new)).unwrap()
     }
 
-    /// Bind `task` of `run` to a new live worker of `persona`; gives the
-    /// worker id.
     fn bind(store: &mut Store, run: &Run, task: &str, persona: &str) -> String {
         let new = NewWorker {
             run_id: run.run_id.clone(),
@@ -1920,8 +1686,6 @@ mod tests {
             .worker_id
     }
 
-    /// A task of `run` that a first worker claimed, asked 1 question about
-    /// and left: the task is `blocked_on_user` with 1 open question.
     fn blocked_task(store: &mut Store, run: &Run) -> (String, String) {
         use crate::fleetd::ideas::application::questions::{ask, Ask};
         let mut new = NewTask::work("t", "t.md", "dev");
@@ -1953,7 +1717,6 @@ mod tests {
                 [&first],
             )
             .unwrap();
-        // Rung 5 ended the attempt with the outcome `asked`.
         store
             .conn()
             .execute(
@@ -1999,14 +1762,12 @@ mod tests {
         let spawn = |plan: &[PersonaPlan]| -> i64 { plan.iter().map(|p| p.spawn).sum() };
         assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 1);
 
-        // A worker of another persona was spawned for the review.
         let reviewer = spawn_for(&mut store, &run, "opus-reviewer", Some(&review));
         assert_eq!(
             spawn(&plan_workers(store.conn(), &run.run_id).unwrap()),
             0,
             "the review has its worker on the way"
         );
-        // A stale reserving worker still holds the review: no spawn either.
         store
             .conn()
             .execute(
@@ -2017,7 +1778,6 @@ mod tests {
             .unwrap();
         assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 0);
 
-        // The reservation ends with its worker: the review needs 1 worker.
         store
             .conn()
             .execute(
@@ -2026,7 +1786,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(spawn(&plan_workers(store.conn(), &run.run_id).unwrap()), 1);
-        // The gate of the spawned worker does not count its own reservation.
         let mine = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
         assert_eq!(
             spawn_refusal(store.conn(), &run.run_id, &mine).unwrap(),
@@ -2049,7 +1808,6 @@ mod tests {
             ticket_sha("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        // Status JSON leaves the snapshot out.
         let task_json = serde_json::to_value(&t).unwrap();
         assert!(task_json.get("ticket_snapshot").is_none(), "{task_json}");
     }
@@ -2116,7 +1874,6 @@ mod tests {
         assert_eq!(t.land_check, None);
     }
 
-    /// Queue a task of `persona` with `edit` applied.
     fn queue(
         store: &mut Store,
         run: &Run,
@@ -2131,7 +1888,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A new worker row of `persona`, in state `spawning`.
     fn hire(store: &mut Store, run: &Run, persona: &str) -> String {
         let new = NewWorker {
             run_id: run.run_id.clone(),
@@ -2166,10 +1922,6 @@ mod tests {
         );
     }
 
-    /// A run with tasks "a" (priority 100) and "b" (priority 50) for dev.
-    /// A dev worker is bound to b, and b gets an open worktree. `dir`
-    /// holds a handoff file. Returns the worker id, task b, and the handoff
-    /// path.
     fn handing_off(store: &mut Store, run: &Run, dir: &std::path::Path) -> (String, Task, String) {
         queue(store, run, "a", "dev", |_| {});
         let b = queue(store, run, "b", "dev", |n| {
@@ -2201,12 +1953,10 @@ mod tests {
         let (mut store, run) = store_with_run(dir.path());
         let (w, b, path) = handing_off(&mut store, &run, dir.path());
         let out = store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
-        // The worker ended handed off, with the path.
         assert_eq!(out.worker.status, WorkerStatus::Incomplete.as_str());
         assert_eq!(out.worker.end_reason.as_deref(), Some("handed_off"));
         assert_eq!(out.worker.handoff_path.as_deref(), Some(path.as_str()));
         assert!(out.worker.ended_at.is_some());
-        // The task is ready, in front of a, and its worktree is open.
         assert_eq!(out.task.status, TaskStatus::Ready.as_str());
         assert_eq!(out.task.current_worker_id, None);
         let a = resolve(store.conn(), &run.run_id, "T-1").unwrap();
@@ -2225,7 +1975,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!((status.as_str(), holder), ("open", None));
-        // A startable wake, in the same transaction, names the replacement.
         let (event, text): (String, String) = store
             .conn()
             .query_row(
@@ -2240,7 +1989,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Spawn: dev x1"), "{text}");
-        // plan-workers names the handed-off worker for --replaces.
         let plan = plan_workers(store.conn(), &run.run_id).unwrap();
         assert_eq!(plan[0].replaces, vec![w.clone()]);
     }
@@ -2255,14 +2003,11 @@ mod tests {
             .immediate(|tx| handoff(tx, &w, &missing.to_string_lossy()))
             .unwrap_err();
         assert!(format!("{err:#}").contains("does not exist"), "{err:#}");
-        // Nothing changed: the worker still works.
         let worker = workers::get(store.conn(), &w).unwrap();
         assert_eq!(worker.status, WorkerStatus::Working.as_str());
-        // A worker with no task cannot hand off.
         let idle = hire(&mut store, &run, "dev");
         let err = store.immediate(|tx| handoff(tx, &idle, &path)).unwrap_err();
         assert!(format!("{err:#}").contains("holds no task"), "{err:#}");
-        // A second handoff of the same worker is refused.
         store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
         assert!(store.immediate(|tx| handoff(tx, &w, &path)).is_err());
     }
@@ -2284,7 +2029,6 @@ mod attempt_tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir, &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -2305,9 +2049,6 @@ mod attempt_tests {
             .task_id
     }
 
-    /// A worker of `dev` in pane `w0:p1` whose agent is pid 4000, started
-    /// at 7.
-    /// Bind `task` of `run` to a new live worker of `dev`.
     fn bind_dev(store: &Store, run: &Run, task: &str) {
         let new = NewWorker {
             run_id: run.run_id.clone(),
@@ -2317,7 +2058,6 @@ mod attempt_tests {
         crate::taskledger::testing::bind_live(store.conn(), task, &new, None).unwrap();
     }
 
-    /// A task `title` of `run` that waits for `blocked_by`.
     fn add_after(store: &mut Store, run: &Run, title: &str, blocked_by: &[&str]) -> Task {
         let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         new.blocked_by = blocked_by.iter().map(|b| b.to_string()).collect();
@@ -2338,14 +2078,12 @@ mod attempt_tests {
         let b = add_after(&mut store, &run, "b", &["T-1"]);
         assert_eq!(status_of(&store, &a), "ready");
         assert_eq!(b.status, "pending");
-        // A dependency that is done is met.
         store
             .conn()
             .execute("UPDATE tasks SET status = 'done' WHERE task_id = ?1", [&a])
             .unwrap();
         let c = add_after(&mut store, &run, "c", &["T-1"]);
         assert_eq!(c.status, "ready");
-        // In a map, a task that waits for a new task of the map is pending.
         let mut first = NewTask::work("d", "tickets/d.md", "dev");
         first.blocked_by = vec!["T-2".into()];
         let mut second = NewTask::work("e", "tickets/e.md", "dev");
@@ -2403,8 +2141,6 @@ mod attempt_tests {
             .unwrap();
     }
 
-    /// Ticket 13 of fleetd-p2: a task whose cancel waits for the stop of
-    /// its attempt is not retried by rung 6.
     #[test]
     fn rung_6_skips_a_task_with_a_cancel_requested() {
         let dir = tempfile::tempdir().unwrap();
@@ -2422,7 +2158,6 @@ mod attempt_tests {
         assert_eq!(get(store.conn(), &task).unwrap().attempts, 1);
     }
 
-    /// A shared-checkout task `title` of `run` for `dev`.
     fn shared_task(store: &mut Store, run: &Run, title: &str) -> String {
         let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         new.worktree_mode = WorktreeMode::Shared;

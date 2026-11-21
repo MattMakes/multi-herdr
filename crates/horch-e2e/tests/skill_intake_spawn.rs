@@ -17,8 +17,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The spawn argv of the shared fixture, with `{teammate}` and `{brief}`
-/// replaced as `intake spawn` replaces them.
 fn fixture_argv(teammate: &str, brief: &str) -> Vec<String> {
     let path = repo_root().join("scripts/skill-intake/tests/fixtures/spawn-argv.json");
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -36,10 +34,6 @@ fn fixture_argv(teammate: &str, brief: &str) -> Vec<String> {
         .collect()
 }
 
-/// A ledger harness with 1 workspace (`w1`, root pane `w1:p1`) and its own
-/// roster: `ctl` may spawn only `intake-*`, `intake-smoke` is a report
-/// role, and none of them starts an agent. No pane runs a command, so every spawned worker stays as the
-/// spawn left it: its role registered, its brief on disk.
 fn roster_harness(label: &str) -> Harness {
     let mut h = Harness::new(label).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -76,8 +70,6 @@ fn roster_harness(label: &str) -> Harness {
     h
 }
 
-/// Register `role` on `pane`, as its `horch worker` does when the pane
-/// starts (no pane runs a command here).
 fn register(h: &Harness, role: &str, pane: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -93,13 +85,10 @@ fn register(h: &Harness, role: &str, pane: &str) {
     f.write_all(pane.as_bytes()).unwrap();
 }
 
-/// Run the `intake spawn` argv for `teammate` from inside pane `pane`, the
-/// way a worker in that pane runs it. No `HORCH_RUN_ID` is set.
 fn spawn_from(h: &Harness, pane: &str, teammate: &str) -> Output {
     spawn_from_with(h, pane, teammate, &[])
 }
 
-/// [`spawn_from`] with extra variables for the spawn (and its fake herdr).
 fn spawn_from_with(h: &Harness, pane: &str, teammate: &str, env: &[(&str, &str)]) -> Output {
     let brief = h.project.join("brief.md");
     std::fs::write(&brief, "# brief\n").unwrap();
@@ -111,8 +100,6 @@ fn spawn_from_with(h: &Harness, pane: &str, teammate: &str, env: &[(&str, &str)]
     cmd.output().expect("running horch spawn")
 }
 
-/// Record `pid` as the agent process of ledger row `worker_id`, as the
-/// row's `horch worker` does when its agent starts.
 fn record_agent(h: &Harness, worker_id: &str, pid: u32) {
     let db = h.root.join("ledger.sqlite3");
     let store = horch_core::taskledger::Store::open(&db).unwrap();
@@ -190,7 +177,6 @@ fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
     let h = roster_harness("intake-spoof");
     let ctl = worker_in_run(&h, "ctl", "w1:p2");
     register(&h, "ctl-1", "w1:p2");
-    // The recorded agent is a process that is no ancestor of the caller.
     let mut other = std::process::Command::new("sleep")
         .arg("30")
         .spawn()

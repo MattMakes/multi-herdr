@@ -1,13 +1,3 @@
-//! The operator boundary of the Claude Code adapter (SR-8, FM-32, RR-5;
-//! ticket 35 of fleetd-p5): the settings of a sandboxed worker deny reading
-//! the operator token, connecting to the command channel and writing into
-//! the run folder and the ledger, and allow writes only in the task folder
-//! and the worktree.
-//!
-//! The real `claude` never runs here. The tests read the `--settings` text
-//! of the built command, and the attack test runs a child under the
-//! platform sandbox with the same rules (ticket 06).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -18,10 +8,6 @@ use horch_core::roster::Teammate;
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::{json, Value};
 
-/// A test fleet in `/tmp` (a socket path has a short limit): a home, a
-/// state root, the ledger folder with the fleet root in it (the default
-/// layout), the run folder with the token and the request folder, a task
-/// folder and a worktree.
 struct Fleet {
     root: tempfile::TempDir,
     paths: OperatorPaths,
@@ -65,9 +51,6 @@ fn fleet() -> Fleet {
 }
 
 impl Fleet {
-    /// The launch environment of a worker of this fleet. `state` is the
-    /// state root. The `PATH` has stub Linux sandbox tools, so the builder
-    /// runs on Linux too.
     fn env(&self, state: &Path) -> LaunchEnv {
         let home = self.root.path().join("home");
         let bin = self.root.path().join("bin");
@@ -96,13 +79,10 @@ impl Fleet {
         env
     }
 
-    /// The state root outside the fleet root.
     fn state(&self) -> PathBuf {
         self.root.path().join("state")
     }
 
-    /// The `--settings` object of a worker launch with `block` as its
-    /// `sandbox:` block.
     fn settings(&self, block: Value, state: &Path) -> Value {
         let t = worker(block);
         let cmd = HarnessKind::Claude
@@ -135,7 +115,6 @@ fn worker(block: Value) -> Teammate {
     }
 }
 
-/// The paths of a list of the settings.
 fn paths(list: &Value) -> Vec<PathBuf> {
     list.as_array()
         .map(|a| {
@@ -147,13 +126,10 @@ fn paths(list: &Value) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Whether an entry of `list` is `path` or a folder that holds it.
 fn covers(list: &Value, path: &Path) -> bool {
     paths(list).iter().any(|entry| path.starts_with(entry))
 }
 
-/// Whether a permission deny rule of `tool` closes `path`, as
-/// `Tool(//<path>)` or `Tool(//<folder of path>/**)`.
 fn rule_denies(settings: &Value, tool: &str, path: &Path) -> bool {
     let rules = settings["permissions"]["deny"].as_array().unwrap();
     rules.iter().filter_map(Value::as_str).any(|rule| {
@@ -173,7 +149,6 @@ fn rule_denies(settings: &Value, tool: &str, path: &Path) -> bool {
 #[test]
 fn claude_worker_settings_deny_reading_the_token() {
     let f = fleet();
-    // The teammate opens the whole fleet root to read: the deny still wins.
     let block = json!({"filesystem": {"allowRead": [f.fleet_root]}});
     let settings = f.settings(block.clone(), &f.state());
     let fs = &settings["sandbox"]["filesystem"];
@@ -192,8 +167,6 @@ fn claude_worker_settings_deny_reading_the_token() {
 #[test]
 fn claude_worker_settings_never_allow_the_channel_socket() {
     let f = fleet();
-    // The state root holds the fleet root, and the teammate asks for the
-    // socket, its run folder and every socket.
     let state = f.fleet_root.parent().unwrap().to_path_buf();
     let block = json!({"network": {
         "allowUnixSockets": [f.paths.channel, f.paths.run, "/var/run/other.sock"],
@@ -210,7 +183,6 @@ fn claude_worker_settings_never_allow_the_channel_socket() {
         "a socket outside the run folder stays: {settings}"
     );
     assert_eq!(net["allowAllUnixSockets"], json!(false), "{settings}");
-    // Linux ignores allowUnixSockets: the deny of the read hides the socket.
     assert!(
         covers(
             &settings["sandbox"]["filesystem"]["denyRead"],
@@ -221,7 +193,6 @@ fn claude_worker_settings_never_allow_the_channel_socket() {
     let boundary = operator_boundary(&worker(block), &f.fleet_root).unwrap();
     assert!(boundary.denies(Act::ConnectChannel), "{boundary:?}");
 
-    // The relay folder under a state root outside the fleet root stays.
     let settings = f.settings(json!({}), &f.state());
     assert!(
         covers(
@@ -235,7 +206,6 @@ fn claude_worker_settings_never_allow_the_channel_socket() {
 #[test]
 fn claude_worker_settings_deny_writing_the_run_folder_and_the_ledger() {
     let f = fleet();
-    // The teammate opens the whole ledger folder to write: the deny wins.
     let ledger_dir = f.ledger_db.parent().unwrap().to_path_buf();
     let block = json!({"filesystem": {"allowWrite": [ledger_dir]}});
     let settings = f.settings(block.clone(), &f.state());
@@ -254,8 +224,6 @@ fn claude_worker_settings_deny_writing_the_run_folder_and_the_ledger() {
         );
         assert!(rule_denies(&settings, "Edit", path), "{settings}");
     }
-    // The fleet root is in the ledger folder, so a deny of the whole folder
-    // would close the task folder and the worktree.
     assert!(!covers(deny, &f.task_dir), "{settings}");
     assert!(!covers(deny, &f.worktree), "{settings}");
     let boundary = operator_boundary(&worker(block), &f.fleet_root).unwrap();
@@ -288,10 +256,6 @@ fn claude_boundary_is_not_supported_on_windows() {
     }
 }
 
-/// A child under the platform sandbox, with the rules of the rendered
-/// settings: `allowWrite` writable, `denyRead` denied to read (and so to
-/// connect), `denyWrite` denied to write. It tries each act and is refused
-/// by the OS, and it still writes its task folder.
 #[test]
 #[cfg(target_os = "macos")]
 fn claude_rules_under_the_platform_sandbox_refuse_the_3_acts() {
@@ -349,11 +313,6 @@ fn claude_rules_under_the_platform_sandbox_refuse_the_3_acts() {
     assert_eq!(std::fs::read_to_string(&progress).unwrap(), "ok\n");
 }
 
-/// With the default layout (the fleet root in the ledger folder), a child
-/// under the platform sandbox with the rendered rules cannot write or
-/// replace (rename over) the ledger file or its `-wal`, `-shm` and
-/// `-journal` files, even when the teammate opens the ledger folder, and
-/// it can write its task folder.
 #[test]
 #[cfg(target_os = "macos")]
 fn claude_worker_cannot_write_or_replace_the_ledger_files() {
@@ -362,7 +321,6 @@ fn claude_worker_cannot_write_or_replace_the_ledger_files() {
     let f = fleet();
     let ledger_dir = f.ledger_db.parent().unwrap().to_path_buf();
     assert!(f.fleet_root.starts_with(&ledger_dir));
-    // The teammate opens the whole ledger folder to write: the deny wins.
     let block = json!({"filesystem": {"allowWrite": [ledger_dir]}});
     let settings = f.settings(block, &f.state());
     let fs = &settings["sandbox"]["filesystem"];

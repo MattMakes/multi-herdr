@@ -1,11 +1,3 @@
-//! `horch agent-list`: found and missing binaries, versions, efforts, the
-//! models the roster runs on each harness, the `--json` shape, and that
-//! `--no-probe` runs no binary.
-//!
-//! Hermetic: the harness binaries are shell scripts in a temp dir, the
-//! environment is cleared (so PATH finds nothing), and the roster is the
-//! built-ins plus one fixture teammate.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -14,9 +6,6 @@ use std::process::Command;
 
 use serde_json::Value;
 
-/// Run a fresh script once with `warm`. On Linux a test thread that forks
-/// while another writes a script can hold it open for writing, so exec fails
-/// with "Text file busy" until that child execs; retry until it does.
 fn warm(path: &Path) {
     for _ in 0..100 {
         match Command::new(path).arg("warm").status() {
@@ -42,7 +31,6 @@ impl World {
         for dir in ["home", "state", "data", "teammates", "bin"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
-        // A fixture teammate on the codex harness with its own model.
         let luna = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates/codex-luna.md");
         let text = std::fs::read_to_string(luna)
             .unwrap()
@@ -57,7 +45,6 @@ impl World {
         self.root.join("probe.log")
     }
 
-    /// A fake CLI that records its call and prints `version` for `--version`.
     fn fake(&self, name: &str, version: &str) -> PathBuf {
         let path = self.root.join("bin").join(name);
         let script = format!(
@@ -93,8 +80,6 @@ impl World {
         String::from_utf8(out.stdout).unwrap()
     }
 
-    /// Claude and codex are fakes, pi is an absolute path that is not there,
-    /// and opencode and prime are bare names with no PATH to find them.
     fn envs(&self) -> Vec<(&'static str, PathBuf)> {
         vec![
             (
@@ -202,8 +187,6 @@ fn agent_list_text_table_shows_a_row_per_harness() {
     assert!(text.contains("fixture-codex (high)"));
 }
 
-/// A `pi` whose `--version` crashes (Node 22.9 and an ESM-only package) is
-/// found but `broken`, with its error line, and is not available.
 #[test]
 fn agent_list_reports_a_crashing_harness_as_broken() {
     let w = World::new();

@@ -1,12 +1,3 @@
-//! `horch context`: the current context of every live session of the
-//! project, its threshold and its state (CTX-01, CTX-04, CTX-06, CTX-09).
-//!
-//! The rules live in `horch_core::compaction` (design §6.7, review finding
-//! 8). This module gathers the inputs of 1 row ([`build_row`]), calls the
-//! rules and prints. `horch compact` and the `horch note` check build their
-//! rows with the same function. Text mode makes no herdr call; `--json`
-//! (CTX-24) makes 1 `herdr pane list` call per workspace of its rows.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,46 +22,34 @@ use horch_core::workspace::model::Pane;
 use horch_core::workspace::PaneHost;
 use serde::Serialize;
 
-/// What `--over` prints when every row is `ok`.
 const NONE_OVER: &str = "no session is over its threshold";
 
-/// Everything 1 row is built from. Tests fill it from a temp state dir, a
-/// temp ledger and a fixture home.
 pub(crate) struct Sources<'a> {
     pub ctx: &'a RuntimeContext,
     pub ledger: &'a SessionLedger,
     pub roster: &'a Roster,
     pub loc: &'a Locations,
-    /// `<state_root>/context`: the marker cache.
     pub cache_dir: &'a Path,
 }
 
-/// The marker cache dir of `ctx` (design §6.6).
 pub(crate) fn cache_dir(ctx: &RuntimeContext) -> PathBuf {
     ctx.paths.state_root.join("context")
 }
 
-/// 1 row: a record, what its transcript says, and its state.
 pub(crate) struct Row {
     pub record: Record,
     pub kind: HarnessKind,
-    /// The transcript's model, else the record's.
     pub model: String,
     pub reading: Result<Reading, Unreadable>,
-    /// The model window: the transcript's, else `model_window`.
     pub window: Option<u64>,
     pub native: Option<u64>,
     pub decision: WindowDecision,
-    /// The record has no decision; `decision` was resolved now.
     pub decided_now: bool,
     pub threshold: u64,
     pub job: JobLiveness,
     pub job_dir: PathBuf,
     pub state: RowState,
-    /// When the row was built; the age of an ask is measured to it.
     pub now: DateTime<Utc>,
-    /// The mode of a Codex pane with `permission_mode: plan` (X6); None for
-    /// every other row.
     pub mode: Option<PaneMode>,
 }
 
@@ -89,7 +68,6 @@ impl Row {
         self.job_dir.join(LOG_FILE)
     }
 
-    /// The `reasons:` line of a row that has no number (CTX-04).
     pub fn reason(&self) -> Option<String> {
         let text = self.reason_text()?;
         Some(format!(
@@ -99,7 +77,6 @@ impl Row {
         ))
     }
 
-    /// The reason of [`Row::reason`] without the role and the state.
     fn reason_text(&self) -> Option<String> {
         Some(match (&self.state, &self.job, &self.reading) {
             (RowState::CompactLost, JobLiveness::Lost { step }, _) => format!(
@@ -117,7 +94,6 @@ impl Row {
             (RowState::CompactFailed, _, Ok(_)) => {
                 let failed =
                     policy::failed_after_ask(&self.record.history, self.last_compaction())?;
-                // The text can hold subprocess output: 1 line, no control characters.
                 let text: String = failed
                     .text
                     .chars()
@@ -139,7 +115,6 @@ impl Row {
         })
     }
 
-    /// The newest compaction marker of the transcript, when it reads.
     pub fn last_compaction(&self) -> Option<&CompactionMark> {
         self.reading
             .as_ref()
@@ -147,13 +122,10 @@ impl Row {
             .and_then(|r| r.last_compaction.as_ref())
     }
 
-    /// The token count, when the reading has one.
     pub fn tokens(&self) -> Option<u64> {
         self.reading.as_ref().ok().and_then(|r| r.tokens)
     }
 
-    /// `(native, horch)` compactions of the transcript (CTX-25), when it
-    /// reads.
     pub fn compactions(&self) -> Option<(usize, usize)> {
         let reading = self.reading.as_ref().ok()?;
         Some(policy::count_compactions(
@@ -163,7 +135,6 @@ impl Row {
     }
 }
 
-/// The directory a record's agent runs in: its `workdir`, else the project.
 pub(crate) fn record_workdir(ctx: &RuntimeContext, record: &Record) -> PathBuf {
     record
         .workdir
@@ -173,7 +144,6 @@ pub(crate) fn record_workdir(ctx: &RuntimeContext, record: &Record) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// The job dir of a record: its workspace, else `workspace` (the caller's).
 pub(crate) fn record_job_dir(
     ctx: &RuntimeContext,
     record: &Record,
@@ -187,16 +157,10 @@ pub(crate) fn record_job_dir(
     jobfile::job_dir(&ctx.paths.state_root, ws, &record.role)
 }
 
-/// The harness of a record; an agent name this binary does not know reads
-/// as `none` (no reader, no command).
 pub(crate) fn record_kind(record: &Record) -> HarnessKind {
     record.agent.parse().unwrap_or(HarnessKind::None)
 }
 
-/// Build the row of `record`: reading, window decision, native trigger,
-/// threshold, job liveness and state. For a lost job it claims the loss;
-/// the 1 caller that claims it records the `compact-failed` event (design
-/// §6.8a). No herdr call.
 pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) -> Row {
     let kind = record_kind(&record);
     let caps = kind.capabilities().compaction;
@@ -229,8 +193,6 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         decision.tokens,
         transcript_window,
     );
-    // CTX-21: the `compact_at` of the teammate that ran. `horch context`,
-    // `horch compact` and the `horch note` check all build the row here.
     let compact_at = launched_teammate(src, &record).and_then(|t| t.compact_at);
     let threshold = window::threshold(policy::watch_base(compact_at), native);
 
@@ -242,7 +204,6 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
                 "step {step}: the job process is lost; log {}",
                 job_dir.join(LOG_FILE).display()
             );
-            // Best effort: the row shows the loss whatever the ledger says.
             let _ = src
                 .ledger
                 .record_event(&record.record_id, EVENT_FAILED, &text);
@@ -271,11 +232,6 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
     row
 }
 
-/// The teammate whose settings the launch of `record` ran with. After a
-/// substitution that is the requested teammate merged with the fallback
-/// (`routing.resolved`, or `via` in a record from before routing
-/// provenance), as the spawn gate built it: the requested name, the
-/// fallback's harness, model, `compact_window` and `compact_at`.
 fn launched_teammate(src: &Sources, record: &Record) -> Option<Teammate> {
     let fallback = record
         .routing
@@ -290,7 +246,6 @@ fn launched_teammate(src: &Sources, record: &Record) -> Option<Teammate> {
     }
 }
 
-/// The window decision a launch of `record` would make now.
 fn decide_now(src: &Sources, record: &Record) -> WindowDecision {
     match launched_teammate(src, record) {
         Some(t) => launch::window_decision(
@@ -304,8 +259,6 @@ fn decide_now(src: &Sources, record: &Record) -> WindowDecision {
     }
 }
 
-/// The records `horch context` shows: live orchestrators, newest first, then
-/// 1 live record per workspace and worker role (the newest `updated_at`), by role.
 pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
     let live = || records.iter().filter(|r| r.execution_status().is_live());
     let mut orchestrators: Vec<&Record> = live().filter(|r| r.is_orchestrator()).collect();
@@ -326,7 +279,6 @@ pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
         .collect()
 }
 
-/// `horch context [--over] [--windows] [--json]`.
 #[allow(dead_code)]
 pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> Result<ExitCode> {
     context_filtered(ctx, over, windows, json, false, false, None)
@@ -364,9 +316,6 @@ pub fn context_filtered(
     }
 }
 
-/// The text or JSON report of the ledger. The outer `Err` is a setup that
-/// failed (the ledger does not open); the inner one is a report that did not
-/// read, which `context_filtered` prints.
 fn report(
     ctx: &RuntimeContext,
     roster: &Roster,
@@ -400,8 +349,6 @@ fn report(
     })
 }
 
-/// `<role>: (pane gone)` for each row of the JSON report whose pane is gone
-/// and whose role starts a line of `text`.
 fn append_pane_gone(mut text: String, json: &str) -> String {
     let rows: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
     let gone = rows.iter().filter(|r| r["pane_gone"] == true);
@@ -413,9 +360,6 @@ fn append_pane_gone(mut text: String, json: &str) -> String {
     text
 }
 
-/// The text of `horch context` (`--over`: every row that is not `ok`, then
-/// the instruction id of each state shown, TRF-08). Err only when the
-/// ledger does not read.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
     context_text_matching(src, over, super::sessionscmd::SessionFilter::default())
@@ -439,9 +383,6 @@ fn context_text_matching(
     Ok(rows_table(&rows) + &instructions(&rows))
 }
 
-/// `instructions:` and 1 line `<state>: <id>` per state of `rows`, in the
-/// order the states first appear (TRF-08). The briefing keys the
-/// instruction for a state by its id.
 fn instructions(rows: &[Row]) -> String {
     let mut seen: Vec<RowState> = Vec::new();
     for row in rows {
@@ -458,7 +399,6 @@ fn instructions(rows: &[Row]) -> String {
     out
 }
 
-/// The rows of every shown record. Err only when the ledger does not read.
 fn shown_rows_matching(
     src: &Sources,
     filter: super::sessionscmd::SessionFilter<'_>,
@@ -476,13 +416,10 @@ fn shown_rows_matching(
         .collect())
 }
 
-/// The herdr workspace of the caller, if it runs in one.
 fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
     super::sessionscmd::caller_workspace(ctx)
 }
 
-/// 1 object of `horch context --json` (CTX-24, design §6.10). The field
-/// order is the key order. Every unknown value is `null`.
 #[derive(Serialize)]
 pub(crate) struct JsonRow {
     pub role: String,
@@ -491,43 +428,28 @@ pub(crate) struct JsonRow {
     pub model: String,
     pub session_id: Option<String>,
     pub transcript: Option<PathBuf>,
-    /// The record's pane, when herdr lists it in the record's workspace.
     pub pane: Option<String>,
-    /// herdr's `agent_status` of that pane.
     pub pane_status: Option<String>,
     pub pane_gone: bool,
     pub tokens: Option<u64>,
-    /// None when the transcript does not read.
     pub provisional: Option<bool>,
     pub pending: Option<bool>,
     pub window: Option<u64>,
     pub native_trigger: Option<u64>,
-    /// The window setting of the decision (Claude
-    /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, Codex
-    /// `model_auto_compact_token_limit`, Prime and pi `contextWindow`).
     pub native_setting: Option<u64>,
-    /// `operator`, `fleet` or `harness`.
     pub native_source: &'static str,
     pub native_detail: String,
     pub threshold: u64,
     pub last_compaction: Option<JsonCompaction>,
-    /// Markers no `compacted` event matches (CTX-25); None when the
-    /// transcript does not read.
     pub native_compactions: Option<usize>,
-    /// Markers a `compacted` event matches within 15 minutes (CTX-25).
     pub horch_compactions: Option<usize>,
     pub state: &'static str,
-    /// The text of the row's `reasons:` line, without the role and state.
     pub reason: Option<String>,
-    /// `in-place` or `fresh`.
     pub route: &'static str,
-    /// The handoff file, resolved against the record's workdir.
     pub handoff: PathBuf,
-    /// `plan` or `write` for a Codex pane with `permission_mode: plan`.
     pub mode: Option<&'static str>,
 }
 
-/// `last_compaction` of a [`JsonRow`]: every key, `null` when unknown.
 #[derive(Serialize)]
 pub(crate) struct JsonCompaction {
     pub at: String,
@@ -536,8 +458,6 @@ pub(crate) struct JsonCompaction {
     pub post_tokens: Option<u64>,
 }
 
-/// The `--json` array: 1 object per row, in the order of the text table.
-/// Err only when the ledger does not read.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<String> {
     context_json_matching(src, ws, super::sessionscmd::SessionFilter::default())
@@ -550,7 +470,6 @@ fn context_json_matching(
 ) -> Result<String> {
     let rows = shown_rows_matching(src, filter)?;
     let caller = caller_workspace(src.ctx);
-    // 1 `pane list` per workspace; None: herdr did not answer.
     let mut panes: BTreeMap<String, Option<Vec<Pane>>> = BTreeMap::new();
     let out: Vec<JsonRow> = rows
         .iter()
@@ -580,7 +499,6 @@ fn context_json_matching(
     Ok(format!("{}\n", serde_json::to_string_pretty(&out)?))
 }
 
-/// The [`JsonRow`] of `row`; `pane` is herdr's entry for its pane.
 fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
     let reading = row.reading.as_ref().ok();
     JsonRow {
@@ -624,8 +542,6 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
     }
 }
 
-/// STATE of the text table: a plan pane left in write mode gets ` [write]`,
-/// so the orchestrator sees a pane to switch back (X6).
 fn state_text(row: &Row) -> String {
     let name = match row.state {
         RowState::Requested | RowState::RequestStale => match ask_age_text(row) {
@@ -640,14 +556,11 @@ fn state_text(row: &Row) -> String {
     }
 }
 
-/// `asked 12m ago` for the newest ask of the cycle.
 fn ask_age_text(row: &Row) -> Option<String> {
     let age = policy::ask_age(&row.record.history, row.last_compaction(), row.now)?;
-    // The age rounds down to whole minutes.
     Some(format!("asked {}m ago", age.as_secs() / 60))
 }
 
-/// The table of rows and its `reasons:` block.
 fn rows_table(rows: &[Row]) -> String {
     let mut t = Table::new(&[
         ("ROLE", Align::Left),
@@ -665,7 +578,6 @@ fn rows_table(rows: &[Row]) -> String {
     for row in rows {
         let provisional = row.reading.as_ref().is_ok_and(|r| r.provisional);
         let context = match row.tokens() {
-            // `*` = provisional; the space keeps the digits in 1 column.
             Some(n) => format!("{}{}", grouped(n), if provisional { "*" } else { " " }),
             None => "- ".into(),
         };
@@ -703,9 +615,6 @@ fn rows_table(rows: &[Row]) -> String {
     out
 }
 
-/// `--windows`: 1 row per roster teammate on a harness with a known trigger
-/// rule, as a launch from `workdir` would decide now (CTX-06), with the
-/// watch base and its source: the teammate's `compact_at` or the fleet base.
 pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Path) -> String {
     let mut t = Table::new(&[
         ("TEAMMATE", Align::Left),
@@ -735,7 +644,6 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
     t.render()
 }
 
-/// The 11 cells of 1 teammate in the `--windows` table.
 fn window_row(
     ctx: &RuntimeContext,
     roster: &Roster,
@@ -769,8 +677,6 @@ fn window_row(
     ]
 }
 
-/// The HEADROOM cell: `-` with no native trigger, else the headroom with
-/// ` WARN` under [`HEADROOM_FLOOR`].
 fn headroom_cell(native: Option<u64>, threshold: u64) -> String {
     match native.map(|n| window::headroom(n, threshold)) {
         None => "-".into(),
@@ -779,7 +685,6 @@ fn headroom_cell(native: Option<u64>, threshold: u64) -> String {
     }
 }
 
-/// The FROM cell: where the watch base comes from.
 fn base_source(compact_at: Option<u64>) -> &'static str {
     if compact_at.is_some() {
         "teammate"
@@ -788,8 +693,6 @@ fn base_source(compact_at: Option<u64>) -> &'static str {
     }
 }
 
-/// The SOURCE column: `operator`, `fleet` or `harness`, with ` (now)` when
-/// the record has no recorded decision.
 fn source_text(source: WindowSource, now: bool) -> String {
     let name = source_name(source);
     if now {
@@ -799,7 +702,6 @@ fn source_text(source: WindowSource, now: bool) -> String {
     }
 }
 
-/// `operator`, `fleet` or `harness`.
 fn source_name(source: WindowSource) -> &'static str {
     match source {
         WindowSource::Operator => "operator",
@@ -808,7 +710,6 @@ fn source_name(source: WindowSource) -> &'static str {
     }
 }
 
-/// A detail that names a file under `home`, with `~` for the home.
 fn home_relative(detail: &str, home: &Path) -> String {
     let home = home.to_string_lossy();
     match detail.strip_prefix(home.as_ref()) {
@@ -817,12 +718,10 @@ fn home_relative(detail: &str, home: &Path) -> String {
     }
 }
 
-/// `1,000,000`, or `-` when unknown.
 fn number(n: Option<u64>) -> String {
     n.map_or_else(|| "-".into(), grouped)
 }
 
-/// `n` with `,` between groups of 3 digits.
 pub(crate) fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -841,7 +740,6 @@ enum Align {
     Right,
 }
 
-/// Columns 2 spaces apart, each as wide as its widest cell.
 struct Table {
     head: Vec<(&'static str, Align)>,
     rows: Vec<Vec<String>>,
@@ -897,17 +795,14 @@ impl Table {
 
 #[cfg(test)]
 pub(crate) mod testkit {
-    //! A temp world for the context-policy commands: a state dir, a project
-    //! dir, the fixture home of `horch-core`, the built-in roster.
 
     use super::*;
     use horch_core::execution::legacy::{HistoryEntry, KIND_ORCHESTRATOR};
     use horch_core::runtime::MapEnv;
 
-    /// The fixture session ids (`horch-core/tests/fixtures/context/home`).
-    pub const OVER: &str = "11111111-1111-4111-8111-111111111111"; // 311,225 tokens
+    pub const OVER: &str = "11111111-1111-4111-8111-111111111111";
     pub const PENDING: &str = "22222222-2222-4222-8222-222222222222";
-    pub const SMALL: &str = "33333333-3333-4333-8333-333333333333"; // 33,352 tokens
+    pub const SMALL: &str = "33333333-3333-4333-8333-333333333333";
     pub const CODEX: &str = "01a0de6e-0000-7000-8000-000000000001";
 
     pub fn fixture_home() -> PathBuf {
@@ -915,8 +810,6 @@ pub(crate) mod testkit {
     }
 
     pub struct World {
-        /// The fleetd of the session records (T-884). Declared first, so
-        /// it drops before the folder.
         pub _fleetd: horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
         pub tmp: tempfile::TempDir,
         pub ctx: RuntimeContext,
@@ -927,10 +820,6 @@ pub(crate) mod testkit {
     }
 
     impl World {
-        /// HOME is the fixture home; state, project and the managed
-        /// settings file are in a temp dir. The managed settings set the
-        /// Claude window to 500,000, as the operator's Mac does (design
-        /// §8.1): a Claude threshold is then 300,000.
         pub fn new() -> World {
             Self::with_home(&fixture_home())
         }
@@ -992,7 +881,6 @@ pub(crate) mod testkit {
             self.ctx.paths.project().unwrap()
         }
 
-        /// A live worker record of teammate `tier` on `agent`.
         pub fn worker(&self, id: &str, role: &str, agent: &str, tier: &str, sid: Option<&str>) {
             self.ledger
                 .insert(Record {
@@ -1009,7 +897,6 @@ pub(crate) mod testkit {
                 .unwrap();
         }
 
-        /// A live orchestrator record.
         pub fn orchestrator(&self, id: &str, sid: Option<&str>) {
             self.ledger
                 .insert(Record {
@@ -1027,7 +914,6 @@ pub(crate) mod testkit {
                 .unwrap();
         }
 
-        /// Append a history entry with an explicit time.
         pub fn event_at(&self, id: &str, at: &str, event: &str, text: &str) {
             self.ledger
                 .store()
@@ -1062,8 +948,6 @@ pub(crate) mod testkit {
                 .collect()
         }
 
-        /// A job dir of `role` in `w1` whose child is dead: `job.json` at
-        /// `step` and a heartbeat of a pid that does not run.
         pub fn lost_job(&self, role: &str, step: &str) -> PathBuf {
             let dir = jobfile::job_dir(&self.ctx.paths.state_root, "w1", role);
             std::fs::create_dir_all(&dir).unwrap();
@@ -1089,12 +973,10 @@ pub(crate) mod testkit {
         }
     }
 
-    /// The stamp of `m` minutes ago.
     pub fn minutes_ago(m: i64) -> String {
         horch_core::clock::stamp(horch_core::clock::now() - chrono::Duration::minutes(m))
     }
 
-    /// A pid that ran and has exited.
     pub fn dead_pid() -> u32 {
         let mut child = std::process::Command::new("true").spawn().unwrap();
         let pid = child.id();
@@ -1112,8 +994,6 @@ mod tests {
         context_text(&w.sources(), over).unwrap()
     }
 
-    /// CTX-01: the orchestrator first, then 1 row per live worker, with
-    /// every column.
     #[test]
     fn ctx_01_lists_orchestrator_first_then_live_workers() {
         let w = World::new();
@@ -1156,9 +1036,6 @@ mod tests {
         }
     }
 
-    /// X6: a Codex pane with `permission_mode: plan` shows its mode: STATE
-    /// gets ` [write]` while it is in write mode, and `--json` has `mode`
-    /// (`plan`, `write`, or `null` for every other row).
     #[test]
     fn x6_a_plan_pane_shows_its_mode() {
         let mut w = World::new();
@@ -1198,7 +1075,6 @@ mod tests {
             .any(|l| l.starts_with("sonnet-1") && l.contains("[write]")));
     }
 
-    /// CTX-01: a done worker has no row.
     #[test]
     fn ctx_01_done_worker_has_no_row() {
         let w = World::new();
@@ -1210,7 +1086,6 @@ mod tests {
         assert!(!out.contains("sonnet-2"), "{out}");
     }
 
-    /// CTX-04: a row with no number has 1 `reasons:` line.
     #[test]
     fn ctx_04_states_print_a_reason_line() {
         let w = World::new();
@@ -1236,7 +1111,6 @@ mod tests {
         );
     }
 
-    /// CTX-06: the windows view with an operator window of 500,000.
     #[test]
     fn ctx_06_windows_view_lists_claude_and_codex_teammates() {
         let home = tempfile::tempdir().unwrap();
@@ -1246,7 +1120,6 @@ mod tests {
             r#"{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"500000"}}"#,
         )
         .unwrap();
-        // No managed settings: the user file is the operator's value.
         let w = World::with_env(home.path(), |e| {
             e.with("HORCH_CLAUDE_MANAGED_SETTINGS", "/nonexistent/managed.json")
         });
@@ -1294,8 +1167,6 @@ mod tests {
         );
     }
 
-    /// The roles of the table lines of `out`: every line before `reasons:`
-    /// or `instructions:`, after the header.
     fn table_roles(out: &str) -> Vec<&str> {
         out.lines()
             .skip(1)
@@ -1304,7 +1175,6 @@ mod tests {
             .collect()
     }
 
-    /// The lines after `instructions:`.
     fn instruction_lines(out: &str) -> Vec<&str> {
         out.lines()
             .skip_while(|l| *l != "instructions:")
@@ -1312,8 +1182,6 @@ mod tests {
             .collect()
     }
 
-    /// TRF-08: `--over` lists every row that is not ok, then 1 instruction
-    /// id per state shown.
     #[test]
     fn trf_08_over_lists_every_non_ok_state_with_its_instruction_id() {
         let w = World::new();
@@ -1349,12 +1217,9 @@ mod tests {
             ],
             "{out}"
         );
-        // Without --over, the table has no instructions block.
         assert!(!text(&w, false).contains("instructions:"));
     }
 
-    /// TRF-09: a row still over its threshold after 1 compaction shows as
-    /// `handoff` in `--over`, with its reason and its instruction id.
     #[test]
     fn trf_09_over_shows_a_row_still_over_after_1_compaction_as_handoff() {
         let w = World::new();
@@ -1381,7 +1246,6 @@ mod tests {
         assert_eq!(lines[5], "  handoff: ctx-handoff");
     }
 
-    /// CTX-09, CTX-15: a lost job shows in `--over` with its reason.
     #[test]
     fn ctx_09_over_prints_compact_lost() {
         let w = World::new();
@@ -1402,7 +1266,6 @@ mod tests {
         );
     }
 
-    /// #75: `--over` lists a stale ask with its age.
     #[test]
     fn over_prints_the_age_of_a_requested_and_a_stale_ask() {
         let w = World::new();
@@ -1420,7 +1283,6 @@ mod tests {
         assert_eq!(state("sonnet-2"), "request-stale (asked 25m ago)", "{out}");
     }
 
-    /// #75: a failure after the ask lists the role with the failed step.
     #[test]
     fn over_lists_a_compact_failed_row_with_its_step() {
         let w = World::new();
@@ -1441,7 +1303,6 @@ mod tests {
         );
     }
 
-    /// CTX-09: every row ok prints exactly 1 line.
     #[test]
     fn ctx_09_over_with_none_prints_exact_line() {
         let w = World::new();
@@ -1451,7 +1312,6 @@ mod tests {
         assert_eq!(text(&empty, true), "no session is over its threshold\n");
     }
 
-    /// CTX-15: of 2 readers of 1 lost job, 1 records the event.
     #[test]
     fn ctx_15_first_reader_of_a_lost_job_records_one_event() {
         let w = World::new();
@@ -1476,8 +1336,6 @@ mod tests {
         }
     }
 
-    /// CTX-24: `pane` and `pane_status` come from 1 `pane list` call per
-    /// workspace; when herdr does not answer, both are `null`.
     #[test]
     fn ctx_24_json_pane_from_one_pane_list() {
         use horch_core::workspace::testing::FakeWorkspace;
@@ -1542,7 +1400,6 @@ mod tests {
             headroom_cell(Some(100_000 + thin), 100_000),
             format!("{} WARN", grouped(thin))
         );
-        // The floor itself is not thin.
         assert_eq!(
             headroom_cell(Some(100_000 + HEADROOM_FLOOR), 100_000),
             grouped(HEADROOM_FLOOR)

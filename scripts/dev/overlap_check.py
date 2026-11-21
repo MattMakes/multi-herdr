@@ -23,10 +23,7 @@ from pathlib import Path
 
 WORD_N = 8
 CODE_N = 12
-# Prose (our .md and .txt files) is read with a shorter window: a phrase of 6 words
-# is enough to be someone's wording, while 8 let 6 and 7 word phrases through.
 PROSE_N = 6
-# kind -> (how the text is split, window size)
 KINDS = {"prose": ("word", PROSE_N), "word": ("word", WORD_N), "code": ("code", CODE_N)}
 MAX_BYTES = 1_000_000
 TEXT_EXT = {".md", ".txt", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".html",
@@ -35,18 +32,13 @@ CODE_EXT = {".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".html", ".css", ".sh",
 SKIP_DIRS = {".git", "node_modules", "dist", "build"}
 SKIP_NAMES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cabal.project.freeze"}
 
-# Allowlist. A hit is common when fewer than MIN_FREE words of it are free
-# (not numeric, not in this set). One comment per entry.
 ALLOW_WORDS = {
-    # ffmpeg CLI flags and options: fixed by the tool, no expression
     "ffmpeg", "ffprobe", "i", "y", "c", "v", "a", "vf", "af", "ss", "t", "to", "r",
     "pix", "fmt", "yuv420p", "libx264", "crf", "preset", "movflags", "faststart",
     "map", "filter", "complex", "vsync", "an", "vn", "f", "lavfi",
-    # ffmpeg filter names: fixed by the tool
     "scale", "crop", "pad", "overlay", "fps", "concat", "setpts", "atempo",
     "amix", "volume", "loudnorm", "afade", "fade", "xfade", "blend", "drawtext",
     "aresample", "anullsrc", "color", "format", "palettegen", "paletteuse",
-    # standard web and Node API names
     "document", "window", "queryselector", "queryselectorall", "getboundingclientrect",
     "requestanimationframe", "addeventlistener", "innerhtml", "textcontent",
     "classlist", "getcomputedstyle", "const", "let", "var", "function", "return",
@@ -55,27 +47,20 @@ ALLOW_WORDS = {
     "readfilesync", "writefilesync", "mkdirsync", "existssync", "promises",
     "child", "spawnsync", "execfilesync", "playwright", "chromium", "page",
     "evaluate", "goto", "screenshot", "viewport", "width", "height",
-    # python stdlib names
     "argparse", "argumentparser", "add", "argument", "args", "sys", "exit", "def",
     "self", "none", "true", "false", "if", "else", "for", "in", "not", "and", "or",
     "pathlib", "subprocess", "run", "check", "output", "text", "capture", "re",
     "compile", "open", "encoding", "utf", "8", "name", "main",
-    # standard seeded PRNG used for deterministic frames: a public algorithm, its
-    # name and magic constant are fixed by the algorithm (imul is its Math call)
     "mulberry32", "imul", "x6d2b79f5", "6d2b79f5",
-    # placeholder written by normalise() for a command-line flag
     "flag",
-    # ffprobe option and field names: fixed by the tool
     "show", "entries", "select", "streams", "stream", "codec", "type", "frame", "rate",
     "duration", "error", "of", "json", "pcm", "s16le", "lavfi", "testsrc2", "ebur128",
-    # python and node standard library names: fixed by the runtime
     "os", "dirname", "abspath", "makedirs", "exist", "ok", "insert", "file", "try", "with",
     "as", "math", "min", "max", "floor", "tmpdir", "node", "url", "resolve", "dir",
     "recursive", "force", "rmsync", "mkdirsync", "stdio", "ignore", "pipe", "fileurltopath",
     "pathtofileurl", "readfilesync", "writefilesync", "date", "now", "tofixed", "send",
     "runtime", "expression", "awaitpromise", "returnbyvalue", "target", "createtarget",
     "about", "blank", "emulation", "setdevicemetricsoverride", "devicescalefactor", "mobile",
-    # css and html boilerplate: property names and a page skeleton
     "doctype", "html", "head", "meta", "charset", "body", "margin", "padding", "overflow",
     "hidden", "background", "display", "position", "font", "size", "px", "left", "top",
     "monospace", "sans", "serif", "flex", "gap", "white", "space", "pre", "wrap", "svg",
@@ -83,39 +68,22 @@ ALLOW_WORDS = {
     "style", "stroke", "linejoin", "round", "cubic", "bezier", "x0", "y0", "x1", "y1",
     "x2", "y2", "lo", "hi", "document", "createtreewalker", "nodefilter", "createrange",
     "selectnodecontents", "nextnode", "parentelement", "getcomputedstyle", "nodetype",
-    # ffmpeg filter expressions seen in several projects: motion blur by tmix, trimming
-    # silence at both ends, drawbox probes
     "tmix", "eq", "mod", "frames", "silenceremove", "areverse", "periods", "start",
     "threshold", "silence", "drawbox", "iw", "ih", "black",
-    # node and javascript idioms: child process imports, timer sleep, split-trim-filter
     "spawn", "spawnsync", "child", "events", "once", "timers", "settimeout", "sleep",
     "trim", "boolean", "split", "number", "h1", "h2", "h3", "h4", "h5", "h6",
-    # argparse option idiom, the 0x prefix form of the mulberry32 constant, DOM range
-    # walk, and a GSAP tween with a named ease: standard API names and options
     "action", "store", "help", "default", "int", "seed", "0x6d2b79f5", "continue", "range",
     "opacity", "ease", "power2",
-    # ffmpeg scale and paletteuse options: fixed by the tool
     "original", "aspect", "ratio", "dither", "bayer",
-    # names of our own storyboard gate, scripts/check_timeline.py, and its input
-    # timeline.json: the same names occur upstream, reported in the audit DONE
     "scripts", "timeline", "py",
-    # canvas drawImage parameter names (source and destination rectangle): MDN names
     "sx", "sy", "sw", "sh", "dx", "dy", "dw", "dh",
-    # macos install path of Google Chrome: a path fixed by the vendor
     "applications", "google", "chrome", "app", "contents", "macos",
 }
 MIN_FREE = 3
-# Code hits shorter than CODE_SHORT tokens need this many free words to count:
-# a 12 to 19 token window with fewer is one fragment of idiom, not expression.
 CODE_SHORT = 20
 CODE_SHORT_MIN_FREE = 6
-# The allowlist only covers a short shared text. A longer one is a hit however
-# plain its words are, unless the idiom rule below clears it: 16 words, 40 tokens.
 WORD_ALLOW_MAX = 16
 CODE_ALLOW_MAX = 40
-# A shared text whose every n-gram occurs in at least this many different
-# upstream projects is a common idiom (boilerplate, a standard algorithm), not
-# one project's expression.
 IDIOM_PROJECTS = 3
 
 
@@ -126,9 +94,9 @@ def is_free(word):
 def is_common(text, kind="word"):
     """True when the shared text carries too few free words to be expression."""
     if not re.search(r"[A-Za-z0-9]", text.replace("FLAG", "")):
-        return True  # only punctuation and flag placeholders: a ruler line, a flag list
+        return True
     if "4294967296" in text:
-        return True  # 2 to the 32: the divisor of every 32-bit seeded PRNG (mulberry32)
+        return True
     size = len(text.split())
     if size > (CODE_ALLOW_MAX if kind == "code" else WORD_ALLOW_MAX):
         return False
@@ -155,15 +123,10 @@ def walk(root):
             yield p
 
 
-# Command-line flags are fixed by the tool, so both sides drop them to a
-# placeholder: --long-flag[=value] anywhere, and -short flags set off by
-# whitespace, quotes or brackets (so "a -b" arithmetic is kept apart from "-v").
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]+(?:=[^\s'\",`]+)?"
                   r"|(?<=[\s\"'`\[,])-[A-Za-z][A-Za-z_]*(?=[\s\"'`,\]])")
 
 
-# Comment rulers (a row of dashes or equals) and import statements carry no
-# expression: the first is decoration, the second only names APIs.
 RULER = re.compile(r"[-=#*_~/]{4,}")
 IMPORT = re.compile(r"\bimport\s+(?:[\w$]+\s*,?\s*)?(?:\{[^}]*\}|\*\s+as\s+\w+)?\s*from\s*['\"][^'\"]+['\"]")
 
@@ -214,7 +177,7 @@ def find_hits(label, text, kind, indexes, sources):
     split, n = KINDS[kind]
     seq = words(text) if split == "word" else tokens(text)
     gs = grams(seq, n)
-    runs = {}  # source index -> [start, last]
+    runs = {}
     hits = []
     for i, g in enumerate(gs):
         for si in index.get(g, ()):
@@ -281,13 +244,9 @@ def self_test():
         (tmp / "up" / "proj-a" / "lib.js").write_text(SELF_CODE + f"// {SELF_COMMON}\n", encoding="utf-8")
         (tmp / "ours").mkdir()
         cases = {
-            # a sentence copied with other case and punctuation: must be caught
             "sentence.md": ("My notes.\n\n" + SELF_PROSE.upper().replace(",", ";") + "\n", 1, "HIT [prose]"),
-            # a code block copied with other spacing: must be caught
             "block.js": (SELF_CODE.replace("  ", "\t"), 1, "HIT [code]"),
-            # own words: must pass
             "clean.md": ("Hold the final caption until speech ends. Cut on the next beat.\n", 0, "hits: 0"),
-            # a command line made only of tool flags: allowlisted, must pass
             "common.md": (f"Probe with `{SELF_COMMON}` first.\n", 0, "hits: 0"),
         }
         failed = 0
@@ -331,8 +290,8 @@ def main():
     sources["prose"] = sources["word"]
     idx_of = {k: build_index(sources[k], k) for k in KINDS}
 
-    found = {}  # (kind, ours, shared) -> upstream paths
-    skipped = {}  # the same for allowlisted hits, kept for --show-common
+    found = {}
+    skipped = {}
     common = 0
     for label, text in ours:
         kinds = ["word", "code"] if Path(label).suffix.lower() in CODE_EXT else ["prose"]

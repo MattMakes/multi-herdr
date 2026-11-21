@@ -1,10 +1,3 @@
-//! The read of `<fleet root>/fleet.toml`.
-//!
-//! A missing file, or a missing key, gives the value of
-//! [`FleetConfig::default`]. An unknown key, a value of the wrong type and a
-//! value out of range are refused, with the name of the key. A retired key
-//! is read and ignored, with 1 warning line in each process.
-
 use std::path::Path;
 use std::sync::Once;
 
@@ -15,10 +8,8 @@ use crate::fleetd::fleet_runtime::domain::config::{
     ConfigError, FleetConfig, JobLimits, WorkingHours,
 };
 
-/// The name of the config file in the fleet root.
 pub const FILE_NAME: &str = "fleet.toml";
 
-/// Read `<fleet_root>/fleet.toml`. No file gives the defaults.
 pub fn load(fleet_root: &Path) -> Result<FleetConfig> {
     let path = fleet_root.join(FILE_NAME);
     let text = match std::fs::read_to_string(&path) {
@@ -35,14 +26,11 @@ pub fn load(fleet_root: &Path) -> Result<FleetConfig> {
     Ok(config)
 }
 
-/// Parse the text of `fleet.toml`, then validate it.
 pub fn parse(text: &str) -> Result<FleetConfig> {
     parse_with_warning(text).map(|(config, _)| config)
 }
 
-/// [`parse`], and the warning of a retired key, or `None`.
 pub fn parse_with_warning(text: &str) -> Result<(FleetConfig, Option<String>)> {
-    // serde names an unknown key and a value of the wrong type.
     let mut file: FileKeys =
         toml::from_str(text).map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
     let warning = file.orchestrator_seats.take().map(|_| {
@@ -59,7 +47,6 @@ pub fn parse_with_warning(text: &str) -> Result<(FleetConfig, Option<String>)> {
     Ok((config, warning))
 }
 
-/// The keys as the file has them: each is optional.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileKeys {
@@ -94,32 +81,20 @@ struct FileKeys {
     transcript_tail_bytes: Option<u64>,
     transcript_line_max_bytes: Option<u64>,
     job_result_max_bytes: Option<u64>,
-    /// Retired in Phase 6: no agent has operator rights (SR-8, FM-32). Any
-    /// value gives 1 warning line and sets nothing (Q19 of
-    /// `docs/tickets/fleetd-p6/MAP.md`).
     orchestrator_seats: Option<toml::Value>,
     fetch_period_s: Option<u64>,
     push_failure_limit: Option<u64>,
-    /// A starting value, to tune from real runs.
     rescue_unique_budget_mb: Option<u64>,
-    /// A starting value, to tune from real runs.
     landing_ready_limit_s: Option<u64>,
-    /// A starting value, to tune from real runs.
     landing_repair_limit_s: Option<u64>,
-    /// A starting value, to tune from real runs.
     landing_job_margin_s: Option<u64>,
-    /// A starting value, to tune from real runs.
     bundle_passed_limit_s: Option<u64>,
-    /// A starting value, to tune from real runs.
     result_max_bytes: Option<u64>,
-    /// A starting value, to tune from real runs.
     resolver_max_lines: Option<u64>,
-    /// A starting value, to tune from real runs.
     resolver_max_files: Option<u64>,
     idle_stop_s: Option<u64>,
     park_after_days: Option<u64>,
     reminder_every_s: Option<u64>,
-    /// A starting value: `Mon-Fri 09:00-18:00`.
     working_hours: Option<String>,
 }
 
@@ -132,15 +107,10 @@ struct FileJobLimits {
     docs_sync: Option<u64>,
     conformance: Option<u64>,
     rescue: Option<u64>,
-    /// A starting value, to tune from real runs.
     fast_gate: Option<u64>,
-    /// A starting value, to tune from real runs.
     full_gate: Option<u64>,
-    /// A starting value, to tune from real runs.
     trial_merge: Option<u64>,
-    /// A starting value, to tune from real runs.
     bundle_build: Option<u64>,
-    /// A starting value, to tune from real runs.
     rebase: Option<u64>,
 }
 

@@ -1,9 +1,3 @@
-//! `horch worktrees`, `horch worktree restore` and the disk line of
-//! `horch ledger status` (ticket 15 of fleetd-p3).
-//!
-//! Each test runs the real binary on its own temporary git project, with
-//! its own ledger, state and fleet folders, and the watchdog off.
-
 #![cfg(unix)]
 
 mod support;
@@ -74,13 +68,10 @@ impl Drop for Agent {
     }
 }
 
-/// The fleetd drops first: fields drop in order.
 struct World {
     _fleetd: Option<TestFleetd>,
     _agent: Option<Agent>,
     _tmp: tempfile::TempDir,
-    /// The temporary folder with no symlink in its path, as git and the
-    /// ledger write it.
     root: PathBuf,
     worker: String,
 }
@@ -90,9 +81,6 @@ impl World {
         World::start("")
     }
 
-    /// A rescue waits for a `worktree_list` result with the HEAD of the
-    /// tree, so with the default list period of 60 s, [`World::rescued`]
-    /// uses most of its 120 s wait (T-290).
     fn with_a_rescuable_tree() -> World {
         World::start("worktree_list_period_s = 5\n")
     }
@@ -176,7 +164,6 @@ impl World {
         self.root().join("proj")
     }
 
-    /// The tree of T1.
     fn tree(&self) -> PathBuf {
         self.proj().join(".worktrees/r1-T1-ticket-one")
     }
@@ -185,7 +172,6 @@ impl World {
         self.root().join("ledger.sqlite3")
     }
 
-    /// `git <args>` in `dir`, with no config of the operator's.
     fn git(&self, dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .args(args)
@@ -208,8 +194,6 @@ impl World {
         String::from_utf8(out.stdout).unwrap()
     }
 
-    /// The `horch` binary with the environment of the test; `worker` sets
-    /// `HORCH_WORKER_ID`.
     fn command(&self, worker: Option<&str>) -> Command {
         let root = self.root();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -237,7 +221,6 @@ impl World {
         Out {
             code: o.status.code().unwrap(),
             out: String::from_utf8(o.stdout).unwrap(),
-            // A host that cannot read a count (a sandbox) gets a guard note.
             err: String::from_utf8(o.stderr)
                 .unwrap()
                 .lines()
@@ -247,7 +230,6 @@ impl World {
         }
     }
 
-    /// Run `args` as the operator, require exit 0, return stdout.
     fn ok(&self, args: &[&str]) -> String {
         let o = self.horch(None, args);
         assert_eq!(o.code, 0, "{args:?}: {}{}", o.out, o.err);
@@ -258,7 +240,6 @@ impl World {
         Store::open(&self.ledger()).unwrap()
     }
 
-    /// The row of the tree of T1.
     fn row(&self) -> custody::WorktreeRow {
         let store = self.store();
         let path = self.tree().to_string_lossy().into_owned();
@@ -272,7 +253,6 @@ impl World {
             .unwrap()
     }
 
-    /// The facts that the `worktree_list` job of the pass stores.
     fn measure(&self, bytes: i64) {
         let id = self.row().worktree_id;
         self.store()
@@ -280,7 +260,6 @@ impl World {
             .unwrap();
     }
 
-    /// The tree of T1 loses its owner, as the reconciler finds it.
     fn orphan(&self) {
         let id = self.row().worktree_id;
         self.store()
@@ -303,8 +282,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 call of the reconciler with no new fact, as part 2 of a pass:
-    /// the id of the rescue job that it queues for the orphan of T1.
     fn reconcile(&self) -> i64 {
         let id = self.row().worktree_id;
         let config = FleetConfig::default();
@@ -328,8 +305,6 @@ impl World {
             .unwrap()
     }
 
-    /// Orphan the tree of T1, then let the worker take it again: its
-    /// rescue job runs first, and the row keeps the rescue ref.
     fn rescued(&self) -> String {
         self.orphan();
         self.wait_for("fleetd to rescue the tree of T1", |w| {
@@ -367,7 +342,6 @@ fn json(text: &str) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"))
 }
 
-/// 1 line for each tree, with a word for each fact, then the total.
 #[test]
 fn worktrees_lists_each_tree_with_state_task_owner_age_and_size() {
     let w = World::with_a_tree();
@@ -402,8 +376,6 @@ fn worktrees_lists_each_tree_with_state_task_owner_age_and_size() {
     assert_eq!(lines[1], "total: 1 worktree, 2.0 KB on disk");
 }
 
-/// RR-10: each orphan on disk is listed with the rescue job that the
-/// reconciler queued for it; the listing changes nothing.
 #[test]
 fn worktrees_shows_the_rescue_job_that_the_reconciler_queued_for_an_orphan() {
     let w = World::with_a_tree();
@@ -506,9 +478,6 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
         std::fs::read_to_string(tree.join("a.txt")).unwrap(),
         "changed\n"
     );
-    // F2 of review round 1: the tree is for the operator. It is `created`
-    // with no owner, which the reconciler leaves as it is, not `active`
-    // with no owner, which it orphans.
     let listed = w.ok(&["worktrees"]);
     let line = listed
         .lines()
@@ -521,8 +490,6 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
     );
 }
 
-/// F1 of review round 1: Phase 3 deletes no rescue ref, so a tree that
-/// custody removed still gives its rescue ref back.
 #[test]
 fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
     let w = World::with_a_rescuable_tree();
@@ -553,8 +520,6 @@ fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
     );
 }
 
-/// The security rule of the orchestrator: no hook of the project runs
-/// when restore makes the tree.
 #[test]
 fn restore_runs_no_hook_of_the_project() {
     let w = World::with_a_rescuable_tree();
@@ -634,8 +599,6 @@ fn restore_of_an_archive_name_keeps_today_s_behavior() {
     assert!(w.branch_exists("restored/old"));
 }
 
-/// FM-28: the board shows the total size of all trees, as a line and as a
-/// field of `--json`.
 #[test]
 fn ledger_status_shows_the_total_size_of_all_trees() {
     let w = World::with_a_tree();

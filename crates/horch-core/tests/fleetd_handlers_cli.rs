@@ -1,12 +1,3 @@
-//! The fleetd handlers of the last direct writers of the CLI (T-885):
-//! `worker_progress`, `worker_done`, `run_adopt`, `question_answer`, the
-//! `rescue_drop` handler of a ref that git confirms, and the dry run of
-//! `ledger_import`.
-//!
-//! Each test sends requests through `requests::handle` to a temp ledger at
-//! generation 1. Each handler writes the rows that its command wrote before,
-//! and refuses a payload that is not valid, with no row.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,11 +18,9 @@ use horch_core::taskledger::{util, Store};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-/// The 1 ref that git has in the tests of `rescue_drop`.
 const RESCUE_REF: &str = "refs/horch/rescue/branch/side/1";
 const TIP: &str = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
 
-/// git has [`RESCUE_REF`] at [`TIP`] and no other ref.
 struct OneRef;
 
 impl RefTips for OneRef {
@@ -155,7 +144,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// A new worker of the run with no task; gives its id.
     fn worker(&mut self) -> String {
         let run_id = self.run.run_id.clone();
         self.store
@@ -240,7 +228,6 @@ fn worker_done_ends_a_taskless_row_once() {
         .as_deref(),
         Some("done")
     );
-    // A retry finds the row ended and changes nothing.
     let r = w.applied(Kind::WorkerDone, json!({ "worker_id": id }));
     assert_eq!(r["ended"], json!(false));
     let why = w.refused(Kind::WorkerDone, json!({ "worker_id": "w-none" }));
@@ -311,7 +298,6 @@ fn rescue_drop_records_1_event_for_a_ref_that_git_confirms() {
     let facts = format!("SELECT count(*) FROM events WHERE entity_id = '{RESCUE_REF}'");
     let n = w.count(&facts);
     assert_eq!(n, 1);
-    // A second drop of the same ref at the same tip records nothing.
     let r = w.applied(Kind::RescueDrop, payload.clone());
     assert_eq!(r["recorded"], json!(false));
     assert_eq!(w.count(&facts), n);

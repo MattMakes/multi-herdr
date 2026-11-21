@@ -1,11 +1,3 @@
-//! The git calls the task ledger makes: run branch, worktrees, land, cleanup.
-//!
-//! Every call names its directory with `-C`; nothing depends on the current
-//! directory. No call here ever forces: no `--force`, no `-D`, no `reset`.
-//! Each call goes through [`GitRunner`], the 1 git runner of horch: it runs
-//! without the caller's git repository variables (a `GIT_DIR` from a hook
-//! wins over `-C`), never prompts, and in the C locale.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -13,13 +5,11 @@ use horch_marketplace::git::GitRunner;
 
 use crate::vcs::network;
 
-/// A git binary.
 #[derive(Debug, Clone)]
 pub struct Git {
     runner: GitRunner,
 }
 
-/// What 1 git call printed.
 #[derive(Debug, Clone)]
 pub struct Out {
     pub ok: bool,
@@ -34,7 +24,6 @@ impl Git {
         }
     }
 
-    /// Run git in `dir`; never fails on a non-zero exit.
     pub fn try_run(&self, dir: &Path, args: &[&str]) -> Result<Out> {
         debug_assert!(
             !args
@@ -52,11 +41,6 @@ impl Git {
         })
     }
 
-    /// Run a git command that talks to a remote (`fetch`, `ls-remote`,
-    /// `push`, `pull`) through [`network::output`], with stall limits and a
-    /// wall-clock bound. Like [`Git::try_run`], a non-zero exit is not an
-    /// error; a passed bound is a failed output whose stderr names the
-    /// command and the bound.
     pub fn try_network(&self, dir: &Path, args: &[&str]) -> Result<Out> {
         let out = match network::output(self.runner.bin(), dir, args) {
             Ok(out) => out,
@@ -76,7 +60,6 @@ impl Git {
         })
     }
 
-    /// Run git in `dir`; a non-zero exit is an error with git's message.
     pub fn run(&self, dir: &Path, args: &[&str]) -> Result<String> {
         let out = self.try_run(dir, args)?;
         if !out.ok {
@@ -94,8 +77,6 @@ impl Git {
         Ok(out.stdout)
     }
 
-    /// The main checkout of the repository `dir` is in (also from inside a
-    /// linked worktree), or `None` outside a repository.
     pub fn main_root(&self, dir: &Path) -> Option<PathBuf> {
         let common = self
             .try_run(
@@ -114,7 +95,6 @@ impl Git {
         Some(horch_platform::path::canonicalize(&root).unwrap_or(root))
     }
 
-    /// The branch checked out in `dir`, if any.
     pub fn current_branch(&self, dir: &Path) -> Option<String> {
         self.try_run(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
             .ok()
@@ -122,7 +102,6 @@ impl Git {
             .map(|o| o.stdout)
     }
 
-    /// Whether `name` is a local branch.
     pub fn branch_exists(&self, dir: &Path, name: &str) -> bool {
         self.try_run(
             dir,
@@ -137,14 +116,12 @@ impl Git {
         .unwrap_or(false)
     }
 
-    /// Whether `remote` is configured.
     pub fn has_remote(&self, dir: &Path, remote: &str) -> bool {
         self.try_run(dir, &["remote", "get-url", remote])
             .map(|o| o.ok)
             .unwrap_or(false)
     }
 
-    /// The commit `rev` names.
     pub fn rev(&self, dir: &Path, rev: &str) -> Result<String> {
         self.run(
             dir,
@@ -152,20 +129,16 @@ impl Git {
         )
     }
 
-    /// The tree `HEAD` holds in `dir`: what a finish step judges.
     pub fn tree(&self, dir: &Path) -> Result<String> {
         self.run(dir, &["rev-parse", "--verify", "HEAD^{tree}"])
     }
 
-    /// Whether `ancestor` is reachable from `of`.
     pub fn is_ancestor(&self, dir: &Path, ancestor: &str, of: &str) -> bool {
         self.try_run(dir, &["merge-base", "--is-ancestor", ancestor, of])
             .map(|o| o.ok)
             .unwrap_or(false)
     }
 
-    /// The files `git status --porcelain` lists in `dir`: modified, staged and
-    /// untracked (ignored files are not listed).
     pub fn dirty(&self, dir: &Path) -> Result<Vec<String>> {
         let out = self.run(dir, &["status", "--porcelain", "--untracked-files=all"])?;
         Ok(out
@@ -175,8 +148,6 @@ impl Git {
             .collect())
     }
 
-    /// Like [`Git::dirty`], but only tracked files: changed, staged or
-    /// deleted. Untracked files do not count.
     pub fn dirty_tracked(&self, dir: &Path) -> Result<Vec<String>> {
         let out = self.run(dir, &["status", "--porcelain", "--untracked-files=no"])?;
         Ok(out
@@ -186,7 +157,6 @@ impl Git {
             .collect())
     }
 
-    /// The stash entries whose message names `branch`.
     pub fn stashes_on(&self, dir: &Path, branch: &str) -> Result<Vec<String>> {
         let out = self.run(dir, &["stash", "list"])?;
         let needle_on = format!("On {branch}:");
@@ -198,7 +168,6 @@ impl Git {
             .collect())
     }
 
-    /// The commits on `branch` that `base` does not contain.
     pub fn commits_missing_from(
         &self,
         dir: &Path,
@@ -210,7 +179,6 @@ impl Git {
     }
 }
 
-/// The size of a directory tree in bytes, following no links.
 pub fn dir_bytes(path: &Path) -> u64 {
     fn walk(p: &Path) -> u64 {
         let Ok(meta) = std::fs::symlink_metadata(p) else {

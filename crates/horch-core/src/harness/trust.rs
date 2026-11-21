@@ -1,11 +1,3 @@
-//! Harness trust in a folder (PRE-14, ARC-29). Claude, Codex and
-//! Antigravity show a trust dialog on their first launch in a folder; a
-//! pane stopped at it does no work. horch reads the stores, and before an
-//! agent starts it writes the one missing entry for the agent's workdir
-//! ([`ensure_trusted`]): atomic, every other key kept, never `/`, the home
-//! directory or an ancestor of it, and never over an operator's explicit
-//! Codex `trust_level = "untrusted"`.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -16,25 +8,18 @@ use serde::{Deserialize, Serialize};
 
 use super::HarnessKind;
 
-/// What a harness has recorded about the repository root. A harness that
-/// has not trusted it stops a new candidate pane at a trust dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustState {
     Trusted,
     Untrusted,
-    /// horch cannot read the harness's decision.
     Unknown,
 }
 
-/// One harness's trust in the repository root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessTrust {
-    /// [`HarnessKind::as_str`].
     pub harness: String,
     pub state: TrustState,
-    /// Why, naming the store file. Never any content of the file: it can
-    /// hold tokens.
     pub reason: String,
 }
 
@@ -48,8 +33,6 @@ impl HarnessTrust {
     }
 }
 
-/// Whether `harness` shows a trust dialog on its first launch in a
-/// repository. opencode, pi and prime have no trust step.
 pub fn asks_for_trust(harness: HarnessKind) -> bool {
     matches!(
         harness,
@@ -57,26 +40,14 @@ pub fn asks_for_trust(harness: HarnessKind) -> bool {
     )
 }
 
-/// The store file names the reasons use. Claude keeps `.claude.json` in
-/// `$CLAUDE_CONFIG_DIR` when it is set, else in the home directory (see
-/// [`claude_config_file`]).
 pub const CLAUDE_TRUST_FILE: &str = "$CLAUDE_CONFIG_DIR/.claude.json";
 pub const CODEX_TRUST_FILE: &str = "$CODEX_HOME/config.toml";
 pub const ANTIGRAVITY_TRUST_FILE: &str = "~/.gemini/antigravity-cli/settings.json";
 
-/// The file Claude keeps its global config and trust decisions in:
-/// `$CLAUDE_CONFIG_DIR/.claude.json` when the variable is set, else
-/// `<home>/.claude.json`. Seen on claude 2.1.289: with the variable set, it
-/// writes `.claude.json` in that directory and leaves the home one alone.
 pub fn claude_config_file(home: &Path, claude_config_dir: Option<&Path>) -> PathBuf {
     claude_config_dir.unwrap_or(home).join(".claude.json")
 }
 
-/// Claude's trust in `roots` (the root and its canonical form): the key
-/// `projects["<root>"].hasTrustDialogAccepted` is `true` in
-/// [`claude_config_file`]. `file` is the file text, `None` when it does not exist.
-/// A parent folder's entry does not count: Claude keys trust on the
-/// repository root.
 pub fn claude_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     let claude = HarnessKind::Claude;
     parse_store(claude, CLAUDE_TRUST_FILE, file).map_or_else(std::convert::identity, |doc| {
@@ -97,8 +68,6 @@ pub fn claude_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     })
 }
 
-/// A JSON store's document, or the verdict for a store that does not exist
-/// or is not JSON.
 fn parse_store(
     harness: HarnessKind,
     label: &str,
@@ -120,8 +89,6 @@ fn parse_store(
     })
 }
 
-/// The verdict of a store that parsed: `trusts the repository root`, else
-/// the `missing` text after the store's name.
 fn trust_result(harness: HarnessKind, label: &str, trusted: bool, missing: &str) -> HarnessTrust {
     if trusted {
         HarnessTrust::new(
@@ -134,9 +101,6 @@ fn trust_result(harness: HarnessKind, label: &str, trusted: bool, missing: &str)
     }
 }
 
-/// Codex's trust in `roots`: a table `[projects."<root>"]` with
-/// `trust_level = "trusted"` in `$CODEX_HOME/config.toml`. `file` is the file
-/// text, `None` when it does not exist.
 pub fn codex_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     let codex = HarnessKind::Codex;
     let Some(text) = file else {
@@ -166,11 +130,6 @@ pub fn codex_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     )
 }
 
-/// Antigravity's trust in `roots`: the list `trustedWorkspaces` in
-/// `~/.gemini/antigravity-cli/settings.json` holds the root. `file` is the
-/// file text, `None` when it does not exist. Trust is exact-path: a parent
-/// folder or a subdirectory does not count. Seen on agy 1.2.17
-/// (`docs/live-checks/harnesses.md`): `{"trustedWorkspaces": ["<dir>", ...]}`.
 pub fn antigravity_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     let agy = HarnessKind::Antigravity;
     parse_store(agy, ANTIGRAVITY_TRUST_FILE, file).map_or_else(std::convert::identity, |doc| {
@@ -191,9 +150,6 @@ pub fn antigravity_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust 
     })
 }
 
-/// The path of a strict `[projects."<path>"]` or `[projects.'<path>']`
-/// header (a trimmed line): spaces or tabs around the parts, then
-/// optionally a `#` comment. `None` for any other line.
 fn toml_project_header(line: &str) -> Option<String> {
     fn ws(s: &str) -> &str {
         s.trim_start_matches([' ', '\t'])
@@ -205,10 +161,8 @@ fn toml_project_header(line: &str) -> Option<String> {
     (after.is_empty() || after.starts_with('#')).then_some(key)
 }
 
-/// The trimmed lines of a TOML text that start outside a multi-line
-/// string. A line inside `"""` or `'''` is string content, not a header or a key.
 fn toml_lines(text: &str) -> Vec<&str> {
-    let mut open: Option<u8> = None; // the quote of the open multi-line string
+    let mut open: Option<u8> = None;
     let mut out = Vec::new();
     for line in text.lines() {
         if open.is_none() {
@@ -219,8 +173,6 @@ fn toml_lines(text: &str) -> Vec<&str> {
     out
 }
 
-/// The quote of the multi-line string that is open at the end of line `b`,
-/// given the one open at its start.
 fn toml_line_end_state(b: &[u8], mut open: Option<u8>) -> Option<u8> {
     let mut i = 0;
     while i < b.len() {
@@ -240,13 +192,10 @@ fn triple(b: &[u8], q: u8, i: usize) -> bool {
     b[i..].starts_with(&[q, q, q])
 }
 
-/// One step inside a multi-line string with quote `q`: the next offset and
-/// the state after it.
 fn step_in_multiline(b: &[u8], i: usize, q: u8) -> (usize, Option<u8>) {
     if q == b'"' && b[i] == b'\\' {
         (i + 2, Some(q))
     } else if triple(b, q, i) {
-        // Up to 2 more quotes are content before the delimiter.
         let extra = b[i + 3..].iter().take(2).take_while(|c| **c == q).count();
         (i + 3 + extra, None)
     } else {
@@ -254,8 +203,6 @@ fn step_in_multiline(b: &[u8], i: usize, q: u8) -> (usize, Option<u8>) {
     }
 }
 
-/// One step outside any string: the next offset and the state after it.
-/// `None` at a comment, which ends the line.
 fn step_outside(b: &[u8], i: usize) -> Option<(usize, Option<u8>)> {
     match b[i] {
         b'#' => None,
@@ -268,7 +215,6 @@ fn step_outside(b: &[u8], i: usize) -> Option<(usize, Option<u8>)> {
     }
 }
 
-/// The offset past the single-line string that opens at `i` with quote `q`.
 fn skip_quoted(b: &[u8], i: usize, q: u8) -> usize {
     let mut i = i + 1;
     while i < b.len() && b[i] != q {
@@ -277,16 +223,11 @@ fn skip_quoted(b: &[u8], i: usize, q: u8) -> usize {
     i + 1
 }
 
-/// `"<value>"` or `'<value>'` for `key = ...`, `None` for any other line.
 fn toml_string_value(line: &str, key: &str) -> Option<String> {
     let rest = line.strip_prefix(key)?.trim_start().strip_prefix('=')?;
     toml_quoted(rest.trim_start()).map(|(value, _)| value)
 }
 
-/// A TOML basic (`"..."`) or literal (`'...'`) string at the start of
-/// `text`, and the text after it. A basic string may use only the escapes
-/// `\\` and `\"`; any other escape gives `None`, so horch never takes a
-/// spelling it does not decode for the path it names.
 fn toml_quoted(text: &str) -> Option<(String, &str)> {
     let quote = text.chars().next()?;
     let body = &text[quote.len_utf8()..];
@@ -297,13 +238,11 @@ fn toml_quoted(text: &str) -> Option<(String, &str)> {
     }
 }
 
-/// The body of a literal string (after its opening quote) and the rest.
 fn toml_literal(body: &str) -> Option<(String, &str)> {
     let end = body.find('\'')?;
     Some((body[..end].to_string(), &body[end + 1..]))
 }
 
-/// The body of a basic string (after its opening quote) and the rest.
 fn toml_basic(body: &str) -> Option<(String, &str)> {
     let mut out = String::new();
     let mut chars = body.char_indices();
@@ -323,8 +262,6 @@ fn toml_basic(body: &str) -> Option<(String, &str)> {
     None
 }
 
-/// The one-time command that records `harness`'s trust in `root`, for when
-/// [`ensure_trusted`] skipped or failed.
 pub fn trust_fix(harness: HarnessKind, root: &Path) -> String {
     let quoted = format!("'{}'", root.to_string_lossy().replace('\'', "'\\''"));
     match harness {
@@ -344,12 +281,6 @@ pub fn trust_fix(harness: HarnessKind, root: &Path) -> String {
     }
 }
 
-/// What each harness in `harnesses` has recorded for `roots` (the
-/// repository root and its canonical form). It reads the stores and keeps
-/// only the verdict: the files can hold tokens, so nothing else of them
-/// leaves this function. `home` is the home directory (agy keeps its store
-/// under it); the two directories are `$CLAUDE_CONFIG_DIR` and
-/// `$CODEX_HOME` when they are set.
 pub fn read_trust(
     harnesses: &[HarnessKind],
     home: &Path,
@@ -379,7 +310,6 @@ pub fn read_trust(
         .collect()
 }
 
-/// The store file of `harness` and the name the reasons use for it.
 fn trust_store_of(
     harness: HarnessKind,
     home: &Path,
@@ -402,7 +332,6 @@ fn trust_store_of(
     }
 }
 
-/// What the store text says about `roots`, for a harness that asks.
 fn verdict_of(harness: HarnessKind, text: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     match harness {
         HarnessKind::Claude => claude_trust(text, roots),
@@ -411,8 +340,6 @@ fn verdict_of(harness: HarnessKind, text: Option<&str>, roots: &[PathBuf]) -> Ha
     }
 }
 
-/// The text of a trust store, `None` when it does not exist, `Err` when it
-/// cannot be read.
 fn read_store(path: &Path) -> Result<Option<String>, ()> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -429,45 +356,13 @@ fn unreadable(harness: HarnessKind, file: &str) -> HarnessTrust {
     )
 }
 
-/// What [`ensure_trusted`] did for one harness and workdir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustWrite {
-    /// The store already trusted the workdir. horch wrote nothing.
     AlreadyTrusted,
-    /// horch wrote the trust entry to this store file.
     Written(PathBuf),
-    /// horch did not write, for this reason. It names the store file or the
-    /// path, never any content of the file.
     Skipped(String),
 }
 
-/// Make `harness` trust `workdir` before an agent starts in it (ARC-29).
-///
-/// It reads the store first and writes only when the store does not trust
-/// the workdir or its canonical form, so most launches write nothing. The
-/// write keeps every other key and value and is atomic: a temporary file in
-/// the same directory, with the store's mode, renamed over the store. horch
-/// reads the store again just before the rename and starts again, at most 3
-/// times, when another process changed it. For every harness it holds the
-/// lock directory `<store>.lock` across the read and the rename: for Claude
-/// that is Claude's own lock, and for Codex and Antigravity it serializes
-/// horch with horch. Codex and Antigravity write their stores without a
-/// lock, so a native write that lands between horch's last read and its
-/// rename is lost (2 Codex sessions have the same exposure to each other).
-/// After the write it reads the store again and fails when it does not
-/// trust the workdir.
-///
-/// The temporary file is `<store>.horch-tmp.<pid>.<12 hex>`. A process
-/// that dies before the rename leaves it, so while it holds the lock horch
-/// removes such a file of a dead pid that is older than 60 s.
-///
-/// It never trusts `/`, the home directory or an ancestor of it, a relative
-/// path, a path that is not valid UTF-8 (the store would name a different
-/// folder), or a path that is not an existing directory. It never writes
-/// through a symlinked store, never changes an explicit Codex
-/// `trust_level = "untrusted"`, and never creates a Claude or Antigravity
-/// store: those return [`TrustWrite::Skipped`]. `home`,
-/// `claude_config_dir` and `codex_home_dir` are as in [`read_trust`].
 pub fn ensure_trusted(
     harness: HarnessKind,
     workdir: &Path,
@@ -485,8 +380,6 @@ pub fn ensure_trusted(
     )
 }
 
-/// The stderr line for what [`ensure_trusted`] did, `None` when the store
-/// already trusted `workdir`. It names the store file, never its content.
 pub fn trust_note(
     harness: HarnessKind,
     workdir: &Path,
@@ -509,22 +402,12 @@ pub fn trust_note(
     }
 }
 
-/// How many times a write starts again when the store changes under it.
 const WRITE_TRIES: usize = 3;
-/// A store lock directory older than this is stale (proper-lockfile's
-/// default, which Claude uses).
 const LOCK_STALE: Duration = Duration::from_secs(10);
-/// How long horch waits for a live store lock before it skips.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
-/// The tag in horch's temporary store name, `<store>.horch-tmp.<pid>.<12 hex>`.
-/// It differs from Claude's `.tmp.`, so horch never removes Claude's files.
 const TEMP_TAG: &str = "horch-tmp";
-/// A temporary store file of a dead pid older than this is left over.
 const TEMP_STALE: Duration = Duration::from_secs(60);
 
-/// [`ensure_trusted`], calling `before_rename` after the new store is in its
-/// temporary file and before the store is read again. A test changes the
-/// store there.
 fn ensure_trusted_with(
     harness: HarnessKind,
     workdir: &Path,
@@ -556,8 +439,6 @@ fn ensure_trusted_with(
         })
 }
 
-/// The roots and store keys of a trust write, or why horch skips it: the
-/// harness has no trust step, or `workdir` may not be trusted.
 fn trust_plan(
     harness: HarnessKind,
     workdir: &Path,
@@ -571,7 +452,6 @@ fn trust_plan(
     Ok((roots, keys))
 }
 
-/// One harness's store, and the roots and keys horch makes it trust.
 struct TrustStore {
     harness: HarnessKind,
     file: PathBuf,
@@ -580,11 +460,8 @@ struct TrustStore {
     keys: Vec<String>,
 }
 
-/// What a store's text asks of horch.
 enum Decision {
-    /// Nothing to write: the outcome is final.
     Done(TrustWrite),
-    /// Write this new store text.
     Write(String),
 }
 
@@ -597,8 +474,6 @@ impl TrustStore {
         verdict_of(self.harness, text, &self.roots)
     }
 
-    /// The store text with the trust entries added, or why horch does not
-    /// edit it.
     fn edit(&self, text: Option<&str>) -> Result<String, String> {
         match (self.harness, text) {
             (HarnessKind::Codex, text) => {
@@ -614,7 +489,6 @@ impl TrustStore {
         }
     }
 
-    /// Why horch does not touch the store path: a symlink, or no directory.
     fn path_problem(&self) -> Option<String> {
         let linked =
             std::fs::symlink_metadata(&self.file).is_ok_and(|m| m.file_type().is_symlink());
@@ -635,8 +509,6 @@ impl TrustStore {
         }
     }
 
-    /// One try: the outcome, or `None` when the store changed under the
-    /// write and the caller starts again.
     fn attempt(
         &self,
         workdir: &Path,
@@ -671,8 +543,6 @@ impl TrustStore {
         }
     }
 
-    /// Write `after` over the store when it is still `before`; `None` when
-    /// it changed. The lock is held until the rename.
     fn commit(
         &self,
         lock: StoreLock,
@@ -695,7 +565,6 @@ impl TrustStore {
         }
     }
 
-    /// The store must trust `workdir` after the write.
     fn verify(&self, workdir: &Path) -> anyhow::Result<()> {
         let written = read_store(&self.file).map_err(|()| self.unreadable())?;
         anyhow::ensure!(
@@ -709,9 +578,6 @@ impl TrustStore {
     }
 }
 
-/// `workdir` and its canonical form, when horch may trust them: an
-/// absolute path of an existing directory that is not `/`, the home
-/// directory or an ancestor of it. Else why not.
 fn trust_roots(workdir: &Path, home: &Path) -> Result<Vec<PathBuf>, String> {
     check_workdir(workdir, home)?;
     let roots = with_canonical(workdir);
@@ -729,8 +595,6 @@ fn trust_roots(workdir: &Path, home: &Path) -> Result<Vec<PathBuf>, String> {
     }
 }
 
-/// The first reason `workdir` cannot be a trust root before any path
-/// comparison: not absolute, not a directory, or no known home.
 fn check_workdir(workdir: &Path, home: &Path) -> Result<(), String> {
     let shown = workdir.display();
     if !workdir.is_absolute() {
@@ -746,15 +610,12 @@ fn check_workdir(workdir: &Path, home: &Path) -> Result<(), String> {
     }
 }
 
-/// `path`, then its canonical form when that differs.
 fn with_canonical(path: &Path) -> Vec<PathBuf> {
     let mut all = vec![path.to_path_buf()];
     all.extend(path.canonicalize().ok().filter(|c| c != path));
     all
 }
 
-/// The store keys for `roots`. Else why not: a path that is not valid UTF-8
-/// has no exact key, and a lossy one names a different folder.
 fn trust_keys(roots: &[PathBuf]) -> Result<Vec<String>, String> {
     roots
         .iter()
@@ -769,14 +630,9 @@ fn trust_keys(roots: &[PathBuf]) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// A lock on a store: the directory `<store>.lock`, as proper-lockfile
-/// makes it (Claude's own lock on `.claude.json`). Dropping the guard
-/// removes the directory.
 struct StoreLock(PathBuf);
 
 impl StoreLock {
-    /// Take the lock. A lock directory older than [`LOCK_STALE`] is stale and
-    /// is taken over. `None` when a live lock stays held for [`LOCK_WAIT`].
     fn take(store: &Path) -> anyhow::Result<Option<StoreLock>> {
         let mut dir = store.as_os_str().to_os_string();
         dir.push(".lock");
@@ -803,7 +659,6 @@ impl StoreLock {
     }
 }
 
-/// Whether the lock directory is older than [`LOCK_STALE`].
 fn lock_is_stale(dir: &Path) -> bool {
     std::fs::metadata(dir)
         .and_then(|m| m.modified())
@@ -818,10 +673,6 @@ impl Drop for StoreLock {
     }
 }
 
-/// The new store text in a temporary file next to the store,
-/// `<store>.horch-tmp.<pid>.<12 hex>`, with the store's mode (`0600` for a
-/// new store). On an error path [`TempStore::discard`] removes it and
-/// reports a failure; `Drop` is the last resort and cannot report.
 struct TempStore(Option<PathBuf>);
 
 impl TempStore {
@@ -833,14 +684,12 @@ impl TempStore {
             .ok()
             .and_then(|m| horch_platform::fs::mode_of(&m).ok())
             .map_or(0o600, |mode| mode & 0o7777);
-        // Windows has no modes: the file gets none, as before.
         let has_modes = horch_platform::fs::create_mode(&mut open, mode).is_ok();
         let mut f = open
             .open(&path)
             .with_context(|| format!("creating {}", path.display()))?;
         let temp = TempStore(Some(path.clone()));
         let mut fill = || -> anyhow::Result<()> {
-            // The umask can narrow the mode `open` asked for.
             if has_modes {
                 horch_platform::fs::set_mode(&path, mode)
                     .with_context(|| format!("setting the mode of {}", path.display()))?;
@@ -872,7 +721,6 @@ impl TempStore {
         }
     }
 
-    /// Remove the file. Err names it when it stays.
     fn discard(mut self) -> anyhow::Result<()> {
         let Some(path) = self.0.take() else {
             return Ok(());
@@ -887,7 +735,6 @@ impl TempStore {
         }
     }
 
-    /// `err`, with the failure to remove the file added when it stays.
     fn discard_with(self, err: anyhow::Error) -> anyhow::Error {
         match self.discard() {
             Ok(()) => err,
@@ -895,8 +742,6 @@ impl TempStore {
         }
     }
 
-    /// `self` when `filled` is Ok; else the file is removed and the error
-    /// says so ([`TempStore::discard_with`]).
     fn keep_if(self, filled: anyhow::Result<()>) -> anyhow::Result<TempStore> {
         match filled {
             Ok(()) => Ok(self),
@@ -905,8 +750,6 @@ impl TempStore {
     }
 }
 
-/// `<store>.horch-tmp.<pid>.<12 hex>`: the name of a temporary copy of the
-/// store, next to it. [`remove_dead_temps`] reads this form.
 fn temp_path(store: &Path) -> PathBuf {
     let mut name = store.as_os_str().to_os_string();
     let random = uuid::Uuid::new_v4().simple().to_string();
@@ -918,7 +761,6 @@ fn temp_path(store: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// `text` written to `f` and flushed to disk.
 fn write_synced(f: &mut std::fs::File, path: &Path, text: &str) -> anyhow::Result<()> {
     use std::io::Write as _;
     f.write_all(text.as_bytes())
@@ -926,11 +768,6 @@ fn write_synced(f: &mut std::fs::File, path: &Path, text: &str) -> anyhow::Resul
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Remove the temporary files that a dead horch writer left next to
-/// `store`: only names that are exactly `<store file name>.horch-tmp.<pid>.<12 hex>`,
-/// where the pid is not alive and the file is older than [`TEMP_STALE`].
-/// No other file is touched. The caller holds the store lock. A file that
-/// cannot be removed stays for a later write.
 fn remove_dead_temps(store: &Path) {
     let (Some(dir), Some(name)) = (store.parent(), store.file_name().and_then(|n| n.to_str()))
     else {
@@ -949,7 +786,6 @@ fn remove_dead_temps(store: &Path) {
     }
 }
 
-/// The pid in a temporary store name, `<prefix><pid>.<12 hex>`.
 fn dead_temp_pid(file_name: &std::ffi::OsStr, prefix: &str) -> Option<u32> {
     file_name
         .to_str()
@@ -957,7 +793,6 @@ fn dead_temp_pid(file_name: &std::ffi::OsStr, prefix: &str) -> Option<u32> {
         .and_then(temp_pid)
 }
 
-/// A regular file older than [`TEMP_STALE`].
 fn is_stale_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .ok()
@@ -967,8 +802,6 @@ fn is_stale_file(path: &Path) -> bool {
         .is_some_and(|age| age > TEMP_STALE)
 }
 
-/// The pid of a temporary name's tail, `<pid>.<12 lowercase hex>`; `None`
-/// for any other text.
 fn temp_pid(tail: &str) -> Option<u32> {
     let (pid, hex) = tail.split_once('.')?;
     let hex_ok = hex.len() == 12 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
@@ -988,10 +821,6 @@ impl Drop for TempStore {
     }
 }
 
-/// `text` with `projects["<key>"].hasTrustDialogAccepted` set to `true`
-/// for each key. Only those bytes change: horch inserts members or replaces
-/// one value, and never re-serializes the file, so no other value can change
-/// (a re-parsed float could). Err: why horch cannot edit it safely.
 fn claude_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     let unsafe_edit = || format!("{label} has a shape horch does not edit");
     let doc: serde_json::Value =
@@ -1005,8 +834,6 @@ fn claude_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, 
         .ok_or_else(unsafe_edit)
 }
 
-/// `out` with `projects["<key>"].hasTrustDialogAccepted` set to `true`.
-/// None: the file has a shape horch does not edit.
 fn add_claude_key(out: &str, key: &str) -> Option<String> {
     let top = json_object_at(out, 0)?;
     let accepted = r#""hasTrustDialogAccepted":true"#;
@@ -1025,7 +852,6 @@ fn add_claude_key(out: &str, key: &str) -> Option<String> {
     })
 }
 
-/// What the edited file must parse to: `doc` with each key trusted.
 fn trusted_projects(mut doc: serde_json::Value, keys: &[String]) -> Option<serde_json::Value> {
     for key in keys {
         let projects = doc
@@ -1043,8 +869,6 @@ fn trusted_projects(mut doc: serde_json::Value, keys: &[String]) -> Option<serde
     Some(doc)
 }
 
-/// `text` with each key that is not in `trustedWorkspaces` added to the
-/// front of that list. Only those bytes change, as in [`claude_add_trust`].
 fn antigravity_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     let unsafe_edit = || format!("{label} has a shape horch does not edit");
     let doc: serde_json::Value =
@@ -1061,8 +885,6 @@ fn antigravity_add_trust(text: &str, keys: &[String], label: &str) -> Result<Str
         .ok_or_else(unsafe_edit)
 }
 
-/// `text` with `items` (JSON strings, comma-separated) put in front of its
-/// `trustedWorkspaces` list. None: the file has a shape horch does not edit.
 fn insert_workspaces(text: &str, items: &str) -> Option<String> {
     let top = json_object_at(text, 0)?;
     match json_member(&top, "trustedWorkspaces") {
@@ -1075,8 +897,6 @@ fn insert_workspaces(text: &str, items: &str) -> Option<String> {
     }
 }
 
-/// What the edited file must parse to: `doc` with each key that is not in
-/// `trustedWorkspaces` put in front of that list, and those keys.
 fn trusted_workspaces(
     mut doc: serde_json::Value,
     keys: &[String],
@@ -1097,8 +917,6 @@ fn trusted_workspaces(
     Some((doc, missing))
 }
 
-/// `text` with `items` first in the array that starts at `start`. None when
-/// no array starts there.
 fn append_to_array(text: &str, start: usize, items: &str) -> Option<String> {
     let t = text.as_bytes();
     (t.get(start) == Some(&b'[')).then_some(())?;
@@ -1111,20 +929,15 @@ fn append_to_array(text: &str, start: usize, items: &str) -> Option<String> {
     ))
 }
 
-/// `out` when it parses to `expected`; a guard on the byte edits.
 fn json_check(out: &str, expected: &serde_json::Value) -> Option<String> {
     let got: serde_json::Value = serde_json::from_str(out).ok()?;
     (&got == expected).then(|| out.to_string())
 }
 
-/// `text` as a JSON string.
 fn json_quote(text: &str) -> String {
     serde_json::Value::String(text.to_string()).to_string()
 }
 
-/// The span of the object whose `{` is the first non-space byte at or
-/// after `at`: the offset of `{` and the members, as (key, value start,
-/// value end). `None` when it is not an object.
 fn json_object_at(text: &str, at: usize) -> Option<JsonObject> {
     let t = text.as_bytes();
     let open = json_ws(t, at);
@@ -1133,7 +946,6 @@ fn json_object_at(text: &str, at: usize) -> Option<JsonObject> {
     Some(JsonObject { open, members })
 }
 
-/// The members of an object, from the first byte after its `{`.
 fn json_members(text: &str, mut i: usize) -> Option<Vec<(String, usize, usize)>> {
     let t = text.as_bytes();
     let mut members = Vec::new();
@@ -1152,7 +964,6 @@ fn json_members(text: &str, mut i: usize) -> Option<Vec<(String, usize, usize)>>
     }
 }
 
-/// One `"key": value` member at `i`: the key and the value span.
 fn json_member_at(text: &str, i: usize) -> Option<(String, usize, usize)> {
     let t = text.as_bytes();
     (t.get(i) == Some(&b'"')).then_some(())?;
@@ -1165,14 +976,11 @@ fn json_member_at(text: &str, i: usize) -> Option<(String, usize, usize)> {
     Some((key, start, end))
 }
 
-/// An object in a JSON text: the offset of its `{` and its members.
 struct JsonObject {
     open: usize,
     members: Vec<(String, usize, usize)>,
 }
 
-/// The value span of `key` in `object`. The last one wins, as when the
-/// file is parsed.
 fn json_member(object: &JsonObject, key: &str) -> Option<(usize, usize)> {
     object
         .members
@@ -1182,7 +990,6 @@ fn json_member(object: &JsonObject, key: &str) -> Option<(usize, usize)> {
         .map(|&(_, start, end)| (start, end))
 }
 
-/// `text` with `member` (`"key":value`) first in `object`.
 fn json_insert(text: &str, object: &JsonObject, member: &str) -> String {
     let sep = if object.members.is_empty() { "" } else { "," };
     let at = object.open + 1;
@@ -1196,7 +1003,6 @@ fn json_ws(t: &[u8], mut i: usize) -> usize {
     i
 }
 
-/// The end (past the closing quote) of the string that starts at `i`.
 fn json_string_end(t: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
     loop {
@@ -1208,7 +1014,6 @@ fn json_string_end(t: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// The end of the value that starts at `i`, in text that is valid JSON.
 fn json_value_end(t: &[u8], i: usize) -> Option<usize> {
     match t.get(i)? {
         b'"' => json_string_end(t, i),
@@ -1217,7 +1022,6 @@ fn json_value_end(t: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// The end of the object or array that starts at `i`.
 fn json_container_end(t: &[u8], i: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut j = i;
@@ -1240,7 +1044,6 @@ fn json_container_end(t: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// The end of the number or word that starts at `i`.
 fn json_scalar_end(t: &[u8], i: usize) -> Option<usize> {
     let len = t[i..]
         .iter()
@@ -1249,15 +1052,6 @@ fn json_scalar_end(t: &[u8], i: usize) -> Option<usize> {
     (len > 0).then_some(i + len)
 }
 
-/// `text` with a `[projects."<key>"]` table, `trust_level = "trusted"`, for
-/// each key appended. The text before it stays byte for byte. Err when a
-/// table for a key exists already: an explicit `trust_level = "untrusted"`
-/// is the operator's choice, and any other table horch does not edit. Err
-/// too when horch does not fully understand the file, as an append could
-/// then make it invalid (a duplicate table): it has a multi-line string, or
-/// a line that can define `projects` other than a strict
-/// `[projects."<path>"]` header (see [`toml_projects_line`]). The result
-/// has exactly 1 strict header for each key, or it is Err.
 fn codex_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     codex_editable(text, label)?;
     refuse_existing_levels(&codex_trust_levels(text, keys), label)?;
@@ -1266,7 +1060,6 @@ fn codex_add_trust(text: &str, keys: &[String], label: &str) -> Result<String, S
     Ok(out)
 }
 
-/// Err when horch does not fully understand `text`.
 fn codex_editable(text: &str, label: &str) -> Result<(), String> {
     let multi_line = text.contains("\"\"\"") || text.contains("'''");
     let odd_projects = text
@@ -1286,8 +1079,6 @@ fn codex_editable(text: &str, label: &str) -> Result<(), String> {
     }
 }
 
-/// The `trust_level` of each `[projects."<key>"]` table that `text` has
-/// for a key; `None` for a table without one.
 fn codex_trust_levels(text: &str, keys: &[String]) -> BTreeMap<String, Option<String>> {
     let mut table: Option<String> = None;
     let mut levels: BTreeMap<String, Option<String>> = BTreeMap::new();
@@ -1306,9 +1097,6 @@ fn codex_trust_levels(text: &str, keys: &[String]) -> BTreeMap<String, Option<St
     levels
 }
 
-/// Err when a table for a key exists already: an explicit
-/// `trust_level = "untrusted"` is the operator's choice, and any other table
-/// horch does not edit.
 fn refuse_existing_levels(
     levels: &BTreeMap<String, Option<String>>,
     label: &str,
@@ -1329,8 +1117,6 @@ fn refuse_existing_levels(
     }
 }
 
-/// `text` with a trusted table appended for each key. The text before it
-/// stays byte for byte.
 fn codex_trust_table(text: &str, keys: &[String], label: &str) -> Result<String, String> {
     let mut out = text.to_string();
     if !out.is_empty() {
@@ -1346,7 +1132,6 @@ fn codex_trust_table(text: &str, keys: &[String], label: &str) -> Result<String,
     Ok(out)
 }
 
-/// The strict `[projects."<key>"]` header for `key`.
 fn codex_trust_header(key: &str, label: &str) -> Result<String, String> {
     if key.chars().any(char::is_control) {
         return Err(format!("{label}: the path {key:?} has a control character"));
@@ -1360,7 +1145,6 @@ fn codex_trust_header(key: &str, label: &str) -> Result<String, String> {
     }
 }
 
-/// Err unless `out` has exactly 1 strict header for each key.
 fn check_single_tables(out: &str, keys: &[String], label: &str) -> Result<(), String> {
     let wrong = keys.iter().find_map(|key| {
         let headers = out
@@ -1375,10 +1159,6 @@ fn check_single_tables(out: &str, keys: &[String], label: &str) -> Result<(), St
     wrong.map_or(Ok(()), Err)
 }
 
-/// Whether a trimmed TOML line can define the `projects` table or a key in
-/// it: a header that names `projects` or has an escape (an escape can spell
-/// `projects`), a key `projects` in any quoting, or a quoted key with an
-/// escape. It can say yes to a line that does not; horch then skips.
 fn toml_projects_line(line: &str) -> bool {
     if line.starts_with('[') {
         return line.contains("projects") || line.contains('\\');
@@ -1398,8 +1178,6 @@ fn toml_projects_line(line: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// A temp home with a project directory in it. Nothing here touches the
-    /// real home.
     struct Fake {
         _tmp: tempfile::TempDir,
         home: PathBuf,
@@ -1409,7 +1187,6 @@ mod tests {
     impl Fake {
         fn new() -> Fake {
             let tmp = tempfile::tempdir().unwrap();
-            // Canonical, so the workdir has one form and one key.
             let root = tmp.path().canonicalize().unwrap();
             let home = root.join("home");
             let project = home.join("projects/alpha");
@@ -1488,7 +1265,6 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        // No temp file and no lock directory stays behind.
         let mut left: Vec<_> = std::fs::read_dir(&f.home)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1496,8 +1272,6 @@ mod tests {
         left.sort();
         assert_eq!(left, [".claude.json", "projects"]);
 
-        // An entry for the project without the key gets the key, and keeps
-        // its other keys.
         let mut partial = before.clone();
         partial["projects"][f.project.to_string_lossy().as_ref()] =
             serde_json::json!({"allowedTools": ["Read"], "hasTrustDialogAccepted": false});
@@ -1510,8 +1284,6 @@ mod tests {
             serde_json::Value::Bool(true);
         assert_eq!(json(&f.claude_file()), partial);
 
-        // A number serde_json cannot round-trip keeps its bytes: horch edits
-        // the text, it does not re-serialize it.
         let long = r#"{"ratio": 0.12345678901234567890123, "big": 123456789012345678901234567890}"#;
         std::fs::write(f.claude_file(), long).unwrap();
         assert!(matches!(
@@ -1546,7 +1318,6 @@ mod tests {
             .unwrap();
         assert_eq!(before, after);
 
-        // No file: Claude never ran with this config dir. Skip, write nothing.
         std::fs::remove_file(f.claude_file()).unwrap();
         let TrustWrite::Skipped(why) = f.ensure(HarnessKind::Claude, &f.project) else {
             panic!("expected a skip");
@@ -1569,8 +1340,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
     }
 
-    /// opencode, pi, prime and the smoke harness show no trust dialog: the
-    /// skip names the harness, and no store is created.
     #[test]
     fn arc_29_a_harness_without_a_trust_step_is_skipped_by_name() {
         let f = Fake::new();
@@ -1594,7 +1363,6 @@ mod tests {
     fn arc_29_codex_table_appended_and_rest_of_file_byte_identical() {
         let f = Fake::new();
         std::fs::create_dir_all(f.codex_file().parent().unwrap()).unwrap();
-        // No final newline, a comment, odd spacing: all kept byte for byte.
         let text = "model = \"gpt-5\"  # mine\n\n[projects.\"/elsewhere\"]\ntrust_level = \"trusted\"\n[tui]\nx=1";
         std::fs::write(f.codex_file(), text).unwrap();
         assert_eq!(
@@ -1611,14 +1379,12 @@ mod tests {
             )
         );
         assert_eq!(f.state(HarnessKind::Codex), TrustState::Trusted);
-        // A second launch writes nothing.
         assert_eq!(
             f.ensure(HarnessKind::Codex, &f.project),
             TrustWrite::AlreadyTrusted
         );
         assert_eq!(std::fs::read_to_string(f.codex_file()).unwrap(), after);
 
-        // No file: horch creates it with only the table.
         std::fs::remove_file(f.codex_file()).unwrap();
         assert!(matches!(
             f.ensure(HarnessKind::Codex, &f.project),
@@ -1697,7 +1463,6 @@ mod tests {
                 );
             }
         }
-        // A path that is not an existing directory, or is relative.
         for dir in [
             f.home.join("missing"),
             f.claude_file(),
@@ -1706,7 +1471,6 @@ mod tests {
             let got = f.ensure(HarnessKind::Claude, &dir);
             assert!(matches!(got, TrustWrite::Skipped(_)), "{dir:?}: {got:?}");
         }
-        // The home through a symlink is still the home.
         #[cfg(unix)]
         {
             let link = f.project.join("home-link");
@@ -1736,8 +1500,6 @@ mod tests {
             &mut || {
                 calls += 1;
                 if calls == 1 {
-                    // Another Claude session saves its config between horch's
-                    // read and its rename.
                     std::fs::write(&file, r#"{"numStartups": 2, "theirs": true}"#).unwrap();
                 }
             },
@@ -1754,8 +1516,6 @@ mod tests {
             })
         );
 
-        // A store that changes on every try fails after 3 tries, and leaves
-        // the other writer's content.
         std::fs::write(f.claude_file(), "{}").unwrap();
         let mut n = 0;
         let err = ensure_trusted_with(
@@ -1780,7 +1540,6 @@ mod tests {
         let f = Fake::new();
         std::fs::write(f.claude_file(), "{}").unwrap();
         let lock = f.home.join(".claude.json.lock");
-        // A stale lock (older than 10 s): horch takes it and removes it after.
         std::fs::create_dir(&lock).unwrap();
         let old = SystemTime::now() - std::time::Duration::from_secs(60);
         std::fs::File::open(&lock)
@@ -1792,7 +1551,6 @@ mod tests {
             TrustWrite::Written(_)
         ));
         assert!(!lock.exists());
-        // A fresh lock that stays held: horch skips, writes nothing.
         std::fs::write(f.claude_file(), "{}").unwrap();
         std::fs::create_dir(&lock).unwrap();
         let TrustWrite::Skipped(why) = f.ensure(HarnessKind::Claude, &f.project) else {
@@ -1833,14 +1591,11 @@ mod tests {
         let raw = {
             use std::os::windows::ffi::OsStringExt as _;
             let mut name: Vec<u16> = "project-".encode_utf16().collect();
-            name.push(0xD800); // an unpaired surrogate
+            name.push(0xD800);
             root.join(std::ffi::OsString::from_wide(&name))
         };
-        // The key builder refuses the path on every system.
         assert!(trust_keys(std::slice::from_ref(&raw)).is_err());
 
-        // Where the file system takes the name (Linux; APFS refuses it), the
-        // whole write skips and the store is not touched.
         let home = root.join("home");
         let lossy_sibling = root.join("project-\u{fffd}");
         std::fs::create_dir_all(&home).unwrap();
@@ -1886,7 +1641,6 @@ mod tests {
             assert!(matches!(got, TrustWrite::Skipped(_)), "{before}: {got:?}");
             assert_eq!(&std::fs::read_to_string(f.codex_file()).unwrap(), before);
         }
-        // A string that only looks like a header is not trust.
         assert_eq!(f.state(HarnessKind::Codex), TrustState::Untrusted);
     }
 
@@ -1986,7 +1740,6 @@ mod tests {
             ));
         }
     }
-    // ---- Pins for the trust writer and scanner split (#198) ----
 
     fn keys(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|p| p.to_string()).collect()
@@ -2015,7 +1768,6 @@ mod tests {
                 "[last]"
             ]
         );
-        // Up to 2 quotes before the closing delimiter are content.
         assert_eq!(
             toml_lines("v = \"\"\"a\"\"\"\"\n[h]"),
             ["v = \"\"\"a\"\"\"\"", "[h]"]
@@ -2201,7 +1953,6 @@ mod tests {
         );
         assert_eq!(got[3].reason, "horch cannot read where pi keeps its trust");
 
-        // A directory where the store should be cannot be read.
         std::fs::create_dir_all(f.claude_file()).unwrap();
         std::fs::create_dir_all(f.codex_file()).unwrap();
         std::fs::create_dir_all(f.home.join(".gemini/antigravity-cli/settings.json")).unwrap();
@@ -2220,7 +1971,6 @@ mod tests {
             ]
         );
 
-        // CLAUDE_CONFIG_DIR moves the Claude store.
         let cfg = f.home.join("cfg");
         std::fs::create_dir_all(&cfg).unwrap();
         std::fs::write(
@@ -2373,7 +2123,6 @@ mod tests {
         assert_eq!(&dup_text[s..e], "22", "the last one wins");
         assert!(json_object_at("{}", 0).unwrap().members.is_empty());
         assert!(json_object_at(" { } ", 0).unwrap().members.is_empty());
-        // From an offset.
         let nested = r#"{"o":{"i":1}}"#;
         let inner_at = nested.find("{\"i").unwrap();
         assert_eq!(json_object_at(nested, inner_at).unwrap().members.len(), 1);
@@ -2464,7 +2213,6 @@ mod tests {
             codex_trust(Some(&quoted), &roots(&["/a\"b\\c"])).state,
             TrustState::Trusted
         );
-        // Two copies of a key would make 2 tables.
         let dup = codex_add_trust("", &keys(&["/p", "/p"]), "L").unwrap_err();
         assert_eq!(dup, "L would have 2 tables for \"/p\"; horch wrote nothing");
     }
@@ -2499,7 +2247,6 @@ mod tests {
     #[test]
     fn ensure_skips_for_a_missing_directory_or_store() {
         let f = Fake::new();
-        // No directory for the store.
         let cfg = f.home.join("no-cfg");
         let got =
             ensure_trusted(HarnessKind::Claude, &f.project, &f.home, Some(&cfg), None).unwrap();
@@ -2510,7 +2257,6 @@ mod tests {
                 cfg.join(".claude.json").display()
             ))
         );
-        // Claude and Antigravity never create a store.
         assert_eq!(
             f.ensure(HarnessKind::Claude, &f.project),
             TrustWrite::Skipped(
@@ -2526,13 +2272,11 @@ mod tests {
                     .into()
             )
         );
-        // A store that is not JSON is the store's problem.
         std::fs::write(f.claude_file(), "{oops").unwrap();
         assert_eq!(
             f.ensure(HarnessKind::Claude, &f.project),
             TrustWrite::Skipped("$CLAUDE_CONFIG_DIR/.claude.json is not valid JSON".into())
         );
-        // Codex creates its config.toml when its directory exists.
         std::fs::create_dir_all(f.codex_file().parent().unwrap()).unwrap();
         assert_eq!(
             f.ensure(HarnessKind::Codex, &f.project),
@@ -2632,19 +2376,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&store).unwrap(), "again");
         assert!(!path.exists());
 
-        // Discarding a file that is already gone is not an error.
         let temp = TempStore::write(&store, "x").unwrap();
         std::fs::remove_file(temp.0.as_ref().unwrap()).unwrap();
         temp.discard().unwrap();
-        // A dropped temp store removes its file.
         let temp = TempStore::write(&store, "y").unwrap();
         let path = temp.0.clone().unwrap();
         drop(temp);
         assert!(!path.exists());
     }
 
-    /// The temp copy takes the permission bits of the store, whatever the
-    /// umask says, and `0600` when there is no store yet.
     #[cfg(unix)]
     #[test]
     fn a_temp_store_takes_the_mode_of_the_store_else_0600() {
@@ -2664,9 +2404,6 @@ mod tests {
         );
     }
 
-    /// A temp store is named `<store>.horch-tmp.<pid>.<12 hex>`, next to the
-    /// store: the name the sweep of a dead writer's files reads as this
-    /// process's. Two writes never share a name.
     #[test]
     fn a_temp_store_is_named_as_the_sweep_of_dead_writers_reads_it() {
         let tmp = tempfile::tempdir().unwrap();

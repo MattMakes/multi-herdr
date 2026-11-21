@@ -1,7 +1,3 @@
-//! `horch idea revise <id> <text>`: send an idea back with what to change
-//! (`docs/specs/fleetd/design.md`, "Quick approval stays with you"). It
-//! sends `idea_revise` to fleetd.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -18,7 +14,6 @@ pub struct ReviseArgs {
     pub text: String,
 }
 
-/// `horch idea revise`.
 pub fn run(ctx: &RuntimeContext, args: ReviseArgs) -> Result<ExitCode> {
     let mut payload = Map::new();
     payload.insert("idea".into(), json!(args.id));

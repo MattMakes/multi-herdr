@@ -8,16 +8,12 @@ use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
 };
 use horch_platform::{group, process};
 
-/// A wrapper `sh` that leads its own group, as the launcher starts it, with
-/// the pid of the process that it printed first. Drop kills both.
 struct Wrapper {
     child: Child,
     printed: u32,
 }
 
 impl Wrapper {
-    /// Start `sh -c <script> <arg>`. The script prints 1 pid on its first
-    /// line. Its stdin is a pipe that stays open until the test closes it.
     fn start(script: &str, arg: &str) -> Wrapper {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", script, arg])
@@ -33,7 +29,6 @@ impl Wrapper {
         Wrapper { child, printed }
     }
 
-    /// A wrapper that starts `sleep` as its child.
     fn with_sleep() -> Wrapper {
         Wrapper::start("sleep 30 & echo $!; wait", "")
     }
@@ -61,7 +56,6 @@ fn kill(pid: u32) {
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
 }
 
-/// The platform facts, except that the parent of 1 pid cannot be read.
 struct UnreadableParent {
     of: u32,
 }
@@ -165,7 +159,6 @@ fn child_of_the_wrapper_is_in_the_attempt() {
 
 #[test]
 fn grandchild_in_another_group_is_in_the_attempt_by_its_parent_chain() {
-    // The child of the wrapper leads a new group, then starts `sleep`.
     const PERL: &str = r#"$| = 1; setpgrp(0, 0); my $p = fork(); if ($p == 0) { exec("sleep", "30"); } print "$p\n"; waitpid($p, 0);"#;
     let w = Wrapper::start(r#"perl -e "$0" & wait"#, PERL);
     let grandchild = w.printed;

@@ -63,8 +63,6 @@ def handler(args: argparse.Namespace) -> int:
     return action(args)
 
 
-# ---------------------------------------------------------------- --render
-
 def _render_line(f: dict) -> str:
     if not f.get("file"):
         return "failed or silent"
@@ -101,8 +99,6 @@ def _note_printer(args: argparse.Namespace) -> Any:
     return print
 
 
-# ---------------------------------------------------------------- --list
-
 def _recipe_row(loop: Any, name: str) -> dict:
     try:
         rec = loop.load_recipe(name)
@@ -132,8 +128,6 @@ def _list(args: argparse.Namespace | None = None) -> int:
     emit(result, args if args is not None else argparse.Namespace(), text="\n".join(lines))
     return 0
 
-
-# ---------------------------------------------------------------- search
 
 def _forge_kwargs(args: argparse.Namespace, refs: Any, cat: str | None) -> dict:
     return dict(target=args.target, alts=args.alts, refs=refs, budget=args.budget, pop=args.pop, keep=args.keep,

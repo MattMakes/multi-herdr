@@ -1,72 +1,35 @@
-//! The repair pass and the failure limit of a repair attempt (tickets 15 and 34).
-//!
-//! The repair pass is FM-6, the outside end: when the agent process of a
-//! push attempt exits with commits since its base, and with no
-//! `result.json` and no question file, the wrapper (`horch worker`) runs 1
-//! short resume of the same session with [`REPAIR_LINE`], then exits. The
-//! repair is 1 event on the attempt, written before the resume, so 1
-//! attempt never gets a second repair. The repair burns no attempt.
-//!
-//! The failure limit is the rule of a resolver or fix attempt of a `done`
-//! task (`docs/specs/fleetd/design.md`, "Landing a task branch on its
-//! feature branch", RR-6): each failed attempt adds 1 to `repair_attempts`
-//! of its task branch, and [`next_repair`] says when the next attempt
-//! starts. At `max_attempts` of the task, no attempt starts, and the branch
-//! has 1 item on the needs-you list.
-
 use super::retry;
 
-/// The fixed line of the repair resume.
 pub const REPAIR_LINE: &str = "Write the result of your task now: run `horch result`.";
 
-/// The cause of the 1 event on the attempt that records its repair.
 pub const REPAIR_CAUSE: &str = "repair pass";
 
-/// What the wrapper knows about 1 push attempt when its agent ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RepairFacts {
-    /// The agent process exited.
     pub exited: bool,
-    /// The branch of the attempt has commits since its base.
     pub commits_since_base: bool,
-    /// `outbox/result.json` of the attempt exists.
     pub result_json: bool,
-    /// `outbox/questions/` of the attempt holds a question file.
     pub question_file: bool,
-    /// The attempt has the event of an earlier repair.
     pub repaired: bool,
 }
 
-/// The attempt gets its 1 repair: the agent exited with commits, with no
-/// result and no question file, and no earlier repair.
 pub fn needs_repair(f: &RepairFacts) -> bool {
     f.exited && f.commits_since_base && !f.result_json && !f.question_file && !f.repaired
 }
 
-/// What the repair pass reads and does for 1 attempt.
 pub trait RepairPort {
     type Error;
-    /// The facts of the attempt now.
     fn facts(&mut self) -> Result<RepairFacts, Self::Error>;
-    /// Write the 1 event of the repair on the attempt.
     fn record(&mut self) -> Result<(), Self::Error>;
-    /// Resume the session of the agent with `line`, and wait for it. `None`:
-    /// a signal ended it.
     fn resume(&mut self, line: &str) -> Result<Option<i32>, Self::Error>;
 }
 
-/// What [`repair_pass`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Repaired {
-    /// The attempt needs no repair.
     No,
-    /// The resume ran, with the exit code of the resumed agent.
     Resumed(Option<i32>),
 }
 
-/// The repair pass of 1 attempt: when [`needs_repair`], record the repair,
-/// then resume the session with [`REPAIR_LINE`]. The record comes first,
-/// so a crash during the resume gives no second repair.
 pub fn repair_pass<P: RepairPort>(port: &mut P) -> Result<Repaired, P::Error> {
     if !needs_repair(&port.facts()?) {
         return Ok(Repaired::No);
@@ -75,37 +38,22 @@ pub fn repair_pass<P: RepairPort>(port: &mut P) -> Result<Repaired, P::Error> {
     Ok(Repaired::Resumed(port.resume(REPAIR_LINE)?))
 }
 
-/// The kind of the needs-you item of a task branch at its repair limit.
-/// Its key is `<kind>:<branch>`.
 pub const REPAIR_LIMIT_KIND: &str = "repair_limit";
 
-/// The repair count of 1 task branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepairCount {
-    /// `repair_attempts` of the branch.
     pub failed: i64,
-    /// `max_attempts` of the task.
     pub max_attempts: i64,
-    /// The fleet clock of the last counted failure of the current need of
-    /// repair; `None` when no attempt of it failed.
     pub failed_at: Option<i64>,
 }
 
-/// What the repair pass does for 1 branch that waits for a repair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NextRepair {
-    /// Start the next attempt now.
     Start,
-    /// The backoff holds the next attempt until this fleet clock.
     Wait { not_before: i64 },
-    /// The branch is at the limit: no attempt, 1 needs-you item.
     Limit,
 }
 
-/// The next repair of a branch at fleet clock `clock`. After `failed`
-/// failures, the next attempt waits `backoff_s[failed - 1]` seconds from
-/// the last failure (the backoff of rung 6). A count of 0, after
-/// `horch task requeue`, waits for nothing.
 pub fn next_repair(n: &RepairCount, backoff_s: &[u64], clock: i64) -> NextRepair {
     if n.failed >= n.max_attempts {
         return NextRepair::Limit;
@@ -216,7 +164,6 @@ mod tests {
         }
     }
 
-    /// A port that only counts its calls.
     struct Counting {
         facts: RepairFacts,
         calls: Vec<String>,

@@ -1,46 +1,3 @@
-//! Prime Agent-specific glue: containing its daemon, and finding the session it
-//! wrote. Written for the Rust build of Prime Agent (0.10.0).
-//!
-//! Prime Agent supervises its own agents in a background daemon that outlives
-//! the CLI. herdr already supervises - a pane IS the agent's lifetime - so left
-//! alone, `horch done` closing a worker's pane would leave that worker's Prime
-//! daemon running, and a fleet would accumulate one per spawn.
-//!
-//! Each launch gets its own launch dir, `<state_root>/prime/<id>` (`<id>`: 12
-//! hex digits), and its own daemon socket in it,
-//! `<launch>/prime-agent-<uid>/d.sock`, passed as `--daemon-socket`. The
-//! socket's dir has that name because `prime-agent shutdown` and `prime-agent
-//! status` ignore `--daemon-socket`: they act on every daemon whose socket is
-//! in `$TMPDIR/prime-agent-<uid>/`. With `TMPDIR=<launch>/` they act on this
-//! launch's daemon and nothing else, so [`Daemon::finish`] stops exactly this
-//! pane's daemon and leaves the operator's own alone. A bare `prime-agent
-//! shutdown` would stop every agent on the machine, including other panes in
-//! the same fleet.
-//!
-//! Prime reports the pane's agent state to herdr itself: the Rust daemon has a
-//! built-in herdr reporter (source `herdr:pi`) that reads the pane's `HERDR_*`
-//! env and cannot be turned off. horch only releases the pane's agent when the
-//! pane finishes, as a clean-up after a crash.
-//!
-//! Sessions are the other half. Prime has no `--session-id` (pi does), so horch
-//! cannot name the session before launch. It can own the directory: with
-//! `--session-dir` pointing somewhere only this launch writes, the session file
-//! that appears there IS this worker's, with no timestamps or project paths to
-//! disambiguate.
-//!
-//! The third part is the agent dir (design `ai_docs/plans/wave2/w1/design.md`
-//! §6.9). Prime reads its settings and `models.json` from
-//! `$PRIME_AGENT_CODING_AGENT_DIR`, so each launch gets its own: every entry
-//! of the operator's dir is a link (`auth.json` included: Prime writes a
-//! refreshed token through the link onto the operator's file), and only
-//! `settings.json` and `models.json` are generated. The fleet window goes in a
-//! `models.json` that holds the override and nothing else, and only when the
-//! operator's own files set no window for the model's provider.
-//!
-//! Launch dirs of Prime 0.9.4 runs have the socket at `<launch>/d.sock`. The
-//! sweep and [`finish_pane`] handle that layout too; the Rust `prime-agent`
-//! cannot name or stop such a daemon, so horch leaves a live one running.
-
 use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -57,27 +14,17 @@ use crate::roster::{HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
-/// The daemon socket's file name, in the launch's scan dir (0.9.4: in the
-/// launch dir itself).
 const SOCKET: &str = "d.sock";
-/// The longest socket path `Daemon::install` accepts: a Unix socket path holds
-/// at most 104 bytes on macOS, the last one a NUL.
 pub const MAX_SOCKET_BYTES: usize = 103;
 
-/// The dir name `prime-agent status` and `shutdown` scan under `$TMPDIR`:
-/// `prime-agent-<uid>`, with the real uid of this process.
 pub fn scan_dir_name() -> String {
     format!("prime-agent-{}", real_uid())
 }
 
-/// The real uid, or 0 where the OS has no uid (Windows).
 fn real_uid() -> u32 {
     horch_platform::fs::current_uid().unwrap_or(0)
 }
 
-/// The daemon socket of the launch dir `launch`, if it has one: the Rust
-/// layout `<launch>/prime-agent-<uid>/d.sock`, else the 0.9.4 layout
-/// `<launch>/d.sock`.
 fn launch_socket(launch: &Path) -> Option<PathBuf> {
     [
         launch.join(scan_dir_name()).join(SOCKET),
@@ -87,26 +34,17 @@ fn launch_socket(launch: &Path) -> Option<PathBuf> {
     .find(|s| std::fs::symlink_metadata(s).is_ok())
 }
 
-/// One Prime Agent launch's dir, private daemon socket and session directory.
 #[derive(Debug, Clone)]
 pub struct Daemon {
     launch: PathBuf,
     socket: PathBuf,
     sessions: PathBuf,
-    /// The `prime-agent` program that answers `shutdown` and `status` for
-    /// [`Daemon::finish`].
     bin: PathBuf,
-    /// When this launch reserved its socket. Its daemon starts later; a
-    /// process that started earlier is not it.
     installed: SystemTime,
 }
 
 impl Daemon {
-    /// Reserve a launch dir, a socket and a session directory. `bin` is the
-    /// `prime-agent` program the launch runs. Fails when the socket path is
-    /// longer than [`MAX_SOCKET_BYTES`].
     pub fn install(state_root: &Path, bin: &Path) -> Result<Daemon> {
-        // No role slug: the socket path must stay short.
         let id: String = crate::mint_uuid()
             .chars()
             .filter(char::is_ascii_hexdigit)
@@ -124,12 +62,9 @@ impl Daemon {
             );
         }
         let sessions = launch.join("sessions");
-        // Owner only: the session files hold the whole conversation.
         crate::fsx::ensure_private_dir(&launch)?;
         crate::fsx::ensure_private_dir(&scan)?;
         crate::fsx::ensure_private_dir(&sessions)?;
-        // Who runs this launch, so a later launch's sweep leaves its agent
-        // dir alone while it runs.
         let pid = std::process::id();
         let started = crate::procid::start_time(pid)
             .map(|t| t.to_string())
@@ -148,9 +83,6 @@ impl Daemon {
         })
     }
 
-    /// The daemon of an earlier launch in `launch`, with `socket` from
-    /// [`launch_socket`] and its launcher file's time as the install time.
-    /// None without a launcher file: that launch's start is unknown.
     fn of_launch(launch: &Path, socket: PathBuf, bin: &Path) -> Option<Daemon> {
         let installed = std::fs::metadata(launch.join(LAUNCHER))
             .and_then(|m| m.modified())
@@ -172,60 +104,27 @@ impl Daemon {
         &self.sessions
     }
 
-    /// This launch's dir: it holds the socket's scan dir, the sessions and
-    /// the agent dir.
     pub fn launch_dir(&self) -> &Path {
         &self.launch
     }
 
-    /// This launch's agent dir.
     fn agent_dir(&self) -> PathBuf {
         self.launch.join(AGENT_DIR)
     }
 
-    /// The `TMPDIR` that scopes `prime-agent shutdown` and `status` to this
-    /// launch's scan dir.
     fn tmpdir(&self) -> std::ffi::OsString {
         let mut dir = self.launch.clone().into_os_string();
         dir.push("/");
         dir
     }
 
-    /// Stop this launch's daemon, and only this one.
-    ///
-    /// No process listens on the socket: there is no daemon (Prime never
-    /// started one, or it stopped and left the socket file). Else first
-    /// `TMPDIR=<launch>/ prime-agent shutdown --force --json`: it stops the
-    /// supervisor and its workers, and the stop counts only when its
-    /// `stopped` list names this socket. The agent dir, which holds the
-    /// worker records, is removed only after a stop.
-    ///
-    /// When that stop fails: `TMPDIR=<launch>/ prime-agent status --json`
-    /// names the pid; a pid can be given to another program once its
-    /// process ends. So `status` is asked twice, and SIGTERM goes only to a
-    /// pid that both answers name with the same start time, and that
-    /// started after [`Daemon::install`]: horch never stops a daemon it did
-    /// not start, such as the operator's own. A SIGTERM to the supervisor
-    /// also ends its workers within about 4 s. Otherwise the daemon is left
-    /// running, and the reason is logged. A daemon left running keeps its
-    /// socket and its agent dir.
-    ///
-    /// Residual risk (U-63): Prime reports no start time of its own.
-    /// Prime takes the pid from `lsof`: a process that holds the socket. So a
-    /// wrong SIGTERM needs a process that started after this launch, got the
-    /// dead daemon's pid and holds this launch's private socket.
     pub fn finish(&self) {
         if let Some(line) = self.stop() {
-            // Not `eprintln!`: after a hangup stderr is gone, and a failed
-            // write must not end the cleanup.
             use std::io::Write as _;
             let _ = writeln!(std::io::stderr(), "{line}");
         }
     }
 
-    /// [`Daemon::finish`] without the log: the line that says why the
-    /// daemon was left running, or None when it is gone and the files are
-    /// removed.
     pub(crate) fn stop(&self) -> Option<String> {
         let problem = listening(&self.socket)
             .then(|| self.shutdown_problem())
@@ -236,12 +135,9 @@ impl Daemon {
         problem
     }
 
-    /// Why the daemon was left running after a stop, or None when it is
-    /// gone.
     fn shutdown_problem(&self) -> Option<String> {
         match self.shutdown() {
             Stop::Stopped => None,
-            // The stop process goes on alone; a later sweep cleans up.
             Stop::TimedOut => Some(format!(
                 "horch: the Prime stop for {} still runs after {} s; going on",
                 self.socket.display(),
@@ -253,24 +149,12 @@ impl Daemon {
 
     fn remove_launch_files(&self) {
         let _ = std::fs::remove_file(&self.socket);
-        // The scan dir of the Rust layout, when it is empty now.
         if let Some(scan) = self.socket.parent().filter(|s| *s != self.launch) {
             let _ = std::fs::remove_dir(scan);
         }
-        // The agent dir links the operator's live `auth.json`; it is not
-        // needed after the pane. `remove_dir_all` does not follow links. The
-        // sessions stay for a resume.
         let _ = std::fs::remove_dir_all(self.agent_dir());
     }
 
-    /// `TMPDIR=<launch>/ prime-agent shutdown --force --json`, at most
-    /// [`STOP_WAIT`]. Without `--force` Prime refuses ("confirmation
-    /// required").
-    ///
-    /// The stop process runs in its own session (`spawn_detached`): `horch
-    /// done` in a Prime pane runs under the daemon's worker, and the stop
-    /// ends that worker; the stop must not end with it (live check X2:
-    /// prime-6). horch waits for it, so it is not a background job.
     fn shutdown(&self) -> Stop {
         let mut cmd = horch_platform::start::command(&self.bin);
         cmd.args(["shutdown", "--force", "--json"])
@@ -299,9 +183,6 @@ impl Daemon {
         }
     }
 
-    /// SIGTERM to the supervisor `status` names, under the rules above.
-    /// The line that says why it was left running, or None after the
-    /// SIGTERM.
     fn terminate_supervisor(&self) -> Option<String> {
         let Some(pid) = self.daemon_pid() else {
             return Some(format!(
@@ -321,8 +202,6 @@ impl Daemon {
         }
     }
 
-    /// The pid of the Prime daemon listening on this launch's socket, from
-    /// `TMPDIR=<launch>/ prime-agent status --json`.
     fn daemon_pid(&self) -> Option<i32> {
         let mut cmd = horch_platform::start::command(&self.bin);
         cmd.args(["status", "--json"])
@@ -338,11 +217,6 @@ impl Daemon {
     }
 }
 
-/// Whether a process listens on the Unix socket at `socket`. No file, a
-/// refused connection or a file that is not a socket: no. Any other error
-/// counts as yes, so the stop rules decide.
-/// Where the OS has no Unix socket (Windows), any file at `socket` counts as
-/// yes.
 fn listening(socket: &Path) -> bool {
     match horch_platform::ipc::LocalStream::connect(socket) {
         Ok(_) => true,
@@ -358,17 +232,12 @@ fn listening(socket: &Path) -> bool {
     }
 }
 
-/// How the wait for a stop process ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Waited {
-    /// It exited; whether with success.
     Exited(bool),
-    /// Still running at the limit: it goes on alone.
     TimedOut,
 }
 
-/// Wait for the stop process at most `limit`. On timeout the process goes
-/// on alone.
 fn wait_for_stop(child: &mut std::process::Child, limit: std::time::Duration) -> Waited {
     let deadline = std::time::Instant::now() + limit;
     match crate::runtime::process::wait_until(child, deadline, std::time::Duration::from_millis(50))
@@ -379,24 +248,15 @@ fn wait_for_stop(child: &mut std::process::Child, limit: std::time::Duration) ->
     }
 }
 
-/// How long horch waits for `prime-agent shutdown`: it stopped a daemon and
-/// its worker in about 2 s on 0.10.0; a loaded machine is slower.
 pub const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// What [`Daemon::shutdown`] gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stop {
-    /// The `stopped` list names the socket.
     Stopped,
-    /// Prime's stop could not run or did not stop it: the caller falls back.
     Failed,
-    /// Still running at [`STOP_WAIT`]: it goes on alone.
     TimedOut,
 }
 
-/// Whether the `prime-agent shutdown --json` output `json`
-/// (`{"stopped": [{"socketPath": .., "action": ..}], "failed": [..]}`)
-/// names `socket` as stopped.
 pub(crate) fn stopped_names(json: &str, socket: &Path) -> bool {
     serde_json::from_str::<Value>(json).is_ok_and(|doc| {
         doc.get("stopped")
@@ -411,8 +271,6 @@ pub(crate) fn stopped_names(json: &str, socket: &Path) -> bool {
     })
 }
 
-/// Whether Prime's path `reported` names `socket`: equal, or equal once both
-/// dirs are resolved (a state root under a linked dir such as macOS `/tmp`).
 fn same_socket(reported: &Path, socket: &Path) -> bool {
     if reported == socket {
         return true;
@@ -423,17 +281,12 @@ fn same_socket(reported: &Path, socket: &Path) -> bool {
         && dir(reported) == dir(socket)
 }
 
-/// How far a start time on the wall clock can be off: Linux counts it from a
-/// boot time in whole seconds.
 const START_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn pid_start(pid: i32) -> Option<u64> {
     u32::try_from(pid).ok().and_then(crate::procid::start_time)
 }
 
-/// Whether [`Daemon::finish`] may signal the daemon that `status` named:
-/// `first` and `again` are the 2 answers, each a pid and its start time.
-/// Split out so the rules are testable without Prime installed.
 pub(crate) fn may_stop(
     first: (i32, Option<u64>),
     again: Option<(i32, Option<u64>)>,
@@ -443,7 +296,6 @@ pub(crate) fn may_stop(
     let again = again.ok_or("a second status call does not name it")?;
     require(again.0 == first.0, "a second status call names another pid")?;
     if !horch_platform::rest::STATUS_HAS_START_TIMES {
-        // No start times here: the pid is all there is (see `procid`).
         Ok(())
     } else {
         require(
@@ -465,10 +317,6 @@ fn require(ok: bool, why: &'static str) -> std::result::Result<(), &'static str>
     }
 }
 
-/// The pid that the `prime-agent status --json` output `json` gives for
-/// `socket`. Split out from [`Daemon::daemon_pid`] so the matching is
-/// testable without Prime installed. A record with no pid (`orphan-file`: a
-/// socket file with no daemon) gives None.
 pub(crate) fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
     let records: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
     records
@@ -479,19 +327,10 @@ pub(crate) fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
                 .then(|| r.get("pid")?.as_i64())
                 .flatten()
         })
-        // A pid that names no single process (0, or one that turns negative
-        // as a `pid_t`) names no daemon.
         .and_then(|pid| u32::try_from(pid).ok().and_then(crate::procid::os_pid))
 }
 
-/// SIGTERM to `pid` while it still has start time `started` (see
-/// [`crate::procid::signal_same`]).
-/// Where the status gives no start times (Windows), `taskkill` stops it by
-/// its pid.
 fn terminate(pid: i32, started: Option<u64>) {
-    // SIGTERM, not SIGKILL: the daemon flushes its sessions on the way out, and
-    // a session file half-written is a resume that fails later in a pane nobody
-    // is watching.
     match (u32::try_from(pid), started) {
         (Ok(pid), Some(started)) => {
             if horch_platform::signal::terminate_politely(pid, started).is_ok() {
@@ -506,10 +345,6 @@ fn terminate(pid: i32, started: Option<u64>) {
         .status();
 }
 
-/// The newest session file Prime wrote into a directory this launch owns.
-///
-/// No filtering by project or time: nothing else writes here, so whatever
-/// appears is this worker's session.
 pub fn find_session(sessions_dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(sessions_dir)
         .ok()?
@@ -520,33 +355,19 @@ pub fn find_session(sessions_dir: &Path) -> Option<PathBuf> {
             let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
             is_session.then_some((modified, path))
         })
-        // The first of equally new files wins.
         .min_by_key(|(modified, _)| std::cmp::Reverse(*modified))
         .map(|(_, path)| path)
 }
 
-/// The variable Prime reads its agent dir from (0.9.4 `dist/config.js`).
 pub const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
-/// The 2 agent-dir files a launch generates; every other entry is a link.
 const SETTINGS: &str = "settings.json";
 const MODELS: &str = "models.json";
-/// Always linked, also when the source has none: a login in the pane then
-/// lands in the operator's file, not in a dir that is removed.
 const AUTH: &str = "auth.json";
-/// Prime's global harness state dir (0.9.4 `core/refinement/refinement.js`).
 const HARNESS_STATE: &str = "harness";
-/// The launch's agent dir and the file that names its launcher.
 const AGENT_DIR: &str = "agent";
 const LAUNCHER: &str = "launcher";
-/// The herdr pane a launch ran in, for [`finish_pane`].
 const PANE: &str = "pane";
 
-/// The agent dir a launch links from: the teammate's own
-/// `PRIME_AGENT_CODING_AGENT_DIR`, else the inherited one, else
-/// `~/.prime/agent`. A leading `~/` is expanded against home, as Prime does.
-/// An inherited value inside `<state_root>/prime/` is another launch's agent
-/// dir (a pane started from a Prime pane) and is ignored. Absolute, so a
-/// link to an entry resolves from the launch's agent dir too.
 pub(crate) fn source_agent_dir(ctx: &RuntimeContext, teammate: &Teammate) -> PathBuf {
     let home = &ctx.paths.home;
     let expand = |p: &str| crate::roster::expand_home(p, Some(home));
@@ -572,13 +393,6 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Clean up earlier launches under `prime_root` whose launcher is gone: for
-/// panes killed before [`Daemon::finish`] ran. A launch with a daemon
-/// socket (either layout, see [`launch_socket`]) gets [`Daemon::finish`]
-/// with its launcher file's time as the install time, so only a daemon that
-/// launch started is stopped; a launch with no launcher file keeps its
-/// daemon. Without a socket, its agent dir is removed. `bin` answers
-/// `shutdown` and `status`. Best effort: an error leaves the entry.
 fn sweep_agent_dirs(prime_root: &Path, bin: &Path) {
     let Ok(entries) = std::fs::read_dir(prime_root) else {
         return;
@@ -601,15 +415,6 @@ fn sweep_agent_dirs(prime_root: &Path, bin: &Path) {
     }
 }
 
-/// Stop the daemon of every launch that ran in herdr pane `pane` and still
-/// has a socket (either layout), through [`Daemon::finish`] with the
-/// launcher file's time as the install time. `horch done` runs it after it
-/// closes the pane: herdr sends SIGHUP, then SIGTERM, then SIGKILL to a
-/// closed pane's processes within about 1 s, so the launcher's own finish
-/// often does not run. `horch done` itself runs under Prime's daemon, in
-/// another session, so the close does not end it; a stop before the close
-/// could. `bin` answers `shutdown` and `status`. Does nothing for a pane
-/// that ran no Prime launch.
 pub fn finish_pane(state_root: &Path, bin: &Path, pane: &str) {
     let Ok(entries) = std::fs::read_dir(state_root.join("prime")) else {
         return;
@@ -629,26 +434,13 @@ fn ran_in_pane(launch: &Path, pane: &str) -> bool {
     std::fs::read_to_string(launch.join(PANE)).is_ok_and(|p| p.trim() == pane)
 }
 
-/// Keep this launcher alive when its pane closes. Closing a pane hangs up
-/// its terminal: SIGHUP goes to the pane's foreground process group, which
-/// is horch and the Prime CLI. Prime's daemon runs in its own group, so it
-/// does not get it. Before this, the default action ended horch before
-/// [`Prepared::finish`], and the daemon ran on (a C5 daemon ran 6 h 44 min
-/// after `horch done`). A handler, not SIG_IGN: an exec resets it, so the
-/// Prime CLI still ends on the hangup, and then horch stops the daemon.
-/// Windows has no SIGHUP, so there it does nothing.
 fn outlive_hangup() {
     let _ = horch_platform::signal::outlive_hangup();
 }
 
-/// The `--source` and `--agent` of the pane reports of Prime's built-in
-/// herdr reporter (`pa-daemon/src/herdr.rs`), for the release on finish. A
-/// release with another source or agent label does nothing. The label is
-/// the one the live check saw (`docs/live-checks/harnesses.md`).
 pub const STATUS_SOURCE: &str = "herdr:pi";
 pub const STATUS_AGENT: &str = "prime-agent";
 
-/// A `--seq` for the release on finish: the time in ms × 1000 + 999.
 fn release_seq() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -656,12 +448,10 @@ fn release_seq() -> u64 {
         .unwrap_or_default()
 }
 
-/// Whether the horch process that wrote `<launch>/launcher` still runs.
 fn launcher_alive(launch: &Path) -> bool {
     read_launcher(launch).is_some_and(|(pid, started)| crate::procid::alive(pid, started))
 }
 
-/// The pid and start time (when recorded) in `<launch>/launcher`.
 fn read_launcher(launch: &Path) -> Option<(u32, Option<u64>)> {
     let text = std::fs::read_to_string(launch.join(LAUNCHER)).ok()?;
     let mut fields = text.split_whitespace();
@@ -670,18 +460,10 @@ fn read_launcher(launch: &Path) -> Option<(u32, Option<u64>)> {
     Some((pid, started))
 }
 
-/// `<workdir>/.prime/agent/settings.json`: Prime's project settings.
 fn project_settings(workdir: &Path) -> PathBuf {
     workdir.join(".prime").join("agent").join(SETTINGS)
 }
 
-/// The window the operator's Prime files set for `model` (design §6.4,
-/// review finding 10): `models` is the agent dir's `models.json`;
-/// `settings` are the agent dir's and the project's `settings.json`. A
-/// `models.json` that defines the model's provider at all is the
-/// operator's, with or without a window for this model; so is one horch
-/// cannot parse or read. A `compaction` setting moves Prime's trigger by an
-/// amount horch does not model.
 fn prime_operator_window(
     models: &Path,
     settings: &[PathBuf],
@@ -691,8 +473,6 @@ fn prime_operator_window(
         .or_else(|| settings.iter().find_map(|path| settings_override(path)))
 }
 
-/// A file horch refuses to read (a FIFO, over 1 MiB) is the operator's,
-/// trigger unknown.
 fn read_operator_file(path: &Path) -> std::result::Result<Option<String>, OperatorWindow> {
     crate::fsx::read_regular_bounded(path).map_err(|why| OperatorWindow {
         tokens: None,
@@ -719,9 +499,6 @@ fn settings_override(path: &Path) -> Option<OperatorWindow> {
     }
 }
 
-/// What a `models.json` says about `<p>/<m>`: None when it does not define
-/// provider `<p>`. The tokens are the override for `<m>`, else the
-/// `contextWindow` of the custom model `<m>`.
 fn models_window(path: &str, text: &str, model: &str) -> Option<OperatorWindow> {
     let (provider, id) = model.split_once('/')?;
     let Ok(doc) = serde_json::from_str::<Value>(text) else {
@@ -743,8 +520,6 @@ fn models_window(path: &str, text: &str, model: &str) -> Option<OperatorWindow> 
     })
 }
 
-/// The `contextWindow` of the first custom model `id` in the `models` of a
-/// provider; None when that model has none.
 fn custom_window(provider: &Value, id: &str) -> Option<u64> {
     provider
         .get("models")?
@@ -755,8 +530,6 @@ fn custom_window(provider: &Value, id: &str) -> Option<u64> {
         .as_u64()
 }
 
-/// Whether a `settings.json` sets `compaction.reserveTokens` or
-/// `compaction.enabled`.
 fn compaction_set(text: &str) -> bool {
     serde_json::from_str::<Value>(text).is_ok_and(|doc| {
         doc.get("compaction")
@@ -764,8 +537,6 @@ fn compaction_set(text: &str) -> bool {
     })
 }
 
-/// The fleet `models.json` for an applied decision: the override for the
-/// launch's model and nothing else. None: the operator's file is linked.
 fn fleet_models(decision: Option<&WindowDecision>, model: &str) -> Option<Value> {
     let decision = decision.filter(|d| d.applied)?;
     let tokens = decision.tokens?;
@@ -773,13 +544,6 @@ fn fleet_models(decision: Option<&WindowDecision>, model: &str) -> Option<Value>
     Some(json!({"providers": {provider: {"modelOverrides": {id: {"contextWindow": tokens}}}}}))
 }
 
-/// The agent dir's `settings.json`: the operator's object, without the
-/// legacy `apiKeys` (Prime 0.9.4 reads it only in a migration), plus each
-/// `agent_settings` key path of the teammate's Prime harness defaults that
-/// neither the operator's file nor the project's sets (a `force` entry sets
-/// it over the operator's file; a later entry wins). None: no key to add,
-/// or the operator's file is not a JSON object; the operator's file is then
-/// linked as it is, so no copy of it exists.
 fn fleet_settings(
     operator: Option<&str>,
     project: Option<&str>,
@@ -802,14 +566,12 @@ fn fleet_settings(
     })
 }
 
-/// The leaf key paths of the teammate's Prime `agent_settings` defaults.
 fn prime_leaves(teammate: &Teammate) -> Vec<(String, Value, bool)> {
     let entries = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Prime)
         .filter_map(|entry| Some((entry.agent_settings.as_ref()?, entry.force.is_some())));
     default_leaves(entries)
 }
 
-/// The JSON object in `text`; None for any other text.
 fn parse_object(text: &str) -> Option<serde_json::Map<String, Value>> {
     match serde_json::from_str(text) {
         Ok(Value::Object(map)) => Some(map),
@@ -817,8 +579,6 @@ fn parse_object(text: &str) -> Option<serde_json::Map<String, Value>> {
     }
 }
 
-/// Whether `doc` sets the dotted `path`. A parent that is not an object
-/// blocks the key too.
 fn sets_path(doc: &Value, path: &str) -> bool {
     let mut node = doc;
     for key in path.split('.') {
@@ -830,8 +590,6 @@ fn sets_path(doc: &Value, path: &str) -> bool {
     true
 }
 
-/// Set `value` at the dotted `path`; whether it was set. A parent that is
-/// not an object is left alone, and so is the value.
 fn insert_at(obj: &mut serde_json::Map<String, Value>, path: &str, value: Value) -> bool {
     let mut parts: Vec<&str> = path.split('.').collect();
     let Some(key) = parts.pop() else {
@@ -840,11 +598,6 @@ fn insert_at(obj: &mut serde_json::Map<String, Value>, path: &str, value: Value)
     insert_at_path(obj, &parts, key, value)
 }
 
-/// Build this launch's agent dir at `dir` from the operator's `src`
-/// (design §6.9). Nothing is copied from `src` but a settings object with a
-/// fleet key added; nothing is written into the workdir. In `src`, only a
-/// missing `harness/` dir is created (empty), so the pane's global harness
-/// state persists there as it does without horch.
 fn build_agent_dir(src: &Path, dir: &Path, req: &PrepareRequest<'_>) -> Result<()> {
     crate::fsx::ensure_private_dir(dir)?;
     if std::fs::symlink_metadata(src.join(HARNESS_STATE)).is_err() {
@@ -863,8 +616,6 @@ fn build_agent_dir(src: &Path, dir: &Path, req: &PrepareRequest<'_>) -> Result<(
     )
 }
 
-/// A link in `dir` to every entry of the operator's `src` but the files a
-/// launch generates, and `auth.json` always.
 fn link_operator_entries(src: &Path, dir: &Path) -> Result<()> {
     let entries = std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))?;
     for entry in entries {
@@ -880,28 +631,20 @@ fn link_operator_entries(src: &Path, dir: &Path) -> Result<()> {
     link_auth(src, dir)
 }
 
-/// `auth.json` is linked also when the source has none: a login in the pane
-/// then lands in the operator's file, not in a dir that is removed.
 fn link_auth(src: &Path, dir: &Path) -> Result<()> {
     let auth = dir.join(AUTH);
     if std::fs::symlink_metadata(&auth).is_err() {
-        // Dangling when the operator has no `auth.json` yet: Prime then
-        // creates nothing here and writes a login through the link.
         horch_platform::path::symlink(&src.join(AUTH), &auth)
             .with_context(|| format!("linking {}", auth.display()))?;
     }
     Ok(())
 }
 
-/// A generated file, a linked lock dir (one this pane can never take), or a
-/// temp file (another process's write in progress): never linked.
 fn is_launch_private(name: &std::ffi::OsStr) -> bool {
     let text = name.to_string_lossy();
     name == SETTINGS || name == MODELS || text.ends_with(".lock") || text.ends_with(".tmp")
 }
 
-/// The fleet `settings.json`; None when the operator's file is linked as it
-/// is. A file horch refuses to read sets everything as far as horch knows.
 fn generated_settings(
     src: &Path,
     req: &PrepareRequest<'_>,
@@ -911,7 +654,6 @@ fn generated_settings(
     fleet_settings(operator.as_deref(), project.as_deref(), req.teammate)
 }
 
-/// Write `generated` to `at`; else link the operator's file when it exists.
 fn write_or_link(generated: Option<Value>, operator: &Path, at: &Path) -> Result<()> {
     if let Some(value) = generated {
         let text = serde_json::to_string_pretty(&value)? + "\n";
@@ -925,7 +667,6 @@ fn write_or_link(generated: Option<Value>, operator: &Path, at: &Path) -> Result
     }
 }
 
-/// The value after `--model` in a built command.
 fn command_model(cmd: &Command) -> Option<String> {
     let args: Vec<_> = cmd.get_args().filter_map(|a| a.to_str()).collect();
     args.windows(2)
@@ -933,11 +674,6 @@ fn command_model(cmd: &Command) -> Option<String> {
         .map(|w| w[1].to_string())
 }
 
-/// The variable that points Prime at this launch's agent dir, built from the
-/// operator's. Without the operator's agent dir there is nothing to link, and
-/// a login would land in a directory nobody keeps: Prime runs on its own
-/// default dir, without a fleet window. A dir that cannot be built is removed
-/// and left out the same way.
 fn fleet_agent_dir_env(
     ctx: &RuntimeContext,
     req: &PrepareRequest<'_>,
@@ -962,8 +698,6 @@ fn fleet_agent_dir_env(
     }
 }
 
-/// Name the pane in the launch dir, for [`finish_pane`]. A failed write
-/// costs `horch done` its way to the daemon; the launch goes on.
 fn write_pane_file(daemon: &Daemon, role: &str, pane: &str) {
     if let Err(e) = crate::fsx::write_atomic(
         &daemon.launch_dir().join(PANE),
@@ -977,7 +711,6 @@ fn write_pane_file(daemon: &Daemon, role: &str, pane: &str) {
     }
 }
 
-/// The Prime Agent adapter.
 pub struct Prime;
 
 impl Harness for Prime {
@@ -985,18 +718,12 @@ impl Harness for Prime {
         HarnessKind::Prime
     }
 
-    /// A socket and a session directory that belong to this pane alone -
-    /// otherwise `horch done` would leave its daemon running and the fleet
-    /// would accumulate one per spawn.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         sweep_agent_dirs(&ctx.paths.state_root.join("prime"), &ctx.bins.harness.prime);
         outlive_hangup();
         let daemon = Daemon::install(&ctx.paths.state_root, &ctx.bins.harness.prime)
             .with_context(|| format!("preparing the Prime launch of {}", req.role))?;
         let mut prepared = Prepared {
-            // pi-family builders append `--` before the prompt. These go into
-            // the teammate's args, which come before that delimiter, or Prime
-            // would treat them as prompt text.
             extra_args: vec![
                 "--daemon-socket".into(),
                 daemon.socket().to_string_lossy().into_owned(),
@@ -1007,19 +734,11 @@ impl Harness for Prime {
             ..Prepared::default()
         };
         prepared.env.extend(fleet_agent_dir_env(ctx, req, &daemon));
-        // In a herdr pane only: `horch done` finds this launch by its pane
-        // and stops the daemon (`finish_pane`). Prime's built-in reporter
-        // reports the pane's agent state itself.
         let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
         if let Some(pane) = &pane {
             write_pane_file(&daemon, req.role, pane);
         }
-        // After the CLI has exited, not before: stopping the daemon early would
-        // take the session it is still writing with it.
         prepared.on_finish(move || daemon.finish());
-        // After the daemon: its reporter sends nothing more. A clean quit
-        // has released the agent already; this is for a crash. A closed
-        // pane or herdr down: nothing to do.
         if let Some(pane) = pane {
             let herdr = crate::workspace::PaneHost::of(ctx);
             prepared.on_finish(move || {
@@ -1029,9 +748,6 @@ impl Harness for Prime {
         Ok(prepared)
     }
 
-    /// The provider of the model in the operator's `models.json`, or a
-    /// `compaction` setting in the agent dir's or the project's
-    /// `settings.json` (design §6.4).
     fn operator_window(&self, inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
         prime_operator_window(
             &inputs.prime_agent_dir.join(MODELS),
@@ -1043,8 +759,6 @@ impl Harness for Prime {
         )
     }
 
-    /// The `contextWindow` for the command's `--model` in `models.json` of
-    /// the command's `$PRIME_AGENT_CODING_AGENT_DIR`.
     fn window_in_command(&self, cmd: &Command) -> Option<u64> {
         let (_, dir) = cmd.get_envs().find(|(k, _)| *k == AGENT_DIR_ENV)?;
         let models = Path::new(dir?).join(MODELS);
@@ -1071,9 +785,6 @@ impl Harness for Prime {
         )
     }
 
-    /// Prime writes into a directory this pane owns, so the session there is
-    /// unambiguously this worker's. The resume handle is the file path, which
-    /// is what `--resume` takes.
     fn discover_sessions(
         &self,
         _ctx: &RuntimeContext,
@@ -1089,10 +800,6 @@ impl Harness for Prime {
     }
 }
 
-/// The operator boundary of the Prime adapter (SR-8, A37): not supported
-/// on any OS. Prime runs its tools with no sandbox and has no deny rule
-/// for a path or a socket. Profile validation refuses each Prime worker
-/// profile.
 pub fn operator_boundary(
     _teammate: &Teammate,
     _fleet_root: &Path,
@@ -1113,9 +820,6 @@ mod tests {
         {"socketPath":"/state/prime/0a1b2c3d4e5f/prime-agent-501/d.sock","pid":99865,"sessionCount":1}
     ]"#;
 
-    /// The whole point of the per-launch socket: stopping this pane's daemon
-    /// must never reach the operator's default one, or closing one worker would
-    /// kill every Prime session on the machine.
     #[test]
     fn only_this_launchs_socket_matches() {
         assert_eq!(
@@ -1131,8 +835,6 @@ mod tests {
         );
     }
 
-    /// A daemon that is not running yet, or output that is not what we expect,
-    /// must yield nothing rather than a pid that belongs to something else.
     #[test]
     fn unmatched_or_unparseable_status_kills_nothing() {
         assert_eq!(pid_for_socket("not json", Path::new("/a/d.sock")), None);
@@ -1141,19 +843,14 @@ mod tests {
             pid_for_socket(r#"[{"pid":1}]"#, Path::new("/a/d.sock")),
             None
         );
-        // 0.10.0: a socket file with no daemon after a clean stop.
         let orphan = r#"[{"socketPath":"/a/d.sock","status":"orphan-file","isDefault":false}]"#;
         assert_eq!(pid_for_socket(orphan, Path::new("/a/d.sock")), None);
-        // -1 as a pid is every process; 0 is this group; 4294967295 turns
-        // into -1.
         for pid in ["-1", "0", "4294967295"] {
             let json = format!(r#"[{{"socketPath":"/a/d.sock","pid":{pid}}}]"#);
             assert_eq!(pid_for_socket(&json, Path::new("/a/d.sock")), None, "{pid}");
         }
     }
 
-    /// A stop counts only when the `stopped` list of `prime-agent shutdown
-    /// --json` (0.10.0 shape) names this socket.
     #[test]
     fn ctx_05_prime_shutdown_counts_only_when_it_names_this_socket() {
         let socket = Path::new("/s/prime/a/prime-agent-501/d.sock");
@@ -1175,8 +872,6 @@ mod tests {
         ));
     }
 
-    /// SIGTERM only for one process across both `status` calls, started
-    /// after this launch reserved its socket.
     #[test]
     fn only_the_same_daemon_started_by_this_launch_is_stopped() {
         use std::time::Duration;
@@ -1205,8 +900,6 @@ mod tests {
         assert!(may_stop(ok, Some(ok), None, installed).is_err());
     }
 
-    /// A temp dir with a short path: a socket path under the default temp
-    /// dir of macOS can be over [`MAX_SOCKET_BYTES`].
     #[cfg(unix)]
     fn short_tempdir() -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -1216,10 +909,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A `prime-agent` shell script: each call appends `<command> <TMPDIR>`
-    /// to the log it gives back. `shutdown` prints `shutdown_json`, `status`
-    /// prints `status_json`. It runs once before it is given back, so the
-    /// first-exec scan of macOS does not fall inside a test's wait.
     #[cfg(unix)]
     fn fake_bin(dir: &Path, shutdown_json: &str, status_json: &str) -> (PathBuf, PathBuf) {
         let bin = dir.join("prime-agent");
@@ -1247,10 +936,6 @@ mod tests {
             .collect()
     }
 
-    /// A socket file at `path` that nobody listens on. A child process binds
-    /// it and ends, so the test process never holds the socket's fd: a
-    /// listener dropped here stays alive in any process that another test
-    /// forks before its `exec`, and a connect to it still succeeds.
     #[cfg(unix)]
     fn stale_socket(path: &Path) {
         use std::os::unix::ffi::OsStrExt;
@@ -1283,15 +968,11 @@ mod tests {
         }
     }
 
-    /// `finish` stops the daemon with `prime-agent shutdown --force --json`
-    /// scoped by `TMPDIR=<launch>/`, then removes the socket, its scan dir
-    /// and the agent dir; the sessions stay. `status` is not asked.
     #[cfg(unix)]
     #[test]
     fn ctx_05_prime_finish_stops_with_a_scoped_shutdown() {
         let tmp = short_tempdir();
         let state = tmp.path().join("state");
-        // The fake names the socket of the 1 launch this test makes.
         let probe = Daemon::install(&state, Path::new("prime-agent")).unwrap();
         let (bin, log) = fake_bin(
             tmp.path(),
@@ -1319,10 +1000,6 @@ mod tests {
         assert!(daemon.sessions_dir().is_dir());
     }
 
-    /// The stop fails (its `stopped` list names no socket of this launch):
-    /// the `status` fallback. A daemon that started before the launch is
-    /// left running with its files; one that started after it gets SIGTERM.
-    /// The child sleeps 1 h, so it cannot end by itself during the test.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn ctx_05_prime_finish_stops_only_a_daemon_this_launch_started() {
@@ -1347,7 +1024,6 @@ mod tests {
         std::fs::create_dir_all(daemon.agent_dir()).unwrap();
         let _listener = std::os::unix::net::UnixListener::bind(daemon.socket()).unwrap();
 
-        // Reserved long after the child started: not this launch's daemon.
         daemon.installed = SystemTime::now() + std::time::Duration::from_secs(60);
         let line = daemon.stop().expect("left running");
         assert!(line.contains(&format!("pid {}", child.id())), "{line}");
@@ -1381,8 +1057,6 @@ mod tests {
         assert!(!daemon.agent_dir().exists());
     }
 
-    /// `status` names the socket but no pid while a process listens on it:
-    /// the daemon is left running with its files, and the line says why.
     #[cfg(unix)]
     #[test]
     fn ctx_05_prime_status_with_no_pid_leaves_the_files() {
@@ -1411,9 +1085,6 @@ mod tests {
         assert!(daemon.agent_dir().is_dir());
     }
 
-    /// No process listens on the socket (a clean stop leaves the file; a
-    /// launch that never started a daemon has none): no Prime call, and the
-    /// files go.
     #[cfg(unix)]
     #[test]
     fn ctx_05_prime_finish_without_a_daemon_runs_no_stop() {
@@ -1422,7 +1093,6 @@ mod tests {
         for stale_file in [true, false] {
             let daemon = Daemon::install(&tmp.path().join("state"), &bin).unwrap();
             std::fs::create_dir_all(daemon.agent_dir().join("daemon-workers")).unwrap();
-            // A socket file nobody listens on, or no file.
             if stale_file {
                 stale_socket(daemon.socket());
             }
@@ -1433,8 +1103,6 @@ mod tests {
         assert!(calls(&log).is_empty(), "{:?}", calls(&log));
     }
 
-    /// A socket path over 103 bytes cannot be bound on macOS: `install`
-    /// fails with the path and its length, and makes no launch dir.
     #[test]
     fn ctx_05_prime_install_refuses_a_long_socket_path() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1455,7 +1123,6 @@ mod tests {
         assert!(!state.exists(), "a launch dir was made");
     }
 
-    /// `horch done` never hangs on the stop: past the limit it goes on.
     #[cfg(unix)]
     #[test]
     fn the_wait_for_the_stop_is_bounded() {
@@ -1475,8 +1142,6 @@ mod tests {
         assert_eq!(wait_for_stop(&mut bad, limit * 10), Waited::Exited(false));
     }
 
-    /// A pane closing hangs up the launcher: it lives on to stop the
-    /// daemon, and a program it runs after still ends on a hangup.
     #[cfg(unix)]
     #[test]
     fn the_launcher_outlives_a_hangup_and_its_child_does_not() {
@@ -1491,8 +1156,6 @@ mod tests {
         assert_eq!(status.signal(), Some(libc::SIGHUP), "{status:?}");
     }
 
-    /// Each launch: `<state>/prime/<12 hex>/`, the socket in its own
-    /// `prime-agent-<uid>/` scan dir (mode 700), short enough to bind.
     #[test]
     fn ctx_05_prime_each_launch_reserves_its_own_socket_and_sessions() {
         let state = tempfile::tempdir().unwrap();
@@ -1520,8 +1183,6 @@ mod tests {
         }
     }
 
-    /// The session file is found by being the only thing in a directory horch
-    /// owns - no timestamps, no project matching, nothing to race.
     #[test]
     fn the_session_in_our_own_directory_is_ours() {
         let dir = tempfile::tempdir().unwrap();
@@ -1534,7 +1195,6 @@ mod tests {
             "s-1.jsonl"
         );
     }
-    // ---- Pins for the build_agent_dir and helper split (#186) ----
 
     fn prime_default(agent_settings: Value, force: bool) -> HarnessDefault {
         HarnessDefault {
@@ -1588,7 +1248,6 @@ mod tests {
         let before = Some(installed - Duration::from_secs(60));
         assert_eq!(may_stop(ok, Some(ok), before, installed), Err(early));
         assert_eq!(may_stop(ok, Some(ok), None, installed), Err(early));
-        // One second of slack before the install time still counts.
         let slack = Some(installed - Duration::from_millis(900));
         assert_eq!(may_stop(ok, Some(ok), slack, installed), Ok(()));
     }
@@ -1612,7 +1271,6 @@ mod tests {
             })
         );
 
-        // The project's key blocks a non-forced default.
         let t = with_defaults(vec![prime_default(json!({"p": 1}), false)]);
         assert_eq!(
             fleet_settings(None, Some(r#"{"p":0}"#), &t),
@@ -1628,21 +1286,17 @@ mod tests {
     #[test]
     fn fleet_settings_leaves_the_operators_file_alone_when_it_adds_nothing() {
         let t = with_defaults(vec![prime_default(json!({"a": 1}), false)]);
-        // Nothing to add: no copy, so `apiKeys` is not stripped either.
         assert_eq!(
             fleet_settings(Some(r#"{"a":0,"apiKeys":{"x":"y"}}"#), None, &t),
             None
         );
-        // Not an object: linked as it is.
         for text in ["[]", "not json", "3"] {
             assert_eq!(fleet_settings(Some(text), None, &t), None, "{text}");
         }
-        // No defaults at all.
         assert_eq!(
             fleet_settings(Some("{}"), None, &with_defaults(vec![])),
             None
         );
-        // A parent that is not an object blocks the key, forced or not.
         for force in [false, true] {
             let t = with_defaults(vec![prime_default(json!({"a": {"b": 1}}), force)]);
             assert_eq!(
@@ -1651,7 +1305,6 @@ mod tests {
                 "{force}"
             );
         }
-        // A default for another harness is ignored.
         let mut other = prime_default(json!({"z": 1}), true);
         other.harness = HarnessKind::Pi;
         assert_eq!(
@@ -1725,9 +1378,6 @@ mod tests {
             .starts_with(&user.display().to_string()));
     }
 
-    /// An override of the model wins over a custom model with its id; the
-    /// first custom model with the id decides; a value that is not a whole
-    /// number is no window.
     #[test]
     fn models_window_takes_the_override_before_the_custom_model() {
         let window = |text: &str, model: &str| models_window("/m.json", text, model);
@@ -1739,29 +1389,21 @@ mod tests {
         };
         let both = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":1000}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
         assert_eq!(window(both, "p/m"), defined(Some(1000)));
-        // An override without a window leaves it to the custom model.
         let bare = r#"{"providers":{"p":{"modelOverrides":{"m":{}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
         assert_eq!(window(bare, "p/m"), defined(Some(2000)));
-        // So does an override whose window is no number.
         let text = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":"1000"}},"models":[{"id":"m","contextWindow":2000}]}}}"#;
         assert_eq!(window(text, "p/m"), defined(Some(2000)));
-        // With no custom model either, there is no window.
         let text = r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":-1}}}}}"#;
         assert_eq!(window(text, "p/m"), defined(None));
-        // The first custom model with the id decides, with a window or not.
         let twice =
             r#"{"providers":{"p":{"models":[{"id":"m"},{"id":"m","contextWindow":3000}]}}}"#;
         assert_eq!(window(twice, "p/m"), defined(None));
-        // `models` that is no array holds no model.
         let object = r#"{"providers":{"p":{"models":{"id":"m","contextWindow":5}}}}"#;
         assert_eq!(window(object, "p/m"), defined(None));
-        // The id is all that follows the first slash.
         let slashed = r#"{"providers":{"p":{"modelOverrides":{"a/b":{"contextWindow":7}}}}}"#;
         assert_eq!(window(slashed, "p/a/b"), defined(Some(7)));
     }
 
-    /// A `models.json` is the operator's when it defines the provider, with
-    /// whatever value; or when it is no JSON and the model names a provider.
     #[test]
     fn models_window_is_none_unless_the_document_defines_the_provider() {
         let window = |text: &str, model: &str| models_window("/m.json", text, model);
@@ -1771,12 +1413,10 @@ mod tests {
         });
         assert_eq!(window(r#"{"providers":{"p":null}}"#, "p/m"), defined);
         assert_eq!(window(r#"{"providers":{"p":{}}}"#, "p/m"), defined);
-        // Another provider, no `providers`, or a document that is no object.
         assert_eq!(window(r#"{"providers":{"q":{}}}"#, "p/m"), None);
         assert_eq!(window("{}", "p/m"), None);
         assert_eq!(window(r#"{"providers":[]}"#, "p/m"), None);
         assert_eq!(window("[1]", "p/m"), None);
-        // Text that is no JSON, for a model that names a provider.
         assert_eq!(
             window("{oops", "p/m"),
             Some(OperatorWindow {
@@ -1784,7 +1424,6 @@ mod tests {
                 detail: "/m.json (not valid JSON)".into(),
             })
         );
-        // A model with no provider is judged before the text is read.
         assert_eq!(window("{oops", "no-slash"), None);
         assert_eq!(window(r#"{"providers":{"p":{}}}"#, "no-slash"), None);
     }
@@ -1835,16 +1474,13 @@ mod tests {
     #[test]
     fn finish_pane_does_nothing_for_a_pane_that_ran_no_launch() {
         let state = tempfile::tempdir().unwrap();
-        // No prime dir at all.
         finish_pane(state.path(), Path::new("prime-agent"), "p1");
-        // A launch of another pane, with a socket file: it stays.
         let launch = state.path().join("prime/aaaaaaaaaaaa");
         std::fs::create_dir_all(launch.join(scan_dir_name())).unwrap();
         std::fs::write(launch.join(PANE), "other\n").unwrap();
         std::fs::write(launch.join(scan_dir_name()).join(SOCKET), "").unwrap();
         finish_pane(state.path(), Path::new("prime-agent"), "p1");
         assert!(launch.join(scan_dir_name()).join(SOCKET).exists());
-        // This pane's launch, with no launcher file: its daemon is kept.
         std::fs::write(launch.join(PANE), "p1\n").unwrap();
         finish_pane(state.path(), Path::new("prime-agent"), "p1");
         assert!(launch.join(scan_dir_name()).join(SOCKET).exists());

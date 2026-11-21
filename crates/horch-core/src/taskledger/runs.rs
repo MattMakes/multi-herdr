@@ -1,5 +1,3 @@
-//! Projects and runs (section 4.1, 4.2).
-
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -20,7 +18,6 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{
 };
 use crate::fleetd::worktree_custody::application::create::{self, Lease, RunJob};
 
-/// 1 run: an orchestrator's body of work.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Run {
     pub run_id: String,
@@ -40,14 +37,11 @@ pub struct Run {
     pub heartbeat_every_s: i64,
     pub heartbeat_stale_s: i64,
     pub timer_tolerance_s: i64,
-    /// Attempts at 1 task before it is held for the operator (#168).
     pub max_attempts: i64,
     pub watchdog_pid: Option<i64>,
     pub watchdog_started: Option<i64>,
     pub watchdog_checkin_at: Option<String>,
-    /// The horch version of the watchdog at its last checkin (#216).
     pub watchdog_version: Option<String>,
-    /// The binary the watchdog runs, as it recorded at its last checkin.
     pub watchdog_exe: Option<ExeIdentity>,
     pub status: String,
     pub origin: String,
@@ -56,8 +50,6 @@ pub struct Run {
 }
 
 impl Run {
-    /// The run's finish steps, in order. A word this binary does not know is
-    /// an error: a step must never be skipped by being unreadable.
     pub fn steps(&self) -> Result<Vec<StepName>> {
         self.finish_steps
             .iter()
@@ -105,25 +97,15 @@ impl Run {
 const SELECT: &str =
     "SELECT r.*, p.root FROM runs r JOIN projects p ON p.project_id = r.project_id";
 
-/// The 1 spelling a project root is stored and matched by: canonical when the
-/// folder exists (macOS `/tmp` is `/private/tmp`), else as given. It is the
-/// plain form of [`horch_platform::path::canonicalize`], never a Windows
-/// verbatim path, because each worktree path is made from it.
 pub fn root_key(root: &Path) -> String {
     let real = horch_platform::path::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     stored_root_key(&real.to_string_lossy())
 }
 
-/// The spelling of [`root_key`] for the stored root text `text`: the plain
-/// form of a Windows verbatim path ([`horch_platform::path::plain_of_verbatim`]),
-/// else `text` unchanged. The function is text only, so it gives the same
-/// result on each OS. An older horch stored a verbatim root (D266-F2), and
-/// the schema step of `PROJECT_ROOTS_VERSION` rewrites it with this function.
 pub fn stored_root_key(text: &str) -> String {
     horch_platform::path::plain_of_verbatim(text).unwrap_or_else(|| text.to_string())
 }
 
-/// The project row for `root`, created when missing.
 pub fn ensure_project(conn: &Connection, root: &Path) -> Result<String> {
     let root = root_key(root);
     if let Some(id) = optional(conn.query_row(
@@ -141,7 +123,6 @@ pub fn ensure_project(conn: &Connection, root: &Path) -> Result<String> {
     Ok(id)
 }
 
-/// What `horch ledger run new` records.
 #[derive(Debug, Clone, Default)]
 pub struct NewRun {
     pub slug: String,
@@ -149,13 +130,10 @@ pub struct NewRun {
     pub base_branch: Option<String>,
     pub run_branch: Option<String>,
     pub remote: Option<String>,
-    /// Empty means the default pipeline.
     pub finish_steps: Vec<StepName>,
-    /// Thresholds; `None` keeps the spec's default.
     pub thresholds: Thresholds,
 }
 
-/// The watchdog's and the supervisor's timing (section 4.2).
 #[derive(Debug, Clone, Default)]
 pub struct Thresholds {
     pub check_every_s: Option<i64>,
@@ -166,8 +144,6 @@ pub struct Thresholds {
     pub max_attempts: Option<i64>,
 }
 
-/// Create a run in project `root`. Refuses a second active run with the
-/// same slug in the project.
 pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
     if new.slug.trim().is_empty() {
         bail!("a run needs a slug");
@@ -252,27 +228,17 @@ pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
     get(conn, &id)
 }
 
-/// The slug prefix of a workspace's solo run, which holds its one-off tasks
-/// (`horch ledger task`, TRF-42).
 pub const SOLO_PREFIX: &str = "solo-";
 
-/// The slug of the solo run of `workspace`.
 pub fn solo_slug(workspace: &str) -> String {
     format!("{SOLO_PREFIX}{workspace}")
 }
 
-/// Whether `run` is a workspace's solo run.
 pub fn is_solo(run: &Run) -> bool {
     run.slug.starts_with(SOLO_PREFIX)
 }
 
-/// Create the internal run of a new feature (fleetd-p6 MAP.md, Q5) in the
-/// project `root`, on the base branch `primary_branch`, with no run branch
-/// yet. Gives the feature id `F-<run rowid>` (4 digits, as the backfill of
-/// Phase 4), which is also the slug of the run. The caller writes the
-/// feature row in the same transaction.
 pub fn create_feature_run(conn: &Connection, root: &Path, primary_branch: &str) -> Result<String> {
-    // No code deletes a run, so the next rowid is 1 more than the largest.
     let next: i64 = conn.query_row("SELECT COALESCE(MAX(rowid), 0) + 1 FROM runs", [], |r| {
         r.get(0)
     })?;
@@ -294,13 +260,10 @@ pub fn create_feature_run(conn: &Connection, root: &Path, primary_branch: &str) 
     Ok(feature)
 }
 
-/// The rowid of the internal run of the feature `F-<rowid>`.
 fn feature_rowid(feature_id: &str) -> Option<i64> {
     feature_id.strip_prefix("F-")?.parse().ok()
 }
 
-/// The internal run of the feature `feature_id` (fleetd-p6 MAP.md, Q5), or
-/// `None`.
 pub fn feature_run(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {
     let Some(rowid) = feature_rowid(feature_id) else {
         return Ok(None);
@@ -312,8 +275,6 @@ pub fn feature_run(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {
     ))
 }
 
-/// Set the run branch of the internal run of the feature `feature_id` to
-/// the feature branch `branch`.
 pub fn set_feature_run_branch(conn: &Connection, feature_id: &str, branch: &str) -> Result<()> {
     let rowid = feature_rowid(feature_id)
         .with_context(|| format!("{feature_id} is not the id of a feature"))?;
@@ -327,8 +288,6 @@ pub fn set_feature_run_branch(conn: &Connection, feature_id: &str, branch: &str)
     Ok(())
 }
 
-/// What a new solo run of `workspace` records: its slug, its workspace and
-/// the minimal profile's finish steps. The caller fills in the branches.
 pub fn solo_new_run(workspace: &str) -> NewRun {
     NewRun {
         slug: solo_slug(workspace),
@@ -338,7 +297,6 @@ pub fn solo_new_run(workspace: &str) -> NewRun {
     }
 }
 
-/// The active solo run of `workspace` in project `root`, if any.
 pub fn active_solo(conn: &Connection, root: &Path, workspace: &str) -> Result<Option<Run>> {
     let slug = solo_slug(workspace);
     Ok(of_project(conn, root)?
@@ -346,7 +304,6 @@ pub fn active_solo(conn: &Connection, root: &Path, workspace: &str) -> Result<Op
         .find(|r| r.slug == slug && r.status == RunStatus::Active.as_str()))
 }
 
-/// 1 run by id.
 pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     conn.query_row(
         &format!("{SELECT} WHERE r.run_id = ?1"),
@@ -356,8 +313,6 @@ pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     .with_context(|| format!("no run {run_id}"))
 }
 
-/// The runs of `run_ids`, by id, in 1 statement for any count of ids. An
-/// id with no run is not in the map.
 pub fn of_ids<'a>(
     conn: &Connection,
     run_ids: impl IntoIterator<Item = &'a str>,
@@ -377,8 +332,6 @@ pub fn of_ids<'a>(
     Ok(out)
 }
 
-/// The internal run of the feature `feature_id`: the run whose feature id
-/// is `F-<run rowid>` (MAP.md of fleetd-p6, Q5), or `None`.
 pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {
     optional(conn.query_row(
         &format!("{SELECT} WHERE printf('F-%04d', r.rowid) = ?1"),
@@ -387,7 +340,6 @@ pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {
     ))
 }
 
-/// Every run of the project at `root`, newest first.
 pub fn of_project(conn: &Connection, root: &Path) -> Result<Vec<Run>> {
     let mut stmt = conn.prepare(&format!(
         "{SELECT} WHERE p.root = ?1 ORDER BY r.started_at DESC, r.rowid DESC"
@@ -398,11 +350,6 @@ pub fn of_project(conn: &Connection, root: &Path) -> Result<Vec<Run>> {
     Ok(rows)
 }
 
-/// The run a command means: `explicit` (an id or a slug of this project),
-/// else the 1 active run of the caller's herdr `workspace`, else the 1 active
-/// run of the project. The second value is a `NOTE:` line when that 1 run
-/// belongs to another workspace than the caller's (#89). 0 active runs, or
-/// 2+ with none of them the workspace's, is an error that names them.
 pub fn resolve(
     conn: &Connection,
     root: &Path,
@@ -416,9 +363,6 @@ pub fn resolve(
     }
 }
 
-/// The 1 active run a command means when it names none (see [`resolve`]).
-/// A solo run is chosen only when no other run fits: one-off tasks must not
-/// make the workspace's planned run ambiguous (TRF-42).
 fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run, Option<String>)> {
     let active: Vec<&Run> = runs
         .iter()
@@ -444,7 +388,6 @@ fn the_active(runs: &[Run], root: &Path, workspace: Option<&str>) -> Result<(Run
     }
 }
 
-/// `runs` without the solo runs when any other run is among them.
 pub fn planned_first(mut runs: Vec<&Run>) -> Vec<&Run> {
     if runs.iter().any(|r| !is_solo(r)) {
         runs.retain(|r| !is_solo(r));
@@ -452,7 +395,6 @@ pub fn planned_first(mut runs: Vec<&Run>) -> Vec<&Run> {
     runs
 }
 
-/// The `NOTE:` line for the 1 active run when it is not the caller's workspace's.
 fn other_workspace_note(one: &Run, workspace: Option<&str>) -> Option<String> {
     workspace
         .filter(|ws| one.workspace_id.as_deref() != Some(*ws))
@@ -465,7 +407,6 @@ fn other_workspace_note(one: &Run, workspace: Option<&str>) -> Option<String> {
         })
 }
 
-/// The error text when 2+ active runs fit and none is chosen.
 fn ambiguous_runs(many: &[&Run], root: &Path) -> String {
     format!(
         "{} active runs in {}: {}. Name one with --run <slug>, or close one with horch ledger run close --run <slug>",
@@ -481,8 +422,6 @@ fn ambiguous_runs(many: &[&Run], root: &Path) -> String {
     )
 }
 
-/// A run by id or slug: a slug picks its active run, else its newest. A run
-/// id from another project (a worker in a worktree) still works.
 fn by_key(conn: &Connection, root: &Path, runs: &[Run], key: &str) -> Result<Run> {
     runs.iter()
         .find(|r| r.run_id == key)
@@ -492,7 +431,6 @@ fn by_key(conn: &Connection, root: &Path, runs: &[Run], key: &str) -> Result<Run
         .with_context(|| format!("no run '{key}' in {}", root.display()))
 }
 
-/// The active run with slug `key`, else the newest with it.
 fn by_slug(runs: &[Run], key: &str) -> Option<Run> {
     let same: Vec<&Run> = runs.iter().filter(|r| r.slug == key).collect();
     same.iter()
@@ -501,7 +439,6 @@ fn by_slug(runs: &[Run], key: &str) -> Option<Run> {
         .map(|r| (*r).clone())
 }
 
-/// Record the orchestrator's own worker row on the run.
 pub fn set_orchestrator(conn: &Connection, run_id: &str, worker_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE runs SET orchestrator_worker_id = ?2 WHERE run_id = ?1",
@@ -510,9 +447,6 @@ pub fn set_orchestrator(conn: &Connection, run_id: &str, worker_id: &str) -> Res
     Ok(())
 }
 
-/// Remove the orchestrator from the run: the release of Phase 6 gives the
-/// run's questions and wakes to the sub-orchestrator of its feature
-/// (fleetd-p6 ticket 50).
 pub fn clear_orchestrator(conn: &Connection, run_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE runs SET orchestrator_worker_id = NULL WHERE run_id = ?1",
@@ -521,8 +455,6 @@ pub fn clear_orchestrator(conn: &Connection, run_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Record `workspace` on run `run_id` when the run has none. Whether it
-/// did.
 pub fn adopt_workspace(conn: &Connection, run_id: &str, workspace: &str) -> Result<bool> {
     let changed = conn.execute(
         "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
@@ -531,7 +463,6 @@ pub fn adopt_workspace(conn: &Connection, run_id: &str, workspace: &str) -> Resu
     Ok(changed == 1)
 }
 
-/// Record the run's pull request.
 pub fn set_pr(conn: &Connection, run_id: &str, number: i64, url: &str) -> Result<()> {
     conn.execute(
         "UPDATE runs SET pr_number = ?2, pr_url = ?3 WHERE run_id = ?1",
@@ -540,7 +471,6 @@ pub fn set_pr(conn: &Connection, run_id: &str, number: i64, url: &str) -> Result
     Ok(())
 }
 
-/// Close a run: `done` or `abandoned`.
 pub fn close(conn: &Connection, run_id: &str, status: RunStatus) -> Result<()> {
     conn.execute(
         "UPDATE runs SET status = ?2, ended_at = ?3 WHERE run_id = ?1",
@@ -549,7 +479,6 @@ pub fn close(conn: &Connection, run_id: &str, status: RunStatus) -> Result<()> {
     Ok(())
 }
 
-/// The statuses of a worktree that no step takes to an outcome.
 const PARKED: &[WorktreeStatus] = &[
     WorktreeStatus::Landed,
     WorktreeStatus::CleanupFailed,
@@ -557,8 +486,6 @@ const PARKED: &[WorktreeStatus] = &[
     WorktreeStatus::Abandoned,
 ];
 
-/// The folders of the run's parked worktrees that are on disk, with their
-/// decision (#308).
 fn parked_on_disk(conn: &Connection, run_id: &str) -> Result<Vec<(String, Option<String>)>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT w.path, w.decision FROM worktrees w LEFT JOIN tasks t ON t.task_id = w.task_id
@@ -576,8 +503,6 @@ fn parked_on_disk(conn: &Connection, run_id: &str) -> Result<Vec<(String, Option
         .collect())
 }
 
-/// The folders of the run's parked worktrees: on disk, not settled, not
-/// held by a task that is still open.
 pub fn parked_worktrees(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
     Ok(parked_on_disk(conn, run_id)?
         .into_iter()
@@ -585,7 +510,6 @@ pub fn parked_worktrees(conn: &Connection, run_id: &str) -> Result<Vec<String>> 
         .collect())
 }
 
-/// Why `run` cannot close while `parked` have no decision.
 pub fn parked_message(run: &Run, parked: &[String]) -> String {
     format!(
         "run {} has {} parked worktrees with no decision: {}. Run horch worktree triage, fill in its reply table, then run horch worktree triage apply <reply>",
@@ -595,27 +519,14 @@ pub fn parked_message(run: &Run, parked: &[String]) -> String {
     )
 }
 
-/// What [`close_run`] did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Closed {
     pub status: String,
-    /// The tasks `--abandon` cancelled, with the worker each one had.
     pub cancelled: Vec<(String, Option<String>)>,
-    /// With `--abandon`: the parked worktrees with no decision. The cancels
-    /// stand, the run stays active, and the caller refuses the close.
     pub parked: Vec<String>,
-    /// `NOTE:` lines of the C5 checks: a gate or PR condition that is not
-    /// applicable, or a declined PR.
     pub notes: Vec<String>,
 }
 
-/// `horch ledger run close`: close an active run as `done`. It refuses while
-/// the run is not settled ([`super::status::unsettled`], C6). With `abandon`, every open task is
-/// cancelled first (the 1 cancel path) and the run closes as `abandoned`;
-/// an undecided worktree then keeps the run active, with the cancels done
-/// ([`Closed::parked`]). The gate folder is not removed here: a job runs
-/// with no transaction open, so the caller runs [`remove_gate_tree`] after
-/// the close commits. `_git` is not read.
 pub fn close_run(
     conn: &Connection,
     _git: &super::git::Git,
@@ -643,7 +554,6 @@ fn close_inner(
                 cancelled.push((t.short(), holder));
             }
         }
-        // A worktree no task holds open any more.
         conn.execute(
             &format!(
                 "UPDATE worktrees SET status = {abandoned}, reason = ?2
@@ -655,7 +565,6 @@ fn close_inner(
             params![run.run_id, format!("run abandoned: {reason}")],
         )?;
     }
-    // C6: the 1 settled rule. Run close adds nothing to it here.
     let (parked, open): (Vec<Unsettled>, Vec<Unsettled>) =
         super::status::unsettled(conn, &run.run_id)?
             .into_iter()
@@ -737,14 +646,12 @@ fn close_inner(
     })
 }
 
-/// 1 recorded run gate (C5): the run check on 1 run-branch tip.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Gate {
     pub gate_id: i64,
     pub run_id: String,
     pub tip_sha: String,
     pub command: String,
-    /// `None` when the check did not exit (it was killed by a signal).
     pub exit_code: Option<i64>,
     pub log_path: Option<String>,
     pub started_at: String,
@@ -770,7 +677,6 @@ impl Gate {
     }
 }
 
-/// Write 1 `run_gates` row and an event; the row as stored.
 pub fn record_gate(conn: &Connection, g: &Gate) -> Result<Gate> {
     conn.execute(
         "INSERT INTO run_gates (run_id, tip_sha, command, exit_code, log_path, started_at, ended_at)
@@ -812,17 +718,10 @@ pub fn record_gate(conn: &Connection, g: &Gate) -> Result<Gate> {
     .context("reading the run gate back")
 }
 
-/// The `worktree_modes` name of the gate folder of `run`.
 fn gate_name(run: &Run) -> String {
     format!("{GATE_PREFIX}{}", run.slug)
 }
 
-/// Record the gate of `run` at `tip` on the open scratch worktree row of
-/// [`gate_dir`], so `run close` removes it (TRF-19). [`run_gate`] made the
-/// row through custody, or the next gate reuses it: it holds the folder's
-/// path, which is unique among the rows that are not `removed`. A row of
-/// an earlier run with the same slug moves to `run`. With no such row the
-/// gate is not recorded, and the error says why.
 fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
     let path = gate_dir(run).to_string_lossy().into_owned();
     let base = run.run_branch.as_deref().unwrap_or_default();
@@ -847,13 +746,6 @@ fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the open gate folder of `run` after its close, only through
-/// custody (row W11, RR-9): the tree is rescued by a verified `rescue` job,
-/// then 1 `worktree_remove` job removes it, with no transaction open. The
-/// row becomes `cleaned`. A `NOTE:` line when the folder has modified or
-/// untracked files, as `git worktree remove` without `--force` refused
-/// them, or when custody refuses or cannot run (TRF-52); the folder and
-/// the open row then stay.
 pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Option<String>> {
     let found: Option<(String, String)> = optional(store.conn().query_row(
         &format!(
@@ -873,8 +765,6 @@ pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Optio
             actor: Actor::Orchestrator,
             text: "the run closed",
         };
-        // TRF-52: any error keeps the folder and its open row, and the run
-        // stays closed.
         let refused = match tools.git.dirty(Path::new(&path)) {
             Ok(dirty) if !dirty.is_empty() => Some(format!(
                 "it has modified or untracked files: {}",
@@ -905,7 +795,6 @@ pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Optio
     Ok(None)
 }
 
-/// The newest gate of `run_id` on `tip`, passing or not.
 pub fn last_gate(conn: &Connection, run_id: &str, tip: &str) -> Result<Option<Gate>> {
     optional(conn.query_row(
         "SELECT * FROM run_gates WHERE run_id = ?1 AND tip_sha = ?2
@@ -915,20 +804,12 @@ pub fn last_gate(conn: &Connection, run_id: &str, tip: &str) -> Result<Option<Ga
     ))
 }
 
-/// The folder the gate of `run` checks out its tip in: 1 detached worktree
-/// per run, kept between gates so a build cache survives.
 pub fn gate_dir(run: &Run) -> std::path::PathBuf {
     Path::new(&run.project_root)
         .join(".worktrees")
         .join(gate_name(run))
 }
 
-/// Check out `tip` in `dir`: a new detached worktree, or the old one moved
-/// to `tip`. Ignored files, such as a build cache, stay. The ledger never
-/// forces git, so a gate dir with changes is refused, with its files named.
-/// The custody row of `dir` decides, not the folder alone: a `reserved`
-/// row, left by a stop between its `worktree_add` run and the observation,
-/// is finished first, and a folder with no row is refused.
 fn checkout_tip(store: &mut Store, tools: &Tools, run: &Run, dir: &Path, tip: &str) -> Result<()> {
     let git = &tools.git;
     let path = dir.to_string_lossy();
@@ -946,8 +827,6 @@ fn checkout_tip(store: &mut Store, tools: &Tools, run: &Run, dir: &Path, tip: &s
             let id = finish::with_custody(store, |conn, ctx| {
                 create::finish_reserved(conn, ctx, jobs.as_ref(), &row.worktree_id)
             })?;
-            // As a new gate tree: no owner. A tree that is not `active`
-            // any more keeps its state.
             store.immediate(|tx| match trees::get(tx, &id)? {
                 Some(r) if r.state == WorktreeState::Active => create::give_to_operator(tx, &id),
                 _ => Ok(()),
@@ -973,10 +852,6 @@ fn checkout_tip(store: &mut Store, tools: &Tools, run: &Run, dir: &Path, tip: &s
     Ok(())
 }
 
-/// Make the gate folder `dir` of `run` at `tip` through custody (row W11,
-/// FR-11): the row first, then its `worktree_add` job in the detached
-/// form, with no transaction open. The tree has no owner (`created`), as a
-/// restored tree.
 fn add_gate_tree(
     store: &mut Store,
     jobs: &dyn RunJob,
@@ -1000,7 +875,6 @@ fn add_gate_tree(
             scratch: true,
         }),
     };
-    // No task and no worker: the request never attaches another tree.
     let lease = Lease {
         task_id: None,
         worker_id: "",
@@ -1012,9 +886,6 @@ fn add_gate_tree(
     store.immediate(|tx| create::give_to_operator(tx, &id))
 }
 
-/// `horch ledger run gate` (C5, TRF-19): run `command` with the shell of `tools` on the
-/// tip of the run branch, in [`gate_dir`], with its output in a log under
-/// `log_dir`. The gate as it ran; the caller records it ([`record_gate`]).
 pub fn run_gate(
     store: &mut Store,
     tools: &Tools,
@@ -1068,34 +939,21 @@ pub fn run_gate(
     })
 }
 
-/// The state of the run's pull request, as `run close` needs it (C5).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrCheck {
-    /// The run has no PR to wait for (no remote, no gh, no commit ahead);
-    /// the text says why.
     NotApplicable(String),
     Merged(i64),
-    /// The PR exists and is not merged: its number and gh's state word.
-    Unmerged {
-        number: i64,
-        state: String,
-    },
-    /// The run has commits to bring to its main branch and no PR.
+    Unmerged { number: i64, state: String },
     Missing,
 }
 
-/// What `run close` checks after the settled rule (C5): the run-branch tip
-/// (`None` when the run has no run branch) and the PR.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloseGuards {
     pub tip: Option<String>,
     pub pr: PrCheck,
-    /// `--pr-declined "<reason>"`.
     pub pr_declined: Option<String>,
 }
 
-/// Refuse unless a passing gate exists for the tip and the PR is merged,
-/// not applicable, or declined. The `NOTE:` lines for the caller.
 fn check_guards(conn: &Connection, run: &Run, g: &CloseGuards) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     match &g.tip {
@@ -1145,9 +1003,6 @@ fn check_guards(conn: &Connection, run: &Run, g: &CloseGuards) -> Result<Vec<Str
     Ok(notes)
 }
 
-/// `horch ledger run close` with the C5 checks: the settled rule
-/// ([`close_run`]), then for a close as `done` a passing gate on the tip and
-/// a merged, not applicable or declined PR. `--abandon` skips the C5 checks.
 pub fn close_run_with(
     conn: &Connection,
     _git: &super::git::Git,
@@ -1217,7 +1072,6 @@ mod tests {
         git(root, &["rev-parse", "HEAD"])
     }
 
-    /// A repository with `main` and the run branch `fleet/r1`, and run r1.
     fn world() -> (tempfile::TempDir, Store, Run) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("repo");
@@ -1260,7 +1114,6 @@ mod tests {
     fn trf_19_run_gate_runs_the_check_on_the_run_branch_tip_and_records_it() {
         let (dir, mut store, run) = world();
         let root = Path::new(&run.project_root);
-        // The run branch moves ahead of the checkout; the gate sees its tip.
         git(root, &["checkout", "-q", "fleet/r1"]);
         let tip = commit(root, "b");
         git(root, &["checkout", "-q", "main"]);
@@ -1278,7 +1131,6 @@ mod tests {
             Some(g.clone())
         );
 
-        // A red check is recorded with its exit code; the gate dir is reused.
         let red = gate(&mut store, &run, "exit 3", &logs);
         assert_eq!(red.exit_code, Some(3));
         assert!(!red.passed());
@@ -1329,7 +1181,6 @@ mod tests {
         assert!(err.to_string().contains("no passing gate"), "{err}");
 
         gate(&mut store, &run, "true", &logs);
-        // The tip moves: the passing gate is for an old tip.
         git(root, &["checkout", "-q", "fleet/r1"]);
         let new_tip = commit(root, "c");
         let err = close_run_with(
@@ -1399,7 +1250,6 @@ mod tests {
         );
         assert_eq!(merged.unwrap().status, "done");
 
-        // Declined: closes and stores the reason.
         let (dir, mut store, run) = world();
         let tip = gate(&mut store, &run, "true", &dir.path().join("logs")).tip_sha;
         let closed = close_run_with(
@@ -1422,7 +1272,6 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("superseded by #9"));
     }
 
-    /// The gate folder's worktree rows: (status, scratch, run_id).
     fn gate_rows(store: &Store, run: &Run) -> Vec<(String, i64, String)> {
         let mut stmt = store
             .conn()
@@ -1444,8 +1293,6 @@ mod tests {
         let (dir, mut store, run) = world();
         let logs = dir.path().join("logs");
         gate(&mut store, &run, "true", &logs);
-        // A removal as the `worktree_remove` job makes it: the folder and
-        // the row are gone.
         let gate_path = gate_dir(&run).to_string_lossy().into_owned();
         git(
             Path::new(&run.project_root),
@@ -1511,7 +1358,6 @@ mod tests {
         );
     }
 
-    /// The tools of a gate, with `jobs` to run its custody jobs.
     fn tools(jobs: Arc<dyn RunJob>) -> Tools {
         Tools {
             git: Git::new("git"),
@@ -1527,7 +1373,6 @@ mod tests {
         }
     }
 
-    /// A job runner whose job process cannot start.
     struct NoJobs;
 
     impl RunJob for NoJobs {
@@ -1575,7 +1420,6 @@ mod tests {
         );
     }
 
-    /// The custody state of the gate row of `run`.
     fn gate_state(store: &Store, run: &Run) -> String {
         let path = gate_dir(run).to_string_lossy().into_owned();
         trees::by_path(store.conn(), &path)
@@ -1624,8 +1468,6 @@ mod tests {
         let (dir, mut store, run) = world();
         let logs = dir.path().join("logs");
         gate(&mut store, &run, "true", &logs);
-        // A stop after the `worktree_add` run and before its observation:
-        // the folder exists and the row is still `reserved`.
         let path = gate_dir(&run).to_string_lossy().into_owned();
         store
             .conn()
@@ -1682,7 +1524,6 @@ mod tests {
         assert_eq!(closed.status, "abandoned");
     }
 
-    /// A ledger in a temp dir with a project folder `root`.
     fn solo_world() -> (tempfile::TempDir, Store, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("proj");
@@ -1738,7 +1579,6 @@ mod tests {
         assert_eq!((run.slug.as_str(), note), ("plan", None));
         let (run, _) = resolve(store.conn(), &root, Some("solo-w7"), Some("w7")).unwrap();
         assert_eq!(run.slug, "solo-w7");
-        // The caller's own solo run beats another workspace's planned run.
         store
             .immediate(|tx| create(tx, &root, &solo_new_run("w9")))
             .unwrap();

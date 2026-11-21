@@ -1,33 +1,11 @@
-//! Reducing a Starlight docs page to plain content HTML.
-//!
-//! The docs site is Astro Starlight with Expressive Code, which wraps content in
-//! presentation markup that a generic HTML-to-markdown pass turns into noise:
-//!
-//! * The page `<h1>` sits in a sibling panel, *outside* `.sl-markdown-content`,
-//!   so a naive extraction loses every page title.
-//! * Each heading carries an `<a class="sl-anchor-link">` holding an icon and a
-//!   `<span class="sr-only">Section titled "..."</span>`, which would otherwise
-//!   appear as stray link text after every heading.
-//! * Code blocks are not `<pre><code>` with a language class. They are
-//!   `div.expressive-code > figure.frame > pre[data-language] > code`, where the
-//!   code is split into one `div.ec-line` per line and every token is a `<span>`
-//!   with inline colours. Converting that directly loses the language, gains a
-//!   blank line per token, and picks up the "Terminal window" caption and the
-//!   copy-to-clipboard button.
-//!
-//! So the DOM is walked once and re-serialised into simple HTML that htmd can
-//! convert faithfully.
-
 use std::fmt::Write as _;
 
 use anyhow::{bail, Result};
 use ego_tree::NodeRef;
 use scraper::{Html, Node, Selector};
 
-/// The Starlight wrapper around page content.
 const CONTENT_SELECTOR: &str = ".sl-markdown-content";
 
-/// Presentation-only elements: no content of ours lives inside them.
 const DROPPED_TAGS: &[&str] = &[
     "script",
     "style",
@@ -39,32 +17,21 @@ const DROPPED_TAGS: &[&str] = &[
     "figcaption",
 ];
 
-/// Classes marking screen-reader and navigation affordances rather than content.
 const DROPPED_CLASSES: &[&str] = &["sr-only", "sl-anchor-link", "copy"];
 
-/// Placeholder text swapped in for a table, and back out after conversion.
-///
-/// The converter has no table support and would flatten a table into a run of
-/// loose cell text, so tables are rendered to markdown here and stitched back in
-/// afterwards. The token is deliberately plain alphanumeric so no markdown
-/// escaping can touch it.
 const TABLE_TOKEN: &str = "HERDRDOCSYNCTABLE";
 
-/// The placeholder standing in for table `index`.
 pub fn table_placeholder(index: usize) -> String {
     format!("{TABLE_TOKEN}{index}X")
 }
 
-/// A page reduced to a title, content HTML, and its extracted tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanPage {
     pub title: Option<String>,
     pub content_html: String,
-    /// Markdown for each table, indexed by the placeholder in `content_html`.
     pub tables: Vec<String>,
 }
 
-/// Extract the page title and simplified content HTML.
 pub fn clean(html: &str) -> Result<CleanPage> {
     let document = Html::parse_document(html);
 
@@ -90,7 +57,6 @@ pub fn clean(html: &str) -> Result<CleanPage> {
     })
 }
 
-/// The page `<h1>`, which Starlight renders outside the content element.
 fn page_title(document: &Html) -> Option<String> {
     let selector = Selector::parse("h1").ok()?;
     let heading = document.select(&selector).next()?;
@@ -98,7 +64,6 @@ fn page_title(document: &Html) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Should this element be dropped wholesale?
 fn is_dropped(element: &scraper::node::Element) -> bool {
     if DROPPED_TAGS.contains(&element.name()) {
         return true;
@@ -116,13 +81,11 @@ fn has_class(element: &scraper::node::Element, class: &str) -> bool {
         .is_some_and(|classes| classes.split_whitespace().any(|c| c == class))
 }
 
-/// Serialise one node into simplified HTML, collecting tables as markdown.
 fn write_node(node: NodeRef<'_, Node>, out: &mut String, tables: &mut Vec<String>) {
     match node.value() {
         Node::Text(text) => escape_into(text, out),
         Node::Element(element) => {
             if is_dropped(element) {
-                // Dropped wholesale: nothing is written.
             } else if has_class(element, "expressive-code") {
                 write_code_block(node, out);
             } else if element.name() == "table" {
@@ -132,15 +95,10 @@ fn write_node(node: NodeRef<'_, Node>, out: &mut String, tables: &mut Vec<String
                 write_element(node, element, out, tables);
             }
         }
-        // Comments, doctype and processing instructions carry nothing.
         _ => {}
     }
 }
 
-/// Render a `<table>` as a GitHub-flavoured pipe table.
-///
-/// The first row is the header, whether it uses `th` or `td`. The docs use no
-/// `rowspan` or `colspan`, so a plain grid is enough.
 fn render_table(node: NodeRef<'_, Node>) -> String {
     let mut rows: Vec<Vec<String>> = Vec::new();
     collect_rows(node, &mut rows);
@@ -167,7 +125,6 @@ fn render_table(node: NodeRef<'_, Node>) -> String {
     out
 }
 
-/// Gather one string per cell, one vector per `<tr>`.
 fn collect_rows(node: NodeRef<'_, Node>, rows: &mut Vec<Vec<String>>) {
     for child in node.children() {
         let Some(element) = child.value().as_element() else {
@@ -186,13 +143,11 @@ fn collect_rows(node: NodeRef<'_, Node>, rows: &mut Vec<Vec<String>>) {
                     .collect();
                 rows.push(cells);
             }
-            // thead, tbody, tfoot
             _ => collect_rows(child, rows),
         }
     }
 }
 
-/// A cell must stay on one line and must not introduce column breaks.
 fn escape_cell(text: &str) -> String {
     text.replace('|', r"\|")
         .split_whitespace()
@@ -200,11 +155,6 @@ fn escape_cell(text: &str) -> String {
         .join(" ")
 }
 
-/// Convert a cell's inline content to markdown.
-///
-/// Only the inline elements the docs actually use in tables are handled; anything
-/// else contributes its text. Surveyed across every docs page, tables use `code`
-/// and nothing more, so the rest is cheap insurance.
 fn inline_markdown(node: NodeRef<'_, Node>) -> String {
     let mut out = String::new();
     for child in node.children() {
@@ -235,7 +185,6 @@ fn inline_element(child: NodeRef<'_, Node>, element: &scraper::node::Element, ou
     }
 }
 
-/// A link as `[label](href)`, or just the label when it has no `href`.
 fn link_markdown(child: NodeRef<'_, Node>, element: &scraper::node::Element) -> String {
     let label = inline_markdown(child);
     element
@@ -243,8 +192,6 @@ fn link_markdown(child: NodeRef<'_, Node>, element: &scraper::node::Element) -> 
         .map_or(label.clone(), |href| format!("[{label}]({href})"))
 }
 
-/// Attributes worth keeping. Everything else is styling or framework bookkeeping
-/// that the markdown conversion ignores anyway.
 const KEPT_ATTRS: &[&str] = &[
     "href", "src", "alt", "title", "colspan", "rowspan", "start", "align", "id",
 ];
@@ -271,11 +218,6 @@ fn write_element(
     let _ = write!(out, "</{tag}>");
 }
 
-/// Rebuild an Expressive Code block as a plain fenced code block.
-///
-/// The language comes from `pre[data-language]`, and the source from one
-/// `div.ec-line` per line - which is why the token `<span>`s never reach the
-/// converter.
 fn write_code_block(node: NodeRef<'_, Node>, out: &mut String) {
     let Some(pre) = find_descendant(node, |e| e.name() == "pre") else {
         return;
@@ -288,7 +230,6 @@ fn write_code_block(node: NodeRef<'_, Node>, out: &mut String) {
 
     let mut lines: Vec<String> = Vec::new();
     collect_code_lines(pre, &mut lines);
-    // A block with no `.ec-line` markers (plain `<pre>`) still has its text.
     let code = if lines.is_empty() {
         text_of(pre)
     } else {
@@ -307,7 +248,6 @@ fn write_code_block(node: NodeRef<'_, Node>, out: &mut String) {
     out.push_str("</code></pre>");
 }
 
-/// Gather one string per `div.ec-line`, in document order.
 fn collect_code_lines(node: NodeRef<'_, Node>, lines: &mut Vec<String>) {
     for child in node.children() {
         if let Some(element) = child.value().as_element() {
@@ -324,13 +264,11 @@ fn find_descendant<'a>(
     node: NodeRef<'a, Node>,
     predicate: impl Fn(&scraper::node::Element) -> bool + Copy,
 ) -> Option<NodeRef<'a, Node>> {
-    // `descendants` walks in document order and starts with `node` itself.
     node.descendants()
         .skip(1)
         .find(|n| n.value().as_element().is_some_and(predicate))
 }
 
-/// All text under a node, concatenated.
 fn text_of(node: NodeRef<'_, Node>) -> String {
     let mut out = String::new();
     fn walk(node: NodeRef<'_, Node>, out: &mut String) {
@@ -364,7 +302,6 @@ fn escape_into(text: &str, out: &mut String) {
 mod tests {
     use super::*;
 
-    /// The real Starlight page skeleton: h1 in its own panel, content in another.
     fn starlight_page(body: &str) -> String {
         format!(
             r#"<!DOCTYPE html><html><head><title>t</title>
@@ -390,7 +327,6 @@ mod tests {
         assert!(page.content_html.contains("prose"));
     }
 
-    /// The heading anchor is an icon plus a screen-reader label; neither is content.
     #[test]
     fn strips_heading_anchor_links() {
         let page = clean(&starlight_page(
@@ -415,8 +351,6 @@ mod tests {
         );
     }
 
-    /// An Expressive Code block must come out as one fenced block with its
-    /// language, no per-token spans, no caption and no copy button.
     #[test]
     fn rebuilds_expressive_code_blocks() {
         let page = clean(&starlight_page(
@@ -449,7 +383,6 @@ mod tests {
         assert!(!html.contains("span"), "{html}");
     }
 
-    /// Two lines must stay two lines, not collapse or gain blanks per token.
     #[test]
     fn code_lines_are_preserved_exactly() {
         let page = clean(&starlight_page(
@@ -457,15 +390,12 @@ mod tests {
         ))
         .unwrap();
         let code = &page.content_html;
-        // Leading indentation is code, so it must survive verbatim; the empty
-        // `.ec-line` must survive as a blank line.
         assert!(
             code.contains("  [ui]\n\ntab_bar_position = &quot;bottom&quot;"),
             "{code}"
         );
     }
 
-    /// A plain `<pre>` with no Expressive Code wrapper still works.
     #[test]
     fn plain_pre_blocks_pass_through() {
         let page = clean(&starlight_page(
@@ -542,7 +472,6 @@ mod table_tests {
         )
     }
 
-    /// The shape every docs table has: a thead, a tbody, and `<code>` in cells.
     #[test]
     fn renders_a_pipe_table_with_inline_code() {
         let page = clean(&table_page(
@@ -564,7 +493,6 @@ mod table_tests {
              | `visible` | Current rendered screen. |\n\
              | `recent-unwrapped` | Recent scrollback. Best for logs. |"
         );
-        // The content HTML carries only the placeholder.
         assert!(page.content_html.contains(&table_placeholder(0)));
         assert!(!page.content_html.contains("<table"));
     }
@@ -583,7 +511,6 @@ mod table_tests {
         assert_ne!(table_placeholder(0), table_placeholder(1));
     }
 
-    /// A table with no thead still needs a header row for valid markdown.
     #[test]
     fn a_table_without_a_head_uses_its_first_row() {
         let page = clean(&table_page(
@@ -593,7 +520,6 @@ mod table_tests {
         assert_eq!(page.tables[0], "| Key | Value |\n| --- | --- |\n| a | 1 |");
     }
 
-    /// A literal pipe in a cell would otherwise create a phantom column.
     #[test]
     fn pipes_in_cells_are_escaped() {
         let page = clean(&table_page(
@@ -603,7 +529,6 @@ mod table_tests {
         assert!(page.tables[0].contains(r"`a \| b`"), "{}", page.tables[0]);
     }
 
-    /// Cells must stay on one line, or the table breaks apart.
     #[test]
     fn multiline_cell_content_is_flattened() {
         let page = clean(&table_page(
@@ -646,9 +571,6 @@ mod table_tests {
         assert!(page.tables[0].contains("*it*"), "{}", page.tables[0]);
     }
 
-    /// Cell content the common cases above do not reach: an anchor without an
-    /// href keeps its label, `br` becomes a space, `kbd` is code, a dropped
-    /// element vanishes and an unknown tag contributes its text.
     #[test]
     fn cell_edge_elements_convert() {
         let page = clean(&table_page(
@@ -663,8 +585,6 @@ mod table_tests {
         );
     }
 
-    /// An expressive-code block with no `pre` writes nothing, and the outermost
-    /// `pre` in document order supplies the language.
     #[test]
     fn code_block_without_a_pre_is_dropped_and_the_first_pre_wins() {
         let page = clean(&table_page(

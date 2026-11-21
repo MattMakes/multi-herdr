@@ -46,8 +46,6 @@ SPACE_R6 = {
 R6_OFF = {"r6": 0.0, "nbw": 2.0, "fifth_db": -48.0, "tone_gate": 1.0, "gate_pow": 1.4,
           "rswell_db": -48.0, "rswell_rt": 2.0, "pre_dip_ms": 0.0}
 
-# ---------------------------------------------------------------- presets (5.4)
-
 _KEYS = tuple(("length curve rise_db noise_db nf0 nf1 nq pink tone_db tmode wave tf0 toct tbright detune oct_db "
          "shep_db shep_rate drone_db drone_f metal_db metal_f gate_depth gate_on gate_p0 gate_p1 gate_duty "
          "gate_sharp gate_drone blip_dec verb rt60 width sat hp end_ms").split())
@@ -102,7 +100,6 @@ PRO = {
                       drone_f=110, noise_db=-14, rise_db=20),
 }
 
-# Round-2 tuned values (5.6), one tuple per member in _R2_KEYS order.
 _R2_KEYS = _KEYS
 _R2 = {
     "air": (2.47, 2.043, 33.76, -2.34, 294.7, 10379, 1.856, 0.646, -22.34, "glide", "tri", 440.8, 1.225, 3.63,
@@ -208,9 +205,6 @@ def _r6_member(label: str) -> dict:
 
 
 R6 = {label: _r6_member(label) for label in _R6_COLS}
-
-# ---------------------------------------------------------------- shared helpers (5.10)
-
 
 def lvl(wav: np.ndarray, frac: float | None = None) -> float:
     """P8 riser variant: peak 10 ms block RMS of the mono fold (optionally of its last frac) + 1e-12."""
@@ -326,9 +320,6 @@ def centroid_track(wav: np.ndarray, hop_ms: float = 20) -> tuple[np.ndarray, np.
     return cent, power
 
 
-# ---------------------------------------------------------------- render pieces
-
-
 def _layer_at(db: float, wav: np.ndarray, frac: float | None = 0.25) -> np.ndarray:
     """AT(db, x): the layer at db relative to its own mix level (last quarter by default)."""
     return 10 ** (db / 20) * wav / lvl(wav, frac)
@@ -398,9 +389,6 @@ def _add_reverb(mix: np.ndarray, feedv: np.ndarray, cfg: dict, ns: int) -> np.nd
 def _octave_rise(prog: np.ndarray) -> np.ndarray:
     """The +12 layer fades in over the second 60 % of the build."""
     return (np.clip((prog - 0.4) / 0.6, 0, 1) ** 2)[:, None]
-
-
-# ---------------------------------------------------------------- the round-6 build (5.9)
 
 
 def _build_chord(cfg: dict, prog: np.ndarray, wv: np.ndarray, gen) -> tuple[np.ndarray, np.ndarray]:
@@ -479,9 +467,6 @@ def render_build(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     if cfg["pre_dip_ms"] > 0.5:
         mix = mix * _pre_dip(cfg, f.t)
     return _finish_tail(mix, cfg, 120.0)
-
-
-# ---------------------------------------------------------------- rounds 1 to 4 (5.11)
 
 
 def _is_blip(cfg: dict) -> bool:
@@ -640,9 +625,6 @@ def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     feedv = _send(cfg, f, gen)
     drone = _layer_at(cfg["drone_db"], stereo2(_drone(cfg, f, gen))) * (f.lv ** 0.3)[:, None]
     return _finish_tail(_add_reverb(feedv + drone, feedv, cfg, f.n), cfg, 30.0)
-
-
-# ---------------------------------------------------------------- measure (5.12)
 
 
 def _ma5(env: np.ndarray) -> np.ndarray:

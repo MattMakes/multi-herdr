@@ -13,8 +13,6 @@ SR = 48000
 TWO_PI = 2.0 * np.pi
 
 
-# ---------------------------------------------------------------- generic
-
 def tri_masks(centers, nfft, sr=SR):
     """Log-frequency triangles at ``centers`` on the rfft bins; they sum to 1."""
     fq = rfftfreq(int(nfft), 1.0 / sr)
@@ -78,8 +76,6 @@ def shaped_side(mid, bands, times, pan, diffuse, sign=1, sr=SR):
     dif_s = np.array([np.interp(tv, times, dv) for dv in diffuse])
     return side_from_gains(mid, bands, pan_s, dif_s, float(sign), sr)
 
-
-# ---------------------------------------------------------------- sines kernels
 
 def synth_partials(partials, n, sr=SR, cents=None):
     """Sum of partials with log2-linear frequency and dB-linear amplitude breakpoints."""
@@ -195,8 +191,6 @@ def sines_finish(model, y):
     lim = model.get("layer") != "deterministic"
     return finish(y, SR, sines_fade_in(model), -1.0, lim)
 
-
-# ---------------------------------------------------------------- modal kernels
 
 NOISE_EDGES = (50, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000, 2320,
                2700, 3150, 3700, 4400, 5300, 6400, 7700, 9500, 12000, 14000, 16000, 18500)

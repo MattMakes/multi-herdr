@@ -1,8 +1,3 @@
-//! The bounded, incremental code-sweep loop (trace-fixes ticket 18,
-//! TRF-27..TRF-30) on a real git repository in a temp dir: the round cap
-//! and its QUESTION, the diff since the last reviewed tree, stable finding
-//! ids with carried answers and waivers, and the `Review` modes.
-
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
 
@@ -70,8 +65,6 @@ struct World {
 }
 
 impl World {
-    /// A run with only code-sweep, the reviewer prompts, and a claimed task
-    /// of `mode` whose worktree has 1 commit of `feature.txt`.
     fn new(mode: Option<ReviewMode>) -> World {
         let tmp = tempfile::tempdir().unwrap();
         let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
@@ -101,7 +94,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -179,7 +171,6 @@ impl World {
         tasks::get(self.store.conn(), &id).unwrap()
     }
 
-    /// The review tasks not yet done: (persona, fallback, findings file).
     fn open_reviews(&self) -> Vec<(String, String, String)> {
         let mut stmt = self
             .store
@@ -206,7 +197,6 @@ impl World {
             .unwrap()
     }
 
-    /// Every open review is in: the first writes `first`, the others none.
     fn round_in(&self, first: &str) {
         for (n, (_, _, file)) in self.open_reviews().iter().enumerate() {
             std::fs::write(file, if n == 0 { first } else { NONE }).unwrap();
@@ -217,7 +207,6 @@ impl World {
             .unwrap();
     }
 
-    /// The folder of review round `round`.
     fn round_dir(&self, round: u32) -> PathBuf {
         let task = self.task();
         self.wt
@@ -298,14 +287,12 @@ fn trf_27_the_review_stops_after_round_3_and_asks_the_orchestrator() {
         "{}",
         q[0]
     );
-    // A new commit queues no round 4.
     commit(&w.wt, "fix3.txt", "fix\n");
     let before = w.review_count();
     let r = w.finish();
     assert_eq!(w.review_count(), before, "no round 4");
     assert_eq!(verdict(&r), "WARN");
     assert!(note(&r).contains("in round 3, the last review round"));
-    // An answer resolves it; the pass says the change since round 3 is not reviewed.
     std::fs::write(&answers, "F1: fixed in fix3.txt\n").unwrap();
     let r = w.finish();
     assert!(r.complete, "{r:?}");
@@ -376,7 +363,6 @@ fn trf_29_finding_ids_carry_and_reviewers_rule_on_the_answers() {
     .unwrap();
     assert!(w.finish().complete);
 
-    // Round 2: the ticket names answers.md, which carries the answer.
     commit(&w.wt, "second.txt", "second\n");
     w.finish();
     let answers = w.round_dir(2).join("answers.md");
@@ -395,8 +381,6 @@ fn trf_29_finding_ids_carry_and_reviewers_rule_on_the_answers() {
     );
     assert!(ticket.contains("## Answers\n- none\n```"), "{ticket}");
 
-    // The same findings at moved lines keep their ids; the waiver and the
-    // accepted answer carry.
     w.round_in(
         "## Critical\n- b.rs:7 boom\n## Important\n- a.rs:9 meh. Fix: check it\n## Minor\n- c.rs:1 new\n## Answers\n- F2 accepted\n",
     );
@@ -418,8 +402,6 @@ fn trf_29_finding_ids_carry_and_reviewers_rule_on_the_answers() {
         "{report}"
     );
 
-    // Round 3: a reviewer rejects the answer and writes the finding again
-    // by id. It blocks until the author changes the answer.
     commit(&w.wt, "third.txt", "third\n");
     w.finish();
     w.round_in(
@@ -447,14 +429,12 @@ fn trf_29_finding_ids_carry_and_reviewers_rule_on_the_answers() {
 
 #[test]
 fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
-    // none: the step does not apply.
     let mut w = World::new(Some(ReviewMode::NoReview));
     let r = w.finish();
     assert_eq!(step(&r, "code-sweep").status, "not_applicable");
     assert_eq!(note(&r), "the ticket says Review: none");
     assert_eq!(w.review_count(), 0);
 
-    // light: 1 round of 2 reviewers; a new commit queues no round 2.
     let mut w = World::new(Some(ReviewMode::Light));
     let r = w.finish();
     assert!(
@@ -473,9 +453,6 @@ fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
     w.finish();
     assert_eq!(w.review_count(), 2);
 
-    // full: at most 3 reviewers, though the triage picks more; round 2
-    // goes to the cheaper persona, with the other vendor's light reviewer
-    // as its fallback.
     let mut w = World::new(Some(ReviewMode::Full));
     commit(
         &w.wt,
@@ -512,6 +489,5 @@ fn trf_30_light_reviewer_falls_back_to_the_other_light_reviewer() {
     ] {
         assert_eq!(codesweep::other_reviewer(persona), fallback, "{persona}");
     }
-    // An unknown persona keeps the default fallback.
     assert_eq!(codesweep::other_reviewer("opus"), "architect-reviewer");
 }

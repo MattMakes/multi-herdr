@@ -1,11 +1,3 @@
-//! Worktree triage through the custody jobs (fleetd-p3 ticket 13): the
-//! real `horch` binary, its own git repository, ledger and state folders in
-//! a temp dir. Triage keeps each of its safeties (RR-16, RR-17, rows W7 to
-//! W9 of `docs/specs/fleetd/preservation-04-behavior.md`), and each folder
-//! that it removes is first on a verified rescue ref, then removed by a
-//! `worktree_remove` job (RR-9). A restore makes its tree through a
-//! `worktree_add` job.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -61,8 +53,6 @@ fn git_ok(h: &Harness, dir: &Path, args: &[&str]) -> bool {
     c.output().unwrap().status.success()
 }
 
-/// A worktree `.worktrees/<name>` on the branch `<name>` that no ledger
-/// row names, with 1 commit of the file `<name>.txt`.
 fn folder(h: &Harness, name: &str) -> PathBuf {
     let path = h.project.join(".worktrees").join(name);
     git_in(
@@ -91,11 +81,6 @@ fn commit_all(h: &Harness, dir: &Path, message: &str) {
     );
 }
 
-/// `horch worktree triage apply` of 1 decision of the row W1 `name`: its
-/// result line. fleetd applies `KEEP` in the request, and the command
-/// prints its line. fleetd applies `ARCHIVE`, `DELETE`, `LAND` and `PR` in
-/// a `triage_apply` job (T-888): the command prints that the job is queued,
-/// so this waits until the job ended and gives the line of its result.
 fn apply(h: &Harness, name: &str, decision: &str) -> String {
     apply_many(h, &[("W1", name, decision)])
 }
@@ -133,7 +118,6 @@ fn apply_many(h: &Harness, rows: &[(&str, &str, &str)]) -> String {
     format!("{}\n", result["text"].as_str().unwrap_or_default())
 }
 
-/// The refs under `prefix`, in name order.
 fn refs(h: &Harness, prefix: &str) -> Vec<String> {
     git_in(
         h,
@@ -149,12 +133,10 @@ fn rev(h: &Harness, name: &str) -> String {
     git_in(h, &h.project, &["rev-parse", name])
 }
 
-/// The text of `file` in the commit of `refname`.
 fn show(h: &Harness, refname: &str, file: &str) -> String {
     git_in(h, &h.project, &["show", &format!("{refname}:{file}")])
 }
 
-/// 1 value of the ledger.
 fn query(h: &Harness, sql: &str) -> Vec<String> {
     let store = Store::open(&ledger(h)).unwrap();
     let mut stmt = store.conn().prepare(sql).unwrap();
@@ -166,8 +148,6 @@ fn query(h: &Harness, sql: &str) -> Vec<String> {
     rows
 }
 
-/// `path` as the ledger writes it: with each link of the project folder
-/// resolved (`/tmp` is `/private/tmp` on macOS).
 fn stored(h: &Harness, path: &Path) -> String {
     let rel = path.strip_prefix(&h.project).unwrap();
     std::fs::canonicalize(&h.project)
@@ -177,7 +157,6 @@ fn stored(h: &Harness, path: &Path) -> String {
         .to_string()
 }
 
-/// The state of each row of the folder `path`, oldest first.
 fn states(h: &Harness, path: &Path) -> Vec<String> {
     query(
         h,
@@ -188,7 +167,6 @@ fn states(h: &Harness, path: &Path) -> Vec<String> {
     )
 }
 
-/// The ended runs of `kind`: `<state>` each, oldest first.
 fn jobs(h: &Harness, kind: &str) -> Vec<String> {
     query(
         h,
@@ -196,9 +174,6 @@ fn jobs(h: &Harness, kind: &str) -> Vec<String> {
     )
 }
 
-/// The read-back of each ref that triage writes fails. The `triage_apply`
-/// job reads the fault, and it runs under fleetd, so the test fleetd
-/// starts again with it (T-888).
 fn read_back_fault(h: &mut Harness) {
     h.set("HORCH_FAULT", "triage-ref-read-back");
     h.without_fleetd(|| ());
@@ -225,9 +200,6 @@ fn pres_04_w9_triage_commits_untracked_before_delete() {
         assert_eq!(show(&h, r, "feat.txt"), "changed", "{r}");
         assert_eq!(show(&h, r, "new.txt"), "untracked", "{r}");
     }
-    // Row W7: the folder had no row; triage adopts it as `orphaned`. The
-    // triage_apply job rescues it and removes it with the custody adapters,
-    // and its ingest moves the row to `rescued`, then `removed` (T-888).
     assert_eq!(states(&h, &path), ["removed"]);
     assert_eq!(
         query(
@@ -277,13 +249,9 @@ fn rr17_triage_deletes_a_branch_only_when_the_trash_ref_holds_its_tip() {
     assert!(said.contains("the branch feat is deleted"), "{said}");
     let trash = refs(&h, "refs/horch/trash/feat/");
     let held = rev(&h, &trash[0]);
-    // The trash ref holds the tip of the branch: the commit of the
-    // uncommitted file, on the old tip.
     assert_eq!(rev(&h, &format!("{held}^")), before);
     assert_eq!(show(&h, &trash[0], "wip.txt"), "wip");
 
-    // A trash ref that does not hold the tip (its read-back fails): the
-    // branch and the folder stay.
     let mut h2 = world("p3-triage-branch-kept");
     let kept = folder(&h2, "feat");
     read_back_fault(&mut h2);
@@ -301,8 +269,6 @@ fn rr17_triage_deletes_a_branch_only_when_the_trash_ref_holds_its_tip() {
 fn pres_04_w8_refs_move_forward_and_are_read_back() {
     let h = world("p3-triage-w8");
     let path = folder(&h, "feat");
-    // Other work at the archive ref: a commit that is not in the history of
-    // the folder.
     let other = folder(&h, "other");
     let elsewhere = git_in(&h, &other, &["rev-parse", "HEAD"]);
     git_in(
@@ -321,7 +287,6 @@ fn pres_04_w8_refs_move_forward_and_are_read_back() {
     assert_eq!(rev(&h, "refs/horch/archive/feat"), elsewhere);
     assert!(refs(&h, "refs/horch/rescue/").is_empty());
 
-    // An archive ref at an older commit of the folder moves forward.
     let old = git_in(&h, &path, &["rev-parse", "HEAD^"]);
     git_in(
         &h,
@@ -374,8 +339,6 @@ fn rr16_second_rescue_through_triage_does_not_overwrite_the_first_ref() {
     let h = world("p3-triage-second-rescue");
     let path = folder(&h, "feat");
     std::fs::write(path.join("first.txt"), "first\n").unwrap();
-    // git refuses to move or remove a locked tree: the rescue passes, and
-    // the worktree_remove job fails.
     git_in(
         &h,
         &h.project,
@@ -443,8 +406,6 @@ fn restore_makes_its_tree_through_a_worktree_add_job() {
         said.trim_end().ends_with("from refs/horch/archive/feat"),
         "{said}"
     );
-    // The worktree_add job runs in the next pass of fleetd (ticket 25 of
-    // fleetd-p5, T-474).
     wait_for("the worktree_add job to pass", || {
         (jobs(&h, "worktree_add") == ["passed"]).then_some(())
     });
@@ -453,9 +414,6 @@ fn restore_makes_its_tree_through_a_worktree_add_job() {
         "untracked\n"
     );
     assert_eq!(git_in(&h, &path, &["branch", "--show-current"]), "feat");
-    // The removed row keeps its path; the restored tree has a new row. It
-    // is for the operator: `created` with no owner, so the reconciler does
-    // not orphan it.
     assert_eq!(states(&h, &path), ["removed", "created"]);
 }
 
@@ -476,8 +434,6 @@ fn restore_runs_no_hook_of_the_project() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     ok(&h, &["worktree", "restore", "feat"]);
-    // The worktree_add job runs in the next pass of fleetd (ticket 25 of
-    // fleetd-p5, T-474).
     wait_for("the restored tree", || {
         (jobs(&h, "worktree_add") == ["passed"]).then_some(())
     });
@@ -494,7 +450,6 @@ fn a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_re
     let path = folder(&h, "feat");
     apply(&h, "feat", "DELETE");
     assert_eq!(states(&h, &path), ["removed"]);
-    // A new folder at the same path, on another branch.
     git_in(
         &h,
         &h.project,
@@ -512,8 +467,6 @@ fn a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_re
     assert!(said.starts_with("W1 feat KEEP: kept"), "{said}");
     assert_eq!(states(&h, &path), ["removed", "orphaned"]);
     assert!(path.join("again.txt").exists());
-    // The triage_apply job removed the first folder with the custody
-    // removal adapter, in the job (T-888): no worktree_remove job ran.
     assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
     assert!(jobs(&h, "worktree_remove").is_empty());
 }

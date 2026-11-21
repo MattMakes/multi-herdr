@@ -1,10 +1,3 @@
-//! The status lines of integration (ticket 45).
-//!
-//! `docs/specs/fleetd/design.md`, OR-1, FM-45, "fleetd owns the candidate
-//! refs", "Rescue refs have 2 classes" and "Remote git state is
-//! level-triggered". `horch status` shows each fact of [`Integration`].
-//! Each query only reads, and no query runs git.
-
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
@@ -18,54 +11,42 @@ use crate::fleetd::worktree_custody::adapters::rescue_refs_git::facts_of;
 use crate::fleetd::worktree_custody::application::rescue_refs::class;
 use crate::fleetd::worktree_custody::domain::rescue_class::Class;
 
-/// The facts of integration on the board.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Integration {
-    /// Each project whose new dispatch holds, with its cause.
     pub holds: Vec<ProjectHold>,
-    /// The bundles that still name a candidate ref.
     pub bundle_refs: u64,
-    /// `None` until a `worktree_list` run read the rescue refs.
     pub rescue: Option<RescueClasses>,
-    /// Each `open` or `ready` feature, by id.
     pub features: Vec<FeaturePush>,
-    /// Each remote tip whose last fetch failed.
     pub stale_remotes: Vec<StaleRemote>,
 }
 
-/// The hold on new dispatch of 1 project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectHold {
     pub project: String,
     pub cause: String,
 }
 
-/// The count and the bytes of the rescue refs of 1 class.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct ClassTally {
     pub count: u64,
     pub bytes: u64,
 }
 
-/// The rescue refs of each class, in each repository.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct RescueClasses {
     pub unique: ClassTally,
     pub superseded: ClassTally,
 }
 
-/// The push state of 1 feature.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeaturePush {
     pub id: String,
     pub name: Option<String>,
     pub state: String,
-    /// `None` before its first push.
     pub push_state: Option<String>,
     pub push_failures: i64,
 }
 
-/// 1 remote tip whose last fetch failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StaleRemote {
     pub repo: String,
@@ -73,7 +54,6 @@ pub struct StaleRemote {
     pub stale_since: String,
 }
 
-/// The facts of integration now.
 pub fn integration(conn: &Connection) -> Result<Integration> {
     Ok(Integration {
         holds: holds(conn)?,
@@ -88,8 +68,6 @@ pub fn integration(conn: &Connection) -> Result<Integration> {
     })
 }
 
-/// The hold of each project with no fast gate: its open needs-you item
-/// records it.
 fn holds(conn: &Connection) -> Result<Vec<ProjectHold>> {
     Ok(needs_you::open_items(conn)?
         .into_iter()
@@ -101,8 +79,6 @@ fn holds(conn: &Connection) -> Result<Vec<ProjectHold>> {
         .collect())
 }
 
-/// The classes of the rescue refs that the newest passed `worktree_list`
-/// run of each repository read.
 fn rescue(conn: &Connection) -> Result<Option<RescueClasses>> {
     let mut out: Option<RescueClasses> = None;
     for row in jobs_store::last_passed(conn, Kind::WorktreeList)? {

@@ -1,19 +1,3 @@
-//! The pass of Phase 7: the scan of the CLI binaries, the `docs_sync` and
-//! `conformance` jobs, the health marks after each ended `conformance`
-//! run, the drift idea after a failed run, the `context_limit` outcome and
-//! the pacing hold of a pool
-//! (docs/tickets/fleetd-p7/30-pass-wiring.md).
-//!
-//! `docs/specs/fleetd/design.md`, "The reconcile pass", "A pass has a work
-//! budget", "Holds on dispatch are visible" and "Docs sync and adapter
-//! conformance"; FR-8, FM-19, FM-20.
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root,
-//! and runs the passes as library calls with no herdr snapshot. A CLI
-//! binary is a temporary file, a job process is a script that sleeps, and
-//! the test writes the result file of each job. No test reads the load, the
-//! limits, the quota file or the clock of this machine: the fleet clock is
-//! a row of the ledger, and the pool readings have a fixed time.
 #![cfg(unix)]
 
 use std::cell::Cell;
@@ -58,22 +42,14 @@ use horch_core::taskledger::{schema, testing, util};
 use horch_marketplace::git::scrub_repo_env;
 use rusqlite::{params, Connection};
 
-/// The folder of the world of a child process of a crash test.
 const CHILD: &str = "HORCH_P7_PASS_CHILD";
 
-/// A teammate of the built-in roster with the agent `claude`.
 const CLAUDE_PROFILE: &str = "opus";
 
-/// A teammate of the built-in roster with the agent `antigravity`.
 const AGY_PROFILE: &str = "antigravity";
 
-/// The seconds between 2 daily `docs_sync` runs of 1 CLI (MAP.md Q11).
 const DAY_S: i64 = 86_400;
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp git repository `project` on `main`, a ledger at generation 1, a
-/// fleet root, 1 run, and a folder `bin` of fake CLI binaries.
 struct World {
     _temp: Option<tempfile::TempDir>,
     dir: PathBuf,
@@ -127,7 +103,6 @@ fn world() -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &project, &new_run).unwrap();
-    // A task needs an idea in flight of the feature of its run (FR-12).
     schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     fs::create_dir_all(dir.join("fleet")).unwrap();
     fs::create_dir_all(dir.join("bin")).unwrap();
@@ -138,7 +113,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The world of the folder `dir` that [`world`] made.
     fn reopen(dir: &Path) -> World {
         let conn = open(&dir.join("ledger.sqlite3"));
         let run_id: String = conn
@@ -159,8 +133,6 @@ impl World {
             codex: CodexSandbox::default(),
             jobs: None,
         };
-        // Each persona has a check sandbox: the host facts do not decide a
-        // test.
         let mut sandboxes = WorkerSandboxes::on_path(
             CodexSandbox::default(),
             dir.join("fleet"),
@@ -196,9 +168,6 @@ impl World {
         }
     }
 
-    /// The program of each job process: it sleeps and writes no result
-    /// file. The test writes the result file. Its binary id is the id of
-    /// the horch binary of the pass.
     fn job_program(&self) -> PathBuf {
         let path = self.dir.join("job.sh");
         if !path.exists() {
@@ -208,13 +177,10 @@ impl World {
         path
     }
 
-    /// The fake binary of the CLI `cli`, with the content `version`: a new
-    /// content is a new binary id.
     fn install_cli(&self, cli: &str, version: &str) {
         fs::write(self.dir.join("bin").join(cli), version).unwrap();
     }
 
-    /// Each fake CLI binary in `bin`, by name.
     fn cli_paths(&self) -> Vec<CliPath> {
         let mut out: Vec<CliPath> = fs::read_dir(self.dir.join("bin"))
             .unwrap()
@@ -240,7 +206,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// Each run of `kind`: id, subject, run number and state, oldest first.
     fn jobs(&self, kind: &str) -> Vec<(i64, String, i64, String)> {
         let mut stmt = self
             .conn
@@ -252,7 +217,6 @@ impl World {
             .unwrap()
     }
 
-    /// The first word of the subject of each run of `kind`.
     fn job_clis(&self, kind: &str) -> Vec<String> {
         self.jobs(kind)
             .into_iter()
@@ -260,7 +224,6 @@ impl World {
             .collect()
     }
 
-    /// The last run of `kind` of the CLI `cli`: id and run number.
     fn last_job(&self, kind: &str, cli: &str) -> (i64, i64) {
         self.jobs(kind)
             .into_iter()
@@ -270,7 +233,6 @@ impl World {
             .unwrap_or_else(|| panic!("no {kind} run of {cli}"))
     }
 
-    /// The `docs_sync` run `id` ends with the result `passed`.
     fn end_docs_sync(&self, id: i64, run: i64) {
         let result = JobResult {
             job_id: id,
@@ -283,8 +245,6 @@ impl World {
         job_result_file::write(&self.root(), &result).unwrap();
     }
 
-    /// The `conformance` run `id` of `report` ends: its `conformance.json`
-    /// in the docs folder, `CHANGES.md` of its CLI, and its result file.
     fn end_conformance(&self, id: i64, run: i64, report: &ConformanceReport) {
         let docs = docs_dir::docs_root(&self.root());
         let path = docs_dir::write_conformance(&docs, report).unwrap();
@@ -311,7 +271,6 @@ impl World {
         job_result_file::write(&self.root(), &result).unwrap();
     }
 
-    /// The health events of `profile`, oldest first.
     fn health_events(&self, profile: &str) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -326,7 +285,6 @@ impl World {
             .unwrap()
     }
 
-    /// The id of each idea, in order.
     fn ideas(&self) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -338,7 +296,6 @@ impl World {
             .unwrap()
     }
 
-    /// The ideas of the drift of an adapter.
     fn drift_ideas(&self) -> Vec<String> {
         self.ideas()
             .into_iter()
@@ -351,7 +308,6 @@ impl World {
             .collect()
     }
 
-    /// 1 ready task of the shared checkout of `persona`.
     fn ready_task(&self, title: &str, persona: &str) -> String {
         let mut t = NewTask::work(title, &format!("{title}.md"), persona);
         t.worktree_mode = WorktreeMode::Shared;
@@ -369,7 +325,6 @@ impl World {
             .unwrap()
     }
 
-    /// The hold events of the pool `pool`, oldest first.
     fn pool_hold_events(&self, pool: &str) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -385,8 +340,6 @@ impl World {
     }
 }
 
-/// A report of `cli` 2.1.0: `Shared write` fails when `failed`, and each
-/// other check passes.
 fn report(cli: &str, failed: bool) -> ConformanceReport {
     let checks = CHECKS
         .into_iter()
@@ -406,9 +359,6 @@ fn report(cli: &str, failed: bool) -> ConformanceReport {
     }
 }
 
-/// The outside of the tests: no herdr snapshot and no health hold; the
-/// fake CLI binaries of the world; the built-in roster and 1 reading of
-/// the claude pool at a fixed time, with `used` of its 7-day window.
 struct Fake {
     clis: Vec<CliPath>,
     project: PathBuf,
@@ -425,8 +375,6 @@ impl Fake {
     }
 }
 
-/// A view of the claude pool with 1 window of 7 days that is half elapsed
-/// and `used`. 0.63 of it at half the window is a pace above 1.25.
 fn half_elapsed(used: f64) -> QuotaView {
     let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
     let mut file = QuotaFile::default();
@@ -476,8 +424,6 @@ impl Outside for Fake {
     }
 }
 
-/// The spawn of a push attempt: 1 line with the attempt id in the
-/// launches file.
 struct Spawns {
     file: PathBuf,
 }
@@ -518,7 +464,6 @@ fn pass<'a>(w: &'a World, fake: &'a Fake, spawns: &'a Spawns, faults: Faults) ->
     })
 }
 
-/// 1 pass of `w` with `fake`, on a new connection.
 fn run_pass(w: &World, fake: &Fake) -> PassReport {
     let sp = spawns(w);
     let mut conn = open(&w.dir.join("ledger.sqlite3"));
@@ -529,8 +474,6 @@ fn run_pass(w: &World, fake: &Fake) -> PassReport {
     report
 }
 
-/// Not a test of its own: 1 pass of a child process of a crash test, with
-/// the fault of `HORCH_FAULT`. It runs only with [`CHILD`].
 #[test]
 fn child_pass() {
     let Some(dir) = std::env::var_os(CHILD) else {
@@ -555,12 +498,6 @@ fn crash(w: &World, fault: &str) {
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE), "the fault {fault}");
 }
 
-// ─── the docs jobs ──────────────────────────────────────────────────────
-
-/// A new CLI binary queues `docs_sync` and `conformance` with no
-/// repository, and part 3 starts each through the launcher. 1 day later on
-/// the fleet clock, the pass queues a new `docs_sync` run with the next run
-/// number.
 #[test]
 fn pass_queues_the_daily_docs_sync() {
     let w = world();
@@ -593,8 +530,6 @@ fn pass_queues_the_daily_docs_sync() {
     assert_eq!(docs[1].2, 2, "the next run number");
 }
 
-/// A docs source with no exec adapter (herdr) gets its `docs_sync` runs
-/// and no `conformance` run, and an ended run queues no new one.
 #[test]
 fn docs_source_with_no_exec_adapter_gets_no_conformance_run() {
     let w = world();
@@ -615,8 +550,6 @@ fn docs_source_with_no_exec_adapter_gets_no_conformance_run() {
     );
 }
 
-/// The scan of the CLI binaries reads at most `pass_budget` binaries in 1
-/// pass, and the next pass continues at its cursor in `pass_cursors`.
 #[test]
 fn scan_of_cli_binaries_has_a_cursor() {
     let mut w = world();
@@ -638,10 +571,6 @@ fn scan_of_cli_binaries_has_a_cursor() {
     assert_eq!(w.job_clis("docs_sync"), ["agy", "claude", "codex"]);
 }
 
-// ─── the health of a profile and the drift idea ─────────────────────────
-
-/// A failed `conformance` run marks each profile of its CLI unhealthy and
-/// adds 1 drift idea; a passed run marks the profile healthy again.
 #[test]
 fn pass_marks_unhealthy_after_a_failed_conformance_run() {
     let w = world();
@@ -656,7 +585,6 @@ fn pass_marks_unhealthy_after_a_failed_conformance_run() {
     assert_eq!(w.drift_ideas().len(), 1);
     assert!(w.health_events(AGY_PROFILE).is_empty(), "another CLI");
 
-    // The docs sync of the next day ends, and its conformance run passes.
     let (docs_id, docs_run) = w.last_job("docs_sync", "claude");
     w.end_docs_sync(docs_id, docs_run);
     run_pass(&w, &fake);
@@ -679,8 +607,6 @@ fn pass_marks_unhealthy_after_a_failed_conformance_run() {
     assert_eq!(w.drift_ideas().len(), 1);
 }
 
-/// The docs source `agy` is the CLI of the harness `antigravity`: its
-/// failed run marks each profile with the agent `antigravity`.
 #[test]
 fn failed_agy_conformance_marks_each_antigravity_profile() {
     let w = world();
@@ -695,9 +621,6 @@ fn failed_agy_conformance_marks_each_antigravity_profile() {
     assert!(w.health_events(CLAUDE_PROFILE).is_empty(), "another CLI");
 }
 
-/// A crash after the commit of the marks and the idea row, before part 3
-/// writes idea.md: the next pass writes idea.md 1 time, and adds no second
-/// mark and no second idea.
 #[test]
 fn pass_adds_1_drift_idea_after_a_crash_and_a_restart() {
     let w = world();
@@ -809,11 +732,6 @@ fn changed_cli_and_missing_or_corrupt_conformance_report_fail_closed() {
     }
 }
 
-// ─── context_limit ──────────────────────────────────────────────────────
-
-/// The wrapper ended the attempt at the context limit: the pass ends it
-/// with `context_limit`, burns no attempt and moves the task to `ready`
-/// at once, with a handoff file for the next attempt.
 #[test]
 fn pass_moves_a_context_limit_task_to_ready() {
     let w = world();
@@ -831,7 +749,6 @@ fn pass_moves_a_context_limit_task_to_ready() {
     };
     let files = AttemptFiles::new(&w.root(), a.clone());
     fs::create_dir_all(files.dir()).unwrap();
-    // The wrapper makes its attempt folder with mode 0700.
     fs::set_permissions(files.dir(), fs::Permissions::from_mode(0o700)).unwrap();
     files
         .write_exit_hinted(Some(0), false, Some(OutcomeHint::ContextLimit))
@@ -1105,11 +1022,6 @@ fn quota_outcome_restarts_as_a_push_attempt_of_the_fallback() {
     assert_eq!(claim_rows, 0, "the old claim path writes no row");
 }
 
-// ─── pacing ─────────────────────────────────────────────────────────────
-
-/// A paced pool holds the ready tasks of its personas in a pass, with 1
-/// `hold_started` event, and the hold ends when the pacing ends: the task
-/// is bound, with 1 `hold_ended` event.
 #[test]
 fn paced_pool_holds_its_ready_tasks_until_the_pacing_ends() {
     let w = world();

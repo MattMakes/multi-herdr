@@ -1,15 +1,3 @@
-//! The operator boundary of the Codex adapter (SR-8, FM-17, RR-5; ticket 36
-//! of fleetd-p5): a Codex worker has no execpolicy rule that runs
-//! `horch ledger` outside its sandbox, writes only its task folder and its
-//! worktree, and its rendered permissions profile denies reading the
-//! operator token, connecting to the command channel and writing into the
-//! run folder. An older Codex, or one without the `network_proxy` feature,
-//! is not supported.
-//!
-//! The real `codex` never runs here. The tests read the argv of the built
-//! command. The conformance check "Operator boundary" of Phase 7 runs the 3
-//! acts inside the real Codex sandbox.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -20,8 +8,6 @@ use horch_core::harness::{CommandSpec, HarnessKind, LaunchEnv, PrepareRequest, S
 use horch_core::roster::{ExecDecision, Roster, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 
-/// A test fleet: a home, a state root, a fleet root with its run folder,
-/// a task folder and a worktree.
 struct Fleet {
     root: tempfile::TempDir,
     paths: OperatorPaths,
@@ -58,9 +44,6 @@ impl Fleet {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// The argv of a launch of `teammate` for a push attempt, built as the
-    /// launcher builds it: `prepare`, its extra args on the teammate, then
-    /// the command.
     fn argv(&self, teammate: &Teammate) -> Vec<String> {
         let ctx = self.ctx();
         let codex = HarnessKind::Codex.adapter();
@@ -102,7 +85,6 @@ impl Fleet {
     }
 }
 
-/// The value of the last `-c <key>=<value>` pair of `argv`, parsed as TOML.
 fn last_pair(argv: &[String], key: &str) -> Option<toml::Value> {
     argv.windows(2)
         .filter(|w| w[0] == "-c")
@@ -134,10 +116,6 @@ fn facts(version: &str, network_proxy: bool) -> CodexFacts {
     }
 }
 
-/// FM-17, #181: from Phase 5 a worker command writes its outbox in the task
-/// folder, so no rule lets `horch ledger` leave the sandbox. The rules that
-/// refuse a check command a worker could add stay, and `horch tell` still
-/// reaches the orchestrator.
 #[test]
 fn codex_worker_rules_have_no_ledger_allow_rule() {
     let roster = Roster::builtin().unwrap();
@@ -166,10 +144,6 @@ fn codex_worker_rules_have_no_ledger_allow_rule() {
         .any(|r| r.pattern == r#""horch", "tell""# && r.decision == ExecDecision::Allow));
 }
 
-/// RR-5, the design's `writable_paths`: a Codex worker of a push attempt
-/// writes its task folder and its worktree, and no other root: not the
-/// state root that `prepare` names, and not the ledger. Its temp folder is
-/// in the task folder, so it stays writable.
 #[test]
 fn codex_writable_roots_are_the_task_folder_and_the_worktree() {
     let f = fleet();
@@ -192,7 +166,6 @@ fn codex_writable_roots_are_the_task_folder_and_the_worktree() {
     want.sort_unstable();
     assert_eq!(roots, want, "{argv:?}");
 
-    // No absolute path of the filesystem table is writable.
     let fs = last_pair(&argv, "permissions.fleet_write.filesystem").expect("filesystem");
     for (path, access) in fs.as_table().unwrap() {
         if !path.starts_with(':') {
@@ -206,19 +179,11 @@ fn codex_writable_roots_are_the_task_folder_and_the_worktree() {
     assert!(tmpdir.is_dir(), "the launch makes {tmpdir:?}");
 }
 
-/// SR-8: the rendered profile closes `<fleet root>/run` ("none": no read,
-/// no write), runs the network proxy, and allows Unix sockets only in the
-/// task folder and the worktree. The boundary holds on macOS and Linux from
-/// Codex 0.167.0 with the `network_proxy` feature, and is not supported on
-/// Windows, on an older or unknown Codex, or without the feature. A
-/// teammate whose own args leave the fleet profile, and an orchestrator
-/// seat, deny nothing.
 #[test]
 fn codex_boundary_denies_the_3_acts_or_is_not_supported() {
     let f = fleet();
     let argv = f.argv(&sol());
 
-    // The config text.
     let fs = last_pair(&argv, "permissions.fleet_write.filesystem").unwrap();
     assert_eq!(
         fs.get(path_str(&f.paths.run)).and_then(toml::Value::as_str),
@@ -250,7 +215,6 @@ fn codex_boundary_denies_the_3_acts_or_is_not_supported() {
         }
     }
 
-    // The boundary.
     let proven = facts(OPERATOR_BOUNDARY_SINCE, true);
     for os in ["macos", "linux"] {
         let b = operator_boundary_on(os, &proven, &sol(), &f.fleet_root).unwrap();
@@ -276,14 +240,11 @@ fn codex_boundary_denies_the_3_acts_or_is_not_supported() {
     assert!(refused("linux", &unknown).contains(OPERATOR_BOUNDARY_SINCE));
     assert!(refused("macos", &facts("0.167.0", false)).contains("network_proxy"));
 
-    // A teammate whose own sandbox flag leaves the fleet profile.
     let mut yolo = sol();
     yolo.args.push("--yolo".into());
     let b = operator_boundary_on("macos", &proven, &yolo, &f.fleet_root).unwrap();
     assert_eq!(b.allowed(), Act::ALL.to_vec());
 
-    // A teammate whose own args reopen the run folder before the seal: the
-    // seal comes last and wins.
     let mut reopen = sol();
     reopen.args.extend([
         "-c".into(),
@@ -298,7 +259,6 @@ fn codex_boundary_denies_the_3_acts_or_is_not_supported() {
             .holds()
     );
 
-    // An orchestrator seat is not a worker profile (Q2).
     let roster = Roster::builtin().unwrap();
     let seat = roster.require("orchestrator-codex").unwrap();
     let b = operator_boundary_on("macos", &proven, seat, &f.fleet_root).unwrap();

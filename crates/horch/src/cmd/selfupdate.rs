@@ -1,11 +1,3 @@
-//! The boot check for a newer horch release, and `horch self-update`
-//! (design C2 and C3 of `ai_docs/specs/self-update/design.md`).
-//!
-//! A release is a GitHub release `vX.Y.Z` of `MattMakes/multi-herdr`. Its
-//! assets are 1 flat archive per target plus `SHA256SUMS`. `self-update`
-//! downloads the archive for [`TARGET`], verifies it, and runs the new
-//! `horch install --dir <dir of this horch>` from a temp dir.
-
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,36 +13,26 @@ use sha2::{Digest, Sha256};
 
 use super::fleetd::{self, Fleet};
 
-/// The installed version.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
-/// The target triple this horch was built for (set by `build.rs`).
 pub const TARGET: &str = env!("HORCH_TARGET");
 
-/// The GitHub API root of the repo that publishes the releases.
 const API_BASE: &str = "https://api.github.com/repos/MattMakes/multi-herdr";
 
-/// The boot check gives up after this long, so it never delays a fleet.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The time limit of `self-update`'s lookup and each download.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// A release archive is a few tens of MB. Stay bounded.
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
-/// How long a cached lookup answers the boot check.
 const CACHE_TTL_HOURS: i64 = 24;
 
-/// The checksum asset of every release.
 const SUMS_NAME: &str = "SHA256SUMS";
 
-/// The fields of a GitHub release that horch reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub tag: String,
     pub html_url: String,
-    /// `(name, browser_download_url)` of each asset.
     pub assets: Vec<(String, String)>,
 }
 
@@ -63,17 +45,13 @@ impl Release {
     }
 }
 
-/// `<state root>/self-check.json`: the last lookup of the boot check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cache {
-    /// RFC 3339.
     pub checked_at: String,
     pub latest_tag: String,
     pub html_url: String,
 }
 
-/// `X.Y.Z` with an optional leading `v`. Anything else, a pre-release
-/// suffix included, is `None`.
 pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let text = text.strip_prefix('v').unwrap_or(text);
     let mut parts = text.split('.').map(|part| {
@@ -85,8 +63,6 @@ pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(version)
 }
 
-/// Whether `latest_tag` is a greater version than `current`. A version that
-/// does not parse is never newer.
 pub fn is_newer(latest_tag: &str, current: &str) -> bool {
     match (parse_version(latest_tag), parse_version(current)) {
         (Some(latest), Some(current)) => latest > current,
@@ -94,7 +70,6 @@ pub fn is_newer(latest_tag: &str, current: &str) -> bool {
     }
 }
 
-/// The body of `GET /releases/latest`.
 pub fn parse_release(json: &str) -> Result<Release> {
     #[derive(Deserialize)]
     struct Asset {
@@ -120,7 +95,6 @@ pub fn parse_release(json: &str) -> Result<Release> {
     })
 }
 
-/// `multi-herdr-v<version>-<target>.tar.gz`, or `.zip` for a windows target.
 pub fn archive_name(version_tag: &str, target: &str) -> String {
     let version = version_tag.strip_prefix('v').unwrap_or(version_tag);
     let ext = if target.contains("windows") {
@@ -131,8 +105,6 @@ pub fn archive_name(version_tag: &str, target: &str) -> String {
     format!("multi-herdr-v{version}-{target}.{ext}")
 }
 
-/// The hex digest `SHA256SUMS` gives for `name`. Lines are
-/// `<64 hex>  <name>`; a `*` before the name (binary mode) is allowed.
 pub fn parse_sums(text: &str, name: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let mut words = line.split_whitespace();
@@ -143,7 +115,6 @@ pub fn parse_sums(text: &str, name: &str) -> Option<String> {
     })
 }
 
-/// Whether a lookup made at `checked_at` still answers at `now`.
 pub fn is_fresh(now: DateTime<Utc>, checked_at: &str) -> bool {
     let Some(at) = clock::parse(checked_at) else {
         return false;
@@ -152,8 +123,6 @@ pub fn is_fresh(now: DateTime<Utc>, checked_at: &str) -> bool {
     age >= chrono::Duration::zero() && age < chrono::Duration::hours(CACHE_TTL_HOURS)
 }
 
-/// Whether `exe` sits in a cargo target layout: `target/{debug,release}/` or
-/// `target/<triple>/{debug,release}/`. A dir named `target` alone is not one.
 fn is_cargo_build(exe: &Path) -> bool {
     let name_of = |dir: Option<&Path>| dir.and_then(Path::file_name).map(|n| n == "target");
     let profile = exe.parent();
@@ -165,9 +134,6 @@ fn is_cargo_build(exe: &Path) -> bool {
             || name_of(profile.and_then(Path::parent).and_then(Path::parent)) == Some(true))
 }
 
-/// The directory `self-update` installs into: the canonical parent of the
-/// running horch, else `default_dir`. A horch in a cargo `target` layout is a
-/// source build, and a release must not overwrite it.
 pub fn install_dir(current_exe: Option<&Path>, default_dir: &Path) -> Result<PathBuf> {
     let Some(exe) = current_exe else {
         return Ok(default_dir.to_path_buf());
@@ -184,8 +150,6 @@ pub fn install_dir(current_exe: Option<&Path>, default_dir: &Path) -> Result<Pat
         .with_context(|| format!("{} has no parent directory", exe.display()))
 }
 
-/// The binaries every release archive holds, which are absent from `dir`.
-/// An install with only some of them would mix versions.
 fn missing_binaries(dir: &Path) -> Vec<String> {
     horch::RELEASE_BINARIES
         .iter()
@@ -194,7 +158,6 @@ fn missing_binaries(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The 2 lines the boot check prints.
 fn notice_text(tag: &str, html_url: &str) -> String {
     format!(
         "horch: NOTE: multi-herdr {tag} is out (you have v{CURRENT}): {html_url}\n\
@@ -206,9 +169,6 @@ fn cache_path(state_root: &Path) -> PathBuf {
     state_root.join("self-check.json")
 }
 
-/// The boot check's decision: a fresh cache answers, else `fetch` does and
-/// its answer is cached. Returns the notice to print, if any. Every error is
-/// silent: `None`.
 fn boot_notice(
     state_root: &Path,
     now: DateTime<Utc>,
@@ -239,16 +199,12 @@ fn boot_notice(
     is_newer(&cache.latest_tag, current).then(|| notice_text(&cache.latest_tag, &cache.html_url))
 }
 
-/// Warn on hot paths using only local state, independent of agent update policy.
-/// Both reasons share one line, even when the cache is arbitrarily old.
 pub fn stale_warning(ctx: &RuntimeContext) {
     if let Some(line) = stale_warning_text(ctx) {
         eprintln!("{line}");
     }
 }
 
-/// Doctor preserves the boot check's bounded cache refresh, but coalesces its
-/// result with installed-binary evidence into the single offline warning.
 pub fn doctor_warning(ctx: &RuntimeContext) {
     if let Some(line) = doctor_warning_text(ctx, std::io::stderr().is_terminal(), || {
         fetch_latest(BOOT_TIMEOUT)
@@ -263,7 +219,6 @@ fn doctor_warning_text(
     fetch: impl FnOnce() -> Result<Option<Release>>,
 ) -> Option<String> {
     if terminal && !ctx.settings.no_update && !ctx.settings.no_self_check {
-        // Preserve refresh/cache side effects without printing the old two-line notice.
         let _ = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch);
     }
     stale_warning_text(ctx)
@@ -285,7 +240,6 @@ fn stale_warning_text(ctx: &RuntimeContext) -> Option<String> {
         ));
     }
     if let (Some(running), Some(installed)) = (&ctx.bins.current_exe, &ctx.bins.installed_horch) {
-        // Distinct paths are compared by content to ignore identical copies.
         let same_path = running
             .canonicalize()
             .ok()
@@ -307,17 +261,8 @@ fn stale_warning_text(ctx: &RuntimeContext) -> Option<String> {
     (!reasons.is_empty()).then(|| format!("horch: WARNING: stale horch: {}", reasons.join("; ")))
 }
 
-/// Set on the horch that [`update_before_fleet`] restarts into, so the new
-/// process does not update again.
 const UPDATED_ENV: &str = "HORCH_SELF_UPDATED";
 
-/// The update step of `horch fleet` and `horch orchestration`, before
-/// anything else runs: when a newer release is out, install it over this
-/// horch and restart the same command on it. Skipped like the boot notice
-/// (`--no-update`, `HORCH_NO_UPDATE=1`, `HORCH_NO_SELF_CHECK=1`, no
-/// terminal) and in the process it restarted. A source build gets the
-/// notice instead. A failed update never stops the fleet: it starts on this
-/// version.
 pub fn update_before_fleet(ctx: &RuntimeContext, no_update: bool) {
     if skip_boot_update(ctx, no_update) {
         return;
@@ -328,8 +273,6 @@ pub fn update_before_fleet(ctx: &RuntimeContext, no_update: bool) {
     }
 }
 
-/// Whether the boot update step is off: a flag, a setting, the restarted
-/// process, or no terminal.
 fn skip_boot_update(ctx: &RuntimeContext, no_update: bool) -> bool {
     no_update
         || ctx.settings.no_update
@@ -338,11 +281,8 @@ fn skip_boot_update(ctx: &RuntimeContext, no_update: bool) -> bool {
         || !std::io::stderr().is_terminal()
 }
 
-/// Install the newer release over this horch and restart on it. A source
-/// build prints `notice` instead.
 fn install_and_restart(ctx: &RuntimeContext, notice: &str) {
     let Ok(dir) = target_dir(ctx) else {
-        // A source build: `git pull` and `just install` update it.
         eprintln!("{notice}");
         return;
     };
@@ -367,18 +307,12 @@ fn install_and_restart(ctx: &RuntimeContext, notice: &str) {
     }
 }
 
-/// Restart the running fleetd on `<dir>/horch`, then run `<dir>/horch` with
-/// this process's arguments and [`UPDATED_ENV`]. On unix it replaces this
-/// process; elsewhere it waits and exits with the child's code. Returns
-/// only the error of a start that failed.
 fn restart(ctx: &RuntimeContext, dir: &Path) -> std::io::Error {
     fleetd::with_fleet(ctx, |fleet| {
         restart_with(fleet, dir, horch_platform::rest::replace_process)
     })
 }
 
-/// [`restart`] on `fleet`: the restart of the running fleetd comes before
-/// `replace` replaces this process (OR-6).
 fn restart_with(
     fleet: &Fleet<'_>,
     dir: &Path,
@@ -392,15 +326,10 @@ fn restart_with(
     replace(cmd)
 }
 
-/// The `horch` of a release installed into `dir`.
 fn new_horch(dir: &Path) -> PathBuf {
     dir.join(format!("horch{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// Restart the running fleetd of `fleet` on the new `horch` in `dir` when it
-/// runs another binary (OR-6). The `horch install` of the release restarts
-/// it already, so this acts only on a fleetd that the install left. No live
-/// fleetd: nothing. A failure is a note: the update stands.
 fn restart_fleetd(fleet: &Fleet<'_>, dir: &Path) {
     match fleetd::restart_older(fleet, &new_horch(dir)) {
         Ok(Some(checked)) => eprintln!("horch: {}", fleetd::describe(&checked)),
@@ -411,9 +340,6 @@ fn restart_fleetd(fleet: &Fleet<'_>, dir: &Path) {
     }
 }
 
-/// The directory a release installs into. `HORCH_SELF_UPDATE_DIR` is for
-/// tests only: the test binary lives under `target/`, which `install_dir`
-/// refuses.
 fn target_dir(ctx: &RuntimeContext) -> Result<PathBuf> {
     match std::env::var_os("HORCH_SELF_UPDATE_DIR").filter(|v| !v.is_empty()) {
         Some(dir) => Ok(PathBuf::from(dir)),
@@ -424,7 +350,6 @@ fn target_dir(ctx: &RuntimeContext) -> Result<PathBuf> {
     }
 }
 
-/// `horch self-update [--check]`.
 pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
     let Some(release) = fetch_latest(DOWNLOAD_TIMEOUT)? else {
         println!("horch: no multi-herdr release is published yet (you have v{CURRENT})");
@@ -446,8 +371,6 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Download `release` for this target, check its digest and its binaries,
-/// and run its `horch install --dir <dir>`. Clears the boot check's cache.
 fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Result<()> {
     let name = archive_name(&release.tag, TARGET);
     let archive = verified_archive(release, &name)?;
@@ -480,8 +403,6 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
     Ok(())
 }
 
-/// Download the archive `name` of `release` and check it against the
-/// release's SHA256SUMS.
 fn verified_archive(release: &Release, name: &str) -> Result<Vec<u8>> {
     let missing = |what: &str| {
         anyhow::anyhow!(
@@ -502,17 +423,12 @@ fn verified_archive(release: &Release, name: &str) -> Result<Vec<u8>> {
     Ok(archive)
 }
 
-/// The digest that the release's SHA256SUMS gives for `name`.
 fn expected_digest(release: &Release, name: &str, sums_url: &str) -> Result<String> {
     let sums = String::from_utf8(download(sums_url)?).context("SHA256SUMS is not text")?;
     parse_sums(&sums, name)
         .with_context(|| format!("SHA256SUMS of {} has no line for {name}", release.tag))
 }
 
-// The network code below is the twin of `crates/herdr-install/src/net.rs`.
-
-/// `HORCH_RELEASE_API` replaces [`API_BASE`]. It is for tests only, which
-/// point it at a local server.
 fn api_base() -> String {
     std::env::var("HORCH_RELEASE_API")
         .ok()
@@ -527,12 +443,10 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
-/// GitHub rejects a request without a User-Agent.
 fn user_agent() -> String {
     format!("horch/{CURRENT}")
 }
 
-/// `GET /releases/latest`. `None` when the repo has no release yet (404).
 fn fetch_latest(timeout: Duration) -> Result<Option<Release>> {
     let url = format!("{}/releases/latest", api_base());
     let response = agent(timeout)
@@ -555,7 +469,6 @@ fn read_release(response: &mut ureq::http::Response<ureq::Body>, url: &str) -> R
     parse_release(&body)
 }
 
-/// Download 1 release asset into memory.
 fn download(url: &str) -> Result<Vec<u8>> {
     let bytes = agent(DOWNLOAD_TIMEOUT)
         .get(url)
@@ -754,7 +667,6 @@ mod tests {
     #[test]
     fn install_dir_refuses_only_a_cargo_target_layout() {
         let fallback = Path::new("/fallback");
-        // Nothing here exists, so canonicalize keeps the path as written.
         assert_eq!(
             install_dir(Some(Path::new("/opt/target/bin/horch")), fallback).unwrap(),
             Path::new("/opt/target/bin")
@@ -769,7 +681,6 @@ mod tests {
                 .to_string();
             assert!(err.contains("source build"), "{exe}: {err}");
         }
-        // `release` alone, or `target` 3 levels up, is not a cargo layout.
         assert!(install_dir(Some(Path::new("/x/release/horch")), fallback).is_ok());
         assert!(install_dir(Some(Path::new("/x/target/a/b/release/horch")), fallback).is_ok());
     }
@@ -800,9 +711,6 @@ mod tests {
         }
     }
 
-    /// A release archive of this OS with 1 file entry named `name`. The
-    /// name goes into the header as raw bytes, because the archive writers
-    /// refuse some of the bad names themselves.
     #[cfg(unix)]
     fn one_entry_archive(name: &str) -> Vec<u8> {
         let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -910,7 +818,6 @@ mod tests {
             boot_notice(tmp.path(), now, "0.2.0", || Ok(Some(release("v0.2.0")))),
             None
         );
-        // A dev build ahead of the latest release is silent too.
         write_cache(tmp.path(), "2026-10-20T11:00:00Z", "v0.2.0");
         assert_eq!(
             boot_notice(tmp.path(), now, "0.3.0", || Ok(Some(release("v0.2.0")))),
@@ -918,8 +825,6 @@ mod tests {
         );
     }
 
-    /// The update restarts the running fleetd on the new binary before it
-    /// replaces this process with the new `horch` (OR-6, FM-34).
     #[cfg(unix)]
     #[test]
     fn self_update_restarts_the_running_fleetd_before_it_replaces_itself() {
@@ -954,8 +859,6 @@ mod tests {
         assert!(ended(old), "the old fleetd still runs");
     }
 
-    /// With no live fleetd, the update starts no fleetd: it never starts a
-    /// fleetd that does not run.
     #[test]
     fn self_update_with_no_live_fleetd_restarts_nothing() {
         use crate::cmd::fleetd::test_fleet::World;
@@ -965,8 +868,6 @@ mod tests {
         let dir = new_horch.parent().unwrap();
         let (_, starts) = w.run(Mode::StandIn, |fleet| restart_fleetd(fleet, dir));
         assert!(starts.is_empty(), "no fleetd row: {starts:?}");
-        // A row whose process ended: this test process with another start
-        // time.
         let pid = std::process::id();
         let gone = Fleetd {
             pid,

@@ -1,6 +1,3 @@
-//! TRF-02: the ticket-writer template's example ticket and plan.yaml parse
-//! under the C1 rules (`docs/specs/ticket-format.md`) with no error.
-
 use std::path::Path;
 
 use horch_core::fleetd::ideas::adapters::plan_yaml;
@@ -11,7 +8,6 @@ fn template() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// The first fenced block after the line `marker`, without its fences.
 fn fenced_after(text: &str, marker: &str) -> String {
     let mut lines = text.lines().skip_while(|l| l.trim() != marker);
     assert!(

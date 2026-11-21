@@ -1,18 +1,3 @@
-//! The feature state machine of the 1 feature of a run: `open`, `ready`
-//! after the full gate on its tip over the fetched primary tip, back to
-//! `open` when a tip moves, and `merged` by content, decided 1 time
-//! (docs/specs/fleetd/design.md, "The feature state machine", "Between
-//! features" (The full gate; Merged), I8; docs/tickets/fleetd-p4/MAP.md,
-//! Q5; docs/tickets/fleetd-p4/36-feature-state-machine.md). The idea
-//! state of docs/tickets/fleetd-p6/34-feature-ready.md replaces the stand-in
-//! of Q20: the test sets the idea of the run to `integrating`.
-//!
-//! Each test has its own temporary ledger and git repository. No test reads
-//! the load, the limits or the clock of the machine: the fleet clock is a
-//! number that the test gives, and the config is the default. The full gate
-//! job does not run here: the test writes its verdict in `gate_runs`, as
-//! the gate executor writes it.
-
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,18 +73,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A repository with `main` and the run branch at the same commit, a temp
-/// ledger with the fleet clock at 0, the run and its feature `F-0001` in
-/// `open`.
-/// [`bare_world`] with the gate tree of [`FEATURE`] made, so a full gate
-/// can run.
 fn world() -> World {
     let w = bare_world();
     w.gate_tree();
     w
 }
 
-/// A world whose feature has no gate tree yet.
 fn bare_world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
@@ -133,7 +112,6 @@ fn bare_world() -> World {
     };
     let tx = conn.transaction().unwrap();
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -164,7 +142,6 @@ impl World {
         }
     }
 
-    /// 1 pass of the feature state machine through `gateway`.
     fn follow_with(&self, gateway: &dyn IntegrationGitGateway) {
         let ctx = self.jobs();
         let f = Features {
@@ -176,7 +153,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// The rebase refs of fleetd in this repository.
     fn rebase_refs(&self) -> GitRebaseRefs {
         let dir = self.repo.parent().unwrap();
         GitRebaseRefs::new(
@@ -184,8 +160,6 @@ impl World {
         )
     }
 
-    /// Run the rescue `effect` after the commit, and record it, as the
-    /// effects of a pass do.
     fn rescue(&self, effect: &Effect) {
         let done = rebase::run(effect, &self.rebase_refs()).unwrap();
         let ctx = self.jobs();
@@ -194,8 +168,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// The branch row of the run branch at its tip, as the branch scan of
-    /// a pass records it.
     fn seen_run_branch(&self) {
         let tip = self.tip(RUN_BRANCH);
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -218,7 +190,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 pass of the continuous rebase: its effects.
     fn follow_rebase(&self) -> Vec<Effect> {
         let ctx = self.jobs();
         let refs = self.rebase_refs();
@@ -237,19 +208,15 @@ impl World {
         self.follow_with(&self.git);
     }
 
-    /// The repository as the run names it: fleetd reads this path.
     fn project_root(&self) -> PathBuf {
         PathBuf::from(&self.run.project_root)
     }
 
-    /// The gate tree of [`FEATURE`]: its reserved row, then its made
-    /// folder.
     fn gate_tree(&self) {
         let job = self.reserve_gate_tree();
         self.make_gate_tree(job);
     }
 
-    /// The `worktree_add` run of the reserved gate tree of [`FEATURE`].
     fn reserve_gate_tree(&self) -> i64 {
         let tip = self.tip(RUN_BRANCH);
         let repo = self.project_root();
@@ -269,8 +236,6 @@ impl World {
         }
     }
 
-    /// The `worktree_add` run `job` of the gate tree makes its folder and
-    /// passes, and a pass observes it.
     fn make_gate_tree(&self, job: i64) {
         let path = gate_tree::path(&self.project_root(), FEATURE);
         let tip = self.tip(RUN_BRANCH);
@@ -306,7 +271,6 @@ impl World {
         git(&self.repo, &["rev-parse", rev])
     }
 
-    /// 1 commit on `branch` that writes `text` to `file`. Gives its tip.
     fn commit_on(&self, branch: &str, file: &str, text: &str) -> String {
         git(&self.repo, &["checkout", "--quiet", branch]);
         std::fs::write(self.repo.join(file), text).unwrap();
@@ -317,15 +281,12 @@ impl World {
         tip
     }
 
-    /// The fetched tip of `main`, as a passed fetch writes it.
     fn fetched_main(&self, tip: &str) {
         let tx = self.conn.unchecked_transaction().unwrap();
         rows::put_remote_tip(&tx, None, &self.run.project_root, "main", tip).unwrap();
         tx.commit().unwrap();
     }
 
-    /// A new task `title` with its branch row in `building`, as the bind of
-    /// its first push attempt writes it. Gives (task, branch).
     fn task(&self, title: &str) -> (String, String) {
         let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator)
@@ -339,8 +300,6 @@ impl World {
         (task, branch)
     }
 
-    /// The task `task` is `status`, and its branch is `landing` (the task
-    /// and landing state machines are not under test here).
     fn settle(&self, task: &str, status: &str, branch: &str, landing: &str) {
         self.conn
             .execute(
@@ -356,8 +315,6 @@ impl World {
             .unwrap();
     }
 
-    /// The idea of the run is `integrating`, as the roll-up writes it when
-    /// each task is settled (the idea state machine is not under test here).
     fn integrating(&self) {
         self.conn
             .execute(
@@ -367,7 +324,6 @@ impl World {
             .unwrap();
     }
 
-    /// The full gate runs of the feature, as (tip, base tip, result).
     fn full_gates(&self) -> Vec<(String, String, Option<String>)> {
         let mut stmt = self
             .conn
@@ -382,8 +338,6 @@ impl World {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// The full gate job of the open gate run passed, as the gate executor
-    /// records it.
     fn pass_full_gate(&self) {
         let (id, job): (i64, i64) = self
             .conn
@@ -397,7 +351,6 @@ impl World {
             .unwrap();
         let tx = self.conn.unchecked_transaction().unwrap();
         rows::set_gate_result(&tx, None, id, job, "pass", cause("the gate ran")).unwrap();
-        // The job ends (the job state machine is not under test here).
         tx.execute("UPDATE jobs SET state = 'passed' WHERE id = ?1", [job])
             .unwrap();
         tx.commit().unwrap();
@@ -413,8 +366,6 @@ impl World {
             .unwrap()
     }
 
-    /// The feature with 1 landed task, 1 cancelled task and a passed full
-    /// gate on its tip over the fetched `main`: `ready`.
     fn ready(&self) {
         let (t1, b1) = self.task("one");
         let (t2, b2) = self.task("two");
@@ -429,8 +380,6 @@ impl World {
         assert_eq!(self.state(), "ready");
     }
 
-    /// A squash merge of the feature branch on `main`, then 1 more commit
-    /// on `main` that the feature did not change. Gives the tip of `main`.
     fn squash_merge(&self) -> String {
         git(&self.repo, &["merge", "--quiet", "--squash", RUN_BRANCH]);
         git(&self.repo, &["commit", "--quiet", "-m", "squash"]);
@@ -438,7 +387,6 @@ impl World {
     }
 }
 
-/// A gateway that counts its calls and then calls git.
 struct Counting<'a> {
     inner: &'a CliGitGateway,
     calls: Cell<usize>,
@@ -512,8 +460,6 @@ impl IntegrationGitGateway for Counting<'_> {
 fn feature_is_ready_after_its_branches_landed_and_the_full_gate_passed() {
     let w = world();
     w.fetched_main(&w.tip("main"));
-    // A feature with no landed task branch has no changes: its tip is in
-    // `main`, but it is not merged, and no gate runs.
     w.follow();
     assert_eq!(w.state(), "open");
     assert!(w.full_gates().is_empty());
@@ -523,19 +469,14 @@ fn feature_is_ready_after_its_branches_landed_and_the_full_gate_passed() {
     let tip = w.commit_on(RUN_BRANCH, "b.txt", "b\n");
     let main = w.tip("main");
     w.settle(&t1, "done", &b1, "landed");
-    // 1 task is still running: no gate.
     w.follow();
     assert_eq!(w.state(), "open");
     assert!(w.full_gates().is_empty());
 
-    // The task is cancelled but its branch is not abandoned yet: no gate.
     w.settle(&t2, "cancelled", &b2, "building");
     w.follow();
     assert!(w.full_gates().is_empty());
 
-    // Each task is done or cancelled, each branch landed or abandoned, so
-    // the idea of the run is `integrating`: 1 full gate on the feature tip
-    // over the fetched primary tip.
     w.settle(&t2, "cancelled", &b2, "abandoned");
     w.integrating();
     w.follow();
@@ -551,7 +492,6 @@ fn feature_is_ready_after_its_branches_landed_and_the_full_gate_passed() {
         .unwrap();
     assert_eq!(job, ("full_gate".to_string(), FEATURE.to_string()));
 
-    // The gate runs once: a second pass queues no second run.
     w.follow();
     assert_eq!(w.full_gates().len(), 1);
     assert_eq!(w.state(), "open");
@@ -563,10 +503,6 @@ fn feature_is_ready_after_its_branches_landed_and_the_full_gate_passed() {
     assert_eq!(w.state(), "ready");
 }
 
-/// Q18: a full gate runs only in the gate tree of its feature. A feature
-/// that never rebased has no gate tree: when its full gate is due, the pass
-/// reserves the tree and queues its `worktree_add` run, and no full gate.
-/// The pass after the tree is made queues 1 full gate.
 #[test]
 fn full_gate_waits_for_the_gate_tree_of_the_feature() {
     let w = bare_world();
@@ -598,17 +534,11 @@ fn full_gate_waits_for_the_gate_tree_of_the_feature() {
     assert_eq!(w.full_gates(), vec![(tip, main, None)]);
 }
 
-/// The primary tip moves after the full gate passed: the gate is stale, and
-/// the feature is `open`. The feature tip does not contain the fetched
-/// primary tip, so no full gate runs on it (the gate would refuse it), and
-/// the gate tree stays free for the rebase (continuous rebase, FM-42).
-/// After the rebase, 1 full gate runs on the new tips.
 #[test]
 fn moved_primary_tip_makes_the_feature_open_and_the_rebase_comes_before_the_full_gate() {
     let w = world();
     w.ready();
     let moved = w.commit_on("main", "c.txt", "c\n");
-    // The local primary branch is not the fetched tip: nothing changes.
     w.follow();
     assert_eq!(w.state(), "ready");
 
@@ -626,8 +556,6 @@ fn moved_primary_tip_makes_the_feature_open_and_the_rebase_comes_before_the_full
         !rebase::gate_tree_busy(&w.conn, FEATURE).unwrap(),
         "no full gate holds the gate tree"
     );
-    // The rebase starts: its first effect is the rescue ref of the old
-    // feature tip. After the rescue, the next pass queues the rebase job.
     w.seen_run_branch();
     let old = w.tip(RUN_BRANCH);
     let effects = w.follow_rebase();
@@ -645,7 +573,6 @@ fn moved_primary_tip_makes_the_feature_open_and_the_rebase_comes_before_the_full
         "the rebase job of {RUN_BRANCH} is queued"
     );
 
-    // The rebase job moved the feature branch onto the primary tip.
     git(&w.repo, &["rebase", "--quiet", "main", RUN_BRANCH]);
     git(&w.repo, &["checkout", "--quiet", "main"]);
     let rebased = w.tip(RUN_BRANCH);
@@ -671,7 +598,6 @@ fn moved_feature_tip_makes_the_feature_open() {
 fn squash_merged_feature_is_merged() {
     let w = world();
     w.ready();
-    // The squash is on the local `main`, not yet fetched: not merged.
     let merged = w.squash_merge();
     w.follow();
     assert_eq!(w.state(), "ready");
@@ -692,8 +618,6 @@ fn merged_is_decided_once() {
     assert_eq!(w.state(), "merged");
     let events = w.feature_events();
 
-    // The fetched tip moves to a commit without the changes of the
-    // feature: fleetd does not read git for the feature again.
     w.fetched_main(&base);
     let counting = Counting {
         inner: &w.git,
@@ -713,7 +637,6 @@ fn remote_none_reads_the_local_primary_branch() {
     let tip = w.commit_on(RUN_BRANCH, "fleet.toml", "remote = \"none\"\n");
     w.settle(&t1, "done", &b1, "landed");
     w.integrating();
-    // A fetched tip that the project does not use.
     let side = w.commit_on("main", "c.txt", "c\n");
     git(&w.repo, &["reset", "--quiet", "--hard", "HEAD~1"]);
     w.fetched_main(&side);
@@ -725,8 +648,6 @@ fn remote_none_reads_the_local_primary_branch() {
     w.follow();
     assert_eq!(w.state(), "ready");
 
-    // A fetched tip with the changes of the feature does not make it
-    // merged with `remote = none`: the local primary branch does.
     git(&w.repo, &["branch", "elsewhere"]);
     git(&w.repo, &["checkout", "--quiet", "elsewhere"]);
     git(&w.repo, &["merge", "--quiet", "--squash", RUN_BRANCH]);
@@ -834,9 +755,6 @@ fn gate_tree_end(w: &World) -> (String, bool) {
     (tree.state.as_str().to_string(), given_up)
 }
 
-/// Row W11: the move of the feature to `merged` gives its gate tree to
-/// custody in the same transaction. The reconciler rescues it, then
-/// removes it (gate_jobs.rs, `released_gate_tree_is_rescued_then_removed`).
 #[test]
 fn merged_feature_releases_its_gate_tree() {
     let w = world();
@@ -851,8 +769,6 @@ fn merged_feature_releases_its_gate_tree() {
     assert_eq!(gate_tree_end(&w), ("orphaned".to_string(), true));
 }
 
-/// Row W11: `horch feature abandon` gives the gate tree to custody in the
-/// transaction of the move to `abandoned`.
 #[test]
 fn abandoned_feature_releases_its_gate_tree() {
     use horch_core::fleetd::integration::application::commands;

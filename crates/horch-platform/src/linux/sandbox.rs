@@ -1,29 +1,3 @@
-//! The concern sandbox for Linux: bubblewrap (`bwrap`), when it is on the
-//! `PATH` of the command.
-//!
-//! The whole disk is bound read-only. `/dev` and `/proc` are new. With a
-//! temp folder `/tmp` is a new empty tmpfs. Then 1 mount for each rule,
-//! from the shortest path to the longest: a readable path read-only, a
-//! writable path writable, and a new empty tmpfs on a hidden folder. With
-//! no network the command gets a new network namespace (`--unshare-net`).
-//!
-//! Each command runs in a new session, which takes the controlling
-//! terminal away, so the command cannot type into the terminal outside the
-//! sandbox (`TIOCSTI`).
-//!
-//! A job gets a new PID namespace (`--unshare-pid`), and `/proc` is the
-//! `/proc` of that namespace. The init of the namespace stays in the
-//! process group of `bwrap`, so a KILL of that group ends the init, and the
-//! kernel then kills each process of the sandbox. A TERM does not reach the
-//! init. `setsid` ([`SETSID`]) starts the command in its new session inside
-//! the sandbox. A job does not use the `--new-session` of `bwrap`: it takes
-//! the init out of the group of `bwrap` too. It does not use
-//! `--die-with-parent`: the kernel sends that signal when the thread that
-//! started `bwrap` ends, so it kills a live command.
-//!
-//! A command with the PIDs of the host gets `--new-session`, so a kill of
-//! the group of `bwrap` does not reach it.
-
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -31,13 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::sandbox::{Network, Rule};
 use crate::NotSupported;
 
-/// The `setsid` of util-linux, at the first of these paths that exists.
-/// A fixed path, not the `PATH` of the command: the disk is bound
-/// read-only, so the path is the same inside the sandbox.
 const SETSID: [&str; 2] = ["/usr/bin/setsid", "/bin/setsid"];
 
-/// The first executable `bwrap` in the absolute folders of `path`. A host
-/// with no [`SETSID`] has no sandbox.
 pub(crate) fn program(path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
     let bwrap = find_bwrap(path).ok_or(
         NotSupported::new("sandbox", "linux").because("bwrap is not on PATH; install bubblewrap"),
@@ -53,15 +22,6 @@ fn setsid() -> Option<&'static Path> {
     SETSID.iter().map(Path::new).find(|file| executable(file))
 }
 
-/// The mounts of `bwrap`: the disk read-only, then 1 mount for each rule,
-/// in order, so the mount of a longer path covers the ones before it. A
-/// readable path is bound read-only, a writable path is bound writable, a
-/// hidden folder gets a new empty tmpfs and a hidden file gets
-/// `/dev/null`. A path that does not exist gets no mount. With a temp
-/// folder `/tmp` is a new empty tmpfs. With no network the command gets a
-/// new network namespace. With `own_pids` the command gets a new PID
-/// namespace, and the last argument is [`SETSID`], so `bwrap` runs the
-/// command through it. Else `bwrap` starts a new session.
 pub(crate) fn args(
     rules: &[Rule<'_>],
     temp: bool,
@@ -87,7 +47,6 @@ pub(crate) fn args(
     }
     for rule in rules {
         match *rule {
-            // The tmpfs is the temp folder when it is /tmp.
             Rule::Write(path) if temp && path == Path::new("/tmp") => {}
             Rule::Read(path) | Rule::Write(path) | Rule::Hide(path) if !path.exists() => {}
             Rule::Read(path) => args.extend(["--ro-bind".into(), path.into(), path.into()]),
@@ -104,8 +63,6 @@ pub(crate) fn args(
     args
 }
 
-/// A relative folder of `path` is skipped: it names a folder of the
-/// caller, not of the system.
 fn find_bwrap(path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path?)
         .filter(|dir| dir.is_absolute())
@@ -216,10 +173,6 @@ mod tests {
     type Sandbox =
         fn(Command, &[std::path::PathBuf], &Denials) -> Result<Command, crate::NotSupported>;
 
-    /// The reason of the new session: a sandboxed command has no
-    /// controlling terminal, so it cannot push input into the terminal of
-    /// the process that started the sandbox (`TIOCSTI`). A job and a
-    /// command with the PIDs of the host both hold it.
     #[test]
     fn sandboxed_command_has_no_controlling_terminal_and_cannot_push_input() {
         let outside = on_a_terminal(None).unwrap();

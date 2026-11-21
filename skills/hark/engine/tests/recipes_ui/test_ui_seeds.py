@@ -124,6 +124,6 @@ def test_at_17_shipped_bank_loads_delivered_first():
     click = load("click")
     entries = bank("click")["entries"]
     loaded = search.load_seeds("click", target=click.TARGETS["click"], refs=[], folder=SEEDS)
-    assert loaded[0] == entries[5]["params"]  # the first entry delivered in the click context
+    assert loaded[0] == entries[5]["params"]
     loaded = search.load_seeds("click", target=click.TARGETS["pro_click"], refs=[], folder=SEEDS)
-    assert loaded[0] == entries[0]["params"]  # the first entry delivered in the pro_click context
+    assert loaded[0] == entries[0]["params"]

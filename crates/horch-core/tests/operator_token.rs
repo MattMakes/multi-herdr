@@ -1,5 +1,3 @@
-//! The operator token (ticket 10 of fleetd-p5): SR-8. Each test uses a
-//! temporary fleet root and never reads the token of the live fleet.
 #![cfg(unix)]
 
 use std::fs::{self, Permissions};

@@ -1,11 +1,7 @@
-//! The small rest (PL-2): the release archive, the restart, the user PATH,
-//! the executable extensions, the install facts and the host tools line.
-
 use std::path::Path;
 
 use horch_platform::rest;
 
-/// Builds a release archive of the host format with 1 file, named `name`.
 #[cfg(unix)]
 fn archive(name: &str, body: &[u8]) -> Vec<u8> {
     let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -57,7 +53,6 @@ fn extract_release_refuses_a_path_and_a_bad_archive() {
     );
     #[cfg(unix)]
     {
-        // `tar::Builder` refuses `..` itself, so the path test uses a separator.
         let err = rest::extract_release(&archive("sub/horch", b"x"), dir.path()).unwrap_err();
         assert_eq!(
             err.to_string(),

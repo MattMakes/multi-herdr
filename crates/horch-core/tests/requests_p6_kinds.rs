@@ -1,7 +1,3 @@
-//! The request kinds of Phase 6: the idea kinds of class `operator`, and
-//! `idea_note`, a file of class `worker` that fleetd refuses on the channel
-//! and in a request file (docs/tickets/fleetd-p6/06-kinds.md; SR-8, FR-10).
-
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{parse_request, Request};
 use horch_core::fleetd::fleet_runtime::domain::authorize::{
     authorize, Decision, PeerProcess, RequestFacts, Source,
@@ -15,8 +11,6 @@ use sha2::{Digest, Sha256};
 const ID: &str = "6f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f";
 const MAX_BYTES: u64 = 64 * 1024;
 
-/// The operator facts of a request of `kind` from `source`: the caller is
-/// the user of the ledger and the token is valid.
 fn operator_facts(kind: &str, source: Source) -> RequestFacts {
     RequestFacts {
         kind: kind.into(),
@@ -27,7 +21,6 @@ fn operator_facts(kind: &str, source: Source) -> RequestFacts {
     }
 }
 
-/// `add` as an `idea_add` request line, parsed back as fleetd parses it.
 fn through_the_wire(add: &IdeaAdd) -> IdeaAdd {
     let payload: Map<String, Value> = add
         .fields()
@@ -57,7 +50,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The target of an idea with no `--to`: a new feature of the project.
 fn new_feature() -> AddTarget {
     AddTarget::New {
         project: absolute("project"),
@@ -93,7 +85,6 @@ fn each_idea_kind_is_operator() {
             "{name}: {decision:?}"
         );
     }
-    // FR-10: the approval is an operator request, so it needs the token.
     let mut facts = operator_facts("idea_approve", Source::RequestFile);
     facts.token_valid = false;
     assert!(matches!(authorize(&facts), Decision::Refused { .. }));

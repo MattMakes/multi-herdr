@@ -1,38 +1,15 @@
-//! The retry rule of rung 6: the attempt limit and the backoff
-//! (`docs/specs/fleetd/design.md`, "Stall ladder", rung 6, and "The task
-//! state machine", the rows `stalled`, `failed` and `escalated`).
-//!
-//! Each outcome that is not verified and is not `asked`, `quota` or
-//! `critical_open` burns 1 attempt. With attempts left, the task waits for
-//! its backoff on the fleet clock in `ready`. With no attempt left, it goes
-//! to `failed` for its 1 replan, then to `escalated` (RR-6).
-
-/// How an attempt ended, when the verifier did not verify it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The verifier rejected the result.
     Rejected,
-    /// The process of the attempt died.
     Crashed,
-    /// No first signal within the start timeout.
     TimedOut,
-    /// Rungs 3 and 4 of the stall ladder.
     Stalled,
-    /// The attempt was stopped.
     Killed,
-    /// The process exited with no result.
     NoResult,
-    /// The worker asked a question.
     Asked,
-    /// A usage limit.
     Quota,
-    /// The judge reports an open CRITICAL item.
     CriticalOpen,
-    /// The context of the attempt reached the limit, and the attempt ended
-    /// with a handoff (FM-20).
     ContextLimit,
-    /// The CLI refused the resume of the session of an answered question
-    /// (RR-12): the session is gone. A fresh attempt starts at once.
     ResumeRefused,
 }
 
@@ -51,7 +28,6 @@ impl Outcome {
         Outcome::ResumeRefused,
     ];
 
-    /// The word of the design, as `attempts.outcome` stores it.
     pub fn as_str(self) -> &'static str {
         match self {
             Outcome::Rejected => "rejected",
@@ -68,9 +44,6 @@ impl Outcome {
         }
     }
 
-    /// A question, a usage limit, an open CRITICAL item of a judge, the
-    /// context limit and a refused resume burn no attempt. Each other
-    /// outcome burns 1.
     pub fn burns_attempt(self) -> bool {
         !matches!(
             self,
@@ -83,27 +56,17 @@ impl Outcome {
     }
 }
 
-/// The numbers of rung 6 for 1 task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Numbers {
-    /// The attempts since the last operator requeue, the burned one
-    /// included: `attempts - attempt_floor`.
     pub used: i64,
-    /// The attempt limit: [`limit`].
     pub limit: i64,
-    /// The replans of the task: 0 or 1.
     pub replans: i64,
 }
 
-/// The attempt limit of a task: `retry.max_attempts` of its profile
-/// (`profile_max`), else the `max_attempts` of its run
-/// (`docs/tickets/fleetd-p2/MAP.md`, Q10).
 pub fn limit(profile_max: Option<u32>, run_max_attempts: i64) -> i64 {
     profile_max.map_or(run_max_attempts, i64::from)
 }
 
-/// The backoff after `used` attempts: `backoff_s[used - 1]`, and the last
-/// value repeats. An empty list gives 0.
 pub fn backoff_s(backoff: &[u64], used: i64) -> u64 {
     let n = usize::try_from(used.saturating_sub(1)).unwrap_or(0);
     backoff
@@ -113,19 +76,13 @@ pub fn backoff_s(backoff: &[u64], used: i64) -> u64 {
         .unwrap_or(0)
 }
 
-/// Where rung 6 moves a task after 1 burned attempt. Each time is a value
-/// of the fleet clock, in seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rung6 {
-    /// `ready`, first in line, not claimed before `not_before`.
     Retry { not_before: i64 },
-    /// `failed`: the orchestrator of the run replans it before `due_at`.
     Fail { due_at: i64 },
-    /// `failed`, then `escalated` at once: the 1 replan is used.
     Escalate,
 }
 
-/// Rung 6 at fleet clock `clock` for a task with `n`.
 pub fn rung6(n: &Numbers, backoff: &[u64], replan_limit_s: u64, clock: i64) -> Rung6 {
     if n.used < n.limit {
         let wait = i64::try_from(backoff_s(backoff, n.used)).unwrap_or(i64::MAX);
@@ -142,34 +99,23 @@ pub fn rung6(n: &Numbers, backoff: &[u64], replan_limit_s: u64, clock: i64) -> R
     }
 }
 
-/// A `failed` task with `due_at` is past its replan limit at `clock`.
 pub fn replan_overdue(due_at: Option<i64>, clock: i64) -> bool {
     due_at.is_some_and(|d| clock >= d)
 }
 
-/// A `ready` task with `not_before` can be claimed at `clock`.
 pub fn claimable_at(not_before: Option<i64>, clock: i64) -> bool {
     not_before.is_none_or(|t| clock >= t)
 }
 
-/// The facts of 1 ended attempt that its handoff file holds (rung 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandoffFacts<'a> {
-    /// The id of the attempt that ended.
     pub attempt: &'a str,
-    /// Why it ended.
     pub why: &'a str,
-    /// The tail of its `outbox/progress.jsonl`.
     pub progress: &'a str,
-    /// The `git diff` of its worktree.
     pub diff: &'a str,
-    /// The tail of its `transcript.jsonl`.
     pub transcript_tail: &'a str,
 }
 
-/// The text of the handoff file that the next attempt in the same worktree
-/// reads first: the progress lines, `git diff` and the transcript tail of
-/// the attempt that ended.
 pub fn handoff_text(f: &HandoffFacts<'_>) -> String {
     let section = |title: &str, body: &str| {
         let body = if body.trim().is_empty() {
@@ -196,7 +142,6 @@ pub fn handoff_text(f: &HandoffFacts<'_>) -> String {
 mod tests {
     use super::*;
 
-    /// The design default of `backoff_s`.
     const BACKOFF_S: [u64; 3] = [30, 120, 480];
     const REPLAN_LIMIT_S: u64 = 1800;
 
@@ -217,20 +162,16 @@ mod tests {
     fn retry_backoff_30s_2m_8m_then_replan_then_escalate() {
         let limit = limit(Some(4), 3);
         assert_eq!(limit, 4, "the profile limit wins over the run's");
-        // Attempts 1 to 3 fail: 30 s, 2 min, 8 min on the fleet clock.
         assert_eq!(at(1, limit, 0, 1000), retry_at(1030));
         assert_eq!(at(2, limit, 0, 1000), retry_at(1120));
         assert_eq!(at(3, limit, 0, 1000), retry_at(1480));
-        // Attempt 4 fails: no attempt left, failed for its 1 replan.
         assert_eq!(
             at(4, limit, 0, 1000),
             Rung6::Fail {
                 due_at: 1000 + 1800
             }
         );
-        // The replan starts the count again from 0 (attempt_floor).
         assert_eq!(at(1, limit, 1, 5000), retry_at(5030));
-        // The last attempt after the replan fails: escalated.
         assert_eq!(at(4, limit, 1, 5000), Rung6::Escalate);
     }
 
@@ -311,8 +252,6 @@ mod tests {
 
     #[test]
     fn limit_counts_attempts_since_the_attempt_floor() {
-        // Preservation 04 L4: the run's max_attempts with no profile limit,
-        // counted from the attempt floor of the last operator requeue.
         let limit = limit(None, 3);
         assert_eq!(limit, 3);
         let (attempts, attempt_floor) = (5, 3);

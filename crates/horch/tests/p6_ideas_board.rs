@@ -1,14 +1,3 @@
-//! `horch ideas` and `horch idea show` (ticket 24 of fleetd-p6): the board
-//! of each idea that is not merged and not cancelled, what it waits on, the
-//! open needs-you items, and what you approve
-//! (docs/specs/fleetd/design.md, "Ideas"; "Between features", "Build on
-//! what is in flight"; OR-3).
-//!
-//! Each test makes its own ledger, fleet root and git repository in a
-//! temporary folder, and runs the real binary with its own home, data and
-//! state folders and the watchdog off. No test reads the clock of the
-//! machine: each time that a test checks, the test writes.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -42,8 +31,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A ledger with the features `F-0001` (`f1`) and `F-0002` (`f2`) of the
-/// primary branch `main`.
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
@@ -69,8 +56,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The idea `id` of `feature`, put in `state` with no event: the set-up
-    /// of a test, not a move.
     fn idea(&mut self, id: &str, feature: &str, state: &str) {
         let new = NewIdea {
             id,
@@ -89,8 +74,6 @@ impl World {
         assert_eq!(self.store.conn().execute(sql, [id, since]).unwrap(), 1);
     }
 
-    /// An open question of `feature`. The question names a task that the
-    /// test does not make, so the insert runs with no foreign key check.
     fn question(&self, id: &str, feature: &str) {
         let conn = rusqlite::Connection::open(self.root.join("ledger.sqlite3")).unwrap();
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
@@ -157,7 +140,6 @@ impl World {
     }
 }
 
-/// The 1 line of the board that names `id`.
 fn line_of<'a>(board: &'a str, id: &str) -> &'a str {
     let lines: Vec<&str> = board.lines().filter(|l| l.contains(id)).collect();
     assert_eq!(lines.len(), 1, "1 line names {id}:\n{board}");
@@ -289,8 +271,6 @@ fn idea_show_prints_the_assumptions_and_their_sha256() {
     assert_eq!(json["amendments"][0]["name"], "01.md");
 }
 
-/// plan.yaml names the feature id, so `horch idea show` prints it, in text
-/// and in JSON, also when the feature has a name.
 #[test]
 fn idea_show_prints_the_feature_id() {
     let mut w = world();
@@ -324,8 +304,6 @@ fn git(repo: &Path, args: &[&str]) {
     );
 }
 
-/// A repository with `main` and the branches `fleet/f1` and `fleet/f2`,
-/// each with 1 commit that adds 1 file.
 fn repo(root: &Path) {
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();

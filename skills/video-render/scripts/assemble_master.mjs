@@ -1,12 +1,4 @@
 #!/usr/bin/env node
-// Assembles render/master.mp4 from timeline.json: scene clips, beat-checked transitions,
-// Chrome-rendered transparent text layers and audio/mix.wav. Node built-ins only; ffmpeg and
-// ffprobe run as subprocesses. Every input path is relative to the folder of timeline.json.
-//
-//   assemble_master.mjs --master <timeline.json> --out <render/master.mp4>
-//   assemble_master.mjs --self-test
-//
-// Exit codes: 0 success, 1 missing input or assembly failure, 2 usage error.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -23,20 +15,15 @@ const FADE_MIN_SEC = 0.25;
 const FADE_MAX_SEC = 0.4;
 const FIRST_FRAME = "frame_000000.png";
 
-// Timeline transition names to ffmpeg xfade types. The storyboard names map to the
-// nearest xfade type.
 export const XFADE_TYPES = {
   fade: "fade", wipeleft: "wipeleft", smoothleft: "smoothleft", circleopen: "circleopen",
   crossfade: "fade", wipe: "wipeleft", "push-left": "smoothleft",
 };
 
-// Scene clip lookup order: the rendered HTML scene first, then the capture plate.
 export const clipCandidates = (id) => [`render/scenes/${id}.mp4`, `captures/${id}.mp4`];
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const json = (v) => JSON.stringify(v);
-
-// ---------------------------------------------------------------- plan
 
 const transitionSpec = (t) => (t && typeof t === "object" ? t : { type: t ?? "cut" });
 
@@ -63,7 +50,6 @@ const sceneEnd = (next, film) => (next ? toFrame(next.start_sec, film.fps) : fil
 const sceneTransition = (s, next) => (next ? parseTransition(s.transition_out, s.id) : LAST_CUT);
 const noFrames = (s) => `scene ${s.id}: start_sec ${s.start_sec} leaves it no frames before the next scene or meta.duration_sec`;
 
-// A scene clip spans its own frames plus a tail handle as long as its outgoing transition.
 function scenePlan(s, next, film) {
   const start = toFrame(s.start_sec, film.fps);
   const length = sceneEnd(next, film) - start;
@@ -81,8 +67,6 @@ export function planMaster(timeline) {
   check(scenes[0].start === 0, `scene ${scenes[0].id}: start_sec must be 0`);
   return { ...film, scenes };
 }
-
-// ---------------------------------------------------------------- inputs
 
 const beatGrid = (g) => [...(g.beats_sec ?? []), ...(g.downbeats_sec ?? [])];
 const distanceTo = (t) => (b) => Math.abs(b - t);
@@ -136,8 +120,6 @@ export function findInputs(root, plan) {
   return { clips, overlays: overlayDirs(root), mix: MIX };
 }
 
-// ---------------------------------------------------------------- filter graph
-
 const secs = (frames, fps) => (frames / fps).toFixed(6);
 
 const normalizeChain = (s, i, p) =>
@@ -167,7 +149,6 @@ function audioChain(plan, input) {
   return `[${input}:a]aresample=${SAMPLE_RATE},apad,atrim=end_sample=${samples}[a]`;
 }
 
-// Inputs: scene clips 0..n-1, then the text layers, then audio/mix.wav.
 export function filterGraph(plan, overlayCount) {
   const n = plan.scenes.length;
   const video = [
@@ -223,8 +204,6 @@ export async function assembleMaster(timelineFile, out) {
   return masterReport(out, writeMasterTimeline(job.root, job.timeline), job);
 }
 
-// ---------------------------------------------------------------- self-test
-
 const assertEq = (actual, expected, what) => check(json(actual) === json(expected), `${what}: expected ${json(expected)}, got ${json(actual)}`);
 
 const W = 640;
@@ -242,8 +221,6 @@ const TIMELINE = {
 
 const BEATS = { bpm: 120, beats_sec: [0, 0.5, 1.0, 1.5, 2.0, 2.5], downbeats_sec: [0, 2.0] };
 
-// Plate colours and sizes. s03 has both a capture (yellow) and a rendered scene (blue);
-// the rendered scene must win. s01 is 4:3, so it is letterboxed by the normalize step.
 const PLATES = [
   ["captures/s01-hook.mp4", "red", "320x240", 1.5],
   ["render/scenes/s02-demo.mp4", "lime", "640x360", 1.0],
@@ -299,7 +276,6 @@ async function writePlate(root, plate) {
 const plateWriter = (root) => (plate) => writePlate(root, plate);
 const writePlates = (root) => Promise.all(PLATES.map(plateWriter(root)));
 
-// A transparent layer with an opaque white 64x36 box at the top-left corner.
 async function writeOverlay(root) {
   const dir = join(root, "render/overlays/captions");
   mkdirSync(dir, { recursive: true });
@@ -307,7 +283,6 @@ async function writeOverlay(root) {
   await ffmpeg(["-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:r=${FPS}`, "-vf", `format=rgba,${box}`, "-frames:v", "90", "-start_number", "0", join(dir, "frame_%06d.png")]);
 }
 
-// mix.wav is 2.8 s at 44.1 kHz, so the master must resample it and pad it to 3.0 s.
 async function writeAudio(root, beats) {
   mkdirSync(join(root, "audio"), { recursive: true });
   writeFileSync(join(root, "audio/beats.json"), json(beats));
@@ -321,7 +296,6 @@ async function writeProject(root) {
   await writeOverlay(root);
 }
 
-// Mean RGB of frame k, sampled from the centre half of the picture or from a w x h box at x,y.
 async function meanColour(file, k, area = "crop=iw/2:ih/2") {
   const vf = `select=eq(n\\,${k}),${area},scale=1:1:flags=area,format=rgb24`;
   const raw = await run("ffmpeg", ["-v", "error", "-i", file, "-vf", vf, "-frames:v", "1", "-f", "rawvideo", "-"]);
@@ -345,7 +319,6 @@ async function checkStreams(file) {
   return `${p.video.nb_frames} frames, ${secText(p.video.duration)} s, audio ${secText(p.audio.duration)} s`;
 }
 
-// Frames 25, 45 and 85 sit inside s01, s02 and s03; frame 34 is mid-way through the 9-frame xfade.
 const PROBE_FRAMES = [25, 34, 45, 85];
 const SCENE_COLOURS = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
 const colourAt = (file) => (k) => meanColour(file, k);
@@ -419,8 +392,6 @@ async function selfTest() {
   console.log(`${passed} of ${results.length} tests passed`);
   return passed === results.length ? 0 : 1;
 }
-
-// ---------------------------------------------------------------- CLI
 
 const OPTIONS = { master: { type: "string" }, out: { type: "string" }, "self-test": { type: "boolean" }, help: { type: "boolean", short: "h" } };
 

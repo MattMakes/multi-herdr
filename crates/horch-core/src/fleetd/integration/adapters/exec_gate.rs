@@ -1,28 +1,3 @@
-//! The executor of the `fast_gate` and `full_gate` jobs (ticket 28).
-//!
-//! `docs/specs/fleetd/design.md`, "Between features" (Two declared gates,
-//! The full gate) and "The kinds of job"; `docs/tickets/fleetd-p4/MAP.md`,
-//! Q18, Q19, Q24 and Q26.
-//!
-//! A `fast_gate` run judges the candidate tip of a bundle over the feature
-//! tip that the candidate is built on. A `full_gate` run judges the feature
-//! tip over the fetched tip of the primary branch: the feature tip must
-//! contain that tip, else the gate waits for the rebase. Both are pure: the
-//! input key is the 2 tips ([`gate_key`]).
-//!
-//! The run reads the gate command from the project `fleet.toml` at the tip
-//! that it judges, runs `git checkout --detach <tip>` in the gate tree of
-//! the feature by the fleetd git rule, then runs the command there through
-//! the launcher, in the gate sandbox. A gate runs code that workers wrote,
-//! so it never runs with the rights of fleetd. It can write only the gate
-//! tree, its temp folder and the gate cache of the feature; the project
-//! adds no path. The exit code is the verdict, written in `gate_runs`.
-//! With no sandbox the gate does not run, and the feature holds with 1
-//! needs-you item until a pass finds a sandbox ([`end_hold`]).
-//!
-//! The time limit is the deadline of the job: the pass stops the job
-//! process, and the job process kills the group of its gate first.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -58,25 +33,16 @@ use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 use crate::taskledger::model::Actor;
 
-/// The start of the cause of a run on a host with no gate sandbox.
 pub const NO_GATE_SANDBOX: &str = "no gate sandbox";
 
-/// The needs-you kind of a feature whose gates hold for want of a sandbox.
 pub const NO_GATE_SANDBOX_KIND: &str = "no_gate_sandbox";
 
-/// The needs-you key of the hold of `feature_id`.
 pub fn no_gate_sandbox_key(feature_id: &str) -> String {
     format!("{NO_GATE_SANDBOX_KIND}:{feature_id}")
 }
 
-/// The gate sandbox: `cmd` that can write only below `writable` and in its
-/// temp folder, with the operator acts `denied`
-/// ([`horch_platform::sandbox::sandboxed_job`]). A test gives a host with no
-/// sandbox.
 pub type GateSandbox = fn(Command, &[PathBuf], &Denials) -> Result<Command, NotSupported>;
 
-/// The input key of a gate run: the tip that it judges and the tip that it
-/// judges it over.
 pub fn gate_key(tip: &str, base_tip: &str) -> String {
     serde_json::json!([tip, base_tip]).to_string()
 }
@@ -85,8 +51,6 @@ fn read_key(key: &str) -> Option<(String, String)> {
     serde_json::from_str(key).ok()
 }
 
-/// The word of the gate of `kind` in `gate_runs`, and its key in the
-/// project file.
 fn gate_word(kind: Kind) -> Option<&'static str> {
     match kind {
         Kind::FastGate => Some("fast"),
@@ -95,9 +59,6 @@ fn gate_word(kind: Kind) -> Option<&'static str> {
     }
 }
 
-/// 1 gate to queue: `kind` of `subject` (the bundle for `fast_gate`, the
-/// feature for `full_gate`) of the feature `feature_id`, on `tip` over
-/// `base_tip`, in the repository `repo`.
 #[derive(Debug, Clone, Copy)]
 pub struct GateRequest<'a> {
     pub kind: Kind,
@@ -108,9 +69,6 @@ pub struct GateRequest<'a> {
     pub repo: &'a Path,
 }
 
-/// Queue the gate `req`, in `tx`, at `clock`: the job run, and for a new
-/// run its `gate_runs` row with no result (row first). `None` while the
-/// feature holds for want of a gate sandbox: no gate of it is queued.
 pub fn queue(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -143,34 +101,24 @@ pub fn queue(
     Ok(Some(queued))
 }
 
-/// Whether the gates of `feature_id` hold for want of a gate sandbox: its
-/// needs-you item is open.
 pub fn held(conn: &Connection, feature_id: &str) -> Result<bool> {
     let key = no_gate_sandbox_key(feature_id);
     Ok(open_keys(conn, NO_GATE_SANDBOX_KIND)?.contains(&key))
 }
 
-/// Why this host has no gate sandbox `sandbox`, or `None` when it has one.
-/// A pass calls it before [`end_hold`].
 pub fn sandbox_gap(sandbox: GateSandbox) -> Option<NotSupported> {
     sandbox(start::command(CHECK_SHELL), &[], &Denials::default()).err()
 }
 
-/// End the hold of `feature_id`, in `tx`: close its needs-you item. `false`
-/// when it did not hold.
 pub fn end_hold(ctx: &JobCtx<'_>, tx: &Connection, feature_id: &str) -> Result<bool> {
     ctx.needs_you
         .resolve_item(tx, &no_gate_sandbox_key(feature_id))
 }
 
-/// Runs the job `row` in the gate sandbox of this host.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
     run_in(conn, row, sandboxed_job)
 }
 
-/// [`run`] with the gate sandbox `sandbox`. It writes no row: the
-/// verdict, or the hold of a host with no gate sandbox, is in its result,
-/// and [`record`] in fleetd writes it.
 pub fn run_in(conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<Ran> {
     let Some(gate) = gate_word(row.kind) else {
         return Ok(no_verdict(format!("{} is not a gate kind", row.kind)).into());
@@ -200,18 +148,12 @@ pub fn run_in(conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<R
     run.go(conn, row, sandbox)
 }
 
-/// The facts of a gate run in its result file: the cause of the hold of a
-/// host with no gate sandbox. A run with a verdict has no facts.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GateFacts {
     held: Option<String>,
 }
 
-/// Record the result `ran` of the gate run `row`, in `tx` of fleetd: the
-/// verdict in its `gate_runs` row, or the needs-you item that holds the
-/// feature. The gate, the tips and the feature come from the row, so a
-/// file changes only the gate run of its own job.
 pub fn record(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: &Ran) -> Result<()> {
     let facts: GateFacts = facts_of(ran.data.as_ref())?.unwrap_or_default();
     if facts.held.is_none() && !ran.outcome.verdict {
@@ -242,8 +184,6 @@ pub fn record(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: &Ran) -> Res
     Ok(())
 }
 
-/// The gate of `feature` does not run for the cause `cause`: 1 needs-you
-/// item holds the feature.
 fn hold(ctx: &JobCtx<'_>, tx: &Connection, feature: &str, cause: &str) -> Result<()> {
     let key = no_gate_sandbox_key(feature);
     let text = format!(
@@ -260,8 +200,6 @@ fn hold(ctx: &JobCtx<'_>, tx: &Connection, feature: &str, cause: &str) -> Result
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// The feature of the gate run `row`: of its bundle for a fast gate, its
-/// subject for a full gate. The inner `Err` is why it has none.
 fn feature_of(conn: &Connection, row: &JobRow) -> Result<Result<String, String>> {
     if row.kind == Kind::FullGate {
         return Ok(Ok(row.subject.clone()));
@@ -278,7 +216,6 @@ fn feature_of(conn: &Connection, row: &JobRow) -> Result<Result<String, String>>
     })
 }
 
-/// The facts of 1 gate run.
 struct GateRun {
     gate: &'static str,
     feature: String,
@@ -360,7 +297,6 @@ impl GateRun {
         }))
     }
 
-    /// Whether the feature tip contains the fetched primary tip.
     fn contains_base(&self, git: &CliWorktreeGit) -> Result<bool> {
         let args = ["merge-base", "--is-ancestor", &self.base_tip, &self.tip];
         let out = git.checked(&self.repo, &args)?;
@@ -374,7 +310,6 @@ impl GateRun {
         }
     }
 
-    /// The declared command of the gate at the tip that it judges.
     fn command(&self, git: &CliWorktreeGit) -> Result<Option<String>> {
         let text = CliGitGateway::new(git.clone()).fleet_toml(&self.repo, &self.tip)?;
         let Some(text) = text else {
@@ -389,8 +324,6 @@ impl GateRun {
         Ok(command.map(str::to_string))
     }
 
-    /// The launch of `command` in `tree`, in the gate sandbox, with the
-    /// gate cache. The inner `Err` is the sandbox gap.
     fn spec(
         &self,
         row: &JobRow,
@@ -439,8 +372,6 @@ impl GateRun {
     }
 }
 
-/// The result of a gate that does not run, because this host has no gate
-/// sandbox for the cause `gap`: no verdict, and the hold in its facts.
 fn no_sandbox(gap: &NotSupported) -> Ran {
     let cause = clip(format!("{NO_GATE_SANDBOX}: {gap}"));
     let facts = GateFacts {
@@ -452,9 +383,6 @@ fn no_sandbox(gap: &NotSupported) -> Ran {
     }
 }
 
-/// The operator acts that a gate cannot do, as a worker cannot (SR-8):
-/// read the operator token, connect to the command channel, write a
-/// request file.
 fn operator_denials(root: &Path) -> Denials {
     let run = root.join("run");
     Denials {
@@ -464,16 +392,8 @@ fn operator_denials(root: &Path) -> Denials {
     }
 }
 
-/// The group of the running gate, 0 when none runs.
 static GATE_GROUP: AtomicI32 = AtomicI32::new(0);
 
-/// Start `spec` through `host` and wait for it. The gate leads its own
-/// group. A stop of this job process at its deadline kills that group
-/// first, so no gate outlives its job. A stop between the launch and the
-/// store of the group waits in the hold until the group is stored
-/// (T-369). Windows has no signal handlers: there the gate lives on after
-/// the stop (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
-/// section 6, row "Signals and stop").
 fn run_gate(host: &dyn ProcessHost, spec: &LaunchSpec) -> Result<ExitStatus> {
     let _ = horch_platform::signal::kill_group_on_termination(&GATE_GROUP);
     let mut launched = {

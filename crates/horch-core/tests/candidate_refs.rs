@@ -1,15 +1,3 @@
-//! The deletion of candidate refs: fleetd deletes `refs/horch/bundle/<id>`
-//! of a bundle in `landed`, `failed` or `dropped` when no child bundle of it
-//! is in `building`, `gating` or `passed`. The deletion is an effect after
-//! the commit, and the next pass verifies it in the ref store before it
-//! clears `candidate_ref` (docs/specs/fleetd/design.md, "fleetd owns the
-//! candidate refs", "The bundle state machine";
-//! docs/tickets/fleetd-p4/32-candidate-ref-deletion.md).
-//!
-//! Each test has its own temporary ledger, fleet root and git repository.
-//! No test reads the load, the limits or the clock of the machine: the
-//! config is the default, and no step here reads the fleet clock.
-
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -41,8 +29,6 @@ const FEATURE_REF: &str = "refs/heads/fleet/r1";
 const A: &str = "fleet/r1-a";
 const B: &str = "fleet/r1-b";
 const C: &str = "fleet/r1-c";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _temp: tempfile::TempDir,
@@ -101,9 +87,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// A repository with the feature branch and the task branches `A`, `B` and
-/// `C`, each with 1 commit of its own file, and a ledger with the feature
-/// and a task branch row for each.
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let root = horch_platform::path::canonicalize(temp.path()).unwrap();
@@ -137,7 +120,6 @@ fn world() -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -182,8 +164,6 @@ impl World {
         )
     }
 
-    /// The task `n`, its git branch `name` from the feature branch with 1
-    /// commit of its own file, and its task branch row.
     fn task_branch(&self, n: usize, name: &str) {
         git(&self.repo, &["checkout", "-q", "-b", name, FEATURE_BRANCH]);
         let file = format!("t{n}.txt");
@@ -207,10 +187,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 bundle of `members` on the feature tip, a child of `parent` when
-    /// given, moved through `path` of states. When `built`, its candidate
-    /// is built and `refs/horch/bundle/<id>` names it, as the build job
-    /// leaves it, before the bundle leaves `building`. Gives its id.
     fn bundle(&self, members: &[&str], parent: Option<i64>, built: bool, path: &[&str]) -> i64 {
         let base = self.tip(FEATURE_BRANCH).unwrap();
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -263,7 +239,6 @@ impl World {
         id
     }
 
-    /// Move the bundle `id` to `to`.
     fn enter(&self, id: i64, to: &str) {
         let tx = self.conn.unchecked_transaction().unwrap();
         transition(
@@ -279,8 +254,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 pass of the deletion with `git`, committed. Gives the deletions to
-    /// run after the commit.
     fn pass_with(&mut self, git: &dyn IntegrationGitGateway) -> Vec<Deletion> {
         let config = self.config.clone();
         let ctx = ctx(&config);
@@ -296,8 +269,6 @@ impl World {
         self.pass_with(&gw)
     }
 
-    /// 1 pass whose process stops before the commit: its transaction rolls
-    /// back. Gives the deletions that it would run.
     fn pass_that_crashes_before_the_commit(&mut self) -> Vec<Deletion> {
         let config = self.config.clone();
         let ctx = ctx(&config);
@@ -330,7 +301,6 @@ impl World {
             .unwrap()
     }
 
-    /// The tip of each branch of the repository, by name.
     fn branches(&self) -> String {
         git(
             &self.repo,
@@ -351,8 +321,6 @@ fn ids(deletions: &[Deletion]) -> Vec<i64> {
     deletions.iter().map(|d| d.bundle).collect()
 }
 
-/// A landed bundle of `A`: the feature ref is at its candidate, as the ref
-/// move leaves it.
 fn landed_a(w: &World) -> i64 {
     let id = w.bundle(&[A], None, true, &["gating", "passed"]);
     let tip = w.candidate_tip(id);
@@ -361,7 +329,6 @@ fn landed_a(w: &World) -> i64 {
     id
 }
 
-/// A git gateway that counts the deletions that git did.
 struct Counting {
     inner: CliGitGateway,
     deleted: Cell<u32>,
@@ -417,8 +384,6 @@ impl IntegrationGitGateway for Counting {
     }
 }
 
-// ─── the tests of the ticket ────────────────────────────────────────────
-
 #[test]
 fn candidate_ref_of_each_ended_bundle_is_deleted_and_verified() {
     let mut w = world();
@@ -430,8 +395,6 @@ fn candidate_ref_of_each_ended_bundle_is_deleted_and_verified() {
     let ended = [landed, failed, dropped];
     let feature_tip = w.tip(FEATURE_BRANCH);
 
-    // The pass deletes nothing itself: it gives 1 deletion for each ended
-    // bundle that has a candidate ref, and the rows keep `candidate_ref`.
     let deletions = w.pass();
     assert_eq!(ids(&deletions), ended);
     for d in &deletions {
@@ -442,7 +405,6 @@ fn candidate_ref_of_each_ended_bundle_is_deleted_and_verified() {
         assert_eq!(w.candidate_ref(d.bundle), Some(bundle_ref(d.bundle)));
     }
 
-    // The effect after the commit deletes each ref.
     let gw = w.gateway();
     for d in &deletions {
         assert_eq!(candidates::run(&gw, d).unwrap(), Ran::Deleted);
@@ -454,19 +416,16 @@ fn candidate_ref_of_each_ended_bundle_is_deleted_and_verified() {
         );
     }
 
-    // The next pass reads the ref store, and only then clears the row.
     assert!(w.pass().is_empty());
     for id in ended {
         assert_eq!(w.candidate_ref(id), None, "bundle {id}");
     }
 
-    // The bundle that is not ended keeps its ref and its row.
     assert!(w.tip(&bundle_ref(gating)).is_some());
     assert_eq!(w.candidate_ref(gating), Some(bundle_ref(gating)));
     assert_eq!(w.candidate_ref(never_built), None);
     assert_eq!(w.tip(FEATURE_BRANCH), feature_tip);
 
-    // A pass after the verification has no work and writes nothing.
     let events = w.events();
     assert!(w.pass().is_empty());
     assert_eq!(w.events(), events);
@@ -484,8 +443,6 @@ fn ref_of_a_failed_bundle_with_a_live_child_stays() {
     let parent = w.bundle(&[A, B], None, true, &["gating", "failed"]);
     let child = w.bundle(&[A], Some(parent), true, &[]);
 
-    // The child is `building`, then `gating`, then `passed`: the ref of the
-    // parent stays in each of these states.
     for next in ["", "gating", "passed"] {
         if !next.is_empty() {
             w.enter(child, next);
@@ -495,7 +452,6 @@ fn ref_of_a_failed_bundle_with_a_live_child_stays() {
         assert_eq!(w.candidate_ref(parent), Some(bundle_ref(parent)));
     }
 
-    // When the child ends, the refs of the parent and the child go.
     w.enter(child, "dropped");
     let deletions = w.pass();
     assert_eq!(ids(&deletions), [parent, child]);
@@ -516,7 +472,6 @@ fn failed_deletion_is_done_again() {
     let id = landed_a(&w);
     let name = bundle_ref(id);
 
-    // A lock file on the ref makes `git update-ref -d` fail.
     let lock = w.repo.join(".git").join(format!("{name}.lock"));
     std::fs::write(&lock, "").unwrap();
     let deletions = w.pass();
@@ -525,7 +480,6 @@ fn failed_deletion_is_done_again() {
     assert!(candidates::run(&gw, &deletions[0]).is_err());
     assert!(w.tip(&name).is_some());
 
-    // The next pass sees the ref, keeps the row and gives the deletion again.
     let again = w.pass();
     assert_eq!(again, deletions);
     assert_eq!(w.candidate_ref(id), Some(name.clone()));
@@ -537,11 +491,6 @@ fn failed_deletion_is_done_again() {
     assert_eq!(w.candidate_ref(id), None);
 }
 
-// ─── more tests ─────────────────────────────────────────────────────────
-
-/// Fault points: before the commit of the pass, after the commit and
-/// before the effect, and before the commit of the verifying pass. The ref
-/// is deleted 1 time, the row is cleared, and no branch tip is lost.
 #[test]
 fn crash_before_the_commit_or_before_the_deletion_deletes_the_ref_1_time() {
     let mut w = world();
@@ -554,15 +503,12 @@ fn crash_before_the_commit_or_before_the_deletion_deletes_the_ref_1_time() {
         deleted: Cell::new(0),
     };
 
-    // A crash before the commit of the pass: nothing ran, nothing is kept.
     let lost = w.pass_that_crashes_before_the_commit();
     assert_eq!(ids(&lost), [landed, failed]);
-    // A crash after the commit and before the effect: nothing ran.
     let lost = w.pass_with(&counting);
     assert_eq!(ids(&lost), [landed, failed]);
     assert_eq!(counting.deleted.get(), 0);
 
-    // The next pass gives the same deletions, and they run 1 time.
     let deletions = w.pass_with(&counting);
     assert_eq!(deletions, lost);
     for d in &deletions {
@@ -570,11 +516,9 @@ fn crash_before_the_commit_or_before_the_deletion_deletes_the_ref_1_time() {
     }
     assert_eq!(counting.deleted.get(), 2);
 
-    // A crash before the commit of the verifying pass keeps the rows.
     assert!(w.pass_that_crashes_before_the_commit().is_empty());
     assert_eq!(w.candidate_ref(landed), Some(bundle_ref(landed)));
 
-    // The next pass verifies and clears; no deletion runs again.
     assert!(w.pass_with(&counting).is_empty());
     assert!(w.pass_with(&counting).is_empty());
     assert_eq!(counting.deleted.get(), 2);
@@ -583,21 +527,16 @@ fn crash_before_the_commit_or_before_the_deletion_deletes_the_ref_1_time() {
         assert_eq!(w.tip(&bundle_ref(id)), None);
     }
 
-    // A late effect of a lost pass deletes nothing: the ref is gone.
     assert_eq!(
         candidates::run(&counting, &lost[0]).unwrap(),
         Ran::Mismatch { actual: None }
     );
     assert_eq!(counting.deleted.get(), 2);
 
-    // No tip is lost: each branch keeps its tip, and the feature branch
-    // holds the candidate of the landed bundle.
     assert_eq!(w.branches(), branches);
     assert_eq!(w.tip(FEATURE_BRANCH), Some(candidate));
 }
 
-/// fleetd deletes only the tip that it wrote: a candidate ref at another
-/// tip stays.
 #[test]
 fn ref_at_another_tip_is_not_deleted() {
     let mut w = world();

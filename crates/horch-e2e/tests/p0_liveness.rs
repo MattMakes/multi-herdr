@@ -1,8 +1,3 @@
-//! Phase 0 red tests of worker liveness (fleetd design, Migration plan items
-//! 1, 3 and 4): an idle claim (FM-3), a dead agent (FM-4), a usage limit
-//! (FM-5) and a machine sleep. Each test is on the list of expected failures
-//! in `expected-failures/p0_liveness.txt` until its phase makes it green.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -42,7 +37,6 @@ fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     p
 }
 
-/// A harness with its own ledger file and a git repository, and no watchdog.
 fn fleet(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", db(&h).to_string_lossy());
@@ -55,12 +49,8 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The run of [`queue`]. A failed conformance job of the fake agents adds
-/// a drift idea, whose feature has its own active run, so each `horch
-/// ledger` call names this run.
 const RUN: &str = "eps";
 
-/// 1 forced watchdog pass, as today's checks run it.
 fn watch_once(h: &Harness, env: &[(&str, &str)]) -> (Output, Value) {
     let mut cmd = h.horch(&[
         "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
@@ -72,9 +62,6 @@ fn watch_once(h: &Harness, env: &[(&str, &str)]) -> (Output, Value) {
     (o, v)
 }
 
-/// The stand-in agent: a `sleep` process in its own process group, so a
-/// stop of its group reaches only it. Killed and waited on drop, so a
-/// failed assertion leaks no process.
 struct Agent(Child);
 
 impl Agent {
@@ -89,8 +76,6 @@ impl Agent {
         )
     }
 
-    /// Whether the process ended. It reaps an ended process, so that no
-    /// zombie looks alive.
     fn ended(&mut self) -> bool {
         matches!(self.0.try_wait(), Ok(Some(_)))
     }
@@ -99,7 +84,6 @@ impl Agent {
         self.0.id()
     }
 
-    /// `SIGKILL`, then reap it, so that no zombie looks alive.
     fn kill(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -125,8 +109,6 @@ fn queue(h: &Harness, persona: &str, fallback: Option<&str>) {
         .unwrap();
 }
 
-/// Bind the task of [`queue`] to a new worker of `persona` whose agent is
-/// `agent` (FR-5). Returns the worker id.
 fn bind(h: &Harness, persona: &str, agent: &Agent) -> String {
     horch_e2e::bind::bind(h, persona, Some(agent.pid())).worker_id
 }
@@ -143,7 +125,6 @@ fn task_row(h: &Harness) -> (String, i64) {
         .unwrap()
 }
 
-/// The fleet clock of the `fleetd` row.
 fn fleet_clock(h: &Harness) -> i64 {
     let store = Store::open(&db(h)).unwrap();
     store
@@ -154,7 +135,6 @@ fn fleet_clock(h: &Harness) -> i64 {
         .unwrap()
 }
 
-/// The causes of the moves of the only task to `to`, oldest first.
 fn causes_to(h: &Harness, to: &str) -> Vec<String> {
     let store = Store::open(&db(h)).unwrap();
     let mut stmt = store
@@ -167,12 +147,8 @@ fn causes_to(h: &Harness, to: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// The time on the fleet clock in which the design catches an idle claim:
-/// stall 300 s, then lease 120 s, under 10 min (FM-3).
 const CATCH_S: i64 = 600;
 
-/// The fleet time between 2 passes of the idle claim test: 6 pass
-/// periods of the default 5 s.
 const STEP_S: i64 = 30;
 
 #[test]
@@ -181,13 +157,9 @@ fn fm3_idle_claim_is_caught_in_under_10_min() {
         let h = fleet("p0-fm3");
         let agent = Agent::start();
         queue(&h, "opus", None);
-        // The first pass writes the fleetd row and starts the fleet clock.
         watch_once(&h, &[]);
         bind(&h, "opus", &agent);
         let claimed = fleet_clock(&h);
-        // The agent stays alive and gives no heartbeat and no output. Each
-        // `watch --once` is a new process, whose tick adds 0, so the test
-        // moves the fleet clock between the passes.
         let mut seen = Vec::new();
         loop {
             h.advance_fleet_clock(STEP_S);
@@ -230,11 +202,9 @@ fn fm4_dead_agent_ends_its_attempt_within_30_s() {
             let mut agent = Agent::start();
             queue(&h, "opus", None);
             bind(&h, "opus", &agent);
-            // fleetd supervises the run, with the default policy.
             let mut fleetds = Fleetds::new(&h);
             fleetds.start(&h, "fleetd");
             agent.kill();
-            // No other `horch` call: only fleetd can see the death.
             let killed = Instant::now();
             let mut status = task_row(&h).0;
             while killed.elapsed() < Duration::from_secs(35) {
@@ -265,8 +235,6 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             declare_gates(&h);
             let quota = fixtures().join("quota/claude-exhausted-codex-ok.json");
             h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-            // The wall clock of the fixture, before its 7 d window resets, so
-            // that the claude pool reads as limited on each day of a run.
             h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
             let mut agent = Agent::start();
             queue(&h, "opus", Some("codex-sol"));
@@ -284,8 +252,6 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
                 );
                 seen.push(text(&o));
             }
-            // The outcome `quota` ends the attempt and stops its process
-            // (MAP.md of fleetd-p2, Q15).
             let store = Store::open(&db(&h)).unwrap();
             let outcome: Option<String> = store
                 .conn()
@@ -348,11 +314,8 @@ fn declare_gates(h: &Harness) {
     }
 }
 
-/// The wall clock after the sleep. The bind writes the wall clock of the
-/// test process, which is years before it: the sleep is longer than 2 h.
 const WOKE_AT: &str = "2030-01-01T02:00:00Z";
 
-/// The lease of the only task, minus the fleet clock: the fleet time left.
 fn lease_left(h: &Harness) -> i64 {
     let store = Store::open(&db(h)).unwrap();
     store
@@ -365,12 +328,6 @@ fn lease_left(h: &Harness) -> i64 {
         .unwrap_or_else(|e| panic!("the task has no lease on the fleet clock: {e}"))
 }
 
-/// A wall clock long after the bind does not expire the lease: a live
-/// fleetd ticks the fleet clock on the awake clock, not on the wall clock.
-/// That the awake clock stops while the machine sleeps is the unit test
-/// `fleet_clock_does_not_advance_during_sleep_or_downtime` of
-/// `clock_store.rs`. The control at the end proves that the pass expires a
-/// lease once the fleet clock passes it.
 #[test]
 fn sleep_does_not_expire_a_lease() {
     check(file!(), "sleep_does_not_expire_a_lease", || {
@@ -378,11 +335,8 @@ fn sleep_does_not_expire_a_lease() {
         let mut agent = Agent::start();
         queue(&h, "opus", None);
         bind(&h, "opus", &agent);
-        // No fleetd ran yet: the bind takes its lease at fleet clock 0,
-        // and the first fleetd starts the clock at 0.
         let before = 0;
 
-        // A fleetd on the wall clock after the sleep runs 3 passes.
         let root = h.root.join("fleet");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
@@ -407,8 +361,6 @@ fn sleep_does_not_expire_a_lease() {
         assert!(causes_to(&h, "stalled").is_empty(), "{log}");
         assert!(!agent.ended(), "the agent was stopped\n{log}");
 
-        // The control: the same pass expires the lease once the fleet
-        // clock passes it.
         h.advance_fleet_clock(left + 1);
         let (o, _) = watch_once(&h, &[]);
         assert_eq!(
@@ -421,10 +373,6 @@ fn sleep_does_not_expire_a_lease() {
     });
 }
 
-// ─── the pane of a worker that ends on the polite stop ──────────────────
-
-/// A harness whose fake herdr runs pane commands, with the pane `w1:p1`,
-/// a ledger with 1 run in workspace `w1`, and the `fleet.toml` `config`.
 fn pane_fleet(name: &str, config: &str) -> (Harness, Store, String) {
     let mut h = Harness::new(name);
     h.set("HORCH_WORKSPACE_ID", "w1");
@@ -454,16 +402,12 @@ fn pane_fleet(name: &str, config: &str) -> (Harness, Store, String) {
     (h, store, run.run_id)
 }
 
-/// The operator boundary probe of a conformance job writes a request file
-/// of mode 0644, and a pass that reads it opens a needs-you item at a
-/// random time (T-268).
 fn remove_agent_clis_so_fleetd_queues_no_conformance_job(h: &Harness) {
     for cli in ["claude", "codex", "agy"] {
         std::fs::remove_file(h.bin.join(cli)).unwrap();
     }
 }
 
-/// Call the fake herdr of `h`; gives its stdout.
 fn herdr(h: &Harness, args: &[&str]) -> String {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
@@ -472,7 +416,6 @@ fn herdr(h: &Harness, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// The pane ids of workspace `w1`.
 fn panes(h: &Harness) -> Vec<String> {
     let v: Value = serde_json::from_str(&herdr(h, &["pane", "list", "--workspace", "w1"])).unwrap();
     v["result"]["panes"]
@@ -483,14 +426,11 @@ fn panes(h: &Harness) -> Vec<String> {
         .collect()
 }
 
-/// A stand-in worker that writes its pid to `<tag>.pid` and ends on the
-/// polite stop (SIGTERM).
 fn polite_script(h: &Harness, tag: &str) -> String {
     let pid = h.root.join(format!("{tag}.pid")).display().to_string();
     format!("echo $$ > {pid}.tmp\n/bin/mv {pid}.tmp {pid}\nexec /bin/sleep 600\n")
 }
 
-/// The pid and start time that the stand-in worker `tag` wrote.
 fn pid_of(h: &Harness, tag: &str) -> (u32, u64) {
     let path = h.root.join(format!("{tag}.pid"));
     wait_for("the pid of the stand-in worker", || {
@@ -499,14 +439,11 @@ fn pid_of(h: &Harness, tag: &str) -> (u32, u64) {
     })
 }
 
-/// Run the stand-in worker `tag` in `pane`, and give its process.
 fn run_in_pane(h: &Harness, pane: &str, tag: &str) -> (u32, u64) {
     herdr(h, &["pane", "run", pane, &polite_script(h, tag)]);
     pid_of(h, tag)
 }
 
-/// A worker of `run` that a reap ended, whose row still names the
-/// supervisor `supervisor` and the pane `pane`.
 fn reaped_worker(store: &mut Store, run: &str, pane: &str, supervisor: (u32, u64)) {
     store
         .immediate(|tx| {
@@ -531,7 +468,6 @@ fn alive(p: (u32, u64)) -> bool {
     horch_core::procid::alive(p.0, Some(p.1))
 }
 
-/// The open needs-you items of the ledger.
 fn open_items(store: &Store) -> Vec<String> {
     let mut stmt = store
         .conn()
@@ -543,7 +479,6 @@ fn open_items(store: &Store) -> Vec<String> {
         .unwrap()
 }
 
-/// Wait until fleetd wrote `passes` more heartbeats: `passes` more passes.
 fn wait_passes(h: &Harness, passes: usize) {
     let path = h.root.join("fleet").join("run").join("heartbeat.json");
     let at = || -> Option<u64> {
@@ -560,13 +495,8 @@ fn wait_passes(h: &Harness, passes: usize) {
     });
 }
 
-/// A grace that no test reaches: each stand-in worker ends on the polite
-/// stop, so no kill comes.
 const NO_KILL: &str = "stop_grace_s = 600\n";
 
-/// A worker in `w1:p1` that ended on the polite stop of a fleetd that then
-/// died before its next pass. The pass period is long, so the dead fleetd
-/// did not close the pane. Gives the fleetds and the worker process.
 fn stopped_then_crashed(h: &Harness, store: &mut Store, run: &str) -> (Fleetds, (u32, u64)) {
     let shell = run_in_pane(h, "w1:p1", "w");
     reaped_worker(store, run, "w1:p1", shell);
@@ -615,8 +545,6 @@ fn a_reaped_worker_that_ends_on_the_polite_stop_has_its_pane_closed() {
 fn a_reaped_worker_whose_pane_has_no_process_keeps_its_pane_with_1_item() {
     let config = format!("pass_period_s = 1\n{NO_KILL}");
     let (h, mut store, run) = pane_fleet("p0-polite-no-info", &config);
-    // The pane runs no command: the fake herdr gives no process for it.
-    // The worker runs outside the pane, in its own process group.
     let shell = {
         use std::os::unix::process::CommandExt;
         let mut child = std::process::Command::new("/bin/sh")
@@ -642,8 +570,6 @@ fn a_reaped_worker_whose_pane_has_no_process_keeps_its_pane_with_1_item() {
     assert_eq!(open_items(&store), ["pane_kept:w1:p1"]);
 }
 
-/// The crash rule: a fleetd that dies between the polite stop and the
-/// close of the pane leaves the proof, and the next fleetd closes the pane.
 #[test]
 fn a_fleetd_that_dies_after_the_polite_stop_leaves_the_pane_close_to_the_next_fleetd() {
     let config = format!("pass_period_s = 30\n{NO_KILL}");
@@ -665,15 +591,11 @@ fn a_fleetd_that_dies_after_the_polite_stop_leaves_the_pane_close_to_the_next_fl
     assert_eq!(open_items(&store), Vec::<String>::new());
 }
 
-/// herdr gives no identity of its server, so a restart shows as a pane id
-/// that names another live process. That pane can be foreign: it is kept,
-/// and 1 needs-you item asks the operator.
 #[test]
 fn a_pane_that_names_another_process_after_the_polite_stop_is_kept_with_1_item() {
     let config = format!("pass_period_s = 30\n{NO_KILL}");
     let (h, mut store, run) = pane_fleet("p0-polite-reused", &config);
     let (mut fleetds, _) = stopped_then_crashed(&h, &mut store, &run);
-    // The pane id now names a process that no row names.
     let foreign = run_in_pane(&h, "w1:p1", "f");
     fleetds.start(&h, "fleetd-2");
     wait_for_or(
@@ -692,15 +614,11 @@ fn a_pane_that_names_another_process_after_the_polite_stop_is_kept_with_1_item()
     let _ = horch_core::procid::signal_same(foreign.0, foreign.1, libc::SIGKILL);
 }
 
-/// An old record of a polite stop (a file of `run/stops/` of an older
-/// fleetd) that does not parse is no proof: fleetd removes it, the fleetd
-/// log names it, and the pane is kept.
 #[test]
 fn an_unreadable_old_record_of_the_polite_stop_is_removed_and_the_pane_is_kept() {
     let config = format!("pass_period_s = 30\n{NO_KILL}");
     let (h, mut store, run) = pane_fleet("p0-polite-unreadable", &config);
     let (mut fleetds, shell) = stopped_then_crashed(&h, &mut store, &run);
-    // In place of the row of fleetd-1: the file of an older fleetd.
     let deleted = store
         .conn()
         .execute(

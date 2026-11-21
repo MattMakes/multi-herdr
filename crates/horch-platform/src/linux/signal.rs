@@ -1,12 +1,8 @@
-//! The concern signal for Linux. A signal goes through a pidfd when the
-//! kernel has them (5.3 and later).
-
 pub(crate) use crate::unix::signal::{
     end_termination_hold, hold_termination, kill_group_on_termination, on_termination_set,
     outlive_hangup, signal_if_same, stop_same, terminate_politely,
 };
 
-/// The pidfd route, else the check and `kill` of the shared unix code.
 pub(crate) fn signal_same(pid: u32, os_pid: i32, started: u64, signal: i32) -> bool {
     if let Some(sent) = pidfd_signal(os_pid, signal, || {
         crate::process::start_time(pid) == Some(started)
@@ -16,9 +12,6 @@ pub(crate) fn signal_same(pid: u32, os_pid: i32, started: u64, signal: i32) -> b
     crate::unix::signal::check_and_kill(pid, os_pid, started, signal)
 }
 
-/// Open a pidfd for `pid`, then send `signal` through it when `same` holds.
-/// `Some(false)` when no process has the pid. `None` when the pidfd does not
-/// open for another reason, so the caller falls back.
 fn pidfd_signal(pid: i32, signal: i32, same: impl Fn() -> bool) -> Option<bool> {
     // SAFETY: plain syscalls; the fd is closed below.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -43,10 +36,6 @@ fn pidfd_signal(pid: i32, signal: i32, same: impl Fn() -> bool) -> Option<bool> 
     Some(sent)
 }
 
-/// What a failed `pidfd_open` gives. Only `ESRCH` means that no process
-/// has the pid. Each other error (`ENOSYS` before kernel 5.3, `EPERM`,
-/// `EMFILE`, `ENFILE`) says nothing about the process, so the caller falls
-/// back and never reads a live process as dead.
 fn after_open_error(errno: Option<i32>) -> Option<bool> {
     (errno == Some(libc::ESRCH)).then_some(false)
 }

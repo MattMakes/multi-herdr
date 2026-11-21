@@ -1,34 +1,13 @@
-//! The verdict of the verifier on an attempt (ticket 19).
-//!
-//! `docs/specs/fleetd/design.md`, "Architecture and roles" (Verifier; Done
-//! for each kind of task), "The task state machine" (`verifying`), RR-3
-//! (the Phase 4 part) and "The kinds of job" (`task_check`: pure, keyed by
-//! the tip of the task branch and the hash of the check).
-//!
-//! - [`plan`] decides from facts alone when it can: `not_applicable` only
-//!   for no commits or `**Check:** none` (F2), and `failed` with `no check`
-//!   for a task with no check and no run default check (F3). Else the
-//!   check runs as a `task_check` job keyed by the tip and the hash of the
-//!   check ([`input_key`]).
-//! - A verdict stands only for the tip that it judged (F5).
-//! - [`Verified`] is the only value that moves a task to `done`. Only this
-//!   module makes it, from a verdict that did not fail.
-
-/// What the verifier decided on 1 attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// The check passed.
     Passed,
-    /// The check failed, or the task has no check.
     Failed,
-    /// The facts need no check: no commits, or `**Check:** none`.
     NotApplicable,
 }
 
 impl Decision {
     pub const ALL: [Decision; 3] = [Decision::Passed, Decision::Failed, Decision::NotApplicable];
 
-    /// The word of `verdict-<n>.json`.
     pub fn as_str(self) -> &'static str {
         match self {
             Decision::Passed => "passed",
@@ -37,25 +16,19 @@ impl Decision {
         }
     }
 
-    /// The decision of a word.
     pub fn parse(word: &str) -> Option<Decision> {
         Decision::ALL.into_iter().find(|d| d.as_str() == word)
     }
 }
 
-/// The step after a verdict that did not fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
-    /// A code kind: the review steps (ticket 20).
     Review,
-    /// A judgment kind or a judge task: the structural check (ticket 21).
     Structural,
 }
 
-/// The kinds that get the structural check in place of the review steps.
 const STRUCTURAL_KINDS: [&str; 6] = ["research", "design", "docs", "report", "creative", "judge"];
 
-/// The step after the check of a task of the ticket kind `work_kind`.
 pub fn next_step(work_kind: Option<&str>) -> Next {
     if work_kind.is_some_and(|k| STRUCTURAL_KINDS.contains(&k)) {
         Next::Structural
@@ -64,47 +37,30 @@ pub fn next_step(work_kind: Option<&str>) -> Next {
     }
 }
 
-/// The facts of 1 attempt of a task in `verifying`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Facts<'a> {
     pub task_id: &'a str,
     pub attempt: &'a str,
-    /// The tip of the task branch.
     pub tip: &'a str,
-    /// The commit that the worktree of the task started from, when it has
-    /// one.
     pub base: Option<&'a str>,
-    /// The check command: the task's own, else the run's default.
     pub check: Option<&'a str>,
-    /// The hash of `check`, `none` with no check.
     pub check_hash: &'a str,
-    /// The ticket says `**Check:** none`.
     pub check_none: bool,
-    /// The effective kind of the task: `judge` for a judge task, else the
-    /// ticket kind or the kind of its plan.
     pub kind: Option<&'a str>,
 }
 
-/// The input key of a `task_check` job: the tip and the hash of the check.
 pub fn input_key(tip: &str, check_hash: &str) -> String {
     format!("{tip}:{check_hash}")
 }
 
-/// What the verifier does for 1 attempt before a check job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Plan {
-    /// The facts decide. No job runs.
     Decided(Verdict),
-    /// The check runs as a `task_check` job with this input key.
     Check { input_key: String },
 }
 
-/// The reason of the verdict of a judge task with no check command.
 pub const JUDGE_NO_CHECK: &str = "a judge task is decided by its structural check and its verdict";
 
-/// The plan for the attempt of `f`. A judge task has no check of its own
-/// (FM-33): with commits and no check command, the facts decide
-/// `not_applicable`, and its structural check and its verdict decide next.
 pub fn plan(f: &Facts<'_>) -> Plan {
     let decided = |decision, reason: &str| Plan::Decided(Verdict::of(f, decision, None, reason));
     if f.base == Some(f.tip) {
@@ -128,8 +84,6 @@ pub fn plan(f: &Facts<'_>) -> Plan {
     }
 }
 
-/// The verdict of the ended `task_check` run `job` on the attempt of `f`:
-/// `passed` or `failed`, with `text` of the run.
 pub fn from_check(f: &Facts<'_>, job: i64, passed: bool, text: &str) -> Verdict {
     let decision = if passed {
         Decision::Passed
@@ -139,19 +93,14 @@ pub fn from_check(f: &Facts<'_>, job: i64, passed: bool, text: &str) -> Verdict 
     Verdict::of(f, decision, Some(job), text)
 }
 
-/// 1 verdict, as `verdict-<n>.json` and its ledger row hold it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
     pub task_id: String,
     pub attempt: String,
-    /// The number of the verdict of its task: 1, 2, and so on. The ledger
-    /// row gives it.
     pub n: u32,
     pub decision: Decision,
-    /// The tip that the verdict judged.
     pub tip: String,
     pub check_hash: String,
-    /// The `task_check` run that gave the verdict, when one ran.
     pub job: Option<i64>,
     pub reason: String,
 }
@@ -170,13 +119,10 @@ impl Verdict {
         }
     }
 
-    /// Whether this verdict judged the attempt of `f`, at its tip, with its
-    /// check. A verdict of another tip is stale (F5).
     pub fn judged(&self, f: &Facts<'_>) -> bool {
         self.attempt == f.attempt && self.tip == f.tip && self.check_hash == f.check_hash
     }
 
-    /// The value that moves the task to `done`, unless the verdict failed.
     pub fn verified(&self) -> Option<Verified> {
         (self.decision != Decision::Failed).then(|| Verified {
             task_id: self.task_id.clone(),
@@ -188,34 +134,6 @@ impl Verdict {
     }
 }
 
-/// A verdict that did not fail: the only value that moves a task from
-/// `verifying` to `done`. Only this module makes it.
-///
-/// `verified_verdict_has_no_constructor_outside_the_verification_module`:
-///
-/// ```compile_fail,E0451
-/// use horch_core::fleetd::task_execution::domain::verification::{Decision, Verified};
-///
-/// let _ = Verified {
-///     task_id: "T-1".into(),
-///     attempt: "T-1-a1".into(),
-///     n: 1,
-///     decision: Decision::Passed,
-///     tip: "abc".into(),
-/// };
-/// ```
-///
-/// The same path names the type, so the code above fails only on its
-/// private fields:
-///
-/// ```
-/// use horch_core::fleetd::task_execution::domain::verification::{Decision, Verified};
-///
-/// fn tip(v: &Verified) -> &str {
-///     v.tip()
-/// }
-/// let _ = (tip, Decision::Passed);
-/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verified {
     task_id: String,
@@ -234,7 +152,6 @@ impl Verified {
         &self.attempt
     }
 
-    /// The number of its verdict.
     pub fn n(&self) -> u32 {
         self.n
     }
@@ -243,14 +160,10 @@ impl Verified {
         self.decision
     }
 
-    /// The tip that its verdict judged.
     pub fn tip(&self) -> &str {
         &self.tip
     }
 
-    /// Whether this value still stands: `newest` is the newest verdict of
-    /// its task and is its own verdict, and the tip of the task branch is
-    /// still `tip` (F5).
     pub fn stands(&self, newest: &Verdict, tip: &str) -> bool {
         newest.task_id == self.task_id
             && newest.n == self.n

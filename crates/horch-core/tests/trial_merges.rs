@@ -1,14 +1,3 @@
-//! The trial merges: the `trial_merges` table and the `trial_merge` job,
-//! keyed by the 2 tips, for each feature against the primary branch and each
-//! pair of features that share a file (docs/specs/fleetd/design.md, "Between
-//! features", "Early detection", "1 git writer for each repository";
-//! Ledger, `trial_merges` and `jobs`; "The kinds of job";
-//! docs/tickets/fleetd-p6/36-trial-merges.md).
-//!
-//! Each test makes its own temporary ledger and git repository. No test
-//! touches this repository or the live ledger. No test starts a process:
-//! a test plays the job process with `run_job` of this process.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -36,7 +25,6 @@ use horch_marketplace::git::scrub_repo_env;
 use horch_platform::channel::User;
 use rusqlite::{Connection, TransactionBehavior};
 
-/// A work budget that no test reaches, but for the budget test.
 const WIDE: usize = 100;
 
 struct World {
@@ -93,7 +81,6 @@ impl World {
         }
     }
 
-    /// The git of a pass: it only reads the repository.
     fn pass_git(&self) -> CliTrialMergeGit {
         CliTrialMergeGit::new(
             CliWorktreeGit::new("git", self.root.join("fleet"))
@@ -105,8 +92,6 @@ impl World {
         git(&self.repo, &["rev-parse", rev])
     }
 
-    /// The `open` feature `id` with the branch `fleet/<id>` made from
-    /// `main`, and 1 commit on it that writes `files`.
     fn feature(&self, id: &str, files: &[(&str, &str)]) {
         let branch = format!("fleet/{id}");
         git(&self.repo, &["branch", &branch, "main"]);
@@ -120,8 +105,6 @@ impl World {
         self.write(|tx| rows::insert_feature(tx, None, &new, cause("feature accepted")).unwrap());
     }
 
-    /// Write `files` on `branch` in 1 commit, with no checkout. Returns the
-    /// new tip.
     fn commit_on(&self, branch: &str, files: &[(&str, &str)]) -> String {
         let index = self.root.join("scratch-index");
         let env = [("GIT_INDEX_FILE", index.to_str().unwrap())];
@@ -157,8 +140,6 @@ impl World {
         out
     }
 
-    /// 1 pass of the trial merges with `budget`: record the ended runs, then
-    /// queue the due ones. Returns the new runs.
     fn pass(&self, budget: usize) -> Vec<i64> {
         let git = self.pass_git();
         let tip = self.tip("main");
@@ -178,8 +159,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Play the job process of the run `id`: it starts, runs and writes
-    /// its result.
     fn run(&mut self, id: i64) -> State {
         let me = std::process::id();
         self.write(|tx| {
@@ -224,7 +203,6 @@ impl World {
         self.write(|tx| jobs::ingest_results(&self.ctx(), tx, &reads).unwrap());
     }
 
-    /// Run each run of `ids`.
     fn run_all(&mut self, ids: &[i64]) {
         for id in ids {
             self.run(*id);
@@ -251,8 +229,6 @@ impl World {
             .unwrap_or_else(|| panic!("a trial_merges row of {left} and {right}"))
     }
 
-    /// The state of the repository that a checkout would change: HEAD,
-    /// the index file and the status of the working tree.
     fn checkout_state(&self) -> (String, Vec<u8>, String) {
         (
             self.tip("HEAD"),
@@ -315,8 +291,6 @@ fn git_in(dir: &Path, args: &[&str], input: &str) -> String {
     assert!(out.status.success(), "git {args:?}");
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
-
-// ─── tests ──────────────────────────────────────────────────────────────
 
 #[test]
 fn trial_merge_of_2_tips_runs_once() {
@@ -443,7 +417,6 @@ fn n_features_do_not_make_n_times_n_jobs_in_1_pass() {
     for i in 1..=n {
         w.feature(&format!("F-000{i}"), &[("a.txt", &format!("a{i}\n"))]);
     }
-    // n against main, and n * (n - 1) / 2 pairs that share a.txt.
     let due = n + n * (n - 1) / 2;
     let budget = 4;
 

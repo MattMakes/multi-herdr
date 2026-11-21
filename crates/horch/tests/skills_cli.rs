@@ -1,10 +1,3 @@
-//! `horch skills` and `horch marketplace` (MKT-08, MKT-09): the legacy
-//! listing is unchanged, the new commands print their documented JSON keys,
-//! and an installed git skill materializes with no git and no network.
-//!
-//! Every command runs with a temp home and data root. Real git runs only on
-//! temp repos, with an empty global config.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -15,10 +8,6 @@ use serde_json::Value;
 
 const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
 
-/// The skills of the A0 oracle. Skills added later appear in the full
-/// listing (`horch skills` without `--phase`) but belong to no phase, so the
-/// frozen full-listing oracle holds these 16 skills only, with its metadata
-/// totals blanked. The listing is reduced the same way before it is compared.
 const A0_SKILLS: [&str; 16] = [
     "brainstorm",
     "check",
@@ -38,8 +27,6 @@ const A0_SKILLS: [&str; 16] = [
     "trace",
 ];
 
-/// `text` (a full `horch skills` listing, text or JSON) reduced to the A0
-/// skills, with the metadata totals blanked.
 fn a0_skills_view(text: &str) -> String {
     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) {
         if let Some(skills) = v["skills"].as_array_mut() {
@@ -68,7 +55,6 @@ fn a0_skills_view(text: &str) -> String {
         .join("\n")
 }
 
-/// A temp home, state root and data root, and a `horch` that sees only them.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -90,8 +76,6 @@ impl World {
         }
     }
 
-    /// The real `git` by absolute path, or `None` (a skip) unless
-    /// `HORCH_REQUIRE_GIT=1`.
     fn with_git(mut self) -> World {
         let found = std::env::var_os("PATH").and_then(|path| {
             std::env::split_paths(&path)
@@ -155,14 +139,11 @@ impl World {
             .env("GIT_AUTHOR_EMAIL", "fixture@horch.invalid")
             .env("GIT_COMMITTER_NAME", "Horch Fixture")
             .env("GIT_COMMITTER_EMAIL", "fixture@horch.invalid");
-        // `-C` does not win over `GIT_DIR`: under `git rebase -x` this
-        // helper once wrote to the real repository.
         horch_marketplace::git::scrub_repo_env(&mut cmd);
         let out = cmd.output().unwrap();
         assert!(out.status.success(), "git {args:?} failed: {}", text(&out));
     }
 
-    /// A bare repository on `main` whose root is one valid skill, `demo`.
     fn bare_skill_repo(&self) -> PathBuf {
         let bare = self.root.join("remote.git");
         let work = self.root.join("upstream");
@@ -212,7 +193,6 @@ fn keys(v: &Value) -> Vec<&str> {
 #[test]
 fn mkt_09_legacy_skills_flags_output_unchanged() {
     let w = World::new();
-    // The 4 legacy forms, and the same forms through the `list` alias.
     for prefix in [&["skills"][..], &["skills", "list"]] {
         let run = |extra: &[&str]| {
             let mut args = prefix.to_vec();
@@ -244,8 +224,6 @@ fn mkt_09_legacy_skills_flags_output_unchanged() {
     }
 }
 
-/// U-49: `horch skills show` prints the size-budget reason of a skill that
-/// has one, and no reason line for a skill without one.
 #[test]
 fn skills_show_prints_the_budget_exempt_reason() {
     let w = World::new();
@@ -288,13 +266,11 @@ fn mkt_09_cli_list_show_json() {
     assert!(show["copied"].is_object());
     assert!(show["install_path"].is_null());
 
-    // An empty store lists no skills.
     let empty: Value = serde_json::from_str(&w.horch(&["marketplace", "list", "--json"])).unwrap();
     assert_eq!(keys(&empty), ["skills", "store"]);
     assert_eq!(empty["skills"], Value::Array(vec![]));
     assert_eq!(empty["store"], w.data_root().display().to_string());
 
-    // A local install lists with every lock field plus path and presence.
     let src = w.root.join("src/demo");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(
@@ -327,7 +303,6 @@ fn mkt_09_cli_list_show_json() {
     assert_eq!(shown["install_path"], entry["path"]);
     assert_eq!(shown["version"], entry["version"]);
 
-    // A SKILL.md description cannot write control bytes to the terminal.
     let loud = w.root.join("src/loud");
     std::fs::create_dir_all(&loud).unwrap();
     std::fs::write(
@@ -340,7 +315,6 @@ fn mkt_09_cli_list_show_json() {
     assert!(!shown.contains('\u{1b}'), "{shown:?}");
     assert!(shown.contains("?[31mred?[0m"), "{shown:?}");
 
-    // A rejected source with a credential is not echoed back.
     let out = w
         .command(
             &[
@@ -366,7 +340,6 @@ fn mkt_08_runtime_needs_no_network() {
     let spec = format!("file://{}@main", bare.display());
     w.horch_with(&["skills", "install", &spec, "--path", "skills/demo"], &git);
 
-    // From here on there is no git: the store alone must serve the skill.
     let doctor = w.horch(&["skills", "doctor"]);
     assert!(doctor.contains("0 problem(s)"), "{doctor}");
     let refresh = w.horch(&["marketplace", "refresh"]);
@@ -409,7 +382,6 @@ fn mkt_08_runtime_needs_no_network() {
     );
     drop(bundle);
 
-    // A changed store file stops the launch instead of exposing it.
     let version = &catalog.lookup("demo").unwrap().version;
     let stored = w
         .data_root()
@@ -431,9 +403,6 @@ fn entry_commit(catalog: &SkillCatalog) -> String {
     }
 }
 
-/// D20 item 5: `bare_skill_repo` with `GIT_DIR` and `GIT_WORK_TREE` aimed at
-/// a decoy repository leaves the decoy unchanged. The child process, not
-/// this one, gets the variables: the other tests run in parallel.
 #[test]
 fn git_env_cannot_reach_another_repository() {
     use horch_marketplace::git::{repo_state, GitRunner};

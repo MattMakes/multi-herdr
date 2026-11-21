@@ -1,14 +1,3 @@
-//! End-to-end (G5): fleet messaging through the real `horch` binary, in a
-//! workspace with no registered orchestrator.
-//!
-//! - `horch done` records the summary, tells nobody, says why, exits 0.
-//! - `horch inbox` marks a role whose pane closed without `horch done`.
-//! - W2: a `horch done` whose report fails keeps the pane, the role and the
-//!   live record, exits non-zero, and a retry finishes once.
-//!
-//! fake-herdr runs in the `exec` scenario, so a pane runs `horch worker`, and
-//! `pane close` kills it. The codex fake runs in `stay`.
-
 use std::process::Output;
 
 use horch_core::execution::legacy::Record;
@@ -33,8 +22,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with workspace `w1` and its root pane `w1:p1`, as `horch fleet`
-/// leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name);
     let quota = fixtures().join("quota/all-ok.json");
@@ -94,8 +81,6 @@ fn record(h: &Harness, id: &str) -> Value {
         .unwrap_or_else(|| panic!("no record {id}"))
 }
 
-/// What a worker pane wrote (fake-herdr `exec` saves its output), and the
-/// record, for a failure message.
 fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
     let mut out = h.log.clone().into_os_string();
     out.push(format!(".pane-{}.out", pane.replace(':', "_")));
@@ -106,8 +91,6 @@ fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
     )
 }
 
-/// `horch done` as the agent in `pane` runs it: the transport variables say
-/// who it is. Closing the pane kills the worker and its agent.
 fn done(h: &Harness, pane: &str, role: &str, id: &str) {
     let mut cmd = h.horch(&["done", "finished the work"]);
     cmd.env("HERDR_PANE_ID", pane)
@@ -117,14 +100,12 @@ fn done(h: &Harness, pane: &str, role: &str, id: &str) {
     assert!(out.status.success(), "{}", text(&out));
 }
 
-/// A fake-herdr call, as the operator would make it by hand.
 fn herdr(h: &Harness, args: &[&str]) -> Output {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
     cmd.args(args).output().unwrap()
 }
 
-/// `horch` as the worker in `pane` runs it.
 fn as_worker(h: &Harness, args: &[&str], pane: &str, role: &str, id: &str) -> Output {
     let mut cmd = h.horch(args);
     cmd.env("HERDR_PANE_ID", pane)
@@ -234,8 +215,6 @@ fn running_worker(h: &Harness) -> (String, String, String) {
     (pane, role, id)
 }
 
-/// G5/#60: without registration both tell and done retain durable reports.
-/// A later orchestrator can acknowledge them; finishing still closes the worker.
 #[test]
 fn g5_done_without_an_orchestrator() {
     let mut h = worker_fleet("g5-done", "exec,stay");
@@ -268,10 +247,6 @@ fn g5_done_without_an_orchestrator() {
     );
 }
 
-/// #201: `horch done` in a project that is not a git work tree, with a real
-/// git, reports no unregistered worktrees and no scan error. git says
-/// "not a git repository" with status 128, which `done` finds as a typed
-/// `GitError`, not by its text.
 #[test]
 fn done_outside_a_git_work_tree_reports_no_scan_error() {
     let mut h = worker_fleet("done-no-repo", "exec,stay").with_git();
@@ -292,8 +267,6 @@ fn done_outside_a_git_work_tree_reports_no_scan_error() {
     assert_eq!(record(&h, &id)["status"], "done");
 }
 
-/// G5: a worker pane closed without `horch done`. `horch inbox` marks the
-/// role, and the record stays working.
 #[test]
 fn g5_inbox_marks_a_role_whose_pane_closed() {
     let h = worker_fleet("g5-closed", "exec,stay");
@@ -313,10 +286,6 @@ fn g5_inbox_marks_a_role_whose_pane_closed() {
     assert!(line.ends_with("(pane closed)"), "{stdout}");
 }
 
-/// MAIL-U1: the mail directory cannot be created, so enqueue fails.
-/// `horch done` exits non-zero and says what to do; the record stays live
-/// with a `report-failed` event, the role stays registered and the pane
-/// stays open. The retry, once enqueue works, reports and records once.
 #[test]
 fn mail_u1_done_stays_open_when_enqueue_fails() {
     let h = worker_fleet("mail-enqueue", "exec,stay");
@@ -376,7 +345,6 @@ fn mail_u1_done_stays_open_when_enqueue_fails() {
     assert_eq!(dones, 1, "{r}");
 }
 
-/// MAIL-U1: once the report is durable, a failed push records and closes.
 #[test]
 fn mail_u1_done_push_failure_records_queued_and_closes() {
     let h = worker_fleet("mail-done", "exec,stay,fail_typing");
@@ -407,8 +375,6 @@ fn mail_u1_done_push_failure_records_queued_and_closes() {
     assert_eq!(std::fs::read_dir(pending).unwrap().count(), 1);
 }
 
-/// MAIL-U1: a failed push is not a failed worker message once its exact line
-/// is durable. The courier note tells the caller why exit status is zero.
 #[test]
 fn mail_u1_tell_push_failure_leaves_pending_mail() {
     let h = fleet("mail-tell", "exec,stay,fail_typing");
@@ -464,7 +430,6 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
 
     assert!(inbox.status.success(), "{}", text(&inbox));
     let stdout = String::from_utf8_lossy(&inbox.stdout);
-    // Each line shows its mail id: `[sonnet-1 #<id>] NOTE: first`.
     let line = |text: &str| {
         stdout
             .lines()
@@ -491,7 +456,6 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     );
 }
 
-/// Queue 3 worker messages for the orchestrator and return the harness.
 fn inbox_fleet_with_three_messages(name: &str) -> Harness {
     let h = fleet(name, "exec,stay");
     let mailbox = h.tmp.join("herdr-orchestration-w1");
@@ -533,12 +497,9 @@ fn inbox_ends_with_the_acknowledged_count_after_the_roles() {
     assert_eq!(pending_count(&h), 0);
 }
 
-/// Stands for the pidfile path inside a `pane list` body.
 #[cfg(unix)]
 const PIDFILE_TOKEN: &str = "@PIDFILE@";
 
-/// Run `horch inbox` with a `pane list` that misbehaves as `on_pane_list`
-/// says, and check that the mail still prints. Returns the stalled pid, if any.
 #[cfg(unix)]
 fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
@@ -602,7 +563,6 @@ fn assert_process_gone(pid: &str) {
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
-    // No pidfile means the script was killed before it ran: nothing leaked.
     if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60") {
         assert_process_gone(&pid);
     }
@@ -611,7 +571,6 @@ fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_descendant_that_holds_the_pane_list_pipe() {
-    // The pidfile ends up holding the descendant's pid, not the script's.
     if let Some(pid) = inbox_with_broken_pane_list(
         "inbox-open-pipe",
         &format!("sleep 30 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
@@ -692,20 +651,13 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
     );
 }
 
-/// #177: a worker's inbox prints the notices horch queued for its role.
-/// `--peek` leaves them pending; a plain inbox acknowledges them. The
-/// orchestrator's mail is never shown or acknowledged.
 #[test]
 fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
     let mut h = fleet("mail-worker-role", "exec,stay");
-    // The tell below starts a courier. A fast poll makes it see the role
-    // mail at once: it must leave the mail of a registered role alone.
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
-    // A courier acknowledges the mail of a role no one holds (`done` freed
-    // it), so the worker is registered, as a spawned worker is.
     std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
     let tell = as_worker(
         &h,
@@ -746,9 +698,6 @@ fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
     );
 }
 
-/// The notices of a role that `done` freed reach no one: the courier
-/// acknowledges them and exits. They do not keep it polling, and a later
-/// worker that takes the role name does not get them.
 #[test]
 fn a_courier_drops_the_mail_of_a_role_no_pane_holds_and_exits() {
     let h = fleet("mail-gone-role", "exec,stay");
@@ -820,9 +769,6 @@ fn inbox_roles_still_reminds_about_pending_mail() {
     assert_eq!(pending_count(&h), 3);
 }
 
-/// R1: a long `horch tell` spools its text under `messages/<workspace>/`, not
-/// in a directory shared by every fleet, and the line typed into the
-/// orchestrator's pane names that file.
 #[test]
 fn r1_long_tell_spools_under_its_own_workspace() {
     let h = fleet("r1-spool", "exec");
@@ -875,7 +821,6 @@ fn r1_long_tell_spools_under_its_own_workspace() {
             (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"]).then(|| argv[3].clone())
         })
         .collect::<Vec<_>>();
-    // FR-7: the pane gets the mail line, and the mail names the spool file.
     assert_eq!(
         typed,
         [horch_core::messaging::delivery::MAIL_LINE],
@@ -892,9 +837,6 @@ fn r1_long_tell_spools_under_its_own_workspace() {
     );
 }
 
-/// P09: a spawn writes the registry under the state folder and nothing under
-/// the temp folder. With the temp folder emptied, `inbox` still lists the
-/// role and `tell` still reaches it.
 #[test]
 fn p09_registry_lives_in_the_state_folder() {
     let h = worker_fleet("p09-state", "exec,stay");
@@ -932,9 +874,6 @@ fn p09_registry_lives_in_the_state_folder() {
     assert!(tell.status.success(), "{}", text(&tell));
 }
 
-/// P09, #77: a registry that exists only in the old temp location, owned
-/// by this user and mode 0700, is copied once into the state folder, then
-/// found by `inbox`, `tell` and `done`. Nothing is written back to it.
 #[cfg(unix)]
 #[test]
 fn p09_registry_in_the_old_temp_location_still_resolves() {
@@ -968,8 +907,6 @@ fn p09_registry_in_the_old_temp_location_still_resolves() {
     assert!(!state_mailbox.join(format!("{role}.id")).exists());
 }
 
-/// #77: the same old registry with mode 0777 is not copied, and the
-/// command says why.
 #[cfg(unix)]
 #[test]
 fn an_old_registry_others_can_write_is_not_copied_and_inbox_says_why() {
@@ -1002,8 +939,6 @@ fn an_old_registry_others_can_write_is_not_copied_and_inbox_says_why() {
     assert!(!tell.status.success(), "{}", text(&tell));
 }
 
-/// A mailbox removal that fails does not stop `horch done`: it warns with the
-/// role and the path, and still closes the pane.
 #[cfg(unix)]
 #[test]
 fn t11_followup_done_warns_when_the_registration_stays() {

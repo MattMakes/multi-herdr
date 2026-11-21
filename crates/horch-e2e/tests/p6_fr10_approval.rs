@@ -1,32 +1,3 @@
-//! FR-10 through the binary: no process of a fleet attempt can record an
-//! approval, also after its attempt ended, and no agent outlives its
-//! attempt (ticket 60 of fleetd-build, T-898; `docs/specs/fleetd/design.md`:
-//! FR-10, SR-8, FM-32).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! idea-lead of `horch_e2e::fr10_agent`. A word `[fr10:<key>]` in the text
-//! of an idea gives the key of its fake, and the word
-//! `[fr10:target=<idea id>]` gives the idea that the fake tries to approve.
-//!
-//! In each case the idea stays in `awaiting_approval`. A try through the
-//! CLI is refused with a reason that names the caller as a fleet process.
-//! A raw request with the operator token is refused by fleetd with such a
-//! reason, and its `requests` row records the try (design, "The `requests`
-//! row records the decision"). A forged `approval.json` is ignored, and 1
-//! event of the idea records it.
-//!
-//! What the PID rule (`fleet_process`) covers: the process tree, the
-//! process group and the session of each wrapper and agent that fleetd
-//! recorded, of live attempts and of attempts that ended in the last 24 h.
-//! An orphan that leaves all 3 (a double fork with a new session) is
-//! covered only by the sandbox: the conformance check "Operator boundary"
-//! proves for each exec adapter that such an orphan cannot read the
-//! operator token, connect to the channel or write a request file
-//! (`crates/horch-core/tests/p7_operator_boundary.rs`). A profile with no
-//! sandbox gets no dispatch (design A37). A fake agent here has no
-//! sandbox, so this file has no orphan test.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -329,12 +300,6 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
-/// SR-8, FM-32 (T-172): no agent code runs before fleetd has recorded the
-/// wrapper of its attempt. The fault point `hold-launching` stops the pass
-/// from recording the pane wrapper of each lead attempt, so its wrapper
-/// waits and never starts its agent, and the start timeout ends the
-/// attempt. While the lead attempt launches, the operator approves the
-/// waiting idea: no request of the operator waits for a launch.
 #[test]
 fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
     let w = World::start("p6-fr10-e", "clarify", Some("hold-launching:I-0002"));
@@ -361,8 +326,6 @@ fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
         text(&o),
         w.context()
     );
-    // The start timeout counts on the fleet clock, which lags the wall
-    // clock when the passes are slow.
     loop {
         let now = w.wait("the fleet clock", || w.fleet_clock());
         if now >= due {
@@ -390,11 +353,6 @@ fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
     );
 }
 
-/// SR-8, FM-32 (T-172): at its first instruction the agent of an attempt
-/// that just launched finds the process of its attempt recorded. So each
-/// `operator` kind that it sends raw on the channel with the operator
-/// token is refused as a fleet process, and its `requests` row records the
-/// refusal.
 #[test]
 fn fr10_f_agent_at_its_first_instruction_is_refused_for_each_operator_kind() {
     let w = World::new("p6-fr10-f", "clarify");

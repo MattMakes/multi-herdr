@@ -1,10 +1,3 @@
-//! `horch` - multi-agent orchestration layouts for herdr (https://herdr.dev).
-//!
-//! One binary replacing the justfile recipes, the `bin/horch-*` and `bin/herdr-*`
-//! scripts, the launcher shell scripts, and the Node installer. Needs no bash,
-//! jq, node, or just: the only external process is `herdr` itself, plus whichever
-//! agent CLI a worker pane launches.
-
 mod cmd;
 #[cfg(all(test, unix))]
 mod test_support;
@@ -482,7 +475,6 @@ enum MeasureCommand {
 }
 
 #[derive(Subcommand)]
-// Parsed once per process, so the size of the ledger variant costs nothing.
 #[allow(clippy::large_enum_variant)]
 enum GridCommand {
     /// Report the worker grid of every tab in the workspace.
@@ -794,7 +786,6 @@ enum TelemetrySub {
     },
 }
 
-/// Join a trailing var-arg list the way `"$*"` did.
 fn joined(parts: &[String]) -> String {
     parts.join(" ")
 }
@@ -802,7 +793,6 @@ fn joined(parts: &[String]) -> String {
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(code) => code,
-        // The REFUSED line is already on stdout; exit 3 says why (design 13.4).
         Err(e)
             if matches!(
                 e.downcast_ref::<SpawnError>(),
@@ -824,22 +814,12 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// What to do when herdr failed inside Codex's sandbox. `codex_sandbox` is
-/// `CODEX_SANDBOX`, which Codex sets in every command it runs sandboxed.
-/// The sandbox has no network, so herdr's socket is never reachable from it.
-/// An execpolicy `allow` lifts the sandbox only for a command that matches
-/// the rule's prefix on its own, so `horch spawn` at the end of a script with
-/// a heredoc ran sandboxed, and a Codex orchestrator reported the fleet
-/// BLOCKED. A worker that set the fleet variables inline lost its report
-/// the same way (W2 C1), so the hint ends with `command`, the exact command
-/// to run.
 fn codex_sandbox_hint(
     e: &anyhow::Error,
     codex_sandbox: Option<&str>,
     command: &str,
 ) -> Option<String> {
     fn herdr_failed(e: &anyhow::Error) -> bool {
-        // `SpawnError` carries its cause in `Display`, not `source()`.
         let inner = match e.downcast_ref::<SpawnError>() {
             Some(SpawnError::LaunchFailed { source, .. } | SpawnError::Store(source)) => {
                 herdr_failed(source)
@@ -861,8 +841,6 @@ fn codex_sandbox_hint(
     })
 }
 
-/// `argv` as one shell command, with `horch` as the program and each other
-/// word quoted when it needs it.
 fn plain_command(argv: &[String]) -> String {
     let words = argv.iter().skip(1).map(|word| {
         let plain = !word.is_empty()
@@ -883,11 +861,7 @@ fn plain_command(argv: &[String]) -> String {
 
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
-    // The one read of the process environment. Every command takes its
-    // values from this context.
     let mut ctx = bootstrap::context_with_backend(cli.backend.as_deref())?;
-    // A `horch_access: report` pane reaches only its outbox and its report
-    // socket.
     if let Some(socket) = ctx.report_socket.clone() {
         let paths = &ctx.paths;
         return done(cmd::messaging::report_mode(
@@ -897,7 +871,6 @@ fn run() -> Result<ExitCode> {
         ));
     }
     cli.command.warn_stale(&ctx);
-    // A pane that herdr resumed after a restart has no HORCH_ROLE (#125).
     if cli.command.adopts_identity() {
         cmd::restore::adopt_restored_identity(&mut ctx);
     }
@@ -911,9 +884,6 @@ fn run() -> Result<ExitCode> {
 
 type Ctx = horch_core::runtime::RuntimeContext;
 
-/// Run `command` after the check of `horch fleetd check`, when the command
-/// makes it: a hung or older fleetd is restarted before the command runs
-/// (PL-5, FM-12, OR-6).
 fn dispatch_checked(command: Command, ctx: &mut Ctx, check: fn(&Ctx)) -> Result<ExitCode> {
     if command.checks_fleetd() {
         check(ctx);
@@ -921,7 +891,6 @@ fn dispatch_checked(command: Command, ctx: &mut Ctx, check: fn(&Ctx)) -> Result<
     command.dispatch(ctx)
 }
 
-/// A handler that returns no exit code succeeds when it returns.
 fn done(r: Result<()>) -> Result<ExitCode> {
     r.map(|()| ExitCode::SUCCESS)
 }
@@ -939,12 +908,9 @@ impl Command {
         }
     }
 
-    /// What this command sends in a `horch_access: report` pane. `None`:
-    /// it is refused there.
     fn report_request(self) -> Option<horch_core::messaging::report::Request> {
         use horch_core::messaging::report::Request;
         match self {
-            // A report pane answers no question: `--answers` is refused.
             Command::Messaging(MessagingCommand::Tell {
                 role,
                 message,
@@ -966,7 +932,6 @@ impl Command {
         }
     }
 
-    /// `doctor` and `spawn` warn when the installed horch is stale.
     fn warn_stale(&self, ctx: &Ctx) {
         match self {
             Command::Tool(ToolCommand::Doctor { .. }) => cmd::selfupdate::doctor_warning(ctx),
@@ -1001,10 +966,6 @@ impl Command {
         )
     }
 
-    /// Whether the command runs the check of `horch fleetd check` before it
-    /// runs (PL-5). fleetd, its check, its job processes, a worker pane,
-    /// `horch docs`, which needs no fleetd, and `horch ledger watch`, which
-    /// runs a pass of fleetd or the check itself, run none.
     fn checks_fleetd(&self) -> bool {
         !matches!(
             self,
@@ -1035,8 +996,6 @@ impl LaunchCommand {
                 action: Some(FleetAction::Stop { cwd }),
                 ..
             } => cmd::recipes::fleet_stop(ctx, cwd.as_deref()),
-            // FLAVOR and --verify are parsed for old command lines and
-            // change nothing: the fleet starts no orchestrator (FM-16).
             LaunchCommand::Fleet {
                 action: None,
                 cwd,
@@ -1338,7 +1297,6 @@ impl ToolCommand {
     }
 }
 
-/// `horch note`: a note on the worker's record, or a project fact.
 fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<ExitCode> {
     if !fact {
         return cmd::messaging::note(ctx, text);
@@ -1366,7 +1324,6 @@ fn mode_command(ctx: &mut Ctx, role: String, mode: &str, timeout: Option<u64>) -
     )
 }
 
-/// `horch done`: [`cmd::messaging::done`] picks the task ledger or the mailbox.
 fn done_command(ctx: &mut Ctx, summary: &str, unlanded: Option<&str>) -> Result<()> {
     cmd::messaging::done(ctx, summary, unlanded)
 }
@@ -1387,7 +1344,6 @@ fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<ExitCo
     }
 }
 
-/// `horch spawn`: split the positionals, spawn, and print the pane id.
 fn spawn_command(
     ctx: &mut Ctx,
     positionals: &[String],
@@ -1455,9 +1411,6 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// In a `horch_access: report` pane, `tell` reaches the report socket
-    /// as 1 request, `done` and `ledger progress` go to the outbox, and
-    /// every other command is refused without a request.
     #[cfg(unix)]
     #[test]
     fn report_mode_routes_3_commands_and_refuses_the_rest() {
@@ -1515,7 +1468,6 @@ mod tests {
         );
     }
 
-    /// The failure a Codex orchestrator hit on `horch spawn`, verbatim.
     #[cfg(unix)]
     fn herdr_denied() -> anyhow::Error {
         use std::os::unix::process::ExitStatusExt;
@@ -1528,9 +1480,6 @@ mod tests {
         .into()
     }
 
-    /// `horch spawn` at the end of a compound command ran in Codex's sandbox,
-    /// and the orchestrator reported the fleet BLOCKED. The hint names the cause
-    /// and the rerun, through the spawn error that wraps the herdr one.
     #[cfg(unix)]
     #[test]
     fn a_herdr_failure_in_the_codex_sandbox_says_to_run_horch_alone() {
@@ -1546,10 +1495,6 @@ mod tests {
         }
     }
 
-    /// W2 C1: a worker that set the variables inline, or ran `horch done`
-    /// from a script, ran sandboxed and lost its report. The hint gives the
-    /// exact plain command to run, quoted for the shell, also through the
-    /// error of a `horch done` whose report failed.
     #[cfg(unix)]
     #[test]
     fn w2_the_sandbox_hint_names_the_exact_command() {
@@ -1582,7 +1527,6 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// `horch tell sonnet-1 fix the bug` must behave like the old
     #[test]
     fn spawn_accepts_phase_for_fresh_and_resumed_workers() {
         for argv in [
@@ -1599,7 +1543,6 @@ mod tests {
         assert!(Cli::try_parse_from(["horch", "spawn", "opus", "--phase", "invalid"]).is_err());
     }
 
-    /// `herdr-tell sonnet-1 fix the bug`, which joined "$*".
     #[test]
     fn tell_joins_its_trailing_words() {
         let cli = Cli::try_parse_from(["horch", "tell", "sonnet-1", "fix", "the", "bug"]).unwrap();
@@ -1617,8 +1560,6 @@ mod tests {
         }
     }
 
-    /// TRF-25: `--answers <id>` names the question; the words after it are
-    /// the message.
     #[test]
     fn trf_25_tell_takes_the_question_id_to_answer() {
         let cli = Cli::try_parse_from([
@@ -1645,7 +1586,6 @@ mod tests {
         }
     }
 
-    /// A quoted single argument must survive intact.
     #[test]
     fn tell_preserves_a_single_quoted_message() {
         let cli = Cli::try_parse_from(["horch", "tell", "orchestrator", "[a] DONE: x, y"]).unwrap();
@@ -1662,7 +1602,6 @@ mod tests {
         assert!(Cli::try_parse_from(["horch", "tell", "sonnet-1"]).is_err());
     }
 
-    /// Walk the whole path a user types through to a resolved teammate.
     fn parse_spawn(argv: &[&str]) -> (Result<Option<String>>, Option<String>, Direction) {
         let cli = Cli::try_parse_from(argv).expect("should parse");
         match cli.command {
@@ -1688,8 +1627,6 @@ mod tests {
         assert_eq!(direction, Direction::Right, "right is the default");
     }
 
-    /// `horch spawn --resume <id>`: the resumed worker claims through the
-    /// ledger, so no teammate and no task are parsed.
     #[test]
     fn spawn_parses_a_resume_key_without_a_teammate() {
         let (teammate, resume, _) = parse_spawn(&["horch", "spawn", "--resume", "s-1"]);
@@ -1697,8 +1634,6 @@ mod tests {
         assert_eq!(resume.as_deref(), Some("s-1"));
     }
 
-    /// TRF-43: `horch assign` is gone, and a spawn with task text refuses
-    /// with the `horch ledger task` command for the same work.
     #[test]
     fn trf_43_assign_is_gone_and_task_text_spawns_refuse() {
         assert!(Cli::try_parse_from(["horch", "assign", "opus-1", "do it"]).is_err());
@@ -1716,9 +1651,6 @@ mod tests {
         assert!(err.contains("horch ledger task 'go on'"), "{err}");
     }
 
-    /// Teammate names are no longer a closed enum, so an unknown one cannot be
-    /// caught while parsing argv. It is rejected against the loaded roster, and
-    /// the error names what is actually available on this machine.
     #[test]
     fn spawn_rejects_an_unknown_teammate_against_the_roster() {
         let cli = Cli::try_parse_from(["horch", "spawn", "haiku"]).unwrap();
@@ -1819,7 +1751,6 @@ mod tests {
         }
     }
 
-    /// Which flattened group a parsed command landed in.
     fn group_of(command: &Command) -> &'static str {
         match command {
             Command::Launch(_) => "launch",
@@ -1880,9 +1811,6 @@ mod tests {
         }
     }
 
-    /// Grouping the variants into flattened sub-enums must not change what
-    /// `horch --help` lists: the same commands, in the same order, with the
-    /// internal ones still hidden.
     #[test]
     fn help_lists_the_same_commands_in_the_same_order() {
         let cmd = Cli::command();
@@ -1944,9 +1872,6 @@ mod tests {
         assert_eq!(listed, expected);
     }
 
-    /// Each watched `horch` command runs the check of `horch fleetd check`
-    /// before it runs (PL-5, FM-12): a check that stops the command proves
-    /// the order. fleetd, its check and its job processes run no check.
     #[test]
     fn a_horch_command_runs_the_fleetd_check_before_it_runs() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1966,7 +1891,6 @@ mod tests {
             .with("HORCH_LEDGER_DB", &ledger.to_string_lossy());
         let mut ctx = Ctx::from_env(&env).unwrap();
         let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
-        // `horch ledger status` creates the ledger; the check comes first.
         let command = parse(&["horch", "ledger", "status"]);
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatch_checked(command, &mut ctx, stop_here)
@@ -1987,7 +1911,6 @@ mod tests {
         assert!(parse(&["horch", "install"]).checks_fleetd());
     }
 
-    /// The commands whose reminders and identity handling differ.
     #[test]
     fn command_policies_follow_the_command() {
         let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
@@ -2001,8 +1924,6 @@ mod tests {
         assert!(!parse(&["horch", "peek", "r"]).adopts_identity());
     }
 
-    /// `horch fleet --resume` reaches the pane as `--session-id <id> --resume`;
-    /// a bare `--resume` has no session to continue.
     #[test]
     fn pane_launch_resume_needs_a_session_id() {
         let base = ["horch", "pane-launch", "--role", "orchestrator", "--kind"];

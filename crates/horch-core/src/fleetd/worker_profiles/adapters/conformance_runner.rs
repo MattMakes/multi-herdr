@@ -1,30 +1,3 @@
-//! The real launch of each conformance check through the launcher.
-//! fleetd-p7 tickets 23 and 24 fill it.
-//!
-//! "Operator boundary" (SR-8): the prompt names the token, the channel and
-//! the request folder of the fleet root of this process. Before the launch
-//! the runner checks that it can reach each of them itself, so that a
-//! refusal inside the sandbox proves the sandbox. When it cannot, the check
-//! has no launch.
-//!
-//! 1 launch is the exec launch of the adapter (fleetd-p7 tickets 13 to 15)
-//! with the preparation of a worker launch, run by the wrapper of ticket 17
-//! ([`run_exec`]), so that each event that reaches a worker's wrapper
-//! reaches the check too. The process starts through the platform start
-//! function, which removes each forbidden name (SR-7, MAP.md Q1).
-//!
-//! Each launch has its own throwaway folder under the scratch folder of
-//! the runner: a task folder with `inbox/START.md` (the fixed prompt of the
-//! check) and `outbox/`, and a working folder. The runner removes the
-//! folder after the launch, and the marker skill when it is elsewhere.
-//!
-//! The runner ends a CLI that shows no stream event within its limit, or
-//! that prints a line that is not a stream event: an exec CLI prints only
-//! its stream on stdout, so another line is a dialog.
-//!
-//! Windows gap: [`horch_platform::group::kill_group_id`] is not supported
-//! on Windows, so there a CLI that hangs is not ended.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -55,21 +28,10 @@ use crate::roster::{validation, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::taskledger::supervisor::{AgentFacts, AttemptFiles};
 
-/// The file that the prompt of a check names for the outside write, in the
-/// throwaway folder: outside the task folder and the working folder.
 const OUTSIDE_FILE: &str = "horch-conformance-outside";
 
-/// The role of a conformance launch. It names the private codex home and
-/// the launch marker of the launch.
 const ROLE: &str = "conformance";
 
-/// The fixed reference profile of `cli`: a sandboxed worker in exec mode,
-/// with the model, the effort and the permission mode of the generic worker
-/// of the CLI. The Claude Code and Codex workers also have the skills of
-/// the implementation phase, as `opus` and `codex-sol` have; Antigravity
-/// gets no skills (`teammates/antigravity.md`). The production
-/// `conformance` job runs the suite with it, and the hash of the adapter
-/// renders it (MAP.md of fleetd-p7, Q9).
 pub fn reference_profile(cli: ExecCli) -> Teammate {
     let (name, agent, model) = match cli {
         ExecCli::Claude => ("conformance-claude", HarnessKind::Claude, "opus"),
@@ -90,7 +52,6 @@ pub fn reference_profile(cli: ExecCli) -> Teammate {
     if cli == ExecCli::Claude {
         t.sandbox = Some(serde_json::Map::new());
     }
-    // `mode: exec`, as a teammate file writes it.
     let mut v = serde_json::to_value(&t).expect("a teammate serializes");
     v["mode"] = json!("exec");
     v["permission_mode"] = json!("auto");
@@ -100,22 +61,12 @@ pub fn reference_profile(cli: ExecCli) -> Teammate {
     serde_json::from_value(v).expect("a teammate with mode exec deserializes")
 }
 
-/// The [`ConformanceLaunch`] of 1 CLI.
 pub struct ConformanceRunner<'a> {
-    /// The context of the process that runs the suite.
     pub ctx: &'a RuntimeContext,
-    /// The reference profile of the CLI, in exec mode. Each launch adds
-    /// [`TEST_MCP_SERVER`] to it.
     pub teammate: &'a Teammate,
-    /// The fleet window of the reference profile and its source, as a
-    /// worker launch gets it (`Roster::fleet_window`).
     pub fleet_window: Option<(u64, String)>,
-    /// The variables that the CLI inherits on top of the environment of
-    /// this process.
     pub env_rule: Vec<(String, String)>,
-    /// The folder of the throwaway folders.
     pub scratch: PathBuf,
-    /// The limit for the first stream event ("Launch headless").
     pub first_event_limit: Duration,
 }
 
@@ -135,9 +86,6 @@ impl ConformanceLaunch for ConformanceRunner<'_> {
         observed.map_err(|e| format!("{e:#}"))
     }
 
-    /// The boundary of the adapter for the fleet root of this process, and
-    /// the operator acts that this process cannot do itself. The Codex
-    /// boundary reads the facts of the Codex binary under test.
     fn operator_boundary(&mut self) -> Result<Vec<Unreachable>, String> {
         let root = &self.ctx.paths.fleet_root;
         let boundary =
@@ -148,8 +96,6 @@ impl ConformanceLaunch for ConformanceRunner<'_> {
 }
 
 impl ConformanceRunner<'_> {
-    /// The reference profile with [`TEST_MCP_SERVER`]: a stdio server of
-    /// the `horch` binary.
     fn profile(&self) -> Teammate {
         let mut t = self.teammate.clone();
         let server = json!({
@@ -192,9 +138,6 @@ impl ConformanceRunner<'_> {
         ))
     }
 
-    /// The throwaway task folder `dir` of 1 launch of `check`: its work
-    /// folder, its inbox with START.md, its outbox, and the context and the
-    /// profile of the launch.
     fn setup(&self, dir: &Path, check: Check) -> Result<Setup> {
         let work = dir.join("work");
         let files = AttemptFiles::new(
@@ -229,12 +172,6 @@ impl ConformanceRunner<'_> {
         })
     }
 
-    /// The hash of the adapter of the CLI (MAP.md of fleetd-p7, Q9): the
-    /// sha256 of the rendered conformance launch of the reference profile,
-    /// its argv and the config file that the adapter writes. The launch is
-    /// rendered in a throwaway folder and does not start. The paths of the
-    /// throwaway folder and of the private home do not reach the hash, so 2
-    /// renders of 1 adapter give 1 hash.
     pub fn adapter_hash(&self) -> Result<String> {
         let cli = ExecCli::of(self.teammate).with_context(|| {
             format!(
@@ -250,7 +187,6 @@ impl ConformanceRunner<'_> {
         Ok(crate::digest::sha256_bytes(rendered?.as_bytes()).hex())
     }
 
-    /// The text of the conformance launch of "Launch headless" in `dir`.
     fn render_in(&self, dir: &Path, cli: ExecCli) -> Result<String> {
         let setup = self.setup(dir, Check::LaunchHeadless)?;
         let session = SessionMode::Fresh(None);
@@ -262,14 +198,10 @@ impl ConformanceRunner<'_> {
     }
 }
 
-/// The throwaway task folder of 1 launch.
 struct Setup {
     files: AttemptFiles,
-    /// The context of the launch: its cwd is the work folder.
     ctx: RuntimeContext,
-    /// The path of START.md.
     prompt: String,
-    /// The reference profile with [`TEST_MCP_SERVER`].
     teammate: Teammate,
 }
 
@@ -294,10 +226,6 @@ impl Setup {
     }
 }
 
-/// The config file that the adapter of `cli` writes into the private home
-/// of `cmd`: the `config.toml` of `CODEX_HOME`, the Antigravity
-/// `settings.json` of `HOME`. Claude Code has none: its `--settings` and
-/// `--mcp-config` are in the argv.
 fn config_file(cli: ExecCli, cmd: &Command) -> Option<(PathBuf, PathBuf)> {
     let env = |key: &str| {
         cmd.get_envs()
@@ -336,7 +264,6 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path, bundles: &Path) -> R
         homes.extend(entries.filter_map(|e| e.ok()).map(|e| e.path()));
     }
     homes.push(dir.to_path_buf());
-    // The longest path first, so a folder inside another becomes its word.
     homes.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
     for (path, word) in homes.iter().map(|p| {
         let word = if p.as_path() == dir {
@@ -351,8 +278,6 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path, bundles: &Path) -> R
     Ok(text)
 }
 
-/// The last `--plugin-dir` of the launch `cmd`: the skills bundle of a
-/// Claude Code launch.
 fn plugin_dir(cmd: &Command) -> Option<PathBuf> {
     let args: Vec<_> = cmd.get_args().collect();
     args.windows(2)
@@ -361,7 +286,6 @@ fn plugin_dir(cmd: &Command) -> Option<PathBuf> {
         .map(|w| PathBuf::from(w[1]))
 }
 
-/// How long the runner waits for its own connect to the channel.
 const CHANNEL_CONNECT_LIMIT: Duration = Duration::from_secs(5);
 
 fn operator_reach(operator: &OperatorPaths) -> Vec<Unreachable> {
@@ -374,8 +298,6 @@ fn operator_reach(operator: &OperatorPaths) -> Vec<Unreachable> {
         })
         .map_err(|why| (why, false));
     let deadline = std::time::Instant::now() + CHANNEL_CONNECT_LIMIT;
-    // No socket, or a socket that no process accepts on: no channel
-    // server exists.
     let channel = horch_platform::channel::Stream::connect(&operator.channel, deadline)
         .map(drop)
         .map_err(|e| {
@@ -422,11 +344,6 @@ fn probe_write(folder: &Path) -> std::result::Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// The private config home of the launch `cmd`, with [`MARKER_SKILL`] put
-/// in it, and the folder of the marker. Claude Code: the `--plugin-dir` of
-/// the launch. Codex: its `CODEX_HOME`. Antigravity: its `HOME`. A home that
-/// is the home of this process is not private: the runner puts nothing
-/// there.
 fn mark_private_home(
     cli: ExecCli,
     cmd: &Command,
@@ -483,7 +400,6 @@ fn mark_private_home(
     ))
 }
 
-/// What the runner saw of the stream of 1 launch.
 #[derive(Debug, Default)]
 struct Seen {
     first_event: bool,
@@ -491,24 +407,19 @@ struct Seen {
     dialog: Option<String>,
     hooks: BTreeSet<Hook>,
     stop_hook: bool,
-    /// The last message of the agent.
     last_text: Option<String>,
 }
 
-/// The end of 1 watched run.
 struct Watched {
     end: ExecEnd,
     seen: Seen,
 }
 
-/// A signal to the watch of the first event.
 enum Signal {
     FirstEvent,
     Done,
 }
 
-/// Run `cmd` through the wrapper, and end the CLI when no stream event
-/// comes within `limit` or when it shows a dialog.
 fn run_watched(
     cmd: Command,
     cli: ExecCli,
@@ -551,16 +462,12 @@ fn run_watched(
     Ok(Watched { end: end?, seen })
 }
 
-/// End the CLI of `facts` and its process group.
 fn end_cli(facts: &AgentFacts) {
     if let Some(pid) = facts.pid() {
         let _ = horch_platform::group::kill_group_id(pid);
     }
 }
 
-/// The pane of a conformance launch. The wrapper writes each stream line
-/// to the transcript and then 1 pane line for it, so each pane line names
-/// the next line of the transcript.
 struct Watch<'a> {
     cli: ExecCli,
     transcript: PathBuf,
@@ -572,7 +479,6 @@ struct Watch<'a> {
 }
 
 impl Watch<'_> {
-    /// The next line of the transcript.
     fn next_stream_line(&mut self) -> Option<String> {
         if self.reader.is_none() {
             self.reader = std::fs::File::open(&self.transcript)
@@ -625,7 +531,6 @@ impl Write for Watch<'_> {
     }
 }
 
-/// What 1 stream line shows: hooks, a Stop hook, the text of a message.
 #[derive(Default)]
 struct Acts {
     hooks: Vec<Hook>,
@@ -633,10 +538,8 @@ struct Acts {
     text: Option<String>,
 }
 
-/// The kinds of a Codex item that are not a tool.
 const CODEX_NOT_TOOLS: [&str; 2] = ["agent_message", "reasoning"];
 
-/// The acts of 1 stream line of `cli`. A tool end also shows its start.
 fn acts(cli: ExecCli, v: &Value) -> Acts {
     let mut a = Acts::default();
     let at = |path: &str| v.pointer(path).and_then(Value::as_str);
@@ -699,9 +602,6 @@ fn acts(cli: ExecCli, v: &Value) -> Acts {
     a
 }
 
-/// The repair pass of the wrapper over the facts of a conformance launch.
-/// The throwaway task stands for a task with work, so it has commits since
-/// its base; the pass resumes nothing.
 struct ConformanceRepair {
     facts: RepairFacts,
 }
@@ -722,8 +622,6 @@ impl RepairPort for ConformanceRepair {
     }
 }
 
-/// The observation of 1 launch from what the runner saw and the files of
-/// the throwaway folder `dir`.
 fn observe(
     watched: Watched,
     files: &AttemptFiles,
@@ -780,9 +678,6 @@ fn observe(
     }
 }
 
-/// The identity of `folder` on the host, read by the runner outside the
-/// sandbox: `<device>:<inode>`. An OS with no device and inode of a folder
-/// gives no identity, which the verdict reads as "not visible".
 fn host_folder(folder: &Path) -> HostFolder {
     let id = std::fs::metadata(folder)
         .map_err(|e| e.to_string())

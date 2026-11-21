@@ -1,10 +1,3 @@
-//! Phase 6 removes the orchestrator seat: no agent has operator rights
-//! (SR-8, FM-32; ticket 44 of fleetd-p6). An attempt with a null task whose
-//! persona is `orchestrator`, the old seat, is a live attempt like each
-//! other, so its operator request on the channel is refused. The key
-//! `orchestrator_seats` of `fleet.toml` gives 1 warning line and no right
-//! (Q19 of `docs/tickets/fleetd-p6/MAP.md`).
-
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::domain::authorize::{
     authorize, Decision, PeerProcess, RequestFacts, Source,
@@ -12,8 +5,6 @@ use horch_core::fleetd::fleet_runtime::domain::authorize::{
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::operator::AttemptFacts;
 
-/// A live attempt of the old seat: a null task and the persona
-/// `orchestrator`.
 fn old_seat(attempt: &str) -> AttemptFacts {
     AttemptFacts {
         attempt: attempt.into(),
@@ -22,9 +13,6 @@ fn old_seat(attempt: &str) -> AttemptFacts {
     }
 }
 
-/// An operator request of `ledger_gc` on the channel from a peer in the
-/// live attempts `attempts`: the caller is the user of the ledger and the
-/// token is valid.
 fn channel_facts(attempts: Vec<AttemptFacts>) -> RequestFacts {
     RequestFacts {
         kind: "ledger_gc".into(),
@@ -56,7 +44,6 @@ fn orchestrator_seat_has_no_operator_right() {
             other => panic!("{persona}: an old seat has no operator right: {other:?}"),
         }
     }
-    // 2 attempts of the old seat prove nothing more than 1.
     let two = channel_facts(vec![old_seat("A-1"), old_seat("A-2")]);
     assert!(
         matches!(authorize(&two), Decision::Refused { .. }),

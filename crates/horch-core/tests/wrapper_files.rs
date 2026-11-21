@@ -1,17 +1,3 @@
-//! The wrapper (`horch worker`) reports the facts of its agent through 3
-//! files of its attempt folder, and writes no ledger row
-//! (docs/specs/fleetd/design.md, "Workspace layout and file protocol",
-//! protocol rules 1 to 3; RR-5, RR-8; docs/tickets/fleetd-p5/
-//! 30-wrapper-writes-files.md).
-//!
-//! - `heartbeat.json`: a snapshot, replaced atomically, with a `seq` that
-//!   grows by 1 on each write.
-//! - `exit.json`: the exit of the agent, 1 time.
-//! - `session.json`: the session id of the CLI and its harness, 1 time.
-//!
-//! Each test has its own temporary ledger and fleet root. No test starts a
-//! `horch` binary, waits for a time or reads the clock of this machine.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,7 +12,6 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 
-/// A ledger with 1 worker and its live attempt, and a fleet root.
 struct World {
     _tmp: tempfile::TempDir,
     db: PathBuf,
@@ -37,7 +22,6 @@ struct World {
 }
 
 impl World {
-    /// `with_attempt`: the worker has a live attempt.
     fn new(with_attempt: bool) -> World {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("ledger.sqlite3");
@@ -54,7 +38,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -118,7 +101,6 @@ impl World {
         )
     }
 
-    /// The worker row columns that the wrapper wrote before Phase 5.
     fn worker_row(&self) -> (Option<String>, Option<i64>, Option<String>, Option<i64>) {
         let store = Store::open_read_only(&self.db).unwrap();
         store
@@ -173,8 +155,6 @@ fn wrapper_writes_heartbeat_with_a_growing_seq() {
     assert_eq!(third.pid, Some(me));
     assert_eq!(third.proc_state.as_deref(), Some("running"));
 
-    // A second writer of the same wrapper (the repair resume) goes on
-    // with the same seq: fleetd uses only a higher seq.
     let mut resumed = w.writer(&facts, no_session());
     resumed.beat().unwrap();
     assert_eq!(read::<HeartbeatFile>(&path).seq, 4);
@@ -244,7 +224,6 @@ fn wrapper_writes_session_json_when_it_finds_the_session() {
     #[cfg(unix)]
     assert_eq!(mode(&path), 0o600);
 
-    // 1 time: a later lookup, or a second writer, changes nothing.
     *found.lock().unwrap() = (Some("sess-2".into()), None);
     writer.beat().unwrap();
     let found2 = found.clone();
@@ -296,12 +275,10 @@ fn heartbeat_is_replaced_atomically() {
     let path = w.dir().join(HEARTBEAT_JSON);
     let tmp = w.dir().join(format!("{HEARTBEAT_JSON}.tmp"));
 
-    // A link that the agent puts at the temp name is not followed.
     let target = w.dir().join("target");
     std::fs::write(&target, b"keep").unwrap();
     std::os::unix::fs::symlink(&target, &tmp).unwrap();
 
-    // A reader never sees a part of a heartbeat while the writer beats.
     let done = Arc::new(AtomicBool::new(false));
     let reader = {
         let (done, path) = (done.clone(), path.clone());

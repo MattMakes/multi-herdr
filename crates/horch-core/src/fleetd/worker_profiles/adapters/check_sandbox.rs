@@ -1,25 +1,3 @@
-//! Runs the check of a task in the worker sandbox (ticket 18; SR-4; F10).
-//!
-//! The check of a task runs code that a worker wrote, so it runs in the
-//! sandbox profile of that worker and never with the rights of fleetd:
-//!
-//! - A Codex worker keeps `codex sandbox` with its `fleet_write` profile
-//!   and the TMPDIR of its pane (F10, #181).
-//! - Each other worker gets the check sandbox of the platform layer
-//!   (`horch_platform::sandbox::sandboxed_local`). It can write only its worktree
-//!   (the project root for a task of the shared checkout), the folder of
-//!   its attempt and its temp folder, it cannot do the 3 operator acts
-//!   (SR-8), and it has no off-host network (SR-3, [`NETWORK_RULE`]).
-//!
-//! On a host with no platform sandbox, a persona of another CLI has no
-//! check sandbox: fleetd does not dispatch it, and 1 needs-you item for
-//! each persona says why (Q-A).
-//!
-//! A worker profile that profile validation refuses on this host (SR-8,
-//! A37; `sandbox_rules.rs`) takes the same path: no dispatch and 1
-//! needs-you item, unless its fallback has a sandbox here and takes the
-//! task.
-
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -42,9 +20,6 @@ use crate::taskledger::finish::CodexSandbox;
 use crate::taskledger::tasks;
 use crate::taskledger::workers::Worker;
 
-/// What a failed check of the platform sandbox says on its stderr: the
-/// network rule (SR-3). A check has no off-host network, so a check that
-/// downloads a dependency fails, and this line tells why.
 pub const NETWORK_RULE: &str = "SR-3: a task check has no off-host network (loopback and Unix \
 sockets only), so no check messages anyone outside the fleet. A dependency must be in the local \
 cache before the check.";
@@ -52,37 +27,19 @@ cache before the check.";
 const CHECK_SCRIPT: &str = "\"$0\" -c \"$1\"; status=$?; \
 if [ \"$status\" -ne 0 ]; then echo \"$2\" >&2; fi; exit \"$status\"";
 
-/// The kind of the needs-you item of a persona with no check sandbox. Its
-/// key is `no_check_sandbox:<persona>`.
 pub const NO_CHECK_SANDBOX_KIND: &str = "no_check_sandbox";
 
-/// The check sandbox of each worker: Codex for a Codex worker, the
-/// platform sandbox for each other worker.
 #[derive(Debug, Clone)]
 pub struct WorkerSandboxes {
     pub codex: CodexSandbox,
-    /// The fleet root: the parent of each attempt folder and of the
-    /// operator paths.
     pub fleet_root: PathBuf,
-    /// Why this host has no platform sandbox, or `None` when it has one.
     pub gap: Option<NotSupported>,
-    /// The `PATH` where the platform sandbox tool is found (`bwrap` on
-    /// Linux), for [`WorkerSandboxes::gap`] and for each check launch.
     pub path: Option<OsString>,
-    /// The worker profiles that profile validation refuses on this host,
-    /// with the reason of each (SR-8, A37; `sandbox_rules.rs`).
     pub refused: BTreeMap<String, String>,
-    /// The roster fallback of each persona. `None` for a persona with a
-    /// `no_fallback_reason`: its task never moves to another persona.
     pub fallbacks: BTreeMap<String, Option<String>>,
 }
 
 impl WorkerSandboxes {
-    /// The check sandboxes of the fleet at `fleet_root` on this host, with
-    /// the sandbox tool found on `path`. fleetd gives the `PATH` of its
-    /// process at its start (`RuntimeContext::inherited`). No worker can
-    /// change it, so no worker can put its own `bwrap` in place of the
-    /// sandbox (SR-4).
     pub fn on_path(
         codex: CodexSandbox,
         fleet_root: PathBuf,
@@ -98,8 +55,6 @@ impl WorkerSandboxes {
         }
     }
 
-    /// These sandboxes with the profile refusals and the fallbacks of
-    /// `roster`.
     pub fn with_profiles(mut self, roster: &Roster) -> WorkerSandboxes {
         self.refused = sandbox_rules::refused(roster, &self.fleet_root);
         self.fallbacks = roster
@@ -117,12 +72,6 @@ impl WorkerSandboxes {
         self
     }
 
-    /// Give each task of `held` that waits for a persona with no sandbox
-    /// here to its fallback, when the fallback has a sandbox here (the
-    /// fallback rule of the roster: the fallback of the task, else the
-    /// first fallback of the persona), in `tx`. Each moved task leaves
-    /// `held`, so it opens no needs-you item, and the next dispatch pass
-    /// binds it. Run it before [`WorkerSandboxes::open_items`].
     pub fn move_to_fallbacks(&self, tx: &Connection, held: &mut Vec<(String, Hold)>) -> Result<()> {
         let mut kept = Vec::with_capacity(held.len());
         for (task_id, hold) in held.drain(..) {
@@ -146,9 +95,6 @@ impl WorkerSandboxes {
         Ok(())
     }
 
-    /// The fallback of a task of `persona` whose own fallback is `own`,
-    /// when it has a sandbox here. A persona with a `no_fallback_reason`
-    /// has none.
     fn fallback_of(&self, persona: &str, own: Option<&str>) -> Option<String> {
         let fallback = match self.fallbacks.get(persona) {
             Some(None) => None,
@@ -160,7 +106,6 @@ impl WorkerSandboxes {
             .map(str::to_string)
     }
 
-    /// Why `persona` has no sandbox here.
     fn why(&self, persona: &str) -> String {
         if let Some(reason) = self.refused.get(persona) {
             return reason.clone();
@@ -171,9 +116,6 @@ impl WorkerSandboxes {
         )
     }
 
-    /// Open 1 needs-you item for each persona of `held` that has the hold
-    /// [`NO_CHECK_SANDBOX`], in `tx`. `held` is the list of held tasks of a
-    /// dispatch pass. An open item of a persona stays 1 item.
     pub fn open_items(
         &self,
         tx: &Connection,
@@ -216,8 +158,6 @@ impl WorkerSandboxes {
         Ok(())
     }
 
-    /// The launch of `check` in `dir` in the platform sandbox, or `None`
-    /// when this host has none.
     fn platform_launch(&self, worker: &Worker, dir: &Path, check: &str) -> Option<LaunchSpec> {
         if self.gap.is_some() {
             return None;
@@ -272,10 +212,6 @@ impl SandboxProfiles for WorkerSandboxes {
     }
 }
 
-/// The check of a Codex worker: the sandbox of its pane, by the rule of
-/// `check_process` in `taskledger/finish/land.rs` (#181). Only the shell
-/// gets the TMPDIR of the pane, as `/tmp` is read-only in the sandbox. A
-/// worker of another CLI has no profile here.
 impl SandboxProfiles for CodexSandbox {
     fn check_launch(&self, worker: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>> {
         if !self.runs(worker) {

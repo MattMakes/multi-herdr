@@ -1,8 +1,3 @@
-//! The needs-you list: add, read and clear an item.
-//!
-//! Each use case that changes a state writes the row and 1 event in the
-//! transaction it is given, through `transition()`.
-
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::Connection;
@@ -17,8 +12,6 @@ use crate::fleetd::ideas::domain::needs_you::{Item, State, Write};
 use crate::taskledger::model::Actor;
 use crate::taskledger::util;
 
-/// Write the open item of `w.key`. An open item gets the new text; a
-/// `resolved` or `superseded` item opens again.
 pub fn open_item(tx: &Connection, w: &Write<'_>) -> Result<()> {
     let old = store::get(tx, w.key)?;
     let Some(new) = Item::written(old.as_ref(), w, &util::now()) else {
@@ -27,14 +20,10 @@ pub fn open_item(tx: &Connection, w: &Write<'_>) -> Result<()> {
     save(tx, old.as_ref(), &new, w.kind)
 }
 
-/// End the open item of `key` as `resolved`. `false` when no open item has
-/// that key.
 pub fn resolve(tx: &Connection, key: &str) -> Result<bool> {
     end(tx, key, State::Resolved, "its cause ended")
 }
 
-/// End the open item of `key` as `superseded`. `false` when no open item
-/// has that key.
 pub fn supersede(tx: &Connection, key: &str) -> Result<bool> {
     end(tx, key, State::Superseded, "a newer item replaced it")
 }
@@ -50,10 +39,6 @@ fn end(tx: &Connection, key: &str, to: State, cause: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Write `new` as the 1 row of its key; `old` is the row before. A new row
-/// gets its event from `created()`. A change of state goes through
-/// `transition()` before the other columns, so a refused move changes
-/// nothing.
 fn save(tx: &Connection, old: Option<&Item>, new: &Item, cause: &str) -> Result<()> {
     let cause = Cause {
         actor: Actor::Horch,
@@ -78,8 +63,6 @@ fn save(tx: &Connection, old: Option<&Item>, new: &Item, cause: &str) -> Result<
     store::update(tx, new)
 }
 
-/// The needs-you list, as the place where `transition()` puts a refused
-/// row.
 pub struct NeedsYouList;
 
 impl RecordRefusal for NeedsYouList {
@@ -113,8 +96,6 @@ impl NeedsYouItems for NeedsYouList {
     }
 }
 
-/// Remove each item that ended `retention_days` or more before `now`.
-/// Returns the count removed.
 pub fn prune(conn: &Connection, now: DateTime<Utc>, retention_days: u64) -> Result<usize> {
     let days = i64::try_from(retention_days).unwrap_or(i64::MAX);
     let cutoff = Duration::try_days(days)
@@ -123,13 +104,10 @@ pub fn prune(conn: &Connection, now: DateTime<Utc>, retention_days: u64) -> Resu
     store::delete_ended(conn, &cutoff)
 }
 
-/// The open items: the only items shown.
 pub fn open_items(conn: &Connection) -> Result<Vec<Item>> {
     store::open(conn)
 }
 
-/// The keys of the open items of kind `kind`: a producer reads them to
-/// resolve the items whose cause ended.
 pub fn open_keys(conn: &Connection, kind: &str) -> Result<Vec<String>> {
     store::open_keys(conn, kind)
 }
@@ -192,7 +170,6 @@ mod tests {
         assert_eq!((item.state, item.text.as_str()), (State::Open, "second"));
         assert_eq!(events_of(&store, "illegal_transition:T-3").len(), 1);
 
-        // A resolve that does not commit leaves the row and the event out.
         let rolled_back: Result<()> = store.immediate(|tx| {
             assert!(resolve(tx, "illegal_transition:T-3")?);
             anyhow::bail!("roll back")

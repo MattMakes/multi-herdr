@@ -1,44 +1,3 @@
-//! The fake idea-lead of the FR-10 tests (`crates/horch-e2e/tests/p6_fr10_approval.rs`).
-//!
-//! A key of this fake is a word `[fr10:<key>]` in the `idea.md` of its
-//! idea, so 2 ideas of 1 fleet can have 2 behaviours. An idea with such a
-//! word gets only this fake, not the keys of `idea_agent`.
-//!
-//! The idea under test is named by the word `[fr10:target=<idea id>]`.
-//! The fake waits for that idea and never takes another idea in
-//! `awaiting_approval`, such as a system idea of a failed conformance job.
-//!
-//! - `approve_waiting`: the own idea stays in `clarifying`, so the own
-//!   attempt stays live. Wait until the own attempt is `live` (fleetd
-//!   recorded its process) and the target is in `awaiting_approval`.
-//!   Then try to approve it 5 ways, each logged under `tries`: `cli`
-//!   (`horch idea approve`), `child_shell` (`sh -c` of it), `detached` (a
-//!   child in a new session and a new process group, whose parent waits),
-//!   and `raw` (a raw `idea_approve` on the channel with the operator
-//!   token). Then write a valid `assumptions.md`.
-//! - `approve_launching`: at the first instruction, with no wait for
-//!   `live`, log `attempts` with the pid of each own attempt, then try
-//!   `cli` and `raw` on the target in `awaiting_approval`, then send each
-//!   `operator` kind raw on the channel with the operator token, logged
-//!   under `kinds`. With the fault point `hold-launching` the test proves
-//!   that this agent never starts.
-//! - `stay`: run `horch idea note` of the own idea (logged as `note`),
-//!   then keep running, as an agent in its interview, until fleetd stops
-//!   it (fix A: the attempt stays live while its agent runs).
-//! - `outlive`: write a valid `assumptions.md` and ignore `SIGTERM`, so the
-//!   agent lives on after fleetd ended its attempt. Wait until each own
-//!   `clarifying` attempt is ended (the operator approves the own idea, so the phase of
-//!   the attempt is old), then try `cli` and `raw` on the target in
-//!   `awaiting_approval`. Then wait for the stop of fleetd.
-//! - `forge`: write a valid `assumptions.md`, wait until the own idea is in
-//!   `awaiting_approval`, then write `approval.json` with its sha256.
-//!
-//! The fake acts only in the phase `clarifying`. In a later phase it exits.
-//!
-//! Before the tries the fake logs `attempts`: the state of each attempt of
-//! its own idea, as the ledger has it. The fake never logs the operator
-//! token.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -59,8 +18,6 @@ const STOP_WAIT: Duration = Duration::from_secs(600);
 
 const AWAITING: &str = "awaiting_approval";
 
-/// Play the FR-10 keys of the idea of this launch. False when the idea has
-/// no such key: the caller plays the other keys.
 pub fn play(call: &mut Call) -> bool {
     let Some(folder) = idea_folder(&call.argv) else {
         return false;

@@ -1,8 +1,3 @@
-//! The `llms_txt` kind: an index of markdown links, of which the source
-//! includes some pages.
-
-/// Each link target of the index, in order. A target that starts with `/` is
-/// joined to the origin of `index_url`.
 pub fn links(text: &str, index_url: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut rest = text;
@@ -20,7 +15,6 @@ pub fn links(text: &str, index_url: &str) -> Vec<String> {
     found
 }
 
-/// `https://host` of a URL.
 fn origin(url: &str) -> &str {
     let after_scheme = url.find("://").map_or(0, |i| i + 3);
     match url[after_scheme..].find('/') {
@@ -29,9 +23,6 @@ fn origin(url: &str) -> &str {
     }
 }
 
-/// The link of 1 include entry: its path, without the markdown suffix, ends
-/// with `/<entry>`. When several do, the shortest path wins, so `hooks` is the
-/// top page and not `agent-sdk/hooks`.
 pub fn pick<'a>(links: &'a [String], entry: &str, md_suffix: Option<&str>) -> Option<&'a str> {
     let tail = format!("/{entry}");
     links
@@ -41,7 +32,6 @@ pub fn pick<'a>(links: &'a [String], entry: &str, md_suffix: Option<&str>) -> Op
         .map(String::as_str)
 }
 
-/// A link without its query, fragment, markdown suffix and trailing `/`.
 fn bare_path<'a>(link: &'a str, md_suffix: Option<&str>) -> &'a str {
     let link = link.split(['?', '#']).next().unwrap_or(link);
     let link = md_suffix
@@ -51,8 +41,6 @@ fn bare_path<'a>(link: &'a str, md_suffix: Option<&str>) -> &'a str {
     link.trim_end_matches('/')
 }
 
-/// The URL to fetch: the link without its fragment, with the markdown
-/// suffix added once.
 pub fn page_url(link: &str, md_suffix: Option<&str>) -> String {
     let link = link.split('#').next().unwrap_or(link);
     match md_suffix {
@@ -61,7 +49,6 @@ pub fn page_url(link: &str, md_suffix: Option<&str>) -> String {
     }
 }
 
-/// The file of 1 include entry: `cli/reference` becomes `cli-reference.md`.
 pub fn file_name(entry: &str) -> String {
     format!("{}.md", entry.replace('/', "-"))
 }

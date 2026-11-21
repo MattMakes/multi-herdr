@@ -1,11 +1,3 @@
-//! Each stop of a worktree job ends the sandboxed git of the job
-//! (docs/tickets/fleetd-finish/208-linux-job-stop-reaches-each-sandbox.md).
-//!
-//! The job process is this test binary, started through the launcher as
-//! part 3 of a pass starts `horch job run <id>`. Its git is a fake git that
-//! writes a heartbeat into the git folder of the repository and never
-//! ends. The path of the fake git holds a marker, so a search of the
-//! command lines of the host finds each process of the sandbox.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -150,8 +142,6 @@ impl World {
                 .to_string(),
             branch: "fleet/w1".to_string(),
             base: "main".to_string(),
-            // The fake git hangs at its first call, before a read of the
-            // base tip.
             base_commit: Some("0".repeat(40)),
             status: WorktreeStatus::Open,
             mode: None,
@@ -378,10 +368,6 @@ fn kill_of_the_job_group_ends_the_git_sandbox_of_a_worktree_job() {
     );
 }
 
-/// The leader of the group of a job ends, and a member of its group lives
-/// on. With the leader gone, no recorded start time proves that the member
-/// is of the job (the group id can be another's by reuse): the pass sends
-/// it no signal and records a notice.
 #[test]
 fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
     let mut w = world();
@@ -448,10 +434,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
         "no git writer of the repository starts while the member runs"
     );
 
-    // The next run of the add waits: the hold of its task names the group,
-    // the member and its start time, and the end by hand.
-    // The hold reads only the task id of the tree, so the test names a task
-    // that has no row.
     w.conn
         .execute_batch(
             "PRAGMA foreign_keys = OFF;
@@ -470,8 +452,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
         assert!(cause.contains(&part), "the hold names {part:?}: {cause}");
     }
 
-    // 1 needs-you item, only when the member runs past the time limit and
-    // the stop grace after the notice, and only 1 time.
     let grace = i64::try_from(config.stop_grace_s).unwrap();
     let bound = 1 + i64::try_from(LIMIT_S).unwrap() + grace;
     let items = |conn: &Connection, state: &str| -> Vec<String> {
@@ -513,7 +493,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
         "a later pass opens no second item"
     );
 
-    // The test started the member, so the test ends it.
     let ended = Command::new("kill")
         .args(["-KILL", &member.to_string()])
         .status()
@@ -530,11 +509,6 @@ fn abandoned_job_whose_group_has_a_member_gets_a_notice_and_no_signal() {
     );
 }
 
-/// A group with no leader takes the place of the recorded group of a run:
-/// the recorded leader is gone, and a process holds its id as its group
-/// id. With the leader gone, nothing proves that the process is of the
-/// job: the id can be of a group of another process by reuse. So neither
-/// the TERM nor the KILL of [`jobs::stop`] sends it a signal (D242-F1).
 #[test]
 fn a_leaderless_group_in_the_place_of_the_recorded_group_gets_no_signal() {
     let mut w = world();
@@ -603,9 +577,6 @@ fn a_leaderless_group_in_the_place_of_the_recorded_group_gets_no_signal() {
     assert!(lives, "the process of the group got no signal");
 }
 
-/// The stop of a task attempt with [`ProcessScope::LeaderGroup`] is the
-/// same: with the leader gone, a leaderless group in the place of its group
-/// gets no signal, neither the TERM nor the KILL (D242-F1).
 #[test]
 fn a_leaderless_group_gets_no_signal_from_a_leader_group_stop() {
     use std::io::{Read, Write};
@@ -653,10 +624,6 @@ fn a_leaderless_group_gets_no_signal_from_a_leader_group_stop() {
     assert!(ended.success());
 }
 
-/// A job process that ignores TERM: it gets the TERM at its deadline,
-/// nothing in the grace after the recorded TERM, then the KILL. The record
-/// is in the ledger, so a new connection (a restarted fleetd) counts the
-/// same grace.
 #[test]
 fn job_stop_sends_the_term_first_and_the_kill_after_the_grace_of_the_recorded_term() {
     let mut w = world();
@@ -693,7 +660,6 @@ fn job_stop_sends_the_term_first_and_the_kill_after_the_grace_of_the_recorded_te
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // The first pass sees the run long past its deadline and its grace.
     let facts = w.facts();
     let seen = w
         .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(late)))
@@ -704,8 +670,6 @@ fn job_stop_sends_the_term_first_and_the_kill_after_the_grace_of_the_recorded_te
     std::thread::sleep(Duration::from_millis(200));
     runner.reap();
 
-    // A restarted fleetd reads the TERM from the ledger: no stop in the
-    // grace, the kill at its end.
     w.conn = open(&w.db());
     let facts = w.facts();
     let key = id.to_string();
@@ -760,11 +724,6 @@ fn marked(marker: &str) -> Vec<String> {
         .collect()
 }
 
-/// A process that is in the recorded group only after the check of the
-/// leader stands for a group that took the id by reuse between the check
-/// and the signal. Neither the TERM nor the KILL of [`jobs::stop`] or of a
-/// [`ProcessScope::LeaderGroup`] stop reaches it: each signal goes to a
-/// process of the snapshot, by its pid and start time (D254-F1).
 #[test]
 fn a_reused_group_after_the_leader_check_gets_no_kill() {
     use std::os::unix::process::CommandExt;

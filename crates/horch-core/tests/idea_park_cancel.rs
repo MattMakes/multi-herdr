@@ -1,13 +1,3 @@
-//! `horch idea park` and `horch idea cancel` (docs/specs/fleetd/design.md,
-//! "The idea state machine", rows `parked` and `cancelled`; "The feature
-//! state machine", row `abandoned`; "A cancel"; FM-39, A34;
-//! docs/tickets/fleetd-p6/20-park-cancel.md).
-//!
-//! Each test makes its own temporary ledger. No test reads the clock, the
-//! load or the limits of the machine: the fleet clock and the facts of a
-//! pass are given. The only process is a child `sleep`, the agent of 1
-//! attempt.
-
 use std::process::{Child, Command};
 
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
@@ -34,12 +24,9 @@ use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 use rusqlite::{params, Connection};
 
-/// The idea and the feature of the first run of a ledger.
 const IDEA: &str = "I-0001";
 const FEATURE: &str = "F-0001";
 
-/// A child `sleep`: the agent process of an attempt. It is killed and
-/// reaped when the test ends.
 struct Sleep(Child);
 
 impl Sleep {
@@ -55,7 +42,6 @@ impl Sleep {
         }
     }
 
-    /// The stop: kill and reap it.
     fn stop(&mut self) {
         self.0.kill().unwrap();
         self.0.wait().unwrap();
@@ -69,7 +55,6 @@ impl Drop for Sleep {
     }
 }
 
-/// Each persona has a check sandbox.
 struct AllSandboxes;
 
 impl CheckSandboxes for AllSandboxes {
@@ -85,8 +70,6 @@ struct World {
     run: Run,
 }
 
-/// A temp ledger with 1 run. Its first task gives the run the idea
-/// [`IDEA`] of the feature [`FEATURE`], in `in_progress`.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -97,7 +80,6 @@ fn world() -> World {
     let run = store
         .immediate(|tx| {
             let run = runs::create(tx, dir.path(), &new_run)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -137,7 +119,6 @@ impl World {
         self.store.conn()
     }
 
-    /// A new ready task of `dev` with `title`. Its id.
     fn task(&mut self, title: &str) -> String {
         let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         new.worktree_mode = WorktreeMode::Shared;
@@ -169,8 +150,6 @@ impl World {
         state_of(self.conn(), "worktrees", "worktree_id", id)
     }
 
-    /// `task` is bound to a worker of `dev` whose agent is `agent`: 1
-    /// live attempt. The id of the worker.
     fn claimed(&mut self, task: &str, agent: Recorded) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -183,8 +162,6 @@ impl World {
             .worker_id
     }
 
-    /// A worktree row `id` of `task` in `state`, through the door, with
-    /// `head` as the HEAD that git gave.
     fn tree(&mut self, id: &str, task: &str, state: &str, head: &str) {
         let root = self.dir.path().display().to_string();
         let new = NewWorktree {
@@ -229,7 +206,6 @@ impl World {
             .unwrap();
     }
 
-    /// A new idea `id` of [`FEATURE`], moved through the door along `path`.
     fn idea(&mut self, id: &str, path: &[&str]) {
         self.store
             .immediate(|tx| {
@@ -282,7 +258,6 @@ impl World {
             .unwrap()
     }
 
-    /// The `rescue` runs of the tree `id`.
     fn rescues(&self, id: &str) -> Vec<(State, String)> {
         let mut out = Vec::new();
         if let Some(job) = jobs_store::active(self.conn(), Kind::Rescue, id).unwrap() {
@@ -300,7 +275,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// What a pass saw of `p`.
 fn facts(p: Recorded, seen: Seen) -> Facts {
     let mut f = Facts::default();
     f.processes.insert(p, seen);
@@ -334,7 +308,6 @@ fn cancel_of_an_idea_cancels_each_task_that_is_not_terminal() {
     }
     assert_eq!(w.idea_state(IDEA), "cancelled");
 
-    // A second cancel of a cancelled idea changes nothing.
     assert_eq!(w.cancel(IDEA, "again"), out);
     assert_eq!(w.idea_state(IDEA), "cancelled");
 }
@@ -367,7 +340,6 @@ fn cancel_stops_a_live_attempt_before_the_task_is_cancelled() {
     );
     assert_eq!(w.idea_state(IDEA), "in_progress", "a task is not terminal");
 
-    // The process still runs: nothing moves.
     let alive = facts(p, Seen::Alive);
     let moved = w
         .store
@@ -387,7 +359,6 @@ fn cancel_stops_a_live_attempt_before_the_task_is_cancelled() {
     );
     assert_eq!(w.idea_state(IDEA), "in_progress");
 
-    // The stop, then the task moves, then the idea.
     agent.stop();
     let dead = facts(p, Seen::Dead);
     let moved = w
@@ -447,7 +418,6 @@ fn abandoned_feature_cancels_each_idea_that_is_not_merged() {
     assert_eq!(w.idea_state("I-0102"), "cancelled");
     assert_eq!(w.idea_state("I-0101"), "merged", "a merged idea stays");
 
-    // The event again: the same effect as 1 time.
     assert!(w.feature_abandoned(FEATURE).is_empty());
     assert_eq!(w.idea_state("I-0101"), "merged");
 }
@@ -480,7 +450,6 @@ fn park_keeps_running_tasks_and_stops_dispatch() {
         "no new task of a parked idea is dispatched"
     );
 
-    // A park of a parked idea is refused; the idea stays parked.
     let err = w.park(IDEA, "again").unwrap_err();
     assert!(
         format!("{err:#}").contains("horch idea approve"),

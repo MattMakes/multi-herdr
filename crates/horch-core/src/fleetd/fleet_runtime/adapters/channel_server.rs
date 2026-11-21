@@ -1,33 +1,3 @@
-//! The command channel of fleetd: bind `<fleet root>/run/fleetd.sock` (a
-//! pipe on Windows), check the peer user, read 1 request line with a
-//! deadline, and write the reply of the recorded decision.
-//!
-//! Requirements: SR-5, SR-8, RR-8, FM-15. Ticket 13 of fleetd-p5 fills it.
-//!
-//! The server runs in 1 thread of fleetd with its own connection to the
-//! ledger, and serves 1 connection at a time. Each connection gives 1
-//! request:
-//!
-//! 1. It reads 1 line, at most `request_max_bytes` of `fleet.toml` and its
-//!    `\n`, until [`READ_DEADLINE`]. A slow or silent client is closed at
-//!    its deadline with no reply, so it holds the next client for that
-//!    time at most (on Windows the channel has 1 pipe instance only).
-//! 2. It parses the line. A line over the limit, or a line that does not
-//!    parse, has no `request_id` that fleetd can trust, so fleetd records
-//!    no row and replies `{"state": "refused", "reason"}` with no
-//!    `request_id`.
-//! 3. It collects the facts: the peer user (SR-5), the token (SR-8) and the
-//!    fleet process fact of the peer process (`fleet_process`, SR-8, FR-10),
-//!    and decides with [`authorize`].
-//! 4. It records and applies the request with [`handle`] (RR-8, FM-15),
-//!    and writes the reply line until [`READ_DEADLINE`] from the start of
-//!    the write. Then it closes the connection.
-//!
-//! An error ends only that connection: a failed write of the ledger closes
-//! it with no reply, and the client asks for the result of its
-//! `request_id`. A lost generation ends the server, because each later
-//! write of this fleetd is refused too.
-
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -57,17 +27,10 @@ use crate::fleetd::fleet_runtime::domain::operator::AttemptFacts;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
 
-/// The deadline of 1 connection: the read of its line, and the write of
-/// its reply. It is the connect time of today
-/// (`preservation-05-contracts-and-values.md`, row V-18).
 pub const READ_DEADLINE: Duration = Duration::from_secs(5);
 
-/// The kind of the needs-you item of a file at the name of the channel
-/// that is not a socket.
 pub const NAME_TAKEN_KIND: &str = "channel_name_taken";
 
-/// The time between 2 accepts after an accept fails, so that an error that
-/// stays does not keep 1 core busy.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
 const STOP_POLL: Duration = Duration::from_millis(50);
@@ -80,19 +43,13 @@ const STOP_MARGIN: Duration = Duration::from_secs(5);
 
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 
-/// The channel of the fleet at `fleet_root`.
 pub fn socket_path(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join("fleetd.sock")
 }
 
-/// The options of the server. [`Options::default`] is the production
-/// value; a test changes a field.
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
-    /// The deadline of 1 connection.
     pub read_deadline: Duration,
-    /// The peer user of a connection. The default reads [`Peer::user`]; a
-    /// test gives another user (SR-5).
     pub peer_user: fn(&Peer) -> Result<User, NotSupported>,
 }
 
@@ -105,8 +62,6 @@ impl Default for Options {
     }
 }
 
-/// The running channel server. [`ChannelServer::stop`] ends it; a drop
-/// also ends it.
 #[derive(Debug)]
 pub struct ChannelServer {
     socket: PathBuf,
@@ -117,9 +72,6 @@ pub struct ChannelServer {
 }
 
 impl ChannelServer {
-    /// Bind the channel of `fleet_root` and serve it in 1 thread, with
-    /// `ledger` as its own connection to the ledger. `guard` is the
-    /// generation of this fleetd. The caller holds the fleetd lock.
     pub fn start(
         fleet_root: &Path,
         ledger: Connection,
@@ -129,10 +81,6 @@ impl ChannelServer {
         ChannelServer::start_with(fleet_root, ledger, guard, handlers, Options::default())
     }
 
-    /// [`ChannelServer::start`] with `options`.
-    ///
-    /// An old socket file at the name is removed first. Any other file at
-    /// the name is kept: the start fails and opens 1 needs-you item.
     pub fn start_with(
         fleet_root: &Path,
         ledger: Connection,
@@ -188,8 +136,6 @@ impl ChannelServer {
         Ok(server)
     }
 
-    /// End the server: it serves no new connection. The error is the end
-    /// of the server before the stop, for example a lost generation.
     pub fn stop(mut self) -> Result<()> {
         self.end()
     }
@@ -214,8 +160,6 @@ impl ChannelServer {
         ended?
     }
 
-    /// When the path is gone, no connect can reach the listener: the
-    /// accept thread stays in `accept`, and the stop does not wait for it.
     fn wake_acceptor(&mut self) {
         let Some(acceptor) = self.acceptor.take() else {
             return;
@@ -229,8 +173,6 @@ impl ChannelServer {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return,
                 other => drop(other),
             }
-            // At most 1 connect in each WAKE_WAIT, so the connects do not
-            // fill the queue of the socket.
             let next = Instant::now() + WAKE_WAIT;
             while !acceptor.is_finished() && Instant::now() < next {
                 thread::sleep(WAKE_POLL);
@@ -246,8 +188,6 @@ impl Drop for ChannelServer {
     }
 }
 
-/// Remove the socket file of an old fleetd at `socket`. Refuse any other
-/// file there, with 1 needs-you item.
 fn free_the_name(conn: &Connection, guard: Generation, socket: &Path) -> Result<()> {
     let found = channel::at_name(socket)
         .with_context(|| format!("reading the channel name {}", socket.display()))?;
@@ -307,7 +247,6 @@ fn accept_loop(listener: &Listener, stop: &AtomicBool, accepted: &SyncSender<(St
     }
 }
 
-/// The state of the thread of the channel.
 struct Server {
     fleet_root: PathBuf,
     conn: Connection,
@@ -331,14 +270,12 @@ impl Server {
                     bail!("the accept thread of the channel ended")
                 }
             };
-            // Each other error ends only this connection.
             if let Err(lost @ DoorError::GenerationLost { .. }) = self.serve(&stream, &peer) {
                 return Err(lost.into());
             }
         }
     }
 
-    /// Serve 1 connection: 1 line, the decision, 1 reply.
     fn serve(&mut self, stream: &Stream, peer: &Peer) -> Result<(), DoorError> {
         let deadline = Instant::now() + self.options.read_deadline;
         let line = match read_line(stream, self.max_bytes, deadline) {
@@ -353,7 +290,6 @@ impl Server {
                 drain_input(stream, self.options.read_deadline);
                 return Ok(());
             }
-            // A silent or slow client, or a client that went away.
             Err(_) => return Ok(()),
         };
         let request = match parse_request(&line, self.max_bytes as u64) {
@@ -397,17 +333,11 @@ impl Server {
     }
 }
 
-/// The line of a connection.
 enum Line {
-    /// The bytes before the `\n`, or before the end of the stream.
     Read(Vec<u8>),
-    /// More than `max_bytes` bytes and no `\n` in them.
     OverLimit,
 }
 
-/// Read 1 line of `stream`: at most `max_bytes` and its `\n`, so never more
-/// than `max_bytes + 1` bytes, until `deadline`. A read after `deadline`
-/// fails with `TimedOut`.
 fn read_line(stream: &Stream, max_bytes: usize, deadline: Instant) -> io::Result<Line> {
     let limit = max_bytes.saturating_add(1);
     let mut line = Vec::new();
@@ -439,7 +369,6 @@ fn read_line(stream: &Stream, max_bytes: usize, deadline: Instant) -> io::Result
     }
 }
 
-/// The reply to a line with no `request_id` that fleetd can trust.
 fn refusal_line(reason: &str) -> String {
     format!(
         "{}\n",
@@ -466,9 +395,6 @@ fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
     let _ = writer.flush();
 }
 
-/// A close of a Unix socket with unread bytes makes the next read of the
-/// client fail with `ECONNRESET` on Linux, after the reply, so the client must
-/// not see that close before it has read the reply.
 fn drain_input(stream: &Stream, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     let mut chunk = [0u8; 4096];

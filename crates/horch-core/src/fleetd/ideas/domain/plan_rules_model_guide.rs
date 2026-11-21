@@ -1,21 +1,10 @@
-//! The model guide rule of the plan validator (D8): Opus 5.5 at medium
-//! effort is the default, a higher effort has a stated reason, a Sonnet task
-//! is marked `no_decisions: true`, and a Fable task needs `fable: approved`
-//! in the plan.
-//!
-//! A task whose profile is not in the roster is the problem of the profile
-//! rule; this rule skips it.
-
 use super::plan::Plan;
 use super::plan_validator::{PlanFacts, Problem};
 
-/// The rule name.
 pub const RULE: &str = "model_guide";
 
-/// The efforts above the default effort, medium.
 const HIGHER_EFFORTS: [&str; 3] = ["high", "xhigh", "max"];
 
-/// Each problem of this rule.
 pub fn check(plan: &Plan, facts: &PlanFacts) -> Vec<Problem> {
     let mut out = Vec::new();
     for task in &plan.tasks {

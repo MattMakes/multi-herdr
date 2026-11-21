@@ -1,7 +1,3 @@
-//! The profile and gate rules of the plan validator (ticket 10 of
-//! fleetd-p6; FR-3, FM-10): each profile exists, has a fallback and a
-//! sandbox on this OS, and the project declares a fast gate and a full gate.
-
 use horch_core::fleetd::ideas::domain::plan::{Acceptance, Kind, Plan, PlannedTask};
 use horch_core::fleetd::ideas::domain::plan_rules_profiles;
 use horch_core::fleetd::ideas::domain::plan_validator::{
@@ -43,8 +39,6 @@ fn profile(name: &str, fallback: Option<&str>, sandbox_here: bool) -> RosterProf
     }
 }
 
-/// A roster where `opus` and `codex-sol` both have a sandbox, and both
-/// gates are declared.
 fn facts(roster: Vec<RosterProfile>) -> PlanFacts {
     PlanFacts {
         roster,
@@ -63,7 +57,6 @@ fn good_roster() -> Vec<RosterProfile> {
     ]
 }
 
-/// The problems of the profile and gate rules (this ticket's rules).
 fn problems(plan: &Plan, facts: &PlanFacts) -> Vec<Problem> {
     PlanValidator::validate(plan, facts)
         .into_iter()

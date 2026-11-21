@@ -26,8 +26,6 @@ SALT = {"side": 4099, "mid": 8191}
 OFF = -150.0
 
 
-# ---------------------------------------------------------------- measures
-
 def is_stereo(x: Any, tol_db: float = -60) -> bool:
     """True when x has 2 channels whose side is more than ``tol_db`` re the mid."""
     av = np.asarray(x, dtype=float)
@@ -139,8 +137,6 @@ def needs_space(x: Any, max_corr: float = 0.7) -> bool:
     tcorr = tail_corr(av)
     return tcorr is not None and tcorr <= max_corr
 
-
-# ---------------------------------------------------------------- layer
 
 def _is_on(model: dict, piece: str) -> np.ndarray:
     return np.asarray(model.get(f"{piece}_db", [OFF] * len(model["bands"])), dtype=float) > -140
@@ -268,8 +264,6 @@ def _add_space(model: dict, yv: np.ndarray, seed: int, width: float, ringv: bool
 def _wet_part(model: dict, yv: np.ndarray, seed: int, cnt: int, piece: str) -> np.ndarray:
     return wet(model, yv, seed, cnt, piece) if np.any(_is_on(model, piece)) else np.zeros(cnt)
 
-
-# ---------------------------------------------------------------- fit
 
 def fit_space(x: Any, sr: int = 48000, dry: np.ndarray | None = None, max_corr: float = 0.7,
               iters: int = 3, need_db: float = -15, mid_need_db: float = -10) -> dict | None:

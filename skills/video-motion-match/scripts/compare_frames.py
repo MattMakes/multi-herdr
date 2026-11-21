@@ -27,8 +27,8 @@ from pathlib import Path
 SSIM_MIN = 0.85
 IOU_MIN = 0.85
 ANALYSIS_WIDTH_MAX = 480
-MISMATCH_DELTA = 25  # a pixel differs when |ref - rendered| > 25 of 255
-LUMA_DELTA = 24  # a pixel is foreground when |luma - background| > 24 of 255
+MISMATCH_DELTA = 25
+LUMA_DELTA = 24
 FRAME_EXTS = {".png", ".jpg", ".jpeg"}
 
 
@@ -275,8 +275,6 @@ def compare(ref_path, rendered_path, spec_path=None, out=None, diff_strip=None,
         Path(out).write_text(json.dumps(report, indent=2) + "\n")
     return report
 
-
-# ---------------------------------------------------------------- self-test
 
 SKILL_BUDGET_BYTES = 12288
 SKILLS = ("video-motion", "video-character", "video-motion-match")

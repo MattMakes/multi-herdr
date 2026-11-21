@@ -1,9 +1,3 @@
-//! The task ledger's tables (docs/specs/task-ledger.md section 4 and 11).
-//!
-//! The schema is built from the enums in [`super::model`], so each `CHECK`
-//! list is the code's own list. `PRAGMA user_version` holds the version;
-//! [`migrate`] brings an older file forward and never goes back.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -12,59 +6,32 @@ use rusqlite::{Connection, OptionalExtension};
 use super::model::*;
 use super::sql_words::word;
 
-/// The version of the finish step `comment-sweep` (`comment_sweep_step`).
-/// horch 0.4.10 of main wrote it as version 8, so it keeps that number.
 pub const COMMENT_SWEEP_VERSION: i64 = 8;
 
-/// The version of the step that adds `workers.backend` (`V9`), the pane
-/// host of a worker. horch 0.5.2 of main wrote it as version 9, so it keeps
-/// that number.
 pub const BACKEND_VERSION: i64 = COMMENT_SWEEP_VERSION + 1;
 
-/// The version of the Phase 1 tables of fleetd (`phase_1`). A test that
-/// tests that step builds or migrates to this version, not to [`VERSION`].
 pub const PHASE_1_VERSION: i64 = BACKEND_VERSION + 1;
 
-/// The version of the Phase 2 tables and columns of fleetd (`phase_2`).
 pub const PHASE_2_VERSION: i64 = PHASE_1_VERSION + 1;
 
-/// The version of the Phase 3 columns of `worktrees` (`phase_3`).
 pub const PHASE_3_VERSION: i64 = PHASE_2_VERSION + 1;
 
-/// The version of the step that builds `events` again with the event
-/// kinds of this binary (`events_kinds`).
 pub const EVENT_KINDS_VERSION: i64 = PHASE_3_VERSION + 1;
 
-/// The version of the step that builds `worktrees` again with its `path`
-/// unique only among the rows that are not `removed` (`worktree_paths`).
 pub const WORKTREE_PATHS_VERSION: i64 = EVENT_KINDS_VERSION + 1;
 
-/// The version of the Phase 4 tables of fleetd and their release backfill
-/// (`phase_4`).
 pub const PHASE_4_VERSION: i64 = WORKTREE_PATHS_VERSION + 1;
 
-/// The version of the Phase 5 tables of fleetd, `requests` and
-/// `polite_stops` (`phase_5`).
 pub const PHASE_5_VERSION: i64 = PHASE_4_VERSION + 1;
 
-/// The version of the Phase 6 tables of fleetd, the idea of each task and
-/// their release backfill (`phase_6`).
 pub const PHASE_6_VERSION: i64 = PHASE_5_VERSION + 1;
 
-/// The version of the Phase 7 step: `events` built again, so its kind
-/// `CHECK` has the event words of the health of a profile (`phase_7`).
 pub const PHASE_7_VERSION: i64 = PHASE_6_VERSION + 1;
 
-/// The version of the step that rewrites each stored project root in the
-/// spelling of [`super::runs::root_key`] and merges 2 rows of 1 root
-/// (`project_roots`, D266-F2).
 pub const PROJECT_ROOTS_VERSION: i64 = PHASE_7_VERSION + 1;
 
-/// The schema version this binary writes.
 pub const VERSION: i64 = PROJECT_ROOTS_VERSION;
 
-/// A rule that applies to rows this ledger writes, not to imported ones
-/// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
 fn native(expr: &str) -> String {
     format!("CHECK (origin = 'import' OR ({expr}))")
 }
@@ -76,7 +43,6 @@ fn origin_columns() -> String {
     )
 }
 
-/// The `projects` table.
 fn projects() -> String {
     r#"CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
@@ -86,7 +52,6 @@ fn projects() -> String {
     .to_string()
 }
 
-/// The `runs_table` statements.
 fn runs_table() -> String {
     let origin = origin_columns();
     format!(
@@ -119,12 +84,9 @@ fn runs_table() -> String {
     )
 }
 
-/// The status `CHECK` of version 1 (the words of today), frozen: the Phase
-/// 2 step builds `tasks` again with the 12 states of [`TaskStatus`].
 const V1_TASK_STATUS: &str =
     "CHECK (status IN ('queued', 'running', 'landing', 'done', 'cancelled'))";
 
-/// The `tasks_table` statements.
 fn tasks_table() -> String {
     let origin = origin_columns();
     format!(
@@ -170,7 +132,6 @@ fn tasks_table() -> String {
     )
 }
 
-/// The `task_deps` statements.
 fn task_deps() -> String {
     r#"CREATE TABLE task_deps (
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
@@ -181,7 +142,6 @@ fn task_deps() -> String {
     .to_string()
 }
 
-/// The `task_files` statements.
 fn task_files() -> String {
     format!(
         r#"CREATE TABLE task_files (
@@ -194,7 +154,6 @@ fn task_files() -> String {
     )
 }
 
-/// The `workers_table` statements.
 fn workers_table() -> String {
     let origin = origin_columns();
     format!(
@@ -246,7 +205,6 @@ CREATE UNIQUE INDEX workers_one_working_per_task
     )
 }
 
-/// The `checks_table` statements.
 fn checks_table() -> String {
     format!(
         r#"CREATE TABLE checks (
@@ -270,7 +228,6 @@ fn checks_table() -> String {
     )
 }
 
-/// The `stops_table` statements.
 fn stops_table() -> String {
     format!(
         r#"CREATE TABLE stops (
@@ -293,11 +250,8 @@ fn stops_table() -> String {
     )
 }
 
-/// `worktrees.status` as version 1 wrote it. Version 1 runs as a migration,
-/// so its text keeps these words; version 5 adds the later ones.
 const V1_WORKTREE_STATUS: &str = "CHECK (status IN ('open', 'landing', 'landed', 'cleanup_failed', 'cleaned', 'unlanded', 'abandoned'))";
 
-/// The `worktrees_table` statements.
 fn worktrees_table() -> String {
     let origin = origin_columns();
     format!(
@@ -324,12 +278,8 @@ fn worktrees_table() -> String {
     )
 }
 
-/// `events.kind` as versions 1 to 8 wrote it. Version 1 runs as a
-/// migration, so its text keeps these words; [`PHASE_1_VERSION`] adds the
-/// later ones.
 const V1_EVENT_KIND: &str = "CHECK (kind IN ('run_created', 'added', 'claimed', 'no_task', 'progress', 'note', 'question', 'blocked', 'answered', 'fallback', 'step_started', 'step_passed', 'step_failed', 'land_started', 'land_red', 'landed', 'pr_updated', 'cleaned', 'cleanup_failed', 'done', 'unlanded', 'reaped', 'requeued', 'stopped', 'session', 'exited', 'cancelled', 'verdict', 'woke', 'imported', 'reopened', 'dismissed'))";
 
-/// The `events_table` statements.
 fn events_table() -> String {
     format!(
         r#"CREATE TABLE events (
@@ -350,7 +300,6 @@ CREATE INDEX events_by_worker ON events(worker_id, event_id);"#,
     )
 }
 
-/// The `task_steps` statements.
 fn task_steps() -> String {
     format!(
         r#"CREATE TABLE task_steps (
@@ -374,13 +323,8 @@ fn task_steps() -> String {
     )
 }
 
-/// `task_steps.name` as version 1 wrote it. Version 1 runs as a migration,
-/// so its text keeps these words; version 8 adds `comment-sweep`.
 const V1_STEP_NAME: &str = "CHECK (name IN ('check', 'code-sweep', 'complexity-sweep', 'recheck', 'land', 'pr', 'cleanup'))";
 
-/// Version 8: the finish step `comment-sweep`. SQLite cannot change a
-/// `CHECK`, so `task_steps` is built again under its own name and its rows
-/// copied. No table points at it.
 fn comment_sweep_step() -> String {
     let table = task_steps()
         .replace("CREATE TABLE task_steps (", "CREATE TABLE task_steps_v8 (")
@@ -393,7 +337,6 @@ ALTER TABLE task_steps_v8 RENAME TO task_steps;"
     )
 }
 
-/// The `import_raw` statements.
 fn import_raw() -> String {
     format!(
         r#"CREATE TABLE import_raw (
@@ -411,7 +354,6 @@ fn import_raw() -> String {
     )
 }
 
-/// The `import_findings` statements.
 fn import_findings() -> String {
     format!(
         r#"CREATE TABLE import_findings (
@@ -434,7 +376,6 @@ fn import_findings() -> String {
     )
 }
 
-/// The statements of version 1.
 fn v1() -> String {
     let tables = [
         projects(),
@@ -454,7 +395,6 @@ fn v1() -> String {
     format!("\n{}\n", tables.join("\n\n"))
 }
 
-/// Version 2: the waits of a worker, and the modes of a worktree.
 const V2: &str = "CREATE TABLE worker_waits (
             worker_id TEXT NOT NULL REFERENCES workers(worker_id),
             kind TEXT NOT NULL CHECK(kind IN ('question','reviewers','background')),
@@ -465,22 +405,13 @@ const V2: &str = "CREATE TABLE worker_waits (
                 run_id TEXT NOT NULL REFERENCES runs(run_id), name TEXT NOT NULL,
                 scratch INTEGER NOT NULL DEFAULT 0 CHECK(scratch IN (0,1))); ";
 
-/// Version 3: a held task stays `queued` with a reason, so the status CHECK
-/// list keeps its words (#168). `attempt_floor` is the attempt count at the
-/// last operator requeue: the limit counts the attempts after it.
 const V3: &str = "ALTER TABLE runs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
              ALTER TABLE tasks ADD COLUMN held_reason TEXT;
              ALTER TABLE tasks ADD COLUMN attempt_floor INTEGER NOT NULL DEFAULT 0;";
 
-/// Version 4: the version and the binary (a JSON `ExeIdentity`) of the
-/// watchdog at its last checkin, so `ledger status` shows an old watchdog
-/// (#216).
 const V4: &str = "ALTER TABLE runs ADD COLUMN watchdog_version TEXT;
              ALTER TABLE runs ADD COLUMN watchdog_exe TEXT;";
 
-/// Version 5: worktree triage (#308). The statuses `archived` and `trashed`,
-/// and the columns of a decision. SQLite cannot change a `CHECK`, so the
-/// table is built again under its own name and its rows copied.
 fn v5() -> String {
     let columns = "worktree_id, task_id, worker_id, repo_root, path, branch, base, base_commit, \
         status, landed_commit, check_output_path, bytes_on_disk, origin, import_raw_id, \
@@ -495,8 +426,6 @@ fn v5() -> String {
                 TriageDecision::check("decision")
             ),
         );
-    // The rows of `worktree_modes` point at `worktrees`. [`migrate`] turns
-    // the foreign keys off around it and checks them before the commit.
     format!(
         "{table}
 INSERT INTO worktrees_v5 ({columns}) SELECT {columns} FROM worktrees;
@@ -505,19 +434,9 @@ ALTER TABLE worktrees_v5 RENAME TO worktrees;"
     )
 }
 
-/// Version 6: the disk a parked worktree held when `horch worktree triage`
-/// last measured it, so `ledger status` sums a stored value and never walks
-/// a folder (#308).
 const V6: &str = "ALTER TABLE worktrees ADD COLUMN bytes INTEGER;
              ALTER TABLE worktrees ADD COLUMN bytes_measured_at TEXT;";
 
-/// Version 7: every field of the trace-fixes plan (docs/specs/trace-fixes.md
-/// section 4), in 1 migration so no 2 tickets race on the version. The
-/// ticket fields of a task (C1), the run check, PR decline and orchestrator
-/// respawn of a run (C5, C7), the run gates (C5), the wake outbox (C3),
-/// the handoff of a worker (C4) and the session records that replace the
-/// JSON session ledger (D10, TRF-45). `held_reason` and `end_reason` stay free
-/// text: their new words live in [`HeldReason`] and [`EndReason`].
 fn v7() -> String {
     format!(
         "ALTER TABLE tasks ADD COLUMN work_kind TEXT {work_kind};
@@ -568,10 +487,8 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
-/// The comment at each `pid_start` column of [`PHASE_1_VERSION`].
 const PID_START_TYPE: &str = "-- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time";
 
-/// The `fleetd` table: 1 row, written at the first start of fleetd.
 fn fleetd_table() -> String {
     format!(
         "CREATE TABLE fleetd (
@@ -587,7 +504,6 @@ fn fleetd_table() -> String {
     )
 }
 
-/// The `attempts` table. `task_id` is null for an orchestrator attempt.
 fn attempts_table() -> String {
     format!(
         "CREATE TABLE attempts (
@@ -608,17 +524,12 @@ fn attempts_table() -> String {
     )
 }
 
-/// The job kinds that the `kind` CHECK of `jobs` allows at [`PHASE_1_VERSION`].
 const PHASE_1_JOB_KINDS: &str = "'task_check', 'fast_gate', 'full_gate', 'trial_merge',
         'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
         'worktree_add', 'worktree_remove', 'worktree_list', 'docs_sync', 'conformance'";
 
-/// The job kind that the step of [`PHASE_5_VERSION`] adds to the `kind`
-/// CHECK of `jobs`: the triage decisions that run git or gh (T-888).
 const PHASE_5_JOB_KIND: &str = "'triage_apply'";
 
-/// The `jobs` table and its index: at most 1 run of 1 kind and 1 subject
-/// is queued or running.
 fn jobs_table() -> String {
     format!(
         "CREATE TABLE jobs (
@@ -646,7 +557,6 @@ CREATE UNIQUE INDEX jobs_one_active ON jobs (kind, subject) WHERE state IN ('que
     )
 }
 
-/// The `pass_cursors` table.
 fn pass_cursors_table() -> String {
     "CREATE TABLE pass_cursors (
     kind TEXT PRIMARY KEY,
@@ -657,7 +567,6 @@ fn pass_cursors_table() -> String {
     .to_string()
 }
 
-/// The `needs_you` table.
 fn needs_you_table() -> String {
     "CREATE TABLE needs_you (
     key TEXT PRIMARY KEY,
@@ -672,9 +581,6 @@ fn needs_you_table() -> String {
     .to_string()
 }
 
-/// `events` built again, as in `v5`, so its kind list has `transition`,
-/// with the columns of a transition, null in each old row. The indexes go
-/// with the old table and are made again after the rename.
 fn events_v8() -> String {
     let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
     let (table, indexes) = events_phase_1_ddl("events_v8");
@@ -687,8 +593,6 @@ ALTER TABLE events_v8 RENAME TO events;
     )
 }
 
-/// `events` as [`PHASE_1_VERSION`] builds it, with the name `name` and the event
-/// kinds of this binary: the table, then its indexes, which name `events`.
 fn events_phase_1_ddl(name: &str) -> (String, String) {
     let table = events_table()
         .replace("CREATE TABLE events (", &format!("CREATE TABLE {name} ("))
@@ -707,19 +611,6 @@ fn events_phase_1_ddl(name: &str) -> (String, String) {
     (table.to_string(), indexes.to_string())
 }
 
-/// Version [`EVENT_KINDS_VERSION`]: `events` built again, so its kind
-/// `CHECK` is the list of this binary. A ledger keeps the kind list of the
-/// binary that built its `events` table, and no later step built it again,
-/// so a ledger at [`PHASE_1_VERSION`] or more from an older binary refuses each
-/// newer kind (`doorbell`, `hold_started`, `hold_ended`). A later step
-/// that adds a kind runs it again with its own `version`
-/// ([`PHASE_7_VERSION`]).
-///
-/// The new table comes from the text of the code ([`events_phase_1_ddl`]),
-/// never from the stored text. Each row keeps its `event_id`, and the
-/// `AUTOINCREMENT` counter keeps its value, so no id is used again. The
-/// indexes go with the old table and are made again after the rename;
-/// `events` has no trigger.
 fn events_kinds(conn: &Connection, version: i64) -> Result<()> {
     let (table, indexes) = events_phase_1_ddl("events_kinds");
     conn.execute_batch(&table)?;
@@ -753,10 +644,6 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('events', {seq});"
     Ok(())
 }
 
-/// `worktrees` as version [`WORKTREE_PATHS_VERSION`] builds it, with the
-/// name `name`: the table, then its index, which names `worktrees`. The
-/// columns are those of [`v5`], [`V6`] and [`phase_3`], in that order, and
-/// `path` is unique only among the rows that are not `removed`.
 fn worktrees_paths_ddl(name: &str) -> (String, String) {
     let table = worktrees_table()
         .replace(
@@ -793,22 +680,6 @@ fn worktrees_paths_ddl(name: &str) -> (String, String) {
     (table, index)
 }
 
-/// Version [`WORKTREE_PATHS_VERSION`]: `worktrees` built again, so 1 path
-/// is unique only among the rows that are not `removed`. A removed row
-/// keeps its path as history, and a restore makes a new row at that path
-/// (fleetd-p3 ticket 13).
-///
-/// A row that today's triage `archived` or `trashed` has no folder: triage
-/// writes those words only after the removal. The Phase 3 backfill made it
-/// `orphaned`; this step makes it `removed`, from the rows alone, so the
-/// path is free for a restore.
-///
-/// The new table comes from the text of the code
-/// ([`worktrees_paths_ddl`]), never from the stored text. Each row keeps
-/// each of its columns. `worktrees` has no index and no trigger of its
-/// own before this step. The rows of `worktree_modes` point at
-/// `worktrees`: [`migrate`] turns the foreign keys off around it and checks
-/// them before the commit.
 fn worktree_paths(conn: &Connection) -> Result<()> {
     let (table, index) = worktrees_paths_ddl("worktrees_paths");
     conn.execute_batch(&table)?;
@@ -833,7 +704,6 @@ UPDATE worktrees SET state = 'removed'
     Ok(())
 }
 
-/// 1 live attempt, `<task id>/A<attempt>`, for each live worker with a task.
 fn attempts_backfill() -> String {
     let live: Vec<String> = WorkerStatus::ALL
         .iter()
@@ -850,9 +720,6 @@ fn attempts_backfill() -> String {
     )
 }
 
-/// Version 9: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
-/// "Ledger"; docs/tickets/fleetd-p1/MAP.md, Q5 to Q7), `events` with the
-/// columns of a transition, and the attempts of the live workers.
 fn phase_1() -> String {
     [
         fleetd_table(),
@@ -866,8 +733,6 @@ fn phase_1() -> String {
     .join("\n")
 }
 
-/// The `leases` table: at most 1 lease for each task (RR-2, FM-14).
-/// `expires_at` is a deadline on the fleet clock (seconds).
 fn leases_table() -> String {
     "CREATE TABLE leases (
     task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),
@@ -879,8 +744,6 @@ fn leases_table() -> String {
     .to_string()
 }
 
-/// The `questions` table. `feature_id` has no reference: the `features`
-/// table is Phase 4, and before then it holds the run id (MAP.md, Q13).
 fn questions_table() -> String {
     "CREATE TABLE questions (
     id TEXT PRIMARY KEY,
@@ -897,12 +760,6 @@ fn questions_table() -> String {
     .to_string()
 }
 
-/// The new columns of Phase 2. Each `INTEGER` time is on the fleet clock:
-/// the end of a retry backoff (`not_before`), the time limit of the current
-/// state (`tasks.due_at`), the last activity of an attempt (`active_at`,
-/// MAP.md Q7) and the cap `max_wait_s` of a wait (`worker_waits.due_at`).
-/// `cancel_requested` holds a cancel that waits for the stop of a live
-/// attempt (MAP.md, Q11).
 const PHASE_2_COLUMNS: &str = "ALTER TABLE tasks ADD COLUMN not_before INTEGER;
 ALTER TABLE tasks ADD COLUMN due_at INTEGER;
 ALTER TABLE tasks ADD COLUMN replans INTEGER NOT NULL DEFAULT 0;
@@ -911,18 +768,11 @@ ALTER TABLE attempts ADD COLUMN active_at INTEGER;
 ALTER TABLE worker_waits ADD COLUMN due_at INTEGER;
 ALTER TABLE worker_waits ADD COLUMN question_id TEXT;";
 
-/// The indexes of the watchdog duties: the tasks and the workers of 1 run
-/// in 1 status, for the whole-run counts (T-322); the newest check of 1
-/// worker (`watchdog::prev`) and the workers of 1 task in attempt order
-/// (`workers::attempts_at`), for the per-row reads (T-443).
 const PHASE_2_INDEXES: &str = "CREATE INDEX tasks_by_run_status ON tasks(run_id, status);
 CREATE INDEX workers_by_run_status ON workers(run_id, status);
 CREATE INDEX checks_by_worker ON checks(worker_id, check_id);
 CREATE INDEX workers_by_task ON workers(task_id, attempt, claimed_at);";
 
-/// The design state of each task row of today, in SQL (MAP.md, Q4). The
-/// words of today are the frozen words of [`V1_TASK_STATUS`]. A dependency
-/// is met when its task is done, as in `tasks::blockers`.
 fn task_state_of_today() -> String {
     format!(
         "CASE
@@ -940,9 +790,6 @@ fn task_state_of_today() -> String {
     )
 }
 
-/// The columns that the steps after version 1 add to `tasks`, as their
-/// `ALTER TABLE` statements write them: [`V3`], [`v7`] and
-/// [`PHASE_2_COLUMNS`].
 fn tasks_added_columns() -> Vec<String> {
     vec![
         "held_reason TEXT".into(),
@@ -959,7 +806,6 @@ fn tasks_added_columns() -> Vec<String> {
     ]
 }
 
-/// The column names of `table`, in order.
 fn column_names(conn: &Connection, table: &str) -> Result<Vec<String>> {
     Ok(conn
         .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")?
@@ -967,11 +813,6 @@ fn column_names(conn: &Connection, table: &str) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// `tasks` built again, as `events` in [`phase_1`], so its status `CHECK` is
-/// the list of the 12 states, and each row moves to its design state. The
-/// new table comes from the text of the code: [`tasks_table`] and
-/// [`tasks_added_columns`], never from the stored text. [`migrate`] turns
-/// the foreign keys off around it and checks them before the commit.
 fn tasks_12_states(conn: &Connection) -> Result<()> {
     let mut sql = vec![tasks_table()
         .replacen("CREATE TABLE tasks (", "CREATE TABLE tasks_p2 (", 1)
@@ -1006,10 +847,6 @@ ALTER TABLE tasks_p2 RENAME TO tasks;",
     Ok(())
 }
 
-/// Version [`PHASE_2_VERSION`]: the Phase 2 tables and columns of fleetd
-/// (docs/specs/fleetd/design.md, "Ledger" and "Migration plan" item 4).
-/// [`phase_2_backfill`] fills them for a run in flight. `tasks` is built
-/// again by [`tasks_12_states`] between the columns and the indexes.
 fn phase_2(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         &[
@@ -1024,26 +861,12 @@ fn phase_2(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The default `liveness.lease_s` of the design: the lease of each held
-/// task at the release.
 const BACKFILL_LEASE_S: i64 = 120;
 
-/// The default `liveness.max_wait_s` of the design: the cap of each open
-/// wait at the release. Each persona of Phase 2 is interactive (MAP.md, Q10).
 const BACKFILL_MAX_WAIT_S: i64 = 3600;
 
-/// The fleet clock of the `fleetd` row. With no row it is 0: fleetd starts
-/// the clock at 0 when it writes its first row.
 const FLEET_CLOCK: &str = "COALESCE((SELECT fleet_clock_s FROM fleetd WHERE id = 1), 0)";
 
-/// The release backfill of Phase 2 (MAP.md, Q21), with `now` as
-/// `renewed_at`:
-/// - each running task with a live attempt gets 1 lease of
-///   [`BACKFILL_LEASE_S`]. With 2 live attempts, the lease goes to the
-///   attempt of the task's current worker, else to the newest.
-/// - each live attempt is active now, so no attempt is judged idle for the
-///   time before the update.
-/// - each wait gets the cap [`BACKFILL_MAX_WAIT_S`].
 fn phase_2_backfill(conn: &Connection, now: &str) -> Result<()> {
     conn.execute(
         &format!(
@@ -1069,27 +892,8 @@ fn phase_2_backfill(conn: &Connection, now: &str) -> Result<()> {
     Ok(())
 }
 
-/// The state of a worktree in the design ("Worktrees: leased, reconciled,
-/// never lost"), beside `status`, which keeps today's words (MAP.md of
-/// fleetd-p3, Q3).
 const WORKTREE_STATE: &str = "CHECK (state IN ('reserved', 'created', 'active', 'landing', 'landed', 'removed', 'orphaned', 'rescued'))";
 
-/// Version [`PHASE_3_VERSION`]: the state, owner and rescue columns of
-/// `worktrees` (docs/specs/fleetd/design.md, "Ledger" and "Migration plan"
-/// item 5; MAP.md of fleetd-p3, Q2). `base_commit` is the design's
-/// `base_sha` and `bytes_on_disk` its `disk_bytes`.
-///
-/// The default `orphaned` of `state` is a bridge for the writers that do
-/// not give a state yet, and is never the state of a row at the update
-/// ([`phase_3_backfill`] sets each one). The ticket that makes each of
-/// them write the state:
-/// - `worktree_ops::create`: ticket 08.
-/// - `finish::insert_worktree`: ticket 08.
-/// - `runs.rs`, the run gate folder: ticket 12.
-/// - `triage::apply::adopt`: ticket 13.
-/// - `import.rs`, `insert_worktree` of an imported tree: no ticket.
-///
-/// An orphaned tree is rescued, and a rescue never removes a tree.
 fn phase_3() -> String {
     format!(
         "ALTER TABLE worktrees ADD COLUMN state TEXT NOT NULL DEFAULT 'orphaned' {WORKTREE_STATE};
@@ -1101,14 +905,6 @@ ALTER TABLE worktrees ADD COLUMN seen_at TEXT;"
     )
 }
 
-/// The release backfill of Phase 3 (MAP.md of fleetd-p3, Q19), from the
-/// rows alone: it reads no process and no folder, and the first pass of
-/// fleetd checks each fact again.
-/// - a `cleaned` tree is `removed`.
-/// - a tree whose task has a `live` attempt of the worker of the row is
-///   `active`, with that attempt as owner. A scratch tree has no task: the
-///   `live` attempt of its worker holds it. With 2, the newest holds it.
-/// - each other tree is `orphaned`, with no owner.
 fn phase_3_backfill() -> String {
     format!(
         "UPDATE worktrees SET owner_attempt = (
@@ -1126,12 +922,8 @@ UPDATE worktrees SET state = CASE
     )
 }
 
-/// The bundle states that are not ended: a task branch is a member of at
-/// most 1 bundle in these states (I12).
 const OPEN_BUNDLE: &str = "('building', 'gating', 'passed')";
 
-/// The Phase 4 tables of fleetd (docs/specs/fleetd/design.md, "Ledger").
-/// The `branches` row of a feature branch has no task and no landing state.
 fn integration_tables() -> String {
     "CREATE TABLE features (
     id TEXT PRIMARY KEY,
@@ -1212,13 +1004,8 @@ CREATE TABLE ingested (
     .to_string()
 }
 
-/// I12, second part, in SQL, so that no writer can break it: a task branch
-/// is a member of at most 1 bundle that is not ended. A membership that is
-/// added or moved into an open bundle, and an ended bundle that opens
-/// again, are refused when 1 of its branches is in another open bundle.
 fn one_open_bundle_triggers() -> String {
     let refuse = "SELECT RAISE(ABORT, 'I12: a task branch is a member of at most 1 bundle that is not ended');";
-    // `skip` leaves out the row that an update moves.
     let member_rule = |skip: &str| {
         format!(
             "(SELECT state FROM bundles WHERE id = NEW.bundle_id) IN {OPEN_BUNDLE}
@@ -1246,11 +1033,6 @@ BEGIN {refuse} END;",
     )
 }
 
-/// Version [`PHASE_4_VERSION`]: the Phase 4 tables of fleetd, the I12
-/// triggers, how an attempt began (`attempts.via`, MAP.md of fleetd-p4,
-/// Q4: an attempt of today's claim path is `claim`), and the index of the
-/// reader `needs_you::open_keys` (T-263). [`phase_4_backfill`] fills the
-/// tables for a run in flight.
 fn phase_4() -> String {
     [
         integration_tables(),
@@ -1262,29 +1044,8 @@ CREATE INDEX needs_you_by_kind_state ON needs_you (kind, state);"
     .join("\n")
 }
 
-/// The time limit of each backfilled `branches` row: the default
-/// `max_minutes` of a profile in the design, 60 min.
 const BACKFILL_TASK_LIMIT_S: i64 = 3600;
 
-/// The release backfill of Phase 4 (design, "What a release does to a run
-/// in flight"; MAP.md of fleetd-p4, Q5), from the rows alone: it reads no
-/// git and no process, and the first pass of fleetd checks each fact again.
-///
-/// Each run with a run branch and a base branch gets 1 feature row:
-/// - `id` is `F-<run rowid>`, 4 digits, as `F-0003`: `runs` has no seq
-///   column, and its rowid is the insert order.
-/// - `name` is the run slug, and `branch` the run branch. Both are unique
-///   in the design. When a newer run has the same slug or branch, the older
-///   run gets the name `<slug>-<rowid>` and no branch.
-/// - `state` is `merged` for a `done` run, `abandoned` for an `abandoned`
-///   run, else `open`.
-///
-/// Each feature with a branch gets the `branches` row of that branch,
-/// owned by fleetd. Each task of a run with a feature row gets the
-/// `branches` row of its newest worktree row, owned by its worker:
-/// `landed` when that tree is `landed` or the task is done with a landed
-/// commit, else `building`. Each row is due [`BACKFILL_TASK_LIMIT_S`]
-/// after the fleet clock now.
 fn phase_4_backfill(conn: &Connection, now: &str) -> Result<()> {
     conn.execute(
         &format!(
@@ -1335,12 +1096,6 @@ INSERT INTO features (id, name, branch, primary_branch, state, created_at, updat
     Ok(())
 }
 
-/// Version [`PHASE_5_VERSION`]: the Phase 5 tables of fleetd
-/// (docs/specs/fleetd/design.md, "Ledger"). `requests` has 1 row for each
-/// command request (RR-8), with the class of its kind and how fleetd
-/// authorized it (SR-8). `polite_stops` has 1 row for each process that got
-/// a polite stop, at the fleet clock (MAP.md of fleetd-p5, Q12). The release
-/// backfill of Phase 5 is empty: both tables start empty.
 fn phase_5() -> String {
     format!(
         "CREATE TABLE requests (
@@ -1368,13 +1123,6 @@ CREATE TABLE polite_stops (
     )
 }
 
-/// The step of [`PHASE_5_VERSION`] builds `jobs` again, so its kind `CHECK`
-/// also allows [`PHASE_5_JOB_KIND`]. The new table comes from the text of
-/// the code ([`jobs_table`]), never from the stored text. Each row keeps
-/// each of its columns and its `id`. The index goes with the old table and
-/// is made again after the rename; `jobs` has no trigger. The rows of
-/// `bundles` and `gate_runs` point at `jobs`: [`migrate`] turns the
-/// foreign keys off around it and checks them before the commit.
 fn phase_5_jobs(conn: &Connection) -> Result<()> {
     let ddl = jobs_table()
         .replace("CREATE TABLE jobs (", "CREATE TABLE jobs_kinds (")
@@ -1403,12 +1151,6 @@ CREATE UNIQUE INDEX{index}",
     Ok(())
 }
 
-/// Version [`PHASE_6_VERSION`]: the Phase 6 tables of fleetd, as the design
-/// writes them (docs/specs/fleetd/design.md, "Ledger"), the idea of each
-/// task (FR-12) and of each sub-orchestrator attempt, and the fix rounds of
-/// a judged task (RR-3) and the task as its plan commits it (`spec_json`).
-/// [`phase_6_backfill`] gives each run in flight its idea, and
-/// [`tasks_need_an_idea`] then refuses a task with no idea.
 const PHASE_6: &str = "CREATE TABLE ideas (
     id TEXT PRIMARY KEY,
     feature_id TEXT NOT NULL REFERENCES features(id),
@@ -1441,9 +1183,6 @@ ALTER TABLE tasks ADD COLUMN fix_rounds INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN spec_json TEXT;
 ALTER TABLE attempts ADD COLUMN idea_id TEXT REFERENCES ideas(id);";
 
-/// FR-12 in SQL: SQLite cannot add a `NOT NULL` column with no default, so
-/// this trigger refuses a new task with no idea. An imported row keeps its
-/// history (section 11.2).
 fn tasks_need_an_idea() -> String {
     format!(
         "CREATE TRIGGER tasks_need_an_idea BEFORE INSERT ON tasks
@@ -1453,15 +1192,8 @@ BEGIN SELECT RAISE(ABORT, 'a task needs an idea (FR-12)'); END;",
     )
 }
 
-/// The marker in `ideas.approved_sha256` of the idea that the release gives
-/// a run (MAP.md of fleetd-p6, Q6): the first pass of fleetd writes the
-/// `approval.json` of the run's `MAP.md`.
 const RELEASE_APPROVAL: &str = "release";
 
-/// The release backfill of Phase 6 (design, "What a release does to a run
-/// in flight"; MAP.md of fleetd-p6, Q5): [`run_idea`] for each run, oldest
-/// first, so a feature name that a run takes is taken for the next one. It
-/// reads no file and starts no process.
 fn phase_6_backfill(conn: &Connection, now: &str) -> Result<()> {
     let runs: Vec<String> = conn
         .prepare("SELECT run_id FROM runs ORDER BY rowid")?
@@ -1473,24 +1205,6 @@ fn phase_6_backfill(conn: &Connection, now: &str) -> Result<()> {
     Ok(())
 }
 
-/// The idea of the run `run_id`, `I-<run rowid>` (4 digits, as the feature
-/// `F-<run rowid>` of Phase 4), written when it does not exist. `adding` is
-/// true when the caller adds a task to the run. The release backfill uses
-/// it, so a run of today's flow has 1 idea. `tasks::add` writes no idea
-/// (ticket 47 of fleetd-p6).
-///
-/// - A run with no feature row gets one only when it has, or gets, a task
-///   that is not done and not cancelled; else it gets no idea (`None`). The
-///   new feature follows the rule of `phase_4_backfill` for 1 run: `name`
-///   is the slug, or `<slug>-<rowid>` when a feature has that name;
-///   `branch` is the run branch when no feature and no branch row has it,
-///   with its `branches` row owned by fleetd; `primary_branch` is the base
-///   branch, or `main` for a run that names none.
-/// - The idea is `in_progress` when the run has, or gets, a task that is
-///   not done and not cancelled, else `integrating`. Its `approved_sha256`
-///   is `RELEASE_APPROVAL`.
-/// - Each task of the run with no idea gets it. Each question of the run
-///   moves to the feature, owned by `idea-lead:<feature id>` (MAP.md, Q11).
 pub fn run_idea(
     conn: &Connection,
     run_id: &str,
@@ -1575,28 +1289,16 @@ pub fn run_idea(
     Ok(Some(idea))
 }
 
-/// Version 9: the pane host backend (`herdr` or `hc`) that owns a worker's
-/// workspace and pane (HCB-03).
 const V9: &str = "ALTER TABLE workers ADD COLUMN backend TEXT NOT NULL DEFAULT 'herdr' CHECK (backend IN ('herdr', 'hc'));";
 
-/// Bring the database to [`VERSION`]. A file from a newer binary is refused:
-/// this one would not know its columns.
-///
-/// Foreign keys are off while it runs: a table that is built again
-/// (`v5`) is dropped while other rows point at it. They are checked before
-/// the commit, and turned back on after it.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     migrate_guarded(conn, &|_| Ok(()))
 }
 
-/// [`migrate`], but an existing file (version 1 or more) is migrated only
-/// when `guard(version)` is `Ok`, and only after a backup (`backup`).
 pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
     migrate_guarded_to(conn, guard, VERSION)
 }
 
-/// [`migrate`], but only up to `target`: a test builds an older file with
-/// the real steps, then migrates it.
 pub fn migrate_to(conn: &mut Connection, target: i64) -> Result<()> {
     if !(1..=VERSION).contains(&target) {
         bail!("the task ledger has no schema version {target}");
@@ -1609,7 +1311,6 @@ fn migrate_guarded_to(
     guard: &dyn Fn(i64) -> Result<()>,
     target: i64,
 ) -> Result<()> {
-    // The pragma is a no-op inside a transaction, so it is set before one.
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
     let migrated = migrate_unchecked(conn, guard, target);
@@ -1617,16 +1318,12 @@ fn migrate_guarded_to(
     migrated
 }
 
-/// The file of `conn`, or `None` for an in-memory database.
 fn file_of(conn: &Connection) -> Option<PathBuf> {
     conn.path().filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
-/// How many backups `backup` keeps in 1 folder.
 pub const BACKUPS_KEPT: usize = 3;
 
-/// The backups in `dir`, `ledger.v<n>-backup-<stamp>.sqlite3`, oldest
-/// name first.
 pub fn backups_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -1650,16 +1347,10 @@ pub fn backups_in(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Copy the ledger `file` at version `from` to
-/// `<dir>/ledger.v<from>-backup-<UTC yyyymmddTHHMMSSZ>.sqlite3`, then keep
-/// the newest [`BACKUPS_KEPT`]. The caller holds the write lock, so the copy
-/// is the state the migration starts from. `VACUUM INTO` cannot run inside a
-/// transaction, so it runs on a second connection.
 fn backup(file: &Path, from: i64) -> Result<PathBuf> {
     let dir = file.parent().unwrap_or(Path::new("."));
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let mut copy = dir.join(format!("ledger.v{from}-backup-{stamp}.sqlite3"));
-    // 2 migrations in 1 second: the second copy gets a number.
     let mut n = 2;
     while copy.exists() {
         copy = dir.join(format!("ledger.v{from}-backup-{stamp}-{n}.sqlite3"));
@@ -1678,8 +1369,6 @@ fn backup(file: &Path, from: i64) -> Result<PathBuf> {
     Ok(copy)
 }
 
-/// The error for a file at version `current` above [`VERSION`]: 1 sentence
-/// and 1 instruction line.
 fn newer_schema(file: Option<&Path>, current: i64) -> anyhow::Error {
     let what = match file {
         Some(f) => format!("the task ledger {}", f.display()),
@@ -1707,8 +1396,6 @@ fn migrate_unchecked(
     guard: &dyn Fn(i64) -> Result<()>,
     target: i64,
 ) -> Result<()> {
-    // The write lock first, then the version: 2 processes that open a fresh
-    // file at once must not both create the tables.
     let file = file_of(conn);
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -1724,7 +1411,6 @@ fn migrate_unchecked(
             backup(file, current)?;
         }
     }
-    // A step runs when the file is below its version and `target` is not.
     let due = |version: i64| current < version && version <= target;
     if due(1) {
         tx.execute_batch(&v1())
@@ -1805,8 +1491,6 @@ fn migrate_unchecked(
         no_broken_reference(&tx, PHASE_6_VERSION)?;
     }
     if due(PHASE_7_VERSION) {
-        // The release row of Phase 7: "Ledger: None". The step changes only
-        // the words that the kind `CHECK` allows, and no row.
         events_kinds(&tx, PHASE_7_VERSION)
             .context("building events again with the event words of the health of a profile")?;
     }
@@ -1821,13 +1505,6 @@ fn migrate_unchecked(
     Ok(())
 }
 
-/// Version [`PROJECT_ROOTS_VERSION`]: each `projects.root` in the spelling
-/// of [`super::runs::root_key`]. An older Windows horch stored a verbatim
-/// root (`\\?\C:\repo`), and `root_key` now gives the plain form
-/// (`C:\repo`), so a lookup missed the old project and made a second row
-/// (D266-F2). 2 rows with 1 root merge onto the older row: each reference to
-/// the newer id, in each table with a foreign key to `projects`, moves to
-/// the older id, and the newer row goes. A second run changes nothing.
 fn project_roots(conn: &Connection) -> Result<()> {
     let rows: Vec<(String, String)> = conn
         .prepare("SELECT project_id, root FROM projects ORDER BY created_at, project_id")?
@@ -1875,8 +1552,6 @@ fn project_roots(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Fail when the migration step `version` left a row whose reference
-/// names no row. Foreign keys are off while a migration runs.
 fn no_broken_reference(conn: &Connection, version: i64) -> Result<()> {
     let broken: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
         r.get(0)
@@ -1891,14 +1566,12 @@ fn no_broken_reference(conn: &Connection, version: i64) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// FNV-1a, so the pin below needs no copy of the 250-line text.
     fn fnv1a(text: &str) -> u64 {
         text.bytes().fold(0xcbf29ce484222325, |h, b| {
             (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
         })
     }
 
-    /// Version 1 runs as a migration on existing files: its text must not drift.
     #[test]
     fn v1_text_is_pinned() {
         let sql = v1();
@@ -1923,7 +1596,6 @@ mod tests {
         assert_eq!(tables, 38);
     }
 
-    /// A ledger file as version 3 left it, with 1 run.
     fn version_3_ledger() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -1956,7 +1628,6 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, VERSION);
-        // A second run of the migration changes nothing.
         migrate(&mut conn).unwrap();
     }
 
@@ -2021,7 +1692,6 @@ mod tests {
 mod v5_tests {
     use super::*;
 
-    /// A ledger file as version 4 left it, with 1 worktree and its mode row.
     fn version_4_file(path: &std::path::Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -2044,7 +1714,6 @@ mod v5_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.sqlite3");
         version_4_file(&path);
-        // The store opens with foreign keys on, as every real open does.
         let store = crate::taskledger::Store::open(&path).unwrap();
         let conn = store.conn();
         let v: i64 = conn
@@ -2082,7 +1751,6 @@ mod v5_tests {
                 []
             )
             .is_err());
-        // The mode row still points at the rebuilt table, and the key holds.
         let fk: i64 = conn
             .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
                 r.get(0)
@@ -2096,7 +1764,6 @@ mod v5_tests {
             )
             .is_err());
         drop(store);
-        // A second open migrates nothing.
         crate::taskledger::Store::open(&path).unwrap();
     }
 }
@@ -2105,7 +1772,6 @@ mod v5_tests {
 mod v6_tests {
     use super::*;
 
-    /// A ledger file as version 5 left it, with 1 parked worktree.
     fn version_5_file(path: &std::path::Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -2149,7 +1815,6 @@ mod v6_tests {
         )
         .unwrap();
         drop(store);
-        // A second open migrates nothing and keeps the measurement.
         let store = crate::taskledger::Store::open(&path).unwrap();
         let bytes: i64 = store
             .conn()
@@ -2164,7 +1829,6 @@ mod v7_tests {
     use super::*;
     use rusqlite::types::Value;
 
-    /// A ledger file as version 6 left it, with rows in every table.
     fn version_6_file(path: &std::path::Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(&v1()).unwrap();
@@ -2203,7 +1867,6 @@ mod v7_tests {
         .unwrap();
     }
 
-    /// Every table, with its columns and rows, ordered so 2 dumps compare.
     type Dump = Vec<(String, Vec<String>, Vec<Vec<Value>>)>;
 
     fn dump(conn: &Connection, only: Option<&Dump>) -> Dump {
@@ -2269,7 +1932,6 @@ mod v7_tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, VERSION);
-        // The Phase 2 step moves the held `t1` from `queued` to `escalated`.
         let mut before = before;
         let (_, columns, rows) = before.iter_mut().find(|(t, _, _)| t == "tasks").unwrap();
         let status = columns.iter().position(|c| c == "status").unwrap();
@@ -2318,7 +1980,6 @@ mod v7_tests {
             assert_eq!(n, 0, "{table} starts empty");
         }
 
-        // The new words are the enums' words, and the CHECK lists hold.
         conn.execute(
             "UPDATE tasks SET work_kind = ?1, review_mode = ?2, held_reason = ?3 WHERE task_id = 't1'",
             [WorkKind::Security.as_str(), ReviewMode::NoReview.as_str(), HeldReason::Unlanded.as_str()],
@@ -2356,7 +2017,6 @@ mod v7_tests {
             .execute("INSERT INTO outbox (id, run_id, event, key, text, created_at) VALUES ('u4', 'nope', 'held', 'k4', 'x', 'now')", [])
             .is_err(), "run_id must name a run");
         drop(store);
-        // A second open migrates nothing and keeps the new rows.
         let store = crate::taskledger::Store::open(&path).unwrap();
         let n: i64 = store
             .conn()
@@ -2365,8 +2025,6 @@ mod v7_tests {
         assert_eq!(n, 1);
     }
 
-    /// A ledger file at `path` that the real steps 1..=`version` built, with
-    /// 1 project row.
     fn file_at(path: &std::path::Path, version: i64) {
         let conn = Connection::open(path).unwrap();
         let steps = [
@@ -2381,8 +2039,6 @@ mod v7_tests {
             V9.into(),
             phase_1(),
         ];
-        // The Phase 2 step reads the stored text of `tasks`, so it runs on
-        // the connection.
         assert_eq!(steps.len() as i64 + 9, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
@@ -2516,7 +2172,6 @@ mod v7_tests {
         assert_eq!(runs_twice, runs_once);
     }
 
-    /// Every table, index and trigger with its SQL text.
     fn schema_text(conn: &Connection) -> Vec<(String, String, Option<String>)> {
         conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
             .unwrap()
@@ -2599,8 +2254,6 @@ mod v7_tests {
         .unwrap()
     }
 
-    /// The Phase 2 step builds `tasks` with the same text as the steps
-    /// before it, with only the status CHECK of the 12 states.
     #[test]
     fn tasks_12_states_builds_the_table_of_the_steps_with_the_12_states() {
         let dir = tempfile::tempdir().unwrap();
@@ -2616,8 +2269,6 @@ mod v7_tests {
         assert_eq!(tasks_sql(&conn), want);
     }
 
-    /// The Phase 2 step never runs the stored text of `tasks`: a ledger
-    /// whose stored text was changed gets the table of the code.
     #[test]
     fn tasks_12_states_does_not_run_the_stored_table_text() {
         let dir = tempfile::tempdir().unwrap();
@@ -2644,9 +2295,6 @@ mod v7_tests {
         assert_eq!(tasks_sql(&conn), want);
     }
 
-    /// The event kinds that the newest `events` step, [`PHASE_7_VERSION`],
-    /// writes in its `CHECK`. A new kind needs a new step: a ledger keeps
-    /// the `CHECK` of the binary that built its `events` table.
     #[test]
     fn event_kinds_are_pinned_to_the_schema_version() {
         let words: Vec<&str> = EventKind::ALL.iter().map(|k| k.as_str()).collect();
@@ -2700,9 +2348,6 @@ mod v7_tests {
         );
     }
 
-    /// A ledger at the version before [`EVENT_KINDS_VERSION`] whose
-    /// `events` table an older binary built: its `CHECK` has no `doorbell`.
-    /// It holds `events` events.
     fn older_events_ledger(dir: &Path, events: i64) -> Connection {
         let mut conn = Connection::open(dir.join("ledger.sqlite3")).unwrap();
         migrate_to(&mut conn, EVENT_KINDS_VERSION - 1).unwrap();
@@ -2729,7 +2374,6 @@ ALTER TABLE events_old RENAME TO events;
         conn
     }
 
-    /// Every event row, in id order.
     fn all_events(conn: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
         let mut stmt = conn
             .prepare("SELECT * FROM events ORDER BY event_id")
@@ -2749,7 +2393,6 @@ ALTER TABLE events_old RENAME TO events;
         Ok(conn.last_insert_rowid())
     }
 
-    /// Insert the worktree `id` at `path` in `state`.
     fn insert_tree(
         conn: &Connection,
         id: &str,
@@ -2791,7 +2434,6 @@ ALTER TABLE events_old RENAME TO events;
         insert_tree(&conn, "w1", "/r/.worktrees/a", "orphaned").unwrap();
         let e = insert_tree(&conn, "w2", "/r/.worktrees/a", "reserved").unwrap_err();
         assert!(e.to_string().contains("UNIQUE"), "{e}");
-        // A live row cannot take the path of a live row by an update.
         insert_tree(&conn, "w3", "/r/.worktrees/a", "removed").unwrap();
         assert!(conn
             .execute(
@@ -2837,7 +2479,6 @@ ALTER TABLE events_old RENAME TO events;
             .map(Result::unwrap)
             .collect()
         };
-        // A tree that today's triage archived has no folder: it is removed.
         conn.execute_batch(
             "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, created_at, state)
              VALUES ('w4', '/r', '/r/.worktrees/c', 'c', 'main', 'trashed', 'then', 'orphaned');",
@@ -2854,7 +2495,6 @@ ALTER TABLE events_old RENAME TO events;
             .query_row("SELECT count(*) FROM worktree_modes", [], |r| r.get(0))
             .unwrap();
         assert_eq!(modes, 1);
-        // The new row of a restore takes the path of a removed row.
         insert_tree(&conn, "w3", "/r/.worktrees/a", "reserved").unwrap();
         insert_tree(&conn, "w5", "/r/.worktrees/c", "reserved").unwrap();
     }
@@ -2867,7 +2507,6 @@ ALTER TABLE events_old RENAME TO events;
             insert_doorbell(&conn).is_err(),
             "the older CHECK refuses doorbell"
         );
-        // The newest event is deleted: its id is never used again.
         conn.execute("DELETE FROM events WHERE event_id = 10000", [])
             .unwrap();
         let before = all_events(&conn);

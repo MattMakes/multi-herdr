@@ -1,8 +1,3 @@
-//! SR-7 (fleetd-p7 ticket 06): a process that workspace, messaging or
-//! telemetry starts never has a name of `FORBIDDEN_ENV`, even when the
-//! parent environment has it. Each test sets each forbidden name in this
-//! process, runs 1 moved start against a fake binary that writes its
-//! environment to a file, and reads that file.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -14,11 +9,8 @@ use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::usage::Locations;
 use horch_core::workspace::herdr::Herdr;
 
-/// A name that the child must have, so a test cannot pass because the
-/// child got no environment at all.
 const CONTROL: &str = "HORCH_P7_WORKSPACE_STARTS_CONTROL";
 
-/// Each forbidden name and the control name set in this process.
 fn arm_parent() {
     for key in FORBIDDEN_ENV {
         std::env::set_var(key, "forbidden-in-test");
@@ -26,8 +18,6 @@ fn arm_parent() {
     std::env::set_var(CONTROL, "1");
 }
 
-/// A fake binary at `dir/<name>` that writes its environment to `out`,
-/// then exits 0 and prints nothing.
 fn env_writer(dir: &Path, name: &str, out: &Path) -> PathBuf {
     let bin = dir.join(name);
     let tmp = out.with_extension("tmp");
@@ -45,8 +35,6 @@ fn env_writer(dir: &Path, name: &str, out: &Path) -> PathBuf {
     bin
 }
 
-/// The environment that the fake binary wrote to `out`. A detached child
-/// writes it later, so wait for the file, with a cap against a hang.
 fn child_env(out: &Path) -> String {
     let cap = Instant::now() + Duration::from_secs(10);
     loop {
@@ -76,13 +64,11 @@ fn workspace_herdr_calls_remove_each_forbidden_name() {
     arm_parent();
     let dir = tempfile::tempdir().unwrap();
 
-    // The unbounded call.
     let out = dir.path().join("unbounded.env");
     let herdr = Herdr::with_bin(env_writer(dir.path(), "herdr-unbounded", &out));
     assert!(herdr.server_reachable());
     assert_clean(&child_env(&out));
 
-    // The bounded call, through output_within.
     let out = dir.path().join("bounded.env");
     let herdr = Herdr::with_bin(env_writer(dir.path(), "herdr-bounded", &out))
         .with_timeout(Duration::from_secs(60));
@@ -129,7 +115,6 @@ fn telemetry_sqlite_read_removes_each_forbidden_name() {
         sqlite3: env_writer(dir.path(), "sqlite3", &out),
         home,
     };
-    // The fake prints no rows, so the read fails. Only the child matters.
     let _ = horch_core::telemetry::context::read_current(
         &loc,
         &dir.path().join("cache"),

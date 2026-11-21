@@ -1,13 +1,3 @@
-//! Phase 1 gate tests for jobs (`docs/specs/fleetd/design.md`, "Migration
-//! plan" item 3; "Supervision, liveness and reconciliation": "Long work is a
-//! job. A pass never waits for it"; FM-12).
-//!
-//! Each test starts 1 real fleetd in stand-in mode on a temp ledger and
-//! queues 1 `task_check` job through the jobs API (Phase 1 queues no job by
-//! itself). The check runs through the fake `codex sandbox`, as the check of
-//! a Codex worker does (SR-4). The tests stand in for the service manager:
-//! they call `horch fleetd check` themselves, as its 30 s timer does.
-
 #![cfg(unix)]
 
 use std::fs::File;
@@ -34,12 +24,8 @@ use horch_platform::channel::Stream;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 
-/// The persona of the worker of the task: a Codex teammate, so its check
-/// has a sandbox profile (SR-4).
 const CODEX_PERSONA: &str = "codex-sol";
 
-/// The hang limit of the design: a heartbeat older than this is a hung
-/// fleetd.
 const HANG_LIMIT_S: u64 = 30;
 
 fn text(o: &Output) -> String {
@@ -57,7 +43,6 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A harness with its own ledger file and a git repository.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -71,13 +56,10 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The fleet root of the harness: `<ledger dir>/fleet` (MAP.md, Q4).
 fn fleet_root(h: &Harness) -> PathBuf {
     h.root.join("fleet")
 }
 
-/// The PID and start time of the fleetd that the `fleetd` row of the ledger
-/// names. `None` while no row exists.
 fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     let store = Store::open(db).ok()?;
     let (pid, started): (i64, i64) = store
@@ -89,15 +71,12 @@ fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()))
 }
 
-/// Stop the process `pid` only while it is the one that started at `started`.
 fn stop(pid: u32, started: Option<u64>, signal: i32) {
     if let Some(started) = started.or_else(|| procid::start_time(pid)) {
         procid::signal_same(pid, started, signal);
     }
 }
 
-/// Each fleetd of a test, the job processes of its ledger and the stand-in
-/// agent of the worker. Drop stops them all, also when the test fails.
 struct Fleetds {
     db: PathBuf,
     children: Vec<Child>,
@@ -113,7 +92,6 @@ impl Fleetds {
         }
     }
 
-    /// The fleetd that the `fleetd` row names, recorded for the teardown.
     fn current(&mut self) -> Option<(u32, Option<u64>)> {
         let row = fleetd_row(&self.db)?;
         if !self.seen.contains(&row) {
@@ -133,8 +111,6 @@ impl Drop for Fleetds {
             let _ = child.kill();
             let _ = child.wait();
         }
-        // A job process stops the group of its check on a SIGTERM, so no
-        // `sleep` of a check outlives the test.
         if let Ok(store) = Store::open(&self.db) {
             for row in jobs_store::running(store.conn()).unwrap_or_default() {
                 if let Some(pid) = row.pid {
@@ -145,8 +121,6 @@ impl Drop for Fleetds {
     }
 }
 
-/// Start `horch fleetd` in the sealed environment of `h`, and wait until the
-/// `fleetd` row names it. Returns its PID.
 fn start_fleetd(h: &Harness, fleetds: &mut Fleetds) -> u32 {
     let out = h.root.join("fleetd.stdout");
     let err = h.root.join("fleetd.stderr");
@@ -214,10 +188,6 @@ fn run_check_in_shared_checkout(h: &Harness, task_id: &str) {
         .unwrap();
 }
 
-/// Queue 1 `task_check` job of `task` at the fleet clock, through the jobs
-/// API, as a pass of a later phase does. With `time_limit_s`, write that
-/// limit in the new row in the same transaction, before a pass can start
-/// it. Returns the id of the job.
 fn queue_check(h: &Harness, task: &str, time_limit_s: Option<u64>) -> i64 {
     let config = config_file::load(&fleet_root(h)).unwrap();
     let ctx = JobCtx {
@@ -248,8 +218,6 @@ fn queue_check(h: &Harness, task: &str, time_limit_s: Option<u64>) -> i64 {
         .unwrap()
 }
 
-/// Each `task_check` job row, in the order of its run. The `worktree_add`
-/// job of `horch ledger worktree new` is not a check, so it does not count.
 fn job_rows(db: &Path) -> Vec<jobs_store::JobRow> {
     let store = Store::open(db).unwrap();
     let ids: Vec<i64> = {
@@ -269,7 +237,6 @@ fn job_rows(db: &Path) -> Vec<jobs_store::JobRow> {
         .collect()
 }
 
-/// The count of needs-you items of abandoned jobs in `state`.
 fn needs_you(db: &Path, state: &str) -> i64 {
     Store::open(db)
         .unwrap()
@@ -282,7 +249,6 @@ fn needs_you(db: &Path, state: &str) -> i64 {
         .unwrap()
 }
 
-/// The job rows and the output of fleetd, for a failure message.
 fn evidence(h: &Harness) -> String {
     let log = |f: &str| std::fs::read_to_string(h.root.join(f)).unwrap_or_default();
     format!(
@@ -293,7 +259,6 @@ fn evidence(h: &Harness) -> String {
     )
 }
 
-/// Poll `f` every 200 ms until it gives a value, for at most `limit`.
 fn wait_for<T>(h: &Harness, what: &str, limit: Duration, mut f: impl FnMut() -> Option<T>) -> T {
     let until = Instant::now() + limit;
     loop {
@@ -328,8 +293,6 @@ fn job_of_5_min_runs_while_fleetd_stays_healthy_and_is_not_restarted() {
     let started = Instant::now();
     let mut checked: Option<Instant> = None;
     let end = loop {
-        // The timer of the service manager runs `horch fleetd check` every
-        // 30 s. A healthy fleetd is not restarted.
         if checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
             let o = h.run(&["fleetd", "check"]);
             assert!(o.status.success(), "horch fleetd check: {}", text(&o));
@@ -389,9 +352,6 @@ fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_go
     let mut fleetds = Fleetds::new(&h);
     let task = checked_task(&h, &mut fleetds, "/bin/sleep 600");
     start_fleetd(&h, &mut fleetds);
-    // `task_check` has the fixed time limit of today, 1200 s (CHECK_TIMEOUT),
-    // and no key in `job_limit_s`. So the test writes a limit of 5 s in the
-    // row of run 1. Each next run copies the limit of the abandoned run.
     let limit = 5;
     let first = queue_check(&h, &task, Some(limit));
     let ended = wait_for(
@@ -411,11 +371,8 @@ fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_go
     assert_requeue_starts_run_4(&h, ended[2].id);
 }
 
-/// The backoff before run 2, 3 and 4, in seconds.
 const BACKOFF_S: [u64; 3] = [1, 2, 4];
 
-/// A `fleet.toml` with short numbers, so the test ends in less than 1 min.
-/// The rule is the same with the starting values.
 fn write_short_job_config(h: &Harness) {
     let backoff: Vec<String> = BACKOFF_S.iter().map(u64::to_string).collect();
     std::fs::create_dir_all(fleet_root(h)).unwrap();
@@ -429,8 +386,6 @@ fn write_short_job_config(h: &Harness) {
     .unwrap();
 }
 
-/// Runs 1 to 3 ended `abandoned` with no result, each with the count of
-/// abandoned runs so far and the limit of run 1.
 fn assert_3_abandoned_runs(ended: &[jobs_store::JobRow], limit: u64) {
     assert_eq!(ended.len(), 3, "{ended:#?}");
     for (i, row) in ended.iter().enumerate() {
@@ -446,9 +401,6 @@ fn assert_3_abandoned_runs(ended: &[jobs_store::JobRow], limit: u64) {
     }
 }
 
-/// Each next run starts only after its backoff on the fleet clock: its run
-/// before it ended at its deadline or later, and its start on the fleet
-/// clock is its deadline minus its time limit.
 fn assert_each_run_waited_for_its_backoff(ended: &[jobs_store::JobRow]) {
     for pair in ended.windows(2) {
         let (before, next) = (&pair[0], &pair[1]);
@@ -490,8 +442,6 @@ fn assert_no_4th_run_starts(h: &Harness, third: &jobs_store::JobRow) {
     assert_eq!(needs_you(&db(h), "open"), 1);
 }
 
-/// The exit of the needs-you list: `horch job requeue <job>` starts run 4
-/// with the count at 0, and resolves the item.
 fn assert_requeue_starts_run_4(h: &Harness, last: i64) {
     ok(h, &["job", "requeue", &last.to_string()]);
     let fourth = wait_for(h, "run 4 to run", Duration::from_secs(30), || {

@@ -1,18 +1,3 @@
-//! A failed conformance run becomes an idea
-//! (`docs/specs/fleetd/design.md`, "Docs sync and adapter conformance",
-//! step 4; FM-19; fleetd-p7 ticket 27).
-//!
-//! [`add_drift_idea`] adds 1 idea "Update the `<tool>` adapter for
-//! `<version>`" through the intake of Phase 6, with
-//! `<fleet root>/docs/<tool>/CHANGES.md` and the failed checks of
-//! `conformance.json` in its text, and opens 1 needs-you item for it, so
-//! the needs-you mirror shows it in `needs-you/`.
-//!
-//! Idempotent (Slice 7, `idempotent: adapter-conformance-failed`): the
-//! request key is the CLI, the version and the adapter hash. Each added
-//! idea writes 1 named fact about that key in the same transaction, and a
-//! key with a fact adds no second idea.
-
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -32,22 +17,14 @@ use crate::fleetd::worker_profiles::domain::conformance::{
 };
 use crate::taskledger::model::{Actor, EventKind};
 
-/// The kind of the needs-you item of a drift idea, and the source and the
-/// cause of the idea.
 pub const KIND: &str = AdapterConformanceFailed::NAME;
 
-/// The `entity` of the named fact of a request key.
 const ABOUT: &str = "adapter";
 
-/// The file of the changes of a CLI against its previous version.
 const CHANGES_FILE: &str = "CHANGES.md";
 
-/// The line after a cut CHANGES.md.
 const CUT: &str = "\n[CHANGES.md is cut here: read the file for the rest]\n";
 
-/// After the failed conformance run `report`, add its drift idea to
-/// `target` and open its needs-you item, in `tx`. `None` when each check
-/// passed, or when the request key of `report` has an idea already.
 pub fn add_drift_idea(
     tx: &Connection,
     ctx: &JobCtx<'_>,
@@ -105,21 +82,16 @@ pub fn add_drift_idea(
     Ok(Some(added))
 }
 
-/// The request key of `report`: the CLI, the version and the adapter hash.
 fn request_key(report: &ConformanceReport) -> String {
     format!("{} {} {}", report.cli, report.version, report.adapter_hash)
 }
 
-/// The first word of the title. A string literal that starts with it reads
-/// as SQL to the table rule of `arch_scan`, so the title names it.
 const VERB: &str = "Update";
 
-/// "Update the <tool> adapter for <version>".
 fn title(report: &ConformanceReport) -> String {
     format!("{VERB} the {} adapter for {}", report.cli, report.version)
 }
 
-/// The text of CHANGES.md at `path`, or `None` when the sync wrote none.
 fn read_changes(path: &Path) -> Result<Option<String>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
@@ -128,8 +100,6 @@ fn read_changes(path: &Path) -> Result<Option<String>> {
     }
 }
 
-/// The text of the drift idea: the title, then CHANGES.md, then the failed
-/// checks. CHANGES.md is cut so the text stays within [`MAX_TEXT`].
 fn idea_text(
     report: &ConformanceReport,
     changes_path: &Path,
@@ -158,7 +128,6 @@ fn idea_text(
     format!("{head}{changes}{checks}")
 }
 
-/// `text`, or its first `room` bytes at a character boundary with [`CUT`].
 fn cut(text: &str, room: usize) -> String {
     if text.len() <= room + CUT.len() {
         return text.to_string();

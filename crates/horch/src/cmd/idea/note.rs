@@ -1,17 +1,3 @@
-//! `horch idea note <id> [--question <qid> --case <case> [--cite <file:line>]]
-//! [--dismiss <finding>] [--ask] <text>`: the sub-orchestrator records 1 note in the
-//! idea folder (`docs/specs/fleetd/design.md`, "Ideas"; protocol rule 5;
-//! A35).
-//!
-//! The note is a file of class worker in `ideas/I-NNNN/notes/`: it never
-//! uses the command channel or the request folder, and the command writes
-//! no ledger row. Only the live sub-orchestrator attempt of the idea, found
-//! by the parent chain of this process, may write it. fleetd ingests each
-//! note 1 time.
-//!
-//! `--ask` records 1 open interview question before you answer it: fleetd
-//! lets a clarifying idea wait on you only while such a question is open.
-
 use std::process::ExitCode;
 
 use anyhow::{bail, Result};
@@ -22,7 +8,6 @@ use horch_core::fleetd::task_execution::adapters::outbox_writer::NO_LIVE_ATTEMPT
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 
-/// The separator of the question and the answer of an interview note.
 const INTERVIEW_SEPARATOR: &str = " - ";
 
 /// How an answer to a question is handled.
@@ -74,7 +59,6 @@ impl From<AnswerCase> for notes::AnswerCase {
     }
 }
 
-/// `horch idea note`.
 pub fn run(ctx: &RuntimeContext, args: NoteArgs) -> Result<ExitCode> {
     let body = body(&args)?;
     let Some(store) = taskledger::open_existing_read_only(ctx)? else {

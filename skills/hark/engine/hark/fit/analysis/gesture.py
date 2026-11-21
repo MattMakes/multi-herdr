@@ -44,8 +44,6 @@ __all__ = ["KIND", "NAME", "VERSION", "KNOBS", "fit", "render", "check", "summar
            "air", "residual", "gain_tones"]
 
 
-# ================================================================ magnitude residual
-
 def _one_channel(ymat: np.ndarray, cv: int, cnt: int) -> np.ndarray:
     yv = ymat if ymat.ndim == 1 else ymat[:, min(cv, ymat.shape[1] - 1)]
     return np.pad(yv[:cnt], (0, max(0, cnt - len(yv))))
@@ -69,8 +67,6 @@ def residual(X: np.ndarray, Y: np.ndarray, alpha: float = ALPHA, n_fft: int = 10
     return np.column_stack([_channel_residual(X[:, cv], _one_channel(Y, cv, len(X)), alpha, n_fft)
                             for cv in range(X.shape[1])])
 
-
-# ================================================================ tones
 
 def _modal_part(tonal: dict, pair2: bool) -> dict:
     lwin = tonal["length_s"]
@@ -149,8 +145,6 @@ def _tonal_fit(av: np.ndarray, pair2: bool, kindv: str, quick: bool) -> dict:
     return sinusoidal.fit(srcv, windows=(1024,) if quick else sinusoidal.WINDOWS)
 
 
-# ================================================================ air
-
 def air(x: Any, y_det: np.ndarray | None = None, alpha: float = ALPHA, fast: bool = False,
         name: str | None = None, mask_fft: int = 1024, **kw) -> dict:
     """A spectral model of x, or of the remainder of x after the noise-free render y_det."""
@@ -164,8 +158,6 @@ def air(x: Any, y_det: np.ndarray | None = None, alpha: float = ALPHA, fast: boo
     mv["channels"] = 1 if is_mono_pair(av) else 2
     return mv
 
-
-# ================================================================ fit
 
 def _tonal_layer(av: np.ndarray, pair2: bool, tonal_l: Any, kindv: str, quick: bool,
                  min_part_ms: float, tonal_min: float) -> tuple:
@@ -230,8 +222,6 @@ def _keep_model(av, name, tonal, amv, alph, frac, pair2, sec_v) -> dict:
                     "air_keys": len(amv["env"]["t"]), "ridges": len(amv.get("ridges") or []),
                     "seconds": {"tones": round(sec_v[0], 3), "air": round(sec_v[1], 3)}}}
 
-
-# ================================================================ render
 
 def _air_extend(amv: dict, more: float) -> dict:
     acc = copy.deepcopy(amv)
@@ -320,8 +310,6 @@ def _fade_end(yv: np.ndarray) -> np.ndarray:
         yv[-ix:] *= (0.5 + 0.5 * np.cos(np.pi * np.arange(ix) / ix))[:, None]
     return yv
 
-
-# ================================================================ face
 
 def check(model: Any) -> None:
     """ValueError when the model is not a gesture model of a supported version."""

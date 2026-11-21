@@ -1,11 +1,3 @@
-//! Phase 0 red tests for the supervision of fleetd (`docs/specs/fleetd/design.md`,
-//! "Supervision, liveness and reconciliation", FM-7 and FM-34). Both turn
-//! green in Phase 1.
-//!
-//! The tests stand in for the service manager: they call `horch fleetd check`
-//! themselves, as the 30 s timer of the design does. They read the PID of
-//! fleetd from the `fleetd` row of the ledger of the harness.
-
 #![cfg(unix)]
 
 use std::fs::File;
@@ -44,7 +36,6 @@ fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     p
 }
 
-/// A harness with its own ledger file and a git repository.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -58,8 +49,6 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The PID and start time of the fleetd that the `fleetd` row of the ledger
-/// names (design, "Ledger"). `None` while no row exists.
 fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     let store = Store::open(db).ok()?;
     let (pid, started): (i64, i64) = store
@@ -71,7 +60,6 @@ fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()))
 }
 
-/// The status and the attempt count of task 1.
 fn task_row(db: &Path) -> (String, i64) {
     Store::open(db)
         .unwrap()
@@ -84,16 +72,12 @@ fn task_row(db: &Path) -> (String, i64) {
         .unwrap()
 }
 
-/// Stop the process `pid` only while it is the one that started at `started`.
 fn stop(pid: u32, started: Option<u64>) {
     if let Some(started) = started.or_else(|| procid::start_time(pid)) {
         procid::signal_same(pid, started, SIGKILL);
     }
 }
 
-/// Each fleetd of a test: the processes that the test started, and the one
-/// that the `fleetd` row names. Drop stops them all, also when the test
-/// fails.
 struct Fleetds {
     db: PathBuf,
     children: Vec<Child>,
@@ -109,7 +93,6 @@ impl Fleetds {
         }
     }
 
-    /// The fleetd that the `fleetd` row names, recorded for the teardown.
     fn current(&mut self) -> Option<(u32, Option<u64>)> {
         let row = fleetd_row(&self.db)?;
         if !self.seen.contains(&row) {
@@ -132,8 +115,6 @@ impl Drop for Fleetds {
     }
 }
 
-/// Start `<bin> fleetd` in the sealed environment of `h`, and wait until the
-/// `fleetd` row names it. Returns its PID.
 fn start_fleetd(h: &Harness, fleetds: &mut Fleetds, bin: &Path) -> u32 {
     let out = h.root.join("fleetd.stdout");
     let err = h.root.join("fleetd.stderr");
@@ -170,8 +151,6 @@ fn start_fleetd(h: &Harness, fleetds: &mut Fleetds, bin: &Path) -> u32 {
     }
 }
 
-/// Kills the stand-in agent and the watchdog that holds a lock in `locks`
-/// when dropped, so a failed assertion leaks neither.
 struct WatchdogTeardown {
     agent: Child,
     locks: PathBuf,
@@ -188,7 +167,6 @@ impl Drop for WatchdogTeardown {
     }
 }
 
-/// Kill the process that the `owner` file of `lock` names, if it still runs.
 fn kill_lock_owner(lock: &Path) {
     let owner = std::fs::read(lock.join("owner")).unwrap_or_default();
     let v: Value = serde_json::from_slice(&owner).unwrap_or_default();
@@ -208,9 +186,6 @@ fn set_thresholds(h: &Harness, run: &Run, check_every_s: i64, stall_rounds: i64)
         .unwrap();
 }
 
-/// In `h`, run `zeta` with task 1 bound to a worker whose agent is a live
-/// `sleep` child of the test (FR-5). Many stall rounds keep a watchdog from
-/// reaping the live worker.
 fn claimed_run(h: &Harness) -> WatchdogTeardown {
     let run = seed_run(h, "zeta", None, "w1:p1");
     set_thresholds(h, &run, 1, 1000);
@@ -240,12 +215,9 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
                 .expect("the run id")
                 .to_string();
             let locks = h.root.join("locks");
-            // Phase 1: no command starts a watchdog. fleetd supervises the
-            // run, and the test kills the fleetd that the row names.
             start_fleetd(&h, &mut fleetds, &Harness::horch_bin());
             let (pid, started) = fleetds.current().expect("the fleetd row");
             let started = started.expect("the start time of fleetd");
-            // From here on, no `horch` call runs other than `horch fleetd check`.
             assert!(procid::signal_same(pid, started, SIGKILL));
             for child in &mut fleetds.children {
                 let _ = child.wait();
@@ -256,7 +228,6 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
             teardown.agent.kill().unwrap();
             teardown.agent.wait().unwrap();
             let died = Instant::now();
-            // The timer of the design runs `horch fleetd check` every 30 s.
             let mut checked: Option<Instant> = None;
             loop {
                 if checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
@@ -267,8 +238,6 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
                 let fleetd = fleetds.current();
                 let (status, _) = task_row(&db(&h));
                 if status == "ready" {
-                    // The requeue is the work of a live fleetd, not of a
-                    // restarted watchdog.
                     assert!(
                         fleetd.is_some_and(|(pid, started)| procid::alive(pid, started)),
                         "task 1 is ready, but the fleetd row names no live fleetd: {fleetd:?}"
@@ -290,9 +259,6 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
     );
 }
 
-/// A copy of this build's horch at `path`, put in place by a rename, as
-/// `horch self-update` replaces its binary. Its modification time is
-/// `mtime`.
 fn install_copy(h: &Harness, path: &Path, mtime: SystemTime) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let tmp = h.root.join("horch.download");
@@ -303,7 +269,6 @@ fn install_copy(h: &Harness, path: &Path, mtime: SystemTime) {
         .unwrap()
         .set_modified(mtime)
         .unwrap();
-    // `--version` exits before any command runs.
     let warmed = horch_e2e::harness::warm(Command::new(&tmp).arg("--version")).unwrap();
     assert!(warmed.status.success(), "warming {} failed", tmp.display());
     std::fs::rename(&tmp, path).unwrap();
@@ -325,7 +290,6 @@ fn fm34_daemon_restart_on_a_new_binary_keeps_the_run() {
             let old = start_fleetd(&h, &mut fleetds, &copy);
             let replaced = SystemTime::now();
             install_copy(&h, &copy, SystemTime::now());
-            // 2 passes of 5 s.
             let until = Instant::now() + Duration::from_secs(10);
             let new = loop {
                 if let Some((pid, started)) = fleetds.current() {

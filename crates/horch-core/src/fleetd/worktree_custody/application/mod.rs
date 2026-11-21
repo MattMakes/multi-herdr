@@ -1,5 +1,3 @@
-//! The application layer of worktree custody: the use cases.
-
 pub mod create;
 pub mod disk;
 pub mod gate_tree;

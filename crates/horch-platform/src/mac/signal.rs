@@ -1,6 +1,3 @@
-//! The concern signal for macOS. macOS has no pidfd for a process that is
-//! not a child, so a signal is the start-time check and then `kill`.
-
 pub(crate) use crate::unix::signal::check_and_kill as signal_same;
 pub(crate) use crate::unix::signal::{
     end_termination_hold, hold_termination, kill_group_on_termination, on_termination_set,

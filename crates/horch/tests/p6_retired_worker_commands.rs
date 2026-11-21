@@ -1,19 +1,3 @@
-//! The worker request kinds are retired (ticket 48 of fleetd-p6; REQUIRED
-//! item 2): `spawn`, `worker_new`, `worker_pid`, `worker_reap`,
-//! `orchestrator_claim`, `orchestrator_stop` and `task_unblock`, and
-//! `spawn_adopt` (T-302: no client sends it after T-895). Each old
-//! command exits 1, writes nothing and prints the line of the table "Old
-//! flow and new" of `docs/tickets/fleetd-p6/MAP.md`. fleetd refuses a
-//! request file of a retired kind with the reason `retired kind: <new
-//! command>`. `worker_stop` and `task_fallback` stay (Q1 of MAP.md), and
-//! the internal spawn of fleetd (`horch spawn --attempt`) sends no `spawn`
-//! request.
-//!
-//! Each test uses only temporary folders: the development `horch` gets its
-//! own home, data, state, ledger and fleet root, and the watchdog is off.
-//! The tests are unix only: the request folder and socket checks are unix
-//! checks.
-
 #![cfg(unix)]
 
 use std::fs::{self, OpenOptions, Permissions};
@@ -47,18 +31,12 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// The new action of `horch spawn` and of `horch ledger spawn`.
 const SPAWN: &str = "fleetd launches each attempt. To pair with a persona, plan its task with an interactive persona";
-/// The new action of `horch ledger worker new` and `worker pid`.
 const RECORDS: &str = "fleetd records each attempt at its launch";
-/// The new action of `horch ledger reap`.
 const REAP: &str =
     r#"fleetd stops an orphan worker. To stop 1 worker: horch ledger stop <worker> "<reason>""#;
-/// The new action of `horch ledger unblock`.
 const UNBLOCK: &str = "Queue the task again: horch task requeue <task>";
-/// The new action of the orchestrator claim of `horch fleet start`.
 const CLAIM: &str = "horch fleet start starts fleetd and herdr with no orchestrator, and fleetd starts 1 sub-orchestrator for each feature";
-/// The new action of `horch fleet stop`.
 const FLEET_STOP: &str = r#"No orchestrator runs, so there is none to stop. fleetd and the herdr server stay under the service manager of the OS. To stop 1 worker: horch ledger stop <worker> "<reason>""#;
 
 const RETIRED_KINDS: [(&str, &str); 8] = [
@@ -72,7 +50,6 @@ const RETIRED_KINDS: [(&str, &str); 8] = [
     ("spawn_adopt", RECORDS),
 ];
 
-/// The 16 operator kinds of the design ("Each request kind has a class").
 const DESIGN_OPERATOR: [&str; 16] = [
     "idea_add",
     "idea_amend",
@@ -92,10 +69,8 @@ const DESIGN_OPERATOR: [&str; 16] = [
     "ledger_dismiss",
 ];
 
-/// The worker kinds of the design: files of an attempt or of an idea.
 const DESIGN_WORKER: [&str; 4] = ["progress", "result", "ask", "idea_note"];
 
-/// The kinds that MAP.md keeps (Q1).
 const KEPT: [&str; 7] = [
     "worker_stop",
     "task_fallback",
@@ -106,11 +81,6 @@ const KEPT: [&str; 7] = [
     "worktree_triage",
 ];
 
-/// The kinds that MAP.md does not name and that no ticket of Phase 6
-/// retires: the records of the internal spawn of fleetd (`--attempt` and
-/// the restart on a fallback), and the last direct writers of the CLI
-/// (T-885), and the write of the session records through fleetd
-/// (`session_records`, T-884).
 const RECORDS_OF_TODAY: [&str; 8] = [
     "spawn_gate_note",
     "worker_launched",
@@ -128,19 +98,13 @@ struct Out {
     err: String,
 }
 
-/// A project folder, the folders of `horch`, a ledger with the `fleetd`
-/// row of this process and the operator token. With [`World::up`], this
-/// process serves the channel as fleetd.
 struct World {
     server: Option<ChannelServer>,
-    // Dropped after the server: the server holds a socket in this folder.
     dir: TempDir,
 }
 
 impl World {
-    /// The ledger and the token, and no server: fleetd is down.
     fn down() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let dir = tempfile::Builder::new()
             .prefix("rw")
             .permissions(Permissions::from_mode(0o700))
@@ -163,8 +127,6 @@ impl World {
         w
     }
 
-    /// [`World::down`], then the channel served by this process with the
-    /// task and worker handlers.
     fn up() -> World {
         let mut w = World::down();
         let handlers = w.handlers();
@@ -214,7 +176,6 @@ impl World {
         conn
     }
 
-    /// The development `horch` with only the temporary folders.
     fn horch(&self, args: &[&str]) -> Out {
         let root = self.root();
         let out = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -241,8 +202,6 @@ impl World {
         }
     }
 
-    /// `args` exits 1, prints `<command> is retired. <instead>`, and
-    /// sends no request: no `requests` row and no request file.
     fn assert_retired(&self, args: &[&str], command: &str, instead: &str) {
         let o = self.horch(args);
         let line = format!("{command} is retired. {instead}");
@@ -260,7 +219,6 @@ impl World {
         assert_eq!(self.request_kinds(), Vec::<String>::new(), "{args:?}");
     }
 
-    /// The kind of each `requests` row and of each request file.
     fn request_kinds(&self) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT kind FROM requests").unwrap();
@@ -279,7 +237,6 @@ impl World {
         kinds
     }
 
-    /// The `requests` rows: kind and state, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -291,7 +248,6 @@ impl World {
             .unwrap()
     }
 
-    /// A run `r1` of the project with its idea in flight (FR-12).
     fn run(&self) -> Run {
         let conn = self.conn();
         let run = runs::create(
@@ -309,7 +265,6 @@ impl World {
         run
     }
 
-    /// A task of `run` for `primary`, with `fallback`. Gives its id.
     fn task(&self, run: &Run, primary: &str, fallback: Option<&str>) -> String {
         let mut t = NewTask::work("alpha", "docs/alpha.md", primary);
         t.fallback = fallback.map(str::to_string);
@@ -319,8 +274,6 @@ impl World {
             .task_id
     }
 
-    /// A worker row of `run` for `persona` with the role `role`, in
-    /// `spawning`. Gives its id.
     fn worker(&self, run: &Run, persona: &str, role: &str) -> String {
         workers::insert(
             &self.conn(),
@@ -349,7 +302,6 @@ impl Drop for World {
     }
 }
 
-/// The start time of this test process.
 fn this_start() -> i64 {
     let start = horch_platform::process::start_time(std::process::id())
         .expect("the start time of the test");
@@ -411,7 +363,6 @@ fn spawn_is_retired_and_names_the_launch_of_fleetd() {
     w.assert_retired(&["spawn", "opus"], "horch spawn", SPAWN);
     let run = w.run();
     let target = w.task(&run, "opus", None);
-    // `horch ledger spawn`: a spawn in a ledger run, with a claim target.
     let o = w.horch(&[
         "spawn",
         "opus",
@@ -551,10 +502,6 @@ fn ledger_fallback_still_moves_a_task() {
     );
 }
 
-/// The internal spawn of fleetd for a reviewer task that the review script
-/// queued: `horch spawn <persona> --attempt <id>` opens the pane of the
-/// attempt that fleetd bound. It is not refused, and it sends no `spawn`
-/// request: it writes the task files of the attempt and binds nothing.
 #[test]
 fn fleetd_review_spawn_does_not_use_the_spawn_kind() {
     let w = World::down();
@@ -614,8 +561,6 @@ fn fleetd_review_spawn_does_not_use_the_spawn_kind() {
     );
 }
 
-/// A request file of an old client, written before the update: fleetd
-/// rejects it with the new action, runs no handler and writes no row.
 #[test]
 fn retired_worker_kind_request_file_is_refused_with_the_new_action() {
     let w = World::down();

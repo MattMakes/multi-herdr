@@ -1,8 +1,3 @@
-//! A recording stand-in for the `hc` (`herdr-core`) CLI.
-//!
-//! State lives in `<state dir>/fake-hc.json` (shared with `fake-herdr-app`)
-//! and calls are logged to `<state dir>/fake-hc.log`.
-
 use std::collections::BTreeMap;
 
 use horch_e2e::hc_fake::{

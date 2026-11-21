@@ -1,12 +1,7 @@
-//! Gate glue that `horch route` shows: every pool a decision could touch.
-//! Named apart from the crate's `balance.rs`, which evens grid columns.
-
 use crate::roster::{Roster, Teammate};
 use crate::routing::decision::{summary, PoolLine};
 use crate::routing::quota::QuotaView;
 
-/// The teammate's pool, then each fallback's, once each, in `fallbacks:`
-/// order. Missing fallbacks are skipped.
 pub fn touched_pools(teammate: &Teammate, roster: &Roster, view: &QuotaView) -> Vec<PoolLine> {
     let mut pools: Vec<PoolLine> = Vec::new();
     for t in

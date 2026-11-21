@@ -1,10 +1,3 @@
-//! `horch sessions` and `horch ledger legacy` - the port of `bin/horch-ledger` and
-//! `bin/horch-sessions`.
-//!
-//! The `ledger` subcommands mirror the bash CLI one for one; they are the
-//! plumbing `spawn`, `note`, `done` and `assign` are built on, kept exposed for
-//! inspection and debugging.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -75,11 +68,6 @@ pub enum LegacyCommand {
     Path,
 }
 
-/// `horch sessions` - the orchestrator-facing ledger view.
-///
-/// Read this before spawning: a `[done]` session whose task or history overlaps
-/// the new task is a resume candidate
-/// (`horch spawn --resume <session-or-record-id> "task"`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SessionFilter<'a> {
     pub all_workspaces: bool,
@@ -199,8 +187,6 @@ pub fn sessions_filtered(
     Ok(())
 }
 
-/// The records `horch sessions` shows: the JSON ledger with the task
-/// ledger's worker rows laid over it (TRF-44), filtered.
 fn session_records(
     ctx: &RuntimeContext,
     all: bool,
@@ -214,7 +200,6 @@ fn session_records(
         .collect())
 }
 
-// Legacy plumbing retains its project-wide output.
 fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
     let records: Vec<_> = ExecutionStore::open_in(ctx)?
         .read()?
@@ -251,7 +236,6 @@ fn has_session(ledger: &SessionLedger, session_id: &str) -> Result<ExitCode> {
     })
 }
 
-/// The subcommands that only print.
 fn read(ctx: &RuntimeContext, ledger: &SessionLedger, command: LegacyCommand) -> Result<()> {
     match command {
         LegacyCommand::Get { key } => print_record(ledger, &key),
@@ -266,8 +250,6 @@ fn read(ctx: &RuntimeContext, ledger: &SessionLedger, command: LegacyCommand) ->
     }
 }
 
-/// What `horch ledger legacy path` prints: the task ledger file on stdout,
-/// and a note on stderr that the old JSON file is only read.
 fn path_lines(ledger: &SessionLedger) -> [String; 2] {
     [
         ledger.store().db().display().to_string(),
@@ -283,7 +265,6 @@ fn print_record(ledger: &SessionLedger, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// The subcommands that change the ledger.
 fn write(ledger: &SessionLedger, command: LegacyCommand) -> Result<()> {
     match command {
         LegacyCommand::Add {
@@ -343,7 +324,6 @@ mod tests {
   }
 ]"#;
 
-    /// The `horch sessions` text before TRF-44, pinned.
     const PINNED: &str = "[working] opus (opus-1)  session=s1  record=r1
   agent=claude model=opus  updated=2026-11-05T10:05:00Z
   task: Run horch ledger claim.
@@ -381,7 +361,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx(dir.path());
         assert_eq!(text(&ctx), PINNED);
-        // A task ledger with no run of this project changes nothing.
         horch_core::taskledger::open(&ctx).unwrap();
         assert_eq!(text(&ctx), PINNED);
     }
@@ -460,8 +439,6 @@ mod tests {
         assert!(shown.contains("agent=codex"), "{shown}");
     }
 
-    /// TRF-45: `horch ledger legacy path` prints the task ledger file, and
-    /// says that the old JSON session file is only read.
     #[test]
     fn trf_45_legacy_path_names_the_task_ledger() {
         let tmp = tempfile::tempdir().unwrap();

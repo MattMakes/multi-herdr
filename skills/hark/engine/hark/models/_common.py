@@ -21,7 +21,6 @@ from hark.models import hub, require_ml
 NO_BF16_CAPS = frozenset({"DEFAULT", "NO AVX", "AVX", "AVX2", "ZVECTOR", "VSX"})
 NO_BF16_ONEDNN = frozenset({"SSE41", "AVX", "AVX2", "AVX2_VNNI", "AVX512_CORE", "AVX512_CORE_VNNI"})
 PICKLE_WEIGHTS = frozenset(hub.PICKLE)
-# torch logs this 1 line on macOS when it imports torch.distributed; it says nothing about hark.
 REDIRECTS_LOGGER = "torch.distributed.elastic.multiprocessing.redirects"
 REDIRECTS_NOTE = "NOTE: Redirects are currently not supported in MacOs."
 

@@ -1,5 +1,3 @@
-//! The concern machine for Linux.
-
 use std::path::Path;
 
 use crate::machine::{parse_meminfo, Disk, Gpu, Memory, Run, Tool};
@@ -37,21 +35,16 @@ pub(crate) fn max_open_files() -> Result<Option<u64>, NotSupported> {
     Ok(unix::max_open_files())
 }
 
-/// Linux needs no such reading: `MemAvailable` of [`memory`] already counts the
-/// file cache that the kernel can free as available.
 pub(crate) fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
     Err(NotSupported::new("machine", "linux"))
 }
 
-/// `/proc/sys/fs/file-max`: the open file limit of the system.
 pub(crate) fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
     Ok(std::fs::read_to_string("/proc/sys/fs/file-max")
         .ok()
         .and_then(|s| s.trim().parse().ok()))
 }
 
-/// The first field of `/proc/sys/fs/file-nr`: the count of open files of
-/// the system.
 pub(crate) fn system_open_file_count() -> Result<Option<u64>, NotSupported> {
     Ok(std::fs::read_to_string("/proc/sys/fs/file-nr")
         .ok()
@@ -84,8 +77,6 @@ pub(crate) fn user_open_file_count() -> Result<Option<u64>, NotSupported> {
     Ok(user_pids().map(|pids| pids.iter().map(String::as_str).map(open_file_count).sum()))
 }
 
-/// The pids of the processes with the real uid of this process, as the
-/// names of their `/proc` folders.
 fn user_pids() -> Option<Vec<String>> {
     // SAFETY: getuid has no precondition and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -99,8 +90,6 @@ fn user_pids() -> Option<Vec<String>> {
     )
 }
 
-/// The real uid of a process: the first field of the `Uid:` line of
-/// `/proc/<pid>/status`. `None` when the process exited.
 fn real_uid(pid: &str) -> Option<libc::uid_t> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     status
@@ -112,7 +101,6 @@ fn real_uid(pid: &str) -> Option<libc::uid_t> {
         .ok()
 }
 
-/// The count of entries of `/proc/<pid>/fd`, or 0 when the read fails.
 fn open_file_count(pid: &str) -> u64 {
     std::fs::read_dir(format!("/proc/{pid}/fd")).map_or(0, |fds| fds.count() as u64)
 }

@@ -1,5 +1,3 @@
-//! The domain layer of fleet runtime: rules with no I/O.
-
 pub mod authorize;
 pub mod budget;
 pub mod clock;

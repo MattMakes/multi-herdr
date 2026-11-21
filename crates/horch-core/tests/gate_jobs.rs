@@ -1,14 +1,3 @@
-//! The `fast_gate` and `full_gate` jobs and the gate tree of a feature
-//! (docs/specs/fleetd/design.md, "Between features" and "The kinds of
-//! job"; docs/tickets/fleetd-p4/28-gate-jobs.md, MAP.md Q18, Q19, Q24 and
-//! Q26).
-//!
-//! Each test makes its own git repository and ledger in [`world_base`],
-//! not below the temp folder of this process: the gate sandbox lets a gate
-//! write its temp folder, so a path there proves no refusal. A job process is a small command started through the launcher,
-//! and the executor runs in the test process with the recorded pid, as
-//! `horch job run` runs it. The test of the time limit starts this test
-//! binary as the job process.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -53,20 +42,14 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 const FEATURE: &str = "F-1";
 
-/// The variable that makes this test binary the job process of the time
-/// limit test: `<ledger path>|<job id>`.
 const JOB_CHILD: &str = "HORCH_GATE_JOBS_CHILD";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     dir: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
     run: Run,
-    /// The repository, as its canonical path.
     repo: PathBuf,
-    /// The tip of `main`.
     main: String,
 }
 
@@ -77,8 +60,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A ledger of the current schema with the run `r1` and the feature
-/// [`FEATURE`] on `fleet/r1`, and a repository with 1 commit on `main`.
 fn world() -> World {
     let dir = tempfile::tempdir_in(world_base()).unwrap();
     let mut conn = open(&dir.path().join("ledger.sqlite3"));
@@ -91,7 +72,6 @@ fn world() -> World {
     git(&repo, &["add", "marker.txt"]);
     git(&repo, &["commit", "-q", "-m", "first"]);
     let main = git(&repo, &["rev-parse", "HEAD"]);
-    // The worktree_add job writes only the tree folder: its parent exists.
     std::fs::create_dir(repo.join(".worktrees")).unwrap();
     std::fs::create_dir_all(dir.path().join("fleet")).unwrap();
     let tx = conn.transaction().unwrap();
@@ -107,7 +87,6 @@ fn world() -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
-    // FR-12: a task of the run needs an idea in flight of the run feature.
     let run_feature = format!("F-{:04}", 1);
     if rows::feature(&tx, &run_feature).unwrap().is_none() {
         let new = NewFeature {
@@ -135,9 +114,6 @@ fn world() -> World {
     }
 }
 
-/// A folder for the worlds of these tests outside the temp folder of this
-/// process, which the gate sandbox lets a gate write, and outside HOME,
-/// which the git sandbox of fleetd hides.
 fn world_base() -> PathBuf {
     let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
     let temp = canon(std::env::temp_dir());
@@ -158,8 +134,6 @@ fn open(db: &Path) -> Connection {
     conn
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -190,7 +164,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// The sandbox profiles of a test: no task check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -204,7 +177,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// A gate sandbox that this host does not have.
 fn no_sandbox(
     _cmd: horch_platform::start::Command,
     _writable: &[PathBuf],
@@ -213,9 +185,6 @@ fn no_sandbox(
     Err(NotSupported::new("sandbox", "test").because("the test host has no sandbox"))
 }
 
-/// Whether this host has the gate sandbox. A Linux host with no `bwrap`
-/// has none: the test then proves only that the gate does not run
-/// (MAP.md of fleetd-p4, Q-A).
 fn has_sandbox() -> bool {
     match exec_gate::sandbox_gap(sandboxed) {
         None => true,
@@ -251,8 +220,6 @@ impl World {
         out
     }
 
-    /// A commit on `branch` from `from` with each file of `files`. Gives
-    /// its tip.
     fn commit(&self, branch: &str, from: &str, files: &[(&str, &str)]) -> String {
         git(&self.repo, &["checkout", "-q", "-B", branch, from]);
         for (name, text) in files {
@@ -265,8 +232,6 @@ impl World {
         tip
     }
 
-    /// A commit on `branch` from `main` whose project `fleet.toml` has the
-    /// gates `gates` and whose `marker.txt` is `marker`.
     fn tip_with(&self, branch: &str, gates: &str, marker: &str) -> String {
         let main = self.main.clone();
         self.commit(
@@ -287,8 +252,6 @@ impl World {
         gate_tree::path(&self.repo, FEATURE)
     }
 
-    /// The gate tree of [`FEATURE`], made by its `worktree_add` job and
-    /// observed, as a pass observes it.
     fn gate_tree(&mut self) -> trees::WorktreeRow {
         let repo = self.repo.clone();
         let main = self.main.clone();
@@ -313,7 +276,6 @@ impl World {
             .unwrap()
     }
 
-    /// A bundle of 1 task branch of [`FEATURE`] on `base_tip`.
     fn bundle(&mut self, base_tip: &str) -> i64 {
         let run = self.run.clone();
         let tx = self.conn.transaction().unwrap();
@@ -341,7 +303,6 @@ impl World {
         id
     }
 
-    /// Queue the gate `kind` of `subject` on `tip` over `base_tip`.
     fn queue_gate(
         &mut self,
         kind: Kind,
@@ -369,9 +330,6 @@ impl World {
         }
     }
 
-    /// The run `id` to its end: its process starts as `true` through the
-    /// launcher, as part 3 of a pass starts it, and its executor runs in
-    /// this process with the recorded pid.
     fn run(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -405,9 +363,6 @@ impl World {
         self.job(id)
     }
 
-    /// The executor of the gate `row` with the sandbox `sandbox` on a
-    /// read-only connection, then its facts recorded in 1 transaction, as
-    /// the ingest of its result file records them. Give its outcome.
     fn gate_with(&mut self, row: &JobRow, sandbox: GateSandbox) -> Outcome {
         let job = Store::open_read_only(&self.db()).unwrap();
         let ran = exec_gate::run_in(job.conn(), row, sandbox).unwrap();
@@ -416,8 +371,6 @@ impl World {
         ran.outcome
     }
 
-    /// Start the run `id` through the launcher, as part 3 of a pass starts
-    /// it. Give the started row.
     fn start(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -440,7 +393,6 @@ impl World {
         self.job(id)
     }
 
-    /// End each run from its result file, as a pass of fleetd ends it.
     fn ingest(&mut self) -> Vec<(i64, State)> {
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -451,8 +403,6 @@ impl World {
         jobs::end_from_files(&ctx, &mut self.conn).unwrap()
     }
 
-    /// The `result` of the newest gate run of [`FEATURE`] on `tip` over
-    /// `base`.
     fn gate_result(&self, gate: &str, tip: &str, base: &str) -> Option<String> {
         let row = rows::gate_run_of(&self.conn, FEATURE, gate, tip, base)
             .unwrap()
@@ -472,7 +422,6 @@ impl World {
         scans::scan_processes(&items, &mut Cursor::new("pass"), &mut clock).facts
     }
 
-    /// Reap and scan until the process of the run `id` is gone.
     fn wait_gone(&self, runner: &mut JobRunner<'_>, id: i64) -> Vec<ProcessFact> {
         let until = Instant::now() + Duration::from_secs(20);
         loop {
@@ -493,8 +442,6 @@ fn text(row: &JobRow) -> String {
     outcome(row).map(|o| o.text).unwrap_or_default()
 }
 
-// ─── the gate tree ──────────────────────────────────────────────────────
-
 #[test]
 fn gate_tree_is_a_custody_row_with_no_task() {
     let mut w = world();
@@ -509,7 +456,6 @@ fn gate_tree_is_a_custody_row_with_no_task() {
     assert!(w.gate_path().is_dir());
     assert_eq!(git(&w.gate_path(), &["rev-parse", "HEAD"]), w.main);
 
-    // The next request of the feature finds the tree: no second row.
     let repo = w.repo.clone();
     let main = w.main.clone();
     let run_id = w.run.run_id.clone();
@@ -525,16 +471,12 @@ fn gate_tree_is_a_custody_row_with_no_task() {
         .unwrap();
     assert!(matches!(again, GateTree::Ready(ref r) if r.worktree_id == tree.worktree_id));
 
-    // The end of the feature gives the tree to custody, which rescues and
-    // removes it.
     assert!(w
         .tx(|ctx, tx| gate_tree::release(ctx, tx, &repo, FEATURE, "its feature is merged"))
         .unwrap());
     let row = trees::get(&w.conn, &tree.worktree_id).unwrap().unwrap();
     assert_eq!(row.state, WorktreeState::Orphaned);
 }
-
-// ─── the gates ──────────────────────────────────────────────────────────
 
 #[test]
 fn fast_gate_runs_the_declared_command_on_the_candidate_tip() {
@@ -598,8 +540,6 @@ fn full_gate_runs_on_the_feature_tip() {
         Some("fail")
     );
 
-    // A feature tip that does not contain the fetched primary tip waits for
-    // the rebase: the gate does not run, and the run has no verdict.
     let primary = w.commit("main", &main, &[("other.txt", "x\n")]);
     std::fs::remove_file(tree.join("seen.txt")).unwrap();
     let id = w.new_gate(Kind::FullGate, FEATURE, &feature, &primary);
@@ -628,7 +568,6 @@ fn passed_gate_of_1_key_is_used_again() {
         other => panic!("expected the passed run again, got {other:?}"),
     }
 
-    // A fail of a gate that ran to its end is used again.
     let fail = w.tip_with("b", "[gates]\nfast = \"true\"\nfull = \"false\"\n", "b");
     let id = w.new_gate(Kind::FullGate, FEATURE, &fail, &main);
     assert_eq!(w.run(id).state, State::Failed);
@@ -637,7 +576,6 @@ fn passed_gate_of_1_key_is_used_again() {
         other => panic!("expected the failed run again, got {other:?}"),
     }
 
-    // A fail with no verdict runs again.
     let none = w.tip_with("c", "[gates]\nfast = \"true\"\n", "c");
     let id = w.new_gate(Kind::FullGate, FEATURE, &none, &main);
     assert_eq!(w.run(id).state, State::Failed);
@@ -783,7 +721,6 @@ fn gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item() {
         "no gate of a held feature is queued"
     );
 
-    // A later pass that finds a sandbox ends the hold.
     let ended = w
         .tx(|ctx, tx| exec_gate::end_hold(ctx, tx, FEATURE))
         .unwrap();
@@ -792,10 +729,6 @@ fn gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item() {
     assert!(open_items(&w.conn).unwrap().iter().all(|i| i.key != key));
 }
 
-/// A gate result file counts only for the job that fleetd started: a file
-/// of a job that does not exist, a file of a job that is not running, and
-/// a file whose job id is not the job of its name change no gate run and
-/// end no job.
 #[test]
 fn gate_result_file_with_another_job_id_changes_nothing() {
     let mut w = world();
@@ -818,11 +751,8 @@ fn gate_result_file_with_another_job_id_changes_nothing() {
         data: None,
     };
     let root = w.fleet_root();
-    // No job has this id.
     job_result_file::write(&root, &passed(started.id + 1000, 1)).unwrap();
-    // The job exists, but fleetd did not start it.
     job_result_file::write(&root, &passed(queued.id, queued.run)).unwrap();
-    // The name is the started job, but the payload names another job.
     let path = job_result_file::path(&root, started.id, started.run);
     let body = serde_json::to_vec(&passed(queued.id, started.run)).unwrap();
     std::fs::write(&path, body).unwrap();
@@ -835,10 +765,6 @@ fn gate_result_file_with_another_job_id_changes_nothing() {
     assert_eq!(w.job(queued.id).state, queued.state);
 }
 
-// ─── the time limit ─────────────────────────────────────────────────────
-
-/// The job process of the time limit test: `horch job run <id>` of the
-/// ledger and the run of [`JOB_CHILD`].
 fn job_child(value: &str) {
     let (db, id) = value.rsplit_once('|').unwrap();
     let conn = open(Path::new(db));
@@ -922,7 +848,6 @@ fn gate_stop_kills_its_group(test: &str, stop_at: i64, hang_git: bool) {
     let bundle = w.bundle(&main).to_string();
     let id = w.new_gate(Kind::FastGate, &bundle, &tip, &main);
 
-    // Part 3 of a pass starts the job process: this test binary.
     let spec = LaunchSpec {
         program: std::env::current_exe().unwrap(),
         args: vec!["--exact".into(), test.into(), "--nocapture".into()],
@@ -1033,10 +958,6 @@ fn marked(marker: &str) -> Vec<String> {
         .collect()
 }
 
-/// The end of a gate tree and of a tree that a worker dropped
-/// (preservation-04 row W11, RR-13; ticket 164 of fleetd-finish), and the
-/// retry of a removal that a process in the tree refused (FM-27, "The
-/// kinds of job", row `worktree_remove`).
 mod tree_end {
     use super::*;
 
@@ -1054,9 +975,6 @@ mod tree_end {
     use horch_core::taskledger::util;
 
     impl World {
-        /// The facts of part 1 of a pass: the folder of each row, each
-        /// folder of `<repo>/.worktrees/`, and the result of the
-        /// `worktree_list` executor on the repository.
         fn tree_facts(&self) -> Facts {
             let rows = trees::in_states(&self.conn, &WorktreeState::ALL).unwrap();
             let folders = rows
@@ -1099,8 +1017,6 @@ mod tree_end {
             }
         }
 
-        /// Part 2 of 1 pass at `clock`: the reconciler on the facts of the
-        /// disk now.
         fn pass_at(&mut self, clock: i64) -> Report {
             let facts = self.tree_facts();
             self.tx(|ctx, tx| reconcile_worktrees(ctx, tx, &facts, FleetSeconds(clock)))
@@ -1150,8 +1066,6 @@ mod tree_end {
                 .collect()
         }
 
-        /// An `orphaned` tree `name` on the branch `fleet/<name>` from
-        /// `main`, of the task `task`.
         fn orphan(&mut self, name: &str, task: Option<&str>) -> PathBuf {
             let path = self.repo.join(".worktrees").join(name);
             let path_s = path.display().to_string();
@@ -1189,8 +1103,6 @@ mod tree_end {
             task
         }
 
-        /// Rescue the orphan `id` through its rescue job: the pass that
-        /// queues it, the run, and the pass that observes it.
         fn rescue(&mut self, id: &str, clock: i64) -> Report {
             let report = self.pass_at(clock);
             assert_eq!(report.rescues, [id], "{report:?}");
@@ -1203,7 +1115,6 @@ mod tree_end {
         }
     }
 
-    /// A process with its working folder in `dir`, which the test ends.
     struct InTree(std::process::Child);
 
     impl InTree {
@@ -1228,8 +1139,6 @@ mod tree_end {
         }
     }
 
-    /// Row W11: the gate tree that its feature released is rescued, then
-    /// removed; its rescue ref stays.
     #[test]
     fn released_gate_tree_is_rescued_then_removed_and_its_rescue_ref_stays() {
         let mut w = world();
@@ -1287,9 +1196,6 @@ mod tree_end {
         );
     }
 
-    /// A drop queues the rescue at the HEAD that the command read. The row
-    /// still has an older HEAD from the last `worktree_list` result. The
-    /// passed rescue makes the tree `rescued`, and no second rescue runs.
     #[test]
     fn rescue_queued_at_a_newer_head_than_the_row_is_the_only_rescue() {
         let mut w = world();
@@ -1333,9 +1239,6 @@ mod tree_end {
         path
     }
 
-    /// FM-27: a removal refused because a process has its working folder
-    /// in the tree opens no item. After the backoff, and once the process
-    /// ended, the next run removes the tree.
     #[test]
     fn removal_refused_by_a_process_in_the_tree_runs_again_after_it_ends() {
         let mut w = world();

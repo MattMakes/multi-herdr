@@ -1,6 +1,3 @@
-//! The adapters layer of integration: SQLite, git, the project file and the
-//! job executors.
-
 pub mod exec_bundle;
 pub mod exec_fetch;
 pub mod exec_gate;

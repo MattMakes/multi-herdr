@@ -47,7 +47,6 @@ def source_skills(skills_dir: Path) -> list[str]:
 
 def build_rewriter(names: list[str]):
     """Return a function that rewrites skill references in markdown text."""
-    # Longest first, so a short name never matches inside a longer one.
     alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
     end = r"(?![-\w])"
     start = r"(?<![-\w/.])"

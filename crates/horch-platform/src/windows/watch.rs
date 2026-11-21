@@ -1,6 +1,3 @@
-//! The concern watch for Windows: `ReadDirectoryChangesW` with overlapped
-//! I/O on each folder, polled with no wait.
-
 use std::collections::HashMap;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -20,19 +17,13 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 const FILTER: u32 =
     FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE;
 
-/// The buffer of 1 read. Its content is not parsed: a completed read only
-/// says that the folder changed, and an overflow completes it too.
 #[repr(C, align(4))]
 struct Buffer([u8; 1024]);
 
-/// 1 watched folder with its read in flight.
 struct Dir {
     handle: HANDLE,
-    /// The OS writes these 2 while a read is in flight, so each is boxed
-    /// and does not move.
     overlapped: Box<OVERLAPPED>,
     buffer: Box<Buffer>,
-    /// A read is in flight.
     armed: bool,
 }
 
@@ -84,7 +75,6 @@ impl Dir {
         Ok(watch)
     }
 
-    /// Start the next read.
     fn arm(&mut self) -> io::Result<()> {
         // SAFETY: `OVERLAPPED` is plain data, and no read is in flight.
         *self.overlapped = unsafe { std::mem::zeroed() };
@@ -111,9 +101,6 @@ impl Dir {
         Ok(())
     }
 
-    /// The read completed: the folder changed. It starts the next read.
-    /// A failed read, for example of a removed folder, also says "changed",
-    /// and no next read starts.
     fn poll(&mut self) -> bool {
         if !self.armed {
             return false;
@@ -128,8 +115,6 @@ impl Dir {
         }
         self.armed = false;
         if ok != 0 {
-            // A failed start is a missed hint: the pass scans each folder
-            // anyway.
             let _ = self.arm();
         }
         true

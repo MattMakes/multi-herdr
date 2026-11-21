@@ -1,16 +1,3 @@
-//! The e2e tests of the remote git state through the binary
-//! (`docs/specs/fleetd/design.md`: FM-43, "Remote git state is
-//! level-triggered"; ticket 55 of `docs/tickets/fleetd-p4/MAP.md`).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, with a local bare repository as the remote `origin`, and runs a
-//! test `fleetd` that fetches and pushes through its jobs. The tests read no
-//! real load, limit or clock: the harness gives the machine through
-//! `HORCH_MACHINE_FILE`, the `fleet.toml` of the fleet sets the fetch
-//! period, and a test moves the fleet clock with
-//! [`Harness::advance_fleet_clock`] in place of a wait. Each test waits for
-//! a row of the ledger, never for a time.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -25,22 +12,16 @@ use horch_core::taskledger::runs;
 use horch_core::taskledger::Store;
 use horch_e2e::harness::{wait_for_or, Harness};
 
-/// The feature of each world, its branch and its remote.
 const FEATURE: &str = "F-0001";
 const BRANCH: &str = "fleet/feature-1";
 const REMOTE: &str = "origin";
 
-/// The `fleet.toml` of each fleet: 1 pass each second, and a fetch period
-/// that no real second reaches, so the fleet clock decides each fetch run.
 const FLEET_TOML: &str = "pass_period_s = 1\nfetch_period_s = 3600\n";
 
-/// The project file at the feature tip, with no pull request tool.
 const PROJECT_MANUAL: &str = "pr = \"manual\"\n[gates]\nfast = \"true\"\nfull = \"true\"\n";
 
-/// The project file at the feature tip, with `gh` as the pull request tool.
 const PROJECT_GH: &str = "pr = \"gh\"\n[gates]\nfast = \"true\"\nfull = \"true\"\n";
 
-/// The pull request that the feature of the `gh` world has.
 const PULL_REQUEST: &str = "https://example.test/o/r/pull/1";
 
 fn text(o: &Output) -> String {
@@ -52,26 +33,15 @@ fn text(o: &Output) -> String {
     )
 }
 
-// ─── the world of 1 test ────────────────────────────────────────────────
-
-/// A fleet with 1 feature whose branch is 1 commit past `main`, a test
-/// fleetd that is not yet started, and the bare remote `origin`.
 struct World {
     h: Harness,
-    /// The bare repository that is the remote.
     remote: PathBuf,
-    /// The tip of the feature branch.
     tip: String,
 }
 
-/// What a world has beyond the push job of its feature.
 struct Spec {
-    /// The project file at the feature tip.
     project: &'static str,
-    /// The feature branch is on the remote, and fleetd saw it there. The
-    /// push rule has nothing to push.
     pushed: bool,
-    /// The pull request of the feature, when it has one.
     pull_request: Option<&'static str>,
 }
 
@@ -87,7 +57,6 @@ fn git_ok(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// The tip of `branch` in the bare repository `remote`, or `None`.
 fn remote_tip(h: &Harness, remote: &Path, branch: &str) -> Option<String> {
     let o = git(
         h,
@@ -155,16 +124,12 @@ fn world(name: &str, spec: &Spec) -> World {
     World { h, remote, tip }
 }
 
-/// Write the rows of the feature: its branch with the tip `tip`, and an
-/// open pull request, so that the push rule wants the branch (Q21). The
-/// test writes them before fleetd runs. fleetd queues each job itself.
 fn seed_feature(h: &Harness, tip: &str, spec: &Spec) {
     let mut store = Store::open(&h.ledger_db()).unwrap();
     store
         .immediate(|tx| {
             let feature = runs::create_feature_run(tx, &h.project, "main")?;
             assert_eq!(feature, FEATURE);
-            // fleetd writes the run branch when the feature has its branch.
             runs::set_feature_run_branch(tx, FEATURE, BRANCH)?;
             let cause = |text| Cause {
                 actor: Actor::Horch,
@@ -228,7 +193,6 @@ fn seed_feature(h: &Harness, tip: &str, spec: &Spec) {
 }
 
 impl World {
-    /// Make the remote path missing, or present again.
     fn remote_down(&self, down: bool) {
         let off = self.h.root.join("remote.off");
         let (from, to) = if down {
@@ -239,7 +203,6 @@ impl World {
         std::fs::rename(from, to).unwrap();
     }
 
-    /// Rows of the ledger: the first column of `sql` as text.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = rusqlite::Connection::open(self.h.ledger_db()).unwrap();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -258,7 +221,6 @@ impl World {
         .collect()
     }
 
-    /// The only value of a column of the feature row.
     fn feature_cell(&self, column: &str) -> String {
         let rows = self.rows(&format!(
             "SELECT {column} FROM features WHERE id = '{FEATURE}'"
@@ -267,22 +229,18 @@ impl World {
         rows.into_iter().next().unwrap()
     }
 
-    /// The states of the runs of the jobs of `kind`, oldest first.
     fn job_states(&self, kind: &str) -> Vec<String> {
         self.rows(&format!(
             "SELECT state FROM jobs WHERE kind = '{kind}' ORDER BY id"
         ))
     }
 
-    /// The keys of the open needs-you items of `kind`.
     fn open_items(&self, kind: &str) -> Vec<String> {
         self.rows(&format!(
             "SELECT key FROM needs_you WHERE kind = '{kind}' AND state = 'open'"
         ))
     }
 
-    /// What a failed wait shows: each job, the feature row and the output of
-    /// fleetd.
     fn diagnostics(&self) -> String {
         let read = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default();
         format!(
@@ -298,19 +256,16 @@ impl World {
         )
     }
 
-    /// Wait until `ready` gives a value.
     fn wait<T>(&self, what: &str, ready: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, ready, || self.diagnostics())
     }
 
-    /// Wait until the feature has failed its push `n` times in a row.
     fn wait_push_failures(&self, n: usize) {
         self.wait(&format!("{n} failed pushes in a row"), || {
             (self.feature_cell("push_failures") == n.to_string()).then_some(())
         });
     }
 
-    /// The fleet clock of the ledger.
     fn fleet_clock(&self) -> i64 {
         self.rows("SELECT fleet_clock_s FROM fleetd WHERE id = 1")[0]
             .parse()
@@ -318,8 +273,6 @@ impl World {
     }
 }
 
-/// A `gh` on the `PATH` of the fleet. A `pr view` call prints the state
-/// `state` and is logged in `gh.log` of the harness root. Gives the log.
 fn fake_gh(h: &Harness, state: &str) -> PathBuf {
     let log = h.root.join("gh.log");
     let script = format!(
@@ -330,13 +283,6 @@ fn fake_gh(h: &Harness, state: &str) -> PathBuf {
     log
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// FM-43: a transient push failure is followed by a new run of the push
-/// job. The remote path is missing when the first run pushes, so that run
-/// fails and backs off on the fleet clock. The path comes back and the
-/// fleet clock moves past the backoff: the next pass queues a new run, that
-/// run passes, and its result is the one that the feature row holds.
 #[test]
 fn fm43_transient_push_failure_is_followed_by_a_new_run_of_the_push_job() {
     let w = world(
@@ -350,7 +296,6 @@ fn fm43_transient_push_failure_is_followed_by_a_new_run_of_the_push_job() {
     w.remote_down(true);
     w.h.serve_fleetd();
     w.wait_push_failures(1);
-    // The failed run left its facts, and the backoff ends after the clock.
     assert_eq!(w.feature_cell("push_state"), "failed");
     let not_before: i64 = w.feature_cell("push_not_before").parse().unwrap();
     assert!(
@@ -362,13 +307,11 @@ fn fm43_transient_push_failure_is_followed_by_a_new_run_of_the_push_job() {
     let first = w.rows("SELECT id FROM jobs WHERE kind = 'push'");
     assert!(w.open_items("push_failed").is_empty());
 
-    // The failure was transient: the path is back, and the backoff ends.
     w.remote_down(false);
     w.h.advance_fleet_clock(1000);
     w.wait("the new run of the push job to pass", || {
         (w.feature_cell("push_state") == "ok").then_some(())
     });
-    // A new run, not the old result: the first run stays failed.
     let states = w.job_states("push");
     assert_eq!(states, ["failed", "passed"], "{}", w.diagnostics());
     let ids = w.rows("SELECT id FROM jobs WHERE kind = 'push'");
@@ -384,10 +327,6 @@ fn fm43_transient_push_failure_is_followed_by_a_new_run_of_the_push_job() {
     assert!(w.open_items("push_failed").is_empty());
 }
 
-/// 2 fetch periods in a row make 2 fetch runs. The first run starts at once.
-/// The fleet clock moves by 1 period, and then a second run starts, so each
-/// period is a new run and a passed run is not a fact for ever. Each passed
-/// run writes the fetched tip of the feature branch in `remote_tips`.
 #[test]
 fn two_fetch_periods_in_a_row_make_two_fetch_runs() {
     let w = world(
@@ -415,7 +354,6 @@ fn two_fetch_periods_in_a_row_make_two_fetch_runs() {
         ["NULL"]
     );
 
-    // 1 period of the fleet clock.
     w.h.advance_fleet_clock(3600);
     w.wait("the second fetch run to pass", || {
         (w.job_states("fetch") == ["passed", "passed"]).then_some(())
@@ -424,9 +362,6 @@ fn two_fetch_periods_in_a_row_make_two_fetch_runs() {
     assert_ne!(ids[0], ids[1], "the 2 runs are 1 row");
 }
 
-/// 3 push failures in a row open 1 needs-you item, and not before the third.
-/// The remote path stays missing, and the fleet clock moves past each
-/// backoff.
 #[test]
 fn three_push_failures_open_1_needs_you_item() {
     let w = world(
@@ -446,7 +381,6 @@ fn three_push_failures_open_1_needs_you_item() {
             "an item after {failures} failures\n{}",
             w.diagnostics()
         );
-        // Past the longest backoff of the first 3 runs (30, 120, 480 s).
         w.h.advance_fleet_clock(1000);
     }
     w.wait_push_failures(3);
@@ -465,10 +399,6 @@ fn three_push_failures_open_1_needs_you_item() {
     assert_eq!(remote_tip(&w.h, &w.h.root.join("remote.off"), BRANCH), None);
 }
 
-/// A closed pull request that is not merged opens 1 needs-you item. A fake
-/// `gh` says that the pull request of the feature is `CLOSED`. The fetch
-/// job reads it, and the item says what to do: open it again, or run
-/// `horch feature abandon`.
 #[test]
 fn closed_unmerged_pull_request_opens_1_needs_you_item() {
     let w = world(
@@ -493,7 +423,6 @@ fn closed_unmerged_pull_request_opens_1_needs_you_item() {
         calls.contains(&format!("pr view {PULL_REQUEST}")),
         "gh calls: {calls:?}"
     );
-    // 1 item, and the fetch job passed.
     assert_eq!(w.open_items("pr_closed").len(), 1);
     assert_eq!(w.job_states("fetch"), ["passed"], "{}", w.diagnostics());
 }

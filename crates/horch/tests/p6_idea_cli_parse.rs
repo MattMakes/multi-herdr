@@ -1,9 +1,3 @@
-//! `horch idea` and `horch ideas` (ticket 05 of fleetd-p6): each subcommand
-//! prints its help with its flags, and a bad flag exits 2.
-//!
-//! Each test runs the real binary with its own home, data, state and ledger
-//! folders, and the watchdog off.
-
 use std::process::Command;
 
 struct Out {

@@ -1,5 +1,3 @@
-//! Worker worktree creation, landing, and inspection.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -27,8 +25,6 @@ fn landing(ctx: &RuntimeContext) -> Landing {
         .with_recorded_worktrees(recorded_worktrees(ctx))
 }
 
-/// The paths the task ledger records as worktrees. A machine with no ledger
-/// file records none, and is not given one by a scan.
 pub fn recorded_worktrees(ctx: &RuntimeContext) -> Vec<PathBuf> {
     if !ctx.paths.ledger_db.exists() {
         return Vec::new();
@@ -47,8 +43,6 @@ pub fn recorded_worktrees(ctx: &RuntimeContext) -> Vec<PathBuf> {
     }
 }
 
-/// Say so when the scan had to leave a worktree out. A path it cannot read
-/// is the operator's to fix, and `done` must not go quiet about it.
 pub fn note_skipped(command: &str, skipped: &[Skipped]) {
     for entry in skipped {
         eprintln!(
@@ -131,7 +125,6 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
     Ok(())
 }
 
-/// The word `list` prints for the state of a claim.
 fn state_label(state: ClaimState) -> &'static str {
     match state {
         ClaimState::Open => "open",
@@ -140,8 +133,6 @@ fn state_label(state: ClaimState) -> &'static str {
     }
 }
 
-/// The `unregistered:` section of `list`: `none` on 1 line, else a header and
-/// a line for each worktree that has no claim.
 fn print_unregistered(entries: &[Unregistered]) {
     if entries.is_empty() {
         println!("unregistered: none");
@@ -159,7 +150,6 @@ fn print_unregistered(entries: &[Unregistered]) {
     }
 }
 
-/// The main checkout of the project the command runs in.
 fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
     let dir = ctx.paths.project()?;
     Ok(git
@@ -167,19 +157,15 @@ fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
         .unwrap_or_else(|| dir.canonicalize().unwrap_or(dir)))
 }
 
-/// The parked worktrees of the project, measured as `measure` says.
 pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage::Row>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    // The listing reads the ledger read-only and skips the bytes cache
-    // (T-5): only fleetd writes the ledger (RR-5, T-885).
     match taskledger::open_existing_read_only(ctx)? {
         Some(store) => triage::collect(store.conn(), &git, &root, measure),
         None => triage::collect_without_ledger(&git, &root, measure),
     }
 }
 
-/// `horch worktree triage [--json]`: the facts of every parked worktree.
 pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let rows = triage_rows(ctx, Measure::Full)?;
     let git = Git::new(&ctx.bins.harness.git);
@@ -198,7 +184,6 @@ pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The reply text: the file, or stdin for `-`.
 fn read_reply(file: &str) -> Result<String> {
     if file == "-" {
         let mut text = String::new();
@@ -208,7 +193,6 @@ fn read_reply(file: &str) -> Result<String> {
     std::fs::read_to_string(file).map_err(|e| anyhow!("reading the reply {file}: {e}"))
 }
 
-/// `gh`: `HORCH_GH_BIN`, else `gh` on PATH.
 fn gh_bin() -> PathBuf {
     std::env::var_os("HORCH_GH_BIN")
         .filter(|v| !v.is_empty())
@@ -216,10 +200,6 @@ fn gh_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("gh"))
 }
 
-/// `horch worktree triage apply <file|->`: parse the operator's reply and
-/// send its decisions to fleetd as 1 `worktree_triage` request. A bad reply
-/// runs nothing. fleetd applies `KEEP` and `FINISH` in the request, and
-/// queues 1 `triage_apply` job for `ARCHIVE`, `DELETE`, `LAND` and `PR`.
 pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<ExitCode> {
     let text = read_reply(file)?;
     let git = Git::new(&ctx.bins.harness.git);
@@ -275,16 +255,10 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<E
     })
 }
 
-/// `horch worktree restore <name>`: a task (`T<seq>` of the active run) or
-/// a worktree id whose row has a rescue ref gives its newest rescue ref
-/// back as a branch and a tree (MAP.md of fleetd-p3, Q14). Each other name
-/// gets the folder again from its archive or trash ref.
 pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<ExitCode> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
     let store = read_only(ctx)?;
-    // A project with no single active run has no `T<seq>` to look up; a
-    // worktree id needs no run.
     let run = resolve_run(ctx, &store, &RunArg::default())
         .ok()
         .map(|r| r.run_id);
@@ -305,9 +279,6 @@ pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<ExitCode> {
     })
 }
 
-/// The git facts of the restore of `source` as the branch
-/// `rescue/T<seq>-<n>` in its tree `<project>/.worktrees/rescue-T<seq>-<n>`.
-/// fleetd refuses the restore when the branch or the folder exists.
 fn rescue_facts(git: &Git, source: &RescueSource) -> Result<Value> {
     let repo = PathBuf::from(&source.row.repo_root);
     let slug = format!("T{}-{}", source.seq, source.n);
@@ -322,9 +293,6 @@ fn rescue_facts(git: &Git, source: &RescueSource) -> Result<Value> {
     }))
 }
 
-/// The git facts of the restore of the folder `<root>/.worktrees/<name>`
-/// from its archive ref, else its newest trash ref, on the branch of the
-/// archived row, else `restored/<name>`.
 fn archive_facts(store: &taskledger::Store, git: &Git, root: &Path, name: &str) -> Result<Value> {
     let archive = match triage::refs::restorable(git, root, name)? {
         Some(r) => Some(json!({ "commit": git.rev(root, &r)?, "name": r })),
@@ -360,7 +328,6 @@ fn archive_facts(store: &taskledger::Store, git: &Git, root: &Path, name: &str) 
     }))
 }
 
-/// The ledger, opened read-only. fleetd creates it at its start.
 fn read_only(ctx: &RuntimeContext) -> Result<taskledger::Store> {
     taskledger::open_existing_read_only(ctx)?.with_context(|| {
         format!(
@@ -370,8 +337,6 @@ fn read_only(ctx: &RuntimeContext) -> Result<taskledger::Store> {
     })
 }
 
-/// `horch worktrees [--json]`: 1 line for each tree that is not `removed`,
-/// then the total. It only reads the ledger.
 pub fn worktrees(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let (rows, total) = match taskledger::open_existing_read_only(ctx)? {
         Some(store) => (
@@ -397,7 +362,6 @@ pub fn worktrees(ctx: &RuntimeContext, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// 1 tree: a word for each fact, the path last.
 fn worktree_line(r: &WorktreeView) -> String {
     let dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into());
     let mut line = format!(
@@ -430,7 +394,6 @@ fn worktree_line(r: &WorktreeView) -> String {
     line
 }
 
-/// The total size of all trees.
 fn total_line(t: &DiskTotal) -> String {
     let unmeasured = match t.unmeasured {
         0 => String::new(),
@@ -444,7 +407,6 @@ fn total_line(t: &DiskTotal) -> String {
     )
 }
 
-/// An age in its largest whole unit: `45s`, `5m`, `2h`, `3d`.
 fn age(s: i64) -> String {
     match s.max(0) {
         s if s < 60 => format!("{s}s"),
@@ -454,8 +416,6 @@ fn age(s: i64) -> String {
     }
 }
 
-/// `horch ledger gc`: delete the trash refs older than 30 days, and return
-/// the deleted refs.
 pub fn gc(ctx: &RuntimeContext) -> Result<Vec<String>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
@@ -476,7 +436,6 @@ pub fn gc(ctx: &RuntimeContext) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// Each state of a claim has its own word in the lines of `list`.
     #[test]
     fn each_claim_state_has_its_own_word() {
         assert_eq!(state_label(ClaimState::Open), "open");

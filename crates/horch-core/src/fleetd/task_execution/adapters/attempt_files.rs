@@ -1,44 +1,3 @@
-//! Reads the wrapper files of an attempt: `heartbeat.json`, `exit.json` and
-//! `session.json`, each with the checks and inside its own attempt folder,
-//! and writes the rows that the wrapper wrote before Phase 5.
-//!
-//! Requirements: RR-5, RR-8, SR-6. `docs/specs/fleetd/design.md`,
-//! "Workspace layout and file protocol", protocol rules 2 and 7;
-//! `docs/tickets/fleetd-p5/31-ingest-wrapper-files.md`.
-//!
-//! - Part 1 of a pass calls [`read`] for each attempt of its scan. Each file
-//!   goes through the protected file reader with the attempt folder as its
-//!   root and the size limit of its type, and its payload must name the
-//!   task and the attempt of its path. A failed file is
-//!   [`Found::Rejected`].
-//! - Part 2 calls [`ingest`] in its transaction.
-//! - `heartbeat.json` is a snapshot. fleetd does not ingest it: it uses it
-//!   only when its `seq` is higher than `attempts.heartbeat_seq`, the last
-//!   `seq` it used. A used snapshot sets `workers.last_checkin_at` (the
-//!   checkin of the wrapper, Phase 2 Q6), the agent and wrapper PIDs that a
-//!   stop uses, and `attempts.active_at` when the agent wrote output since
-//!   the last checkin (Phase 2 Q7).
-//! - `exit.json` and `session.json` are messages: 1 `ingested` row by path
-//!   and sha256, and 1 effect. `exit.json` settles the worker row and ends
-//!   its session record ([`supervisor::settle_exit`]); `session.json` fills
-//!   the session id, the transcript and the execution record id of the
-//!   worker row, which the session records show. A record id of another
-//!   form rejects the file. `session.json` goes first in a pass, so the
-//!   exit of the same pass finds the record.
-//! - A file that fails a check gets 1 `ingested` row `rejected` with its
-//!   reason, and fleetd does not read its path again (protocol rule 7).
-//!
-//! The PID of the agent is a claim of a file in the task folder, so fleetd
-//! checks it: the process runs, its parent (the wrapper) runs, neither is
-//! fleetd, and while a recorded wrapper runs, a new agent must be its
-//! child. A fact that the platform does not give fails the check.
-//!
-//! The wrapper writes its first heartbeat before its agent starts, with
-//! its own PID and no agent, and starts the agent only when fleetd has
-//! recorded it (SR-8, FM-32). fleetd records such a wrapper only for an
-//! attempt that it launched (its launch record exists) and that is not
-//! ended, and only when the worker row has no wrapper or has this one.
-
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -67,77 +26,54 @@ use crate::taskledger::supervisor::{
 };
 use crate::taskledger::{util, workers};
 
-/// The cause of the note on an attempt whose `exit.json` has the outcome
-/// hint `quota`: the wrapper saw the usage-limit signal of the CLI. Rung 5
-/// then gives the outcome `quota` (RR-11).
 pub const QUOTA_HINT: &str = "the wrapper saw a usage limit";
 
-/// The size limit of `exit.json`.
 pub const EXIT_MAX_BYTES: u64 = 4096;
 
-/// The size limit of `session.json`.
 pub const SESSION_MAX_BYTES: u64 = 4096;
 
-/// What the reader found in 1 file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Found<T> {
-    /// The file passed each check.
-    Valid { sha256: String, file: T },
-    /// The file failed a check. `sha256` is known when the bytes were read.
+    Valid {
+        sha256: String,
+        file: T,
+    },
     Rejected {
         sha256: Option<String>,
         reason: String,
     },
 }
 
-/// 1 wrapper file of an attempt and what the reader found in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WrapperFile<T> {
     pub path: PathBuf,
     pub found: Found<T>,
 }
 
-/// The wrapper files that part 1 read for 1 attempt. `None`: no file, or a
-/// path that the ledger has.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WrapperRead {
     pub attempt: AttemptRef,
-    /// fleetd launched the attempt: its launch record exists.
     pub launched: bool,
     pub heartbeat: Option<WrapperFile<HeartbeatFile>>,
     pub exit: Option<WrapperFile<ExitFile>>,
     pub session: Option<WrapperFile<SessionFile>>,
 }
 
-/// What 1 ingest did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// The attempts whose heartbeat was used.
     pub checkins: Vec<String>,
-    /// The push attempts whose `exit.json` this ingest recorded with their
-    /// worker row left live: the pass ends each by rung 5.
     pub exited: Vec<String>,
-    /// The wrapper of each used heartbeat that passed the PID check, by
-    /// attempt. The pass records it on the attempt row at `launching ->
-    /// live`.
     pub wrappers: BTreeMap<String, Recorded>,
-    /// The attempts whose exit settled their worker, with how it ended.
     pub exits: Vec<(String, Ended)>,
-    /// The attempts whose session was recorded.
     pub sessions: Vec<String>,
-    /// The files that this ingest recorded as rejected.
     pub rejected: Vec<PathBuf>,
 }
 
-/// The process facts that the PID check reads.
 pub trait ProcessFacts {
-    /// The start time of `pid`; `None` when no process has it.
     fn start_time(&self, pid: u32) -> Option<u64>;
-    /// The parent of `pid`; `None` when it is not known.
     fn parent(&self, pid: u32) -> Option<u32>;
 }
 
-/// The processes of this machine.
 pub struct OsProcesses;
 
 impl ProcessFacts for OsProcesses {
@@ -150,7 +86,6 @@ impl ProcessFacts for OsProcesses {
     }
 }
 
-/// The task and the attempt that a payload names.
 trait OfAttempt {
     fn task(&self) -> &str;
     fn attempt(&self) -> &str;
@@ -171,10 +106,6 @@ macro_rules! of_attempt {
 
 of_attempt!(HeartbeatFile, ExitFile, SessionFile);
 
-/// Part 1: read the wrapper files of each of `attempts` under `fleet_root`.
-/// `owner` is the user that owns the ledger; `heartbeat_max_bytes` is the
-/// limit of `heartbeat.json` (`fleet.toml`). A path with an `ingested` row
-/// is not read. Gives 1 read for each attempt.
 pub fn read(
     conn: &Connection,
     fleet_root: &Path,
@@ -202,12 +133,8 @@ pub fn read(
     Ok(out)
 }
 
-/// The most bytes of the record id of `session.json`.
 pub const RECORD_ID_MAX_BYTES: usize = 64;
 
-/// `f` with its record id checked: the id is a claim of a file in the task
-/// folder, so a form other than 1 to [`RECORD_ID_MAX_BYTES`] ASCII letters,
-/// digits, `-` and `_` rejects the file.
 fn checked_session(mut f: WrapperFile<SessionFile>) -> WrapperFile<SessionFile> {
     if let Found::Valid { sha256, file } = &f.found {
         if let Some(id) = file.record_id.as_deref().filter(|id| !record_id_ok(id)) {
@@ -223,7 +150,6 @@ fn checked_session(mut f: WrapperFile<SessionFile>) -> WrapperFile<SessionFile> 
     f
 }
 
-/// Whether `id` has the form of an execution record id.
 fn record_id_ok(id: &str) -> bool {
     (1..=RECORD_ID_MAX_BYTES).contains(&id.len())
         && id
@@ -231,12 +157,10 @@ fn record_id_ok(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The `ingested.path` of a file.
 fn key(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// Read `dir/name` of attempt `a` under `rule`.
 fn read_file<T: DeserializeOwned + OfAttempt>(
     conn: &Connection,
     dir: &Path,
@@ -272,7 +196,6 @@ fn read_file<T: DeserializeOwned + OfAttempt>(
     Ok(Some(WrapperFile { path, found }))
 }
 
-/// The payload of `bytes`, which must name the task and the attempt of `a`.
 fn payload<T: DeserializeOwned + OfAttempt>(bytes: &[u8], a: &AttemptRef) -> Result<T, String> {
     let file: T = serde_json::from_slice(bytes).map_err(|e| format!("schema: {e}"))?;
     if file.task() != a.task_id {
@@ -292,9 +215,6 @@ fn payload<T: DeserializeOwned + OfAttempt>(bytes: &[u8], a: &AttemptRef) -> Res
     Ok(file)
 }
 
-/// Part 2: apply each of `reads` in the open transaction `tx`, at fleet
-/// clock `clock` and time `at`. The fleetd of generation `guard` writes.
-/// `procs` gives the facts of the PID check.
 pub fn ingest(
     tx: &Connection,
     guard: Option<Generation>,
@@ -333,7 +253,6 @@ pub fn ingest(
         if let Some(f) = &r.heartbeat {
             ingest.heartbeat(id, &worker, r.launched, f)?;
         }
-        // session.json first: it names the session record that the exit ends.
         if let Some(f) = &r.session {
             if let Some(session) = ingest.message(f)? {
                 ingest.session(id, &worker, session)?;
@@ -348,7 +267,6 @@ pub fn ingest(
     Ok(ingest.report)
 }
 
-/// 1 ingest in its transaction.
 struct Ingest<'a> {
     tx: &'a Connection,
     guard: Option<Generation>,
@@ -359,8 +277,6 @@ struct Ingest<'a> {
 }
 
 impl Ingest<'_> {
-    /// Record the `ingested` row of `f`. Gives the payload of a valid file
-    /// that had no row; `None` for a rejected file or a path with a row.
     fn message<'f, T>(&mut self, f: &'f WrapperFile<T>) -> Result<Option<&'f T>> {
         let (sha256, outcome, reason, file) = match &f.found {
             Found::Valid { sha256, file } => {
@@ -383,7 +299,6 @@ impl Ingest<'_> {
         Ok(file)
     }
 
-    /// Use the snapshot `f` of attempt `id` when its `seq` is new.
     fn heartbeat(
         &mut self,
         id: &str,
@@ -392,8 +307,6 @@ impl Ingest<'_> {
         f: &WrapperFile<HeartbeatFile>,
     ) -> Result<()> {
         let Found::Valid { file: hb, .. } = &f.found else {
-            // A rejected snapshot is recorded like a message, and its path
-            // is not read again.
             self.message(f)?;
             return Ok(());
         };
@@ -456,11 +369,6 @@ impl Ingest<'_> {
         Ok(())
     }
 
-    /// Settle the worker of attempt `id` with the new `exit`, and end its
-    /// session record. A push attempt keeps its worker row: the pass ends
-    /// both by rung 5 in this pass, so an agent that ran never ends
-    /// `launch_failed`, also when it exited before fleetd recorded its
-    /// wrapper.
     fn exit(&mut self, id: &str, worker: &str, exit: &ExitFile) -> Result<()> {
         let ended = if self.pass_ends(id)? {
             supervisor::exit_seen(self.tx, worker, exit.code, self.at)?;
@@ -493,8 +401,6 @@ impl Ingest<'_> {
         Ok(())
     }
 
-    /// Whether attempt `id` is a push attempt that is not ended: the pass
-    /// ends it by rung 5 at its `exit.json`.
     fn pass_ends(&self, id: &str) -> Result<bool> {
         let found: bool = self.tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM attempts WHERE id = ?1 AND via = 'push'
@@ -505,7 +411,6 @@ impl Ingest<'_> {
         Ok(found)
     }
 
-    /// Record the note `text` on attempt `id` 1 time.
     fn note_once(&self, id: &str, text: &str) -> Result<()> {
         if has_fact(self.tx, Entity::Attempt, id, EventKind::Note, text)? {
             return Ok(());
@@ -527,8 +432,6 @@ impl Ingest<'_> {
         Ok(())
     }
 
-    /// Fill the session of the worker of attempt `id` from the new
-    /// session file `s`.
     fn session(&mut self, id: &str, worker: &str, s: &SessionFile) -> Result<()> {
         workers::set_session(
             self.tx,
@@ -536,7 +439,6 @@ impl Ingest<'_> {
             Some(&s.session_id),
             s.transcript.as_deref(),
         )?;
-        // `checked_session` checked the form of the id in part 1.
         if let Some(record_id) = &s.record_id {
             workers::set_record(self.tx, worker, record_id)?;
         }
@@ -545,8 +447,6 @@ impl Ingest<'_> {
     }
 }
 
-/// The agent and its wrapper, each as (PID, start time), that heartbeat
-/// `hb` names, when they pass the PID check against the worker row `w`.
 fn agent_process(
     hb: &HeartbeatFile,
     w: &workers::Worker,
@@ -570,9 +470,6 @@ fn agent_process(
     Some(((pid, start), (wrapper, wrapper_start)))
 }
 
-/// The wrapper, as (PID, start time), of a heartbeat `hb` that names no
-/// agent: it runs, it is not fleetd, and the worker row `w` has no wrapper
-/// or has this one. A wrapper that the row has is never replaced here.
 fn wrapper_process(
     hb: &HeartbeatFile,
     w: &workers::Worker,
@@ -592,7 +489,6 @@ fn wrapper_process(
     }
 }
 
-/// Whether the agent of `hb` wrote output after the checkin `last`.
 fn output_since(hb: &HeartbeatFile, last: Option<&str>) -> bool {
     let Some(output) = hb.last_output_at.as_deref() else {
         return false;

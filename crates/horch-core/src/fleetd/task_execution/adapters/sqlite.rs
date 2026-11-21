@@ -1,8 +1,3 @@
-//! The `tasks`, `task_deps`, `workers` and `attempts` tables.
-//!
-//! The SQL of the rows of the reap path. `transition()` writes the state of
-//! a row.
-
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
@@ -15,8 +10,6 @@ use crate::taskledger::model::{TaskStatus, WorkerKind, WorkerStatus};
 use crate::taskledger::runs;
 use crate::taskledger::store::one_snapshot;
 
-/// A recorded process from its pid and start time columns. A pid that
-/// cannot name 1 process is no process.
 fn recorded(pid: Option<i64>, start: Option<i64>) -> Option<Recorded> {
     let pid = u32::try_from(pid?).ok().filter(|p| *p > 0)?;
     Some(Recorded {
@@ -25,8 +18,6 @@ fn recorded(pid: Option<i64>, start: Option<i64>) -> Option<Recorded> {
     })
 }
 
-/// The columns of an attempt. An attempt with no process or pane of its own
-/// has those of its worker: the agent can record its pid after its claim.
 const ATTEMPT_COLUMNS: &str = "a.id, a.task_id, a.worker_id, a.state,
     COALESCE(a.pid, w.agent_pid), CASE WHEN a.pid IS NULL THEN w.agent_started ELSE a.pid_start END,
     COALESCE(a.mux_handle, w.pane_id)";
@@ -60,14 +51,10 @@ fn attempts_where(conn: &Connection, filter: &str, args: &[&str]) -> Result<Vec<
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The attempts of worker `worker_id`, oldest first.
 pub fn attempts_of_worker(conn: &Connection, worker_id: &str) -> Result<Vec<AttemptRow>> {
     attempts_where(conn, "WHERE a.worker_id = ?1", &[worker_id])
 }
 
-/// Each attempt that is not ended and that has a pid, with the persona of
-/// its worker, oldest first: the facts of the peer process check of the
-/// command channel (SR-8).
 pub fn open_attempts_with_persona(conn: &Connection) -> Result<Vec<(AttemptRow, Option<String>)>> {
     let sql = format!(
         "SELECT {ATTEMPT_COLUMNS}, w.persona FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
@@ -78,22 +65,15 @@ pub fn open_attempts_with_persona(conn: &Connection) -> Result<Vec<(AttemptRow, 
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The recorded processes of 1 attempt for the fleet process rule (FR-10):
-/// the process of the attempt row, and the wrapper and the agent of its
-/// worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptProcesses {
     pub attempt: String,
     pub task: Option<String>,
     pub persona: Option<String>,
     pub ended: bool,
-    /// Each recorded process, at most 3. A process may have no start time.
     pub processes: Vec<Recorded>,
 }
 
-/// The recorded processes of each attempt that is not `ended`, or that
-/// ended at or after the ledger stamp `ended_since`, in the order of their
-/// rows.
 pub fn fleet_processes(conn: &Connection, ended_since: &str) -> Result<Vec<AttemptProcesses>> {
     let mut stmt = conn.prepare(
         "SELECT a.id, a.task_id, w.persona, a.state = 'ended', a.pid, a.pid_start,
@@ -120,12 +100,8 @@ pub fn fleet_processes(conn: &Connection, ended_since: &str) -> Result<Vec<Attem
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The task, the state, the `via` and the persona of the worker of 1
-/// attempt.
 pub type AttemptVia = (Option<String>, String, String, Option<String>);
 
-/// The [`AttemptVia`] of the attempt `id`, or `None` when the ledger has no
-/// such attempt.
 pub fn attempt_via(conn: &Connection, id: &str) -> Result<Option<AttemptVia>> {
     let row = conn
         .query_row(
@@ -139,8 +115,6 @@ pub fn attempt_via(conn: &Connection, id: &str) -> Result<Option<AttemptVia>> {
     Ok(row)
 }
 
-/// The worker of the attempt `id`, or `None` when the ledger has no such
-/// attempt.
 pub fn worker_of_attempt(conn: &Connection, id: &str) -> Result<Option<String>> {
     let row = conn
         .query_row("SELECT worker_id FROM attempts WHERE id = ?1", [id], |r| {
@@ -150,7 +124,6 @@ pub fn worker_of_attempt(conn: &Connection, id: &str) -> Result<Option<String>> 
     Ok(row)
 }
 
-/// The id of each task with the status `status`, by id.
 pub fn tasks_in(conn: &Connection, status: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT task_id FROM tasks WHERE status = ?1 ORDER BY task_id")?;
     let ids = stmt
@@ -159,7 +132,6 @@ pub fn tasks_in(conn: &Connection, status: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// The worker row of `r`; `host` is the host of this machine.
 fn worker(r: &Row<'_>, host: &str) -> rusqlite::Result<WorkerRow> {
     let status: String = r.get(2)?;
     let kind: String = r.get(1)?;
@@ -192,7 +164,6 @@ fn workers(conn: &Connection, host: &str) -> Result<BTreeMap<String, WorkerRow>>
     Ok(out)
 }
 
-/// Each task of the idea `idea_id`, as (`task_id`, `status`), oldest first.
 pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(String, String)>> {
     let mut stmt =
         conn.prepare("SELECT task_id, status FROM tasks WHERE idea_id = ?1 ORDER BY rowid")?;
@@ -200,8 +171,6 @@ pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(Stri
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Whether the idea `idea_id` has a task in `status`: 1 statement for any
-/// count of tasks.
 pub fn idea_has_task_in(conn: &Connection, idea_id: &str, status: TaskStatus) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM tasks WHERE idea_id = ?1 AND status = ?2)",
@@ -210,8 +179,6 @@ pub fn idea_has_task_in(conn: &Connection, idea_id: &str, status: TaskStatus) ->
     )?)
 }
 
-/// The idea of each task of `task_ids` that has an idea, by task: 1
-/// statement for any count of tasks.
 pub fn ideas_of_tasks<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str>,
@@ -228,16 +195,12 @@ pub fn ideas_of_tasks<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The persona of each worker row, by worker id: 1 statement for any count
-/// of workers.
 pub fn worker_personas(conn: &Connection) -> Result<BTreeMap<String, Option<String>>> {
     let mut stmt = conn.prepare("SELECT worker_id, persona FROM workers")?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The outcome of each attempt of `ids`, by id: 1 statement for any count
-/// of attempts. An attempt with no row is not in the map.
 pub fn outcomes_of<'a>(
     conn: &Connection,
     ids: impl IntoIterator<Item = &'a str>,
@@ -254,19 +217,13 @@ pub fn outcomes_of<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The owner facts of the worktree rows of the custody pass. An id with no
-/// row is not in its map.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OwnerFacts {
     pub attempt_states: BTreeMap<String, String>,
     pub worker_statuses: BTreeMap<String, String>,
-    /// Status and held reason, by task id.
     pub tasks: BTreeMap<String, (String, Option<String>)>,
 }
 
-/// The state of each attempt of `attempts`, the status of each worker of
-/// `workers`, and the status and held reason of each task of `tasks`: 3
-/// statements for any count of ids.
 pub fn owner_facts<'a>(
     conn: &Connection,
     attempts: impl IntoIterator<Item = &'a str>,
@@ -310,8 +267,6 @@ pub fn owner_facts<'a>(
     })
 }
 
-/// 2 statements for any count of live tasks: each live attempt is judged in
-/// each pass, so this read stays whole.
 fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
     let mut stmt = conn.prepare(
         "SELECT task_id, status, current_worker_id, attempts - attempt_floor, run_id
@@ -337,7 +292,6 @@ fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<Str
     let runs = runs::of_ids(conn, rows.iter().map(|(_, run)| run.as_str()))?;
     let mut out = BTreeMap::new();
     for (mut t, run) in rows {
-        // A task with no run is not in the map: the check below fails.
         let Some(run) = runs.get(&run) else {
             continue;
         };
@@ -356,9 +310,6 @@ fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<Str
     Ok(out)
 }
 
-/// The rows of the reap path: each attempt and each worker row, and the
-/// task of each live attempt. `host` is the host of this machine. The 3
-/// reads run on 1 snapshot, so each live attempt has its task.
 pub fn rows(conn: &Connection, host: &str) -> Result<Rows> {
     one_snapshot(conn, || {
         let attempts = attempts_where(conn, "", &[])?;
@@ -371,7 +322,6 @@ pub fn rows(conn: &Connection, host: &str) -> Result<Rows> {
     })
 }
 
-/// Insert `a`, started at `now`. Its event is the caller's.
 pub fn insert_attempt(conn: &Connection, a: &AttemptRow, now: &str) -> Result<()> {
     let p = a.process;
     conn.execute(
@@ -391,8 +341,6 @@ pub fn insert_attempt(conn: &Connection, a: &AttemptRow, now: &str) -> Result<()
     Ok(())
 }
 
-/// Record the process `p` of the attempt `id`: the launch of fleetd started
-/// it. `transition()` writes the state.
 pub fn set_process(conn: &Connection, id: &str, p: Recorded) -> Result<()> {
     conn.execute(
         "UPDATE attempts SET pid = ?2, pid_start = ?3 WHERE id = ?1",
@@ -405,7 +353,6 @@ pub fn set_process(conn: &Connection, id: &str, p: Recorded) -> Result<()> {
     Ok(())
 }
 
-/// Whether an attempt other than `id` records the process `p`.
 pub fn process_of_other_attempt(conn: &Connection, id: &str, p: Recorded) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM attempts WHERE id != ?1 AND pid = ?2 AND pid_start = ?3",
@@ -419,8 +366,6 @@ pub fn process_of_other_attempt(conn: &Connection, id: &str, p: Recorded) -> Res
     Ok(n > 0)
 }
 
-/// Write the process `p` on the attempt `id` when its row has no process.
-/// Gives whether it wrote.
 pub fn set_missing_process(conn: &Connection, id: &str, p: Recorded) -> Result<bool> {
     let n = conn.execute(
         "UPDATE attempts SET pid = ?2, pid_start = ?3 WHERE id = ?1 AND pid IS NULL",
@@ -433,8 +378,6 @@ pub fn set_missing_process(conn: &Connection, id: &str, p: Recorded) -> Result<b
     Ok(n == 1)
 }
 
-/// Write the outcome and the end time of the attempt `id`, which
-/// `transition()` moves to `ended`.
 pub fn set_ended(conn: &Connection, id: &str, outcome: &str, now: &str) -> Result<()> {
     conn.execute(
         "UPDATE attempts SET outcome = ?2, ended_at = COALESCE(ended_at, ?3) WHERE id = ?1",
@@ -443,8 +386,6 @@ pub fn set_ended(conn: &Connection, id: &str, outcome: &str, now: &str) -> Resul
     Ok(())
 }
 
-/// The tasks of the idea `idea_id` that are not `done` and not `cancelled`,
-/// by id.
 pub fn open_tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT task_id FROM tasks WHERE idea_id = ?1 AND status NOT IN (?2, ?3)
@@ -457,7 +398,6 @@ pub fn open_tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String
     Ok(ids)
 }
 
-/// Each task of the idea `idea_id`, by id.
 pub fn tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT task_id FROM tasks WHERE idea_id = ?1 ORDER BY task_id")?;
     let ids = stmt
@@ -466,8 +406,6 @@ pub fn tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// Move each task of the idea `idea_id` to the run `run_id`. The number of
-/// moved tasks.
 pub fn move_tasks_of_idea(conn: &Connection, idea_id: &str, run_id: &str) -> Result<usize> {
     Ok(conn.execute(
         "UPDATE tasks SET run_id = ?2, updated_at = ?3 WHERE idea_id = ?1",
@@ -475,7 +413,6 @@ pub fn move_tasks_of_idea(conn: &Connection, idea_id: &str, run_id: &str) -> Res
     )?)
 }
 
-/// The idea of the task `task_id`, or `None`.
 pub fn idea_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let idea = conn.query_row(
         "SELECT idea_id FROM tasks WHERE task_id = ?1",
@@ -485,8 +422,6 @@ pub fn idea_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> 
     Ok(idea)
 }
 
-/// A live attempt with its own recorded wrapper process, and its task or,
-/// for a sub-orchestrator attempt, its idea (fleetd-p6 ticket 25).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveWrapper {
     pub id: String,
@@ -496,8 +431,6 @@ pub struct LiveWrapper {
     pub pid_start: u64,
 }
 
-/// Each live attempt whose wrapper PID and start time are recorded. It
-/// only reads.
 pub fn live_wrappers(conn: &Connection) -> Result<Vec<LiveWrapper>> {
     let mut stmt = conn.prepare(
         "SELECT id, task_id, idea_id, pid, pid_start FROM attempts
@@ -515,7 +448,6 @@ pub fn live_wrappers(conn: &Connection) -> Result<Vec<LiveWrapper>> {
     let mut out = Vec::new();
     for row in rows {
         let (id, task_id, idea_id, process) = row?;
-        // A value that is not a PID or a start time names no process.
         if let Some(Recorded {
             pid,
             pid_start: Some(pid_start),
@@ -533,7 +465,6 @@ pub fn live_wrappers(conn: &Connection) -> Result<Vec<LiveWrapper>> {
     Ok(out)
 }
 
-/// The task and the idea of attempt `id`. `None` when it has no row.
 pub fn task_and_idea(
     conn: &Connection,
     id: &str,
@@ -548,8 +479,6 @@ pub fn task_and_idea(
         .optional()?)
 }
 
-/// Each sub-orchestrator attempt of the idea `idea_id` (no task), oldest
-/// first, with its outcome.
 pub fn idea_attempts(
     conn: &Connection,
     idea_id: &str,
@@ -564,7 +493,6 @@ pub fn idea_attempts(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The idea of each sub-orchestrator attempt that is not ended, each once.
 pub fn ideas_with_open_attempts(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT idea_id FROM attempts
@@ -574,8 +502,6 @@ pub fn ideas_with_open_attempts(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Record the idea `idea_id` of the sub-orchestrator attempt `id`, which
-/// fleetd launches (`via = push`).
 pub fn set_idea(conn: &Connection, id: &str, idea_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE attempts SET idea_id = ?2, via = 'push' WHERE id = ?1",

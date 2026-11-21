@@ -1,18 +1,3 @@
-//! The `polite_stops` rows in SQLite: the proof that fleetd stopped a
-//! process politely, in place of a file in `run/stops/` (Q12 of the map).
-//!
-//! Requirements: RR-5, RR-8. 1 row for each process that got a polite stop,
-//! keyed by its pid and start time. The row holds the time of the polite
-//! stop on the fleet clock, so the kill comes when the grace ends, also
-//! after a restart of fleetd. When the process was the process in a pane,
-//! the row also holds the pane: the proof with which a later pass closes
-//! the pane after the process ended on the polite stop ([`stopped`]).
-//!
-//! [`record`] commits the row before the pass sends the signal. [`forget`]
-//! deletes the row when the process is gone. [`import_old_files`] reads the
-//! files `<fleet root>/run/stops/<pid>-<start>.json` of an older fleetd 1
-//! time, writes their rows and removes them.
-
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -25,17 +10,11 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::task_execution::domain::task::{GroupLeft, PaneProof, Recorded, Stopped};
 
-/// The largest old file that [`import_old_files`] reads. A file of an older
-/// fleetd has less than 200 bytes.
 const OLD_FILE_MAX_BYTES: u64 = 4096;
 
-/// The polite stop of 1 process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Polite {
-    /// The time of the polite stop, on the fleet clock.
     pub at: FleetSeconds,
-    /// The pane that the process was in at the polite stop, by the pid and
-    /// start time of the process in the pane.
     pub pane: Option<String>,
 }
 
@@ -43,8 +22,6 @@ fn start_key(pid_start: u64) -> Result<i64> {
     i64::try_from(pid_start).with_context(|| format!("the start time {pid_start} is too large"))
 }
 
-/// The polite stop of the process `pid` with the start time `pid_start`;
-/// `None` when it got none.
 pub fn get(conn: &Connection, pid: u32, pid_start: u64) -> Result<Option<Polite>> {
     conn.query_row(
         "SELECT at_s, pane FROM polite_stops WHERE pid = ?1 AND pid_start = ?2",
@@ -60,9 +37,6 @@ pub fn get(conn: &Connection, pid: u32, pid_start: u64) -> Result<Option<Polite>
     .with_context(|| format!("reading the polite stop of process {pid}"))
 }
 
-/// Record the polite stop `p` of the process in its own transaction, while
-/// `guard` is the generation of the `fleetd` row. The row is committed
-/// before the stop is sent.
 pub fn record(
     conn: &mut Connection,
     guard: Generation,
@@ -80,8 +54,6 @@ pub fn record(
         .with_context(|| format!("recording the polite stop of process {pid}"))
 }
 
-/// Each row: the pid, the start time and the pane. A row whose key is not
-/// a pid and a start time is skipped: no code writes one.
 fn rows(conn: &Connection) -> Result<Vec<(u32, u64, Option<String>)>> {
     let mut stmt =
         conn.prepare("SELECT pid, pid_start, pane FROM polite_stops ORDER BY pid, pid_start")?;
@@ -102,9 +74,6 @@ fn rows(conn: &Connection) -> Result<Vec<(u32, u64, Option<String>)>> {
     Ok(out)
 }
 
-/// The polite stop of each process that is `gone(pid, start)`, with the
-/// pane that it proves. Its group is [`GroupLeft::None`]: the pass reads
-/// the group of each with the facts of the OS.
 pub fn stopped(conn: &Connection, gone: impl Fn(u32, u64) -> bool) -> Result<Vec<Stopped>> {
     Ok(rows(conn)
         .context("reading the polite stops")?
@@ -121,9 +90,6 @@ pub fn stopped(conn: &Connection, gone: impl Fn(u32, u64) -> bool) -> Result<Vec
         .collect())
 }
 
-/// Delete the row of each polite stop for which `kept(pid, start)` is
-/// false: the process is gone, or no row names it. 1 transaction, while
-/// `guard` is the generation of the `fleetd` row.
 pub fn forget(
     conn: &mut Connection,
     guard: Generation,
@@ -143,9 +109,6 @@ pub fn forget(
         .context("deleting the polite stops of gone processes")
 }
 
-// ─── the files of an older fleetd ───────────────────────────────────────
-
-/// `<fleet root>/run/stops`: the folder of the files of an older fleetd.
 fn old_dir(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join("stops")
 }
@@ -158,8 +121,6 @@ struct OldFile {
     pane: Option<OldPane>,
 }
 
-/// The proof of a pane in an old file: herdr named the process `shell_pid`
-/// with the start time `shell_start` as the process in the pane `pane_id`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OldPane {
@@ -168,16 +129,11 @@ struct OldPane {
     shell_start: u64,
 }
 
-/// The pid and start time of the old file `name`: `<pid>-<start>.json`.
 fn old_key(name: &str) -> Option<(u32, u64)> {
     let (pid, start) = name.strip_suffix(".json")?.split_once('-')?;
     Some((pid.parse().ok()?, start.parse().ok()?))
 }
 
-/// Read the old file `path` of the process `(pid, start)`, with the checks
-/// of an untrusted file: a regular file and no link, the same file when it
-/// is open, the owner is this user, and its size is under its limit. The
-/// error is the reason of the refusal.
 fn read_old(path: &Path, (pid, start): (u32, u64)) -> std::result::Result<Polite, String> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| format!("not readable ({e})"))?;
     if !meta.file_type().is_file() {
@@ -216,15 +172,6 @@ fn read_old(path: &Path, (pid, start): (u32, u64)) -> std::result::Result<Polite
     })
 }
 
-/// Read each file of `<fleet root>/run/stops/` of an older fleetd 1 time:
-/// write the row of each file that passes its checks, and keep a row that
-/// exists. Then remove each file and the folder. A file that fails a check
-/// writes no row, so its process gets a new grace. Gives 1 log line for
-/// each file that failed a check or that fleetd could not remove.
-///
-/// The rows commit in 1 transaction, while `guard` is the generation of the
-/// `fleetd` row, before the first file is removed: a crash between them
-/// reads the files again, and the rows stay.
 pub fn import_old_files(
     conn: &mut Connection,
     guard: Generation,

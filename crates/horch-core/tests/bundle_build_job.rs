@@ -1,14 +1,3 @@
-//! The `bundle_build` job: it builds the candidate of a bundle from the base
-//! tip and the tip of each member, writes `refs/horch/bundle/<id>`
-//! create-only, reads it back, and gives the candidate tip, or the member
-//! that conflicts with its files (docs/specs/fleetd/design.md, "The bundle",
-//! "The kinds of job", "fleetd owns the candidate refs";
-//! docs/tickets/fleetd-p4/27-bundle-build-job.md).
-//!
-//! Each test makes its own temporary ledger and git repository. No test
-//! touches this repository, and no test reads the clock, the load or the
-//! limits of the machine.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,10 +18,7 @@ use horch_marketplace::git::scrub_repo_env;
 
 const FEATURE: &str = "F-0001";
 
-/// The date of each commit of a test: a fixed day in the past.
 const COMMIT_DATE: &str = "1700000000 +0000";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _dir: tempfile::TempDir,
@@ -41,7 +27,6 @@ struct World {
     tasks: u32,
     root: PathBuf,
     repo: PathBuf,
-    /// The first commit of `main`.
     base: String,
 }
 
@@ -63,7 +48,6 @@ fn world() -> World {
     store
         .immediate(|tx| {
             rows::insert_feature(tx, None, &new, cause("feature accepted"))?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -98,8 +82,6 @@ fn cause(text: &str) -> Cause<'_> {
 }
 
 impl World {
-    /// Check out `branch` (made from `main` when it is new), write each file
-    /// of `files`, and commit them. Gives the new tip.
     fn commit_on(&self, branch: &str, files: &[(&str, &str)]) -> String {
         if git_out(&self.repo, &["rev-parse", "--verify", "-q", branch])
             .status
@@ -119,7 +101,6 @@ impl World {
         tip
     }
 
-    /// The tip of `rev`, or `None` when it does not exist.
     fn tip(&self, rev: &str) -> Option<String> {
         let out = git_out(&self.repo, &["rev-parse", "--verify", "-q", rev]);
         out.status
@@ -133,7 +114,6 @@ impl World {
             .success()
     }
 
-    /// A new task and its task branch `name` of [`FEATURE`].
     fn task_branch(&mut self, name: &str) {
         self.tasks += 1;
         let n = self.tasks;
@@ -156,8 +136,6 @@ impl World {
             .unwrap();
     }
 
-    /// A new `building` bundle on the base tip with the task branches
-    /// `members`, in queue order. Gives its id.
     fn bundle(&mut self, members: &[&str]) -> i64 {
         for m in members {
             self.task_branch(m);
@@ -174,8 +152,6 @@ impl World {
             .unwrap()
     }
 
-    /// Queue run `run` of the `bundle_build` job of `bundle` with the input
-    /// key of the base tip and `tips`, and commit it. Gives its row.
     fn queue(&mut self, bundle: i64, tips: &[&str], run: i64) -> JobRow {
         let subject = bundle.to_string();
         let key = exec_bundle::input_key(&self.base, tips);
@@ -184,8 +160,6 @@ impl World {
         jobs_store::get(self.store.conn(), id).unwrap().unwrap()
     }
 
-    /// The process of the run `row` was lost: the next pass ends it
-    /// `abandoned`, so a new run can be queued.
     fn lose(&self, row: &JobRow) {
         self.store
             .conn()
@@ -201,8 +175,6 @@ impl World {
     }
 }
 
-/// Run `run` of the `bundle_build` job of the bundle `bundle` of the
-/// repository `repo`, with the input key `key`.
 fn new_job<'a>(repo: &'a str, bundle: &'a str, key: &'a str, run: i64) -> NewJob<'a> {
     NewJob {
         kind: Kind::BundleBuild,
@@ -216,7 +188,6 @@ fn new_job<'a>(repo: &'a str, bundle: &'a str, key: &'a str, run: i64) -> NewJob
     }
 }
 
-/// The build that the data of `ran` gives.
 fn build(ran: &Ran) -> Build {
     serde_json::from_value(ran.data.clone().expect("the run gives its build")).unwrap()
 }
@@ -255,8 +226,6 @@ fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
     cmd.output().unwrap()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn bundle_build_writes_the_candidate_ref_and_its_tip() {
     let mut w = world();
@@ -279,7 +248,6 @@ fn bundle_build_writes_the_candidate_ref_and_its_tip() {
     };
     assert_eq!(candidate_ref, name);
     assert_eq!(w.tip(&name).as_deref(), Some(candidate_tip.as_str()));
-    // Each task's commits are kept (Q15), and no other ref moved.
     for tip in [&one, &two, &w.base] {
         assert!(w.is_ancestor(tip, &candidate_tip), "{tip} is kept");
     }
@@ -334,8 +302,6 @@ fn repeated_run_with_the_same_ref_passes() {
     let Build::Candidate { candidate_tip, .. } = build(&ran) else {
         panic!("a candidate: {:?}", build(&ran));
     };
-    // The tip depends only on the input key: each merge commit has the
-    // newest date of its parents, not the date of the run.
     let dates = git(&w.repo, &["show", "-s", "--format=%at %ct", &candidate_tip]);
     assert_eq!(dates, "1700000000 1700000000");
     assert_eq!(w.tip(&exec_bundle::candidate_ref(id)), Some(candidate_tip));
@@ -376,8 +342,6 @@ fn input_key_of_other_tips_fails_and_runs_no_git() {
     assert_eq!(w.tip(&exec_bundle::candidate_ref(id)), None);
 }
 
-/// The fleetd git rule (Q26): a merge driver of the project is code of the
-/// project, and it never runs with the rights of fleetd.
 #[test]
 fn candidate_build_runs_no_merge_driver_of_the_project() {
     let mut w = world();
@@ -408,10 +372,6 @@ fn candidate_build_runs_no_merge_driver_of_the_project() {
     assert_eq!(w.tip(&exec_bundle::candidate_ref(id)), None);
 }
 
-/// A crash at each fault point of the effect: before the commit of the
-/// intended row, after that commit and before the ref write, and after the
-/// ref write and before the result. The next run completes the effect 1
-/// time, and no tip and no work is lost.
 #[test]
 fn crash_at_each_fault_point_writes_the_candidate_ref_1_time() {
     let mut w = world();
@@ -422,7 +382,6 @@ fn crash_at_each_fault_point_writes_the_candidate_ref_1_time() {
     let subject = id.to_string();
     let key = exec_bundle::input_key(&w.base, &[&one, &two]);
 
-    // 1. A fault before the commit of the intended row: no row, no ref.
     let repo = w.repo.to_str().unwrap().to_string();
     let new = new_job(&repo, &subject, &key, 1);
     let faulted = w.store.immediate(|tx| -> anyhow::Result<()> {
@@ -438,13 +397,10 @@ fn crash_at_each_fault_point_writes_the_candidate_ref_1_time() {
     assert_eq!(count, 0, "a fault before the commit leaves no row");
     assert_eq!(w.tip(&name), None);
 
-    // 2. A fault after the commit and before the effect: the row is
-    // committed, and its process is lost before the ref write.
     let first = w.queue(id, &[&one, &two], 1);
     assert_eq!(w.tip(&name), None);
     w.lose(&first);
 
-    // The next run does the effect.
     let second = w.queue(id, &[&one, &two], 2);
     let done = w.run(&second);
     assert!(done.outcome.passed, "{}", done.outcome.text);
@@ -452,8 +408,6 @@ fn crash_at_each_fault_point_writes_the_candidate_ref_1_time() {
         panic!("a candidate: {:?}", build(&done));
     };
 
-    // 3. A fault after the ref write and before the result: the run is
-    // lost, and the next run passes with the same tip and no new move.
     w.lose(&second);
     let third = w.queue(id, &[&one, &two], 3);
     let again = w.run(&third);

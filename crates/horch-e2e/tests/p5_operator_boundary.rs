@@ -1,28 +1,3 @@
-//! The SR-8 gate test of Phase 5 (`docs/specs/fleetd/design.md`, Migration
-//! plan item 7; ticket 43 of fleetd-p5): a worker cannot send an operator
-//! request in any way, and neither can a test of the project that runs in
-//! a gate (SR-4, SR-5, SR-8, FM-32, Q2 and Q21 of
-//! `docs/tickets/fleetd-p5/MAP.md`).
-//!
-//! Each test starts 1 real `horch fleetd` on its own temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and `FLEET_ROOT`,
-//! with 1 pass each second, and waits for an event (a row, a file, an
-//! exit), never for a time. Each `horch` command of a test runs with
-//! `HORCH_TEST_ASSERT_READ_ONLY=1`; fleetd and its job processes do not,
-//! because `horch job run` still writes the rows of its job (T-883).
-//!
-//! The live attempt of a test is a stand-in wrapper: a `sleep` process that
-//! leads its own process group, which the test records as the wrapper of a
-//! live attempt, as the launcher does. Each attacker joins that group, or is
-//! a child of the wrapper, so the peer process check of fleetd finds it in
-//! the attempt. The attacker is this test binary, started again with the
-//! act in its environment ([`attack_child`]). The worker sandbox is the
-//! platform sandbox of ticket 06 with the 3 operator denials, so an attack
-//! from inside it meets the OS first and fleetd second.
-//!
-//! Unix only: the channel is a Unix socket, and on Windows the platform
-//! sandbox is `NotSupported`.
-
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
@@ -63,35 +38,15 @@ use horch_platform::sandbox::{sandboxed, Denials};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 
-// ─── the attacker ───────────────────────────────────────────────────────
-
-/// The act of the attacker: `read`, `connect` or `file`.
 const ACT_ENV: &str = "HORCH_P5_ACT";
-/// The path of the act: the token file, the channel, or the request file.
 const PATH_ENV: &str = "HORCH_P5_PATH";
-/// The request line of a `connect` or a `file` act, with no `\n`.
 const LINE_ENV: &str = "HORCH_P5_LINE";
-/// With `1`, the attacker leaves the process group of its parent first
-/// (`setsid`), so only its parent chain holds it in the attempt.
 const NEW_SESSION_ENV: &str = "HORCH_P5_NEW_SESSION";
 
-/// The start of the line of the attacker that says what it got. libtest
-/// prints its own text on the same stream.
 const RESULT: &str = "p5-attack: ";
 
-/// The name of the test that is the attacker, for `--exact`.
 const ATTACK_CHILD: &str = "attack_child";
 
-/// The attacker: with no act in its environment it does nothing, so a
-/// normal run of this file passes it. A test starts this binary again with
-/// an act. It exits 0 when the act succeeds and prints what it got, else it
-/// prints the error and exits 1.
-///
-/// - `read`: read the token file. An empty read is a refusal: the Linux
-///   sandbox puts an empty file over the token.
-/// - `connect`: connect to the channel, send the line, read the reply.
-/// - `file`: write the line as `<path>.tmp` with mode 0600, then rename it
-///   to `<path>`, as the client of the channel writes a request file.
 #[test]
 fn attack_child() {
     let Ok(act) = std::env::var(ACT_ENV) else {
@@ -155,9 +110,6 @@ fn write_request_file(path: &Path, line: &str) -> Result<String, String> {
     Ok(format!("wrote {}", path.display()))
 }
 
-/// The command that starts this binary as the attacker of `act` on `path`
-/// with `line`. It inherits no variable of the operator but `PATH`: the
-/// Linux sandbox finds `bwrap` there.
 fn attacker(act: &str, path: &Path, line: &str) -> Command {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args([
@@ -175,11 +127,9 @@ fn attacker(act: &str, path: &Path, line: &str) -> Command {
     cmd
 }
 
-/// What 1 attack did.
 #[derive(Debug)]
 struct Attack {
     succeeded: bool,
-    /// The last line that the attacker printed: what it got, or the error.
     text: String,
 }
 
@@ -200,10 +150,6 @@ fn attack_of(out: &Output) -> Attack {
     }
 }
 
-// ─── requests ───────────────────────────────────────────────────────────
-
-/// Each `operator` kind of the catalog (the table "Request kinds" of the
-/// MAP, after the kinds that Phase 6 retired).
 fn operator_kinds() -> Vec<Kind> {
     Kind::ALL
         .into_iter()
@@ -211,13 +157,10 @@ fn operator_kinds() -> Vec<Kind> {
         .collect()
 }
 
-/// A request id of `[A-Za-z0-9-]` from `parts`.
 fn request_id(parts: &[&str]) -> RequestId {
     RequestId::parse(&parts.join("-").replace('_', "-")).unwrap()
 }
 
-/// The request line of `kind` with `payload`, and `token` if any, with no
-/// `\n`.
 fn line(id: &RequestId, kind: Kind, payload: Value, token: Option<&str>) -> String {
     let Value::Object(payload) = payload else {
         panic!("a payload is an object");
@@ -233,7 +176,6 @@ fn line(id: &RequestId, kind: Kind, payload: Value, token: Option<&str>) -> Stri
     .to_string()
 }
 
-/// 1 row of the `requests` table.
 #[derive(Debug, Clone, PartialEq)]
 struct RequestRow {
     id: String,
@@ -244,8 +186,6 @@ struct RequestRow {
     reason: Option<String>,
 }
 
-/// SR-8: the row of a refused operator request records the refusal with its
-/// reason and a null `auth`.
 fn assert_refused(row: &RequestRow, reason_has: &str) {
     assert_eq!(row.state, "refused", "{row:?}");
     assert_eq!(row.class, "operator", "{row:?}");
@@ -257,27 +197,17 @@ fn assert_refused(row: &RequestRow, reason_has: &str) {
     );
 }
 
-// ─── the world of a test ────────────────────────────────────────────────
-
-/// The feature of each test, and its branch.
 const FEATURE: &str = "F-0001";
 const FEATURE_BRANCH: &str = "fleet/F-0001";
 
-/// The persona of the old orchestrator seat, which Phase 6 removed (ticket
-/// 44 of fleetd-p6).
 const SEAT: &str = "orchestrator";
 
-/// The persona of the worker of a test.
 const WORKER: &str = "opus-hardening";
 
-/// The `fleet.toml` of a test: 1 pass each second and the longest
-/// heartbeat age.
 fn fleet_toml() -> String {
     "pass_period_s = 1\nheartbeat_max_age_s = 300\n".to_string()
 }
 
-/// 1 live attempt of a test: its id and its stand-in wrapper, which leads
-/// its own process group.
 struct Attempt {
     id: String,
     worker: String,
@@ -285,11 +215,7 @@ struct Attempt {
     wrapper: u32,
 }
 
-/// A harness with a git repository, a real fleetd, the run `p5` and the
-/// stand-in wrappers of the live attempts.
 struct World {
-    /// Dropped before `h`: the teardown of the harness fails a test whose
-    /// processes still run.
     fleetds: Fleetds,
     h: Harness,
     run: Run,
@@ -310,8 +236,6 @@ impl World {
         World::with_gate_sandbox(name, false)
     }
 
-    /// The world. With `gate`, the fleetd of the test can find `bwrap` on
-    /// Linux, the gate sandbox of this host.
     fn with_gate_sandbox(name: &str, gate: bool) -> World {
         let mut h = Harness::new(name).with_git();
         let db = h.root.join("ledger.sqlite3");
@@ -361,7 +285,6 @@ impl World {
         OperatorPaths::of(&self.fleet_root())
     }
 
-    /// The operator token, as the test gives it to an attack.
     fn token(&self) -> String {
         token_file::read(&self.fleet_root())
             .unwrap()
@@ -369,13 +292,10 @@ impl World {
             .to_string()
     }
 
-    /// A connection of the test to the ledger, for its fixtures and reads.
     fn conn(&self) -> Connection {
         open(&self.db())
     }
 
-    /// The evidence of a wait that failed: the output of fleetd and each
-    /// job with its result.
     fn fleetd_output(&self) -> String {
         let conn = self.conn();
         let mut stmt = conn
@@ -396,9 +316,6 @@ impl World {
         )
     }
 
-    /// A new live attempt of `persona` with the task `task`, or with no
-    /// task when `task` is `None`. Its stand-in wrapper is a `sleep` that
-    /// leads a new process group.
     fn live_attempt(&mut self, persona: &str, kind: WorkerKind, task: bool) -> Attempt {
         let wrapper = Command::new("/bin/sleep")
             .arg("3600")
@@ -414,8 +331,6 @@ impl World {
         self.record_attempt(persona, kind, task, pid, start)
     }
 
-    /// Record the live attempt whose wrapper is `pid` with the start time
-    /// `start`, as fleetd records a launch.
     fn record_attempt(
         &self,
         persona: &str,
@@ -471,25 +386,18 @@ impl World {
         }
     }
 
-    /// A `horch` command of the test, with the seam of RR-5: it panics when
-    /// it opens the ledger for a write (ticket 42). fleetd and its job
-    /// processes run with no seam: `horch job run` still writes the rows of
-    /// its job until T-883.
     fn horch(&self, args: &[&str]) -> Command {
         let mut cmd = self.h.horch(args);
         cmd.env(ASSERT_READ_ONLY_ENV, "1");
         cmd
     }
 
-    /// The folder that the worker sandbox lets an attacker write.
     fn work_area(&self) -> PathBuf {
         let dir = self.h.root.join("work-area");
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// The worker sandbox of ticket 06: write only the work area, and the
-    /// 3 operator denials (the token, the channel, each write in `run/`).
     fn worker_sandbox(&self, cmd: Command) -> Command {
         let paths = self.paths();
         let denied = Denials {
@@ -503,8 +411,6 @@ impl World {
         }
     }
 
-    /// The attacker of `act` on `path` with `line`, in the worker sandbox
-    /// when `sandbox`, in the process group of the attempt `a`.
     fn attack(&self, a: &Attempt, sandbox: bool, act: &str, path: &Path, line: &str) -> Attack {
         let cmd = attacker(act, path, line);
         let cmd = if sandbox {
@@ -515,7 +421,6 @@ impl World {
         attack_of(&World::in_attempt(cmd, a))
     }
 
-    /// Run `cmd` in the process group of the attempt `a`.
     fn in_attempt(mut cmd: Command, a: &Attempt) -> Output {
         cmd.process_group(i32::try_from(a.wrapper).unwrap())
             .stdin(Stdio::null())
@@ -523,7 +428,6 @@ impl World {
             .unwrap()
     }
 
-    /// The row of the request `id`.
     fn request(&self, id: &str) -> Option<RequestRow> {
         self.conn()
             .query_row(
@@ -536,7 +440,6 @@ impl World {
             .unwrap()
     }
 
-    /// Each row of the `requests` table, in the order of its insert.
     fn requests(&self) -> Vec<RequestRow> {
         let conn = self.conn();
         let mut stmt = conn
@@ -548,7 +451,6 @@ impl World {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// Wait until the request `id` is decided, and give its row.
     fn decided(&self, id: &str) -> RequestRow {
         wait_for_or(
             &format!("fleetd to decide the request {id}"),
@@ -557,7 +459,6 @@ impl World {
         )
     }
 
-    /// The names of the files in the request folder, `archive/` left out.
     fn request_files(&self) -> BTreeSet<String> {
         std::fs::read_dir(requests_dir(&self.fleet_root()))
             .unwrap()
@@ -567,8 +468,6 @@ impl World {
             .collect()
     }
 
-    /// The state of the ledger that an operator request changes: each task,
-    /// worker, attempt, job, feature and branch with its state.
     fn state(&self) -> Vec<String> {
         let conn = self.conn();
         let mut out = Vec::new();
@@ -630,8 +529,6 @@ impl World {
     }
 }
 
-/// The feature [`FEATURE`] of the project `project` and its internal run,
-/// with 1 idea in flight: a task needs one (FR-12).
 fn new_feature_run(conn: &Connection, project: &Path) -> Run {
     let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate).unwrap();
     let feature = runs::create_feature_run(&tx, project, "main").unwrap();
@@ -658,8 +555,6 @@ fn new_feature_run(conn: &Connection, project: &Path) -> Run {
     run
 }
 
-/// A connection of the test to the ledger `db`. It waits for the writes of
-/// fleetd.
 fn open(db: &Path) -> Connection {
     let conn = Connection::open(db).unwrap();
     conn.busy_timeout(Duration::from_secs(30)).unwrap();
@@ -677,9 +572,6 @@ fn request_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     })
 }
 
-/// Link `bwrap` of this host into the `bin/` of `h`, so that fleetd and its
-/// jobs find the Linux sandbox on their sealed `PATH`. macOS needs no link:
-/// its sandbox is `/usr/bin/sandbox-exec`.
 fn link_bwrap(h: &Harness) {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -691,27 +583,12 @@ fn link_bwrap(h: &Harness) {
     }
 }
 
-/// The reason of a refusal on the channel from a peer in a worker attempt.
 fn peer_reason(a: &Attempt) -> String {
     format!("the peer process is a fleet process of attempt {}", a.id)
 }
 
-/// The reason of a refusal of an operator request with no valid token.
 const NO_TOKEN: &str = "an operator kind needs the valid operator token";
 
-// ─── SR-8 from a worker sandbox ─────────────────────────────────────────
-
-/// For each `operator` kind, 4 attacks from a live worker attempt:
-/// 1. inside the worker sandbox, a raw request line on the channel;
-/// 2. inside the worker sandbox, a request file with the right mode;
-/// 3. with the sandbox off, a raw request line with a copy of a valid
-///    token, which the peer process check refuses;
-/// 4. with the sandbox off, a request file with no token.
-///
-/// 1 and 2 fail at the OS, and no row or file is left. 3 and 4 reach fleetd,
-/// and the `requests` row records the refusal with its reason and a null
-/// `auth`. No request of the attacks is applied, and the state of the
-/// ledger does not change.
 #[test]
 fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
     let mut w = World::new("p5-sr8-kinds");
@@ -822,12 +699,6 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
     );
 }
 
-// ─── SR-8 from a process of a live attempt ──────────────────────────────
-
-/// A process of a live attempt that left the process group of its wrapper
-/// (`setsid`) is still in the attempt by its parent chain. Its raw request
-/// with a copy of a valid token is refused, and the row records the refusal
-/// with a null `auth`.
 #[test]
 fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     let w = World::new("p5-sr8-chain");
@@ -841,8 +712,6 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     );
     let mut attack = attacker("connect", &paths.channel, &text);
     attack.env(NEW_SESSION_ENV, "1");
-    // The stand-in wrapper waits for 1 line on its stdin, then starts the
-    // attacker as its child.
     let mut wrapper = Command::new("/bin/sh");
     wrapper
         .args(["-c", "read go; \"$@\"", "wrapper"])
@@ -870,12 +739,8 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     assert_refused(&w.decided(id.as_str()), &peer_reason(&a));
 }
 
-// ─── REQUIRED item 3: the operator-only commands ────────────────────────
-
 const INSIDE_ATTEMPT: &str = "refused inside a fleet attempt";
 
-/// The task branch of the worker of a test, in the ledger and in git, so
-/// that `horch branch abandon` finds it.
 const TASK_BRANCH: &str = "fleet/F-0001/attack";
 
 #[test]
@@ -916,7 +781,6 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
     );
 }
 
-/// The rescue ref that the attacker tries to drop.
 const RESCUE_REF: &str = "refs/horch/rescue/attack/1";
 
 #[test]
@@ -960,8 +824,6 @@ fn operator_only_rescue_drop_from_a_worker_is_refused() {
 }
 
 impl World {
-    /// Run `horch args` in the process group of the attempt `a`, with
-    /// `HORCH_ROLE` set to `role` or removed.
     fn command_in_attempt(&self, a: &Attempt, args: &[&str], role: Option<&str>) -> Output {
         let mut cmd = self.horch(args);
         match role {
@@ -974,8 +836,6 @@ impl World {
         World::in_attempt(cmd, a)
     }
 
-    /// The task branch [`TASK_BRANCH`] of the task of `a`: a git branch of
-    /// the project with its row, and its worktree `attack` with its row.
     fn task_branch(&self, a: &Attempt) {
         let task = a.task.as_deref().unwrap();
         let tree = self.h.project.join(".worktrees").join("attack");
@@ -1024,12 +884,7 @@ impl World {
     }
 }
 
-// ─── Q2: the orchestrator seat ──────────────────────────────────────────
-
 impl World {
-    /// The raw request `ledger_gc` with a copy of the valid token, on the
-    /// channel, from the attacker in the attempt `a` with the extra
-    /// environment `env`. Gives the decided row.
     fn gc_from(&self, a: &Attempt, name: &str, env: &[(&str, &str)]) -> RequestRow {
         let id = request_id(&["gc", name]);
         let text = line(
@@ -1046,12 +901,6 @@ impl World {
     }
 }
 
-/// A worker cannot make itself an orchestrator seat. Each of these is
-/// refused:
-/// - a worker attempt whose environment names the orchestrator persona,
-///   its role and the worker of a real seat;
-/// - an attempt whose worker has the persona of a seat but a task;
-/// - an attempt with a null task of another persona.
 #[test]
 fn forged_orchestrator_seat_is_refused() {
     let mut w = World::new("p5-sr8-forged");
@@ -1074,9 +923,6 @@ fn forged_orchestrator_seat_is_refused() {
     assert_refused(&row, &peer_reason(&no_task_not_a_seat));
 }
 
-/// The control case: you, outside each live attempt, run an operator-only
-/// command, send a raw request with the token and write a request file with
-/// the token, while a worker attempt is live. fleetd authorizes each one.
 #[test]
 fn operator_on_the_command_line_is_authorized() {
     let mut w = World::new("p5-sr8-operator");
@@ -1117,18 +963,9 @@ fn operator_on_the_command_line_is_authorized() {
     assert_eq!(row.auth.as_deref(), Some("token; request file"));
 }
 
-// ─── SR-4, Q21: a test of the project in a gate ─────────────────────────
-
-/// The file of the gate tree in which the test of the project writes the
-/// result of each act.
 const GATE_REPORT: &str = "p5-gate-attack.txt";
 
-/// The test of the project that the fast gate runs: it tries each operator
-/// act with the attacker `exe` and writes 1 line for each act in
-/// [`GATE_REPORT`]: `<act> <kind> <exit code> <what the attacker got>`.
-/// It exits 0, so the gate passes when each act is refused.
 fn gate_test_script(exe: &Path, paths: &OperatorPaths) -> String {
-    // The gate runs with the sealed PATH of the harness.
     let mut script = String::from("set -u\nPATH=/usr/bin:/bin\n");
     let mut act = |act: &str, kind: &str, path: &Path, line: &str| {
         script.push_str(&format!(
@@ -1146,7 +983,6 @@ fn gate_test_script(exe: &Path, paths: &OperatorPaths) -> String {
     for kind in operator_kinds() {
         let name = kind.as_str();
         let id = request_id(&["gate", name]);
-        // The test of the project has no token: it sends a raw line.
         act(
             "connect",
             name,
@@ -1161,13 +997,11 @@ fn gate_test_script(exe: &Path, paths: &OperatorPaths) -> String {
     script
 }
 
-/// `text` in single quotes for `sh`.
 fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 impl World {
-    /// A commit on `branch` from `main` with `files`. Gives its tip.
     fn commit(&self, branch: &str, files: &[(&str, &str)]) -> String {
         let git = |args: &[&str]| {
             let out = self.h.git_cmd(args).output().unwrap();
@@ -1189,8 +1023,6 @@ impl World {
         tip
     }
 
-    /// The gate tree of [`FEATURE`] at `main`: the test reserves it, and
-    /// fleetd runs its `worktree_add` job and observes it.
     fn gate_tree(&self, repo: &Path, main: &str) -> PathBuf {
         std::fs::create_dir_all(repo.join(".worktrees")).unwrap();
         let req = GateTreeRequest {
@@ -1217,8 +1049,6 @@ impl World {
         )
     }
 
-    /// A bundle of 1 task branch of [`FEATURE`] on `base_tip`. Its task is
-    /// done, so fleetd dispatches nothing.
     fn bundle(&self, base_tip: &str) -> i64 {
         let mut conn = self.conn();
         let tx = conn
@@ -1257,8 +1087,6 @@ impl World {
         id
     }
 
-    /// Run `f` in 1 immediate transaction of the test, with the job context
-    /// of a test (no generation).
     fn jobs_tx<T>(&self, f: impl FnOnce(&JobCtx<'_>, &Connection) -> anyhow::Result<T>) -> T {
         let mut conn = self.conn();
         let tx = conn
@@ -1276,13 +1104,6 @@ impl World {
     }
 }
 
-/// The test project declares a fast gate whose command is a test of the
-/// project. The test tries each operator act: it reads the token, sends a
-/// raw request line of each `operator` kind on the channel, and writes a
-/// request file of each `operator` kind. fleetd runs the `fast_gate` job in
-/// the gate sandbox with the 3 operator denials (SR-4, Q21), so the OS
-/// refuses each act. The `gate_runs` row records the result, no `requests`
-/// row exists, and the state of the ledger does not change.
 #[test]
 fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
     let w = World::with_gate_sandbox("p5-sr8-gate", true);

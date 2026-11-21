@@ -1,4 +1,3 @@
-//! Fleet acceptance at the durable messaging / ledger seam.
 use horch_core::messaging::mail::{redelivery_offset, Mail};
 use horch_e2e::harness::{output_within, Harness, DEADLINE};
 use std::time::Duration;
@@ -16,7 +15,6 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     h
 }
-/// The short id of the oldest open question in workspace `w1`.
 fn open_id(state: &std::path::Path) -> String {
     Mail::under(state, "w1").open_questions().unwrap()[0]
         .id
@@ -71,14 +69,12 @@ fn g70_question_survives_ack_without_a_task_run() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("worker-1.id"), "w1:p1").unwrap();
-    // TRF-25: a plain tell closes no question.
     assert!(h
         .run(&["tell", "worker-1", "Choose option A"])
         .status
         .success());
     let inbox = h.run(&["inbox", "--roles"]);
     assert!(String::from_utf8_lossy(&inbox.stdout).contains("QUESTION: which option?"));
-    // An answer by id closes it.
     let id = open_id(&h.state);
     assert!(h
         .run(&["tell", "worker-1", "--answers", &id, "Choose option A"])
@@ -348,8 +344,6 @@ fn check(
         .verdict
         .clone()
 }
-/// 3 checks of `worker` with no progress: each gives `no_progress` with a
-/// rising stall round, none gives `dead`, and the worker stays `working`.
 fn assert_no_reap(
     store: &mut horch_core::taskledger::Store,
     run: &horch_core::taskledger::runs::Run,
@@ -401,7 +395,6 @@ fn g70_reviewer_wait_holds_sixty_minutes_then_three_idle_checks_reap() {
         7 * 86400,
     )
     .unwrap();
-    // Six ten-minute checks, sixty minutes from the original wait, with no proxy progress.
     for _ in 0..6 {
         store.conn().execute("UPDATE worker_waits SET started_at=strftime('%Y-%m-%dT%H:%M:%SZ', started_at, '-600 seconds')",[]).unwrap();
         assert_eq!(check(&mut store, &run, &worker, true), "progress");
@@ -418,8 +411,6 @@ fn g70_reviewer_wait_holds_sixty_minutes_then_three_idle_checks_reap() {
             [&review.task_id],
         )
         .unwrap();
-    // The checks of today see no progress, but no stall round reaps
-    // (docs/tickets/fleetd-p2/MAP.md, Q14). The ladder proof: g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion.
     assert_no_reap(&mut store, &run, &worker);
 }
 #[cfg(unix)]
@@ -448,8 +439,6 @@ fn g70_waiting_background_deadline_and_dead_process() {
     );
     assert_eq!(check(&mut store, &run, &worker, true), "progress");
     assert_eq!(check(&mut store, &run, &worker, false), "dead");
-    // Past its deadline the wait ends. The checks see no progress, but no
-    // stall round reaps (docs/tickets/fleetd-p2/MAP.md, Q14).
     store
         .conn()
         .execute(
@@ -461,8 +450,6 @@ fn g70_waiting_background_deadline_and_dead_process() {
         assert_eq!(check(&mut store, &run, &worker, true), "no_progress");
     }
     assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
-    // A new wait holds while the child runs, and ends at once when it
-    // exits.
     wait(&store, "waiting: background test");
     assert_eq!(workers::waiting(store.conn(), &worker).unwrap().len(), 1);
     end_child(&agent, child);
@@ -524,7 +511,6 @@ fn g60_pinned_two_hour_old_mail_redelivers_and_inbox_stops_courier() {
             })
             .then_some(())
     });
-    // FR-7: the courier types the mail line; the text stays in the mail.
     assert_eq!(mail.pending().unwrap().len(), 1);
     assert!(h.run(&["inbox"]).status.success());
     wait_for("courier exit after acknowledgement", || {
@@ -564,8 +550,6 @@ fn relay_delivery_case(agent: &str) {
         })
         .unwrap();
         h.set("HORCH_RECORD_ID", "relay-orchestrator");
-        // macOS may scan a freshly linked executable longer than the relay's
-        // real ten-second queue budget. Warm this exact sealed fake first.
         let mut command = std::process::Command::new(h.bin.join("codex"));
         h.seal(&mut command);
         let mut warm = Agent(
@@ -777,8 +761,6 @@ fn assert_ladder_stopped(
             )
             .unwrap()
     };
-    // The stall pass saw the old process alive: the task stays stalled, so
-    // no claim starts a new attempt beside it.
     assert_eq!(
         task_status(),
         "stalled",
@@ -866,9 +848,6 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
             [&review.task_id],
         )
         .unwrap();
-    // The reviews are in: the wait ends. The checks of today see no
-    // progress, but no stall round reaps (docs/tickets/fleetd-p2/MAP.md,
-    // Q14).
     for at in [
         "2030-01-01T01:10:00Z",
         "2030-01-01T01:20:00Z",
@@ -881,8 +860,6 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
         "working"
     );
     assert!(matches!(agent.0.try_wait(), Ok(None)), "no check stops it");
-    // No activity past stall_after_s (300 s) after the wait: the stall
-    // ladder ends the attempt `stalled` and stops the agent by its PID.
     h.advance_fleet_clock(400);
     pinned_check(&h, &run, "2030-01-01T01:40:00Z");
     assert_ladder_stopped(&store, &worker, &mut agent, || {
@@ -920,7 +897,6 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
         "progress",
         "the wait holds while the child runs"
     );
-    // The child exits: the wait ends at once, long before its deadline.
     end_child(&agent, child);
     assert_eq!(
         pinned_check(&h, &run, "2030-01-01T00:44:00Z")["verdict"],
@@ -933,8 +909,6 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
     );
     agent.0.kill().unwrap();
     agent.0.wait().unwrap();
-    // 1 pass ends the attempt of the dead agent at once, before the duty
-    // check (I4).
     pinned_check(&h, &run, "2030-01-01T00:50:00Z");
     let attempt: (String, Option<String>) = store
         .conn()
@@ -960,15 +934,9 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
     );
 }
 
-/// An agent that leads its own process group; the group is killed on
-/// drop, so a failed assertion leaks no child.
 #[cfg(unix)]
 struct GroupAgent(std::process::Child);
 
-/// Make the agent of `worker` and of its attempt a new process that leads
-/// its own process group, with a live child: the background work that
-/// holds its wait (MAP.md of fleetd-p2, Q23). Gives the agent and the pid
-/// of its child.
 #[cfg(unix)]
 fn agent_with_child(store: &horch_core::taskledger::Store, worker: &str) -> (GroupAgent, u32) {
     use std::os::unix::process::CommandExt;
@@ -998,7 +966,6 @@ fn agent_with_child(store: &horch_core::taskledger::Store, worker: &str) -> (Gro
     (agent, child)
 }
 
-/// Kill the child `child` of `agent`, and wait until it is gone.
 #[cfg(unix)]
 fn end_child(agent: &GroupAgent, child: u32) {
     let pid = agent.0.id();
@@ -1009,7 +976,6 @@ fn end_child(agent: &GroupAgent, child: u32) {
     });
 }
 
-/// The text of the last `wait_ended` event of `worker`.
 #[cfg(unix)]
 fn last_wait_end(store: &horch_core::taskledger::Store, worker: &str) -> String {
     store
@@ -1133,8 +1099,6 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    // A closed question takes no second answer, and an older reply does not
-    // reopen it.
     for (args, ok) in [
         (
             vec!["tell", "worker-1", "--answers", id.as_str(), "again"],
@@ -1156,7 +1120,6 @@ fn g70_delayed_older_reply_cannot_reopen_newer_answered_question() {
             "an older reply {args:?} reopened the question"
         );
     }
-    // Older replies also overlap each other across independent CLI processes.
     let mut replies: Vec<_> = (0..8)
         .map(|minute| {
             Agent(
@@ -1266,10 +1229,6 @@ fn wait_for_pass_after_last_prompt(h: &Harness) {
     });
 }
 
-/// A world for a courier that runs under a pinned clock. The orchestrator
-/// exists, so the courier must live until its mail is acknowledged. The
-/// 20 ms no-orchestrator limit of [`world`] would stop it after 2 failed
-/// `pane get` calls in a row, which a loaded machine produces.
 fn pinned_clock_world(name: &str) -> (Harness, std::path::PathBuf) {
     let mut h = world(name);
     h.set("HORCH_NOW", "2030-01-01T00:00:00Z");
@@ -1312,8 +1271,6 @@ fn g60_pinned_courier_survives_a_herdr_outage() {
             .unwrap(),
     );
     wait_for_pane_state_observed(&h);
-    // The fake herdr answers `pane get` with an error while its state file
-    // is away: the courier sees its orchestrator vanish for a moment.
     let state = std::path::PathBuf::from(format!("{}.state.json", h.log.display()));
     let away = state.with_extension("away");
     std::fs::rename(&state, &away).unwrap();
@@ -1597,7 +1554,6 @@ fn g60_plain_done_and_tell_without_registration_arrive_after_late_registration()
             })
             .then_some(())
     });
-    // FR-7: both reports wait in the mail until inbox reads them.
     let pending: Vec<String> = mail
         .pending()
         .unwrap()
@@ -1638,7 +1594,6 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
 fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let (mut h, _store, run, _worker, _agent) = pinned_worker("t177-unknown-orchestrator");
     h.set("HORCH_NO_WAKE", "0");
-    // A 2 s budget in place of the real 20 s.
     h.set("HORCH_FAULT", "done-push-budget-ms:2000");
     fake(&h, &["workspace", "create", "--label", "orchestrator"]);
     fake(
@@ -1656,8 +1611,6 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("orchestrator.id"), "w1:p1").unwrap();
-    // macOS scans a new executable at its first exec: keep that out of the
-    // timed pass.
     assert!(h.run(&["--version"]).status.success());
 
     let began = std::time::Instant::now();
@@ -1671,9 +1624,6 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     assert!(h.run(&["inbox"]).status.success());
 }
 
-/// fleetd binds the first startable task of the run and persona of `new`
-/// to a new worker with the live agent `agent`, and gives the worker (FR-5).
-/// The run has no git repository: the task works in the shared checkout.
 fn bind_first(
     tx: &rusqlite::Connection,
     new: &horch_core::taskledger::workers::NewWorker,

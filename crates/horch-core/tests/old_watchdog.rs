@@ -89,8 +89,6 @@ fn take_over_stops_only_the_watchdog_that_its_own_ledger_records() {
     let mut other_b = sleeper();
     let (pid_a, pid_b) = (watchdog_a.id(), other_b.id());
     let (start_a, start_b) = (started(pid_a), started(pid_b));
-    // The test reaps the stopped process at once, as init reaps a real
-    // watchdog, so the stop sees it end.
     let mut watchdog_a = watchdog_a;
     let waiter_a = std::thread::spawn(move || watchdog_a.wait().unwrap());
 

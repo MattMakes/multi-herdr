@@ -1,11 +1,3 @@
-//! The job result file (ticket 33 of fleetd-p5): RR-5, RR-8, SR-6 and Q14
-//! of `docs/tickets/fleetd-p5/MAP.md`.
-//!
-//! A job process writes `<fleet root>/run/jobs/<job id>-<run>.json` and no
-//! ledger row. The pass reads the file with the checks of the protected
-//! file reader, ends the job through `transition()`, records the file in
-//! `ingested`, and archives it after the commit. Each test uses a temp
-//! ledger and a temp fleet root, the folder `fleet` beside the ledger.
 #![cfg(unix)]
 
 use std::fs::{self, Permissions};
@@ -39,7 +31,6 @@ struct World {
     owner: User,
 }
 
-/// A temp ledger of the current schema with the default `fleet.toml`.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
@@ -52,7 +43,6 @@ fn world() -> World {
     }
 }
 
-/// No sandbox profile: a test runs no `task_check`.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -62,12 +52,10 @@ impl SandboxProfiles for NoProfiles {
 }
 
 impl World {
-    /// The fleet root of the ledger: the folder `fleet` beside it.
     fn root(&self) -> PathBuf {
         self.dir.path().join("fleet")
     }
 
-    /// Run `f` in 1 committed transaction, as part 2 of a pass.
     fn tx<T>(&mut self, f: impl FnOnce(&JobCtx<'_>, &Transaction<'_>) -> T) -> T {
         let tx = self
             .conn
@@ -83,7 +71,6 @@ impl World {
         out
     }
 
-    /// Queue a run of `kind` for `subject` at `clock`: its id.
     fn queue(&mut self, kind: Kind, subject: &str, clock: i64) -> i64 {
         let key = JobKey {
             kind,
@@ -96,7 +83,6 @@ impl World {
         }
     }
 
-    /// Part 3: start each due run as `true` through the launcher.
     fn start_due(&mut self, runner: &mut JobRunner<'_>, clock: i64) {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -120,8 +106,6 @@ impl World {
         }
     }
 
-    /// The job process of the run `id`: `run_job` in this process with the
-    /// recorded pid, as `horch job run <id>` runs it.
     fn run_job(&mut self, id: i64) -> Option<Outcome> {
         let me = self.row(id).pid.unwrap();
         let ctx = JobCtx {
@@ -137,18 +121,15 @@ impl World {
         jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap()
     }
 
-    /// Part 1: read the result files with the size limit `max_bytes`.
     fn read(&self, max_bytes: u64) -> Vec<FileRead> {
         jobs::read_results(&self.conn, &self.root(), &self.owner, max_bytes).unwrap()
     }
 
-    /// Part 2: ingest `reads` in 1 committed transaction.
     fn ingest(&mut self, reads: &[FileRead]) -> Vec<(i64, State)> {
         self.tx(|ctx, tx| jobs::ingest_results(ctx, tx, reads))
             .unwrap()
     }
 
-    /// Parts 1 and 2 of 1 pass, with no archive: a crash after the commit.
     fn pass_no_archive(&mut self) -> (Vec<FileRead>, Vec<(i64, State)>) {
         let reads = self.read(self.config.job_result_max_bytes);
         let ended = self.ingest(&reads);
@@ -159,7 +140,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// The events of the job `id` of `kind`, with their cause.
     fn events(&self, id: i64, kind: &str) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -176,7 +156,6 @@ impl World {
         .collect()
     }
 
-    /// How many moves of the job `id` to `state` the ledger has.
     fn moves_to(&self, id: i64, state: State) -> i64 {
         self.conn
             .query_row(
@@ -188,7 +167,6 @@ impl World {
             .unwrap()
     }
 
-    /// The `ingested` row of `path`: outcome and reason.
     fn ingested(&self, path: &Path) -> Option<(String, Option<String>)> {
         self.conn
             .query_row(
@@ -199,7 +177,6 @@ impl World {
             .ok()
     }
 
-    /// A queued and started run of `kind`: its id.
     fn running(&mut self, runner: &mut JobRunner<'_>, kind: Kind) -> i64 {
         let id = self.queue(kind, "F-1", 0);
         self.start_due(runner, 0);
@@ -212,7 +189,6 @@ fn mode(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
-/// A passed result of the run `run` of the job `job_id`.
 fn passed(job_id: i64, run: i64, text: &str) -> JobResult {
     JobResult {
         job_id,
@@ -224,7 +200,6 @@ fn passed(job_id: i64, run: i64, text: &str) -> JobResult {
     }
 }
 
-/// The names of the files in `folder`, sorted.
 fn names(folder: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(folder)
         .unwrap()
@@ -245,7 +220,6 @@ fn job_process_writes_its_result_file_and_no_row() {
 
     let o = w.run_job(id).expect("the job process runs its row");
 
-    // No ledger write: the row and the count of changes stay as they are.
     assert_eq!(w.conn.total_changes(), changes, "run_job wrote the ledger");
     assert_eq!(w.row(id), before);
     assert_eq!(w.row(id).result_json, None);
@@ -254,7 +228,6 @@ fn job_process_writes_its_result_file_and_no_row() {
         .iter()
         .all(|c| !c.contains("result")));
 
-    // The result file: its path, its modes and its payload.
     let path = files::path(&w.root(), id, 1);
     assert_eq!(path, w.root().join(format!("run/jobs/{id}-1.json")));
     assert_eq!(mode(&path), 0o600);
@@ -266,7 +239,6 @@ fn job_process_writes_its_result_file_and_no_row() {
     assert_eq!(file["verdict"], false);
     assert_eq!(file["text"], o.text.as_str());
     assert_eq!(o.text, "no executor before phase 7 for docs_sync");
-    // No temp file stays.
     assert_eq!(
         names(&w.root().join("run/jobs")),
         vec![format!("{id}-1.json")]
@@ -297,12 +269,9 @@ fn pass_ends_the_job_from_its_file_once() {
     );
     assert_eq!(w.ingested(&path), Some(("accepted".into(), None)));
 
-    // The same reads a second time change nothing.
     assert_eq!(w.ingest(&reads), vec![]);
     assert_eq!(w.moves_to(id, State::Failed), 1);
 
-    // After the commit the pass archives the file, and the next pass reads
-    // nothing.
     jobs::archive_results(&w.root(), &reads).unwrap();
     assert!(!path.exists());
     assert!(w
@@ -320,8 +289,6 @@ fn result_of_an_old_run_is_ignored_and_logged() {
     let mut runner = JobRunner::new(&launcher);
     let old = w.running(&mut runner, Kind::Push);
 
-    // The pass sees the process of run 1 gone with no result: run 1 ends
-    // `abandoned`, and run 2 starts after its backoff.
     let gone = ProcessFact {
         key: old.to_string(),
         liveness: Liveness::Dead,
@@ -332,7 +299,6 @@ fn result_of_an_old_run_is_ignored_and_logged() {
     w.start_due(&mut runner, 10_000);
     assert_eq!((w.row(new).run, w.row(new).state), (2, State::Running));
 
-    // A late file of run 1, and a file of the row of run 2 that names run 1.
     files::write(&w.root(), &passed(old, 1, "late")).unwrap();
     files::write(&w.root(), &passed(new, 1, "wrong run")).unwrap();
 
@@ -357,7 +323,6 @@ fn result_of_an_old_run_is_ignored_and_logged() {
         "{new_notes:?}"
     );
 
-    // 1 event only: the files are not read again.
     let again = w.read(w.config.job_result_max_bytes);
     assert!(again.iter().all(|r| matches!(r.read, Read::Seen)));
     assert_eq!(w.ingest(&again), vec![]);
@@ -372,7 +337,6 @@ fn symlinked_result_file_is_rejected() {
     let mut runner = JobRunner::new(&launcher);
     let id = w.running(&mut runner, Kind::Push);
 
-    // A valid result outside the folder, and a link to it in the folder.
     let outside = w.dir.path().join("elsewhere.json");
     fs::write(
         &outside,
@@ -399,7 +363,6 @@ fn symlinked_result_file_is_rejected() {
     assert_eq!(w.row(id).state, State::Running);
     assert_eq!(w.row(id).result_json, None);
 
-    // The path is not read again, and the archive moves the link itself.
     let again = w.read(w.config.job_result_max_bytes);
     assert!(matches!(again[0].read, Read::Seen));
     jobs::archive_results(&w.root(), &again).unwrap();
@@ -434,12 +397,10 @@ fn crash_after_the_commit_only_archives_the_file() {
     let id = w.running(&mut runner, Kind::DocsSync);
     let path = files::write(&w.root(), &passed(id, 1, "pushed")).unwrap();
 
-    // The pass commits, then fleetd stops before the archive.
     let (_, ended) = w.pass_no_archive();
     assert_eq!(ended, vec![(id, State::Passed)]);
     assert!(path.is_file());
 
-    // A new fleetd: a new connection. Its pass only archives the file.
     w.conn = Connection::open(w.dir.path().join("ledger.sqlite3")).unwrap();
     let reads = w.read(w.config.job_result_max_bytes);
     assert_eq!(reads.len(), 1);
@@ -454,7 +415,6 @@ fn crash_after_the_commit_only_archives_the_file() {
     assert_eq!(w.moves_to(id, State::Passed), 1);
     assert_eq!(w.row(id).state, State::Passed);
     assert!(outcome(&w.row(id)).unwrap().passed);
-    // A second archive of the same reads is safe.
     jobs::archive_results(&w.root(), &reads).unwrap();
 }
 

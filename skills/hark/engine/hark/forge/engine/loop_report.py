@@ -15,8 +15,6 @@ SR = 48000
 EMPTY_REEL = 4800
 
 
-# ---------------------------------------------------------------- audition
-
 def _stereo(x: Any) -> np.ndarray:
     a = np.asarray(x, dtype=np.float64)
     return np.column_stack([a, a]) if a.ndim == 1 else a[:, :2]
@@ -64,8 +62,6 @@ def audition(path: Any, made: Sequence[tuple[str, Any]], refs: Sequence[tuple[st
     return {"file": str(f), "txt": str(txt), "cues": cues}
 
 
-# ---------------------------------------------------------------- number format
-
 def _f(v: Any, nd: int = 2) -> str:
     if v is None:
         res = "-"
@@ -99,8 +95,6 @@ def _round(v: Any) -> Any:
 def _table(head: Sequence[str], rows: list[list[str]]) -> list[str]:
     return ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)] + ["| " + " | ".join(r) + " |" for r in rows]
 
-
-# ---------------------------------------------------------------- report_md
 
 def _asked(r: dict) -> list[str]:
     refs = r.get("refs") or []
@@ -210,9 +204,6 @@ def report_md(r: dict) -> str:
     return "\n".join(lines + _gap_md(r) + _files_md(r))
 
 
-# ---------------------------------------------------------------- palette_md
-
-# (source, key) per palette column after the name; source None is the pick itself
 _PALETTE_COLS = ((None, "family"), ("score", "total"), ("score", "passes"), ("measured", "tone_db"),
                  ("score", "env_pen"), ("score", "art_pen"), ("score", "polish_pen"), ("score", "hard"),
                  (None, "gain_db"), ("measured", "nearest_ref"))

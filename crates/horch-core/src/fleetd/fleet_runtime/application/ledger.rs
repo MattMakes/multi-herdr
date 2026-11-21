@@ -1,8 +1,3 @@
-//! The use of `transition()`: 1 state change and its event in 1 transaction.
-//! A task that moves to a state that holds no lease loses its lease row in
-//! the same transaction.
-//! `record()` writes 1 event of a row that does not change.
-
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event, Fact};
@@ -12,11 +7,7 @@ use crate::fleetd::fleet_runtime::domain::ledger::{
 use crate::fleetd::task_execution::domain::lease::Holder;
 use crate::taskledger::model::{Actor, EventKind};
 
-/// Where [`transition`] puts a refused row: the needs-you list. The ideas
-/// context implements it, so this context does not depend on ideas.
 pub trait RecordRefusal {
-    /// Open the needs-you item of the refused row `id` of `entity`, with
-    /// `text`, in `tx`.
     fn record_refusal(
         &self,
         tx: &Connection,
@@ -26,30 +17,20 @@ pub trait RecordRefusal {
     ) -> anyhow::Result<()>;
 }
 
-/// Why a row moves, and who moves it.
 #[derive(Debug, Clone, Copy)]
 pub struct Cause<'a> {
     pub actor: Actor,
     pub text: &'a str,
 }
 
-/// What [`transition`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Moved {
-    /// The row is in the new state, and 1 event says so.
     Changed,
-    /// The row was already in that state: no write and no event.
     Unchanged,
 }
 
-/// Why [`transition`] did not move the row.
 #[derive(Debug)]
 pub enum DoorError {
-    /// The table does not allow the move. The row did not change. 1 event
-    /// and 1 needs-you item record the refusal in the caller's transaction,
-    /// so the caller goes on and commits. A caller that rolls back records
-    /// it again with [`record_refused`]: `cause` and `actor` are the cause
-    /// of the refused move.
     Refused {
         entity: Entity,
         id: String,
@@ -58,17 +39,15 @@ pub enum DoorError {
         cause: String,
         actor: Actor,
     },
-    /// The `fleetd` row has another generation. Nothing is written.
     GenerationLost {
         held: Generation,
         found: Option<Generation>,
     },
-    /// No row of the entity has the id.
-    NoRow { entity: Entity, id: String },
-    /// The connection has no open transaction, so a write of the door
-    /// cannot go with the other writes of its caller. Nothing is written.
+    NoRow {
+        entity: Entity,
+        id: String,
+    },
     NoTransaction,
-    /// The ledger failed.
     Ledger(anyhow::Error),
 }
 
@@ -108,16 +87,6 @@ impl From<anyhow::Error> for DoorError {
     }
 }
 
-/// Move the row `id` of `entity` to `to`, in the caller's transaction
-/// `tx`. A connection with no open transaction gives
-/// [`DoorError::NoTransaction`]. An allowed move writes the row and 1 event.
-/// An allowed move of a task to a state that holds no lease also deletes the
-/// lease row of the task (I1, FM-14). A refused move writes
-/// no row change, 1 event and 1 needs-you item, and returns
-/// [`DoorError::Refused`]. With `Some(guard)`, a `fleetd` row of another
-/// generation gives [`DoorError::GenerationLost`] and writes nothing. Only
-/// fleetd passes a guard. `refusals` opens the needs-you item of a refused
-/// move.
 pub fn transition(
     tx: &Connection,
     guard: Option<Generation>,
@@ -134,8 +103,6 @@ pub fn transition(
         Decision::Unchanged => Ok(Moved::Unchanged),
         Decision::Allowed => {
             door::set_state(tx, entity, id, to)?;
-            // A task in a state that holds no lease has no lease row (I1,
-            // FM-14): each exit releases it here, so no command forgets it.
             if entity == Entity::Task && Holder::of(to).is_none() {
                 door::delete_lease(tx, id)?;
             }
@@ -166,9 +133,6 @@ pub fn transition(
     }
 }
 
-/// Record the new row `id` of `entity`, which the caller inserted in `tx`:
-/// 1 event from no state to the state of the row. `guard` is as in
-/// [`transition`].
 pub fn created(
     tx: &Connection,
     guard: Option<Generation>,
@@ -193,13 +157,6 @@ pub fn created(
     Ok(())
 }
 
-/// Record 1 event of kind `kind` about the row `id` of `entity`, with
-/// `data` in `data_json`, in the caller's transaction `tx`. The row does
-/// not change. A connection with no open transaction gives
-/// [`DoorError::NoTransaction`], and a missing row gives
-/// [`DoorError::NoRow`]. With `Some(guard)`, a `fleetd` row of another
-/// generation gives [`DoorError::GenerationLost`]. Each error writes
-/// nothing.
 pub fn record(
     tx: &Connection,
     guard: Option<Generation>,
@@ -227,7 +184,6 @@ pub fn record(
     Ok(())
 }
 
-/// [`DoorError::NoTransaction`] when `tx` is in autocommit mode.
 fn check_open(tx: &Connection) -> Result<(), DoorError> {
     if tx.is_autocommit() {
         return Err(DoorError::NoTransaction);
@@ -235,8 +191,6 @@ fn check_open(tx: &Connection) -> Result<(), DoorError> {
     Ok(())
 }
 
-/// [`DoorError::GenerationLost`] when `guard` is not the generation of the
-/// `fleetd` row.
 fn check_generation(tx: &Connection, guard: Option<Generation>) -> Result<(), DoorError> {
     let Some(held) = guard else {
         return Ok(());
@@ -248,10 +202,6 @@ fn check_generation(tx: &Connection, guard: Option<Generation>) -> Result<(), Do
     Ok(())
 }
 
-/// The decision for the move of the row `id` of `entity` from `from` to
-/// `to`: the table, and for a resume the state that the row left. A resume
-/// to another state, or of a row whose park has no event, is refused (a
-/// guard whose fact is unknown does not hold).
 fn decide_move(
     tx: &Connection,
     entity: Entity,
@@ -269,7 +219,6 @@ fn decide_move(
     Ok(decision)
 }
 
-/// The state of the row `id` of `entity`, or [`DoorError::NoRow`].
 fn state_of(tx: &Connection, entity: Entity, id: &str) -> Result<String, DoorError> {
     door::state_of(tx, entity, id)?.ok_or_else(|| DoorError::NoRow {
         entity,
@@ -277,10 +226,6 @@ fn state_of(tx: &Connection, entity: Entity, id: &str) -> Result<String, DoorErr
     })
 }
 
-/// Record the refused move of `err` in `tx`, as [`transition`] does: for a
-/// caller whose transaction rolled back. `false`, with no write, when `err`
-/// is not [`DoorError::Refused`] or the row is no longer in its `from`
-/// state.
 pub fn record_refused(
     tx: &Connection,
     err: &DoorError,
@@ -297,9 +242,6 @@ pub fn record_refused(
     else {
         return Ok(false);
     };
-    // Another writer can move the row between the rollback and `tx`. The
-    // event then names a state that the row no longer has, so it is not
-    // written (review F4).
     if door::state_of(tx, *entity, id)?.as_deref() != Some(from.as_str()) {
         return Ok(false);
     }
@@ -311,8 +253,6 @@ pub fn record_refused(
     Ok(true)
 }
 
-/// Record a refused move: 1 event with the refused state, and the open
-/// needs-you item of the row.
 fn refuse(
     tx: &Connection,
     entity: Entity,

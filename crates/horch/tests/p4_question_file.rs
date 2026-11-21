@@ -1,11 +1,3 @@
-//! A QUESTION of a push attempt also writes its question file in
-//! `outbox/questions/` (ticket 16 of fleetd-p4).
-//!
-//! Each test runs the real binary on its own temporary git project, with
-//! its own ledger, state and fleet folders, a fake herdr, and the watchdog
-//! off. The push attempt is attempt A1 of T1: its `task.yaml` is under the
-//! fleet root, and the pane names it in `HORCH_TASK_YAML`.
-
 #![cfg(unix)]
 
 mod support;
@@ -36,7 +28,6 @@ const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
 const WORKSPACE: &str = "w1";
 const ROLE: &str = "dev1";
 
-/// The starting value of `result_max_bytes` of `fleet.toml`.
 const MAX_BYTES: u64 = 64 * 1024;
 
 fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
@@ -86,8 +77,6 @@ struct World {
 }
 
 impl World {
-    /// A project with 1 run, 1 task T1 claimed by worker `dev1`, and the
-    /// `task.yaml` of attempt A1 of T1 under the fleet root.
     fn new() -> World {
         World::with_agent(false)
     }
@@ -139,7 +128,6 @@ impl World {
             .join(format!("herdr-orchestration-{WORKSPACE}"));
         std::fs::create_dir_all(&mailbox).unwrap();
         std::fs::write(mailbox.join("orchestrator.id"), format!("{WORKSPACE}:p1")).unwrap();
-        // A spawned worker has the workspace of its pane.
         let worker = horch_core::taskledger::workers::NewWorker {
             persona: "dev".into(),
             role: Some(ROLE.into()),
@@ -217,7 +205,6 @@ impl World {
             .unwrap()
     }
 
-    /// The `horch` binary with the environment of the test.
     fn command(&self, task_yaml: Option<&Path>) -> Command {
         let root = &self.root;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -246,7 +233,6 @@ impl World {
         cmd
     }
 
-    /// `horch <args>` as the worker; `task_yaml` is `HORCH_TASK_YAML`.
     fn horch(&self, task_yaml: Option<&Path>, args: &[&str]) -> (i32, String, String) {
         let mut cmd = self.command(task_yaml);
         cmd.args(args);
@@ -258,8 +244,6 @@ impl World {
         )
     }
 
-    /// `horch tell orchestrator <text>` of the worker, in the push attempt
-    /// A1 when `push` is true, else in its claim attempt.
     fn ask(&self, push: bool, text: &str) {
         let yaml = push.then_some(self.files.task_yaml.as_path());
         let (code, out, err) = self.horch(yaml, &["tell", "orchestrator", text]);

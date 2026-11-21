@@ -1,5 +1,3 @@
-//! The application layer of worker profiles: use cases over the domain.
-
 pub mod conformance;
 pub mod docs_jobs;
 pub mod docs_sync;

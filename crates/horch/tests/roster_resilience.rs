@@ -1,14 +1,6 @@
-//! F7: one teammate file this binary cannot parse never takes the roster
-//! down. `horch teammates` lists the rest and warns once; `--check` fails.
-//!
-//! Hermetic: the environment is cleared and the roster is the built-ins plus
-//! a temp `HORCH_TEAMMATES_DIR`.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// A temp home and roster directory holding one file that is ahead of the
-/// binary: `requires` names a value it does not know.
 fn world() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
@@ -76,6 +68,5 @@ fn f7_teammates_check_still_fails_on_the_file() {
         stderr.contains("unknown variant `no-such-tool`"),
         "{stderr}"
     );
-    // Reported once, as a problem, not also as a load warning.
     assert_eq!(stderr.matches("did not load").count(), 1, "{stderr}");
 }

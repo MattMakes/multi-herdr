@@ -1,30 +1,13 @@
-//! The branch invariants: orphan branches and the deletion guard (ticket 44).
-//!
-//! `docs/specs/fleetd/design.md`, "No work is lost" (items 4 and 5), I11 and
-//! I12; `preservation-04-behavior.md`, row W6:
-//! - I11: each fleet branch in git has a `branches` row. A fleet branch is
-//!   a branch below `fleet/`, or a task branch `<run branch>-T<seq>-<name>`
-//!   of the branch of a feature (Q4 of Phase 3). One with no row is adopted
-//!   as an orphan row and reported. It is never deleted.
-//! - I12: a branch is deleted only when it is landed or rescued, and no
-//!   `git stash` entry names it. [`may_delete`] is the guard. A task branch
-//!   is deleted only in a state with no exit: `landed`, or `abandoned` with
-//!   a rescue ref at its tip. A task branch of a merged feature that is in
-//!   neither state can hold work that is not landed, so it is kept.
-
 use super::task_branch::LandingState;
 
-/// The folder of the fleet branches.
 pub const FLEET_PREFIX: &str = "fleet/";
 
-/// A feature and its branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeatureBranch {
     pub id: String,
     pub branch: String,
 }
 
-/// Whether `name` is `<branch>-T<seq>-<task name>` (Q4 of Phase 3).
 fn is_task_branch_of(name: &str, branch: &str) -> bool {
     let Some(rest) = name.strip_prefix(branch).and_then(|r| r.strip_prefix("-T")) else {
         return false;
@@ -35,9 +18,6 @@ fn is_task_branch_of(name: &str, branch: &str) -> bool {
     !seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit()) && !task.is_empty()
 }
 
-/// The feature of the branch `name`: the feature whose branch is `name`,
-/// or whose branch has the task branch `name`. The longest feature branch
-/// that matches wins.
 pub fn feature_of<'a>(name: &str, features: &'a [FeatureBranch]) -> Option<&'a FeatureBranch> {
     features
         .iter()
@@ -45,30 +25,19 @@ pub fn feature_of<'a>(name: &str, features: &'a [FeatureBranch]) -> Option<&'a F
         .max_by_key(|f| f.branch.len())
 }
 
-/// Whether `name` is a fleet branch: below [`FLEET_PREFIX`], or a branch
-/// of 1 of `features`.
 pub fn is_fleet_branch(name: &str, features: &[FeatureBranch]) -> bool {
     name.starts_with(FLEET_PREFIX) || feature_of(name, features).is_some()
 }
 
-/// The facts of 1 task branch that the deletion guard reads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeletionFacts {
-    /// The row was adopted as an orphan (I11).
     pub orphan: bool,
-    /// The landing state of the row, `None` for a branch with no landing
-    /// state.
     pub landing: Option<LandingState>,
-    /// A rescue ref of the row is at the tip of the branch.
     pub rescued: bool,
-    /// A `git stash` entry names the branch (W6).
     pub stashed: bool,
-    /// A worktree that is not removed holds the branch. `git branch -D`
-    /// refuses such a branch too.
     pub in_worktree: bool,
 }
 
-/// Why the guard keeps a branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     Orphan,
@@ -90,8 +59,6 @@ impl Refusal {
     }
 }
 
-/// The deletion guard (I11, I12): `Ok` only when the branch may be
-/// deleted.
 pub fn may_delete(f: &DeletionFacts) -> Result<(), Refusal> {
     if f.orphan {
         return Err(Refusal::Orphan);

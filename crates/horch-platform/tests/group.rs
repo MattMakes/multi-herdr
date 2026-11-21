@@ -1,11 +1,8 @@
-//! The concern group: process groups, job objects and the detach of a child.
-
 use horch_platform::group;
 use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
-/// Poll `done` every 10 ms until it is true or 5 s pass.
 #[cfg(unix)]
 fn within_5s(mut done: impl FnMut() -> bool) -> bool {
     let until = Instant::now() + Duration::from_secs(5);
@@ -89,9 +86,6 @@ fn is_same_group_is_false_for_a_wrong_start_time() {
     assert_eq!(wrong, Ok(false));
 }
 
-/// Only a leader that runs with its start time proves the group: a group
-/// whose leader is gone and that still has a member is not proved, though
-/// `is_same_group` holds it the same (D242-F1).
 #[cfg(unix)]
 #[test]
 fn is_group_leader_needs_the_leader_with_its_start_time() {
@@ -127,15 +121,9 @@ fn is_group_leader_needs_the_leader_with_its_start_time() {
     assert_eq!(group::is_group_leader(0, started), Ok(false));
 }
 
-/// Set in the child process of
-/// `kill_group_id_refuses_an_id_that_names_no_group_it_started`.
 #[cfg(unix)]
 const REFUSE_CHILD: &str = "HORCH_PLATFORM_TEST_REFUSE_CHILD";
 
-/// 0 names the group of the caller, and an id above `i32::MAX` becomes a
-/// negative `pid_t`. `kill_group_id` refuses both and sends no signal. The
-/// check runs in a child process that leads a new group, so a wrong kill
-/// ends only that child.
 #[cfg(unix)]
 #[test]
 fn kill_group_id_refuses_an_id_that_names_no_group_it_started() {
@@ -156,7 +144,6 @@ fn kill_group_id_refuses_an_id_that_names_no_group_it_started() {
     assert!(status.success(), "the child ended with {status:?}");
 }
 
-/// A `cmd` child whose `ping` grandchild holds stdout for about 60 s.
 #[cfg(windows)]
 fn cmd_with_a_grandchild() -> Command {
     let mut cmd = Command::new("cmd");
@@ -185,8 +172,6 @@ fn contained_child_is_killed_with_its_children() {
 
     assert!(contained.terminate(), "the job is terminated");
     child.wait().expect("reap cmd");
-    // `ping` holds the pipe while it runs, so the end of the pipe proves it
-    // has ended too.
     assert!(
         receiver.recv_timeout(Duration::from_secs(10)).is_ok(),
         "ping outlived the job"
@@ -215,7 +200,6 @@ fn detach_and_kill_group_id_are_not_supported_on_windows() {
     assert!(group::is_same_group(std::process::id(), 0).is_err());
 }
 
-/// A parent that read the output of `horch tell` through a pipe waited until the detached courier ended, because the courier inherited the std handles (Windows, CI run 4).
 #[test]
 fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
     const HELPER: &str = "HORCH_PLATFORM_DETACHED_CHILD_PID_FILE";
@@ -224,8 +208,6 @@ fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        // The helper exits with no wait: the detached child must outlive
-        // it. The parent test stops that child by its pid.
         let pid = group::spawn_detached(&mut cmd)
             .expect("start the detached child")
             .id();

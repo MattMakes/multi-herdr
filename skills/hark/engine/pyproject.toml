@@ -7,7 +7,6 @@ name = "hark"
 version = "0.1.0"
 description = "Listen to, measure, make and review sound effects for video and games."
 requires-python = ">=3.11"
-# Runtime packages, in name order. Each floor is the oldest release hark is tested on.
 dependencies = [
     "librosa >= 0.10",
     "matplotlib >= 3.8",
@@ -19,7 +18,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# torch: install from the CPU wheel index first (see docs/specs/hark/ARCHITECTURE.md 5.2).
 ml = ["torch>=2.6", "transformers>=4.40"]
 mcp = ["mcp>=2"]
 dev = ["pytest>=8", "pytest-xdist>=3.6"]
@@ -36,7 +34,6 @@ include = ["hark*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# -n auto: pytest-xdist runs the tests on one worker per CPU core.
 addopts = "--import-mode=importlib -n auto"
 markers = [
     "ml: needs the ML extras (torch and transformers); skipped when they are absent",

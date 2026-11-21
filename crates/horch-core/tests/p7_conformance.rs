@@ -1,13 +1,3 @@
-//! The conformance suite (fleetd-p7 ticket 23; FR-8, FR-9, SR-1, SR-7,
-//! FM-18): 9 checks of the design, each a real launch of the exec adapter
-//! through the wrapper in a throwaway task folder, with a verdict for each
-//! check and the text of `conformance.json`.
-//!
-//! Each test runs the fake agents of `crates/horch-e2e` in temporary
-//! folders, never a real agent CLI (MAP.md Q6). The test builds the fakes 1
-//! time, as `p7_wrapper_exec.rs` does. No test waits for a time: a failure
-//! of "Launch headless" uses a fake that exits with no event.
-
 #[path = "support/fakes.rs"]
 mod fakes;
 
@@ -29,23 +19,17 @@ use horch_core::roster::Teammate;
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::{json, Value};
 
-/// The fakes that the tests launch.
 const FAKES: [&str; 4] = ["fake-claude", "fake-codex", "fake-antigravity", "fake-pi"];
 
 fn fake(name: &str) -> PathBuf {
     fakes::fake(&FAKES, name)
 }
 
-/// The variables of the host that a CLI reads as its compaction setting.
-/// A test machine has none of them.
 const HOST_WINDOW_VARS: [&str; 2] = [
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 ];
 
-/// A script in `dir/bin` that starts the fake `name` without
-/// [`HOST_WINDOW_VARS`]: the CLI of the test machine does not see the
-/// settings of the host that runs the test.
 fn sealed(dir: &Path, name: &str) -> PathBuf {
     let script = dir.join("bin").join(name);
     let text = format!(
@@ -59,8 +43,6 @@ fn sealed(dir: &Path, name: &str) -> PathBuf {
     script
 }
 
-/// The folder of each test machine. On Linux the sandbox mounts a new
-/// empty tmpfs on `/tmp`, so a folder in `/tmp` is not visible in it.
 fn machine_root() -> PathBuf {
     if cfg!(target_os = "linux") {
         PathBuf::from("/var/tmp")
@@ -86,8 +68,6 @@ impl Machine {
         for d in ["home", "state", "data", "ledger/fleet", "scratch", "bin"] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
-        // Stub Linux sandbox tools, so the Claude sandbox check passes on
-        // Linux too.
         #[cfg(unix)]
         for tool in ["bwrap", "socat"] {
             let path = tmp.path().join("bin").join(tool);
@@ -111,7 +91,6 @@ impl Machine {
         self.path("home")
     }
 
-    /// The operator paths of the fleet root of [`Machine::ctx`].
     fn operator_paths(&self) -> OperatorPaths {
         OperatorPaths::of(&self.path("ledger/fleet"))
     }
@@ -120,7 +99,6 @@ impl Machine {
         self.path("fake.log")
     }
 
-    /// The context of the process that runs the suite.
     fn ctx(&self) -> RuntimeContext {
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         let mut env = MapEnv::new(self.home())
@@ -140,8 +118,6 @@ impl Machine {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// The verdict of `check` for `teammate`, with the fake scenario
-    /// `scenario`.
     fn check(&self, teammate: &Teammate, scenario: &str, check: Check) -> CheckResult {
         let ctx = self.ctx();
         let mut runner = self.runner(&ctx, teammate, scenario);
@@ -158,7 +134,6 @@ impl Machine {
         ConformanceRunner {
             ctx,
             teammate,
-            // The window of each seat (fleetd-p7 ticket 21, MAP.md Q16).
             fleet_window: Some((CONTEXT_LIMIT, "context-windows.md".into())),
             env_rule: vec![
                 ("HORCH_FAKE_SCENARIO".into(), scenario.into()),
@@ -169,7 +144,6 @@ impl Machine {
         }
     }
 
-    /// Each call of the fakes, from the log.
     fn calls(&self) -> Vec<Value> {
         std::fs::read_to_string(self.log())
             .unwrap_or_default()
@@ -178,8 +152,6 @@ impl Machine {
             .collect()
     }
 
-    /// No fake saw a violation, such as the forbidden name in its
-    /// environment (SR-7).
     fn assert_no_violation(&self) {
         let calls = self.calls();
         assert!(!calls.is_empty(), "no fake ran");
@@ -192,7 +164,6 @@ impl Machine {
         }
     }
 
-    /// The scratch folder holds no throwaway folder after a launch.
     fn assert_scratch_is_empty(&self) {
         let left: Vec<_> = std::fs::read_dir(self.path("scratch"))
             .unwrap()
@@ -202,7 +173,6 @@ impl Machine {
     }
 }
 
-/// The reference profile of a CLI: a sandboxed worker in exec mode.
 fn profile(agent: HarnessKind) -> Teammate {
     let (name, model) = match agent {
         HarnessKind::Claude => ("conformance-claude", "claude-opus-5-5"),
@@ -218,7 +188,6 @@ fn profile(agent: HarnessKind) -> Teammate {
     if agent == HarnessKind::Claude {
         t.sandbox = Some(serde_json::Map::new());
     }
-    // `mode: exec`, as a teammate file writes it.
     let mut v = serde_json::to_value(&t).unwrap();
     v["mode"] = json!("exec");
     serde_json::from_value(v).unwrap()
@@ -236,8 +205,6 @@ fn assert_verdict(r: &CheckResult, check: Check, verdict: Verdict) {
     assert!(!r.evidence.contains('\n'), "{r:?}");
 }
 
-// Launch headless
-
 #[test]
 fn launch_headless_passes_when_the_cli_streams_and_exits_0() {
     let m = Machine::new();
@@ -245,7 +212,6 @@ fn launch_headless_passes_when_the_cli_streams_and_exits_0() {
     assert_verdict(&r, Check::LaunchHeadless, Verdict::Pass);
     m.assert_no_violation();
     m.assert_scratch_is_empty();
-    // The CLI read the fixed prompt of the check.
     assert_eq!(
         m.calls()[0]["exec_prompt"],
         Check::LaunchHeadless.prompt(&m.operator_paths()),
@@ -257,15 +223,12 @@ fn launch_headless_passes_when_the_cli_streams_and_exits_0() {
 #[test]
 fn launch_headless_fails_when_the_cli_emits_no_event() {
     let mut m = Machine::new();
-    // fake-pi has no exec mode: it exits 0 and prints nothing.
     m.bins.insert("HORCH_CLAUDE_BIN", fake("fake-pi"));
     let r = m.check(&claude(), "default", Check::LaunchHeadless);
     assert_verdict(&r, Check::LaunchHeadless, Verdict::Fail);
     assert!(r.evidence.contains("no stream event"), "{r:?}");
     m.assert_scratch_is_empty();
 }
-
-// Private home honoured
 
 #[test]
 fn private_home_marker_is_visible() {
@@ -280,14 +243,12 @@ fn private_home_marker_is_visible() {
     let call = &m.calls()[0];
     let skills = call["conformance"]["skills"].as_array().unwrap();
     assert!(skills.iter().any(|s| s == MARKER_SKILL), "{call}");
-    // The marker is not left behind.
     assert!(!m.home().join(".codex/skills").join(MARKER_SKILL).exists());
 }
 
 #[test]
 fn private_home_fails_when_the_launch_uses_the_operator_home() {
     let m = Machine::new();
-    // The Antigravity launch runs with the HOME of this process.
     let r = m.check(
         &profile(HarnessKind::Antigravity),
         "conformance",
@@ -295,7 +256,6 @@ fn private_home_fails_when_the_launch_uses_the_operator_home() {
     );
     assert_verdict(&r, Check::PrivateHome, Verdict::Fail);
     assert!(r.evidence.contains("home of the operator"), "{r:?}");
-    // The runner puts nothing in the home of the operator.
     assert!(!m
         .home()
         .join(".gemini/antigravity-cli/skills")
@@ -303,12 +263,9 @@ fn private_home_fails_when_the_launch_uses_the_operator_home() {
         .exists());
 }
 
-// Exact MCP set
-
 #[test]
 fn global_only_mcp_server_is_not_listed() {
     let m = Machine::new();
-    // A server only in the global config of the user.
     let global = json!({"mcpServers": {"global-only": {"command": "true"}}});
     std::fs::write(m.home().join(".claude.json"), global.to_string()).unwrap();
     let r = m.check(&claude(), "conformance", Check::ExactMcpSet);
@@ -320,7 +277,6 @@ fn global_only_mcp_server_is_not_listed() {
 #[test]
 fn exact_mcp_set_fails_when_the_profile_server_is_not_listed() {
     let m = Machine::new();
-    // The Antigravity launch renders no MCP server of the profile.
     let r = m.check(
         &profile(HarnessKind::Antigravity),
         "conformance",
@@ -329,8 +285,6 @@ fn exact_mcp_set_fails_when_the_profile_server_is_not_listed() {
     assert_verdict(&r, Check::ExactMcpSet, Verdict::Fail);
     assert!(r.evidence.contains("is not listed"), "{r:?}");
 }
-
-// Shared write
 
 #[test]
 fn shared_write_reaches_outbox_result_json() {
@@ -352,8 +306,6 @@ fn shared_write_fails_when_the_agent_ends_without_the_write() {
     assert_verdict(&r, Check::SharedWrite, Verdict::Fail);
     assert!(r.evidence.contains("outbox/result.json"), "{r:?}");
 }
-
-// Sandbox boundary
 
 #[test]
 fn sandbox_write_outside_is_refused() {
@@ -398,8 +350,6 @@ fn sandbox_boundary_fails_when_the_profile_has_no_sandbox() {
     assert!(r.evidence.contains("allowed"), "{r:?}");
 }
 
-// Context limit
-
 #[test]
 fn context_limit_reads_back_256000() {
     let m = Machine::new();
@@ -417,14 +367,11 @@ fn context_limit_fails_when_the_setting_reads_back_another_value() {
     let ctx = m.ctx();
     let t = profile(HarnessKind::Codex);
     let mut runner = m.runner(&ctx, &t, "conformance");
-    // A seat with the window of before ticket 21.
     runner.fleet_window = Some((200_000, "context-windows.md".into()));
     let r = run_check(&mut runner, Check::ContextLimit);
     assert_verdict(&r, Check::ContextLimit, Verdict::Fail);
     assert!(r.evidence.contains("reads back 200000"), "{r:?}");
 }
-
-// Hooks fire
 
 #[test]
 fn hooks_reach_the_wrapper() {
@@ -445,8 +392,6 @@ fn hooks_fire_fails_when_no_stop_reaches_the_wrapper() {
     assert!(r.evidence.contains("no stop"), "{r:?}");
 }
 
-// No trust prompt
-
 #[test]
 fn no_trust_prompt_passes_when_the_stream_has_no_dialog() {
     let m = Machine::new();
@@ -457,14 +402,11 @@ fn no_trust_prompt_passes_when_the_stream_has_no_dialog() {
 #[test]
 fn trust_prompt_fails_the_check() {
     let m = Machine::new();
-    // The fake prints a dialog and waits: the runner ends it at once.
     let r = m.check(&claude(), "trust_prompt", Check::NoTrustPrompt);
     assert_verdict(&r, Check::NoTrustPrompt, Verdict::Fail);
     assert!(r.evidence.contains("trust"), "{r:?}");
     m.assert_scratch_is_empty();
 }
-
-// Stop gate
 
 #[test]
 fn exit_without_result_triggers_the_stop_gate() {
@@ -481,13 +423,10 @@ fn exit_without_result_triggers_the_stop_gate() {
 #[test]
 fn stop_gate_fails_when_the_agent_leaves_a_result() {
     let m = Machine::new();
-    // The agent does not obey the prompt of the check.
     let r = m.check(&claude(), "conformance,ignore_stop_gate", Check::StopGate);
     assert_verdict(&r, Check::StopGate, Verdict::Fail);
     assert!(r.evidence.contains("result"), "{r:?}");
 }
-
-// conformance.json
 
 #[test]
 fn conformance_json_lists_each_check() {
@@ -527,7 +466,6 @@ fn conformance_json_lists_each_check() {
             assert!(c["evidence"].as_str().is_some_and(|e| !e.is_empty()), "{c}");
         }
         assert_eq!(read_conformance_json(&text).unwrap(), report);
-        // The contract names the CLI, the version and each failed check.
         if let Some(failure) = report.failure() {
             let line = failure.to_string();
             assert!(line.starts_with("adapter-conformance-failed: "), "{line}");

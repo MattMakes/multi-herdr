@@ -55,7 +55,6 @@ SPACE: dict[str, Any] = cm.space_table("""
 """)
 _KEYS = list(SPACE)
 
-# One row of values per member, in the key order of SPACE.
 _COLUMNS: dict[str, str] = {
     "sub": (
         "0.2858 0.1949 224.8 45.69 0.04827 0.01613 0.04364 0.6188 0.0 0.6151 174.9 92.57 0.008307 "

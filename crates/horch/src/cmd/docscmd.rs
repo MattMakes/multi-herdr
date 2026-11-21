@@ -1,10 +1,3 @@
-//! `horch docs sync` (`docs/specs/fleetd/design.md`, "Docs sync and adapter
-//! conformance"): steps 1 and 2 of 1 sync for each source of
-//! `docs-sources.toml`. It is an operator command and needs no fleetd.
-//!
-//! This file also gives [`AgentDocs`], the `agent-docs-sync` implementation
-//! of the port `DocsSyncRunner`, which the `docs_sync` job uses too.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -20,10 +13,6 @@ use horch_core::runtime::RuntimeContext;
 
 use crate::output;
 
-/// A test folder that serves each URL as the file `<host>/<path>`
-/// (`index.html` for a path that ends with `/`), and each `also_git`
-/// repository as a local repository at the same place. No test uses the
-/// network.
 const FIXTURE_ENV: &str = "HORCH_TEST_DOCS_FIXTURE";
 
 #[derive(Subcommand)]
@@ -41,15 +30,12 @@ pub enum DocsCommand {
     },
 }
 
-/// `horch docs`.
 pub fn docs(ctx: &RuntimeContext, command: DocsCommand) -> Result<ExitCode> {
     match command {
         DocsCommand::Sync { cli, out } => sync(ctx, cli.as_deref(), out),
     }
 }
 
-/// `horch docs sync`: sync each chosen source, print 1 line for each, and
-/// exit 1 when a sync failed.
 fn sync(ctx: &RuntimeContext, cli: Option<&str>, out: Option<PathBuf>) -> Result<ExitCode> {
     let runner = AgentDocs::new()?;
     let clis: Vec<String> = match cli {
@@ -77,8 +63,6 @@ fn sync(ctx: &RuntimeContext, cli: Option<&str>, out: Option<PathBuf>) -> Result
     })
 }
 
-/// The sources of `docs-sources.toml` and the fetch port: HTTPS, or the
-/// folder of [`FIXTURE_ENV`].
 pub struct AgentDocs {
     sources: Vec<Source>,
     fetch: Box<dyn Fetch>,
@@ -153,7 +137,6 @@ impl DocsSyncRunner for AgentDocs {
     }
 }
 
-/// The fetch port of [`FIXTURE_ENV`].
 struct FixtureFetch(PathBuf);
 
 impl Fetch for FixtureFetch {

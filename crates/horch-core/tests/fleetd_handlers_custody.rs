@@ -1,12 +1,3 @@
-//! The fleetd handlers of the custody, job and integration request kinds
-//! (docs/tickets/fleetd-p5/20-handlers-custody.md; RR-5, RR-8, RR-13 to
-//! RR-18).
-//!
-//! Each test sends requests through `requests::handle` to a temp ledger at
-//! generation 1, with the handlers of `handlers_custody` registered. The
-//! git facts of a request come in its payload, as the command reads them.
-//! No test runs git or a process.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -47,8 +38,6 @@ impl RefTips for NoRefs {
 const BASE: &str = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
 const HEAD: &str = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
 
-/// A temp ledger at generation 1 with 1 run of the folder `root`, and the
-/// handlers of this ticket.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -110,7 +99,6 @@ fn world() -> World {
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A request of `kind` with a new request_id.
 fn request(kind: Kind, payload: Value) -> Request {
     let n = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     let id = format!("6f1c2a3e-0b9d-4c55-8e7f-{n:012x}");
@@ -159,7 +147,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// A new worker of the run; gives its id.
     fn worker(&mut self) -> String {
         let run = self.run.clone();
         self.store
@@ -190,8 +177,6 @@ impl World {
         })
     }
 
-    /// A scratch tree `name` of a new worker whose folder exists: `active`,
-    /// as after its `worktree_add` job. Gives its worktree id.
     fn active_tree(&mut self, name: &str) -> String {
         let worker = self.worker();
         let p = self.scratch_payload(&worker, name);
@@ -238,7 +223,6 @@ impl World {
     }
 }
 
-/// The facts of a clean folder on its recorded branch `branch`.
 fn clean(branch: &str) -> Value {
     json!({
         "path_exists": true,
@@ -256,7 +240,6 @@ fn with(mut facts: Value, key: &str, value: Value) -> Value {
     facts
 }
 
-/// A triage row of the ledger tree `id` at `path` on `branch`.
 fn triage_row(id: &str, path: &str, branch: &str, run_id: &str) -> Value {
     json!({
         "id": "W1",
@@ -382,8 +365,6 @@ fn worktree_drop_keeps_each_refusal_of_today() {
         0
     );
 
-    // --keep-branch keeps a tree with unique commits; the drop orphans the
-    // tree and queues its rescue at the HEAD of the facts.
     let mut p = w.drop_payload("t1", with(clean(&branch), "unique_commits", json!(true)));
     p["keep_branch"] = json!(true);
     let out = w.applied(Kind::WorktreeDrop, p);
@@ -559,9 +540,6 @@ fn worktree_triage_queues_its_jobs() {
     );
 }
 
-/// `rescue_drop` (T-885) checks its payload as untrusted input and records
-/// nothing that git does not confirm. The CLI test `p5_cli_writers` drops
-/// a real ref.
 #[test]
 fn rescue_drop_refuses_a_payload_that_git_or_the_ledger_does_not_confirm() {
     let mut w = world();
@@ -596,7 +574,6 @@ fn rescue_drop_refuses_a_payload_that_git_or_the_ledger_does_not_confirm() {
     assert!(w
         .refused(Kind::RescueDrop, p)
         .contains("a bad rescue_drop payload"));
-    // git has no such ref: the handler records nothing.
     let why = w.refused(Kind::RescueDrop, good(&w));
     assert!(why.contains("does not exist"), "{why}");
     assert_eq!(events(&w), before);

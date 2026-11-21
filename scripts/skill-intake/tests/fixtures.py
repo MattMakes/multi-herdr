@@ -59,8 +59,6 @@ def build(root: Path, files: dict[str, str | bytes]) -> Path:
     return root
 
 
-# ---- scanner fixtures (spec 12.2) ----
-
 ZWSP = chr(0x200B)
 RLO = chr(0x202E)
 
@@ -142,8 +140,6 @@ def f_clean() -> dict[str, str]:
         "skills/clean-fixture/scripts/test_count.py": test,
     }
 
-
-# ---- ticket 04: acquire and discover fixtures ------------------------------
 
 import os  # noqa: E402
 import stat  # noqa: E402
@@ -231,8 +227,6 @@ def git_repo(root: Path, files: dict[str, str | bytes], sentinel: Path | None = 
     return root
 
 
-# ---- dependency and opaque fixtures (spec 12.2: F-binary, F-deps) ----
-
 MACHO_64 = b"\xcf\xfa\xed\xfe" + (0x0100000C).to_bytes(4, "little") + bytes(4) + (2).to_bytes(4, "little")
 ELF_64 = b"\x7fELF\x02\x01\x01" + bytes(9) + (2).to_bytes(2, "little") + (0x3E).to_bytes(2, "little")
 PYC_312 = (3531).to_bytes(2, "little") + b"\r\n" + bytes(12)
@@ -281,8 +275,6 @@ def f_deps() -> dict[str, str]:
     }
 
 
-# ---- multi-herdr checkout (spec 12.2: F-repo) ----
-
 REPO_MARKERS = ("skills/copied.json", "teammates/_template.md", "crates/horch-core/tests/skills_catalog.rs")
 BOOKKEEPING = REPO_MARKERS + ("skills/README.md", "crates/horch-core/tests/baseline_oracles.rs",
                               "teammates/README.md", "docs/skills-and-teams.md", "CHANGELOG.md",
@@ -303,7 +295,6 @@ def f_repo(root: Path, source: Path, catalog: bool = True, roster: dict[str, str
             files[rel] = (source / rel).read_bytes()
     for name, text in (roster or {}).items():
         files[f"teammates/{name}.md"] = text
-    # Copies of this repo's own files, not hostile fixtures: no inert check.
     for rel, content in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_bytes(_as_bytes(content))

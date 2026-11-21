@@ -1,12 +1,3 @@
-//! The fleetd handlers of the idea kinds: `idea_add` (also `--direct` and
-//! `--to`), `idea_amend`, `idea_approve`, `idea_revise`, `idea_park` and
-//! `idea_cancel` (docs/tickets/fleetd-p6/22-handlers.md; RR-8, SR-8).
-//!
-//! Each test sends requests through `requests::handle` to a temp ledger at
-//! generation 1, and reads the rows and the result. Each test has its own
-//! temp git repository and idea folders. No test touches this repository or
-//! the live ledger, and no test starts a process other than git.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -34,7 +25,6 @@ use serde_json::{json, Value};
 const ID: &str = "6f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f";
 const ID_2: &str = "7a2d3b4f-1c0e-4d66-9f80-2b3c4d5e6f70";
 
-/// A ticket in format C1 of a code kind.
 const TICKET: &str = "# 03: Retry sync with backoff
 
 <!-- horch-ticket: 1 -->
@@ -54,8 +44,6 @@ feature: retry-sync
 1. [assumed] A retry waits.
 ";
 
-/// A temp ledger at generation 1, a git repository with 1 commit on
-/// `main`, and the idea handlers.
 struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -190,7 +178,6 @@ impl World {
         self.send_as(ID, kind, payload)
     }
 
-    /// The payload of `horch idea add <text>` with no `--to`.
     fn add_payload(&self, text: &str) -> Value {
         json!({
             "text": text,
@@ -199,7 +186,6 @@ impl World {
         })
     }
 
-    /// 1 captured idea of a new feature, through its request.
     fn add(&mut self, request_id: &str, text: &str) -> Value {
         let payload = self.add_payload(text);
         applied(self.send_as(request_id, Kind::IdeaAdd, payload))
@@ -216,14 +202,11 @@ impl World {
             .unwrap()
     }
 
-    /// Put `idea` in `state` with no event: the set-up of a test.
     fn put(&self, idea: &str, state: &str) {
         let sql = "UPDATE ideas SET state = ?2 WHERE id = ?1";
         assert_eq!(self.store.conn().execute(sql, [idea, state]).unwrap(), 1);
     }
 
-    /// 1 idea in `awaiting_approval` with assumptions.md in its folder.
-    /// Gives its id and the sha256 of assumptions.md.
     fn awaiting_approval(&mut self) -> (String, String) {
         let id = self.add(ID_2, "retry sync")["idea"]
             .as_str()

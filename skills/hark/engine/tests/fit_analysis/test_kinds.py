@@ -15,8 +15,6 @@ KIND_MODULES = {"sines": sinusoidal, "modal": modal, "spectral_noise": spectral,
 MODEL_OF = {"sines": "sines_s1", "modal": "modal_s1", "spectral_noise": "spectral_s3", "gesture": "gesture_s3"}
 
 
-# ---------------------------------------------------------------- the face
-
 def test_module_for_maps_every_kind():
     assert set(analysis.KINDS) == set(KIND_MODULES)
     for kind, mod in KIND_MODULES.items():
@@ -103,8 +101,6 @@ def test_kind_modules_do_not_import_the_pipeline():
         assert "hark.fit.pipeline" not in src and "from hark.fit import" not in src, f.name
 
 
-# ---------------------------------------------------------------- quality on synthetic sounds
-
 def test_modal_recovers_the_struck_modes(models, s1):
     m = models["modal_s1"]
     rows = m["strikes"][0]["modes"]
@@ -123,7 +119,6 @@ def test_modal_finds_the_gated_pulses(models, s4):
     ts = [s["t"] for s in m["strikes"]]
     assert len(ts) == 4
     assert np.allclose(ts, [0.01, 0.09, 0.17, 0.25], atol=0.002)
-    # Without the pipeline's gate (A-11, 20b) the rings run on into the gaps.
     assert modal.env_corr(s4, modal.render(m, 0)) > 0.7
 
 
@@ -224,8 +219,6 @@ def test_magnitude_residual_removes_what_y_holds():
     assert np.allclose(gesture.residual(noise, np.zeros_like(noise)), noise, atol=1e-6)
 
 
-# ---------------------------------------------------------------- modal pieces
-
 def test_modal_onsets_and_quick_checks(s1, s4):
     assert modal.onsets(np.zeros(1000)) == [0]
     on = modal.onsets(s4)
@@ -292,8 +285,6 @@ def test_modal_knobs_move_the_sound(models):
     assert not np.array_equal(modal.render(m, 0, brightness=2), y)
     assert modal.render(m, 0, room=0.2).shape == y.shape
 
-
-# ---------------------------------------------------------------- sines and space edge cases
 
 def test_sines_noise_only_model():
     x = 0.1 * np.random.default_rng(3).standard_normal(SR // 4)

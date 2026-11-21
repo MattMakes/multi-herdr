@@ -19,14 +19,12 @@ struct Out {
     err: String,
 }
 
-/// The fleetd drops first: fields drop in order.
 struct World {
     _fleetd: Option<TestFleetd>,
     tmp: tempfile::TempDir,
 }
 
 impl World {
-    /// The temp project with a test fleetd that serves its requests.
     fn new() -> World {
         let mut w = World::without_fleetd();
         w._fleetd = Some(TestFleetd::start(
@@ -36,7 +34,6 @@ impl World {
         w
     }
 
-    /// The temp project, and no fleetd: no ledger exists yet.
     fn without_fleetd() -> World {
         let tmp = short_tempdir();
         let proj = tmp.path().join("proj");
@@ -61,11 +58,7 @@ impl World {
         for (n, title) in [("t1", "One"), ("t2", "Two")] {
             std::fs::write(proj.join(format!("{n}.md")), format!("# Ticket {title}\n")).unwrap();
         }
-        // A fixed, healthy machine, so the health guard of `horch spawn`
-        // never reads the real load of the host.
         std::fs::write(tmp.path().join("machine.json"), HEALTHY_MACHINE).unwrap();
-        // The process and open-file counts have no fixture: a share of 1.0
-        // holds only above the limit, which the host does not allow.
         std::fs::create_dir_all(tmp.path().join("fleet")).unwrap();
         std::fs::write(
             tmp.path().join("fleet/fleet.toml"),
@@ -129,8 +122,6 @@ impl World {
             .unwrap()
     }
 
-    /// The `horch` binary with the environment of the test. `watchdog_off`
-    /// sets `HORCH_NO_WATCHDOG=1`.
     fn horch(&self, watchdog_off: bool) -> Command {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -153,7 +144,6 @@ impl World {
         self.run_env(worker, true, args)
     }
 
-    /// `watchdog_off` sets `HORCH_NO_WATCHDOG=1`.
     fn run_env(&self, worker: Option<&str>, watchdog_off: bool, args: &[&str]) -> Out {
         let mut cmd = self.horch(watchdog_off);
         cmd.args(args);
@@ -164,7 +154,6 @@ impl World {
         Out {
             code: o.status.code().unwrap(),
             out: String::from_utf8(o.stdout).unwrap(),
-            // A host that cannot read a count (a sandbox) gets a guard note.
             err: String::from_utf8(o.stderr)
                 .unwrap()
                 .lines()
@@ -178,7 +167,6 @@ impl World {
         self.run_as(None, args)
     }
 
-    /// Run `args`, require exit 0, return stdout.
     fn ok(&self, args: &[&str]) -> String {
         let o = self.run(args);
         assert_eq!(o.code, 0, "{args:?}: {}", o.err);
@@ -186,7 +174,6 @@ impl World {
     }
 }
 
-/// An event line without its leading timestamp.
 fn untimed(text: &str) -> Vec<String> {
     text.lines()
         .map(|l| l.trim_start().split_once(' ').unwrap().1.to_string())
@@ -232,7 +219,6 @@ fn the_board_commands_print_their_pinned_text() {
         w.ok(&["ledger", "fallback", "T-1", "because"]),
         "T-1 can now be claimed by dev2.\n"
     );
-    // Ticket 48 of fleetd-p6 retires unblock.
     let unblock = w.run(&["ledger", "unblock", "T-2", "--from", "T-1"]);
     assert_eq!((unblock.code, unblock.out.as_str()), (1, ""));
     assert_eq!(
@@ -243,9 +229,6 @@ fn the_board_commands_print_their_pinned_text() {
         w.ok(&["ledger", "cancel", "T-2", "nope"]),
         "T-2 cancelled.\n"
     );
-    // `cancelled` is terminal (fleetd-p2 MAP.md, Q22): the door refuses
-    // the requeue. fleetd refuses the request (ticket 22 of fleetd-p5,
-    // T-471).
     let requeue = w.run(&["ledger", "requeue", "T-2", "again"]);
     assert_eq!((requeue.code, requeue.out.as_str()), (1, ""));
     assert!(
@@ -278,7 +261,6 @@ fn the_board_commands_print_their_pinned_text() {
     );
 }
 
-/// The board of a ledger with no run.
 fn assert_no_runs(w: &World) {
     assert_eq!(w.ok(&["ledger", "status"]), "No runs.\n");
     assert_eq!(
@@ -289,7 +271,6 @@ fn assert_no_runs(w: &World) {
     assert_eq!(w.ok(&["ledger", "run", "list", "--json"]), "[]\n");
 }
 
-/// `horch ledger show` of T-2, as text and as JSON, and of an unknown task.
 fn assert_show_of_t2(w: &World) {
     assert_eq!(
         w.ok(&["ledger", "show", "T-2"])
@@ -320,10 +301,6 @@ fn assert_show_of_t2(w: &World) {
     );
 }
 
-/// The events of the board test, in order: `horch ledger events` without
-/// its times.
-/// fleetd records the refused requeue of the cancelled T-2 in its request
-/// row (ticket 22 of fleetd-p5, T-471).
 fn assert_refused_requeue(w: &World) {
     let conn = rusqlite::Connection::open(w.tmp.path().join("home/.horch/ledger.sqlite3")).unwrap();
     let refused: Vec<(String, String)> = conn
@@ -383,7 +360,6 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     let stop = w.run(&["ledger", "stop", "nobody", "why"]);
     assert_eq!(stop.code, 1);
     assert!(stop.err.starts_with("refused: "), "{}", stop.err);
-    // Ticket 48 of fleetd-p6 retires worker pid.
     let pid = w.run(&["ledger", "worker", "pid", "nobody", "--agent", "1"]);
     assert_eq!(pid.code, 1, "{}", pid.err);
     assert_eq!(
@@ -392,9 +368,6 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     );
 }
 
-/// A world with run `r1` (checks every 3600 s, so no check is due within
-/// a test on a loaded machine) and 1 task bound to the worker `dev1`
-/// (FR-5).
 fn world_with_a_claimed_task() -> (World, String) {
     let w = World::without_fleetd();
     w.seed_run(
@@ -409,8 +382,6 @@ fn world_with_a_claimed_task() -> (World, String) {
     (w, id)
 }
 
-/// Bind the next task of `dev` to a new worker with the role `dev1` and the
-/// agent `agent` (FR-5). Gives the worker id.
 fn bind_dev1(w: &World, agent: Option<u32>) -> String {
     let db = w.ledger_db();
     let worker = NewWorker {
@@ -424,7 +395,6 @@ fn bind_dev1(w: &World, agent: Option<u32>) -> String {
 #[test]
 fn watch_once_reports_in_text_and_json() {
     let (w, _) = world_with_a_claimed_task();
-    // Not due yet: nothing is checked, in either form.
     assert_eq!(
         w.ok(&["ledger", "watch", "--once"]),
         "No worker was due for a check.\n"
@@ -444,8 +414,6 @@ fn watch_once_reports_in_text_and_json() {
 #[test]
 fn watch_once_json_lists_each_checked_worker() {
     let w = World::without_fleetd();
-    // Many stall rounds: the forced check does not reap the worker, whose
-    // agent is this test.
     w.seed_run(
         Thresholds {
             check_every_s: Some(10),
@@ -466,7 +434,6 @@ fn watch_once_json_lists_each_checked_worker() {
     assert_eq!(list[0]["task"], "T-1");
     assert_eq!(list[0]["verdict"], "no_progress", "{checked}");
     assert_eq!(list[0]["round"], 1, "{checked}");
-    // The note gives the seconds since the claim, which the test cannot fix.
     let note = list[0]["note"].as_str().unwrap();
     assert!(
         note.starts_with("no ledger call, no transcript growth, no state change"),
@@ -477,8 +444,6 @@ fn watch_once_json_lists_each_checked_worker() {
 #[test]
 fn a_command_with_no_fleetd_row_starts_no_watchdog() {
     let (w, _) = world_with_a_claimed_task();
-    // The check before the command is on. No fleetd ran on this ledger, so
-    // it starts nothing and says nothing.
     let status = w.run_env(None, false, &["ledger", "status"]);
     assert_eq!(status.code, 1, "{}", status.err);
     assert_eq!(status.err, "", "{}", status.err);

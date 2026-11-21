@@ -1,39 +1,19 @@
-//! The class of a rescue ref (ticket 24). No I/O.
-//!
-//! `docs/specs/fleetd/design.md`, "No work is lost" (Rescue refs have 2
-//! classes, and fleetd owns both), I10, FM-40, RR-16; MAP.md of fleetd-p4,
-//! Q16 and Q17.
-//!
-//! A rescue ref of a branch is `refs/horch/rescue/branch/<name>/<n>`, with
-//! each `/` of the branch name as `-`. A rescue ref of a worktree is
-//! `refs/horch/rescue/<worktree id>/<n>` (Phase 3). fleetd decides the class
-//! of each rescue ref by content, each time it reads the ref: `superseded`
-//! when its changes are in a newer tip of its branch or in a landed branch,
-//! else `unique`. Only `superseded` expires.
-
 use super::rescue::{self, REF_PREFIX};
 
-/// The folder of the rescue refs of branches, below [`REF_PREFIX`].
 pub const BRANCH_FOLDER: &str = "branch";
 
-/// The `fleet.toml` key of the budget of the `unique` class.
 pub const BUDGET_KEY: &str = "rescue_unique_budget_mb";
 
-/// The key and the kind of the needs-you item of the budget.
 pub const NEEDS_YOU_KEY: &str = "rescue_unique_budget";
 
-/// The feature states after which a `superseded` ref can expire.
 pub const ENDED: [&str; 2] = ["merged", "abandoned"];
 
 const MB: u64 = 1024 * 1024;
 const DAY_S: i64 = 24 * 60 * 60;
 
-/// The class of a rescue ref.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// It holds work that is in no landed branch. Only you delete it.
     Unique,
-    /// Its work is in a newer tip of its branch or in a landed branch.
     Superseded,
 }
 
@@ -46,54 +26,40 @@ impl Class {
     }
 }
 
-/// What a rescue ref is a rescue of.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RefOwner {
-    /// A branch, by the folder name: the branch name with `-` for `/`.
     Branch(String),
-    /// A worktree, by its id.
     Worktree(String),
 }
 
-/// A rescue ref, parsed from its full name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed {
     pub owner: RefOwner,
     pub n: u64,
 }
 
-/// The branch of the owner of a rescue ref, and its feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Owner {
     pub branch: String,
     pub feature: Option<FeatureRefs>,
 }
 
-/// The id and the branches of a feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeatureRefs {
     pub id: String,
-    /// The feature branch; `None` when the feature has none.
     pub branch: Option<String>,
     pub primary: String,
 }
 
-/// The folder name of the rescue refs of `branch`: each `/` as `-`. `None`
-/// when that name cannot name a ref folder (the rule of
-/// [`rescue::valid_id`]).
 pub fn branch_folder_name(branch: &str) -> Option<String> {
     let name = branch.replace('/', "-");
     rescue::valid_id(&name).then_some(name)
 }
 
-/// The id of the rescue refs of `branch` for [`rescue::ref_name`] and
-/// [`rescue::next_n`]: `branch/<folder name>`.
 pub fn branch_ref_id(branch: &str) -> Option<String> {
     Some(format!("{BRANCH_FOLDER}/{}", branch_folder_name(branch)?))
 }
 
-/// The owner and the number of the rescue ref `name`, or `None` when
-/// `name` is not a rescue ref with a number.
 pub fn parse(name: &str) -> Option<Parsed> {
     let below = name.strip_prefix(REF_PREFIX)?;
     let (folder, n) = below.rsplit_once('/')?;
@@ -108,18 +74,12 @@ pub fn parse(name: &str) -> Option<Parsed> {
     Some(Parsed { owner, n })
 }
 
-/// The by-content facts of 1 rescue ref. A fact that git could not give is
-/// `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Content {
-    /// Its changes are in a newer tip of its branch.
     pub in_newer_tip: Option<bool>,
-    /// Its changes are in a landed branch.
     pub in_landed: Option<bool>,
 }
 
-/// The class of a ref with the facts `c`. A fact that is not known never
-/// makes a ref `superseded`.
 pub fn classify(c: &Content) -> Class {
     if c.in_newer_tip == Some(true) || c.in_landed == Some(true) {
         Class::Superseded
@@ -128,9 +88,6 @@ pub fn classify(c: &Content) -> Class {
     }
 }
 
-/// Whether a ref of `class` expires at `now_s`: it is `superseded`, its
-/// feature ended at `ended_s`, and `retention_days` have passed since then.
-/// Times are Unix seconds. A ref with no ended feature never expires.
 pub fn expired(class: Class, ended_s: Option<i64>, now_s: i64, retention_days: u64) -> bool {
     let keep_s = i64::try_from(retention_days)
         .ok()
@@ -143,7 +100,6 @@ pub fn expired(class: Class, ended_s: Option<i64>, now_s: i64, retention_days: u
     }
 }
 
-/// Whether `unique_bytes` is over the budget of `budget_mb` megabytes.
 pub fn over_budget(unique_bytes: u64, budget_mb: u64) -> bool {
     unique_bytes > budget_mb.saturating_mul(MB)
 }

@@ -1,11 +1,3 @@
-//! The job runner of a test, shared by the integration tests that load it
-//! with `#[path = "common/test_jobs.rs"] mod test_jobs;`.
-//!
-//! The job process is `true`, started through the launcher as a pass
-//! starts it, and the executor runs in the test process with the recorded
-//! pid, as `horch job run <id>` runs it. A test never starts a `horch`
-//! binary, so it never reaches the ledger of the fleet.
-
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -21,7 +13,6 @@ use horch_core::fleetd::worktree_custody::application::create::RunJob;
 use horch_core::taskledger::workers::Worker;
 use rusqlite::Connection;
 
-/// Runs each job in the test process.
 pub struct TestJobs;
 
 impl RunJob for TestJobs {
@@ -57,7 +48,6 @@ fn get(conn: &Connection, job_id: i64) -> Result<JobRow> {
     jobs_store::get(conn, job_id)?.with_context(|| format!("no job {job_id}"))
 }
 
-/// No worker of a test has a sandbox profile.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {

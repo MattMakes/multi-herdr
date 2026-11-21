@@ -1,28 +1,3 @@
-//! A recording stand-in for the `opencode` CLI.
-//!
-//! Three kinds of call:
-//! - `--version` prints a fixed version.
-//! - `session list [--format json]` prints the JSON array that
-//!   `horch_core::harness::opencode` parses: one session whose `directory` is the
-//!   process cwd and whose `created` is now. Its id is
-//!   `horch_e2e::opencode_session_id(cwd)`: `ses_` and 16 hex digits.
-//! - Any other argv is a launch (`--model m [--session id] --prompt p`). The
-//!   fake records it, then behaves by scenario.
-//!
-//! Scenarios (a comma-separated list is allowed):
-//! - `default`: a launch exits 0 at once.
-//! - `stay`: a launch sleeps until killed, like a TUI in a pane.
-//! - `inspect_skills`: a launch also writes the `skills.paths` of
-//!   `$OPENCODE_CONFIG_CONTENT` to `$HORCH_FAKE_LOG.skills.json`
-//!   (`horch_e2e::write_skills_report`).
-//!
-//! `HORCH_FAKE_TRANSCRIPTS=1`: a launch also writes the rows horch's telemetry
-//! reader needs into `opencode.db` (`$HORCH_OPENCODE_DB`, else
-//! `$XDG_DATA_HOME/opencode/opencode.db`, else `$HOME/.local/share/opencode/
-//! opencode.db`) through the `sqlite3` CLI (`$HORCH_SQLITE3_BIN`, else
-//! `sqlite3`). The rows are 1 session and 1 completed assistant message. The
-//! fake skips this without a message when `sqlite3` is absent or fails.
-
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -66,7 +41,6 @@ fn main() {
                 inspect_skills();
             }
             horch_e2e::probe::record_operator_boundary(&mut call);
-            // Eager: a `stay` launch is killed, so nothing is written after it.
             call.flush();
             if std::env::var("HORCH_FAKE_TRANSCRIPTS").is_ok_and(|v| v == "1") {
                 write_transcript(&id, &cwd);
@@ -124,8 +98,6 @@ fn db_path() -> Option<PathBuf> {
     })
 }
 
-/// The schema subset the reader queries, as in
-/// `crates/horch-core/tests/fixtures/telemetry/opencode/opencode.sql`.
 fn write_transcript(session: &str, cwd: &std::path::Path) {
     let Some(db) = db_path() else { return };
     if let Some(dir) = db.parent() {
@@ -149,7 +121,6 @@ fn write_transcript(session: &str, cwd: &std::path::Path) {
          INSERT OR REPLACE INTO message VALUES ('msg_{session}','{session}',{now},{now},'{data}');\n"
     );
     let bin = std::env::var_os("HORCH_SQLITE3_BIN").unwrap_or_else(|| "sqlite3".into());
-    // The SQL goes in on stdin: an argument that starts with `--` is an option.
     let Ok(mut child) = Command::new(bin)
         .arg(&db)
         .stdin(Stdio::piped())
@@ -165,10 +136,6 @@ fn write_transcript(session: &str, cwd: &std::path::Path) {
     let _ = child.wait();
 }
 
-/// `opencode upgrade`: record the call, then answer as the scenario says.
-/// `update_fail:opencode` exits 1 with a coloured error line, and
-/// `update_hang:opencode` sleeps 60 s first. Otherwise it prints 1 line and
-/// exits 0.
 fn update(call: &Call) -> ! {
     call.flush();
     if horch_e2e::scenario_has("update_fail:opencode") {

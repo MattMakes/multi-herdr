@@ -1,10 +1,3 @@
-//! The Antigravity adapter in exec mode (fleetd-p7 ticket 15): the launch of
-//! 1 exec attempt, and the events of its `stream-json` output.
-//!
-//! The stream lines are the fixture `fixtures/streams/agy-exec.jsonl`. Each
-//! line names its doc page in `_doc`. The soft-denial line and the
-//! usage-limit line are not in the docs; the conformance job confirms them.
-
 use std::path::Path;
 
 use horch_core::harness::antigravity::{
@@ -13,7 +6,6 @@ use horch_core::harness::antigravity::{
 
 const FIXTURE: &str = include_str!("fixtures/streams/agy-exec.jsonl");
 
-/// The fixture line whose text has each of `parts`. Exactly 1 line must.
 fn line(parts: &[&str]) -> &'static str {
     let found: Vec<&str> = FIXTURE
         .lines()
@@ -97,22 +89,18 @@ fn agy_stream_soft_denial_is_a_signal() {
             message: "run_command needs approval, which headless mode cannot obtain".into(),
         }
     );
-    // The run goes on after a soft denial: it is activity, not a wait.
     assert!(event.is_activity());
 
-    // A tool step that did not fail is plain activity.
     let ok = read_event(line(&["hello_headless_demo"]));
     assert_eq!(ok, Event::Activity);
 }
 
 #[test]
 fn agy_stream_gives_the_context_token_count() {
-    // input_tokens 278 + cache_read_tokens 30214: the context of the turn.
     let event = read_event(line(&["\"step_type\":\"agent_response\"", "\"usage\""]));
     assert_eq!(event, Event::ContextTokens(30492));
     assert!(event.is_activity());
 
-    // The result totals the session, so it is not the context.
     let result = read_event(line(&["\"status\":\"SUCCESS\""]));
     assert_eq!(
         result,
@@ -120,7 +108,6 @@ fn agy_stream_gives_the_context_token_count() {
             status: "SUCCESS".into()
         }
     );
-    // A checkpoint step has its own small call, not the context.
     assert_eq!(
         read_event(line(&["\"step_type\":\"checkpoint\""])),
         Event::Activity
@@ -137,7 +124,6 @@ fn agy_stream_usage_limit_is_quota() {
         }
     );
 
-    // An ERROR that does not name a limit is a plain result, not quota.
     let other = read_event(line(&["invalid model selection"]));
     assert_eq!(
         other,

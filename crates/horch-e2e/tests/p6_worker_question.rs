@@ -273,8 +273,6 @@ impl World {
         wait_for_or(what, f, || self.context())
     }
 
-    /// The attempts of `task` that its retry budget counts:
-    /// `attempts - attempt_floor`.
     fn used(&self, task: &str) -> i64 {
         self.one(&format!(
             "SELECT attempts - attempt_floor FROM tasks WHERE task_id = {}",
@@ -303,7 +301,6 @@ impl World {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Refuse {
     Never,
-    /// A resume: the CLI says that the session is gone, as claude does.
     Resume,
     AllButFirst,
 }
@@ -478,8 +475,6 @@ fn session_of(w: &World, attempt: &str) -> String {
     })
 }
 
-/// RR-12, design line 1015: fleetd resumes the session of the worker with
-/// the answer, through the resume form of the adapter, and records it.
 #[test]
 fn answered_question_resumes_the_session_of_the_worker() {
     let w = World::new("p6-wq-resume", "stay", &question_tell(QUESTION));
@@ -506,7 +501,6 @@ fn answered_question_resumes_the_session_of_the_worker() {
         "the worker row records the resumed session\n{}",
         w.context()
     );
-    // T-15 retired the manual resume: no CLI user can start one.
     let o = w.h.run(&["spawn", "--resume", &session]);
     assert!(!o.status.success(), "horch spawn --resume: {}", text(&o));
     assert_eq!(w.attempts(&task).len(), 2, "{}", w.context());
@@ -582,10 +576,6 @@ fn refused_resume_at_the_last_attempt(name: &str, refuse: Refuse) -> Refused {
     }
 }
 
-/// RR-12, design line 1015: a resume that the CLI refuses because the
-/// session is gone gives a fresh attempt from the question, the answer and
-/// the committed work, also at the last attempt: the refusal burns no
-/// attempt and waits no backoff (D244-F3).
 #[test]
 fn refused_resume_at_the_last_attempt_gives_a_fresh_attempt_with_the_answer_and_the_work() {
     let r = refused_resume_at_the_last_attempt("p6-wq-refused", Refuse::Resume);
@@ -627,9 +617,6 @@ fn refused_resume_at_the_last_attempt_gives_a_fresh_attempt_with_the_answer_and_
     );
 }
 
-/// RR-12 bound: 1 fresh launch for each answer. When the fresh attempt
-/// also exits with no result, it ends `no_result` and burns the last
-/// attempt as today, and no attempt resumes again.
 #[test]
 fn fresh_attempt_after_a_refused_resume_that_fails_burns_the_attempt_and_does_not_loop() {
     let r = refused_resume_at_the_last_attempt("p6-wq-refused-twice", Refuse::AllButFirst);
@@ -655,8 +642,6 @@ fn fresh_attempt_after_a_refused_resume_that_fails_burns_the_attempt_and_does_no
         "no attempt after the burned last attempt\n{}",
         w.context()
     );
-    // The wrapper of a2 also resumes its session 1 time with no START.md
-    // (the repair pass of FM-6). No attempt after a2 resumes it.
     let refused = refused_argvs(w);
     let a3_dir = w.attempt_dir(&r.a3).to_string_lossy().into_owned();
     let names_a3 = |argv: &Vec<String>| argv.iter().any(|a| a.contains(&a3_dir));
@@ -732,7 +717,6 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
             })
             .collect()
     };
-    // The attempt row comes before its CLI starts: wait for the call.
     w.wait("a call of the sub-orchestrator CLI", || {
         (!lead_calls().is_empty()).then_some(())
     });

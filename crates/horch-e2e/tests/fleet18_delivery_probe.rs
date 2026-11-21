@@ -1,4 +1,3 @@
-//! #61: the real CLI verifies delivery rather than assuming a successful write.
 #![cfg(unix)]
 
 use horch_e2e::harness::{fixtures, Harness};
@@ -15,10 +14,6 @@ fn world(name: &str, scenario: &str) -> Harness {
     h
 }
 
-/// The budget of a probe that must confirm. Each fake herdr call loads and
-/// saves a state file, and on a loaded machine one call took 2.9 s: past
-/// the 2 s call bound and the 4 s budget. A probe that confirms ends at
-/// once, so the bounds cost nothing when delivery works.
 const CONFIRM_FAULTS: &str = "delivery-probe-ms:30000,delivery-probe-call-ms:30000";
 
 #[test]
@@ -46,10 +41,6 @@ fn g61_doctor_confirms_executed_echo_and_cleans_up() {
     );
 }
 
-/// `delivery-probe-call-ms` bounds each herdr call of the probe. The fake
-/// `pane split` never answers, so the probe fails at that bound and never
-/// at the 2000 ms default. A loaded machine can make another call (the
-/// create, the cleanup) miss the bound first; the warning names it then.
 #[test]
 fn g61_doctor_call_bound_follows_the_fault() {
     let mut h = world("g61-call-ms", "exec,shell,hang_split");
@@ -68,10 +59,6 @@ fn g61_doctor_call_bound_follows_the_fault() {
     );
 }
 
-/// The typing fails, and the probe still closes its workspace. The cleanup
-/// gets the long call bound of [`CONFIRM_FAULTS`]: on a loaded machine one
-/// fake herdr call takes seconds, and a close cut off at the 2 s default is
-/// never recorded. The bound itself is g61_doctor_call_bound_follows_the_fault.
 #[test]
 fn g61_doctor_typing_failure_warns_without_failing_or_leaking_workspace() {
     let mut h = world("g61-no-type", "exec,shell,fail_typing");

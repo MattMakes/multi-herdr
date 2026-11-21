@@ -1,23 +1,3 @@
-//! The e2e tests of the no-loss invariants I8 to I12, 1 for each
-//! (`docs/specs/fleetd/design.md`, "Migration plan" item 6, "No work is
-//! lost", I8 to I12; `docs/tickets/fleetd-p4/52-p4-no-loss-e2e.md`).
-//!
-//! Each test makes its own temp project with a bare remote `origin`, its
-//! own ledger and fleet root, and 1 run whose run branch `fleet/r1` is the
-//! branch of its feature. The test writes the rows that a worker and its
-//! task would leave, changes git as you or a worker would, and then runs
-//! fleetd only as `horch ledger watch --once` passes. A pass starts its
-//! jobs as `horch job run` processes, and the test waits for those
-//! processes to end before the next pass, so each pass reads the results of
-//! the jobs of the pass before it. A crash is the fault point
-//! `abort-before-commit` or `abort-after-commit` of 1 pass.
-//!
-//! Each process runs with temporary `HORCH_DATA_DIR`, `HORCH_STATE_DIR`,
-//! `HORCH_LEDGER_DB` and `FLEET_ROOT`. No test reads the load, the limits or
-//! the clock of this machine: the harness gives the machine facts through
-//! `HORCH_MACHINE_FILE`, the test `fleet.toml` gives the keys, and each wait
-//! is for an event, never for a time.
-
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -37,31 +17,21 @@ use horch_e2e::harness::{wait_for_or, Harness, DELIVERY_PROBE_FAULT};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// The run branch of the run, and so the branch of its feature (Q5).
 const FEATURE_BRANCH: &str = "fleet/r1";
 
-/// The name of the bare remote of each project.
 const REMOTE: &str = "origin";
 
-/// The primary branch of the feature.
 const PRIMARY: &str = "main";
 
-/// The persona of each seeded task. No task of a test is dispatched.
 const PERSONA: &str = "dev";
 
-/// The `fleet.toml` of the fleet root: the defaults of the phase.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The project file: the remote `origin`, no `gh` call, and 2 gates that
-/// pass, so no hold of a missing gate stops the feature (Q-C).
 const PROJECT_TOML: &str =
     "remote = \"origin\"\npr = \"manual\"\n\n[gates]\nfast = \"true\"\nfull = \"true\"\n";
 
-/// The most passes that a test waits for 1 fact.
 const MAX_PASSES: usize = 30;
 
-/// The rescue refs of the feature branch `fleet/r1` (Q16). The ref name
-/// has the branch name with `-` in place of `/`.
 const FEATURE_RESCUES: &str = "refs/horch/rescue/branch/fleet-r1/";
 
 fn text(o: &Output) -> String {
@@ -80,7 +50,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// Whether the process `pid` runs.
 fn alive(pid: i64) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
@@ -89,15 +58,9 @@ fn alive(pid: i64) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-// ─── the world of 1 test ────────────────────────────────────────────────
-
-/// A temp project on `main` with its bare remote `origin`, its committed
-/// project file, the feature branch `fleet/r1` from `main`, a ledger with 1
-/// run on that branch and its idea in flight (FR-12), and a fleet root.
 struct World {
     h: Harness,
     run: Run,
-    /// The output of each pass, for the text of a failed wait.
     passes: RefCell<Vec<String>>,
 }
 
@@ -138,8 +101,6 @@ fn world(name: &str) -> World {
     w
 }
 
-/// The run `r1` of the project of `h` and its idea in flight, as
-/// `horch idea` leaves them.
 fn seed_run(h: &Harness) -> Run {
     let mut conn = Connection::open(h.ledger_db()).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -165,14 +126,12 @@ impl World {
         conn
     }
 
-    /// Run git in the project, and give its trimmed stdout.
     fn git(&self, args: &[&str]) -> String {
         let o = self.h.git_cmd(args).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", text(&o));
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    /// The commit of `rev` in the project, or `None`.
     fn tip(&self, rev: &str) -> Option<String> {
         let o = self
             .h
@@ -184,7 +143,6 @@ impl World {
             .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     }
 
-    /// Whether `ancestor` is `tip` or an ancestor of it.
     fn contains(&self, tip: &str, ancestor: &str) -> bool {
         self.h
             .git_cmd(&["merge-base", "--is-ancestor", ancestor, tip])
@@ -193,13 +151,10 @@ impl World {
             .success()
     }
 
-    /// The file `file` at the commit `rev`.
     fn show(&self, rev: &str, file: &str) -> String {
         self.git(&["show", &format!("{rev}:{file}")])
     }
 
-    /// Commit `file` with `content` on `branch`, made from `from` when it
-    /// is new. The project is back on `main` after it. Gives the new tip.
     fn commit_on(&self, branch: &str, from: &str, file: &str, content: &str) -> String {
         if self.tip(&format!("refs/heads/{branch}")).is_some() {
             self.git(&["checkout", "-q", branch]);
@@ -214,7 +169,6 @@ impl World {
         tip
     }
 
-    /// Merge `branch` into the feature branch, as a landing does.
     fn land_on_feature(&self, branch: &str) {
         self.git(&["checkout", "-q", FEATURE_BRANCH]);
         self.git(&[
@@ -229,9 +183,6 @@ impl World {
         self.git(&["checkout", "-q", PRIMARY]);
     }
 
-    /// Record the tip of the feature branch as the tip that fleetd saw, as
-    /// fleetd records it when it makes or moves the branch. A feature
-    /// branch with no seen tip gets no rebase and no ref move.
     fn seen(&self) {
         let tip = self.tip(FEATURE_BRANCH).unwrap();
         let conn = self.conn();
@@ -241,7 +192,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// The id of the feature of the run.
     fn feature(&self) -> String {
         self.conn()
             .query_row(
@@ -252,10 +202,6 @@ impl World {
             .unwrap()
     }
 
-    /// A done task of the run with its task branch `name` in the landing
-    /// state `landing`, as its worker and the bind leave them. The branch
-    /// holds 1 commit of `file` with `content` on the feature branch. Gives
-    /// the task id.
     fn task_branch(&self, name: &str, file: &str, content: &str, landing: &str) -> String {
         self.commit_on(name, FEATURE_BRANCH, file, content);
         let feature = self.feature();
@@ -290,7 +236,6 @@ impl World {
         task
     }
 
-    /// 1 value of the ledger as text, or `None` for no row or a null.
     fn value(&self, sql: &str, args: impl rusqlite::Params) -> Option<String> {
         let v: Option<SqlValue> = self
             .conn()
@@ -305,7 +250,6 @@ impl World {
         }
     }
 
-    /// Each row of 1 text column of the ledger.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -317,12 +261,10 @@ impl World {
         out
     }
 
-    /// The fetched tip of the primary branch.
     fn fetched_primary(&self) -> Option<String> {
         self.value("SELECT tip FROM remote_tips WHERE branch = ?1", [PRIMARY])
     }
 
-    /// The rescue refs of the feature branch, each with its commit.
     fn feature_rescues(&self) -> Vec<(String, String)> {
         let out = self.git(&[
             "for-each-ref",
@@ -337,8 +279,6 @@ impl World {
             .collect()
     }
 
-    /// What a failed wait shows: the rows of integration and the output of
-    /// each pass.
     fn diagnostics(&self) -> String {
         let jobs = self.rows(
             "SELECT id || ' ' || kind || ' ' || subject || ' ' || state || ' '
@@ -360,15 +300,6 @@ impl World {
         )
     }
 
-    /// 1 pass of fleetd, `horch ledger watch --once`, with the fault point
-    /// `fault`. Then wait until each job process that a pass started has
-    /// ended, so the next pass reads its result.
-    ///
-    /// The `PATH` of the pass is an empty folder (and the host tools on
-    /// Linux, see `pass_path`): the fakes of the harness
-    /// are not on it, so the scan of the CLI binaries of Phase 7 finds no
-    /// CLI and queues no docs or conformance job. Git, herdr and the agents
-    /// have their absolute paths in the sealed environment.
     fn pass_with(&self, fault: Option<&str>) -> Output {
         let no_clis = self.h.root.join("no-clis");
         std::fs::create_dir_all(&no_clis).unwrap();
@@ -396,13 +327,11 @@ impl World {
         o
     }
 
-    /// 1 pass with no fault: it must succeed.
     fn pass(&self) {
         let o = self.pass_with(None);
         assert!(o.status.success(), "{}", self.diagnostics());
     }
 
-    /// 1 pass that crashes at `fault`.
     fn crash_at(&self, fault: &str) {
         let o = self.pass_with(Some(fault));
         assert_eq!(
@@ -413,7 +342,6 @@ impl World {
         );
     }
 
-    /// Passes until `f` gives a value, at most [`MAX_PASSES`].
     fn pass_until<T>(&self, what: &str, mut f: impl FnMut(&World) -> Option<T>) -> T {
         for _ in 0..MAX_PASSES {
             self.pass();
@@ -428,12 +356,6 @@ impl World {
     }
 }
 
-// ─── I8 ─────────────────────────────────────────────────────────────────
-
-/// I8: you squash-merge the feature into `main` on the remote, and resolve
-/// a conflict with the content of the feature. The squash commit does not
-/// contain the feature tip, so only the check by content sees it: the
-/// feature goes to `merged` (Q14).
 #[test]
 fn i8_squash_merge_with_a_conflict_resolution_is_seen_as_landed() {
     let w = world("p4-i8");
@@ -443,8 +365,6 @@ fn i8_squash_merge_with_a_conflict_resolution_is_seen_as_landed() {
     w.seen();
     let feature_tip = w.tip(FEATURE_BRANCH).unwrap();
 
-    // `main` changes the same line, then you squash-merge the feature and
-    // keep its side of the conflict.
     w.commit_on(PRIMARY, PRIMARY, "notes.txt", "one\nmain\n");
     let merge =
         w.h.git_cmd(&["merge", "--squash", FEATURE_BRANCH])
@@ -480,12 +400,6 @@ fn i8_squash_merge_with_a_conflict_resolution_is_seen_as_landed() {
     assert_eq!(w.tip(FEATURE_BRANCH), Some(feature_tip), "no ref moved");
 }
 
-// ─── I9 ─────────────────────────────────────────────────────────────────
-
-/// I9: the fast gate passes on a bundle of the feature tip, then you push
-/// a commit to the feature branch before fleetd moves it. The gate result
-/// is for a stale tip: the bundle is `dropped`, the feature branch stays at
-/// your commit, and the candidate never reaches it.
 #[test]
 fn i9_gate_result_on_a_stale_tip_moves_no_ref() {
     let w = world("p4-i9");
@@ -493,8 +407,6 @@ fn i9_gate_result_on_a_stale_tip_moves_no_ref() {
     w.task_branch(task_branch, "a.txt", "a\n", "building");
     let base = w.tip(FEATURE_BRANCH).unwrap();
 
-    // The fast gate job of the bundle runs and ends with its pass, and no
-    // pass read its result yet.
     let bundle = w.pass_until("the fast gate of the bundle ended", |w| {
         w.value(
             "SELECT subject FROM jobs WHERE kind = 'fast_gate' AND state = 'running'",
@@ -515,7 +427,6 @@ fn i9_gate_result_on_a_stale_tip_moves_no_ref() {
         .expect("the build wrote the candidate");
     assert!(w.contains(&candidate, &base));
 
-    // You push a commit to the feature branch.
     let yours = w.commit_on(FEATURE_BRANCH, FEATURE_BRANCH, "yours.txt", "yours\n");
 
     w.pass_until("the bundle is dropped", |w| {
@@ -543,12 +454,6 @@ fn i9_gate_result_on_a_stale_tip_moves_no_ref() {
     );
 }
 
-// ─── I10 ────────────────────────────────────────────────────────────────
-
-/// I10: `main` moves on the remote, so fleetd rebases the feature branch,
-/// a forced update. A crash before the rescue ref is written, and a crash
-/// after it, each lose no tip: the old tip is in 1 rescue ref, and the
-/// branch is rebased 1 time onto the new primary tip.
 #[test]
 fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     let w = world("p4-i10");
@@ -557,9 +462,6 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     let primary = w.commit_on(PRIMARY, PRIMARY, "p.txt", "p\n");
     w.git(&["push", "-q", REMOTE, PRIMARY]);
 
-    // The fetch job records the new primary tip. The rebase runs in the
-    // gate tree, so fleetd makes it first: its `worktree_add` process ended,
-    // and no pass read its result yet. The next pass gives the rescue.
     w.pass_until("the gate tree of the rebase", |w| {
         let fetched = w.fetched_primary().as_deref() == Some(primary.as_str());
         let made = w.value(
@@ -571,15 +473,10 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()));
     assert!(w.feature_rescues().is_empty());
 
-    // A crash before the rescue ref: the pass gave the rescue and ends
-    // after its commit, before its effects.
     w.crash_at(ABORT_AFTER_COMMIT);
     assert!(w.feature_rescues().is_empty(), "no rescue ref yet");
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()), "no tip moved");
 
-    // A later pass writes the rescue ref of the old tip. Under load a pass
-    // can reach its time budget (PL-5) before this effect, and the next
-    // pass gives it again, so wait for the ref, not for 1 pass.
     w.pass_until("the rescue ref of the old tip", |w| {
         (!w.feature_rescues().is_empty()).then_some(())
     });
@@ -588,8 +485,6 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert_eq!(rescues[0].1, old, "the rescue ref holds the old tip");
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()), "no rebase yet");
 
-    // A crash after the rescue ref, before the commit of the pass that
-    // queues the rebase.
     w.crash_at(ABORT_BEFORE_COMMIT);
     assert_eq!(w.feature_rescues(), rescues);
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()), "no tip moved");
@@ -601,7 +496,6 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert_ne!(new, old);
     assert_eq!(w.show(&new, "feature.txt"), "feature");
     assert_eq!(w.feature_rescues(), rescues, "1 rescue ref, at the old tip");
-    // The next pass reads the result of the rebase job.
     w.pass();
     assert_eq!(
         w.tip(FEATURE_BRANCH),
@@ -615,10 +509,6 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert_eq!(runs.as_deref(), Some("1"), "{}", w.diagnostics());
 }
 
-// ─── I11 ────────────────────────────────────────────────────────────────
-
-/// I11: a fleet branch with no `branches` row is adopted as an orphan row,
-/// reported with 1 needs-you item, and never deleted by later passes.
 #[test]
 fn i11_orphan_fleet_branch_is_adopted_and_not_deleted() {
     let w = world("p4-i11");
@@ -651,11 +541,6 @@ fn i11_orphan_fleet_branch_is_adopted_and_not_deleted() {
     assert_eq!(w.tip(orphan), Some(tip), "the orphan is not deleted");
 }
 
-// ─── I12 ────────────────────────────────────────────────────────────────
-
-/// I12: 2 landed task branches. fleetd deletes the one that no stash entry
-/// names. A `git stash` entry names the other, so it stays with its stash,
-/// pass after pass.
 #[test]
 fn i12_stash_entry_blocks_the_deletion_of_its_branch() {
     let w = world("p4-i12");

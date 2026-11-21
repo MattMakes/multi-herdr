@@ -1,9 +1,3 @@
-//! The verdict file of a judge task: 1 verdict, each finding ranked
-//! CRITICAL, HIGH, MEDIUM or LOW, its structural check, and the outcome
-//! critical_open that burns no attempt (docs/specs/fleetd/design.md, "Done
-//! for each kind of task", Judge kind; RR-3, FM-33;
-//! docs/tickets/fleetd-p6/39-judge-verdict.md, MAP.md Q18).
-
 use horch_core::fleetd::task_execution::domain::judge_pair::{
     parse_verdict, Rank, VerdictError, VerdictWord,
 };

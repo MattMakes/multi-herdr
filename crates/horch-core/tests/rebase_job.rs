@@ -1,14 +1,3 @@
-//! The `rebase` job: when the fetched primary tip moves and the feature
-//! does not contain it, fleetd writes a rescue ref of the feature tip, then
-//! queues 1 rebase job. The job rebases the feature branch on the primary
-//! tip in the gate tree of the feature and moves the branch by
-//! compare-and-set. No rebase is queued while a bundle of the feature is in
-//! `gating` or `passed` (docs/specs/fleetd/design.md, "Between features",
-//! "The kinds of job", I9, I10, FM-37; docs/tickets/fleetd-p4/41-rebase-job.md).
-//!
-//! Each test makes its own ledger and git repository in a temporary folder.
-//! No test touches this repository, and no test reads the clock, the load or
-//! the limits of the machine: the fleet clock is a number of the test.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -51,10 +40,7 @@ use rusqlite::{params, Connection};
 const FEATURE: &str = "F-1";
 const FEATURE_BRANCH: &str = "fleet/r1";
 
-/// The folder of the rescue refs of [`FEATURE_BRANCH`].
 const RESCUES: &str = "refs/horch/rescue/branch/fleet-r1/";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _dir: tempfile::TempDir,
@@ -62,7 +48,6 @@ struct World {
     config: FleetConfig,
     run: Run,
     root: PathBuf,
-    /// The repository, as its canonical path.
     repo: PathBuf,
     tasks: u32,
 }
@@ -74,16 +59,10 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A ledger of the current schema with the run `r1`, the feature
-/// [`FEATURE`] on [`FEATURE_BRANCH`] and its branch row, the fetched tip of
-/// `main`, and the gate tree of the feature. In git, `main` has 1 commit,
-/// and the feature branch has 1 more commit of `f.txt`.
 fn world() -> World {
     world_with(|_| {})
 }
 
-/// [`world`], and `setup` runs in the new repository before the gate tree
-/// is made.
 fn world_with(setup: impl FnOnce(&Path)) -> World {
     let dir = tempfile::tempdir().unwrap();
     let root = horch_platform::path::canonicalize(dir.path()).unwrap();
@@ -102,7 +81,6 @@ fn world_with(setup: impl FnOnce(&Path)) -> World {
     git(&repo, &["add", "f.txt"]);
     git(&repo, &["commit", "-q", "-m", "feature"]);
     git(&repo, &["checkout", "-q", "main"]);
-    // The worktree_add job writes only the tree folder: its parent exists.
     std::fs::create_dir(repo.join(".worktrees")).unwrap();
     setup(&repo);
     let tx = conn.transaction().unwrap();
@@ -120,7 +98,6 @@ fn world_with(setup: impl FnOnce(&Path)) -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -154,8 +131,6 @@ fn world_with(setup: impl FnOnce(&Path)) -> World {
     w
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its output.
 fn git_out(dir: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .arg("-C")
@@ -175,7 +150,6 @@ fn git_out(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// [`git_out`], trimmed. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = git_out(dir, args);
     assert!(
@@ -187,7 +161,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// The sandbox profiles of a test: no task check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -206,7 +179,6 @@ impl World {
         git(&self.repo, &["rev-parse", rev])
     }
 
-    /// Commit `file` with `text` on `branch`, and give the new tip.
     fn commit_on(&self, branch: &str, file: &str, text: &str) -> String {
         let exists = git_out(&self.repo, &["rev-parse", "--verify", "-q", branch])
             .status
@@ -230,15 +202,12 @@ impl World {
         tip
     }
 
-    /// A new commit of `file` on `main`, which a fetch then sees: the
-    /// fetched primary tip moves. Gives the new tip.
     fn move_primary(&self, file: &str, text: &str) -> String {
         let tip = self.commit_on("main", file, text);
         self.fetched(&tip);
         tip
     }
 
-    /// The fetch saw `tip` as the tip of `main`.
     fn fetched(&self, tip: &str) {
         let repo = self.repo.to_string_lossy();
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -252,7 +221,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// Each rescue ref of the feature branch, as (name, tip).
     fn rescues(&self) -> Vec<(String, String)> {
         let out = git(
             &self.repo,
@@ -270,8 +238,6 @@ impl World {
             .writing(&[self.repo.join(".git")])
     }
 
-    /// The gate tree of [`FEATURE`], made by its `worktree_add` job and
-    /// observed, as a pass observes it.
     fn gate_tree(&mut self) {
         let repo = self.repo.clone();
         let tip = self.tip(FEATURE_BRANCH);
@@ -303,8 +269,6 @@ impl World {
         gate_tree::path(&self.repo, FEATURE)
     }
 
-    /// 1 pass of the rebase rule at the fleet clock `clock`, committed.
-    /// Gives its effects.
     fn pass(&mut self, clock: i64) -> Vec<Effect> {
         let config = self.config.clone();
         let gw = CliGitGateway::new(self.fleet_git());
@@ -321,9 +285,6 @@ impl World {
         effects
     }
 
-    /// Run each effect of a pass after its commit, and observe each result
-    /// in 1 more transaction. `commit` false: the observation is lost, as
-    /// in a crash after the effect.
     fn effects(&mut self, effects: &[Effect], commit: bool) {
         let refs = GitRebaseRefs::new(self.fleet_git());
         let config = self.config.clone();
@@ -337,8 +298,6 @@ impl World {
         }
     }
 
-    /// Passes until the rule queues the rebase: the rescue pass, its
-    /// effect, then the queue pass. Gives the queued run.
     fn queue_rebase(&mut self, clock: i64) -> JobRow {
         let effects = self.pass(clock);
         self.effects(&effects, true);
@@ -365,8 +324,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Run the job `id` as `horch job run` runs it, and end it from its
-    /// result file, as a pass ends it. Gives the ended row.
     fn run_job(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -399,7 +356,6 @@ impl World {
         self.job(id)
     }
 
-    /// The process of the run `id` was lost: the pass ends it `abandoned`.
     fn lose(&self, id: i64) {
         self.conn
             .execute(
@@ -423,8 +379,6 @@ impl World {
         rows::bundle(&self.conn, id).unwrap().unwrap().state
     }
 
-    /// A task, its git branch `name` with 1 commit of `file`, and its task
-    /// branch row moved to `ready`, as the landing moves it.
     fn ready_branch(&mut self, name: &str, file: &str) {
         self.commit_on(name, file, &format!("{name}\n"));
         self.tasks += 1;
@@ -451,7 +405,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 pass of bundles at `clock`, committed.
     fn bundles_pass(&mut self, clock: i64) {
         let config = self.config.clone();
         let gw = CliGitGateway::new(self.fleet_git());
@@ -465,7 +418,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// The 1 bundle of the feature.
     fn the_bundle(&self) -> i64 {
         self.conn
             .query_row("SELECT id FROM bundles", [], |r| r.get(0))
@@ -505,13 +457,10 @@ fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
         .success()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn moved_primary_tip_queues_1_rebase_after_a_rescue_ref() {
     let mut w = world();
     let old = w.tip(FEATURE_BRANCH);
-    // The feature contains the fetched primary tip: nothing to do.
     assert!(w.pass(1).is_empty());
     assert_eq!(w.rebase_runs(), 0);
 
@@ -582,7 +531,6 @@ fn clean_rebase_moves_the_ref_by_compare_and_set_and_drops_a_building_bundle() {
     );
     assert_eq!(w.rescues()[0].1, old, "the old tip stays in its rescue ref");
 
-    // The next pass records the new tip and queues the push.
     assert!(w.pass(3).is_empty());
     assert_eq!(w.seen_tip().as_deref(), Some(new.as_str()));
     let push = jobs_store::active(&w.conn, Kind::Push, FEATURE).unwrap();
@@ -592,7 +540,6 @@ fn clean_rebase_moves_the_ref_by_compare_and_set_and_drops_a_building_bundle() {
     );
     assert_eq!(w.rebase_runs(), 1, "the rebased feature needs no rebase");
 
-    // The moved tip drops the building bundle, and its member is ready.
     w.bundles_pass(4);
     assert_eq!(w.bundle_state(bundle), "dropped");
     assert_eq!(w.landing_state("fleet/t1").as_deref(), Some("ready"));
@@ -603,7 +550,6 @@ fn a_tip_that_moved_after_the_queue_is_not_overwritten() {
     let mut w = world();
     w.move_primary("p.txt", "p\n");
     let job = w.queue_rebase(2);
-    // A push of the operator moves the branch before the job runs.
     let theirs = w.commit_on(FEATURE_BRANCH, "o.txt", "o\n");
     let ended = w.run_job(job.id);
     assert_eq!(ended.state, State::Failed, "{:?}", outcome(&ended));
@@ -612,7 +558,6 @@ fn a_tip_that_moved_after_the_queue_is_not_overwritten() {
         theirs,
         "the compare-and-set moves nothing"
     );
-    // The tips moved, so the rule queues a run for the new tips.
     let effects = w.pass(3);
     w.effects(&effects, true);
     w.pass(4);
@@ -626,12 +571,10 @@ fn crash_before_and_after_the_rescue_loses_no_tip() {
     let old = w.tip(FEATURE_BRANCH);
     w.move_primary("p.txt", "p\n");
 
-    // A crash after the rescue ref and before the commit of its row.
     let effects = w.pass(2);
     w.effects(&effects, false);
     assert_eq!(w.rescues().len(), 1);
     assert_eq!(w.rebase_runs(), 0);
-    // The next pass writes the rescue again: the same ref, then 1 run.
     let effects = w.pass(3);
     assert_eq!(effects.len(), 1);
     w.effects(&effects, true);
@@ -643,7 +586,6 @@ fn crash_before_and_after_the_rescue_loses_no_tip() {
     w.pass(4);
     let first = w.active_rebase().expect("1 rebase run");
 
-    // A crash after the commit of the run and before its effect.
     w.lose(first.id);
     assert_eq!(w.tip(FEATURE_BRANCH), old);
     w.pass(10_000);
@@ -651,7 +593,6 @@ fn crash_before_and_after_the_rescue_loses_no_tip() {
     assert_eq!(second.input_key, first.input_key);
     assert_eq!(second.run, 2);
 
-    // A crash after the compare-and-set and before the result.
     let lost = exec_rebase::run(&w.conn, &w.job(second.id)).unwrap();
     assert!(lost.outcome.passed, "{:?}", lost.outcome);
     let new = w.tip(FEATURE_BRANCH);
@@ -695,7 +636,6 @@ fn conflict_leaves_the_branch_at_its_old_tip() {
             .success(),
         "no rebase is in progress in the gate tree"
     );
-    // The conflict is a result: the same tips queue no new run.
     assert!(w.pass(3).is_empty());
     assert_eq!(w.rebase_runs(), 1);
 }
@@ -712,7 +652,6 @@ fn rebase_runs_no_hook_or_program_of_the_project() {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     });
-    // The gate tree was made with hooks off too.
     let git_dir = w.repo.join(".git");
     let marker = |hook: &str| git_dir.join(format!("{hook}.ran"));
     w.move_primary("p.txt", "p\n");
@@ -726,7 +665,6 @@ fn rebase_runs_no_hook_or_program_of_the_project() {
         assert!(!marker(hook).exists(), "the {hook} hook ran");
     }
 
-    // A merge driver in the repository config stops the job.
     let old = w.commit_on(FEATURE_BRANCH, "g.txt", "g\n");
     w.fact(BranchFact::SeenTip(&old));
     let primary = w.move_primary("q.txt", "q\n");

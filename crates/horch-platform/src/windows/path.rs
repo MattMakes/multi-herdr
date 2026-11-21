@@ -1,5 +1,3 @@
-//! The concern path for Windows.
-
 use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::io;
@@ -52,9 +50,6 @@ pub fn is_reparse_point(meta: &Metadata) -> Result<bool, NotSupported> {
     Ok(meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
 }
 
-// Junctions rather than symlinks: creating a directory symlink on Windows
-// needs Developer Mode or elevation, while `mklink /J` does not. `mklink` is
-// a cmd built-in, so no extra tooling is required.
 pub fn set_junction(link: &Path, target: &Path) -> io::Result<()> {
     clear_link(link)?;
     if let Some(parent) = link.parent() {
@@ -74,8 +69,6 @@ pub fn clear_link(link: &Path) -> io::Result<()> {
             ),
         )),
         JunctionAction::Replace => {
-            // A junction is removed with remove_dir, not remove_dir_all, or the
-            // delete would follow the link and take the release with it.
             if std::fs::remove_dir(link).is_err() {
                 std::fs::remove_dir_all(link).map_err(|e| {
                     io::Error::new(e.kind(), format!("clearing {}: {e}", link.display()))

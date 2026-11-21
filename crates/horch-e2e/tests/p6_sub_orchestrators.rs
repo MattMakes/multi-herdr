@@ -1,7 +1,3 @@
-//! The e2e tests of the dispatcher and the sub-orchestrators through the
-//! binary (`docs/tickets/fleetd-p6/57-e2e-sub-orch.md`;
-//! `docs/specs/fleetd/design.md`: FR-2, FM-16, FM-29 and FM-31).
-
 #![cfg(unix)]
 
 use std::path::PathBuf;

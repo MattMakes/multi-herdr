@@ -1,19 +1,3 @@
-//! The use cases of a lease: take, renew and expire, and the lease part of
-//! I1 (`docs/specs/fleetd/design.md`, "Ledger", rule 2 "Leases, not
-//! claims").
-//!
-//! - The claim takes the lease of its attempt ([`take`]), in the
-//!   transaction of the claim.
-//! - Each pass renews or expires each lease ([`renew_or_expire_leases`]),
-//!   after `finish_exited`: a task that a result moved out of `running` in
-//!   the pass is not expired ("Order inside 1 pass"). The expiry of the
-//!   lease of a resolver or fix attempt of a `done` task ends that attempt
-//!   and moves no task (`end_repair_attempt`, ticket 33).
-//! - `transition()`, the 1 door, deletes the lease of each task that moves
-//!   to a state that holds no lease, in the transaction of the move. The
-//!   I1 check of the pass ([`check_i1`]) deletes a row that another writer
-//!   leaves ([`release`]).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Result};
@@ -39,43 +23,29 @@ use crate::fleetd::worker_profiles::domain::profile::Liveness;
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::{util, workers};
 
-/// The cause of the move of a task to `stalled` when its lease expires.
 pub const LEASE_EXPIRED: &str = "lease_expired";
 
-/// The cause of the event of each repair of the I1 check: a `note` about
-/// the task, with the repair, the attempt and the fleet clock in its data.
 pub const I1_REPAIRED: &str = "i1_repaired";
 
-/// The kind of the needs-you item of a breach of I1 that no repair can
-/// fix: 2 live attempts of 1 task.
 pub const I1_BREACH: &str = "i1_breach";
 
-/// What part 1 of a pass saw of 1 live attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Observed {
     pub process: Seen,
-    /// The age of the last wrapper heartbeat (`workers.last_checkin_at`).
     pub heartbeat_age_s: Option<i64>,
-    /// The pass saw activity of the attempt.
     pub active: bool,
 }
 
-/// A lease that expired in a pass: its task moved to `stalled`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expired {
     pub task_id: String,
     pub attempt_id: String,
 }
 
-/// The `lease_s` of a claim: the design default of a profile. The claim
-/// has no profile, so the first renewal of a pass sets the `lease_s` of
-/// the profile of the worker.
 pub fn claim_lease_s() -> i64 {
     i64::try_from(Liveness::default().lease_s).unwrap_or(i64::MAX)
 }
 
-/// The fleet clock of the `fleetd` row; 0 before the first start of
-/// fleetd, which starts the clock at 0.
 pub fn fleet_clock(tx: &Connection) -> Result<FleetSeconds> {
     if door::generation(tx)?.is_none() {
         return Ok(FleetSeconds(0));
@@ -83,9 +53,6 @@ pub fn fleet_clock(tx: &Connection) -> Result<FleetSeconds> {
     clock_store::read(tx)
 }
 
-/// Attempt `attempt_id` takes the lease of task `task_id` at fleet clock
-/// `clock`, for `lease_s`, and is active at `clock`. FM-14: refused while
-/// the lease belongs to another attempt that is not ended.
 pub fn take(
     tx: &Connection,
     clock: FleetSeconds,
@@ -112,18 +79,11 @@ pub fn take(
     store::set_active_at(tx, attempt_id, clock.0)
 }
 
-/// Delete the lease of task `task_id`, which leaves the states that hold
-/// one.
 pub fn release(tx: &Connection, task_id: &str) -> Result<()> {
     store::delete(tx, task_id)?;
     Ok(())
 }
 
-/// Renew or expire each lease of a live attempt at fleet clock `clock`.
-/// `facts` holds what part 1 saw of each attempt, by attempt id; an
-/// attempt with no facts earns nothing. `limits` gives the numbers of a
-/// worker. An expired lease moves its `running` task to `stalled` with the
-/// cause [`LEASE_EXPIRED`]. Gives each expired lease.
 pub fn renew_or_expire_leases(
     tx: &Connection,
     guard: Option<Generation>,
@@ -135,8 +95,6 @@ pub fn renew_or_expire_leases(
     let now = util::now();
     let mut expired = Vec::new();
     for h in store::held(tx)? {
-        // A task that left the held states, or a lease of an ended
-        // attempt: the I1 check deletes the row.
         let Some(holder) = holder(tx, &h.task_id, &h.task_status)? else {
             continue;
         };
@@ -190,19 +148,11 @@ pub fn renew_or_expire_leases(
     Ok(expired)
 }
 
-/// The holder of the task `task_id` in the state `status`. A `done` task
-/// holds the lease only while its branch waits for a resolver or fix
-/// attempt (ticket 33).
 fn holder(tx: &Connection, task_id: &str, status: &str) -> Result<Option<Holder>> {
     let repair = status == Holder::Repair.as_str() && repair::has_branch_to_repair(tx, task_id)?;
     Ok(Holder::of_task(status, repair))
 }
 
-/// Rule 2 of "Leases, not claims": the lease of the resolver or fix attempt
-/// `attempt_id` of the `done` task `task_id` expired. The attempt ends with
-/// the outcome `stalled`, its live worker row ends `incomplete`, and the
-/// lease row goes. The task does not move. I5 stops the process of the
-/// ended rows, and ticket 34 counts the end in `repair_attempts`.
 fn end_repair_attempt(
     tx: &Connection,
     guard: Option<Generation>,
@@ -232,12 +182,6 @@ fn end_repair_attempt(
     release(tx, task_id)
 }
 
-/// The lease part of I1 at fleet clock `clock`: write the missing lease of
-/// a live attempt with a full `lease_s` of its worker, delete a lease of an
-/// ended attempt or of a task that is not held, and open 1 needs-you item
-/// for a task with 2 live attempts. Each write or delete has 1 event with
-/// the cause [`I1_REPAIRED`], and the item of a breach that ended
-/// resolves. The fleetd of generation `guard` writes them.
 pub fn check_i1(
     tx: &Connection,
     guard: Option<Generation>,
@@ -247,11 +191,6 @@ pub fn check_i1(
     check_i1_within(tx, guard, clock, limits, usize::MAX)
 }
 
-/// [`check_i1`] with at most `budget` lease writes and deletes (PL-5,
-/// T-292). A write or a delete repairs its row, so the next call repairs
-/// other rows: N repairs are done in at most N / `budget` + 1 calls. A
-/// task with 2 live attempts opens its needs-you item in each call, with
-/// no budget: that item writes no lease, and its key keeps it to 1 row.
 pub fn check_i1_within(
     tx: &Connection,
     guard: Option<Generation>,
@@ -275,9 +214,6 @@ pub fn check_i1_within(
     resolve_ended_breaches(tx, &repairs)
 }
 
-/// Refuse a pass with no open transaction, or a pass of a fleetd whose
-/// generation `guard` is not the generation of the `fleetd` row, before
-/// its first write.
 fn check_pass(tx: &Connection, guard: Option<Generation>) -> Result<()> {
     if tx.is_autocommit() {
         return Err(DoorError::NoTransaction.into());
@@ -291,17 +227,12 @@ fn check_pass(tx: &Connection, guard: Option<Generation>) -> Result<()> {
     Ok(())
 }
 
-/// The attempts of 1 task that are not ended.
 #[derive(Default)]
 struct Unended {
-    /// Their worker row is live.
     live: Vec<String>,
-    /// Their worker row ended: the pass reaps them.
     ending: Vec<String>,
 }
 
-/// The lease facts of I1 of each task, and the worker of each attempt that
-/// is not ended.
 fn task_leases(tx: &Connection) -> Result<(Vec<TaskLeases>, BTreeMap<String, String>)> {
     let (rows, attempts) = store::i1_rows(tx)?;
     let mut by_task: BTreeMap<String, Unended> = BTreeMap::new();
@@ -330,8 +261,6 @@ fn task_leases(tx: &Connection) -> Result<(Vec<TaskLeases>, BTreeMap<String, Str
     Ok((tasks, worker_of))
 }
 
-/// Do 1 repair of I1 at fleet clock `clock`. `lease_s` gives the
-/// `lease_s` of the worker of an attempt.
 fn apply(
     tx: &Connection,
     guard: Option<Generation>,
@@ -381,13 +310,10 @@ fn apply(
     }
 }
 
-/// The key of the needs-you item of the breach of task `task_id`.
 fn breach_key(task_id: &str) -> String {
     format!("{I1_BREACH}:{task_id}")
 }
 
-/// Resolve each open needs-you item of kind [`I1_BREACH`] whose task is
-/// not in `repairs` with 2 live attempts.
 fn resolve_ended_breaches(tx: &Connection, repairs: &[Repair]) -> Result<()> {
     let open: BTreeSet<String> = repairs
         .iter()
@@ -404,8 +330,6 @@ fn resolve_ended_breaches(tx: &Connection, repairs: &[Repair]) -> Result<()> {
     Ok(())
 }
 
-/// Record the event of 1 repair of I1: `repair` of the lease of task
-/// `task_id` for attempt `attempt_id` at fleet clock `clock`.
 fn repaired(
     tx: &Connection,
     guard: Option<Generation>,
@@ -454,7 +378,6 @@ mod tests {
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::Store;
 
-    /// The generation of the `fleetd` row of the fixture.
     const GEN: Generation = Generation(1);
 
     const LIMITS: Limits = Limits {
@@ -473,7 +396,6 @@ mod tests {
         run: Run,
     }
 
-    /// A ledger with 1 run and the `fleetd` row at fleet clock `clock`.
     fn fixture(clock: i64) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -492,7 +414,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -527,8 +448,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// The first ready task is bound to a new worker. Gives (task,
-        /// worker).
         fn claimed(&mut self) -> (String, String) {
             let conn = self.store.conn();
             let task: String = conn
@@ -595,8 +514,6 @@ mod tests {
                 .unwrap();
         }
 
-        /// The `data_json` of each `i1_repaired` event of `task`, oldest
-        /// first. Each is a `note` about the task row, by horch.
         fn i1_events(&self, task: &str) -> Vec<serde_json::Value> {
             self.store
                 .conn()
@@ -616,7 +533,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// `horch ledger finish`, another writer, moves `task` to `verifying`.
         fn finish(&mut self, task: &str) {
             self.store
                 .immediate(|tx| {
@@ -695,7 +611,6 @@ mod tests {
             ..earning()
         };
         let facts = BTreeMap::from([(attempt.clone(), idle)]);
-        // The last activity is 305 s before the pass: past stall_after_s.
         l.store
             .conn()
             .execute(
@@ -753,7 +668,6 @@ mod tests {
         let mut l = fixture(0);
         l.add_task("a");
         let (task, _) = l.claimed();
-        // Earlier in the same pass, the result moved the task on.
         l.finish(&task);
         assert_eq!(l.pass(10_000, &BTreeMap::new()), vec![]);
         assert_eq!(l.status(&task), "verifying");
@@ -807,7 +721,6 @@ mod tests {
         assert!(format!("{err:#}").contains("FM-14"), "{err:#}");
         assert_eq!(l.leases().len(), 1);
         assert_eq!(l.leases()[0].attempt_id, format!("{task}/A1"));
-        // Once the first attempt ends, the second takes the lease.
         l.store
             .conn()
             .execute(
@@ -840,9 +753,6 @@ mod tests {
         assert_eq!(l.leases(), vec![]);
     }
 
-    /// The guard: each task exit of the door from a state that holds a
-    /// lease deletes the lease when its target holds none, and keeps it
-    /// when its target holds one. A later exit cannot forget the lease.
     #[test]
     fn each_task_exit_out_of_a_lease_state_deletes_the_lease_in_the_door() {
         let exits: Vec<(&str, &str)> = EXITS
@@ -923,7 +833,6 @@ mod tests {
         let (task, _) = l.claimed();
         l.finish(&task);
         assert_eq!(l.leases(), vec![], "the door released the lease");
-        // Another writer, outside the door, leaves a stale row.
         let stale = LeaseRow {
             task_id: task.clone(),
             attempt_id: format!("{task}/A1"),
@@ -968,9 +877,6 @@ mod tests {
         assert_eq!(l.i1_events(&task), Vec::<serde_json::Value>::new());
     }
 
-    /// A stale generation is refused before its first write, also on the
-    /// paths that move no row: a renewal, an activity mark and a breach
-    /// item. Each write runs in an open transaction that commits on `Ok`.
     #[test]
     fn a_stale_generation_is_refused_before_a_renewal_an_activity_mark_or_a_breach_item() {
         let mut l = fixture(0);
@@ -1029,7 +935,6 @@ mod tests {
         assert_eq!(l.leases(), vec![]);
     }
 
-    /// The open needs-you items of kind [`I1_BREACH`].
     fn breaches(l: &Fixture) -> Vec<String> {
         needs_you::open_items(l.store.conn())
             .unwrap()
@@ -1049,7 +954,6 @@ mod tests {
         l.store
             .immediate(|tx| {
                 tasks::handoff(tx, &worker, path.to_str().unwrap())?;
-                // The pass ends the attempt of the worker that handed off.
                 commands::end_own_attempt(tx, &worker, "handed_off")
             })
             .unwrap();
@@ -1077,7 +981,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(l.leases(), vec![], "a ready task holds no lease");
-        // Past the retry backoff of 30 s on the fleet clock (rung 6).
         l.store
             .conn()
             .execute("UPDATE fleetd SET fleet_clock_s = 30 WHERE id = 1", [])
@@ -1108,7 +1011,6 @@ mod tests {
         l.check_i1(15);
         assert_eq!(breaches(&l), vec![task.clone()]);
         assert_eq!(l.leases(), before, "no repair is safe");
-        // The operator stops the second attempt: the item resolves.
         l.store
             .conn()
             .execute(
@@ -1161,7 +1063,6 @@ mod tests {
         assert_eq!(count(3), count(30));
     }
 
-    /// The lease expiry stays whole in 1 pass: each lease is judged in each pass.
     #[test]
     fn renew_or_expire_leases_runs_the_same_statements_for_3_and_30_leases() {
         let count = |n: usize| {

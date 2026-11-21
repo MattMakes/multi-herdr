@@ -1,7 +1,3 @@
-//! `horch fleet` starts the worktree steward beside the orchestrator when
-//! the project has parked worktrees, and no steward when it has none (#308).
-//! The real `horch` binary on the fake herdr.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -61,8 +57,6 @@ fn git(h: &Harness, dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// A run whose task T-1 was cancelled with its worktree on disk: the
-/// worktree is `abandoned`.
 fn abandoned_worktree(h: &Harness) -> PathBuf {
     let run = seed_run(h, "alpha", None, "w1:p1");
     let t = h.project.join("tickets").join("01-f.md");
@@ -96,8 +90,6 @@ fn abandoned_worktree(h: &Harness) -> PathBuf {
     path
 }
 
-/// The command lines the fake herdr was asked to run in a pane of the fleet
-/// workspace `w1`.
 fn launches(h: &Harness) -> Vec<String> {
     h.calls_of("herdr")
         .iter()
@@ -146,9 +138,6 @@ fn a_fleet_with_an_abandoned_worktree_spawns_the_worktree_steward() {
     );
 }
 
-/// Fix B (T-5): the codex sandbox cannot write the ledger, so the steward
-/// has no codex fallback. An exhausted claude pool starts no steward, and
-/// `horch fleet` says why.
 #[test]
 fn an_exhausted_claude_pool_starts_no_codex_steward() {
     horch_e2e::expected::check(
@@ -194,8 +183,6 @@ fn a_fleet_with_no_parked_worktree_spawns_no_steward() {
     assert!(runs.is_empty(), "no pane starts: {runs:#?}");
 }
 
-/// Fix B keeps the read-only listing (T-5): a caller that cannot write the
-/// ledger still lists the parked rows. The full listing skips its bytes cache.
 #[test]
 fn triage_lists_rows_from_a_ledger_it_cannot_write() {
     use std::os::unix::fs::PermissionsExt;
@@ -295,8 +282,6 @@ fn triage_delete_refuses_a_detached_unique_commit() {
     assert!(path.exists());
 }
 
-/// Bug 3: a steward in its solo run drops a clean scratch worktree of
-/// another run when it names that run with `--run`.
 #[test]
 fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     let h = harness("i308-cross-run-drop");
@@ -310,8 +295,6 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     let owner = horch_e2e::bind::bind(&h, "opus", None).worker_id;
     let said = worker_ok(&h, &owner, &["ledger", "worktree", "scratch", "bisect"]);
     let path = PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
-    // A worktree_add job of the next pass makes the tree (ticket 22 of
-    // fleetd-p5, T-471).
     wait_for("the scratch tree to leave reserved", || {
         let v: serde_json::Value = serde_json::from_str(&ok(&h, &["worktrees", "--json"])).unwrap();
         let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
@@ -343,9 +326,6 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     let mut other_run = drop.to_vec();
     other_run.extend(["--run", "alpha"]);
     worker_ok(&h, &steward, &other_run);
-    // docs/specs/fleetd/design.md, the worktree state table, row `rescued`:
-    // fleetd saves the tree on a rescue ref and keeps the folder until its
-    // idea is merged or cancelled.
     let rescue_ref = wait_for("the dropped tree to be rescued", || {
         let v: serde_json::Value = serde_json::from_str(&ok(&h, &["worktrees", "--json"])).unwrap();
         let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
@@ -358,8 +338,6 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
         })
     })
     .expect("a rescued row names its rescue ref");
-    // The rescue commit has the tip as its parent and the tree of the tip:
-    // the clean tree is saved whole.
     let at = |rev: String| git(&h, &h.project, &["rev-parse", &rev]);
     assert_eq!(at(format!("{rescue_ref}^1")), tip, "{rescue_ref}");
     assert_eq!(
@@ -370,15 +348,11 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     assert!(path.exists());
 }
 
-/// The `ledger status --json` board of `run`. Status exits 1 while the run
-/// is not complete, so only its JSON counts.
 fn board(h: &Harness, run: &str) -> serde_json::Value {
     let o = h.run(&["ledger", "status", "--run", run, "--json"]);
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
-/// Bug 4: the steward task changes no file and makes no worktree. Its
-/// finish passes and its done records the task as done, not UNLANDED.
 #[test]
 fn the_no_change_steward_task_finishes_without_a_worktree() {
     horch_e2e::expected::check(

@@ -1,5 +1,3 @@
-//! The concern path: home folders, fixed paths, symlinks and links (PL-2).
-
 use horch_platform::path;
 
 #[cfg(unix)]
@@ -50,7 +48,6 @@ fn symlink_points_at_its_target() {
 fn copy_symlink_copies_the_target_text() {
     let tmp = tempfile::tempdir().unwrap();
     let from = tmp.path().join("from");
-    // A relative target that does not exist: the copy keeps the text as is.
     path::symlink(std::path::Path::new("../elsewhere"), &from).unwrap();
     let to = tmp.path().join("to");
     path::copy_symlink(&from, &to).unwrap();

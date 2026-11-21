@@ -1,5 +1,3 @@
-//! The concern process for Windows.
-
 use crate::NotSupported;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
@@ -10,17 +8,14 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-/// `FILETIME` ticks (100 ns) from 1601-01-01 to 1970-01-01.
 const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
 const TICKS_PER_SEC: u64 = 10_000_000;
 
 const NOT_SUPPORTED: NotSupported = NotSupported::new("process", "windows");
 
-/// A process handle, closed on drop.
 pub(crate) struct Process(HANDLE);
 
 impl Process {
-    /// The open handle. It stays valid while `self` lives; only drop closes it.
     pub(crate) fn handle(&self) -> HANDLE {
         self.0
     }
@@ -31,18 +26,12 @@ impl Process {
         (!h.is_null()).then_some(Self(h))
     }
 
-    /// Whether the process has not exited. A handle can outlive its process
-    /// (a parent holds one until it drops the child), so an open handle
-    /// alone does not prove it runs. A process that exited with code 259
-    /// (`STILL_ACTIVE`) itself reads as running.
     fn running(&self) -> bool {
         let mut code = 0u32;
         // SAFETY: the handle is open and `code` is a valid u32 to fill.
         (unsafe { GetExitCodeProcess(self.0, &mut code) }) != 0 && code == STILL_ACTIVE as u32
     }
 
-    /// The creation time as a u64 of `FILETIME` ticks, while the process has
-    /// not exited.
     pub(crate) fn start_time(&self) -> Option<u64> {
         if !self.running() {
             return None;
@@ -71,7 +60,6 @@ pub(crate) fn start_time(pid: i32) -> Option<u64> {
     Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?.start_time()
 }
 
-/// The start time is 100 ns ticks since 1601-01-01.
 pub(crate) fn started_at(pid: i32) -> Option<SystemTime> {
     Some(filetime_to_system(start_time(pid)?))
 }
@@ -88,10 +76,6 @@ pub(crate) fn started_by(pid: i32, t: SystemTime) -> Option<bool> {
     Some(started_at(pid)? <= t)
 }
 
-/// Whether `pid` names a process that has not exited. One this user may
-/// not open exists all the same, as `EPERM` does on Unix. A process
-/// handle, not `tasklist`: no spawn, and no text match that could find the
-/// pid inside another number.
 pub(crate) fn alive(pid: i32) -> bool {
     match Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
         Some(p) => p.running(),
@@ -100,27 +84,22 @@ pub(crate) fn alive(pid: i32) -> bool {
     }
 }
 
-/// Windows has no parent pid today.
 pub(crate) fn parent(_pid: u32) -> Result<Option<u32>, NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
-/// Windows has no process groups.
 pub(crate) fn group_of(_pid: i32) -> Result<Option<u32>, NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
-/// Windows has no sessions of the POSIX kind.
 pub(crate) fn session_of(_pid: i32) -> Result<Option<u32>, NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
-/// Windows has no process groups.
 pub(crate) fn group_members(_pgid: i32) -> Result<Vec<u32>, NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
-/// No public Windows API gives the working folder of another process.
 pub(crate) fn cwd_pids_under(
     _dir: &std::path::Path,
 ) -> Result<std::io::Result<Vec<u32>>, NotSupported> {

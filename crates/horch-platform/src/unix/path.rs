@@ -1,5 +1,3 @@
-//! The concern path for the code of macOS and Linux.
-
 use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};

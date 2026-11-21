@@ -1,8 +1,4 @@
 extends RefCounted
-## The controls of the tuning bench.
-##
-## This script loads `bench.json` and the data files of `sources`. It computes the new value of each number
-## from the value k of each control. It has no game code.
 
 const BenchJson := preload("res://addons/tuning_bench/bench_json.gd")
 
@@ -15,20 +11,14 @@ const PLAYER_FIELDS: Array[String] = ["decision_s", "active_share", "reset_gain"
 const DEFAULT_SELFCHECK := "res://bench/selfcheck.json"
 
 
-## True for a role whose number is a ratio above 1: `effect_factor` and each role that ends in `_growth`.
-## A control changes only the part above 1 of such a number.
 static func is_growth_role(role: String) -> bool:
 	return role == FACTOR_ROLE or role.ends_with(GROWTH_SUFFIX)
 
 
-## Return the default op of a role: "growth" for a growth role, "mul" for each other role.
-## A control with `"op": "role"` applies this op to each number that it selects.
 static func role_op(role: String) -> String:
 	return "growth" if is_growth_role(role) else "mul"
 
 
-## Return the sense of a number: -1 when the ledger has `"sense": -1`, else 1.
-## A number with the sense -1 works against its role (a divisor): a control applies 1 / k to it.
 static func sense_of(number: Dictionary) -> int:
 	var raw: Variant = number.get("sense", 1)
 	if (raw is int or raw is float) and float(raw) < 0.0:
@@ -36,9 +26,6 @@ static func sense_of(number: Dictionary) -> int:
 	return 1
 
 
-## Return the hash of the ledger that a self-check result keeps (`ledger_hash`): the SHA-256 of 1 line
-## "<number id>=<base value>" for each tunable number, in the order of the bench file.
-## A self-check result with another hash is stale: a number came, went, or has another value in its data file.
 static func ledger_hash(ctx: Dictionary) -> String:
 	var base: Dictionary = ctx["base"]
 	var lines: PackedStringArray = PackedStringArray()
@@ -47,8 +34,6 @@ static func ledger_hash(ctx: Dictionary) -> String:
 	return ("\n".join(lines) + "\n").sha256_text()
 
 
-## Load the bench file and the data files. Return the context that each other part of the bench uses.
-## Keys: ok, error, path, bench, data, base, numbers, tunable, controls, by_id, missing, foreign.
 static func build(bench_path: String = DEFAULT_BENCH) -> Dictionary:
 	var ctx: Dictionary = {"ok": false, "error": "", "path": bench_path, "bench": {}, "data": {}, "base": {},
 		"numbers": {}, "tunable": [], "controls": [], "by_id": {}, "missing": [], "foreign": []}
@@ -152,7 +137,6 @@ static func build(bench_path: String = DEFAULT_BENCH) -> Dictionary:
 	return ctx
 
 
-## True when a control can change this number: a balance number in a data file, not marked `tunable: false`.
 static func is_tunable(number: Dictionary) -> bool:
 	if str(number.get("class", "")) != "balance":
 		return false
@@ -241,7 +225,6 @@ static func _matches(number: Dictionary, select: Dictionary) -> bool:
 	return true
 
 
-## Return the value k of each control with no change: 1 for `mul`, `growth` and `role`, 0 for `add`, the value for `set`.
 static func base_k(ctx: Dictionary) -> Dictionary:
 	var out: Dictionary = {}
 	for control: Dictionary in ctx["controls"]:
@@ -249,7 +232,6 @@ static func base_k(ctx: Dictionary) -> Dictionary:
 	return out
 
 
-## Return only the entries of k that are not at the base value. A saved setting has these entries.
 static func changed_k(ctx: Dictionary, k: Dictionary) -> Dictionary:
 	var out: Dictionary = {}
 	var by_id: Dictionary = ctx["by_id"]
@@ -259,7 +241,6 @@ static func changed_k(ctx: Dictionary, k: Dictionary) -> Dictionary:
 	return out
 
 
-## Return the k values for a result file: each control of the bench file, and each changed control of 1 number.
 static func report_k(ctx: Dictionary, k: Dictionary) -> Dictionary:
 	var out: Dictionary = {}
 	for control: Dictionary in ctx["controls"]:
@@ -282,10 +263,6 @@ static func _apply_op(op: String, value: float, k: float) -> float:
 	return value
 
 
-## Return the new value of 1 number for the value k of a control.
-## The op "role" becomes the default op of the role of the number. A number with the sense -1 gets 1 / k
-## for "mul" and "growth" and -k for "add"; "set" gives k itself. With k at or below 0 a number with the
-## sense -1 keeps its value for "mul" and "growth", because 1 / k has no meaning there.
 static func apply_to_number(op: String, number: Dictionary, value: float, k: float) -> float:
 	var real_op: String = role_op(str(number.get("role", ""))) if op == "role" else op
 	if sense_of(number) < 0:
@@ -299,7 +276,6 @@ static func apply_to_number(op: String, number: Dictionary, value: float, k: flo
 	return _apply_op(real_op, value, k)
 
 
-## Return the value of each tunable number with the controls applied, in the order of the file.
 static func values(ctx: Dictionary, k: Dictionary) -> Dictionary:
 	var base: Dictionary = ctx["base"]
 	var numbers: Dictionary = ctx["numbers"]
@@ -326,7 +302,6 @@ static func values(ctx: Dictionary, k: Dictionary) -> Dictionary:
 	return out
 
 
-## Return a copy of the data of each source with the new values in it.
 static func apply(ctx: Dictionary, vals: Dictionary) -> Dictionary:
 	var data: Dictionary = (ctx["data"] as Dictionary).duplicate(true)
 	var base: Dictionary = ctx["base"]
@@ -339,12 +314,10 @@ static func apply(ctx: Dictionary, vals: Dictionary) -> Dictionary:
 	return data
 
 
-## Return the data of each source for a set of k values.
 static func data_for(ctx: Dictionary, k: Dictionary) -> Dictionary:
 	return apply(ctx, values(ctx, k))
 
 
-## Return the players with the player controls applied. A player control changes the bot, not the game.
 static func players(ctx: Dictionary, k: Dictionary) -> Array:
 	var out: Array = []
 	for entry: Variant in (ctx["bench"] as Dictionary).get("players", []):
@@ -373,7 +346,6 @@ static func players(ctx: Dictionary, k: Dictionary) -> Array:
 	return out
 
 
-## Merge the targets of a setting over the targets of the bench file.
 static func targets(ctx: Dictionary, changes: Dictionary) -> Dictionary:
 	var out: Dictionary = {}
 	var source: Variant = (ctx["bench"] as Dictionary).get("targets", {})
@@ -388,7 +360,6 @@ static func targets(ctx: Dictionary, changes: Dictionary) -> Dictionary:
 	return out
 
 
-## Return the ids of the whole-game controls that change a number with one of these roles.
 static func hint(ctx: Dictionary, roles: Array) -> Array:
 	var out: Array = []
 	for control: Dictionary in ctx["controls"]:
@@ -406,7 +377,6 @@ static func hint(ctx: Dictionary, roles: Array) -> Array:
 	return out
 
 
-## Return the ids of the player controls that change one of these fields.
 static func player_hint(ctx: Dictionary, fields: Array) -> Array:
 	var out: Array = []
 	for control: Dictionary in ctx["controls"]:
@@ -415,7 +385,6 @@ static func player_hint(ctx: Dictionary, fields: Array) -> Array:
 	return out
 
 
-## Read a setting file. Return {"ok", "error", "k", "targets"}.
 static func read_setting(ctx: Dictionary, path: String) -> Dictionary:
 	var read: Dictionary = BenchJson.read_file(path)
 	if not read["ok"]:
@@ -436,13 +405,11 @@ static func read_setting(ctx: Dictionary, path: String) -> Dictionary:
 	return {"ok": true, "error": "", "k": k, "targets": changes}
 
 
-## Return the content of a setting file.
 static func setting(ctx: Dictionary, k: Dictionary, target_changes: Dictionary) -> Dictionary:
 	return {"format": "tuning-bench-setting", "version": 1, "game": str((ctx["bench"] as Dictionary).get("game", "")),
 		"k": changed_k(ctx, k), "targets": target_changes}
 
 
-## Return the id of the `set` control of 1 number, or "" when the number has none.
 static func control_of_number(ctx: Dictionary, number_id: String) -> String:
 	for control: Dictionary in ctx["controls"]:
 		if control["op"] == "set" and control["kind"] == "numbers":

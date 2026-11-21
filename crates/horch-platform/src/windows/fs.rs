@@ -1,5 +1,3 @@
-//! The concern fs for Windows. Each gap is documented in `crate::fs`.
-
 use std::ffi::c_void;
 use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::io;
@@ -50,20 +48,13 @@ pub(crate) fn create_dir_mode(_builder: &mut DirBuilder, _mode: u32) -> Result<(
     Err(NOT_SUPPORTED)
 }
 
-/// A security descriptor that makes this user the owner and allows only
-/// this user, freed on drop.
 struct OwnerOnly(PSECURITY_DESCRIPTOR);
 
 impl OwnerOnly {
-    /// `inherit` is the SDDL flags of the 1 rule: `OICI` for a folder, so
-    /// each file and folder made in it gets the rule, and empty for a file.
     fn new(inherit: &str) -> io::Result<OwnerOnly> {
         let User::Sid(sid) = current_user()? else {
             unreachable!("a Windows user is a SID")
         };
-        // `O:` sets the owner, also for an elevated token whose default
-        // owner is `Administrators`. `D:P` is a protected DACL, so the
-        // object takes no rule from its folder. `FA` is all file access.
         OwnerOnly::from_sddl(&format!("O:{sid}D:P(A;{inherit};FA;;;{sid})"))
     }
 
@@ -86,8 +77,6 @@ impl OwnerOnly {
         Ok(OwnerOnly(descriptor))
     }
 
-    /// The attributes of a create with this descriptor. They point into
-    /// `self`, so `self` must live until the create returns.
     fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -96,10 +85,6 @@ impl OwnerOnly {
         }
     }
 
-    /// Give the existing folder or file `path` the owner and the protected
-    /// DACL of this descriptor. The DACL goes first: an owner holds
-    /// `WRITE_DAC` but not always `WRITE_OWNER`, and the new DACL gives this
-    /// user all access, `WRITE_OWNER` too.
     fn set_on(&self, path: &Path) -> io::Result<()> {
         let mut present = 0;
         let mut defaulted = 0;
@@ -218,14 +203,6 @@ fn make_dir(path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Make sure that this user owns the existing folder `path` and that its
-/// DACL is owner-only, as [`check_owner_only`] checks it. An older horch
-/// made the folder with an inherited DACL, or with the owner
-/// `Administrators` on an elevated token (D266-F1). When the check fails,
-/// this user becomes the owner and the folder gets the protected DACL of a
-/// new folder, then the check runs again. A folder that this user may not
-/// change, a link, or a check that still fails is a `PermissionDenied`
-/// error that names the folder.
 fn keep_owner_only(path: &Path) -> io::Result<()> {
     let refused = |reason: String| {
         io::Error::new(
@@ -326,14 +303,6 @@ pub(crate) fn check_owner_only(file: &File, _meta: &Metadata, _rule: u32) -> Res
     checked
 }
 
-/// Check that the DACL `dacl` allows no user other than `owner`, `SYSTEM`
-/// and `Administrators`, and has only allow and deny rules. A null DACL
-/// allows each user.
-///
-/// # Safety
-///
-/// `owner` is a valid SID, and `dacl` is null or a valid ACL, for the
-/// length of the call.
 unsafe fn only_owner_allowed(owner: PSID, dacl: *const ACL) -> Result<(), String> {
     if dacl.is_null() {
         return Err("the access list is missing, so each user has access".into());
@@ -401,8 +370,6 @@ pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn open_no_follow(path: &Path) -> io::Result<File> {
-    // `FILE_FLAG_OPEN_REPARSE_POINT` opens a link itself, not its target.
-    // `FILE_FLAG_BACKUP_SEMANTICS` lets the call open a folder too.
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
@@ -474,7 +441,6 @@ pub(crate) fn device_and_inode(_meta: &Metadata) -> Result<(u64, u64), NotSuppor
     Err(NOT_SUPPORTED.because("stable Rust gives no volume serial number and file index"))
 }
 
-/// [`crate::fs::BreakerGuard`]: it holds nothing on Windows.
 #[derive(Debug)]
 pub(crate) struct BreakerGuard;
 
@@ -506,7 +472,6 @@ mod tests {
     fn an_existing_folder_with_an_open_dacl_becomes_owner_only() {
         let root = tempfile::tempdir().unwrap();
         let jobs = root.path().join("jobs");
-        // Each user has all access, and each file made in it inherits it.
         make_dir_with(&jobs, "D:(A;OICI;FA;;;WD)");
         assert!(gap(&jobs).is_some(), "the old folder is not owner-only");
 

@@ -1,7 +1,3 @@
-//! End-to-end: what `horch fleet` and `horch orchestration` leave behind when
-//! they fail to start (#217), the task ledger of a scratch fleet (#199), and
-//! a fleet with no orchestrator pane (FM-16).
-
 use horch_core::execution::records::SessionLedger;
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
@@ -34,7 +30,6 @@ fn harness(name: &str, scenario: &str) -> Harness {
     h
 }
 
-/// The ids of the workspaces fake herdr lists now.
 fn workspaces(h: &Harness) -> Vec<String> {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
@@ -53,7 +48,6 @@ fn cwd(h: &Harness) -> String {
     h.project.to_string_lossy().into_owned()
 }
 
-/// Whether the fake herdr was asked to create a workspace.
 fn created_a_workspace(h: &Harness) -> bool {
     h.calls_of("herdr").iter().any(|c| {
         let argv: Vec<String> = serde_json::from_value(c["argv"].clone()).unwrap_or_default();
@@ -61,10 +55,6 @@ fn created_a_workspace(h: &Harness) -> bool {
     })
 }
 
-/// FM-16 (ticket 45 of fleetd-p6): `horch fleet` starts its workspace with
-/// no orchestrator pane and no orchestrator record, and names `horch idea
-/// add`. A failed pane run of the telemetry space is only a warning. With
-/// `HORCH_LEDGER_DB` set, no ledger warning prints (#199).
 #[test]
 fn a_fleet_starts_no_orchestrator_pane() {
     let h = harness("f45-none", "fail_run");
@@ -117,15 +107,10 @@ fn an_orchestration_whose_pane_run_fails_closes_its_workspace() {
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
 
-/// The default task ledger of the sealed home: what a scratch fleet must
-/// not create or change.
 fn default_ledger(h: &Harness) -> std::path::PathBuf {
     h.home.join(".horch").join("ledger.sqlite3")
 }
 
-/// #199: a scratch fleet with its own `HORCH_STATE_DIR` and no
-/// `HORCH_LEDGER_DB` says which task ledger it still uses, and does not
-/// create that ledger.
 #[test]
 fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
     let mut h = harness("f199-new", "");
@@ -143,7 +128,6 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
         "the fleet created the default ledger"
     );
 
-    // `horch doctor` and `horch spawn` give the same warning, once each.
     let o = h.run(&["doctor"]);
     let doctor = format!("warning: {warning}");
     assert_eq!(err(&o).matches(&doctor).count(), 1, "{}", err(&o));
@@ -169,15 +153,11 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
     assert_eq!(err(&o).matches(&note).count(), 1, "{}", err(&o));
 }
 
-/// #199: with an existing default ledger, a scratch fleet leaves its bytes
-/// as they were.
 #[test]
 fn a_scratch_fleet_does_not_change_an_existing_default_ledger() {
     let mut h = harness("f199-old", "");
     h.unset("HORCH_LEDGER_DB");
     h.unset("HORCH_NO_WATCHDOG").unset("HORCH_NO_WAKE");
-    // The operator's real ledger, with 1 active run of this project. fleetd
-    // makes a ledger, so the test writes it with the library.
     std::fs::create_dir_all(default_ledger(&h).parent().unwrap()).unwrap();
     let store = horch_core::taskledger::Store::open(&default_ledger(&h)).unwrap();
     let new = horch_core::taskledger::runs::NewRun {

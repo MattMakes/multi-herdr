@@ -1,11 +1,5 @@
-//! `horch doctor` warns when an offered harness has no timer format and no
-//! transcript lookup (#203).
-
 use horch_e2e::harness::{copy_tree, repo_root, Harness};
 
-/// The doctor output for the repo roster, with the teammates in `to_claude`
-/// moved from antigravity to claude. An overlay cannot remove a built-in, so
-/// the files are rewritten instead.
 fn doctor_text(name: &str, to_claude: &[&str]) -> String {
     let mut h = Harness::new(name);
     let roster = h.root.join("roster");
@@ -42,8 +36,6 @@ fn doctor_warns_for_a_harness_the_watchdog_cannot_see() {
     );
 }
 
-/// Every repo teammate that runs on antigravity. The list comes from the
-/// roster files, so a new antigravity teammate does not break the test.
 fn antigravity_teammates() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(repo_root().join("teammates"))
         .unwrap()
@@ -62,7 +54,6 @@ fn antigravity_teammates() -> Vec<String> {
 #[test]
 fn doctor_is_quiet_when_no_offered_teammate_uses_such_a_harness() {
     let moved = antigravity_teammates();
-    // The scan must find the antigravity teammates, or the test proves nothing.
     for known in [
         "antigravity",
         "audio-reviewer",

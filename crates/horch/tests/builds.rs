@@ -1,6 +1,3 @@
-//! Having any integration test makes `cargo test` build the `horch` binary
-//! itself, which the end-to-end tests in `crates/horch-e2e` run.
-
 #[test]
 fn the_binary_is_built_and_answers() {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_horch"));

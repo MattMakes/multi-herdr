@@ -1,13 +1,3 @@
-//! I2, Phase 4 part: no task is `ready` while a dependency is not met. A
-//! normal dependency is met when its task is `done` and its task branch is
-//! `landed`. A dependency with no branch row keeps the rule of today:
-//! `done` (docs/specs/fleetd/design.md, I2, "The task state machine";
-//! docs/tickets/fleetd-p4/26-i2-dependency-met-when-landed.md).
-//!
-//! Each test has its own temporary ledger and fleet root. No test reads the
-//! load, the limits or the clock of the machine: the fleet clock is the
-//! `fleetd` row, and the config is the default.
-
 use std::collections::BTreeMap;
 
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
@@ -68,7 +58,6 @@ fn world() -> World {
     };
     let tx = conn.transaction().unwrap();
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -95,7 +84,6 @@ fn cause(text: &str) -> Cause<'_> {
 }
 
 impl World {
-    /// A new task `title`; it waits for each task of `after`.
     fn task(&self, title: &str, after: &[&str]) -> String {
         let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         new.blocked_by = after.iter().map(|s| s.to_string()).collect();
@@ -104,7 +92,6 @@ impl World {
             .task_id
     }
 
-    /// The task `task` is `done` (verified).
     fn done(&self, task: &str) {
         self.conn
             .execute(
@@ -114,7 +101,6 @@ impl World {
             .unwrap();
     }
 
-    /// The task branch of `task`, in `building`.
     fn branch(&mut self, task: &str) -> String {
         let name = format!("fleet/r1/{task}");
         let new = NewBranch {
@@ -139,7 +125,6 @@ impl World {
             .unwrap();
     }
 
-    /// The task `task` is in `status`.
     fn set_status(&self, task: &str, status: &str) {
         self.conn
             .execute(
@@ -171,7 +156,6 @@ impl World {
     }
 }
 
-/// An outside with no pane, no hold and no folder.
 struct Quiet;
 
 impl Outside for Quiet {
@@ -239,11 +223,6 @@ fn dependency_without_a_branch_row_keeps_the_done_rule() {
     assert_eq!(w.status(&dependent), "ready");
 }
 
-/// The `judges:` dependency in the pass (I2; the judge pair, steps 1 and
-/// 2; ticket 40 of fleetd-p6): a judge task stays `pending` while its
-/// judged task is `ready` or `verifying` with no passed structural check of
-/// its newest attempt. It is `ready` after that check passed. Else fleetd
-/// runs the judge beside the judged task (FM-9).
 #[test]
 fn judge_task_stays_pending_until_its_judged_task_passed_its_structural_check() {
     let mut w = world();

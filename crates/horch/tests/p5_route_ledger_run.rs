@@ -1,16 +1,3 @@
-//! The `import` and `gc` commands of `horch ledger` send 1 request to fleetd
-//! and write no row themselves (RR-5, FM-24; ticket 21 of fleetd-p5).
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root,
-//! and the watchdog off. The test process plays fleetd: it writes the
-//! `fleetd` row with its own PID and start time, makes the operator token,
-//! and serves the channel in-process with the handlers of the run and plan
-//! kinds. The client of the channel then accepts it as the fleetd of the
-//! ledger.
-//!
-//! The tests are unix only: the socket path must be short.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -37,8 +24,6 @@ struct Out {
     err: String,
 }
 
-/// A fleet in temporary folders. With [`World::up`], the test process
-/// serves the channel as fleetd.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -46,10 +31,7 @@ struct World {
 }
 
 impl World {
-    /// The ledger, the `fleetd` row of this process and the token, and no
-    /// server: fleetd is down.
     fn down() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("rl")
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -79,7 +61,6 @@ impl World {
         w
     }
 
-    /// [`World::down`], then the channel served by this process.
     fn up() -> World {
         let mut w = World::down();
         let mut handlers = Handlers::new();
@@ -134,7 +115,6 @@ impl World {
         }
     }
 
-    /// `horch` with `args`, which must exit 0.
     fn ok(&self, args: &[&str]) -> Out {
         let o = self.horch(args);
         assert_eq!(
@@ -149,7 +129,6 @@ impl World {
         Connection::open(self.ledger()).unwrap()
     }
 
-    /// The kind and state of each `requests` row, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn

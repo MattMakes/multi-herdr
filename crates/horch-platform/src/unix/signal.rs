@@ -1,13 +1,9 @@
-//! The concern signal for the code of macOS and Linux.
-
 use crate::os::signal::signal_same;
 use crate::signal::{Stop, Termination};
 use crate::NotSupported;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::sync::Once;
 
-/// Send `signal` to `os_pid`, the OS form of `pid`, only when the start time
-/// still matches: the check, then `kill`.
 pub(crate) fn check_and_kill(pid: u32, os_pid: i32, started: u64, signal: i32) -> bool {
     // SAFETY: plain syscall on a pid checked to be positive.
     crate::process::start_time(pid) == Some(started) && unsafe { libc::kill(os_pid, signal) } == 0
@@ -21,8 +17,6 @@ pub(crate) fn stop_same(pid: u32, os_pid: i32, started: u64, how: Stop) -> bool 
     signal_same(pid, os_pid, started, signal)
 }
 
-/// [`crate::signal::signal_same`]: the OS signal of `pid` when it names
-/// one process.
 pub(crate) fn signal_if_same(pid: u32, started: u64, signal: i32) -> Result<bool, NotSupported> {
     let os_pid = i32::try_from(pid).ok().filter(|p| *p > 0);
     Ok(os_pid.is_some_and(|os_pid| signal_same(pid, os_pid, started, signal)))
@@ -40,7 +34,6 @@ fn number(t: Termination) -> libc::c_int {
     }
 }
 
-/// The flag of [`on_termination_set`]. Null until the first call.
 static FLAG: AtomicPtr<AtomicBool> = AtomicPtr::new(std::ptr::null_mut());
 
 extern "C" fn set_flag(_: libc::c_int) {
@@ -71,22 +64,15 @@ static GROUPS: [AtomicPtr<AtomicI32>; GROUP_SLOTS] =
 const GROUP_SLOTS: usize = 8;
 static INSTALL: Once = Once::new();
 
-/// The hold of [`kill_group`]: the count of open holds above [`SIGNAL_BITS`],
-/// and in those bits the first signal that came while a hold was open, 0
-/// for none. 1 word, so that the handler and the end of a hold change it
-/// with 1 compare-and-swap each, and a signal is never lost between them.
 static HOLD: AtomicU32 = AtomicU32::new(0);
-/// The bits of [`HOLD`] that hold a signal number (each is below 64).
 const SIGNAL_BITS: u32 = 8;
 const SIGNAL_MASK: u32 = (1 << SIGNAL_BITS) - 1;
 
 extern "C" fn kill_group(sig: libc::c_int) {
     let held = u32::try_from(sig).unwrap_or(0) & SIGNAL_MASK;
     let mut now = HOLD.load(Ordering::SeqCst);
-    // An atomic load and compare-and-swap are async-signal-safe.
     while now >> SIGNAL_BITS > 0 {
         if now & SIGNAL_MASK != 0 {
-            // A signal already waits for the end of the hold: it acts 1 time.
             return;
         }
         match HOLD.compare_exchange(now, now | held, Ordering::SeqCst, Ordering::SeqCst) {
@@ -97,9 +83,6 @@ extern "C" fn kill_group(sig: libc::c_int) {
     kill_groups_and_end(sig);
 }
 
-/// Kill each registered group with `SIGKILL`, then end this process by
-/// `sig` with its default action. It only calls async-signal-safe
-/// functions, so the handler can call it.
 fn kill_groups_and_end(sig: libc::c_int) {
     for slot in &GROUPS {
         let group = slot.load(Ordering::SeqCst);
@@ -169,7 +152,6 @@ pub(crate) fn end_termination_hold() {
     loop {
         let holds = (now >> SIGNAL_BITS).saturating_sub(1);
         let sig = now & SIGNAL_MASK;
-        // The last hold takes the signal that waits, so it acts 1 time.
         let next = if holds == 0 {
             0
         } else {

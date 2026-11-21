@@ -1,14 +1,3 @@
-//! The add and list executors: the only `git worktree add` and `git worktree list` calls.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" and "The kinds of job" (rows `worktree_add` and `worktree_list`):
-//! each git call of custody is a job, never work inside a pass (FM-12).
-//!
-//! [`CliWorktreeGit`] runs each git call in the platform sandbox, and with
-//! a config that the project cannot change, so a program of the project
-//! never runs with the rights of fleetd (the fleetd git rule, review F4 of
-//! T-607, T-691). Each of its calls goes through `CliWorktreeGit::checked`.
-
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -35,23 +24,14 @@ use crate::runtime::paths::home_dir;
 use crate::runtime::process::which;
 use crate::taskledger::git::dir_bytes;
 
-// ─── the input keys ─────────────────────────────────────────────────────
-
-/// The input key of the `worktree_add` job of `row`: its path, its branch
-/// and its base tip.
 pub fn worktree_add_key(row: &WorktreeRow) -> String {
     serde_json::json!([row.path, row.branch, row.base_commit]).to_string()
 }
 
-/// The branch of the tree of a run gate: it has none (row W11).
 pub const DETACHED: &str = "(detached)";
 
-/// The start of the folder name and of the mode name of the tree of a run
-/// gate: `_gate-<run slug>`.
 pub const GATE_PREFIX: &str = "_gate-";
 
-/// Whether `row` is the tree of a run gate: a scratch tree `_gate-<slug>`
-/// on no branch. Only such a tree is added detached.
 pub fn is_gate(row: &WorktreeRow) -> bool {
     row.branch == DETACHED
         && row
@@ -60,17 +40,11 @@ pub fn is_gate(row: &WorktreeRow) -> bool {
             .is_some_and(|m| m.scratch && m.name.starts_with(GATE_PREFIX))
 }
 
-/// The input key of the `worktree_list` job at `clock`: the number of the
-/// period of `period_s` seconds on the fleet clock. So 1 run is made for
-/// each period.
 pub fn worktree_list_key(clock: FleetSeconds, period_s: u64) -> String {
     let period = i64::try_from(period_s.max(1)).unwrap_or(i64::MAX);
     (clock.0 / period).to_string()
 }
 
-// ─── the results ────────────────────────────────────────────────────────
-
-/// The result of a passed `worktree_add` run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddResult {
     pub path: String,
@@ -78,31 +52,19 @@ pub struct AddResult {
     pub head: String,
 }
 
-/// The facts of 1 tree in a `worktree_list` result. A fact that git or
-/// the disk cannot give is `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeFacts {
     pub path: String,
-    /// The row of the tree, when a row has its path.
     pub worktree_id: Option<String>,
     pub head: Option<String>,
     pub dirty: Option<bool>,
-    /// The size of the folder in bytes. The main tree of the repository
-    /// has no size: it is not a tree of custody.
     pub bytes: Option<u64>,
-    /// The error of git when it could not read the tree. A path that is
-    /// absent, or that is not the top of a work tree, has no git fact and no
-    /// error.
     pub error: Option<String>,
 }
 
-/// The result of a passed `worktree_list` run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListResult {
-    /// Each entry of `git worktree list --porcelain`, in its order.
     pub entries: Vec<ListEntry>,
-    /// The facts of each entry that is not bare, then of each row with no
-    /// entry.
     pub trees: Vec<TreeFacts>,
 }
 
@@ -117,7 +79,6 @@ fn passed(text: String, data: impl Serialize) -> Ran {
     }
 }
 
-/// A run that ends `failed` with the reason `text`.
 pub(crate) fn failed(text: String) -> Ran {
     Outcome {
         passed: false,
@@ -127,16 +88,8 @@ pub(crate) fn failed(text: String) -> Ran {
     .into()
 }
 
-// ─── the worktree_add executor ──────────────────────────────────────────
-
-/// The reason of a `worktree_add` run that keeps a folder.
 const HOLDS_WORK: &str = "the folder holds files or commits";
 
-/// The `worktree_add` job of the `reserved` row `row`, in the project root
-/// of the row. A folder at the path is kept unless it holds no work. A
-/// branch that exists already is attached when it is the branch of the
-/// task and name of the row and no other tree holds it. Else it is refused.
-/// A branch is never deleted. The row is not moved.
 pub fn worktree_add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Ran {
     add(git, row).unwrap_or_else(|e| failed(format!("{e:#}")))
 }
@@ -169,8 +122,6 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
         }
     }
     if row.branch == DETACHED {
-        // The tree of a run gate: `git worktree add --detach` at its base
-        // tip, with no branch.
         if !is_gate(row) {
             return Ok(failed(format!(
                 "only the tree of a run gate is added with no branch: {}",
@@ -179,10 +130,6 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
         }
         git.add(repo, path, DETACHED, base)?;
     } else if git.branch_exists(repo, &row.branch)? {
-        // The branch of an earlier run of this task and name, or the
-        // branch at the base tip of the row (a restore): the job attaches
-        // it, with each of its commits, when no other tree holds it. A
-        // branch is never deleted (review F1 of T-288).
         if !of_its_task_and_name(row) && !at_its_base(git, row)? {
             return Ok(refused(
                 row,
@@ -226,19 +173,11 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
     ))
 }
 
-/// Whether the branch of `row` holds exactly the base tip that the row
-/// records. A restore records the tip of its archive or trash ref, so the
-/// job attaches the archived branch only while it is at that commit.
 fn at_its_base(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<bool> {
     let tip = git.branch_tip(Path::new(&row.repo_root), &row.branch)?;
     Ok(tip.is_some() && tip.as_deref() == row.base_commit.as_deref())
 }
 
-/// Whether the branch of `row` is the branch that its task and name give.
-/// The folder of a task tree is `T<seq>-<name>` on the branch
-/// `<run branch>-T<seq>-<name>`, and the folder of a scratch tree is
-/// `<name>` on `fleet-scratch-<run>-<name>`: the branch ends with
-/// `-<folder>`.
 fn of_its_task_and_name(row: &WorktreeRow) -> bool {
     Path::new(&row.path)
         .file_name()
@@ -246,9 +185,6 @@ fn of_its_task_and_name(row: &WorktreeRow) -> bool {
         .is_some_and(|f| row.branch.ends_with(&format!("-{f}")))
 }
 
-/// The data of a `worktree_add` run that refused the existing branch of
-/// its row: the tree at `held_by` has it checked out, or, when `held_by`
-/// is `None`, it is not the branch of the task and name of the row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchRefused {
     pub branch: String,
@@ -274,11 +210,9 @@ fn add_result(row: &WorktreeRow, head: String) -> AddResult {
     }
 }
 
-/// What is at the path of a tree.
 enum Folder {
     Absent,
     Empty,
-    /// A folder with an entry, or a file.
     Full,
 }
 
@@ -299,11 +233,6 @@ fn folder(path: &Path) -> Result<Folder> {
     })
 }
 
-/// The HEAD of the folder at the path of `row` when it is the tree that the
-/// job makes, with no work: a tree that git lists, on the branch of the
-/// row, at the base tip, with no modified or untracked file. Then an
-/// earlier run made it and its result was lost. `None` for each other
-/// folder.
 fn made_already(
     git: &dyn WorktreeGitGateway,
     row: &WorktreeRow,
@@ -323,13 +252,10 @@ fn made_already(
         .map(|t| t.head))
 }
 
-/// Whether `a` and `b` name 1 folder. Git prints canonical paths; a row can
-/// hold another form of the same path.
 fn same_path(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
 }
 
-/// The canonical form of `path`, also when the last part does not exist.
 fn canonical(path: &Path) -> PathBuf {
     if let Ok(p) = path.canonicalize() {
         return p;
@@ -343,12 +269,6 @@ fn canonical(path: &Path) -> PathBuf {
     }
 }
 
-// ─── the worktree_list executor ─────────────────────────────────────────
-
-/// The `worktree_list` job of the repository `repo`: each entry of `git
-/// worktree list --porcelain`, and the HEAD, the dirty flag and the size of
-/// each entry and of each row in `rows` (the rows of `repo` that are not
-/// `removed`). It changes nothing.
 pub fn worktree_list(git: &dyn WorktreeGitGateway, repo: &Path, rows: &[WorktreeRow]) -> Ran {
     list(git, repo, rows).unwrap_or_else(|e| failed(format!("{e:#}")))
 }
@@ -363,7 +283,6 @@ fn list(git: &dyn WorktreeGitGateway, repo: &Path, rows: &[WorktreeRow]) -> Resu
         }
         let path = Path::new(&e.path);
         let id = row_of(path).map(|r| r.worktree_id.clone());
-        // The first entry is the main tree of the repository.
         trees.push(facts(git, path, id, n > 0));
     }
     for r in rows {
@@ -381,8 +300,6 @@ fn list(git: &dyn WorktreeGitGateway, repo: &Path, rows: &[WorktreeRow]) -> Resu
     Ok(passed(text, ListResult { entries, trees }))
 }
 
-/// The facts of the tree at `path`. A folder that is not the top of a work
-/// tree has a size and no git fact.
 fn facts(
     git: &dyn WorktreeGitGateway,
     path: &Path,
@@ -414,37 +331,18 @@ fn facts(
     f
 }
 
-// ─── the git adapter ────────────────────────────────────────────────────
-
-/// The `-c` keys of each git call, before its subcommand. The command line
-/// is the last scope that git reads, so each key wins over the config of
-/// the project. The git runner adds `core.hooksPath=/dev/null` too; it is
-/// here so that this list is the whole rule.
 const SAFE_CONFIG: [&str; 9] = [
-    // Hooks.
     "core.hooksPath=/dev/null",
-    // The fsmonitor program.
     "core.fsmonitor=false",
-    // The gpg program.
     "commit.gpgSign=false",
     "tag.gpgSign=false",
-    // The attributes file of the user, which can select a filter driver.
     "core.attributesFile=/dev/null",
-    // The ignore file of the user, below HOME, which git cannot read.
     "core.excludesFile=/dev/null",
-    // Each transport: the ssh command, a remote helper, `ext::`.
     "protocol.allow=never",
-    // An empty value empties the list of credential helpers.
     "credential.helper=",
     "core.askPass=",
 ];
 
-/// The environment of each git call. The global and system config and the
-/// system attributes file are not read: the global config of the user can
-/// define a filter driver (for example git-lfs) that a `.gitattributes` of
-/// the project selects (review F4 of T-287). No git call takes an
-/// optional lock: a `git status` does not write the index of a worker
-/// tree, so a worker commit never finds an `index.lock` of fleetd (T-290).
 const SAFE_ENV: [(&str, &str); 7] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_EDITOR", "true"),
@@ -455,7 +353,6 @@ const SAFE_ENV: [(&str, &str); 7] = [
     ("GIT_OPTIONAL_LOCKS", "0"),
 ];
 
-/// The config keys that start a program, as `<section>.<name>`.
 const PROGRAM_KEYS: [&str; 8] = [
     "core.fsmonitor",
     "core.sshcommand",
@@ -467,8 +364,6 @@ const PROGRAM_KEYS: [&str; 8] = [
     "diff.external",
 ];
 
-/// The config keys with a subsection that start a program, as
-/// `<section>.<name>`: `filter.<driver>.clean` is `filter.clean`.
 const PROGRAM_SUBKEYS: [&str; 8] = [
     "filter.clean",
     "filter.smudge",
@@ -480,25 +375,12 @@ const PROGRAM_SUBKEYS: [&str; 8] = [
     "gpg.program",
 ];
 
-/// The config scopes that the project controls.
 const PROJECT_SCOPES: [&str; 2] = ["local", "worktree"];
 
-/// The start of the text of a job that did not run git because this host
-/// has no sandbox.
 pub const NO_SANDBOX: &str = "no sandbox";
 
-/// The time limit of each git call of the fleetd process: the reconcile
-/// pass and the command channel (T-369). These calls are local and short
-/// by their nature (design.md, "Long work is a job"), and some run in the
-/// write transaction of the pass. A pass must end below the hang limit of
-/// 30 s (PL-5), so 1 hung git must not hold the pass, the ledger writer
-/// and the heartbeat until the watchdog restarts fleetd. The design gives
-/// no number for a local git command: 10 s is a starting value, below the
-/// hang limit with the 1 s grace of the stop.
 pub const FLEETD_GIT_LIMIT: Duration = Duration::from_secs(10);
 
-/// A test seam: it runs after the scan of the project config and before
-/// git starts, with the folder and the arguments of the git call.
 type RaceFn = dyn Fn(&Path, &[&str]) + Send + Sync;
 
 #[derive(Clone)]
@@ -510,39 +392,18 @@ impl fmt::Debug for Race {
     }
 }
 
-/// [`WorktreeGitGateway`] on the git binary.
-///
-/// Each git call runs in the platform sandbox (way A of T-691): git, and
-/// each program that git starts, can write only the paths of the job
-/// ([`CliWorktreeGit::writing`] and the folder of a private index),
-/// cannot read, write or connect below `<fleet root>/run` and HOME (but
-/// the paths of the job and the git install folder), has no network, and
-/// gets only the environment of
-/// `horch_marketplace::git::SANDBOX_KEPT_ENV` and of the runner. The keys of
-/// `SAFE_CONFIG` and `SAFE_ENV` are the second layer (way B): they stop
-/// hooks, the fsmonitor, gpg, each transport, credential helpers, askpass
-/// and the global filter drivers. A filter, merge or diff driver of the
-/// project config has a free name, and `$GIT_DIR/info/attributes` can
-/// select it, so only the sandbox stops it when it comes after the scan.
-/// So does `diff.external`: an empty value makes git run an empty program.
 #[derive(Debug, Clone)]
 pub struct CliWorktreeGit {
     runner: GitRunner,
     fleet_root: PathBuf,
     writable: Vec<PathBuf>,
-    /// The paths below HOME that git can read: the git install folder and
-    /// the paths of the job.
     readable: Vec<PathBuf>,
-    /// HOME, hidden from git. `None` when HOME is not an absolute path:
-    /// then no git runs.
     home: Option<PathBuf>,
     host: SandboxHost,
     race: Option<Race>,
 }
 
 impl CliWorktreeGit {
-    /// The adapter of a job of the fleet at `fleet_root`. It can write no
-    /// path until [`CliWorktreeGit::writing`] names one.
     pub fn new(bin: impl Into<PathBuf>, fleet_root: impl Into<PathBuf>) -> CliWorktreeGit {
         let bin = bin.into();
         let install = install_folder(&bin, ProcessEnv.var_os("PATH").as_deref());
@@ -561,38 +422,27 @@ impl CliWorktreeGit {
         }
     }
 
-    /// This adapter, and git can also write below each path of `paths`.
     pub fn writing(mut self, paths: &[PathBuf]) -> CliWorktreeGit {
         self.writable.extend_from_slice(paths);
         self
     }
 
-    /// This adapter, and each git call also gets `value` in the environment
-    /// key `key`.
     pub fn with_env(mut self, key: &str, value: &str) -> CliWorktreeGit {
         self.runner = self.runner.with_env(key, value);
         self
     }
 
-    /// This adapter, and git can also read below each path of `paths`, also
-    /// when it is below HOME. Give paths of the ledger, never a path that
-    /// the project names.
     pub fn reading(mut self, paths: &[PathBuf]) -> CliWorktreeGit {
         self.readable.extend_from_slice(paths);
         self
     }
 
-    /// A test seam: `home` takes the place of HOME, which git cannot read.
     #[doc(hidden)]
     pub fn with_home(mut self, home: impl Into<PathBuf>) -> CliWorktreeGit {
         self.home = Some(home.into()).filter(|home| home.is_absolute());
         self
     }
 
-    /// This adapter, with the private index file `index` for each git call.
-    /// Git can write in the folder of `index`. The caller owns `index`,
-    /// keeps it outside every project, and deletes the file when it is
-    /// done.
     pub(crate) fn with_index(&self, index: &Path) -> Result<CliWorktreeGit> {
         let folder = index.parent().context("a private index has a folder")?;
         let runner = self
@@ -607,25 +457,17 @@ impl CliWorktreeGit {
         .writing(&[folder.to_path_buf()]))
     }
 
-    /// This adapter, and each git call stops at `limit`: `SIGTERM` to the
-    /// group of git, then `SIGKILL` after 1 s. The error then names each
-    /// `.lock` file that stays in the paths that git can write. For the git
-    /// of the fleetd process ([`FLEETD_GIT_LIMIT`]). A job has its own
-    /// time limit, and its git has none.
     pub fn with_time_limit(mut self, limit: Duration) -> CliWorktreeGit {
         self.runner = self.runner.with_time_limit(limit);
         self
     }
 
-    /// A test seam: `host` takes the place of the sandbox of the platform.
     #[doc(hidden)]
     pub fn with_sandbox_host(mut self, host: SandboxHost) -> CliWorktreeGit {
         self.host = host;
         self
     }
 
-    /// A test seam: `race` runs after the scan of the project config and
-    /// before git starts, with the folder and the arguments of the git call.
     #[doc(hidden)]
     pub fn with_race(
         mut self,
@@ -635,7 +477,6 @@ impl CliWorktreeGit {
         self
     }
 
-    /// Why this host cannot run git in the sandbox, or `None` when it can.
     pub fn sandbox_gap(&self) -> Option<NotSupported> {
         let probe = horch_platform::start::command(self.runner.bin());
         let hidden = match self.hidden() {
@@ -652,15 +493,10 @@ impl CliWorktreeGit {
         (self.host)(probe, &reach).err()
     }
 
-    /// `<fleet root>/run`, with the operator token and the command channel.
     fn run_folder(&self) -> PathBuf {
         self.fleet_root.join("run")
     }
 
-    /// The operator acts that git and each program it starts cannot do,
-    /// as a worker cannot (SR-8): read the operator token, connect to the
-    /// command channel, write a request file. The run folder is hidden
-    /// too; the denials keep the 3 paths denied whatever is writable.
     fn denials(&self) -> Denials {
         let run = self.run_folder();
         Denials {
@@ -670,10 +506,6 @@ impl CliWorktreeGit {
         }
     }
 
-    /// The paths that git cannot read: [`CliWorktreeGit::run_folder`], and
-    /// HOME with the files of the user (keys, tokens, the shell history).
-    /// With no absolute HOME, the folder of the user is not known, so no
-    /// git runs: a gap of the sandbox.
     fn hidden(&self) -> Result<Vec<PathBuf>, NotSupported> {
         let home =
             self.home
@@ -684,10 +516,6 @@ impl CliWorktreeGit {
         Ok(vec![self.run_folder(), home])
     }
 
-    /// The 1 way this adapter runs a git command: first refuse a key of the
-    /// project config that starts a program, then run `git <args>` in `dir`
-    /// in the sandbox, with the keys of `SAFE_CONFIG`, whatever its exit
-    /// code.
     pub fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
         self.refuse_project_programs(dir)?;
         if let Some(Race(race)) = &self.race {
@@ -696,8 +524,6 @@ impl CliWorktreeGit {
         self.safe(dir, args)
     }
 
-    /// [`CliWorktreeGit::checked`], where a non-zero exit is an error with
-    /// the message of git.
     pub fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
         let out = self.checked(dir, args)?;
         if out.status != 0 {
@@ -711,12 +537,8 @@ impl CliWorktreeGit {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// `git <args>` in `dir` in the sandbox, with the keys of
-    /// [`SAFE_CONFIG`], whatever its exit code.
     fn safe(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
-        // On Linux the sandbox covers a hidden folder only when it exists.
         private_folder(&self.run_folder())?;
-        // Git reads the folder of the call: a path of the caller.
         let mut readable = self.readable.clone();
         readable.push(dir.to_path_buf());
         let sandbox = GitSandbox {
@@ -743,9 +565,6 @@ impl CliWorktreeGit {
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))
     }
 
-    /// An error that names the first key of the repository or worktree
-    /// config of `dir` that starts a program. The global config of the user
-    /// is not read.
     pub(crate) fn refuse_project_programs(&self, dir: &Path) -> Result<()> {
         let args = ["config", "--list", "--show-origin", "--show-scope", "-z"];
         let out = self.safe(dir, &args)?;
@@ -767,11 +586,6 @@ impl CliWorktreeGit {
     }
 }
 
-/// The text of the `.lock` files in `writable` after the stop of a git at
-/// its time limit. Git fails at once on a held lock and does not wait, so a
-/// `.lock` file that stays makes each later git that takes it fail with
-/// "File exists": the text names each file, so the cause is in the error.
-/// The `objects` folders hold no lock and are not read.
 fn locks_left(fleet_root: &Path, writable: &[PathBuf]) -> String {
     let mut locks = Vec::new();
     let mut todo: Vec<PathBuf> = writable.to_vec();
@@ -806,11 +620,6 @@ fn locks_left(fleet_root: &Path, writable: &[PathBuf]) -> String {
     )
 }
 
-/// The lock journal of the fleet at `fleet_root`: a JSON list of each
-/// `.lock` file that stayed after the stop of a git of the fleet at its time
-/// limit. It is in the run folder, owner-only, which git cannot read. A path
-/// stays in it until its file is gone, so each pass after a crash or a
-/// rolled-back transaction opens its needs-you item again (D266-F3).
 pub fn lock_journal(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join(LOCK_JOURNAL)
 }
@@ -854,43 +663,20 @@ fn journal_locks(fleet_root: &Path, locks: impl IntoIterator<Item = PathBuf>) ->
     change_journal(fleet_root, |paths| paths.extend(locks))
 }
 
-/// The `.lock` files of the lock journal of `fleet_root`, also the ones
-/// that are gone since.
 pub fn locks_left_after_stops(fleet_root: &Path) -> Result<Vec<PathBuf>> {
     read_journal(fleet_root)
 }
 
-/// Remove the `.lock` file `path` from the lock journal of `fleet_root`:
-/// its file is gone.
 pub fn forget_lock_left(fleet_root: &Path, path: &Path) -> Result<()> {
     change_journal(fleet_root, |paths| {
         paths.remove(path);
     })
 }
 
-/// The group of this job process while 1 of its sandboxed git calls runs,
-/// else 0.
-///
-/// Git runs in the group of the job. On Linux the sandbox of git is a PID
-/// namespace whose init ignores the `SIGTERM` of a stop, and git runs in a
-/// session of its own in it. So a stop of the job (`SIGTERM`, `SIGINT` or
-/// `SIGHUP`) during a git call kills the whole job group with `SIGKILL`,
-/// and the kernel then ends each process of the namespace. A `SIGKILL` of
-/// the job group by fleetd reaches the namespace init too, because git has
-/// no group of its own. The value is 0 while a gate or a check runs, so
-/// the handler then kills only their group and the job ends by the signal.
 static GIT_GROUP: AtomicI32 = AtomicI32::new(0);
 
-/// The group of this process when [`kill_job_group_on_stop`] armed it, else
-/// 0: fleetd and the CLI run git with no group kill, as they keep their
-/// own signal handlers.
 static OWN_GROUP: AtomicI32 = AtomicI32::new(0);
 
-/// Make each later sandboxed git call of this job process end with the
-/// stop of the job (see `GIT_GROUP`). It acts only when this process
-/// leads its group, as `horch job run` does. A process that does not (a
-/// test that runs an executor) shares the group of its starter, which a
-/// kill must not reach.
 pub fn kill_job_group_on_stop() {
     let me = std::process::id();
     let leads = matches!(horch_platform::process::group_of(me), Ok(Some(g)) if g == me);
@@ -905,16 +691,11 @@ pub fn kill_job_group_on_stop() {
     }
 }
 
-/// The result data of a job that ran no git because this host has no
-/// sandbox: the reason of the platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoSandbox {
     pub no_sandbox: String,
 }
 
-/// The install folder of the git binary `bin`, found on `path` when it is a
-/// bare name: the folder above its `bin` folder, after each link, so git can
-/// read its own files when they are below HOME.
 fn install_folder(bin: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let found = if bin.components().count() > 1 {
         bin.to_path_buf()
@@ -925,9 +706,6 @@ fn install_folder(bin: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf>
     real.parent()?.parent().map(Path::to_path_buf)
 }
 
-/// The run of a job that does not run git because this host has no
-/// sandbox, or `None` when it has one. The text starts with [`NO_SANDBOX`],
-/// and the data is [`NoSandbox`].
 pub fn no_sandbox(git: &CliWorktreeGit) -> Option<Ran> {
     git.sandbox_gap().map(|gap| {
         let data = NoSandbox {
@@ -943,9 +721,6 @@ pub fn no_sandbox(git: &CliWorktreeGit) -> Option<Ran> {
     })
 }
 
-/// The git folder `<repo root>/.git` of the repository at `repo_root`,
-/// which git of a job can write. It must be a folder: a `.git` file can
-/// name any folder.
 pub fn repo_git_dir(repo_root: &Path) -> Result<PathBuf> {
     let dir = repo_root.join(".git");
     if !dir.is_dir() {
@@ -957,32 +732,23 @@ pub fn repo_git_dir(repo_root: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// `git`, and it can also write the git folder of the repository of `row`
-/// and the folder of its tree.
 pub fn tree_writer(git: CliWorktreeGit, row: &WorktreeRow) -> Result<CliWorktreeGit> {
     let dir = repo_git_dir(Path::new(&row.repo_root))?;
     Ok(git.writing(&[dir, PathBuf::from(&row.path)]))
 }
 
-/// Make `folder` and its parents when it does not exist. The new folders
-/// have mode 0700.
 pub(crate) fn private_folder(folder: &Path) -> Result<()> {
     if folder.is_dir() {
         return Ok(());
     }
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
-    // A host with no modes (Windows) makes the folder with its default rights.
     let _ = create_dir_mode(&mut builder, 0o700);
     builder
         .create(folder)
         .with_context(|| format!("making {}", folder.display()))
 }
 
-/// The first key that starts a program in a project scope of the output of
-/// `git config --list --show-origin --show-scope -z`, with its origin. Each
-/// record is `<scope>\0<origin>\0<key>\n<value>\0`; a key with no value has
-/// no `\n`.
 pub(crate) fn project_program(text: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = text.split('\0').collect();
     parts
@@ -996,7 +762,6 @@ pub(crate) fn project_program(text: &str) -> Option<(String, String)> {
         })
 }
 
-/// Whether the config key `key` with `value` starts a program.
 fn starts_program(key: &str, value: &str) -> bool {
     let key = key.to_ascii_lowercase();
     let section = key.split('.').next().unwrap_or("");
@@ -1025,8 +790,6 @@ impl WorktreeGitGateway for CliWorktreeGit {
         if !path.is_dir() {
             return Ok(None);
         }
-        // A folder in the project that is not a tree of its own is in the
-        // tree of the project: git would answer for that tree.
         let top = self.git(path, &["rev-parse", "--show-toplevel"])?;
         if !same_path(Path::new(top.trim_end()), path) {
             return Ok(None);
@@ -1073,12 +836,10 @@ impl WorktreeGitGateway for CliWorktreeGit {
     }
 
     fn add(&self, repo: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
-        // A refused add makes no folder.
         self.refuse_project_programs(repo)?;
         tree_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
         if branch == DETACHED {
-            // The tree of a run gate (`is_gate`); `--` ends the options.
             return self
                 .git(repo, &["worktree", "add", "--detach", "--", path, base])
                 .map(drop);
@@ -1091,22 +852,15 @@ impl WorktreeGitGateway for CliWorktreeGit {
         self.refuse_project_programs(repo)?;
         tree_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
-        // `--` ends the options: no path or branch name reads as a flag.
         self.git(repo, &["worktree", "add", "--", path, branch])
             .map(drop)
     }
 }
 
-/// Make the empty folder of the tree at `path`, and the folders that hold
-/// it. Git in the sandbox can write only the tree itself, and on Linux the
-/// sandbox binds only a folder that exists, so fleetd makes it first. Git
-/// adds a tree in an empty folder.
 fn tree_folder(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).with_context(|| format!("making {}", path.display()))
 }
 
-/// The entries of `git worktree list --porcelain -z`: attributes end with
-/// `\0`, and an entry ends with 1 more `\0`.
 fn parse_list(out: &str) -> Vec<ListEntry> {
     let mut entries = Vec::new();
     let mut cur: Option<ListEntry> = None;
@@ -1148,9 +902,6 @@ fn parse_list(out: &str) -> Vec<ListEntry> {
 pub(crate) mod tests {
     use super::*;
 
-    /// A repository with 2 commits on `main` and the branch `feat` at the
-    /// first; the row of the folder `.worktrees/feat` on `feat`, whose base
-    /// tip is `base`.
     fn restore_row(base: impl Fn(&str, &str) -> String) -> (tempfile::TempDir, WorktreeRow) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
@@ -1200,8 +951,6 @@ pub(crate) mod tests {
         (dir, row)
     }
 
-    /// The git of the `worktree_add` job of `row`, with the fleet root in
-    /// `dir`: it can write the git folder and the tree.
     fn add_git(dir: &tempfile::TempDir, row: &WorktreeRow) -> CliWorktreeGit {
         tree_writer(CliWorktreeGit::new("git", dir.path().join("fleet")), row).unwrap()
     }
@@ -1245,11 +994,8 @@ pub(crate) mod tests {
     #[cfg(unix)]
     #[test]
     fn git_call_holds_the_job_group_only_while_it_runs() {
-        // No process has this group, so a stop in the test kills nothing.
         let group = i32::MAX;
         OWN_GROUP.store(group, Ordering::SeqCst);
-        // The 8 slots of the handler: each call with the same static takes
-        // the slot of the first call.
         for _ in 0..9 {
             horch_platform::signal::kill_group_on_termination(&GIT_GROUP).unwrap();
         }
@@ -1299,9 +1045,6 @@ pub(crate) mod tests {
         (repo, tip)
     }
 
-    /// A fake git that, on `update-ref`, takes the lock
-    /// `<git_dir>/refs/heads/x.lock` and hangs, with the shell `on_term` as
-    /// its `SIGTERM` trap. Each other git command is the real git.
     #[cfg(unix)]
     fn locking_git(dir: &Path, git_dir: &Path, on_term: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;

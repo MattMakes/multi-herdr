@@ -1,15 +1,3 @@
-//! The `conformance` job (fleetd-p7 ticket 25): step 3 of 1 docs sync as a
-//! job with no repository. The executor runs the suite of 1 CLI and writes
-//! `<fleet root>/docs/<cli>/<version>/conformance.json`. The hash of the
-//! adapter is the sha256 of the rendered conformance launch of the
-//! reference profile (MAP.md of fleetd-p7, Q9).
-//!
-//! The suite of the job tests is a fake of the port: the suite itself has
-//! its tests in `p7_conformance.rs`. The version command is a script in a
-//! temp folder, not a real agent CLI. The job process is `true`, started
-//! through the launcher, and the executor runs in the test process with the
-//! recorded pid, as `horch job run <id>` runs it. The hash test renders the
-//! launch with no start, so no CLI runs.
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -44,15 +32,10 @@ use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::Worker;
 use rusqlite::{Connection, TransactionBehavior};
 
-/// The text that the fake version command prints.
 const VERSION: &str = "2.0.1 (Fake CLI)";
 
-/// The adapter hash that the fake suite gives.
 const HASH: &str = "ab12cd34";
 
-/// A fake suite: the version command is a script that prints [`VERSION`];
-/// each check passes, but each check of `fail` fails and each check of
-/// `unsupported` is `not supported`.
 struct FakeSuite {
     bin: PathBuf,
     fail: Vec<Check>,
@@ -109,7 +92,6 @@ impl ConformanceSuite for FakeSuite {
     }
 }
 
-/// No worker of these tests has a sandbox profile.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -136,7 +118,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The fleet root of the ledger: the folder `fleet` beside it.
     fn root(&self) -> PathBuf {
         horch_platform::path::canonicalize(self.dir.path())
             .unwrap()
@@ -147,9 +128,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Queue a `conformance` run of `subject` with no repository, start its
-    /// job process through the launcher, run the executor with `suite`,
-    /// and end the run from its result file.
     fn run_conformance(&mut self, subject: &str, suite: &FakeSuite) -> JobRow {
         let ctx = JobCtx {
             guard: None,
@@ -237,7 +215,6 @@ fn conformance_job_writes_conformance_json() {
 
     let row = w.run_conformance("fake 9f2c", &suite);
 
-    // A check that is `not supported` does not fail the run.
     assert_eq!(row.state, State::Passed, "{:?}", row.result_json);
     let path = w
         .root()
@@ -253,7 +230,6 @@ fn conformance_job_writes_conformance_json() {
     assert_eq!(report.checks.len(), CHECKS.len());
     let data = result_data(&row).unwrap();
     assert_eq!(data["path"], path.to_string_lossy().as_ref());
-    // No repository: nothing is written outside the fleet root.
     assert!(!w.dir.path().join("docs").exists());
 }
 
@@ -279,7 +255,6 @@ fn failed_check_fails_the_job_with_its_name() {
         assert!(text.contains(check.name()), "{text}");
     }
     assert!(text.contains(VERSION), "{text}");
-    // The failed run still writes its report.
     let path = w
         .root()
         .join("docs/fake")
@@ -310,8 +285,6 @@ fn stub_sandbox_tools(bin: &Path) {
     }
 }
 
-/// A context for the rendering of a launch: temp folders, a stub CLI
-/// binary for each exec CLI.
 fn render_ctx(tmp: &Path) -> RuntimeContext {
     for d in ["home", "state", "data", "ledger/fleet", "scratch", "bin"] {
         std::fs::create_dir_all(tmp.join(d)).unwrap();
@@ -407,16 +380,12 @@ fn adapter_hash_changes_when_the_rendered_launch_changes() {
         assert_eq!(ExecCli::of(&profile), Some(cli), "{cli:?}");
         let first = hash_of(&ctx, &profile, &scratch);
         assert_eq!(first.len(), 64, "a sha256 in hex: {first}");
-        // The same render gives the same hash: the throwaway folder of the
-        // render does not reach the hash.
         assert_eq!(hash_of(&ctx, &profile, &scratch), first, "{cli:?}");
 
-        // A change of what the adapter renders changes the hash.
         let mut changed = profile.clone();
         changed.model = Some("another-model".into());
         assert_ne!(hash_of(&ctx, &changed, &scratch), first, "{cli:?}");
     }
-    // The render starts no process and leaves no throwaway folder.
     let left: Vec<_> = std::fs::read_dir(&scratch)
         .unwrap()
         .map(|e| e.unwrap().path())

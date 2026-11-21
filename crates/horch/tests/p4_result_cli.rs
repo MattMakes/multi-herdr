@@ -1,10 +1,3 @@
-//! `horch result` and `horch result --check` (ticket 12 of fleetd-p4).
-//!
-//! Each test runs the real binary on its own temporary git project, with
-//! its own ledger, state and fleet folders, and the watchdog off. The
-//! attempt is a push attempt: its `task.yaml` is under the fleet root, and
-//! the pane names it in `HORCH_TASK_YAML`.
-
 #![cfg(unix)]
 
 mod support;
@@ -29,7 +22,6 @@ const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_av
 
 const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
 
-/// The starting value of `result_max_bytes` of `fleet.toml`.
 const RESULT_MAX_BYTES: u64 = 64 * 1024;
 
 const FIRST: &str = "run `horch result` first";
@@ -85,8 +77,6 @@ struct World {
 }
 
 impl World {
-    /// A project with 1 run, 1 task T1 claimed by a worker, its tree, and
-    /// the `task.yaml` of attempt A1 of T1 under the fleet root.
     fn new() -> World {
         World::with_agent(false)
     }
@@ -186,7 +176,6 @@ impl World {
         self.outbox().join("result.json")
     }
 
-    /// Commit `name` in the tree of T1; its sha.
     fn commit(&self, name: &str) -> String {
         let tree = self.tree();
         std::fs::write(tree.join(name), "x\n").unwrap();
@@ -197,7 +186,6 @@ impl World {
             .to_string()
     }
 
-    /// The `horch` binary with the environment of the test.
     fn command(&self, task_yaml: Option<&Path>, worker: Option<&str>) -> Command {
         let root = &self.root;
         let proj = root.join("proj");
@@ -229,7 +217,6 @@ impl World {
         cmd
     }
 
-    /// `horch <args>` in the tree of T1. `task_yaml` is `HORCH_TASK_YAML`.
     fn horch(&self, task_yaml: Option<&Path>, worker: Option<&str>, args: &[&str]) -> Out {
         let mut cmd = self.command(task_yaml, worker);
         cmd.args(args);
@@ -246,7 +233,6 @@ impl World {
         }
     }
 
-    /// `horch result <args>` in the push attempt A1 of T1.
     fn result(&self, args: &[&str]) -> Out {
         let mut all = vec!["result"];
         all.extend_from_slice(args);
@@ -254,7 +240,6 @@ impl World {
     }
 }
 
-/// `git <args>` in `dir`, with no config of the operator's.
 fn git(root: &Path, dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
@@ -277,7 +262,6 @@ fn git(root: &Path, dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The names in `dir`, sorted.
 fn names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -311,7 +295,6 @@ fn result_writes_a_valid_file_once() {
     assert_eq!(file.files_changed, ["one.txt", "two.txt"]);
     assert_eq!(names(&w.outbox()), ["result.json"], "no temp file is left");
 
-    // The commits and the files given on the command line win.
     let w = World::new();
     w.commit("one.txt");
     let out = w.result(&[
@@ -347,7 +330,6 @@ fn result_json_with_another_status_is_refused() {
     assert_ne!(out.code, 0, "{}{}", out.out, out.err);
     assert!(out.err.contains("done"), "{}", out.err);
     assert!(!w.result_json().exists());
-    // No status at all writes nothing either.
     let out = w.result(&["--summary", "s"]);
     assert_eq!(out.code, 1, "{}{}", out.out, out.err);
     assert!(out.err.contains("--status"), "{}", out.err);
@@ -384,7 +366,6 @@ fn check_exits_2_with_neither_file_and_0_with_one() {
     assert_eq!(out.code, 2, "{}{}", out.out, out.err);
     assert!(out.err.contains(FIRST), "{}", out.err);
 
-    // A question file of the attempt lets the turn end.
     let questions = w.outbox().join("questions");
     std::fs::create_dir_all(&questions).unwrap();
     std::fs::write(questions.join("q.json.tmp"), "{}").unwrap();
@@ -398,7 +379,6 @@ fn check_exits_2_with_neither_file_and_0_with_one() {
     assert_eq!(out.code, 0, "{}{}", out.out, out.err);
     std::fs::remove_dir_all(&questions).unwrap();
 
-    // So does result.json.
     w.commit("one.txt");
     assert_eq!(w.result(&["--status", "failed", "--summary", "s"]).code, 0);
     let out = w.result(&["--check"]);
@@ -442,7 +422,6 @@ fn oversized_result_is_refused() {
     assert!(out.err.contains("the limit is 65536 bytes"), "{}", out.err);
     assert!(!w.result_json().exists());
 
-    // The limit comes from the fleet.toml of the fleet.
     let toml = w.root.join("fleet/fleet.toml");
     let mut text = std::fs::read_to_string(&toml).unwrap();
     text.push_str("result_max_bytes = 2000\n");

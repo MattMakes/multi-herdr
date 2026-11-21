@@ -1,7 +1,3 @@
-//! The watchdog duties of the fleetd pass through the CLI: liveness from
-//! herdr's status (#203), a SIGTERM to fleetd during a reap (#216), and the
-//! workspace of the wakes of a fleetd that a pane of another workspace
-//! starts (#218).
 #![cfg(unix)]
 
 use horch_core::taskledger::{
@@ -16,7 +12,6 @@ use horch_e2e::harness::Harness;
 
 const SIGTERM: i32 = 15;
 
-/// A fake agent process; killed on drop.
 struct Agent(std::process::Child);
 impl Drop for Agent {
     fn drop(&mut self) {
@@ -32,8 +27,6 @@ fn fake(h: &Harness, args: &[&str]) {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
-/// A run in workspace `w1` with 1 working worker in pane `w1:p1`, claimed at
-/// 2030-01-01T00:00:00Z, whose agent is a live fake process.
 fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
     let mut h = Harness::new(name);
     h.set("HORCH_WORKSPACE_ID", "w1");
@@ -109,7 +102,6 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
     (h, store, run, worker, agent)
 }
 
-/// 1 forced watchdog pass at the pinned time `at`; the worker's check.
 fn pinned_check(h: &Harness, run: &Run, at: &str) -> serde_json::Value {
     let o = h
         .horch(&[
@@ -128,8 +120,6 @@ fn pinned_check(h: &Harness, run: &Run, at: &str) -> serde_json::Value {
     serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()[0].clone()
 }
 
-/// The wakes that the fleetd pass wrote to the outbox of `run`. The
-/// outbox keeps them with `HORCH_NO_WAKE`, which writes no `woke` event.
 fn outbox(store: &Store, run: &Run) -> Vec<String> {
     let mut stmt = store
         .conn()
@@ -141,12 +131,6 @@ fn outbox(store: &Store, run: &Run) -> Vec<String> {
         .unwrap()
 }
 
-/// The stall ladder for a busy pane with no timer (MAP.md of fleetd-p2,
-/// Q14): herdr shows `working`, but no signal moves, so the attempt earns
-/// no activity after its claim. The pass keeps it within stall_after_s (300
-/// s), with a proxy check and no stop. Past it the agent is hung: rung 3
-/// stops it at once, with no doorbell (the ladder rings only an idle
-/// pane), and rung 6 queues the task again; the operator gets 1 needs-you item.
 #[test]
 fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung_3() {
     let (h, store, run, worker, mut agent) = pinned_worker("wd203-busy-pi");
@@ -186,7 +170,6 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
         outbox(&store, &run)
     );
 
-    // Past stall_after_s of the claim, with no activity: rung 3.
     h.advance_fleet_clock(400);
     pinned_check(&h, &run, "2030-01-01T00:08:00Z");
     let (state, outcome): (String, Option<String>) = store
@@ -208,8 +191,6 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
         )
         .unwrap();
     assert_eq!(doorbells, 0, "a busy pane gets no doorbell");
-    // The stall pass saw the old process alive: the task stays stalled, so
-    // no claim starts a new attempt beside it (FM-14).
     assert_eq!(
         task_status(),
         "stalled",
@@ -218,7 +199,6 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
     horch_e2e::harness::wait_for("the stop of rung 3 to end the agent", || {
         matches!(agent.0.try_wait(), Ok(Some(_))).then_some(())
     });
-    // The next pass sees the old process gone: rung 6.
     pinned_check(&h, &run, "2030-01-01T00:08:00Z");
     assert_eq!(task_status(), "ready", "rung 6 queued it again");
     assert_eq!(
@@ -255,21 +235,12 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
     );
 }
 
-/// Write `config` as the `fleet.toml` of the fleet root of `h`: the folder
-/// `fleet` next to its ledger (`docs/tickets/fleetd-p1/MAP.md`, Q4).
 fn fleet_toml(h: &Harness, config: &str) {
     let root = h.root.join("fleet");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("fleet.toml"), config).unwrap();
 }
 
-/// A SIGTERM to fleetd while it reaps a worker does not lose the reap. The
-/// stall ladder ends the attempt of a hung agent (herdr shows `working`, no
-/// activity past stall_after_s) and sends TERM to the agent, which ignores
-/// it, and the stop grace runs.
-/// fleetd ends between 2 passes, and the next fleetd kills the agent after
-/// the grace. A reap that a SIGTERM lost would leave the agent, with the
-/// task already queued again.
 #[test]
 fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
     let (h, store, _run, worker, _fake) = pinned_worker("wd216-term-mid-reap");
@@ -289,7 +260,6 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
             "pi",
         ],
     );
-    // An agent that ignores TERM and says when it got one.
     let got_term = h.root.join("got-term");
     let mut agent = std::process::Command::new("/bin/sh")
         .arg("-c")
@@ -322,10 +292,7 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
     let mut fleetds = Fleetds::new(&h);
     let first = fleetds.start(&h, "fleetd-1");
     let (pid, started) = fleetds.row().expect("the fleetd row");
-    // No activity since the claim, past stall_after_s (300 s): the agent
-    // is hung, and rung 3 stops it.
     h.advance_fleet_clock(400);
-    // The stop sent TERM to the agent, and the stop grace runs.
     horch_e2e::harness::wait_for("the reap's TERM to the agent", || {
         got_term.exists().then_some(())
     });
@@ -344,8 +311,6 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
     agent_ended
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("the next fleetd killed the agent after the grace");
-    // The pass has no process of the pane, so it keeps the pane and asks
-    // the operator (ticket 26 closes the pane of a reap, FM-22).
     let kept: String = store
         .conn()
         .query_row(
@@ -403,15 +368,11 @@ fn a_run_made_outside_herdr_has_no_workspace_and_the_first_pane_status_records_i
         "{err}"
     );
     assert_eq!(workspace().as_deref(), Some("w1"));
-    // The first one wins; the NOTE is printed once.
     let o = plan("w3");
     assert!(!String::from_utf8_lossy(&o.stderr).contains("NOTE: run auth"));
     assert_eq!(workspace().as_deref(), Some("w1"));
 }
 
-/// fleetd binds the first startable task of the run and persona of `new`
-/// to a new worker with the live agent `agent`, and gives the worker (FR-5).
-/// The run has no git repository: the task works in the shared checkout.
 fn bind_first(
     tx: &rusqlite::Connection,
     new: &horch_core::taskledger::workers::NewWorker,

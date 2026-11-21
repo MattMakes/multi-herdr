@@ -12,7 +12,6 @@ struct Out {
     err: String,
 }
 
-/// The fleetd drops first: fields drop in order.
 struct World {
     _fleetd: Option<TestFleetd>,
     tmp: tempfile::TempDir,
@@ -27,7 +26,6 @@ impl World {
         w
     }
 
-    /// The temp git project, and no fleetd: no ledger exists yet.
     fn without_fleetd() -> World {
         let tmp = short_tempdir();
         let proj = tmp.path().join("proj");
@@ -66,7 +64,6 @@ impl World {
         std::fs::write(self.proj().join("tickets").join(name), text).unwrap();
     }
 
-    /// The `horch` binary with the environment of the test.
     fn horch(&self) -> Command {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -115,7 +112,6 @@ impl World {
     }
 }
 
-/// A C1 ticket with `fields` after its version line.
 fn c1(title: &str, fields: &str) -> String {
     format!("# 01: {title}\n\n<!-- horch-ticket: 1 -->\n{fields}\n\n## Goal\n\nDo {title}.\n")
 }
@@ -155,8 +151,6 @@ fn trf_11_dry_run_names_each_problem_and_writes_nothing() {
     );
     assert_eq!(w.task_count(), 0);
 
-    // A clean map passes the dry run, needs no run, and still queues nothing.
-    // fleetd creates the ledger at its start, so it starts after the dry run.
     let mut w = World::without_fleetd();
     w.write("a.md", &c1("A", FIELDS));
     w.write("MAP.md", MAP);

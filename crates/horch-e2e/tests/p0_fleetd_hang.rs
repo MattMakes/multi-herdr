@@ -1,14 +1,3 @@
-//! Phase 0 red test for a hung fleetd (`docs/specs/fleetd/design.md`, FM-12,
-//! PL-5, and preservation row 06 S14). It turns green in Phase 1.
-//!
-//! This file has no `#![cfg(unix)]`: the design wants the result on macOS,
-//! Linux and Windows. It uses only `std` and `horch_core` functions that
-//! compile on each OS.
-//!
-//! The test stands in for the service manager: it calls `horch fleetd check`
-//! itself, as the 30 s timer of the design does. It reads the PID of fleetd
-//! from the `fleetd` row of the ledger of the harness.
-
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
@@ -20,7 +9,6 @@ use horch_core::procid;
 use horch_core::taskledger::Store;
 use horch_e2e::harness::Harness;
 
-/// The hang limit of fleetd, in awake time (PL-5).
 const HANG_LIMIT: Duration = Duration::from_secs(30);
 
 fn text(o: &Output) -> String {
@@ -32,8 +20,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The PID and start time of the fleetd that the `fleetd` row of the ledger
-/// names (design, "Ledger"). `None` while no row exists.
 fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
     if !db.exists() {
         return None;
@@ -61,8 +47,6 @@ fn heartbeat_age(root: &Path, pid: u32) -> Option<Duration> {
     Some(Duration::from_millis(ms))
 }
 
-/// The hung fleetd that the test started, and each fleetd that the `fleetd`
-/// row names. Drop stops them all, also when the test fails.
 struct Fleetds {
     db: PathBuf,
     child: Option<Child>,
@@ -70,7 +54,6 @@ struct Fleetds {
 }
 
 impl Fleetds {
-    /// The fleetd that the `fleetd` row names, recorded for the teardown.
     fn current(&mut self) -> Option<(u32, Option<u64>)> {
         let row = fleetd_row(&self.db)?;
         if !self.seen.contains(&row) {
@@ -109,8 +92,6 @@ fn fm12_hung_fleetd_is_restarted_on_each_os() {
         };
         let out = h.root.join("fleetd.stdout");
         let err = h.root.join("fleetd.stderr");
-        // Only this fleetd hangs: the one that `horch fleetd check` starts
-        // gets the environment of the check.
         let mut cmd = h.horch(&["fleetd"]);
         cmd.env("HORCH_FAULT", "hang-pass")
             .stdin(Stdio::null())
@@ -188,8 +169,6 @@ fn fm12_hung_fleetd_is_restarted_on_each_os() {
             "no new fleetd runs after horch fleetd check: the fleetd row names PID {new}: {}",
             text(&o)
         );
-        // A fresh heartbeat: a check past 1 more hang limit leaves the new
-        // fleetd in place, so its passes write the heartbeat.
         std::thread::sleep(HANG_LIMIT + Duration::from_secs(2));
         let o = h.run(&["fleetd", "check"]);
         assert!(o.status.success(), "horch fleetd check: {}", text(&o));

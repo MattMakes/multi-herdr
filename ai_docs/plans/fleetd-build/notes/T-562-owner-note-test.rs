@@ -1,8 +1,3 @@
-// From T-897 (crates/horch-e2e/tests/p6_worker_question.rs). Add it after T-898 lands.
-// It needs the World helpers of that file and scenario key answer_own.
-/// RR-12: the answer of the owner (the fake sub-orchestrator answers with
-/// its own decision) answers the row, the task leaves `blocked_on_user`,
-/// and `START.md` of the next attempt holds the question and the answer.
 #[test]
 fn answer_of_the_owner_reaches_the_next_attempt() {
     let w = World::new("p6-wq-owner", "stay,answer_own", &horch_ask(QUESTION));
@@ -20,7 +15,6 @@ fn answer_of_the_owner_reaches_the_next_attempt() {
         start.contains(QUESTION),
         "START.md of the next attempt holds the question:\n{start}"
     );
-    // The fake sub-orchestrator answers with this text (crate::idea_agent).
     let answer = w
         .one(&format!(
             "SELECT json_extract(data_json, '$.text') FROM events

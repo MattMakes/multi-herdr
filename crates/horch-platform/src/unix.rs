@@ -1,6 +1,3 @@
-//! Code that `mac` and `linux` share. Only those 2 modules call it.
-//! It is not a 4th OS module.
-
 pub(crate) mod awake;
 pub(crate) mod channel;
 pub(crate) mod fs;

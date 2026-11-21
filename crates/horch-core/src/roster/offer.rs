@@ -1,36 +1,16 @@
-//! Which teammates the orchestrator is offered in THIS project.
-//!
-//! A domain teammate (Unreal, Swift) is noise in every other project's
-//! briefing. `offer_when` names the files that make it relevant; the roster
-//! lists it only when the project has one. The filter is a pure function of the
-//! teammate and [`ProjectFacts`]: the CLI reads the directory, this module
-//! never touches the filesystem.
-
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use super::Teammate;
 
-/// A host tool a teammate cannot work without. `horch doctor` checks each
-/// one when a teammate the project is offered names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Requirement {
-    /// `xcodebuild` on PATH, with Xcode's first launch done.
     Xcode,
-    /// Docker CLI and a reachable daemon.
     Docker,
-    /// `blender` on PATH, or `BLENDER_PATH`, and `--version` runs.
     Blender,
-    /// `GODOT_PATH`, `godot` on PATH, or the macOS app bundle, and
-    /// `--version` reports 4.3 or later. In a C# project (`"C#"` in
-    /// `config/features`, or a `*.csproj`), also the Godot .NET engine
-    /// (`GODOT_MONO_PATH`, or the macOS `Godot_mono.app`) and `dotnet` on PATH.
     Godot,
-    /// `git lfs version` runs with the fleet's git (`HORCH_GIT_BIN`, else
-    /// `git` on PATH). In an Unreal project, `.gitattributes` also needs an
-    /// LFS rule for `*.uasset`.
     #[serde(rename = "git-lfs")]
     GitLfs,
 }
@@ -47,8 +27,6 @@ impl Requirement {
     }
 }
 
-/// The entry names (files and directories) at the top of the project and one
-/// level down. `*.xcodeproj` is a directory, so directories count.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectFacts {
     names: BTreeSet<String>,
@@ -65,15 +43,11 @@ impl ProjectFacts {
         }
     }
 
-    /// Whether any entry name matches `pattern`.
     pub fn has_match(&self, pattern: &str) -> bool {
         self.names.iter().any(|name| glob_match(pattern, name))
     }
 }
 
-/// Whether the orchestrator is offered `t`. A teammate without `offer_when` is
-/// always offered; so is every teammate when no facts were gathered (`None`),
-/// which keeps `horch teammates` and the compiled-in goldens project-free.
 pub fn offered_in(t: &Teammate, facts: Option<&ProjectFacts>) -> bool {
     if t.hidden {
         return false;
@@ -86,8 +60,6 @@ pub fn offered_in(t: &Teammate, facts: Option<&ProjectFacts>) -> bool {
     }
 }
 
-/// The skills `t.skills_when` adds in a project with `facts`: every skill of
-/// every matching pattern, sorted, without the ones `skills:` already names.
 pub fn project_skills(t: &Teammate, facts: &ProjectFacts) -> Vec<String> {
     let added: BTreeSet<&String> = t
         .skills_when
@@ -99,10 +71,6 @@ pub fn project_skills(t: &Teammate, facts: &ProjectFacts) -> Vec<String> {
     added.into_iter().cloned().collect()
 }
 
-/// `t` as it launches in a project with `facts`: each [`project_skills`]
-/// entry joins `skills:`, so the activation plan, the briefing and the
-/// ledger record treat it as an expected skill, and it leaves
-/// `available_skills:`.
 pub fn with_project_skills(mut t: Teammate, facts: &ProjectFacts) -> Teammate {
     let added = project_skills(&t, facts);
     t.available_skills.retain(|s| !added.contains(s));
@@ -110,8 +78,6 @@ pub fn with_project_skills(mut t: Teammate, facts: &ProjectFacts) -> Teammate {
     t
 }
 
-/// What `check` says about one `offer_when` pattern, if anything. Patterns
-/// match an entry NAME, so a path separator can never match.
 pub(crate) fn pattern_problem(pattern: &str) -> Option<&'static str> {
     if pattern.trim().is_empty() {
         Some("is empty")
@@ -122,13 +88,10 @@ pub(crate) fn pattern_problem(pattern: &str) -> Option<&'static str> {
     }
 }
 
-/// `*` matches any run of characters, `?` exactly one; everything else is
-/// literal and case-sensitive.
 pub(crate) fn glob_match(pattern: &str, name: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();
     let (mut pi, mut ni) = (0, 0);
-    // The last `*` seen, and the name position it is currently absorbing to.
     let mut star: Option<(usize, usize)> = None;
     while ni < n.len() {
         if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
@@ -187,8 +150,6 @@ mod tests {
         assert!(offered_in(&domain(&["*.uproject"]), Some(&facts)));
     }
 
-    /// The CLI puts names from one level down into the same set, so a match
-    /// there offers the teammate too.
     #[test]
     fn offered_when_an_entry_one_level_down_matches() {
         let facts = ProjectFacts::from_names(["ios", "Package.swift", "web"]);
@@ -254,12 +215,9 @@ mod tests {
             launched.skills,
             ["tdd", "godot-csharp-godot", "godot-csharp-signals"]
         );
-        // A skill made expected is no longer only offered.
         assert!(launched.available_skills.is_empty());
     }
 
-    /// No match adds nothing; a skill `skills:` already names is not added
-    /// twice.
     #[test]
     fn skills_when_without_a_match_or_with_a_named_skill_adds_nothing() {
         let t = csharp_builder();
@@ -301,8 +259,6 @@ mod tests {
         assert_eq!(names, ["xcode", "blender", "godot", "git-lfs"]);
     }
 
-    /// U-17: the value is `git-lfs`, as `as_str` prints it. The spellings
-    /// serde would derive (`gitlfs`) or a writer might guess are rejected.
     #[test]
     fn requires_git_lfs_has_one_spelling() {
         for wrong in ["gitlfs", "git_lfs", "lfs"] {

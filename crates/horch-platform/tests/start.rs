@@ -1,14 +1,8 @@
-//! The concern start: a process that `start::Command` starts never has a
-//! forbidden name (SR-7), whether the parent has it or the command sets it.
-
 use horch_platform::start::{self, FORBIDDEN_ENV};
 use std::process::Stdio;
 
-/// A name that the probe must see, so a test cannot pass because the probe
-/// reads no environment at all.
 const CONTROL: &str = "HORCH_START_TEST_CONTROL";
 
-/// A child that prints its environment, then exits 3 when it has `name`.
 #[cfg(unix)]
 fn probe(name: &str) -> start::Command {
     let mut cmd = start::command("sh");
@@ -17,7 +11,6 @@ fn probe(name: &str) -> start::Command {
     cmd
 }
 
-/// A child that prints its environment, then exits 3 when it has `name`.
 #[cfg(windows)]
 fn probe(name: &str) -> start::Command {
     let mut cmd = start::command("cmd");
@@ -25,8 +18,6 @@ fn probe(name: &str) -> start::Command {
     cmd
 }
 
-/// Each forbidden name set in this process and on the command, with the
-/// control name on the command. Gives the probe of `name`.
 fn armed(name: &str) -> start::Command {
     for key in FORBIDDEN_ENV {
         std::env::set_var(key, "forbidden-in-test");
@@ -39,7 +30,6 @@ fn armed(name: &str) -> start::Command {
     cmd
 }
 
-/// The child printed the control name and no forbidden name.
 fn assert_clean(name: &str, out: &std::process::Output) {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(

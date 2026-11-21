@@ -1,13 +1,3 @@
-//! The removal of a worktree: the queue of its `worktree_remove` job and
-//! the observation of the run.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" (rows `landed`, `rescued`, `removed`) and "The kinds of job" (row
-//! `worktree_remove`); MAP.md of fleetd-p3, Q7 and Q8. The pass and a
-//! command call [`queue_remove`] and [`observe`] in 1 transaction, with no
-//! git call. A command calls [`remove_tree`], which runs the jobs with no
-//! transaction open.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
@@ -34,14 +24,6 @@ use crate::fleetd::worktree_custody::domain::removal;
 use crate::taskledger::model::{Actor, EventKind, WorktreeStatus};
 use crate::taskledger::util;
 
-/// Queue 1 `worktree_remove` run of the tree of `row`, in `tx`: subject
-/// its worktree id, input key its path and `keep_branch`
-/// ([`remove_key`]), repository its repository. Only a row that is
-/// `landed` or `rescued` in `tx` is queued. Each other state is refused:
-/// the inner `Err` holds its reason and `cause`, the reason of the caller,
-/// and no run is queued. 1 tree has at most 1 open removal: an open run
-/// of the tree is given back, and an open run with the other
-/// `keep_branch` is refused.
 pub fn queue_remove(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -74,16 +56,12 @@ pub fn queue_remove(
     }
 }
 
-/// The runs of the worktree jobs of the trees and repositories of 1 step
-/// of a pass, read in 1 statement on its snapshot. Each method gives what
-/// the `jobs_store` read of 1 subject gives.
 #[derive(Debug, Clone, Default)]
 pub struct TreeJobs {
     runs: BTreeMap<(&'static str, String), Vec<JobRow>>,
 }
 
 impl TreeJobs {
-    /// The runs of `kinds` of each subject of `subjects`.
     pub fn read<'a>(
         conn: &Connection,
         kinds: &[Kind],
@@ -104,7 +82,6 @@ impl TreeJobs {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// [`jobs_store::latest`].
     pub fn latest(&self, kind: Kind, subject: &str, input_key: &str) -> Option<&JobRow> {
         self.of(kind, subject)
             .iter()
@@ -112,24 +89,20 @@ impl TreeJobs {
             .max_by_key(|j| j.run)
     }
 
-    /// [`jobs_store::last`].
     pub fn last(&self, kind: Kind, subject: &str) -> Option<&JobRow> {
         self.of(kind, subject).iter().max_by_key(|j| j.id)
     }
 
-    /// [`jobs_store::active`].
     pub fn active(&self, kind: Kind, subject: &str) -> Option<&JobRow> {
         self.of(kind, subject)
             .iter()
             .find(|j| matches!(j.state, State::Queued | State::Running))
     }
 
-    /// [`jobs_store::get`] of a run of `kind` and `subject`.
     pub fn get(&self, kind: Kind, subject: &str, id: i64) -> Option<&JobRow> {
         self.of(kind, subject).iter().find(|j| j.id == id)
     }
 
-    /// [`latest_removal`].
     pub fn latest_removal(&self, id: &str, path: &str) -> Option<&JobRow> {
         [false, true]
             .into_iter()
@@ -137,9 +110,6 @@ impl TreeJobs {
             .max_by_key(|j| j.id)
     }
 
-    /// Whether [`jobs::queue`] of `key` adds a run: no run of its kind and
-    /// subject is active, and the last run of its input is not used again
-    /// and not held at `abandoned_run_limit`.
     pub fn queues(&self, ctx: &JobCtx<'_>, key: &JobKey<'_>) -> bool {
         if self.active(key.kind, key.subject).is_some() {
             return false;
@@ -154,9 +124,6 @@ impl TreeJobs {
     }
 }
 
-/// The notes of the trees that a pass reads: the refusals of the removals
-/// of each tree, its last [`OwnerEnded`], and the causes of its notes. 1
-/// statement for any count of trees.
 #[derive(Debug, Clone, Default)]
 pub struct Notes {
     refusals: BTreeMap<String, Vec<Refusal>>,
@@ -186,7 +153,6 @@ impl Notes {
         Ok(notes)
     }
 
-    /// Whether the tree `id` has a note with `cause`.
     pub fn has(&self, id: &str, cause: &str) -> bool {
         self.causes.contains(&(id.to_string(), cause.to_string()))
     }
@@ -196,13 +162,6 @@ impl Notes {
     }
 }
 
-/// Queue the automatic removal of `row` for `cause`, as the reconciler and
-/// the disk budget queue it, in `tx`, with the runs of `jobs`; `true` for a
-/// new run. A tree whose last removal failed ([`removal_failed`]) is not
-/// queued here: [`retry`] runs a refusal again that can go away, and each
-/// other refusal keeps its needs-you item, which says how to run it again
-/// (an operator decision, MAP.md of fleetd-p3). A run that ended
-/// `abandoned` runs again after its backoff, up to `abandoned_run_limit`.
 pub fn queue_auto_remove(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -214,8 +173,6 @@ pub fn queue_auto_remove(
     auto_remove(ctx, tx, jobs, row, cause, false, clock)
 }
 
-/// [`queue_auto_remove`] with `keep_branch`, the choice of the owner that
-/// dropped the tree.
 pub fn auto_remove(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -242,23 +199,12 @@ pub fn auto_remove(
     Ok(matches!(queued, Ok(Queued::New(_))))
 }
 
-/// Whether a job of fleetd works in the tree of `row` now: a rescue of the
-/// tree is queued or running, or a `worktree_list` run of its repository
-/// runs git in each tree. A removal then waits, because the guard refuses
-/// a tree with a process in it.
 fn busy(jobs: &TreeJobs, row: &WorktreeRow) -> bool {
     let rescue = jobs.active(Kind::Rescue, &row.worktree_id);
     let list = jobs.active(Kind::WorktreeList, &row.repo_root);
     rescue.is_some() || list.is_some_and(|j| j.state == State::Running)
 }
 
-/// Queue the removal of `row` again, in `tx`, at `clock`, with the runs of
-/// `jobs` and the refusals of `notes`, when its last removal was refused
-/// for a cause that can go away ([`removal::transient`]): the same input,
-/// after the backoff of `job_backoff_s` from the pass that saw the refusal,
-/// up to `abandoned_run_limit` refusals ("The kinds of job", row
-/// `worktree_remove`). At the limit, the needs-you item of [`observe`]
-/// stays. `true` for a new run.
 pub fn retry(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -313,9 +259,6 @@ struct Refusal {
     clock: i64,
 }
 
-/// The refusals that can go away of the removals of the tree `id`, oldest
-/// first. The tree is `removed` after its first passed removal, so each
-/// one counts.
 fn refusals(tx: &Connection, id: &str) -> Result<Vec<Refusal>> {
     Ok(facts_of(tx, Entity::Worktree, id, EventKind::Note)?
         .into_iter()
@@ -324,24 +267,14 @@ fn refusals(tx: &Connection, id: &str) -> Result<Vec<Refusal>> {
         .collect())
 }
 
-/// The cause of the fact that the owner of a tree gave it up: fleetd
-/// released a gate tree (row W11), or a worker dropped a tree (RR-13).
 pub const OWNER_ENDED: &str = "owner_ended";
 
-/// What the owner of a tree decided when it gave it up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct OwnerEnded {
-    /// The removal keeps the branch (`drop --keep-branch`).
     pub keep_branch: bool,
-    /// The rescue run of the drop. Only a rescue ref of this run lets the
-    /// tree go: a later rescue saves work that came after the drop. `None`
-    /// for a released gate tree, which only fleetd writes.
     pub rescue_job: Option<i64>,
 }
 
-/// Record, in `tx`, that the owner of the tree `id` gave it up with
-/// `ended`. The caller writes it in the transaction that moves the tree
-/// to its rescue, so a refused request leaves no fact.
 pub fn record_owner_end(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -366,21 +299,16 @@ pub fn record_owner_end(
     Ok(())
 }
 
-/// The last [`OwnerEnded`] of each tree, by worktree id, in 1 read.
 pub fn owners_ended(tx: &Connection) -> Result<BTreeMap<String, OwnerEnded>> {
     Ok(Notes::read(tx)?.ended)
 }
 
-/// Whether the last automatic removal of the tree `id` at `path` (the
-/// branch not kept) ended `failed`.
 pub fn removal_failed(tx: &Connection, id: &str, path: &str) -> Result<bool> {
     let key = remove_key(path, false);
     let last = jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)?;
     Ok(last.is_some_and(|j| j.state == State::Failed))
 }
 
-/// The newest `worktree_remove` run of the tree `id` at `path`, with
-/// either `keep_branch`.
 pub fn latest_removal(tx: &Connection, id: &str, path: &str) -> Result<Option<JobRow>> {
     let mut newest: Option<JobRow> = None;
     for keep_branch in [false, true] {
@@ -394,26 +322,13 @@ pub fn latest_removal(tx: &Connection, id: &str, path: &str) -> Result<Option<Jo
     Ok(newest)
 }
 
-/// What [`observe`] did with the row of the tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Observed {
-    /// The row is `removed`.
     Removed,
-    /// The removal failed: the row stays. 1 needs-you item is open, unless
-    /// [`retry`] runs the refusal again.
     Failed,
-    /// The row stays as it was.
     Kept,
 }
 
-/// Observe the remove run `job`, in `tx`:
-/// - `passed`: the row moves to `removed` from `landed` or `rescued`, with
-///   today's `cleaned_at` (and the status `cleaned` for landed work), and the needs-you item of a failed removal of
-///   the tree ends. The door refuses each other state and records it.
-/// - `failed`: the row stays, and 1 needs-you item opens with the reason.
-/// - `abandoned` (its time limit or a lost process), `queued` or
-///   `running`: the row stays. The rule of abandoned runs of jobs gives the
-///   next run and, at `abandoned_run_limit`, its needs-you item.
 pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observed> {
     if job.kind != Kind::WorktreeRemove {
         bail!(
@@ -464,10 +379,6 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
         refusals,
     ) {
         Ok(Moved::Changed) => {
-            // A tree of landed work is `cleaned`, as the cleanup of today
-            // leaves it. So is an `open` tree: settled and `ledger status`
-            // count an `open` status as work on disk (row W5). Each other
-            // status, such as `abandoned` of a drop, stays.
             tx.execute(
                 "UPDATE worktrees SET cleaned_at = ?2,
                     status = CASE WHEN status IN (?3, ?5) THEN ?4 ELSE status END
@@ -482,7 +393,6 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
             )?;
         }
         Ok(Moved::Unchanged) => {}
-        // The door recorded the refusal with 1 event and 1 needs-you item.
         Err(DoorError::Refused { .. }) => return Ok(Observed::Kept),
         Err(e) => return Err(e.into()),
     }
@@ -491,11 +401,6 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
     Ok(Observed::Removed)
 }
 
-/// Open the needs-you item of the failed removal `job`. A refusal that can
-/// go away ([`removal::transient`]) is recorded 1 time, and [`retry`] runs
-/// it again: its item opens only at `abandoned_run_limit` refusals. The
-/// pass does not queue each other refusal again, so the item says how to
-/// run it again.
 fn failed(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, reason: &str) -> Result<Observed> {
     let id = job.subject.as_str();
     if removal::transient(reason) {
@@ -542,18 +447,6 @@ fn failed(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, reason: &str) -> Resu
     Ok(Observed::Failed)
 }
 
-// ─── the command ────────────────────────────────────────────────────────
-
-/// Remove the tree of the row `id` only through custody (RR-9, FM-27),
-/// with the connection `conn` and the job context `ctx` of a command. No
-/// transaction is open while a job runs.
-/// - A `landed` or `rescued` tree: 1 `worktree_remove` job.
-/// - Each other tree: it moves to `orphaned` with no owner (`cause`), 1
-///   `rescue` job puts it on a verified rescue ref, then 1
-///   `worktree_remove` job removes it.
-///
-/// The inner `Err` is why custody refused it: the tree stays. With
-/// `keep_branch` the job never deletes the branch.
 pub fn remove_tree(
     conn: &mut Connection,
     ctx: &JobCtx<'_>,
@@ -579,10 +472,6 @@ fn immediate(conn: &mut Connection) -> Result<Transaction<'_>> {
         .context("taking the task ledger's write lock")
 }
 
-/// The row `id`, in a state that a rescue or a removal takes. A `landed`,
-/// `landing`, `orphaned` or `rescued` row stays as it is. Each other row
-/// moves to `orphaned` with no owner, for `cause`. A move that the door
-/// refuses is recorded and keeps the row: the inner `Err` says why.
 fn removable_row(
     ctx: &JobCtx<'_>,
     conn: &mut Connection,
@@ -619,8 +508,6 @@ fn removable_row(
     Ok(Ok(row))
 }
 
-/// Queue the `worktree_remove` job of the row `id`, run it through `jobs`
-/// with no transaction open, then observe it in 1 transaction.
 fn remove_now(
     ctx: &JobCtx<'_>,
     conn: &mut Connection,

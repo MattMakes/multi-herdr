@@ -1,18 +1,5 @@
-//! A worker profile is complete (FR-6; ticket 20 of fleetd-p7). Each field
-//! that FR-6 names - CLI, model, skills, MCP servers, sandbox, writable
-//! paths, context budget, timeouts and restart policy - resolves to a value
-//! from the file, its `base`, or a default of the design. `horch teammates
-//! --check` refuses a worker profile with a field that has no value and no
-//! default, with the file and the field (`docs/tickets/fleetd-p7/MAP.md`,
-//! Q7). The exempt teammates of fleetd-p2 Q8 are not worker profiles.
-//!
-//! Each test overlays 1 teammate file from a temp folder on the built-in
-//! roster. No test starts an agent CLI.
-
 use horch_core::roster::Roster;
 
-/// The file of a Claude worker profile `name`, complete apart from what
-/// `extra` and `without` change.
 fn claude_file(name: &str, without: &[&str], extra: &str) -> String {
     let lines = [
         ("agent", "agent: claude\n".to_string()),
@@ -38,8 +25,6 @@ fn claude_file(name: &str, without: &[&str], extra: &str) -> String {
     text
 }
 
-/// The `horch teammates --check` lines of the built-in roster with the
-/// file `name.md` of `text` laid over it, that name `name`.
 fn check_lines(name: &str, text: &str) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(format!("{name}.md")), text).unwrap();
@@ -52,8 +37,6 @@ fn check_lines(name: &str, text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The lines of `lines` that refuse an incomplete profile for `field`,
-/// with the file `name.md`.
 fn incomplete<'a>(lines: &'a [String], name: &str, field: &str) -> Vec<&'a String> {
     let prefix = format!("{name}.md: ");
     let marker = format!("incomplete worker profile: {field} has no value");
@@ -108,9 +91,6 @@ fn worker_profile_without_sandbox_is_refused_with_the_field() {
 
 #[test]
 fn worker_profile_without_writable_paths_is_refused_with_the_field() {
-    // The Claude adapter renders the writable paths of the design
-    // ({task_dir}, {worktree}) into the sandbox. With no sandbox they
-    // have no value.
     let lines = check_lines("p7-nowrite", &claude_file("p7-nowrite", &["sandbox"], ""));
     assert_eq!(
         incomplete(&lines, "p7-nowrite", "writable_paths").len(),
@@ -121,7 +101,6 @@ fn worker_profile_without_writable_paths_is_refused_with_the_field() {
 
 #[test]
 fn worker_profile_without_context_budget_is_refused_with_the_field() {
-    // No compact_window, and no key of context-windows.md for this model.
     let text = claude_file(
         "p7-noctx",
         &["compact_window", "model"],
@@ -137,7 +116,6 @@ fn worker_profile_without_context_budget_is_refused_with_the_field() {
 
 #[test]
 fn context_budget_resolves_from_context_windows_md() {
-    // claude/opus has a key in context-windows.md: the design default.
     let text = claude_file("p7-ctxbase", &["compact_window"], "");
     let lines = check_lines("p7-ctxbase", &text);
     assert!(no_incomplete_line(&lines), "{lines:#?}");
@@ -145,8 +123,6 @@ fn context_budget_resolves_from_context_windows_md() {
 
 #[test]
 fn context_budget_of_a_cli_with_no_window_setting_is_the_wrapper_limit() {
-    // OpenCode has no window setting: the wrapper ends the attempt with a
-    // handoff at 256k, a default of the design.
     let text = "---\nname: p7-oc\nbrief_description: test worker\nbase: fleet-worker\n\
                 agent: opencode\nmodel: opencode/p7-model\nfallbacks: [opus]\n---\nbody\n";
     let lines = check_lines("p7-oc", text);
@@ -225,7 +201,6 @@ fn a_zero_restart_count_is_refused_with_the_field() {
 
 #[test]
 fn an_exempt_teammate_is_not_a_worker_profile() {
-    // agent: none runs no agent, so it has no worker profile to complete.
     let text = "---\nname: p7-none\nbrief_description: test\nagent: none\n---\nbody\n";
     let lines = check_lines("p7-none", text);
     assert!(no_incomplete_line(&lines), "{lines:#?}");

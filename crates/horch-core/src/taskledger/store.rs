@@ -1,5 +1,3 @@
-//! Opening the task ledger: 1 SQLite file per machine (ADR 0001).
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,30 +8,18 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, Transactio
 
 use super::schema;
 
-/// How long a writer waits for another writer's lock before it fails.
-/// A claim or a checkin holds the lock for milliseconds; 30 s is room for
-/// many workers at once on a slow disk.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A live opener keeps its initialization lock for at most this long before
-/// another machine may break it. Dead local processes are detected at once.
 const OPEN_LOCK_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 
-/// The cross-process lock used only while a ledger switches to WAL and runs
-/// its first migration. Ledgers already in WAL mode do not take this lock.
 const OPEN_LOCK_NAME: &str = "task-ledger-open";
 
-/// The ledger file under a home directory: `<home>/.horch/ledger.sqlite3`.
 pub fn default_path(home: &Path) -> PathBuf {
     home.join(".horch").join("ledger.sqlite3")
 }
 
-/// The opt-in that lets a development build migrate the shared ledger.
 pub const ALLOW_MIGRATE_ENV: &str = "HORCH_ALLOW_LEDGER_MIGRATE";
 
-/// True when `exe` is a cargo build output: a `target` component followed
-/// by `debug` or `release`, or by 1 more component and then `debug`,
-/// `release` or `deps` (`target/<triple>/debug`, `target/<profile>/deps`).
 pub fn is_dev_build(exe: &Path) -> bool {
     let parts: Vec<&std::ffi::OsStr> = exe
         .parent()
@@ -50,15 +36,10 @@ pub fn is_dev_build(exe: &Path) -> bool {
     })
 }
 
-/// True when `ledger` is the operator's shared ledger,
-/// `<passwd_home>/.horch/ledger.sqlite3`.
 pub fn is_shared_ledger(ledger: &Path, passwd_home: &Path) -> bool {
     ledger == default_path(passwd_home)
 }
 
-/// Why this horch must not migrate `ledger` from version `from`, or `None`
-/// when it may. A development build refuses the shared ledger unless
-/// `allow` (the value of [`ALLOW_MIGRATE_ENV`]) is `1`.
 pub fn migrate_refusal(
     exe: &Path,
     ledger: &Path,
@@ -85,10 +66,6 @@ fn refused(exe: &Path, ledger: &Path, passwd_home: Option<&Path>, allow: Option<
     shared && is_dev_build(exe) && allow != Some("1")
 }
 
-/// Why this horch must not open `ledger` for a write, or `None` when it
-/// may. A development build refuses each writable open of the shared
-/// ledger, also when its schema version is current, unless `allow` (the
-/// value of [`ALLOW_MIGRATE_ENV`]) is `1`: its rows name live runs and PIDs.
 pub fn write_refusal(
     exe: &Path,
     ledger: &Path,
@@ -108,9 +85,6 @@ pub fn write_refusal(
     ))
 }
 
-/// The real path of `path`: the canonical path of its nearest ancestor that
-/// exists, with the rest of `path` after it. A ledger that does not exist
-/// yet still matches through a symlinked home.
 pub fn canonical(path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut at = path;
@@ -158,7 +132,6 @@ fn this_process() -> Option<(PathBuf, Option<String>)> {
     Some((exe, ProcessEnv.var(ALLOW_MIGRATE_ENV)))
 }
 
-/// [`migrate_refusal`] for this process and `ledger`.
 fn guard(ledger: &Path, from: i64) -> Result<()> {
     let Some((exe, allow)) = this_process() else {
         return Ok(());
@@ -181,13 +154,11 @@ fn guard_open(ledger: &Path) -> Result<()> {
     }
 }
 
-/// The current SQLite journal mode, in lower-case ASCII.
 fn journal_mode(conn: &Connection) -> Result<String> {
     conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .context("reading the task ledger journal mode")
 }
 
-/// Serialize the WAL switch and first migration across threads and processes.
 fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
     let dir = path
         .parent()
@@ -197,16 +168,10 @@ fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
         .with_context(|| format!("locking task ledger initialization for {}", path.display()))
 }
 
-/// The test seam of RR-5: with this variable set to `1`, a writable open of
-/// the ledger in a process that made no [`LedgerWriter`] panics. The e2e
-/// tests set it for each CLI process.
 pub const ASSERT_READ_ONLY_ENV: &str = "HORCH_TEST_ASSERT_READ_ONLY";
 
-/// True after this process made the [`LedgerWriter`] of fleetd.
 static FLEETD_WRITER: AtomicBool = AtomicBool::new(false);
 
-/// Panic under the seam ([`ASSERT_READ_ONLY_ENV`]) when this process is not
-/// fleetd.
 fn assert_fleetd_writer(path: &Path) {
     use crate::runtime::{EnvSource, ProcessEnv};
     if FLEETD_WRITER.load(Ordering::SeqCst) {
@@ -220,34 +185,20 @@ fn assert_fleetd_writer(path: &Path) {
     }
 }
 
-/// The right of this process to write the ledger (RR-5, FM-24). From
-/// Phase 5 fleetd is the 1 writer: each other process opens the ledger with
-/// [`Store::open_read_only`] and sends a request or writes a file.
-///
-/// Only the composition root of fleetd (`crates/horch/src/cmd/fleetd.rs`)
-/// makes it, for `horch fleetd` and for `horch ledger watch --once`, which
-/// takes the fleetd lock. The arch rule
-/// `fitness_only_fleet_runtime_opens_the_ledger_writable` holds that.
 #[derive(Debug)]
 pub struct LedgerWriter(());
 
 impl LedgerWriter {
-    /// The writer of fleetd. After this call, the seam lets this process
-    /// open the ledger for a write.
     pub fn fleetd() -> LedgerWriter {
         FLEETD_WRITER.store(true, Ordering::SeqCst);
         LedgerWriter(())
     }
 
-    /// Open (and create, and migrate) the ledger at `path` for a write.
     pub fn open(&self, path: &Path) -> Result<Store> {
         Store::open(path)
     }
 }
 
-/// The ledger file and the last statement of 1 read-only connection. The
-/// [`Store`] holds it, and a caller can keep a clone after the store is
-/// dropped, for [`read_only_failure`].
 #[derive(Clone, Debug)]
 pub struct ReadOnlyRecord(Arc<ReadOnlyEntry>);
 
@@ -297,10 +248,6 @@ fn record_statements(conn: &Connection, path: &Path) -> ReadOnlyRecord {
     record
 }
 
-/// `err` with the command `command`, the last statement of the read-only
-/// connection of `record` and its ledger file, when `err` holds the SQLite
-/// code `SQLITE_READONLY` (8, or an extended code of it). Each other error
-/// is returned unchanged.
 pub fn read_only_failure(
     command: &str,
     record: Option<&ReadOnlyRecord>,
@@ -332,9 +279,6 @@ pub fn read_only_failure(
     err.context(text)
 }
 
-/// The test hook of a read-only connection: with this variable set to a
-/// file path in a debug build, each statement action that is not a read is
-/// appended to that file, 1 line per action.
 pub const SQL_TRACE_ENV: &str = "HORCH_TEST_SQL_TRACE";
 
 fn trace_writes(conn: &Connection) {
@@ -353,8 +297,6 @@ fn trace_writes(conn: &Connection) {
 fn trace_to(conn: &Connection, file: PathBuf) {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-        // The savepoint of [`one_snapshot`] writes nothing: it gives a
-        // read of 2 or more statements 1 snapshot.
         let read = matches!(
             ctx.action,
             AuthAction::Read { .. } | AuthAction::Select | AuthAction::Function { .. }
@@ -376,23 +318,13 @@ fn trace_to(conn: &Connection, file: PathBuf) {
     }));
 }
 
-/// An open task ledger.
 pub struct Store {
-    // `conn` is declared before `record`, so it is dropped first: the trace
-    // callback of `record_statements` reads `record` while `conn` is open.
     conn: Connection,
     path: PathBuf,
     record: Option<ReadOnlyRecord>,
 }
 
 impl Store {
-    /// Open (and create, and migrate) the ledger at `path`. A development
-    /// build does not open the shared ledger for a write
-    /// ([`write_refusal`]), and does not migrate it ([`migrate_refusal`]).
-    ///
-    /// A writable open: production code calls it through [`LedgerWriter`],
-    /// and under [`ASSERT_READ_ONLY_ENV`] a process that is not fleetd
-    /// panics here, before it touches the file.
     pub fn open(path: &Path) -> Result<Store> {
         Store::open_checked(path, &guard_open)
     }
@@ -406,17 +338,12 @@ impl Store {
         let mut conn = Connection::open(path)
             .with_context(|| format!("opening the task ledger {}", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        // Switching journal mode is not covered by SQLite's busy timeout. A
-        // first opener holds a cross-process lock until migration completes;
-        // later openers see WAL and rely on SQLite's writer lock as usual.
         let _open_lock = if journal_mode(&conn)? == "wal" {
             None
         } else {
             Some(open_lock(path)?)
         };
         if journal_mode(&conn)? != "wal" {
-            // WAL: readers never block the 1 writer, and a crash mid-write
-            // keeps the last committed state.
             let _: String = conn
                 .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
                 .context("setting the task ledger journal mode to WAL")?;
@@ -432,8 +359,6 @@ impl Store {
         })
     }
 
-    /// Open an existing ledger without creating, migrating, or changing its
-    /// journal settings. Read-only commands use this in a sandbox.
     pub fn open_read_only(path: &Path) -> Result<Store> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("opening the task ledger {} read-only", path.display()))?;
@@ -447,26 +372,18 @@ impl Store {
         })
     }
 
-    /// The record of the last statement of a read-only store, for
-    /// [`read_only_failure`]. A writable store has none.
     pub fn read_only_record(&self) -> Option<ReadOnlyRecord> {
         self.record.clone()
     }
 
-    /// The file this store reads and writes.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The connection, for reads.
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
 
-    /// A second writable store of this writable ledger: the own connection
-    /// of the custody of a caller (`finish::with_custody`). A read-only
-    /// store gives an error. It opens through [`Store::open`], so the seam
-    /// checks the process again (T-885).
     pub fn second_writer(&self) -> Result<Store> {
         anyhow::ensure!(
             !self.conn.is_readonly(rusqlite::MAIN_DB)?,
@@ -477,18 +394,10 @@ impl Store {
         Store::open(path)
     }
 
-    /// The connection, for a call that takes `&mut Connection`: a custody
-    /// call that runs a job between its transactions ([`Store::second_writer`]).
     pub fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }
 
-    /// Run `f` in a `BEGIN IMMEDIATE` transaction: the write lock is taken
-    /// before the first read, so a read-then-write (claim, reap, land) cannot
-    /// interleave with another writer. Commits when `f` returns `Ok`. When
-    /// `f` fails, the transaction rolls back, and a refused move of the
-    /// error is recorded after it
-    /// ([`super::util::record_refusal_after_rollback`]).
     pub fn immediate<T>(&mut self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let tx = self
             .conn
@@ -508,11 +417,6 @@ impl Store {
     }
 }
 
-/// Run the reads of `f` on 1 snapshot of the ledger. A read of 2 or more
-/// statements needs it: without it, a commit of another connection between
-/// 2 statements gives a torn read. The savepoint is a deferred transaction
-/// when `conn` has none (in WAL mode, 1 transaction reads 1 snapshot), and
-/// it nests in the open transaction of a caller with no new `BEGIN`.
 pub fn one_snapshot<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
     conn.execute_batch(&format!("SAVEPOINT {SNAPSHOT}"))?;
     let out = f();
@@ -527,7 +431,6 @@ pub fn one_snapshot<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Resu
 
 const SNAPSHOT: &str = "one_snapshot";
 
-/// 1 optional value of a query.
 pub fn optional<T>(r: rusqlite::Result<T>) -> Result<Option<T>> {
     Ok(r.optional()?)
 }
@@ -563,7 +466,6 @@ mod tests {
             .unwrap();
         assert_eq!(v, schema::VERSION);
         drop(store);
-        // Reopening is a no-op migration.
         Store::open(&path).unwrap();
     }
 
@@ -604,9 +506,6 @@ mod tests {
         assert!(text.contains("Insert"), "{text}");
     }
 
-    /// The savepoint of `one_snapshot` is a read, and a write inside it is
-    /// still traced. Another savepoint, and a name that only starts with
-    /// `one_snapshot`, are traced.
     #[cfg(debug_assertions)]
     #[test]
     fn the_trace_counts_only_the_snapshot_savepoint_as_a_read() {

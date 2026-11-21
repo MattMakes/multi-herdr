@@ -1,11 +1,6 @@
-//! End-to-end: `horch fleet` and `horch fleetd` on the `hc` (`herdr-core` +
-//! `herdr-app`) pane host. fleetd has no `hc` adapter, so both refuse the
-//! host with 1 line and touch no pane host (T-330).
-
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
 
-/// The refusal of `fleetd::HC_REFUSED`.
 const REFUSED: &str = "fleetd runs its workers only on herdr: the hc pane host (herdr-core and the Herdr desktop app) has no fleetd adapter. Run this command with --backend herdr, or unset HORCH_BACKEND";
 
 fn harness(name: &str) -> Harness {
@@ -22,7 +17,6 @@ fn harness(name: &str) -> Harness {
     h
 }
 
-/// The spaces of the fake `hc`: none when it never ran.
 fn hc_spaces(h: &Harness) -> Vec<Value> {
     if !h.state.join("fake-hc.json").exists() {
         return Vec::new();

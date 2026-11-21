@@ -1,5 +1,3 @@
-//! The application layer of integration: use cases over the domain.
-
 pub mod branches;
 pub mod bundles;
 pub mod candidates;

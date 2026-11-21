@@ -1,13 +1,5 @@
-//! Helpers shared by the unit tests of several modules.
-
 use std::path::Path;
 
-/// Write `script` to `path` as an executable and run it once with `args`,
-/// untimed. macOS scans a new executable at its first exec, for seconds:
-/// the warm keeps that scan out of the call under test. On Linux a test
-/// thread that forks while another writes a script can hold it open for
-/// writing, so exec fails with "Text file busy" until that child execs;
-/// retry until it does.
 pub(crate) fn write_warmed(path: &Path, script: &str, args: &[&str]) -> std::process::Output {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, script).unwrap();

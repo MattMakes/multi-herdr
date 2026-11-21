@@ -1,12 +1,3 @@
-//! horch idea add: 1 immutable idea file and 1 captured row for each idea,
-//! with no AI, and 2 ideas sent at the same time stay 2 ideas
-//! (docs/specs/fleetd/design.md, "Capturing an idea needs no AI"; FR-1;
-//! FM-8; docs/tickets/fleetd-p6/16-intake.md).
-//!
-//! Each test makes its own temporary ledger, git repository and idea
-//! folder. No test touches this repository or the live ledger, and no test
-//! starts a process other than git.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Barrier};
@@ -85,8 +76,6 @@ fn owner() -> User {
     User::current().unwrap()
 }
 
-/// `AddIdea` in 1 committed write transaction on `conn`. idea.md is not
-/// written.
 fn add(
     conn: &Connection,
     config: &FleetConfig,
@@ -117,7 +106,6 @@ impl World {
         add(&self.conn, &self.config, &self.repo, text, to)
     }
 
-    /// The text of idea.md of `idea`, read back through the idea folder.
     fn idea_text(&self, idea: &str) -> String {
         IdeaFolder::new(&self.ideas, idea, owner())
             .unwrap()
@@ -136,8 +124,6 @@ impl World {
 #[test]
 fn intake_test_two_ideas_added_back_to_back_produce_two_files_and_two_rows() {
     let w = world();
-    // 2 requests at the same time, each on its own connection: the write
-    // transaction gives each its own id.
     let barrier = Arc::new(Barrier::new(2));
     let handles: Vec<_> = ["Retry sync with backoff", "Log each retry"]
         .into_iter()
@@ -178,7 +164,6 @@ fn intake_test_two_ideas_added_back_to_back_produce_two_files_and_two_rows() {
     let files = std::fs::read_dir(&w.ideas).unwrap().count();
     assert_eq!(files, 2, "1 folder for each idea");
 
-    // A third idea after them gets the next number.
     let third = w.add("Cap the delay at 30 s", None);
     assert_eq!(third.file.id, "I-0003");
 }
@@ -193,7 +178,6 @@ fn idea_md_holds_exactly_the_text() {
     assert_eq!(w.idea_text(&added.file.id), text);
     assert_eq!(added.file.source, "horch idea add");
 
-    // `-f <file>`: the text of the file is the idea, byte for byte.
     let notes = w.ideas.with_file_name("rough-notes.md");
     std::fs::write(&notes, "# Rough notes\n\n- retry\n- log\n").unwrap();
     let from_file = idea_text_from_file(&notes).unwrap();
@@ -202,7 +186,6 @@ fn idea_md_holds_exactly_the_text() {
     write_idea_file(&w.ideas, owner(), &added.file).unwrap();
     assert_eq!(w.idea_text(&added.file.id), from_file);
 
-    // A file over 64 KiB is refused, and so is an empty idea.
     let big = w.ideas.with_file_name("big.md");
     std::fs::write(&big, "x".repeat(FILE_LIMIT as usize + 1)).unwrap();
     let err = idea_text_from_file(&big).unwrap_err().to_string();
@@ -231,8 +214,6 @@ fn idea_md_holds_exactly_the_text() {
     drop(tx);
     assert_eq!(w.idea_count(), 2, "a refused idea writes no row");
 
-    // The file is immutable: writing it again with other bytes fails, and
-    // the same bytes are accepted.
     let mut changed = added.file.clone();
     assert_eq!(
         write_idea_file(&w.ideas, owner(), &changed).unwrap(),
@@ -247,12 +228,10 @@ fn idea_md_holds_exactly_the_text() {
 fn crash_after_the_row_writes_idea_md_on_the_next_pass() {
     let w = world();
     let text = "Retry sync with backoff\nand log each retry\n";
-    // The commit happens, then the process dies before the effect.
     let added = w.add(text, None);
     let path = w.ideas.join(&added.file.id).join(IDEA_MD);
     assert!(!path.exists());
 
-    // The next pass, in a new process: only the ledger is left.
     drop(w.conn);
     let conn = Connection::open(&w.db).unwrap();
     let pending = pending_idea_files(&conn, &w.ideas).unwrap();
@@ -270,7 +249,6 @@ fn crash_after_the_row_writes_idea_md_on_the_next_pass() {
     assert_eq!(read, added.file);
     assert_eq!(read.text, text);
 
-    // The pass after it finds nothing to write.
     assert!(pending_idea_files(&conn, &w.ideas).unwrap().is_empty());
 }
 
@@ -299,7 +277,6 @@ fn idea_with_to_joins_the_feature() {
         "open"
     );
 
-    // An unknown feature is refused, and no row is written.
     let ctx = JobCtx {
         guard: None,
         config: &w.config,

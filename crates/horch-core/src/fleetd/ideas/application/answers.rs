@@ -1,44 +1,3 @@
-//! `AnswerQuestion`: the answer of a worker question in its 4 cases, and the
-//! decision log of the feature.
-//!
-//! `docs/specs/fleetd/design.md`, "Ideas" (How a worker's question is
-//! resolved, steps 4 to 6), D13, RR-12; `docs/tickets/fleetd-p6/32-answers.md`;
-//! MAP.md of fleetd-p6, Q15.
-//!
-//! The sub-orchestrator of the feature answers with an `answer` note
-//! (ticket 25). [`answer_question`] runs in the transaction of the ingest
-//! of the note:
-//!
-//! - `covered`: the note cites `[I-NNNN/]<file>:<line>`, a line of
-//!   assumptions.md or spec.md of an idea of the feature; with no idea, of
-//!   the idea of the task. fleetd checks that the line exists. Then the
-//!   question is answered and the task goes from `blocked_on_user` to
-//!   `ready` ([`questions::answered`]).
-//! - `revise`: the idea of the task goes to `awaiting_approval`, and the
-//!   question goes to `escalated`: it went to you, so the question flow
-//!   does not ring or escalate it again. Only its task waits; the other
-//!   tasks of the idea go on. When you approve the idea,
-//!   [`settle_revisions`] answers the question with the note text.
-//! - `replan`: the question stays open and its task waits for the replan
-//!   file of the sub-orchestrator ([`pending_replans`],
-//!   [`super::replan::replan_task`]). The time limit of the question bounds
-//!   the wait: past it the question flow escalates it to you.
-//! - `own_decision`: fleetd appends `<n>. [assumed, own decision] <text>
-//!   (<question id>)` to assumptions.md of the idea of the task, 1 time
-//!   only (D13). It needs no new approval: when you approved assumptions.md
-//!   as it was before the decision, the approval follows the new hash, so
-//!   I7 still holds. Then the question is answered.
-//!
-//! An accepted answer records 1 `question` event of its task with the case
-//! and the files it intends (RR-8): the entry of
-//! `features/F-NNNN/decisions.md`, and for an own decision the new
-//! assumptions.md and approval.json. fleetd writes no file in the
-//! transaction. It writes them after the commit ([`Recorded::write`]).
-//! After a crash between the commit and the writes,
-//! [`pending_answer_files`] gives the writes again from the ledger (FM-11). A refused answer leaves the question as it
-//! was, records 1 `note` event of the task with the reason, and rings the
-//! live process of the feature again with the reason.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -79,48 +38,33 @@ use crate::fsx;
 use crate::taskledger::model::{Actor, EventKind, TaskStatus};
 use crate::taskledger::{tasks, util};
 
-/// The folder of the ideas in the fleet root.
 const IDEAS: &str = "ideas";
 
-/// The mode of the decision log.
 const DECISIONS_MODE: u32 = 0o600;
 
-/// What [`answer_question`] needs besides the ledger.
 pub struct Answering<'a> {
-    /// The generation of the fleetd that writes.
     pub guard: Option<Generation>,
-    /// The fleet clock of the pass, for a doorbell.
     pub clock: FleetSeconds,
-    /// The fleet root: it holds `ideas/` and `features/`.
     pub root: &'a Path,
-    /// The user that owns the ledger, and so each file that fleetd reads.
     pub owner: &'a User,
 }
 
-/// What [`answer_question`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answered {
     Recorded(Recorded),
     Refused(Refused),
 }
 
-/// An accepted answer. Its files are written after the commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
     pub question: String,
     pub case: Case,
     pub decision: DecisionLog,
-    /// The approval.json of the idea that follows an own decision: (idea,
-    /// file).
     pub approval: Option<(String, ApprovalFile)>,
-    /// The assumptions.md of the idea with the own decision.
     pub assumptions: Option<AssumptionsWrite>,
 }
 
 impl Recorded {
-    /// Write the files of the answer under the fleet root `root`:
-    /// assumptions.md, approval.json, then the entry of the decision log.
-    /// Each write is safe to repeat.
     pub fn write(&self, root: &Path, owner: &User) -> Result<()> {
         if let Some(a) = &self.assumptions {
             a.write(root, owner)?;
@@ -184,22 +128,14 @@ impl Recorded {
     }
 }
 
-/// The assumptions.md that an own decision intends, to write after the
-/// commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssumptionsWrite {
     pub idea: String,
-    /// The sha256 of the assumptions.md that the decision appends to, or
-    /// `None` when the idea had no assumptions.md.
     pub base_sha256: Option<String>,
-    /// The new assumptions.md.
     pub text: String,
 }
 
 impl AssumptionsWrite {
-    /// Replace assumptions.md with the new text when it is still the file
-    /// that the decision appends to. Otherwise the file holds the decision
-    /// already, or it changed since, and this write does nothing.
     pub fn write(&self, root: &Path, owner: &User) -> Result<()> {
         let folder = IdeaFolder::new(&root.join(IDEAS), &self.idea, owner.clone())?;
         if assumptions_sha(&folder)? == self.base_sha256 {
@@ -209,18 +145,13 @@ impl AssumptionsWrite {
     }
 }
 
-/// A refused answer: the question is as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refused {
     pub question: String,
-    /// What the sub-orchestrator reads.
     pub reason: String,
-    /// The doorbell to type after the commit, when the feature has a live
-    /// process in a pane and the question waits for an answer.
     pub ring: Option<Ring>,
 }
 
-/// 1 entry of `features/F-NNNN/decisions.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionLog {
     pub feature: String,
@@ -229,13 +160,10 @@ pub struct DecisionLog {
 }
 
 impl DecisionLog {
-    /// The decision log of the feature, under the fleet root `root`.
     pub fn path(&self, root: &Path) -> PathBuf {
         root.join(FEATURES).join(&self.feature).join(DECISIONS_MD)
     }
 
-    /// Append the entry to the decision log, atomically, unless the log
-    /// holds it already. The log is read with the checks of SR-6.
     pub fn write(&self, root: &Path, owner: &User) -> Result<()> {
         let features = root.join(FEATURES);
         fsx::ensure_private_dir(&features)?;
@@ -274,11 +202,8 @@ impl DecisionLog {
     }
 }
 
-/// A check of an answer: the error is the reason of the refusal.
 type Checked<T> = std::result::Result<T, String>;
 
-/// `AnswerQuestion`: the answer note `note` of the sub-orchestrator, in the
-/// open transaction `tx`. A note that is not an answer is an error.
 pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Result<Answered> {
     let NoteBody::Answer {
         question,
@@ -372,11 +297,6 @@ pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Res
     Ok(Answered::Recorded(recorded))
 }
 
-/// The files of each committed answer that are not written yet, from the
-/// `question` events of the ledger, oldest first (RR-8, FM-11). Each
-/// [`Recorded`] holds only the writes that are still pending: write them in
-/// this order after a crash between the commit of an answer and its
-/// [`Recorded::write`].
 pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Result<Vec<Recorded>> {
     let mut sha_after_pending: HashMap<String, Option<String>> = HashMap::new();
     let mut out = Vec::new();
@@ -455,9 +375,6 @@ struct OwnDecisionFiles {
     assumptions: Option<AssumptionsWrite>,
 }
 
-/// Each question that went to you with a `revise` answer and whose idea you
-/// approved since: it is answered with the text of the answer, and its task
-/// goes on. The ids of the questions, in the open transaction `tx`.
 pub fn settle_revisions(tx: &Connection) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for q in store::unanswered(tx)? {
@@ -476,8 +393,6 @@ pub fn settle_revisions(tx: &Connection) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Each task in `blocked_on_user` whose question has a `replan` answer and
-/// waits for its replan file, each once, oldest question first.
 pub fn pending_replans(conn: &Connection) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for q in store::unanswered(conn)? {
@@ -493,8 +408,6 @@ pub fn pending_replans(conn: &Connection) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The question of task `task_id` that waits for an answer and has a
-/// `replan` answer, with the text of that answer.
 pub fn replan_question(conn: &Connection, task_id: &str) -> Result<Option<(Question, String)>> {
     for q in store::of_task(conn, task_id)? {
         if q.state == State::Answered {
@@ -516,8 +429,6 @@ fn case_of(case: AnswerCase) -> Case {
     }
 }
 
-/// `covered`: the citation names a line that exists, in assumptions.md or
-/// spec.md of an idea of the feature of `q`.
 fn covered(
     tx: &Connection,
     ctx: &Answering<'_>,
@@ -558,7 +469,6 @@ fn covered(
     Ok(Ok(()))
 }
 
-/// `revise`: the idea goes to you, and `q` waits for your approval.
 fn revise(
     tx: &Connection,
     ctx: &Answering<'_>,
@@ -592,8 +502,6 @@ fn revise(
     Ok(Ok(()))
 }
 
-/// `replan`: the task of `q` is a task of a committed plan, so it has a
-/// replan file.
 fn replan(tx: &Connection, q: &Question) -> Result<Checked<()>> {
     if committed_task(tx, &q.task_id)?.is_none() {
         return Ok(Err(format!(
@@ -670,8 +578,6 @@ fn intended_assumptions(
     Ok(file)
 }
 
-/// When you approved assumptions.md of `idea` as `base`, record the same
-/// approval of `new` (D13). The approval.json to write after the commit.
 fn follow_approval(
     tx: &Connection,
     ctx: &Answering<'_>,
@@ -714,8 +620,6 @@ fn follow_approval(
     )?))
 }
 
-/// A refusal of an answer to a question that waits for none: nothing to
-/// record and no ring.
 fn quiet(question: &str, reason: String) -> Answered {
     Answered::Refused(Refused {
         question: question.to_string(),
@@ -724,8 +628,6 @@ fn quiet(question: &str, reason: String) -> Answered {
     })
 }
 
-/// Refuse the answer of `q` for `reason`: 1 `note` event of its task, and
-/// 1 doorbell to the live process of its feature.
 fn refuse(tx: &Connection, ctx: &Answering<'_>, q: &Question, reason: String) -> Result<Answered> {
     let text = format!("the answer of question {} is refused: {reason}", q.id);
     let data = json!({ "question_id": q.id, "refused": reason });
@@ -774,7 +676,6 @@ fn refuse(tx: &Connection, ctx: &Answering<'_>, q: &Question, reason: String) ->
     }))
 }
 
-/// The live process of `feature` in a pane: (attempt, pane).
 pub(crate) fn live_owner(conn: &Connection, feature: &str) -> Result<Option<(String, String)>> {
     let mut found = None;
     for idea in ideas_store::of_feature(conn, feature)? {
@@ -787,7 +688,6 @@ pub(crate) fn live_owner(conn: &Connection, feature: &str) -> Result<Option<(Str
     Ok(found)
 }
 
-/// The case and the answer text of the last accepted answer of `q`.
 fn last_case(conn: &Connection, q: &Question) -> Result<Option<(Case, String)>> {
     let mut found = None;
     for fact in tasks::task_facts(conn, &q.task_id, EventKind::Question)? {
@@ -814,7 +714,6 @@ fn idea_row(conn: &Connection, idea: &str) -> Result<IdeaRow> {
     ideas_store::idea(conn, idea)?.with_context(|| format!("no idea {idea} in the ledger"))
 }
 
-/// The idea of the task of `q`.
 fn task_idea(conn: &Connection, q: &Question) -> Result<IdeaRow> {
     let idea = attempts::idea_of_task(conn, &q.task_id)?
         .with_context(|| format!("task {} has no idea", q.task_id))?;

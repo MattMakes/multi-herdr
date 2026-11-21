@@ -1,5 +1,3 @@
-//! Selecting which pane host (`herdr` or `hc`) this process runs inside.
-
 use std::fmt;
 use std::str::FromStr;
 

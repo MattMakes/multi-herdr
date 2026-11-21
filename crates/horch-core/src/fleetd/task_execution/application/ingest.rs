@@ -1,32 +1,3 @@
-//! The ingest of `result.json` and of the question file (ticket 13).
-//!
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol"
-//! (protocol rules 1, 2 and 7), "Ledger" (`ingested`, I1), "Order inside 1
-//! pass", SR-6, FM-6 and FM-23.
-//!
-//! - Part 1 of a pass calls [`read`] for each outbox that its outbox scan
-//!   gave in its budget. A path with an `ingested` row is not read again.
-//! - Part 2 calls [`ingest`] in its transaction, before
-//!   `renew_or_expire_leases`, so a valid `result.json` of the pass wins
-//!   over a lease expiry of the same pass (I1).
-//! - Each file gets 1 `ingested` row, by its path and its sha256: 1 time.
-//! - A valid `result.json` of the newest attempt of a `running` or
-//!   `stalled` task moves the task to `verifying`. Only the verifier moves
-//!   a task to `done`. A result with the key `unlanded` then parks the task
-//!   with its tree (`verifier::park_unlanded`, RR-14).
-//! - A valid question file of the newest attempt of a `running` task ends
-//!   the attempt with the outcome `asked`, which burns no attempt, and
-//!   moves the task to `blocked_on_user`. In the same transaction the file
-//!   gives 1 `questions` row, owned by the sub-orchestrator of the feature
-//!   of the task (RR-12, FM-35; [`questions::ask`]). A later question file
-//!   of that attempt, while the task waits, gives 1 more row. A task with
-//!   no idea has no sub-orchestrator: its question goes to you as 1
-//!   needs-you item.
-//! - A rejected file gets its row with the reason, and changes nothing
-//!   else. A rejected question file also gives you 1 needs-you item, as
-//!   its worker waits for an answer that nobody can give (OR-3). fleetd
-//!   stays healthy.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -52,34 +23,25 @@ use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::{tasks, util, workers};
 
-/// The files that part 1 read from the outbox of 1 attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboxRead {
     pub attempt: AttemptRef,
     pub files: Vec<FileRead>,
 }
 
-/// What 1 ingest did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// The tasks that a result moved to `verifying`.
     pub to_verifying: Vec<String>,
-    /// The tasks that a question moved to `blocked_on_user`.
     pub to_blocked: Vec<String>,
-    /// The files that this ingest recorded as rejected.
     pub rejected: Vec<PathBuf>,
 }
 
-/// Part 1: read the new files of the outbox of each of `attempts` under
-/// `fleet_root`, with the size limit `max_bytes`. A file with an
-/// `ingested` row is not read. An outbox with no new file is left out.
 pub fn read(
     conn: &Connection,
     fleet_root: &Path,
     attempts: &[AttemptRef],
     max_bytes: u64,
 ) -> Result<Vec<OutboxRead>> {
-    // fleetd owns the ledger: each outbox file must be of its user.
     let owner = User::current().context("read the user of this process")?;
     let mut out = Vec::new();
     for attempt in attempts {
@@ -95,12 +57,8 @@ pub fn read(
     Ok(out)
 }
 
-/// The kind of the needs-you item of a question file that has no row.
 pub const QUESTION_FILE_KIND: &str = "question_file";
 
-/// Part 2: record each file of `reads` 1 time and act on each valid file,
-/// in the open transaction `tx`. The fleetd of generation `guard` writes.
-/// A question gets the time limit `question_limit_s` on the fleet clock.
 pub fn ingest(
     tx: &Connection,
     guard: Option<Generation>,
@@ -160,13 +118,10 @@ pub fn ingest(
     Ok(report)
 }
 
-/// The `ingested.path` of a file.
 pub(super) fn key(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// Refuse a connection with no open transaction, and a pass of another
-/// generation, before the first write.
 fn check_pass(tx: &Connection, guard: Option<Generation>) -> Result<()> {
     if tx.is_autocommit() {
         return Err(DoorError::NoTransaction.into());
@@ -187,9 +142,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// The worker and the state of attempt `a` when it is the newest attempt
-/// of its task; `None` for an older attempt, or for no attempt row. A file
-/// of an older attempt moves nothing.
 pub(super) fn newest(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String)>> {
     Ok(tx
         .query_row(
@@ -202,8 +154,6 @@ pub(super) fn newest(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, 
         .optional()?)
 }
 
-/// The move of `entity` `id` to `to`. A refused move is recorded by the
-/// door, and fails only its row: false.
 pub(super) fn moved(
     tx: &Connection,
     guard: Option<Generation>,
@@ -219,8 +169,6 @@ pub(super) fn moved(
     }
 }
 
-/// A valid `result.json` of `a`: its `running` or `stalled` task moves to
-/// `verifying`.
 fn to_verifying(tx: &Connection, guard: Option<Generation>, a: &AttemptRef) -> Result<bool> {
     if newest(tx, a)?.is_none() {
         return Ok(false);

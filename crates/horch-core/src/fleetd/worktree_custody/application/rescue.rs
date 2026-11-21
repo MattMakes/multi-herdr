@@ -1,11 +1,3 @@
-//! The observation of a rescue run: a verified ref makes the tree
-//! `rescued`; each other end keeps the tree and its row.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" (rows `orphaned` and `landing`) and "The kinds of job" (row
-//! `rescue`); MAP.md of fleetd-p3, Q25. The pass and a command call
-//! [`observe`] in 1 transaction, with no git call.
-
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 
@@ -19,34 +11,19 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{self as store, WorktreeS
 use crate::fleetd::worktree_custody::domain::rescue;
 use crate::taskledger::model::Actor;
 
-/// The states from which a verified rescue makes a tree `rescued`. A
-/// `rescued` tree gets the newer ref.
 const RESCUABLE: [WorktreeState; 3] = [
     WorktreeState::Orphaned,
     WorktreeState::Landing,
     WorktreeState::Rescued,
 ];
 
-/// What [`observe`] did with the row of the tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Observed {
-    /// The row is `rescued`, with this verified ref.
     Rescued(String),
-    /// The rescue failed: the row stays, and 1 needs-you item is open.
     Failed,
-    /// The row stays as it was.
     Kept,
 }
 
-/// Observe the rescue run `job`, in `tx`:
-/// - `passed`, with a verified ref of its tree: the row gets the ref and
-///   moves to `rescued` from `orphaned` or `landing`, and the needs-you
-///   item of a failed rescue of the tree ends. A row in another state
-///   stays.
-/// - `failed`: the row stays, and 1 needs-you item opens.
-/// - `abandoned` (its time limit or a lost process), `queued` or
-///   `running`: the row stays. The rule of abandoned runs of jobs gives the
-///   next run and, at `abandoned_run_limit`, its needs-you item.
 pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observed> {
     if job.kind != Kind::Rescue {
         bail!("job {} is a {} job, not a rescue job", job.id, job.kind);
@@ -70,8 +47,6 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
     }
 }
 
-/// The rescue that the passed run `job` saved, when it names a rescue ref
-/// of the tree `id`.
 fn saved(job: &JobRow, id: &str) -> Option<Rescue> {
     let r: Rescue = serde_json::from_value(result_data(job)?).ok()?;
     r.rescue_ref

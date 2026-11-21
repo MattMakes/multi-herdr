@@ -1,29 +1,4 @@
 #!/bin/sh
-# The release gate of the real agent CLIs (finding R6-F4 of
-# docs/specs/fleetd/reviews/end-review-p7.md; design FR-6, FR-8, SR-1, SR-7,
-# SR-8, FM-18, FM-19).
-#
-# The gate runs the production conformance suite (`horch job run`, started
-# by fleetd) 1 time for each installed CLI, in a temp fleet: a temp
-# FLEET_ROOT, HORCH_LEDGER_DB, HORCH_STATE_DIR and HORCH_DATA_DIR. It
-# copies each <fleet root>/docs/<cli>/<version>/conformance.json to
-# <out>/<cli>/<version>/conformance.json, and it passes only when each
-# check of each report has the verdict "pass". On exit it stops its fleetd
-# and removes the temp fleet.
-#
-# Operator release step:
-#   A worker never runs this gate with the real CLIs. A real run uses the
-#   login and the quota of the operator, and a worker never uses
-#   ANTHROPIC_API_KEY. Before a release, the operator runs in a logged-in
-#   shell:
-#     env -u ANTHROPIC_API_KEY scripts/live/p7-real-conformance.sh --out docs/specs/fleetd/gates/evidence/p7-conformance
-#   and records each conformance.json path that it prints in
-#   docs/specs/fleetd/gates/fleetd-p7.md.
-#
-# Environment:
-#   HORCH_BIN                 the horch binary (default: horch on PATH).
-#   P7_CONFORMANCE_TIMEOUT_S  the wait for the runs, in seconds (default 1800).
-#   HORCH_TEST_DOCS_FIXTURE   tests only: the docs sync reads a local folder.
 set -eu
 
 unset ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_BASE_URL
@@ -92,9 +67,6 @@ GIT="$(command -v git || true)"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 
-# A short temp folder: macOS limits a Unix socket path to 104 bytes. The
-# Linux sandbox mounts a new empty tmpfs on /tmp, so a fleet in /tmp is
-# hidden from the checks there: on Linux the temp fleet is in /var/tmp.
 case "$(uname -s)" in
 Linux) TMP_BASE=/var/tmp ;;
 *) TMP_BASE=/tmp ;;

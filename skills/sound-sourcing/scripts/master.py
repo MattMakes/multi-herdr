@@ -18,7 +18,6 @@ from scipy.ndimage import maximum_filter1d, minimum_filter1d
 SR = 48000
 SILENT_LUFS = float("-inf")
 
-# BS.1770 K-weighting at 48 kHz: the high shelf, then the RLB high-pass.
 _SHELF_BA = (np.array([1.53512485958697, -2.69169618940638, 1.19839281085285]),
        np.array([1.0, -1.69065929318241, 0.73248077421585]))
 _RLB_BA = (np.array([1.0, -2.0, 1.0]), np.array([1.0, -1.99004745483398, 0.99007225036621]))
@@ -36,8 +35,6 @@ def as_stereo(sig: np.ndarray) -> np.ndarray:
         sig = np.repeat(sig, 2, axis=1)
     return sig[:, :2]
 
-
-# ---------------------------------------------------------------- measurement
 
 def kweight(sig: np.ndarray) -> np.ndarray:
     shaped = signal.lfilter(_SHELF_BA[0], _SHELF_BA[1], sig, axis=0)
@@ -126,8 +123,6 @@ def measure(sig: np.ndarray) -> dict:
         "seconds": len(sig) / SR,
     }
 
-
-# ---------------------------------------------------------------- processing
 
 def raised_cosine(n: int) -> np.ndarray:
     if n <= 1:
@@ -369,13 +364,12 @@ def self_test() -> int:
         all_ok &= bool(holds)
         print(("ok   " if holds else "FAIL ") + label)
 
-    # 1 kHz sine at -20 dBFS peak per channel reads close to the BS.1770 reference.
     times = np.arange(SR * 5) / SR
     tone = 10 ** (-20 / 20) * np.sin(2 * np.pi * 1000 * times)
     expect("1 kHz stereo sine meter", abs(integrated(np.stack([tone, tone], 1)) + 20.0) < 0.1)
     with tempfile.TemporaryDirectory() as tmp:
         hiss = gen.standard_normal((SR * 10, 2))
-        hiss = signal.lfilter([0.05], [1, -0.95], hiss, axis=0)  # darker than white
+        hiss = signal.lfilter([0.05], [1, -0.95], hiss, axis=0)
         hiss *= 10 ** ((-30 - integrated(hiss)) / 20)
         wav_in, wav_out = os.path.join(tmp, "in.wav"), os.path.join(tmp, "out.wav")
         sf.write(wav_in, hiss.astype(np.float32), SR, subtype="FLOAT")
@@ -420,7 +414,7 @@ def _guarded(args) -> int:
         if not args.input:
             raise ValueError("INPUT is required")
         return execute(args)
-    except Exception as err:  # one line, exit 1
+    except Exception as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
 

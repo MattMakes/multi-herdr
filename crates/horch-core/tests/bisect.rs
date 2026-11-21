@@ -1,12 +1,3 @@
-//! The bisect of a failed bundle: each half is a child bundle, the failing
-//! branch goes to `gate_failed`, and the others go on
-//! (docs/specs/fleetd/design.md, "The bundle", "The bundle state machine"
-//! (`failed`); docs/tickets/fleetd-p4/30-bisect.md).
-//!
-//! Each test has its own temporary ledger, fleet root and git repository.
-//! No test reads the load, the limits or the clock of the machine: the fleet
-//! clock is a number that the test gives, and the config is the default.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -37,8 +28,6 @@ use rusqlite::{params, Connection};
 
 const FEATURE: &str = "F-0001";
 const FEATURE_BRANCH: &str = "fleet/r1";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _temp: tempfile::TempDir,
@@ -124,7 +113,6 @@ fn world() -> World {
     };
     let tx = conn.transaction().unwrap();
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -148,9 +136,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The gate tree of [`FEATURE`], so a fast gate can run (Q18): its
-    /// reserved row, the folder that its `worktree_add` job makes, and the
-    /// observation of the passed job, as a pass observes it.
     fn gate_tree(&self) {
         let tip = git(&self.repo, &["rev-parse", FEATURE_BRANCH]);
         let req = GateTreeRequest {
@@ -192,8 +177,6 @@ impl World {
         assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
     }
 
-    /// Commit `file` with `text` on `branch`, made from the feature branch
-    /// when it is new.
     fn commit_on(&self, branch: &str, file: &str, text: &str) {
         let exists = git_out(&self.repo, &["rev-parse", "--verify", "-q", branch])
             .status
@@ -218,8 +201,6 @@ impl World {
         )
     }
 
-    /// A task, its git branch `name` with 1 commit of its own file, and its
-    /// task branch row moved to `ready`, as the landing moves it.
     fn ready_branch(&mut self, name: &str) {
         self.commit_on(name, &format!("branch-{name}.txt"), &format!("{name}\n"));
         self.tasks += 1;
@@ -250,7 +231,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 pass of bundles at the next second of the fleet clock, committed.
     fn pass(&mut self) {
         self.clock += 1;
         let config = self.config.clone();
@@ -298,8 +278,6 @@ impl World {
             .unwrap()
     }
 
-    /// Run the `bundle_build` job of the `building` bundle `id` as its job
-    /// process runs it, and end its row with the result.
     fn build(&self, id: i64) {
         let bundle = self.bundle(id);
         assert_eq!(bundle.state, "building", "bundle {id}");
@@ -316,8 +294,6 @@ impl World {
         self.end_job(job, "passed", &json.to_string());
     }
 
-    /// The fast gate of the `gating` bundle `id` ends with the verdict
-    /// `passed`, as its job process records it.
     fn gate(&self, id: i64, passed: bool) {
         let bundle = self.bundle(id);
         assert_eq!(bundle.state, "gating", "bundle {id}");
@@ -348,14 +324,12 @@ impl World {
             .unwrap();
     }
 
-    /// Build and gate the `building` bundle `id` to the `gating` state.
     fn build_and_gate(&mut self, id: i64) {
         self.build(id);
         self.pass();
         assert_eq!(self.bundle(id).state, "gating");
     }
 
-    /// The open bundles (`building`, `gating`, `passed`) that hold `branch`.
     fn open_bundles_of(&self, branch: &str) -> Vec<i64> {
         self.bundle_ids()
             .into_iter()
@@ -366,8 +340,6 @@ impl World {
             .collect()
     }
 
-    /// Each of `members` is in exactly 1 place: 1 open bundle while it is
-    /// `in_bundle`, else `gate_failed` or `ready` and in no open bundle.
     fn assert_each_member_in_1_place(&self, members: &[&str]) {
         for m in members {
             let open = self.open_bundles_of(m);
@@ -383,8 +355,6 @@ impl World {
     }
 }
 
-/// A world with the ready branches `names`, put in 1 bundle and taken to a
-/// failed fast gate. Gives the id of that bundle.
 fn failed_bundle_of(names: &[&str]) -> (World, i64) {
     let mut w = world();
     for name in names {
@@ -403,8 +373,6 @@ fn failed_bundle_of(names: &[&str]) -> (World, i64) {
 fn members_of(b: &BundleRow) -> Vec<&str> {
     b.members.iter().map(String::as_str).collect()
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn failed_bundle_of_4_makes_2_children_of_2() {
@@ -443,7 +411,6 @@ fn child_of_1_that_fails_sends_its_branch_to_gate_failed() {
     assert!(w.children(left).is_empty(), "a bundle of 1 is not split");
     assert_eq!(w.landing_state("a"), "gate_failed");
     assert_eq!(w.landing_state("b"), "in_bundle");
-    // The gate output of the failed run goes with the branch.
     assert_eq!(
         bundles::failed_gate(&w.conn, "a").unwrap(),
         Some(FailedGate {
@@ -465,8 +432,6 @@ fn clean_child_lands_its_members() {
     w.pass();
     w.gate(right, true);
     w.pass();
-    // A clean child is not split again: it goes to `passed`, and the ref
-    // move of ticket 31 lands its members.
     assert_eq!(w.bundle(right).state, "passed");
     let limit = i64::try_from(w.config.bundle_passed_limit_s).unwrap();
     assert_eq!(
@@ -487,7 +452,6 @@ fn each_member_ends_in_1_place() {
     let names = ["a", "b", "c", "d", "e"];
     let (mut w, id) = failed_bundle_of(&names);
     w.assert_each_member_in_1_place(&names);
-    // [a b] fails and splits; [c d e] passes.
     let children = w.children(id);
     let (left, right) = (children[0].id, children[1].id);
     w.build(left);
@@ -497,8 +461,6 @@ fn each_member_ends_in_1_place() {
     w.gate(right, true);
     w.pass();
     w.assert_each_member_in_1_place(&names);
-    // [a] fails and is found; [b] is dropped by a moved feature tip and
-    // goes back to `ready`.
     let grand = w.children(left);
     assert_eq!(grand.len(), 2);
     let (ga, gb) = (grand[0].id, grand[1].id);

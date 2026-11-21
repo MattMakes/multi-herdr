@@ -90,7 +90,6 @@ def scan_text(text):
         if MOVING_KEY.search(body) and LINEAR_EASE.search(body):
             add(m.start(), f"linear .{m.group(1)}() tween on a moving property", m.group(0) + body[1:])
     for m in TRANSITION.finditer(text):
-        # Each comma item of a transition list has its own property and timing.
         items = re.split(r",(?![^()]*\))", m.group(1))
         if any(MOVING_CSS.search(item) and LINEAR_CSS.search(item) for item in items):
             add(m.start(), "linear CSS transition on a moving property", m.group(0))
@@ -246,9 +245,7 @@ def main(argv):
     return command(argv)
 
 
-# ---------------------------------------------------------------- self-test
 FIXTURES = {
-    # name: (file text, expected hit count)
     "linear-x.js": ('tl.to("#card", { x: 120, duration: 0.6, ease: "linear" }, 0);\n', 1),
     "none-scale.js": ("tl.fromTo(dot, { scale: 0 },\n  { scale: 1, ease: 'none' }, 1);\n", 1),
     "bezier-rotate.html": ('<script>\nm.to(w, { rotate: 90, ease: "cubic-bezier(0, 0, 1, 1)" });\n</script>\n', 1),

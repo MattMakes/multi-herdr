@@ -1,12 +1,3 @@
-//! The handlers of the worker kinds: `worker_stop` and the records of 1
-//! spawn of fleetd (docs/tickets/fleetd-p5/19-handlers-worker.md; RR-5,
-//! RR-8). Ticket 48 of fleetd-p6 retires `spawn`, `worker_reap`,
-//! `worker_new`, `worker_pid`, `orchestrator_claim` and
-//! `orchestrator_stop`.
-//!
-//! Each test sends its request through `requests::handle` to a temp ledger
-//! at generation 1 and checks the rows that the command of today writes.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -66,8 +57,6 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(o.status.success(), "git {}", args.join(" "));
 }
 
-/// A git repo with the run branch, a ledger at generation 1 with 1 active
-/// run, and the handlers of this module.
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
@@ -98,7 +87,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -121,9 +109,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The bind of `task` to 1 push attempt in `launching` of a new
-    /// `spawning` worker, as the dispatch of fleetd does it. Gives its
-    /// worker.
     fn bind(&mut self, task: &str) -> String {
         let tx = self.conn.transaction().unwrap();
         let config = FleetConfig::default();
@@ -180,7 +165,6 @@ impl World {
         .outcome
     }
 
-    /// Send 1 new request and give its result; a refusal fails the test.
     fn send(&mut self, kind: Kind, payload: Value) -> Value {
         let req = self.request(kind, payload);
         match self.send_request(&req) {
@@ -212,8 +196,6 @@ impl World {
             .unwrap()
     }
 
-    /// A worker row of the run with the agent `pid`, as a spawn of today
-    /// leaves it.
     fn worker(&self, task: Option<&str>) -> String {
         let id = workers::insert(
             &self.conn,
@@ -243,7 +225,6 @@ impl World {
         id
     }
 
-    /// The rows that an effect of a request changes, as 1 text.
     fn rows(&self) -> String {
         let mut out = String::new();
         for sql in [
@@ -348,10 +329,6 @@ fn each_kind_twice_with_1_request_id_has_1_effect() {
     }
 }
 
-// ─── the records of 1 spawn (ticket 23 of fleetd-p5) ────────────────────
-
-/// A worker row of another run, so a payload that names it with run `r1`
-/// is refused.
 fn worker_of_other_run(w: &World) -> String {
     let root = std::path::PathBuf::from(&w.run.project_root);
     let other = runs::create(
@@ -363,7 +340,6 @@ fn worker_of_other_run(w: &World) -> String {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &w.conn,
         &other.run_id,

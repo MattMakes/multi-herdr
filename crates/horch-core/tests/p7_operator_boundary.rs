@@ -1,16 +1,3 @@
-//! The check "Operator boundary" of the conformance suite (fleetd-p7
-//! ticket 24; SR-8): for each adapter, 1 real launch tries the 3 operator
-//! acts from inside its sandbox, and the check passes only when each act is
-//! refused. An adapter with no sandbox on this OS gives `not supported`.
-//!
-//! The fleet root of each test is a temporary folder with a real token file
-//! (mode 0600), a real channel socket and a request folder. Each launch
-//! runs a fake agent of `crates/horch-e2e`, never a real agent CLI (MAP.md
-//! Q6). The fakes try each act in a child under the platform sandbox with
-//! the rules of their rendered config.
-//!
-//! Unix only: the test channel is a Unix socket, and on Windows no adapter
-//! has an operator boundary.
 #![cfg(unix)]
 
 #[path = "support/fakes.rs"]
@@ -35,10 +22,8 @@ use horch_core::roster::{PermissionMode, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::{json, Value};
 
-/// The fakes that the tests launch.
 const FAKES: [&str; 2] = ["fake-claude", "fake-codex"];
 
-/// Each adapter of the suite (MAP.md Q5).
 const ADAPTERS: [HarnessKind; 6] = [
     HarnessKind::Claude,
     HarnessKind::Codex,
@@ -57,19 +42,13 @@ fn executable(path: &Path, text: &str) {
     std::fs::set_permissions(path, PermissionsExt::from_mode(0o755)).unwrap();
 }
 
-/// The Codex of a test machine: fake-codex with the version and the
-/// features that the operator boundary of Codex reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Codex {
     BelowBoundaryVersion,
-    /// Codex 0.167.0 with the `network_proxy` feature.
     WithNetworkProxy,
-    /// Codex 0.167.0 with no `network_proxy` feature.
     WithoutNetworkProxy,
 }
 
-/// The folder of each test machine. On Linux the sandbox mounts a new
-/// empty tmpfs on `/tmp`, so a fleet root in `/tmp` is not visible in it.
 const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
     "/var/tmp"
 } else {
@@ -79,8 +58,6 @@ const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
-    /// The listener of the channel. It accepts no connection: a connect
-    /// to it completes in the backlog.
     _channel: UnixListener,
 }
 
@@ -101,8 +78,6 @@ impl Machine {
         ] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
-        // Stub Linux sandbox tools, so the Claude sandbox check passes on
-        // Linux too.
         for tool in ["bwrap", "socat"] {
             executable(&tmp.path().join("bin").join(tool), "#!/bin/sh\nexit 0\n");
         }
@@ -157,7 +132,6 @@ impl Machine {
         self.path("fake.log")
     }
 
-    /// The context of the process that runs the suite.
     fn ctx(&self) -> RuntimeContext {
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         let mut env = MapEnv::new(self.path("home"))
@@ -177,7 +151,6 @@ impl Machine {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// The verdict of "Operator boundary" for `teammate`.
     fn check(&self, teammate: &Teammate) -> CheckResult {
         self.check_in(teammate, "conformance")
     }
@@ -188,9 +161,6 @@ impl Machine {
             ctx: &ctx,
             teammate,
             fleet_window: Some((CONTEXT_LIMIT, "context-windows.md".into())),
-            // The fakes read the operator paths from FLEET_ROOT, not from
-            // the prompt. Without it they probe the fleet root of the
-            // host.
             env_rule: vec![
                 ("HORCH_FAKE_SCENARIO".into(), scenario.into()),
                 (
@@ -208,8 +178,6 @@ impl Machine {
         run_check(&mut runner, Check::OperatorBoundary)
     }
 
-    /// No fake saw a violation, such as the forbidden name in its
-    /// environment (SR-7).
     fn assert_no_violation(&self) {
         let text = std::fs::read_to_string(self.log()).unwrap_or_default();
         assert!(!text.is_empty(), "no fake ran");
@@ -223,8 +191,6 @@ impl Machine {
         }
     }
 
-    /// The launch left no throwaway folder and no request file, and the
-    /// token is still the operator's.
     fn assert_clean(&self) {
         let left: Vec<_> = std::fs::read_dir(self.path("scratch"))
             .unwrap()
@@ -243,8 +209,6 @@ impl Machine {
         );
     }
 
-    /// A Claude profile whose last `--settings` gives these sandbox rules,
-    /// so the rendered config of the launch is `filesystem`.
     fn claude_with_rules(&self, filesystem: Value) -> Teammate {
         let file = self.path("home/override-settings.json");
         let settings = json!({"sandbox": {"enabled": true, "filesystem": filesystem}});
@@ -255,8 +219,6 @@ impl Machine {
     }
 }
 
-/// The reference profile of an adapter: a sandboxed worker in exec mode
-/// where the adapter has exec mode.
 fn profile(agent: HarnessKind) -> Teammate {
     let name = format!("conformance-{}", agent.as_str());
     let model = match agent {
@@ -282,7 +244,6 @@ fn profile(agent: HarnessKind) -> Teammate {
     ) {
         return t;
     }
-    // `mode: exec`, as a teammate file writes it.
     let mut v = serde_json::to_value(&t).unwrap();
     v["mode"] = json!("exec");
     serde_json::from_value(v).unwrap()
@@ -435,7 +396,6 @@ fn operator_boundary_fails_when_the_sandbox_does_not_see_the_real_fleet_root() {
 
 #[test]
 fn operator_boundary_fails_when_the_fleet_root_has_no_token() {
-    // A refusal of a read of a file that is not there proves nothing.
     let m = Machine::new(Codex::WithNetworkProxy);
     std::fs::remove_file(m.operator_paths().token).unwrap();
     let r = m.check(&profile(HarnessKind::Claude));
@@ -466,14 +426,10 @@ fn operator_boundary_not_supported_is_not_pass() {
     let agy = m.check(&profile(HarnessKind::Antigravity));
     assert_verdict(&agy, Verdict::NotSupported);
     assert!(agy.evidence.contains("agy has no rule"), "{agy:?}");
-    // A Codex that drops the network_proxy feature cannot deny the connect
-    // to the channel.
     let codex = m.check(&profile(HarnessKind::Codex));
     assert_verdict(&codex, Verdict::NotSupported);
     assert!(codex.evidence.contains("network_proxy"), "{codex:?}");
 
-    // `conformance.json` writes the word `not supported`, and the run has
-    // no failed check for it.
     let subject = SuiteSubject {
         cli: "antigravity".into(),
         version: "1.0.0".into(),

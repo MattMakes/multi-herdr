@@ -1,7 +1,4 @@
 extends SceneTree
-## godot-economy-system scenarios: "Prove it" in SKILL.md and the "Checks"
-## lists of references/shops-and-loot.md and references/balancing.md, on the
-## skill's own blocks in res://skill/.
 
 const Expect = preload("res://expect.gd")
 
@@ -10,7 +7,6 @@ var e := Expect.new()
 
 func _initialize() -> void:
 	e.watch(self)
-	# The root enters the tree after _initialize starts; _ready needs it.
 	await process_frame
 	_wallet()
 	_save_round_trip()

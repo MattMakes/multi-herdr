@@ -1,12 +1,3 @@
-//! OpenCode-specific glue: recovering a session id after launch.
-//!
-//! OpenCode mints its own `ses_...` ids and offers no way to supply one, so a
-//! fresh worker's resume handle has to be recovered the way codex's is. Unlike
-//! codex there are no rollout files to scan: `opencode session list` is the
-//! supported interface, it takes `--format json`, and every record carries the
-//! `directory` it belongs to and when it was created. That is enough to tell one
-//! worker's session from another's without reading OpenCode's database.
-
 use horch_platform::start::Command;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,19 +11,12 @@ use crate::roster::{HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
-/// A session that could belong to this worker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionCandidate {
     pub session_id: String,
     pub created: SystemTime,
 }
 
-/// Sessions created at or after `since` whose directory is `project_dir`,
-/// newest first.
-///
-/// The directory check is what keeps two projects' concurrent OpenCode sessions
-/// apart, exactly as the cwd check does for codex rollouts. Directories
-/// compare canonically ([`Workdir`]).
 pub(crate) fn find_sessions(
     bin: &Path,
     project_dir: &str,
@@ -50,15 +34,10 @@ pub(crate) fn find_sessions(
     }
 }
 
-/// Split out from `find_sessions` so the filtering is testable without an
-/// OpenCode install.
 pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<SessionCandidate> {
     let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
         return Vec::new();
     };
-    // The launch marker's timestamp has whole-second resolution on some
-    // filesystems while OpenCode records milliseconds, so a session created in
-    // the same second as the marker would otherwise be missed.
     let since = since - Duration::from_secs(1);
     let workdir = Workdir::new(project_dir);
     let mut found: Vec<SessionCandidate> = records
@@ -71,7 +50,6 @@ pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<S
     found
 }
 
-/// Whether the `directory` of a record is the project's.
 fn in_project(record: &serde_json::Value, workdir: &Workdir) -> bool {
     record
         .get("directory")
@@ -79,8 +57,6 @@ fn in_project(record: &serde_json::Value, workdir: &Workdir) -> bool {
         .is_some_and(|d| workdir.matches(Path::new(d)))
 }
 
-/// The session a record names; None without a whole-number `created` or a
-/// text `id`.
 fn candidate(record: &serde_json::Value) -> Option<SessionCandidate> {
     let created = millis(record.get("created")?)?;
     Some(SessionCandidate {
@@ -94,7 +70,6 @@ fn millis(value: &serde_json::Value) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_millis(ms))
 }
 
-/// The OpenCode adapter.
 pub struct OpenCode;
 
 impl Harness for OpenCode {
@@ -102,15 +77,11 @@ impl Harness for OpenCode {
         HarnessKind::OpenCode
     }
 
-    /// The OpenCode free-tier models report `variants: {}` (`opencode models
-    /// --verbose`), so an effort there is silently a no-op.
     fn model_takes_effort(&self, model: &str) -> bool {
         !(model.starts_with("opencode/")
             && (model.ends_with("-free") || model == "opencode/big-pickle"))
     }
 
-    /// `skills.paths` in `OPENCODE_CONFIG_CONTENT` gains the bundle's
-    /// `skills/` directory, which holds exactly the activated skills.
     fn expose_skills_env(
         &self,
         cmd: &mut Command,
@@ -118,8 +89,6 @@ impl Harness for OpenCode {
         skills: &Bundle,
         inherited: Option<&str>,
     ) -> Result<()> {
-        // The builder may already have set it (the effort variant); build
-        // on that rather than on the teammate's or the operator's value.
         let set = cmd
             .get_envs()
             .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
@@ -142,11 +111,6 @@ impl Harness for OpenCode {
         Ok(())
     }
 
-    /// opencode 1.18.34 opens `--session <id>` and ignores `--prompt`
-    /// (LA-3, 2026-10-04; re-checked live 2026-10-06, U-64,
-    /// docs/live-checks/harnesses.md). The resume argv carries no `--prompt`
-    /// (`opencode_command`), so the typed prompt is the 1 delivery path
-    /// and a later opencode cannot deliver the task twice.
     fn resume_prompt_typed(&self) -> bool {
         true
     }
@@ -161,7 +125,6 @@ impl Harness for OpenCode {
         )
     }
 
-    /// `opencode session list` records whose directory is `workdir`.
     fn discover_sessions(
         &self,
         ctx: &RuntimeContext,
@@ -180,13 +143,6 @@ impl Harness for OpenCode {
     }
 }
 
-/// OpenCode: `opencode --model provider/model --prompt "..."`.
-///
-/// The prompt is a FLAG here, not a trailing positional, so it cannot be eaten
-/// by a variadic - but `args` still goes before it, to keep every builder in
-/// this file ordered the same way. A resume passes no `--prompt`: opencode
-/// ignores it beside `--session`, and the launch types the prompt in
-/// instead ([`Harness::resume_prompt_typed`]), so the task arrives once.
 pub(super) fn opencode_command(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -201,8 +157,6 @@ pub(super) fn opencode_command(
         cmd.env("OPENCODE_CONFIG_CONTENT", config);
     }
     push_permission_args(&mut cmd, teammate)?;
-    // `--pure` drops external plugins while leaving the operator's providers and
-    // credentials alone - the same intent as `inherit_plugins: false` on claude.
     if !teammate.inherit_plugins {
         cmd.arg("--pure");
     }
@@ -210,13 +164,6 @@ pub(super) fn opencode_command(
     Ok(cmd)
 }
 
-/// The `OPENCODE_CONFIG_CONTENT` value to set, or `None` to leave the env alone.
-///
-/// OpenCode calls reasoning effort a model "variant". The TUI horch
-/// launches has no `--variant` flag - 1.18.2 swallows it silently - so the level goes
-/// through the config overlay instead, as the default agent's `variant`.
-/// The teammate's config, else the operator's, with the harness default
-/// `config` keys merged under it.
 fn config_env(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<String>> {
     let base = teammate
         .env
@@ -225,8 +172,6 @@ fn config_env(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<String>> {
     let config = with_config_defaults(base.map(String::as_str), teammate)?;
     match &teammate.effort {
         Some(effort) => opencode_variant_config(config.as_deref(), effort).map(Some),
-        // Only when a default added a key: else the teammate env layer (or
-        // the inherited env) already carries this exact value.
         None => Ok(config.filter(|c| Some(c) != base)),
     }
 }
@@ -246,9 +191,6 @@ fn push_permission_args(cmd: &mut Command, teammate: &Teammate) -> Result<()> {
     Ok(())
 }
 
-/// A resume names its session before `args` and passes no `--prompt`; a fresh
-/// launch says nothing about the session (OpenCode mints its own `ses_...`
-/// ids, harvested afterwards) and ends on `--prompt`.
 fn push_session_args(cmd: &mut Command, session: Session<'_>, args: &[String], prompt: &str) {
     if let Session::Resume(id) = session {
         cmd.arg("--session").arg(id).args(args);
@@ -257,7 +199,6 @@ fn push_session_args(cmd: &mut Command, session: Session<'_>, args: &[String], p
     }
 }
 
-/// An `OPENCODE_CONFIG_CONTENT` text as JSON; no text is an empty object.
 fn parse_config(text: Option<&str>) -> Result<serde_json::Value> {
     match text {
         Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON"),
@@ -265,9 +206,6 @@ fn parse_config(text: Option<&str>) -> Result<serde_json::Value> {
     }
 }
 
-/// Merge `agent.build.variant` into an OpenCode config overlay. `build` is
-/// the primary agent the TUI starts in, and a variant set there applies to
-/// that agent's model, which is the one horch passes with `--model`.
 pub(crate) fn opencode_variant_config(inherited: Option<&str>, effort: &str) -> Result<String> {
     let mut value = parse_config(inherited)?;
     let build = value
@@ -285,10 +223,6 @@ pub(crate) fn opencode_variant_config(inherited: Option<&str>, effort: &str) -> 
     Ok(value.to_string())
 }
 
-/// `base` (an `OPENCODE_CONFIG_CONTENT` text) with the `config` keys of the
-/// teammate's OpenCode harness defaults deep-merged under it: a key path
-/// `base` already has wins. Among the defaults, a later entry wins. `base`
-/// comes back unchanged, byte for byte, when no default adds a key.
 pub(crate) fn with_config_defaults(
     base: Option<&str>,
     teammate: &Teammate,
@@ -302,8 +236,6 @@ pub(crate) fn with_config_defaults(
     Ok(merged.or_else(|| base.map(str::to_owned)))
 }
 
-/// The `config` keys of the teammate's OpenCode harness defaults, a later
-/// entry winning.
 fn opencode_defaults(teammate: &Teammate) -> serde_json::Map<String, serde_json::Value> {
     let mut defaults = serde_json::Map::new();
     HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::OpenCode)
@@ -314,7 +246,6 @@ fn opencode_defaults(teammate: &Teammate) -> serde_json::Map<String, serde_json:
     defaults
 }
 
-/// `base` with `defaults` merged under it, or `None` when nothing changed.
 fn merged_config(
     base: Option<&str>,
     defaults: &serde_json::Map<String, serde_json::Value>,
@@ -327,8 +258,6 @@ fn merged_config(
     Ok(changed.then(|| value.to_string()))
 }
 
-/// Deep-merge `from` into `into`. `overwrite`: a leaf of `from` replaces the
-/// same leaf of `into`; else `into` keeps it. Returns whether `into` changed.
 pub(crate) fn merge_json(
     into: &mut serde_json::Map<String, serde_json::Value>,
     from: &serde_json::Map<String, serde_json::Value>,
@@ -355,8 +284,6 @@ pub(crate) fn merge_json(
     changed
 }
 
-/// Add `skills` to `skills.paths` in an OpenCode config overlay, keeping
-/// everything else in it.
 fn skills_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
     let mut value = parse_config(inherited)?;
     let object = value
@@ -379,11 +306,6 @@ fn skills_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
     Ok(value.to_string())
 }
 
-/// The operator boundary of the OpenCode adapter (SR-8, A37): not
-/// supported on any OS. OpenCode runs its tools with no OS sandbox, so a
-/// command of the agent can read the token, connect to the command channel
-/// and write into the request folder whatever its permission rules say.
-/// Profile validation refuses each OpenCode worker profile.
 pub fn operator_boundary(
     _teammate: &Teammate,
     _fleet_root: &Path,
@@ -405,10 +327,6 @@ mod tests {
             .collect()
     }
 
-    /// U-64: opencode 1.18.34 ignores `--prompt` beside `--session` (seen
-    /// live, docs/live-checks/harnesses.md), and the launch types the prompt
-    /// in. A resume argv without the flag delivers the task once, even if a
-    /// later opencode starts to honour it. A fresh launch keeps it.
     #[test]
     fn only_a_fresh_launch_passes_the_prompt_flag() {
         use super::super::launch::command_in;
@@ -532,7 +450,6 @@ mod tests {
         let launch = |t: &crate::roster::Teammate| {
             config_env(&opencode_command(&env, t, Session::Unmanaged, "x", None).unwrap())
         };
-        // Nothing to say: the env is left to the inherited layers.
         assert_eq!(launch(&pickle()), None);
 
         let mut t = pickle();
@@ -545,14 +462,12 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&launch(&t).unwrap()).unwrap();
         assert_eq!(v, serde_json::json!({"share":"disabled"}));
 
-        // A default the teammate's own config already has changes nothing.
         t.env.insert(
             "OPENCODE_CONFIG_CONTENT".into(),
             r#"{"share":"manual"}"#.into(),
         );
         assert_eq!(launch(&t), None);
 
-        // Effort on top of a teammate config and a default.
         t.effort = Some("max".into());
         t.env
             .insert("OPENCODE_CONFIG_CONTENT".into(), r#"{"theme":"x"}"#.into());
@@ -604,8 +519,6 @@ mod tests {
          "projectId":"global","directory":"/proj/other"}
     ]"#;
 
-    /// The two filters that keep workers apart: another project's session is not
-    /// this worker's, and neither is one that existed before it launched.
     #[test]
     fn only_this_project_and_only_after_launch() {
         let found = parse_sessions(LIST, "/proj/mine", at(1788648160000));
@@ -625,8 +538,6 @@ mod tests {
         assert_eq!(ids, ["ses_c", "ses_b", "ses_a"]);
     }
 
-    /// A session created in the same second the marker was written still counts:
-    /// the marker's mtime can be coarser than OpenCode's millisecond stamp.
     #[test]
     fn a_session_from_the_launch_second_is_not_missed() {
         let found = parse_sessions(
@@ -637,21 +548,15 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:#?}");
     }
 
-    /// Output that is not the JSON this expects must yield nothing rather than
-    /// panicking a background thread nobody is watching.
     #[test]
     fn unparseable_output_is_empty_not_fatal() {
         assert!(parse_sessions("not json", "/proj/mine", at(0)).is_empty());
         assert!(parse_sessions("[]", "/proj/mine", at(0)).is_empty());
         assert!(parse_sessions(r#"[{"id":"x"}]"#, "/proj/mine", at(0)).is_empty());
-        // One record is no list.
         let one = r#"{"id":"ses_a","created":5000,"directory":"/proj/mine"}"#;
         assert!(parse_sessions(one, "/proj/mine", at(0)).is_empty());
     }
 
-    /// A record of this project needs a whole-number `created` and a text
-    /// `id`; one that lacks either is skipped, not fatal. Stamps that tie keep
-    /// the order of the list.
     #[test]
     fn a_record_of_this_project_needs_a_numeric_created_and_a_text_id() {
         let json = r#"[
@@ -672,9 +577,6 @@ mod tests {
         assert!(found.iter().all(|c| c.created == at(5000)), "{found:#?}");
     }
 
-    /// The cut is 1 s before the launch marker, which some filesystems round
-    /// down to the second: a session at the cut counts, 1 ms before it does
-    /// not.
     #[test]
     fn the_cut_is_one_second_before_the_marker_and_includes_it() {
         let json = r#"[

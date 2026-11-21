@@ -1,31 +1,13 @@
-//! The health of a worker profile, read from its last `profile_unhealthy` or
-//! `profile_healthy` event (fleetd-p7 MAP.md Q10). No event means healthy.
-//!
-//! `docs/specs/fleetd/design.md`, "Worker profiles and adapters" (The
-//! health of a profile), rung 4 of the stall ladder, and step 4 of "Docs
-//! sync and adapter conformance": a failed conformance run or a dialog
-//! marks a profile unhealthy, a passed run marks it healthy again, and a
-//! mark that does not change the health writes no event. Facts in,
-//! choices out. No I/O.
-
 use super::conformance::ConformanceReport;
 
-/// The `entity` word of a health event: the event is about a profile, which
-/// is not a row of the ledger.
 pub const PROFILE: &str = "profile";
 
-/// The health of 1 profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Health {
     Healthy,
-    /// The cause of its last `profile_unhealthy` event.
-    Unhealthy {
-        reason: String,
-    },
+    Unhealthy { reason: String },
 }
 
-/// The contract `profile-marked-unhealthy` (Slice 7). Its fields are the
-/// `data_json` of the `profile_unhealthy` event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileMarkedUnhealthy {
     pub profile_id: String,
@@ -36,8 +18,6 @@ impl ProfileMarkedUnhealthy {
     pub const NAME: &'static str = "profile-marked-unhealthy";
 }
 
-/// The contract `profile-marked-healthy` (Slice 7). Its field is the
-/// `data_json` of the `profile_healthy` event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileMarkedHealthy {
     pub profile_id: String,
@@ -47,15 +27,12 @@ impl ProfileMarkedHealthy {
     pub const NAME: &'static str = "profile-marked-healthy";
 }
 
-/// 1 mark that changes the health of 1 profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mark {
     Unhealthy(ProfileMarkedUnhealthy),
     Healthy(ProfileMarkedHealthy),
 }
 
-/// The mark `unhealthy` of `profile` with `reason`, or `None` when the
-/// profile is unhealthy already.
 pub fn mark_unhealthy(now: &Health, profile: &str, reason: &str) -> Option<Mark> {
     (*now == Health::Healthy).then(|| {
         Mark::Unhealthy(ProfileMarkedUnhealthy {
@@ -65,8 +42,6 @@ pub fn mark_unhealthy(now: &Health, profile: &str, reason: &str) -> Option<Mark>
     })
 }
 
-/// The mark `healthy` of `profile`, or `None` when the profile is healthy
-/// already.
 pub fn mark_healthy(now: &Health, profile: &str) -> Option<Mark> {
     (*now != Health::Healthy).then(|| {
         Mark::Healthy(ProfileMarkedHealthy {
@@ -75,10 +50,6 @@ pub fn mark_healthy(now: &Health, profile: &str) -> Option<Mark> {
     })
 }
 
-/// The marks after the conformance run `report` of 1 CLI. `profiles` holds
-/// each profile whose `agent` is that CLI, with its health now. A failed
-/// run marks each healthy one unhealthy, with the failed checks as the
-/// cause. A passed run marks each unhealthy one healthy again.
 pub fn after_conformance(report: &ConformanceReport, profiles: &[(String, Health)]) -> Vec<Mark> {
     let failure = report.failure().map(|f| f.to_string());
     profiles
@@ -90,7 +61,6 @@ pub fn after_conformance(report: &ConformanceReport, profiles: &[(String, Health
         .collect()
 }
 
-/// The cause of a mark after a dialog at rung 4 of the stall ladder.
 pub fn dialog_reason(attempt: &str) -> String {
     format!("dialog: attempt {attempt} waited on a dialog (rung 4)")
 }

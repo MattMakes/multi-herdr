@@ -1,13 +1,3 @@
-//! The files of an idea folder: atomic writes and checked reads.
-//!
-//! Each write is atomic (Protocol rule 1): idea.md and each amendment are
-//! created 1 time and never changed, the other files are replaced whole.
-//! A sub-orchestrator writes assumptions.md, spec.md and requirements.yaml,
-//! so each read goes through the protected file reader (SR-6): a regular
-//! file, no link, its real path inside its own idea folder, owned by the
-//! ledger owner, mode 0600 in a folder of mode 0700, and at most
-//! [`FILE_LIMIT`] bytes.
-
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -27,21 +17,13 @@ use crate::fleetd::ideas::domain::idea_folder::{
 use crate::fleetd::ideas::domain::plan_validator::Requirement;
 use crate::fsx::{self, Created, FsxError};
 
-/// The mode of each file of an idea folder.
 const FILE_MODE: u32 = 0o600;
 
-/// Why a file of an idea folder cannot be used. `file` is its path in the
-/// idea folder.
 #[derive(Debug)]
 pub enum FolderError {
-    /// The file does not exist.
     Missing { file: String },
-    /// The file failed a check of SR-6. The caller records it in `ingested`
-    /// and does not read the path again.
     Rejected { file: String, reason: String },
-    /// The content of the file fails a rule of the idea folder.
     Invalid { file: String, reason: String },
-    /// A write failed.
     Write(FsxError),
 }
 
@@ -71,7 +53,6 @@ fn invalid_in(file: &str) -> impl Fn(Invalid) -> FolderError + '_ {
     }
 }
 
-/// The front matter of idea.md.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Front {
@@ -82,7 +63,6 @@ struct Front {
     depends_on: Vec<String>,
 }
 
-/// requirements.yaml.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequirementsFile {
@@ -99,18 +79,14 @@ struct RequirementEntry {
     cites: Vec<String>,
 }
 
-/// The folder `<fleet root>/ideas/I-NNNN/` of 1 idea.
 #[derive(Debug, Clone)]
 pub struct IdeaFolder {
     dir: PathBuf,
     idea: String,
-    /// The user that owns the ledger, and so each file of the folder.
     owner: User,
 }
 
 impl IdeaFolder {
-    /// The folder of `idea` in `ideas`, the `ideas/` folder of the fleet
-    /// root. It does no I/O.
     pub fn new(ideas: &Path, idea: &str, owner: User) -> Result<IdeaFolder, FolderError> {
         if !is_idea_id(idea) {
             return Err(FolderError::Invalid {
@@ -125,8 +101,6 @@ impl IdeaFolder {
         })
     }
 
-    /// [`IdeaFolder::new`], and make the folder and its `amendments/`
-    /// folder with mode 0700.
     pub fn create(ideas: &Path, idea: &str, owner: User) -> Result<IdeaFolder, FolderError> {
         let folder = IdeaFolder::new(ideas, idea, owner)?;
         fsx::ensure_private_dir(&folder.dir)?;
@@ -134,13 +108,10 @@ impl IdeaFolder {
         Ok(folder)
     }
 
-    /// The path of the folder.
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Write idea.md 1 time (FR-1). The same bytes again are
-    /// `AlreadyIdentical`; other bytes are a `Conflict`, and the file stays.
     pub fn write_idea(&self, idea: &IdeaFile) -> Result<Created, FolderError> {
         let front = Front {
             id: idea.id.clone(),
@@ -161,7 +132,6 @@ impl IdeaFolder {
         )?)
     }
 
-    /// Read and validate idea.md.
     pub fn read_idea(&self) -> Result<IdeaFile, FolderError> {
         let file = self.read_text(IDEA_MD)?;
         let (front, text) = split_front_matter(&file).map_err(invalid_in(IDEA_MD))?;
@@ -180,7 +150,6 @@ impl IdeaFolder {
         })
     }
 
-    /// Write amendment `n` 1 time, as idea.md.
     pub fn write_amendment(&self, n: u32, text: &str) -> Result<Created, FolderError> {
         Ok(fsx::create_immutable(
             &self.dir.join(amendment_file(n)),
@@ -189,8 +158,6 @@ impl IdeaFolder {
         )?)
     }
 
-    /// The text of each amendment, in the order of its number. A file of
-    /// `amendments/` that is not `<n>.md` is not read.
     pub fn read_amendments(&self) -> Result<Vec<String>, FolderError> {
         let entries = match std::fs::read_dir(self.dir.join(AMENDMENTS)) {
             Ok(entries) => entries,
@@ -214,8 +181,6 @@ impl IdeaFolder {
             .collect()
     }
 
-    /// Append 1 question and its answer to interview.md, and return the id
-    /// of the answer: `Q<n>`.
     pub fn append_interview(&self, question: &str, answer: &str) -> Result<String, FolderError> {
         let mut file = match self.read_text(INTERVIEW_MD) {
             Ok(file) => file,
@@ -228,7 +193,6 @@ impl IdeaFolder {
         Ok(format!("Q{n}"))
     }
 
-    /// The id of each answer of interview.md. No interview.md is no answer.
     pub fn read_answers(&self) -> Result<Vec<String>, FolderError> {
         match self.read_text(INTERVIEW_MD) {
             Ok(file) => Ok(interview_answers(&file)),
@@ -237,35 +201,28 @@ impl IdeaFolder {
         }
     }
 
-    /// Replace assumptions.md.
     pub fn write_assumptions(&self, text: &str) -> Result<(), FolderError> {
         self.replace(ASSUMPTIONS_MD, text)
     }
 
-    /// Read and validate assumptions.md (FM-30: no `[open]` item).
     pub fn read_assumptions(&self) -> Result<Assumptions, FolderError> {
         parse_assumptions(&self.read_text(ASSUMPTIONS_MD)?).map_err(invalid_in(ASSUMPTIONS_MD))
     }
 
-    /// Replace spec.md.
     pub fn write_spec(&self, text: &str) -> Result<(), FolderError> {
         self.replace(SPEC_MD, text)
     }
 
-    /// Read and validate spec.md.
     pub fn read_spec(&self) -> Result<String, FolderError> {
         let file = self.read_text(SPEC_MD)?;
         check_spec(&file).map_err(invalid_in(SPEC_MD))?;
         Ok(file)
     }
 
-    /// Replace requirements.yaml.
     pub fn write_requirements(&self, text: &str) -> Result<(), FolderError> {
         self.replace(REQUIREMENTS_YAML, text)
     }
 
-    /// Read and validate requirements.yaml: each requirement cites an item
-    /// of assumptions.md or an answer of interview.md (FM-30).
     pub fn read_requirements(&self) -> Result<Vec<Requirement>, FolderError> {
         let file = self.read_text(REQUIREMENTS_YAML)?;
         let parsed: RequirementsFile =
@@ -294,24 +251,18 @@ impl IdeaFolder {
         Ok(requirements)
     }
 
-    /// The lower-case hex sha256 of the file `name` of the folder, read with
-    /// the checks of SR-6. `name` is a path inside the folder.
     pub fn sha256_of(&self, name: &str) -> Result<String, FolderError> {
         Ok(sha256_bytes(self.read_text(name)?.as_bytes()).hex())
     }
 
-    /// Replace approval.json. Only fleetd calls it (FR-10).
     pub fn write_approval(&self, text: &str) -> Result<(), FolderError> {
         self.replace(APPROVAL_JSON, text)
     }
 
-    /// The text of approval.json, read with the checks of SR-6. The caller
-    /// trusts it only when its sha256 is the one that fleetd recorded.
     pub fn read_approval(&self) -> Result<String, FolderError> {
         self.read_text(APPROVAL_JSON)
     }
 
-    /// Replace the file `name` atomically: `.name.tmp-*`, fsync, rename.
     fn replace(&self, name: &str, text: &str) -> Result<(), FolderError> {
         Ok(fsx::write_atomic(
             &self.dir.join(name),
@@ -320,7 +271,6 @@ impl IdeaFolder {
         )?)
     }
 
-    /// Read the file `name` with the checks of SR-6, as UTF-8 text.
     pub fn read_text(&self, name: &str) -> Result<String, FolderError> {
         let path = self.dir.join(name);
         if let Err(e) = std::fs::symlink_metadata(&path) {
@@ -346,13 +296,10 @@ impl IdeaFolder {
     }
 }
 
-/// The path of amendment `n` in the idea folder.
 fn amendment_file(n: u32) -> String {
     format!("{AMENDMENTS}/{n:04}.md")
 }
 
-/// The number of the amendment file `name`, or `None` when `name` is not
-/// the name that [`amendment_file`] gives.
 fn amendment_number(name: &str) -> Option<u32> {
     let n = name.strip_suffix(".md")?.parse().ok()?;
     (amendment_file(n) == format!("{AMENDMENTS}/{name}")).then_some(n)

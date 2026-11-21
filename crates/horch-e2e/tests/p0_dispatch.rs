@@ -1,6 +1,3 @@
-//! Phase 0 red tests for dispatch and the result of a worker (design
-//! `docs/specs/fleetd/design.md`, FM-2 and FM-6). Both turn green in Phase 4.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -28,17 +25,12 @@ fn out(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A harness with its own ledger file, a git repository and a fleet.toml
-/// with 1 pass each second. A test starts its test fleetd after it queued
-/// its task: after T-884 a launched spawn writes its session record through
-/// fleetd, so a push launch needs a fleetd that runs (T-890).
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
-    // The load of the build host does not hold dispatch in this test.
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
@@ -46,8 +38,6 @@ fn world(name: &str) -> Harness {
         "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
-    // The project declares its gates, so no hold of a missing fast gate
-    // stops the dispatch (Phase 4, Q-C).
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -63,15 +53,11 @@ fn world(name: &str) -> Harness {
     h
 }
 
-/// Wait for about 1 pass of the test fleetd, and give `horch ledger status
-/// --json` for a panic message. `status` exits 1 while work remains.
 fn pass(h: &Harness) -> Output {
     std::thread::sleep(std::time::Duration::from_secs(1));
     h.run(&["ledger", "status", "--json"])
 }
 
-/// The `task.yaml` of attempt `attempt` under the fleet root, when it
-/// exists, and its text.
 fn task_yaml_of(h: &Harness, attempt: &str) -> Option<(PathBuf, String)> {
     let want = format!("attempt: {attempt}");
     files_named(&h.fleet_root().join("tasks"), "task.yaml")
@@ -83,7 +69,6 @@ fn task_yaml_of(h: &Harness, attempt: &str) -> Option<(PathBuf, String)> {
         .find(|(_, y)| y.lines().any(|l| l.trim() == want))
 }
 
-/// The value of key `key` in the YAML text `y`.
 fn yaml_key(y: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     y.lines()
@@ -91,15 +76,11 @@ fn yaml_key(y: &str, key: &str) -> Option<String> {
         .map(|v| v.trim().trim_matches('"').to_string())
 }
 
-/// A harness in workspace `w1` (root pane `w1:p1`) whose panes run their
-/// commands, like `horch fleet` leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = world(name);
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
     h.set("HORCH_FAKE_SCENARIO", scenario);
-    // The workspace of the fleet has the label of the project folder, so
-    // fleetd launches an attempt with no recorded pane in it.
     let workspace = h.fleet_workspace();
     assert_eq!(workspace, "w1");
     h.set("HORCH_WORKSPACE_ID", workspace);
@@ -127,10 +108,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     out(&o).trim().to_string()
 }
 
-/// Create run `slug` in workspace `w1` with `thresholds` and the run branch
-/// `fleet/<slug>` and its orchestrator in pane `w1:p1`, give it an idea
-/// in flight (FR-12), and queue 1 task for `persona`. `horch ledger run new`
-/// and `horch ledger add` are retired, so the test writes the rows.
 fn queue_one(h: &Harness, slug: &str, thresholds: Thresholds, persona: &str) {
     let p = ticket(h, "t0", "# T0\n");
     let base = git_in(h, &h.project, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -155,8 +132,6 @@ fn queue_one(h: &Harness, slug: &str, thresholds: Thresholds, persona: &str) {
     schema::run_idea(conn, &run.run_id, &now, true)
         .unwrap()
         .expect("the idea of the run");
-    // The orchestrator in the root pane `w1:p1`: a push launch opens the
-    // pane of its attempt beside it.
     let orchestrator = workers::insert(
         conn,
         &NewWorker {
@@ -174,7 +149,6 @@ fn queue_one(h: &Harness, slug: &str, thresholds: Thresholds, persona: &str) {
     tasks::add(conn, &run, &new, Actor::Orchestrator).unwrap();
 }
 
-/// Each file named `name` under `dir`, at any depth.
 fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -191,7 +165,6 @@ fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     found
 }
 
-/// The worker id and the label of the 1 worker of kind `worker` in `st`.
 fn the_worker(st: &Value) -> (String, String) {
     let w = &st["workers"]
         .as_array()
@@ -212,12 +185,6 @@ fn fm2_agent_that_never_claims_has_its_task_bound_at_spawn() {
             let h = fleet("p0-fm2", "exec,bound");
             queue_one(&h, "alpha", Thresholds::default(), "opus");
             h.serve_fleetd();
-            // A pass dispatches the task by push. Its worktree job runs,
-            // and a later pass launches the agent.
-            // The fake agent never runs `horch ledger claim`. Its `bound`
-            // key records at process entry whether its task is bound and
-            // whether its task.yaml exists, in entry.json of its attempt
-            // folder. With no binding at entry it writes no entry.json.
             let tasks = h.fleet_root().join("tasks");
             let path = wait_for(
                 &format!(
@@ -239,10 +206,6 @@ fn fm2_agent_that_never_claims_has_its_task_bound_at_spawn() {
                 entry["task_yaml_exists"] == true,
                 "the task.yaml of the agent is missing at entry: {entry}"
             );
-            // The agent exits with no result, so a later pass can end that
-            // attempt (no_result) and make the task ready again: read the
-            // attempt, not the status row of the task.
-            // `status` exits 1 while work remains.
             let o = h.run(&["ledger", "status", "--json"]);
             let st: Value =
                 serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
@@ -281,8 +244,6 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
         file!(),
         "fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt",
         || {
-            // Each agent commits in the worktree of its task.yaml, then
-            // exits with no `done` and no result.
             let h = fleet("p0-fm6", "exec,commit,exit_without_result");
             queue_one(
                 &h,
@@ -295,7 +256,6 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
                 "opus",
             );
             h.serve_fleetd();
-            // A1 starts by push dispatch.
             let (_, a1) = wait_for("no task.yaml of A1", || {
                 pass(&h);
                 task_yaml_of(&h, "A1")
@@ -310,8 +270,6 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
                 subject.starts_with("fake ").then(|| head.to_string())
             });
 
-            // The agent of A1 ends with no result, after its 1 repair
-            // resume. Passes run until its worker row is not live.
             wait_for("the worker of A1 is still live", || {
                 pass(&h);
                 let st = json_of(&h, &["ledger", "status", "--json"]);
@@ -322,21 +280,14 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
                     .find(|w| w["worker"]["kind"] == "worker")?["worker"];
                 (!live.iter().any(|s| w["status"] == *s)).then_some(())
             });
-            // No heartbeat renews the lease of A1. It expires after its
-            // 120 s on the fleet clock, and the task waits for its next
-            // attempt.
             h.advance_fleet_clock(121);
             wait_for("the task of A1 is not queued again", || {
                 pass(&h);
                 let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
                 (t["task"]["status"] == "queued").then_some(())
             });
-            // The retry waits for its backoff of 30 s on the fleet clock
-            // (rung 6).
             h.advance_fleet_clock(30);
 
-            // The next attempt starts by push dispatch (Phase 4: no claim).
-            // Its task.yaml names the same worktree, with the commit in it.
             let (_, a2) = wait_for("no task.yaml of A2", || {
                 pass(&h);
                 task_yaml_of(&h, "A2")

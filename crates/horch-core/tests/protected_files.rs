@@ -1,6 +1,3 @@
-//! The protected file reader (ticket 07 of fleetd-p5): SR-5, SR-6, FM-23.
-//! Each rejected case asserts its reason text.
-
 #[cfg(unix)]
 use std::fs::Permissions;
 use std::fs::{self, File};
@@ -31,7 +28,6 @@ impl Setup {
         }
     }
 
-    /// The real path of the temporary folder, outside the root.
     fn outside(&self) -> PathBuf {
         fs::canonicalize(self._tmp.path()).unwrap()
     }
@@ -97,8 +93,6 @@ fn file_over_its_limit_is_rejected_without_reading_it_all() {
     let s = Setup::new();
     let path = s.root.join("progress.jsonl");
     write_file(&path, b"");
-    // A sparse file of 1 GiB: the reason comes from the size of the open
-    // handle, so the reader refuses it before a read.
     File::options()
         .write(true)
         .open(&path)
@@ -145,8 +139,6 @@ fn folder_with_mode_0755_is_rejected() {
 #[test]
 fn real_path_outside_the_root_is_rejected() {
     let s = Setup::new();
-    // The file is regular, and the link is in a parent folder: `sub` points
-    // out of the root.
     let elsewhere = s.outside().join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
@@ -173,8 +165,6 @@ fn file_of_another_owner_is_rejected() {
     let User::Uid(uid) = s.owner else {
         panic!("a unix user is a uid")
     };
-    // A test cannot make a file of another user, so the caller gives an
-    // owner that is not the owner of the file.
     let other = User::Uid(uid + 1);
     let rule = Rule {
         root: &s.root,

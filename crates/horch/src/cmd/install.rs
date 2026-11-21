@@ -1,13 +1,3 @@
-//! `horch install` - replaces `scripts/install-herdr-fleet.mjs`.
-//!
-//! The Node script had to inject a shell function into `~/.zshrc` or the
-//! PowerShell profile, because the real entry point was
-//! `just --justfile <repo>/justfile herdr-fleet` and so depended on the repo
-//! staying put. `horch` embeds its prompts and needs no repo, so installing is
-//! just putting one binary on PATH - no profile editing, nothing to keep in sync.
-//! `herdr-install` goes next to it, and so do the `herdr-fleet` and
-//! `herdr-run` launchers (unix only).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -16,9 +6,7 @@ use horch_platform::service;
 
 use super::fleetd::{self, Fleet, Mode};
 
-/// Where to put the binary when the caller does not say.
 pub fn default_dir(ctx: &RuntimeContext) -> PathBuf {
-    // The base variable is `LOCALAPPDATA` on Windows; the context reads it.
     match horch_platform::path::INSTALL_BASE_VAR {
         Some(_) => ctx
             .inherited
@@ -43,13 +31,10 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     let target = dir.join(file_name);
 
     place_horch(&source, &dir, &target)?;
-    // A live collector keeps running the binary it started with: old
-    // prices, old readers. Restart it on the binary just installed.
     let herdr = horch_core::workspace::PaneHost::of(ctx);
     if let Err(e) = super::telemetry::restart_if_stale(ctx, &herdr, &target) {
         println!("warning: telemetry collector not restarted: {e:#}; run `horch telemetry ensure`");
     }
-    // And fleetd (OR-6).
     let install_fleetd_service = || install_service(&target);
     for line in fleetd::with_fleet(ctx, |fleet| {
         install_fleetd(fleet, &install_fleetd_service, &target)
@@ -57,8 +42,6 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
         println!("{line}");
     }
 
-    // The sibling binary is built next to horch (`cargo build --bin
-    // herdr-install`), and is installed next to it too.
     install_siblings(&source, &dir)?;
     let git = horch_core::taskledger::git::Git::new(&ctx.bins.harness.git);
     let roster = ctx
@@ -79,11 +62,6 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// The fleetd part of `horch install` (OR-6, preservation 04 S10). In
-/// service mode it installs the fleetd service with `install_service`, and
-/// stand-in mode writes no service (`docs/tickets/fleetd-p1/MAP.md`, Q8).
-/// Then it restarts a live fleetd that runs another binary on `target`.
-/// Gives the lines to print. A failure is a warning: the install stands.
 fn install_fleetd(
     fleet: &Fleet<'_>,
     install_service: &dyn Fn() -> Result<()>,
@@ -108,25 +86,18 @@ fn install_fleetd(
     lines
 }
 
-/// Install the fleetd service on `target` with the service manager of this
-/// OS. Each install loads each label with its current definition, also
-/// when the definition files hold this text already: a failed install
-/// can leave a current file next to a label that is not loaded.
 fn install_service(target: &Path) -> Result<()> {
     let spec = fleetd::service_spec(target)?;
     service::ensure(&spec, Path::new(service::MANAGER))
         .with_context(|| format!("installing the service {}", service::LABEL))
 }
 
-/// Clears `dir` of leftovers and installs `source` as `target`.
 fn place_horch(source: &Path, dir: &Path, target: &Path) -> Result<()> {
     remove_stale_old(dir);
     remove_retired(dir)?;
     install_one("horch", source, target)
 }
 
-/// Deletes each [`horch::RETIRED_BINARIES`] file in `dir` and prints 1 line
-/// that names its path.
 fn remove_retired(dir: &Path) -> Result<()> {
     for path in horch::remove_retired_binaries(dir)? {
         println!("removed the retired {}", path.display());
@@ -134,17 +105,14 @@ fn remove_retired(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Removes the `.old` files a Windows replacement left; a no-op elsewhere.
 fn remove_stale_old(dir: &Path) {
     if horch_platform::rest::RUNNING_EXE_IS_LOCKED {
-        // A process that still runs from a `.old` file keeps it; that is fine.
         for old in stale_old_paths(dir) {
             let _ = std::fs::remove_file(old);
         }
     }
 }
 
-/// The closing text of `install`, without its final newline.
 fn path_help(dir: &Path, on_path: bool) -> String {
     if on_path {
         "\nReady. cd into a project and run: horch fleet\n(needs a running herdr server: launch the herdr app, or `herdr server`)".to_string()
@@ -157,7 +125,6 @@ fn path_help(dir: &Path, on_path: bool) -> String {
     }
 }
 
-/// The launcher scripts, with `__TEAMMATES_DIR__` as the roster placeholder.
 const FLEET_LAUNCHER: &str = include_str!("../../../../scripts/herdr-fleet");
 const RUN_LAUNCHER: &str = include_str!("../../../../scripts/herdr-run");
 
@@ -165,9 +132,6 @@ pub fn exe_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// Installs each release binary but `horch` that is built beside
-/// `horch_source` into `dir`. A missing binary prints one line and the
-/// install goes on.
 fn install_siblings(horch_source: &Path, dir: &Path) -> Result<()> {
     for &bin in &horch::RELEASE_BINARIES[1..] {
         let source = sibling(horch_source, bin);
@@ -183,8 +147,6 @@ fn install_siblings(horch_source: &Path, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes the `herdr-fleet` and `herdr-run` launchers into `dir`. They are
-/// shell scripts, so Windows gets none: `horch fleet` is the entry point there.
 fn install_launchers(dir: &Path, teammates: Option<&Path>) -> Result<()> {
     if !horch_platform::rest::SHELL_LAUNCHERS {
         println!(
@@ -203,11 +165,6 @@ fn install_launchers(dir: &Path, teammates: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// The roster dir a launcher bakes in for `teammates`. A linked worktree (a
-/// gate or task worktree) is deleted once its work lands, and a launcher
-/// that names a dir in one then runs every fleet on the built-in roster. So
-/// a dir inside a linked worktree becomes the same dir of the main checkout,
-/// when that dir exists. Any other dir is kept.
 fn durable_roster(git: &horch_core::taskledger::git::Git, teammates: &Path) -> PathBuf {
     let kept = teammates.to_path_buf();
     let Ok(top) = git.run(teammates, &["rev-parse", "--show-toplevel"]) else {
@@ -238,16 +195,12 @@ fn durable_roster(git: &horch_core::taskledger::git::Git, teammates: &Path) -> P
     durable
 }
 
-/// The roster assignment line of a launcher template.
 const TEAMMATES_LINE: &str = "HORCH_TEAMMATES_DIR=\"__TEAMMATES_DIR__\"";
 
-/// `text` as a POSIX single-quoted literal: no expansion happens inside it.
 fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Fills in a launcher template. With a roster dir the path is baked in; with
-/// none the two `HORCH_TEAMMATES_DIR` lines go, and horch uses its own roster.
 fn render_launcher(template: &str, teammates: Option<&Path>) -> String {
     match teammates {
         Some(dir) => {
@@ -265,8 +218,6 @@ fn render_launcher(template: &str, teammates: Option<&Path>) -> String {
     }
 }
 
-/// The binary `name` built beside `horch_source`. A link to horch is
-/// resolved first, so the sibling is the one in the build directory.
 fn sibling(horch_source: &Path, name: &str) -> PathBuf {
     let real = horch_source
         .canonicalize()
@@ -274,10 +225,7 @@ fn sibling(horch_source: &Path, name: &str) -> PathBuf {
     real.with_file_name(exe_name(name))
 }
 
-/// Install `source` as `target`, unless that real file is there already.
 fn install_one(name: &str, source: &Path, target: &Path) -> Result<()> {
-    // `same_file` follows symlinks, so a link that resolves to this binary
-    // would count as installed. The install must be a real file: not a link.
     if same_file(source, target) && !is_symlink(target) {
         println!("{name} is already installed at {}", target.display());
     } else {
@@ -287,10 +235,7 @@ fn install_one(name: &str, source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copies `source` to `target`, replacing whatever is there.
 fn place_binary(source: &Path, target: &Path) -> Result<()> {
-    // The running binary can be reached through the very symlink removed below,
-    // so resolve it to the real file first.
     let source = source
         .canonicalize()
         .unwrap_or_else(|_| source.to_path_buf());
@@ -301,9 +246,6 @@ fn place_binary(source: &Path, target: &Path) -> Result<()> {
     })
 }
 
-/// Fills a staged file with `fill`, makes it executable, and moves it to
-/// `target`. Replace rather than write in place: overwriting a running binary
-/// fails on Windows and can crash a live process on Unix.
 fn replace_file(target: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     let dir = target
         .parent()
@@ -316,7 +258,6 @@ fn replace_file(target: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result
     let staged = dir.join(format!(".{}.new", file_name.to_string_lossy()));
     fill(&staged)?;
     process::make_executable(&staged)?;
-    // A running exe cannot be overwritten on Windows, but it can be renamed.
     swap_in(
         &staged,
         target,
@@ -325,9 +266,6 @@ fn replace_file(target: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result
     )
 }
 
-/// Moves `staged` to `target`. With `move_aside`, an existing `target` goes to
-/// its `.old` path first, and comes back if the final rename fails. `rename`
-/// is a parameter so a test can make it fail.
 fn swap_in(
     staged: &Path,
     target: &Path,
@@ -338,8 +276,6 @@ fn swap_in(
     rename(staged, target).map_err(|e| roll_back(install_error(e, target), aside, target, &rename))
 }
 
-/// With `enabled` and an existing `target`, moves it to its `.old` path and
-/// returns that path.
 fn move_aside_old(
     target: &Path,
     enabled: bool,
@@ -362,8 +298,6 @@ fn install_error(e: std::io::Error, target: &Path) -> anyhow::Error {
     ))
 }
 
-/// Puts the moved-aside `old` back at `target` after a failed install, and
-/// returns the error to report.
 fn roll_back(
     err: anyhow::Error,
     aside: Option<PathBuf>,
@@ -383,8 +317,6 @@ fn roll_back(
     }
 }
 
-/// The `.old` files that `install` removes at its start: one per installed
-/// binary in `dir`. Windows leaves them after a replacement.
 fn stale_old_paths(dir: &Path) -> Vec<PathBuf> {
     horch::RELEASE_BINARIES
         .iter()
@@ -392,7 +324,6 @@ fn stale_old_paths(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Where Windows moves a replaced exe: `.<file name>.old` in the same dir.
 fn old_path(target: &Path) -> PathBuf {
     let name = target
         .file_name()
@@ -401,9 +332,6 @@ fn old_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.old"))
 }
 
-/// Removes `path` when it is a symlink, and says so. A link at the destination
-/// is usually a stale one to a script in another checkout, and the install must
-/// replace the link and never the file it points to.
 fn remove_symlink(path: &Path) -> Result<()> {
     if !is_symlink(path) {
         return Ok(());
@@ -421,13 +349,10 @@ fn remove_symlink(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// True when `path` is itself a symlink, whether or not its target exists.
 fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
-/// Runs `<target> --version`. That reports the installed version and proves
-/// the installed file runs.
 fn installed_version(target: &Path) -> Result<String> {
     let out = horch_platform::start::command(target)
         .arg("--version")
@@ -442,7 +367,6 @@ fn installed_version(target: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// True when both paths name the same existing file.
 fn same_file(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -512,7 +436,6 @@ mod tests {
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&real, &target).unwrap();
 
-        // Running `<target> install` reports the link itself as the source.
         place_binary(&target, &target).unwrap();
 
         assert!(!is_symlink(&target));
@@ -656,9 +579,6 @@ mod tests {
         assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 2);
     }
 
-    /// `just install` run in a gate worktree baked that worktree's roster
-    /// into herdr-fleet; the gate was then removed, and every fleet ran on
-    /// the built-in roster. The launcher names the main checkout's roster.
     #[test]
     fn a_roster_in_a_linked_worktree_maps_to_the_main_checkout() {
         let tmp = tempfile::tempdir().unwrap();
@@ -860,8 +780,6 @@ mod tests {
         }
     }
 
-    /// `horch install` writes no service definition in stand-in mode, and
-    /// installs the fleetd service in service mode (MAP.md, Q8).
     #[test]
     fn install_writes_no_service_in_stand_in_mode() {
         use crate::cmd::fleetd::{test_fleet::World, Mode};
@@ -885,9 +803,6 @@ mod tests {
         );
     }
 
-    /// `horch install` restarts a live fleetd that runs another binary on
-    /// the installed binary (OR-6, preservation 04 S10). A fleetd of the
-    /// installed binary stays.
     #[cfg(unix)]
     #[test]
     fn install_restarts_a_fleetd_of_another_binary() {

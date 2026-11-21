@@ -1,15 +1,3 @@
-//! horch idea approve and revise (ticket 18 of fleetd-p6): FR-10, FM-32 (a
-//! forged approval) and I7 (the approval part).
-//!
-//! fleetd writes approval.json with the hash of the assumptions that you
-//! saw, keeps the sha256 of that file in `ideas.approval_sha256`, and
-//! ignores any other approval.json. An idea past `awaiting_approval` whose
-//! approved file changed is held, with 1 needs-you item. Each test makes
-//! its own temporary ledger and idea folder. No test reads the clock, the
-//! load or the limits of the machine.
-//!
-//! Unix only: the protected file reader refuses each file on Windows, where
-//! the platform gives no mode.
 #![cfg(unix)]
 
 use std::fs;
@@ -55,7 +43,6 @@ fn sha(text: &str) -> String {
     sha256_bytes(text.as_bytes()).hex()
 }
 
-/// 1 feature and 1 idea in `state`, with assumptions.md written.
 fn world(state: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -88,8 +75,6 @@ fn world(state: &str) -> World {
 }
 
 impl World {
-    /// Put the idea in `state` with no event: the set-up of a test, not a
-    /// move.
     fn put(&self, state: &str) {
         let sql = "UPDATE ideas SET state = ?2 WHERE id = ?1";
         assert_eq!(self.store.conn().execute(sql, [IDEA, state]).unwrap(), 1);
@@ -99,8 +84,6 @@ impl World {
         ideas_store::idea(self.store.conn(), IDEA).unwrap().unwrap()
     }
 
-    /// Approve with the hash `seen`, and write approval.json after the
-    /// commit, as fleetd does.
     fn approve(&mut self, seen: &str) -> Approved {
         let folder = self.folder.clone();
         let approved = self
@@ -113,7 +96,6 @@ impl World {
         approved
     }
 
-    /// The I7 check of 1 pass: `true` when the approval part holds.
     fn i7(&mut self) -> bool {
         let folder = self.folder.clone();
         self.store
@@ -134,7 +116,6 @@ impl World {
         serde_json::from_str(&text).unwrap()
     }
 
-    /// The events of the idea whose cause starts with `prefix`.
     fn events_with(&self, prefix: &str) -> usize {
         let pattern = format!("{prefix}%");
         self.store
@@ -156,7 +137,6 @@ impl World {
             .count()
     }
 
-    /// A worker writes approval.json by hand, with `text`.
     fn forge(&self, text: &str) {
         self.folder.write_approval(text).unwrap();
     }
@@ -205,7 +185,6 @@ fn approve_with_a_stale_hash_is_refused() {
     assert_eq!(row.approval_sha256, None);
     assert!(!w.folder.dir().join(APPROVAL_JSON).exists());
 
-    // An idea that does not wait for your approval is refused too.
     w.put("clarifying");
     assert!(matches!(
         w.approve(&sha(&changed)),
@@ -218,28 +197,22 @@ fn approve_with_a_stale_hash_is_refused() {
 fn fm32_forged_approval_is_ignored() {
     let mut w = world("awaiting_approval");
     let seen = sha(ASSUMPTIONS);
-    // A sub-orchestrator writes a perfect approval.json for the hash that
-    // you would see.
     let forged = format!(
         r#"{{"idea":"{IDEA}","file":"assumptions.md","sha256":"{seen}","approved_at":"2026-11-18T00:00:00Z","by":"operator"}}"#
     );
     w.forge(&forged);
     assert_eq!(w.trusted(), None);
     assert_eq!(w.events_with("approval.json ignored"), 1);
-    // The second read logs nothing new.
     assert_eq!(w.trusted(), None);
     assert_eq!(w.events_with("approval.json ignored"), 1);
     let row = w.row();
     assert_eq!(row.state, "awaiting_approval");
     assert_eq!(row.approved_sha256, None);
 
-    // An idea moved past approval with only a forged file is held.
     w.put("ticketing");
     assert!(!w.i7());
     assert_eq!(w.open_i7_items(), 1);
 
-    // After your approval, a worker replaces approval.json to name another
-    // file. fleetd ignores it and still compares assumptions.md.
     w.put("awaiting_approval");
     assert!(matches!(w.approve(&seen), Approved::Approved(_)));
     w.folder
@@ -271,8 +244,6 @@ fn revise_sends_the_idea_back_to_clarifying() {
     assert_eq!(w.row().state, "clarifying");
     assert_eq!(w.folder.read_amendments().unwrap(), vec![text.to_string()]);
 
-    // A revise of an idea that does not wait for you is refused, and
-    // writes no file.
     let again = w
         .store
         .immediate(|tx| revise(tx, None, &folder, IDEA, "again\n"))
@@ -293,18 +264,14 @@ fn i7_changed_assumptions_after_approval_hold_the_idea() {
     assert!(w.i7());
     assert_eq!(w.open_i7_items(), 0);
 
-    // The sub-orchestrator changes assumptions.md after your approval.
     w.folder
         .write_assumptions(&ASSUMPTIONS.replace("1 file", "2 files"))
         .unwrap();
     assert!(!w.i7());
     assert_eq!(w.open_i7_items(), 1);
-    // The next pass keeps 1 item.
     assert!(!w.i7());
     assert_eq!(w.open_i7_items(), 1);
 
-    // The file you approved comes back: the hold ends and its item is
-    // resolved.
     w.folder.write_assumptions(ASSUMPTIONS).unwrap();
     assert!(w.i7());
     assert_eq!(w.open_i7_items(), 0);

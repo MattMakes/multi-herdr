@@ -1,5 +1,3 @@
-//! The Windows module of the platform layer.
-
 pub(crate) mod awake;
 pub(crate) mod channel;
 pub(crate) mod fs;

@@ -1,11 +1,3 @@
-//! The fleetd handlers of the task kinds: `task_requeue`, `task_cancel`,
-//! `task_fallback`, `ledger_waive`, `ledger_reopen` and `ledger_dismiss`
-//! (docs/tickets/fleetd-p5/18-handlers-task.md; RR-5, RR-8). Ticket 48 of
-//! fleetd-p6 retires `task_unblock`.
-//!
-//! Each test sends 1 request through `requests::handle` to a temp ledger at
-//! generation 1, and checks the rows that the command of today writes.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,8 +21,6 @@ use serde_json::{json, Value};
 
 const ID: &str = "6f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f";
 
-/// A temp ledger at generation 1 with the run `r1` and 2 tasks: T-1 of
-/// `dev` with the fallback `alt`, and T-2 that waits for T-1.
 struct World {
     _dir: tempfile::TempDir,
     store: Store,
@@ -58,7 +48,6 @@ fn world() -> World {
     let run = store
         .immediate(|tx| {
             let run = runs::create(tx, &root, &new_run)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -111,7 +100,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The payload `args` with the project root and the run of the world.
     fn payload(&self, args: Value) -> Value {
         let mut p = json!({ "project": self.root, "run": "r1" });
         for (k, v) in args.as_object().unwrap() {
@@ -152,7 +140,6 @@ impl World {
         self.store.conn().execute(statement, []).unwrap();
     }
 
-    /// Each row of `sql`, its columns joined with `|`.
     fn rows(&self, sql: &str) -> Vec<String> {
         let mut stmt = self.conn.prepare(sql).unwrap();
         let n = stmt.column_count();
@@ -182,8 +169,6 @@ impl World {
         rows[0].clone()
     }
 
-    /// fleetd binds T-1 to a worker of `dev` with a recorded agent process: 1 live
-    /// attempt. No process runs: the handler reads only the rows.
     fn claimed(&mut self) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -191,8 +176,6 @@ impl World {
             pane_id: Some("w0:p1".into()),
             ..Default::default()
         };
-        // The project is no git repository: T-1 works in the shared
-        // checkout, so its bind reserves no tree.
         self.store
             .conn()
             .execute(
@@ -209,7 +192,6 @@ impl World {
             .worker_id
     }
 
-    /// 1 open finding of the kind `ended_without_done` about T-1.
     fn finding(&self) -> i64 {
         self.store
             .conn()
@@ -222,7 +204,6 @@ impl World {
         self.store.conn().last_insert_rowid()
     }
 
-    /// Round 1 of the code sweep of T-1, whose report names F1.
     fn code_sweep_round(&self) {
         let task_dir = self.evidence.join(&self.t1);
         let round = task_dir.join("round-1");
@@ -293,8 +274,6 @@ fn task_requeue_resets_the_attempt_count_as_today() {
         )),
         "escalated|ready"
     );
-    // A task that is not held is refused with the words of today, and
-    // nothing changes.
     let reply = w.send_as(
         "7f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f",
         Kind::TaskRequeue,
@@ -322,10 +301,6 @@ fn task_cancel_of_a_running_task_records_the_intended_stop_first() {
         lines(result),
         ["T-1 is not cancelled yet: a process of its attempt still runs. The next pass of fleetd cancels it when the process is gone."]
     );
-    // The intended stop: the attempt ends `killed`, the worker row ends
-    // `stopped`, the task lets go of its worker and waits with
-    // `cancel_requested`. The task is not `cancelled` before the process
-    // is gone, and the handler stops no process.
     assert_eq!(
         w.one(
             "SELECT status, cancel_requested, current_worker_id IS NULL FROM tasks WHERE seq = 1"
@@ -408,7 +383,6 @@ fn ledger_waive_records_the_waiver_of_today() {
         )),
         "T-1 code-sweep round 1: F1 waived: out of scope"
     );
-    // A finding that the round does not name is refused, as today.
     let reply = w.send_as(
         "7f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f",
         Kind::LedgerWaive,
@@ -487,8 +461,6 @@ fn ledger_dismiss_cleanup_of_a_finding_with_no_worktree_is_refused() {
     );
 }
 
-/// Send `kind` with `args` 2 times with 1 `request_id`. The second reply
-/// is the stored reply of the first, and `effect` counts 1 effect.
 fn twice(w: &mut World, kind: Kind, args: Value, effect: &str, want: &str) {
     let first = w.send(kind, args.clone());
     let second = w.send(kind, args);
@@ -574,8 +546,6 @@ fn each_kind_twice_with_1_request_id_has_1_effect() {
     );
 }
 
-/// The project root of a payload must be absolute: fleetd has no current
-/// folder of the caller.
 #[test]
 fn relative_project_root_is_refused() {
     let mut w = world();

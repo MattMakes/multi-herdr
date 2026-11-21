@@ -1,4 +1,3 @@
-//! Remaining fleet briefing and worktree contracts at the public seam.
 use horch_core::{execution::SessionMode, prompts, roster::Roster};
 use horch_e2e::harness::Harness;
 fn worker() -> String {
@@ -291,7 +290,6 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     assert!(horch_core::taskledger::finish::worktree_of(s.conn(), &task)
         .unwrap()
         .is_none());
-    // Dirt is always preserved, including when keeping the branch.
     std::fs::write(path.join("dirty.txt"), "keep me").unwrap();
     assert!(!as_worker(
         &h,
@@ -369,8 +367,6 @@ fn g56_later_spawn_receives_recorded_fact() {
         "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\nfetch_period_s = 2\nworktree_list_period_s = 2\n",
     )
     .unwrap();
-    // The project declares its gates, so no hold of a missing fast gate
-    // stops the dispatch.
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -617,9 +613,6 @@ fn g57_compacting_orchestrator_types_its_command_card() {
         })
         .filter_map(|a| a.get(3).and_then(|v| v.as_str()))
         .collect();
-    // FR-7: `/compact` takes no argument. The keep-list of #57 (the real run
-    // identity and decisions-log path; roster and ownership from the task
-    // ledger) is in the orchestrator brief.
     let compact_lines: Vec<_> = lines.iter().filter(|l| l.starts_with("/compact")).collect();
     assert_eq!(compact_lines, [&"/compact"], "{lines:?}");
     let roster = Roster::builtin().unwrap();
@@ -637,8 +630,6 @@ fn g57_compacting_orchestrator_types_its_command_card() {
     ] {
         assert!(brief.contains(required), "the brief lacks {required}");
     }
-    // FR-7: the command card waits in the orchestrator mail; the pane gets
-    // the mail line.
     assert!(
         lines.contains(&horch_core::messaging::delivery::MAIL_LINE),
         "{lines:?}"
@@ -681,8 +672,6 @@ fn g58_claude_workers_share_read_only_preapprovals() {
         if t.agent.as_str() == "claude"
             && matches!(t.base.as_deref(), Some("fleet-worker" | "report-worker"))
         {
-            // A report pane runs no `horch` command but progress, tell and
-            // done, so it pre-approves none of the others.
             let report = t.horch_access == horch_core::roster::HorchAccess::Report;
             let want: Vec<String> = expected
                 .iter()
@@ -694,7 +683,6 @@ fn g58_claude_workers_share_read_only_preapprovals() {
         }
     }
     assert_eq!(names.len(), 88);
-    // sound-engineer runs on claude; audio-reviewer runs on agy.
     assert!(names.contains(&"sound-engineer"), "{names:?}");
     assert!(!names.contains(&"audio-reviewer"), "{names:?}");
     for pattern in expected {

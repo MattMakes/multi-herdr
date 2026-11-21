@@ -64,9 +64,6 @@ IMAGE_QUALITY = 88
 DETAILS = ("low", "normal", "high")
 FIND_KINDS = ("auto", "event", "texture")
 
-# one handler per tool -------------------------------------------------
-
-
 def t_measure(path: str, start: float | None = None, end: float | None = None, music: bool = False,
               light: bool = False, full: bool = False) -> ToolResult:
     args = {"src": file_arg(path), "music": music, "start": start, "end": end, "light": light}
@@ -303,9 +300,6 @@ def call_tool(name: str, **kwargs: Any) -> ToolResult:
         raise ToolError(str(exc).replace("llm_critique failed: AgyCannotHear: ", "")) from None
 
 
-# the stdio server -----------------------------------------------------
-
-
 def hold_threads(threads: int | None = None) -> int:
     """Fix the BLAS thread count before numpy loads; a value the user set wins."""
     if threads:
@@ -424,9 +418,6 @@ def serve(warm: bool = False) -> int:
     print(f"hark {_version()} MCP server: {len(TOOLS)} tools on stdio, {threads} threads", file=sys.stderr)
     server.run("stdio")
     return 0
-
-
-# command line ---------------------------------------------------------
 
 
 def add_cli(sub: Any) -> None:

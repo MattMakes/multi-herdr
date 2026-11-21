@@ -1,13 +1,9 @@
-//! The plan validator frame: plan.yaml, its schema rule and its DAG rule
-//! (ticket 08 of fleetd-p6; FR-3, FR-4, FM-10).
-
 use std::path::Path;
 
 use horch_core::fleetd::ideas::adapters::plan_yaml;
 use horch_core::fleetd::ideas::domain::plan::{Acceptance, Kind, Plan};
 use horch_core::fleetd::ideas::domain::plan_validator::{PlanFacts, PlanValidator, Problem};
 
-/// The example plan.yaml of the design, as written there.
 const DESIGN_EXAMPLE: &str = r###"idea: I-0007
 repo: /fleet/repos/app
 feature: F-0003
@@ -58,7 +54,6 @@ tasks:
     outputs: [docs/sync.review.md]   # each miss ranked CRITICAL, HIGH, MEDIUM or LOW
 "###;
 
-/// A ticket in format C1.
 const C1_TICKET: &str = "# 01: Add backoff
 
 <!-- horch-ticket: 1 -->
@@ -72,8 +67,6 @@ const C1_TICKET: &str = "# 01: Add backoff
 Retry with backoff.
 ";
 
-/// A small valid plan: `a`, then `b` after `a`. `extra` is appended to the
-/// task list.
 fn plan_text(extra: &str) -> String {
     format!(
         "idea: I-0001
@@ -100,8 +93,6 @@ tasks:
     )
 }
 
-/// Write `plan` as plan.yaml in `dir`, with each `(path, text)` ticket file,
-/// and read it back.
 fn read_plan(dir: &Path, plan: &str, tickets: &[(&str, &str)]) -> Plan {
     for (path, text) in tickets {
         let file = dir.join(path);
@@ -113,7 +104,6 @@ fn read_plan(dir: &Path, plan: &str, tickets: &[(&str, &str)]) -> Plan {
     plan_yaml::read(&file).unwrap()
 }
 
-/// The problems of the schema and DAG rules (this ticket's rules).
 fn frame_problems(plan: &Plan) -> Vec<Problem> {
     PlanValidator::validate(plan, &PlanFacts::default())
         .into_iter()
@@ -137,7 +127,6 @@ fn a_valid_plan_has_no_problem() {
 #[test]
 fn plan_with_a_dependency_cycle_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    // a -> b -> c -> a; d depends on the cycle but is not in it.
     let text = plan_text(
         "  - key: c
     title: Task c

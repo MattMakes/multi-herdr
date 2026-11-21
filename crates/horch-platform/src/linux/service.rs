@@ -1,5 +1,3 @@
-//! The concern service for Linux: a systemd user unit and the watchdog ping.
-
 use std::ffi::OsString;
 use std::io;
 use std::os::linux::net::SocketAddrExt;
@@ -19,13 +17,10 @@ pub fn default_folder(home: &Path) -> PathBuf {
     home.join(".config").join("systemd").join("user")
 }
 
-/// Whether a ping sent `READY=1`.
 static READY_SENT: AtomicBool = AtomicBool::new(false);
 
 pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     let exe = quote(&utf8(&spec.exe)?.replace('$', "$$"));
-    // `StartLimitIntervalSec=0` turns off the start limit, so the restart is
-    // always. `RestartSec=1` keeps a crash loop from a busy loop.
     let mut unit = format!(
         "[Unit]\n\
          Description=horch fleetd\n\
@@ -48,9 +43,6 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     Ok(vec![(spec.folder.join(unit_name(spec)), unit)])
 }
 
-/// Reads the unit files again, enables the unit, and restarts it. The
-/// restart runs each time: a failed run can leave a unit that runs a stale
-/// definition next to a unit file that is current.
 pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
     let unit = unit_name(spec);
     [
@@ -84,7 +76,6 @@ fn ping() -> io::Result<()> {
         b"READY=1\nWATCHDOG=1"
     };
     let socket = UnixDatagram::unbound()?;
-    // A name that starts with `@` is in the abstract namespace.
     match target.as_bytes().strip_prefix(b"@") {
         Some(name) => socket.send_to_addr(message, &SocketAddr::from_abstract_name(name)?)?,
         None => socket.send_to(message, Path::new(&target))?,
@@ -101,8 +92,6 @@ fn args(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
 }
 
-/// `text` as a quoted word of a unit file: `\`, `"` and line breaks are
-/// escaped, and `%` is doubled, because systemd reads it as a specifier.
 fn quote(text: &str) -> String {
     let mut out = String::from("\"");
     for c in text.chars() {

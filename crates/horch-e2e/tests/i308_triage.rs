@@ -1,6 +1,3 @@
-//! Worktree triage at the CLI seam (#308): the real `horch` binary, a git
-//! repository and a ledger file in a temp dir.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -49,7 +46,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     out(&o).trim().to_string()
 }
 
-/// A worktree `.worktrees/<name>` that no ledger row names, with 1 commit.
 fn folder(h: &Harness, name: &str) -> PathBuf {
     let path = h.project.join(".worktrees").join(name);
     git_in(
@@ -182,8 +178,6 @@ fn finish_queues_a_task_that_inherits_the_worktree() {
     let task: Value = serde_json::from_str(&status).unwrap();
     assert_eq!(task["task"]["status"], "queued", "{task:#}");
     assert!(path.exists());
-    // A routed FINISH sends no wake (ticket 25 of fleetd-p5, T-474): the
-    // event of the queued task is the record.
     let events: Value = serde_json::from_str(&ok(&h, &["ledger", "events", "--json"])).unwrap();
     let added = events
         .as_array()
@@ -193,7 +187,6 @@ fn finish_queues_a_task_that_inherits_the_worktree() {
         .filter_map(|e| e["text"].as_str())
         .find(|t| *t == "T-1 queued for opus: Finish T7-cache: Fix the flaky test, then land.");
     assert!(added.is_some(), "{events:#}");
-    // The task's worktree has a worker coming: it is no longer parked.
     assert_eq!(triage_json(&h)["rows"], serde_json::json!([]));
 }
 
@@ -211,8 +204,6 @@ fn archive_restore_and_gc_through_the_cli() {
     assert!(!path.exists());
     let said = ok(&h, &["worktree", "restore", "feat"]);
     assert!(said.starts_with("restored "), "{said}");
-    // `git worktree add` creates each file before it writes it, so the test
-    // reads the file after the job ended.
     wait_for("the worktree_add job of the restore to pass", || {
         let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
         let state: Option<String> = store

@@ -1,24 +1,4 @@
-/*
- * seek-timeline.js - a paused, seekable animation timeline for video scenes.
- * No imports, no network, no clock. Load it with a plain <script> tag. It sets
- * the browser global `SeekTimeline`.
- *
- *   var tl = SeekTimeline.timeline({ onSeek: function (t) { drawCanvas(t); } });
- *   tl.fromTo("#title", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, ease: "expo.out" }, 0);
- *   tl.addLabel("cta", 2.0);
- *   tl.to(".item", { x: 120, duration: 0.4, stagger: 0.06 }, "cta+=0.2");
- *   tl.set("#badge", { attr: { fill: "#F2C14E" } }, "cta");
- *   window.__seekToFrame = function (frameIndex, fps) { tl.seek(frameIndex / fps); };
- *
- * Spring presets by role: ease "spring-ui", "spring-camera", "spring-heavy"
- * or "spring-playful". A tween with a preset and no duration takes the
- * preset's duration. SeekTimeline.springs lists the preset numbers.
- *
- * seek(t) is a pure function of t: it computes every animated property from
- * t alone and writes it, so frames can be rendered in any order.
- */
 {
-  // A block, not a function: every name below is block-scoped with const.
 
   const fail = function (message) { throw new Error("SeekTimeline: " + message); };
   const has = function (obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); };
@@ -29,8 +9,6 @@
     return Math.min(Math.floor(t * fps + 1e-6), lastFrame);
   };
 
-  // ------------------------------------------------------------ easing
-  // A family makes an "in" curve. out(p) = 1 - in(1 - p); inOut joins halves.
   const power = function (n, p) { return Math.pow(p, n); };
   const sineIn = function (p) { return 1 - Math.cos(p * Math.PI / 2); };
   const expoIn = function (p) { return p === 0 ? 0 : Math.pow(2, 10 * (p - 1)); };
@@ -62,13 +40,10 @@
     inOut: function (easeIn) { return easeInOut.bind(null, easeIn); }
   };
 
-  // cubic-bezier(x1, y1, x2, y2) as in CSS: find u with x(u) = p, return y(u).
-  // x(u) rises from 0 to 1, so bisection finds u.
   const bezier = function (a, b, u) {
     var v = 1 - u;
     return 3 * v * v * u * a + 3 * v * u * u * b + u * u * u;
   };
-  // goal is { x1, x2, p }. Each step halves the range [lo, hi] that holds u.
   const bisectBezierX = function (goal, lo, hi, steps) {
     var mid = (lo + hi) / 2;
     var below = bezier(goal.x1, goal.x2, mid) < goal.p;
@@ -80,29 +55,17 @@
     return inside ? bezier(y1, y2, solveBezierX(x1, x2, p)) : clamp(Math.round(p), 0, 1);
   };
 
-  // Spring presets by role. Each is the step response of a damped spring,
-  // stretched over the tween duration. damping is the damping ratio: 1 never
-  // overshoots, lower values overshoot and ring. settle is the distance left
-  // to the target at the end of the tween; a smaller value makes the start
-  // faster. duration is the tween length a preset uses when a tween sets none.
-  //   ui:      buttons, cards, labels. Quick, a hair of overshoot.
-  //   camera:  pans, zooms, push-ins. No overshoot, slow soft landing.
-  //   heavy:   big panels, product shots, devices. Slow, small settle.
-  //   playful: icons, mascots, stickers. Clear bounce that rings out.
   const SPRINGS = {
     ui: { damping: 0.86, settle: 0.001, duration: 0.45 },
     camera: { damping: 1, settle: 0.004, duration: 1.2 },
     heavy: { damping: 0.8, settle: 0.01, duration: 0.9 },
     playful: { damping: 0.42, settle: 0.005, duration: 0.75 }
   };
-  // Position of a spring released at 0 toward 1, at time w (natural-frequency units).
   const springAt = function (zeta, w) {
     var wd = Math.sqrt(Math.max(0, 1 - zeta * zeta));
     var ring = wd > 0 ? Math.cos(wd * w) + zeta / wd * Math.sin(wd * w) : 1 + w;
     return 1 - Math.exp(-zeta * w) * ring;
   };
-  // p in [0, 1] maps to w in [0, end]. The last term spreads the small
-  // remaining gap over the tween, so the ease ends at exactly 1.
   const springEase = function (preset, p) {
     var end = Math.log(1 / preset.settle) / preset.damping;
     return p >= 1 ? 1 : springAt(preset.damping, p * end) + p * (1 - springAt(preset.damping, end));
@@ -143,8 +106,6 @@
     return easeCache[name];
   };
 
-  // ------------------------------------------------------------ values
-  // A value is { n: number, unit: string } or { c: [r, g, b, a] }.
   const NAMED = { transparent: [0, 0, 0, 0], black: [0, 0, 0, 1], white: [255, 255, 255, 1] };
 
   const hexColor = function (h) {
@@ -164,7 +125,6 @@
     return hex ? hexColor(hex[1]) : fn ? rgbColor(fn[1]) : namedColor(s);
   };
 
-  // A value from a string or number, or null when it is not a colour or a number.
   const NUMBER = /^(-?\d*\.?\d+(?:e[+-]?\d+)?)([a-z%]*)$/i;
   const readValue = function (v) {
     var s = String(v).trim();
@@ -193,10 +153,6 @@
     return color || round4(v.n) + (v.unit || defaultUnit || "");
   };
 
-  // ------------------------------------------------------------ properties
-  // A track animates 1 property of 1 target. Its kind says how to read and
-  // write it: an element style, an attribute, a transform part, or a plain
-  // object property (for Canvas drawing).
   const UNITLESS = { opacity: 1, zIndex: 1, fontWeight: 1, lineHeight: 1, flexGrow: 1, flexShrink: 1, order: 1 };
 
   const computedStyle = function (el, k) {
@@ -257,7 +213,6 @@
     var elementKind = has(TRANSFORM, k) ? "transform" : "style";
     return isElement(target) ? elementKind : "prop";
   };
-  // The [kind, prop, value] list a vars object animates on 1 target.
   const entries = function (target, vars) {
     var own = Object.keys(vars || {}).filter(function (k) { return !has(RESERVED, k); });
     var attr = (vars && vars.attr) || {};
@@ -276,27 +231,22 @@
     return (s.each || 0) * from(i, n);
   };
 
-  // ------------------------------------------------------------ track values
   const byStart = function (a, b) { return a.start - b.start || a.order - b.order; };
 
   const tweenAt = function (w, from, t) {
     var p = w.duration > 0 ? clamp((t - w.start) / w.duration, 0, 1) : 1;
     return mix(from, w.to, p >= 1 ? 1 : w.ease(p));
   };
-  // A tween without a from value starts at the value its track has at its
-  // start, so a later tween takes over smoothly from an earlier one.
   const chain = function (base, state, w) {
     var from = w.from || (state ? tweenAt(state.w, state.from, w.start) : base) || w.to;
     return { w: w, from: from };
   };
-  // Before its first tween, a track shows that tween's from value, else its base.
   const valueAt = function (tr, t) {
     var started = tr.tweens.filter(function (w) { return w.start <= t; }).sort(byStart);
     var state = started.reduce(chain.bind(null, tr.base), null);
     return state ? tweenAt(state.w, state.from, t) : tr.tweens.slice().sort(byStart)[0].from || tr.base;
   };
 
-  // A track with no value restores the raw value it had before the timeline.
   const putValue = function (tr, v) {
     var kind = KINDS[tr.kind];
     kind.put(tr.target, tr.prop, v ? kind.text(v, tr.prop) : tr.raw);
@@ -310,10 +260,6 @@
     return tr.kind === "transform" ? setTransformPart(tr, v, transforms) : putValue(tr, v);
   };
 
-  // ------------------------------------------------------------ timeline
-  // position: undefined (the end), seconds, "+=s", "-=s", "<" (start of the
-  // previous add), ">" (its end), or a label, each optionally followed by
-  // "+=s" or "-=s".
   const POSITION = /^(<|>|[A-Za-z_][\w-]*)?(?:([+-])=(\d*\.?\d+))?$/;
   const ANCHORS = {
     "<": function (tl) { return tl.last.start; },
@@ -362,7 +308,6 @@
     }, this);
   };
 
-  // A spring preset gives the duration when the tween sets none.
   const tweenTiming = function (toVars, isSet) {
     var preset = springPreset(toVars.ease) || { duration: 0.5 };
     return { duration: isSet ? 0 : orDefault(toVars.duration, preset.duration), ease: ease(toVars.ease) };

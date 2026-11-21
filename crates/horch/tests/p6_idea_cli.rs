@@ -1,19 +1,3 @@
-//! The write commands of `horch idea` (ticket 23 of fleetd-p6): each sends
-//! its request with the channel client, or writes a request file when
-//! fleetd is down, and prints the result. `horch idea approve`, `horch idea
-//! add --direct` and `horch feature abandon` refuse to run inside a fleet
-//! attempt (docs/specs/fleetd/design.md, "Ideas"; FR-1, FR-10, SR-5).
-//!
-//! Each test makes its own ledger, fleet root and git repository in a
-//! temporary folder, and runs the real binary with its own home, data and
-//! state folders and the watchdog off. A test fleetd is a thread of this
-//! test process: the `fleetd` row names this process, so the client
-//! accepts it. "Inside a fleet attempt" is a live attempt whose wrapper is
-//! this test process, the parent of the `horch` child.
-//!
-//! The tests are unix only: the socket path must be short, and the process
-//! chain facts are not supported on Windows.
-
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -30,7 +14,6 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-/// The idea of the approve tests and its assumptions.
 const IDEA: &str = "I-0007";
 const ASSUMPTIONS: &str = "feature: fast-search\n\n- A1: search stays under 50 ms.\n";
 
@@ -40,15 +23,12 @@ struct Out {
     err: String,
 }
 
-/// A fleet in temporary folders: its ledger, its fleet root with the
-/// operator token, and a git repository with the branch `main`.
 struct World {
     dir: TempDir,
 }
 
 impl World {
     fn new() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let dir = tempfile::Builder::new()
             .prefix("p6i")
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -95,7 +75,6 @@ impl World {
         assert!(out.status.success(), "git {args:?}: {out:?}");
     }
 
-    /// Run the development binary with only the temporary folders.
     fn horch(&self, args: &[&str]) -> Out {
         let root = self.root();
         let out = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -130,8 +109,6 @@ impl World {
             .unwrap();
     }
 
-    /// Record a live attempt whose wrapper is this test process, so each
-    /// `horch` child runs inside a fleet attempt.
     fn inside_an_attempt(&self) {
         let pid = std::process::id();
         let start = horch_platform::process::start_time(pid).unwrap();
@@ -146,8 +123,6 @@ impl World {
         );
     }
 
-    /// The idea [`IDEA`] in `awaiting_approval`, with [`ASSUMPTIONS`] in
-    /// its folder.
     fn idea_awaiting_approval(&self) {
         self.sql(
             "INSERT INTO features (id, name, primary_branch, state, created_at, updated_at)
@@ -164,7 +139,6 @@ impl World {
         std::fs::write(folder.join("assumptions.md"), ASSUMPTIONS).unwrap();
     }
 
-    /// The names of the files in the request folder.
     fn request_files(&self) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(self.fleet().join("run").join("requests")) else {
             return Vec::new();
@@ -176,8 +150,6 @@ impl World {
         names
     }
 
-    /// A test fleetd: the `fleetd` row names this process, and a thread
-    /// accepts 1 request and replies `result`.
     fn fleetd(&self, result: Value) -> Fleetd {
         let pid = std::process::id();
         let start = horch_platform::process::start_time(pid).unwrap();
@@ -211,7 +183,6 @@ impl World {
     }
 }
 
-/// The test fleetd thread: it gives the kind and the payload it read.
 struct Fleetd {
     thread: JoinHandle<(String, Map<String, Value>)>,
 }
@@ -229,8 +200,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// A refusal inside a fleet attempt: exit 1, the reason on stderr, nothing
-/// sent and no request file.
 fn assert_refused_inside(w: &World, o: &Out) {
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
     assert!(

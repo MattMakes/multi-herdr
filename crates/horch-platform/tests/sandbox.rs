@@ -1,16 +1,3 @@
-//! The check sandbox (SR-4): a sandboxed command writes only in its paths
-//! and in its temp folder, and an OS with no sandbox gives `NotSupported`
-//! with a reason (PL-3). The hiding sandbox writes only in its paths, and
-//! cannot read, write or connect to a Unix socket below a hidden path.
-//!
-//! The test folders are under `CARGO_TARGET_TMPDIR`, not under the temp
-//! folder of the OS, because the sandbox always lets a command write in the
-//! temp folder.
-//!
-//! On Linux the sandbox is `bwrap`. The CI installs it. On Windows, and on
-//! a Linux host without `bwrap`, the write tests assert `NotSupported`
-//! instead.
-
 use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding, Denials, Network, Reach};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,23 +6,16 @@ fn test_dir() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
 }
 
-/// A command that writes `hello` to `file`.
 fn write_command(file: &Path) -> Command {
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg("echo hello > \"$1\"").arg("sh").arg(file);
     cmd
 }
 
-/// True when this host has no sandbox for a command with the `PATH` of
-/// this process: Windows, or Linux without `bwrap`. The result of
-/// `sandboxed` must then be `NotSupported`.
-/// `linux_finds_an_executable_bwrap_on_the_path` tests the lookup itself.
 fn host_has_no_sandbox() -> bool {
     host_problem(std::env::var_os("PATH").as_deref()).is_some()
 }
 
-/// Run `cmd` in the sandbox with `writable`. `None` when the host has no
-/// sandbox, after the check that `sandboxed` says so with the reason.
 fn run_sandboxed(cmd: Command, writable: &[PathBuf]) -> Option<std::process::Output> {
     match sandboxed(cmd, writable, &Denials::default()) {
         Ok(mut sandboxed) => Some(sandboxed.output().expect("start the sandboxed command")),
@@ -47,9 +27,6 @@ fn run_sandboxed(cmd: Command, writable: &[PathBuf]) -> Option<std::process::Out
     }
 }
 
-/// Run `cmd` in the hiding sandbox with `writable` and `hidden`. `None`
-/// when the host has no sandbox, after the check that `sandboxed_hiding`
-/// says so with the reason.
 fn run_hiding(
     cmd: Command,
     writable: &[PathBuf],
@@ -67,7 +44,6 @@ fn run_hiding(
     )
 }
 
-/// Run `cmd` in the hiding sandbox with `reach`.
 fn run_reach(cmd: Command, reach: &Reach<'_>) -> Option<std::process::Output> {
     match sandboxed_hiding(cmd, reach) {
         Ok(mut sandboxed) => Some(sandboxed.output().expect("start the sandboxed command")),
@@ -79,7 +55,6 @@ fn run_reach(cmd: Command, reach: &Reach<'_>) -> Option<std::process::Output> {
     }
 }
 
-/// A shell command `script` with the arguments `args`.
 fn sh(script: &str, args: &[&Path]) -> Command {
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg(script).arg("sh").args(args);
@@ -143,7 +118,6 @@ fn sandboxed_command_keeps_its_folder_and_environment() {
 fn windows_and_linux_without_bwrap_are_not_supported_with_a_reason() {
     let empty = test_dir();
     let mut cmd = Command::new("sh");
-    // Linux looks for `bwrap` on the PATH of the command: here an empty folder.
     cmd.env("PATH", empty.path());
     let gap =
         sandboxed(cmd, &[empty.path().to_path_buf()], &Denials::default()).expect_err("no sandbox");
@@ -225,7 +199,6 @@ fn hiding_sandbox_cannot_write_in_a_hidden_path_that_is_also_writable() {
 #[cfg(unix)]
 #[test]
 fn hiding_sandbox_cannot_connect_to_a_unix_socket_in_a_hidden_folder() {
-    // A socket path has a short limit (SUN_LEN), so this folder is in /tmp.
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let hidden = dir.path().join("run");
     std::fs::create_dir(&hidden).unwrap();
@@ -260,7 +233,6 @@ fn hiding_sandbox_has_no_temp_folder() {
     let Some(out) = run_hiding(cmd, &[dir.path().to_path_buf()], &[]) else {
         return;
     };
-    // Exit 9 when the write reached the temp folder.
     assert!(out.status.success(), "{out:?}");
 }
 
@@ -341,10 +313,6 @@ fn hiding_sandbox_writes_a_writable_path_in_a_hidden_folder() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello\n");
 }
 
-/// git makes the leading folders of a path with a `stat` of each parent
-/// folder. So the command can read the metadata of each folder between a
-/// hidden path and a writable path in it, but it cannot list such a folder,
-/// read a file in it or see a path beside the writable path.
 #[test]
 fn hiding_sandbox_shows_only_the_metadata_of_the_parent_folders_of_a_writable_path() {
     let dir = test_dir();
@@ -434,10 +402,6 @@ fn hiding_sandbox_with_no_network_cannot_connect_to_a_tcp_listener() {
     assert_eq!(denied.status.code(), Some(3), "{denied:?}");
 }
 
-/// A fleet root with the 3 operator paths of the denials: the token file,
-/// the channel socket and the request folder. It is in `/tmp`, because a
-/// socket path has a short limit (SUN_LEN). The run folder has mode 0700,
-/// as the channel needs.
 #[cfg(unix)]
 struct Operator {
     root: tempfile::TempDir,
@@ -474,8 +438,6 @@ impl Operator {
         }
     }
 
-    /// Run `cmd` with `denied`. The whole fleet root, and also each path of
-    /// `writable`, is writable, so only the denials stop an act.
     fn run(
         &self,
         cmd: Command,
@@ -497,7 +459,6 @@ impl Operator {
     }
 }
 
-/// The text of the refusal of the OS for a denied act on this OS.
 #[cfg(unix)]
 fn refused(out: &std::process::Output, linux: &str) -> bool {
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -522,7 +483,6 @@ fn sandboxed_child_cannot_read_the_denied_file() {
         "the child reads the token with no denial: {open:?}"
     );
 
-    // The token is also in a writable path: the denial wins.
     let out = op
         .run(read(), std::slice::from_ref(&op.token), &op.denials())
         .unwrap();
@@ -534,7 +494,6 @@ fn sandboxed_child_cannot_read_the_denied_file() {
         assert_eq!(out.status.code(), Some(1), "{out:?}");
         assert!(refused(&out, ""), "{out:?}");
     } else {
-        // bwrap puts an empty file (/dev/null) over the token.
         assert!(out.stdout.is_empty(), "{out:?}");
     }
     assert_eq!(std::fs::read_to_string(&op.token).unwrap(), "secret\n");
@@ -562,17 +521,13 @@ fn sandboxed_child_cannot_connect_to_the_denied_socket() {
         open.status.success(),
         "the child connects with no denial: {open:?}"
     );
-    // The child closed its connection, so the peer facts can be gone.
     let _ = listener.accept();
 
-    // The socket is also in a writable path: the denial wins.
     let out = op
         .run(connect(), std::slice::from_ref(&op.socket), &op.denials())
         .unwrap();
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     assert!(refused(&out, "Connection refused"), "{out:?}");
-    // The first connection in the queue is the one of this test, so the
-    // child made none.
     let deadline = Instant::now() + Duration::from_secs(5);
     let _mine = Stream::connect(&op.socket, deadline).unwrap();
     let (_, peer) = listener.accept().unwrap();
@@ -584,7 +539,6 @@ fn sandboxed_child_cannot_connect_to_the_denied_socket() {
 fn sandboxed_child_cannot_write_into_the_denied_folder() {
     let op = operator();
     let request = op.requests.join("r.json");
-    // The request folder is also writable by itself: the denial wins.
     let out = op.run(
         write_command(&request),
         std::slice::from_ref(&op.requests),

@@ -51,9 +51,6 @@ _LICENCE_LINE = ("A fit derives from its recording: keep the source's attributio
             "CC0 sources for anything you ship.")
 
 
-# ---------------------------------------------------------------- model literal
-
-
 _INFINITY = {math.inf: "float('inf')", -math.inf: "float('-inf')"}
 
 
@@ -144,9 +141,6 @@ def literal(model: dict, name: str = "MODEL") -> str:
     return f"{name} = " + _value_text({key_: val for key_, val in model.items() if key_ not in DROP}, 0)
 
 
-# ---------------------------------------------------------------- critic words
-
-
 def _normalise(pv: str) -> str:
     return os.path.normcase(os.path.abspath(pv))
 
@@ -225,9 +219,6 @@ def critic_words(source: str | None = None, category: str | None = None,
         if desc_v:
             return desc_v, [], category
     return _target_of_character(character), [], None
-
-
-# ---------------------------------------------------------------- recipe text
 
 
 def _escaped(text: str) -> str:
@@ -344,9 +335,6 @@ def to_recipe(model: dict, name: str = "fitted", source: str | None = None, qual
     acc = ['"""' + doc, '"""'] + _head_text(target, alts, refset, _ref_list(source, refs), kind_v)
     acc += _lines_for_space(knobs) + [_line_of_defaults(ident_v), literal(model)]
     return "\n".join(acc) + _BODY.replace("__WAV__", repr(name + ".wav"))
-
-
-# ---------------------------------------------------------------- files
 
 
 def clean_name(path: str) -> str:

@@ -1,9 +1,3 @@
-//! The agent CLIs a worker can run, and what each one can do.
-//!
-//! [`HarnessKind`] names the harness; it replaced `teammates::Agent`, and
-//! no alias remains (`arc_25_no_shim_modules`). What each harness can do is
-//! [`Capabilities`] data, read through [`HarnessKind::capabilities`].
-
 pub mod antigravity;
 pub mod capabilities;
 pub mod claude;
@@ -37,74 +31,42 @@ use crate::skills::Bundle;
 pub use capabilities::{Capabilities, SkillExposure};
 pub use launch::{LaunchEnv, Session};
 
-/// What one launch needs from its pane before the CLI starts.
 pub struct PrepareRequest<'a> {
-    /// The pane's role, which names whatever the launch leaves on disk.
     pub role: &'a str,
-    /// The execpolicy rules this pane needs (codex).
     pub exec_rules: &'a [ExecRule],
-    /// The skills bundle the launch exposes, when the teammate has one.
     pub skills: Option<&'a Bundle>,
-    /// The launch's native-window decision (CTX-05). Prime's `prepare`
-    /// reads it (slice 2).
     pub compact_window: Option<&'a WindowDecision>,
-    /// The teammate the launch runs, as loaded (its harness defaults).
     pub teammate: &'a Teammate,
-    /// The pane's model: the override, else the teammate's.
     pub model: &'a str,
-    /// The directory the agent starts in.
     pub workdir: &'a Path,
-    /// The variables the fleet commands (`horch tell`, `note`, `done`) read
-    /// in the agent's shell tool. A codex launch sets them through
-    /// `shell_environment_policy.set`, so an operator policy such as
-    /// `inherit = "core"` does not strip them.
     pub shell_env: &'a [(String, String)],
 }
 
-/// What an operator window resolver reads for one launch (design §6.4).
 pub struct WindowInputs<'a> {
-    /// `RuntimeContext.paths.home`.
     pub home: &'a Path,
-    /// `$CLAUDE_CONFIG_DIR`.
     pub claude_config_dir: Option<&'a Path>,
-    /// `RuntimeContext.paths.claude_managed_settings` (review finding 5).
     pub claude_managed_settings: &'a Path,
-    /// The inherited codex home (`codex::codex_home`).
     pub codex_home: &'a Path,
-    /// The Prime agent dir the launch links from: the teammate's
-    /// `PRIME_AGENT_CODING_AGENT_DIR`, else the inherited one, else
-    /// `~/.prime/agent` (`prime::source_agent_dir`).
     pub prime_agent_dir: &'a Path,
-    /// The directory the agent starts in.
     pub workdir: &'a Path,
-    /// The inherited `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
     pub process_window: Option<&'a str>,
     pub teammate: &'a Teammate,
     pub model: &'a str,
 }
 
-/// What [`Harness::prepare`] set up for one launch. Hold it until the CLI
-/// has exited, then call [`Prepared::finish`]; dropping it instead cleans up
-/// what has to be cleaned up on an error path.
 #[derive(Default)]
 pub struct Prepared {
-    /// Added to the teammate's `args`, so they land before the prompt and
-    /// before any `--` delimiter.
     pub extra_args: Vec<String>,
-    /// Set on the child after every other environment layer, so these win.
     pub env: Vec<(String, OsString)>,
-    /// A directory only this launch records sessions in (Prime Agent).
     pub sessions_dir: Option<PathBuf>,
     finish: Vec<Box<dyn FnOnce()>>,
 }
 
 impl Prepared {
-    /// Run `step` after the CLI has exited, in the order the steps were added.
     pub(crate) fn on_finish(&mut self, step: impl FnOnce() + 'static) {
         self.finish.push(Box::new(step));
     }
 
-    /// Clean up after the CLI has exited.
     pub fn finish(self) {
         for step in self.finish {
             step();
@@ -112,20 +74,14 @@ impl Prepared {
     }
 }
 
-/// The parts of a launch the command line is built from.
 #[derive(Debug, Clone, Copy)]
 pub struct CommandSpec<'a> {
     pub teammate: &'a Teammate,
     pub session: Session<'a>,
     pub prompt: &'a str,
-    /// For the fixed `orchestration` recipe, where the model belongs to the
-    /// pane rather than to the teammate file.
     pub model_override: Option<&'a str>,
 }
 
-/// Everything harness-specific about launching one CLI. Callers dispatch
-/// through [`HarnessKind::adapter`] and read [`Capabilities`]; they never
-/// match on the kind.
 pub trait Harness: Sync {
     fn kind(&self) -> HarnessKind;
 
@@ -133,70 +89,40 @@ pub trait Harness: Sync {
         self.kind().capabilities()
     }
 
-    /// Claude-shaped teammate fields this harness has no way to express.
-    ///
-    /// Setting one of these is asking for isolation or capability that would
-    /// silently not happen, so the roster check rejects it by name rather than
-    /// launching a worker whose author believes it is constrained.
     fn validate(&self, t: &Teammate) -> Vec<&'static str> {
         generic_validate(self, t)
     }
 
-    /// Whether `model` has any effort setting here. A harness whose models
-    /// differ overrides this.
     fn model_takes_effort(&self, _model: &str) -> bool {
         !self.capabilities().effort.is_empty()
     }
 
-    /// Set up what the launch needs on disk before the CLI starts: codex's
-    /// private home with the skills bundle linked in, Prime's daemon socket.
-    /// The launch then calls [`Harness::expose_skills`] and
-    /// [`Harness::expose_skills_env`] around the build.
     fn prepare(&self, _ctx: &RuntimeContext, _req: &PrepareRequest<'_>) -> Result<Prepared> {
         Ok(Prepared::default())
     }
 
-    /// The native auto-compact setting the operator's own files set for
-    /// this launch, if any (CTX-05). Default: none (no known lever).
     fn operator_window(&self, _inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
         None
     }
 
-    /// The window value the built command really passes to the harness,
-    /// read back from the command, with the environment `prepare` set
-    /// (review finding 12). Default: none.
     fn window_in_command(&self, _cmd: &Command) -> Option<u64> {
         None
     }
 
-    /// The CLI drops a prompt given on the command line of a resumed
-    /// session, so the launch also types the prompt into the pane once the
-    /// agent is idle
-    /// ([`crate::messaging::delivery::deliver_when_idle`]).
     fn resume_prompt_typed(&self) -> bool {
         false
     }
 
-    /// The harness's own command line. Call [`Harness::build_command`]
-    /// instead, which removes the forbidden environment.
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command>;
 
-    /// Fail when this CLI cannot expose skills here, before a pane is
-    /// allocated or shared rules are written.
     fn ensure_skills_supported(&self) -> Result<()> {
         Ok(())
     }
 
-    /// The prefix this CLI shows before a bundled skill's name (`horch:`
-    /// for a plugin), or `None` when it names skills bare.
     fn skill_namespace(&self) -> Option<&'static str> {
         None
     }
 
-    /// Expose the bundle's activated skills the way this CLI discovers
-    /// skills, by changing the teammate the command is built from. `home`
-    /// is `$HOME`. The bundle holds exactly the activated skills, one
-    /// directory each under [`Bundle::skills_dir`].
     fn expose_skills(
         &self,
         teammate: &Teammate,
@@ -206,9 +132,6 @@ pub trait Harness: Sync {
         Ok(teammate.clone())
     }
 
-    /// Expose the bundle's skills on the built command, for a CLI that reads
-    /// them from an environment overlay the builder may already have set.
-    /// `inherited` is the value the launch would otherwise pass through.
     fn expose_skills_env(
         &self,
         _cmd: &mut Command,
@@ -219,18 +142,12 @@ pub trait Harness: Sync {
         Ok(())
     }
 
-    /// The command for `spec`, with every [`launch::FORBIDDEN_ENV`] key and
-    /// every git repository variable removed. Not overridden by any harness.
     fn build_command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
         let mut cmd = self.command(env, spec)?;
         crate::runtime::process::scrub_child_env(&mut cmd);
         Ok(cmd)
     }
 
-    /// Session ids this CLI recorded at or after `since` for `workdir`,
-    /// newest first. Paths compare canonically, so `/var/...` and
-    /// `/private/var/...` are one directory. `sessions_dir` is
-    /// [`Prepared::sessions_dir`].
     fn discover_sessions(
         &self,
         _ctx: &RuntimeContext,
@@ -242,8 +159,6 @@ pub trait Harness: Sync {
     }
 }
 
-/// The checks every harness shares, from its [`Capabilities`]. A harness
-/// that adds a check calls this first.
 pub(crate) fn generic_validate<H: Harness + ?Sized>(
     harness: &H,
     t: &Teammate,
@@ -256,13 +171,9 @@ pub(crate) fn generic_validate<H: Harness + ?Sized>(
     if !t.disallowed_tools.is_empty() && !caps.tool_denylist {
         out.push("disallowed_tools");
     }
-    // Claude's "permit this without asking" list. pi has an allowlist and a
-    // denylist but nothing that grants a tool permission, so there is
-    // nowhere for this to go on any other agent.
     if !t.allowed_tools.is_empty() {
         out.push("allowed_tools");
     }
-    // Claude-shaped configuration with no counterpart anywhere else.
     for (field, set) in [
         ("plugin_dirs", !t.plugin_dirs.is_empty()),
         ("settings", t.settings.is_some()),
@@ -286,11 +197,6 @@ pub(crate) fn generic_validate<H: Harness + ?Sized>(
     out
 }
 
-/// A workdir as session discovery compares it: equal as written, or equal
-/// after resolving symlinks. A herdr pane's cwd and the path an agent
-/// records can differ by `/var` versus `/private/var` (or `/tmp` versus
-/// `/private/tmp`) on macOS, and a string compare would silently find
-/// nothing.
 #[derive(Debug, Clone)]
 pub struct Workdir {
     raw: PathBuf,
@@ -304,7 +210,6 @@ impl Workdir {
         Workdir { raw, canonical }
     }
 
-    /// Whether `recorded`, a directory an agent wrote down, is this one.
     pub fn matches(&self, recorded: &Path) -> bool {
         if recorded == self.raw {
             return true;
@@ -316,7 +221,6 @@ impl Workdir {
     }
 }
 
-/// Which CLI a teammate launches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {
@@ -327,12 +231,10 @@ pub enum HarnessKind {
     Pi,
     Prime,
     Antigravity,
-    /// No real agent: the smoke teammate exercises the machinery only.
     None,
 }
 
 impl HarnessKind {
-    /// Every kind, `None` included. A new harness adds itself here.
     pub const ALL: &'static [HarnessKind] = &[
         HarnessKind::Claude,
         HarnessKind::Codex,
@@ -355,8 +257,6 @@ impl HarnessKind {
         }
     }
 
-    /// The CLI this harness runs, from `bins`. `None` for the agentless
-    /// smoke harness.
     pub fn binary(self, bins: &HarnessBins) -> Option<PathBuf> {
         match self {
             HarnessKind::Claude => Some(bins.claude.clone()),
@@ -369,7 +269,6 @@ impl HarnessKind {
         }
     }
 
-    /// The module that owns this harness's behavior.
     pub fn adapter(self) -> &'static dyn Harness {
         match self {
             HarnessKind::Claude => &claude::Claude,
@@ -382,7 +281,6 @@ impl HarnessKind {
         }
     }
 
-    /// What this harness can do.
     pub fn capabilities(self) -> &'static Capabilities {
         match self {
             HarnessKind::Claude => &capabilities::CLAUDE,
@@ -395,14 +293,10 @@ impl HarnessKind {
         }
     }
 
-    /// Whether `model` has any effort setting on this harness. See
-    /// [`crate::roster::model_takes_effort`].
     pub fn model_takes_effort(self, model: &str) -> bool {
         self.adapter().model_takes_effort(model)
     }
 
-    /// Claude-shaped teammate fields this agent has no way to express. See
-    /// [`Harness::validate`].
     pub(crate) fn unsupported_fields(self, t: &Teammate) -> Vec<&'static str> {
         self.adapter().validate(t)
     }
@@ -415,10 +309,6 @@ impl fmt::Display for HarnessKind {
 }
 
 impl HarnessKind {
-    /// How an orchestrator pane of this harness takes a pushed worker report
-    /// (ARC-30): a Claude channel notification, or a `codex queue` call for
-    /// the session `thread` names. Every other harness has no relay, and its
-    /// reports stay typed.
     pub fn channel_output(
         self,
         codex_bin: std::path::PathBuf,
@@ -468,7 +358,6 @@ mod tests {
         HarnessKind::None,
     ];
 
-    /// `HarnessKind::ALL` (what `horch agent-list` iterates) names every kind.
     #[test]
     fn all_names_every_kind() {
         assert_eq!(HarnessKind::ALL, &ALL[..]);
@@ -492,9 +381,6 @@ mod tests {
         );
     }
 
-    /// The predicates and effort table as they were before A4, copied
-    /// verbatim: (mints_session_id, harvests_session_id, runs_a_daemon,
-    /// uses_execpolicy, takes_tool_lists, takes_tool_denylist, valid_efforts).
     fn legacy(kind: HarnessKind) -> (bool, bool, bool, bool, bool, bool, &'static [&'static str]) {
         use HarnessKind as A;
         (
@@ -570,7 +456,6 @@ mod tests {
         }
         assert!(serde_json::from_str::<HarnessKind>(r#""open_code""#).is_err());
 
-        // Teammate frontmatter keeps its spelling.
         let t = Roster::builtin().unwrap();
         let t = t.require("opencode-pickle").unwrap();
         assert_eq!(t.agent, HarnessKind::OpenCode);

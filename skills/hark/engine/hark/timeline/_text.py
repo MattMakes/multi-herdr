@@ -22,8 +22,6 @@ def _pct(v) -> str:
     return f"{100 * v:.0f}%"
 
 
-# ---------------------------------------------------------------- summary
-
 def _lufs_sentence(L: dict) -> str:
     s = f"Integrated {L['integrated_lufs']:.1f} LUFS, true peak {L['true_peak_dbtp']:.1f} dBTP"
     if L.get("lra_lu") is not None:
@@ -167,8 +165,6 @@ def summary(r: dict) -> str:
             parts.append(_sync_sentence(kind, r["sync"][kind], zoomed))
     return ascii_safe(" ".join(p for p in parts if p))
 
-
-# ---------------------------------------------------------------- transcript
 
 def _centroid(c) -> str:
     if c is None:

@@ -1,11 +1,3 @@
-//! The rows of `ideas` and `requirements` in SQLite.
-//!
-//! No other code writes these tables. A new idea and its event go through
-//! `created()` of the 1 door. A state change is not a function of this
-//! store: the use cases call `transition()` (`docs/specs/fleetd/design.md`,
-//! "Ledger", rule 1 "One door"). Each write of a fact that is not a state
-//! records 1 event of its idea (OR-2).
-
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
@@ -17,7 +9,6 @@ use crate::fleetd::ideas::domain::idea::FIRST;
 use crate::taskledger::model::EventKind;
 use crate::taskledger::util;
 
-/// 1 row of `ideas`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdeaRow {
     pub id: String,
@@ -27,7 +18,6 @@ pub struct IdeaRow {
     pub pane: Option<String>,
     pub waiting_on_you_since: Option<String>,
     pub approved_sha256: Option<String>,
-    /// The sha256 of the `approval.json` that fleetd wrote.
     pub approval_sha256: Option<String>,
     pub plan_sha256: Option<String>,
     pub phase_attempts: i64,
@@ -35,7 +25,6 @@ pub struct IdeaRow {
     pub updated_at: String,
 }
 
-/// A new idea, in [`FIRST`].
 #[derive(Debug, Clone, Copy)]
 pub struct NewIdea<'a> {
     pub id: &'a str,
@@ -43,21 +32,18 @@ pub struct NewIdea<'a> {
     pub priority: i64,
 }
 
-/// 1 requirement of an idea, from its `requirements.yaml`.
 #[derive(Debug, Clone, Copy)]
 pub struct Requirement<'a> {
     pub req_id: &'a str,
     pub text: &'a str,
 }
 
-/// Insert the idea `new` in [`FIRST`], with its event, in `tx`.
 pub fn insert_idea(
     tx: &Connection,
     guard: Option<Generation>,
     new: &NewIdea<'_>,
     cause: Cause<'_>,
 ) -> Result<()> {
-    // `created()` checks this too, but after the insert.
     check_writable(tx, guard)?;
     let now = util::now();
     tx.execute(
@@ -69,7 +55,6 @@ pub fn insert_idea(
     Ok(())
 }
 
-/// The idea `id`, or `None`.
 pub fn idea(conn: &Connection, id: &str) -> Result<Option<IdeaRow>> {
     let row = conn
         .query_row(
@@ -99,10 +84,6 @@ pub fn idea(conn: &Connection, id: &str) -> Result<Option<IdeaRow>> {
     Ok(row)
 }
 
-/// Record the approval of the idea `id` in `tx`: `approved_sha256`, the
-/// sha256 of the approved file (or the marker `release`), and
-/// `approval_sha256`, the sha256 of the `approval.json` that fleetd writes,
-/// with 1 event of the idea that holds both.
 pub fn set_approval(
     tx: &Connection,
     guard: Option<Generation>,
@@ -122,9 +103,6 @@ pub fn set_approval(
     Ok(())
 }
 
-/// Move the idea `id` from the feature `from` to the feature `to` in `tx`,
-/// with 1 event of the idea. `false`, with no write, when the idea is not
-/// an idea of `from`.
 pub fn set_feature(
     tx: &Connection,
     guard: Option<Generation>,
@@ -146,8 +124,6 @@ pub fn set_feature(
     Ok(true)
 }
 
-/// Insert the requirements `reqs` of the idea `idea_id`, with 1 event of
-/// the idea that names their ids, in `tx`.
 pub fn insert_requirements(
     tx: &Connection,
     guard: Option<Generation>,
@@ -176,7 +152,6 @@ pub fn insert_requirements(
     Ok(())
 }
 
-/// The ideas of the feature `feature_id`, oldest first.
 pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Vec<IdeaRow>> {
     let mut stmt =
         conn.prepare("SELECT id FROM ideas WHERE feature_id = ?1 ORDER BY created_at, id")?;
@@ -190,7 +165,6 @@ pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Vec<IdeaRow>> {
     Ok(out)
 }
 
-/// The requirements of the idea `idea_id`, as (`req_id`, `text`), by id.
 pub fn requirements(conn: &Connection, idea_id: &str) -> Result<Vec<(String, String)>> {
     let mut stmt =
         conn.prepare("SELECT req_id, text FROM requirements WHERE idea_id = ?1 ORDER BY req_id")?;
@@ -200,8 +174,6 @@ pub fn requirements(conn: &Connection, idea_id: &str) -> Result<Vec<(String, Str
     Ok(rows)
 }
 
-/// The requirement ids of `task_covers` of the task `task_id`, in the
-/// order of their rows.
 pub fn covers(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
     let mut stmt =
         conn.prepare("SELECT req_id FROM task_covers WHERE task_id = ?1 ORDER BY rowid")?;
@@ -211,8 +183,6 @@ pub fn covers(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// The ids of the requirements that each task of `task_ids` covers, by
-/// task, as [`covers`] gives them: 1 statement for any count of tasks.
 pub fn covers_of<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str>,
@@ -234,8 +204,6 @@ pub fn covers_of<'a>(
     Ok(out)
 }
 
-/// The feature of each idea of `ids`, by idea: 1 statement for any count
-/// of ids. An id with no idea is not in the map.
 pub fn features_of<'a>(
     conn: &Connection,
     ids: impl IntoIterator<Item = &'a str>,
@@ -252,15 +220,12 @@ pub fn features_of<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The ids of the ideas in `state`: 1 statement for any count of ideas.
 pub fn ids_in_state(conn: &Connection, state: &str) -> Result<std::collections::BTreeSet<String>> {
     let mut stmt = conn.prepare("SELECT id FROM ideas WHERE state = ?1")?;
     let ids = stmt.query_map([state], |r| r.get(0))?;
     Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The state of each idea of `ids`, by id, in 1 statement for any count of
-/// ids. An id with no idea is not in the map.
 pub fn states_of<'a>(
     conn: &Connection,
     ids: impl IntoIterator<Item = &'a str>,

@@ -1,16 +1,3 @@
-//! Resolver and fix attempts of a task branch: fleetd starts 1 attempt of
-//! the `done` task of a `conflicted` or `gate_failed` branch, in its
-//! worktree, with the conflict or the gate output. The attempt holds the
-//! lease of its task, and its passed result moves the branch to `ready`
-//! (docs/specs/fleetd/design.md, "Landing a task branch on its feature
-//! branch", "Leases, not claims", I1, FM-38;
-//! docs/tickets/fleetd-p4/33-resolver-and-fix-attempts.md).
-//!
-//! Each test makes its own temporary git repository, ledger and fleet
-//! root. No test starts a `horch` binary, and no test reads the load, the
-//! limits or the clock of this machine: the time is the fleet clock that
-//! the test gives, and the config is the default.
-
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -60,14 +47,11 @@ const SNAPSHOT: &str = "# A ticket\n\nDo the work.\n";
 const CHECK: &str = "cargo test -p demo";
 const PERSONA: &str = "opus";
 
-/// The numbers of a worker in these tests.
 const LIMITS: Limits = Limits {
     lease_s: 120,
     stall_after_s: 300,
     heartbeat_max_age_s: 30,
 };
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _tmp: tempfile::TempDir,
@@ -82,8 +66,6 @@ struct World {
     tree: PathBuf,
 }
 
-/// Run git in `dir` for the test itself, with no hook and no config of the
-/// user, and give its trimmed output.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -121,9 +103,6 @@ fn cause(text: &str) -> Cause<'_> {
 }
 
 impl World {
-    /// A repository with a run branch and its feature, and 1 task whose
-    /// first attempt worked in its own worktree, committed 1 file and ended.
-    /// The task is `done`, and its task branch is `in_bundle`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
         let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
@@ -158,7 +137,6 @@ impl World {
                     primary_branch: "main",
                 };
                 rows::insert_feature(tx, None, &feature, cause("feature accepted"))?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -192,8 +170,6 @@ impl World {
         }
     }
 
-    /// The task, its first attempt, its tree with 1 commit, the attempt
-    /// ended, the task `done` and its branch `in_bundle`.
     fn first_attempt_done(&mut self) {
         let name = format!("t{}", self.task_count() + 1);
         let mut t = NewTask::work(&name, &format!("docs/{name}.md"), PERSONA);
@@ -255,8 +231,6 @@ impl World {
         ]);
     }
 
-    /// Move the task branch along `path` through the 1 door, as the use
-    /// cases of other tickets move it.
     fn enter(&mut self, path: &[LandingState]) {
         let config = self.config.clone();
         let branch = self.branch.clone();
@@ -275,7 +249,6 @@ impl World {
             .unwrap();
     }
 
-    /// A job row of `kind` that ended `state` with `result`.
     fn ended_job(&self, kind: &str, subject: &str, state: &str, result: &serde_json::Value) -> i64 {
         let conn = self.store.conn();
         conn.execute(
@@ -289,7 +262,6 @@ impl World {
                 state,
                 result.to_string(),
                 util::now(),
-                // 1 job of each kind for each branch.
                 self.branch
             ],
         )
@@ -297,7 +269,6 @@ impl World {
         conn.last_insert_rowid()
     }
 
-    /// A bundle of the task branch in `state`, with the job `job`.
     fn bundle(&self, state: &str, job: i64) -> i64 {
         let conn = self.store.conn();
         let base = git(&self.root, &["rev-parse", RUN_BRANCH]);
@@ -316,8 +287,6 @@ impl World {
         id
     }
 
-    /// The build of a bundle of the branch conflicted on `files`: the
-    /// branch is `conflicted`.
     fn conflicted(&mut self, files: &[&str]) {
         let data = serde_json::json!({
             "passed": false,
@@ -330,8 +299,6 @@ impl World {
         self.enter(&[LandingState::Conflicted]);
     }
 
-    /// The fast gate of a bundle of the branch alone failed with the output
-    /// `output`: the branch is `gate_failed`.
     fn gate_failed(&mut self, output: &str) {
         let data = serde_json::json!({"passed": false, "verdict": true, "text": "exit 101"});
         let job = self.ended_job("fast_gate", FEATURE, "failed", &data);
@@ -364,7 +331,6 @@ impl World {
             .unwrap()
     }
 
-    /// 1 pass of the repair start at fleet clock `clock`, committed.
     fn start(&mut self, clock: i64) -> Vec<Started> {
         let config = self.config.clone();
         let git = Git::new("git");
@@ -382,7 +348,6 @@ impl World {
             .unwrap()
     }
 
-    /// 1 pass of the repair results at fleet clock `clock`, committed.
     fn observe(&mut self, clock: i64) -> Report {
         let config = self.config.clone();
         let tip = git(&self.root, &["rev-parse", &self.branch]);
@@ -418,7 +383,6 @@ impl World {
             .unwrap()
     }
 
-    /// The attempts of the task, oldest first: (id, state, via).
     fn attempts(&self) -> Vec<(String, String, String)> {
         let conn = self.store.conn();
         let mut stmt = conn
@@ -430,14 +394,11 @@ impl World {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// `START.md` of the attempt `attempt`, written as part 3 writes it.
     fn start_md(&self, attempt: &str) -> String {
         let files = write_task_files(self.store.conn(), &self.fleet_root, attempt, &[]).unwrap();
         std::fs::read_to_string(files.start_md).unwrap()
     }
 
-    /// The repair attempt commits `file` in the tree and writes its
-    /// `result.json`, which the ingest accepted.
     fn result_of(&self, attempt: &str, file: &str) {
         std::fs::write(self.tree.join(file), "fixed\n").unwrap();
         git(&self.tree, &["add", file]);
@@ -457,7 +418,6 @@ impl World {
             .unwrap();
     }
 
-    /// The `task_check` job of the task ends `state`.
     fn end_check(&self, state: &str) {
         let job = jobs_store::last(self.store.conn(), Kind::TaskCheck, &self.task)
             .unwrap()
@@ -485,8 +445,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 renewal pass at `clock` in which the attempt `attempt` shows
-    /// `process` and no other signal.
     fn renew_or_expire(&mut self, clock: i64, attempt: &str, process: Seen) {
         let facts = BTreeMap::from([(
             attempt.to_string(),
@@ -515,13 +473,10 @@ impl World {
     }
 }
 
-/// The only repair attempt that `started` holds.
 fn only(started: &[Started]) -> &Started {
     assert_eq!(started.len(), 1, "1 repair attempt: {started:?}");
     &started[0]
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn conflicted_branch_gets_1_resolver_attempt_and_the_task_stays_done() {
@@ -558,7 +513,6 @@ fn conflicted_branch_gets_1_resolver_attempt_and_the_task_stays_done() {
         "the first attempt is a work attempt"
     );
 
-    // The attempt works in the tree of the task.
     let tree = s.bound.worktree.as_ref().expect("the tree of the task");
     assert_eq!(PathBuf::from(&tree.path), w.tree);
     assert_eq!(tree.branch, w.branch);
@@ -566,7 +520,6 @@ fn conflicted_branch_gets_1_resolver_attempt_and_the_task_stays_done() {
     let row = trees::of_task(w.store.conn(), &w.task).unwrap().unwrap();
     assert_eq!(row.owner_attempt.as_deref(), Some(id.as_str()));
 
-    // A second pass starts no second attempt.
     assert!(w.start(11).is_empty());
     assert_eq!(w.attempts().len(), 2);
 }
@@ -621,7 +574,6 @@ fn passed_resolver_result_moves_the_branch_to_ready() {
     w.conflicted(&["a.txt"]);
     let attempt = only(&w.start(10)).bound.attempt_id.clone();
 
-    // No result yet: nothing moves.
     let r = w.observe(11);
     assert!(r.queued.is_empty() && r.ready.is_empty(), "{r:?}");
 
@@ -698,11 +650,9 @@ fn repair_attempt_has_a_lease() {
         "the bind takes the lease"
     );
 
-    // I1 keeps the lease of the live repair attempt of a done task.
     w.check_i1(20);
     assert_eq!(w.lease_of_task(), Some(attempt.clone()));
 
-    // I1 writes it again when it is missing.
     w.store
         .conn()
         .execute("DELETE FROM leases WHERE task_id = ?1", [&w.task])
@@ -730,7 +680,6 @@ fn done_task_with_no_live_attempt_holds_no_lease() {
         "I1 deletes the lease of an ended attempt"
     );
 
-    // A done task whose branch needs no repair holds no lease either.
     let mut w = World::new();
     let first = w.attempts()[0].0.clone();
     w.store
@@ -751,13 +700,10 @@ fn expiry_of_a_repair_lease_ends_the_attempt_and_does_not_move_the_task() {
     w.gate_failed("test x ... FAILED\n");
     let attempt = only(&w.start(10)).bound.attempt_id.clone();
 
-    // Inside its lease, a pass with no signal keeps it.
     w.renew_or_expire(100, &attempt, Seen::Dead);
     assert_eq!(w.lease_of_task(), Some(attempt.clone()));
     assert_eq!(w.attempt_row(&attempt).0, "launching");
 
-    // Past its lease, the attempt ends `stalled` and frees the lease; the
-    // task stays done, and the branch stays gate_failed.
     w.renew_or_expire(10 + LIMITS.lease_s + 1, &attempt, Seen::Dead);
     assert_eq!(
         w.attempt_row(&attempt),
@@ -768,16 +714,11 @@ fn expiry_of_a_repair_lease_ends_the_attempt_and_does_not_move_the_task() {
     assert_eq!(w.landing_state(), "gate_failed");
 }
 
-/// Step 3 of the ticket: a crash before the commit of the bind leaves no
-/// row, and the next pass binds 1 attempt. A crash after the commit and
-/// before the task files and the launch leaves the attempt, and the next
-/// pass writes its files 1 time and binds no second attempt.
 #[test]
 fn crash_before_and_after_the_commit_of_the_bind_loses_no_attempt() {
     let mut w = World::new();
     w.conflicted(&["a.txt"]);
 
-    // Fault point 1: the bind runs, and fleetd dies before the commit.
     {
         let config = w.config.clone();
         let git = Git::new("git");
@@ -798,7 +739,6 @@ fn crash_before_and_after_the_commit_of_the_bind_loses_no_attempt() {
     assert_eq!(w.attempts().len(), 1, "no row of the bind is left");
     assert_eq!(w.lease_of_task(), None);
 
-    // Fault point 2: the bind commits, and fleetd dies before the files.
     let attempt = only(&w.start(11)).bound.attempt_id.clone();
     let written = write_missing_task_files(w.store.conn(), &w.fleet_root, &[]).unwrap();
     assert_eq!(
@@ -833,11 +773,6 @@ fn branch_of_a_task_that_is_not_done_gets_no_repair_attempt() {
     assert!(w.start(10).is_empty());
 }
 
-/// A repair attempt that cannot start fails only its own branch (the
-/// design, "Three rules that make the ledger trustworthy", rule 1: 1 bad
-/// row never stops the pass). The task of the first `gate_failed` branch
-/// has no worktree: its branch gets no attempt and 1 needs-you item. The
-/// start commits, and the second `gate_failed` branch gets its fix attempt.
 #[test]
 fn repair_that_cannot_start_fails_only_its_branch() {
     let mut w = World::new();
@@ -850,8 +785,6 @@ fn repair_that_cannot_start_fails_only_its_branch() {
             [&w.task],
         )
         .unwrap();
-    // A second task, done in its own tree, whose branch failed the gate
-    // also.
     w.first_attempt_done();
     w.gate_failed("exit 101\n");
 
@@ -889,7 +822,6 @@ fn repair_that_cannot_start_fails_only_its_branch() {
     assert!(open[0].1.contains("no worktree"), "{}", open[0].1);
     assert!(open[0].1.contains(&lost), "{}", open[0].1);
 
-    // The next start writes no second item.
     assert!(w.start(11).is_empty());
     assert_eq!(items(&w), open);
 }

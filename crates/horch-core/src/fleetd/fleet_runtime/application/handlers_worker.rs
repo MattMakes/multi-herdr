@@ -1,30 +1,3 @@
-//! The handlers of the worker request kinds: `worker_stop`, and the
-//! records of 1 spawn of fleetd: `spawn_gate_note`, `worker_launched`
-//! and `worker_launch_failed`.
-//!
-//! Requirements: RR-5, RR-8. Ticket 19 of fleetd-p5. Ticket 48 of
-//! fleetd-p6 retires `spawn`, `worker_reap`, `worker_new`, `worker_pid`,
-//! `orchestrator_claim` and `orchestrator_stop`: fleetd dispatches,
-//! launches and records each attempt itself.
-//!
-//! Each handler writes the rows that its `horch` command writes today,
-//! through the same functions of `taskledger/` and `fleetd/`, in the
-//! transaction of its request. It does no effect:
-//!
-//! - `spawn_gate_note`, `worker_launched` and `worker_launch_failed` are
-//!   the records of 1 spawn of fleetd (`horch spawn --attempt` and the
-//!   restart on a fallback) that `horch spawn` wrote itself before (ticket
-//!   23 of fleetd-p5). Each handler checks that the worker row of its
-//!   payload exists and is a row of its run.
-//! - `session_records` writes the session records that 1 process changed
-//!   ([`crate::execution::store::apply_session_records`], T-884).
-//! - `worker_stop` ends the worker row. The pass stops each process of an
-//!   ended row by its PID and start time, and closes its pane only with a
-//!   fact that proves it (`commands::mark_orphans`).
-//!
-//! The payload holds the arguments of the command; the run is its id, as
-//! the command resolves it. The result holds what the command prints.
-
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{Connection, Transaction};
 use serde::de::DeserializeOwned;
@@ -41,14 +14,11 @@ use crate::taskledger::stop;
 use crate::taskledger::util::{self, About};
 use crate::taskledger::workers;
 
-/// What the handlers of this module read outside their payload.
 #[derive(Clone)]
 pub struct WorkerDeps {
-    /// The generation of this fleetd.
     pub guard: Generation,
 }
 
-/// Register the handler of each kind of this module in `handlers`.
 pub fn register(handlers: &mut Handlers, deps: &WorkerDeps) {
     handlers.insert(Kind::SpawnGateNote, |tx, p| {
         spawn_gate_note(tx, &record(Kind::SpawnGateNote, p)?)
@@ -70,10 +40,6 @@ fn parse<T: DeserializeOwned>(payload: &Value) -> Result<T> {
     serde_json::from_value(payload.clone()).context("the payload does not fit its kind")
 }
 
-// ─── the records of 1 spawn ──────────────────────────────────────────────
-
-/// The payload of a kind of the records of 1 spawn: an object of texts that
-/// passes [`check_spawn_record`].
 fn record<T: DeserializeOwned>(kind: Kind, payload: &Value) -> Result<T> {
     let Value::Object(map) = payload else {
         bail!("the payload of {} is not an object", kind.as_str());
@@ -92,8 +58,6 @@ fn record<T: DeserializeOwned>(kind: Kind, payload: &Value) -> Result<T> {
     parse(payload)
 }
 
-/// The worker row `worker_id` of the run `run_id`. The payload names both,
-/// so the row must exist and be a row of that run.
 fn worker_of_run(tx: &Connection, run_id: &str, worker_id: &str) -> Result<workers::Worker> {
     let Some(w) = workers::find(tx, worker_id)? else {
         bail!("no worker row has the id {worker_id}");
@@ -105,11 +69,9 @@ fn worker_of_run(tx: &Connection, run_id: &str, worker_id: &str) -> Result<worke
     Ok(w)
 }
 
-/// The arguments of the record of 1 spawn-gate decision (TRF-41).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnGateNotePayload {
-    /// `spawn gate: teammate=<t> outcome=<o> pool=<p> reason=<r>`.
     pub text: String,
     #[serde(default)]
     pub run_id: Option<String>,
@@ -117,11 +79,8 @@ pub struct SpawnGateNotePayload {
     pub worker_id: Option<String>,
 }
 
-/// The prefix of the text of each spawn-gate note.
 const GATE_NOTE: &str = "spawn gate: ";
 
-/// 1 `note` event of a spawn-gate decision, about the run and the worker of
-/// the spawn when it joins a run, as `horch spawn` wrote it.
 fn spawn_gate_note(tx: &Transaction<'_>, p: &SpawnGateNotePayload) -> Result<Value> {
     ensure!(
         p.text.starts_with(GATE_NOTE),
@@ -144,7 +103,6 @@ fn spawn_gate_note(tx: &Transaction<'_>, p: &SpawnGateNotePayload) -> Result<Val
     Ok(json!({ "run_id": p.run_id, "worker_id": p.worker_id }))
 }
 
-/// The arguments of the record of a pane that a spawn opened.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerLaunchedPayload {
@@ -158,8 +116,6 @@ pub struct WorkerLaunchedPayload {
     pub effort: Option<String>,
 }
 
-/// The pane of the worker is open and runs `horch worker <role>`: its pane,
-/// its role and its launch, as `horch spawn` wrote them.
 fn worker_launched(tx: &Transaction<'_>, p: &WorkerLaunchedPayload) -> Result<Value> {
     worker_of_run(tx, &p.run_id, &p.worker_id)?;
     workers::set_pane(tx, &p.worker_id, &p.pane)?;
@@ -174,7 +130,6 @@ fn worker_launched(tx: &Transaction<'_>, p: &WorkerLaunchedPayload) -> Result<Va
     Ok(json!({ "worker_id": p.worker_id, "pane": p.pane }))
 }
 
-/// The arguments of the record of a spawn that failed before its worker ran.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerLaunchFailedPayload {
@@ -197,14 +152,10 @@ fn worker_launch_failed(
     Ok(json!({ "worker_id": p.worker_id, "ended": ended }))
 }
 
-// ─── worker_stop ────────────────────────────────────────────────────────
-
-/// The arguments of `horch ledger stop`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StopPayload {
     pub run_id: String,
-    /// A worker id or role.
     pub worker: String,
     pub reason: String,
 }

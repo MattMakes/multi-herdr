@@ -1,6 +1,3 @@
-//! Orchestrator mail goes through the channel relay while it is live. horch
-//! types into the orchestrator pane only when no relay answers: an idle
-//! pane can hold the operator's half-typed prompt.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -14,8 +11,6 @@ use horch_e2e::harness::{wait_for, Harness};
 use serde_json::Value;
 use tempfile::TempDir;
 
-/// A harness whose state dir is short: the relay socket path must stay
-/// below the 104-byte Unix socket limit of macOS.
 fn short_world(name: &str) -> (Harness, TempDir) {
     let mut h = Harness::new(name);
     let short = tempfile::Builder::new()
@@ -37,7 +32,6 @@ fn fake(h: &Harness, args: &[&str]) {
     );
 }
 
-/// Every herdr call that types text into a pane.
 fn pane_writes(h: &Harness) -> Vec<Value> {
     h.calls_of("herdr")
         .into_iter()
@@ -50,8 +44,6 @@ fn pane_writes(h: &Harness) -> Vec<Value> {
         .collect()
 }
 
-/// A Claude channel relay for `workspace`. A reader thread passes each
-/// stdout line on, so a test waits for a line with a bound.
 struct Relay {
     child: Child,
     input: Option<ChildStdin>,
@@ -111,7 +103,6 @@ impl Relay {
             .unwrap_or_else(|_| panic!("the relay printed no line for {what} in 20 s"))
     }
 
-    /// The content of the next channel notification.
     fn next_notice(&mut self, what: &str) -> String {
         loop {
             let line = self.next_line(what);
@@ -130,9 +121,6 @@ impl Drop for Relay {
     }
 }
 
-/// The incident: the orchestrator pane is idle because the operator types a
-/// draft, and the relay is live. The courier's redelivery goes through the
-/// relay. Nothing is typed into the pane.
 #[test]
 fn a_live_relay_gets_the_courier_redelivery_and_the_idle_pane_gets_no_text() {
     let (mut h, _short) = short_world("relay-first-courier");
@@ -159,7 +147,6 @@ fn a_live_relay_gets_the_courier_redelivery_and_the_idle_pane_gets_no_text() {
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     let mut relay = Relay::start(&h, "w1");
 
-    // A horch notice has no first push: the courier owes it 1 resend.
     let mail = Mail::under(&h.state, "w1");
     let id = mail
         .enqueue("horch", "[horch] NOTE: Tasks can start: T-9")
@@ -186,19 +173,12 @@ fn a_live_relay_gets_the_courier_redelivery_and_the_idle_pane_gets_no_text() {
     assert_eq!(pane_writes(&h), Vec::<Value>::new());
 }
 
-/// How a fake relay answers a message. It answers every ping with `ok`, so
-/// `channel::is_live` is true.
 #[derive(Clone, Copy)]
 enum FakeAnswer {
-    /// An error line: `channel::send` gives NotDelivered.
     Refuse,
-    /// No answer before the send timeout: `channel::send` gives Unconfirmed.
     Silent,
 }
 
-/// A fake relay on the socket of `workspace`. It returns the messages it
-/// received. Each connection gets its own thread, so a silent message does
-/// not hold a ping.
 fn fake_relay(h: &Harness, workspace: &str, answer: FakeAnswer) -> Receiver<String> {
     use std::os::unix::net::UnixListener;
 
@@ -234,8 +214,6 @@ fn fake_relay(h: &Harness, workspace: &str, answer: FakeAnswer) -> Receiver<Stri
     messages
 }
 
-/// A worker world: an idle orchestrator pane w1:p1 that holds an operator
-/// draft, registered as the orchestrator of w1.
 fn worker_world(name: &str) -> (Harness, TempDir) {
     let (mut h, short) = short_world(name);
     h.set("HORCH_WORKSPACE_ID", "w1");
@@ -261,7 +239,6 @@ fn worker_world(name: &str) -> (Harness, TempDir) {
     (h, short)
 }
 
-/// `horch tell orchestrator` from worker sonnet-1. It returns the stderr.
 fn worker_tell(h: &Harness, text: &str) -> String {
     let out = h
         .horch(&["tell", "orchestrator", text])
@@ -273,8 +250,6 @@ fn worker_tell(h: &Harness, text: &str) -> String {
     stderr
 }
 
-/// The pending orchestrator mail lines of w1. `horch inbox` then reads
-/// them, so the courier that the tell started stops.
 fn pending_then_read(h: &Harness) -> Vec<String> {
     let lines = Mail::under(&h.state, "w1")
         .pending()
@@ -286,8 +261,6 @@ fn pending_then_read(h: &Harness) -> Vec<String> {
     lines
 }
 
-/// Case A: a live relay refuses the tell. Nothing is typed into the idle
-/// pane, and the mail stays pending for the courier's relay redelivery.
 #[test]
 fn a_live_relay_that_refuses_a_tell_gets_no_pane_text_and_the_mail_stays() {
     let (h, _short) = worker_world("relay-first-refused");
@@ -308,8 +281,6 @@ fn a_live_relay_that_refuses_a_tell_gets_no_pane_text_and_the_mail_stays() {
     assert_eq!(pending_then_read(&h), ["[sonnet-1] DONE: case A"]);
 }
 
-/// Case B: a live relay does not confirm the tell. Nothing is typed into
-/// the idle pane, and the mail stays pending for the courier.
 #[test]
 fn a_live_relay_that_does_not_confirm_a_tell_gets_no_pane_text_and_the_mail_stays() {
     let (h, _short) = worker_world("relay-first-unconfirmed");

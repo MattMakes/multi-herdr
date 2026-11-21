@@ -1,7 +1,3 @@
-//! The `needs_you` table.
-//!
-//! The SQL of the rows. `transition()` writes the state of a row.
-
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -30,13 +26,11 @@ fn item(r: &Row<'_>) -> rusqlite::Result<Item> {
     })
 }
 
-/// The item of `key`.
 pub fn get(conn: &Connection, key: &str) -> Result<Option<Item>> {
     let sql = format!("SELECT {COLUMNS} FROM needs_you WHERE key = ?1");
     Ok(conn.query_row(&sql, [key], item).optional()?)
 }
 
-/// Insert `i` as the new row of its key.
 pub fn insert(conn: &Connection, i: &Item) -> Result<()> {
     let sql = format!("INSERT INTO needs_you ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
     conn.execute(
@@ -55,8 +49,6 @@ pub fn insert(conn: &Connection, i: &Item) -> Result<()> {
     Ok(())
 }
 
-/// Write each column of `i` but its state, which only `transition()`
-/// writes.
 pub fn update(conn: &Connection, i: &Item) -> Result<()> {
     conn.execute(
         "UPDATE needs_you SET kind = ?2, entity = ?3, entity_id = ?4, text = ?5,
@@ -75,7 +67,6 @@ pub fn update(conn: &Connection, i: &Item) -> Result<()> {
     Ok(())
 }
 
-/// The open items, oldest first.
 pub fn open(conn: &Connection) -> Result<Vec<Item>> {
     let sql = format!("SELECT {COLUMNS} FROM needs_you WHERE state = ?1 ORDER BY created_at, key");
     let mut stmt = conn.prepare(&sql)?;
@@ -83,7 +74,6 @@ pub fn open(conn: &Connection) -> Result<Vec<Item>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The keys of the open items of kind `kind`, in key order.
 pub fn open_keys(conn: &Connection, kind: &str) -> Result<Vec<String>> {
     let mut stmt =
         conn.prepare("SELECT key FROM needs_you WHERE state = ?1 AND kind = ?2 ORDER BY key")?;
@@ -91,8 +81,6 @@ pub fn open_keys(conn: &Connection, kind: &str) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Remove each item that is not open and ended at or before `cutoff`.
-/// Ledger stamps have 1 format, so they compare as text.
 pub fn delete_ended(conn: &Connection, cutoff: &str) -> Result<usize> {
     Ok(conn.execute(
         "DELETE FROM needs_you WHERE state <> ?1 AND ended_at <= ?2",

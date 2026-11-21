@@ -19,8 +19,6 @@ from . import evidence, frontmatter
 
 SKIP_DIRS = frozenset({".git", "node_modules", ".github", "dist", "build", "vendor", "site-packages", "__pycache__"})
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-# A skill folder path is stored raw in skills.json (orchestrator decision), so
-# every component must be safe: [A-Za-z0-9._-]+, and never "." or "..".
 COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
 TEXT_LIMIT = 1024 * 1024
 

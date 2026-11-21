@@ -1,39 +1,11 @@
-//! Exec mode of the fake agents (fleetd-p7 ticket 16).
-//!
-//! A fake that gets the exec argv of its adapter (tickets 13 to 15) reads
-//! the path on the last line of the prompt, `inbox/START.md`, and prints
-//! the stream lines of
-//! `crates/horch-core/tests/fixtures/streams/<cli>-exec.jsonl`, without the
-//! doc keys of the fixture. With no key it prints the progress lines, then
-//! 1 result line, and exits 0.
-//!
-//! Scenario keys:
-//! - `usage_limit`: the progress lines, then the first usage-limit line of
-//!   the fixture, and exit 1.
-//! - `long_context`: the progress lines, then 1 token count past 256000,
-//!   and no exit. Codex prints its token count only in `turn.completed`.
-//! - `exit_without_result`: the progress lines, and exit 0.
-//! - `trust_prompt`: a dialog that is not a stream line, and no exit.
-//! - `conformance`, and with any key the prompt of a conformance check: the
-//!   probes of [`crate::probe`], and the write of
-//!   `outbox/result.json` of the task folder (`result_write`). The report
-//!   goes into the result line and into the log as `conformance`. For the
-//!   prompt of "Stop gate" the fake obeys the prompt: the progress lines,
-//!   and exit 0 with no result.
-//! - `ignore_stop_gate`: with `conformance`, the fake does not obey the
-//!   prompt of "Stop gate": it writes its result as for each other check.
-
 use serde_json::{json, Value};
 
 use horch_core::fleetd::worker_profiles::domain::conformance::STOP_GATE_PROMPT;
 
 use crate::{hang, probe, say, scenario_has, Call};
 
-/// The first sentence of the prompt of each conformance check
-/// (`domain::conformance`, `PROBE_PROMPT` and the others).
 const CHECK_PROMPT_HEAD: &str = "This is a conformance check of horch.";
 
-/// The CLIs with an exec adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cli {
     Claude,
@@ -41,10 +13,8 @@ pub enum Cli {
     Agy,
 }
 
-/// The token count of a `long_context` run: past the window of 256000.
 pub const LONG_CONTEXT_TOKENS: u64 = 300_000;
 
-/// What the dialog of `trust_prompt` prints.
 pub const TRUST_DIALOG: &str = "Do you trust the files in this folder? 1. Yes, proceed 2. No, exit";
 
 const CLAUDE_STREAM: &str =
@@ -52,28 +22,22 @@ const CLAUDE_STREAM: &str =
 const CODEX_STREAM: &str = include_str!("../../horch-core/tests/fixtures/streams/codex-exec.jsonl");
 const AGY_STREAM: &str = include_str!("../../horch-core/tests/fixtures/streams/agy-exec.jsonl");
 
-/// What 1 fixture line is for the run of a fake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// A line of a run that makes progress. A token count is 1 of them.
     Progress,
     Tokens,
     UsageLimit,
     Result,
-    /// An error or a warning: not in a run of a fake.
     Other,
 }
 
 impl Cli {
-    /// The CLI of an exec argv, and its prompt path; `None` for any other
-    /// argv. `fake` is the name of the fake that got `argv`.
     pub fn of_argv<'a>(fake: &str, argv: &'a [String]) -> Option<(Cli, &'a str)> {
         let has = |flag: &str| argv.iter().any(|a| a == flag);
         let stream_json = argv
             .windows(2)
             .any(|w| w[0] == "--output-format" && w[1] == "stream-json");
         match fake {
-            // The quota probe also has `--input-format stream-json`.
             "claude" if has("-p") && stream_json && !has("--input-format") => {
                 Some((Cli::Claude, argv.last()?))
             }
@@ -83,8 +47,6 @@ impl Cli {
         }
     }
 
-    /// The fixture lines of this CLI, each with its kind and without its
-    /// doc keys.
     fn stream(self) -> Vec<(Kind, Value)> {
         let text = match self {
             Cli::Claude => CLAUDE_STREAM,
@@ -154,11 +116,6 @@ fn agy_kind(line: &Value) -> Kind {
     }
 }
 
-/// Run `call` in exec mode for `cli` with `prompt`: the skills briefing,
-/// if any, then the path of `START.md` on its last line. The argv of `call`
-/// keeps the full prompt. Never
-/// returns: the fake exits or hangs as its scenario says. The Phase 4 keys
-/// of [`crate::agent`] run first, so `bound` records the state at entry.
 pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     crate::agent::play(&mut call);
     let path = prompt.lines().last().unwrap_or(prompt);
@@ -198,9 +155,6 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     for line in &progress {
         say(&line.to_string());
     }
-    // The prompt of a conformance check wins over the scenario of the
-    // fleet: a test world with any scenario gets a passing conformance run,
-    // so fleetd keeps its profiles healthy.
     if scenario_has("usage_limit") && !check {
         say(&first(Kind::UsageLimit).to_string());
         call.flush();
@@ -216,10 +170,6 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         call.flush();
         hang();
     }
-    // A real agent obeys the prompt of "Stop gate": it ends with no result.
-    // The fake acts on the prompt of a check as a real agent does, with any
-    // scenario: the production job runs each check with the scenario of
-    // the fleet.
     let conformance = check || scenario_has("conformance");
     let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
     let ends_with_no_result =
@@ -239,8 +189,6 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
             Cli::Claude => result["result"] = Value::String(text),
             Cli::Agy => result["result"]["response"] = Value::String(text),
             Cli::Codex => {
-                // The probes are commands: Codex ends each with an
-                // `item.completed` of its `command_execution` item.
                 say(&json!({"type": "item.completed", "item": {"id": "item_1",
                     "type": "command_execution", "command": "bash -lc ls",
                     "exit_code": 0, "status": "completed"}})
@@ -256,8 +204,6 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     std::process::exit(0);
 }
 
-/// `line`, a token count of `cli`, with [`LONG_CONTEXT_TOKENS`] in the
-/// context.
 fn past_the_window(cli: Cli, mut line: Value) -> Value {
     let n = LONG_CONTEXT_TOKENS;
     match cli {
@@ -276,7 +222,6 @@ fn past_the_window(cli: Cli, mut line: Value) -> Value {
     line
 }
 
-/// The hook events of the printed lines, each 1 time, in order.
 fn hook_events(lines: &[&Value]) -> Vec<String> {
     let mut events: Vec<String> = Vec::new();
     for event in lines.iter().filter_map(|l| l["hook_event"].as_str()) {

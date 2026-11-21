@@ -19,7 +19,6 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # Ubuntu 24.04 lets no unconfined program make a user namespace, and bwrap needs one.
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -40,8 +39,6 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   release-lint:
-    # Code under cfg(debug_assertions) hides release-only warnings from the
-    # debug builds; users install the release build.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -64,7 +61,6 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
-    # Until Phase P of fleetd: many tests do not run on Windows yet. The gate of Phase P removes this line.
     continue-on-error: true
     timeout-minutes: 120
     steps:

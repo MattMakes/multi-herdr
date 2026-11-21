@@ -1,14 +1,3 @@
-//! The shape and the limits of `result.json` of an attempt (ticket 12).
-//!
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol"
-//! (Example: result.json; protocol rules 1, 2, 5 and 7). [`validate`] is the
-//! schema: `horch result` calls it before it writes the file, and the ingest
-//! of fleetd calls it before it reads one. No I/O: bytes in, a
-//! [`ResultFile`] or a [`Refusal`] out. A domain module names only `std`, so
-//! the JSON reader and writer of this schema are here.
-
-/// The closed list of statuses. The status is the claim of the worker:
-/// only the verifier moves a task to `done`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResultStatus {
     Completed,
@@ -36,19 +25,15 @@ impl ResultStatus {
     }
 }
 
-/// 1 command that the worker ran to check its own work, and its exit code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelfCheck {
     pub run: String,
     pub exit: i64,
 }
 
-/// A valid `result.json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResultFile {
-    /// The task id of the path of the file.
     pub task: String,
-    /// The attempt id of the path of the file, `A<n>`.
     pub attempt: String,
     pub status: ResultStatus,
     pub summary: String,
@@ -56,33 +41,18 @@ pub struct ResultFile {
     pub files_changed: Vec<String>,
     pub acceptance_self_check: Vec<SelfCheck>,
     pub notes_for_next: Option<String>,
-    /// The handoff file of a handed-off attempt, an absolute path
-    /// (`docs/tickets/fleetd-p5/MAP.md`, Q4). The file then has
-    /// `"reason": "handoff"` and `"handoff": <path>`, and the status is
-    /// `blocked`. `None`: the file has neither key.
     pub handoff: Option<String>,
-    /// The reason of a worker whose work cannot land (RR-14, 04 L5): the
-    /// key `"unlanded"`, with the status `completed`. fleetd parks the task
-    /// with its worktree. The reason is untrusted text of the worker
-    /// (SR-6). `None`: the file has no such key.
     pub unlanded: Option<String>,
 }
 
-/// The `reason` of a handoff result (Q4 of `docs/tickets/fleetd-p5/MAP.md`).
 pub const HANDOFF_REASON: &str = "handoff";
 
-/// Why a `result.json` is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The file is over the size limit.
     TooLarge { bytes: u64, max: u64 },
-    /// The bytes are not 1 JSON value in UTF-8.
     NotJson(String),
-    /// The JSON value does not match the schema.
     Schema(String),
-    /// The payload names another task than its path.
     OtherTask { payload: String, path: String },
-    /// The payload names another attempt than its path.
     OtherAttempt { payload: String, path: String },
 }
 
@@ -108,9 +78,6 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// Check `bytes` as `result.json` of attempt `attempt` of task `task`, the
-/// ids of its path, with the size limit `max_bytes` (`result_max_bytes`
-/// of `fleet.toml`).
 pub fn validate(
     bytes: &[u8],
     task: &str,
@@ -143,8 +110,6 @@ pub fn validate(
 }
 
 impl ResultFile {
-    /// The JSON text of the file, 1 key on each line, in the order of the
-    /// example of the design.
     pub fn to_json(&self) -> String {
         let strings = |items: &[String]| {
             let quoted: Vec<String> = items.iter().map(|s| json_string(s)).collect();
@@ -180,7 +145,6 @@ impl ResultFile {
     }
 }
 
-/// The keys of the schema. Each other key is refused.
 const KEYS: [&str; 11] = [
     "task",
     "attempt",
@@ -195,7 +159,6 @@ const KEYS: [&str; 11] = [
     "unlanded",
 ];
 
-/// The [`ResultFile`] of a parsed JSON value.
 fn from_value(value: Json) -> Result<ResultFile, String> {
     let Json::Obj(fields) = value else {
         return Err("the top level is not an object".into());
@@ -249,9 +212,6 @@ fn unlanded(value: Option<&Json>, status: ResultStatus) -> Result<Option<String>
     Ok(Some(reason.clone()))
 }
 
-/// The handoff path of the keys `reason` and `handoff`: both are given or
-/// neither is. `reason` is only `handoff`, the path is absolute, and the
-/// status is `blocked`.
 fn handoff(
     reason: Option<&Json>,
     path: Option<&Json>,
@@ -278,7 +238,6 @@ fn handoff(
     Ok(Some(path.clone()))
 }
 
-/// An optional list of strings: missing is empty.
 fn string_list(value: Option<&Json>, key: &str) -> Result<Vec<String>, String> {
     let Some(value) = value else {
         return Ok(Vec::new());
@@ -295,7 +254,6 @@ fn string_list(value: Option<&Json>, key: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// The optional list `acceptance_self_check`: missing is empty.
 fn self_checks(value: Option<&Json>) -> Result<Vec<SelfCheck>, String> {
     const KEY: &str = "acceptance_self_check";
     let Some(value) = value else {
@@ -307,7 +265,6 @@ fn self_checks(value: Option<&Json>) -> Result<Vec<SelfCheck>, String> {
     items.iter().map(self_check).collect()
 }
 
-/// 1 item of `acceptance_self_check`: `{"run": <string>, "exit": <integer>}`.
 fn self_check(item: &Json) -> Result<SelfCheck, String> {
     let bad = || {
         "an item of \"acceptance_self_check\" is not {\"run\": <string>, \"exit\": <integer>}"
@@ -333,12 +290,10 @@ fn self_check(item: &Json) -> Result<SelfCheck, String> {
     }
 }
 
-/// Whether `text` is 1 JSON document. The error names why not.
 pub(crate) fn parse_json(text: &str) -> Result<(), String> {
     Parser::new(text).document().map(|_| ())
 }
 
-/// `s` as a JSON string.
 pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -357,7 +312,6 @@ pub(crate) fn json_string(s: &str) -> String {
     out
 }
 
-/// A JSON value. A number keeps its text: the schema reads only integers.
 #[derive(Debug)]
 enum Json {
     Null,
@@ -368,11 +322,8 @@ enum Json {
     Obj(Vec<(String, Json)>),
 }
 
-/// The nesting limit of the reader. `result.json` nests 3 levels, and a
-/// limit keeps a hostile file from a deep recursion.
 const MAX_DEPTH: usize = 16;
 
-/// A reader of 1 JSON document (RFC 8259).
 struct Parser<'a> {
     text: &'a str,
     pos: usize,
@@ -383,7 +334,6 @@ impl<'a> Parser<'a> {
         Parser { text, pos: 0 }
     }
 
-    /// 1 value and only white space around it.
     fn document(mut self) -> Result<Json, String> {
         let value = self.value(0)?;
         self.space();
@@ -547,7 +497,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The character of the escape after a `\`.
     fn escape(&mut self) -> Result<char, String> {
         let Some(byte) = self.peek() else {
             return Err(self.error("a string has no end"));
@@ -567,7 +516,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// The character of `\uXXXX`, or of a surrogate pair of 2 of them.
     fn unicode(&mut self) -> Result<char, String> {
         let first = self.hex4()?;
         let code = if (0xD800..0xDC00).contains(&first) {
@@ -601,7 +549,6 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
-    /// The starting value of `result_max_bytes`.
     const MAX: u64 = 64 * 1024;
 
     const EXAMPLE: &str = r#"{

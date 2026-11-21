@@ -40,7 +40,7 @@ def _glide(f0: float, f1: float, rise_s: float, hold_s: float) -> np.ndarray:
     f = np.concatenate([f0 * (f1 / f0) ** (np.arange(n_rise) / n_rise), np.full(n_hold, f1)])
     x = 0.5 * np.sin(2 * np.pi * np.cumsum(f) / SR)
     x[:96] *= np.linspace(0, 1, 96)
-    x[-n_hold:] *= 10 ** (-3.5 * np.linspace(0, 1, n_hold))  # the hold dies away to -70 dB (no cut tail)
+    x[-n_hold:] *= 10 ** (-3.5 * np.linspace(0, 1, n_hold))
     return x
 
 
@@ -50,9 +50,6 @@ def _burst(n: int, start_s: float, rng) -> np.ndarray:
     t = np.arange(n - i) / SR
     x[i:] = rng.standard_normal(n - i) * np.exp(-t / 0.005) * 0.5
     return x
-
-
-# ---------------------------------------------------------------- sfx render (AT-3 .. AT-11)
 
 
 def test_at_3_default_render_file(fixture_bank, tmp_path):
@@ -134,13 +131,10 @@ def test_sfx_without_subcommand_exits_2(cli, capsys):
     assert "list" in capsys.readouterr().out
 
 
-# ---------------------------------------------------------------- sfx list (AT-12)
-
-
 def test_at_12_kind_filter_shipped(shipped, open_ids):
     rows = sfx.sfx_list(kind="whoosh.long")
     cats = {r["category"] for r in rows["sounds"]}
-    want = 15 - len({"whoosh_big/thump_deep"} & open_ids["forge04"])  # an open forge04 member is left out
+    want = 15 - len({"whoosh_big/thump_deep"} & open_ids["forge04"])
     assert len(rows["sounds"]) == want and cats <= {"whoosh_big", "pro_whoosh_big"}
     assert rows["summary"].startswith(f"{want} sounds")
 
@@ -169,9 +163,6 @@ def test_list_json_out(fixture_bank, cli, tmp_path, capsys):
     target = tmp_path / "list.json"
     assert cli(["sfx", "list", "--json", "--out", str(target)]) == 0
     assert json.loads(target.read_text())["version"] == bank.VERSION
-
-
-# ---------------------------------------------------------------- the audit (AT-14 .. AT-17)
 
 
 def test_at_14_rising_glide_warning_and_drip_allowance():

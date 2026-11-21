@@ -1,15 +1,3 @@
-//! The outbox writer of a worker command (ticket 26 of fleetd-p5): the
-//! command finds its own attempt by its parent chain, makes the outbox when
-//! it is missing, and writes each file atomically.
-//!
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol",
-//! protocol rules 1, 3 and 7; FR-7, RR-5, RR-8, SR-6;
-//! `docs/tickets/fleetd-p5/MAP.md`, Q3 and Q4.
-//!
-//! Each test uses a temp ledger and a temp fleet root. A "wrapper" is a real
-//! process: an `sh` that the test starts, or the parent of this test
-//! process. A worker command is a real child process: this test binary,
-//! started again to run [`child_entry`].
 #![cfg(unix)]
 
 use std::io::Write as _;
@@ -30,13 +18,11 @@ use rusqlite::{params, Connection, OpenFlags};
 
 const AT: &str = "2026-11-18T12:00:00Z";
 
-/// The environment of a child command: set only by these tests.
 const CHILD: &str = "OUTBOX_WRITER_TEST_CHILD";
 const CHILD_ROOT: &str = "OUTBOX_WRITER_TEST_ROOT";
 const CHILD_LEDGER: &str = "OUTBOX_WRITER_TEST_LEDGER";
 const CHILD_ACTION: &str = "OUTBOX_WRITER_TEST_ACTION";
 
-/// A temp ledger with the schema of today and a fleet root.
 struct World {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -58,8 +44,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// Record the live attempt `<task>/A1` whose wrapper is `pid`, and
-    /// make its attempt folder, as fleetd does. Its outbox is not made.
     fn live(&self, task: &str, pid: u32) -> String {
         let id = format!("{task}/A1");
         let start = process::start_time(pid).expect("the start time of the wrapper");
@@ -87,18 +71,14 @@ impl World {
         self.attempt_dir(task).join("outbox")
     }
 
-    /// The ledger, read-only, as a worker command opens it.
     fn read_only(&self) -> Connection {
         Connection::open_with_flags(&self.ledger, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
     }
 
-    /// The writer of this test process, with `config`.
     fn writer(&self, config: &FleetConfig) -> anyhow::Result<OutboxWriter> {
         OutboxWriter::of_this_process(&self.root, &self.read_only(), config, &PlatformFacts)
     }
 
-    /// A child command that runs `action`, with its stdin held until
-    /// [`go`].
     fn child(&self, action: &str) -> Command {
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args([
@@ -118,14 +98,10 @@ impl World {
     }
 }
 
-/// The parent of this test process: a real process in the chain of this
-/// process and of each child that it starts.
 fn parent_of_this_process() -> u32 {
     process::parent(std::process::id()).unwrap().unwrap()
 }
 
-/// A wrapper `sh` that waits for 1 line on its stdin, then runs `cmd` as
-/// its child and exits with its code.
 fn wrapper_of(cmd: &Command) -> Child {
     let mut sh = Command::new("sh");
     sh.args(["-c", r#"read go; "$@"; exit $?"#, "sh"])
@@ -139,16 +115,13 @@ fn wrapper_of(cmd: &Command) -> Child {
             None => sh.env_remove(key),
         };
     }
-    // The wrapper does not give its stdin to the child.
     sh.spawn().unwrap()
 }
 
-/// A live process that is not in the chain of this test process.
 fn stranger() -> Child {
     Command::new("sleep").arg("30").spawn().unwrap()
 }
 
-/// Send the line that starts each child, then wait for the success of each.
 fn go_and_wait_all(mut children: Vec<Child>) {
     for child in &mut children {
         child.stdin.take().unwrap().write_all(b"go\n").unwrap();
@@ -171,7 +144,6 @@ fn mode(path: &Path) -> u32 {
         & 0o777
 }
 
-/// The JSON values of the lines of `path`.
 fn lines(path: &Path) -> Vec<serde_json::Value> {
     let text = std::fs::read_to_string(path).unwrap();
     assert!(text.ends_with('\n'), "the log ends with a whole line");
@@ -195,7 +167,6 @@ fn result_of(writer: &OutboxWriter, status: ResultStatus) -> ResultFile {
     }
 }
 
-/// The body of a child command. It does nothing in a plain test run.
 #[test]
 fn child_entry() {
     if std::env::var_os(CHILD).is_none() {
@@ -328,12 +299,10 @@ fn result_is_written_atomically_with_mode_0600() {
         .collect();
     assert_eq!(names, [RESULT_JSON], "no temp file stays");
 
-    // An immutable message: a second result is refused, the first stays.
     let second = result_of(&writer, ResultStatus::Failed);
     assert!(writer.write_result(&second).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
-    // A result that names another attempt is refused before the write.
     let other = w.outbox("T-1").join("..").join("..").join("A2");
     let mut foreign = file.clone();
     foreign.attempt = "A2".into();

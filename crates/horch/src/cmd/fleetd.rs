@@ -1,30 +1,3 @@
-//! `horch fleetd` and `horch fleetd check`: the composition root of fleetd
-//! (`docs/specs/fleetd/design.md`, "Architecture and roles", row fleetd;
-//! `ddd/08-code/fleet-runtime/design.md`).
-//!
-//! `horch fleetd` runs the daemon: it takes the fleetd lock, takes the next
-//! generation of the `fleetd` row, and runs 1 pass every `pass_period_s`.
-//! A SIGTERM ends the loop between 2 passes, never inside a pass.
-//!
-//! `horch fleetd check` restarts a hung or older fleetd (PL-5, FM-12,
-//! OR-6). The service manager runs it every 30 s on macOS and Windows, and
-//! each `horch` command makes the same check before it runs
-//! ([`check_before_command`]). The check:
-//!
-//! - no `fleetd` row: does nothing. The check never starts a fleetd that
-//!   never ran; the service starts it.
-//! - a row whose process is gone: starts fleetd.
-//! - a heartbeat older than 30 s of awake time, or a fleetd whose binary
-//!   file changed: restarts fleetd.
-//! - else: does nothing.
-//!
-//! The mode of a restart (`docs/tickets/fleetd-p1/MAP.md`, Q8): the
-//! service manager of the OS restarts fleetd only for the default ledger of
-//! the OS user with no `FLEET_ROOT`. Else the mode is stand-in: the check
-//! stops the old fleetd by the PID and start time of the row, waits until
-//! the fleetd lock is free, and starts `horch fleetd` detached through the
-//! launcher.
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -119,13 +92,10 @@ pub enum FleetdCommand {
     Check,
 }
 
-/// fleetd and `horch fleet` drive only the `herdr` pane host: the
-/// adapters of fleetd use only the herdr backend of `PaneHost`.
 pub(crate) const HC_REFUSED: &str = "fleetd runs its workers only on herdr: \
      the hc pane host (herdr-core and the Herdr desktop app) has no fleetd adapter. \
      Run this command with --backend herdr, or unset HORCH_BACKEND";
 
-/// Fail with [`HC_REFUSED`] when `ctx` resolved the `hc` pane host.
 pub(crate) fn refuse_hc(ctx: &RuntimeContext) -> Result<()> {
     if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
         bail!(HC_REFUSED);
@@ -133,7 +103,6 @@ pub(crate) fn refuse_hc(ctx: &RuntimeContext) -> Result<()> {
     Ok(())
 }
 
-/// `horch fleetd` and `horch fleetd check`.
 pub fn fleetd(ctx: &RuntimeContext, command: Option<FleetdCommand>) -> Result<ExitCode> {
     refuse_hc(ctx)?;
     match command {
@@ -146,61 +115,41 @@ pub fn fleetd(ctx: &RuntimeContext, command: Option<FleetdCommand>) -> Result<Ex
     }
 }
 
-// ─── the check ──────────────────────────────────────────────────────────
-
-/// What `horch fleetd check` found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Found {
-    /// No `fleetd` row: no fleetd ran on this ledger.
     NoRow,
-    /// The fleetd of the row runs, and its heartbeat is fresh.
     Fresh,
-    /// No process has the PID and start time of the row.
     Dead,
-    /// The fleetd of the row wrote no heartbeat for 30 s of awake time.
     Hung,
-    /// The binary file of the fleetd of the row changed after its start.
     Older,
 }
 
-/// 1 fleetd process: its PID and start time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fleetd {
     pub pid: u32,
     pub pid_start: u64,
 }
 
-/// What `horch fleetd check` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checked {
     pub found: Found,
-    /// The fleetd that the row named.
     pub old: Option<Fleetd>,
-    /// The fleetd that the row names after a start. `None` when the check
-    /// started nothing, or when no new fleetd wrote the row in time.
     pub new: Option<Fleetd>,
     pub mode: Mode,
 }
 
 impl Checked {
-    /// Whether the check started or restarted fleetd.
     fn started(&self) -> bool {
         matches!(self.found, Found::Dead | Found::Hung | Found::Older)
     }
 }
 
-/// How a restart starts the new fleetd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// The service manager of the OS restarts the service.
     Service,
-    /// The check stops the old fleetd and starts `horch fleetd` detached.
     StandIn,
 }
 
-/// The mode of the ledger of `paths`: [`Mode::Service`] only for the
-/// default ledger of the OS user, whose home is `os_home`, with no other
-/// fleet root (MAP.md, Q8).
 pub fn mode(paths: &Paths, os_home: Option<&Path>) -> Mode {
     let Some(home) = os_home else {
         return Mode::StandIn;
@@ -214,22 +163,15 @@ pub fn mode(paths: &Paths, os_home: Option<&Path>) -> Mode {
     }
 }
 
-/// The fleet of 1 ledger, as the check sees it.
 pub(crate) struct Fleet<'a> {
     pub ledger: &'a Path,
     pub root: &'a Path,
     pub mode: Mode,
-    /// Start the new fleetd from the binary `exe`: through the service
-    /// manager, or detached through the launcher.
     pub start: &'a dyn Fn(&Path) -> Result<()>,
 }
 
-/// The time that a killed fleetd takes to free the lock, and that a new
-/// fleetd takes to write the `fleetd` row.
 const START_WAIT: Duration = Duration::from_secs(10);
 
-/// The `fleetd` row of the ledger: `None` when the ledger file, the table
-/// or the row is missing. The read never creates or migrates the ledger.
 fn read_row(ledger: &Path) -> Result<Option<Fleetd>> {
     if !ledger.is_file() {
         return Ok(None);
@@ -257,8 +199,6 @@ fn read_row(ledger: &Path) -> Result<Option<Fleetd>> {
     }))
 }
 
-/// The heartbeat that the fleetd `f` wrote. A heartbeat of another
-/// process, or one that does not read, is none.
 fn own_heartbeat(root: &Path, f: Fleetd) -> Option<Heartbeat> {
     read_heartbeat(root)
         .ok()
@@ -266,10 +206,7 @@ fn own_heartbeat(root: &Path, f: Fleetd) -> Option<Heartbeat> {
         .filter(|hb| hb.pid == f.pid && hb.pid_start == f.pid_start)
 }
 
-/// What the check finds for the live fleetd `f`.
 fn judge_live(root: &Path, f: Fleetd) -> Result<(Found, Option<Heartbeat>)> {
-    // fleetd writes its start heartbeat right after it writes the row, so
-    // a live fleetd with no heartbeat of its own is in its start.
     let Some(hb) = own_heartbeat(root, f) else {
         return Ok((Found::Fresh, None));
     };
@@ -284,25 +221,18 @@ fn judge_live(root: &Path, f: Fleetd) -> Result<(Found, Option<Heartbeat>)> {
     Ok((found, Some(hb)))
 }
 
-/// The binary file at the path of the binary of `hb`, as it is now.
 fn binary_now(hb: &Heartbeat) -> Exe {
     exe_at(Path::new(&hb.exe.path))
 }
 
-/// The binary file at `path` as it is now. A file that cannot be read has
-/// an empty identity.
 fn exe_at(path: &Path) -> Exe {
     exe_of(exe_identity(path).unwrap_or_default())
 }
 
-/// Whether the binary file that this fleetd started from was replaced: a
-/// file at its path is there, and it is another file. A missing file is no
-/// new binary: an install can be between its 2 renames.
 fn binary_changed(started: &Exe) -> bool {
     exe_identity(Path::new(&started.path)).is_some_and(|now| exe_of(now) != *started)
 }
 
-/// `horch fleetd check` on `fleet`.
 pub(crate) fn check_with(fleet: &Fleet<'_>) -> Result<Checked> {
     let Some(old) = read_row(fleet.ledger)? else {
         return Ok(Checked {
@@ -326,8 +256,6 @@ pub(crate) fn check_with(fleet: &Fleet<'_>) -> Result<Checked> {
     if !checked.started() {
         return Ok(checked);
     }
-    // The new fleetd runs the binary file of the old one, when it has one:
-    // an install replaced that file. Else the binary of this command.
     let exe = hb
         .map(|hb| PathBuf::from(hb.exe.path))
         .filter(|p| p.is_file())
@@ -337,12 +265,6 @@ pub(crate) fn check_with(fleet: &Fleet<'_>) -> Result<Checked> {
     Ok(checked)
 }
 
-/// Restart the live fleetd of `fleet` on `installed` when it runs another
-/// binary (OR-6, preservation 04 S10). `horch install` and
-/// `horch self-update` call it after the new binary is in place. `None`
-/// when it restarted nothing: no live fleetd, a fleetd that wrote no
-/// heartbeat yet, or a fleetd of `installed`. It never starts a fleetd that
-/// does not run.
 pub(crate) fn restart_older(fleet: &Fleet<'_>, installed: &Path) -> Result<Option<Checked>> {
     let Some(old) = read_row(fleet.ledger)? else {
         return Ok(None);
@@ -365,9 +287,6 @@ pub(crate) fn restart_older(fleet: &Fleet<'_>, installed: &Path) -> Result<Optio
     }))
 }
 
-/// Stop the fleetd `old`, which the check found as `found` (stand-in mode
-/// only: the service manager stops it in service mode), start fleetd from
-/// `exe`, and wait for the new fleetd in the row.
 fn restart(fleet: &Fleet<'_>, old: Fleetd, found: Found, exe: &Path) -> Result<Option<Fleetd>> {
     if fleet.mode == Mode::StandIn {
         refuse_fleet_caller(fleet.ledger)?;
@@ -406,11 +325,6 @@ fn own_fact(ledger: &Path) -> Fact {
     }
 }
 
-/// Stop the old fleetd `old` by its PID and start time, then wait until
-/// the fleetd lock is free. A gone fleetd gets no signal. A hung fleetd
-/// gets the kill at once: it ends a polite stop only between 2 passes. An
-/// older fleetd gets a polite stop, and the kill when `stop_grace_s` of
-/// `fleet.toml` ends. Only that case reads `fleet.toml`.
 fn stop(fleet: &Fleet<'_>, old: Fleetd, found: Found) -> Result<()> {
     let lock = lock_path(fleet.root);
     if found == Found::Dead {
@@ -441,7 +355,6 @@ fn stop(fleet: &Fleet<'_>, old: Fleetd, found: Found) -> Result<()> {
     Ok(())
 }
 
-/// [`wait_until_free`], with a missing run folder as a free lock.
 fn lock_free(lock: &Path, deadline: Instant) -> Result<bool> {
     if lock.parent().is_some_and(|d| !d.is_dir()) {
         return Ok(true);
@@ -449,8 +362,6 @@ fn lock_free(lock: &Path, deadline: Instant) -> Result<bool> {
     wait_until_free(lock, deadline).with_context(|| format!("waiting for {}", lock.display()))
 }
 
-/// The live fleetd that the row names in place of `old`, within
-/// [`START_WAIT`].
 fn wait_for_new(ledger: &Path, old: Fleetd) -> Option<Fleetd> {
     let until = Instant::now() + START_WAIT;
     loop {
@@ -466,12 +377,10 @@ fn wait_for_new(ledger: &Path, old: Fleetd) -> Option<Fleetd> {
     }
 }
 
-/// The check of the fleet of `ctx`, with the start of this machine.
 pub(crate) fn run_check(ctx: &RuntimeContext) -> Result<Checked> {
     with_fleet(ctx, check_with)
 }
 
-/// Run `f` on the fleet of `ctx`, with the start of this machine.
 pub(crate) fn with_fleet<T>(ctx: &RuntimeContext, f: impl FnOnce(&Fleet<'_>) -> T) -> T {
     let paths = &ctx.paths;
     let mode = this_mode(ctx);
@@ -484,13 +393,10 @@ pub(crate) fn with_fleet<T>(ctx: &RuntimeContext, f: impl FnOnce(&Fleet<'_>) -> 
     })
 }
 
-/// The mode of the ledger of `ctx` on this machine.
 fn this_mode(ctx: &RuntimeContext) -> Mode {
     mode(&ctx.paths, service::os_user_home().ok().as_deref())
 }
 
-/// The service of fleetd on the binary `exe`, for the default ledger of the
-/// OS user.
 pub(crate) fn service_spec(exe: &Path) -> Result<service::Spec> {
     let home = service::os_user_home().context("finding the home of the OS user")?;
     service_spec_for(exe, &default_path(&home), Some(&home))
@@ -526,7 +432,6 @@ pub(crate) fn service_label(ledger: &Path, os_home: Option<&Path>) -> String {
     service::ledger_label(&Sha256::digest(real.as_os_str().as_encoded_bytes()))
 }
 
-/// Start fleetd from `exe` in `mode`.
 fn start_fleetd(ctx: &RuntimeContext, mode: Mode, exe: &Path) -> Result<()> {
     match mode {
         Mode::Service => {
@@ -552,14 +457,12 @@ fn start_fleetd(ctx: &RuntimeContext, mode: Mode, exe: &Path) -> Result<()> {
                 detach: true,
                 output: Some(paths.fleet_root.join("run").join("fleetd.log")),
             };
-            // The new fleetd outlives this command, so it is not waited for.
             Launcher.launch(&spec).context("starting horch fleetd")?;
             Ok(())
         }
     }
 }
 
-/// The line that says what the check did.
 pub(crate) fn describe(c: &Checked) -> String {
     let old = c.old.map_or(0, |f| f.pid);
     let new = match (c.new, c.mode) {
@@ -582,9 +485,6 @@ pub(crate) fn describe(c: &Checked) -> String {
     }
 }
 
-/// The check of `horch fleetd check` before a `horch` command (PL-5). It
-/// prints to stderr only when it starts fleetd or fails, so the output of
-/// the command stays as it is. `HORCH_NO_WATCHDOG=1` turns it off.
 pub fn check_before_command(ctx: &RuntimeContext) {
     if ctx.settings.no_watchdog {
         return;
@@ -596,10 +496,6 @@ pub fn check_before_command(ctx: &RuntimeContext) {
     }
 }
 
-// ─── the daemon ─────────────────────────────────────────────────────────
-
-/// Write the heartbeat of this fleetd at its start, so that the hang limit
-/// counts awake time from the start until the first full pass ends.
 fn write_start_heartbeat(root: &Path, generation: Generation, exe: &Exe) -> Result<()> {
     let pid = std::process::id();
     let hb = Heartbeat {
@@ -614,7 +510,6 @@ fn write_start_heartbeat(root: &Path, generation: Generation, exe: &Exe) -> Resu
     write_heartbeat(root, &hb)
 }
 
-/// A SIGTERM came: the loop ends after the pass that runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
 fn sleep_unless_term(d: Duration, woke: &mut dyn FnMut() -> bool) {
@@ -708,8 +603,6 @@ impl Wake {
     }
 }
 
-/// The ledger connection of the pass, after [`Store::open`] created or
-/// migrated the ledger.
 pub(crate) fn ledger_conn(ledger: &Path) -> Result<Connection> {
     drop(Store::open(ledger)?);
     let conn = Connection::open(ledger)
@@ -719,18 +612,11 @@ pub(crate) fn ledger_conn(ledger: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// `horch fleetd`: take the lock and the generation, then 1 pass every
-/// `pass_period_s` until a SIGTERM. When its binary file changed, it
-/// starts the new binary after a pass and exits.
 fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
-    // Windows has no signal handlers: there the loop runs until the
-    // process ends.
     let _ = horch_platform::signal::on_termination_set(
         &TERM,
         &[horch_platform::signal::Termination::Terminate],
     );
-    // The binary file that this fleetd runs, read before it writes the
-    // fleetd row: an install after the row is then a new binary.
     let own_exe = this_exe();
     let horch = std::env::current_exe().context("finding the horch binary")?;
     if let Fact::Yes(attempts) = own_fact(&ctx.paths.ledger_db) {
@@ -739,7 +625,6 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
             attempts.join(", ")
         );
     }
-    // T-389: the rule of the rescue, 1 time, before the fleetd row and any job.
     if let Err(problem) = rescue_git_version(
         &ctx.bins.harness.git,
         ctx.inherited.path.as_deref(),
@@ -799,12 +684,6 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The start of Phase 5 after the lock and the generation: the operator
-/// token and the request files that wait ([`Pass::start`]), then the
-/// channel server with `handlers` ([`Pass::serve`]). A channel that does
-/// not start is printed, and the passes run without it: the request files
-/// still reach fleetd. `None`: another fleetd took the generation, and
-/// this fleetd exits.
 fn start_channel(
     ctx: &RuntimeContext,
     pass: &mut Pass<'_>,
@@ -833,12 +712,6 @@ fn start_channel(
     }
 }
 
-/// The handlers of the request kinds of Phase 5 (the table "Request kinds"
-/// of `docs/tickets/fleetd-p5/MAP.md`): the run and plan kinds, the task
-/// kinds, the worker kinds, the kinds of the last direct writers of the CLI
-/// (T-885) and the custody kinds, and the idea kinds of Phase 6 (T-553).
-/// The channel server and
-/// the request files of the fleetd of `settings` each get 1 copy.
 fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     let config = Arc::new(settings.config.clone());
     let guard = settings.generation;
@@ -868,8 +741,6 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     handlers
 }
 
-/// The handlers of the idea request kinds of Phase 6 (T-553). With no user
-/// of fleetd, the kinds get no handler, and fleetd prints 1 line.
 fn register_idea_handlers(
     ctx: &RuntimeContext,
     settings: &Settings,
@@ -898,10 +769,6 @@ fn register_idea_handlers(
     );
 }
 
-/// The profiles of the roster now, for the plan validator of Phase 6: the
-/// roster as `horch spawn` loads it, and the check sandbox of each persona
-/// on this host. A roster that does not load gives no profile, so the
-/// validator refuses each plan that names a profile.
 fn roster_profiles(ctx: &RuntimeContext, sandboxes: &WorkerSandboxes) -> Vec<RosterProfile> {
     let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
         return Vec::new();
@@ -921,9 +788,6 @@ fn roster_profiles(ctx: &RuntimeContext, sandboxes: &WorkerSandboxes) -> Vec<Ros
         .collect()
 }
 
-/// The live sources of the idea duties of Phase 6 (T-553). The launch of
-/// an idea-lead attempt is not here: [`Live::attempt_spec`] refuses it
-/// until T-890.
 struct LiveIdeas<'a> {
     ctx: &'a RuntimeContext,
     sandboxes: &'a WorkerSandboxes,
@@ -932,8 +796,6 @@ struct LiveIdeas<'a> {
 }
 
 impl LiveIdeas<'_> {
-    /// The repository and the primary branch of each open or ready feature,
-    /// sorted. `branchless` keeps only the features with no branch yet.
     fn projects(&self, conn: &Connection, branchless: bool) -> Result<Vec<(PathBuf, String)>> {
         let mut stmt = conn.prepare(
             "SELECT id, primary_branch FROM features
@@ -952,8 +814,6 @@ impl LiveIdeas<'_> {
         Ok(projects.into_iter().collect())
     }
 
-    /// The tip of `branch` of `repo`: the last fetched tip that is not
-    /// stale, else the local branch.
     fn tip(&self, conn: &Connection, repo: &Path, branch: &str) -> Result<Option<String>> {
         if let Some(row) = feature_rows::remote_tip(conn, &repo.to_string_lossy(), branch)? {
             if row.stale_since.is_none() {
@@ -969,9 +829,6 @@ impl IdeaPorts for LiveIdeas<'_> {
         roster_profiles(self.ctx, self.sandboxes)
     }
 
-    /// The gates of the project `fleet.toml` at the primary tip of the
-    /// first project with an open feature, by path. No project, or no file
-    /// at the tip, gives no gate.
     fn gates(&self, conn: &Connection) -> Result<DeclaredGates> {
         let Some((repo, branch)) = self.projects(conn, false)?.into_iter().next() else {
             return Ok(DeclaredGates::default());
@@ -994,8 +851,6 @@ impl IdeaPorts for LiveIdeas<'_> {
         &self.git
     }
 
-    /// A project whose primary branch has no tip gets no entry: its ideas
-    /// wait in `clarifying`.
     fn primaries(&self, conn: &Connection) -> Result<Vec<Primary>> {
         let mut primaries = Vec::new();
         for (repo, branch) in self.projects(conn, true)? {
@@ -1020,9 +875,6 @@ impl IdeaPorts for LiveIdeas<'_> {
     }
 }
 
-/// The check sandbox of each worker on this host (ticket 18 of Phase 4):
-/// Codex for a Codex worker, the platform sandbox for each other worker. A
-/// persona with no check sandbox gets no dispatch (SR-4).
 fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
     let codex = CodexSandbox {
         bin: ctx.bins.harness.codex.clone(),
@@ -1036,8 +888,6 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
     )
 }
 
-/// The spawn of each push attempt that fleetd bound:
-/// `horch spawn <persona> --attempt <id>` (ticket 10 of Phase 4).
 struct PushSpawns<'a> {
     ctx: &'a RuntimeContext,
     herdr: PaneHost,
@@ -1058,9 +908,6 @@ impl Launches for PushSpawns<'_> {
     }
 }
 
-/// The launch of the attempt of `l`: [`super::recipes::push_launch_spec`]
-/// with the pane of [`launch_pane`]. Each push attempt and each idea-lead
-/// attempt launches through it.
 fn spawn_spec(ctx: &RuntimeContext, herdr: &PaneHost, mut l: PushLaunch) -> Result<LaunchSpec> {
     let (pane, workspace) = launch_pane(herdr, &l)?;
     l.from_pane = Some(pane);
@@ -1068,12 +915,6 @@ fn spawn_spec(ctx: &RuntimeContext, herdr: &PaneHost, mut l: PushLaunch) -> Resu
     super::recipes::push_launch_spec(ctx, &l)
 }
 
-/// The pane that the launch of `l` splits, and its workspace: the recorded
-/// pane of `l`, else the first pane of the herdr workspace whose label is
-/// the name of the project folder, as `horch fleet` names it. In Phase 6
-/// no run has an orchestrator pane, so the recorded pane is often missing.
-/// No other workspace is used: with neither, the launch fails, and the
-/// start timeout of the pass ends the attempt.
 fn launch_pane(herdr: &PaneHost, l: &PushLaunch) -> Result<(String, String)> {
     if let Some(pane) = &l.from_pane {
         let workspace = match &l.workspace_id {
@@ -1112,10 +953,6 @@ fn launch_pane(herdr: &PaneHost, l: &PushLaunch) -> Result<(String, String)> {
     Ok((pane.pane_id, workspace.workspace_id))
 }
 
-/// The launch of the idea-lead attempt `a` (T-890), with the recipe of a
-/// push attempt: `horch spawn idea-lead --run <run> --exact --attempt <id>
-/// --from-pane <pane>`. The spawn takes the brief of the idea from the same
-/// rows. `None` when `a` is not an idea-lead attempt.
 fn idea_lead_spec(
     ctx: &RuntimeContext,
     herdr: &PaneHost,
@@ -1129,7 +966,6 @@ fn idea_lead_spec(
     };
     let push = PushLaunch {
         attempt: l.attempt,
-        // An idea-lead attempt has no task. The recipe does not read it.
         task_id: String::new(),
         worker_id: l.worker_id,
         persona: l.persona,
@@ -1152,11 +988,6 @@ fn settings(ctx: &RuntimeContext, generation: Generation) -> Result<Settings> {
     })
 }
 
-/// Stop each old watchdog of the active runs and take its runs, before the
-/// first pass ([`old_watchdog::take_over`]). Prints 1 line for each
-/// recorded watchdog. An error, or a recorded watchdog that may still run,
-/// is an error: fleetd runs no pass, so 1 control path acts on each run.
-/// The next start of fleetd tries again.
 fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) -> Result<()> {
     let locks = orchestrator::lock_dir(&ctx.paths.ledger_db);
     let grace = Duration::from_secs(settings.config.stop_grace_s);
@@ -1174,10 +1005,6 @@ fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) -> Re
 
 const HERDR_CALL_LIMIT: Duration = Duration::from_secs(5);
 
-/// Build the pass of fleetd on this machine with `settings`, and give it
-/// with its run duties to `f`. `force` checks each working worker in each
-/// pass, due or not. The daemon and `horch ledger watch --once` use it, so
-/// both run the same pass.
 fn with_pass<T>(
     ctx: &RuntimeContext,
     writer: &LedgerWriter,
@@ -1232,19 +1059,11 @@ fn with_pass<T>(
     f(&mut pass, &duties)
 }
 
-/// What `horch ledger watch --once` did.
 pub(crate) enum Once {
-    /// It ran 1 pass: the checks of the pass, with the run id of each.
     Ran(Vec<(String, watchdog::Checked)>),
-    /// The fleetd of the row holds the fleetd lock: it does the checks.
     Held(Option<Fleetd>),
 }
 
-/// `horch ledger watch --once`: 1 pass of fleetd in the foreground, when no
-/// fleetd holds the fleetd lock (`docs/tickets/fleetd-p1/MAP.md`, Q11). It
-/// starts as the daemon starts: it takes the lock and the next generation,
-/// and takes over the old watchdogs. When a fleetd holds the lock, it runs
-/// no pass and stops nothing.
 pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
     let writer = LedgerWriter::fleetd();
     let mut store = writer.open(&ctx.paths.ledger_db)?;
@@ -1267,7 +1086,6 @@ pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
     })
 }
 
-/// Run 1 pass, and print its failures.
 fn one_pass(pass: &mut Pass<'_>, conn: &mut Connection) -> Passed {
     match pass.run(conn) {
         Ok(report) => {
@@ -1287,13 +1105,9 @@ fn one_pass(pass: &mut Pass<'_>, conn: &mut Connection) -> Passed {
     }
 }
 
-/// The restart of this fleetd on its changed binary file (preservation 04
-/// S10). It holds the fleetd lock until the restart.
 struct SelfRestart<'a> {
     ctx: &'a RuntimeContext,
-    /// The binary file that this fleetd started from.
     exe: Exe,
-    /// The path that started this fleetd: the restart starts it again.
     horch: PathBuf,
     lock: RefCell<Option<FleetdLock>>,
 }
@@ -1303,9 +1117,6 @@ impl SelfRestart<'_> {
         binary_changed(&self.exe)
     }
 
-    /// Free the lock, because a new fleetd exits at once while this one
-    /// holds it, then start the new binary. This fleetd runs no pass after
-    /// it.
     fn restart(&self) {
         drop(self.lock.borrow_mut().take());
         let ctx = self.ctx;
@@ -1323,18 +1134,12 @@ impl SelfRestart<'_> {
     }
 }
 
-/// What 1 pass of the loop gave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Passed {
     Ran,
-    /// Another fleetd took the generation: this fleetd exits.
     GenerationLost,
 }
 
-/// The loop of the daemon: 1 `pass` every `period`, until a SIGTERM or a
-/// lost generation. When the binary file of fleetd `changed`, the loop
-/// calls `restart` once after the pass, and so after its heartbeat, and
-/// ends. A restart never stops a pass (preservation 04 S10, FM-34).
 fn run_loop(
     period: Duration,
     pass: &mut dyn FnMut() -> Passed,
@@ -1355,11 +1160,9 @@ fn run_loop(
     }
 }
 
-/// What a pass reads and does outside the ledger on this machine.
 struct Live<'a> {
     ctx: &'a RuntimeContext,
     herdr: PaneHost,
-    /// herdr and the transcript of a live attempt.
     observer: HerdrObserver,
 }
 
@@ -1368,13 +1171,6 @@ impl Outside for Live<'_> {
         Some(&self.ctx.paths.state_root)
     }
 
-    /// Each pane of each herdr workspace, with the process that herdr
-    /// started in it (`shell_pid`) and its start time: the fact that proves
-    /// a pane is the pane of a row (FM-22). A pane whose process-info fails,
-    /// or whose process cannot be read, is [`InPane::Unknown`], so it is
-    /// never closed. A pane whose pid no process has is [`InPane::Gone`]:
-    /// only the record of a polite stop of that pid can prove the pane then.
-    /// A list that fails gives no snapshot, so no pane counts as gone.
     fn panes(&self) -> Option<BTreeMap<String, InPane>> {
         let mut panes = BTreeMap::new();
         for ws in self.herdr.workspace_list().ok()? {
@@ -1397,8 +1193,6 @@ impl Outside for Live<'_> {
         self.herdr.pane_close(pane)
     }
 
-    /// The holds of the health guards. A failed probe holds nothing, and
-    /// says so.
     fn holds(&self) -> Vec<Hold> {
         match holds::holds(self.ctx) {
             Ok(findings) => findings
@@ -1415,8 +1209,6 @@ impl Outside for Live<'_> {
         }
     }
 
-    /// The folder of each worktree row that is not `removed`, by its
-    /// worktree id.
     fn worktree_folders(&self, conn: &Connection) -> Result<Vec<FolderItem>> {
         let kept: Vec<WorktreeState> = WorktreeState::ALL
             .into_iter()
@@ -1431,9 +1223,6 @@ impl Outside for Live<'_> {
             .collect())
     }
 
-    /// The entries of `<project>/.worktrees/` of each repository of the
-    /// fleet (MAP.md of fleetd-p3, Q4). A work directory that cannot be
-    /// listed gives no entry in this pass.
     fn work_dirs(&self, conn: &Connection) -> Result<Vec<WorkDir>> {
         let mut out = Vec::new();
         for repo in self.repositories(conn)? {
@@ -1455,8 +1244,6 @@ impl Outside for Live<'_> {
         Ok(out)
     }
 
-    /// The project root of each run that is not `done` or `abandoned`,
-    /// each once, in order (MAP.md of fleetd-p3, Q4).
     fn repositories(&self, conn: &Connection) -> Result<Vec<String>> {
         let sql = format!(
             "SELECT DISTINCT p.root FROM runs r JOIN projects p ON p.project_id = r.project_id
@@ -1470,9 +1257,6 @@ impl Outside for Live<'_> {
         roots.context("reading the repositories of the fleet")
     }
 
-    /// An idea-lead attempt gets [`idea_lead_spec`] (T-890). Phase 1 puts
-    /// no other attempt here: a respawn of an orchestrator that an older
-    /// fleetd wrote has no launch, and the run duties end it (FM-16).
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec> {
         if let Some(spec) = idea_lead_spec(self.ctx, &self.herdr, attempt)? {
             return Ok(spec);
@@ -1487,9 +1271,6 @@ impl Outside for Live<'_> {
         Some(self.observer.observe(w))
     }
 
-    /// The roster and the pool readings of the state folder. The pass
-    /// starts no probe: a reading that is missing or old stays as it is
-    /// (`horch quota` and the spawn gate refresh it).
     fn pools(&self) -> Option<PoolFacts> {
         let ctx = self.ctx;
         let root = &ctx.paths.state_root;
@@ -1505,9 +1286,6 @@ impl Outside for Live<'_> {
         delivery::send_line(&self.herdr, pane, TypedLine::Doorbell)
     }
 
-    /// Each tool of `docs-sources.toml` whose version command names a
-    /// binary on the `PATH` of fleetd, with the path of that binary. A tool
-    /// that is not installed has no binary, so it gets no docs job.
     fn cli_binaries(&self) -> Vec<CliPath> {
         let Ok(sources) = agent_docs_sync::sources() else {
             return Vec::new();
@@ -1525,9 +1303,6 @@ impl Outside for Live<'_> {
     }
 }
 
-/// A ledger, a fleet root and stand-in fleetds in a temp folder: the
-/// fixture of the tests of the fleetd restart here, in `install.rs` and in
-/// `selfupdate.rs`.
 #[cfg(test)]
 pub(crate) mod test_fleet {
     use std::cell::RefCell;
@@ -1544,15 +1319,11 @@ pub(crate) mod test_fleet {
 
     use super::{check_with, Checked, Fleet, Fleetd, Mode};
 
-    /// A ledger and a fleet root in a temp folder.
     pub(crate) struct World {
         pub(crate) dir: tempfile::TempDir,
         pub(crate) ledger: PathBuf,
         pub(crate) root: PathBuf,
-        /// The binary of the fleetds of the test: a file that a test can
-        /// change.
         pub(crate) exe: PathBuf,
-        /// Each process that the test started, stopped at the end.
         pub(crate) started: RefCell<Vec<Fleetd>>,
     }
 
@@ -1564,7 +1335,6 @@ pub(crate) mod test_fleet {
             std::fs::create_dir_all(root.join("run")).unwrap();
             let exe = dir.path().join("horch");
             std::fs::write(&exe, "1").unwrap();
-            // The binary of a heartbeat is a canonical path.
             let exe = exe.canonicalize().unwrap();
             drop(Store::open(&ledger).unwrap());
             World {
@@ -1576,8 +1346,6 @@ pub(crate) mod test_fleet {
             }
         }
 
-        /// A process that stands in for a fleetd: a `sleep` that is not a
-        /// child of this test, so that its end is not a zombie.
         pub(crate) fn process(&self) -> Fleetd {
             let out = std::process::Command::new("/bin/sh")
                 .args(["-c", "sleep 120 >/dev/null 2>&1 & echo $!"])
@@ -1590,7 +1358,6 @@ pub(crate) mod test_fleet {
             p
         }
 
-        /// Write `p` to the `fleetd` row.
         pub(crate) fn record(&self, p: Fleetd) {
             let store = Store::open(&self.ledger).unwrap();
             store
@@ -1605,8 +1372,6 @@ pub(crate) mod test_fleet {
                 .unwrap();
         }
 
-        /// The heartbeat of `p`, `age_s` seconds of awake time old, with the
-        /// binary of the world as it is now.
         pub(crate) fn heartbeat(&self, p: Fleetd, age_s: u64) {
             let now = awake_now().unwrap();
             let hb = Heartbeat {
@@ -1624,15 +1389,10 @@ pub(crate) mod test_fleet {
             write_heartbeat(&self.root, &hb).unwrap();
         }
 
-        /// Run the check in stand-in mode. Gives the result and the binary
-        /// of each start.
         pub(crate) fn check(&self) -> (Checked, Vec<PathBuf>) {
             self.run(Mode::StandIn, |fleet| check_with(fleet).unwrap())
         }
 
-        /// Run `f` on the fleet of the world in `mode`. Each start starts a
-        /// new stand-in fleetd and records it in the row, as `horch fleetd`
-        /// does. Gives the result of `f` and the binary of each start.
         pub(crate) fn run<T>(
             &self,
             mode: Mode,
@@ -1654,12 +1414,10 @@ pub(crate) mod test_fleet {
             (out, starts.into_inner())
         }
 
-        /// The fleetd that the `fleetd` row names.
         pub(crate) fn row(&self) -> Option<Fleetd> {
             super::read_row(&self.ledger).unwrap()
         }
 
-        /// A new binary file in a folder of its own: `<folder>/horch`.
         pub(crate) fn new_binary(&self, folder: &str) -> PathBuf {
             let dir = self.dir.path().join(folder);
             std::fs::create_dir_all(&dir).unwrap();
@@ -1681,7 +1439,6 @@ pub(crate) mod test_fleet {
         horch_core::procid::alive(p.pid, Some(p.pid_start))
     }
 
-    /// Wait up to 5 s for `p` to end.
     pub(crate) fn ended(p: Fleetd) -> bool {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while alive(p) {
@@ -1701,8 +1458,6 @@ mod tests {
     use super::test_fleet::{alive, ended, World};
     use super::*;
 
-    /// fleetd and `horch fleet` refuse the hc pane host with 1 line that
-    /// names the fix, and take herdr (T-330).
     #[test]
     fn the_hc_backend_is_refused_with_its_fix_and_herdr_is_taken() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1726,7 +1481,6 @@ mod tests {
         let (checked, starts) = w.check();
         assert_eq!(checked.found, Found::NoRow);
         assert!(starts.is_empty(), "{starts:?}");
-        // A ledger that does not exist is not created.
         std::fs::remove_file(&w.ledger).unwrap();
         let (checked, starts) = w.check();
         assert_eq!(checked.found, Found::NoRow);
@@ -1739,8 +1493,6 @@ mod tests {
     fn check_restarts_a_hung_fleetd_by_pid_and_start_time() {
         let w = World::new();
         let hung = w.process();
-        // A row with the PID and another start time names a process that
-        // ended: the check starts a fleetd and stops nothing.
         let other = Fleetd {
             pid_start: hung.pid_start + 1,
             ..hung
@@ -1753,7 +1505,6 @@ mod tests {
             alive(hung),
             "the check stopped a PID with another start time"
         );
-        // The row with the PID and its start time, and a heartbeat 31 s old.
         w.record(hung);
         w.heartbeat(hung, 31);
         let (checked, starts) = w.check();
@@ -1773,7 +1524,6 @@ mod tests {
         let old = w.process();
         w.record(old);
         w.heartbeat(old, 1);
-        // An install replaces the binary of the running fleetd.
         std::fs::write(&w.exe, "22").unwrap();
         let (checked, starts) = w.check();
         assert_eq!(checked.found, Found::Older);
@@ -1918,8 +1668,6 @@ mod tests {
         assert_eq!(checked.new, None);
     }
 
-    /// fleetd writes a heartbeat at its start, so the hang limit counts
-    /// awake time from the start until the first full pass.
     #[test]
     fn a_started_fleetd_has_a_heartbeat_before_its_first_pass() {
         let w = World::new();
@@ -1933,8 +1681,6 @@ mod tests {
         assert_eq!(judge_live(&w.root, me).unwrap().0, Found::Fresh);
     }
 
-    /// The check of a ledger with no fleetd row reads no `fleet.toml`: a
-    /// file that does not parse does not fail it.
     #[test]
     fn check_with_no_row_reads_no_fleet_toml() {
         let w = World::new();
@@ -1960,24 +1706,18 @@ mod tests {
         let os_home = home.path().join("os-user");
         let default = os_home.join(".horch").join("ledger.sqlite3");
         let default = default.to_string_lossy();
-        // The default ledger of the OS user, with no FLEET_ROOT.
         let p = paths(&[("HORCH_LEDGER_DB", &default)]);
         assert_eq!(mode(&p, Some(&os_home)), Mode::Service);
-        // `$HOME` is not the home of the OS user: its default ledger is not
-        // the default ledger of the OS user.
         assert_eq!(mode(&paths(&[]), Some(&os_home)), Mode::StandIn);
-        // Another ledger.
         let other = home.path().join("ledger.sqlite3");
         let p = paths(&[("HORCH_LEDGER_DB", &other.to_string_lossy())]);
         assert_eq!(mode(&p, Some(&os_home)), Mode::StandIn);
-        // The default ledger with another FLEET_ROOT.
         let root = home.path().join("fleet");
         let p = paths(&[
             ("HORCH_LEDGER_DB", &default),
             ("FLEET_ROOT", &root.to_string_lossy()),
         ]);
         assert_eq!(mode(&p, Some(&os_home)), Mode::StandIn);
-        // No home of the OS user.
         let p = paths(&[("HORCH_LEDGER_DB", &default)]);
         assert_eq!(mode(&p, None), Mode::StandIn);
     }
@@ -2075,9 +1815,6 @@ mod tests {
         );
     }
 
-    /// Preservation 04 S10: a fleetd whose binary file changed starts the
-    /// new binary once, after the heartbeat of its pass, and ends its loop.
-    /// It never stops a pass.
     #[test]
     fn pres_04_s10_changed_binary_restarts_between_passes() {
         let dir = tempfile::tempdir().unwrap();
@@ -2090,7 +1827,6 @@ mod tests {
         let mut pass = || {
             passes.set(passes.get() + 1);
             events.borrow_mut().push("pass");
-            // An install replaces the binary inside the 2nd pass.
             if passes.get() == 2 {
                 std::fs::write(&exe, "22").unwrap();
             }
@@ -2110,8 +1846,6 @@ mod tests {
             *events.borrow(),
             ["pass", "heartbeat", "pass", "heartbeat", "restart"]
         );
-        // A binary file that is gone (an install between its 2 renames) is
-        // not a new binary.
         std::fs::remove_file(&exe).unwrap();
         assert!(!binary_changed(&started), "a missing binary");
     }

@@ -1,9 +1,3 @@
-//! The bind helper of the tests (FR-5). No worker finds a task by a
-//! search: fleetd binds each task. A test that needs a task held by a
-//! worker uses [`bind_live`], which binds the task through the door that
-//! fleetd uses ([`dispatch::bind`]) and then moves the attempt to `live`,
-//! as the launch and the pass do.
-
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
@@ -20,13 +14,6 @@ use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::util;
 use crate::taskledger::workers::NewWorker;
 
-/// Run `f` and count the SQL statements that `conn` compiles while it runs
-/// (T-292): the authorizer of SQLite sees each SELECT (also a subquery),
-/// INSERT and DELETE 1 time, and each column of an UPDATE 1 time. A
-/// statement of the statement cache is not compiled again, and is not
-/// counted. A reader that runs 1 statement for each row gives a count that
-/// grows with the rows; a set reader gives the same count for 10 rows and
-/// for 10,000.
 pub fn count_statements<T>(conn: &Connection, f: impl FnOnce() -> T) -> (T, usize) {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,22 +37,6 @@ pub fn count_statements<T>(conn: &Connection, f: impl FnOnce() -> T) -> (T, usiz
     (out, count.load(Ordering::Relaxed))
 }
 
-/// Bind the ready task `task_id` to a new worker of `worker.persona` and
-/// bring its attempt to `live`, in 1 transaction of `conn`:
-///
-/// 1. [`dispatch::bind`]: the task goes to `leased`, with 1 new worker row
-///    and 1 attempt in `launching` (and the tree of a worktree task).
-/// 2. The attempt goes to `live` with the process `agent`, and the task
-///    takes its lease.
-/// 3. The task goes to `running` and the worker to `working`.
-///
-/// A worktree task needs a run in a git repository, as the bind does.
-///
-/// ```ignore
-/// let worker = NewWorker { run_id, persona: "dev".into(), ..Default::default() };
-/// let bound = testing::bind_live(store.conn(), &task_id, &worker, None)?;
-/// assert_eq!(tasks::get(store.conn(), &task_id)?.status, "running");
-/// ```
 pub fn bind_live(
     conn: &Connection,
     task_id: &str,
@@ -118,12 +89,6 @@ pub fn bind_live(
     })
 }
 
-/// Record the supervisor process `pid` of the worker `worker_id` that
-/// [`bind_live`] made, as the launch does. The worker is `working` already,
-/// so this writes only the process fields; [`workers::supervisor_started`]
-/// moves a `starting` worker.
-///
-/// [`workers::supervisor_started`]: crate::taskledger::workers::supervisor_started
 pub fn record_supervisor(
     conn: &Connection,
     worker_id: &str,
@@ -165,7 +130,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
                 Ok(run)
             })
@@ -211,7 +175,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(lease, bound.attempt_id);
-        // Each move went through the door: 1 transition event for each.
         let moves: Vec<(String, String)> = conn
             .prepare(
                 "SELECT from_state, to_state FROM events WHERE kind = 'transition'
@@ -238,7 +201,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
                 Ok(run)
             })

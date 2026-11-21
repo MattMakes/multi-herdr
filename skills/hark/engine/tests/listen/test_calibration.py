@@ -111,7 +111,7 @@ def test_cal_5_calibration_math():
     U = cal.U[0]
     assert cal.rank[0, 0] == 1 + int((U > U[2]).sum())
     assert cal.percentile[0, 0] == pytest.approx((U < U[2]).mean())
-    best = voc.unit(a + 0.0)  # the sound's own direction beats every term
+    best = voc.unit(a + 0.0)
     top = v.calibrate(a[None, :], Q=best[None, :])
     assert top.percentile[0, 0] == pytest.approx(1.0)
     assert top.rank[0, 0] == 1

@@ -86,7 +86,6 @@ def _balance_gap(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _closest_ref(ours: np.ndarray, candidates: Sequence[np.ndarray]) -> int | None:
-    # This module is under the search layer, so the match uses spectral balance only.
     if not candidates:
         return None
     own = tone.profile(ours)

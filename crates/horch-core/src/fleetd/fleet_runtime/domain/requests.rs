@@ -1,22 +1,9 @@
-//! The request contract: the kind catalog with the class of each kind, the
-//! `request_id` rule, the size rule of a line, and the reasons of a refusal.
-//! The JSON form of a request and of a reply, and the payload hash, are in
-//! `adapters/request_wire.rs`, because a domain module names only `std`.
-//!
-//! Requirements: RR-8, SR-8, FM-15, FR-10. Ticket 08 of fleetd-p5, and
-//! tickets 06, 47 and 48 of fleetd-p6.
-
 use std::path::Path;
 
-/// The most bytes of a `request_id`.
 pub const REQUEST_ID_MAX_BYTES: usize = 64;
 
-/// The most characters of an untrusted text that a refusal reason repeats.
 const ECHO_MAX_CHARS: usize = 64;
 
-/// Who may send a kind. An `operator` kind comes on the channel or in a
-/// request file. A `worker` kind is a file of its own attempt only, and
-/// fleetd refuses it on the channel and in a request file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     Operator,
@@ -32,13 +19,6 @@ impl Class {
     }
 }
 
-/// Each request kind: the table "Request kinds" of
-/// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
-/// state, with the 3 kinds of the records of 1 spawn of fleetd (ticket 23
-/// of fleetd-p5), the 4 kinds of the last direct writers of the CLI after
-/// `rescue_drop` (T-885), then the idea kinds of Phase 6 (design, "Each
-/// request kind has a class"), then `session_records`, the writes of the
-/// session store (T-884). A kind of [`RETIRED`] is not a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     LedgerImport,
@@ -79,8 +59,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Each kind, in the order of the MAP table, then the idea kinds, then
-    /// `session_records`.
     pub const ALL: [Kind; 35] = [
         Kind::LedgerImport,
         Kind::LedgerGc,
@@ -119,7 +97,6 @@ impl Kind {
         Kind::SessionRecords,
     ];
 
-    /// The name of the kind on the wire and in the `requests` row.
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::LedgerImport => "ledger_import",
@@ -160,9 +137,6 @@ impl Kind {
         }
     }
 
-    /// `worker` for the 3 kinds that are files of an attempt and for
-    /// `idea_note`, a file of a sub-orchestrator in its idea folder, else
-    /// `operator`.
     pub fn class(self) -> Class {
         match self {
             Kind::Progress | Kind::Result | Kind::Ask | Kind::IdeaNote => Class::Worker,
@@ -170,9 +144,6 @@ impl Kind {
         }
     }
 
-    /// The kind of the wire name `name`. A retired name is refused with
-    /// its new command. An unknown name is refused, and the reason repeats
-    /// the name.
     pub fn parse(name: &str) -> Result<Kind, RequestError> {
         if let Some(r) = retired(name) {
             return Err(RequestError::Retired(r.instead));
@@ -184,38 +155,24 @@ impl Kind {
     }
 }
 
-/// A request kind that Phase 6 retires, the command that sent it, and what
-/// you do in its place: the table "Old flow and new" of
-/// `docs/tickets/fleetd-p6/MAP.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Retired {
-    /// The wire name of the kind.
     pub kind: &'static str,
-    /// The old command.
     pub command: &'static str,
-    /// What you do in its place.
     pub instead: &'static str,
 }
 
 impl Retired {
-    /// The line that the old command prints: `<command> is retired.
-    /// <instead>`.
     pub fn line(&self) -> String {
         format!("{} is retired. {}", self.command, self.instead)
     }
 }
 
-/// What you do in place of `horch ledger add` and `horch ledger task`.
 const DIRECT: &str =
     "Add a ticket that you wrote: horch idea add --direct <ticket file> [--to <feature>]";
 
-/// What you do in place of `horch ledger worker new` and `worker pid`.
 const RECORDS: &str = "fleetd records each attempt at its launch";
 
-/// Each retired kind (tickets 47 and 48 of fleetd-p6, and `spawn_adopt` of
-/// T-302: no client sends it after T-895). fleetd refuses a
-/// request of one with the reason `retired kind: <instead>`: a request
-/// file of an old client, written before the update.
 pub const RETIRED: [Retired; 15] = [
     Retired {
         kind: "run_new",
@@ -294,13 +251,10 @@ pub const RETIRED: [Retired; 15] = [
     },
 ];
 
-/// The retired kind of the wire name `kind`, or `None`.
 pub fn retired(kind: &str) -> Option<&'static Retired> {
     RETIRED.iter().find(|r| r.kind == kind)
 }
 
-/// The idempotency key of a request: 1 UUID v4 text that the client makes.
-/// The rule: 1 to 64 bytes, each of `[A-Za-z0-9-]`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RequestId(String);
 
@@ -331,9 +285,6 @@ impl std::fmt::Display for RequestId {
     }
 }
 
-/// Refuses a line of `bytes` bytes over the limit `max_bytes`
-/// (`request_max_bytes` of `fleet.toml`). The caller checks it before it
-/// parses the line.
 pub fn check_size(bytes: usize, max_bytes: u64) -> Result<(), RequestError> {
     if u64::try_from(bytes).map_or(true, |b| b > max_bytes) {
         return Err(RequestError::TooLarge { bytes, max_bytes });
@@ -341,43 +292,27 @@ pub fn check_size(bytes: usize, max_bytes: u64) -> Result<(), RequestError> {
     Ok(())
 }
 
-/// The payload of `idea_add`: the idea, and the feature that it joins with
-/// `--to`, else the project of its new feature. Each field is 1 text:
-/// `text`, or `direct` and `sha256`; then `to`, or `project` and
-/// `primary_branch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdeaAdd {
     pub idea: IdeaInput,
     pub target: AddTarget,
 }
 
-/// The feature of a new idea.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AddTarget {
-    /// No `--to`: a new feature of the project at the absolute root
-    /// `project`, from its primary branch `primary_branch`. The command
-    /// reads both from the repository of the caller.
     New {
         project: String,
         primary_branch: String,
     },
-    /// `--to <feature>`: the id or the name of a feature.
     Join(String),
 }
 
-/// What `horch idea add` captures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IdeaInput {
-    /// The text of the idea.
     Text(String),
-    /// `--direct`: the ticket file that you wrote.
     Direct(DirectTicket),
 }
 
-/// A `--direct` ticket file: its absolute path and the lower-case hex
-/// sha256 of its bytes. A request line stays small, so it carries the path,
-/// and fleetd refuses the request when the file has another sha256 (Q15 of
-/// `docs/tickets/fleetd-p5/MAP.md`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectTicket {
     path: String,
@@ -415,11 +350,6 @@ impl DirectTicket {
 }
 
 impl IdeaAdd {
-    /// The payload `fields`, each a key and its text. It refuses an unknown
-    /// key, both `text` and `direct` or neither, `direct` without `sha256`
-    /// or `sha256` without `direct`, an empty `to`, `to` with `project` or
-    /// `primary_branch`, and with no `to` a missing or relative `project` or
-    /// a missing or empty `primary_branch`.
     pub fn from_fields(fields: &[(&str, &str)]) -> Result<IdeaAdd, RequestError> {
         const KEYS: [&str; 6] = [
             "text",
@@ -482,7 +412,6 @@ impl IdeaAdd {
         Ok(IdeaAdd { idea, target })
     }
 
-    /// The payload fields of this request, each a key and its text.
     pub fn fields(&self) -> Vec<(&'static str, &str)> {
         let mut fields = match &self.idea {
             IdeaInput::Text(text) => vec![("text", text.as_str())],
@@ -504,8 +433,6 @@ impl IdeaAdd {
     }
 }
 
-/// The required and the optional payload fields of each kind of the
-/// records of 1 spawn (ticket 23 of fleetd-p5). `None` for each other kind.
 fn spawn_record_fields(kind: Kind) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match kind {
         Kind::SpawnGateNote => Some((&["text"], &["run_id", "worker_id"])),
@@ -518,10 +445,6 @@ fn spawn_record_fields(kind: Kind) -> Option<(&'static [&'static str], &'static 
     }
 }
 
-/// Check the payload `fields` of a kind of the records of 1 spawn: each key
-/// is a field of the kind, each text is not empty, and each required field
-/// is there. `spawn_gate_note` has both `run_id` and `worker_id` or
-/// neither. Each other kind passes.
 pub fn check_spawn_record(kind: Kind, fields: &[(&str, &str)]) -> Result<(), RequestError> {
     let Some((required, optional)) = spawn_record_fields(kind) else {
         return Ok(());
@@ -553,24 +476,16 @@ pub fn check_spawn_record(kind: Kind, fields: &[(&str, &str)]) -> Result<(), Req
     Ok(())
 }
 
-/// The reason that a request or a reply is refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestError {
-    /// The line has more bytes than the limit.
     TooLarge { bytes: usize, max_bytes: u64 },
-    /// The line is not the JSON form of the contract. The text is safe to
-    /// print: control characters are escaped and the length is bounded.
     Malformed(String),
-    /// The kind is not in the catalog. The text is the escaped name.
     UnknownKind(String),
-    /// The kind is retired. The text is what you do in its place.
     Retired(&'static str),
-    /// The `request_id` breaks its rule. The text says which part.
     BadRequestId(&'static str),
 }
 
 impl RequestError {
-    /// A `Malformed` error from the untrusted text `text`.
     pub fn malformed(text: &str) -> RequestError {
         RequestError::Malformed(echo(text, 4 * ECHO_MAX_CHARS))
     }
@@ -595,8 +510,6 @@ impl std::fmt::Display for RequestError {
 
 impl std::error::Error for RequestError {}
 
-/// The untrusted text `text` made safe to print: control characters,
-/// quotes and backslashes escaped, and at most `max_chars` characters kept.
 fn echo(text: &str, max_chars: usize) -> String {
     let mut out: String = text
         .chars()
@@ -613,9 +526,6 @@ fn echo(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
-    /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md` with no
-    /// retired kind, then the idea kinds of Phase 6, then `session_records`
-    /// (T-884).
     const MAP_TABLE: [(&str, Class); 35] = [
         ("ledger_import", Class::Operator),
         ("ledger_gc", Class::Operator),

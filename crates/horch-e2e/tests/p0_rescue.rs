@@ -1,13 +1,3 @@
-//! Phase 0 red tests of fleetd (`docs/specs/fleetd/design.md`): a herdr
-//! server restart (FM-13) and a worker killed with dirty and untracked files
-//! in its worktree (FM-25). The tests began as Phase 0 red tests on the list
-//! of expected failures, `expected-failures/p0_rescue.txt`. Phases 1 and 3
-//! made them green, and they now run as normal tests.
-//!
-//! The test plays the agent: a `sleep` process stands in for it, and the
-//! test runs the worker commands with `HORCH_WORKER_ID`. A herdr restart
-//! ends every agent process and closes the panes of the fake herdr.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -24,8 +14,6 @@ use horch_e2e::harness::{fixtures, wait_for, wait_for_or, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-/// The time in which the design catches a herdr restart and a dead worker
-/// (FM-13 and FM-25: 5 to 30 s), with 5 s for a slow machine.
 const CAUGHT_S: u64 = 35;
 
 fn text(o: &Output) -> String {
@@ -37,8 +25,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness in workspace `w1` (root pane `w1:p1`) with its own ledger file
-/// and a git repository. The watchdog is off until a test turns it on.
 fn fleet(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
@@ -88,8 +74,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Kills the stand-in agents and the fleetds of the test when dropped, so a
-/// failed assertion leaks none.
 struct Teardown {
     agents: Vec<Child>,
     fleetds: Fleetds,
@@ -163,7 +147,6 @@ fn set_stall_rounds(h: &Harness, run: &Run, rounds: i64) {
         .unwrap();
 }
 
-/// A herdr server restart: every agent process ends, and the panes are gone.
 fn restart_herdr(h: &Harness, td: &mut Teardown, panes: &[String]) {
     for agent in &mut td.agents {
         agent.kill().unwrap();
@@ -174,7 +157,6 @@ fn restart_herdr(h: &Harness, td: &mut Teardown, panes: &[String]) {
     }
 }
 
-/// 1 commit of `feature.txt` in the worktree `path`.
 fn commit_feature(h: &Harness, path: &Path) -> String {
     std::fs::write(path.join("feature.txt"), "committed\n").unwrap();
     git_in(h, path, &["add", "feature.txt"]);
@@ -186,7 +168,6 @@ fn commit_feature(h: &Harness, path: &Path) -> String {
     git_in(h, path, &["rev-parse", "HEAD"])
 }
 
-/// The refs under `refs/horch/rescue/`, as `<object> <ref>` lines.
 fn rescue_refs(h: &Harness) -> Vec<String> {
     let project = h.project.clone();
     let refs = git_in(
@@ -245,7 +226,6 @@ fn the_rescue_ref(h: &Harness) -> String {
     refs[0].split(' ').nth(1).unwrap().to_string()
 }
 
-/// The bytes of `file` in the tree of `rev`.
 fn file_at(h: &Harness, rev: &str, file: &str) -> Vec<u8> {
     let o = h
         .git_cmd(&["cat-file", "blob", &format!("{rev}:{file}")])
@@ -256,8 +236,6 @@ fn file_at(h: &Harness, rev: &str, file: &str) -> Vec<u8> {
     o.stdout
 }
 
-/// The active run, its tasks and its workers (not its orchestrator), read
-/// from the ledger file without a `horch` call.
 fn board(h: &Harness) -> (Run, Vec<tasks::Task>, Vec<workers::Worker>) {
     let s = Store::open_read_only(&ledger(h)).unwrap();
     let run = watchdog::active_runs(s.conn()).unwrap().remove(0);
@@ -278,7 +256,6 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
         "fm13_herdr_restart_ends_attempts_and_queues_tasks_again",
         || {
             let h = fleet("p0-fm13-p1");
-            // The default timers of the run: the design's numbers apply.
             let run = seed_run(&h, "fm13", None, "w1:p1");
             let mut td = Teardown {
                 agents: Vec::new(),
@@ -287,13 +264,11 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
             let (_, p1, _) = held_task(&h, &mut td, &run, "t1");
             let (_, p2, _) = held_task(&h, &mut td, &run, "t2");
             let (run, ts, ws) = board(&h);
-            // fleetd supervises the run.
             td.fleetds.start(&h, "fleetd");
             assert!(ts.iter().all(|t| t.status == "running"), "{ts:?}");
             assert_eq!(ws.iter().filter(|w| live(w)).count(), 2, "{ws:?}");
 
             restart_herdr(&h, &mut td, &[p1, p2]);
-            // No `horch` call from here: fleetd alone must act.
             let until = Instant::now() + Duration::from_secs(CAUGHT_S);
             let (_, mut ts, mut ws) = board(&h);
             while Instant::now() < until {
@@ -355,8 +330,6 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
                 file_at(&h, &rescue, "feature.txt"),
                 b"committed\nand changed\n"
             );
-            // The retry waits for its backoff of 30 s on the fleet clock
-            // (rung 6, Phase 2).
             h.advance_fleet_clock(30);
             let next = wait_for_or(
                 "the bind of the next attempt",
@@ -396,8 +369,6 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
             let agent = &mut td.agents[0];
             agent.kill().unwrap();
             agent.wait().unwrap();
-            // The pass ends the attempt of the dead agent (I4) before the
-            // duty check, so the reap shows in the ledger, not as a verdict.
             wait_for("the reap", || {
                 let (_, _, ws) = board(&h);
                 (!ws.iter().any(live)).then_some(())

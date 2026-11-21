@@ -1,10 +1,3 @@
-//! The schema step of Phase 4 (docs/specs/fleetd/design.md, "Ledger" and
-//! "Migration plan" item 6; docs/tickets/fleetd-p4/02-schema-phase4.md): the
-//! tables `features`, `branches`, `bundles`, `bundle_members`, `gate_runs`,
-//! `remote_tips` and `ingested`, the column `attempts.via`, the I12 rule of
-//! bundle members, and the release backfill of a run in flight (MAP.md, Q4
-//! and Q5).
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -13,30 +6,10 @@ use horch_core::taskledger::store::{self, migrate_refusal};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
-/// The version before the Phase 4 step.
 const BEFORE: i64 = schema::PHASE_4_VERSION - 1;
-/// The fleet clock of the `fleetd` row in [`phase_3_file`].
 const CLOCK: i64 = 5000;
-/// The task limit of a backfilled branch row: the `max_minutes` default of
-/// the design, 60 min.
 const TASK_LIMIT_S: i64 = 3600;
 
-/// A ledger at [`BEFORE`] at `path`, built by the real steps. The runs, in
-/// insert order (so `rowid` 1 to 6):
-/// - `r1`: active, run branch `fleet/a`. Its tasks:
-///   - `t1` done, its tree cleaned with a landed commit.
-///   - `t2` running, its tree open.
-///   - `t3` ready, its tree `landed`.
-///   - `t4` running, 2 trees: `fleet/a/t4-old` landed, then `fleet/a/t4`
-///     open.
-///   - `t5` ready, no tree.
-/// - `r2`: done, run branch `fleet/b`.
-/// - `r3`: abandoned, run branch `fleet/c`.
-/// - `r4`: active, no run branch. Its task `t6` has a tree.
-/// - `r5`: done, slug `dup`, run branch `fleet/d`.
-/// - `r6`: active, slug `dup`, run branch `fleet/d`. Its task `t7` has a tree.
-///
-/// `w1` has the live attempt `t2/A1` and the ended attempt `t1/A1`.
 fn phase_3_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, BEFORE).unwrap();
@@ -139,9 +112,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The migration of the file at `path` up to the Phase 4 step, with foreign
-/// keys on as `Store::open` sets them. A later step does not change what
-/// these tests see.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -149,8 +119,6 @@ fn migrate(path: &Path) -> Connection {
     conn
 }
 
-/// A [`phase_3_file`] ledger, migrated: its folder (kept alive) and a
-/// connection with foreign keys on.
 fn migrated() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -159,7 +127,6 @@ fn migrated() -> (tempfile::TempDir, Connection) {
     (dir, conn)
 }
 
-/// Each feature row: `id -> (name, branch, primary_branch, state, pr_state)`.
 type Features = BTreeMap<String, (String, Option<String>, String, String, String)>;
 
 fn features(conn: &Connection) -> Features {
@@ -176,8 +143,6 @@ fn features(conn: &Connection) -> Features {
         .unwrap()
 }
 
-/// Each branch row: `name -> (feature_id, task_id, landing_state, owner,
-/// due_at, seen_tip)`.
 type Branches = BTreeMap<
     String,
     (
@@ -222,8 +187,6 @@ fn columns(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// Each row of each table, as text, by table. With `only`, the columns of
-/// each table in `only`.
 type Dump = BTreeMap<String, (Vec<String>, Vec<Vec<String>>)>;
 
 fn dump(conn: &Connection, only: Option<&Dump>) -> Dump {
@@ -285,10 +248,8 @@ fn phase3_ledger_migrates_with_1_backup() {
             "{table} is missing"
         );
     }
-    // Each row of each old table keeps each old column.
     assert_eq!(dump(&conn, Some(&before)), before);
 
-    // The backup holds the ledger as it was before the step.
     let backups = schema::backups_in(dir.path());
     assert_eq!(backups.len(), 1, "{backups:?}");
     let name = backups[0]
@@ -328,7 +289,6 @@ fn each_run_with_a_run_branch_gets_1_open_feature_row() {
     .into_iter()
     .map(|(id, row)| (id.to_string(), row))
     .collect();
-    // `r4` has no run branch, so it has no feature row (Q5).
     assert_eq!(features(&conn), want);
     let created: String = conn
         .query_row(
@@ -344,8 +304,6 @@ fn each_run_with_a_run_branch_gets_1_open_feature_row() {
 fn runs_that_share_a_branch_and_a_slug_get_1_row_each_and_the_newest_keeps_the_branch() {
     let (_dir, conn) = migrated();
     let all = features(&conn);
-    // The older run `r5` keeps its feature row with no branch and a name of
-    // its own; the newer run `r6` has the branch, its row and its tasks.
     assert_eq!(all["F-0005"].0, "dup-5");
     assert_eq!(all["F-0005"].1, None);
     assert_eq!(all["F-0006"].0, "dup");
@@ -375,12 +333,10 @@ fn landed_task_gets_a_landed_branch_row_and_open_task_a_building_row() {
         )
     };
     let want: Branches = [
-        // The feature branches, with no task and no landing state.
         ("fleet/a", b("F-0001", None, None, "fleetd")),
         ("fleet/b", b("F-0002", None, None, "fleetd")),
         ("fleet/c", b("F-0003", None, None, "fleetd")),
         ("fleet/d", b("F-0006", None, None, "fleetd")),
-        // Done with a landed commit, and a tree in `landed`: landed.
         (
             "fleet/a/t1",
             b("F-0001", Some("t1"), Some("landed"), "worker"),
@@ -389,7 +345,6 @@ fn landed_task_gets_a_landed_branch_row_and_open_task_a_building_row() {
             "fleet/a/t3",
             b("F-0001", Some("t3"), Some("landed"), "worker"),
         ),
-        // An open tree: building. `t4` gets the branch of its newest tree.
         (
             "fleet/a/t2",
             b("F-0001", Some("t2"), Some("building"), "worker"),
@@ -406,7 +361,6 @@ fn landed_task_gets_a_landed_branch_row_and_open_task_a_building_row() {
     .into_iter()
     .map(|(name, row)| (name.to_string(), row))
     .collect();
-    // `t5` has no tree, and `t6` is in a run with no run branch.
     assert_eq!(branches(&conn), want);
 }
 
@@ -447,7 +401,6 @@ fn attempt_backfill_is_via_claim() {
             ("t2/A1".to_string(), "claim".to_string())
         ]
     );
-    // A new attempt names how it began, and only `claim` or `push`.
     let insert = |id: &str, via: &str| {
         conn.execute(
             "INSERT INTO attempts (id, task_id, worker_id, state, via) VALUES (?1, 't5', 'w1', 'launching', ?2)",
@@ -458,7 +411,6 @@ fn attempt_backfill_is_via_claim() {
     assert!(insert("t5/A2", "spawn").is_err());
 }
 
-/// A bundle `id` of feature `F-0001` in `state`.
 fn bundle(conn: &Connection, id: i64, state: &str) {
     conn.execute(
         "INSERT INTO bundles (id, feature_id, base_tip, state, due_at, at) VALUES (?1, 'F-0001', 'c0', ?2, 0, 'now')",
@@ -488,17 +440,13 @@ fn bundle_member_of_2_open_bundles_is_refused() {
         bundle(&conn, id, state);
     }
     member(&conn, 1, "fleet/a/t2").unwrap();
-    // A second open bundle is refused: gating or passed.
     for open in [2, 3] {
         let e = member(&conn, open, "fleet/a/t2").unwrap_err().to_string();
         assert!(e.contains("I12"), "{e}");
     }
-    // An ended bundle takes the member: I12 counts only open bundles.
     for ended in [4, 5, 6] {
         member(&conn, ended, "fleet/a/t2").unwrap();
     }
-    // A membership moves to another open bundle when its branch is in no
-    // other open bundle.
     member(&conn, 2, "fleet/a/t4").unwrap();
     conn.execute(
         "UPDATE bundle_members SET bundle_id = 1 WHERE bundle_id = 2 AND branch = 'fleet/a/t4'",
@@ -514,14 +462,11 @@ fn bundle_member_of_2_open_bundles_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("I12"), "{e}");
-    // An ended bundle that opens again while a member is in an open bundle
-    // is refused.
     let e = conn
         .execute("UPDATE bundles SET state = 'building' WHERE id = 4", [])
         .unwrap_err()
         .to_string();
     assert!(e.contains("I12"), "{e}");
-    // When the open bundle ends, the next one takes the branch.
     conn.execute("UPDATE bundles SET state = 'dropped' WHERE id = 1", [])
         .unwrap();
     member(&conn, 2, "fleet/a/t2").unwrap();

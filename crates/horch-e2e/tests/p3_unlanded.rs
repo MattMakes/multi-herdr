@@ -1,12 +1,3 @@
-//! Work that does not land, with the tree states of Phase 3 (fleetd-p3
-//! ticket 14): the real `horch` binary, its own git repository, ledger and
-//! state folders in a temp dir. `done --unlanded` parks the task with its
-//! tree (`created`, no owner) and its dependents stay blocked; `requeue`
-//! resumes it in the same tree; `ledger unfinished` lists each tree with
-//! work that never landed until 1 decision (RR-14, RR-15, RR-18; rows L5,
-//! L8 and L9 of `docs/specs/fleetd/preservation-04-behavior.md`, row V-14
-//! of `preservation-05-contracts-and-values.md`). No fleetd runs.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -232,7 +223,6 @@ fn bind_and_work_as(
     (w, path)
 }
 
-/// The tree path that the bind `b` names.
 fn bound_tree(b: &Bound) -> PathBuf {
     let tree = b
         .worktree
@@ -241,7 +231,6 @@ fn bound_tree(b: &Bound) -> PathBuf {
     PathBuf::from(&tree.path)
 }
 
-/// The values of the first column of `sql`.
 fn query(h: &Harness, sql: &str) -> Vec<String> {
     let store = Store::open(&ledger(h)).unwrap();
     let mut stmt = store.conn().prepare(sql).unwrap();
@@ -253,8 +242,6 @@ fn query(h: &Harness, sql: &str) -> Vec<String> {
     rows
 }
 
-/// `path` as the ledger writes it: with each link of the project folder
-/// resolved (`/tmp` is `/private/tmp` on macOS).
 fn stored(h: &Harness, path: &Path) -> String {
     let project = std::fs::canonicalize(&h.project).unwrap();
     match path.strip_prefix(&h.project) {
@@ -276,8 +263,6 @@ fn column(h: &Harness, path: &Path, name: &str) -> String {
     rows[0].clone()
 }
 
-/// The state moves of the row of `path` that the door recorded,
-/// `<from>><to>` each, oldest first.
 fn moves(h: &Harness, path: &Path) -> Vec<String> {
     let id = column(h, path, "worktree_id");
     query(
@@ -290,7 +275,6 @@ fn moves(h: &Harness, path: &Path) -> Vec<String> {
     )
 }
 
-/// The cause text of the last state move of the row of `path`.
 fn last_cause(h: &Harness, path: &Path) -> String {
     let id = column(h, path, "worktree_id");
     query(
@@ -304,7 +288,6 @@ fn last_cause(h: &Harness, path: &Path) -> String {
     .remove(0)
 }
 
-/// The attempt of `worker` at task `seq`.
 fn attempt_of(h: &Harness, seq: i64, worker: &str) -> String {
     let rows = query(
         h,
@@ -317,7 +300,6 @@ fn attempt_of(h: &Harness, seq: i64, worker: &str) -> String {
     rows[0].clone()
 }
 
-/// The task `T-<seq>` as `ledger show --json` gives it.
 fn task(h: &Harness, seq: i64) -> Value {
     json_of(
         h,
@@ -333,7 +315,6 @@ fn task(h: &Harness, seq: i64) -> Value {
         .clone()
 }
 
-/// The open findings of `ledger unfinished --json`.
 fn unfinished(h: &Harness) -> Vec<Value> {
     json_of(h, &["ledger", "unfinished", "--json"])
         .as_array()
@@ -341,7 +322,6 @@ fn unfinished(h: &Harness) -> Vec<Value> {
         .clone()
 }
 
-/// The 1 open finding of the tree `path`.
 fn finding_of(h: &Harness, path: &Path) -> Value {
     let id = column(h, path, "worktree_id");
     let list = unfinished(h);
@@ -367,21 +347,16 @@ fn parked(h: &Harness) -> (String, PathBuf, Run) {
     (w, path, run)
 }
 
-// ─── RR-14: park with the tree, requeue in the same tree ────────────────
-
 #[test]
 fn pres_04_l5_unlanded_task_keeps_worktree_and_blocks_dependents() {
     let h = world("p3-unl-park");
     let (_, path, _) = parked(&h);
 
-    // The tree and each file stay.
     assert!(path.join("feat.txt").is_file());
     assert_eq!(
         std::fs::read_to_string(path.join("notes.txt")).unwrap(),
         "untracked\n"
     );
-    // The tree is `created` with no owner, in the same transaction as the
-    // park, through the door.
     assert_eq!(column(&h, &path, "status"), "unlanded");
     assert_eq!(column(&h, &path, "state"), "created");
     assert_eq!(column(&h, &path, "owner_attempt"), "");
@@ -389,7 +364,6 @@ fn pres_04_l5_unlanded_task_keeps_worktree_and_blocks_dependents() {
     let cause = last_cause(&h, &path);
     assert!(cause.contains("unlanded: a red check"), "{cause}");
 
-    // The task is parked, and its dependent waits.
     let t1 = task(&h, 1);
     assert_eq!(t1["held_reason"], "unlanded", "{t1}");
     let t2 = task(&h, 2);
@@ -466,7 +440,6 @@ fn rr14_requeue_of_a_parked_task_runs_in_the_same_tree() {
             "alpha",
         ],
     );
-    // The requeue gives the tree back: `open`, still `created`.
     assert_eq!(column(&h, &path, "status"), "open");
     assert_eq!(column(&h, &path, "state"), "created");
 
@@ -493,11 +466,8 @@ fn rr14_requeue_of_a_parked_task_runs_in_the_same_tree() {
     assert_eq!(stored(&h, &again), stored(&h, &path));
     assert!(again.join("feat.txt").is_file());
     assert!(again.join("notes.txt").is_file());
-    // The dependent still waits until T-1 is done.
     assert_eq!(task(&h, 2)["state"], "pending");
 }
-
-// ─── RR-15: unlanded work stays on record until 1 decision ──────────────
 
 #[test]
 fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
@@ -509,8 +479,6 @@ fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
     until("the park of the second task", &h, || {
         (column(&h, &reopened, "state") == "created").then_some(())
     });
-    // A parked task is held for the operator. Its cancel makes its tree
-    // unlanded work with no task.
     ok(
         &h,
         &["ledger", "cancel", "T-1", "dropped", "--run", "alpha"],
@@ -522,7 +490,6 @@ fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
     pass(&h);
     let first = finding_of(&h, &dismissed);
     let second = finding_of(&h, &reopened);
-    // Listed again on each read, until a decision.
     assert_eq!(finding_of(&h, &dismissed), first);
 
     let id = first["finding_id"].to_string();
@@ -545,7 +512,6 @@ fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
         "dismiss keeps the tree"
     );
 
-    // A reopen gives the tree to the new task, and its bind takes it.
     let ticket = h.project.join("tickets/04-again.md");
     std::fs::write(&ticket, "# 04: Again\n\n**Check:** none\n").unwrap();
     let sid = second["finding_id"].to_string();
@@ -593,7 +559,6 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
     queue(&h, &run, "01-a", "opus", &[]);
     queue(&h, &run, "02-b", "opus", &[]);
 
-    // T-1: its worker is reaped, and the reconcile orphans its tree.
     let mut agent = std::process::Command::new("/bin/sleep")
         .arg("600")
         .spawn()
@@ -645,11 +610,9 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
     let detail = r["detail"].as_str().unwrap();
     assert!(detail.contains("Rescue ref:"), "{detail}");
     assert!(detail.contains(&rescue_ref), "{detail}");
-    // The text list names the rescue ref too.
     let said = ok(&h, &["ledger", "unfinished"]);
     assert!(said.contains(&rescue_ref), "{said}");
 
-    // 1 decision each: a dismissed tree is not listed again.
     ok(
         &h,
         &["ledger", "dismiss", &o["finding_id"].to_string(), "x"],
@@ -773,8 +736,6 @@ fn rr15_rescued_work_that_did_not_land_stays_listed_after_the_task_is_done() {
     let path = orphan_then_land(&h, |path| {
         std::fs::write(path.join("scratch.txt"), "only on the rescue ref\n").unwrap();
     });
-    // The rescue ref holds scratch.txt, and scratch.txt never landed. The
-    // first read of `unfinished` is after the land, and it lists the tree.
     let f = finding_of(&h, &path);
     let rescue_ref = column(&h, &path, "rescue_ref");
     assert!(f["detail"].as_str().unwrap().contains(&rescue_ref), "{f}");
@@ -791,15 +752,11 @@ fn rr15_rescued_work_that_did_not_land_stays_listed_after_the_task_is_done() {
     assert!(unfinished(&h).is_empty(), "{:?}", unfinished(&h));
 }
 
-// ─── RR-18: the attempt count of a requeue ──────────────────────────────
-
 #[test]
 fn rr18_requeue_of_an_escalated_task_sets_its_attempt_count_to_0() {
     let h = world("p3-unl-attempts");
     let run = seed_alpha(&h, "land", Some(2));
     queue(&h, &run, "01-a", "opus", &[]);
-    // The first limit asks for the 1 replan (`failed`), the second holds
-    // the task for the operator (`escalated`).
     attempts(&h, 1..=2, "failed");
     ok(
         &h,
@@ -813,8 +770,6 @@ fn rr18_requeue_of_an_escalated_task_sets_its_attempt_count_to_0() {
         "an escalated task does not run"
     );
 
-    // Your requeue sets the count of the limit to 0: the task runs again,
-    // with each of its attempts.
     ok(
         &h,
         &[
@@ -861,8 +816,6 @@ fn attempts(h: &Harness, ns: std::ops::RangeInclusive<i64>, end: &str) {
     }
 }
 
-/// A world with a bare remote and the code-sweep reviewer prompts, as the
-/// code-sweep step needs them.
 fn sweep_world(name: &str) -> Harness {
     let mut h = world(name);
     let cli = h.write_warmed(
@@ -883,9 +836,7 @@ fn sweep_world(name: &str) -> Harness {
     h
 }
 
-/// The review tasks, `(T-<seq>, status)` each, in seq order.
 fn reviews(h: &Harness) -> Vec<(String, String)> {
-    // `status` exits 1 while the run is not complete.
     let st: Value = serde_json::from_slice(
         &h.run(&["ledger", "status", "--json", "--run", "alpha"])
             .stdout,
@@ -941,7 +892,6 @@ fn rr18_review_requeue_keeps_the_attempt_count() {
             )
             .unwrap();
     });
-    // The code-sweep queues the cancelled review again, on its own counter.
     flat_until("the cancelled review queued again", &h, || {
         (reviews(&h).len() == n + 1).then_some(())
     });
@@ -960,7 +910,6 @@ fn rr18_review_requeue_keeps_the_attempt_count() {
     for key in ["attempts", "attempt_floor", "status", "current_worker_id"] {
         assert_eq!(after[key], before[key], "{key}: {before} -> {after}");
     }
-    // The cancelled review keeps its 1 attempt; the new review has none yet.
     let review = |seq: &str| -> Value {
         json_of(&h, &["ledger", "show", seq, "--json", "--run", "alpha"])["task"].clone()
     };

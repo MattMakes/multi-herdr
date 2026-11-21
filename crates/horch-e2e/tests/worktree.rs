@@ -1,5 +1,3 @@
-//! ARC-31 end-to-end tests for worker worktree landing and the done guard.
-
 #![cfg(unix)]
 
 use std::path::Path;
@@ -147,8 +145,6 @@ fn arc_31_e2e_done_refuses_then_unlanded_reports() {
     assert!(calls.contains("wt/sonnet-1-unit"), "{calls}");
 }
 
-/// FR-7: the pane gets only the mail line, and the report waits in the
-/// orchestrator mail. The texts of that mail, once the line was typed.
 fn reported(h: &Harness) -> String {
     let calls = serde_json::to_string(&h.calls_of("herdr")).unwrap();
     assert!(
@@ -164,7 +160,6 @@ fn reported(h: &Harness) -> String {
         .join("\n")
 }
 
-/// A harness with its own task ledger, for the worktrees the ledger records.
 fn ledger_world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -174,7 +169,6 @@ fn ledger_world(name: &str) -> Harness {
     h
 }
 
-/// A worktree made by raw `git worktree add`: no claim, no ledger row.
 fn raw_worktree(h: &Harness, name: &str) -> std::path::PathBuf {
     let path = h.project.join(".worktrees").join(name);
     git(
@@ -192,9 +186,6 @@ fn raw_worktree(h: &Harness, name: &str) -> std::path::PathBuf {
     path
 }
 
-/// P27: a worktree whose folder was deleted used to fail the whole scan, so
-/// `horch done` silently reported nothing. The scan now names it and reports
-/// the rest.
 #[test]
 fn arc_31_e2e_list_and_done_survive_a_deleted_worktree_folder() {
     let mut h = worker_world("arc31-deleted-wt");
@@ -223,8 +214,6 @@ fn arc_31_e2e_list_and_done_survive_a_deleted_worktree_folder() {
     assert!(!calls.contains(".worktrees/gone"), "{calls}");
 }
 
-/// P30: the operator's own checkout outside `.worktrees/` is never a fleet
-/// worktree, however dirty.
 #[test]
 fn arc_31_e2e_list_ignores_the_operators_own_worktree() {
     let h = worker_world("arc31-operator-wt");
@@ -254,8 +243,6 @@ fn arc_31_e2e_list_ignores_the_operators_own_worktree() {
     assert!(stderr(&listed).is_empty(), "{}", stderr(&listed));
 }
 
-/// A task-ledger worktree is in the ledger's table, not the claim registry:
-/// without it, every worker's `done` lists its peers' in-flight work.
 #[test]
 fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
     let h = ledger_world("arc31-ledger-wt");
@@ -280,7 +267,6 @@ fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
             .any(|r| r["path"].as_str() == Some(path.as_str()) && r["state"] != "reserved")
             .then_some(())
     });
-    // Work the ledger owns is ahead of main, so the scan would report it.
     commit_work(&h, &worktree);
 
     let listed = h.run(&["worktree", "list"]);

@@ -1,13 +1,3 @@
-//! The Phase 4 lines of `horch ledger status` (ticket 45 of fleetd-p4):
-//! the hold of a missing fast gate, a persona with no check sandbox, the
-//! count of bundle refs, the 2 classes of rescue refs, the push state of
-//! each feature and since when a remote tip is stale. `--json` has the
-//! same facts.
-//!
-//! Each test runs the real binary with its own ledger, state and fleet
-//! folders, and the watchdog off. The facts are ledger rows that the test
-//! writes; no test reads the real machine or the real clock.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -28,7 +18,6 @@ struct World {
 }
 
 impl World {
-    /// A git project with 1 run `r1`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
         let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
@@ -47,8 +36,6 @@ impl World {
             "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n",
         )
         .unwrap();
-        // fleetd makes the ledger and takes the run request; the test
-        // writes both here.
         let store = Store::open(&w.ledger()).unwrap();
         let new = NewRun {
             slug: "r1".into(),
@@ -84,8 +71,6 @@ impl World {
         assert!(out.status.success(), "git {args:?}");
     }
 
-    /// Run `horch <args>` as the operator; return stdout. A board with work
-    /// left exits 1, so each exit code but 0 and 1 fails.
     fn horch(&self, args: &[&str]) -> String {
         let root = &self.root;
         let o = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -134,7 +119,6 @@ impl World {
         ));
     }
 
-    /// The feature `id` with the name `name`, in `state`.
     fn feature(&self, id: &str, name: &str, state: &str, push: &str, failures: i64) {
         self.sql(&format!(
             "INSERT INTO features (id, name, branch, primary_branch, state, push_state,
@@ -144,7 +128,6 @@ impl World {
         ));
     }
 
-    /// 1 bundle of `feature` in `state`, with the candidate ref `candidate`.
     fn bundle(&self, feature: &str, state: &str, candidate: &str) {
         self.sql(&format!(
             "INSERT INTO bundles (feature_id, base_tip, candidate_ref, state, due_at, at)
@@ -152,8 +135,6 @@ impl World {
         ));
     }
 
-    /// 1 `worktree_list` run of the repository `repo` in `state`, whose
-    /// result holds `refs` as its rescue ref facts.
     fn worktree_list(&self, repo: &str, run: i64, state: &str, refs: &str) {
         let result = format!(
             r#"{{"passed":true,"verdict":true,"text":"listed","data":{{"rescue_refs":{refs}}}}}"#
@@ -167,7 +148,6 @@ impl World {
     }
 }
 
-/// The facts of 1 rescue ref.
 fn rescue_ref(name: &str, bytes: u64, in_newer_tip: bool, in_landed: bool) -> String {
     format!(
         r#"{{"name":"{name}","tip":"t","branch":null,"feature":null,"bytes":{bytes},"in_newer_tip":{in_newer_tip},"in_landed":{in_landed}}}"#
@@ -195,7 +175,6 @@ fn status_shows_missing_fast_gate_hold() {
         ),
         "{board}"
     );
-    // The needs-you block of today stays.
     assert!(board.contains("Needs you (1):"), "{board}");
 }
 
@@ -230,7 +209,6 @@ fn status_shows_bundle_ref_count_and_rescue_classes() {
         rescue_ref("refs/horch/rescue/w2/1", 2048, false, true),
     );
     w.worktree_list("/r/a", 1, "passed", &refs);
-    // A newer run that has not passed gives no facts: the passed run counts.
     w.worktree_list("/r/a", 2, "queued", "[]");
     let board = w.status();
     assert!(has_line(&board, "Bundle refs: 2."), "{board}");

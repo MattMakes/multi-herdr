@@ -1,10 +1,3 @@
-//! The 1 door: the SQLite writes of the state of each entity.
-//!
-//! `application::ledger::transition()` is the only caller of
-//! [`set_state`]. Each state change and its event go through it
-//! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door").
-//! [`drop_reserved`] is the only delete of the door.
-
 use std::cell::RefCell;
 
 use anyhow::{bail, Result};
@@ -15,21 +8,13 @@ use crate::taskledger::model::{Actor, EventKind, TaskStatus};
 use crate::taskledger::util;
 
 thread_local! {
-    /// The connections of this thread, by address, that have an open
-    /// transaction with a door write.
     static OPEN: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Whether this thread has an open transaction in which the door wrote a
-/// state or an event. No effect outside the ledger starts while it is true.
 pub fn in_door_transaction() -> bool {
     OPEN.with(|o| !o.borrow().is_empty())
 }
 
-/// Mark the transaction of `tx` open for [`in_door_transaction`] until it
-/// commits or rolls back. The hooks of its connection clear the mark.
-/// Call it only after a write: SQLite calls the commit hook only for a
-/// transaction that wrote (review F1).
 fn mark(tx: &Connection) {
     let key = tx as *const Connection as usize;
     let new = OPEN.with(|o| {
@@ -53,8 +38,6 @@ fn leave(key: usize) {
     OPEN.with(|o| o.borrow_mut().retain(|k| *k != key));
 }
 
-/// The generation of the `fleetd` row; `None` before the first start of
-/// fleetd.
 pub fn generation(conn: &Connection) -> Result<Option<Generation>> {
     let g = conn
         .query_row("SELECT generation FROM fleetd WHERE id = 1", [], |r| {
@@ -64,7 +47,6 @@ pub fn generation(conn: &Connection) -> Result<Option<Generation>> {
     Ok(g.map(Generation))
 }
 
-/// The table of `entity`: its name, its key column and its state column.
 fn table(entity: Entity) -> (&'static str, &'static str, &'static str) {
     match entity {
         Entity::Task => ("tasks", "task_id", "status"),
@@ -80,9 +62,6 @@ fn table(entity: Entity) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// The state of the row `id` of `entity`; `None` when no row has that id,
-/// or when its state is null: a feature branch row has no landing state,
-/// so it is not a task branch.
 pub fn state_of(conn: &Connection, entity: Entity, id: &str) -> Result<Option<String>> {
     let (name, key, state) = table(entity);
     let sql = format!("SELECT {state} FROM {name} WHERE {key} = ?1");
@@ -90,8 +69,6 @@ pub fn state_of(conn: &Connection, entity: Entity, id: &str) -> Result<Option<St
     Ok(found.flatten())
 }
 
-/// Write `to` in the state column of the row `id` of `entity`. Only
-/// `transition()` calls this.
 pub fn set_state(conn: &Connection, entity: Entity, id: &str, to: &str) -> Result<()> {
     let (name, key, state) = table(entity);
     let sql = format!("UPDATE {name} SET {state} = ?2 WHERE {key} = ?1");
@@ -99,10 +76,6 @@ pub fn set_state(conn: &Connection, entity: Entity, id: &str, to: &str) -> Resul
     Ok(())
 }
 
-/// The state that the row `id` of `entity` left on its last move to the
-/// state `into`: the `from_state` of the newest event of an allowed move
-/// to `into`. `None` when no such event exists. A refused move writes an
-/// event with the cause [`refused_cause`], so it is not a move.
 pub fn left_state(
     conn: &Connection,
     entity: Entity,
@@ -129,15 +102,11 @@ pub fn left_state(
     Ok(found.flatten())
 }
 
-/// Delete the lease of task `task_id`, which moves to a state that holds
-/// no lease. Only `transition()` calls this.
 pub fn delete_lease(conn: &Connection, task_id: &str) -> Result<()> {
     conn.execute("DELETE FROM leases WHERE task_id = ?1", [task_id])?;
     Ok(())
 }
 
-/// The run, task and worker of the row `id` of `entity`, for the columns
-/// of today that `horch ledger show` reads.
 fn about(
     conn: &Connection,
     entity: Entity,
@@ -150,7 +119,6 @@ fn about(
             "SELECT w.run_id, a.task_id, a.worker_id FROM attempts a
              JOIN workers w ON w.worker_id = a.worker_id WHERE a.id = ?1"
         }
-        // A scratch row has no task: its run is the run of its mode row.
         Entity::Worktree => {
             "SELECT COALESCE(t.run_id, m.run_id), w.task_id, w.worker_id FROM worktrees w
              LEFT JOIN tasks t ON t.task_id = w.task_id
@@ -171,22 +139,16 @@ fn about(
     Ok(row.unwrap_or((None, None, None)))
 }
 
-/// 1 event of a state of 1 row.
 #[derive(Debug, Clone, Copy)]
 pub struct Event<'a> {
     pub entity: Entity,
     pub id: &'a str,
-    /// `None` when the row is new.
     pub from: Option<&'a str>,
     pub to: &'a str,
     pub cause: &'a str,
     pub actor: Actor,
 }
 
-/// Append the `transition` event `e`, with the columns of today filled as
-/// `taskledger::util::event` fills them. Each state change and each new row
-/// of an entity has 1 event, so this marks the transaction for
-/// [`in_door_transaction`].
 pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
     insert_event(
         tx,
@@ -201,8 +163,6 @@ pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
     )
 }
 
-/// The fields of 1 event row. `to` is `None` when the row is gone
-/// ([`drop_reserved`]).
 struct Record<'a> {
     entity: Entity,
     id: &'a str,
@@ -214,8 +174,6 @@ struct Record<'a> {
 
 fn insert_event(tx: &Connection, e: &Record<'_>) -> Result<()> {
     let (run, task, worker) = about(tx, e.entity, e.id)?;
-    // The text keeps the task words of today (MAP.md, Q3); `from_state` and
-    // `to_state` hold the stored words.
     let shown = |word| match e.entity {
         Entity::Task => TaskStatus::shown_word(word),
         _ => word,
@@ -246,9 +204,6 @@ fn insert_event(tx: &Connection, e: &Record<'_>) -> Result<()> {
     Ok(())
 }
 
-/// An error when `tx` has no open transaction, or when `guard` is not the
-/// generation of the `fleetd` row. A writer that inserts a row before it
-/// calls `created()` checks this first, so a refused call writes nothing.
 pub fn check_writable(tx: &Connection, guard: Option<Generation>) -> Result<()> {
     if tx.is_autocommit() {
         bail!("a write of the ledger state needs an open transaction of the ledger");
@@ -266,12 +221,6 @@ pub fn check_writable(tx: &Connection, guard: Option<Generation>) -> Result<()> 
     Ok(())
 }
 
-/// Drop the `reserved` worktree row `id`, with its mode row, in the
-/// caller's transaction `tx`: the exit of a `reserved` row whose
-/// `worktree_add` job failed (MAP.md of fleetd-p3, Q18). 1 event from
-/// `reserved` to no state records `cause`. A row in another state, a
-/// missing row, a connection with no open transaction or a `fleetd` row of
-/// another generation than `guard` gives an error, and nothing is written.
 pub fn drop_reserved(
     tx: &Connection,
     guard: Option<Generation>,
@@ -288,7 +237,6 @@ pub fn drop_reserved(
         }
         Some(_) => {}
     }
-    // The event reads the run and the task of the row, so it goes first.
     let event = Record {
         entity: Entity::Worktree,
         id,
@@ -303,7 +251,6 @@ pub fn drop_reserved(
     Ok(())
 }
 
-/// 1 event of 1 row that is not a state change.
 #[derive(Debug, Clone, Copy)]
 pub struct Fact<'a> {
     pub kind: EventKind,
@@ -311,13 +258,9 @@ pub struct Fact<'a> {
     pub id: &'a str,
     pub cause: &'a str,
     pub actor: Actor,
-    /// The `data_json` column: 1 JSON value.
     pub data_json: &'a str,
 }
 
-/// Append the event `f` of kind `f.kind`, with the run, task and worker of
-/// its row filled as [`append_event`] fills them. `from_state` and
-/// `to_state` stay null: the row does not change.
 pub fn append_fact(tx: &Connection, f: &Fact<'_>) -> Result<()> {
     let (run, task, worker) = about(tx, f.entity, f.id)?;
     let text = format!("{}: {}; {} {}", f.kind, f.cause, f.entity, f.id);
@@ -343,9 +286,6 @@ pub fn append_fact(tx: &Connection, f: &Fact<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Whether an event of kind `kind` with the cause `cause` is about the row
-/// `id` of `entity`. No index of `events` covers the entity, so the read
-/// scans the table: a caller asks only about rows that need the answer.
 pub fn has_fact(
     conn: &Connection,
     entity: Entity,
@@ -361,9 +301,6 @@ pub fn has_fact(
     )?)
 }
 
-/// The `data_json` of the first event of kind `kind` with the cause `cause`
-/// about the row `id` of `entity`, or `None` when no event is. The read
-/// scans the table, as [`has_fact`] does.
 pub fn fact_data(
     conn: &Connection,
     entity: Entity,
@@ -383,7 +320,6 @@ pub fn fact_data(
         .flatten())
 }
 
-/// 1 fact event, as [`facts_of`] and [`facts_after`] read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactRow {
     pub event_id: i64,
@@ -403,8 +339,6 @@ fn fact_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FactRow> {
     })
 }
 
-/// The events of kind `kind` with no state change about the row `id` of
-/// `entity`, oldest first.
 pub fn facts_of(
     conn: &Connection,
     entity: Entity,
@@ -420,8 +354,6 @@ pub fn facts_of(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The events of kind `kind` with no state change about each row of `ids`
-/// of `entity`, oldest first: 1 statement for any count of ids.
 pub fn facts_of_ids<'a>(
     conn: &Connection,
     entity: Entity,
@@ -442,8 +374,6 @@ pub fn facts_of_ids<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// [`fact_data`] of each row of `ids` of `entity`, by id: 1 statement for
-/// any count of ids. An id with no such fact is not in the map.
 pub fn fact_data_of_ids<'a>(
     conn: &Connection,
     entity: Entity,
@@ -473,8 +403,6 @@ pub fn fact_data_of_ids<'a>(
     Ok(out)
 }
 
-/// The events of kind `kind` with no state change about rows of `entity`
-/// after the event `after`, oldest first.
 pub fn facts_after(
     conn: &Connection,
     entity: Entity,
@@ -490,9 +418,6 @@ pub fn facts_after(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// 1 event about a named thing that is not a row of the ledger, for
-/// example a worker profile (`docs/tickets/fleetd-p7/MAP.md`, Q10). Its
-/// `entity` column holds `about`, and its run, task and worker stay null.
 #[derive(Debug, Clone, Copy)]
 pub struct NamedFact<'a> {
     pub kind: EventKind,
@@ -500,12 +425,9 @@ pub struct NamedFact<'a> {
     pub id: &'a str,
     pub cause: &'a str,
     pub actor: Actor,
-    /// The `data_json` column: 1 JSON value.
     pub data_json: &'a str,
 }
 
-/// Append the event `f`, in the open transaction `tx` of the fleetd of
-/// generation `guard`.
 pub fn append_named_fact(
     tx: &Connection,
     guard: Option<Generation>,
@@ -531,7 +453,6 @@ pub fn append_named_fact(
     Ok(())
 }
 
-/// The last event of 1 of `kinds` about each named thing of `about`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastNamedFact {
     pub id: String,
@@ -539,8 +460,6 @@ pub struct LastNamedFact {
     pub cause: String,
 }
 
-/// The last event of 1 of `kinds` about each thing of `about`, by id. No
-/// index of `events` covers the entity, so the read scans the table 1 time.
 pub fn last_named_facts(
     conn: &Connection,
     about: &str,
@@ -567,9 +486,6 @@ pub fn last_named_facts(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The stamp of the last event of any kind that moved each row of `ids` of
-/// `entity` to `state`, by id: 1 statement for any count of ids. An id
-/// with no such event is not in the map.
 pub fn last_moves_to<'a>(
     conn: &Connection,
     entity: Entity,
@@ -591,8 +507,6 @@ pub fn last_moves_to<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The stamp of the last `transition` event that moved the row `id` of
-/// `entity` to 1 of `states`, or `None` when no event did.
 pub fn entered_at(
     conn: &Connection,
     entity: Entity,
@@ -643,7 +557,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -685,7 +598,6 @@ mod tests {
             self.store.conn()
         }
 
-        /// `to` for `entity` `id` in its own transaction.
         fn moved(&mut self, entity: Entity, id: &str, to: &str) -> Result<Moved, DoorError> {
             self.store
                 .immediate(|tx| Ok(move_row(tx, None, entity, id, to, cause("test"))))
@@ -693,7 +605,6 @@ mod tests {
         }
     }
 
-    /// `transition()` with the needs-you list of ideas as its refusals.
     fn move_row(
         tx: &Transaction<'_>,
         guard: Option<Generation>,
@@ -719,7 +630,6 @@ mod tests {
         .unwrap()
     }
 
-    /// The transition events of 1 row: from, to, cause.
     fn events(
         conn: &Connection,
         entity: Entity,
@@ -807,7 +717,6 @@ mod tests {
         );
     }
 
-    /// The attempt `A1` of `task` and `worker`, in `launching`.
     fn attempt(l: &TestLedger, task: &str, worker: &str) -> &'static str {
         l.conn()
             .execute(
@@ -819,8 +728,6 @@ mod tests {
         "A1"
     }
 
-    /// Move `id` of `entity` to `to`, then assert its row state and its 1
-    /// event, from `from` with the cause `test`.
     fn assert_moved(l: &mut TestLedger, entity: Entity, id: &str, from: &str, to: &str) {
         assert_eq!(l.moved(entity, id, to).unwrap(), Moved::Changed);
         assert_eq!(state_of(l.conn(), entity, id).unwrap().as_deref(), Some(to));
@@ -937,12 +844,6 @@ mod tests {
         assert!(!has_fact(l.conn(), Entity::Worker, &task, EventKind::Note, "seen").unwrap());
     }
 
-    /// A ledger built at version `from` and migrated to the newest version
-    /// accepts the event kinds that came after the step that built
-    /// `events`: `doorbell` of the stall ladder, and `hold_started` and
-    /// `hold_ended` of Phase 1. Each step runs with the code of this
-    /// binary, so this does not cover a ledger whose `events` step ran
-    /// under an older binary: its `CHECK` keeps the older list.
     #[test]
     fn migrated_ledger_accepts_the_new_event_kinds() {
         use crate::taskledger::schema;
@@ -1021,8 +922,6 @@ mod tests {
         assert!(events(l.conn(), Entity::Task, &task).is_empty());
     }
 
-    /// The refused move ready -> verifying of `task`, from a transaction
-    /// that rolls back.
     fn rolled_back_refusal(l: &TestLedger, task: &str) -> DoorError {
         let tx =
             Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
@@ -1031,7 +930,6 @@ mod tests {
         err
     }
 
-    /// `record_refused` in its own transaction.
     fn record(l: &TestLedger, err: &DoorError) -> bool {
         let tx =
             Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
@@ -1051,8 +949,6 @@ mod tests {
         assert_eq!(events(l.conn(), Entity::Task, &task).len(), 1);
     }
 
-    /// Review F4: the row moved after the rollback, so the refusal names a
-    /// state that the row no longer has. Nothing is written.
     #[test]
     fn a_refusal_of_a_row_that_moved_on_is_not_recorded() {
         let mut l = ledger();
@@ -1196,8 +1092,6 @@ mod tests {
         assert_eq!(status(l.conn(), &b), "ready");
     }
 
-    /// SQLite calls no commit hook for a transaction with no write (review
-    /// F1).
     #[test]
     fn in_door_transaction_is_false_after_a_deferred_transaction_with_no_write() {
         let mut l = ledger();
@@ -1215,8 +1109,6 @@ mod tests {
         assert!(!in_door_transaction());
     }
 
-    /// A transaction whose only door write makes a needs-you item is a door
-    /// transaction (review F2).
     #[test]
     fn in_door_transaction_is_true_while_a_new_needs_you_item_is_not_committed() {
         use crate::fleetd::ideas::application::needs_you::open_item;
@@ -1243,8 +1135,6 @@ mod tests {
         );
     }
 
-    /// The worktree row `id` of `task` in `state`, inserted as the test
-    /// wants it: a state change of a test row needs no event.
     fn worktree(l: &TestLedger, id: &str, task: Option<&str>, state: &str) {
         l.conn()
             .execute(
@@ -1271,7 +1161,6 @@ mod tests {
             .collect()
     }
 
-    /// The design's exits of a worktree (MAP.md of fleetd-p3, Q10).
     const WORKTREE_EXITS: [(&str, &str); 12] = [
         ("reserved", "created"),
         ("created", "active"),

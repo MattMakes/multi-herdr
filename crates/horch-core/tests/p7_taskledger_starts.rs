@@ -1,12 +1,3 @@
-//! SR-7 for the process starts of the task ledger and `vcs/` (fleetd-p7
-//! ticket 07): a child that they start never has a forbidden name, also when
-//! the parent has it in its environment.
-//!
-//! Each test runs this test binary again with each forbidden name in its
-//! environment, as a shell of the operator can have it. The ignored test
-//! that it runs makes 1 start of 1 folder, and the child of that start
-//! writes its environment to the file of `ENV_OUT`.
-
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -25,12 +16,8 @@ use horch_core::taskledger::Store;
 use horch_core::vcs::landing::Landing;
 use test_jobs::TestJobs;
 
-/// The file that the child of the start writes its environment to.
 const ENV_OUT: &str = "HORCH_TEST_START_ENV";
 
-/// Run the ignored test `child` in a new process of this binary, with each
-/// forbidden name set, and return the environment that its started child
-/// wrote.
 fn env_of_child(child: &str) -> String {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("env.txt");
@@ -65,13 +52,10 @@ fn assert_no_forbidden_name(seen: &str) {
     }
 }
 
-/// The file of `ENV_OUT`, in the process that the parent test started.
 fn env_out() -> PathBuf {
     PathBuf::from(std::env::var_os(ENV_OUT).expect("run by its parent test"))
 }
 
-/// An executable `name` in `dir` that writes its environment to the file of
-/// `ENV_OUT`, then prints `stdout`.
 fn env_printer(dir: &Path, name: &str, stdout: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(
@@ -83,7 +67,6 @@ fn env_printer(dir: &Path, name: &str, stdout: &str) -> PathBuf {
     path
 }
 
-/// A git config file with an author, for the git calls of a test.
 fn git_config(dir: &Path) -> PathBuf {
     let path = dir.join("gitconfig");
     std::fs::write(
@@ -111,7 +94,6 @@ fn git(dir: &Path, config: &Path, args: &[&str]) {
     );
 }
 
-/// A repository with 1 commit on `main` and the branch `fleet/r1`.
 fn repo(top: &Path) -> (PathBuf, PathBuf) {
     let config = git_config(top);
     let root = top.join("repo");
@@ -124,7 +106,6 @@ fn repo(top: &Path) -> (PathBuf, PathBuf) {
     (root, config)
 }
 
-/// The run r1 of `root` in a new ledger in `top`.
 fn run(top: &Path, root: &Path) -> (Store, Run) {
     let mut store = Store::open(&top.join("ledger.sqlite3")).unwrap();
     let run = store

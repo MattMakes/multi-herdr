@@ -1,10 +1,3 @@
-//! The channel server of fleetd: bind, the peer user check, 1 request line
-//! with a deadline, the decision and the reply
-//! (docs/tickets/fleetd-p5/13-channel-server.md; SR-5, SR-8, RR-8, FM-15).
-//!
-//! Each test uses a temp fleet root with a ledger at generation 1, a test
-//! `fleet.toml` and the operator token of that root.
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -27,14 +20,11 @@ use horch_platform::channel::{Stream, User};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-/// The `request_max_bytes` of the test `fleet.toml`.
 const MAX_BYTES: usize = 512;
 
-/// The env of the child that sends 1 line as a process of an attempt.
 const CHILD_SOCKET: &str = "HORCH_TEST_CHANNEL_SOCKET";
 const CHILD_LINE: &str = "HORCH_TEST_CHANNEL_LINE";
 
-/// A temp fleet root with its ledger at generation 1 and its token.
 struct World {
     temp: tempfile::TempDir,
     calls: Arc<AtomicUsize>,
@@ -74,7 +64,6 @@ impl World {
         conn
     }
 
-    /// Handlers with 1 handler for `task_cancel` that counts its calls.
     fn handlers(&self) -> Handlers {
         let calls = Arc::clone(&self.calls);
         let mut handlers = Handlers::new();
@@ -107,7 +96,6 @@ impl World {
         socket_path(self.root())
     }
 
-    /// The state, class, auth and reason of the row of `id`.
     fn row(&self, id: &RequestId) -> Option<(String, String, Option<String>, Option<String>)> {
         self.conn()
             .query_row(
@@ -144,7 +132,6 @@ fn connect(socket: &Path) -> Stream {
     Stream::connect(socket, Instant::now() + Duration::from_secs(10)).unwrap()
 }
 
-/// Send `line` on a new connection, and read until the server closes it.
 fn ask(socket: &Path, line: &[u8]) -> Vec<u8> {
     let stream = connect(socket);
     (&stream).write_all(line).unwrap();
@@ -186,7 +173,6 @@ fn request_from_this_user_is_applied_and_replied() {
         auth.as_deref(),
         Some("token; peer outside each live attempt")
     );
-    // The same request_id again gets the stored result, with no second call.
     let again = reply(&ask(&w.socket(), req.to_line().as_bytes()));
     assert_eq!(again.outcome, Outcome::Applied(json!({ "calls": 1 })));
     assert_eq!(w.calls(), 1);
@@ -253,20 +239,16 @@ fn silent_client_is_dropped_at_its_deadline_and_the_next_is_served() {
         ..Options::default()
     };
     let server = w.start(options).unwrap();
-    // This client connects and sends nothing.
     let silent = connect(&w.socket());
     let req = request(Kind::TaskCancel, Some(w.token()));
 
     let got = reply(&ask(&w.socket(), req.to_line().as_bytes()));
 
     assert_eq!(got.outcome, Outcome::Applied(json!({ "calls": 1 })));
-    // The server closed the silent connection with no reply.
     assert_eq!(read_to_close(&silent), b"");
     server.stop().unwrap();
 }
 
-/// A reply far larger than the buffer of the channel: 4096 bytes on a
-/// Windows pipe, a few KiB on a Unix socket.
 const LARGE_REPLY: usize = 128 * 1024;
 
 #[test]
@@ -326,9 +308,6 @@ fn worker_kind_on_the_channel_is_refused_and_recorded() {
     server.stop().unwrap();
 }
 
-/// A child of a recorded wrapper sends the request. The wrapper `sh` waits
-/// for 1 line on its stdin, so the test records its attempt first. Its
-/// child is this test binary, which runs [`channel_client_child`].
 #[cfg(unix)]
 #[test]
 fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
@@ -382,8 +361,6 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     server.stop().unwrap();
 }
 
-/// The child of [`operator_request_from_a_process_of_a_live_attempt_is_refused`]:
-/// it sends 1 line and prints the reply. It does nothing outside that test.
 #[test]
 #[ignore = "runs only as the child of a test"]
 fn channel_client_child() {
@@ -394,17 +371,14 @@ fn channel_client_child() {
         return;
     };
     let got = ask(Path::new(&socket), line.as_bytes());
-    // The harness prints on the same line, so the reply has its own line.
     println!("\nREPLY {}", String::from_utf8(got).unwrap().trim_end());
 }
 
-/// On Windows the channel is a pipe, and the path is no file.
 #[cfg(unix)]
 #[test]
 fn old_socket_file_is_replaced_but_a_regular_file_is_not() {
     let w = World::new();
     let socket = w.socket();
-    // An old fleetd left its socket file.
     drop(horch_platform::channel::Listener::bind(&socket).unwrap());
     assert!(socket.exists());
     let server = w.start(Options::default()).unwrap();
@@ -413,7 +387,6 @@ fn old_socket_file_is_replaced_but_a_regular_file_is_not() {
     assert!(matches!(got.outcome, Outcome::Applied(_)), "{got:?}");
     server.stop().unwrap();
 
-    // A regular file at the name is never removed.
     std::fs::remove_file(&socket).unwrap();
     std::fs::write(&socket, b"keep me").unwrap();
     let err = w.start(Options::default()).unwrap_err();
@@ -441,7 +414,6 @@ where
     rx.recv_timeout(Duration::from_secs(1)).ok()
 }
 
-/// On Windows the channel is a pipe, and the path is no file.
 #[cfg(unix)]
 #[test]
 fn stop_completes_when_socket_folder_is_removed_before_stop() {

@@ -1,7 +1,4 @@
 extends RefCounted
-## The run of the tuning bench: 1 player plays 1 game through the adapter. The output is a trace.
-##
-## The runner has no game math. It moves the clock, asks the adapter for the actions, and lets the bot decide.
 
 const BenchJson := preload("res://addons/tuning_bench/bench_json.gd")
 const Knobs := preload("res://addons/tuning_bench/bench_knobs.gd")
@@ -13,15 +10,11 @@ const CORE_ADAPTER := "res://addons/tuning_bench/core_adapter.gd"
 const KINDS: Array[String] = ["buy", "once", "advance", "reset", "other"]
 const MAX_ACTIONS_PER_DECISION := 5000
 const NO_RATE_BEFORE := 999.0
-## A player that is not the main player stops at the upper limit of the target of meter 6 times this value.
 const OTHER_PLAYER_MARGIN := 1.25
-## A player that cannot move stops after this game time (the key `sim.stall_hours`; 0 = the rule is off).
 const DEFAULT_STALL_HOURS := 2.0
 const PROFILE_ADAPTER := "res://addons/tuning_bench/bench_profile.gd"
 
 
-## Make the adapter of the game. Return {"ok", "error", "adapter"}.
-## `bench.json` names a script with "adapter". With "core" and no "adapter" the bench uses the core adapter.
 static func make_adapter(ctx: Dictionary) -> Dictionary:
 	var bench: Dictionary = ctx["bench"]
 	var path: String = str(bench.get("adapter", ""))
@@ -55,29 +48,6 @@ static func _sim(ctx: Dictionary, key: String, default: float) -> float:
 	return default
 
 
-## Play 1 game for 1 player. Return the trace.
-## Options: "strict" (check the contract), "reference" (the log of another run: stop at the first difference),
-## "cancel" (a dictionary; the run stops when its key "cancel" is true), "record" (keep the list of actions),
-## "replay" (a list of [time, action id]: do these actions and let no bot decide),
-## "max_s" (stop the run at this game time; the default is `sim.max_hours`),
-## "checkpoints" (a list of game times in order: the trace gets [time, hash of the state] at the first decision
-## at or after each time, before the actions of that decision; the adapter needs `state_hash`).
-##
-## An action with `"bot": false` is a free choice of the player. The bot never does it, and it does not count
-## in the wake rule. It is in the table of the actions, so the view rule "each action id has a control" sees it.
-##
-## The stall rule: the run stops when, for `sim.stall_hours` of game time (default 2; 0 = off), the bot did no
-## action, the game reported no purchase of its own (an event `bought`), and `progress()` and `rate()` did not
-## change. The trace then has "stalled": true and "stall_from_s" (the time of the last of these changes).
-## A replay has no stall rule: it runs to the time of its record.
-##
-## The order of 1 decision at the time t:
-## 1. the bot looks at `actions()` and does actions until nothing is affordable;
-## 2. the runner takes `events()`, `rate()` and `progress()`;
-## 3. the runner calls `step()` for `decision_s` seconds, in parts of at most `max_step()`;
-## 4. the runner calls `active(decision_s x active_share)` 1 time, when `active_share` is above 0;
-## 5. when the player goes away now, the runner calls `away(away_min x 60)`; the clock moves by that time.
-## The next decision is at t + decision_s (plus the time away).
 static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player: Dictionary, opts: Dictionary = {}) -> Dictionary:
 	var bench: Dictionary = ctx["bench"]
 	var strict: bool = opts.get("strict", false)
@@ -203,7 +173,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 							_check_action(act, contract)
 						if table.has(act_id) and not (table[act_id] as Dictionary).has("from_event"):
 							continue
-						# A row that an auto purchase made keeps its auto purchases. The action shows now.
 						var auto_times: Array = []
 						var auto_count: int = 0
 						if table.has(act_id):
@@ -213,7 +182,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 							"element": str(act.get("element", "")), "seen_s": t, "times": [], "gains": [],
 							"auto_times": auto_times, "auto_count": auto_count}
 						if act.get("bot", true) is bool and not act.get("bot", true):
-							# A free choice of the player. The bot does not use it, and meter 8 does not count it.
 							(table[act_id] as Dictionary)["bot"] = false
 						if not first_scan and not content_seen.has(act_id):
 							content_seen[act_id] = true
@@ -223,9 +191,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 					first_scan = false
 					var pick: Dictionary = Player.choose(acts, player, t - last_buy_t, refused)
 					if pick.is_empty():
-						# `wealth()` is the main currency. A cost in another currency says nothing about the
-						# time of the next purchase: with such an action that is not affordable, the bot looks
-						# at each decision.
 						var have_now: float = adapter.wealth()
 						wake = INF
 						for entry: Variant in acts:
@@ -285,7 +250,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 		if not errors.is_empty():
 			break
 
-		# Events that the adapter reports, and the income after this decision.
 		var moved: bool = acted
 		var reported: Variant = adapter.events()
 		if reported is Array:
@@ -302,7 +266,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 						content.append([t, event_id])
 						diverged = _log(log, [t, "c", event_id], reference, has_reference) or diverged
 				elif event_kind == "bought":
-					# A purchase that the game made by itself (an auto-buy). The bot did not ask for it.
 					var bought: int = maxi(int(event.get("count", 1)), 1)
 					if not table.has(event_id):
 						table[event_id] = {"kind": "buy", "label": str(event.get("label", event_id)), "element": "",
@@ -316,7 +279,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 				else:
 					(trace["events"] as Array).append([t, event_kind, event_id])
 					if event_kind == "advance" and not advances.has([t, event_id]):
-						# A wall that the game passed by itself. The timeline shows it in the row "walls".
 						advances.append([t, event_id])
 		var now_rate: float = adapter.rate()
 		var progress: float = adapter.progress()
@@ -329,7 +291,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 			rate_series.append([t, BenchJson.sig(now_rate)])
 			last_rate = now_rate
 
-		# The end of a phase.
 		while phase_at < phases.size() - 1 and _phase_ends(phases[phase_at], progress, happened, resets):
 			var phase_id: String = str((phases[phase_at] as Dictionary).get("id", ""))
 			phase_out.append([phase_id, phase_start, t])
@@ -347,7 +308,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 			break
 		if has_replay and replay_at >= replay.size() and t >= float(opts.get("replay_until", 0.0)):
 			break
-		# The stall rule: no purchase, and no change of the progress and the income, for `stall_s`.
 		if moved or progress != last_progress or now_rate != stall_rate:
 			last_move_t = t
 			last_progress = progress
@@ -368,7 +328,6 @@ static func run(adapter: AdapterBase, ctx: Dictionary, data: Dictionary, player:
 		var play_t: float = float(tick) * decision_s
 		t = BenchJson.ms(play_t + away_total)
 		if goes_away and not away_missing and play_t - last_away_play >= away_every_s - 1.0e-9:
-			# The player closes the game. The game applies its offline rule.
 			adapter.away(away_s)
 			if adapter.bench_away_missing:
 				away_missing = true
@@ -447,8 +406,6 @@ static func _phase_ends(phase: Variant, progress: float, happened: Dictionary, r
 	return false
 
 
-## Return the id of the main player of a list: the player "active", or the first player.
-## `only` is the id of the 1 player that runs, or "".
 static func main_player_id(players: Array, only: String = "") -> String:
 	var first: String = ""
 	for player: Dictionary in players:
@@ -462,9 +419,6 @@ static func main_player_id(players: Array, only: String = "") -> String:
 	return first
 
 
-## Return the game time at which a player that is not the main player stops:
-## min(max_hours, length of the main player x (upper limit of the target `idle_ratio`) x 1.25).
-## A longer run cannot change the status of meter 6. Return {"limit_s", "kind"}; `kind` is "m6" or "max_hours".
 static func other_player_limit(ctx: Dictionary, targets: Dictionary, main: Dictionary) -> Dictionary:
 	var limit_s: float = _sim(ctx, "max_hours", 18.0) * 3600.0
 	var out: Dictionary = {"limit_s": limit_s, "kind": "max_hours"}
@@ -477,13 +431,6 @@ static func other_player_limit(ctx: Dictionary, targets: Dictionary, main: Dicti
 	return out
 
 
-## Run each player and compute the meters. Return {"ok", "error", "result", "traces"}.
-## The main player runs first. Each other player stops at `other_player_limit`.
-## Options: "player" (run only this player id), "cancel", "check" (the content of a self-check result),
-## "on_partial" (a Callable; the runner calls it with the result of the main player alone before the other
-## players run. That result has the key "pending_players"), "profile" (a list; the runner adds 1 entry for each
-## player: {"player", "usec", "steps", "decisions", "scans", "spent"}; `spent` is the time of each contract
-## function, see bench_profile.gd. The result does not change).
 static func simulate(ctx: Dictionary, k: Dictionary, target_changes: Dictionary = {}, opts: Dictionary = {}) -> Dictionary:
 	var made: Dictionary = opts.get("adapter_made", {})
 	if made.is_empty():

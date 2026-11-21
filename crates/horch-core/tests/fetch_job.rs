@@ -1,14 +1,3 @@
-//! The `fetch` job (docs/specs/fleetd/design.md, "Between features":
-//! "Remote git state is level-triggered"; "The kinds of job": `fetch`;
-//! "Push and pull request results are facts on the feature row"; F11;
-//! docs/tickets/fleetd-p4/37-fetch-job.md).
-//!
-//! Each test makes its own temporary ledger, a local bare repository as the
-//! remote, and a clone of it as the repository of the project. A job
-//! process is `true`, started through the launcher; the executor runs in
-//! the test process with the recorded pid, as `horch job run` runs it. The
-//! fleet clock of each test is a number that the test gives.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -43,22 +32,15 @@ use rusqlite::{Connection, TransactionBehavior};
 const FEATURE: &str = "F-0001";
 const FEATURE_BRANCH: &str = "fleet/run/x";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     dir: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
-    /// The bare repository that is the remote `origin`.
     remote: PathBuf,
-    /// The clone: the repository of the project, as its canonical path.
     repo: PathBuf,
-    /// A second clone that writes new commits to the remote.
     writer: PathBuf,
 }
 
-/// A temp ledger of the current schema with 1 project, its run and the
-/// feature of the run, and a remote with `main` and the feature branch.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
@@ -120,7 +102,6 @@ impl World {
         path(&self.repo)
     }
 
-    /// The tip of `branch` on the remote.
     fn remote_tip(&self, branch: &str) -> String {
         git(
             &self.remote,
@@ -128,7 +109,6 @@ impl World {
         )
     }
 
-    /// A new commit on `branch` of the remote.
     fn advance(&self, branch: &str) {
         git(&self.writer, &["fetch", "-q", "origin"]);
         git(
@@ -143,7 +123,6 @@ impl World {
         );
     }
 
-    /// Queue the fetch of the repository at `clock` with the period rule.
     fn queue(&mut self, remote: &Remote, clock: i64) -> Option<Queued> {
         let config = self.config.clone();
         let ctx = ctx(&config);
@@ -157,8 +136,6 @@ impl World {
         queued
     }
 
-    /// Queue the fetch at `clock`, start its process at `clock` and run its
-    /// executor to its end. Give the ended row.
     fn fetch(&mut self, clock: i64) -> JobRow {
         let id = match self.queue(&Remote::default(), clock) {
             Some(Queued::New(id)) => id,
@@ -174,7 +151,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Start the run `id` at `clock` through the launcher. Give its pid.
     fn start(&mut self, id: i64, clock: i64) -> u32 {
         let config = self.config.clone();
         let ctx = ctx(&config);
@@ -267,8 +243,6 @@ impl World {
         }
     }
 
-    /// The executor of the run `id` with the pid `pid`, as `horch job run`
-    /// runs it: on a read-only connection to the ledger.
     fn run_job(&self, id: i64, pid: u32) {
         let config = self.config.clone();
         let checks = CheckRunner {
@@ -280,9 +254,6 @@ impl World {
         jobs::run_job(&ctx(&config), job.conn(), id, pid, &checks).unwrap();
     }
 
-    /// The executor of the fetch `row` with the programs `tools` on a
-    /// read-only connection, then its facts recorded in 1 transaction, as
-    /// the ingest of its result file records them. Give its outcome.
     fn fetch_with(&mut self, row: &JobRow, tools: &Tools) -> Outcome {
         let ran = exec_fetch::run_with(self.job_store().conn(), row, tools, &Launcher).unwrap();
         let config = self.config.clone();
@@ -295,18 +266,15 @@ impl World {
         ran.outcome
     }
 
-    /// The ledger as the job process opens it: read-only.
     fn job_store(&self) -> Store {
         Store::open_read_only(&self.dir.path().join("ledger.sqlite3")).unwrap()
     }
 
-    /// End each run from its result file, as a pass of fleetd ends it.
     fn ingest(&mut self) -> Vec<(i64, State)> {
         let config = self.config.clone();
         jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap()
     }
 
-    /// The result files of the archive of the fleet root.
     fn archived(&self) -> PathBuf {
         self.dir.path().join("fleet/run/jobs/archive")
     }
@@ -348,7 +316,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// No worker of a test has a sandbox profile.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -361,8 +328,6 @@ fn path(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -399,8 +364,6 @@ fn commit(dir: &Path, file: &str, text: &str) {
     git(dir, &["commit", "-q", "-m", file]);
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn fetch_records_the_tips_in_remote_tips() {
     let mut w = world();
@@ -415,7 +378,6 @@ fn fetch_records_the_tips_in_remote_tips() {
         assert_eq!(row.tip, w.remote_tip(branch), "the fetched tip of {branch}");
         assert_eq!(row.stale_since, None);
     }
-    // The fetch wrote the objects: the clone has the fetched tip.
     git(&w.repo, &["cat-file", "-e", &w.remote_tip("main")]);
 }
 
@@ -450,7 +412,6 @@ fn failed_fetch_sets_stale_since_and_the_next_period_runs_again() {
     assert_eq!(w.fetch(0).state, State::Passed);
     let seen = w.tip_row("main").tip;
 
-    // The remote is gone: each fetch fails.
     let moved = w.dir.path().join("moved.git");
     std::fs::rename(&w.remote, &moved).unwrap();
     let failed = w.fetch(period);
@@ -459,8 +420,6 @@ fn failed_fetch_sets_stale_since_and_the_next_period_runs_again() {
     assert_eq!(stale.tip, seen, "a failed fetch keeps the last fetched tip");
     let since = stale.stale_since.expect("a failed fetch sets stale_since");
 
-    // The next period is a new run, also after a failed run, and
-    // stale_since keeps the time of the first failure.
     std::thread::sleep(Duration::from_millis(1100));
     let again = w.fetch(2 * period);
     assert_eq!(again.state, State::Failed);
@@ -470,7 +429,6 @@ fn failed_fetch_sets_stale_since_and_the_next_period_runs_again() {
         Some(since.as_str())
     );
 
-    // The remote is back: a passed fetch clears stale_since.
     std::fs::rename(&moved, &w.remote).unwrap();
     w.advance("main");
     let passed = w.fetch(3 * period);
@@ -504,7 +462,6 @@ fn closed_unmerged_pull_request_opens_1_item() {
             [FEATURE],
         )
         .unwrap();
-    // A fake `gh` on PATH: the pull request is closed and not merged.
     let bin = w.dir.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let gh = bin.join("gh");
@@ -519,7 +476,6 @@ fn closed_unmerged_pull_request_opens_1_item() {
     let tools = Tools::from_env(&env);
     assert_eq!(tools.gh.as_deref(), Some(gh.as_path()));
 
-    // 2 fetch periods read the same closed pull request.
     for clock in [0, 60] {
         let id = match w.queue(&Remote::default(), clock) {
             Some(Queued::New(id)) => id,
@@ -576,9 +532,6 @@ fn missing_gh_gives_the_cause_in_the_job_result() {
     assert_eq!(feature.pr_state, "none");
 }
 
-/// The job process of a fetch writes no row: it runs on a read-only
-/// connection, and the ledger has no tip until the ingest of its result
-/// file. A second ingest of the same file changes nothing.
 #[test]
 fn fetch_job_process_writes_no_row_and_a_second_ingest_changes_nothing() {
     let mut w = world();
@@ -662,8 +615,6 @@ fn fetch_on_project_with_no_origin_fails_promptly_and_releases_git_writer_for_re
     assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
 }
 
-/// The rows that an ingest can change: each job, remote tip, event,
-/// ingested file and needs-you item.
 fn snapshot(conn: &Connection) -> Vec<String> {
     let mut out = Vec::new();
     for sql in [

@@ -1,7 +1,3 @@
-//! The e2e tests of intake and approval through the binary (ticket 56 of
-//! fleetd-p6; `docs/specs/fleetd/design.md`: FR-1, FR-10, FR-12, FM-30,
-//! FM-32).
-
 #![cfg(unix)]
 
 use std::path::PathBuf;

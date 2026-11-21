@@ -1,11 +1,5 @@
-//! What one collector tick spent, per phase, and what it wrote (NFR-02).
-//!
-//! The collector fills a [`TickTiming`] on every tick. With
-//! `HORCH_TELEMETRY_TIMING=1` it prints the record to stderr after the tick.
-
 use std::time::{Duration, Instant};
 
-/// The phases of a tick, in tick order.
 pub const PHASES: [&str; 9] = [
     "ledgers",
     "resolve",
@@ -18,10 +12,8 @@ pub const PHASES: [&str; 9] = [
     "write",
 ];
 
-/// The files a tick writes.
 pub const FILES: [&str; 4] = ["events", "cursors", "quota", "snapshot"];
 
-/// One tick's time per phase and bytes written per file.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TickTiming {
     pub phases: [Duration; PHASES.len()],
@@ -30,7 +22,6 @@ pub struct TickTiming {
 }
 
 impl TickTiming {
-    /// Add the time since `start` to `phase`, and return now.
     pub(crate) fn lap(&mut self, phase: &str, start: Instant) -> Instant {
         let now = Instant::now();
         self.add(phase, now - start);
@@ -49,7 +40,6 @@ impl TickTiming {
         }
     }
 
-    /// The time of `phase`.
     pub fn phase(&self, phase: &str) -> Duration {
         PHASES
             .iter()
@@ -57,7 +47,6 @@ impl TickTiming {
             .map_or(Duration::ZERO, |i| self.phases[i])
     }
 
-    /// The bytes written to `file`.
     pub fn written(&self, file: &str) -> u64 {
         FILES
             .iter()
@@ -65,12 +54,10 @@ impl TickTiming {
             .map_or(0, |i| self.bytes[i])
     }
 
-    /// Every byte the tick wrote.
     pub fn written_total(&self) -> u64 {
         self.bytes.iter().sum()
     }
 
-    /// One line: `tick 12.3ms ledgers=0.4ms ... | events=0B cursors=0B ...`.
     pub fn line(&self) -> String {
         let ms = |d: Duration| format!("{:.1}ms", d.as_secs_f64() * 1000.0);
         let mut out = format!("telemetry tick {}", ms(self.total));

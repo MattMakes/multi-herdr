@@ -1,17 +1,3 @@
-//! Writes `task.yaml` and `START.md` under the folder of an attempt (ticket 07).
-//!
-//! The folder is `<fleet root>/tasks/<task id>/attempts/<attempt>/`
-//! (`docs/tickets/fleetd-p4/MAP.md`, Q3), so each attempt has its own 2
-//! immutable files. Both texts pass the SR-2 lint before either file is
-//! written. Each file is written 1 time through [`fsx::create_immutable`]:
-//! a temp file, an fsync, then an atomic link, so a reader sees the whole
-//! file or no file (protocol rule 1). A file that exists is never
-//! rewritten (rule 2): the same bytes again are accepted, other bytes are
-//! refused. `START.md` is written before `task.yaml`, so an attempt with a
-//! `task.yaml` also has its `START.md`. The attempt folder and its inbox
-//! have mode 0700, so that fleetd reads the files of the attempt with the
-//! SR-6 checks.
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -22,29 +8,21 @@ use crate::fleetd::task_execution::domain::task_files::{
 };
 use crate::fsx::{self, FsxError};
 
-/// The folder of the ideas in the fleet root.
 const IDEAS: &str = "ideas";
 
-/// The file mode of both files: only the user of fleetd and its workers.
 const MODE: u32 = 0o600;
-/// The mode of the attempt folder and of its inbox (SR-6).
 const DIR_MODE: u32 = 0o700;
 
-/// The 2 files of an attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttemptFiles {
     pub task_yaml: PathBuf,
     pub start_md: PathBuf,
 }
 
-/// Why the 2 files were not written.
 #[derive(Debug)]
 pub enum TaskFilesError {
-    /// The SR-2 lint refused a text. No file is written.
     Secret(Sr2Refusal),
-    /// The file exists with other content. It stays as it is.
     Exists(PathBuf),
-    /// A file system call failed.
     Io(FsxError),
 }
 
@@ -73,7 +51,6 @@ impl From<FsxError> for TaskFilesError {
     }
 }
 
-/// The folder of attempt `attempt` of task `task_id`.
 pub fn attempt_dir(fleet_root: &Path, task_id: &str, attempt: &str) -> PathBuf {
     fleet_root
         .join("tasks")
@@ -82,11 +59,6 @@ pub fn attempt_dir(fleet_root: &Path, task_id: &str, attempt: &str) -> PathBuf {
         .join(attempt)
 }
 
-/// The files the worker of `facts` reads before it starts, in order: the
-/// ticket, the `requirements.yaml` of its idea and the decisions file of
-/// its feature when they exist (RR-12; MAP.md, Q15), and the verdict file
-/// of a fix attempt. A task of a run in flight with no idea folder lists
-/// only its ticket.
 fn read_first(fleet_root: &Path, facts: &TaskFacts) -> Vec<String> {
     let idea = facts
         .idea
@@ -109,8 +81,6 @@ fn read_first(fleet_root: &Path, facts: &TaskFacts) -> Vec<String> {
         .collect()
 }
 
-/// Render, lint and write the 2 files of the attempt of `facts`. `secrets`
-/// are the env values of the profile and of `FORBIDDEN_ENV`.
 pub fn write_attempt_files(
     fleet_root: &Path,
     facts: &TaskFacts,
@@ -119,10 +89,6 @@ pub fn write_attempt_files(
     write_attempt_files_with(fleet_root, facts, None, secrets)
 }
 
-/// [`write_attempt_files`], and `START.md` ends with the section of the
-/// project facts when `project_facts` is given (G56). The first write of
-/// the attempt keeps that section in [`FACTS_MD`], and each later write
-/// renders from it: a fact recorded between 2 writes changes no byte.
 pub fn write_attempt_files_with(
     fleet_root: &Path,
     facts: &TaskFacts,
@@ -153,8 +119,6 @@ pub fn write_attempt_files_with(
     Ok(files)
 }
 
-/// The file of the attempt folder with the section of the project facts
-/// that its `START.md` holds.
 pub const FACTS_MD: &str = "facts.md";
 
 fn facts_section(
@@ -180,9 +144,6 @@ fn facts_section(
     }
 }
 
-/// Make `inbox` and its missing parents with [`DIR_MODE`], and set that
-/// mode on the attempt folder `dir` and on `inbox`, which the umask can
-/// clear. Where the OS has no modes, the folders keep the default.
 fn make_dirs(dir: &Path, inbox: &Path) -> Result<(), FsxError> {
     let io = |path: &Path| {
         let path = path.to_path_buf();

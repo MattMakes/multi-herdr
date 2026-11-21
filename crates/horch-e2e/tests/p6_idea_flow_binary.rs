@@ -1,15 +1,3 @@
-//! The idea flow of Phase 6 through the binary
-//! (`ai_docs/plans/fleetd-build/tickets/56-phase-6-idea-flow-through-the-binary.md`).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. `horch idea add --direct` adds 1 ticket. fleetd makes the feature
-//! row and then the feature branch in the project `.git`.
-//!
-//! Each test waits for an event of the ledger or of git, never for a time.
-//! Each test sets `HORCH_TEST_DOCS_FIXTURE` to an empty local folder, so no
-//! test uses the network.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -22,13 +10,10 @@ use horch_core::taskledger::{schema, util, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The source of the idea.md of a `--direct` idea.
 const DIRECT_SOURCE: &str = "horch idea add --direct";
 
-/// The ticket of each test: 1 task of the code kind.
 const TICKET: &str = "# 01: Write the queue guide\n\n\
 <!-- horch-ticket: 1 -->\n\
 **Persona:** primary `opus` · **Parallel:** yes\n\
@@ -47,18 +32,13 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A fleet with a test fleetd and 1 `--direct` idea.
 struct World {
     h: Harness,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its worker finds the same paths there.
         let fleet = h.state.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -72,15 +52,12 @@ impl World {
             "HORCH_QUOTA_FILE",
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
-        // No test uses the network for the docs sync of fleetd.
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
         h.fleet_workspace();
         let w = World { h };
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             w.h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -95,14 +72,12 @@ impl World {
         w
     }
 
-    /// Write the ticket `name` of the project folder `tickets` with `text`.
     fn write_ticket(&self, name: &str, text: &str) {
         let tickets = self.h.project.join("tickets");
         std::fs::create_dir_all(&tickets).unwrap();
         std::fs::write(tickets.join(name), text).unwrap();
     }
 
-    /// `horch idea add --direct` of the ticket `name` of the project.
     fn add_direct(&self, name: &str) {
         let ticket = self.h.project.join("tickets").join(name);
         let o = self
@@ -121,8 +96,6 @@ impl World {
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
 
-    /// The rows of `sql`, each row its columns joined with 1 space. No rows
-    /// while the ledger does not exist yet.
     fn rows(&self, sql: &str) -> Vec<String> {
         let Ok(conn) =
             Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -156,8 +129,6 @@ impl World {
         self.rows(sql).into_iter().next()
     }
 
-    /// What a failed wait shows: the features, the ideas, the tasks, the
-    /// git refs and the fleetd stderr.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -187,7 +158,6 @@ impl World {
         .concat()
     }
 
-    /// The plan.verdict.json of each idea folder that has one.
     fn verdicts(&self) -> String {
         let ideas = self.h.state.join("fleet").join("ideas");
         let mut dirs: Vec<_> = std::fs::read_dir(&ideas)
@@ -203,7 +173,6 @@ impl World {
             .join("\n")
     }
 
-    /// The refs of the project repository.
     fn refs(&self) -> String {
         let o = self
             .h
@@ -214,7 +183,6 @@ impl World {
         String::from_utf8_lossy(&o.stdout).into_owned()
     }
 
-    /// The lines of the fleetd stderr, each 1 time, in order.
     fn fleetd_stderr(&self) -> String {
         let all = std::fs::read_to_string(self.h.root.join("fleetd.stderr")).unwrap_or_default();
         let mut seen = std::collections::BTreeSet::new();
@@ -224,15 +192,11 @@ impl World {
             .join("\n")
     }
 
-    /// Wait for `what`: `f` gives a value.
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
 }
 
-/// Fault 1: fleetd makes the feature branch of `horch idea add --direct`
-/// in the project `.git`. The git sandbox of fleetd lets it write the git
-/// folder of the project.
 #[test]
 fn idea_add_direct_makes_the_feature_and_its_branch() {
     let w = World::new("p6-flow-branch", "commit,result");
@@ -248,10 +212,6 @@ fn idea_add_direct_makes_the_feature_and_its_branch() {
     });
 }
 
-/// Ticket 58 of fleetd-build: 10 `--direct` ideas in a row, with 1 pass
-/// each second. A pass can come between the commit of a request and its
-/// files. Each idea reaches `ticketing` and gets its planned task, no idea
-/// is ever in `clarifying`, and fleetd starts no clarifying process.
 #[test]
 fn ten_direct_ideas_in_a_row_all_reach_ticketing() {
     let w = World::new("p6-flow-ten-direct", "commit,result");
@@ -276,9 +236,6 @@ fn ten_direct_ideas_in_a_row_all_reach_ticketing() {
             (ticketed.as_deref() == Some("10")).then_some(())
         },
     );
-    // fleetd can add other ideas, for example 1 for each agent CLI of the
-    // host that fails its conformance check. The checks below read only
-    // the `--direct` ideas.
     let direct = format!("SELECT entity_id FROM events WHERE entity = 'idea' AND kind = 'added' AND json_extract(data_json, '$.source') = '{DIRECT_SOURCE}'");
     assert_eq!(w.rows(&direct).len(), 10, "{}", w.context());
     let clarifying = w.rows(&format!(
@@ -295,18 +252,10 @@ fn ten_direct_ideas_in_a_row_all_reach_ticketing() {
     assert!(leads.is_empty(), "clarifying processes: {leads:?}");
 }
 
-// ─── fault 3: each fake plays only the keys of its role ─────────────────
-
-/// The verdict file of the fake judge.
 const VERDICT_FILE: &str = "review.md";
 
-/// The scenario of each fake of a judge pair: the keys of the worker and
-/// of the judge together, as the fleet gives them to each pane.
 const PAIR_SCENARIO: &str = "commit,result,verdict_pass";
 
-/// A git project with a ledger that holds 1 judged task and its judge
-/// task. A stand-in `horch` before the real one on `PATH` logs the files
-/// of HEAD at each `horch result`.
 struct Pair {
     h: Harness,
     judged: String,
@@ -359,9 +308,6 @@ impl Pair {
         }
     }
 
-    /// Run fake-claude with [`PAIR_SCENARIO`] as the attempt of `task_id`,
-    /// in the project. The stand-in `horch` writes 1 line for each
-    /// `horch result`: the files of HEAD then.
     fn launch(&mut self, task_id: &str) {
         let attempt = self.h.root.join(format!("attempt-{task_id}"));
         std::fs::create_dir_all(&attempt).unwrap();
@@ -400,7 +346,6 @@ impl Pair {
         assert!(o.status.success(), "fake claude: {}", text(&o));
     }
 
-    /// The files of HEAD of the project.
     fn head_files(&self) -> Vec<String> {
         let o = self
             .h
@@ -414,7 +359,6 @@ impl Pair {
             .collect()
     }
 
-    /// The lines of the stand-in `horch`.
     fn results(&self) -> Vec<String> {
         std::fs::read_to_string(&self.stub_log)
             .unwrap_or_default()
@@ -429,8 +373,6 @@ fn make_executable(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// Fault 3: the fake worker of a judged task commits its work and says
-/// done. It writes no `review.md`: that is the work of the judge.
 #[test]
 fn fake_worker_writes_no_review_md() {
     let mut p = Pair::new("p6-fake-worker");
@@ -448,8 +390,6 @@ fn fake_worker_writes_no_review_md() {
     assert_eq!(p.results().len(), 1, "the worker says done 1 time");
 }
 
-/// Fault 3: the fake judge commits `review.md` before `horch result`, and
-/// does not do the work of the worker.
 #[test]
 fn fake_judge_commits_review_md_before_its_result() {
     let mut p = Pair::new("p6-fake-judge");

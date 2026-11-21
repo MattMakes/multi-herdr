@@ -1,11 +1,3 @@
-//! The rows of the `worktrees` table: the store of worktree custody.
-//!
-//! A new row and its event go through `created()` of the 1 door. A state
-//! change is not a function of this store: the use cases call
-//! `transition()` (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One
-//! door"). `status` keeps the words of today (`docs/tickets/fleetd-p3/MAP.md`,
-//! Q3).
-
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -15,8 +7,6 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::taskledger::model::WorktreeStatus;
 use crate::taskledger::util;
 
-/// `worktrees.state`: the 8 states of the worktree table of the design
-/// ("Worktrees: leased, reconciled, never lost").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorktreeState {
     Reserved,
@@ -30,7 +20,6 @@ pub enum WorktreeState {
 }
 
 impl WorktreeState {
-    /// Every state, in the order of the design table.
     pub const ALL: [WorktreeState; 8] = [
         WorktreeState::Reserved,
         WorktreeState::Created,
@@ -42,7 +31,6 @@ impl WorktreeState {
         WorktreeState::Rescued,
     ];
 
-    /// The stored word.
     pub fn as_str(self) -> &'static str {
         match self {
             WorktreeState::Reserved => "reserved",
@@ -56,7 +44,6 @@ impl WorktreeState {
         }
     }
 
-    /// The state that a stored word names.
     pub fn parse(text: &str) -> Result<WorktreeState> {
         match WorktreeState::ALL.into_iter().find(|s| s.as_str() == text) {
             Some(state) => Ok(state),
@@ -71,8 +58,6 @@ impl std::fmt::Display for WorktreeState {
     }
 }
 
-/// The `worktree_modes` row of a worktree: its run, its name and its
-/// scratch flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeMode {
     pub run_id: String,
@@ -80,9 +65,6 @@ pub struct WorktreeMode {
     pub scratch: bool,
 }
 
-/// 1 row of `worktrees`, with its mode row, as custody reads it.
-/// `base_commit` is the design's `base_sha` and `bytes_on_disk` its
-/// `disk_bytes` (MAP.md of fleetd-p3, Q2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRow {
     pub worktree_id: String,
@@ -104,8 +86,6 @@ pub struct WorktreeRow {
     pub mode: Option<WorktreeMode>,
 }
 
-/// A new row: [`insert_reserved`] writes it in `reserved`, and
-/// [`insert_orphan`] in `orphaned`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewWorktree {
     pub worktree_id: String,
@@ -120,7 +100,6 @@ pub struct NewWorktree {
     pub mode: Option<WorktreeMode>,
 }
 
-/// The columns of [`WorktreeRow`], in the order of [`row`].
 const COLUMNS: &str = "w.worktree_id, w.task_id, w.worker_id, w.repo_root, w.path, w.branch,
     w.base, w.base_commit, w.status, w.state, w.owner_attempt, w.head_sha, w.dirty,
     w.bytes_on_disk, w.rescue_ref, w.seen_at, m.run_id, m.name, m.scratch";
@@ -144,7 +123,6 @@ fn row(r: &Row<'_>) -> rusqlite::Result<(WorktreeRow, String, String)> {
         branch: r.get(5)?,
         base: r.get(6)?,
         base_commit: r.get(7)?,
-        // Parsed after the read: a word of the row is not a SQLite error.
         status: WorktreeStatus::Open,
         state: WorktreeState::Reserved,
         owner_attempt: r.get(10)?,
@@ -171,7 +149,6 @@ fn one(conn: &Connection, sql: &str, key: &str) -> Result<Option<WorktreeRow>> {
         .transpose()
 }
 
-/// The row `id`; `None` when no row has that id.
 pub fn get(conn: &Connection, id: &str) -> Result<Option<WorktreeRow>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM worktrees w
@@ -181,9 +158,6 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<WorktreeRow>> {
     one(conn, &sql, id)
 }
 
-/// The tip that the newest row of the branch `branch` recorded, also a
-/// `removed` row: its landed commit, else its head. `None` when no row
-/// records one.
 pub fn recorded_tip(conn: &Connection, branch: &str) -> Result<Option<String>> {
     let tip: Option<Option<String>> = conn
         .query_row(
@@ -196,8 +170,6 @@ pub fn recorded_tip(conn: &Connection, branch: &str) -> Result<Option<String>> {
     Ok(tip.flatten())
 }
 
-/// The row of `task_id` that is not `removed`; the newest when there are
-/// more.
 pub fn of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM worktrees w
@@ -208,7 +180,6 @@ pub fn of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> 
     one(conn, &sql, task_id)
 }
 
-/// The newest row that is not `removed` of a task, as [`of_task`] reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskTree {
     pub task_id: String,
@@ -218,9 +189,6 @@ pub struct TaskTree {
     pub path: String,
 }
 
-/// The newest row that is not `removed` of each task of `task_ids`: 1
-/// statement for any count of tasks. SQLite takes the bare columns from
-/// the row of `max(rowid)`.
 pub fn newest_of_tasks<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str>,
@@ -244,8 +212,6 @@ pub fn newest_of_tasks<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The row of the folder `path` that is not `removed`; `None` when no such
-/// row has that path. A `removed` row is history, read by its id.
 pub fn by_path(conn: &Connection, path: &str) -> Result<Option<WorktreeRow>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM worktrees w
@@ -255,7 +221,6 @@ pub fn by_path(conn: &Connection, path: &str) -> Result<Option<WorktreeRow>> {
     one(conn, &sql, path)
 }
 
-/// Each row in 1 of `states`, oldest first.
 pub fn in_states(conn: &Connection, states: &[WorktreeState]) -> Result<Vec<WorktreeRow>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM worktrees w
@@ -263,15 +228,12 @@ pub fn in_states(conn: &Connection, states: &[WorktreeState]) -> Result<Vec<Work
          WHERE instr(?1, ',' || w.state || ',') > 0
          ORDER BY w.rowid"
     );
-    // The words as 1 list, `,reserved,orphaned,`: no state word has a comma.
     let words: String = states.iter().map(|s| format!(",{s}")).collect::<String>() + ",";
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([words], row)?;
     rows.map(|r| parsed(r?)).collect()
 }
 
-/// Insert `new` in `state`, with its mode row, then record it through
-/// `created()` of the door.
 fn insert(
     tx: &Connection,
     guard: Option<Generation>,
@@ -279,8 +241,6 @@ fn insert(
     state: WorktreeState,
     cause: Cause<'_>,
 ) -> Result<()> {
-    // `created()` checks this too, but after the insert: a refused call
-    // would leave a row with no event (review F1).
     check_writable(tx, guard)?;
     tx.execute(
         "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
@@ -311,8 +271,6 @@ fn insert(
     Ok(())
 }
 
-/// Insert `new` in `reserved`: a tree that fleetd makes. 1 event records
-/// it, with `cause`.
 pub fn insert_reserved(
     tx: &Connection,
     guard: Option<Generation>,
@@ -322,8 +280,6 @@ pub fn insert_reserved(
     insert(tx, guard, new, WorktreeState::Reserved, cause)
 }
 
-/// Insert `new` in `orphaned`: a folder that the reconciler adopts. 1
-/// event records it, with `cause`.
 pub fn insert_orphan(
     tx: &Connection,
     guard: Option<Generation>,
@@ -333,7 +289,6 @@ pub fn insert_orphan(
     insert(tx, guard, new, WorktreeState::Orphaned, cause)
 }
 
-/// An error when `changed` is not 1 row.
 fn updated(changed: usize, id: &str) -> Result<()> {
     if changed != 1 {
         bail!("no worktree {id} in the ledger");
@@ -341,8 +296,6 @@ fn updated(changed: usize, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The facts that git and the disk give of the row `id`. No state
-/// changes, so no event.
 pub fn set_facts(
     tx: &Connection,
     id: &str,
@@ -359,7 +312,6 @@ pub fn set_facts(
     updated(changed, id)
 }
 
-/// The attempt that holds the row `id`; `None` when no attempt holds it.
 pub fn set_owner(tx: &Connection, id: &str, attempt: Option<&str>) -> Result<()> {
     let changed = tx.execute(
         "UPDATE worktrees SET owner_attempt = ?2 WHERE worktree_id = ?1",
@@ -368,7 +320,6 @@ pub fn set_owner(tx: &Connection, id: &str, attempt: Option<&str>) -> Result<()>
     updated(changed, id)
 }
 
-/// The verified rescue ref of the row `id`.
 pub fn set_rescue_ref(tx: &Connection, id: &str, rescue_ref: &str) -> Result<()> {
     let changed = tx.execute(
         "UPDATE worktrees SET rescue_ref = ?2 WHERE worktree_id = ?1",
@@ -377,9 +328,6 @@ pub fn set_rescue_ref(tx: &Connection, id: &str, rescue_ref: &str) -> Result<()>
     updated(changed, id)
 }
 
-/// Record that the work of the row `id` landed at `commit`: the status
-/// `landed`, its landed commit and its time, as the land of today writes
-/// them. The move of `state` to `landed` goes through the door.
 pub fn set_landed(tx: &Connection, id: &str, commit: &str) -> Result<()> {
     let changed = tx.execute(
         "UPDATE worktrees SET status = ?2, landed_commit = ?3, landed_at = ?4, reason = NULL
@@ -418,7 +366,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -602,7 +549,6 @@ mod tests {
         move_to(&mut l, "wt1", WorktreeState::Rescued);
         move_to(&mut l, "wt1", WorktreeState::Removed);
         assert_eq!(by_path(l.store.conn(), &old.path).unwrap(), None);
-        // A folder at the path of the removed row is a new row.
         let new = NewWorktree {
             worktree_id: "wt2".into(),
             ..old.clone()

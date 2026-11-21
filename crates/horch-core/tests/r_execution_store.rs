@@ -1,6 +1,3 @@
-//! Ledger record conversion (`to_execution`), `ExecutionStore::read` and
-//! `end_if_pane_closed`: each result and each guard.
-
 use horch_core::execution::legacy::{
     LedgerRecordV1, KIND_ORCHESTRATOR, KIND_WORKER, STATUS_WORKING,
 };
@@ -147,7 +144,6 @@ fn a_bad_id_or_agent_is_refused() {
 
 fn store() -> (tempfile::TempDir, ExecutionStore) {
     let tmp = tempfile::tempdir().unwrap();
-    // A test of the store writes with the writer of fleetd (T-884).
     let store = ExecutionStore::for_project(tmp.path(), "/work/alpha").with_writer(
         std::sync::Arc::new(horch_core::taskledger::store::LedgerWriter::fleetd()),
     );
@@ -174,7 +170,6 @@ fn read_a_missing_empty_and_valid_ledger() {
     assert!(format!("{err:#}").contains("parsing ledger"), "{err:#}");
 }
 
-/// A working worker record in pane `p9`, and a fake workspace without it.
 fn working() -> LedgerRecordV1 {
     let mut r = record();
     r.status = STATUS_WORKING.into();
@@ -210,7 +205,6 @@ fn end_if_pane_closed_ends_a_working_record_whose_pane_is_gone() {
         (last.event.as_str(), last.text.as_str()),
         ("ended", PANE_CLOSED)
     );
-    // A second look finds a finished record.
     assert!(!store.end_if_pane_closed("rec-1", &ws).unwrap());
 }
 
@@ -218,7 +212,6 @@ fn end_if_pane_closed_ends_a_working_record_whose_pane_is_gone() {
 fn end_if_pane_closed_leaves_the_record_alone_under_each_guard() {
     let ws_open = FakeWorkspace::new();
     ws_open.workspace_create("w1", None, false).unwrap();
-    // The pane `p1` exists in the workspace.
     let mut open_pane = working();
     open_pane.pane_id = Some("p1".into());
     let mut no_pane = working();
@@ -243,13 +236,11 @@ fn end_if_pane_closed_leaves_the_record_alone_under_each_guard() {
         assert_eq!(after.finished_at, before.finished_at, "{name}");
         assert_eq!(after.history.len(), before.history.len(), "{name}");
     }
-    // herdr does not answer: a gone pane proves nothing.
     let (_tmp, store) = store();
     put(&store, working());
     let down = FakeWorkspace::new();
     down.set_reachable(false);
     assert!(!store.end_if_pane_closed("rec-1", &down).unwrap());
     assert_eq!(store.get("rec-1").unwrap().status, STATUS_WORKING);
-    // No record matches the key.
     assert!(!store.end_if_pane_closed("nope", &down).unwrap());
 }

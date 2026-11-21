@@ -1,17 +1,11 @@
-//! The concern awake for macOS.
-
 use std::ffi::CStr;
 use std::io;
 
-/// `CLOCK_UPTIME_RAW` is the clock of `mach_absolute_time`: it does not
-/// count the time asleep.
 pub(crate) fn awake_ms() -> io::Result<u64> {
     crate::unix::awake::clock_ms(libc::CLOCK_UPTIME_RAW)
 }
 
-/// `kern.bootsessionuuid`, the UUID that the kernel makes at each boot.
 pub(crate) fn boot_id() -> io::Result<String> {
-    // A UUID has 36 characters and the NUL.
     let mut buf = [0u8; 64];
     let mut len = buf.len();
     // SAFETY: the name is a NUL-terminated C string. `buf` is writable for

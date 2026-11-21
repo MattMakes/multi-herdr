@@ -1,5 +1,3 @@
-//! The concern fs for Linux.
-
 use std::ffi::CStr;
 use std::io;
 use std::path::Path;

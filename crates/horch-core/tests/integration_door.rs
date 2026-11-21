@@ -1,14 +1,3 @@
-//! The task branch, the bundle and the feature are entities of the 1 door
-//! (docs/specs/fleetd/design.md, "Ledger", rule 1 "One door"; "Landing a
-//! task branch on its feature branch"; "The bundle state machine"; "The
-//! feature state machine"; docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md).
-//!
-//! Each state change goes through `transition()` with 1 event. The rows
-//! store of integration inserts the rows of the 6 integration tables, reads
-//! them by key and writes each fact that is not a state with 1 event.
-//! Each test makes its own temporary ledger. No test reads the clock, the
-//! load or the limits of the machine.
-
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, NewRun as NewJob};
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError, Moved};
 use horch_core::fleetd::fleet_runtime::domain::jobs::Kind;
@@ -27,13 +16,8 @@ use rusqlite::Connection;
 
 const FEATURE: &str = "F-0001";
 
-/// The 3 entities of this ticket.
 const ENTITIES: [Entity; 3] = [Entity::TaskBranch, Entity::Bundle, Entity::Feature];
 
-/// The column "Leaves when" of the task branch table of the design. Each
-/// state that is not terminal also leaves to `abandoned`: `horch feature
-/// abandon` moves each branch of the feature that is not landed, and
-/// `horch branch abandon` moves a `conflicted` or `gate_failed` branch.
 const BRANCH_EXITS: &[(&str, &str)] = &[
     ("building", "verifying"),
     ("building", "abandoned"),
@@ -53,7 +37,6 @@ const BRANCH_EXITS: &[(&str, &str)] = &[
     ("gate_failed", "abandoned"),
 ];
 
-/// The column "Leaves when" of the bundle table of the design.
 const BUNDLE_EXITS: &[(&str, &str)] = &[
     ("building", "gating"),
     ("building", "dropped"),
@@ -64,7 +47,6 @@ const BUNDLE_EXITS: &[(&str, &str)] = &[
     ("passed", "dropped"),
 ];
 
-/// The column "Leaves when" of the feature table of the design.
 const FEATURE_EXITS: &[(&str, &str)] = &[
     ("open", "ready"),
     ("open", "merged"),
@@ -74,7 +56,6 @@ const FEATURE_EXITS: &[(&str, &str)] = &[
     ("ready", "abandoned"),
 ];
 
-/// The states of each table, and the terminal states among them.
 fn states(entity: Entity) -> (&'static [&'static str], &'static [&'static str]) {
     match entity {
         Entity::TaskBranch => (
@@ -113,7 +94,6 @@ fn design_exits(entity: Entity) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// The word that the text of each event of `entity` names.
 fn noun(entity: Entity) -> &'static str {
     match entity {
         Entity::TaskBranch => "task branch",
@@ -122,8 +102,6 @@ fn noun(entity: Entity) -> &'static str {
         other => panic!("{other} is not an entity of this ticket"),
     }
 }
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _dir: tempfile::TempDir,
@@ -149,7 +127,6 @@ fn world() -> World {
         tasks: 0,
     };
     w.feature(FEATURE, "fleet/r1");
-    // FR-12: a task needs an idea in flight of the feature of its run.
     let run_id = w.run.run_id.clone();
     w.store
         .immediate(|tx| {
@@ -188,7 +165,6 @@ impl World {
             .unwrap();
     }
 
-    /// A new task and its task branch `name` of [`FEATURE`], in `building`.
     fn task_branch(&mut self, name: &str) -> String {
         self.tasks += 1;
         let n = self.tasks;
@@ -212,7 +188,6 @@ impl World {
         name.to_string()
     }
 
-    /// A new bundle of [`FEATURE`] with 1 new task branch `member`.
     fn bundle(&mut self, member: &str) -> String {
         self.task_branch(member);
         let new = NewBundle {
@@ -229,7 +204,6 @@ impl World {
         id.to_string()
     }
 
-    /// A new row of `entity` with the id `n`, in its first state.
     fn row(&mut self, entity: Entity, n: usize) -> String {
         match entity {
             Entity::TaskBranch => self.task_branch(&format!("fleet/r1/t{n}")),
@@ -243,8 +217,6 @@ impl World {
         }
     }
 
-    /// Put the row `id` of `entity` in `state` with no event: the set-up of
-    /// a test, not a move.
     fn put(&self, entity: Entity, id: &str, state: &str) {
         let sql = match entity {
             Entity::TaskBranch => "UPDATE branches SET landing_state = ?2 WHERE name = ?1",
@@ -286,7 +258,6 @@ impl World {
     }
 }
 
-/// 1 event row: its kind, states, cause, text and data.
 #[derive(Debug, Clone, PartialEq)]
 struct Ev {
     kind: String,
@@ -322,8 +293,6 @@ fn events(conn: &Connection, entity: Entity, id: &str) -> Vec<Ev> {
 fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
-
-// ─── the state tables ───────────────────────────────────────────────────
 
 #[test]
 fn each_allowed_exit_of_the_3_tables_moves_and_records_1_event() {
@@ -384,7 +353,6 @@ fn illegal_exit_is_refused_and_opens_1_needs_you_item() {
         let id = w.row(entity, n);
         w.put(entity, &id, from);
         let before = w.events(entity, &id).len();
-        // The refusal and a legal move of another row share 1 pass.
         let other = w.task_branch(&format!("fleet/r1/other{n}"));
         let (refused, legal) = w
             .store
@@ -452,7 +420,6 @@ fn terminal_states_have_no_exit() {
                 );
             }
         }
-        // Each other state has an exit.
         for from in all.iter().filter(|s| !terminal.contains(s)) {
             assert!(
                 EXITS.iter().any(|(e, f, _)| *e == entity && f == from),
@@ -469,8 +436,6 @@ fn terminal_states_have_no_exit() {
     ));
     assert_eq!(w.state(Entity::Bundle, &id), "landed");
 }
-
-// ─── the rows store ─────────────────────────────────────────────────────
 
 #[test]
 fn bundle_with_its_members_is_1_transaction() {
@@ -504,8 +469,6 @@ fn bundle_with_its_members_is_1_transaction() {
     );
     assert_eq!(events[0].cause, "bundle built");
 
-    // `a` is in the open bundle `id` (I12), and `nope` has no row. Each
-    // insert fails as a whole, and the caller's transaction goes on.
     let c = w.task_branch("fleet/r1/c");
     let bundles = count(w.conn(), "SELECT count(*) FROM bundles");
     let members = count(w.conn(), "SELECT count(*) FROM bundle_members");
@@ -543,12 +506,10 @@ fn bundle_with_its_members_is_1_transaction() {
         );
         w.put(Entity::TaskBranch, &c, "building");
     }
-    // Only the 2 moves of `c` wrote events.
     assert_eq!(
         count(w.conn(), "SELECT count(*) FROM events"),
         all_events + 2
     );
-    // A bundle has at least 1 member.
     let empty = NewBundle {
         feature_id: FEATURE,
         base_tip: "base1",
@@ -563,9 +524,6 @@ fn bundle_with_its_members_is_1_transaction() {
     assert!(out.is_err());
 }
 
-/// Run `write` in 1 transaction, then assert its 1 new event of the row
-/// `id` of `entity`: a `note` with no state, with `cause`, whose text names
-/// the entity and the row. Gives its `data_json`.
 fn fact_event(
     w: &mut World,
     entity: Entity,
@@ -586,8 +544,6 @@ fn fact_event(
     e.data.clone().unwrap()
 }
 
-/// Each fact of the branch row `name`, with its event on the row `id` of
-/// `entity`, then the row reads back each fact.
 fn branch_facts(w: &mut World, name: &str, entity: Entity, id: &str) {
     for fact in [
         BranchFact::SeenTip("tip1"),
@@ -652,8 +608,6 @@ fn fact_writes_record_an_event_with_the_entity() {
     let branch = w.task_branch("fleet/r1/a");
     let bundle = w.bundle("fleet/r1/b");
 
-    // A feature branch row has no landing state: the event of each of its
-    // facts is an event of its feature.
     let feature_branch = "fleet/r1";
     let new = NewBranch {
         name: feature_branch,
@@ -680,7 +634,6 @@ fn fact_writes_record_an_event_with_the_entity() {
     bundle_facts(&mut w, &bundle);
     feature_facts(&mut w);
 
-    // A fact of a row that does not exist writes nothing.
     let all_events = count(w.conn(), "SELECT count(*) FROM events");
     let out = w
         .store

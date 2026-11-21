@@ -1,17 +1,3 @@
-//! Drop, cleanup, dismiss and the run gate through the custody jobs
-//! (fleetd-p3 ticket 12): the real `horch` binary, its own git repository,
-//! ledger and state folders in a temp dir. Each path keeps each refusal of
-//! today (RR-13, rows W6, W11 and L9 of
-//! `docs/specs/fleetd/preservation-04-behavior.md`), and each folder that
-//! it removes is `landed`, or first on a verified rescue ref, and then
-//! removed by 1 `worktree_remove` job (RR-9, FM-27). No fleetd runs: each
-//! command runs its jobs itself.
-//!
-//! The old paths that these tests replace: the `git worktree remove` calls
-//! of `worktree_ops::drop_worktree`, `finish::land::delete_worktree` (the
-//! cleanup step and `dismiss --cleanup`) and `runs::remove_gate_worktree`,
-//! and the `git worktree add --detach` call of `runs::checkout_tip`.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -121,9 +107,6 @@ fn seed_alpha(h: &Harness, steps: &str) -> Run {
     run
 }
 
-/// A run `alpha` with the finish steps `steps`, 1 task with no check, a
-/// worker bound to it, and its worktree `feat`. Gives the worker, the
-/// task id and the path of the tree.
 fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
     claimed_as(h, steps, None)
 }
@@ -170,8 +153,6 @@ fn claimed_as(h: &Harness, steps: &str, agent: Option<u32>) -> (String, String, 
     (w, task, path)
 }
 
-/// The run gives each task 1 attempt: when the attempt ends, the task
-/// fails and no retry attempt takes its tree again during the test.
 fn no_retry(h: &Harness) {
     Store::open(&ledger(h))
         .unwrap()
@@ -180,7 +161,6 @@ fn no_retry(h: &Harness) {
         .unwrap();
 }
 
-/// The values of the first column of `sql`.
 fn query(h: &Harness, sql: &str) -> Vec<String> {
     let store = Store::open(&ledger(h)).unwrap();
     let mut stmt = store.conn().prepare(sql).unwrap();
@@ -192,9 +172,6 @@ fn query(h: &Harness, sql: &str) -> Vec<String> {
     rows
 }
 
-/// `path` as the ledger writes it: with each link of the project folder
-/// resolved (`/tmp` is `/private/tmp` on macOS). A path that a command
-/// printed is resolved already.
 fn stored(h: &Harness, path: &Path) -> String {
     let project = std::fs::canonicalize(&h.project).unwrap();
     match path.strip_prefix(&h.project) {
@@ -203,7 +180,6 @@ fn stored(h: &Harness, path: &Path) -> String {
     }
 }
 
-/// 1 column of the 1 row of the folder `path`.
 fn column(h: &Harness, path: &Path, name: &str) -> String {
     let rows = query(
         h,
@@ -216,8 +192,6 @@ fn column(h: &Harness, path: &Path, name: &str) -> String {
     rows[0].clone()
 }
 
-/// The state moves of the row of `path` that the door recorded,
-/// `<from>><to>` each, oldest first.
 fn moves(h: &Harness, path: &Path) -> Vec<String> {
     let id = column(h, path, "worktree_id");
     query(
@@ -230,7 +204,6 @@ fn moves(h: &Harness, path: &Path) -> Vec<String> {
     )
 }
 
-/// The runs of `kind`: `<state>` each, oldest first.
 fn jobs(h: &Harness, kind: &str) -> Vec<String> {
     query(
         h,
@@ -238,7 +211,6 @@ fn jobs(h: &Harness, kind: &str) -> Vec<String> {
     )
 }
 
-/// The refs under `prefix`, in name order.
 fn refs(h: &Harness, prefix: &str) -> Vec<String> {
     git_in(
         h,
@@ -250,11 +222,6 @@ fn refs(h: &Harness, prefix: &str) -> Vec<String> {
     .collect()
 }
 
-/// A `git` that runs `hook` (a shell snippet) once, the first time its
-/// arguments contain `when` while the file `mark` does not exist, and then
-/// runs the real git. The hook makes `mark`, or the script makes it. It
-/// replaces the `HORCH_GIT_BIN` of `h`. A job runs git in a sandbox that
-/// writes only its tree, so the `mark` of a hook in a job is in the tree.
 fn git_with_hook(h: &mut Harness, when: &str, mark: &Path, hook: &str) {
     let real = h.git_bin().unwrap().to_path_buf();
     let script = format!(
@@ -275,8 +242,6 @@ fn drop_tree(h: &Harness, w: &str, name: &str, keep_branch: bool) -> Output {
     as_worker(h, w, &args)
 }
 
-/// A drop that is refused with `words`: the tree stays, its row is not
-/// moved, and no custody job ran.
 fn assert_refused(h: &Harness, o: &Output, path: &Path, words: &str) {
     assert!(!o.status.success(), "{}", text(o));
     assert!(
@@ -290,8 +255,6 @@ fn assert_refused(h: &Harness, o: &Output, path: &Path, words: &str) {
     assert!(jobs(h, "rescue").is_empty(), "{:?}", jobs(h, "rescue"));
     assert!(jobs(h, "worktree_remove").is_empty());
 }
-
-// ─── RR-13: the refusals of the drop ────────────────────────────────────
 
 #[test]
 fn rr13_drop_of_a_dirty_tree_is_refused_and_the_tree_stays() {
@@ -433,8 +396,6 @@ fn rr13_a_commit_after_an_accepted_drop_is_kept_in_the_rescue_ref() {
     assert!(path.join("first.txt").is_file());
 }
 
-// ─── the drop through the rescue and remove jobs ────────────────────────
-
 #[test]
 fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
     let h = world("p3-ref-drop");
@@ -477,8 +438,6 @@ fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
         || format!("{said}\n{}", dump(&h)),
     );
     assert!(!path.exists());
-    // The rescue ref holds the tree, and its run ended before the removal
-    // started.
     let rescue = refs(&h, &format!("refs/horch/rescue/{id}/"));
     assert_eq!(rescue, [format!("refs/horch/rescue/{id}/1")]);
     assert_eq!(
@@ -506,10 +465,8 @@ fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
         ]),
         "{m:?}"
     );
-    // Today's record of a drop stays: `abandoned`, with the reason.
     assert_eq!(column(&h, &path, "status"), "abandoned");
     assert_eq!(column(&h, &path, "reason"), "stop");
-    // `--keep-branch` keeps the branch at its HEAD.
     assert_eq!(git_in(&h, &h.project, &["rev-parse", &branch]), head);
 }
 
@@ -614,8 +571,6 @@ fn drop_of_a_merged_branch_deletes_it_and_keep_branch_keeps_it() {
         assert_eq!(exists, keep, "{branch}");
     }
 }
-
-// ─── the cleanup step ───────────────────────────────────────────────────
 
 fn send_finish(h: &Harness, w: &str) {
     let mut cmd = std::process::Command::new("/bin/sh");
@@ -817,9 +772,6 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
     let mut h = world("p3-ref-cleanup-refused");
     let (w, _task, path) = claimed(&h, "land,cleanup");
     commit_file(&h, &path, "feature.txt");
-    // The untracked file comes after today's checks of the cleanup step
-    // passed, as the remove job reads the HEAD of the tree: the guard of
-    // the job refuses it (RR-13).
     let late = path.join("late.txt");
     let hook = format!("echo late > '{}'", late.display());
     git_with_hook(&mut h, "--show-toplevel --verify HEAD", &late, &hook);
@@ -856,8 +808,6 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
     );
 }
 
-// ─── dismiss --cleanup ──────────────────────────────────────────────────
-
 #[test]
 fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
     let h = world("p3-ref-dismiss");
@@ -880,7 +830,6 @@ fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
             (pid, start, &w),
         )
         .unwrap();
-    // A folder beside it that no row records.
     let other = h.project.join(".worktrees").join("other");
     git_in(
         &h,

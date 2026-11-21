@@ -1,20 +1,3 @@
-//! Writes `verdict.json` of an attempt (ticket 19).
-//!
-//! Each verdict of the verifier is a row first, then a file after the
-//! commit (`docs/specs/fleetd/design.md`, A24; protocol rules 1 to 3):
-//!
-//! - The row is a `verdict` fact of the task, recorded through the door,
-//!   with the cause `verdict-<n>.json` and the verdict in `data_json`. `n`
-//!   counts the verdicts of the task: 1, 2, and so on.
-//! - The file is `<fleet root>/tasks/<task id>/verdict-<n>.json`, a new
-//!   name for each verdict. It is written 1 time through
-//!   [`fsx::create_immutable`]: the same bytes again are accepted, and other
-//!   bytes are refused.
-//! - The cursor [`CURSOR`] in `pass_cursors` holds the event id of the last
-//!   row whose file is written. A crash after the commit of a row and
-//!   before its file leaves the cursor before the row, so the next call
-//!   writes the file.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -30,23 +13,18 @@ use crate::fsx;
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::util;
 
-/// The `pass_cursors` kind of the verdict files.
 pub const CURSOR: &str = "verdict_files";
 
-/// The file mode: only the user of fleetd and its workers.
 const MODE: u32 = 0o600;
 
-/// The name of verdict `n`.
 pub fn file_name(n: u32) -> String {
     format!("verdict-{n}.json")
 }
 
-/// The file of verdict `n` of task `task_id`.
 pub fn path(fleet_root: &Path, task_id: &str, n: u32) -> PathBuf {
     fleet_root.join("tasks").join(task_id).join(file_name(n))
 }
 
-/// The form of a verdict in its row and its file.
 #[derive(Serialize, Deserialize)]
 struct Wire {
     task_id: String,
@@ -72,7 +50,6 @@ fn to_wire(v: &Verdict) -> Wire {
     }
 }
 
-/// The verdict of a verdict row, or `None` for another `verdict` fact.
 fn from_row(row: &FactRow) -> Result<Option<Verdict>> {
     if !(row.cause.starts_with("verdict-") && row.cause.ends_with(".json")) {
         return Ok(None);
@@ -97,9 +74,6 @@ fn from_row(row: &FactRow) -> Result<Option<Verdict>> {
     }))
 }
 
-/// Record `v` as the next verdict of its task, in the open transaction
-/// `tx`. The fleetd of generation `guard` writes. Gives the verdict with
-/// its number.
 pub fn record(tx: &Connection, guard: Option<Generation>, mut v: Verdict) -> Result<Verdict> {
     let count = recorded(tx, &v.task_id)?.len();
     v.n = u32::try_from(count + 1).context("the count of verdicts of a task")?;
@@ -120,7 +94,6 @@ pub fn record(tx: &Connection, guard: Option<Generation>, mut v: Verdict) -> Res
     Ok(v)
 }
 
-/// Each verdict of task `task_id`, oldest first.
 pub fn recorded(conn: &Connection, task_id: &str) -> Result<Vec<Verdict>> {
     let rows = door::facts_of(conn, Entity::Task, task_id, EventKind::Verdict)?;
     let mut out = Vec::new();
@@ -130,13 +103,10 @@ pub fn recorded(conn: &Connection, task_id: &str) -> Result<Vec<Verdict>> {
     Ok(out)
 }
 
-/// The newest verdict of task `task_id`.
 pub fn newest(conn: &Connection, task_id: &str) -> Result<Option<Verdict>> {
     Ok(recorded(conn, task_id)?.pop())
 }
 
-/// The newest verdict of each task of `task_ids`, by task: 1 statement for
-/// any count of tasks. A task with no verdict is not in the map.
 pub fn newest_of<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str>,
@@ -150,10 +120,6 @@ pub fn newest_of<'a>(
     Ok(out)
 }
 
-/// Write the file of each verdict row after [`CURSOR`], oldest first, then
-/// move the cursor. Gives the files that this call wrote or found with the
-/// same bytes. A file with other bytes stops the call, and the cursor stays
-/// before its row.
 pub fn write_unwritten(conn: &mut Connection, fleet_root: &Path) -> Result<Vec<PathBuf>> {
     let cursor = cursors_store::load(conn, CURSOR, &util::now())?;
     let after: i64 = cursor

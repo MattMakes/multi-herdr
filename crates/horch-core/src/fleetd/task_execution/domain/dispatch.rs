@@ -1,55 +1,26 @@
-//! The rules of a push dispatch: which ready task binds to which persona
-//! now, and why each other ready task waits (ticket 08).
-//!
-//! `docs/specs/fleetd/design.md`, "The task state machine" (`ready`),
-//! FR-5 and "Holds on dispatch are visible"; rows L2, L3 and L6 of
-//! `preservation-04-behavior.md`. Facts in, choices out. No I/O.
-//!
-//! - L2: the order is the target task first, then priority, then seq.
-//! - L3: a retry goes first: rung 6 lowers its priority.
-//! - L6: no 2 tasks of 1 run that run together own overlapping paths, an
-//!   exclusive task runs alone, shared-checkout tasks run 1 at a time, and
-//!   a review task never waits on these rules.
-//! - Each hold has a cause: a global hold, an unhealthy profile, a hold of
-//!   the persona, a hold of the project, `not_before`, an open attempt, or
-//!   a tree that waits for its rescue.
-//! - An unhealthy profile has no fallback: its task waits (fleetd-p7
-//!   MAP.md, Q15).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::retry::claimable_at;
 
-/// The facts of 1 `ready` task that the choice reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadyTask {
     pub task_id: String,
-    /// `T-<seq>`, for the text of a hold.
     pub short: String,
     pub run_id: String,
     pub project: String,
-    /// The persona of its next attempt: `claimable_by`, else its primary.
     pub persona: String,
     pub priority: i64,
     pub seq: i64,
-    /// The caller names this task first (a spawn for a target task, or a
-    /// replacement of the worker that held it).
     pub target: bool,
-    /// The end of its retry backoff on the fleet clock.
     pub not_before: Option<i64>,
     pub parallel: bool,
     pub shared_checkout: bool,
     pub review: bool,
-    /// The paths that it owns.
     pub own: Vec<String>,
-    /// An attempt of the task that is not ended (a restart on a fallback).
     pub open_attempt: Option<String>,
-    /// Its tree is `orphaned`: its rescue comes first.
     pub tree_orphaned: bool,
 }
 
-/// The facts of 1 task that holds its paths now: `leased`, `running`,
-/// `stalled`, `verifying`, `blocked_on_user` or `waiting_quota`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunningTask {
     pub short: String,
@@ -60,48 +31,27 @@ pub struct RunningTask {
     pub own: Vec<String>,
 }
 
-/// The holds on dispatch now, each with its cause.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Holds {
-    /// The fleet clock, in seconds.
     pub clock: i64,
-    /// The global holds: the health floors and the worktree disk budget.
     pub global: Vec<String>,
-    /// The holds of 1 persona, by persona: pacing of its pool, or no check
-    /// sandbox.
     pub personas: BTreeMap<String, String>,
-    /// The holds of 1 project, by project id: a missing fast gate.
     pub projects: BTreeMap<String, String>,
-    /// The unhealthy profiles: a failed conformance run or a dialog marked
-    /// each one (fleetd-p7 ticket 26).
     pub unhealthy: BTreeSet<String>,
 }
 
-/// Why a ready task is not bound now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hold {
-    /// A global hold.
     Global(String),
-    /// The profile of the task is unhealthy.
     UnhealthyProfile { profile: String },
-    /// A hold of the persona of the task.
     Persona { persona: String, cause: String },
-    /// A hold of the project of the task.
     Project { project: String, cause: String },
-    /// The retry backoff ends in `seconds` on the fleet clock.
     NotBefore { seconds: i64 },
-    /// An attempt of the task is not ended.
     OpenAttempt { attempt: String },
-    /// The tree of the task is `orphaned` and waits for its rescue.
     TreeRescue,
-    /// The idea of the task is `parked`: no new task of it is dispatched
-    /// (`docs/tickets/fleetd-p6/MAP.md`, Q10).
     IdeaParked { idea: String },
-    /// An exclusive task runs, or this exclusive task waits for others.
     Exclusive { running: String },
-    /// Another shared-checkout task works in the 1 shared checkout.
     SharedCheckout { running: String },
-    /// A task that runs owns a path that overlaps a path of this task.
     PathHeld { path: String, by: String },
 }
 
@@ -125,18 +75,12 @@ impl std::fmt::Display for Hold {
     }
 }
 
-/// The choice for 1 ready task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Choice {
-    /// Bind the task to a new attempt of `persona`.
     Bind { task_id: String, persona: String },
-    /// The task stays `ready`, for this cause.
     Held { task_id: String, hold: Hold },
 }
 
-/// The choice for each task of `ready`, in dispatch order. The tasks are
-/// chosen greedily: each one is checked against `running` and the tasks
-/// bound before it.
 pub fn choose(ready: &[ReadyTask], running: &[RunningTask], holds: &Holds) -> Vec<Choice> {
     let mut order: Vec<&ReadyTask> = ready.iter().collect();
     order.sort_by_key(|t| (!t.target, t.priority, t.seq));
@@ -167,7 +111,6 @@ pub fn choose(ready: &[ReadyTask], running: &[RunningTask], holds: &Holds) -> Ve
     out
 }
 
-/// The first hold of `t` beside the `active` tasks, or `None`.
 fn hold(t: &ReadyTask, active: &[RunningTask], holds: &Holds) -> Option<Hold> {
     if let Some(cause) = holds.global.first() {
         return Some(Hold::Global(cause.clone()));
@@ -213,7 +156,6 @@ fn hold(t: &ReadyTask, active: &[RunningTask], holds: &Holds) -> Option<Hold> {
         .or_else(|| path_held(t, &work))
 }
 
-/// An exclusive task runs, or `t` is exclusive and others run.
 fn exclusive(t: &ReadyTask, work: &[&RunningTask]) -> Option<Hold> {
     let blocker = work
         .iter()
@@ -224,7 +166,6 @@ fn exclusive(t: &ReadyTask, work: &[&RunningTask]) -> Option<Hold> {
     })
 }
 
-/// 1 checkout holds the edits of each shared task: they go 1 by 1.
 fn shared_checkout(t: &ReadyTask, work: &[&RunningTask]) -> Option<Hold> {
     if !t.shared_checkout {
         return None;
@@ -236,7 +177,6 @@ fn shared_checkout(t: &ReadyTask, work: &[&RunningTask]) -> Option<Hold> {
         })
 }
 
-/// The first path of `t` that overlaps a path of a task of `work`.
 fn path_held(t: &ReadyTask, work: &[&RunningTask]) -> Option<Hold> {
     work.iter().find_map(|a| {
         a.own.iter().find_map(|theirs| {
@@ -251,7 +191,6 @@ fn path_held(t: &ReadyTask, work: &[&RunningTask]) -> Option<Hold> {
     })
 }
 
-/// 2 paths overlap when they are equal or 1 is a folder of the other.
 fn overlap(a: &str, b: &str) -> bool {
     let a = a.trim_end_matches('/');
     let b = b.trim_end_matches('/');

@@ -1,5 +1,3 @@
-//! The concern fs for macOS.
-
 use std::ffi::CStr;
 use std::io;
 use std::path::Path;

@@ -1,28 +1,3 @@
-//! The reconciler of the worktree rows with git.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" ("The reconciler compares three views"), "Supervision, liveness
-//! and reconciliation" (`reconcile_worktrees(tx, trees)` in part 2 of a
-//! pass), "Migration plan" item 5, RR-10, I6, FM-25, FM-26, FM-27;
-//! `ddd/08-code/worktree-custody/design.md` §3 (`ReconcileWorktrees`).
-//!
-//! [`reconcile_worktrees`] compares the `worktrees` rows with the facts of
-//! part 1 of a pass: the folder scan of each row, the folders under
-//! `<project>/.worktrees/` of each run, and the last passed `worktree_list`
-//! run of each repository. It runs no git. The 1 folder it reads is the
-//! one that the observation of a `worktree_add` run checks. It is
-//! level-triggered: a second call with the same facts writes nothing more.
-//!
-//! It acts (MAP.md of fleetd-p3, Q9): it queues 1 `rescue` job for each
-//! `orphaned` tree, which has no verified rescue of its state now: a
-//! verified rescue moves it to `rescued`. It queues 1 `worktree_remove` job
-//! for each `landed` tree, and for each `rescued` tree whose idea is
-//! `merged` ("Ideas finish clean", ticket 33 of fleetd-p6); the rescue ref
-//! stays. A `rescued` tree with no task is removed only when its owner gave
-//! it up: a released gate tree or a dropped tree. The jobs run
-//! outside the pass, and the guard of the remove job checks each tree
-//! again at its removal.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -61,61 +36,39 @@ use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus, Workt
 use crate::taskledger::store::one_snapshot;
 use crate::taskledger::{runs, tasks, util};
 
-/// The folders under `<project>/.worktrees/` of 1 repository (Q4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkDir {
     pub repo: String,
-    /// The full path of each folder.
     pub folders: Vec<String>,
 }
 
-/// The last passed `worktree_list` run of 1 repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub repo: String,
-    /// The id of the run in `jobs`.
     pub job: i64,
-    /// When the run read its facts: the `seen_at` of each row it names.
     pub seen_at: String,
     pub result: ListResult,
 }
 
-/// The worktree facts of part 1 of a pass. A path is written as git
-/// writes it, so that a folder, an entry and a row compare as text.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// The folder scan of the rows, by worktree id. A row with no fact was
-    /// not scanned in this pass.
     pub folders: Vec<FolderFact>,
     pub work_dirs: Vec<WorkDir>,
     pub lists: Vec<Listed>,
 }
 
-/// What 1 call did. Each list but `not_trees` holds worktree ids, in row
-/// order; `not_trees` holds paths.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
-    /// The ended runs of the worktree jobs that the call observed.
     pub observed: Vec<i64>,
     pub adopted: Vec<String>,
     pub orphaned: Vec<String>,
-    /// Moved to `created`: the task is parked by `done --unlanded`, or it
-    /// waits for its next attempt.
     pub created: Vec<String>,
-    /// Moved to `landing`: the attempt ended verified.
     pub landing: Vec<String>,
-    /// Moved from `landing` to `landed`: the task branch is `landed`.
     pub landed: Vec<String>,
     pub vanished: Vec<String>,
-    /// The rows that got new facts from a `worktree_list` result.
     pub refreshed: Vec<String>,
-    /// The trees that got a new `rescue` run.
     pub rescues: Vec<String>,
-    /// The trees that got a new `worktree_remove` run.
     pub removals: Vec<String>,
-    /// The path of each folder of a work directory that the last
-    /// `worktree_list` result of its repository does not name: not a git
-    /// worktree, so it gets no row and no job.
     pub not_trees: Vec<String>,
 }
 
@@ -126,14 +79,6 @@ fn by_horch(text: &str) -> Cause<'_> {
     }
 }
 
-/// Reconcile the worktree rows with `facts`, in `tx`, at `clock` (part 2
-/// of a pass). In order: observe the ended worktree job runs; adopt each
-/// tree with no row as `orphaned`; write the facts of the `worktree_list`
-/// results; move each `active` row whose owner is gone; escalate each
-/// vanished folder; queue the rescue of each orphan and the removal of each
-/// landed tree. Between the owners and the escalation, each `landing` row
-/// follows its task branch. Each step reads the rows that the step before
-/// it wrote.
 pub fn reconcile_worktrees(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -151,8 +96,6 @@ pub fn reconcile_worktrees(
     Ok(report)
 }
 
-/// The breaches of I6 that `facts` show, in `conn`. A breach is reported;
-/// the rule that repairs it acts on the next pass.
 pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
     let (rows, jobs, removing) = one_snapshot(conn, || {
         let rows = store::in_states(conn, &WorktreeState::ALL)?;
@@ -194,9 +137,6 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
     Ok(out)
 }
 
-// ─── the steps ──────────────────────────────────────────────────────────
-
-/// Each row, oldest first.
 fn all_rows(tx: &Connection) -> Result<Vec<WorktreeRow>> {
     store::in_states(tx, &WorktreeState::ALL)
 }
@@ -205,13 +145,6 @@ fn add_run<'a>(jobs: &'a TreeJobs, row: &WorktreeRow) -> Option<&'a jobs_store::
     jobs.latest(Kind::WorktreeAdd, &row.worktree_id, &worktree_add_key(row))
 }
 
-/// Observe the last run of the job that each row waits for, when it
-/// ended `passed` or `failed`: the observations of `create`, `rescue` and
-/// `remove`. A rescue run is the newest of the tree, of any HEAD: a drop
-/// queues it at the HEAD that the command read, which the row may not
-/// have yet, and a run that is not observed gets a second rescue. A passed
-/// rescue whose ref the row has already is the rescue of an earlier orphan
-/// of a reused tree: it does not save the tree now, so it is not observed.
 fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     let (rows, jobs) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
@@ -255,7 +188,6 @@ fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Resul
     Ok(())
 }
 
-/// Whether the passed rescue run `job` names the rescue ref that `row` has.
 fn applied(job: &jobs_store::JobRow, row: &WorktreeRow) -> bool {
     job.state == State::Passed
         && result_data(job)
@@ -263,8 +195,6 @@ fn applied(job: &jobs_store::JobRow, row: &WorktreeRow) -> bool {
             .is_some_and(|r| row.rescue_ref.as_deref() == Some(r.rescue_ref.as_str()))
 }
 
-/// The path of each row in `rows`, and of each tree that a `worktree_list`
-/// run matched to a row.
 fn known_paths<'a>(
     rows: impl Iterator<Item = &'a WorktreeRow>,
     facts: &'a Facts,
@@ -278,10 +208,6 @@ fn known_paths<'a>(
     rows.map(|r| r.path.as_str()).chain(listed).collect()
 }
 
-/// The trees that the views show: each entry of `git worktree list` that
-/// [`admits`] gives as a tree now. A folder of a work directory is a tree
-/// only when the last `worktree_list` result of its repository names it:
-/// with no result yet, its adoption waits for one.
 fn seen(jobs: &TreeJobs, rows: &[WorktreeRow], facts: &Facts) -> Vec<Seen> {
     let mut out = Vec::new();
     for l in &facts.lists {
@@ -302,21 +228,13 @@ fn seen(jobs: &TreeJobs, rows: &[WorktreeRow], facts: &Facts) -> Vec<Seen> {
     out
 }
 
-/// What shows that the folder of an entry of a `worktree_list` result is
-/// there now, besides the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Evidence {
-    /// The scan of this pass read the folder of a row at the path.
     RowScan(Folder),
-    /// The path is in the work directory `<repo>/.worktrees/`, which the
-    /// scan of this pass lists: whether the listing holds it.
     WorkDirScan { listed: bool },
-    /// No scan of this pass reads the path: a folder that no row names,
-    /// outside the work directory. The list is the only evidence.
     ListOnly,
 }
 
-/// The evidence for the folder `path` of an entry of `list`.
 fn evidence(facts: &Facts, rows: &[WorktreeRow], list: &Listed, path: &str) -> Evidence {
     let read = rows
         .iter()
@@ -338,9 +256,6 @@ fn evidence(facts: &Facts, rows: &[WorktreeRow], list: &Listed, path: &str) -> E
     Evidence::ListOnly
 }
 
-/// Whether the entry `path` of `list` is a tree now: its folder is not
-/// shown gone by a scan of this pass, and no passed removal of the path
-/// made the list result stale.
 fn admits(jobs: &TreeJobs, rows: &[WorktreeRow], facts: &Facts, list: &Listed, path: &str) -> bool {
     let shown = match evidence(facts, rows, list, path) {
         Evidence::RowScan(f) => f == Folder::Present,
@@ -350,12 +265,6 @@ fn admits(jobs: &TreeJobs, rows: &[WorktreeRow], facts: &Facts, list: &Listed, p
     shown && !stale(jobs, rows, list, path)
 }
 
-/// Whether a passed removal of the folder `path` was queued after the run
-/// of `list`: the run may have read the tree before it went. The order is
-/// the order of the ids of the runs, which cannot tie, as 2 times of 1 s
-/// can. A list run queued after the removal but started before its end is
-/// not stale by this rule: the scan of [`evidence`] shows that the folder
-/// is gone.
 fn stale(jobs: &TreeJobs, rows: &[WorktreeRow], list: &Listed, path: &str) -> bool {
     rows.iter()
         .filter(|r| r.path == path)
@@ -363,8 +272,6 @@ fn stale(jobs: &TreeJobs, rows: &[WorktreeRow], list: &Listed, path: &str) -> bo
         .any(|job| job.state == State::Passed && job.id > list.job)
 }
 
-/// The folders of the work directories that no row owns and that the
-/// `worktree_list` result of their repository does not name.
 fn plain_folders(known: &BTreeSet<&str>, facts: &Facts) -> Vec<String> {
     let mut out = Vec::new();
     for d in &facts.work_dirs {
@@ -391,10 +298,6 @@ fn short_branch(full: &str) -> String {
     full.strip_prefix("refs/heads/").unwrap_or(full).to_string()
 }
 
-/// Adopt each tree that no row owns as `orphaned`, with the task that its
-/// branch names (RR-10, FM-26, Q15). A `removed` row owns no tree: a
-/// folder at its path gets a new row, as [`check_i6`] reads it. A folder
-/// that git does not name is reported in `not_trees` and gets no row.
 fn adopt(ctx: &JobCtx<'_>, tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
     let (rows, jobs) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
@@ -406,7 +309,6 @@ fn adopt(ctx: &JobCtx<'_>, tx: &Connection, facts: &Facts, report: &mut Report) 
     let known = known_paths(live, facts);
     report.not_trees = plain_folders(&known, facts);
     let seen = seen(&jobs, &rows, facts);
-    // The runs are read only for the repositories of a tree to adopt.
     let repos: BTreeSet<String> = rules::adoptions(&known, &seen, &[])
         .into_iter()
         .map(|a| a.repo)
@@ -450,8 +352,6 @@ fn adopt(ctx: &JobCtx<'_>, tx: &Connection, facts: &Facts, report: &mut Report) 
     Ok(())
 }
 
-/// Write the HEAD, the dirty flag and the size of each tree of a row that
-/// a `worktree_list` result read with no error, when they changed (Q11).
 fn refresh(tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
     let rows = all_rows(tx)?;
     for l in &facts.lists {
@@ -459,7 +359,6 @@ fn refresh(tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
             let (Some(head), Some(dirty), None) = (&t.head, t.dirty, &t.error) else {
                 continue;
             };
-            // A `removed` row of the same path is history.
             let row = rows
                 .iter()
                 .filter(|r| r.state != WorktreeState::Removed)
@@ -487,8 +386,6 @@ fn refresh(tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
     Ok(())
 }
 
-/// Move `id` to `to` through the door. `false` when it was there already,
-/// or when the door refused the move and recorded the refusal.
 fn moved(ctx: &JobCtx<'_>, tx: &Connection, id: &str, to: &str, cause: &str) -> Result<bool> {
     match transition(
         tx,
@@ -505,8 +402,6 @@ fn moved(ctx: &JobCtx<'_>, tx: &Connection, id: &str, to: &str, cause: &str) -> 
     }
 }
 
-/// The owner of the `active` row `row`, as the ledger gives it in `facts`
-/// and `outcomes`. A task id with no task row is an error.
 fn owner(
     row: &WorktreeRow,
     outcomes: &BTreeMap<String, Option<String>>,
@@ -547,8 +442,6 @@ fn outcome_of<'a>(
     outcomes.get(attempt)?.as_deref()
 }
 
-/// The outcome of the owner attempt of each row of `rows`, in 1 statement
-/// for any count of rows.
 fn owner_outcomes(
     tx: &Connection,
     rows: &[WorktreeRow],
@@ -571,9 +464,6 @@ fn task_now(status: &str, held_reason: Option<&str>) -> TaskNow {
     }
 }
 
-/// Move each `active` row whose owner is gone: `landing` for a verified
-/// task, `created` for a parked or retried task, else `orphaned` in this
-/// pass (FM-25, Q10, Q23).
 fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     let (rows, outcomes, facts) = one_snapshot(tx, || {
         let rows = store::in_states(tx, &[WorktreeState::Active])?;
@@ -595,8 +485,6 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
             Some(OwnerGone::Orphaned(cause)) => ("orphaned", cause, &mut report.orphaned),
         };
         if moved(ctx, tx, id, to, cause)? {
-            // A tree in `created` has no owner (Q10); an orphan keeps the
-            // attempt that died, for its rescue commit.
             if to == "created" {
                 store::set_owner(tx, id, None)?;
             }
@@ -606,10 +494,6 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
     Ok(())
 }
 
-/// The landing state of the task branch of each `landing` row, by branch
-/// name, and the stamp of the last event that moved that branch to
-/// `landed`. Each is 1 set read of the context that owns its table, on 1
-/// snapshot: 2 statements for any count of rows.
 struct Branches {
     states: BTreeMap<String, Option<String>>,
     landed_at: BTreeMap<String, String>,
@@ -634,11 +518,6 @@ impl Branches {
     }
 }
 
-/// Move each `landing` row whose task branch is `landed` to `landed`, at
-/// the HEAD that a `worktree_list` run read after the landing: its landed
-/// commit, the 1 record of the landing for the removal guard and for
-/// `horch ledger unfinished`. A row with no such read waits for it. A row
-/// whose branch is `abandoned` gets its rescue in [`act`].
 fn landings(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     let (rows, branches) = one_snapshot(tx, || {
         let rows = store::in_states(tx, &[WorktreeState::Landing])?;
@@ -665,7 +544,6 @@ fn landings(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()
     Ok(())
 }
 
-/// What the folder scan saw at the row `id`.
 fn folder(facts: &Facts, id: &str) -> Folder {
     match facts
         .folders
@@ -679,8 +557,6 @@ fn folder(facts: &Facts, id: &str) -> Folder {
     }
 }
 
-/// Whether `git worktree list` of the repository of `row` shows its tree,
-/// with a folder.
 fn in_git(facts: &Facts, row: &WorktreeRow) -> bool {
     facts
         .lists
@@ -694,8 +570,6 @@ fn in_git(facts: &Facts, row: &WorktreeRow) -> bool {
         })
 }
 
-/// Whether the entry at `path` of `result` is the tree of `row`: by its
-/// path as text, or by the row that the `worktree_list` run matched to it.
 fn names_row(result: &ListResult, path: &str, row: &WorktreeRow) -> bool {
     let same_path = path == row.path;
     let same_row = result
@@ -705,8 +579,6 @@ fn names_row(result: &ListResult, path: &str, row: &WorktreeRow) -> bool {
     same_path || same_row
 }
 
-/// Whether a removal set the tree of `row` aside: its remove run is
-/// active, or its quarantine folder is in the work directory.
 fn set_aside(removing: &BTreeSet<String>, facts: &Facts, row: &WorktreeRow) -> bool {
     let quarantine = quarantine_path(Path::new(&row.path), &row.worktree_id);
     let quarantine = quarantine.display().to_string();
@@ -718,14 +590,10 @@ fn set_aside(removing: &BTreeSet<String>, facts: &Facts, row: &WorktreeRow) -> b
     in_work_dir || removing.contains(&row.worktree_id)
 }
 
-/// 1 statement for any count of trees: check_i6 and escalate_vanished judge
-/// each tree, so this read stays whole.
 fn removing(conn: &Connection) -> Result<BTreeSet<String>> {
     jobs_store::active_subjects(conn, Kind::WorktreeRemove)
 }
 
-/// Escalate each folder that vanished without a removal by fleetd: 1
-/// event and 1 needs-you item, 1 time for each row. The row stays (FM-27).
 fn escalate_vanished(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -779,14 +647,6 @@ fn escalate_vanished(
     Ok(())
 }
 
-/// Queue 1 `rescue` run of each `orphaned` row and of each `landing` row
-/// whose task branch is `abandoned`, and 1
-/// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9), of
-/// each `rescued` row whose idea is `merged` ("Ideas finish clean"), and of
-/// each `rescued` row with no task that its owner gave up ([`given_up`]).
-/// A removal refused by a process in the tree runs again
-/// ([`remove::retry`]). A row whose folder vanished is escalated, not
-/// queued. A row with an active run of that kind is not queued again.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
     let (rows, branches, notes, jobs, ideas) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
@@ -854,12 +714,6 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
     Ok(())
 }
 
-/// Whether the `rescued` row `row` has no task and its owner gave it up
-/// (`owner`): fleetd released its gate tree ("removed at close", row W11
-/// of preservation-04), or a worker dropped it (RR-13). A drop counts only
-/// with the rescue ref of the rescue run that it queued; a later rescue
-/// holds work that came after the drop. A tree with no task that nobody
-/// gave up stays.
 fn given_up(jobs: &TreeJobs, row: &WorktreeRow, owner: Option<&remove::OwnerEnded>) -> bool {
     let Some(owner) = owner else {
         return false;
@@ -899,14 +753,6 @@ impl IdeaStates {
     }
 }
 
-/// Queue the `rescue` run of the orphan `row` at the HEAD that the last
-/// `worktree_list` result gave; `true` for a new run. A row with no HEAD
-/// waits for that result. The run of the same path and HEAD that ended
-/// `failed` is not run again: a failed rescue keeps the tree and its
-/// needs-you item, and a new HEAD is a new input. A passed run of the same
-/// input saved an earlier orphan of a reused tree, so a new run saves the
-/// tree now. A run that ended `abandoned` runs again after its backoff, up
-/// to `abandoned_run_limit`.
 fn queue_rescue(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -1226,8 +1072,6 @@ mod landing_reads_tests {
         }
     }
 
-    /// T-286, by count: the steps `landings` and `act` run the same
-    /// statements for 3 and for 300 `landing` rows.
     #[test]
     fn landings_and_act_run_the_same_statements_for_3_and_300_landing_rows() {
         let count = |n: usize| {

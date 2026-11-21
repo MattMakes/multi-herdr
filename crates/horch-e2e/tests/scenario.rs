@@ -1,7 +1,3 @@
-//! The hermetic end-to-end story of design section 16.5, one step at a time.
-//! `scripts/verify-telemetry-e2e.sh` runs it and keeps its `PASS <step>`
-//! lines. Every number comes from the fixture oracle, EXPECTED.md.
-
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -18,7 +14,6 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6
 }
 
-/// Copy a tree, keeping the first floor(n/2) lines of every `.jsonl`.
 fn copy_half(from: &Path, to: &Path) {
     if from.is_dir() {
         std::fs::create_dir_all(to).unwrap();
@@ -127,9 +122,6 @@ fn the_hermetic_story() {
     story(false);
 }
 
-/// The same story with an `ollama` that takes 7 s to start, longer than the
-/// 5 s production deadline. The harness deadline covers it, so the telemetry
-/// is the same. Its steps print nothing: the plain story prints them.
 #[test]
 fn the_hermetic_story_with_an_ollama_that_starts_in_7_s() {
     story(true);
@@ -287,8 +279,6 @@ fn usage_agrees_with_cost(h: &mut Harness) {
     }
 }
 
-/// The story of the module doc. `slow_ollama` delays every `ollama` call by
-/// 7 s and keeps the `PASS` lines quiet.
 fn story(slow_ollama: bool) {
     let pass = |step: &str| {
         if !slow_ollama {
@@ -307,7 +297,6 @@ fn story(slow_ollama: bool) {
         (f.join("prime"), h.state.join("prime")),
     ];
 
-    // 1. The clock, the 2 ledgers, and the first half of every transcript.
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
     h.set(
         "HORCH_PROBE_TIMEOUT_MS",
@@ -326,7 +315,6 @@ fn story(slow_ollama: bool) {
     }
     pass("1 fixtures installed (first halves)");
 
-    // 2. One tick: EXPECTED.md stage 1.
     let out = h.run(&["telemetry", "collect", "--once"]);
     assert!(
         out.status.success(),
@@ -351,8 +339,6 @@ fn story(slow_ollama: bool) {
     );
     pass("2 stage 1 totals equal EXPECTED.md");
 
-    // 4 (before 3): a collector that dies between the append and the cursor
-    // save, as `kill -9` would leave it: events written, cursors not, lock stale.
     for (from, to) in &places {
         copy_tree(from, to);
     }
@@ -366,8 +352,6 @@ fn story(slow_ollama: bool) {
     );
     h.unset("HORCH_FAULT");
 
-    // 3. The second halves are in; the next tick reaches stage 2, the stale
-    // lock is broken, and nothing is counted twice.
     let out = h.run(&["telemetry", "collect", "--once"]);
     assert!(
         out.status.success(),
@@ -384,7 +368,6 @@ fn story(slow_ollama: bool) {
     claude_probe_reads_exhausted(&mut h);
     pass("5 quota --refresh: claude exhausted, 7d 1.00, no fake violation");
 
-    // 6-8. The gate, on quota fixtures.
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
     h.set("HORCH_PROJECT_DIR", "/work/alpha");
     h.set("HORCH_WORKSPACE_ID", "w1");
@@ -409,7 +392,6 @@ fn story(slow_ollama: bool) {
     h.unset("HORCH_WORKSPACE_ID");
     pass("8 launch of opus: REFUSED, no record, no pane split");
 
-    // 9. One frame of the screen, from the stage 2 snapshot.
     let out = h.run(&["telemetry", "render", "--size", "120x40", "--window", "7d"]);
     assert!(
         out.status.success(),

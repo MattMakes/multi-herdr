@@ -107,9 +107,6 @@ def full6(label: str) -> dict:
     return {kn: (float(v) if not isinstance(v, str) else v) for kn, v in cfg.items()}
 
 
-# ------------------------------------------------------------------------------------------------ version 2
-
-
 def _fm_tone(prng: np.random.Generator, ns: int, fc_lo: float, fc_hi: float, ix_lo: float,
              ix_hi: float) -> np.ndarray:
     cut = prng.uniform(fc_lo, fc_hi)
@@ -286,8 +283,6 @@ def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     return headroom(_finish(dsp.peq(sig, 6000, cfg["bright"], 0.5), cfg["drive"]))
 
 
-# ------------------------------------------------------------------------------------------------ version 6
-
 _NS = n_of(0.6)
 _INTERVALS = (0, 7, 12, 3, 10)
 
@@ -444,9 +439,6 @@ def render6(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     srcv = source6(cfg, gen, prng)
     sig, low = _bursts6(cfg, ctx, srcv, prng)
     return _post6(cfg, ctx, sig, low, gen)
-
-
-# ------------------------------------------------------------------------------------------------ measures
 
 
 def _stereo(wav: np.ndarray) -> np.ndarray:

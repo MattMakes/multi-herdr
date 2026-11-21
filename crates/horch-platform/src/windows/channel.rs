@@ -1,8 +1,3 @@
-//! The concern channel for Windows: a named pipe that only this user can
-//! open. `GetNamedPipeClientProcessId` gives the peer process, and the
-//! token of that process gives the peer user. On a client handle,
-//! `GetNamedPipeServerProcessId` gives the server process.
-
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
@@ -47,70 +42,41 @@ use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use crate::channel::{AtName, Peer, User};
 use crate::NotSupported;
 
-/// A named pipe server with 1 instance only. The listener holds that
-/// instance for its whole life and reuses it for each client, so no other
-/// process can make an instance of the name and catch a client (SR-8). A
-/// client that finds the instance busy waits for it (`connect`).
 #[derive(Debug)]
 pub(crate) struct Listener(Arc<Instance>);
 
-/// The only instance of the pipe.
 #[derive(Debug)]
 pub(crate) struct Instance {
     pipe: OwnedHandle,
-    /// True while an accepted [`Stream`] holds the instance.
     busy: Mutex<bool>,
-    /// Signals that `busy` became false.
     free: Condvar,
 }
 
-/// 1 connection of the channel.
 #[derive(Debug)]
 pub(crate) struct Stream {
     end: End,
-    /// The longest wait of each read, or `None` for no limit. A pipe that
-    /// is not overlapped has no read timeout, so a read with a limit first
-    /// polls [`PeekNamedPipe`] until bytes wait or the limit passes.
     read_timeout: Mutex<Option<Duration>>,
-    /// The longest wait of each write, or `None` for no limit. A pipe that
-    /// is not overlapped has no write timeout, so a write with a limit is
-    /// cancelled with [`CancelSynchronousIo`] when the limit passes.
     write_timeout: Mutex<Option<Duration>>,
     cut: AtomicBool,
 }
 
-/// The side of 1 connection.
 #[derive(Debug)]
 enum End {
-    /// The client side owns its handle.
     Client(File),
-    /// The server side uses the handle of the instance and never closes
-    /// it. The drop ends the connection, and the listener can accept the
-    /// next client.
     Server {
         view: ManuallyDrop<File>,
         instance: Arc<Instance>,
     },
 }
 
-/// The longest time that the end of a server connection waits for the
-/// client to read the rest of the reply. It is below the 5 s request
-/// deadline of the channel, so a client that never reads holds the only
-/// instance for a short time only.
 const DRAIN_LIMIT: Duration = Duration::from_secs(2);
 
-/// The time between 2 polls of a read with a timeout.
 const READ_POLL: Duration = Duration::from_millis(10);
 
-/// The time between 2 cancels of a write that passed its timeout. A cancel
-/// that comes before the write starts in the OS cancels nothing, so the
-/// watchdog cancels again until the write returns.
 const CANCEL_RETRY: Duration = Duration::from_millis(10);
 
-/// The longest full pipe name, in UTF-16 units.
 const MAX_PIPE_NAME: usize = 256;
 
-/// The size of the in and out buffer of each instance, in bytes.
 const BUFFER: u32 = 4096;
 
 pub(crate) fn bind(name: &Path) -> io::Result<Listener> {
@@ -122,8 +88,6 @@ pub(crate) fn bind(name: &Path) -> io::Result<Listener> {
     })))
 }
 
-/// `\\.\pipe\<name>`, with each `\` of `name` as `/`: a pipe name holds no
-/// `\` after the prefix.
 fn pipe_name(name: &Path) -> io::Result<Vec<u16>> {
     let invalid = |reason| io::Error::new(io::ErrorKind::InvalidInput, reason);
     let text: Vec<u16> = name
@@ -148,11 +112,6 @@ fn pipe_name(name: &Path) -> io::Result<Vec<u16>> {
     Ok(full)
 }
 
-/// The only instance of the pipe `name`, with the access rule of this user
-/// only. It refuses clients of other computers.
-/// `FILE_FLAG_FIRST_PIPE_INSTANCE` refuses a pipe that exists, so no other
-/// process can own the name before fleetd. `nMaxInstances` 1 refuses each
-/// instance after it.
 fn create_instance(name: &[u16]) -> io::Result<OwnedHandle> {
     let descriptor = OwnerOnly::new()?;
     let attributes = SECURITY_ATTRIBUTES {
@@ -181,16 +140,11 @@ fn create_instance(name: &[u16]) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
-/// A security descriptor whose access rule allows only this user, freed
-/// on drop.
 struct OwnerOnly(PSECURITY_DESCRIPTOR);
 
 impl OwnerOnly {
     fn new() -> io::Result<OwnerOnly> {
         let sid = current_sid()?;
-        // The SDDL text of the access rule. `D:P` is a protected DACL, so
-        // the pipe takes no rule from a parent. `(A;;GA;;;<sid>)` is 1 rule
-        // that allows all access to this user. No other user has a rule.
         let text: Vec<u16> = format!("D:P(A;;GA;;;{sid})")
             .encode_utf16()
             .chain([0])
@@ -221,9 +175,6 @@ impl Drop for OwnerOnly {
     }
 }
 
-/// Wait until the previous [`Stream`] of the server ends, then connect the
-/// instance to the next client. An error ends only this connection: the
-/// instance is disconnected, so it waits for the next client again.
 pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
     let instance = &listener.0;
     let mut busy = instance.busy.lock().unwrap_or_else(PoisonError::into_inner);
@@ -252,18 +203,10 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
         view: ManuallyDrop::new(unsafe { File::from_raw_handle(pipe) }),
         instance: Arc::clone(instance),
     });
-    // On an error, the drop of `stream` ends the connection.
     let peer = peer(pipe)?;
     Ok((stream, peer))
 }
 
-/// End the connection of the server side, and free the instance for the
-/// next client. `DisconnectNamedPipe` discards the bytes that the client did
-/// not read, so `FlushFileBuffers` first waits until the client reads them,
-/// for at most [`DRAIN_LIMIT`]. The handle is synchronous, so the system runs
-/// 1 call on it at a time: a disconnect while the flush waits would wait for
-/// the flush, for ever. The flush therefore runs on this thread and is
-/// cancelled before the disconnect starts.
 fn end_connection(instance: &Instance, cut: bool) {
     let pipe = instance.pipe.as_raw_handle();
     if !cut {
@@ -321,8 +264,6 @@ impl Stream {
         }
     }
 
-    /// Read into `buf`. With a read timeout, wait first until bytes wait
-    /// in the pipe, and read only those, so the read never blocks.
     fn read_by(&self, buf: &mut [u8]) -> io::Result<usize> {
         let timeout = *self
             .read_timeout
@@ -332,7 +273,6 @@ impl Stream {
             return self.read_file(buf);
         };
         match self.wait_for_bytes(Instant::now() + timeout)? {
-            // The other side closed: the read reports the end.
             None => self.read_file(buf),
             Some(0) => Err(io::ErrorKind::TimedOut.into()),
             Some(waiting) => {
@@ -344,11 +284,6 @@ impl Stream {
         }
     }
 
-    /// 1 read of the pipe. The server ends a connection with
-    /// `DisconnectNamedPipe`, and then a read of the client fails with
-    /// `ERROR_PIPE_NOT_CONNECTED` (233), not `ERROR_BROKEN_PIPE`, which the
-    /// standard library reads as the end. Both mean that the other side ended
-    /// the connection, so both read as the end of the stream.
     fn read_file(&self, buf: &mut [u8]) -> io::Result<usize> {
         match self.file().read(buf) {
             Err(e) if is_end(&e) => Ok(0),
@@ -356,8 +291,6 @@ impl Stream {
         }
     }
 
-    /// The count of bytes that wait in the pipe, polled until it is not 0
-    /// or until `deadline`. `None` when the other side closed the pipe.
     fn wait_for_bytes(&self, deadline: Instant) -> io::Result<Option<u32>> {
         loop {
             let mut waiting = 0u32;
@@ -393,11 +326,6 @@ fn is_end(error: &io::Error) -> bool {
         || error.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32)
 }
 
-/// Run the synchronous I/O `io` on this thread. A watchdog thread cancels it
-/// with [`CancelSynchronousIo`] when it runs longer than `limit`, and then
-/// again each [`CANCEL_RETRY`] until `io` returns. A cancelled `io` fails
-/// with `ERROR_OPERATION_ABORTED`. The scope joins the watchdog before the
-/// return, so no cancel reaches a later I/O of this thread.
 fn cancel_after<T>(limit: Duration, io: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let this = current_thread()?;
     let this = &this;
@@ -407,7 +335,6 @@ fn cancel_after<T>(limit: Duration, io: impl FnOnce() -> io::Result<T>) -> io::R
             .name("horch-pipe-watchdog".into())
             .spawn_scoped(scope, move || {
                 let mut wait = limit;
-                // `done` is dropped when `io` returns: that is `Disconnected`.
                 while let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(wait) {
                     // SAFETY: `this` is an open handle of the thread that runs
                     // `io`, and it lives until the scope ends.
@@ -421,8 +348,6 @@ fn cancel_after<T>(limit: Duration, io: impl FnOnce() -> io::Result<T>) -> io::R
     })
 }
 
-/// A real handle of this thread, which another thread can use. The handle
-/// of `GetCurrentThread` is a pseudo handle that means "the calling thread".
 fn current_thread() -> io::Result<OwnedHandle> {
     let mut handle: HANDLE = ptr::null_mut();
     // SAFETY: plain calls; the pseudo handles need no close, and `handle` is
@@ -506,8 +431,6 @@ fn peer(pipe: HANDLE) -> io::Result<Peer> {
     })
 }
 
-/// An error of the OS leaves the server process unknown: the fact is not
-/// given, never a guess.
 pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
     let mut pid = 0u32;
     // SAFETY: `stream` keeps its pipe handle open, and `pid` is valid for 1
@@ -519,8 +442,6 @@ pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
     Ok(pid)
 }
 
-/// `SECURITY_IDENTIFICATION` lets the server read who the client is, but
-/// not act as the client.
 pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
     let name = pipe_name(name)?;
     loop {
@@ -551,7 +472,6 @@ pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
         if left.is_zero() {
             return Err(io::ErrorKind::TimedOut.into());
         }
-        // `u32::MAX` means "wait forever", so the wait stays below it.
         let millis = left.as_millis().clamp(1, u128::from(u32::MAX - 1)) as u32;
         // SAFETY: `name` ends with a NUL.
         if unsafe { WaitNamedPipeW(name.as_ptr(), millis) } == 0 {
@@ -559,14 +479,10 @@ pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
             if error.raw_os_error() == Some(ERROR_SEM_TIMEOUT as i32) {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            // Any other error, for example a pipe that is gone: the next
-            // CreateFileW reports it.
         }
     }
 }
 
-/// The pipe name is not a file, and the pipe of an old listener ends with
-/// its process.
 pub(crate) fn at_name(_: &Path) -> io::Result<AtName> {
     Ok(AtName::Free)
 }
@@ -585,8 +501,6 @@ pub(crate) fn set_read_timeout(stream: &Stream, timeout: Duration) -> io::Result
     Ok(())
 }
 
-/// A pipe that is not overlapped has no write timeout, so each later write
-/// is cancelled when it waits longer than `timeout` (`Stream::write_by`).
 pub(crate) fn set_write_timeout(stream: &Stream, timeout: Duration) -> io::Result<()> {
     if timeout.is_zero() {
         return Err(io::Error::new(
@@ -610,7 +524,6 @@ fn current_sid() -> io::Result<String> {
     process_sid(unsafe { GetCurrentProcess() })
 }
 
-/// The user SID of the token of `process`, as text.
 fn process_sid(process: HANDLE) -> io::Result<String> {
     let token = open_token(process)?;
     let user = token_user(&token)?;
@@ -621,7 +534,6 @@ fn process_sid(process: HANDLE) -> io::Result<String> {
     unsafe { sid_text(sid) }
 }
 
-/// The token of `process`, open for queries and closed on drop.
 fn open_token(process: HANDLE) -> io::Result<OwnedHandle> {
     let mut token: HANDLE = ptr::null_mut();
     // SAFETY: `process` is open for the call, and `token` is valid for 1
@@ -633,8 +545,6 @@ fn open_token(process: HANDLE) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(token) })
 }
 
-/// The `TOKEN_USER` of `token` and the SID that it points to. The buffer
-/// has u64 units, so that it has the alignment of `TOKEN_USER`.
 fn token_user(token: &OwnedHandle) -> io::Result<Vec<u64>> {
     let token = token.as_raw_handle();
     let mut length = 0u32;
@@ -660,11 +570,6 @@ fn token_user(token: &OwnedHandle) -> io::Result<Vec<u64>> {
     Ok(buffer)
 }
 
-/// The text of `sid`, for example `S-1-5-21-...`.
-///
-/// # Safety
-///
-/// `sid` points to a valid SID for the length of the call.
 pub(crate) unsafe fn sid_text(sid: PSID) -> io::Result<String> {
     let mut text: PWSTR = ptr::null_mut();
     // SAFETY: the caller keeps `sid` valid, and `text` is valid for 1
@@ -695,19 +600,14 @@ mod tests {
 
     use super::*;
 
-    /// A pipe name that no other test and no other run uses.
     fn unique_name(test: &str) -> PathBuf {
         PathBuf::from(format!("horch-test-{}-{test}", std::process::id()))
     }
 
-    /// The upper limit of a connect in a test. No test waits for it: a
-    /// connect returns as soon as an instance is free.
     fn far_deadline() -> Instant {
         Instant::now() + Duration::from_secs(60)
     }
 
-    /// A second instance of the pipe `name`, as another process of this
-    /// user can try to make it. `None` when the system refuses it.
     fn other_instance(name: &Path, max_instances: u32) -> Option<OwnedHandle> {
         let name = pipe_name(name).unwrap();
         // SAFETY: `name` ends with a NUL. The security attributes may be
@@ -729,8 +629,6 @@ mod tests {
         (handle != INVALID_HANDLE_VALUE).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
     }
 
-    /// Accept `count` clients. Each sends 1 line and gets the same line
-    /// back. The result is the lines in the order of the clients.
     fn echo(listener: &Listener, count: usize) -> Vec<String> {
         (0..count)
             .map(|_| {
@@ -765,7 +663,6 @@ mod tests {
         };
         refused("before a client");
 
-        // After a client ends, the listener still holds the only instance.
         thread::scope(|scope| {
             let server = scope.spawn(|| echo(&listener, 1));
             let client = connect(&name, far_deadline()).unwrap();
@@ -784,8 +681,6 @@ mod tests {
             let server = scope.spawn(|| echo(&listener, 2));
             let first = connect(&name, far_deadline()).unwrap();
 
-            // The first client holds the only instance: a connect whose
-            // deadline is over gets PIPE_BUSY and stops at once.
             let busy = connect(&name, Instant::now()).unwrap_err();
             assert_eq!(busy.kind(), io::ErrorKind::TimedOut);
 

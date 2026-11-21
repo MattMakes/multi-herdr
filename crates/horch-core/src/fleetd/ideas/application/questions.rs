@@ -1,8 +1,3 @@
-//! The use cases of a question: ask and answer.
-//!
-//! Each use case runs in the transaction of its caller, else in 1 new
-//! transaction.
-
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::json;
@@ -17,26 +12,15 @@ use crate::fleetd::ideas::domain::questions::{next_n, row_id, Question, State};
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{tasks, util};
 
-/// 1 question of the worker of an attempt, from its question file. Its
-/// feature is the feature of the idea of its task, and its owner is the
-/// sub-orchestrator of that feature ([`owner_of`]; fleetd-p6 MAP.md, Q11).
 #[derive(Debug, Clone, Copy)]
 pub struct Ask<'a> {
     pub task_id: &'a str,
     pub attempt_id: &'a str,
-    /// The id of the mail of a QUESTION line, so that `horch tell <role>
-    /// --answers <id>` finds the row. `None` for `horch ask`.
     pub mail_id: Option<&'a str>,
     pub text: &'a str,
     pub asked_at: &'a str,
 }
 
-/// The `questions` row of the question of `a`: the row of its mail that
-/// exists, else a new `open` row of the feature of its task, owned by the
-/// sub-orchestrator of that feature, with the time limit `question_limit_s`
-/// after `clock`, and 1 `question` event that holds the mail id and the
-/// text. The question flow counts the limit only while the owner runs
-/// ([`crate::fleetd::ideas::application::question_flow`]).
 pub fn ask(
     conn: &Connection,
     a: &Ask<'_>,
@@ -76,9 +60,6 @@ pub fn ask(
     })
 }
 
-/// The answer `answer` to the mail question `mail_id`: its row that waits
-/// for an answer goes to `answered`. The id of the row, or `None` when no
-/// such row asked it.
 pub fn answer_mail(conn: &Connection, mail_id: &str, answer: &str) -> Result<Option<String>> {
     util::atomic(conn, |tx| {
         let open = open_with_mail(tx)?;
@@ -93,10 +74,6 @@ pub fn answer_mail(conn: &Connection, mail_id: &str, answer: &str) -> Result<Opt
     })
 }
 
-/// The row `q` that waits for an answer (`open` or `escalated`) goes to
-/// `answered`, with the answer text when it is known. Its needs-you item
-/// is resolved, and its task is freed when no other question of the task
-/// waits for an answer.
 pub fn answered(conn: &Connection, q: &Question, answer: Option<&str>) -> Result<()> {
     util::atomic(conn, |tx| {
         if !store::set_answered(tx, &q.id, &util::now())? {
@@ -113,9 +90,6 @@ pub fn answered(conn: &Connection, q: &Question, answer: Option<&str>) -> Result
     })
 }
 
-/// The `data_json` of a `question` or `answered` event of a row: the
-/// `questions` table holds no text, so before the worker outbox of Phase 4
-/// these events hold the mail id, the question and the answer.
 #[derive(Debug, serde::Deserialize)]
 struct Fact {
     question_id: String,
@@ -123,8 +97,6 @@ struct Fact {
     text: Option<String>,
 }
 
-/// The text of the question of the row `q`, when its `question` event holds
-/// it.
 pub fn asked_text(conn: &Connection, q: &Question) -> Result<Option<String>> {
     Ok(facts(conn, &q.task_id, EventKind::Question)?
         .into_iter()
@@ -132,7 +104,6 @@ pub fn asked_text(conn: &Connection, q: &Question) -> Result<Option<String>> {
         .and_then(|f| f.text))
 }
 
-/// The facts of kind `kind` about task `task_id`, oldest first.
 fn facts(conn: &Connection, task_id: &str, kind: EventKind) -> Result<Vec<Fact>> {
     tasks::task_facts(conn, task_id, kind)?
         .into_iter()
@@ -140,8 +111,6 @@ fn facts(conn: &Connection, task_id: &str, kind: EventKind) -> Result<Vec<Fact>>
         .collect()
 }
 
-/// Each row that waits for an answer (`open` or `escalated`) with the mail
-/// id of its question, oldest first.
 pub fn open_with_mail(conn: &Connection) -> Result<Vec<(Question, Option<String>)>> {
     let mut out = Vec::new();
     for q in store::unanswered(conn)? {
@@ -154,17 +123,13 @@ pub fn open_with_mail(conn: &Connection) -> Result<Vec<(Question, Option<String>
     Ok(out)
 }
 
-/// 1 answered question with its texts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answered {
     pub id: String,
     pub question: Option<String>,
-    /// `None` when the question closed with no recorded answer text.
     pub answer: Option<String>,
 }
 
-/// [`answered_of_task`] of each task of `task_ids`, by task: 3 statements
-/// for any count of tasks. A task with no answered row is not in the map.
 pub fn answered_of_tasks<'a>(
     conn: &Connection,
     task_ids: impl IntoIterator<Item = &'a str> + Clone,
@@ -206,7 +171,6 @@ fn text_of(facts: &[Fact], id: &str) -> Option<String> {
         .and_then(|f| f.text.clone())
 }
 
-/// The answered rows of task `task_id`, oldest first, with their texts.
 pub fn answered_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Answered>> {
     let asked = facts(conn, task_id, EventKind::Question)?;
     let answers = facts(conn, task_id, EventKind::Answered)?;
@@ -262,7 +226,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,

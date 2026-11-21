@@ -1,12 +1,3 @@
-//! RR-5 and FM-24: only fleetd writes the ledger. Each other process opens
-//! it read-only, and a writable open in a process with the test seam
-//! `HORCH_TEST_ASSERT_READ_ONLY=1` panics (ticket 42 of fleetd-p5).
-//!
-//! The seam reads the environment of the process. So each test runs its
-//! process side in a child: this test binary again, with `SINGLE_WRITER_CHILD`
-//! set to the name of the case and with the seam set. The tests are unix
-//! only: the socket path must be short, and the mode checks need unix modes.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -27,14 +18,10 @@ use horch_core::taskledger::Store;
 use serde_json::json;
 use tempfile::TempDir;
 
-/// The env key that makes this binary the child of 1 case.
 const CHILD: &str = "SINGLE_WRITER_CHILD";
-/// The env key that names the folder of the fleet to the child.
 const DIR: &str = "SINGLE_WRITER_DIR";
-/// The mark before each report line of the child.
 const MARK: &str = "CHILD ";
 
-/// A fleet in temporary folders: its ledger and its fleet root.
 struct Fleet {
     dir: PathBuf,
 }
@@ -71,7 +58,6 @@ impl Fleet {
     }
 }
 
-/// A new fleet folder: short, for the `sun_path` limit of macOS.
 fn fleet_dir() -> TempDir {
     let dir = tempfile::Builder::new()
         .prefix("sw")
@@ -82,7 +68,6 @@ fn fleet_dir() -> TempDir {
     dir
 }
 
-/// A fleet with a migrated ledger that holds 1 run, `r1`.
 fn fleet_with_a_run(dir: &Path) -> Fleet {
     let fleet = Fleet::at(dir);
     let store = Store::open(&fleet.db()).unwrap();
@@ -98,7 +83,6 @@ fn fleet_with_a_run(dir: &Path) -> Fleet {
     fleet
 }
 
-/// Run `case` in a child process with the seam set.
 fn child(case: &str, dir: &Path) -> Output {
     Command::new(std::env::current_exe().unwrap())
         .args([case, "--exact", "--nocapture", "--test-threads", "1"])
@@ -109,7 +93,6 @@ fn child(case: &str, dir: &Path) -> Output {
         .unwrap()
 }
 
-/// The case that this process runs as a child, with its fleet folder.
 fn as_child(case: &str) -> Option<Fleet> {
     if std::env::var(CHILD).ok().as_deref() != Some(case) {
         return None;
@@ -117,8 +100,6 @@ fn as_child(case: &str) -> Option<Fleet> {
     Some(Fleet::at(Path::new(&std::env::var(DIR).unwrap())))
 }
 
-/// The report lines of the child, without the mark. The test harness of
-/// the child can print the name of the test before the first one.
 fn reports(o: &Output) -> Vec<String> {
     String::from_utf8_lossy(&o.stdout)
         .lines()
@@ -135,8 +116,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The bytes of the ledger file, and the size of its WAL file (0 when it
-/// has none). SQLite makes an empty WAL file for a read-only reader.
 fn ledger_bytes(db: &Path) -> (Vec<u8>, u64) {
     let mut wal = db.as_os_str().to_owned();
     wal.push("-wal");
@@ -146,9 +125,6 @@ fn ledger_bytes(db: &Path) -> (Vec<u8>, u64) {
 
 const CLI_CASE: &str = "cli_command_opens_ledger_read_only_and_sends_a_request";
 
-/// A command that changes state: under the seam it opens the ledger only
-/// read-only (to check the fleetd row) and sends 1 request. fleetd, here
-/// the channel server in this test process, writes the `requests` row.
 #[test]
 fn cli_command_opens_ledger_read_only_and_sends_a_request() {
     if let Some(fleet) = as_child(CLI_CASE) {
@@ -170,7 +146,6 @@ fn cli_command_opens_ledger_read_only_and_sends_a_request() {
     let dir = fleet_dir();
     let fleet = fleet_with_a_run(dir.path());
     token_file::ensure(&fleet.root()).unwrap();
-    // The fleetd of the test: the `fleetd` row names this process.
     let pid = std::process::id();
     let start = horch_platform::process::start_time(pid).unwrap();
     let writer = LedgerWriter::fleetd();
@@ -215,8 +190,6 @@ fn cli_command_opens_ledger_read_only_and_sends_a_request() {
 
 const READ_CASE: &str = "read_command_on_a_read_only_ledger_file_works";
 
-/// A read opens the ledger read-only: it works on a ledger file that the
-/// process cannot write, and it does not change the file.
 #[test]
 fn read_command_on_a_read_only_ledger_file_works() {
     if let Some(fleet) = as_child(READ_CASE) {
@@ -249,8 +222,6 @@ fn read_command_on_a_read_only_ledger_file_works() {
 
 const SEAM_CASE: &str = "writable_open_outside_fleetd_panics_under_the_seam";
 
-/// Under the seam, a writable open in a process that made no fleetd writer
-/// panics before it touches the file. The writer of fleetd opens it.
 #[test]
 fn writable_open_outside_fleetd_panics_under_the_seam() {
     if let Some(fleet) = as_child(SEAM_CASE) {
@@ -287,6 +258,5 @@ fn writable_open_outside_fleetd_panics_under_the_seam() {
         "the panic names the seam: {}",
         text(&o)
     );
-    // Without the seam, this process opens the ledger as each test does.
     Store::open(&dir.path().join("other.db")).unwrap();
 }

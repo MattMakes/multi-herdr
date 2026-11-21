@@ -1,6 +1,3 @@
-//! The concern channel: the transport of the fleetd command channel, with
-//! the user and the process of the peer.
-
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -8,19 +5,12 @@ use std::time::{Duration, Instant};
 
 use horch_platform::channel::{Listener, Stream, User};
 
-/// The env var that makes this test binary run [`child_client_helper`].
 const HELPER: &str = "HORCH_PLATFORM_CHANNEL_HELPER";
 
-/// The env var that makes this test binary run [`child_server_helper`].
 const SERVER_HELPER: &str = "HORCH_PLATFORM_CHANNEL_SERVER_HELPER";
 
-/// The line that [`child_server_helper`] writes to stderr when its
-/// listener is bound.
 const SERVER_READY: &str = "horch-channel-server-ready";
 
-/// The name of a new channel. On unix it is a socket path in a new folder,
-/// short because `sun_path` holds about 104 bytes on macOS. On Windows it
-/// is a pipe name that no other test uses.
 struct Place {
     #[cfg(unix)]
     _dir: tempfile::TempDir,
@@ -120,7 +110,6 @@ fn peer_pid_of_a_child_client_is_the_child() {
     assert!(status.success(), "the child client ends well: {status:?}");
 }
 
-/// The client of the test above. It does nothing in a normal test run.
 #[test]
 fn child_client_helper() {
     let Some(name) = std::env::var_os(HELPER) else {
@@ -128,7 +117,6 @@ fn child_client_helper() {
     };
     let mut stream = Stream::connect(&PathBuf::from(name), deadline()).unwrap();
     stream.write_all(b"child\n").unwrap();
-    // Stay connected until the server closes the stream.
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
 }
@@ -157,14 +145,12 @@ fn client_gets_the_pid_of_a_server_in_a_child_process() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("start the child server");
-    // Wait for the event "the listener is bound", not for a time.
     let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
     let ready = lines.any(|line| line.is_ok_and(|line| line == SERVER_READY));
     assert!(ready, "the child server binds its listener");
 
     let client = Stream::connect(&place.name, deadline()).unwrap();
     let server_pid = client.server_pid();
-    // Stay connected until the server accepts the connection.
     let mut line = String::new();
     BufReader::new(&client).read_line(&mut line).unwrap();
     drop(client);
@@ -180,7 +166,6 @@ fn client_gets_the_pid_of_a_server_in_a_child_process() {
     );
 }
 
-/// The server of the test above. It does nothing in a normal test run.
 #[test]
 fn child_server_helper() {
     let Some(name) = std::env::var_os(SERVER_HELPER) else {
@@ -190,7 +175,6 @@ fn child_server_helper() {
     eprintln!("{SERVER_READY}");
     let (mut stream, _) = listener.accept().unwrap();
     stream.write_all(b"server\n").unwrap();
-    // Stay connected until the client closes the stream.
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
 }
@@ -221,9 +205,6 @@ fn the_listener_accepts_a_next_client_after_the_first() {
     }
 }
 
-/// A reply that is far larger than the buffer of the channel: 4096 bytes on
-/// a Windows pipe, a few KiB on a macOS Unix socket and about 208 KiB on a
-/// Linux Unix socket (`net.core.wmem_default`).
 const LARGE_REPLY: usize = 1024 * 1024;
 
 fn serve_large_reply(

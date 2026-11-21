@@ -1,65 +1,8 @@
-//! A recording stand-in for the `herdr` CLI.
-//!
-//! State (workspaces and panes) lives in `$HORCH_FAKE_LOG.state.json`, so a
-//! sequence of calls sees one consistent server. Read-only calls and the three
-//! calls `horch telemetry ensure` and `horch fleet` need are answered; every
-//! call that would move, focus, split or close something the operator can see
-//! is answered too, but recorded as a violation, so a test can prove horch
-//! never made it.
-//!
-//! `pane split` adds a pane to the state, in the tab and workspace of the
-//! source pane, and answers with its id (`<workspace>:p<n>`). As in real
-//! herdr, an id is never given out twice: each workspace counts up in
-//! `next_pane`, and a closed pane's id is not reused. `pane close` removes
-//! the pane. Both stay recorded as violations.
-//!
-//! `HORCH_FAKE_SCENARIO` holds one scenario or a comma-separated list, for
-//! example `exec,fail_run`. Scenarios:
-//! - `default`: answer everything.
-//! - `fail_create`: `workspace create` exits 1. `HORCH_FAKE_FAIL_LABEL`
-//!   fails it for one label only, in any scenario.
-//! - `fail_split`: `pane split` exits 1 with a message on stderr. The state
-//!   does not change.
-//! - `fail_run`: `pane run` exits 1 with a message on stderr. The state does
-//!   not change and no command runs.
-//! - `exec`: `pane run` also executes the command, detached, with
-//!   `HERDR_PANE_ID` set, the way a real pane would. Output goes to
-//!   `$HORCH_FAKE_LOG.pane-<id>.out`. The process group id is stored in the
-//!   state, and `pane close` kills that group. `pane process-info` gives
-//!   that pid as `shell_pid`, with the field names of real herdr 0.9.4. A
-//!   pane that runs no command has no `process-info`: the call exits 1.
-//! - `shell`: each pane is a plain shell with no agent in it. `agent prompt`
-//!   exits 1, as real herdr does for a pane without an agent. `pane
-//!   send-text` types text into the pane; `pane send-keys <pane> enter` runs
-//!   the typed line like `exec`, with its output appended to the pane.
-//! - `fail_typing`: `agent prompt` and `pane send-text` exit 1 with a message
-//!   on stderr, as a pane that is gone or a sandboxed caller gets. Nothing is
-//!   typed.
-//! - `fail_first_typing`: the first `agent prompt` into each pane exits 1,
-//!   and so does a `pane send-text` that follows it into that pane. Later
-//!   typing into the pane succeeds, so a retry gets through.
-//! - `mail_drop`: the first non-redelivery agent prompt succeeds but is
-//!   dropped, then the pane reports an idle agent for the courier.
-//! - `hang_split`: `pane split` never answers. The calling process sleeps
-//!   until the caller kills it (60 s at most), and records nothing.
-//!
-//! `pane read` prints the pane text: the output of its commands, then the
-//! line typed and not yet entered. `pane wait-output` searches that text
-//! with `--match`, as herdr 0.8.2 does: exit 0 with an `output_matched`
-//! result, or exit 1 with herdr's `timeout` error on stderr. It takes no
-//! state lock while it polls.
-//!
-//! A top-level command that herdr 0.8.2 does not have (for example the old
-//! `herdr wait output`) exits 2 with herdr's `unknown command` message.
-//!
-//! `workspace close` removes a workspace and kills every pane command in it.
-
 use std::path::PathBuf;
 
 use horch_e2e::{say, scenario_has, Call};
 use serde_json::{json, Value};
 
-/// The top-level commands of herdr 0.8.2 (`herdr --help`).
 const COMMANDS: [&str; 15] = [
     "api",
     "agent",
@@ -80,14 +23,9 @@ const COMMANDS: [&str; 15] = [
 
 const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", "resize"];
 
-/// Set in the copy of this call that runs in its own process group, to the
-/// pid of the process that called herdr. The copy logs it as `caller`, so a
-/// test can tell apart the calls of 2 horch processes on the same pane.
 const DETACHED: &str = "HORCH_FAKE_HERDR_DETACHED";
 
 fn main() {
-    // A hung call stays in the calling process, so a kill of the call's
-    // process group ends it and nothing is left behind.
     if scenario_has("hang_split")
         && std::env::args().nth(1).as_deref() == Some("pane")
         && std::env::args().nth(2).as_deref() == Some("split")
@@ -95,12 +33,6 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(60));
         std::process::exit(1);
     }
-    // A real herdr call is a request to a server, which finishes it even
-    // when the client is killed. Here the state lock is held by the calling
-    // process, and `pane close` kills a pane's whole process group, which
-    // can hold a call of its own. So the call runs in a copy of this process
-    // in a new process group: a kill of the caller's group cannot leave the
-    // lock stale or the state half written.
     #[cfg(unix)]
     if std::env::var_os(DETACHED).is_none() {
         use std::os::unix::process::CommandExt;
@@ -122,52 +54,28 @@ fn main() {
     if let Some(caller) = caller.and_then(|c| c.parse::<u32>().ok()) {
         call.extra.insert("caller".into(), json!(caller));
     }
-    // A wait polls for seconds; holding the lock that long would stall the
-    // very commands whose output it waits for.
     if call.argv.get(..2) == Some(&["pane".to_string(), "wait-output".to_string()][..]) {
         let args: Vec<&str> = call.argv.iter().map(String::as_str).collect();
         let code = wait_output(&args[2..]);
         call.flush();
         std::process::exit(code);
     }
-    // One call at a time reads and writes the state: concurrent calls (a
-    // coordinator and its workers) would otherwise lose each other's panes.
     let lock = StateLock::acquire();
     let code = run(&mut call);
     drop(lock);
     call.flush();
-    // Kill only after the state is saved and unlocked: a pane that closes
-    // itself kills this very process.
     for (pgid, started) in std::mem::take(&mut *KILL.lock().unwrap()) {
         kill_group(pgid, started);
     }
     std::process::exit(code);
 }
 
-/// Process groups to kill once the call is done, with their leader's start
-/// time when `pane run` recorded it.
 static KILL: std::sync::Mutex<Vec<(u64, Option<u64>)>> = std::sync::Mutex::new(Vec::new());
 
-/// `$HORCH_FAKE_LOG.state.lock/`, a mkdir lock. The holder writes its pid
-/// into `pid` in the lock dir.
-///
-/// A waiter takes the lock over only from a holder that is dead: one whose
-/// pid no longer runs, or one that left no pid after [`NO_PID_GRACE`]. Each
-/// call runs in its own process group (see `main`), so only a SIGKILL of
-/// the call itself leaves a stale lock. A live holder is never broken, so a
-/// slow holder under load cannot lose the state. Measured under load 28 to
-/// 62 (7624 calls): a hold takes at most 0.5 s and a wait at most 0.4 s.
-///
-/// A lock whose directory cannot be made at all means the harness root is
-/// gone: a detached `horch tile` can call herdr after the test removed its
-/// temp dir. The call fails then instead of waiting for ever.
 struct StateLock(Option<PathBuf>);
 
-/// How long a lock dir without a `pid` file counts as being set up. The
-/// holder writes the pid right after `mkdir`.
 const NO_PID_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How often a waiter checks whether the holder still runs.
 const HOLDER_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl StateLock {
@@ -204,7 +112,6 @@ impl StateLock {
     }
 }
 
-/// Whether the lock in `dir` was left by a call that no longer runs.
 fn holder_is_dead(dir: &std::path::Path) -> bool {
     match std::fs::read_to_string(dir.join("pid"))
         .ok()
@@ -219,8 +126,6 @@ fn holder_is_dead(dir: &std::path::Path) -> bool {
     }
 }
 
-/// Whether a process with this pid runs. Unknown (no `kill` to ask) counts
-/// as running: a live lock is never broken.
 fn process_runs(pid: u32) -> bool {
     if cfg!(windows) {
         return true;
@@ -256,8 +161,6 @@ fn load() -> Value {
         .unwrap_or_else(|| json!({"workspaces": [], "next": 1}))
 }
 
-/// Write the state to a temp file, then rename it into place, so a reader
-/// never sees a half-written state.
 fn save(state: &Value) {
     if let Some(p) = state_path() {
         let mut tmp = p.clone().into_os_string();
@@ -287,8 +190,6 @@ fn run(call: &mut Call) -> i32 {
         }
     }
     let mut state = load();
-    // Any verb that changes what the operator sees is a violation, whatever
-    // noun it is attached to.
     if let Some(verb) = args.get(1) {
         if MUTATING.contains(verb) || (args.first() == Some(&"tab") && *verb == "focus") {
             call.violate(format!("mutating call: herdr {}", args.join(" ")));
@@ -409,8 +310,6 @@ fn run(call: &mut Call) -> i32 {
             command
                 .arg("inbox")
                 .env("HORCH_WORKSPACE_ID", workspace)
-                // Orchestrator panes have no worker-role environment. A
-                // HORCH_ROLE value deliberately makes inbox worker-only.
                 .env_remove("HORCH_ROLE")
                 .env_remove("HORCH_RECORD_ID")
                 .env_remove("HORCH_WORKER_ID")
@@ -459,8 +358,6 @@ fn run(call: &mut Call) -> i32 {
                 let line = state["typed"][*pane].as_str().unwrap_or("").to_string();
                 state["typed"][*pane] = json!("");
                 save(&state);
-                // Not waited for: the line may call herdr, and this call
-                // holds the state lock. `pane wait-output` polls for it.
                 if !line.trim().is_empty() {
                     shell_line(pane, &line);
                 }
@@ -513,8 +410,6 @@ fn flag<'a>(args: &[&'a str], name: &str) -> Option<&'a str> {
         .and_then(|i| args.get(i + 1).copied())
 }
 
-/// `pane test-state`: set the agent, its status and the screen text of
-/// pane `id`, for a test.
 fn test_state(state: &mut Value, id: &str, rest: &[&str]) -> i32 {
     let Some(pane) = find_pane_mut(state, id) else {
         eprintln!("fake-herdr: no pane {id}");
@@ -533,7 +428,6 @@ fn test_state(state: &mut Value, id: &str, rest: &[&str]) -> i32 {
     ok(json!({"type": "ok"}))
 }
 
-/// `pane run`: log the command, and run it with the `exec` scenario.
 fn pane_run(call: &mut Call, state: &mut Value, pane: &str, command: &str) -> i32 {
     if scenario_has("fail_run") {
         eprintln!("fake-herdr: pane run refused (scenario fail_run)");
@@ -550,8 +444,6 @@ fn pane_run(call: &mut Call, state: &mut Value, pane: &str, command: &str) -> i3
     if scenario_has("exec") {
         if let Some(pid) = exec_detached(pane, command) {
             state["pids"][pane] = json!(pid);
-            // With the pid, the start time: `pane close` kills the
-            // group only while its leader is this process.
             if let Some(started) = horch_core::procid::start_time(pid) {
                 state["started"][pane] = json!(started);
             }
@@ -561,8 +453,6 @@ fn pane_run(call: &mut Call, state: &mut Value, pane: &str, command: &str) -> i3
     ok(json!({"type": "ok"}))
 }
 
-/// `pane process-info`: the pid of the command that `pane run` started in
-/// pane `id`, as `shell_pid`. A pane that runs no command exits 1.
 fn process_info(state: &Value, id: &str) -> i32 {
     match state["pids"][id].as_u64() {
         Some(pid) if find_pane(state, id).is_some() => ok(json!({
@@ -596,8 +486,6 @@ fn find_pane_mut<'a>(state: &'a mut Value, id: &str) -> Option<&'a mut Value> {
         .find(|pane| pane["pane_id"].as_str() == Some(id))
 }
 
-/// Add a pane next to `from`, in its tab and workspace. A source pane that is
-/// not in the state still gets an answer, as the fake always gave one.
 fn split_pane(state: &mut Value, from: &str) -> Value {
     let Some(ws) = state["workspaces"].as_array_mut().and_then(|all| {
         all.iter_mut().find(|w| {
@@ -609,9 +497,6 @@ fn split_pane(state: &mut Value, from: &str) -> Value {
         return json!({"pane_id": format!("{from}-split")});
     };
     let wid = ws["workspace_id"].as_str().unwrap_or("w0").to_string();
-    // The workspace's counter, never the live panes: a closed pane's id is
-    // not given out again. A state without a counter (written by an older
-    // fake) starts above its highest live id.
     let n = ws["next_pane"]
         .as_u64()
         .unwrap_or_else(|| highest_pane(ws, &wid) + 1);
@@ -627,7 +512,6 @@ fn split_pane(state: &mut Value, from: &str) -> Value {
     pane
 }
 
-/// The highest `n` among the workspace's live `<workspace>:p<n>` ids.
 fn highest_pane(ws: &Value, wid: &str) -> u64 {
     let prefix = format!("{wid}:p");
     ws["panes"]
@@ -639,8 +523,6 @@ fn highest_pane(ws: &Value, wid: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Remove a pane from the state and queue its process group for the kill,
-/// if `exec` started one. False when the pane is not in the state.
 fn remove_pane(state: &mut Value, pane: &str) -> bool {
     let mut found = false;
     for ws in state["workspaces"].as_array_mut().into_iter().flatten() {
@@ -662,7 +544,6 @@ fn remove_pane(state: &mut Value, pane: &str) -> bool {
     found
 }
 
-/// Remove a workspace and kill every pane command in it.
 fn close_workspace(state: &mut Value, ws: &str) {
     let panes: Vec<String> = state["workspaces"]
         .as_array()
@@ -680,12 +561,6 @@ fn close_workspace(state: &mut Value, ws: &str) {
     }
 }
 
-/// Kill the process group of a pane's command.
-///
-/// Only while it is still that group: the pid was recorded at `pane run`,
-/// and a pane command that has ended frees it for any other program. A kill
-/// of a reused group id can end another test run, even a whole gate. A
-/// group without a recorded start time is not killed.
 fn kill_group(pgid: u64, started: Option<u64>) {
     if cfg!(windows) {
         let _ = std::process::Command::new("taskkill")
@@ -705,7 +580,6 @@ fn kill_group(pgid: u64, started: Option<u64>) {
     }
 }
 
-/// The file that holds what pane `pane` printed.
 fn pane_out(pane: &str) -> Option<PathBuf> {
     std::env::var_os("HORCH_FAKE_LOG").map(|p| {
         let mut p = p;
@@ -714,7 +588,6 @@ fn pane_out(pane: &str) -> Option<PathBuf> {
     })
 }
 
-/// What a read of `pane` shows: its output, then the line typed into it.
 fn pane_text(state: &Value, pane: &str) -> String {
     if let Some(text) =
         find_pane(state, pane).and_then(|p| p["test_screen"].as_str().map(str::to_owned))
@@ -728,8 +601,6 @@ fn pane_text(state: &Value, pane: &str) -> String {
     format!("{out}{typed}")
 }
 
-/// `pane wait-output <pane> --match <text> [--timeout <ms>]`, answered the
-/// way herdr 0.8.2 answers it.
 fn wait_output(args: &[&str]) -> i32 {
     let needle = flag(args, "--match").unwrap_or("");
     let timeout = flag(args, "--timeout").and_then(|t| t.parse::<u64>().ok());
@@ -770,9 +641,6 @@ fn wait_output(args: &[&str]) -> i32 {
     }
 }
 
-/// The shell a pane runs its lines in. horch builds PowerShell lines on
-/// Windows (`PaneShell::PowerShell`), so the fake runs them with PowerShell,
-/// as a real herdr pane does; `cmd /C` would misread the `&` call operator.
 fn pane_shell() -> (&'static str, &'static str) {
     if cfg!(windows) {
         ("powershell", "-Command")
@@ -781,7 +649,6 @@ fn pane_shell() -> (&'static str, &'static str) {
     }
 }
 
-/// Start one entered line in `pane`, its output appended to the pane.
 fn shell_line(pane: &str, line: &str) {
     let (shell, flag) = pane_shell();
     let mut cmd = std::process::Command::new(shell);
@@ -803,9 +670,6 @@ fn shell_line(pane: &str, line: &str) {
     let _ = cmd.spawn();
 }
 
-/// Run `command` the way a herdr pane would: in a shell, with the pane's id
-/// in its environment, not waiting for it. Returns the pid, which is also the
-/// process group id on unix.
 fn exec_detached(pane: &str, command: &str) -> Option<u32> {
     let out = pane_out(pane);
     let (shell, flag) = pane_shell();
@@ -842,7 +706,6 @@ mod tests {
         pane["pane_id"].as_str().unwrap()
     }
 
-    /// A closed pane's id is never given out again, the newest one included.
     #[test]
     fn pane_ids_are_never_reused_after_a_close() {
         let mut state = one_workspace();
@@ -855,8 +718,6 @@ mod tests {
         assert!(find_pane(&state, "w1:p3").is_none());
     }
 
-    /// A state an older fake wrote has no counter: ids start above the
-    /// highest live one.
     #[test]
     fn a_state_without_a_counter_starts_above_the_live_ids() {
         let mut state = one_workspace();
