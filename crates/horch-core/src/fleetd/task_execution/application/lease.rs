@@ -1140,4 +1140,48 @@ mod tests {
         }
         assert_eq!(written, [2, 4, 5]);
     }
+
+    /// A fixture with `n` claimed tasks, each with its lease.
+    fn claimed_tasks(n: usize) -> Fixture {
+        let mut l = fixture(0);
+        for i in 0..n {
+            l.add_task(&format!("t{i}"));
+            l.claimed();
+        }
+        l
+    }
+
+    /// T-292, by count: with a budget of 2, 1 call runs the same
+    /// statements for 3 missing leases and for 30.
+    #[test]
+    fn check_i1_within_runs_the_same_statements_for_3_and_30_repairs() {
+        let count = |n: usize| {
+            let mut l = claimed_tasks(n);
+            l.store.conn().execute("DELETE FROM leases", []).unwrap();
+            let tx = l.store.conn_mut().transaction().unwrap();
+            let ((), statements) = crate::taskledger::testing::count_statements(&tx, || {
+                check_i1_within(&tx, Some(GEN), FleetSeconds(10), &limits, 2).unwrap()
+            });
+            statements
+        };
+        assert_eq!(count(3), count(30));
+    }
+
+    /// T-292, by count: the renewal check of 3 leases and of 30, with no
+    /// observed attempt, runs the same statements. The lease expiry stays
+    /// whole in 1 pass: each lease is judged in each pass.
+    #[test]
+    fn renew_or_expire_leases_runs_the_same_statements_for_3_and_30_leases() {
+        let count = |n: usize| {
+            let mut l = claimed_tasks(n);
+            let tx = l.store.conn_mut().transaction().unwrap();
+            let (expired, statements) = crate::taskledger::testing::count_statements(&tx, || {
+                renew_or_expire_leases(&tx, Some(GEN), FleetSeconds(10), &BTreeMap::new(), &limits)
+                    .unwrap()
+            });
+            assert_eq!(expired, vec![]);
+            statements
+        };
+        assert_eq!(count(3), count(30));
+    }
 }

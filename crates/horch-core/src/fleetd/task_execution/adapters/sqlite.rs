@@ -542,4 +542,26 @@ mod tests {
         assert_eq!(rows.attempts.len(), 5);
         assert_eq!(rows.workers.len(), 5);
     }
+
+    /// T-292: `rows` runs the same statements for 3 live tasks and for
+    /// 300: 1 statement for each task made 1 pass of 10,000 live tasks
+    /// spend seconds.
+    #[test]
+    fn rows_runs_the_same_statements_for_3_and_300_live_tasks() {
+        let count = |n: usize| {
+            let ids: Vec<String> = (0..n).map(|i| format!("T{i:04}")).collect();
+            let tasks: Vec<(&str, &str, i64, i64, &str)> = ids
+                .iter()
+                .map(|id| (id.as_str(), "running", 1, 0, "live"))
+                .collect();
+            let (_tmp, store) = ledger(&tasks);
+            let (rows, statements) =
+                crate::taskledger::testing::count_statements(store.conn(), || {
+                    rows(store.conn(), "h").unwrap()
+                });
+            assert_eq!(rows.tasks.len(), n);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }
