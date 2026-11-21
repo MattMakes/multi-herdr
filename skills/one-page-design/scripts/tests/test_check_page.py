@@ -506,6 +506,7 @@ class CommandLine(unittest.TestCase):
         argv = seen["argv"]
         self.assertIn("--headless", argv)
         self.assertIn("--hide-scrollbars", argv)
+        self.assertIn("--disable-features=MacAppCodeSignClone", argv)
         self.assertIn("--window-size=2400,1632", argv)  # (24+1)*96, (16+1)*96
         self.assertIn(f"--screenshot={shot.resolve()}", argv)
         self.assertEqual(buffer.getvalue().splitlines()[-1],

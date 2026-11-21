@@ -179,14 +179,22 @@ impl SessionLedger {
     /// the ones whose workspace is gone instead. Returns how many records it
     /// closed. A planned record never launched, so it is left alone.
     pub fn supersede_orchestrators(&self, keep: impl Fn(&str) -> bool) -> Result<usize> {
+        self.supersede_orchestrators_by_record(|r| r.workspace_id.as_deref().is_some_and(&keep))
+    }
+
+    /// Like [`SessionLedger::supersede_orchestrators`], with access to the full
+    /// [`Record`] so callers can scope liveness to `r.backend`.
+    pub fn supersede_orchestrators_by_record(
+        &self,
+        keep: impl Fn(&Record) -> bool,
+    ) -> Result<usize> {
         let at = now();
         self.store.update(|records| {
             let mut n = 0;
-            for r in records.iter_mut().filter(|r| {
-                r.is_orchestrator()
-                    && r.execution_status().is_live()
-                    && !r.workspace_id.as_deref().is_some_and(&keep)
-            }) {
+            for r in records
+                .iter_mut()
+                .filter(|r| r.is_orchestrator() && r.execution_status().is_live() && !keep(r))
+            {
                 r.set_legacy_status(STATUS_DONE);
                 r.updated_at = at.clone();
                 r.history.push(HistoryEntry {

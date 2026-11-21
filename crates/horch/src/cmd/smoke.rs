@@ -17,9 +17,9 @@ use horch_core::execution::TilingMode;
 use horch_core::messaging::delivery::TypedLine;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, Layout, NewWorkspace, Rect};
 use horch_core::workspace::paneshell::PaneShell;
+use horch_core::workspace::PaneHost;
 
 use super::doctor;
 use super::spawn::{spawn, SpawnArgs};
@@ -150,7 +150,7 @@ struct Scratch {
     /// This check's own context: the scratch state and project, and the
     /// scratch workspace. The process environment is left alone.
     ctx: RuntimeContext,
-    herdr: Herdr,
+    herdr: PaneHost,
     exe: PathBuf,
     shell: PaneShell,
     ws: NewWorkspace,
@@ -161,7 +161,7 @@ struct Scratch {
 
 fn scratch_context(ctx: &RuntimeContext, label: &str) -> Result<Scratch> {
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
     let state = tempfile::Builder::new()
@@ -252,7 +252,7 @@ fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
 
 fn messaging_run(ctx: &RuntimeContext) -> Step {
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
 
@@ -285,7 +285,7 @@ fn await_registered(mailbox: &Mailbox, workspace_id: &str) -> Step {
 
 /// Send the arithmetic from `a` to `b` and wait for its result on `b`.
 fn verify_delivery(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     mailbox: &Mailbox,
     shell: PaneShell,
     workspace_id: &str,
@@ -303,7 +303,7 @@ fn verify_delivery(
 }
 
 /// The failure for a pane that never showed the message, with what it shows.
-fn pane_dump(herdr: &Herdr, workspace_id: &str, pane: &str) -> Failure {
+fn pane_dump(herdr: &PaneHost, workspace_id: &str, pane: &str) -> Failure {
     let contents = herdr
         .pane_read(pane, "recent-unwrapped")
         .unwrap_or_else(|e| format!("(could not read pane: {e:#})"));
@@ -391,7 +391,7 @@ fn ticks(path: &Path) -> Option<u64> {
 }
 
 /// Every tab of a workspace, in tab-strip order.
-fn tabs_of(herdr: &Herdr, workspace_id: &str) -> Result<Vec<Layout>> {
+fn tabs_of(herdr: &PaneHost, workspace_id: &str) -> Result<Vec<Layout>> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
     let mut out = Vec::new();
@@ -580,7 +580,7 @@ fn bottom_complaints(tab: &str, area: Rect, top: &[Rect], bottom: &[Rect]) -> Ve
 /// Check the whole workspace, tab by tab. `per_tab` is how many workers each tab
 /// should hold, in tab order.
 fn grid_complaints(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     orchestrator: &str,
     per_tab: &[usize],
@@ -609,7 +609,7 @@ fn grid_complaints(
 /// tiling handed the keyboard to the orchestrator pane every time, because the
 /// park phase moves the focused pane out with `--no-focus` and herdr then picks
 /// a pane that stayed.
-fn viewed(herdr: &Herdr, workspace_id: &str) -> Result<(String, String)> {
+fn viewed(herdr: &PaneHost, workspace_id: &str) -> Result<(String, String)> {
     let tab = herdr
         .workspace_list()?
         .into_iter()

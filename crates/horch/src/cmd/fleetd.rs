@@ -118,8 +118,23 @@ pub enum FleetdCommand {
     Check,
 }
 
+/// fleetd and `horch fleet` drive only the `herdr` pane host: the
+/// adapters of fleetd call [`Herdr`] and not `PaneHost`.
+pub(crate) const HC_REFUSED: &str = "fleetd runs its workers only on herdr: \
+     the hc pane host (herdr-core and the Herdr desktop app) has no fleetd adapter. \
+     Run this command with --backend herdr, or unset HORCH_BACKEND";
+
+/// Fail with [`HC_REFUSED`] when `ctx` resolved the `hc` pane host.
+pub(crate) fn refuse_hc(ctx: &RuntimeContext) -> Result<()> {
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        bail!(HC_REFUSED);
+    }
+    Ok(())
+}
+
 /// `horch fleetd` and `horch fleetd check`.
 pub fn fleetd(ctx: &RuntimeContext, command: Option<FleetdCommand>) -> Result<ExitCode> {
+    refuse_hc(ctx)?;
     match command {
         None => daemon(ctx),
         Some(FleetdCommand::Check) => {

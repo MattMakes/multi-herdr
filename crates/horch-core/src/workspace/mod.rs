@@ -3,22 +3,33 @@
 pub mod arrange;
 pub mod balance;
 pub mod client;
+pub(crate) mod exec;
+pub mod hc;
 pub mod herdr;
+pub mod host;
 pub mod layout;
 pub mod model;
 pub mod paneshell;
+pub mod place;
 pub mod testing;
 pub mod tile;
 
+pub use hc::HcFailed;
+pub use herdr::HerdrFailed;
+pub use host::{is_installed, Caps, Hosts, PaneHost, Unsupported};
+
 #[cfg(test)]
 mod tests {
-    const FORBIDDEN: [&str; 7] = [
+    const FORBIDDEN: [&str; 10] = [
         "std::process",
         "Command::new",
         "Herdr",
+        "HcApp",
+        "PaneHost",
         "WorkspaceClient",
         "crate::workspace::herdr",
-        "crate::workspace::herdr",
+        "crate::workspace::hc",
+        "crate::workspace::host",
         "std::env",
     ];
 
@@ -39,6 +50,7 @@ mod tests {
             ("layout.rs", include_str!("layout.rs")),
             ("tile.rs", include_str!("tile.rs")),
             ("balance.rs", include_str!("balance.rs")),
+            ("place.rs", include_str!("place.rs")),
         ];
         for (name, source) in sources {
             assert_eq!(

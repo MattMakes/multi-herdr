@@ -27,9 +27,9 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::execution::legacy::{LedgerRecordV1, STATUS_WORKING};
 use crate::execution::store::ExecutionStore;
 use crate::messaging::mail::Mail;
-use crate::runtime::RuntimeContext;
+use crate::runtime::{Backend, RuntimeContext};
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::{Hosts, PaneHost};
 use crate::workspace::model::{Direction, NewWorkspace, Pane};
 
 /// A spool file lives as long as acked mail does.
@@ -94,6 +94,19 @@ pub struct Herd<'a> {
     pub client: &'a dyn WorkspaceClient,
 }
 
+/// One pane host's view during a multi-host sweep.
+pub struct HostView<'a> {
+    pub backend: Backend,
+    pub listed: Option<BTreeSet<String>>,
+    pub client: &'a dyn WorkspaceClient,
+}
+
+/// Multi-host view for [`scan_hosts`].
+pub struct SweepHosts<'a> {
+    pub hosts: Vec<HostView<'a>>,
+    pub all_installed_answer: bool,
+}
+
 /// One entry to remove. `after` names the records that must end first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Item {
@@ -102,11 +115,12 @@ struct Item {
     after: Vec<String>,
 }
 
-/// A `working` record to end: its ledger and its record id.
+/// A `working` record to end: its ledger, its record id, and its backend.
 #[derive(Debug, Clone)]
 struct End {
     store: ExecutionStore,
     record_id: String,
+    backend: Backend,
 }
 
 /// What a sweep found. Nothing is removed until [`Plan::apply`].
@@ -145,13 +159,20 @@ impl Plan {
     /// End the records through `client`, then remove the entries. An entry
     /// that waits for a record stays when that record did not end.
     pub fn apply(self, client: &dyn WorkspaceClient) -> Applied {
+        self.apply_hosts(&[(Backend::Herdr, client), (Backend::Hc, client)])
+    }
+
+    /// End each record through the client of its recorded [`Backend`], then
+    /// remove the entries whose prerequisites ended.
+    pub fn apply_hosts(self, clients: &[(Backend, &dyn WorkspaceClient)]) -> Applied {
         let mut applied = Applied::default();
         let mut ended = BTreeSet::new();
-        // A record is planned to end only when herdr answered the scan, so
-        // the reachability probe, which has no time limit, is not run again.
-        let client = Answered(client);
         for end in &self.ends {
-            match end.store.end_if_pane_closed(&end.record_id, &client) {
+            let Some((_, client)) = clients.iter().find(|(b, _)| *b == end.backend) else {
+                continue;
+            };
+            let answered = Answered(*client);
+            match end.store.end_if_pane_closed(&end.record_id, &answered) {
                 Ok(true) => {
                     ended.insert(end.record_id.clone());
                     *applied.removed.entry(Kind::Record).or_insert(0) += 1;
@@ -193,9 +214,29 @@ fn remove(path: &Path) -> std::io::Result<()> {
 /// Find the stale state under `scope`. `now` is the clock the ages use;
 /// the reads stop at `deadline`, and what is not read yet stays.
 pub fn scan(scope: Scope<'_>, herd: &Herd<'_>, now: SystemTime, deadline: Instant) -> Plan {
+    let hosts = SweepHosts {
+        all_installed_answer: herd.listed.is_some(),
+        hosts: vec![HostView {
+            backend: Backend::Herdr,
+            listed: herd.listed.clone(),
+            client: herd.client,
+        }],
+    };
+    scan_hosts(scope, &hosts, now, deadline)
+}
+
+/// Multi-host sweep: judges each recorded workspace on its owning backend's
+/// [`HostView`], and unrecorded folders only when `hosts.all_installed_answer`
+/// holds.
+pub fn scan_hosts(
+    scope: Scope<'_>,
+    hosts: &SweepHosts<'_>,
+    now: SystemTime,
+    deadline: Instant,
+) -> Plan {
     let mut scan = Scanner {
         scope,
-        herd,
+        hosts,
         now,
         deadline,
         plan: Plan::default(),
@@ -206,7 +247,7 @@ pub fn scan(scope: Scope<'_>, herd: &Herd<'_>, now: SystemTime, deadline: Instan
 
 struct Scanner<'a> {
     scope: Scope<'a>,
-    herd: &'a Herd<'a>,
+    hosts: &'a SweepHosts<'a>,
     now: SystemTime,
     deadline: Instant,
     plan: Plan,
@@ -259,28 +300,33 @@ impl Scanner<'_> {
     }
 
     fn run(&mut self) {
-        // Without herdr's answer no owner can be proven gone: remove nothing.
-        if self.herd.listed.is_none() {
+        // Without any host's answer no owner can be proven gone: remove nothing.
+        if !self.hosts.hosts.iter().any(|h| h.listed.is_some()) {
             return;
         }
         let records = Records::read(self.scope.state_root);
+        let mut ws_backends: BTreeMap<String, Backend> = BTreeMap::new();
+        for (_, r) in &records.rows {
+            if let Some(ws) = r.workspace_id.as_deref() {
+                ws_backends.insert(ws.to_string(), r.backend);
+                ws_backends.insert(crate::messaging::file_safe(ws), r.backend);
+            }
+        }
         self.ends(&records);
         let ending: BTreeSet<String> = self.plan.ends.iter().map(|e| e.record_id.clone()).collect();
         self.bundles(&records, &ending);
         self.codex_homes(&records, &ending);
         let pending = PendingMail::read(self.scope.state_root);
-        self.spool(&pending);
+        self.spool(&pending, &ws_backends);
         self.sockets();
-        self.workspaces(&pending);
+        self.workspaces(&pending, &ws_backends);
         self.temp_files(self.scope.state_root, 0);
     }
 
-    /// The `working` records whose workspace or pane herdr no longer lists.
+    /// The `working` records whose workspace or pane their own backend no
+    /// longer lists.
     fn ends(&mut self, records: &Records) {
-        let Some(listed) = &self.herd.listed else {
-            return;
-        };
-        let mut panes: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+        let mut panes: BTreeMap<(Backend, String), Option<BTreeSet<String>>> = BTreeMap::new();
         for (store, r) in &records.rows {
             if self.late() {
                 return;
@@ -294,25 +340,26 @@ impl Scanner<'_> {
             let (Some(pane), Some(ws)) = (r.pane_id.as_deref(), r.workspace_id.as_deref()) else {
                 continue;
             };
+            let Some(view) = self.hosts.hosts.iter().find(|h| h.backend == r.backend) else {
+                continue;
+            };
+            let Some(listed) = &view.listed else {
+                continue;
+            };
             let closed = !listed.contains(ws)
                 || panes
-                    .entry(ws.to_string())
-                    .or_insert_with(|| self.pane_ids(ws))
+                    .entry((r.backend, ws.to_string()))
+                    .or_insert_with(|| pane_ids_on(view.client, ws))
                     .as_ref()
                     .is_some_and(|ids| !ids.contains(pane));
             if closed {
                 self.plan.ends.push(End {
                     store: store.clone(),
                     record_id: r.record_id.clone(),
+                    backend: r.backend,
                 });
             }
         }
-    }
-
-    /// The panes of `ws`, or `None` when herdr did not answer.
-    fn pane_ids(&self, ws: &str) -> Option<BTreeSet<String>> {
-        let panes = self.herd.client.pane_list(ws).ok()?;
-        Some(panes.into_iter().map(|p| p.pane_id).collect())
     }
 
     /// A bundle named for a terminal record, or for one this sweep ends.
@@ -376,10 +423,12 @@ impl Scanner<'_> {
 
     /// Spool files older than [`SPOOL_RETENTION`] that no pending mail
     /// names, and the empty spool dir of a gone workspace.
-    fn spool(&mut self, pending: &PendingMail) {
+    fn spool(&mut self, pending: &PendingMail, ws_backends: &BTreeMap<String, Backend>) {
         for dir in entries(&self.scope.state_root.join("messages")) {
             let files = entries(&dir.path());
-            if files.is_empty() && self.gone(&dir.file_name().to_string_lossy(), pending) {
+            if files.is_empty()
+                && self.gone(&dir.file_name().to_string_lossy(), pending, ws_backends)
+            {
                 self.push(Kind::Spool, dir.path());
             }
             for file in files {
@@ -406,13 +455,13 @@ impl Scanner<'_> {
         }
     }
 
-    /// The registry and mail dirs of a workspace herdr no longer lists.
-    fn workspaces(&mut self, pending: &PendingMail) {
+    /// The registry and mail dirs of a workspace its owning host no longer lists.
+    fn workspaces(&mut self, pending: &PendingMail, ws_backends: &BTreeMap<String, Backend>) {
         for root in std::iter::once(self.scope.state_root).chain(self.scope.temp_root) {
             for entry in entries(root) {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if let Some(ws) = name.strip_prefix(REGISTRY_PREFIX) {
-                    if self.gone(ws, pending) && self.settled(&entry.path()) {
+                    if self.gone(ws, pending, ws_backends) && self.settled(&entry.path()) {
                         self.push(Kind::Registry, entry.path());
                     }
                 }
@@ -420,22 +469,51 @@ impl Scanner<'_> {
         }
         for entry in entries(&self.scope.state_root.join("mail")) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if self.gone(&name, pending) && self.settled(&entry.path()) {
+            if self.gone(&name, pending, ws_backends) && self.settled(&entry.path()) {
                 self.push(Kind::Mail, entry.path());
             }
         }
     }
 
-    /// herdr answered, does not list `ws`, and `ws` has no pending mail.
-    fn gone(&self, ws: &str, pending: &PendingMail) -> bool {
-        let Some(listed) = &self.herd.listed else {
-            return false;
-        };
+    /// True when `ws` has no pending mail and is provably gone on its recorded
+    /// backend (or on every installed host when unrecorded).
+    fn gone(
+        &self,
+        ws: &str,
+        pending: &PendingMail,
+        ws_backends: &BTreeMap<String, Backend>,
+    ) -> bool {
         let safe = crate::messaging::file_safe(ws);
-        !listed
+        if pending.holds(&safe) {
+            return false;
+        }
+        if let Some(&backend) = ws_backends.get(ws).or_else(|| ws_backends.get(&safe)) {
+            let Some(listed) = self
+                .hosts
+                .hosts
+                .iter()
+                .find(|h| h.backend == backend)
+                .and_then(|h| h.listed.as_ref())
+            else {
+                return false;
+            };
+            return !listed
+                .iter()
+                .any(|l| l == ws || crate::messaging::file_safe(l) == safe);
+        }
+        if !self.hosts.all_installed_answer
+            || self.hosts.hosts.is_empty()
+            || self.hosts.hosts.iter().any(|h| h.listed.is_none())
+        {
+            return false;
+        }
+        !self
+            .hosts
+            .hosts
             .iter()
+            .filter_map(|h| h.listed.as_ref())
+            .flatten()
             .any(|l| l == ws || crate::messaging::file_safe(l) == safe)
-            && !pending.holds(&safe)
     }
 
     /// `write_atomic` temp files of a dead process, under `dir`. Bundles and
@@ -627,42 +705,121 @@ impl WorkspaceClient for Answered<'_> {
     }
 }
 
+fn pane_ids_on(client: &dyn WorkspaceClient, ws: &str) -> Option<BTreeSet<String>> {
+    let panes = client.pane_list(ws).ok()?;
+    Some(panes.into_iter().map(|p| p.pane_id).collect())
+}
+
 /// What herdr lists, through `herdr`. `None` when it does not answer.
-pub fn listed(herdr: &Herdr) -> Option<BTreeSet<String>> {
+pub fn listed(herdr: &PaneHost) -> Option<BTreeSet<String>> {
     let workspaces = herdr.workspace_list().ok()?;
     Some(workspaces.into_iter().map(|w| w.workspace_id).collect())
 }
 
 /// The sweep with the context's dirs and herdr, cut off at `budget`.
-pub fn plan_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> (Plan, Option<usize>) {
+pub fn plan_in(ctx: &RuntimeContext, herdr: &PaneHost, budget: Duration) -> (Plan, Option<usize>) {
     let deadline = Instant::now() + budget;
     let herdr = herdr.clone().until(Some(deadline));
     let herd = Herd {
         listed: listed(&herdr),
         client: &herdr,
     };
-    // The temp registries belong to the default state root: a moved state
-    // root (a test, a second install) must not judge them.
-    let scope = Scope {
-        state_root: &ctx.paths.state_root,
-        temp_root: ctx
-            .paths
-            .state_override
-            .is_none()
-            .then_some(ctx.paths.temp_root.as_path()),
-    };
-    // File times are wall-clock times, so the ages use the wall clock.
+    let scope = scope_of(ctx);
     let plan = scan(scope, &herd, SystemTime::now(), deadline);
     let workspaces = herd.listed.as_ref().map(BTreeSet::len);
     (plan, workspaces)
 }
 
 /// Sweep now, through `herdr`, and apply.
-pub fn clean_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> Applied {
+pub fn clean_in(ctx: &RuntimeContext, herdr: &PaneHost, budget: Duration) -> Applied {
     let deadline = Instant::now() + budget;
     let herdr = herdr.clone().until(Some(deadline));
     let (plan, _) = plan_in(ctx, &herdr, budget);
     plan.apply(&herdr)
+}
+
+fn scope_of(ctx: &RuntimeContext) -> Scope<'_> {
+    // The temp registries belong to the default state root: a moved state
+    // root (a test, a second install) must not judge them.
+    Scope {
+        state_root: &ctx.paths.state_root,
+        temp_root: ctx
+            .paths
+            .state_override
+            .is_none()
+            .then_some(ctx.paths.temp_root.as_path()),
+    }
+}
+
+/// Plan the sweep across every installed pane host (`Hosts::reachable`),
+/// returning `(plan, answered_host_count, unreachable_backends)`.
+pub fn plan_all(ctx: &RuntimeContext, budget: Duration) -> (Plan, usize, Vec<Backend>) {
+    let deadline = Instant::now() + budget;
+    let probed = Hosts::reachable(ctx);
+    let bounded: Vec<PaneHost> = probed
+        .hosts
+        .into_iter()
+        .map(|h| h.until(Some(deadline)))
+        .collect();
+    let mut unreachable = probed.unreachable;
+    let mut views = Vec::with_capacity(bounded.len());
+    let mut answered = 0usize;
+    for host in &bounded {
+        let l = listed(host);
+        if l.is_some() {
+            answered += 1;
+        } else {
+            unreachable.push(host.backend());
+        }
+        views.push(HostView {
+            backend: host.backend(),
+            listed: l,
+            client: host,
+        });
+    }
+    let sweep_hosts = SweepHosts {
+        all_installed_answer: answered > 0 && unreachable.is_empty(),
+        hosts: views,
+    };
+    let plan = scan_hosts(scope_of(ctx), &sweep_hosts, SystemTime::now(), deadline);
+    (plan, answered, unreachable)
+}
+
+/// Sweep across every installed pane host and apply.
+pub fn clean_all(ctx: &RuntimeContext, budget: Duration) -> (Applied, Vec<Backend>) {
+    let deadline = Instant::now() + budget;
+    let probed = Hosts::reachable(ctx);
+    let bounded: Vec<PaneHost> = probed
+        .hosts
+        .into_iter()
+        .map(|h| h.until(Some(deadline)))
+        .collect();
+    let mut unreachable = probed.unreachable;
+    let mut views = Vec::with_capacity(bounded.len());
+    let mut answered = 0usize;
+    for host in &bounded {
+        let l = listed(host);
+        if l.is_some() {
+            answered += 1;
+        } else {
+            unreachable.push(host.backend());
+        }
+        views.push(HostView {
+            backend: host.backend(),
+            listed: l,
+            client: host,
+        });
+    }
+    let sweep_hosts = SweepHosts {
+        all_installed_answer: answered > 0 && unreachable.is_empty(),
+        hosts: views,
+    };
+    let plan = scan_hosts(scope_of(ctx), &sweep_hosts, SystemTime::now(), deadline);
+    let clients: Vec<(Backend, &dyn WorkspaceClient)> = bounded
+        .iter()
+        .map(|h| (h.backend(), h as &dyn WorkspaceClient))
+        .collect();
+    (plan.apply_hosts(&clients), unreachable)
 }
 
 /// Whether the stamp at `stamp` is missing or [`INTERVAL`] old at `now`.
@@ -689,8 +846,7 @@ pub fn run_due(ctx: &RuntimeContext) {
         );
         return;
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let applied = clean_in(ctx, &herdr, HOOK_BUDGET);
+    let (applied, _) = clean_all(ctx, HOOK_BUDGET);
     for error in &applied.errors {
         eprintln!("horch: state sweep: {error}");
     }

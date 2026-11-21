@@ -21,12 +21,22 @@ use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::procid;
 
-/// How a stop reaches herdr: close 1 pane by its id.
+/// How a stop reaches the pane host: close 1 pane by its id.
 pub trait Panes {
     /// Whether the pane exists.
     fn exists(&self, pane: &str) -> bool;
     /// Close the pane.
     fn close(&self, pane: &str) -> Result<()>;
+    /// Whether the pane exists on `backend`.
+    fn exists_on(&self, backend: crate::runtime::Backend, pane: &str) -> bool {
+        let _ = backend;
+        self.exists(pane)
+    }
+    /// Close the pane on `backend`.
+    fn close_on(&self, backend: crate::runtime::Backend, pane: &str) -> Result<()> {
+        let _ = backend;
+        self.close(pane)
+    }
 }
 
 /// The operating system side of a stop, replaceable in tests.
@@ -404,12 +414,16 @@ fn stop_processes(
     Ok(steps)
 }
 
-/// Close the worker's pane by its id.
-fn close_pane(panes: &dyn Panes, pane: Option<&String>) -> StopStep {
+/// Close the worker's pane by its id on its recorded backend.
+fn close_pane(
+    panes: &dyn Panes,
+    backend: crate::runtime::Backend,
+    pane: Option<&String>,
+) -> StopStep {
     let (pane_id, result) = match pane {
-        Some(p) if panes.exists(p) => (
+        Some(p) if panes.exists_on(backend, p) => (
             Some(p.clone()),
-            if panes.close(p).is_ok() {
+            if panes.close_on(backend, p).is_ok() {
                 StopResult::PaneClosed
             } else {
                 StopResult::Error
@@ -443,7 +457,7 @@ pub fn stop_worker(
     check_stoppable(store.conn(), &w, by, reason)?;
     let requeued = end_row(store, &w, by, reason, opts)?;
     let mut steps = stop_processes(store, &w, by, reason, procs, opts)?;
-    let pane_step = close_pane(panes, w.pane_id.as_ref());
+    let pane_step = close_pane(panes, w.backend, w.pane_id.as_ref());
     record(store.conn(), &w, by, reason, &pane_step, None)?;
     steps.push(pane_step);
     Ok(StopReport {

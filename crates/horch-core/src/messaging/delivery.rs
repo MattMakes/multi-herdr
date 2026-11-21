@@ -194,9 +194,10 @@ pub fn send_line_with(
     timing: &Timing,
 ) -> Result<()> {
     let message = line.text();
-    if ws.agent_prompt(pane, line.text()).is_ok() {
-        return Ok(());
-    }
+    let prompt_err = match ws.agent_prompt(pane, message) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
     let settle = if message.len() > 1500 {
         timing.settle_long
     } else {
@@ -210,7 +211,12 @@ pub fn send_line_with(
     if push_time_left().is_some_and(|left| left < reserve) {
         bail!("the push budget is spent, so the line was not typed");
     }
-    ws.pane_send_text(pane, line.text())?;
+    if let Err(type_err) = ws.pane_send_text(pane, message) {
+        if type_err.is::<crate::workspace::Unsupported>() {
+            return Err(prompt_err);
+        }
+        return Err(type_err);
+    }
     // Typing takes time too, so the tail poll gets only what is left now.
     let mut timing = *timing;
     if let Some(left) = push_time_left() {
@@ -714,5 +720,63 @@ mod tests {
         let screen = "\u{2502} > [sonnet-1] DONE: No file was uncl \u{2502}\n\u{2502}   assifiable.      \u{2502}\n";
         assert!(squash(screen).contains(&needle));
         assert_eq!(tail_needle("   "), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_06_send_line_uses_only_the_prompt_on_hc() {
+        let dir = tempfile::tempdir().unwrap();
+        let hc_bin = dir.path().join("hc");
+        let app_bin = dir.path().join("herdr-app");
+        let sock = dir.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf '%s\n' "$*" >> "$d/calls"
+case "$3" in
+t1)
+  printf '{"started":true,"status":"idle","turn":1}\n'
+  exit 0;;
+t2)
+  printf '{"error":{"hint":null,"kind":"blocked","message":"terminal t2 is blocked"}}\n' >&2
+  exit 9;;
+esac
+exit 1
+"#;
+        assert!(crate::test_support::write_warmed(&hc_bin, body, &["warm"])
+            .status
+            .success());
+        assert!(
+            crate::test_support::write_warmed(&app_bin, "#!/bin/sh\nexit 0\n", &["warm"])
+                .status
+                .success()
+        );
+        let host = crate::workspace::PaneHost::hc_app(crate::workspace::hc::HcApp::new(
+            &hc_bin, &app_bin, &sock,
+        ));
+        send_line(&host, "t1", TypedLine::Mail).unwrap();
+
+        let blocked = send_line(&host, "t2", TypedLine::Doorbell).unwrap_err();
+        assert_eq!(
+            blocked
+                .downcast_ref::<crate::workspace::HcFailed>()
+                .map(|f| f.kind.as_str()),
+            Some("blocked"),
+            "send_line must keep the prompt failure and never enter the 2-call fallback: {blocked:#}"
+        );
+
+        let calls: Vec<String> = std::fs::read_to_string(dir.path().join("calls"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                format!("send --json t1 {MAIL_LINE}"),
+                format!("send --json t2 {DOORBELL}"),
+            ]
+        );
     }
 }

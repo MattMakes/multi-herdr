@@ -26,6 +26,7 @@ pub mod harness;
 pub mod idea_agent;
 pub mod ledger_seed;
 pub mod probe;
+pub mod hc_fake;
 pub mod process;
 
 /// One call of a fake, built up while it runs and written when it finishes.

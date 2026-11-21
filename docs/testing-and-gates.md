@@ -170,6 +170,8 @@ binaries in `crates/horch-e2e/src/bin/`:
 | `fake-prime.rs` | `prime-agent` |
 | `fake-antigravity.rs` | `agy` |
 | `fake-herdr.rs` | `herdr` (panes, workspaces, state in a file) |
+| `fake-hc.rs` | `hc` (`herdr-core` terminals, status, screen, shared `<state>/fake-hc.json`) |
+| `fake-herdr-app.rs` | `herdr-app` (spaces, tabs, splits, window-closed state, shared `<state>/fake-hc.json`) |
 | `fake-ollama.rs` | `ollama` |
 
 `FAKES` in `crates/horch-e2e/src/harness.rs` maps each command name to its
@@ -180,6 +182,15 @@ unified log), which showed as a flaky e2e test.
 `HORCH_NOW` pins the clock (`crates/horch-core/src/clock.rs`). `HORCH_FAULT`
 stops a process at a named point (`crates/horch-core/src/runtime/fault.rs`);
 the e2e tests use it to test crash and resume.
+
+`fake-hc` and `fake-herdr-app` share `<state>/fake-hc.json` under a directory
+lock (`<state>/fake-hc.lock/`) and append calls to `<state>/fake-hc.log`.
+`crates/horch-e2e/tests/pane_host_contract.rs` runs one `PaneHost` contract
+suite against both `fake-herdr` and `fake-hc` + `fake-herdr-app` in the gate.
+To verify the same windowless contract scenarios against a real isolated
+`herdr-core` session (`HC_SESSION=horch-contract-<pid>` with scratch XDG
+folders, stopped at the end without touching the operator's core), run
+`HORCH_LIVE_HC=1 cargo test -p horch-e2e --test pane_host_contract -- --ignored`.
 
 ## e2e gotchas
 

@@ -33,6 +33,10 @@ pub const START_ENV: &str = "HORCH_TELEMETRY_START";
 /// never whether `ensure` succeeds.
 pub const UNSEEN_AFTER: Duration = Duration::from_secs(300);
 
+fn is_herdr(b: &crate::runtime::Backend) -> bool {
+    *b == crate::runtime::Backend::Herdr
+}
+
 /// What `ensure` started, and where.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -43,6 +47,9 @@ pub struct Request {
     /// The herdr program `ensure` used; the collector closes the old
     /// workspaces with it.
     pub herdr: PathBuf,
+    /// The pane host backend `ensure` used; omitted when `herdr`.
+    #[serde(default, skip_serializing_if = "is_herdr")]
+    pub backend: crate::runtime::Backend,
 }
 
 /// The started process: written before it tries the lock.
@@ -190,6 +197,7 @@ mod tests {
             workspace_id: "w2".into(),
             pane_id: "w2:p1".into(),
             herdr: PathBuf::from("/bin/herdr"),
+            backend: crate::runtime::Backend::Herdr,
         }
     }
 

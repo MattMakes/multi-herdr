@@ -27,9 +27,9 @@ use horch_core::roster::{ExecRule, Roster, Teammate};
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::VERIFY_ENV;
 use horch_core::taskledger::orchestrator;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
+use horch_core::workspace::PaneHost;
 
 use super::doctor;
 
@@ -196,6 +196,13 @@ fn pane_command(
     if let Some(ledger) = ledger.as_deref() {
         env.push(("HORCH_LEDGER_DB", ledger));
     }
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        env.push(("HORCH_BACKEND", "hc"));
+    }
+    let project_dir = super::path_text(ctx.paths.project_dir.as_deref());
+    if let Some(dir) = project_dir.as_deref() {
+        env.push(("HORCH_PROJECT_DIR", dir));
+    }
     Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
 }
 
@@ -218,10 +225,11 @@ pub fn fleet_with(ctx: &RuntimeContext, cwd: Option<&str>, options: &FleetOption
     if options.resume.is_some() {
         anyhow::bail!(orchestrator::RETIRED);
     }
+    super::fleetd::refuse_hc(ctx)?;
     println!("horch {}", super::selfupdate::CURRENT);
     super::update::before_fleet(ctx, options.no_update);
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let cwd = resolve_cwd(ctx, cwd)?;
     let mut ctx = ctx.clone();
     ctx.paths.project_dir = Some(PathBuf::from(&cwd));
@@ -340,11 +348,32 @@ fn steward_spawn_args(root_pane: &str, run: &str) -> super::spawn::SpawnArgs {
 /// End the orchestrator records of workspaces that are gone: an
 /// orchestrator never runs `horch done`. Without a herdr workspace list,
 /// none is ended.
-fn retire_gone_orchestrators(ctx: &RuntimeContext, herdr: &Herdr) -> Result<()> {
+fn retire_gone_orchestrators(ctx: &RuntimeContext, herdr: &PaneHost) -> Result<()> {
     let ledger = SessionLedger::open_in(ctx)?;
-    if let Ok(open) = herdr.workspace_list() {
-        let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
-        ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
+    let hosts = horch_core::workspace::Hosts::reachable(ctx);
+    let mut open_by_backend: std::collections::BTreeMap<horch_core::runtime::Backend, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for h in &hosts.hosts {
+        if let Ok(list) = h.workspace_list() {
+            open_by_backend.insert(
+                h.backend(),
+                list.into_iter().map(|w| w.workspace_id).collect(),
+            );
+        }
+    }
+    if let std::collections::btree_map::Entry::Vacant(e) = open_by_backend.entry(herdr.backend()) {
+        if let Ok(list) = herdr.workspace_list() {
+            e.insert(list.into_iter().map(|w| w.workspace_id).collect());
+        }
+    }
+    if !open_by_backend.is_empty() {
+        ledger.supersede_orchestrators_by_record(|r| match r.workspace_id.as_deref() {
+            Some(ws) => match open_by_backend.get(&r.backend) {
+                Some(open) => open.iter().any(|o| o == ws),
+                None => true,
+            },
+            None => false,
+        })?;
     }
     Ok(())
 }
@@ -359,7 +388,7 @@ fn print_fleet_ready(workspace_id: &str) {
 /// Close the workspace of a start that failed after it was created
 /// (#217). A cleanup error is printed; the start's own error is the one the
 /// caller returns.
-fn close_workspace(herdr: &Herdr, workspace_id: &str) {
+fn close_workspace(herdr: &PaneHost, workspace_id: &str) {
     if let Err(e) = herdr.workspace_close(workspace_id) {
         eprintln!("warning: closing workspace {workspace_id} failed: {e:#}");
     }
@@ -476,7 +505,7 @@ fn normalised(current: &Path, path: &Path) -> PathBuf {
 /// Native herdr agent-status reporting is optional but nice: it lets the
 /// orchestrator watch workers with `herdr agent list` and hands codex session ids
 /// to the ledger without the rollout-file fallback.
-fn warn_about_missing_integrations(herdr: &Herdr) {
+fn warn_about_missing_integrations(herdr: &PaneHost) {
     let Some(status) = herdr.integration_status() else {
         return;
     };
@@ -501,7 +530,7 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -> Result<()> {
     super::update::before_fleet(ctx, no_update);
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let cwd = resolve_cwd(ctx, cwd)?;
 
     println!("Creating workspace rooted at {cwd}...");
@@ -527,7 +556,7 @@ pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -
 
 /// The 5 panes of `horch orchestration` in the new workspace `ws`: the
 /// layout, then each pane's agent.
-fn lay_out_orchestration(ctx: &RuntimeContext, herdr: &Herdr, ws: &NewWorkspace) -> Result<()> {
+fn lay_out_orchestration(ctx: &RuntimeContext, herdr: &PaneHost, ws: &NewWorkspace) -> Result<()> {
     println!("Building layout: orchestrator | 2x2 worker grid...");
     let top_left = herdr.pane_split(&ws.root_pane_id, Direction::Right)?;
     let bottom_left = herdr.pane_split(&top_left, Direction::Down)?;
@@ -659,7 +688,7 @@ fn register_pane_then(
     fleet: bool,
     before_route: impl FnOnce(&RuntimeContext, &str, &str) -> Result<()>,
 ) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     if let Some(dir) = &identity.state_dir {
         ctx.paths.set_state_dir(dir);
     }
@@ -752,6 +781,9 @@ fn child_env(
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
         env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
+    }
+    if ctx.herdr.backend == horch_core::runtime::Backend::Hc {
+        env.push(("HORCH_BACKEND".into(), "hc".into()));
     }
     // Set explicitly, not inherited: a Codex shell policy can drop it, and
     // the orchestrator's `horch ledger run new` reads it.

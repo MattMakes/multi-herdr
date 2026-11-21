@@ -229,7 +229,7 @@ impl std::fmt::Display for Direction {
 /// (`herdr plugin pane focus` answers `plugin_pane_not_found`), so stepping is
 /// the only way to put a named pane back in focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FocusDir {
+pub enum FocusDir {
     Left,
     Right,
     Up,
@@ -237,7 +237,7 @@ pub(crate) enum FocusDir {
 }
 
 impl FocusDir {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             FocusDir::Left => "left",
             FocusDir::Right => "right",

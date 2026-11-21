@@ -238,7 +238,7 @@ fn build_command(
     // more config path or tool name. Every variadic flag therefore goes
     // first, and `--model` - always present, never variadic - fences them off.
     push_mcp_args(&mut cmd, env, teammate);
-    push_tool_args(&mut cmd, teammate);
+    push_tool_args(&mut cmd, env, teammate);
 
     let model = model_for(teammate, model_override)?;
     cmd.arg("--model").arg(model);
@@ -298,7 +298,7 @@ fn mcp_servers_config(env: &LaunchEnv, teammate: &Teammate) -> String {
     json!({ "mcpServers": servers }).to_string()
 }
 
-fn push_tool_args(cmd: &mut Command, teammate: &Teammate) {
+fn push_tool_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
     // `Some([])` means "no tools", which is `--tools ""`, not "omit the flag".
     if let Some(tools) = &teammate.tools {
         cmd.arg("--tools").arg(tools.join(","));
@@ -308,8 +308,20 @@ fn push_tool_args(cmd: &mut Command, teammate: &Teammate) {
             .arg(teammate.allowed_tools.join(","));
     }
     if !teammate.disallowed_tools.is_empty() {
-        cmd.arg("--disallowedTools")
-            .arg(teammate.disallowed_tools.join(","));
+        let mut disallowed = teammate.disallowed_tools.clone();
+        if env.backend == crate::runtime::Backend::Hc
+            && disallowed.iter().any(|t| t == "Bash(herdr pane zoom)")
+        {
+            for extra in [
+                "Bash(herdr-app do pane.zoom)",
+                "Bash(herdr-app do pane.zoom *)",
+            ] {
+                if !disallowed.iter().any(|t| t == extra) {
+                    disallowed.push(extra.to_string());
+                }
+            }
+        }
+        cmd.arg("--disallowedTools").arg(disallowed.join(","));
     }
     if teammate.worker_channel {
         cmd.args(["--dangerously-load-development-channels", "server:horch"]);
@@ -1017,44 +1029,50 @@ fn overlay_horch_paths(
     let sandbox = sandbox
         .as_object_mut()
         .context("sandbox must be an object")?;
-    let roots = [&env.state_root, &env.ledger_dir];
-    let (reads, writes, sockets) = match teammate.horch_access {
-        // From Phase 5 a worker writes only its task folder and its
-        // worktree (RR-5; design, `writable_paths`).
-        HorchAccess::Full if is_worker(teammate) => (
-            roots,
-            [&env.task_dir, &env.worktree],
-            [&env.state_root, &env.herdr_socket],
-        ),
-        HorchAccess::Full => (roots, roots, [&env.state_root, &env.herdr_socket]),
-        // A report pane of a task reads the ledger, to find its own
-        // attempt, and writes its task folder, the outbox (ticket 32 of
-        // fleetd-p5). A pane with no task gets neither.
-        HorchAccess::Report => {
-            let ledger = if env.task_dir.is_some() {
-                &env.ledger_dir
-            } else {
-                &None
-            };
-            (
-                [ledger, &None],
-                [&env.task_dir, &None],
-                [&env.report_socket, &None],
-            )
-        }
-    };
+    let roots: Vec<&PathBuf> = env.state_root.iter().chain(env.ledger_dir.iter()).collect();
+    let full_sockets: Vec<&PathBuf> = env
+        .state_root
+        .iter()
+        .chain(env.host_sockets.iter())
+        .collect();
+    let (reads, writes, sockets): (Vec<&PathBuf>, Vec<&PathBuf>, Vec<&PathBuf>) =
+        match teammate.horch_access {
+            // From Phase 5 a worker writes only its task folder and its
+            // worktree (RR-5; design, `writable_paths`).
+            HorchAccess::Full if is_worker(teammate) => (
+                roots,
+                env.task_dir.iter().chain(env.worktree.iter()).collect(),
+                full_sockets,
+            ),
+            HorchAccess::Full => (roots.clone(), roots, full_sockets),
+            // A report pane of a task reads the ledger, to find its own
+            // attempt, and writes its task folder, the outbox (ticket 32 of
+            // fleetd-p5). A pane with no task gets neither.
+            HorchAccess::Report => {
+                let ledger = if env.task_dir.is_some() {
+                    env.ledger_dir.iter().collect()
+                } else {
+                    Vec::new()
+                };
+                (
+                    ledger,
+                    env.task_dir.iter().collect(),
+                    env.report_socket.iter().collect(),
+                )
+            }
+        };
     let mut changed = false;
     for (section, key, paths) in [
-        ("filesystem", "allowRead", reads),
-        ("filesystem", "allowWrite", writes),
-        ("network", "allowUnixSockets", sockets),
+        ("filesystem", "allowRead", reads.as_slice()),
+        ("filesystem", "allowWrite", writes.as_slice()),
+        ("network", "allowUnixSockets", sockets.as_slice()),
     ] {
         let list = object_entry(sandbox, section)?
             .entry(key)
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .with_context(|| format!("sandbox.{section}.{key} must be a list"))?;
-        for path in paths.into_iter().flatten() {
+        for path in paths {
             let path = Value::String(path.to_string_lossy().into_owned());
             if !list.contains(&path) {
                 list.push(path);
@@ -2163,7 +2181,7 @@ mod tests {
             ledger_db: Some(PathBuf::from("/home/op/.horch/ledger.sqlite3")),
             fleet_root: Some(PathBuf::from("/home/op/.horch/fleet")),
             home: Some(PathBuf::from("/home/op")),
-            herdr_socket: Some(PathBuf::from("/home/op/.config/herdr/herdr.sock")),
+            host_sockets: vec![PathBuf::from("/home/op/.config/herdr/herdr.sock")],
             ..LaunchEnv::for_test()
         })
     }
@@ -2780,7 +2798,7 @@ mod tests {
         let without_roots = LaunchEnv {
             state_root: None,
             ledger_dir: None,
-            herdr_socket: None,
+            host_sockets: Vec::new(),
             ..with_roots.clone()
         };
         let argv = |env: &LaunchEnv| -> Vec<String> {
@@ -3692,5 +3710,59 @@ mod tests {
         let mut none = opus;
         none.system_prompt = None;
         assert!(prepare(&none).unwrap().extra_args.is_empty());
+    }
+
+    #[test]
+    fn hcb_11_hc_sandbox_allows_the_core_and_app_sockets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [base, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&base) {
+            return;
+        }
+        let home = tmp.path().join("home");
+        let map = crate::runtime::MapEnv::new(&home)
+            .with("HOME", &home.to_string_lossy())
+            .with("HORCH_BACKEND", "hc")
+            .with("HC_TERMINAL_SOCKET", "/tmp/hc-core.sock")
+            .with("HERDR_APP_HOME", "/tmp/herdr-app-home")
+            .with("HORCH_STATE_DIR", "/state/horch");
+        let ctx = crate::runtime::RuntimeContext::from_env(&map).unwrap();
+        let mut env = LaunchEnv::from_context(&ctx);
+        env.path = base.path.clone();
+
+        let built = super::super::launch::command_in(
+            &env,
+            &sandboxed(json!({})),
+            Session::Fresh("id"),
+            "go",
+            None,
+        )
+        .unwrap();
+        let settings = settings_arg(&built);
+        assert_eq!(
+            settings["sandbox"]["network"]["allowUnixSockets"],
+            json!([
+                "/state/horch",
+                "/tmp/hc-core.sock",
+                "/tmp/herdr-app-home/herdr-app.sock"
+            ])
+        );
+
+        let roster = crate::roster::Roster::builtin().unwrap();
+        let orch = roster.require("orchestrator").unwrap();
+        let orch_cmd =
+            super::super::launch::command_in(&env, orch, Session::Fresh("id"), "go", None).unwrap();
+        let orch_args: Vec<String> = orch_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let idx = orch_args
+            .iter()
+            .position(|a| a == "--disallowedTools")
+            .unwrap();
+        assert_eq!(
+            orch_args[idx + 1],
+            "Agent,RemoteTrigger,Bash(herdr pane zoom),Bash(herdr pane zoom *),Bash(herdr-app do pane.zoom),Bash(herdr-app do pane.zoom *)"
+        );
     }
 }
