@@ -1132,6 +1132,8 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Reads `import_findings` 1 time, not 1 time for each row: the sync
+/// compares each row with all findings.
 fn cancelled_open_trees_sql() -> String {
     format!(
         "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
@@ -1165,6 +1167,8 @@ fn sync_custody_trees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Reads `import_findings` 1 time, not 1 time for each row: the sync
+/// compares each row with all findings.
 fn custody_trees_sql() -> String {
     format!(
             "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
@@ -1201,6 +1205,8 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Reads `import_findings` 1 time, not 1 time for each row: the sync
+/// compares each row with all findings.
 fn reaped_tasks_sql() -> String {
     format!(
         "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status

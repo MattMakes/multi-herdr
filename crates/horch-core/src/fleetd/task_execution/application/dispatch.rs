@@ -491,6 +491,8 @@ fn ready_task(
     })
 }
 
+/// 2 statements for any count of tasks: a bind compares its Own files with
+/// each running task, so this read stays whole.
 fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
     let words: Vec<String> = HOLDING.iter().map(|s| word(*s)).collect();
     let holding = words.join(", ");

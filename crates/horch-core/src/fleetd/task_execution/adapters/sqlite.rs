@@ -198,6 +198,8 @@ pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(Stri
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// 1 statement for any count of live tasks: each live attempt is judged in
+/// each pass, so this read stays whole.
 fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
     let mut stmt = conn.prepare(
         "SELECT t.task_id, t.status, t.current_worker_id, t.attempts - t.attempt_floor,

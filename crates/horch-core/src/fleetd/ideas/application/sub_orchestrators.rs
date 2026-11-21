@@ -692,8 +692,8 @@ fn planning(ideas: &[IdeaFacts]) -> Option<Need> {
     })
 }
 
-/// The idea in [`IN_FLIGHT`] of the oldest open question of the feature of
-/// `ideas`, else of its oldest `failed` task that waits for its replan.
+/// 1 statement for any count of tasks. A failed task is open: its status
+/// is not `done` or `cancelled`.
 fn has_failed_task(conn: &Connection, idea: &str) -> Result<bool> {
     let failed = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM tasks WHERE idea_id = ?1 AND status = ?2)",
@@ -703,6 +703,8 @@ fn has_failed_task(conn: &Connection, idea: &str) -> Result<bool> {
     Ok(failed)
 }
 
+/// The idea in [`IN_FLIGHT`] of the oldest open question of the feature of
+/// `ideas`, else of its oldest `failed` task that waits for its replan.
 fn work(conn: &Connection, ideas: &[IdeaFacts]) -> Result<Option<Need>> {
     let need = |idea: &str| {
         let i = ideas.iter().find(|i| i.id == idea)?;

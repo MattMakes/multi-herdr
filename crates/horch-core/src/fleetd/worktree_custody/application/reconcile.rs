@@ -596,6 +596,8 @@ fn set_aside(removing: &BTreeSet<String>, facts: &Facts, row: &WorktreeRow) -> b
     in_work_dir || removing.contains(&row.worktree_id)
 }
 
+/// 1 statement for any count of trees: check_i6 and escalate_vanished judge
+/// each tree, so this read stays whole.
 fn removing(conn: &Connection) -> Result<BTreeSet<String>> {
     let mut stmt = conn
         .prepare("SELECT subject FROM jobs WHERE kind = ?1 AND state IN ('queued', 'running')")?;

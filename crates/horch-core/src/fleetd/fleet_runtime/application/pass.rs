@@ -2607,7 +2607,8 @@ impl Rules<'_> {
         Ok(())
     }
 
-    /// Step 6: the lease part of I1.
+    /// Step 6: the lease part of I1, at most `pass_budget` lease writes
+    /// and deletes: N repairs take at most N / `pass_budget` + 1 passes.
     fn check_i1(&self) -> Result<()> {
         let limits = |worker: &str| self.limits(worker);
         let budget = PassBudget::new(self.config.pass_budget).rows();

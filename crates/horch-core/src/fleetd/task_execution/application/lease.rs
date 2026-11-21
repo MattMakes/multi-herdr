@@ -1161,6 +1161,7 @@ mod tests {
         assert_eq!(count(3), count(30));
     }
 
+    /// The lease expiry stays whole in 1 pass: each lease is judged in each pass.
     #[test]
     fn renew_or_expire_leases_runs_the_same_statements_for_3_and_30_leases() {
         let count = |n: usize| {

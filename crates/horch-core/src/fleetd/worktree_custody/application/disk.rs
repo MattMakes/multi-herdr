@@ -137,6 +137,8 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
     ctx.needs_you.open_item(tx, &item)
 }
 
+/// 1 statement for any count of trees: the disk budget sums the bytes of
+/// all trees, so this read stays whole.
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT w.worktree_id, w.state, w.task_id IS NOT NULL, w.created_at, w.bytes_on_disk,
