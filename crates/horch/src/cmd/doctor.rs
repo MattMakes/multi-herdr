@@ -18,8 +18,8 @@ use horch_core::runtime::{process, RuntimeContext};
 use horch_core::sweep;
 use horch_core::taskledger::timer::Agent;
 use horch_core::usage::has_transcript;
-use horch_platform::start;
 use horch_core::workspace::PaneHost;
+use horch_platform::start;
 
 pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     check(ctx)?;

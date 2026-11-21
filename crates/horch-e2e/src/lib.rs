@@ -23,10 +23,10 @@ pub mod expected;
 pub mod fleetd;
 pub mod fr10_agent;
 pub mod harness;
+pub mod hc_fake;
 pub mod idea_agent;
 pub mod ledger_seed;
 pub mod probe;
-pub mod hc_fake;
 pub mod process;
 
 /// One call of a fake, built up while it runs and written when it finishes.
