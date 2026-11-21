@@ -5,8 +5,7 @@
 //! Requirements: RR-5, RR-8. Ticket 19 of fleetd-p5. Ticket 48 of
 //! fleetd-p6 retires `spawn`, `worker_reap`, `worker_new`, `worker_pid`,
 //! `orchestrator_claim` and `orchestrator_stop`: fleetd dispatches,
-//! launches and records each attempt itself. T-302 retires `spawn_adopt`:
-//! no client sends it after T-895.
+//! launches and records each attempt itself.
 //!
 //! Each handler writes the rows that its `horch` command writes today,
 //! through the same functions of `taskledger/` and `fleetd/`, in the

@@ -174,7 +174,6 @@ impl World {
         w
     }
 
-    /// The task and worker handlers of fleetd.
     fn handlers(&self) -> Handlers {
         let mut handlers = Handlers::new();
         handlers_task::register(
