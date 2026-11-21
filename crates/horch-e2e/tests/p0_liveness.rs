@@ -731,10 +731,6 @@ fn an_unreadable_old_record_of_the_polite_stop_is_removed_and_the_pane_is_kept()
     assert!(panes(&h).contains(&"w1:p1".to_string()), "the pane is kept");
 }
 
-// ─── a host with no git (T-389) ─────────────────────────────────────────
-
-/// The `horch doctor` output of `h`, with its root shown as `<root>`, and
-/// whether the doctor passed.
 fn doctor(h: &Harness) -> (bool, String, String) {
     let o = h.run(&["doctor"]);
     let root = h.root.to_string_lossy().into_owned();
@@ -742,7 +738,6 @@ fn doctor(h: &Harness) -> (bool, String, String) {
     (o.status.success(), shown(&o.stdout), shown(&o.stderr))
 }
 
-/// The lines of `text` without the git line of the doctor.
 fn without_git_line(text: &str) -> Vec<&str> {
     text.lines().filter(|l| !l.starts_with("git: ")).collect()
 }

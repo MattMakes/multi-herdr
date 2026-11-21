@@ -445,10 +445,6 @@ impl Harness {
             "HORCH_TEAMMATES_DIR".into(),
             repo_root().join("teammates").to_string_lossy().into_owned(),
         );
-        // The start of fleetd and `horch doctor` refuse without git 2.41 or
-        // newer (T-389). A world without `with_git` has no usable git, so
-        // its `HORCH_GIT_BIN` is the fake of [`NO_GIT`]. A test of a host
-        // without git uses `without("HORCH_GIT_BIN")`.
         #[cfg(unix)]
         env.insert(
             "HORCH_GIT_BIN".into(),
@@ -1570,9 +1566,6 @@ fn unique_sequence() -> u64 {
     N.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The git of a world without [`Harness::with_git`]: it answers `git
-/// version` with 2.41 and ends each other command with exit 1. It is
-/// outside the sealed `PATH`, and only `HORCH_GIT_BIN` names it.
 #[cfg(unix)]
 const NO_GIT: &str = "#!/bin/sh\n\
 [ \"$1\" = warm ] && exit 0\n\

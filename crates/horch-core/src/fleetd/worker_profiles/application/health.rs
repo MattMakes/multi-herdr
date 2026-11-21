@@ -28,8 +28,6 @@ use crate::fleetd::worker_profiles::domain::health::{self, Health, Mark, PROFILE
 use crate::harness::HarnessKind;
 use crate::taskledger::model::{Actor, EventKind};
 
-/// The kind of the hold of a profile whose last conformance run did not
-/// prove a check. Only this module writes a `note` about a profile.
 const NOT_PROVED: EventKind = EventKind::Note;
 
 const KINDS: [EventKind; 3] = [
@@ -55,7 +53,6 @@ pub fn not_proved_profiles(conn: &Connection) -> Result<BTreeMap<String, String>
     last_of_kind(conn, NOT_PROVED)
 }
 
-/// Each profile whose last event of [`KINDS`] is of `kind`, with its cause.
 fn last_of_kind(conn: &Connection, kind: EventKind) -> Result<BTreeMap<String, String>> {
     Ok(last_named_facts(conn, PROFILE, &KINDS)?
         .into_iter()
@@ -137,8 +134,6 @@ pub fn mark_after_conformance(
                         reason: reason.clone(),
                     }
                 }
-                // A held profile is not proved: a failed run marks it
-                // unhealthy, and a passed run marks it healthy.
                 Some((kind, reason)) if kind == NOT_PROVED.as_str() && !failed => {
                     Health::Unhealthy {
                         reason: reason.clone(),
@@ -181,7 +176,6 @@ pub fn mark_cli_unhealthy(
     Ok(marks)
 }
 
-/// The `note` hold of `profile` with `cause`, in `tx`.
 fn hold(tx: &Connection, guard: Option<Generation>, profile: &str, cause: &str) -> Result<()> {
     let data = json!({ "profile_id": profile, "hold": "not proved" }).to_string();
     append_named_fact(

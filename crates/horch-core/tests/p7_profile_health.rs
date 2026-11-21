@@ -108,8 +108,6 @@ impl World {
         self.conformance_run(1, &subject, report)
     }
 
-    /// The marks after the conformance run `run` of the job subject
-    /// `subject`.
     fn conformance_run(
         &mut self,
         run: i64,
@@ -122,7 +120,6 @@ impl World {
             .unwrap()
     }
 
-    /// The same ledger, opened again: a restart of fleetd.
     fn restart(&mut self) {
         let path = self._dir.path().join("ledger.sqlite3");
         self.store = Store::open(&path).unwrap();
@@ -242,8 +239,6 @@ fn not_proved(cli: &str, failed: &[Check]) -> ConformanceReport {
     r
 }
 
-/// The hold of the profile `profile` whose last conformance run did not
-/// prove a check: its persona hold, with the cause.
 fn not_proved_hold(c: &[Choice], task_id: &str, profile: &str) -> String {
     match hold_of(c, task_id) {
         Some(Hold::Persona { persona, cause }) if persona == profile => cause,
@@ -296,8 +291,6 @@ fn first_not_proved_run_holds_the_profile_until_a_passed_run() {
     assert!(is_bound(&w.choices(), &task));
 }
 
-/// The hold text names the run that did not prove, the check and its
-/// evidence, and the run that is awaited.
 #[test]
 fn not_proved_hold_names_its_cause_and_the_awaited_run() {
     let mut w = World::new();
@@ -316,8 +309,6 @@ fn not_proved_hold_names_its_cause_and_the_awaited_run() {
     assert_eq!(hold.to_string(), format!("persona opus: {cause}"));
 }
 
-/// A held profile whose next run fails is unhealthy, as after any failed
-/// run, and a passed run marks it healthy again.
 #[test]
 fn held_profile_with_a_failed_run_is_unhealthy() {
     let mut w = World::new();
@@ -341,9 +332,6 @@ fn held_profile_with_a_failed_run_is_unhealthy() {
     assert!(is_bound(&w.choices(), &task));
 }
 
-/// A new CLI binary or a new horch binary is a new key: a run of the new
-/// key that does not prove a check holds the profile again, after a passed
-/// run of the old key, until a passed run of the new key.
 #[test]
 fn not_proved_run_of_a_new_key_holds_again_until_its_proof() {
     let mut w = World::new();
@@ -365,7 +353,6 @@ fn not_proved_run_of_a_new_key_holds_again_until_its_proof() {
     assert!(is_bound(&w.choices(), &task));
 }
 
-/// The hold and its release are rows: a restart of fleetd keeps each.
 #[test]
 fn restart_keeps_the_hold_and_the_proof() {
     let mut w = World::new();
