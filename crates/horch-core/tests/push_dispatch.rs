@@ -39,8 +39,12 @@ use horch_core::fleetd::task_execution::application::dispatch::{
     bind, choices, dispatch_due, read_base_tips, write_missing_task_files, write_task_files,
     BaseTips, Bound, CheckSandboxes, DispatchCtx, Dispatched,
 };
+use horch_core::fleetd::task_execution::application::launch as push_launch;
 use horch_core::fleetd::task_execution::application::lease;
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
+use horch_core::fleetd::worker_profiles::application::ports::{
+    EnvRule, LaunchError, LaunchSpec, Launched, ProcessHost,
+};
 use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
 use horch_core::fleetd::worktree_custody::application::create;
@@ -831,4 +835,300 @@ fn bind_uses_pre_read_sandboxed_base_tips_and_runs_no_git_in_write_tx() {
     assert_eq!(Some(row.worktree_id), b.worktree.map(|t| t.worktree_id));
     assert_eq!(row.base, RUN_BRANCH);
     assert_eq!(row.base_commit, Some(tip));
+}
+
+#[derive(Default)]
+struct RefusingHost {
+    calls: std::cell::Cell<usize>,
+}
+
+impl push_launch::Launches for RefusingHost {
+    fn spec(&self, l: &push_launch::PushLaunch) -> anyhow::Result<LaunchSpec> {
+        Ok(LaunchSpec {
+            program: "horch".into(),
+            args: vec!["spawn".into(), "--attempt".into(), l.attempt.clone().into()],
+            cwd: None,
+            env_rule: EnvRule::default(),
+            detach: false,
+            output: None,
+        })
+    }
+}
+
+impl ProcessHost for RefusingHost {
+    fn launch(&self, _: &LaunchSpec) -> Result<Launched, LaunchError> {
+        self.calls.set(self.calls.get() + 1);
+        Err(LaunchError::Io(std::io::Error::other("the OS refused")))
+    }
+}
+
+/// Rung 6 (design.md, "The stall ladder", rung 6): a launch whose host
+/// call fails ends its attempt `crashed` in the same pass, as a reported
+/// failed spawn does (T-254). It does not wait for the start timeout. The
+/// next attempt follows the backoff of rung 6 (30 s, 120 s on the fleet
+/// clock), and the `max_attempts` of the run bounds the loop: the last
+/// failure moves the task to `failed`, and no pass launches it again.
+#[test]
+fn failed_host_launch_ends_the_attempt_at_once_and_rung_6_bounds_the_retries() {
+    let mut w = World::new();
+    w.store
+        .conn()
+        .execute(
+            "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, 0, ?2, 0, ?2)",
+            rusqlite::params![std::process::id(), horch_core::taskledger::util::now()],
+        )
+        .unwrap();
+    let set_clock = |w: &World, s: i64| {
+        w.store
+            .conn()
+            .execute("UPDATE fleetd SET fleet_clock_s = ?1 WHERE id = 1", [s])
+            .unwrap();
+    };
+    let mut t = task("refused");
+    t.worktree_mode = WorktreeMode::Shared;
+    let id = w.add(t);
+    let limit = w.run.max_attempts;
+    assert!(limit >= 2, "the run allows a retry: max_attempts {limit}");
+    let backoff = [30_i64, 120, 480];
+    let host = RefusingHost::default();
+    let mut clock = 0_i64;
+    for n in 1..=limit {
+        set_clock(&w, clock);
+        let d = w.dispatch(
+            &Holds {
+                clock,
+                ..Holds::default()
+            },
+            &AllSandboxes,
+        );
+        assert_eq!(bound_ids(&d), vec![id.clone()], "attempt {n} at {clock}");
+        let attempt = d.bound[0].attempt_id.clone();
+        let worker = d.bound[0].worker_id.clone();
+
+        let r = push_launch::launch(
+            w.store.conn(),
+            &w.fleet_root,
+            FleetSeconds(clock),
+            &attempt,
+            &host,
+            &host,
+        );
+        assert!(r.is_err(), "the pass reports the failed launch");
+        assert_eq!(host.calls.get(), n as usize);
+
+        assert_eq!(
+            w.attempts(&id).last().map(|a| (a.0.clone(), a.1.clone())),
+            Some((attempt.clone(), "ended".to_string()))
+        );
+        let outcome: Option<String> = w
+            .store
+            .conn()
+            .query_row(
+                "SELECT outcome FROM attempts WHERE id = ?1",
+                [&attempt],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outcome.as_deref(), Some("crashed"));
+        assert_eq!(
+            workers::get(w.store.conn(), &worker).unwrap().status,
+            "launch_failed"
+        );
+        let row = tasks::get(w.store.conn(), &id).unwrap();
+        assert_eq!(row.attempts, n);
+        if n == limit {
+            assert_eq!(row.status, "failed", "max_attempts {limit} ends the loop");
+            break;
+        }
+        let wait = backoff[(n as usize - 1).min(backoff.len() - 1)];
+        assert_eq!(row.status, "ready");
+        assert_eq!(row.not_before, Some(clock + wait), "the backoff of rung 6");
+
+        let early = w.dispatch(
+            &Holds {
+                clock: clock + wait - 1,
+                ..Holds::default()
+            },
+            &AllSandboxes,
+        );
+        assert!(early.bound.is_empty(), "attempt {} waits", n + 1);
+        clock += wait;
+    }
+
+    set_clock(&w, clock + 10_000);
+    let d = w.dispatch(
+        &Holds {
+            clock: clock + 10_000,
+            ..Holds::default()
+        },
+        &AllSandboxes,
+    );
+    assert!(d.bound.is_empty());
+    assert_eq!(host.calls.get(), limit as usize);
+    assert_eq!(w.attempts(&id).len(), limit as usize);
+}
+
+fn with_shorts(w: &World, text: String) -> String {
+    let mut stmt = w
+        .store
+        .conn()
+        .prepare("SELECT task_id, seq FROM tasks")
+        .unwrap();
+    let ids: Vec<(String, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    ids.iter().fold(text, |t, (id, seq)| {
+        t.replace(id.as_str(), &format!("T-{seq}"))
+    })
+}
+
+fn ready_queue(n: usize) -> World {
+    let w = World::new();
+    let run = w.run.clone();
+    let items: Vec<(String, NewTask)> = (0..n)
+        .map(|i| {
+            let mut t = task(&format!("q{i}"));
+            t.own = vec![format!("src/q{i}.rs")];
+            (format!("q{i}"), t)
+        })
+        .collect();
+    let mut w = w;
+    w.store
+        .immediate(|tx| Ok(tasks::add_many(tx, &run, &items, Actor::Orchestrator)?.len()))
+        .unwrap();
+    w
+}
+
+#[test]
+fn dispatch_reads_of_a_large_ready_queue_run_a_fixed_number_of_statements() {
+    let count = |n: usize| {
+        let w = ready_queue(n);
+        let conn = w.store.conn();
+        let (chosen, choice_statements) =
+            horch_core::taskledger::testing::count_statements(conn, || {
+                choices(conn, &Holds::default(), &AllSandboxes, None).unwrap()
+            });
+        assert_eq!(bind_order(&chosen).len(), n);
+        let gw = CliGitGateway::new(effects::integration_git(
+            &w.fleet_root,
+            std::slice::from_ref(&w.root),
+        ));
+        let (tips, tip_statements) =
+            horch_core::taskledger::testing::count_statements(conn, || {
+                read_base_tips(conn, &gw).unwrap()
+            });
+        assert_eq!(tips.len(), 1);
+        (choice_statements, tip_statements)
+    };
+    assert_eq!(count(30), count(3000));
+}
+
+/// T-313: on a mixed queue the choices, the binds of a pass of 2 slots
+/// and the base tips are the values of the code that read each ready task
+/// by itself, recorded before the change.
+#[test]
+fn dispatch_choices_of_a_mixed_queue_are_the_recorded_choices() {
+    let mut w = World::new();
+    let cancelled = w.add(task("cancelled"));
+    let parked = w.add(task("parked"));
+    let open = w.add(task("open"));
+    let rescue = w.add(task("rescue"));
+    let mut same_1 = task("same-1");
+    same_1.own = vec!["src/x.rs".into()];
+    w.add(same_1);
+    let mut same_2 = task("same-2");
+    same_2.own = vec!["src/x.rs".into()];
+    w.add(same_2);
+    let mut codex_1 = task("codex-1");
+    codex_1.primary = "codex".into();
+    codex_1.own = vec!["src/c1.rs".into()];
+    w.add(codex_1);
+    let mut codex_2 = task("codex-2");
+    codex_2.primary = "codex".into();
+    codex_2.own = vec!["src/c2.rs".into()];
+    let codex_2 = w.add(codex_2);
+
+    let b = w.bind(&open).unwrap();
+    let b2 = w.bind(&rescue).unwrap();
+    w.crash(&b2.attempt_id, &rescue);
+    let conn = w.store.conn();
+    conn.execute(
+        "UPDATE tasks SET cancel_requested = 'test cancel' WHERE task_id = ?1",
+        [&cancelled],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ideas (id, feature_id, state, created_at, updated_at)
+         SELECT 'I-parked', feature_id, 'parked', 'now', 'now' FROM ideas LIMIT 1",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tasks SET idea_id = 'I-parked' WHERE task_id = ?1",
+        [&parked],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE task_id = ?1",
+        [&open],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE worktrees SET state = 'orphaned' WHERE task_id = ?1",
+        [&rescue],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tasks SET priority = -1 WHERE task_id = ?1",
+        [&codex_2],
+    )
+    .unwrap();
+    assert!(b.worktree.is_some());
+
+    let holds = Holds {
+        clock: 1_000_000,
+        ..Holds::default()
+    };
+    let chosen = choices(w.store.conn(), &holds, &AllSandboxes, None).unwrap();
+    let chosen: Vec<String> = chosen.iter().map(|c| format!("{c:?}")).collect();
+    assert_eq!(
+        with_shorts(&w, chosen.join("\n")),
+        [
+            r#"Held { task_id: "T-2", hold: IdeaParked { idea: "I-parked" } }"#,
+            r#"Held { task_id: "T-4", hold: TreeRescue }"#,
+            r#"Bind { task_id: "T-8", persona: "codex" }"#,
+            r#"Held { task_id: "T-3", hold: OpenAttempt { attempt: "T-3/A1" } }"#,
+            r#"Bind { task_id: "T-5", persona: "opus" }"#,
+            r#"Held { task_id: "T-6", hold: PathHeld { path: "src/x.rs", by: "T-5" } }"#,
+            r#"Bind { task_id: "T-7", persona: "codex" }"#,
+        ]
+        .join("\n")
+    );
+
+    let gw = CliGitGateway::new(effects::integration_git(
+        &w.fleet_root,
+        std::slice::from_ref(&w.root),
+    ));
+    let tips = read_base_tips(w.store.conn(), &gw).unwrap();
+    let bases: Vec<&str> = tips.keys().map(|(_, base)| base.as_str()).collect();
+    assert_eq!(bases, [RUN_BRANCH]);
+
+    let ctx = tips_ctx(&w.config, &tips);
+    let d = w
+        .store
+        .immediate(|tx| dispatch_due(tx, &ctx, &holds, &AllSandboxes, 2))
+        .unwrap();
+    let bound: Vec<_> = d.bound.iter().map(|b| (&b.task_id, &b.persona)).collect();
+    assert_eq!(
+        with_shorts(&w, format!("{bound:?}\n{:?}\n{:?}", d.held, d.failed)),
+        [
+            r#"[("T-8", "codex"), ("T-5", "opus")]"#,
+            r#"[("T-2", IdeaParked { idea: "I-parked" }), ("T-4", TreeRescue), ("T-3", OpenAttempt { attempt: "T-3/A1" }), ("T-6", PathHeld { path: "src/x.rs", by: "T-5" })]"#,
+            "[]",
+        ]
+        .join("\n")
+    );
 }

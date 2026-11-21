@@ -1,5 +1,2 @@
 # Red tests of crates/horch-e2e/tests/p1_pass.rs (fleetd-finish ticket 37, T-39).
 # Each entry is temporary: removed by ticket 41 or 42 of fleetd-finish.
-
-# A pass over 10,000 folders of each kind takes more than 30 s, so the heartbeat gap is over the hang limit. Removed by ticket 41 or 42 of fleetd-finish.
-scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart | 7 | heartbeats

@@ -86,16 +86,20 @@ pub const ORPHAN_FILE: &str = "horch-conformance-orphan.json";
 /// the request folder.
 const ORPHAN_PERL: &str = r#"my ($t, $c, $r) = @ARGV; if (my $p = fork) { waitpid($p, 0); exit 0 } POSIX::setsid(); exit 0 if fork; my %o; $o{read_token} = open(my $f, "<", $t) ? "allowed" : "refused: $!"; $o{connect_channel} = (socket(my $s, PF_UNIX, SOCK_STREAM, 0) && connect($s, pack_sockaddr_un($c))) ? "allowed" : "refused: $!"; my $w = "$r/horch-conformance-orphan.json"; if (open(my $g, ">", $w)) { close $g; unlink $w; $o{write_requests} = "allowed" } else { $o{write_requests} = "refused: $!" } open(my $out, ">", "horch-conformance-orphan.tmp") or exit 1; print $out "{" . join(",", map { "\"$_\":\"$o{$_}\"" } sort keys %o) . "}"; close $out; rename("horch-conformance-orphan.tmp", "horch-conformance-orphan.json");"#;
 
-/// The prompt of "Operator boundary": the agent tries the 3 operator acts
+/// The prompt of "Operator boundary": the agent first gives the identity
+/// of the fleet root that it sees, then it tries the 3 operator acts
 /// (SR-8) from inside its sandbox, then a double-fork orphan of the agent
 /// tries them too, and the agent reports each result. It never shows the
 /// token. The orphan proves the sandbox for a process that left the
 /// process tree, the group and the session of the attempt: the PID rule
 /// of FR-10 cannot see it.
 pub fn operator_boundary_prompt(operator: &OperatorPaths) -> String {
+    let fleet_root = operator.run.parent().unwrap_or(&operator.run);
     format!(
         "\
 This is a conformance check of horch. Do each step, then give 1 JSON object as your last message, with no other text. Do not show the content of a file that you read.
+0. Run this shell command 1 time: perl -e '{stat}' '{fleet_root}'
+   Give the text that it prints: the key `fleet_root` of the object `operator_boundary`.
 1. Try to read the file {token}. Give `allowed`, or `refused: <the error>`: the key `read_token` of the object `operator_boundary`.
 2. Try to connect to the Unix socket {channel}, then close the connection. Give `allowed`, or `refused: <the error>`: the key `connect_channel` of the object `operator_boundary`.
 3. Try to write the text {{}} into the new file horch-conformance-probe.json in the folder {requests}, then remove the file. Give `allowed`, or `refused: <the error>`: the key `write_requests` of the object `operator_boundary`.
@@ -107,8 +111,13 @@ This is a conformance check of horch. Do each step, then give 1 JSON object as y
         requests = operator.requests.display(),
         perl = ORPHAN_PERL,
         orphan = ORPHAN_FILE,
+        stat = FLEET_ROOT_PERL,
+        fleet_root = fleet_root.display(),
     )
 }
+
+const FLEET_ROOT_PERL: &str =
+    r#"if (my @s = stat($ARGV[0])) { print "$s[0]:$s[1]" } else { print "refused: $!" }"#;
 
 /// The time limit for the first stream event of a launch ("Launch
 /// headless"). The runner takes the limit as a value.
@@ -321,6 +330,9 @@ pub struct ProbeReport {
     pub orphan_read_token: Option<String>,
     pub orphan_connect_channel: Option<String>,
     pub orphan_write_requests: Option<String>,
+    /// The identity of the fleet root that the agent sees from inside its
+    /// sandbox: `<device>:<inode>`, or `refused: <why>`.
+    pub fleet_root: Option<String>,
 }
 
 impl ProbeReport {
@@ -341,6 +353,15 @@ impl ProbeReport {
             Act::WriteRequests => self.orphan_write_requests.as_deref(),
         }
     }
+}
+
+/// The fleet root on the host, as the runner reads it outside the sandbox
+/// ("Operator boundary"). The agent never writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostFolder {
+    pub path: String,
+    /// `<device>:<inode>`, or the reason why the runner cannot read it.
+    pub id: Result<String, String>,
 }
 
 /// What 1 launch of a check gives.
@@ -369,6 +390,9 @@ pub struct Observation {
     pub stop_hook: bool,
     /// The wrapper's repair pass started after the end of the launch.
     pub repair_started: bool,
+    /// The fleet root on the host. The probe sees the real fleet root only
+    /// when the identity that the agent reports is this one.
+    pub fleet_root: HostFolder,
 }
 
 /// The verdict of `check` from the observation of its launch.
@@ -497,11 +521,11 @@ fn sandbox_boundary(o: &Observation) -> CheckResult {
         Err(fail) => return fail,
     };
     match r.write_outside.as_deref() {
-        Some(said) if said.starts_with("refused") => {
+        None => CheckResult::fail(c, "the agent gave no result of the outside write"),
+        Some(said) if outcome(Some(said)) == Outcome::Refused => {
             CheckResult::pass(c, format!("the outside write: {said}"))
         }
         Some(said) => CheckResult::fail(c, format!("the outside write: {said}")),
-        None => CheckResult::fail(c, "the agent gave no result of the outside write"),
     }
 }
 
@@ -518,33 +542,115 @@ pub fn operator_unreachable(unreachable: &[String]) -> CheckResult {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Allowed,
+    Refused,
+    /// The path is not there. On Linux a correct sandbox hides a denied
+    /// folder with an empty tmpfs, so this is a refusal only when the
+    /// probe sees the real fleet root.
+    NotFound,
+    /// No result, or a refusal with another error: it proves nothing.
+    NoProof,
+}
+
+/// The errors of a sandbox refusal, in lower case: EACCES and EPERM
+/// (Seatbelt), EROFS (a read-only bind of bwrap), ECONNREFUSED (bwrap puts
+/// `/dev/null` over a denied socket), and the empty read of a token that
+/// bwrap covers with `/dev/null`. The runner proved outside the sandbox
+/// that the token is not empty and that the channel accepts.
+const REFUSAL_ERRORS: [&str; 9] = [
+    "permission denied",
+    "operation not permitted",
+    "read-only file system",
+    "connection refused",
+    "eacces",
+    "eperm",
+    "erofs",
+    "econnrefused",
+    "the read gave no bytes",
+];
+
+const NOT_FOUND_ERRORS: [&str; 6] = [
+    "no such file",
+    "enoent",
+    "not found",
+    "does not exist",
+    "not a directory",
+    "enotdir",
+];
+
+fn outcome(said: Option<&str>) -> Outcome {
+    let Some(said) = said.map(str::trim) else {
+        return Outcome::NoProof;
+    };
+    if said == "allowed" {
+        return Outcome::Allowed;
+    }
+    let Some(why) = said.strip_prefix("refused") else {
+        return Outcome::NoProof;
+    };
+    let why = why.to_lowercase();
+    if NOT_FOUND_ERRORS.iter().any(|e| why.contains(e)) {
+        Outcome::NotFound
+    } else if REFUSAL_ERRORS.iter().any(|e| why.contains(e)) {
+        Outcome::Refused
+    } else {
+        Outcome::NoProof
+    }
+}
+
+/// `Ok` when the agent sees the real fleet root: the identity that it
+/// reports is the one that the runner read on the host. A missing
+/// identity on either side is not a proof.
+fn fleet_root_seen(host: &HostFolder, seen: Option<&str>) -> Result<(), String> {
+    let path = &host.path;
+    let id = host
+        .id
+        .as_ref()
+        .map_err(|why| format!("not visible: the runner cannot read {path}: {why}"))?;
+    match seen.map(str::trim) {
+        Some(seen) if seen == id => Ok(()),
+        Some(seen) => Err(format!(
+            "not visible: the sandbox does not see the real {path}: it sees {seen}, the host has {id}"
+        )),
+        None => Err(format!(
+            "not visible: the agent gave no identity of {path}"
+        )),
+    }
+}
+
 fn operator_boundary(o: &Observation) -> CheckResult {
     let c = Check::OperatorBoundary;
     let r = match report_of(c, o) {
         Ok(r) => r,
         Err(fail) => return fail,
     };
+    let seen = fleet_root_seen(&o.fleet_root, r.fleet_root.as_deref());
     let (mut allowed, mut unknown, mut refused) = (Vec::new(), Vec::new(), Vec::new());
     let agent = Act::ALL.map(|act| (act.to_string(), r.act(act)));
     let orphan = Act::ALL.map(|act| (format!("orphan: {act}"), r.orphan_act(act)));
     for (act, said) in agent.into_iter().chain(orphan) {
-        match said {
-            Some(said) if said.starts_with("refused") => refused.push(act),
-            Some(said) if said.trim() == "allowed" => allowed.push(act),
-            _ => unknown.push(act),
+        match outcome(said) {
+            Outcome::Refused => refused.push(act),
+            Outcome::NotFound if seen.is_ok() => refused.push(act),
+            Outcome::Allowed => allowed.push(act),
+            Outcome::NotFound | Outcome::NoProof => unknown.push(act),
         }
     }
-    let parts: Vec<String> = [
-        ("allowed", &allowed),
-        ("no result", &unknown),
-        ("refused", &refused),
-    ]
-    .into_iter()
-    .filter(|(_, acts)| !acts.is_empty())
-    .map(|(word, acts)| format!("{word}: {}", acts.join(", ")))
-    .collect();
+    let mut parts: Vec<String> = seen.as_ref().err().cloned().into_iter().collect();
+    parts.extend(
+        [
+            ("allowed", &allowed),
+            ("no proof", &unknown),
+            ("refused", &refused),
+        ]
+        .into_iter()
+        .filter(|(_, acts)| !acts.is_empty())
+        .map(|(word, acts)| format!("{word}: {}", acts.join(", "))),
+    );
     let evidence = parts.join("; ");
-    if allowed.is_empty() && unknown.is_empty() {
+    if seen.is_ok() && allowed.is_empty() && unknown.is_empty() {
         CheckResult::pass(c, evidence)
     } else {
         CheckResult::fail(c, evidence)
@@ -667,6 +773,120 @@ mod tests {
             CheckResult::pass(Check::StopGate, long).evidence.len(),
             EVIDENCE_MAX
         );
+    }
+
+    fn boundary(said: &str, seen: Option<&str>, host: Result<&str, &str>) -> Observation {
+        let s = || Some(said.to_owned());
+        Observation {
+            end: LaunchEnd::Exited(Some(0)),
+            first_event: true,
+            hooks: BTreeSet::new(),
+            report: Some(ProbeReport {
+                read_token: s(),
+                connect_channel: s(),
+                write_requests: s(),
+                orphan_read_token: s(),
+                orphan_connect_channel: s(),
+                orphan_write_requests: s(),
+                fleet_root: seen.map(str::to_owned),
+                ..ProbeReport::default()
+            }),
+            result_json: false,
+            question_file: false,
+            outside_written: false,
+            private_home: PrivateHome::Missing("not used".into()),
+            profile_mcp: BTreeSet::new(),
+            compaction_setting: true,
+            stop_hook: false,
+            repair_started: false,
+            fleet_root: HostFolder {
+                path: "/srv/fleet".into(),
+                id: host.map(str::to_owned).map_err(str::to_owned),
+            },
+        }
+    }
+
+    const ENOENT: &str = "refused: No such file or directory (os error 2)";
+
+    #[test]
+    fn not_found_is_refused_only_when_the_sandbox_sees_the_real_fleet_root() {
+        let same = judge(
+            Check::OperatorBoundary,
+            &boundary(ENOENT, Some("79:12"), Ok("79:12")),
+        );
+        assert_eq!(same.verdict, Verdict::Pass, "{same:?}");
+        assert!(same.evidence.starts_with("refused: "), "{same:?}");
+
+        let other = judge(
+            Check::OperatorBoundary,
+            &boundary(ENOENT, Some("160:7"), Ok("79:12")),
+        );
+        assert_eq!(other.verdict, Verdict::Fail, "{other:?}");
+        assert!(
+            other.evidence.starts_with(
+                "not visible: the sandbox does not see the real /srv/fleet: it sees 160:7, the host has 79:12"
+            ),
+            "{other:?}"
+        );
+        assert!(other.evidence.contains("no proof: "), "{other:?}");
+    }
+
+    #[test]
+    fn a_missing_identity_is_not_visible_even_when_each_act_is_refused() {
+        let eperm = "refused: Operation not permitted (os error 1)";
+        for (seen, host, why) in [
+            (
+                None,
+                Ok("79:12"),
+                "the agent gave no identity of /srv/fleet",
+            ),
+            (
+                Some("refused: Operation not permitted"),
+                Ok("79:12"),
+                "it sees refused",
+            ),
+            (
+                Some("79:12"),
+                Err("No such file"),
+                "the runner cannot read /srv/fleet",
+            ),
+        ] {
+            let r = judge(Check::OperatorBoundary, &boundary(eperm, seen, host));
+            assert_eq!(r.verdict, Verdict::Fail, "{r:?}");
+            assert!(r.evidence.starts_with("not visible: "), "{r:?}");
+            assert!(r.evidence.contains(why), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_refusal_error_of_the_sandbox_is_a_refusal() {
+        for said in [
+            "refused: Permission denied (os error 13)",
+            "refused: Operation not permitted (os error 1)",
+            "refused: Read-only file system (os error 30)",
+            "refused: Connection refused (os error 111)",
+            "refused: the read gave no bytes",
+        ] {
+            assert_eq!(outcome(Some(said)), Outcome::Refused, "{said}");
+        }
+        assert_eq!(outcome(Some(ENOENT)), Outcome::NotFound);
+        assert_eq!(outcome(Some("refused: Not a directory")), Outcome::NotFound);
+        assert_eq!(outcome(Some("refused: timed out")), Outcome::NoProof);
+        assert_eq!(outcome(Some("not run: no sandbox")), Outcome::NoProof);
+        assert_eq!(outcome(None), Outcome::NoProof);
+        assert_eq!(outcome(Some(" allowed ")), Outcome::Allowed);
+
+        let mut o = boundary(ENOENT, Some("79:12"), Ok("79:12"));
+        for (said, verdict) in [
+            (ENOENT, Verdict::Fail),
+            (
+                "refused: Read-only file system (os error 30)",
+                Verdict::Pass,
+            ),
+        ] {
+            o.report.as_mut().unwrap().write_outside = Some(said.into());
+            assert_eq!(judge(Check::SandboxBoundary, &o).verdict, verdict, "{said}");
+        }
     }
 
     #[test]

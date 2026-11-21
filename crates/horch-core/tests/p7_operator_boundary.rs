@@ -68,9 +68,14 @@ enum Codex {
     WithoutNetworkProxy,
 }
 
-/// A test machine in `/tmp`: a home, the horch folders, the scratch folder
-/// and a fleet root with a real token file, a real channel socket and a
-/// request folder.
+/// The folder of each test machine. On Linux the sandbox mounts a new
+/// empty tmpfs on `/tmp`, so a fleet root in `/tmp` is not visible in it.
+const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
+    "/var/tmp"
+} else {
+    "/tmp"
+};
+
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
@@ -81,7 +86,11 @@ struct Machine {
 
 impl Machine {
     fn new(codex: Codex) -> Machine {
-        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        Machine::new_in(codex, MACHINE_ROOT)
+    }
+
+    fn new_in(codex: Codex, root: &str) -> Machine {
+        let tmp = tempfile::tempdir_in(root).unwrap();
         for d in [
             "home",
             "state",
@@ -396,6 +405,32 @@ fn operator_boundary_fails_when_the_rules_allow_a_request_write() {
     }));
     assert_only_allowed(&m.check(&t), Act::WriteRequests);
     m.assert_clean();
+}
+
+#[track_caller]
+fn assert_not_visible(r: &CheckResult, fleet_root: &Path) {
+    assert_verdict(r, Verdict::Fail);
+    let want = format!(
+        "not visible: the sandbox does not see the real {}",
+        fleet_root.display()
+    );
+    assert!(r.evidence.starts_with(&want), "{r:?}");
+}
+
+#[test]
+fn operator_boundary_fails_when_the_sandbox_does_not_see_the_real_fleet_root() {
+    let m = Machine::new(Codex::WithNetworkProxy);
+    let root = m.path("ledger/fleet");
+    let t = m.claude_with_rules(json!({"denyRead": [root], "allowWrite": []}));
+    assert_not_visible(&m.check(&t), &root);
+    m.assert_clean();
+
+    if cfg!(target_os = "linux") {
+        let old = Machine::new_in(Codex::WithNetworkProxy, "/tmp");
+        let r = old.check(&profile(HarnessKind::Claude));
+        assert_not_visible(&r, &old.path("ledger/fleet"));
+        old.assert_clean();
+    }
 }
 
 #[test]

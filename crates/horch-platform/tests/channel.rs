@@ -222,8 +222,9 @@ fn the_listener_accepts_a_next_client_after_the_first() {
 }
 
 /// A reply that is far larger than the buffer of the channel: 4096 bytes on
-/// a Windows pipe, a few KiB on a Unix socket.
-const LARGE_REPLY: usize = 128 * 1024;
+/// a Windows pipe, a few KiB on a macOS Unix socket and about 208 KiB on a
+/// Linux Unix socket (`net.core.wmem_default`).
+const LARGE_REPLY: usize = 1024 * 1024;
 
 fn serve_large_reply(
     listener: &Listener,

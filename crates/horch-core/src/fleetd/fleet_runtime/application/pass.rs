@@ -1308,6 +1308,7 @@ impl<'a> Pass<'a> {
             needs_you: self.ports.needs_you,
             sent: &read.sent,
             exited: &wrappers.exited,
+            personas_at_start: worker_personas(&tx)?,
         };
         let mut doorbells = Vec::new();
         rules.run(&read, &mut stops, &mut doorbells)?;
@@ -2123,6 +2124,7 @@ struct Rules<'a> {
     /// The push attempts whose `exit.json` this pass ingested.
     exited: &'a [String],
     judge_branches: JudgeGit<'a>,
+    personas_at_start: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2165,6 +2167,9 @@ impl Rules<'_> {
     }
 
     fn persona_of(&self, worker: &str) -> Result<Option<String>> {
+        if let Some(persona) = self.personas_at_start.get(worker) {
+            return Ok(persona.clone());
+        }
         Ok(workers::find(self.tx, worker)?.and_then(|w| w.persona))
     }
 
@@ -2602,10 +2607,12 @@ impl Rules<'_> {
         Ok(())
     }
 
-    /// Step 6: the lease part of I1.
+    /// Step 6: the lease part of I1, at most `pass_budget` lease writes
+    /// and deletes: N repairs take at most N / `pass_budget` + 1 passes.
     fn check_i1(&self) -> Result<()> {
         let limits = |worker: &str| self.limits(worker);
-        lease::check_i1(self.tx, self.guard, self.clock, &limits)
+        let budget = PassBudget::new(self.config.pass_budget).rows();
+        lease::check_i1_within(self.tx, self.guard, self.clock, &limits, budget)
     }
 }
 
@@ -3165,6 +3172,12 @@ fn verifying(tx: &Connection, task: &str) -> Result<bool> {
 fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
     let hint = attempt_files::QUOTA_HINT;
     door::has_fact(tx, Entity::Attempt, attempt, EventKind::Note, hint)
+}
+
+fn worker_personas(tx: &Connection) -> Result<BTreeMap<String, Option<String>>> {
+    let mut stmt = tx.prepare("SELECT worker_id, persona FROM workers")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// The cause of the hold of each project with no fast gate, by project

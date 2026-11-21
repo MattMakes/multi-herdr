@@ -20,6 +20,7 @@ use horch_core::fleetd::fleet_runtime::domain::health::Finding;
 use horch_core::fleetd::fleet_runtime::domain::requests::{retired, Kind};
 use horch_core::fleetd::task_execution::adapters::task_files::AttemptFiles;
 use horch_core::fleetd::task_execution::application::dispatch::write_task_files;
+use horch_core::fleetd::task_execution::application::launch;
 use horch_core::fleetd::task_execution::domain::task::AttemptState;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{RunStatus, WorkerStatus};
@@ -100,6 +101,10 @@ pub struct Pushed {
     pub attempt_id: String,
     pub task_id: String,
     pub files: AttemptFiles,
+    /// The session that the CLI of the attempt resumes (RR-12): the
+    /// `resumed_from_session` that fleetd wrote on the worker row before the
+    /// launch, of the form of [`launch::session_id_ok`]. No argument sets it.
+    pub resume: Option<String>,
 }
 
 /// The ledger side of a spawn that joins a task-ledger run: it names one
@@ -218,12 +223,16 @@ fn push(
 ) -> Result<(String, Pushed)> {
     let (worker, attempt_id, task_id) = bound_attempt(store, attempt, run, persona)?;
     let files = write_task_files(store.conn(), &ctx.paths.fleet_root, &attempt_id, &[])?;
+    let resume = workers::get(store.conn(), &worker)?
+        .resumed_from_session
+        .filter(|id| launch::session_id_ok(id));
     Ok((
         worker,
         Pushed {
             attempt_id,
             task_id,
             files,
+            resume,
         },
     ))
 }

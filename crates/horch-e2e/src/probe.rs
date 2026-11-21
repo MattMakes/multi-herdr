@@ -102,6 +102,7 @@ fn orphan_entry(_act: &str, _path: &Path, _out: &Path) -> ! {
 
 fn do_act(act: &str, path: &Path) -> Result<(), String> {
     match act {
+        "stat" => identity(path).map(|id| print!("{id}")),
         "write" => std::fs::write(path, "horch probe\n").map_err(|e| e.to_string()),
         "read" => match std::fs::read(path) {
             Ok(bytes) if bytes.is_empty() => Err("the read gave no bytes".to_owned()),
@@ -111,6 +112,19 @@ fn do_act(act: &str, path: &Path) -> Result<(), String> {
         "connect" => connect(path),
         other => Err(format!("unknown act {other}")),
     }
+}
+
+#[cfg(unix)]
+fn identity(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .map(|m| format!("{}:{}", m.dev(), m.ino()))
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn identity(_path: &Path) -> Result<String, String> {
+    Err("no device and inode on this OS".to_owned())
 }
 
 #[cfg(unix)]
@@ -470,9 +484,14 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
         "sandbox".into(),
         json!(if rules.is_some() { "on" } else { "none" }),
     );
+    let fleet_root = paths.run.parent().unwrap_or(&paths.run);
+    report.insert("fleet_root".into(), json!(seen_in_child(rules, fleet_root)));
     let mut orphan = Map::new();
     for (name, act, path) in acts {
-        let result = in_child(rules, act, &path);
+        let result = match name {
+            "write_outside" => write_outside(rules, &path),
+            _ => in_child(rules, act, &path),
+        };
         if act == "write" {
             let _ = std::fs::remove_file(&path);
         }
@@ -489,6 +508,51 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
     }
     report.insert("orphan".into(), Value::Object(orphan));
     Value::Object(report)
+}
+
+/// The outside write of the probe, at a path that is real on the host:
+/// the sandbox must see the real folder of `path`, and after the write
+/// the host must have no file at `path`.
+fn write_outside(rules: Option<&Rules>, path: &Path) -> String {
+    let folder = path.parent().unwrap_or(path);
+    let host = identity(folder);
+    let seen = seen_in_child(rules, folder);
+    if host.as_deref() != Ok(seen.as_str()) {
+        return format!(
+            "not run: the sandbox does not see the real {}: it sees {seen}, the host has {}",
+            folder.display(),
+            host.unwrap_or_else(|e| format!("refused: {e}"))
+        );
+    }
+    let result = in_child(rules, "write", path);
+    if result.starts_with("refused") && path.exists() {
+        return format!(
+            "allowed: {} is on the host, the child said {result}",
+            path.display()
+        );
+    }
+    result
+}
+
+fn seen_in_child(rules: Option<&Rules>, path: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("not run: {e}"),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(CHILD).arg("stat").arg(path);
+    if let Some(rules) = rules {
+        cmd = match sandboxed(cmd, &rules.writable, &rules.denials) {
+            Ok(cmd) => cmd,
+            Err(e) => return format!("not run: {e}"),
+        };
+    }
+    cmd.stdin(std::process::Stdio::null());
+    match cmd.output() {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        Ok(out) => format!("refused: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        Err(e) => format!("not run: {e}"),
+    }
 }
 
 fn in_orphan(rules: Option<&Rules>, act: &str, path: &Path, out: &Path) -> String {

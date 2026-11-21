@@ -21,10 +21,10 @@ use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State as JobState};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-use crate::fleetd::ideas::application::rollup::idea_state_of_task;
 use crate::fleetd::worktree_custody::adapters::sqlite as store;
-use crate::fleetd::worktree_custody::application::remove::{queue_auto_remove, removal_failed};
+use crate::fleetd::worktree_custody::application::remove::queue_auto_remove;
 use crate::fleetd::worktree_custody::domain::disk::{
     self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND,
 };
@@ -46,6 +46,7 @@ pub struct Report {
 
 /// 1 row that is not `removed`, with the state of the idea of its task and
 /// whether its automatic removal failed.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Measured {
     id: String,
     state: String,
@@ -136,40 +137,164 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// Each row that is not `removed`, with the state of the idea of its task.
+/// 1 statement for any count of trees: the disk budget sums the bytes of
+/// all trees, so this read stays whole.
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
-    let mut stmt = conn.prepare(
-        "SELECT worktree_id, state, task_id, created_at, bytes_on_disk, path
-           FROM worktrees WHERE state <> 'removed'",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, String>(5)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, state, task_id, created_at, bytes, path) in rows {
-        let idea_state = match task_id.as_deref() {
-            Some(task) => idea_state_of_task(conn, task)?,
-            None => None,
-        };
-        let removal_failed = removal_failed(conn, &id, &path)?;
-        out.push(Measured {
-            id,
-            state,
-            has_task: task_id.is_some(),
-            idea_state,
-            created_at,
-            bytes: bytes.and_then(|b| u64::try_from(b).ok()),
-            removal_failed,
-        });
+    let mut stmt = conn.prepare(&format!(
+        "SELECT w.worktree_id, w.state, w.task_id IS NOT NULL, w.created_at, w.bytes_on_disk,
+             i.state,
+             (SELECT j.state FROM jobs j
+               WHERE j.kind = '{remove}' AND j.subject = w.worktree_id AND j.input_key = w.path
+               ORDER BY j.run DESC LIMIT 1) = '{failed}'
+           FROM worktrees w
+           LEFT JOIN tasks t ON t.task_id = w.task_id
+           LEFT JOIN ideas i ON i.id = t.idea_id
+          WHERE w.state <> 'removed'
+          ORDER BY w.rowid",
+        remove = Kind::WorktreeRemove.as_str(),
+        failed = JobState::Failed.as_str(),
+    ))?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Measured {
+            id: r.get(0)?,
+            state: r.get(1)?,
+            has_task: r.get(2)?,
+            created_at: r.get(3)?,
+            bytes: r
+                .get::<_, Option<i64>>(4)?
+                .and_then(|b| u64::try_from(b).ok()),
+            idea_state: r.get(5)?,
+            removal_failed: r.get::<_, Option<bool>>(6)?.unwrap_or(false),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::params;
+
+    use super::*;
+    use crate::fleetd::ideas::application::rollup::idea_state_of_task;
+    use crate::fleetd::worktree_custody::application::remove::removal_failed;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+
+    fn measured_one_by_one(conn: &Connection) -> Vec<Measured> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT worktree_id, state, task_id, created_at, bytes_on_disk, path
+                   FROM worktrees WHERE state <> 'removed' ORDER BY rowid",
+            )
+            .unwrap();
+        let rows: Vec<(String, String, Option<String>, String, Option<i64>, String)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows.into_iter()
+            .map(|(id, state, task_id, created_at, bytes, path)| Measured {
+                idea_state: task_id
+                    .as_deref()
+                    .and_then(|t| idea_state_of_task(conn, t).unwrap()),
+                removal_failed: removal_failed(conn, &id, &path).unwrap(),
+                has_task: task_id.is_some(),
+                bytes: bytes.and_then(|b| u64::try_from(b).ok()),
+                id,
+                state,
+                created_at,
+            })
+            .collect()
     }
-    Ok(out)
+
+    fn ledger(n: usize) -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now');",
+                )?;
+                let idea = crate::taskledger::schema::run_idea(tx, "r1", "now", true)?;
+                for i in 0..n {
+                    let task = format!("T{i:04}");
+                    tx.execute(
+                        "INSERT INTO tasks (task_id, run_id, seq, title, task_file,
+                             primary_persona, claimable_by, status, created_at, updated_at, idea_id)
+                         VALUES (?1, 'r1', ?2, ?1, 'a.md', 'opus', 'opus', 'running', 'now',
+                             'now', ?3)",
+                        params![task, i as i64 + 1, idea],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch,
+                             base, status, created_at, bytes_on_disk)
+                         VALUES (?1, ?2, '/p', ?3, ?1, 'main', 'open', 'now', ?4)",
+                        params![
+                            format!("WT{i:04}"),
+                            task,
+                            format!("/p/.worktrees/{i}"),
+                            i as i64
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    fn removal(conn: &Connection, id: &str, key: &str, run: i64, state: &str) {
+        conn.execute(
+            "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)
+             VALUES ('worktree_remove', ?1, ?2, ?3, ?4, 60, 'now')",
+            params![id, key, run, state],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn measured_gives_the_rows_of_the_read_of_each_tree() {
+        let (_tmp, store) = ledger(6);
+        let c = store.conn();
+        c.execute_batch(
+            "UPDATE worktrees SET state = 'removed' WHERE worktree_id = 'WT0000';
+             UPDATE worktrees SET task_id = NULL WHERE worktree_id = 'WT0001';
+             UPDATE worktrees SET bytes_on_disk = NULL WHERE worktree_id = 'WT0002';",
+        )
+        .unwrap();
+        removal(c, "WT0002", "/p/.worktrees/2", 1, "failed");
+        removal(c, "WT0003", "/p/.worktrees/3", 1, "failed");
+        removal(c, "WT0003", "/p/.worktrees/3", 2, "passed");
+        removal(c, "WT0004", "/p/.worktrees/other", 1, "failed");
+        let want = measured_one_by_one(c);
+        assert_eq!(want.len(), 5);
+        assert_eq!(
+            want.iter().filter(|m| m.removal_failed).count(),
+            1,
+            "the fixture has 1 failed removal"
+        );
+        assert_eq!(measured(c).unwrap(), want);
+    }
+
+    #[test]
+    fn measured_runs_the_same_statements_for_3_and_300_trees() {
+        let count = |n: usize| {
+            let (_tmp, store) = ledger(n);
+            let (rows, statements) = count_statements(store.conn(), || measured(store.conn()));
+            assert_eq!(rows.unwrap().len(), n);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }

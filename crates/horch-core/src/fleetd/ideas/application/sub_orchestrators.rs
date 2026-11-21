@@ -67,7 +67,7 @@ use crate::fleetd::task_execution::domain::task::{
 };
 use crate::taskledger::model::{Actor, TaskStatus, WorkerKind, WorkerStatus};
 use crate::taskledger::workers::{self, NewWorker};
-use crate::taskledger::{runs, tasks, util};
+use crate::taskledger::{runs, util};
 
 /// The persona of each sub-orchestrator attempt.
 pub const PERSONA: &str = "idea-lead";
@@ -692,6 +692,17 @@ fn planning(ideas: &[IdeaFacts]) -> Option<Need> {
     })
 }
 
+/// 1 statement for any count of tasks. A failed task is open: its status
+/// is not `done` or `cancelled`.
+fn has_failed_task(conn: &Connection, idea: &str) -> Result<bool> {
+    let failed = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE idea_id = ?1 AND status = ?2)",
+        [idea, TaskStatus::Failed.as_str()],
+        |r| r.get(0),
+    )?;
+    Ok(failed)
+}
+
 /// The idea in [`IN_FLIGHT`] of the oldest open question of the feature of
 /// `ideas`, else of its oldest `failed` task that waits for its replan.
 fn work(conn: &Connection, ideas: &[IdeaFacts]) -> Result<Option<Need>> {
@@ -718,11 +729,85 @@ fn work(conn: &Connection, ideas: &[IdeaFacts]) -> Result<Option<Need>> {
         .iter()
         .filter(|i| IN_FLIGHT.contains(&i.state.as_str()))
     {
-        for task in attempts::open_tasks_of_idea(conn, &i.id)? {
-            if tasks::get(conn, &task)?.status == TaskStatus::Failed.as_str() {
-                return Ok(need(&i.id));
-            }
+        if has_failed_task(conn, &i.id)? {
+            return Ok(need(&i.id));
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod has_failed_task_tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::tasks;
+    use crate::taskledger::testing::count_statements;
+    use rusqlite::params;
+
+    fn ledger(statuses: &[&str]) -> (tempfile::TempDir, Store, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        let idea = store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now');",
+                )?;
+                let idea = crate::taskledger::schema::run_idea(tx, "r1", "now", true)?;
+                for (i, status) in statuses.iter().enumerate() {
+                    tx.execute(
+                        "INSERT INTO tasks (task_id, run_id, seq, title, task_file,
+                             primary_persona, claimable_by, status, created_at, updated_at, idea_id)
+                         VALUES (?1, 'r1', ?2, ?1, 'a.md', 'opus', 'opus', ?3, 'now', 'now', ?4)",
+                        params![format!("T{i:04}"), i as i64 + 1, status, idea],
+                    )?;
+                }
+                Ok(idea)
+            })
+            .unwrap();
+        (tmp, store, idea.expect("the run has its idea"))
+    }
+
+    fn failed_one_by_one(conn: &Connection, idea: &str) -> bool {
+        attempts::open_tasks_of_idea(conn, idea)
+            .unwrap()
+            .iter()
+            .any(|t| tasks::get(conn, t).unwrap().status == TaskStatus::Failed.as_str())
+    }
+
+    #[test]
+    fn has_failed_task_gives_the_answer_of_the_read_of_each_task() {
+        let mixed = [
+            "running",
+            "done",
+            "cancelled",
+            "ready",
+            "pending",
+            "verifying",
+        ];
+        for failed in [false, true] {
+            let mut statuses = mixed.to_vec();
+            if failed {
+                statuses.push("failed");
+            }
+            let (_tmp, store, idea) = ledger(&statuses);
+            let c = store.conn();
+            assert_eq!(failed_one_by_one(c, &idea), failed);
+            assert_eq!(has_failed_task(c, &idea).unwrap(), failed);
+        }
+    }
+
+    #[test]
+    fn has_failed_task_runs_the_same_statements_for_3_and_300_tasks() {
+        let count = |n: usize| {
+            let (_tmp, store, idea) = ledger(&vec!["running"; n]);
+            let (failed, statements) = count_statements(store.conn(), || {
+                has_failed_task(store.conn(), &idea).unwrap()
+            });
+            assert!(!failed);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }

@@ -12,7 +12,6 @@ use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, Rows, TaskRow, WorkerRow,
 };
 use crate::taskledger::model::{TaskStatus, WorkerKind, WorkerStatus};
-use crate::taskledger::{runs, tasks};
 
 /// A recorded process from its pid and start time columns. A pid that
 /// cannot name 1 process is no process.
@@ -199,35 +198,50 @@ pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(Stri
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The task row of task `task_id`.
-fn task(conn: &Connection, task_id: &str) -> Result<TaskRow> {
-    let t = tasks::get(conn, task_id)?;
-    let max_attempts = runs::get(conn, &t.run_id)?.max_attempts;
-    let holds = [TaskStatus::Running, TaskStatus::Verifying]
+/// 1 statement for any count of live tasks: each live attempt is judged in
+/// each pass, so this read stays whole.
+fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.task_id, t.status, t.current_worker_id, t.attempts - t.attempt_floor,
+             r.max_attempts
+         FROM tasks t JOIN runs r ON r.run_id = t.run_id
+         WHERE t.task_id IN (SELECT task_id FROM attempts WHERE state = 'live')",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let status: String = r.get(1)?;
+        let holds = [TaskStatus::Running, TaskStatus::Verifying]
+            .iter()
+            .any(|s| s.as_str() == status);
+        let held: Option<String> = r.get(2)?;
+        Ok(TaskRow {
+            id: r.get(0)?,
+            held_by: held.filter(|_| holds),
+            used: r.get(3)?,
+            max_attempts: r.get(4)?,
+        })
+    })?;
+    let mut out = BTreeMap::new();
+    for t in rows {
+        let t = t?;
+        out.insert(t.id.clone(), t);
+    }
+    let live = attempts
         .iter()
-        .any(|s| s.as_str() == t.status);
-    Ok(TaskRow {
-        held_by: t.current_worker_id.filter(|_| holds),
-        used: t.attempts - t.attempt_floor,
-        max_attempts,
-        id: t.task_id,
-    })
+        .filter(|a| a.state == AttemptState::Live)
+        .filter_map(|a| a.task_id.as_deref());
+    for t in live {
+        if !out.contains_key(t) {
+            return Err(anyhow!("no task {t} with its run"));
+        }
+    }
+    Ok(out)
 }
 
 /// The rows of the reap path: each attempt and each worker row, and the
 /// task of each live attempt. `host` is the host of this machine.
 pub fn rows(conn: &Connection, host: &str) -> Result<Rows> {
     let attempts = attempts_where(conn, "", &[])?;
-    let mut tasks = BTreeMap::new();
-    let live = attempts
-        .iter()
-        .filter(|a| a.state == AttemptState::Live)
-        .filter_map(|a| a.task_id.as_deref());
-    for t in live {
-        if !tasks.contains_key(t) {
-            tasks.insert(t.to_string(), task(conn, t)?);
-        }
-    }
+    let tasks = live_tasks(conn, &attempts)?;
     Ok(Rows {
         attempts,
         workers: workers(conn, host)?,
@@ -446,4 +460,97 @@ pub fn set_idea(conn: &Connection, id: &str, idea_id: &str) -> Result<()> {
         params![id, idea_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+
+    fn ledger(tasks: &[(&str, &str, i64, i64, &str)]) -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at,
+                         max_attempts)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now', 5);",
+                )?;
+                let idea = crate::taskledger::schema::run_idea(tx, "r1", "now", true)?;
+                for (id, status, attempts, floor, state) in tasks {
+                    let worker = format!("W-{id}");
+                    tx.execute(
+                        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                             claimable_by, status, attempts, attempt_floor, current_worker_id,
+                             created_at, updated_at, idea_id)
+                         VALUES (?1, 'r1', (SELECT count(*) + 1 FROM tasks), ?1, 'a.md', 'opus',
+                             'opus', ?2, ?3, ?4, ?5, 'now', 'now', ?6)",
+                        params![id, status, attempts, floor, worker, idea],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO workers (worker_id, run_id, persona, host, status, task_id)
+                         VALUES (?1, 'r1', 'opus', 'h', 'working', ?2)",
+                        params![worker, id],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO attempts (id, task_id, worker_id, state)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![format!("{id}/A1"), id, worker, state],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    #[test]
+    fn rows_reads_the_task_of_each_live_attempt() {
+        let (_tmp, store) = ledger(&[
+            ("A", "running", 3, 1, "live"),
+            ("B", "verifying", 1, 0, "live"),
+            ("C", "stalled", 2, 0, "live"),
+            ("D", "running", 1, 0, "ended"),
+            ("E", "running", 1, 0, "launching"),
+        ]);
+        let rows = rows(store.conn(), "h").unwrap();
+        let row = |id: &str, held: Option<&str>, used| TaskRow {
+            id: id.to_string(),
+            held_by: held.map(str::to_string),
+            used,
+            max_attempts: 5,
+        };
+        let want: BTreeMap<String, TaskRow> = [
+            row("A", Some("W-A"), 2),
+            row("B", Some("W-B"), 1),
+            row("C", None, 2),
+        ]
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+        assert_eq!(rows.tasks, want);
+        assert_eq!(rows.attempts.len(), 5);
+        assert_eq!(rows.workers.len(), 5);
+    }
+
+    #[test]
+    fn rows_runs_the_same_statements_for_3_and_300_live_tasks() {
+        let count = |n: usize| {
+            let ids: Vec<String> = (0..n).map(|i| format!("T{i:04}")).collect();
+            let tasks: Vec<(&str, &str, i64, i64, &str)> = ids
+                .iter()
+                .map(|id| (id.as_str(), "running", 1, 0, "live"))
+                .collect();
+            let (_tmp, store) = ledger(&tasks);
+            let (rows, statements) =
+                crate::taskledger::testing::count_statements(store.conn(), || {
+                    rows(store.conn(), "h").unwrap()
+                });
+            assert_eq!(rows.tasks.len(), n);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }

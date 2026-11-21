@@ -28,7 +28,7 @@ use std::process::ExitStatus;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
-use horch_platform::sandbox::{sandboxed, Denials};
+use horch_platform::sandbox::{sandboxed_job, Denials};
 use horch_platform::shell::CHECK_SHELL;
 use horch_platform::start::{self, Command};
 use horch_platform::NotSupported;
@@ -71,7 +71,7 @@ pub fn no_gate_sandbox_key(feature_id: &str) -> String {
 
 /// The gate sandbox: `cmd` that can write only below `writable` and in its
 /// temp folder, with the operator acts `denied`
-/// ([`horch_platform::sandbox::sandboxed`]). A test gives a host with no
+/// ([`horch_platform::sandbox::sandboxed_job`]). A test gives a host with no
 /// sandbox.
 pub type GateSandbox = fn(Command, &[PathBuf], &Denials) -> Result<Command, NotSupported>;
 
@@ -165,7 +165,7 @@ pub fn end_hold(ctx: &JobCtx<'_>, tx: &Connection, feature_id: &str) -> Result<b
 
 /// Runs the job `row` in the gate sandbox of this host.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
-    run_in(conn, row, sandboxed)
+    run_in(conn, row, sandboxed_job)
 }
 
 /// [`run`] with the gate sandbox `sandbox`. It writes no row: the

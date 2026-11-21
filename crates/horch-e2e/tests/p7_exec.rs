@@ -15,7 +15,7 @@ use horch_core::taskledger::{schema, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
 
-const FLEET_TOML: &str = "pass_period_s = 1\n";
+const FLEET_TOML: &str = "pass_period_s = 1\nworktree_list_period_s = 5\n";
 
 const DOES_THE_TASK: &str = "commit,result";
 

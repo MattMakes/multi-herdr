@@ -1702,17 +1702,19 @@ pub(crate) fn sandbox_host_problem(path: Option<&std::ffi::OsStr>) -> Option<Str
     match std::env::consts::OS {
         "macos" => host.map(|_| format!("{SANDBOX_EXEC} is missing")),
         "linux" => {
+            let bwrap = crate::runtime::process::which(path, None, "bwrap");
             let socat = crate::runtime::process::which(path, None, "socat");
-            let missing: Vec<&str> = [("bwrap", host.is_some()), ("socat", socat.is_none())]
+            let missing: Vec<&str> = [("bwrap", bwrap.is_none()), ("socat", socat.is_none())]
                 .into_iter()
                 .filter_map(|(bin, missing)| missing.then_some(bin))
                 .collect();
-            (!missing.is_empty()).then(|| {
-                format!(
+            if !missing.is_empty() {
+                return Some(format!(
                     "{} not on PATH; install bubblewrap and socat",
                     missing.join(" and ")
-                )
-            })
+                ));
+            }
+            host.map(|gap| gap.to_string())
         }
         other => host.map(|_| format!("Claude Code has no sandbox on {other}")),
     }
