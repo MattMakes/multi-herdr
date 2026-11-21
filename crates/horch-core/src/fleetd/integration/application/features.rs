@@ -223,6 +223,7 @@ fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) 
                 by_fleetd(&why),
                 f.jobs.needs_you,
             )?;
+            release_gate_tree(f.jobs, tx, &tips.repo, id, to)?;
             Ok(Step::Entered(to))
         }
         // The full gate judges the feature tip over the fetched primary
@@ -258,6 +259,24 @@ fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) 
             })
         }
     }
+}
+
+/// Give the gate tree of the feature `id` in `repo` to custody, in `tx`,
+/// when the feature moves to `to` and `to` ends it: `merged` or
+/// `abandoned`. The gate tree is removed at close (row W11 of
+/// preservation-04): the reconciler rescues it, then removes it.
+pub(crate) fn release_gate_tree(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    repo: &Path,
+    id: &str,
+    to: FeatureState,
+) -> Result<()> {
+    if matches!(to, FeatureState::Merged | FeatureState::Abandoned) {
+        let why = format!("its feature is {}", to.as_str());
+        gate_tree::release(ctx, tx, repo, id, &why)?;
+    }
+    Ok(())
 }
 
 /// The cause text of the move to `to`.

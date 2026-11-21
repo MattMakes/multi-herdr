@@ -23,6 +23,7 @@ use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Moved};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::integration::adapters::sqlite::{self as rows, BranchFact};
+use crate::fleetd::integration::application::features;
 use crate::fleetd::integration::application::landing::{self, BranchRescues};
 use crate::fleetd::integration::domain::feature::FeatureState;
 use crate::fleetd::integration::domain::task_branch::LandingState;
@@ -266,6 +267,8 @@ pub fn record_feature(
             ctx.needs_you,
         )?;
     }
+    let repo = Path::new(&run.project_root);
+    features::release_gate_tree(ctx, tx, repo, feature, FeatureState::Abandoned)?;
     Ok(FeatureAbandoned {
         feature: feature.to_string(),
         branches,
