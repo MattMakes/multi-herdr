@@ -4,7 +4,8 @@
 //! Q17 and Q20).
 //!
 //! Each test runs the real `horch` binary with its own git repository,
-//! ledger and state folders in a temp dir. Most tests pass 1 fleetd pass at
+//! ledger and state folders in a temp dir, and its own `fleet.toml` with a
+//! list period of [`LIST_PERIOD_S`]. Most tests pass 1 fleetd pass at
 //! a time with `horch ledger watch --once`, and move the fleet clock by
 //! [`PASS_S`] before each pass, so a time of the design reads as fleet
 //! seconds. The jobs that a pass starts run outside it; each step waits
@@ -28,10 +29,16 @@ use horch_e2e::harness::{fixtures, Harness};
 use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-/// `pass_period_s` of the default `fleet.toml`: 1 step of the fleet clock.
+/// 1 step of the fleet clock: the `pass_period_s` of the default
+/// `fleet.toml`.
 const PASS_S: i64 = 5;
-/// `worktree_list_period_s` of the default `fleet.toml` (RR-10).
-const LIST_PERIOD_S: i64 = 60;
+/// `worktree_list_period_s` of the `fleet.toml` of the test world (RR-10):
+/// 2 steps, so a list period is still longer than a pass.
+const LIST_PERIOD_S: i64 = 10;
+/// The `fleet.toml` of the test world. The served fleetd starts the jobs
+/// that a pass queues on its next pass, so a real pass period of 1 s keeps
+/// the job wait of [`pass`] short.
+const FLEET_TOML: &str = "pass_period_s = 1\nworktree_list_period_s = 10\n";
 /// The "Caught within" time of FM-26 and FM-27.
 const CAUGHT_S: i64 = 60;
 /// `pass_time_budget_s` of the default `fleet.toml`.
@@ -59,15 +66,47 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A harness with its own ledger file and a git repository, and no
-/// watchdog.
+/// A harness with its own ledger file, a git repository, the
+/// [`FLEET_TOML`], no watchdog and no agent CLI on its `PATH`.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    path_without_docs_clis(&mut h);
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("fleet.toml"), FLEET_TOML).unwrap();
     h.serve_fleetd();
     h
+}
+
+/// The CLIs of `docs-sources.toml`: fleetd queues a `docs_sync` and a
+/// `conformance` run for each one on its `PATH`.
+const DOCS_CLIS: [&str; 4] = ["herdr", "claude", "codex", "agy"];
+
+/// A `PATH` of links to the fakes of `bin/` without [`DOCS_CLIS`], so fleetd
+/// queues no docs job: such a job runs for minutes, and the first pass
+/// waits for it. The commands of the test reach herdr and the agents by
+/// their `HORCH_*_BIN` paths.
+fn path_without_docs_clis(h: &mut Harness) {
+    let dir = h.root.join("no-docs-clis");
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(&h.bin).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if !DOCS_CLIS.iter().any(|c| name.to_str() == Some(c)) {
+            std::os::unix::fs::symlink(entry.path(), dir.join(&name)).unwrap();
+        }
+    }
+    let mut dirs = vec![dir];
+    // The host tools of the sealed `PATH` on Linux.
+    let host = h.root.join("host-bin");
+    if host.is_dir() {
+        dirs.push(host);
+    }
+    let path = std::env::join_paths(dirs).unwrap();
+    h.set("PATH", path.to_string_lossy());
 }
 
 /// [`world`] in the herdr workspace `w1` (root pane `w1:p1`), for a worker
@@ -535,14 +574,25 @@ fn rr10_hand_made_worktree_is_adopted_within_1_list_period() {
     // The tree comes after the `worktree_list` run of this period: the
     // longest wait.
     let work = hand_tree(&h, "by-hand", "by-hand");
-    // 1 period, and the pass that reads the run of the next period.
-    let took = until(&h, "the adoption", LIST_PERIOD_S + PASS_S, |h| {
-        state(h, &work.tree).is_some()
-    });
+    // 1 period, and the pass that reads the run of the next period. The
+    // fleet clock also adds the awake time of the job waits of `pass`, and
+    // under load that time is more than the margin, so the bound counts
+    // the fleet seconds that the steps of the test add.
+    let mut steps = 0;
+    while state(&h, &work.tree).is_none() {
+        assert!(
+            steps * PASS_S < LIST_PERIOD_S + PASS_S,
+            "the adoption: not within {} steps\n{}",
+            steps,
+            board(&h)
+        );
+        step(&h);
+        steps += 1;
+    }
     let s = state(&h, &work.tree).unwrap();
     assert!(s == "orphaned" || s == "rescued", "{s}\n{}", board(&h));
     assert_eq!(column(&h, &work.tree, "task_id"), Some(String::new()));
-    assert!(took <= LIST_PERIOD_S + PASS_S, "{took}");
+    assert!(steps * PASS_S <= LIST_PERIOD_S + PASS_S, "{steps} steps");
     assert_kept(&h, &[&work]);
 }
 
@@ -761,11 +811,9 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
         &project,
         &["commit", "--quiet", "--no-gpg-sign", "-m", "ignore"],
     );
-    let fleet_root = h.root.join("fleet");
-    std::fs::create_dir_all(&fleet_root).unwrap();
     std::fs::write(
-        fleet_root.join("fleet.toml"),
-        "worktree_disk_budget_gb = 1\n",
+        h.fleet_root().join("fleet.toml"),
+        format!("{FLEET_TOML}worktree_disk_budget_gb = 1\n"),
     )
     .unwrap();
 
