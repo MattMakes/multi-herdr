@@ -510,6 +510,9 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
     Value::Object(report)
 }
 
+/// The outside write of the probe, at a path that is real on the host:
+/// the sandbox must see the real folder of `path`, and after the write
+/// the host must have no file at `path`.
 fn write_outside(rules: Option<&Rules>, path: &Path) -> String {
     let folder = path.parent().unwrap_or(path);
     let host = identity(folder);

@@ -550,6 +550,7 @@ enum Outcome {
     /// folder with an empty tmpfs, so this is a refusal only when the
     /// probe sees the real fleet root.
     NotFound,
+    /// No result, or a refusal with another error: it proves nothing.
     NoProof,
 }
 
@@ -599,6 +600,9 @@ fn outcome(said: Option<&str>) -> Outcome {
     }
 }
 
+/// `Ok` when the agent sees the real fleet root: the identity that it
+/// reports is the one that the runner read on the host. A missing
+/// identity on either side is not a proof.
 fn fleet_root_seen(host: &HostFolder, seen: Option<&str>) -> Result<(), String> {
     let path = &host.path;
     let id = host

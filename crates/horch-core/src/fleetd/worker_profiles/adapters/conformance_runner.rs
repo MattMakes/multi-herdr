@@ -763,6 +763,8 @@ fn observe(
     }
 }
 
+/// The identity of `folder` on the host, read by the runner outside the
+/// sandbox: `<device>:<inode>`.
 fn host_folder(folder: &Path) -> HostFolder {
     #[cfg(unix)]
     let id = std::fs::metadata(folder)
