@@ -683,7 +683,8 @@ fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bo
 impl Drop for Harness {
     fn drop(&mut self) {
         drop(self.fleetd.get_mut().take());
-        let leaked = match reap(&self.root, &self.log, reap_grace()) {
+        let mut leaked = stop_jobs(&self.ledger_db());
+        leaked.extend(match reap(&self.root, &self.log, reap_grace()) {
             Ok(leaked) => leaked,
             // A test that passes while its processes cannot be seen can
             // leave one running for hours: fail it, unless it already fails.
@@ -694,7 +695,7 @@ impl Drop for Harness {
                 eprintln!("teardown could not list the processes of this test ({error})");
                 Vec::new()
             }
-        };
+        });
         if !std::thread::panicking() {
             check_built_fakes();
             assert!(
@@ -721,6 +722,125 @@ fn reap_grace() -> std::time::Duration {
 }
 
 const PS_SCAN_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The process group of each run in the `jobs` table of the ledger `db`
+/// that is still the group of its recorded leader (pid and start time).
+#[cfg(unix)]
+fn job_groups(db: &Path) -> Vec<u32> {
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let read = || -> Result<Vec<(u32, u64)>, String> {
+        let store =
+            horch_core::taskledger::Store::open_read_only(db).map_err(|e| format!("{e:#}"))?;
+        let mut stmt = store
+            .conn()
+            .prepare(
+                "SELECT pid, pid_start FROM jobs WHERE pid IS NOT NULL AND pid_start IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    };
+    let rows = read().unwrap_or_else(|error| {
+        eprintln!(
+            "warning: teardown could not read the jobs of {}: {error}",
+            db.display()
+        );
+        Vec::new()
+    });
+    let mut groups: Vec<u32> = rows
+        .into_iter()
+        .filter(|&(pid, started)| pid > 1 && horch_core::procid::is_same_group(pid, started))
+        .map(|(pid, _)| pid)
+        .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+}
+
+/// Stop each job of the world, by the group that its row in `db` records,
+/// and return the processes that still run after the stop.
+///
+/// A job may outlive its fleetd: the next fleetd observes a `running` job
+/// by its pid and start time, and ends it `abandoned` only when its process
+/// is gone (`docs/specs/fleetd/design.md`, "Long work is a job"). So the
+/// stop of the test fleetd does not end its jobs, and a job process need not
+/// name the harness root, which [`reap`] looks for. Like the stop of a job
+/// at its deadline, each group gets SIGTERM, then SIGKILL after the stop
+/// grace of the design. A process in an uninterruptible syscall acts on a
+/// signal only when the syscall returns, so the wait for the end is
+/// [`EXIT_LIMIT`]. Never a group of another world: a group id stays ours
+/// while the group has members.
+#[cfg(unix)]
+fn stop_jobs(db: &Path) -> Vec<String> {
+    use crate::process::signal_groups;
+    let groups = job_groups(db);
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    let running = |groups: &[u32]| -> Vec<crate::process::Process> {
+        let members: Vec<crate::process::Process> = groups
+            .iter()
+            .flat_map(|g| {
+                horch_core::procid::group_members(*g)
+                    .into_iter()
+                    .map(|pid| crate::process::Process {
+                        pid,
+                        pgid: *g,
+                        command: String::new(),
+                    })
+            })
+            .collect();
+        let states = states_of(&members);
+        members
+            .into_iter()
+            .filter(|p| after_grace(states.get(&p.pid).map(String::as_str)) == AfterGrace::Running)
+            .collect()
+    };
+    let wait = |groups: &[u32], limit: std::time::Duration| {
+        let until = std::time::Instant::now() + limit;
+        loop {
+            let left = running(groups);
+            if left.is_empty() || std::time::Instant::now() >= until {
+                return left;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    signal_groups(&groups, "TERM");
+    let design = horch_core::fleetd::fleet_runtime::domain::config::FleetConfig::default();
+    let left = wait(&groups, std::time::Duration::from_secs(design.stop_grace_s));
+    if left.is_empty() {
+        return Vec::new();
+    }
+    let mut kill: Vec<u32> = left.iter().map(|p| p.pgid).collect();
+    kill.sort_unstable();
+    kill.dedup();
+    signal_groups(&kill, "KILL");
+    let left = wait(&kill, EXIT_LIMIT);
+    let commands: std::collections::HashMap<u32, String> = crate::process::processes()
+        .into_iter()
+        .map(|p| (p.pid, p.command))
+        .collect();
+    left.into_iter()
+        .map(|p| {
+            format!(
+                "{} {} (a job process of group {}, alive {EXIT_LIMIT:?} after its SIGKILL)",
+                p.pid,
+                commands.get(&p.pid).map_or("?", String::as_str),
+                p.pgid
+            )
+        })
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn stop_jobs(_db: &Path) -> Vec<String> {
+    Vec::new()
+}
 
 /// End every process this harness started, and return the ones that
 /// leaked.
@@ -1854,6 +1974,75 @@ mod tests {
         assert!(
             took >= Duration::from_secs(8),
             "the stop took {took:?}: it must be slower than the old 5 s wait"
+        );
+    }
+
+    /// A job process that leads its own group, as the launcher starts it,
+    /// that does not name `root` in its command or its environment, and that
+    /// sleeps for 600 s. Its parent exits, so it is not a child of the test.
+    /// Gives its pid.
+    fn sleeping_job(ready: &Path) -> u32 {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "perl -e 'setpgrp(0, 0); open my $f, q(>), $ARGV[0]; print $f $$; close $f; sleep 600' \"$0\" </dev/null >/dev/null 2>&1 &",
+        ])
+        .arg(ready)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir("/");
+        assert!(cmd.status().unwrap().success());
+        super::wait_for("the job process to lead its group", || {
+            let pid: u32 = std::fs::read_to_string(ready).ok()?.trim().parse().ok()?;
+            let started = horch_core::procid::start_time(pid)?;
+            horch_core::procid::is_same_group(pid, started).then_some(pid)
+        })
+    }
+
+    /// T-365: a job of the world outlives the stop of its fleetd by design,
+    /// so the teardown stops it by the group that the `jobs` table records,
+    /// and no process of the world runs after the teardown.
+    #[cfg(unix)]
+    #[test]
+    fn the_teardown_stops_each_job_of_the_world_by_its_recorded_group() {
+        use super::{after_grace, states_of, AfterGrace};
+        let mut h = super::Harness::new("job-teardown");
+        let db = h.root.join("ledger.sqlite3");
+        h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+        let ready = super::tmpdir().join(format!("h-job-{:x}", super::unique()));
+        let pid = sleeping_job(&ready);
+        let started = horch_core::procid::start_time(pid).expect("the job process runs");
+        let store = horch_core::taskledger::Store::open(&db).unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO jobs (kind, subject, input_key, state, pid, pid_start, time_limit_s,
+                     deadline, created_at, started_at)
+                 VALUES ('docs_sync', 'herdr 0', '0', 'running', ?1, ?2, 3600, 3600,
+                     '2026-11-21T00:00:00Z', '2026-11-21T00:00:00Z')",
+                rusqlite::params![pid, started],
+            )
+            .unwrap();
+        drop(store);
+
+        drop(h);
+
+        let job = crate::process::Process {
+            pid,
+            pgid: pid,
+            command: String::new(),
+        };
+        let state = states_of(std::slice::from_ref(&job));
+        let runs = after_grace(state.get(&pid).map(String::as_str)) == AfterGrace::Running
+            && horch_core::procid::is_same(pid, started);
+        if runs {
+            // SAFETY: plain syscall; the group is the one this test started.
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        }
+        let _ = std::fs::remove_file(&ready);
+        assert!(
+            !runs,
+            "the job process {pid} of the world still runs after the teardown"
         );
     }
 
