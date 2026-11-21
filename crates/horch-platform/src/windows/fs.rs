@@ -331,6 +331,10 @@ pub(crate) fn file_identity(meta: &Metadata) -> (u64, u64) {
     (0, meta.creation_time())
 }
 
+pub(crate) fn device_and_inode(_meta: &Metadata) -> Result<(u64, u64), NotSupported> {
+    Err(NOT_SUPPORTED.because("stable Rust gives no volume serial number and file index"))
+}
+
 /// [`crate::fs::BreakerGuard`]: it holds nothing on Windows.
 #[derive(Debug)]
 pub(crate) struct BreakerGuard;

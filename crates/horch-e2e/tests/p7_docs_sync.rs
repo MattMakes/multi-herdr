@@ -808,7 +808,7 @@ fn operator_boundary() {
             // An adapter with no sandbox on this OS (ticket 24). Claude
             // Code and Codex have one on each OS of the fleet.
             Verdict::NotSupported => adapter != "claude" && adapter != "codex",
-            Verdict::Fail => false,
+            Verdict::Fail | Verdict::NotProved => false,
         };
         if !ok {
             failed.push(format!("{adapter}: {r:?}"));

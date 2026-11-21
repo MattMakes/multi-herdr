@@ -186,6 +186,14 @@ fn install(dir: &Path, cli: &str, fake: &str, version: &str) {
 
 /// A test fleetd with the fake CLIs on its `PATH` and the docs fixture.
 fn fleetd(name: &str) -> Harness {
+    let h = world(name);
+    h.serve_fleetd();
+    h
+}
+
+/// The fleet of [`fleetd`] with no fleetd: the fake CLIs on its `PATH`, the
+/// docs fixture, the run `r1` and its herdr workspace.
+fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let fleet = h.root.join("fleet");
     std::fs::create_dir_all(&fleet).unwrap();
@@ -220,7 +228,6 @@ fn fleetd(name: &str) -> Harness {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", text(&o));
-    h.serve_fleetd();
     h
 }
 
@@ -389,6 +396,143 @@ fn conformance_passes_for_claude_and_codex_and_agy_fails_only_by_design() {
         let profiles = profiles_of(*agent);
         let sick: Vec<_> = unhealthy().intersection(&profiles).cloned().collect();
         assert!(sick.is_empty(), "unhealthy profiles of {cli}: {sick:?}");
+    }
+}
+
+/// The count of rows of the 1 number query `sql`.
+fn count(h: &Harness, sql: &str) -> i64 {
+    ledger(h).query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// Whether a pass acted on an ended `conformance` run of each exec CLI:
+/// the run has the note of its health marks and its drift idea.
+fn each_conformance_acted_on(h: &Harness) -> bool {
+    let acted = count(
+        h,
+        "SELECT COUNT(DISTINCT substr(j.subject, 1, instr(j.subject, ' ') - 1)) FROM jobs j
+         JOIN events e ON e.entity = 'job' AND e.entity_id = CAST(j.id AS TEXT)
+         WHERE j.kind = 'conformance' AND e.cause = 'conformance result acted on'",
+    );
+    acted == EXEC_CLIS.len() as i64
+}
+
+/// The verdict of "Operator boundary" in each `conformance.json` of `cli`.
+fn operator_boundary_verdicts(h: &Harness, cli: &str) -> Vec<Verdict> {
+    let docs = h.fleet_root().join("docs").join(cli);
+    let mut verdicts = Vec::new();
+    for dir in std::fs::read_dir(docs).into_iter().flatten() {
+        let path = dir.unwrap().path().join("conformance.json");
+        let Ok(report) = read_conformance_json(&read(&path)) else {
+            continue;
+        };
+        verdicts.extend(
+            report
+                .checks
+                .iter()
+                .filter(|r| r.check.name() == "Operator boundary")
+                .map(|r| r.verdict),
+        );
+    }
+    verdicts
+}
+
+/// The state of the ended run 2 or later of `kind` of `cli`, if one ended.
+fn ended_again(h: &Harness, kind: &str, cli: &str) -> Option<String> {
+    ledger(h)
+        .query_row(
+            "SELECT state FROM jobs WHERE kind = ?1 AND subject LIKE ?2 AND run >= 2
+             AND state IN ('passed', 'failed', 'abandoned') ORDER BY id LIMIT 1",
+            [kind, &format!("{cli} %")],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+/// The world of T-333: passes of `horch ledger watch --once` and no fleetd,
+/// so no command channel serves the fleet. Claude Code and Codex are
+/// conformant by design, and Antigravity has no sandbox on any OS (A37).
+/// "Operator boundary" is not proved because fleetd is not ready: it marks
+/// no profile unhealthy and adds no drift idea. The run of an unsupported
+/// CLI adds no drift idea and no needs-you item either. Then a fleetd with
+/// a channel server runs the conformance job of each CLI with a check that
+/// is not proved 1 more time, and that run passes.
+#[test]
+fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
+    let h = world("p7-conformance-no-fleetd");
+    let features = count(&h, "SELECT COUNT(*) FROM features");
+    let mut passes = Vec::new();
+    wait_for_or(
+        "a pass that acted on a conformance run of each exec CLI",
+        || {
+            let o = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
+            assert!(o.status.success(), "horch ledger watch: {}", text(&o));
+            passes.push(text(&o));
+            each_conformance_acted_on(&h).then_some(())
+        },
+        || diagnostics(&h),
+    );
+    let unhealthy: BTreeSet<String> = unhealthy_profiles(&ledger(&h))
+        .unwrap()
+        .into_keys()
+        .collect();
+    for (cli, _, _, agent) in &EXEC_CLIS[..2] {
+        let sick: Vec<_> = unhealthy
+            .intersection(&profiles_of(*agent))
+            .cloned()
+            .collect();
+        assert!(
+            sick.is_empty(),
+            "unhealthy profiles of {cli}: {sick:?}\nfailed checks: {:?}\n{}",
+            failed_checks(&h, cli),
+            diagnostics(&h)
+        );
+    }
+    for (cli, _, _, _) in &EXEC_CLIS[..2] {
+        assert_eq!(
+            operator_boundary_verdicts(&h, cli),
+            [Verdict::NotProved],
+            "{cli}\n{}",
+            diagnostics(&h)
+        );
+    }
+    let drift = count(
+        &h,
+        "SELECT COUNT(*) FROM needs_you WHERE kind = 'adapter-conformance-failed'",
+    );
+    let new_features = count(&h, "SELECT COUNT(*) FROM features") - features;
+    assert!(
+        drift == 0 && new_features == 0,
+        "{drift} drift items and {new_features} new features after {} passes\n{}",
+        passes.len(),
+        diagnostics(&h)
+    );
+    // OR-3: at most 1 item for the unsupported CLI, by its key. The design
+    // gives it none: `horch status` shows its profiles as not available.
+    let agy_items = count(
+        &h,
+        "SELECT COUNT(*) FROM needs_you WHERE key LIKE '%agy%' OR entity_id LIKE '%agy%'
+         OR text LIKE '%agy%'",
+    );
+    assert_eq!(agy_items, 0, "needs-you items of agy\n{}", diagnostics(&h));
+
+    h.serve_fleetd();
+    for (cli, _, _, _) in &EXEC_CLIS[..2] {
+        let state = wait_for_or(
+            &format!("a second ended conformance run of {cli}"),
+            || ended_again(&h, "conformance", cli),
+            || diagnostics(&h),
+        );
+        assert_eq!(
+            (state.as_str(), failed_checks(&h, cli)),
+            ("passed", Vec::new()),
+            "{cli}\n{}",
+            diagnostics(&h)
+        );
+        assert_eq!(
+            operator_boundary_verdicts(&h, cli),
+            [Verdict::Pass],
+            "{cli}"
+        );
     }
 }
 

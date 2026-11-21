@@ -72,12 +72,17 @@ pub fn mark_healthy(
 /// the conformance run `report` (the docs source `agy` is the harness
 /// `antigravity`), in `tx`: unhealthy after a failed run, with
 /// the failed checks as the cause, and healthy again after a passed run.
+/// A run with no failed check and a check that is not proved (fleetd was
+/// not ready) marks no profile: it does not prove the adapter.
 pub fn mark_after_conformance(
     tx: &Connection,
     guard: Option<Generation>,
     report: &ConformanceReport,
     profiles: &[(&str, HarnessKind)],
 ) -> Result<Vec<Mark>> {
+    if report.failure().is_none() && report.has_not_proved() {
+        return Ok(Vec::new());
+    }
     let unhealthy = unhealthy_profiles(tx)?;
     let of_cli: Vec<(String, Health)> = profiles
         .iter()

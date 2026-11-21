@@ -235,6 +235,10 @@ pub(crate) fn file_identity(meta: &Metadata) -> (u64, u64) {
     (meta.dev(), meta.ino())
 }
 
+pub(crate) fn device_and_inode(meta: &Metadata) -> Result<(u64, u64), NotSupported> {
+    Ok((meta.dev(), meta.ino()))
+}
+
 /// [`crate::fs::BreakerGuard`]: the open dir that holds the `flock`, or
 /// nothing where `flock` is not available.
 #[derive(Debug)]

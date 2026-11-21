@@ -159,6 +159,12 @@ pub enum Verdict {
     /// ("Operator boundary"). Profile validation already refuses such a
     /// profile on that OS, so it is not a failed check.
     NotSupported,
+    /// The check cannot be proved now because fleetd is not ready: no
+    /// fleetd serves the command channel, so the runner itself cannot
+    /// connect to it ("Operator boundary"). It is a fact about fleetd, not
+    /// about the profile: it makes no drift idea and changes no health, and
+    /// a later conformance run proves the check.
+    NotProved,
 }
 
 impl Verdict {
@@ -168,14 +174,20 @@ impl Verdict {
             Verdict::Pass => "pass",
             Verdict::Fail => "fail",
             Verdict::NotSupported => "not supported",
+            Verdict::NotProved => "not proved",
         }
     }
 
     /// The verdict of `word`.
     pub fn of_word(word: &str) -> Option<Verdict> {
-        [Verdict::Pass, Verdict::Fail, Verdict::NotSupported]
-            .into_iter()
-            .find(|v| v.word() == word)
+        [
+            Verdict::Pass,
+            Verdict::Fail,
+            Verdict::NotSupported,
+            Verdict::NotProved,
+        ]
+        .into_iter()
+        .find(|v| v.word() == word)
     }
 }
 
@@ -201,6 +213,10 @@ impl CheckResult {
 
     pub fn not_supported(check: Check, evidence: impl AsRef<str>) -> CheckResult {
         CheckResult::new(check, Verdict::NotSupported, evidence.as_ref())
+    }
+
+    pub fn not_proved(check: Check, evidence: impl AsRef<str>) -> CheckResult {
+        CheckResult::new(check, Verdict::NotProved, evidence.as_ref())
     }
 
     /// The evidence is 1 line: each line break becomes a space, and a long
@@ -239,6 +255,25 @@ impl ConformanceReport {
             .filter(|r| r.verdict == Verdict::Fail)
             .map(|r| r.check)
             .collect()
+    }
+
+    /// Whether a check of the run is not proved: the run tells nothing new
+    /// about the health of a profile of its CLI.
+    pub fn has_not_proved(&self) -> bool {
+        self.checks.iter().any(|r| r.verdict == Verdict::NotProved)
+    }
+
+    /// The failure of the run that makes a drift idea: [`Self::failure`],
+    /// unless the adapter has no sandbox on this OS ("Operator boundary"
+    /// is not supported). No worker of such a CLI runs on this OS (A37),
+    /// and `horch status` shows it as not available, so a drift idea in
+    /// each fleet only repeats that fact (OR-3).
+    pub fn drift(&self) -> Option<AdapterConformanceFailed> {
+        let no_sandbox = self
+            .checks
+            .iter()
+            .any(|r| r.check == Check::OperatorBoundary && r.verdict == Verdict::NotSupported);
+        self.failure().filter(|_| !no_sandbox)
     }
 
     /// The contract `adapter-conformance-failed` (Slice 7): a run with at
@@ -529,15 +564,41 @@ fn sandbox_boundary(o: &Observation) -> CheckResult {
     }
 }
 
-/// "Operator boundary" fails with no launch: outside the sandbox, the
-/// runner itself cannot do each act of `unreachable` (each with its
-/// reason), so a refusal inside the sandbox proves nothing.
-pub fn operator_unreachable(unreachable: &[String]) -> CheckResult {
+/// 1 operator act that the runner cannot do itself, outside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreachable {
+    pub act: Act,
+    /// The error of the act.
+    pub why: String,
+    /// No channel server exists: the connect found no socket, or a socket
+    /// that no process accepts on. Only the act [`Act::ConnectChannel`]
+    /// sets it.
+    pub no_server: bool,
+}
+
+/// "Operator boundary" has no launch: outside the sandbox, the runner
+/// itself cannot do each act of `unreachable` (each with its reason), so a
+/// refusal inside the sandbox proves nothing. When the 1 such act is the
+/// connect to the command channel, and no channel server exists, fleetd
+/// is not ready: the check is not proved. Each other gap fails.
+pub fn operator_unreachable(unreachable: &[Unreachable]) -> CheckResult {
+    let acts: Vec<String> = unreachable
+        .iter()
+        .map(|u| format!("{}: {}", u.act, u.why))
+        .collect();
+    let acts = acts.join("; ");
+    if let [u] = unreachable {
+        if u.act == Act::ConnectChannel && u.no_server {
+            return CheckResult::not_proved(
+                Check::OperatorBoundary,
+                format!("not proved: no fleetd serves the command channel: {acts}"),
+            );
+        }
+    }
     CheckResult::fail(
         Check::OperatorBoundary,
         format!(
-            "outside the sandbox the runner cannot do each act, so a refusal proves nothing: {}",
-            unreachable.join("; ")
+            "outside the sandbox the runner cannot do each act, so a refusal proves nothing: {acts}"
         ),
     )
 }
@@ -907,5 +968,55 @@ mod tests {
             failure.to_string(),
             "adapter-conformance-failed: codex 0.130.0: Hooks fire, Stop gate"
         );
+    }
+
+    #[test]
+    fn a_channel_with_no_server_is_not_proved_and_each_other_gap_fails() {
+        let gap = |act, no_server| Unreachable {
+            act,
+            why: "No such file or directory (os error 2)".into(),
+            no_server,
+        };
+        let no_server = gap(Act::ConnectChannel, true);
+        let r = operator_unreachable(std::slice::from_ref(&no_server));
+        assert_eq!(r.verdict, Verdict::NotProved, "{r:?}");
+        assert!(r.evidence.starts_with("not proved: "), "{r:?}");
+        assert_eq!(Verdict::of_word("not proved"), Some(Verdict::NotProved));
+        let mut gaps = vec![vec![gap(Act::ConnectChannel, false)]];
+        for other in [Act::ReadToken, Act::WriteRequests] {
+            gaps.push(vec![no_server.clone(), gap(other, false)]);
+            gaps.push(vec![gap(other, false)]);
+        }
+        for unreachable in gaps {
+            let r = operator_unreachable(&unreachable);
+            assert_eq!(r.verdict, Verdict::Fail, "{unreachable:?}: {r:?}");
+            assert!(r.evidence.contains("proves nothing"), "{r:?}");
+        }
+        let report = ConformanceReport {
+            cli: "claude".into(),
+            version: "2.1.284".into(),
+            adapter_hash: "h".into(),
+            checks: vec![operator_unreachable(&[no_server])],
+        };
+        assert!(report.failure().is_none() && report.drift().is_none());
+        assert!(report.has_not_proved());
+    }
+
+    #[test]
+    fn a_cli_with_no_sandbox_on_this_os_makes_no_drift() {
+        let mut report = ConformanceReport {
+            cli: "agy".into(),
+            version: "1.1.3".into(),
+            adapter_hash: "h".into(),
+            checks: vec![
+                CheckResult::fail(Check::PrivateHome, "the home of the operator"),
+                CheckResult::not_supported(Check::OperatorBoundary, "no sandbox"),
+            ],
+        };
+        assert!(report.failure().is_some());
+        assert_eq!(report.drift(), None);
+        report.checks[1] = CheckResult::pass(Check::OperatorBoundary, "refused");
+        assert_eq!(report.drift(), report.failure());
+        assert!(report.drift().is_some());
     }
 }
