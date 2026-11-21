@@ -136,7 +136,7 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
     assert!(p["fallback_index"].is_null());
     assert!(plain.get("via").is_none(), "no via on a plain launch");
 
-    let refusal = "launch_failed: REFUSED: researcher cannot start. \
+    let refusal = "its spawn failed: REFUSED: researcher cannot start. \
                    claude exhausted (7d 100%, resets Fri 14:00Z).";
     wait_for_or(
         "the refusal of the researcher launch",

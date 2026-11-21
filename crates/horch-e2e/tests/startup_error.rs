@@ -221,7 +221,10 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         || shown(&h, "T-1"),
     );
     let reason = row["end_reason"].as_str().unwrap_or_default();
-    assert!(reason.starts_with("no brief at "), "{row}");
+    assert!(
+        reason.starts_with("its spawn failed: no brief at "),
+        "{row}"
+    );
     assert!(reason.contains("sonnet-1"), "{row}");
     assert!(reason.contains("herdr-orchestration-elsewhere"), "{row}");
     assert!(!reason.contains("has not registered"), "{row}");

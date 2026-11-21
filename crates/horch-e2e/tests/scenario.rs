@@ -189,7 +189,7 @@ fn refused_launch_changes_nothing() {
         "the refusal of the launch",
         || {
             shown()
-                .contains("launch_failed: REFUSED: opus cannot start.")
+                .contains("its spawn failed: REFUSED: opus cannot start.")
                 .then_some(())
         },
         shown,
