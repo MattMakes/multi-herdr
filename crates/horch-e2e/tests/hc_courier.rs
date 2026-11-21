@@ -44,8 +44,13 @@ fn hcb_06_a_detached_courier_for_an_hc_workspace_calls_hc() {
     let env = MapEnv::new(&h.project)
         .with("HOME", &h.home.to_string_lossy())
         .with("HORCH_STATE_DIR", &h.state.to_string_lossy())
-        .with("HORCH_PROJECT_DIR", &h.project.to_string_lossy());
+        .with("HORCH_PROJECT_DIR", &h.project.to_string_lossy())
+        .with("HORCH_LEDGER_DB", &h.ledger_db().to_string_lossy());
     let ctx = RuntimeContext::from_env(&env).unwrap();
+    // The run branch writes session records through fleetd (T-884).
+    let _fleetd =
+        horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(&ctx.paths)
+            .unwrap();
     let store = ExecutionStore::open_in(&ctx).unwrap();
     store
         .insert(LedgerRecordV1 {
