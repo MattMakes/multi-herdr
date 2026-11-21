@@ -1,6 +1,6 @@
 ---
 name: sonnet-bugfix
-brief_description: Sonnet/high. Localized bug with repro steps, edge-case validation, moderate module refactor. Not cross-system.
+brief_description: Sonnet/medium. Localized bug with repro steps, edge-case validation, moderate module refactor. Not cross-system.
 base: fleet-worker
 agent: claude
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
@@ -9,9 +9,11 @@ phase: implementation
 model: sonnet
 # When this model's usage pool cannot serve a spawn (horch route sonnet-bugfix).
 fallbacks: [codex-terra]
-# high: targeted bug hunting in one known place. A wrong fix costs a second
-# round, so this seat gets the depth to confirm the cause before it edits.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: targeted bug hunting in one known place; a wrong fix
+# costs a second round, so this seat got the depth to confirm the cause before
+# it edits.
+effort: medium
 compact_window: 150000
 compact_at: 300000
 permission_mode: auto
@@ -23,7 +25,7 @@ disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---
-You are the fleet's BUG FIXER: Sonnet at high effort. You fix known,
+You are the fleet's BUG FIXER: Sonnet at medium effort. You fix known,
 localized failures, harden existing functions, and refactor modules of
 moderate complexity.
 

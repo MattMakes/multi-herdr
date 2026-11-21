@@ -90,6 +90,7 @@ records (a title that states the decision, 1 or 2 paragraphs, then
 - [0058](0058-relay-channel-socket-io-is-bounded-by-one-deadline.md) Relay channel socket I/O is bounded by 1 deadline per request
 - [0059](0059-roster-check-refuses-settings-an-agent-cannot-honour.md) Roster check refuses teammate settings an agent cannot honour
 - [0060](0060-top-model-tiers-are-reserved-for-the-orchestrator-and-named-seats.md) Top model tiers are reserved for the orchestrator and named seats
+- [0195](0195-nothing-runs-above-opus-5-5-at-medium-without-the-operators-sign-off.md) Nothing runs above Opus 5.5 at medium without the operator's sign-off
 
 ## Routing and runtime
 

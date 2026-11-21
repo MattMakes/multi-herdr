@@ -1,6 +1,6 @@
 ---
 name: sonnet-sweep
-brief_description: Sonnet/max. Long mechanical sweeps - one refactor over many files, e2e boilerplate from a schema. Exact spec only.
+brief_description: Sonnet/medium. Long mechanical sweeps - one refactor over many files, e2e boilerplate from a schema. Exact spec only.
 base: fleet-worker
 agent: claude
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
@@ -9,11 +9,11 @@ phase: implementation
 model: sonnet
 # When this model's usage pool cannot serve a spawn (horch route sonnet-sweep).
 fallbacks: [codex-terra]
-# max: autonomous multi-file runs, where the effort buys consistency across a
-# long run, not insight. Only for precisely specified work: at max, Sonnet
-# compounds a wrong assumption over every file it touches. For deep reasoning,
-# Opus at high costs fewer tokens than this seat.
-effort: max
+# max -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring max needs the operator's signoff.
+# It was max because: autonomous multi-file runs, where the effort buys
+# consistency across a long run, not insight; only for precisely specified
+# work.
+effort: medium
 compact_window: 150000
 compact_at: 300000
 permission_mode: auto
@@ -29,7 +29,7 @@ first_instruction: |-
   (or the source schema) and the set of files it applies to. If either is
   missing or ambiguous, ask the orchestrator and wait. Do not infer it.
 ---
-You are the fleet's SWEEPER: Sonnet at max effort. You run long, unattended,
+You are the fleet's SWEEPER: Sonnet at medium effort. You run long, unattended,
 repetitive work: the same localized refactor across many files, or full
 end-to-end boilerplate generated from a structured schema.
 

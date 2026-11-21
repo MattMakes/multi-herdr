@@ -46,6 +46,30 @@ choose from** — there is no registry to update and nothing to recompile.
   are a list in the code (`TOP_TIER_SEATS`), so a file cannot add one. The
   rule is matched on the tier name, so a version bump stays reserved.
   `horch teammates --check` fails any other offered teammate that asks for one.
+- **The ceiling: nothing runs above Opus 5.5 at medium without the operator's
+  sign-off.** A teammate file sets an `effort` above `medium` (`high`,
+  `xhigh`, `max`, on any agent) only with the key
+  `signoff: "<yyyy-mm-dd> <who>: <why>"`: 1 line with the date, who signed,
+  and the reason. **The operator alone writes that line.** An agent, a skill
+  or a script never adds, edits or copies one; it proposes the change and
+  stops. `horch teammates --check`:
+  - fails an effort above `medium` that has no sign-off;
+  - fails a sign-off that is empty, does not start with a `yyyy-mm-dd` date,
+    or gives no reason after `: `;
+  - fails a sign-off on a teammate that is not above the ceiling (it is
+    stale: remove it);
+  - prints a `warning:` and still passes for a worker seat on a reserved
+    model (`fable`, `gpt-6-astra`) that has no sign-off. Those seats keep
+    working until the operator decides. The orchestrators are exempt from
+    this warning.
+
+  `horch spawn --effort`, `horch spawn --model` and the `horch fleet <flavor>`
+  choice are the operator's own decisions for 1 launch. They are not roster
+  settings, and the check does not judge them. `horch teammates --matrix`
+  shows each sign-off in its notes column. The decision is
+  [ADR 0195](../docs/adr/0195-nothing-runs-above-opus-5-5-at-medium-without-the-operators-sign-off.md);
+  the teammates lowered on 2026-11-21, with their old levels and reasons, are
+  in [`docs/fleet-ceiling-2026-11-21.md`](../docs/fleet-ceiling-2026-11-21.md).
 - **`brief_description` is the only field the orchestrator reads** to decide
   between a specialist and a generic. One line, ≤120 characters, enforced at
   load. Everything else — persona, model, effort, skills — is applied when the
@@ -120,8 +144,8 @@ by name, not by phase, so `--phase` never hands them to another teammate.
 
 | teammate | phase | agent, model, effort | MCP servers | use for |
 |---|---|---|---|---|
-| `design-director` | research | claude, opus, high | none | direction contract and storyboard; no production code |
-| `design-critic` | validation | claude, opus, high | playwright | scored review with screenshots; never edits code |
+| `design-director` | research | claude, opus, medium | none | direction contract and storyboard; no production code |
+| `design-critic` | validation | claude, opus, medium | playwright | scored review with screenshots; never edits code |
 | `landing-page-builder` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | landing and marketing pages |
 | `design-system-engineer` | implementation | claude, sonnet, medium | playwright, context7 | tokens, themes, components, brand kit |
 | `motion-engineer` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | GSAP scroll scenes and transitions |
@@ -152,12 +176,12 @@ when the project has a `.uproject` file at the top level or one level down.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
-| `ue-tech-lead` | 1 | plan | claude, opus, high | runs first: writes `.agents/ue-project-context.md`; plans modules and plugins |
+| `ue-tech-lead` | 1 | plan | claude, opus, medium | runs first: writes `.agents/ue-project-context.md`; plans modules and plugins |
 | `ue-gameplay-engineer` | 1 | implementation | claude, opus, medium | actors, components, gameplay framework, GAS, tags, data assets |
 | `ue-network-engineer` | 1 | implementation | claude, opus, medium | replication, RPCs, prediction, net movement, dedicated servers |
 | `ue-technical-artist` | 1 | implementation | claude, opus, medium | materials, Niagara, audio, Sequencer, procedural content |
-| `ue-qa-engineer` | 1 | validation | claude, sonnet, high | headless builds, automation tests, crash repros, profiling |
-| `ue-code-reviewer` | 1 | validation | claude, opus, high | UE C++ review; never edits |
+| `ue-qa-engineer` | 1 | validation | claude, sonnet, medium | headless builds, automation tests, crash repros, profiling |
+| `ue-code-reviewer` | 1 | validation | claude, opus, medium | UE C++ review; never edits |
 | `ue-character-engineer` | 2 | implementation | claude, opus, medium | movement modes, animation, cameras, Enhanced Input |
 | `ue-ai-engineer` | 2 | implementation | claude, opus, medium | AI controllers, behavior trees, EQS, State Tree, Mass |
 | `ue-ui-engineer` | 2 | implementation | claude, opus, medium | UMG, Slate, Common UI, MVVM, gamepad focus |
@@ -221,19 +245,19 @@ seat and link it in the skill's index.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
-| `godot-tech-lead` | 1 | plan | claude, opus, high | runs first: writes `.agents/godot-project-context.md`; plans scenes, autoloads, features |
+| `godot-tech-lead` | 1 | plan | claude, opus, medium | runs first: writes `.agents/godot-project-context.md`; plans scenes, autoloads, features |
 | `godot-gameplay-programmer` | 1 | implementation | claude, opus, medium | player controllers, state machines, components, combat, game loops, input, physics |
 | `godot-systems-programmer` | 1 | implementation | claude, opus, medium | Resources, abilities, inventory, economy, quests, save/load, event bus |
 | `godot-ui-developer` | 1 | implementation | claude, opus, medium | Control scenes, themes, HUDs, menus, responsive layout, localization |
 | `godot-technical-artist` | 1 | implementation | claude, opus, medium | shaders, particles, 2D and 3D scenes, lighting, asset import, audio |
-| `godot-qa-engineer` | 1 | validation | claude, sonnet, high | headless parse checks, GUT and gdUnit4 tests, bug repros |
-| `godot-code-reviewer` | 1 | validation | claude, opus, high | GDScript and C# review; never edits |
+| `godot-qa-engineer` | 1 | validation | claude, sonnet, medium | headless parse checks, GUT and gdUnit4 tests, bug repros |
+| `godot-code-reviewer` | 1 | validation | claude, opus, medium | GDScript and C# review; never edits |
 | `godot-animator` | 2 | implementation | claude, opus, medium | AnimationPlayer, AnimationTree, tweens, sprite animation |
 | `godot-ai-programmer` | 2 | implementation | claude, opus, medium | navigation, state machines, LimboAI and Beehave behavior trees |
 | `godot-network-engineer` | 2 | implementation | claude, opus, medium | MultiplayerAPI, RPCs, spawners, synchronizers, dedicated servers |
 | `godot-world-builder` | 2 | implementation | claude, opus, medium | TileMap layers, GridMap, CSG, procedural levels, cameras |
 | `godot-narrative-programmer` | 2 | implementation | claude, opus, medium | dialogue, Dialogue Manager, Popochiu, quests, localized text |
-| `godot-performance-engineer` | 2 | implementation | claude, opus, high | profiling, frame time, threads, physics cost, asset size |
+| `godot-performance-engineer` | 2 | implementation | claude, opus, medium | profiling, frame time, threads, physics cost, asset size |
 | `godot-release-engineer` | 2 | implementation | claude, sonnet, medium | export presets and builds, mobile and web targets; never uploads |
 | `godot-csharp-engineer` | 3 | implementation | claude, opus, medium | GDScript-C# interop, `dotnet build`, source generators |
 | `godot-tools-engineer` | 3 | implementation | claude, opus, medium | EditorPlugins, `@tool` scripts, inspector plugins, addon packaging |
@@ -276,7 +300,7 @@ latest stable release on 2026-10-04 (4.7.2).
 |---|---|---|---|
 | `blender-artist` | implementation | claude, opus, medium | Blender models, retopology, UVs, collision, LODs, rigs; FBX exports for the UE team |
 | `blender-builder` | implementation | claude, opus, medium | Blender assets for any target (Godot, Unity, Unreal, Roblox, web, render): model, UV, PBR, bake, export |
-| `blender-qa` | validation | claude, sonnet, high | Blender asset QA: topology, UVs, scale, materials, budgets, exports; reports numbers and renders, fixes nothing |
+| `blender-qa` | validation | claude, sonnet, medium | Blender asset QA: topology, UVs, scale, materials, budgets, exports; reports numbers and renders, fixes nothing |
 | `blender-3d-printer` | implementation | claude, opus, medium | Cleans Blender, STL, 3MF and OBJ models for FDM and resin printing: watertight, walls, overhangs, scale, export |
 
 `offer_when: ["*.blend", "*.uproject"]`. It drives Blender through the
@@ -302,13 +326,13 @@ waves from
 
 | teammate | phase | agent, model, effort | skills | use for |
 |---|---|---|---|---|
-| `video-producer` | plan | claude, opus, high | `video-produce` | workflow pick, `PRODUCTION.md`, blind A/B labels, taste notes, batch summary, share kit |
-| `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
+| `video-producer` | plan | claude, opus, medium | `video-produce` | workflow pick, `PRODUCTION.md`, blind A/B labels, taste notes, batch summary, share kit |
+| `video-director` | plan | claude, opus, medium | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
 | `video-capture` | implementation | claude, sonnet, medium | `video-capture` | deterministic browser and terminal plates with telemetry |
 | `video-audio` | implementation | claude, sonnet, medium | `video-audio`, `video-storyboard` | voice-over, timing reconciliation, beat grid, SFX, -14 LUFS master |
 | `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-motion-match`, `motion-gsap` | deterministic HTML scenes, character rigs, reference matching |
 | `video-editor` | implementation | claude, sonnet, medium | `video-render` | frame-stepped render, `render/master.mp4`, aspect variants, publish pack |
-| `video-critic` | validation | claude, opus, high | `video-qa`, `video-direction` | numeric render QA and a blind 8-axis review |
+| `video-critic` | validation | claude, opus, medium | `video-qa`, `video-direction` | numeric render QA and a blind 8-axis review |
 
 No `offer_when`: an ordinary code repo asks for a launch video before any
 `timeline.json` exists. No `requires`: each persona checks `ffmpeg`,
@@ -337,7 +361,7 @@ least 3 rounds of render, look and fix before `DONE:`.
 
 | teammate | phase | agent, model, effort | fallback | use for |
 |---|---|---|---|---|
-| `game-design-incremental-specialist` | plan | claude, opus, high | `codex-sol` | the math of incremental, idle and upgrade-driven games: design and prove a new game, rebalance a built game with the smallest change, add a system, install the tuning bench; says "not ready" when the proof fails |
+| `game-design-incremental-specialist` | plan | claude, opus, medium | `codex-sol` | the math of incremental, idle and upgrade-driven games: design and prove a new game, rebalance a built game with the smallest change, add a system, install the tuning bench; says "not ready" when the proof fails |
 
 It carries `incremental-game-design` and names `game-juice`,
 `godot-economy-system` and `godot-gameplay-loops`. A Godot project adds
@@ -361,7 +385,7 @@ orchestrator at `game-design-juicer`.
 
 | teammate | phase | agent, model, effort | fallback | use for |
 |---|---|---|---|---|
-| `addictive-game-design-reviewer` | plan | claude, opus, high | `codex-sol` | a gameplay review of a built incremental, idle or upgrade-driven game: what to rebalance, redo, add, remove, automate or reveal so that players want one more upgrade |
+| `addictive-game-design-reviewer` | plan | claude, opus, medium | `codex-sol` | a gameplay review of a built incremental, idle or upgrade-driven game: what to rebalance, redo, add, remove, automate or reveal so that players want one more upgrade |
 
 It carries `addictive-game-design-review` and names `incremental-game-design`
 and `game-juice`. The skill is text only. It comes from research on reward
@@ -387,8 +411,8 @@ starts each clean-room role as a separate fleet worker with `intake spawn`
 
 | teammate | agent, model, effort | side | reads | writes | offered |
 |---|---|---|---|---|---|
-| `skill-importer` | claude, opus, high | controller, never opens source | `intake` output, status files | through `intake` only | everywhere |
-| `intake-auditor` | claude, opus, high | contaminated | `contaminated/` | `contaminated/` | hidden: started only by `skill-importer` |
+| `skill-importer` | claude, opus, medium | controller, never opens source | `intake` output, status files | through `intake` only | everywhere |
+| `intake-auditor` | claude, opus, medium | contaminated | `contaminated/` | `contaminated/` | hidden: started only by `skill-importer` |
 | `intake-analyst` | claude, opus, medium | contaminated | `contaminated/`, `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
 | `intake-sanitizer` | claude, opus, medium | source-blind | `drafts/` | `drafts/` | hidden: started only by `skill-importer` |
 | `intake-writer` | claude, opus, medium | clean | `clean/` | `clean/` | hidden: started only by `skill-importer` |
@@ -415,11 +439,11 @@ orchestrator is offered them only on an Apple project. All except
 |---|---|---|---|---|
 | `swift-developer` | implementation | claude, opus, medium | none | SwiftUI features, SwiftData, Swift 6 concurrency |
 | `apple-platform-developer` | implementation | claude, opus, medium | none | App Intents, widgets, Live Activities, background tasks, focus |
-| `swift-reviewer` | validation | claude, opus, high | `codex-sol` | Swift review: concurrency, modern API, performance, Keychain; never edits |
-| `swift-qa-engineer` | validation | claude, sonnet, high | none | Swift Testing, XCTest migration, simulator repros |
-| `apple-accessibility-auditor` | validation | claude, sonnet, high | `codex-terra` | VoiceOver, Dynamic Type, Voice Control, UI copy; never edits |
+| `swift-reviewer` | validation | claude, opus, medium | `codex-sol` | Swift review: concurrency, modern API, performance, Keychain; never edits |
+| `swift-qa-engineer` | validation | claude, sonnet, medium | none | Swift Testing, XCTest migration, simulator repros |
+| `apple-accessibility-auditor` | validation | claude, sonnet, medium | `codex-terra` | VoiceOver, Dynamic Type, Voice Control, UI copy; never edits |
 | `app-release-preparer` | implementation | claude, sonnet, medium | none | archive, export, readiness audit, notes; writes the upload command for a human; never uploads or submits |
-| `codex-swift-reviewer` | validation | codex, gpt-5.6-sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
+| `codex-swift-reviewer` | validation | codex, gpt-5.6-sol, medium | `opus` | cross-vendor Swift review of Claude-built changes |
 
 Every persona's first move is a toolchain check (`xcodebuild -version`,
 `swift --version`, `xcrun simctl list devices available`). A builder or QA
@@ -471,38 +495,42 @@ It carries `comment-pruning`, written clean-room with `skill-intake` (see [docs/
 
 | teammate | phase | agent, model, effort | fallback | use for |
 |---|---|---|---|---|
-| `comment-purger` | implementation | claude, opus, high | `codex-sol` | A whole-repository comment purge: every comment sorted, deleted, and its knowledge kept in an issue or an ADR, plus a ratchet lint and a `/delete-comment` skill. |
+| `comment-purger` | implementation | claude, opus, medium | `codex-sol` | A whole-repository comment purge: every comment sorted, deleted, and its knowledge kept in an issue or an ADR, plus a ratchet lint and a `/delete-comment` skill. |
 
 Its persona holds the operator's brief word for word, so `horch spawn comment-purger` with no further task runs that brief on the project the fleet is in. A task may narrow the scope to named paths. It works in any repository: it uses a comment lint, a skill and an ADR folder where they exist, and builds them where they do not. In this repository they exist (`scripts/comments/comment_lint.py`, `.claude/skills/delete-comment/`, [ADR 0004](../docs/adr/0004-no-comments-in-code.md)). It differs from `comment-remover`, which sweeps only the lines of 1 task's diff and is never offered.
 
 ## The effort-matrix personas
 
-Eight more Claude specialists split the work by model tier and effort level
-rather than by discipline. Sonnet does fast, cheap execution. Opus 5.5 brings
-more baseline reasoning and handles complex abstraction. The effort level sets
-how deep each one checks.
+Eight more Claude specialists split the work by model tier and by kind of
+work rather than by discipline. Sonnet does fast, cheap execution. Opus 5.5
+brings more baseline reasoning and handles complex abstraction.
 
 | effort | Sonnet | Opus |
 |---|---|---|
 | low | `sonnet-sketch`: drafts, brainstorms, boilerplate, one-file edits, scoping | `opus-architect`: architecture critique, API and schema design, multi-service bug triage |
 | medium | `sonnet-feature`: endpoints, UI components, CRUD, test updates to a clear spec | `opus-domain`: intricate algorithms, domain rules, brownfield cross-cutting features |
-| high | `sonnet-bugfix`: localized bugs with repro steps, edge-case validation, module refactors | `opus-hardening`: races, leaks, concurrency, adversarial security review, fuzz harnesses |
-| max | `sonnet-sweep`: one refactor over many files, e2e boilerplate from a schema | `opus-verify`: Lean 4, hardware synthesis, compiler passes, sandboxed pentest |
+| medium (high until 2026-11-21) | `sonnet-bugfix`: localized bugs with repro steps, edge-case validation, module refactors | `opus-hardening`: races, leaks, concurrency, adversarial security review, fuzz harnesses |
+| medium (max until 2026-11-21) | `sonnet-sweep`: one refactor over many files, e2e boilerplate from a schema | `opus-verify`: Lean 4, hardware synthesis, compiler passes, sandboxed pentest |
+
+The matrix was built on 4 effort levels. On 2026-11-21 the 2 upper rows were
+lowered to medium, the fleet ceiling (rule "The ceiling" above). Each seat
+keeps its work and its boundary, and its file records the level it had and
+the reason. A seat goes back to its old level only with the operator's
+`signoff:`.
 
 Each persona states its boundary ("stop and report when...") in its body, and
 the short form of that boundary in `brief_description`, so both the worker and
-the orchestrator see it. The two `max` seats, `sonnet-sweep` and `opus-verify`,
-have a `first_instruction` that makes the worker ask and wait on an
-underspecified task. At max effort a wrong premise costs the most tokens.
+the orchestrator see it. `sonnet-sweep` and `opus-verify` have a
+`first_instruction` that makes the worker ask and wait on an underspecified
+task. In a long unattended run a wrong premise costs the most tokens.
 Like the other Claude seats, each has a Codex `fallbacks:` entry for when the
 Claude pool cannot serve a spawn: `codex-sol` for the Opus four, `codex-terra`
 for the Sonnet four (`horch route <name>` shows the decision).
 
-Token efficiency: for deep reasoning, `opus-hardening` (Opus at high) often
-matches or beats Sonnet at max on fewer tokens. `sonnet-sweep` exists for
-repetitive volume, not for depth. `opus-architect` is the fast, low-effort
-counterpart of `staff-engineer` (deep plans, high) and `architect-reviewer`
-(reviews a change, high).
+For deep reasoning, pick `opus-hardening` before `sonnet-sweep`.
+`sonnet-sweep` exists for repetitive volume, not for depth. `opus-architect`
+is the fast, low-effort counterpart of `staff-engineer` (deep plans) and
+`architect-reviewer` (reviews a change).
 
 ## The generics
 
@@ -532,27 +560,37 @@ confidentiality as much as on capability:
 | `antigravity` `spec-writer` `ticket-writer` | the operator's Google plan; data use follows their agy Enable Telemetry setting, which horch cannot read and trusts | anything the project already trusts Google with |
 | `pi` | your own GPU | anything, including what must not leave the machine |
 
-## Effort: set by role, stated in every file
+## Effort: capped at medium, stated in every file
 
-Each teammate's `effort:` follows its role, not its model
+The fleet ceiling is Opus 5.5 at medium effort (rule "The ceiling" above).
+Inside the ceiling, each teammate's `effort:` follows its role, not its model
 ([ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40)).
 
 | role | teammates | effort |
 |---|---|---|
 | orchestrator | `orchestrator`, `orchestrator-codex` | medium |
-| reviewers and planners | `architect-reviewer`, `root-cause-auditor`, `comment-purger`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
+| reviewers and planners | `architect-reviewer`, `root-cause-auditor`, `comment-purger`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | medium (high until 2026-11-21) |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime`, `spec-writer`, `ticket-writer` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
-| effort-matrix personas | `sonnet-*`, `opus-*` (effort is the role; see above) | low to max |
+| effort-matrix personas | `sonnet-*`, `opus-*` (see above) | low or medium |
 | no effort setting | `opencode-*` (their free models define no variants) | - |
+
+No teammate carries a `signoff:` on 2026-11-21, so no teammate runs above
+medium. The 3 worker seats on a reserved model (`fable-creative`,
+`astra-creative`, `game-design-juicer`) run at medium and await the
+operator's sign-off for their model.
 
 Rules `horch teammates --check` enforces:
 - the level must be one this agent's CLI takes;
 - an offered codex teammate must state one;
-- haiku and the free opencode models must not have one.
+- haiku and the free opencode models must not have one;
+- a level above `medium` needs the operator's `signoff:`, and a malformed or
+  stale sign-off fails.
 
-Change a level with the `tune-fleet` skill (`.claude/skills/tune-fleet/`),
-which works from `horch cost` numbers, and write the reason next to the line.
+Propose a change of level with the `tune-fleet` skill
+(`.claude/skills/tune-fleet/`), which works from `horch cost` numbers, and
+write the reason next to the line. A level above `medium` is a proposal to
+the operator: the skill never writes a `signoff:`.
 
 ## Free tiers and `trains_on_input`
 

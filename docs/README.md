@@ -42,6 +42,9 @@ Each recipe names every file to change and the check for each step.
   sees skills, and context measurements.
 - [runtime-skill-checks.md](runtime-skill-checks.md): native skill discovery
   checked against the installed harnesses, with no model request.
+- [fleet-ceiling-2026-11-21.md](fleet-ceiling-2026-11-21.md): the fleet
+  ceiling (Opus 5.5 at medium), every teammate lowered to it with its old
+  level and reason, and the seats that await the operator's sign-off.
 
 ## Specs
 

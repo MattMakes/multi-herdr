@@ -12,8 +12,10 @@ system_prompt: sr_eng_system_prompt
 # No fallback: Chrome, ffmpeg and macOS `say` are not live-checked in the
 # Codex sandbox, so a Codex fallback could not run this work. When the
 # Claude pool is out, `horch route` refuses and the orchestrator waits.
-# high, like the other planners: every builder works from this plan.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: like the other planners, every builder works from this
+# plan.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

@@ -18,14 +18,14 @@ const SEATS: [Seat; 7] = [
         "video-producer",
         Phase::Plan,
         "opus",
-        "high",
+        "medium",
         &["video-produce"],
     ),
     (
         "video-director",
         Phase::Plan,
         "opus",
-        "high",
+        "medium",
         &["video-direction", "video-storyboard"],
     ),
     (
@@ -65,7 +65,7 @@ const SEATS: [Seat; 7] = [
         "video-critic",
         Phase::Validation,
         "opus",
-        "high",
+        "medium",
         &["video-qa", "video-direction"],
     ),
 ];

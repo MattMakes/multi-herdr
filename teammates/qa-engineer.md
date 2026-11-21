@@ -9,10 +9,11 @@ phase: validation
 model: sonnet
 # When this model's usage pool cannot serve a spawn (horch route qa-engineer).
 fallbacks: [codex-terra]
-# high: a missed finding costs a review round, which cost more than the
-# review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
-# spend at xhigh). high, not xhigh: diminishing returns above it.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a missed finding costs a review round, which cost more
+# than the review itself in cezaar#40's baseline (reviewers+judges were 71% of
+# worker spend at xhigh); not xhigh: diminishing returns above high.
+effort: medium
 compact_window: 150000
 compact_at: 300000
 permission_mode: auto

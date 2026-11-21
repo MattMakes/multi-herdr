@@ -8,9 +8,10 @@ phase: implementation
 model: opus
 system_prompt: sr_eng_system_prompt
 fallbacks: [codex-sol]
-# high: each comment gets a verdict, and a decision filed as a tautology is
-# lost when the comment goes.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: each comment gets a verdict, and a decision filed as a
+# tautology is lost when the comment goes.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

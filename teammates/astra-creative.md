@@ -8,9 +8,9 @@ phase: plan
 model: gpt-6-astra
 # No fallbacks: a substitute model would give the council 2 designs from 1
 # model. The orchestrator runs with the seats that start (orchestrate §10).
-# high: open design is where reasoning depth pays. Raise one spawn with
-# --effort.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: open design is where reasoning depth pays.
+effort: medium
 compact_at: 300000
 skills: [creative-council]
 # auto, not plan: plan maps to `-s read-only -a on-request`, and an approval

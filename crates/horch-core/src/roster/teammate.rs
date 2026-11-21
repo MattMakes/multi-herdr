@@ -56,6 +56,8 @@ pub struct Teammate {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signoff: Option<String>,
     #[serde(default)]
     pub subagent_model: Option<String>,
     #[serde(default = "yes")]
@@ -147,6 +149,7 @@ impl Default for Teammate {
             agent: HarnessKind::Claude,
             model: None,
             effort: None,
+            signoff: None,
             subagent_model: None,
             inherit_plugins: true,
             plugin_dirs: Vec::new(),

@@ -13,9 +13,11 @@ system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn. codex-sol can read a
 # game directory and write the report, which is all the skill needs.
 fallbacks: [codex-sol]
-# high: a review that reads a formula wrong, or that proposes a new system
-# where a change of numbers was enough, sends the whole build the wrong way.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a review that reads a formula wrong, or that proposes a
+# new system where a change of numbers was enough, sends the whole build the
+# wrong way.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

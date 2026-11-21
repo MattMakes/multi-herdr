@@ -14,8 +14,9 @@ system_prompt: sr_eng_system_prompt
 # No fallback: a fallback launches with another harness and other rules, so
 # the trust wall below would be gone. skill-importer spawns with --exact.
 fallbacks: []
-# high: it judges hostile input.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: it judges hostile input.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

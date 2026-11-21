@@ -13,9 +13,10 @@ system_prompt: sr_eng_system_prompt
 offer_when: ["*.uproject"]
 # When this model's usage pool cannot serve a spawn (horch route ue-code-reviewer).
 fallbacks: [codex-sol]
-# high: a missed finding costs a review round, the same as
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a missed finding costs a review round, the same as
 # architect-reviewer.
-effort: high
+effort: medium
 compact_window: 200000
 compact_at: 300000
 

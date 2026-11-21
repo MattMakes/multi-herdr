@@ -14,9 +14,10 @@ offer_when: ["*.uproject"]
 requires: [git-lfs]
 # When this model's usage pool cannot serve a spawn (horch route ue-tech-lead).
 fallbacks: [codex-sol]
-# high: a planner, like staff-engineer. A wrong module split or a missed
-# plugin dependency costs every builder after it.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a planner, like staff-engineer; a wrong module split or
+# a missed plugin dependency costs every builder after it.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

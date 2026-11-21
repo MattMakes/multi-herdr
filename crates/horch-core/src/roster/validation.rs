@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 
+use super::ceiling::{awaits_signoff, ceiling_problems};
 use super::operator::expand_home;
 use super::parser::{parse_base, parse_teammate};
 use super::repository::{BUILTIN_BASES, BUILTIN_TEAMMATES};
@@ -166,6 +167,12 @@ impl Roster {
     }
 
     pub(crate) fn check_teammate(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = self.check_launch(t);
+        problems.extend(self.ceiling_rules(t));
+        problems
+    }
+
+    fn check_launch(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
         problems.extend(self.skill_catalog_rules(t));
         problems.extend(self.description_rules(t));
@@ -311,6 +318,10 @@ impl Roster {
             }
         }
         problems
+    }
+
+    fn ceiling_rules(&self, t: &Teammate) -> Vec<String> {
+        ceiling_problems(t)
     }
 
     fn plugin_skill_rules(&self, t: &Teammate) -> Vec<String> {
@@ -1591,7 +1602,7 @@ fn fallback_pair_problems(
     let merged = merge(t, f);
     out.extend(
         roster
-            .check_teammate(&merged)
+            .check_launch(&merged)
             .into_iter()
             .map(|p| format!("{who} via {fb}: {p}")),
     );
@@ -1619,6 +1630,14 @@ pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
         }
     }
     out
+}
+
+pub fn ceiling_warnings(roster: &Roster) -> Vec<String> {
+    roster
+        .teammates
+        .values()
+        .filter_map(awaits_signoff)
+        .collect()
 }
 
 pub fn operator_skill_warnings(roster: &Roster) -> Vec<String> {
@@ -2121,6 +2140,205 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             "{:?}",
             r.check()
         );
+    }
+
+    const SIGNOFF: &str = "2026-11-21 operator: proofs need the depth";
+    const SIGNOFF_SHAPE: &str = "signoff: \"<yyyy-mm-dd> <who>: <why>\"";
+
+    fn ceiling_problems_of(r: &Roster) -> Vec<String> {
+        r.check()
+            .into_iter()
+            .filter(|p| p.contains("fleet ceiling") || p.contains("signoff"))
+            .collect()
+    }
+
+    #[test]
+    fn roster_check_fails_an_effort_above_the_ceiling_without_a_signoff() {
+        for (name, effort) in [
+            ("opus", "high"),
+            ("sonnet", "xhigh"),
+            ("codex-sol", "max"),
+            ("pi", "high"),
+            ("antigravity", "high"),
+        ] {
+            let mut r = Roster::builtin().unwrap();
+            r.teammates.get_mut(name).unwrap().effort = Some(effort.into());
+            assert_eq!(
+                r.check(),
+                [format!(
+                    "{name}: effort '{effort}' is above the fleet ceiling (Opus 5.5 at medium) \
+                     and has no operator sign-off; set effort: medium, or have the operator \
+                     add {SIGNOFF_SHAPE}"
+                )]
+            );
+            r.teammates.get_mut(name).unwrap().signoff = Some(SIGNOFF.into());
+            assert!(r.check().is_empty(), "{name}: {:?}", r.check());
+        }
+        for (name, effort) in [("opus", "low"), ("opus", "medium"), ("codex-sol", "none")] {
+            let mut r = Roster::builtin().unwrap();
+            r.teammates.get_mut(name).unwrap().effort = Some(effort.into());
+            assert!(r.check().is_empty(), "{name} {effort}: {:?}", r.check());
+        }
+    }
+
+    #[test]
+    fn roster_check_fails_a_signoff_without_a_date_a_signer_or_a_reason() {
+        let mut r = Roster::builtin().unwrap();
+        let mut signed = |signoff: &str| {
+            let t = r.teammates.get_mut("opus").unwrap();
+            t.effort = Some("high".into());
+            t.signoff = Some(signoff.into());
+            r.check()
+        };
+        for (signoff, why) in [
+            ("", "signoff is empty"),
+            ("   ", "signoff is empty"),
+            (
+                "operator: proofs need the depth",
+                "signoff does not start with a yyyy-mm-dd date",
+            ),
+            (
+                "21-11-2026 operator: proofs need the depth",
+                "signoff does not start with a yyyy-mm-dd date",
+            ),
+            (
+                "2026-1-5 operator: proofs need the depth",
+                "signoff does not start with a yyyy-mm-dd date",
+            ),
+            (
+                "2026-13-01 operator: proofs need the depth",
+                "signoff does not start with a yyyy-mm-dd date",
+            ),
+            ("2026-11-21", "signoff gives no reason after ': '"),
+            ("2026-11-21 operator", "signoff gives no reason after ': '"),
+            ("2026-11-21 operator:", "signoff gives no reason after ': '"),
+            (
+                "2026-11-21 operator: ",
+                "signoff gives no reason after ': '",
+            ),
+            (
+                "2026-11-21 : proofs need the depth",
+                "signoff does not say who signed",
+            ),
+            (
+                "2026-11-21 operator: proofs\nneed the depth",
+                "signoff must be one line",
+            ),
+        ] {
+            assert_eq!(
+                signed(signoff),
+                [format!(
+                    "opus: {why}; only the operator writes {SIGNOFF_SHAPE}"
+                )],
+                "{signoff:?}"
+            );
+        }
+        assert!(signed(SIGNOFF).is_empty());
+        assert!(signed("2026-11-21 Op. Erator: needs depth: proofs").is_empty());
+    }
+
+    #[test]
+    fn roster_check_fails_a_stale_signoff_under_the_ceiling() {
+        for name in ["opus", "codex-terra", "orchestrator", "orchestrator-codex"] {
+            let mut r = Roster::builtin().unwrap();
+            r.teammates.get_mut(name).unwrap().signoff = Some(SIGNOFF.into());
+            assert_eq!(
+                r.check(),
+                [format!(
+                    "{name}: signoff is set, but this teammate is not above the fleet ceiling \
+                     (Opus 5.5 at medium); remove it"
+                )]
+            );
+        }
+        let mut r = Roster::builtin().unwrap();
+        let t = r.teammates.get_mut("opus").unwrap();
+        t.signoff = Some("not a signoff".into());
+        assert_eq!(ceiling_problems_of(&r).len(), 2, "{:?}", r.check());
+    }
+
+    #[test]
+    fn a_worker_seat_on_a_reserved_model_warns_until_the_operator_signs_off() {
+        let mut r = Roster::builtin().unwrap();
+        for (seat, _) in TOP_TIER_SEATS {
+            let t = r.teammates.get_mut(seat).unwrap();
+            t.effort = Some("medium".into());
+            t.signoff = None;
+        }
+        assert!(r.check().is_empty(), "{:?}", r.check());
+        assert_eq!(
+            ceiling_warnings(&r),
+            [
+                ("astra-creative", "gpt-6-astra"),
+                ("fable-creative", "fable"),
+                ("game-design-juicer", "fable"),
+            ]
+            .map(|(seat, model)| format!(
+                "{seat}: model '{model}' is above the fleet ceiling (Opus 5.5 at medium) and \
+                 awaits the operator's sign-off"
+            ))
+        );
+
+        r.teammates.get_mut("fable-creative").unwrap().signoff = Some(SIGNOFF.into());
+        assert!(r.check().is_empty(), "{:?}", r.check());
+        let warned = ceiling_warnings(&r);
+        assert_eq!(warned.len(), 2, "{warned:?}");
+        assert!(!warned.iter().any(|w| w.starts_with("fable-creative:")));
+    }
+
+    #[test]
+    fn the_orchestrators_are_exempt_from_the_model_ceiling_but_not_from_the_effort_ceiling() {
+        let r = Roster::builtin().unwrap();
+        for name in [
+            "orchestrator",
+            "orchestrator-codex",
+            "orchestration-orchestrator",
+        ] {
+            let t = r.require(name).unwrap();
+            assert!(
+                reserved_tier(t.model.as_deref().unwrap_or_default()).is_some(),
+                "{name}"
+            );
+            assert!(t.is_orchestrator(), "{name}");
+            assert_eq!(t.model_above_ceiling(), None, "{name}");
+            assert!(
+                !ceiling_warnings(&r)
+                    .iter()
+                    .any(|w| w.starts_with(&format!("{name}:"))),
+                "{name}"
+            );
+            let mut high = t.clone();
+            high.effort = Some("high".into());
+            assert!(
+                r.check_teammate(&high)
+                    .iter()
+                    .any(|p| p.contains("has no operator sign-off")),
+                "{name}"
+            );
+        }
+        assert!(!r.require("opus").unwrap().is_orchestrator());
+        assert!(!r.require("fable-creative").unwrap().is_orchestrator());
+    }
+
+    #[test]
+    fn a_fallback_launch_is_not_judged_against_the_ceiling_a_second_time() {
+        let mut r = Roster::builtin().unwrap();
+        let t = r.teammates.get_mut("architect-reviewer").unwrap();
+        assert_eq!(t.fallbacks, ["codex-sol"]);
+        t.effort = Some("high".into());
+        assert_eq!(ceiling_problems_of(&r).len(), 1, "{:?}", r.check());
+        r.teammates.get_mut("architect-reviewer").unwrap().signoff = Some(SIGNOFF.into());
+        assert!(r.check().is_empty(), "{:?}", r.check());
+    }
+
+    #[test]
+    fn signoff_parses_from_frontmatter_and_defaults_to_none() {
+        let head = "---\nname: x\nbrief_description: X\nagent: claude\nmodel: opus\n";
+        let t = parse_teammate("x", &format!("{head}---\nbody")).unwrap();
+        assert_eq!(t.signoff, None);
+        let t = parse_teammate("x", &format!("{head}signoff:\n---\nbody")).unwrap();
+        assert_eq!(t.signoff, None);
+        let t = parse_teammate("x", &format!("{head}signoff: \"{SIGNOFF}\"\n---\nbody")).unwrap();
+        assert_eq!(t.signoff.as_deref(), Some(SIGNOFF));
     }
 
     #[test]

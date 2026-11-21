@@ -11,9 +11,11 @@ phase: implementation
 model: sonnet
 # No fallback: the codex sandbox cannot run horch worktree triage apply (T-5).
 fallbacks: []
-# high: each row needs a careful read of its diff, but no design work. The
-# operator decides; the steward only prepares the decision.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: each row needs a careful read of its diff, but no
+# design work; the operator decides, and the steward only prepares the
+# decision.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

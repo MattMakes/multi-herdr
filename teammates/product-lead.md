@@ -10,8 +10,10 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn (horch route product-lead).
 fallbacks: [codex-sol]
-# high: plans and product calls are where a wrong turn is expensive.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: plans and product calls are where a wrong turn is
+# expensive.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto

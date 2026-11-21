@@ -429,7 +429,7 @@ teammate is refused: pick a Claude teammate.
 `game-design-juicer` is a third Fable seat, by the operator's exception
 (`SEATS_WITH_FALLBACKS`). It starts only when named, like the council seats,
 but it names `opus` as its fallback: when Fable's own window is used up and
-Opus still has room, it runs on Opus at the same high effort. A pool-wide
+Opus still has room, it runs on Opus at the same effort. A pool-wide
 Claude limit blocks both.
 
 Every other briefing is written for an Opus or Codex-Sol reader: the
@@ -495,32 +495,32 @@ registry to update.
 
 | teammate               | agent  | model  | effort | for                                          |
 |------------------------|--------|--------|--------|----------------------------------------------|
-| `product-lead`         | Claude | Opus   | high   | Scope, priorities, acceptance criteria       |
+| `product-lead`         | Claude | Opus   | medium | Scope, priorities, acceptance criteria       |
 | `researcher`           | Claude | Opus   | medium | R&D; investigating unfamiliar code and prior art |
-| `staff-engineer`       | Claude | Opus   | high   | Deep implementation plans a junior can execute |
+| `staff-engineer`       | Claude | Opus   | medium | Deep implementation plans a junior can execute |
 | `designer`             | Claude | Opus   | medium | UX flows, states, copy, accessibility        |
-| `architect-reviewer`   | Claude | Opus   | high   | Boundaries, contracts, coupling. Read-only   |
+| `architect-reviewer`   | Claude | Opus   | medium | Boundaries, contracts, coupling. Read-only   |
 | `frontend-developer`   | Claude | Opus   | medium | UI work, with a real browser to check it in  |
 | `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
-| `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
-| `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `qa-engineer`          | Claude | Sonnet | medium | Tests, e2e harnesses, bug reproduction       |
+| `codex-reviewer`       | Codex  | Sol    | medium | Cross-vendor review of Claude-built changes  |
 | `architect-reviewer-light` | Claude | Opus | medium | Code-sweep rounds 2 and 3 only. Read-only    |
-| `root-cause-auditor`   | Claude | Opus   | high   | Finds code patched around a stale comment or core flaw; fixes the root cause when told |
+| `root-cause-auditor`   | Claude | Opus   | medium | Finds code patched around a stale comment or core flaw; fixes the root cause when told |
 | `codex-reviewer-light` | Codex  | Terra  | medium | Code-sweep rounds 2 and 3 only               |
 | `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
 | `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
-| `sonnet-bugfix`        | Claude | Sonnet | high   | Localized bugs with repro steps, edge-case hardening |
-| `sonnet-sweep`         | Claude | Sonnet | max    | Long mechanical multi-file sweeps, exact spec only |
+| `sonnet-bugfix`        | Claude | Sonnet | medium | Localized bugs with repro steps, edge-case hardening |
+| `sonnet-sweep`         | Claude | Sonnet | medium | Long mechanical multi-file sweeps, exact spec only |
 | `opus-architect`       | Claude | Opus   | low    | Fast architecture critique, API/schema design, triage |
 | `opus-domain`          | Claude | Opus   | medium | Intricate algorithms, domain logic, brownfield features |
-| `opus-hardening`       | Claude | Opus   | high   | Races, leaks, security review, fuzz harnesses |
-| `opus-verify`          | Claude | Opus   | max    | Unattended formal proofs, compiler passes, sandboxed pentest |
-| `fable-creative`       | Claude | Fable  | high   | Creative council seat; also combines the designs |
-| `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
-| `opus-creative`        | Claude | Opus   | high   | Creative council seat |
-| `game-design-juicer`   | Claude | Fable (Opus fallback) | high | Studies a game or design doc; proposes balanced juice |
-| `game-design-incremental-specialist` | Claude | Opus | high | Incremental and idle game math: designs, proves and rebalances progression; says "not ready" when the proof fails |
-| `addictive-game-design-reviewer` | Claude | Opus | high | Reviews a built incremental game's source; ranks what to rebalance, redo, add or remove |
+| `opus-hardening`       | Claude | Opus   | medium | Races, leaks, security review, fuzz harnesses |
+| `opus-verify`          | Claude | Opus   | medium | Unattended formal proofs, compiler passes, sandboxed pentest |
+| `fable-creative`       | Claude | Fable  | medium | Creative council seat; also combines the designs |
+| `astra-creative`       | Codex  | Astra  | medium | Creative council seat |
+| `opus-creative`        | Claude | Opus   | medium | Creative council seat |
+| `game-design-juicer`   | Claude | Fable (Opus fallback) | medium | Studies a game or design doc; proposes balanced juice |
+| `game-design-incremental-specialist` | Claude | Opus | medium | Incremental and idle game math: designs, proves and rebalances progression; says "not ready" when the proof fails |
+| `addictive-game-design-reviewer` | Claude | Opus | medium | Reviews a built incremental game's source; ranks what to rebalance, redo, add or remove |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
@@ -881,17 +881,30 @@ Every teammate states its model and effort in its file, and `horch teammates
 | `opencode` | `provider/model` | the model's variants | The free `opencode/*` models have none, so no effort |
 | `pi` `prime` | `provider/id` | `off` `minimal` `low` `medium` `high` `xhigh` `max` | |
 
-Effort follows the role, as in
-[ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40):
-- builders run at medium, because the thinking belongs in their brief;
-- reviewers and planners run at high, because a missed finding costs a whole
-  review round;
-- the orchestrator runs at medium.
+**The fleet ceiling is Opus 5.5 at medium effort.** No teammate file sets an
+effort above `medium` without the operator's sign-off, whatever its role or
+harness ([ADR 0195](docs/adr/0195-nothing-runs-above-opus-5-5-at-medium-without-the-operators-sign-off.md)):
+- builders, reviewers, planners and the orchestrator run at medium;
+- runners run at low;
+- a teammate above the ceiling carries `signoff: "<yyyy-mm-dd> <who>: <why>"`.
+  Only the operator writes that line. `horch teammates --check` fails an
+  effort above `medium` without it, a malformed one, and one on a teammate
+  that is not above the ceiling;
+- a worker seat on a reserved model (`fable`, `gpt-6-astra`) without a
+  sign-off gets a `warning:` from the check and keeps working until the
+  operator decides. The orchestrators are exempt: `horch fleet <flavor>`
+  picks their model per launch.
+
+On 2026-11-21 every teammate above `medium` was lowered to it; the table and
+the old reasons are in
+[`docs/fleet-ceiling-2026-11-21.md`](docs/fleet-ceiling-2026-11-21.md).
 
 `horch spawn <teammate> --effort <level>` overrides the level for one spawn,
 and the ledger records the level each session actually ran at.
 `--model <model>` overrides the model the same way, checked against the
-teammate's agent. Levels are not
+teammate's agent. Both flags, and the `horch fleet <flavor>` choice, are the
+operator's own decisions for one launch. They are not roster settings, and
+the roster check does not judge them. Levels are not
 comparable across vendors: codex "high" is not claude "high".
 
 **Where effort gets overridden behind your back:**

@@ -1,6 +1,6 @@
 ---
 name: opus-hardening
-brief_description: Opus/high. Root-cause races, leaks and concurrency bugs; adversarial security review; fuzz/property harnesses.
+brief_description: Opus/medium. Root-cause races, leaks and concurrency bugs; adversarial security review; fuzz/property harnesses.
 base: fleet-worker
 agent: claude
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
@@ -10,10 +10,11 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn (horch route opus-hardening).
 fallbacks: [codex-sol]
-# high: the sweet spot. Root-cause analysis and hardening need depth, and Opus
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: root-cause analysis and hardening need depth, and Opus
 # at high often matches or beats a smaller model at max on fewer tokens.
 # Not for first drafts: reasoning tokens spent on preliminary ideas are waste.
-effort: high
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto
@@ -25,7 +26,7 @@ disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---
-You are the fleet's HARDENING ENGINEER: Opus at high effort. You find the
+You are the fleet's HARDENING ENGINEER: Opus at medium effort. You find the
 cause of the bugs that other seats could not, and you make code hold up
 against inputs and schedules that nobody planned for.
 

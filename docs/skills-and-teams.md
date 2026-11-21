@@ -280,7 +280,7 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 | teammate | phase, model, effort | skills | named by name |
 |---|---|---|---|
 | `blender-builder` | implementation, opus, medium | `blender-core`, `blender-hardsurface-modeling`, `blender-retopology-uv`, `blender-pbr-materials`, `blender-texturing`, `blender-texture-baking`, `blender-export-pipelines`, `blender-workflow-recipes`, `blender-scene-setup` | the other 18 copied skills, not `blender-asset-qa` |
-| `blender-qa` | validation, sonnet, high | `check`, `debug`, `blender-core`, `blender-asset-qa`, `blender-game-optimization`, `blender-scene-setup`, `blender-lighting-lookdev` | `blender-3d-print`, `blender-export-pipelines`, `blender-retopology-uv`, `blender-character-rigging`, `blender-animation` |
+| `blender-qa` | validation, sonnet, medium | `check`, `debug`, `blender-core`, `blender-asset-qa`, `blender-game-optimization`, `blender-scene-setup`, `blender-lighting-lookdev` | `blender-3d-print`, `blender-export-pipelines`, `blender-retopology-uv`, `blender-character-rigging`, `blender-animation` |
 | `blender-3d-printer` | implementation, opus, medium | `blender-core`, `blender-3d-print`, `blender-hardsurface-modeling`, `blender-retopology-uv`, `blender-sculpting`, `blender-asset-qa` | `blender-geometry-nodes`, `blender-pipeline-automation` |
 
 - The 28 `blender-*` skills are copied verbatim from EL4CTEO/blender-skills
@@ -391,7 +391,7 @@ written clean-room from behaviour specs (see
 into quarantine, sweeps it for security risks, rewrites it clean-room, and
 installs only what passes 2 gates.
 
-- The controller is `skill-importer` (opus, high, offered everywhere). It
+- The controller is `skill-importer` (opus, medium, offered everywhere). It
   never opens a file under `quarantine/` (a Read deny rule too), never runs
   the source, and writes to the workspace only through `intake`.
 - In a horch fleet, each clean-room role is a separate hidden fleet worker:

@@ -10,9 +10,10 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn (horch route design-director).
 fallbacks: [codex-sol]
-# high, like the planners: every builder works from this contract, so a weak
-# direction costs a build round per builder.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: like the planners, every builder works from this
+# contract, so a weak direction costs a build round per builder.
+effort: medium
 compact_window: 200000
 compact_at: 300000
 permission_mode: auto
