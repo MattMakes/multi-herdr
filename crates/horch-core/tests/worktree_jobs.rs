@@ -967,11 +967,8 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     runner.reap();
 }
 
-/// Start the run `fetch` as a process that ignores TERM, and wait until
-/// its trap is set. The run as it is then.
 #[cfg(unix)]
 fn start_fetch_that_ignores_term(w: &mut World, runner: &mut JobRunner<'_>, fetch: i64) -> JobRow {
-    // The hung fetch ignores TERM, so only the KILL ends it.
     let ready = w.dir.path().join("fetch-ready");
     let hung_spec = LaunchSpec {
         program: "sh".into(),
@@ -1003,9 +1000,6 @@ fn start_fetch_that_ignores_term(w: &mut World, runner: &mut JobRunner<'_>, fetc
     w.job(fetch)
 }
 
-/// The run `fetch` (time limit 5 s, grace 1 s) gets the TERM at 6, which
-/// it ignores, no stop in the grace, and the KILL at 7, while it still
-/// holds the git writer of `repo`. Then its process is gone.
 #[cfg(unix)]
 fn term_then_kill_after_the_grace(
     w: &mut World,
@@ -1039,8 +1033,6 @@ fn term_then_kill_after_the_grace(
     wait_gone(runner, pid);
 }
 
-/// The running rescue `rescue` of `row` ends with a rescue ref on the base
-/// that holds the untracked file, and the tree stays.
 #[cfg(unix)]
 fn assert_rescue_saves_the_tree(w: &mut World, row: &WorktreeRow, rescue: i64) {
     use horch_core::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
