@@ -723,6 +723,8 @@ fn reap_grace() -> std::time::Duration {
 
 const PS_SCAN_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The process group of each run in the `jobs` table of the ledger `db`
+/// that is still the group of its recorded leader (pid and start time).
 #[cfg(unix)]
 fn job_groups(db: &Path) -> Vec<u32> {
     if !db.is_file() {
@@ -759,12 +761,16 @@ fn job_groups(db: &Path) -> Vec<u32> {
     groups
 }
 
+/// Stop each job of the world, by the group that its row in `db` records,
+/// and return the processes that still run after the stop.
+///
 /// A job may outlive its fleetd: the next fleetd observes a `running` job
 /// by its pid and start time, and ends it `abandoned` only when its process
 /// is gone (`docs/specs/fleetd/design.md`, "Long work is a job"). So the
 /// stop of the test fleetd does not end its jobs, and a job process need not
-/// name the harness root, which [`reap`] looks for.
-/// A process in an uninterruptible syscall acts on a
+/// name the harness root, which [`reap`] looks for. Like the stop of a job
+/// at its deadline, each group gets SIGTERM, then SIGKILL after the stop
+/// grace of the design. A process in an uninterruptible syscall acts on a
 /// signal only when the syscall returns, so the wait for the end is
 /// [`EXIT_LIMIT`]. Never a group of another world: a group id stays ours
 /// while the group has members.
@@ -1989,6 +1995,9 @@ mod tests {
         })
     }
 
+    /// T-365: a job of the world outlives the stop of its fleetd by design,
+    /// so the teardown stops it by the group that the `jobs` table records,
+    /// and no process of the world runs after the teardown.
     #[cfg(unix)]
     #[test]
     fn the_teardown_stops_each_job_of_the_world_by_its_recorded_group() {
