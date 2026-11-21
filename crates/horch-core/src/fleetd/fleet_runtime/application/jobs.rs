@@ -65,6 +65,7 @@ use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost
 use crate::fleetd::worker_profiles::domain::conformance::{Check, ConformanceReport};
 use crate::fleetd::worker_profiles::domain::operator_boundary::OperatorPaths;
 use crate::fleetd::worktree_custody::adapters::executors;
+use crate::fleetd::worktree_custody::adapters::git as worktree_git;
 use crate::taskledger::finish::complexity::{ToolRun, ToolRunner};
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
 use crate::taskledger::model::{Actor, EventKind};
@@ -276,7 +277,13 @@ pub fn observe(
     clock: FleetSeconds,
 ) -> Result<Observed> {
     let mut seen = Observed::default();
-    for row in store::running(tx)? {
+    let running = store::running(tx)?;
+    let past: Vec<&JobRow> = running
+        .iter()
+        .filter(|r| r.deadline.is_some_and(|d| clock >= d))
+        .collect();
+    let terms = terms_sent(tx, &past)?;
+    for row in running {
         let key = row.id.to_string();
         let process = match facts.iter().find(|f| f.key == key).map(|f| f.liveness) {
             Some(Liveness::Alive) => Process::Alive,
@@ -286,10 +293,17 @@ pub fn observe(
         let result = outcome(&row).map(|o| o.state());
         let deadline = row.deadline.unwrap_or(FleetSeconds(i64::MAX));
         let stop_grace_s = ctx.config.stop_grace_s;
-        let state = match jobs::observe(process, result, deadline, stop_grace_s, clock) {
+        let term_at = terms
+            .iter()
+            .find(|(id, _)| *id == row.id)
+            .map(|(_, at)| *at);
+        let state = match jobs::observe(process, result, deadline, term_at, stop_grace_s, clock) {
             Seen::Runs => continue,
             Seen::Stop { kill } => {
                 if let Some(pid) = row.pid {
+                    if !kill {
+                        record_term(ctx, tx, &row, pid, clock)?;
+                    }
                     seen.stops.push(Stop {
                         job_id: row.id,
                         pid,
@@ -308,11 +322,333 @@ pub fn observe(
         };
         match done {
             Ok(()) => seen.ended.push((row.id, state)),
-            Err(e) if is_refused(&e) => {}
+            Err(e) if is_refused(&e) => continue,
             Err(e) => return Err(e),
         }
+        if let (State::Abandoned, Some(pid)) = (state, row.pid) {
+            note_group_left(ctx, tx, &row, pid, clock)?;
+        }
     }
+    tell_group_left(ctx, tx, clock)?;
     Ok(seen)
+}
+
+/// The cause of the notice that the group of an abandoned run has members.
+const GROUP_LEFT: &str = "the job process is gone and its group id has members; \
+     fleetd sends them no signal, as it cannot prove that they are of the job";
+
+/// The data of a [`GROUP_LEFT`] notice: its fleet time, the run, its
+/// group id, and each member other than the gone leader with its start
+/// time.
+#[derive(Debug, Serialize, Deserialize)]
+struct GroupLeft {
+    at: i64,
+    run: i64,
+    group: u32,
+    members: Vec<Member>,
+}
+
+/// A process with its start time, as [`horch_platform::process::start_time`]
+/// reads it.
+#[derive(Debug, Serialize, Deserialize)]
+struct Member {
+    pid: u32,
+    start: u64,
+}
+
+/// Record a notice in `tx` when the group id `pid` of the abandoned run
+/// `row` still has a member other than its gone leader.
+///
+/// Limit: a job process that something else killed leaves the processes
+/// of its group (on Linux the bwrap and the namespace init of a git
+/// sandbox) alive until their command ends. fleetd sends them no signal: a
+/// group id is free for reuse when its last member ends, and with the
+/// leader gone no recorded start time proves that a member is of the job
+/// (`is_same_group` then only checks that the group has a member). A dev
+/// fleetd never stops a process that it did not start. While a member of
+/// the notice of a git writer runs with its recorded start time, no other
+/// git writer of its repository starts ([`git_writer_busy`]), and the
+/// hold of a task shows it. fleetd puts no bound on that wait: it ends
+/// when the member ends, and past the time limit of the run and the stop
+/// grace the operator gets 1 needs-you item ([`tell_group_left`]).
+///
+/// The `SIGTERM` of [`stop`] keeps its form with the leader gone: it goes
+/// to the group id while the group has a member. The OS does not give a
+/// pid out while it is the id of a group with a member (Linux frees a pid
+/// number only when no process uses it as its pid, group id or session id;
+/// the macOS fork skips a pid that names a process, a group or a session).
+/// So the group gets a wrong process only when every member of the group
+/// ends, and the id goes to a new process that then makes its own group
+/// (`setsid` or `setpgid`).
+fn note_group_left(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &JobRow,
+    pid: u32,
+    clock: FleetSeconds,
+) -> Result<()> {
+    let members: Vec<Member> = horch_platform::process::group_members(pid)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| *m != pid)
+        .filter_map(|m| {
+            Some(Member {
+                pid: m,
+                start: horch_platform::process::start_time(m)?,
+            })
+        })
+        .collect();
+    if members.is_empty() {
+        return Ok(());
+    }
+    let data = serde_json::to_value(GroupLeft {
+        at: clock.0,
+        run: row.run,
+        group: pid,
+        members,
+    })?;
+    record(
+        tx,
+        ctx.guard,
+        EventKind::Note,
+        Entity::Job,
+        &row.id.to_string(),
+        pass_cause(GROUP_LEFT),
+        &data,
+    )?;
+    Ok(())
+}
+
+/// The cause of the fact that the operator got the needs-you item of a
+/// [`GROUP_LEFT`] notice.
+const GROUP_TOLD: &str = "the group of the abandoned run still runs past its time limit \
+     and the stop grace; the operator got 1 needs-you item";
+
+/// A [`GROUP_LEFT`] notice of an abandoned git writer whose group still
+/// has a member that runs with its recorded start time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupLeftHold {
+    pub job_id: i64,
+    pub kind: Kind,
+    pub subject: String,
+    pub repo: String,
+    pub run: i64,
+    pub group: u32,
+    /// Each member that runs, with its start time.
+    pub members: Vec<(u32, u64)>,
+    at: i64,
+    time_limit_s: u64,
+    told: bool,
+}
+
+impl GroupLeftHold {
+    /// The members as "pid <pid> (start time <start>)", joined by ", ".
+    pub fn members_text(&self) -> String {
+        self.members
+            .iter()
+            .map(|(pid, start)| format!("pid {pid} (start time {start})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The [`GROUP_LEFT`] notices of git writers whose group still has a member
+/// that runs with its recorded start time, of the repository `repo` or of
+/// each repository, in 1 read.
+pub fn group_left_holds(conn: &Connection, repo: Option<&str>) -> Result<Vec<GroupLeftHold>> {
+    let sql = "SELECT j.id, j.kind, j.subject, j.repo, j.time_limit_s, e.data_json,
+         EXISTS (SELECT 1 FROM events t WHERE t.entity = ?1 AND t.kind = ?2
+             AND t.cause = ?4 AND t.entity_id = e.entity_id)
+         FROM events e JOIN jobs j ON e.entity_id = CAST(j.id AS TEXT)
+         WHERE e.entity = ?1 AND e.kind = ?2 AND e.cause = ?3
+         AND j.repo IS NOT NULL AND (?5 IS NULL OR j.repo = ?5)
+         ORDER BY e.event_id";
+    let params = rusqlite::params![
+        Entity::Job.as_str(),
+        EventKind::Note.as_str(),
+        GROUP_LEFT,
+        GROUP_TOLD,
+        repo
+    ];
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params, |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, u64>(4)?,
+            r.get::<_, Option<String>>(5)?,
+            r.get::<_, bool>(6)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (job_id, kind, subject, repo, time_limit_s, data, told) = row?;
+        let Some(kind) = Kind::parse(&kind).filter(|k| is_git_writer(*k)) else {
+            continue;
+        };
+        let Some(left) = data.and_then(|d| serde_json::from_str::<GroupLeft>(&d).ok()) else {
+            continue;
+        };
+        let members: Vec<(u32, u64)> = left
+            .members
+            .iter()
+            .filter(|m| horch_platform::process::start_time(m.pid) == Some(m.start))
+            .map(|m| (m.pid, m.start))
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        out.push(GroupLeftHold {
+            job_id,
+            kind,
+            subject,
+            repo,
+            run: left.run,
+            group: left.group,
+            members,
+            at: left.at,
+            time_limit_s,
+            told,
+        });
+    }
+    Ok(out)
+}
+
+/// Open 1 needs-you item, in `tx`, for each [`GROUP_LEFT`] notice of a git
+/// writer whose member still runs `time_limit_s` plus `stop_grace_s` after
+/// the notice, and record that it did, so a later pass opens no second
+/// one. fleetd sends the member no signal: the operator ends it by hand.
+fn tell_group_left(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
+    let bound = |h: &GroupLeftHold| {
+        let wait = h.time_limit_s.saturating_add(ctx.config.stop_grace_s);
+        h.at.saturating_add(i64::try_from(wait).unwrap_or(i64::MAX))
+    };
+    for hold in group_left_holds(tx, None)? {
+        if hold.told || clock.0 < bound(&hold) {
+            continue;
+        }
+        let id = hold.job_id.to_string();
+        let key = format!("{}:group:{id}", jobs::NEEDS_YOU_KIND);
+        let text = format!(
+            "Job {id} ({kind} of {subject}, run {run}) ended abandoned, and its \
+             process group {group} still runs past its time limit and the stop \
+             grace: {members}. It holds the git writer of {repo}: no other git job \
+             of it starts. fleetd sends these processes no signal, as it cannot \
+             prove that they are of the job. Check each one and end it by hand.",
+            kind = hold.kind,
+            subject = hold.subject,
+            run = hold.run,
+            group = hold.group,
+            members = hold.members_text(),
+            repo = hold.repo,
+        );
+        let item = NewItem {
+            key: &key,
+            kind: jobs::NEEDS_YOU_KIND,
+            entity: Entity::Job,
+            entity_id: &id,
+            text: &text,
+        };
+        ctx.needs_you.open_item(tx, &item)?;
+        let data = serde_json::json!({ "run": hold.run, "group": hold.group, "key": key });
+        record(
+            tx,
+            ctx.guard,
+            EventKind::Note,
+            Entity::Job,
+            &id,
+            pass_cause(GROUP_TOLD),
+            &data,
+        )?;
+    }
+    Ok(())
+}
+
+/// The cause of the fact that a stop sends `SIGTERM` to a job process.
+const TERM_SENT: &str = "the stop sends SIGTERM to the job process";
+
+/// The data of a [`TERM_SENT`] fact: the fleet time of the `SIGTERM`, and
+/// the run and the process that it stops.
+#[derive(Debug, Serialize, Deserialize)]
+struct TermSent {
+    at: i64,
+    run: i64,
+    pid: u32,
+    pid_start: Option<u64>,
+}
+
+/// Record in `tx` that the stop of the run `row` sends `SIGTERM` to its
+/// process `pid` at `clock`. The row comes before the signal (A24), so the
+/// grace before the kill counts from it, also after a restart of fleetd.
+fn record_term(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &JobRow,
+    pid: u32,
+    clock: FleetSeconds,
+) -> Result<()> {
+    let data = serde_json::to_value(TermSent {
+        at: clock.0,
+        run: row.run,
+        pid,
+        pid_start: row.pid_start,
+    })?;
+    record(
+        tx,
+        ctx.guard,
+        EventKind::Note,
+        Entity::Job,
+        &row.id.to_string(),
+        pass_cause(TERM_SENT),
+        &data,
+    )?;
+    Ok(())
+}
+
+/// The fleet time of the first [`TERM_SENT`] fact of the current run and
+/// process of each row of `rows`, in 1 read. A fact of an earlier run or
+/// process of the row does not count.
+fn terms_sent(tx: &Connection, rows: &[&JobRow]) -> Result<Vec<(i64, FleetSeconds)>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = vec!["?"; rows.len()].join(", ");
+    let sql = format!(
+        "SELECT entity_id, data_json FROM events WHERE entity = ? AND kind = ? AND cause = ?
+         AND entity_id IN ({ids}) ORDER BY event_id"
+    );
+    let mut values: Vec<String> = vec![
+        Entity::Job.as_str().to_string(),
+        EventKind::Note.as_str().to_string(),
+        TERM_SENT.to_string(),
+    ];
+    values.extend(rows.iter().map(|r| r.id.to_string()));
+    let mut stmt = tx.prepare(&sql)?;
+    let facts = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let mut out: Vec<(i64, FleetSeconds)> = Vec::new();
+    for fact in facts {
+        let (id, data) = fact?;
+        let Some(sent) = data.and_then(|d| serde_json::from_str::<TermSent>(&d).ok()) else {
+            continue;
+        };
+        let current = rows.iter().any(|r| {
+            r.id.to_string() == id
+                && r.run == sent.run
+                && r.pid == Some(sent.pid)
+                && r.pid_start == sent.pid_start
+        });
+        let Ok(id) = id.parse::<i64>() else {
+            continue;
+        };
+        if current && !out.iter().any(|(seen, _)| *seen == id) {
+            out.push((id, FleetSeconds(sent.at)));
+        }
+    }
+    Ok(out)
 }
 
 fn is_refused(e: &anyhow::Error) -> bool {
@@ -522,10 +858,12 @@ pub fn git_writers_running(conn: &Connection, repo: &str) -> Result<Vec<JobRow>>
         .collect())
 }
 
-/// Whether a run of a git writer of the repository `repo` is `running`
-/// ("1 git writer for each repository").
+/// Whether a run of a git writer of the repository `repo` is `running`,
+/// or a member of the group of an abandoned one still runs
+/// ([`note_group_left`]) ("1 git writer for each repository").
 pub fn git_writer_busy(conn: &Connection, repo: &str) -> Result<bool> {
-    Ok(!git_writers_running(conn, repo)?.is_empty())
+    Ok(!git_writers_running(conn, repo)?.is_empty()
+        || !group_left_holds(conn, Some(repo))?.is_empty())
 }
 
 /// The launch of the job process of the run `job_id`: `<horch> job run
@@ -633,6 +971,16 @@ fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
 /// only, and the processes that it started live on
 /// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
 /// row "Process groups").
+///
+/// The kill comes only after a recorded `SIGTERM` and its grace
+/// ([`observe`]): the handler of the job process kills the group of its
+/// gate or check on that `SIGTERM`. Limit: a job process that cannot run
+/// its handler (stopped, or with its signals blocked) dies by the kill,
+/// and the gate or check group that it leads lives on until its command
+/// ends, which has no time limit of its own. Nothing of fleetd waits for
+/// it: the run ends `abandoned` and frees its job slot, and a gate or a
+/// check holds no git writer lock. Git of a job runs in the job group, so
+/// the kill ends git and its sandbox.
 pub fn stop(s: &Stop) -> bool {
     use horch_platform::group;
     use horch_platform::signal::{stop_same, Stop as How};
@@ -736,6 +1084,7 @@ pub fn run_job_with(
     let Some(row) = wait_for_record(conn, job_id, me)? else {
         return Ok(None);
     };
+    worktree_git::kill_job_group_on_stop();
     let ran = match row.kind {
         Kind::TaskCheck if review::is_complexity_key(&row.input_key) => {
             complexity_sweep(conn, &row, runners.checks)?

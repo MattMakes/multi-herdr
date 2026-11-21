@@ -864,6 +864,39 @@ fn job_child(value: &str) {
 
 #[test]
 fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
+    gate_stop_kills_its_group(
+        "gate_at_its_limit_is_abandoned_and_its_group_killed",
+        10,
+        false,
+    );
+}
+
+/// A pass that first sees the gate job past its deadline and its grace
+/// (a restart of fleetd, a long pass) sends the TERM first, not a KILL of
+/// the job group that would miss the gate group.
+#[test]
+fn gate_first_seen_past_its_grace_gets_the_term_and_its_group_killed() {
+    let past_grace = 10 + i64::try_from(FleetConfig::default().stop_grace_s).unwrap();
+    gate_stop_kills_its_group(
+        "gate_first_seen_past_its_grace_gets_the_term_and_its_group_killed",
+        past_grace,
+        false,
+    );
+}
+
+/// The git of a gate job runs in the job group, not in the gate group: the
+/// stop at the deadline ends it and its sandbox too.
+#[test]
+fn gate_job_stopped_in_its_git_ends_its_git_sandbox() {
+    gate_stop_kills_its_group("gate_job_stopped_in_its_git_ends_its_git_sandbox", 10, true);
+}
+
+/// The gate job `test` with a time limit of 10 s, stopped by the pass at
+/// the clock `stop_at`: the run is abandoned and each process of the
+/// command that hangs is killed. The command that hangs is the gate, or
+/// with `hang_git` the first git call of the job: a fake git whose file
+/// name holds the marker.
+fn gate_stop_kills_its_group(test: &str, stop_at: i64, hang_git: bool) {
     if let Ok(value) = std::env::var(JOB_CHILD) {
         job_child(&value);
         return;
@@ -876,11 +909,25 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     w.gate_tree();
     let tree = w.gate_path();
     let beat_file = tree.join("beat");
-    let marker = format!("gate-group-marker-{}", std::process::id());
+    let marker = format!("gate-group-marker-{}-{stop_at}", std::process::id());
+    // With `hang_git`, only the fake git holds the marker.
+    let gate_marker = if hang_git { "no-marker" } else { &marker };
     let gates = format!(
-        "[gates]\nfast = \"sh -c 'sleep 600; :' {marker} & i=0; \
+        "[gates]\nfast = \"sh -c 'sleep 600; :' {gate_marker} & i=0; \
          while :; do i=$((i+1)); echo $i > beat; sleep 0.1; done\"\nfull = \"true\"\n"
     );
+    let mut vars = Vec::new();
+    if hang_git {
+        let fake = w.dir.path().join(&marker);
+        let script = format!(
+            "#!/bin/sh\ni=0\nwhile :; do i=$((i+1)); echo $i > '{}'; sleep 0.1; done\n",
+            beat_file.display()
+        );
+        std::fs::write(&fake, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        vars.push(("HORCH_GIT_BIN".into(), fake.into_os_string()));
+    }
     let main = w.main.clone();
     let tip = w.tip_with("slow", &gates, "slow");
     let bundle = w.bundle(&main).to_string();
@@ -889,17 +936,15 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     // Part 3 of a pass starts the job process: this test binary.
     let spec = LaunchSpec {
         program: std::env::current_exe().unwrap(),
-        args: vec![
-            "--exact".into(),
-            "gate_at_its_limit_is_abandoned_and_its_group_killed".into(),
-            "--nocapture".into(),
-        ],
+        args: vec!["--exact".into(), test.into(), "--nocapture".into()],
         cwd: None,
         env_rule: EnvRule {
-            vars: vec![(
+            vars: std::iter::once((
                 JOB_CHILD.into(),
                 format!("{}|{id}", w.db().display()).into(),
-            )],
+            ))
+            .chain(vars)
+            .collect(),
         },
         detach: false,
         output: None,
@@ -922,25 +967,26 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
         if let Some(beat) = beat(&beat_file) {
             break beat;
         }
-        assert!(Instant::now() < until, "the gate command started");
+        assert!(Instant::now() < until, "the command that hangs started");
         std::thread::sleep(Duration::from_millis(50));
     };
     while beat(&beat_file) == Some(first) {
-        assert!(Instant::now() < until, "the heartbeat of the gate advances");
+        assert!(Instant::now() < until, "the heartbeat advances");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!marked(&marker).is_empty(), "the gate command runs");
+    assert!(!marked(&marker).is_empty(), "the command that hangs runs");
 
-    // At the deadline the pass stops the job process; its group goes too.
+    // The pass sends the TERM to the job process; the groups go too.
     let facts = w.facts();
     let seen = w
-        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(10)))
+        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(stop_at)))
         .unwrap();
     assert_eq!(seen.stops.len(), 1);
+    assert!(!seen.stops[0].kill, "the first stop is the TERM");
     assert!(jobs::stop(&seen.stops[0]));
     let facts = w.wait_gone(&mut runner, id);
     let seen = w
-        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(11)))
+        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(stop_at + 1)))
         .unwrap();
     assert_eq!(seen.ended, vec![(id, State::Abandoned)]);
     assert_eq!(w.job(id).state, State::Abandoned);
@@ -958,13 +1004,13 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
         }
         assert!(
             Instant::now() < until,
-            "the gate group was killed: {left:?}"
+            "each process of the command that hangs was killed: {left:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
     let stopped = beat(&beat_file);
     std::thread::sleep(Duration::from_secs(1));
-    assert_eq!(beat(&beat_file), stopped, "the heartbeat of the gate stops");
+    assert_eq!(beat(&beat_file), stopped, "the heartbeat stops");
 }
 
 fn beat(path: &Path) -> Option<u64> {

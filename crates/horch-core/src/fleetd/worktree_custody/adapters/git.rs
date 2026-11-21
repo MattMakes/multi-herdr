@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -708,11 +709,10 @@ impl CliWorktreeGit {
         };
         let mut full: Vec<&str> = SAFE_CONFIG.iter().flat_map(|c| ["-c", c]).collect();
         full.extend_from_slice(args);
-        self.runner
-            .clone()
-            .with_sandbox(sandbox)
-            .output(dir, &full)
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        GIT_GROUP.store(OWN_GROUP.load(Ordering::SeqCst), Ordering::SeqCst);
+        let out = self.runner.clone().with_sandbox(sandbox).output(dir, &full);
+        GIT_GROUP.store(0, Ordering::SeqCst);
+        out.map_err(|e| anyhow::anyhow!("{e}"))
             .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))
     }
 
@@ -737,6 +737,43 @@ impl CliWorktreeGit {
             );
         }
         Ok(())
+    }
+}
+
+/// The group of this job process while 1 of its sandboxed git calls runs,
+/// else 0.
+///
+/// Git runs in the group of the job. On Linux the sandbox of git is a PID
+/// namespace whose init ignores the `SIGTERM` of a stop, and git runs in a
+/// session of its own in it. So a stop of the job (`SIGTERM`, `SIGINT` or
+/// `SIGHUP`) during a git call kills the whole job group with `SIGKILL`,
+/// and the kernel then ends each process of the namespace. A `SIGKILL` of
+/// the job group by fleetd reaches the namespace init too, because git has
+/// no group of its own. The value is 0 while a gate or a check runs, so
+/// the handler then kills only their group and the job ends by the signal.
+static GIT_GROUP: AtomicI32 = AtomicI32::new(0);
+
+/// The group of this process when [`kill_job_group_on_stop`] armed it, else
+/// 0: fleetd and the CLI run git with no group kill, as they keep their
+/// own signal handlers.
+static OWN_GROUP: AtomicI32 = AtomicI32::new(0);
+
+/// Make each later sandboxed git call of this job process end with the
+/// stop of the job (see [`GIT_GROUP`]). It acts only when this process
+/// leads its group, as `horch job run` does. A process that does not (a
+/// test that runs an executor) shares the group of its starter, which a
+/// kill must not reach.
+pub fn kill_job_group_on_stop() {
+    let me = std::process::id();
+    let leads = matches!(horch_platform::process::group_of(me), Ok(Some(g)) if g == me);
+    let group = if leads {
+        i32::try_from(me).unwrap_or(0)
+    } else {
+        0
+    };
+    OWN_GROUP.store(group, Ordering::SeqCst);
+    if group > 0 {
+        let _ = horch_platform::signal::kill_group_on_termination(&GIT_GROUP);
     }
 }
 
@@ -1065,6 +1102,50 @@ mod tests {
             ran.outcome.text
         );
         assert!(!Path::new(&row.path).exists());
+    }
+
+    /// The value of [`GIT_GROUP`] that the fake host of
+    /// [`git_call_holds_the_job_group_only_while_it_runs`] saw.
+    static SEEN: AtomicI32 = AtomicI32::new(0);
+
+    /// A host that records [`GIT_GROUP`] at the start of git, and runs git
+    /// with no sandbox.
+    fn seeing_host(
+        cmd: horch_platform::start::Command,
+        _reach: &Reach<'_>,
+    ) -> Result<horch_platform::start::Command, NotSupported> {
+        SEEN.store(GIT_GROUP.load(Ordering::SeqCst), Ordering::SeqCst);
+        Ok(cmd)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_call_holds_the_job_group_only_while_it_runs() {
+        // No process has this group, so a stop in the test kills nothing.
+        let group = i32::MAX;
+        OWN_GROUP.store(group, Ordering::SeqCst);
+        // The 8 slots of the handler: each call with the same static takes
+        // the slot of the first call.
+        for _ in 0..9 {
+            horch_platform::signal::kill_group_on_termination(&GIT_GROUP).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let git = CliWorktreeGit::new("git", dir.path().join("fleet"))
+            .with_home(dir.path().join("home"))
+            .with_sandbox_host(seeing_host);
+        let out = git.safe(dir.path(), &["--version"]);
+        OWN_GROUP.store(0, Ordering::SeqCst);
+        assert_eq!(out.unwrap().status, 0);
+        assert_eq!(
+            SEEN.load(Ordering::SeqCst),
+            group,
+            "git runs in the job group"
+        );
+        assert_eq!(
+            GIT_GROUP.load(Ordering::SeqCst),
+            0,
+            "the slot is free after git"
+        );
     }
 
     #[test]

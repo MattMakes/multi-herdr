@@ -859,6 +859,16 @@ fn observe_run(
 }
 
 #[cfg(unix)]
+fn alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[cfg(unix)]
 fn wait_gone(runner: &mut JobRunner<'_>, pid: u32) {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
@@ -935,7 +945,35 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     let rescue = w.queue(Kind::Rescue, &row.worktree_id, &rescue_key);
     let mut runner = JobRunner::new(&Launcher);
 
-    assert!(start_sleeping(&mut w, &mut runner, fetch, "60", 0));
+    // The hung fetch ignores TERM, so only the KILL ends it.
+    let ready = w.dir.path().join("fetch-ready");
+    let hung_spec = LaunchSpec {
+        program: "sh".into(),
+        args: vec![
+            "-c".into(),
+            format!("trap '' TERM; : > '{}'; exec sleep 60", ready.display()).into(),
+        ],
+        cwd: None,
+        env_rule: Default::default(),
+        detach: true,
+        output: None,
+    };
+    let job = w.job(fetch);
+    let config = w.config.clone();
+    assert!(runner
+        .start(
+            &ctx(&config),
+            &mut w.conn,
+            &job,
+            &hung_spec,
+            FleetSeconds(0)
+        )
+        .unwrap());
+    let until = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() {
+        assert!(Instant::now() < until, "the fetch process ignores TERM");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let hung = w.job(fetch);
     assert_eq!(hung.state, State::Running);
     assert_eq!(hung.deadline, Some(FleetSeconds(5)));
@@ -951,18 +989,32 @@ fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued
     let seen = observe_run(&mut w, fetch, Liveness::Alive, 6);
     assert!(seen.ended.is_empty(), "the process still lives: {seen:?}");
     assert_eq!(seen.stops.len(), 1, "{seen:?}");
-    assert!(seen.stops[0].kill, "{seen:?}");
+    assert!(!seen.stops[0].kill, "the first stop is the TERM: {seen:?}");
+    assert!(jobs::stop(&seen.stops[0]), "the TERM reached the process");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        alive(hung.pid.unwrap()),
+        "the fetch process ignores the TERM"
+    );
+    let in_grace = observe_run(&mut w, fetch, Liveness::Alive, 6);
+    assert!(
+        in_grace.stops.is_empty(),
+        "no stop in the grace: {in_grace:?}"
+    );
+    let seen = observe_run(&mut w, fetch, Liveness::Alive, 7);
+    assert_eq!(seen.stops.len(), 1, "{seen:?}");
+    assert!(seen.stops[0].kill, "the KILL after the grace: {seen:?}");
     assert_eq!(w.job(fetch).state, State::Running);
     assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
-    assert!(jobs::stop(&seen.stops[0]), "the stop reached the process");
+    assert!(jobs::stop(&seen.stops[0]), "the KILL reached the process");
     wait_gone(&mut runner, hung.pid.unwrap());
 
-    let ended = observe_run(&mut w, fetch, Liveness::Dead, 7);
+    let ended = observe_run(&mut w, fetch, Liveness::Dead, 8);
     assert_eq!(ended.ended, vec![(fetch, State::Abandoned)]);
     assert_eq!(w.job(fetch).state, State::Abandoned);
     assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
 
-    assert!(start_sleeping(&mut w, &mut runner, rescue, "0", 7));
+    assert!(start_sleeping(&mut w, &mut runner, rescue, "0", 8));
     assert_eq!(w.job(rescue).state, State::Running);
     let rescue_ref = rescue_and_observe(&mut w, &row, rescue);
     assert!(
