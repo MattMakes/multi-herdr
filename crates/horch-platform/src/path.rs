@@ -184,6 +184,7 @@ const RESERVED_NAMES: [&str; 30] = [
     "LPT\u{b3}",
 ];
 
+/// Whether `name` means the same file with and without the verbatim prefix.
 fn plain_component(name: &str) -> bool {
     if name.is_empty() || name == "." || name == ".." || name.ends_with(['.', ' ']) {
         return false;
