@@ -389,13 +389,14 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     );
 }
 
-/// A world with run `r1` (checks every 10 s) and 1 task bound to the
-/// worker `dev1` (FR-5).
+/// A world with run `r1` (checks every 3600 s, so no check is due within
+/// a test on a loaded machine) and 1 task bound to the worker `dev1`
+/// (FR-5).
 fn world_with_a_claimed_task() -> (World, String) {
     let w = World::without_fleetd();
     w.seed_run(
         Thresholds {
-            check_every_s: Some(10),
+            check_every_s: Some(3600),
             ..Default::default()
         },
         Vec::new(),
