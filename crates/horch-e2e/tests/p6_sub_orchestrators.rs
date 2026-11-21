@@ -337,6 +337,8 @@ fn fr2_each_sub_orchestrator_attempt_has_1_idea() {
         assert_ne!(idea, "-", "attempt {id} has no idea\n{}", w.context());
         assert!(id.starts_with(&format!("{idea}/")), "{row}");
     }
+    // fleetd adds its own ideas too, such as the idea of a failed adapter
+    // conformance (FM-19), so a launch can be for an idea of no test step.
     let ideas = w.rows("SELECT id FROM ideas");
     for i in [&first, &second, &other] {
         assert!(ideas.contains(i), "idea {i} is not in {ideas:?}");

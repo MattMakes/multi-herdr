@@ -1021,6 +1021,8 @@ mod phase4 {
         h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
+        // On Linux the sealed PATH holds `bwrap`, and fleetd runs the git of
+        // the worktree job only in its sandbox.
         let path = format!("{}:{}", sealed_path(&h), horch_e2e::bin_dir().display());
         h.set("PATH", path);
         std::fs::create_dir_all(h.project.join("tickets")).unwrap();

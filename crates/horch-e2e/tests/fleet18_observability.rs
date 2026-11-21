@@ -1101,6 +1101,7 @@ fn g54_sandbox_warning_matches_launch_on_unsupported_host() {
     std::fs::create_dir_all(&roster).unwrap();
     std::fs::write(roster.join("sandbox-test.md"),"---\nname: sandbox-test\nbrief_description: Sandboxed worker\nagent: claude\nmodel: sonnet\nsandbox:\n  enabled: true\n---\nworker\n").unwrap();
     h.set("HORCH_TEAMMATES_DIR", roster.to_string_lossy());
+    // The sealed PATH holds the bwrap and socat of the host (T-240).
     let path_without_sandbox_tools = h.bin.to_string_lossy().into_owned();
     h.set("PATH", path_without_sandbox_tools);
     let o = h.run(&["doctor"]);
