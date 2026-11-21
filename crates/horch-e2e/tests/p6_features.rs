@@ -485,6 +485,12 @@ impl World {
     /// job process that the pass started has ended, so the next pass reads
     /// its result. A project with 2 runs needs `--run`; the pass covers the
     /// whole ledger, and `--run r1` names only the run of its printed checks.
+    ///
+    /// The `PATH` of the pass is an empty folder (and the host tools on
+    /// Linux, see `pass_path`): the scan of the CLI
+    /// binaries of Phase 7 finds no CLI and queues no docs or conformance
+    /// job. Git, herdr and the agents have their absolute paths in the
+    /// sealed environment.
     fn pass(&self) {
         if self.pushed.get()
             && self
