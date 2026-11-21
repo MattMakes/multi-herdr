@@ -776,7 +776,7 @@ fn rescue_job_at_its_limit_is_not_rescued_and_runs_again_after_its_backoff() {
     // Past its limit and its grace, the pass stops the run.
     let seen = w.see(id, Liveness::Alive, limit + grace + 1);
     assert_eq!(seen.stops.len(), 1, "{seen:?}");
-    assert!(seen.stops[0].kill);
+    assert!(!seen.stops[0].kill, "the first stop is the TERM");
     jobs::stop(&seen.stops[0]);
     // Its process is gone with no result.
     let at = limit + grace + 2;

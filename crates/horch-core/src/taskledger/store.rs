@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -244,47 +245,67 @@ impl LedgerWriter {
     }
 }
 
-static LAST_READ_ONLY: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::new(None);
+/// The ledger file and the last statement of 1 read-only connection. The
+/// [`Store`] holds it, and a caller can keep a clone after the store is
+/// dropped, for [`read_only_failure`].
+#[derive(Clone, Debug)]
+pub struct ReadOnlyRecord(Arc<ReadOnlyEntry>);
 
-fn record_statements(conn: &Connection, path: &Path) {
+#[derive(Debug)]
+struct ReadOnlyEntry {
+    path: PathBuf,
+    last: Mutex<String>,
+}
+
+fn record_statements(conn: &Connection, path: &Path) -> ReadOnlyRecord {
     unsafe extern "C" fn on_statement(
         event: std::os::raw::c_uint,
-        _ctx: *mut std::os::raw::c_void,
+        ctx: *mut std::os::raw::c_void,
         _stmt: *mut std::os::raw::c_void,
         sql: *mut std::os::raw::c_void,
     ) -> std::os::raw::c_int {
         if event == rusqlite::ffi::SQLITE_TRACE_STMT as std::os::raw::c_uint && !sql.is_null() {
+            // SAFETY: `ctx` is the `ReadOnlyEntry` of the `Store` that owns
+            // this connection. The `Store` declares `conn` before `record`,
+            // so the connection closes, and SQLite stops calling this
+            // callback, before the `Store` drops its `Arc` of the entry.
+            let entry = unsafe { &*ctx.cast::<ReadOnlyEntry>() };
             // SAFETY: for SQLITE_TRACE_STMT, SQLite passes the SQL text as
             // a NUL-terminated string that lives for this call.
             let text = unsafe { std::ffi::CStr::from_ptr(sql.cast()) };
-            if let Ok(mut last) = LAST_READ_ONLY.lock() {
-                if let Some((_, s)) = last.as_mut() {
-                    *s = text.to_string_lossy().into_owned();
-                }
+            if let Ok(mut last) = entry.last.lock() {
+                *last = text.to_string_lossy().into_owned();
             }
         }
         0
     }
-    if let Ok(mut last) = LAST_READ_ONLY.lock() {
-        *last = Some((path.to_path_buf(), String::new()));
-    }
-    // SAFETY: the handle is the open connection of `conn`; the callback
-    // uses no context pointer.
+    let record = ReadOnlyRecord(Arc::new(ReadOnlyEntry {
+        path: path.to_path_buf(),
+        last: Mutex::new(String::new()),
+    }));
+    // SAFETY: the handle is the open connection of `conn`. The context
+    // pointer stays valid for each call of the callback: see the SAFETY
+    // comment in `on_statement`.
     unsafe {
         rusqlite::ffi::sqlite3_trace_v2(
             conn.handle(),
             rusqlite::ffi::SQLITE_TRACE_STMT as std::os::raw::c_uint,
             Some(on_statement),
-            std::ptr::null_mut(),
+            Arc::as_ptr(&record.0).cast_mut().cast(),
         );
     }
+    record
 }
 
-/// `err` with the command `command`, the last statement of a read-only
-/// connection and the ledger file, when `err` holds the SQLite code
-/// `SQLITE_READONLY` (8, or an extended code of it). Each other error is
-/// returned unchanged.
-pub fn read_only_failure(command: &str, err: anyhow::Error) -> anyhow::Error {
+/// `err` with the command `command`, the last statement of the read-only
+/// connection of `record` and its ledger file, when `err` holds the SQLite
+/// code `SQLITE_READONLY` (8, or an extended code of it). Each other error
+/// is returned unchanged.
+pub fn read_only_failure(
+    command: &str,
+    record: Option<&ReadOnlyRecord>,
+    err: anyhow::Error,
+) -> anyhow::Error {
     let read_only = err.chain().any(|e| {
         e.downcast_ref::<rusqlite::Error>()
             .and_then(rusqlite::Error::sqlite_error)
@@ -293,7 +314,10 @@ pub fn read_only_failure(command: &str, err: anyhow::Error) -> anyhow::Error {
     if !read_only {
         return err;
     }
-    let last = LAST_READ_ONLY.lock().ok().and_then(|l| l.clone());
+    let last = record.map(|r| {
+        let sql = r.0.last.lock().map(|l| l.clone()).unwrap_or_default();
+        (&r.0.path, sql)
+    });
     let text = match last {
         Some((path, sql)) if !sql.is_empty() => format!(
             "`{command}` got SQLITE_READONLY on the read-only task ledger {}; the last statement was: {sql}",
@@ -329,9 +353,14 @@ fn trace_writes(conn: &Connection) {
 fn trace_to(conn: &Connection, file: PathBuf) {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        // The savepoint of [`one_snapshot`] writes nothing: it gives a
+        // read of 2 or more statements 1 snapshot.
         let read = matches!(
             ctx.action,
             AuthAction::Read { .. } | AuthAction::Select | AuthAction::Function { .. }
+        ) || matches!(
+            ctx.action,
+            AuthAction::Savepoint { savepoint_name, .. } if savepoint_name == SNAPSHOT
         );
         if !read {
             use std::io::Write;
@@ -349,8 +378,11 @@ fn trace_to(conn: &Connection, file: PathBuf) {
 
 /// An open task ledger.
 pub struct Store {
+    // `conn` is declared before `record`, so it is dropped first: the trace
+    // callback of `record_statements` reads `record` while `conn` is open.
     conn: Connection,
     path: PathBuf,
+    record: Option<ReadOnlyRecord>,
 }
 
 impl Store {
@@ -396,6 +428,7 @@ impl Store {
         Ok(Store {
             conn,
             path: path.to_path_buf(),
+            record: None,
         })
     }
 
@@ -405,12 +438,19 @@ impl Store {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("opening the task ledger {} read-only", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        record_statements(&conn, path);
+        let record = record_statements(&conn, path);
         trace_writes(&conn);
         Ok(Store {
             conn,
             path: path.to_path_buf(),
+            record: Some(record),
         })
+    }
+
+    /// The record of the last statement of a read-only store, for
+    /// [`read_only_failure`]. A writable store has none.
+    pub fn read_only_record(&self) -> Option<ReadOnlyRecord> {
+        self.record.clone()
     }
 
     /// The file this store reads and writes.
@@ -467,6 +507,25 @@ impl Store {
         }
     }
 }
+
+/// Run the reads of `f` on 1 snapshot of the ledger. A read of 2 or more
+/// statements needs it: without it, a commit of another connection between
+/// 2 statements gives a torn read. The savepoint is a deferred transaction
+/// when `conn` has none (in WAL mode, 1 transaction reads 1 snapshot), and
+/// it nests in the open transaction of a caller with no new `BEGIN`.
+pub fn one_snapshot<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch(&format!("SAVEPOINT {SNAPSHOT}"))?;
+    let out = f();
+    let end = if out.is_ok() {
+        format!("RELEASE {SNAPSHOT}")
+    } else {
+        format!("ROLLBACK TO {SNAPSHOT}; RELEASE {SNAPSHOT}")
+    };
+    conn.execute_batch(&end)?;
+    out
+}
+
+const SNAPSHOT: &str = "one_snapshot";
 
 /// 1 optional value of a query.
 pub fn optional<T>(r: rusqlite::Result<T>) -> Result<Option<T>> {
@@ -545,6 +604,42 @@ mod tests {
         assert!(text.contains("Insert"), "{text}");
     }
 
+    /// The savepoint of `one_snapshot` is a read, and a write inside it is
+    /// still traced. Another savepoint, and a name that only starts with
+    /// `one_snapshot`, are traced.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_trace_counts_only_the_snapshot_savepoint_as_a_read() {
+        let dir = temp();
+        let path = dir.path().join("ledger.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap();
+        let trace = dir.path().join("trace.txt");
+        trace_to(store.conn(), trace.clone());
+        let conn = store.conn();
+        one_snapshot(conn, || {
+            let _: i64 = conn.query_row("SELECT count(*) FROM projects", [], |r| r.get(0))?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(one_snapshot(conn, || Err::<(), _>(anyhow::anyhow!("x"))).is_err());
+        assert!(!trace.exists(), "a snapshot read is not traced");
+        let written = one_snapshot(conn, || {
+            Ok(conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])?)
+        });
+        assert!(written.is_err(), "the read-only ledger refuses the insert");
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("Insert"), "{text}");
+        std::fs::remove_file(&trace).unwrap();
+        for name in ["other", "one_snapshot_x"] {
+            conn.execute_batch(&format!("SAVEPOINT {name}; RELEASE {name}"))
+                .unwrap();
+        }
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("\"other\""), "{text}");
+        assert!(text.contains("\"one_snapshot_x\""), "{text}");
+    }
+
     #[test]
     fn a_read_only_failure_names_the_command_the_statement_and_the_ledger() {
         let dir = temp();
@@ -556,7 +651,14 @@ mod tests {
             .execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap_err()
             .into();
-        let text = format!("{:#}", read_only_failure("horch ledger status --json", err));
+        let text = format!(
+            "{:#}",
+            read_only_failure(
+                "horch ledger status --json",
+                store.read_only_record().as_ref(),
+                err
+            )
+        );
         assert!(text.contains("`horch ledger status --json`"), "{text}");
         assert!(
             text.contains("the last statement was: INSERT INTO projects VALUES ('p', '/r', 'now')"),
@@ -564,8 +666,44 @@ mod tests {
         );
         assert!(text.contains(&path.display().to_string()), "{text}");
         assert!(text.contains("Error code 8"), "{text}");
-        let other = read_only_failure("horch ledger status", anyhow::anyhow!("no run"));
+        let other = read_only_failure("horch ledger status", None, anyhow::anyhow!("no run"));
         assert_eq!(format!("{other:#}"), "no run", "another error is unchanged");
+    }
+
+    #[test]
+    fn a_read_only_failure_names_the_store_that_failed_with_2_stores_open() {
+        let dir = temp();
+        let first_path = dir.path().join("first.sqlite3");
+        let second_path = dir.path().join("second.sqlite3");
+        drop(Store::open(&first_path).unwrap());
+        drop(Store::open(&second_path).unwrap());
+        let first = Store::open_read_only(&first_path).unwrap();
+        let second = Store::open_read_only(&second_path).unwrap();
+        let err: anyhow::Error = first
+            .conn()
+            .execute("INSERT INTO projects VALUES ('first', '/r', 'now')", [])
+            .unwrap_err()
+            .into();
+        let _: i64 = second
+            .conn()
+            .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        let text = format!(
+            "{:#}",
+            read_only_failure(
+                "horch ledger status",
+                first.read_only_record().as_ref(),
+                err
+            )
+        );
+        assert!(
+            text.contains(
+                "the last statement was: INSERT INTO projects VALUES ('first', '/r', 'now')"
+            ),
+            "{text}"
+        );
+        assert!(text.contains(&first_path.display().to_string()), "{text}");
+        assert!(!text.contains(&second_path.display().to_string()), "{text}");
     }
 
     #[test]

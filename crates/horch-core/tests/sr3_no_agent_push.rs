@@ -374,6 +374,7 @@ fn codex_profile_forbids_git_push_and_external_messages_by_default() {
 /// An address that no host answers (RFC 5737, TEST-NET-1): a webhook at
 /// this address never gets a message, so the test sends none.
 const OFF_HOST_WEBHOOK: &str = "http://192.0.2.1:9/hook";
+const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
 
 #[cfg(unix)]
 fn check_launches(
@@ -434,6 +435,24 @@ fn run_check(
 }
 
 #[cfg(unix)]
+fn sandbox_loopback_check() -> String {
+    "perl -MIO::Socket::INET -e '\
+         alarm 20; \
+         my $l = IO::Socket::INET->new(Listen => 1, LocalAddr => \"127.0.0.1\", LocalPort => 0) \
+           or die \"listen: $!\"; \
+         my $p = $l->sockport; \
+         my $pid = fork; defined $pid or die \"fork: $!\"; \
+         if (!$pid) { exec \"curl\", \"--silent\", \"--show-error\", \"--max-time\", \"5\", \
+           \"--data\", \"hello\", \"http://127.0.0.1:$p/\"; die \"exec: $!\" } \
+         my $c = $l->accept or die \"accept: $!\"; \
+         my $r = \"\"; while ($r !~ /hello/ && sysread($c, my $b, 1024)) { $r .= $b } \
+         print \"GOT $r\\n\"; \
+         print $c \"HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"; \
+         close $c; waitpid $pid, 0; exit($? >> 8)'"
+        .to_string()
+}
+
+#[cfg(unix)]
 #[test]
 fn verifier_check_sends_no_message_outside_the_fleet() {
     use horch_core::fleetd::worker_profiles::adapters::check_sandbox::NETWORK_RULE;
@@ -444,31 +463,51 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let local = curl(&format!("http://127.0.0.1:{port}/"));
-    let launches = check_launches(tmp.path(), &[&local, &curl(OFF_HOST_WEBHOOK)]);
+    let host = curl(&format!("http://127.0.0.1:{port}/"));
+    let launches = check_launches(
+        tmp.path(),
+        &[&sandbox_loopback_check(), &host, &curl(OFF_HOST_WEBHOOK)],
+    );
     let Some(spec) = &launches[0] else {
         return;
     };
-    let webhook = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0u8; 1024];
-        let n = stream.read(&mut buf).unwrap();
-        let _ =
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        String::from_utf8_lossy(&buf[..n]).into_owned()
-    });
+    // The loopback works in the sandbox, so the off-host refusal below is
+    // the network rule and not a sandbox with no network at all.
     let out = run_check(spec);
     assert!(ok(&out), "{}", show(&out));
-    assert!(webhook.join().unwrap().contains("hello"), "no request");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("GOT POST") && stdout.contains("hello"),
+        "no request on the loopback of the sandbox: {}",
+        show(&out)
+    );
     assert!(
         !String::from_utf8_lossy(&out.stderr).contains("SR-3"),
         "a passing check prints no refusal: {}",
         show(&out)
     );
 
+    if SANDBOX_HAS_ITS_OWN_LOOPBACK {
+        let out = run_check(launches[1].as_ref().unwrap());
+        assert_eq!(out.status.code(), Some(7), "{}", show(&out));
+        drop(listener);
+    } else {
+        let webhook = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).unwrap();
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        let out = run_check(launches[1].as_ref().unwrap());
+        assert!(ok(&out), "{}", show(&out));
+        assert!(webhook.join().unwrap().contains("hello"), "no request");
+    }
+
     // A webhook on another host: the check fails with exit 7 (curl could
     // not connect), never with a timeout, and says why.
-    let out = run_check(launches[1].as_ref().unwrap());
+    let out = run_check(launches[2].as_ref().unwrap());
     assert_eq!(out.status.code(), Some(7), "{}", show(&out));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains(NETWORK_RULE), "{}", show(&out));

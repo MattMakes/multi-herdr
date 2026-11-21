@@ -74,7 +74,7 @@ struct World {
 impl World {
     fn new(steps: &[StepName], remote: bool) -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -145,7 +145,7 @@ impl World {
     }
 
     fn top(&self) -> PathBuf {
-        self.tmp.path().canonicalize().unwrap()
+        horch_platform::path::for_child(&self.tmp.path().canonicalize().unwrap())
     }
 
     /// A claimed task of a new `persona` worker; returns the worker id.

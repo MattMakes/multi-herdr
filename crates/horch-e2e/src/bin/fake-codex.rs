@@ -36,8 +36,8 @@
 //! As `codex sandbox ... -C <dir> -- <command>` it runs the command as a
 //! child with writes confined to `dir` and the profile's workspace roots,
 //! records them as `sandbox_writable`, and exits with the command's code.
-//! On macOS the confinement is Seatbelt, as in the real CLI; elsewhere the
-//! command runs unconfined.
+//! On macOS the confinement is Seatbelt, as in the real CLI. Elsewhere it is
+//! the job sandbox of the platform (`horch_platform::sandbox::sandboxed_job`).
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -465,9 +465,17 @@ fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     cmd
 }
 
+/// `command` in the job sandbox of the platform: writes only to `writable`
+/// and the temp folder, and a PID namespace that a KILL of the job group
+/// ends. With no platform sandbox the command runs unconfined.
 #[cfg(not(target_os = "macos"))]
-fn confined(command: &[String], _writable: &[String]) -> std::process::Command {
-    let mut cmd = std::process::Command::new(&command[0]);
-    cmd.args(&command[1..]);
-    cmd
+fn confined(command: &[String], writable: &[String]) -> std::process::Command {
+    let plain = || {
+        let mut cmd = std::process::Command::new(&command[0]);
+        cmd.args(&command[1..]);
+        cmd
+    };
+    let roots: Vec<PathBuf> = writable.iter().map(PathBuf::from).collect();
+    horch_platform::sandbox::sandboxed_job(plain(), &roots, &Denials::default())
+        .unwrap_or_else(|_| plain())
 }

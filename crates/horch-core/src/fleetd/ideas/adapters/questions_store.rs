@@ -112,6 +112,16 @@ pub fn ids_of_attempt(conn: &Connection, attempt_id: &str) -> Result<Vec<String>
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Whether attempt `attempt_id` has an `answered` row.
+pub fn answered_of_attempt(conn: &Connection, attempt_id: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM questions
+         WHERE state = 'answered' AND substr(id, 1, length(?1) + 1) = ?1 || '/')",
+        [attempt_id],
+        |r| r.get(0),
+    )?)
+}
+
 /// The number of open rows of task `task_id`.
 pub fn open_of_task(conn: &Connection, task_id: &str) -> Result<i64> {
     Ok(conn.query_row(

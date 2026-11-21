@@ -799,6 +799,22 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
         !read.text.contains(&token),
         "the attacker never prints the token"
     );
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
         w.state(),
         before,

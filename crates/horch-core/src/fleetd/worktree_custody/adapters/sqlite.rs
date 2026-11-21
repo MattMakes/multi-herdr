@@ -208,6 +208,40 @@ pub fn of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> 
     one(conn, &sql, task_id)
 }
 
+/// The newest row that is not `removed` of a task, as [`of_task`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTree {
+    pub task_id: String,
+    pub status: String,
+    pub state: String,
+    pub branch: String,
+}
+
+/// The newest row that is not `removed` of each task of `task_ids`: 1
+/// statement for any count of tasks. SQLite takes the bare columns from
+/// the row of `max(rowid)`.
+pub fn newest_of_tasks<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<TaskTree>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT task_id, status, state, branch, max(rowid) FROM worktrees
+         WHERE state <> 'removed' AND task_id IN ({}) GROUP BY task_id",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok(TaskTree {
+            task_id: r.get(0)?,
+            status: r.get(1)?,
+            state: r.get(2)?,
+            branch: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The row of the folder `path` that is not `removed`; `None` when no such
 /// row has that path. A `removed` row is history, read by its id.
 pub fn by_path(conn: &Connection, path: &str) -> Result<Option<WorktreeRow>> {
@@ -337,6 +371,18 @@ pub fn set_rescue_ref(tx: &Connection, id: &str, rescue_ref: &str) -> Result<()>
     let changed = tx.execute(
         "UPDATE worktrees SET rescue_ref = ?2 WHERE worktree_id = ?1",
         params![id, rescue_ref],
+    )?;
+    updated(changed, id)
+}
+
+/// Record that the work of the row `id` landed at `commit`: the status
+/// `landed`, its landed commit and its time, as the land of today writes
+/// them. The move of `state` to `landed` goes through the door.
+pub fn set_landed(tx: &Connection, id: &str, commit: &str) -> Result<()> {
+    let changed = tx.execute(
+        "UPDATE worktrees SET status = ?2, landed_commit = ?3, landed_at = ?4, reason = NULL
+         WHERE worktree_id = ?1",
+        params![id, WorktreeStatus::Landed.as_str(), commit, util::now()],
     )?;
     updated(changed, id)
 }

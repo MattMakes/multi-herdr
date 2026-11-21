@@ -695,12 +695,7 @@ fn planning(ideas: &[IdeaFacts]) -> Option<Need> {
 /// 1 statement for any count of tasks. A failed task is open: its status
 /// is not `done` or `cancelled`.
 fn has_failed_task(conn: &Connection, idea: &str) -> Result<bool> {
-    let failed = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM tasks WHERE idea_id = ?1 AND status = ?2)",
-        [idea, TaskStatus::Failed.as_str()],
-        |r| r.get(0),
-    )?;
-    Ok(failed)
+    attempts::idea_has_task_in(conn, idea, TaskStatus::Failed)
 }
 
 /// The idea in [`IN_FLIGHT`] of the oldest open question of the feature of

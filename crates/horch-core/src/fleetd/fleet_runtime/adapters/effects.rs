@@ -41,7 +41,9 @@ use crate::fleetd::fleet_runtime::domain::heartbeat::{Exe, Heartbeat};
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::task_execution::domain::task::{GroupLeft, ProcessScope, Recorded};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
-use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
+use crate::fleetd::worktree_custody::adapters::git::{
+    repo_git_dir, CliWorktreeGit, FLEETD_GIT_LIMIT,
+};
 use crate::fsx;
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
@@ -78,8 +80,10 @@ pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -
     if scope == ProcessScope::OrphanGroup {
         return stop_orphan_group(pid, how);
     }
+    // Only a live leader proves the group: with the leader gone, the id can
+    // name a group of another process by reuse (D242-F1).
     let leads = scope == ProcessScope::LeaderGroup
-        && matches!(group::is_same_group(pid, pid_start), Ok(true));
+        && matches!(group::is_group_leader(pid, pid_start), Ok(true));
     if !leads {
         return stop_same(pid, pid_start, how);
     }
@@ -102,6 +106,14 @@ fn stop_each(members: Vec<u32>, how: How) -> bool {
 
 /// The stop of the group `pgid` whose leader is gone. A process with the
 /// pid `pgid` makes the group a new group (FM-22): no stop then.
+///
+/// Limit (D242-F1, kept by design): this check does not prove that a member
+/// is of the recorded group. The order of events: each member of the
+/// recorded group ends, so the id is free; the OS gives the pid `pgid` to a
+/// new process; that process makes its own group (`setsid` or `setpgid`),
+/// starts a child and ends; the child keeps the group id `pgid`, and no
+/// process has the pid `pgid`. This stop then sends its signal to that
+/// child, which fleetd did not start.
 fn stop_orphan_group(pgid: u32, how: How) -> bool {
     if horch_platform::process::alive(pgid) {
         return false;
@@ -361,12 +373,14 @@ pub fn watchdog_ping() {
 /// project, in its sandbox). It reads each repository of `repos` and
 /// writes only their git folders: a short `git update-ref` of a local ref,
 /// a rescue ref or a deletion. A repository with no git folder is not
-/// writable.
+/// writable. Each call stops at [`FLEETD_GIT_LIMIT`], so a hung git does
+/// not hold the pass (A23).
 pub fn integration_git(fleet_root: &Path, repos: &[PathBuf]) -> CliWorktreeGit {
     let git_dirs: Vec<PathBuf> = repos.iter().filter_map(|r| repo_git_dir(r).ok()).collect();
     CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), fleet_root)
         .reading(repos)
         .writing(&git_dirs)
+        .with_time_limit(FLEETD_GIT_LIMIT)
 }
 
 /// The folder of the private index of each rebuild of a judge branch

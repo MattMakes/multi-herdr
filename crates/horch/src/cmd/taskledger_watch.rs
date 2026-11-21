@@ -433,8 +433,6 @@ mod tests {
     /// `horch ledger watch --once` runs the Phase 4 pass of fleetd: its 1
     /// pass binds the ready task of a run to a push attempt
     /// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
-    /// The run has no orchestrator pane, so its spawn waits: the bind is the
-    /// fact that this test reads.
     #[test]
     fn watch_once_runs_the_phase4_pass() {
         use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -468,7 +466,19 @@ mod tests {
             "a",
         ]);
         let db = dir.join("ledger.sqlite3");
+        // The job host of the pass is the sibling horch of the exe. A stub
+        // that fails stands in for it, so no horch of the PATH runs.
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let failing_job_host = bin.join("horch");
+        std::fs::write(&failing_job_host, "#!/bin/sh\nexit 1\n").unwrap();
+        horch_platform::fs::make_executable(&failing_job_host).unwrap();
+        // fleetd finds the sandbox tool on the PATH of its context (SR-4):
+        // give it the PATH that the branch below reads.
+        let path = std::env::var("PATH").unwrap_or_default();
         let env = MapEnv::new(dir)
+            .with_exe(bin.join("horch-test"))
+            .with("PATH", &path)
             .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
             .with("HORCH_DATA_DIR", dir.join("data").to_str().unwrap())
             .with("HORCH_LEDGER_DB", db.to_str().unwrap())
@@ -516,15 +526,23 @@ mod tests {
             assert_eq!(status, "ready", "no check sandbox: no bind");
             return;
         }
-        let (status, via): (String, String) = store
+        // The launch has no herdr, so the attempt ends crashed in the same
+        // pass and rung 6 of the stall ladder makes the task ready after a
+        // backoff (T-307).
+        let (status, not_before, via, outcome): (String, Option<i64>, String, String) = store
             .conn()
             .query_row(
-                "SELECT t.status, a.via FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+                "SELECT t.status, t.not_before, a.via, a.outcome
+                 FROM tasks t JOIN attempts a ON a.task_id = t.task_id
                  WHERE t.task_id = ?1",
                 [&task],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!((status.as_str(), via.as_str()), ("leased", "push"));
+        assert_eq!(
+            (status.as_str(), via.as_str(), outcome.as_str()),
+            ("ready", "push", "crashed")
+        );
+        assert!(not_before.is_some(), "no backoff after the crashed attempt");
     }
 }

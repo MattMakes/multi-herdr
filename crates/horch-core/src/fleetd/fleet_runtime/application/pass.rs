@@ -58,7 +58,7 @@
 //! refs and deletes the refs that are due, each by compare-and-set, after
 //! the other effects and within the time budget.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -715,6 +715,18 @@ pub struct Pass<'a> {
     work: Option<TaskWork<'a>>,
     /// The Phase 6 idea duties; `None`: the pass does none of them.
     ideas: Option<IdeaWork<'a>>,
+    serving: Cell<bool>,
+    reproof: RefCell<Reproof>,
+}
+
+/// What 1 fleetd with a channel server did with the `conformance` runs
+/// that a pass with no channel server ran: a check of each is not proved.
+#[derive(Default)]
+struct Reproof {
+    read: BTreeMap<String, i64>,
+    /// The CLIs whose not proved run this fleetd queued again: 1 new run
+    /// for each start of fleetd.
+    queued: BTreeSet<String>,
 }
 
 impl<'a> Pass<'a> {
@@ -735,6 +747,8 @@ impl<'a> Pass<'a> {
             requests: Handlers::new(),
             work: None,
             ideas: None,
+            serving: Cell::new(false),
+            reproof: RefCell::new(Reproof::default()),
         }
     }
 
@@ -891,12 +905,14 @@ impl<'a> Pass<'a> {
     /// requests. Call it after [`Pass::start`]. The server ends when the
     /// returned value is dropped.
     pub fn serve(&self, ledger: Connection, handlers: Handlers) -> Result<ChannelServer> {
-        ChannelServer::start(
+        let server = ChannelServer::start(
             &self.settings.fleet_root,
             ledger,
             self.settings.generation,
             handlers,
-        )
+        )?;
+        self.serving.set(true);
+        Ok(server)
     }
 
     /// Part 1, first: apply the request files from the cursor of the
@@ -3175,9 +3191,7 @@ fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
 }
 
 fn worker_personas(tx: &Connection) -> Result<BTreeMap<String, Option<String>>> {
-    let mut stmt = tx.prepare("SELECT worker_id, persona FROM workers")?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    attempts_store::worker_personas(tx)
 }
 
 /// The cause of the hold of each project with no fast gate, by project
@@ -4400,8 +4414,49 @@ impl Pass<'_> {
         }
         if let Some(horch_id) = &p7.horch_id {
             queue_docs_jobs(&self.job_ctx(), tx, clock, horch_id, &p7.clis)?;
+            self.reprove(tx, clock, &p7.clis)?;
         }
         Ok(failed)
+    }
+
+    /// When this fleetd serves the command channel: queue 1 new
+    /// `conformance` run of each CLI of `clis` whose last run ended with a
+    /// check that is not proved, 1 time for each start of fleetd. That run
+    /// had no channel server, so it proved nothing about the profile. A new
+    /// CLI binary gets its run by the docs job rules.
+    fn reprove(&self, tx: &Transaction<'_>, clock: FleetSeconds, clis: &[CliBinary]) -> Result<()> {
+        if !self.serving.get() {
+            return Ok(());
+        }
+        let mut reproof = self.reproof.borrow_mut();
+        for cli in clis {
+            if reproof.queued.contains(&cli.cli) {
+                continue;
+            }
+            let Some(row) = jobs_store::last_of_word(tx, Kind::Conformance, &cli.cli)? else {
+                continue;
+            };
+            let ended = matches!(row.state, State::Passed | State::Failed);
+            if !ended || reproof.read.get(&cli.cli) == Some(&row.id) {
+                continue;
+            }
+            reproof.read.insert(cli.cli.clone(), row.id);
+            let not_proved = conformance_report(&row)
+                .ok()
+                .flatten()
+                .is_some_and(|r| r.has_not_proved());
+            if !not_proved {
+                continue;
+            }
+            let key = JobKey {
+                kind: Kind::Conformance,
+                subject: &row.subject,
+                input_key: &row.input_key,
+            };
+            jobs::queue(&self.job_ctx(), tx, &key, None, clock)?;
+            reproof.queued.insert(cli.cli.clone());
+        }
+        Ok(())
     }
 
     /// The health marks of each profile of `roster` after each ended
@@ -4440,7 +4495,7 @@ impl Pass<'_> {
         let no_report = match conformance_report(&row) {
             Ok(Some(report)) => {
                 mark_after_conformance(tx, guard, &report, profiles)?;
-                if report.failure().is_some() {
+                if report.drift().is_some() {
                     note = self.drift(tx, &report, &mut failed)?;
                 }
                 None
@@ -5401,8 +5456,8 @@ fn feature_settings(
     let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
         return Ok(None);
     };
-    let settings = integration::features::project_settings(gw, &repo, &tip)
-        .map_err(|e| format!("feature {feature}: {e:#}"));
+    let settings = integration::features::project_settings(gw, &repo, &tip)?
+        .map_err(|e| format!("feature {feature}: {e}"));
     Ok(Some((run, settings)))
 }
 

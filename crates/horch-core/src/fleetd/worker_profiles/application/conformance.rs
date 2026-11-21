@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::fleetd::worker_profiles::domain::conformance::{
     judge, operator_unreachable, Check, CheckResult, ConformanceReport, Observation, ProbeReport,
-    Verdict, CHECKS,
+    Unreachable, Verdict, CHECKS,
 };
 
 /// The real launch of 1 check: its fixed prompt in a fresh throwaway task
@@ -20,7 +20,7 @@ pub trait ConformanceLaunch {
     /// adapter of the profile has no sandbox on this OS, else each operator
     /// act that this process cannot do itself, outside the sandbox, with
     /// its reason.
-    fn operator_boundary(&mut self) -> Result<Vec<String>, String>;
+    fn operator_boundary(&mut self) -> Result<Vec<Unreachable>, String>;
 }
 
 /// The CLI under test: its name, its version text and the hash of its
@@ -35,7 +35,9 @@ pub struct SuiteSubject {
 /// The verdict of 1 check: its launch, then its rule. A launch that did not
 /// start fails the check with its reason. "Operator boundary" has no
 /// launch when the adapter has no sandbox on this OS (`not supported` with
-/// the reason), or when this process cannot do 1 of the acts itself (fail).
+/// the reason), or when this process cannot do 1 of the acts itself (`not
+/// proved` when the 1 act is the connect to a channel with no server, else
+/// fail).
 pub fn run_check(port: &mut dyn ConformanceLaunch, check: Check) -> CheckResult {
     if check == Check::OperatorBoundary {
         match port.operator_boundary() {

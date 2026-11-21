@@ -1,6 +1,6 @@
 //! Behavioral coverage for fleet pitfalls #49–55.
 use horch_core::execution::records::SessionLedger;
-use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness};
+use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness, DEADLINE};
 use horch_e2e::ledger_seed::{seed_run, seed_task, seed_worker};
 use serde_json::json;
 
@@ -342,7 +342,7 @@ fn launch_attempt(h: &Harness, slug: &str) -> String {
     let ticket = h.project.join(format!("{slug}.md"));
     std::fs::write(&ticket, format!("# {slug}\n**Check:** `true`\n")).unwrap();
     let task = seed_task(h, &run, &ticket, "codex-terra");
-    wait("the launch of the worker", || {
+    wait_up_to("the launch of the worker", LAUNCH_WAIT, || {
         let store = horch_core::taskledger::Store::open(&h.ledger_db()).ok()?;
         store
             .conn()
@@ -374,8 +374,17 @@ fn serve_state_fleetd(h: &mut Harness) {
     h.serve_fleetd();
 }
 
-fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+/// A launch is 4 serial process starts (spawn, pane, supervisor, agent)
+/// beside the conformance jobs of fleetd. At load 50 it took 29.7 s from
+/// the task row to the agent start, so it gets the harness DEADLINE.
+const LAUNCH_WAIT: std::time::Duration = DEADLINE;
+
+fn wait<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
+    wait_up_to(what, std::time::Duration::from_secs(30), f)
+}
+
+fn wait_up_to<T>(what: &str, limit: std::time::Duration, mut f: impl FnMut() -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
         if let Some(v) = f() {
             return v;
@@ -402,7 +411,7 @@ fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
             std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
             seed_task(&h, &run, &file, "codex-terra");
             serve_fast_fleetd(&h);
-            let (worker, pid, started) = wait("the ingested agent PID", || {
+            let (worker, pid, started) = wait_up_to("the ingested agent PID", LAUNCH_WAIT, || {
                 let state: serde_json::Value =
                     serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
                 let w = state["workers"]
@@ -447,7 +456,7 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
     }
     // fleetd dispatches both tasks in 1 pass (Phase 4).
     serve_fast_fleetd(&h);
-    let workers = wait("two session transcripts", || {
+    let workers = wait_up_to("two session transcripts", LAUNCH_WAIT, || {
         let state: serde_json::Value =
             // The running tasks keep the run open, so status exits 1 (TRF-15).
             serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
@@ -458,9 +467,12 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
             .filter(|w| w["kind"] == "worker")
             .collect();
         (ws.len() == 2
-            && ws
-                .iter()
-                .all(|w| w["session_id"].is_string() && w["transcript_path"].is_string()))
+            && ws.iter().all(|w| {
+                w["session_id"].is_string()
+                    && w["transcript_path"].is_string()
+                    && w["agent_pid"].is_u64()
+                    && w["agent_started"].is_u64()
+            }))
         .then_some(ws)
     });
     (h, workers)
@@ -1101,6 +1113,9 @@ fn g54_sandbox_warning_matches_launch_on_unsupported_host() {
     std::fs::create_dir_all(&roster).unwrap();
     std::fs::write(roster.join("sandbox-test.md"),"---\nname: sandbox-test\nbrief_description: Sandboxed worker\nagent: claude\nmodel: sonnet\nsandbox:\n  enabled: true\n---\nworker\n").unwrap();
     h.set("HORCH_TEAMMATES_DIR", roster.to_string_lossy());
+    // The sealed PATH holds the bwrap and socat of the host (T-240).
+    let path_without_sandbox_tools = h.bin.to_string_lossy().into_owned();
+    h.set("PATH", path_without_sandbox_tools);
     let o = h.run(&["doctor"]);
     assert!(o.status.success());
     assert!(

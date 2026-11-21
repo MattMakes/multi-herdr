@@ -1,13 +1,14 @@
 //! Fleet acceptance at the durable messaging / ledger seam.
 use horch_core::messaging::mail::{redelivery_offset, Mail};
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{output_within, Harness, DEADLINE};
 use std::time::Duration;
 
 fn worker_tell(h: &Harness, text: &str) -> std::process::Output {
-    h.horch(&["tell", "orchestrator", text])
-        .env("HORCH_ROLE", "worker-1")
-        .output()
-        .unwrap()
+    output_within(
+        h.horch(&["tell", "orchestrator", text])
+            .env("HORCH_ROLE", "worker-1"),
+        DEADLINE,
+    )
 }
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name);
@@ -103,12 +104,12 @@ fn g62_login_screen_is_detected_before_typing() {
     h.set("HORCH_FAKE_SCENARIO", "mail_drop");
     let mut create = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut create);
-    assert!(create
-        .args(["workspace", "create", "--label", "login"])
-        .output()
-        .unwrap()
-        .status
-        .success());
+    assert!(output_within(
+        create.args(["workspace", "create", "--label", "login"]),
+        DEADLINE
+    )
+    .status
+    .success());
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("orchestrator.id"), "w1:p1").unwrap();
@@ -140,7 +141,7 @@ fn g62_login_screen_is_detected_before_typing() {
 fn fake(h: &Harness, args: &[&str]) {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
-    let o = cmd.args(args).output().unwrap();
+    let o = output_within(cmd.args(args), DEADLINE);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 

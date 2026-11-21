@@ -651,34 +651,24 @@ fn push_finish_world(name: &str, scenario: &str) -> Harness {
 
 #[test]
 fn a_task_finishes_through_review_land_pr_and_cleanup() {
-    horch_e2e::expected::check(
-        file!(),
-        "a_task_finishes_through_review_land_pr_and_cleanup",
-        || {
-            let h = push_finish_world("tl-finish", "exec,stay,commit,result");
-            let run = seed_run(&h, "alpha", None, "w1:p1");
-            let p = ticket(&h, "01-a", "# 01: Feature\n");
-            seed_task_with(&h, &run, &p, "opus", |new| {
-                new.land_check = Some("test -f fake-claude.txt".into());
-                new.issue_url = Some("https://github.com/o/r/issues/29".into());
-            });
-            h.serve_fleetd();
-            let tree = wait_push("the worktree of T-1", || task_worktree(&h, "T-1"));
-            let reviews = wait_done_playing_reviewers(&h, "T-1");
-            assert!(reviews >= 2, "bugs and clarity at least: {reviews}");
-            wait_pipeline("the branch of T-1 landed", || task_branch_landed(&h, 1));
-            let project = h.project.clone();
-            let log = git_in(&h, &project, &["log", "--oneline", "fleet/alpha"]);
-            assert!(log.contains("fake claude: commit"), "{log}");
-            // Known fault (ticket 168, T-207): no code removes the tree of
-            // landed work.
-            wait_push("the worktree of T-1 is gone", || {
-                (!tree.exists()).then_some(())
-            });
-            let st = json_of(&h, &["ledger", "status", "--json"]);
-            assert_eq!(st["worktrees"][0]["status"], "cleaned", "{st}");
-        },
-    );
+    let h = push_finish_world("tl-finish", "exec,stay,commit,result");
+    let run = seed_run(&h, "alpha", None, "w1:p1");
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    seed_task_with(&h, &run, &p, "opus", |new| {
+        new.land_check = Some("test -f fake-claude.txt".into());
+        new.issue_url = Some("https://github.com/o/r/issues/29".into());
+    });
+    h.serve_fleetd();
+    let tree = wait_push("the worktree of T-1", || task_worktree(&h, "T-1"));
+    let reviews = wait_done_playing_reviewers(&h, "T-1");
+    assert!(reviews >= 2, "bugs and clarity at least: {reviews}");
+    wait_pipeline("the branch of T-1 landed", || task_branch_landed(&h, 1));
+    let project = h.project.clone();
+    let log = git_in(&h, &project, &["log", "--oneline", "fleet/alpha"]);
+    assert!(log.contains("fake claude: commit"), "{log}");
+    wait_push("the worktree of T-1 is gone and cleaned", || {
+        (!tree.exists() && tree_status(&h, "T-1").as_deref() == Some("cleaned")).then_some(())
+    });
 }
 
 fn open_reviews(h: &Harness) -> Vec<(String, PathBuf)> {
@@ -1377,25 +1367,28 @@ fn the_whole_flow_on_the_fake_herdr() {
         // folder is gone, and C can start.
         let reviews = land_by_push(&h, "T-2", &a_tree);
         assert!(reviews > 0, "the code-sweep of A queued its reviews");
+        // FM-16: no orchestrator is woken for C. Under fleetd the wake
+        // `Tasks can start` is retired (wakes.rs, `startable_wake`): the
+        // dispatcher launches C with no command, in step 5.
         let events = json_of(&h, &["ledger", "events", "--json"]);
         assert!(
-            events
+            !events
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|e| e["kind"] == "woke"
-                    && e["text"].as_str().unwrap().contains("Tasks can start: T-3")),
-            "the orchestrator is woken for C: {events}"
+                    && e["text"].as_str().unwrap().contains("Tasks can start")),
+            "no wake for C: {events}"
         );
         // 5. B's checks and the stall ladder; A's worker is untouched.
         stall_by_the_ladder(&h, &wb, bpid, bstart);
         assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
-        // The orchestrator got the wake for B.
+        // FM-16: no orchestrator is woken for B. With no live
+        // sub-orchestrator of the feature, a stall writes no wake; the stall
+        // ladder of fleetd acts on the attempt (wakes.rs).
         let wakes = outbox(&h);
         assert!(
-            wakes
-                .iter()
-                .any(|w| w.contains("codex-terra-1 on T-1 shows no progress")),
+            !wakes.iter().any(|w| w.contains("shows no progress")),
             "{wakes:?}"
         );
         // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
@@ -1409,7 +1402,10 @@ fn the_whole_flow_on_the_fake_herdr() {
                 .into_iter()
                 .find(|w| w["task_id"] == t1["task"]["task_id"] && w["attempt"] == 2)
         });
-        assert_eq!(rb["previous_worker_id"], wb.as_str(), "{rb}");
+        // FM-16: fleetd launches attempt 2 of T-1 on a new worker; no
+        // `horch spawn --replaces` names the stalled one (wakes.rs,
+        // `spawn_advice`).
+        assert_ne!(rb["worker_id"], wb.as_str(), "{rb}");
 
         // 6. No task is left for a spare worker of opus.
         let none = try_bind(&h, "opus", None);
@@ -1428,7 +1424,8 @@ fn the_whole_flow_on_the_fake_herdr() {
                 .unwrap()
                 .iter()
                 .all(|w| w["status"] == "cleaned"),
-            "{st}"
+            "{}\n{st}",
+            not_cleaned(&st)
         );
         let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
         for t in ["T-1", "T-2", "T-3"] {
@@ -1527,17 +1524,47 @@ fn task_worktree(h: &Harness, short: &str) -> Option<PathBuf> {
         .map(|w| PathBuf::from(w["path"].as_str().unwrap()))
 }
 
-/// Wait until the task `short` is `done` and its worktree `tree` is gone.
-/// Its agent ends with `horch result`, and fleetd runs the verifier, the
-/// review steps and the land. The test plays each reviewer: it writes the
-/// findings file of each review task with no findings. Gives the count of
-/// findings files that it wrote.
 fn land_by_push(h: &Harness, short: &str, tree: &Path) -> usize {
     let written = wait_done_playing_reviewers(h, short);
-    wait_push(&format!("the worktree of {short} is gone"), || {
-        (!tree.exists()).then_some(())
-    });
+    wait_push(
+        &format!("the worktree of {short} is gone and cleaned"),
+        || (!tree.exists() && tree_status(h, short).as_deref() == Some("cleaned")).then_some(()),
+    );
     written
+}
+
+fn not_cleaned(st: &serde_json::Value) -> String {
+    let trees = st["worktrees"].as_array().cloned().unwrap_or_default();
+    trees
+        .iter()
+        .filter(|w| w["status"] != "cleaned")
+        .map(|w| {
+            let path = w["path"].as_str().unwrap_or_default();
+            let name = Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let kind = if name.starts_with("gate-") {
+                "gate tree"
+            } else {
+                "tree"
+            };
+            format!(
+                "the {kind} {name} stays {}",
+                w["status"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tree_status(h: &Harness, short: &str) -> Option<String> {
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    st["worktrees"]
+        .as_array()?
+        .iter()
+        .find(|w| w["task"] == short)
+        .and_then(|w| w["status"].as_str().map(str::to_string))
 }
 
 fn wait_done_playing_reviewers(h: &Harness, short: &str) -> usize {
@@ -1593,7 +1620,11 @@ struct AgentShell {
 
 impl AgentShell {
     fn start(h: &Harness) -> AgentShell {
-        let dir = h.root.join("agent-shell");
+        // 1 folder for each shell: a shared folder lets every shell run the
+        // go.sh of 1 shell and write its code file while that shell reads it.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = h.root.join(format!("agent-shell-{n}"));
         std::fs::create_dir_all(&dir).unwrap();
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new("/bin/sh");
@@ -1620,7 +1651,7 @@ impl AgentShell {
         let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
         let words: Vec<String> = args.iter().map(|a| quote(a)).collect();
         let script = format!(
-            "{} {} > {dir}/out 2>&1\necho $? > {dir}/code\n",
+            "{} {} > {dir}/out 2>&1\necho $? > {dir}/code.tmp\n/bin/mv {dir}/code.tmp {dir}/code\n",
             quote(&self.horch.to_string_lossy()),
             words.join(" "),
             dir = quote(&self.dir.to_string_lossy()),
@@ -1879,10 +1910,24 @@ fn sandbox_calls(h: &Harness) -> Vec<Value> {
         .collect()
 }
 
+fn marked(marker: &str) -> Vec<String> {
+    horch_e2e::process::try_processes()
+        .expect("listing the processes")
+        .into_iter()
+        .filter(|p| p.command.contains(marker))
+        .map(|p| format!("{} {}", p.pid, p.command))
+        .collect()
+}
+
 fn assert_check_killed_at_its_limit(name: &str, persona: &str) -> (Claimed, Harness) {
     let h = push_finish_world(name, PUSH_SCENARIO);
-    let check = "echo $PPID > host.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait";
-    let c = push_claimed(&h, persona, "check", Some(check), "a.txt");
+    // The marker is in the command line of each process of the check job
+    // but `sleep`: on Linux the PIDs in the files are of the PID namespace
+    // of the sandbox, not of the host.
+    let marker = format!("tl-check-marker-{}-{name}", std::process::id());
+    let check =
+        format!("echo $PPID > host.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait; : {marker}");
+    let c = push_claimed(&h, persona, "check", Some(&check), "a.txt");
     h.serve_fleetd();
     c.ready(&h);
     if persona.starts_with("codex") {
@@ -1896,18 +1941,28 @@ fn assert_check_killed_at_its_limit(name: &str, persona: &str) -> (Claimed, Harn
         assert!(warmed.status.success(), "warming the fake codex failed");
     }
     let job = queue_check(&h, &c.task_id, 2);
+    let mut seen = false;
     let row = wait_push("the job to end at its time limit", || {
         let row = job_row(&h, job);
+        seen = seen || !marked(&marker).is_empty();
         (row.state != JobState::Queued && row.state != JobState::Running).then_some(row)
     });
     assert_eq!(row.state, JobState::Abandoned, "{row:?}");
+    assert!(seen, "the search finds the processes of the running check");
     for file in ["sleep.pid", "host.pid"] {
         let pid = std::fs::read_to_string(c.path.join(file))
             .unwrap_or_else(|e| panic!("the check wrote no {file}: {e}"))
             .trim()
             .to_string();
-        wait_gone(file, &pid);
+        if cfg!(not(target_os = "linux")) {
+            wait_gone(file, &pid);
+        }
     }
+    // On Linux the sandbox ends with its namespace init, and the kernel
+    // then ends `sleep` too.
+    wait_for("each process of the check to be gone", || {
+        marked(&marker).is_empty().then_some(())
+    });
     (c, h)
 }
 
@@ -2645,7 +2700,15 @@ fn worker_status(h: &Harness, id: &str) -> (String, String) {
 
 /// The wakes recorded for the run, oldest first.
 fn wakes(h: &Harness) -> Vec<String> {
-    json_of(h, &["ledger", "events", "--json"])
+    wakes_of(h, None)
+}
+
+/// [`wakes`] of the run `run`. A failed conformance job of the fake agents
+/// adds a drift idea, whose feature has its own active run.
+fn wakes_of(h: &Harness, run: Option<&str>) -> Vec<String> {
+    let mut args = vec!["ledger", "events", "--json"];
+    args.extend(run.iter().flat_map(|r| ["--run", *r]));
+    json_of(h, &args)
         .as_array()
         .unwrap()
         .iter()
@@ -2746,10 +2809,19 @@ fn a_launch_of_an_unknown_teammate_leaves_no_live_row() {
     });
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["status"], "launch_failed", "{rows:?}");
-    let reason = rows[0]["end_reason"].as_str().unwrap();
+    let unknown = horch_core::roster::Roster::builtin()
+        .unwrap()
+        .require("no-such-teammate")
+        .unwrap_err();
     assert!(
-        reason.starts_with("unknown teammate 'no-such-teammate'."),
-        "{reason}"
+        unknown
+            .to_string()
+            .starts_with("unknown teammate 'no-such-teammate'."),
+        "{unknown}"
+    );
+    assert_eq!(
+        rows[0]["end_reason"].as_str().unwrap(),
+        format!("its spawn failed: {unknown}")
     );
 }
 
@@ -2770,13 +2842,17 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         .unwrap();
 
     // 1 pass now: ghost2's supervisor is gone; ghost is in its launch grace.
-    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force", "--run", "a"]));
     let (st, why) = worker_status(&h, &ghost2);
     assert_eq!(st, "no_task", "{why}");
     assert!(why.contains("supervisor is gone"), "{why}");
     assert_eq!(worker_status(&h, &ghost).0, "spawning");
 
-    let o = run_env(&h, &[("HORCH_NOW", &later(200))], &["ledger", "status"]);
+    let o = run_env(
+        &h,
+        &[("HORCH_NOW", &later(200))],
+        &["ledger", "status", "--run", "a"],
+    );
     let line = out(&o)
         .lines()
         .find(|l| l.contains("spawning"))
@@ -2788,7 +2864,7 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         run_env(
             &h,
             &[("HORCH_NOW", &later(200))],
-            &["ledger", "watch", "--once", "--force"],
+            &["ledger", "watch", "--once", "--force", "--run", "a"],
         )
     });
     assert!(o.status.success(), "{}", text(&o));
@@ -2827,7 +2903,13 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
         .unwrap();
     let watch = |at: Option<String>| {
         let env: Vec<(&str, &str)> = at.iter().map(|t| ("HORCH_NOW", t.as_str())).collect();
-        let o = h.without_fleetd(|| run_env(&h, &env, &["ledger", "watch", "--once", "--force"]));
+        let o = h.without_fleetd(|| {
+            run_env(
+                &h,
+                &env,
+                &["ledger", "watch", "--once", "--force", "--run", "a"],
+            )
+        });
         assert!(o.status.success(), "{}", text(&o));
     };
     // Within the 3 min claim grace (TRF-23) the worker is never touched.
@@ -3002,7 +3084,11 @@ fn a_parked_unlanded_task_names_its_dependents_and_a_stuck_run_is_reported_once(
     for _ in 0..3 {
         pass(&h);
     }
-    assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
+    assert!(
+        wakes_of(&h, Some("a")).is_empty(),
+        "{:?}",
+        wakes_of(&h, Some("a"))
+    );
     let blockers = needs_you(&h, "blocker");
     assert_eq!(blockers.len(), 1, "{blockers:?}");
     assert!(

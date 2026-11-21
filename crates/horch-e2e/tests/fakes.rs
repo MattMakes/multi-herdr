@@ -999,6 +999,17 @@ mod phase4 {
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
+    fn sealed_path(h: &Harness) -> String {
+        let mut probe = Command::new("true");
+        h.seal(&mut probe);
+        probe
+            .get_envs()
+            .find_map(|(k, v)| (k == "PATH").then_some(v).flatten())
+            .expect("the sealed PATH")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn attempt(name: &str) -> Attempt {
         use horch_core::fleetd::task_execution::adapters::task_files::write_attempt_files;
         use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
@@ -1010,7 +1021,9 @@ mod phase4 {
         h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
-        let path = format!("{}:{}", h.bin.display(), horch_e2e::bin_dir().display());
+        // On Linux the sealed PATH holds `bwrap`, and fleetd runs the git of
+        // the worktree job only in its sandbox.
+        let path = format!("{}:{}", sealed_path(&h), horch_e2e::bin_dir().display());
         h.set("PATH", path);
         std::fs::create_dir_all(h.project.join("tickets")).unwrap();
         std::fs::write(h.project.join("tickets/t1.md"), "# T1\n").unwrap();

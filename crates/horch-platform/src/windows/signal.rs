@@ -43,6 +43,10 @@ pub(crate) fn kill_group_on_termination(_group: &'static AtomicI32) -> Result<()
     Err(NOT_SUPPORTED)
 }
 
+pub(crate) fn hold_termination() {}
+
+pub(crate) fn end_termination_hold() {}
+
 pub(crate) fn outlive_hangup() -> Result<(), NotSupported> {
     Err(NOT_SUPPORTED)
 }

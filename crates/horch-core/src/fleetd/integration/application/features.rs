@@ -293,9 +293,9 @@ pub(crate) fn read_tips(
     let Some(feature) = git.tip(&repo, &format!("refs/heads/{branch}"))? else {
         return Ok(Err(format!("git has no branch {branch}")));
     };
-    let settings = match project_settings(git, &repo, &feature) {
+    let settings = match project_settings(git, &repo, &feature)? {
         Ok(s) => s,
-        Err(e) => return Ok(Err(format!("{e:#}"))),
+        Err(e) => return Ok(Err(e)),
     };
     let primary_branch = &row.primary_branch;
     let primary = match settings.remote {
@@ -315,16 +315,19 @@ pub(crate) fn read_tips(
 }
 
 /// The project file at the feature tip `tip`, or the defaults when the
-/// commit has none.
+/// commit has none. The outer `Err` is a failed read of git; the inner
+/// `Err` is the line of a project file that does not parse.
 pub(crate) fn project_settings(
     git: &dyn IntegrationGitGateway,
     repo: &Path,
     tip: &str,
-) -> Result<ProjectSettings> {
-    match git.fleet_toml(repo, tip)? {
-        Some(text) => project_file::parse(&text).with_context(|| format!("at {tip}")),
+) -> Result<Result<ProjectSettings, String>> {
+    Ok(match git.fleet_toml(repo, tip)? {
+        Some(text) => project_file::parse(&text)
+            .with_context(|| format!("at {tip}"))
+            .map_err(|e| format!("{e:#}")),
         None => Ok(ProjectSettings::default()),
-    }
+    })
 }
 
 /// Whether the feature `id` has at least 1 idea, and each of its ideas is

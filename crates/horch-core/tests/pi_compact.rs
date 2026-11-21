@@ -22,7 +22,8 @@ fn asset() -> PathBuf {
 /// `fileOps` arrive as arrays and become the `Set`s that pi passes.
 const DRIVER: &str = r#"
 import { readFileSync } from "node:fs";
-const ext = (await import(process.argv[2])).default;
+import { pathToFileURL } from "node:url";
+const ext = (await import(pathToFileURL(process.argv[2]).href)).default;
 const handlers = {};
 ext({ on: (name, fn) => { (handlers[name] ??= []).push(fn); } });
 const event = JSON.parse(readFileSync(process.argv[3], "utf8"));

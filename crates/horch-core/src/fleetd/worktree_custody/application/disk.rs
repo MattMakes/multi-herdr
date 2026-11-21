@@ -19,15 +19,19 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+use crate::fleetd::fleet_runtime::adapters::jobs_store;
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State as JobState};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::adapters::ideas_store;
+use crate::fleetd::task_execution::adapters::sqlite as task_store;
 use crate::fleetd::worktree_custody::adapters::sqlite as store;
 use crate::fleetd::worktree_custody::application::remove::queue_auto_remove;
 use crate::fleetd::worktree_custody::domain::disk::{
     self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND,
 };
+use crate::taskledger::store::one_snapshot;
 
 /// What 1 call of [`disk_budget`] found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -137,37 +141,69 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// 1 statement for any count of trees: the disk budget sums the bytes of
-/// all trees, so this read stays whole.
-fn measured(conn: &Connection) -> Result<Vec<Measured>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT w.worktree_id, w.state, w.task_id IS NOT NULL, w.created_at, w.bytes_on_disk,
-             i.state,
-             (SELECT j.state FROM jobs j
-               WHERE j.kind = '{remove}' AND j.subject = w.worktree_id AND j.input_key = w.path
-               ORDER BY j.run DESC LIMIT 1) = '{failed}'
-           FROM worktrees w
-           LEFT JOIN tasks t ON t.task_id = w.task_id
-           LEFT JOIN ideas i ON i.id = t.idea_id
-          WHERE w.state <> 'removed'
-          ORDER BY w.rowid",
-        remove = Kind::WorktreeRemove.as_str(),
-        failed = JobState::Failed.as_str(),
-    ))?;
+struct TreeFacts {
+    id: String,
+    state: String,
+    task_id: Option<String>,
+    created_at: String,
+    bytes: Option<i64>,
+    path: String,
+}
+
+fn tree_facts(conn: &Connection) -> Result<Vec<TreeFacts>> {
+    let mut stmt = conn.prepare(
+        "SELECT worktree_id, state, task_id, created_at, bytes_on_disk, path
+           FROM worktrees WHERE state <> 'removed' ORDER BY rowid",
+    )?;
     let rows = stmt.query_map([], |r| {
-        Ok(Measured {
+        Ok(TreeFacts {
             id: r.get(0)?,
             state: r.get(1)?,
-            has_task: r.get(2)?,
+            task_id: r.get(2)?,
             created_at: r.get(3)?,
-            bytes: r
-                .get::<_, Option<i64>>(4)?
-                .and_then(|b| u64::try_from(b).ok()),
-            idea_state: r.get(5)?,
-            removal_failed: r.get::<_, Option<bool>>(6)?.unwrap_or(false),
+            bytes: r.get(4)?,
+            path: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// 4 statements for any count of trees, on 1 snapshot: the disk budget
+/// sums the bytes of all trees, so this read stays whole. The trees, the
+/// ideas of their tasks, the states of those ideas and the last removal
+/// of each tree are 1 set read each, of the context that owns the table.
+fn measured(conn: &Connection) -> Result<Vec<Measured>> {
+    one_snapshot(conn, || {
+        let trees = tree_facts(conn)?;
+        let ideas =
+            task_store::ideas_of_tasks(conn, trees.iter().filter_map(|t| t.task_id.as_deref()))?;
+        let idea_states = ideas_store::states_of(conn, ideas.values().map(String::as_str))?;
+        let removals = jobs_store::latest_states(
+            conn,
+            Kind::WorktreeRemove,
+            trees.iter().map(|t| t.id.as_str()),
+        )?;
+        let failed = JobState::Failed.as_str();
+        Ok(trees
+            .into_iter()
+            .map(|t| Measured {
+                idea_state: t
+                    .task_id
+                    .as_ref()
+                    .and_then(|task| ideas.get(task))
+                    .and_then(|idea| idea_states.get(idea))
+                    .cloned(),
+                removal_failed: removals
+                    .get(&(t.id.clone(), t.path))
+                    .is_some_and(|state| state == failed),
+                has_task: t.task_id.is_some(),
+                bytes: t.bytes.and_then(|b| u64::try_from(b).ok()),
+                id: t.id,
+                state: t.state,
+                created_at: t.created_at,
+            })
+            .collect())
+    })
 }
 
 #[cfg(test)]
@@ -181,37 +217,20 @@ mod tests {
     use crate::taskledger::testing::count_statements;
 
     fn measured_one_by_one(conn: &Connection) -> Vec<Measured> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT worktree_id, state, task_id, created_at, bytes_on_disk, path
-                   FROM worktrees WHERE state <> 'removed' ORDER BY rowid",
-            )
-            .unwrap();
-        let rows: Vec<(String, String, Option<String>, String, Option<i64>, String)> = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            })
+        tree_facts(conn)
             .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        rows.into_iter()
-            .map(|(id, state, task_id, created_at, bytes, path)| Measured {
-                idea_state: task_id
+            .into_iter()
+            .map(|t| Measured {
+                idea_state: t
+                    .task_id
                     .as_deref()
-                    .and_then(|t| idea_state_of_task(conn, t).unwrap()),
-                removal_failed: removal_failed(conn, &id, &path).unwrap(),
-                has_task: task_id.is_some(),
-                bytes: bytes.and_then(|b| u64::try_from(b).ok()),
-                id,
-                state,
-                created_at,
+                    .and_then(|task| idea_state_of_task(conn, task).unwrap()),
+                removal_failed: removal_failed(conn, &t.id, &t.path).unwrap(),
+                has_task: t.task_id.is_some(),
+                bytes: t.bytes.and_then(|b| u64::try_from(b).ok()),
+                id: t.id,
+                state: t.state,
+                created_at: t.created_at,
             })
             .collect()
     }

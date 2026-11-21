@@ -490,7 +490,7 @@ fn group_of(command: &LedgerCommand) -> Group {
 }
 
 pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
-    let out = match run_command(ctx, command) {
+    match run_command(ctx, command) {
         Err(e) => match e.downcast_ref::<NotApplied>() {
             Some(NotApplied::Refused(reason)) => {
                 eprintln!("refused: {reason}");
@@ -501,11 +501,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             None => Err(e),
         },
         done => done,
-    };
-    out.map_err(|e| {
-        let command = std::env::args().collect::<Vec<_>>().join(" ");
-        horch_core::taskledger::store::read_only_failure(&command, e)
-    })
+    }
 }
 
 /// The retired kind of `command` when it is a retired command (tickets 47
@@ -573,9 +569,13 @@ fn run_command(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode>
     // Each command opens the ledger read-only (RR-5): a command that changes
     // state sends a request to fleetd (T-885).
     let store = read_only(ctx)?;
+    let record = store.read_only_record();
     // One entry per `Group`, in its order.
     let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
-    dispatch[group_of(&command) as usize](ctx, store, command)
+    dispatch[group_of(&command) as usize](ctx, store, command).map_err(|e| {
+        let command = std::env::args().collect::<Vec<_>>().join(" ");
+        horch_core::taskledger::store::read_only_failure(&command, record.as_ref(), e)
+    })
 }
 
 /// The ledger, opened read-only. fleetd creates it at its start.

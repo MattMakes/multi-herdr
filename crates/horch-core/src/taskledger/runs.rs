@@ -347,6 +347,27 @@ pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     .with_context(|| format!("no run {run_id}"))
 }
 
+/// The runs of `run_ids`, by id, in 1 statement for any count of ids. An
+/// id with no run is not in the map.
+pub fn of_ids<'a>(
+    conn: &Connection,
+    run_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, Run>> {
+    let ids: Vec<&str> = run_ids.into_iter().collect();
+    let sql = format!(
+        "{SELECT} WHERE r.run_id IN ({})",
+        sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), Run::from_row)?;
+    let mut out = std::collections::BTreeMap::new();
+    for run in rows {
+        let run = run?;
+        out.insert(run.run_id.clone(), run);
+    }
+    Ok(out)
+}
+
 /// The internal run of the feature `feature_id`: the run whose feature id
 /// is `F-<run rowid>` (MAP.md of fleetd-p6, Q5), or `None`.
 pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {

@@ -1,5 +1,6 @@
 //! The concern path for the code of macOS and Linux.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,10 @@ use crate::NotSupported;
 pub const HOME_VAR: &str = "HOME";
 pub const CONFIG_BASE_VAR: Option<&str> = None;
 pub const INSTALL_BASE_VAR: Option<&str> = None;
+
+pub fn for_child(text: &OsStr) -> OsString {
+    text.to_owned()
+}
 
 pub fn passwd_home() -> Result<Option<PathBuf>, NotSupported> {
     use std::ffi::{CStr, OsStr};

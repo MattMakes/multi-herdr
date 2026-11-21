@@ -35,6 +35,7 @@ use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::commands;
@@ -424,12 +425,7 @@ pub fn resume_of(conn: &Connection, p_id: &str, ports: &dyn Launches) -> Result<
     if outcome.as_deref() != Some(Outcome::Asked.as_str()) || !session_id_ok(&session) {
         return Ok(None);
     }
-    let answered: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM questions
-         WHERE state = 'answered' AND substr(id, 1, length(?1) + 1) = ?1 || '/')",
-        [&prev_id],
-        |r| r.get(0),
-    )?;
+    let answered = questions_store::answered_of_attempt(conn, &prev_id)?;
     let persona = workers::get(conn, &p.worker_id)?
         .persona
         .unwrap_or_default();
@@ -584,7 +580,7 @@ mod tests {
     impl World {
         fn new() -> World {
             let tmp = tempfile::tempdir().unwrap();
-            let top = tmp.path().canonicalize().unwrap();
+            let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
             let root = top.join("repo");
             let fleet_root = top.join("fleet");
             std::fs::create_dir_all(&root).unwrap();

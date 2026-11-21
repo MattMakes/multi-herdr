@@ -12,6 +12,8 @@ use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, Rows, TaskRow, WorkerRow,
 };
 use crate::taskledger::model::{TaskStatus, WorkerKind, WorkerStatus};
+use crate::taskledger::runs;
+use crate::taskledger::store::one_snapshot;
 
 /// A recorded process from its pid and start time columns. A pid that
 /// cannot name 1 process is no process.
@@ -198,31 +200,92 @@ pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(Stri
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// 1 statement for any count of live tasks: each live attempt is judged in
+/// Whether the idea `idea_id` has a task in `status`: 1 statement for any
+/// count of tasks.
+pub fn idea_has_task_in(conn: &Connection, idea_id: &str, status: TaskStatus) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE idea_id = ?1 AND status = ?2)",
+        [idea_id, status.as_str()],
+        |r| r.get(0),
+    )?)
+}
+
+/// The idea of each task of `task_ids` that has an idea, by task: 1
+/// statement for any count of tasks.
+pub fn ideas_of_tasks<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, String>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT task_id, idea_id FROM tasks WHERE idea_id IS NOT NULL AND task_id IN ({})",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The persona of each worker row, by worker id: 1 statement for any count
+/// of workers.
+pub fn worker_personas(conn: &Connection) -> Result<BTreeMap<String, Option<String>>> {
+    let mut stmt = conn.prepare("SELECT worker_id, persona FROM workers")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The outcome of each attempt of `ids`, by id: 1 statement for any count
+/// of attempts. An attempt with no row is not in the map.
+pub fn outcomes_of<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, Option<String>>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT id, outcome FROM attempts WHERE id IN ({})",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// 2 statements for any count of live tasks: each live attempt is judged in
 /// each pass, so this read stays whole.
 fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
     let mut stmt = conn.prepare(
-        "SELECT t.task_id, t.status, t.current_worker_id, t.attempts - t.attempt_floor,
-             r.max_attempts
-         FROM tasks t JOIN runs r ON r.run_id = t.run_id
-         WHERE t.task_id IN (SELECT task_id FROM attempts WHERE state = 'live')",
+        "SELECT task_id, status, current_worker_id, attempts - attempt_floor, run_id
+         FROM tasks
+         WHERE task_id IN (SELECT task_id FROM attempts WHERE state = 'live')",
     )?;
-    let rows = stmt.query_map([], |r| {
-        let status: String = r.get(1)?;
-        let holds = [TaskStatus::Running, TaskStatus::Verifying]
-            .iter()
-            .any(|s| s.as_str() == status);
-        let held: Option<String> = r.get(2)?;
-        Ok(TaskRow {
-            id: r.get(0)?,
-            held_by: held.filter(|_| holds),
-            used: r.get(3)?,
-            max_attempts: r.get(4)?,
-        })
-    })?;
+    let rows = stmt
+        .query_map([], |r| {
+            let status: String = r.get(1)?;
+            let holds = [TaskStatus::Running, TaskStatus::Verifying]
+                .iter()
+                .any(|s| s.as_str() == status);
+            let held: Option<String> = r.get(2)?;
+            let row = TaskRow {
+                id: r.get(0)?,
+                held_by: held.filter(|_| holds),
+                used: r.get(3)?,
+                max_attempts: 0,
+            };
+            Ok((row, r.get::<_, String>(4)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let runs = runs::of_ids(conn, rows.iter().map(|(_, run)| run.as_str()))?;
     let mut out = BTreeMap::new();
-    for t in rows {
-        let t = t?;
+    for (mut t, run) in rows {
+        // A task with no run is not in the map: the check below fails.
+        let Some(run) = runs.get(&run) else {
+            continue;
+        };
+        t.max_attempts = run.max_attempts;
         out.insert(t.id.clone(), t);
     }
     let live = attempts
@@ -238,14 +301,17 @@ fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<Str
 }
 
 /// The rows of the reap path: each attempt and each worker row, and the
-/// task of each live attempt. `host` is the host of this machine.
+/// task of each live attempt. `host` is the host of this machine. The 3
+/// reads run on 1 snapshot, so each live attempt has its task.
 pub fn rows(conn: &Connection, host: &str) -> Result<Rows> {
-    let attempts = attempts_where(conn, "", &[])?;
-    let tasks = live_tasks(conn, &attempts)?;
-    Ok(Rows {
-        attempts,
-        workers: workers(conn, host)?,
-        tasks,
+    one_snapshot(conn, || {
+        let attempts = attempts_where(conn, "", &[])?;
+        let tasks = live_tasks(conn, &attempts)?;
+        Ok(Rows {
+            attempts,
+            workers: workers(conn, host)?,
+            tasks,
+        })
     })
 }
 

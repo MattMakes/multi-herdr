@@ -14,9 +14,14 @@ struct World {
 impl World {
     /// A short folder under `/tmp`: `sun_path` holds about 104 bytes on macOS.
     fn new() -> World {
+        let root = if cfg!(unix) {
+            std::path::PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
         let tmp = tempfile::Builder::new()
             .prefix("rl")
-            .tempdir_in("/tmp")
+            .tempdir_in(root)
             .unwrap();
         let state = tmp.path().join("state");
         let server =

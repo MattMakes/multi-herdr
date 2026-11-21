@@ -32,7 +32,12 @@ struct Fleet {
 }
 
 fn fleet() -> Fleet {
-    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let base = if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let root = tempfile::tempdir_in(base).unwrap();
     let ledger_dir = root.path().join("ledger");
     let fleet_root = ledger_dir.join("fleet");
     let paths = OperatorPaths::of(&fleet_root);

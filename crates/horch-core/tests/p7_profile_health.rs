@@ -214,6 +214,41 @@ fn profile_is_marked_healthy_again_when_conformance_passes() {
     assert!(is_bound(&w.choices(), &task));
 }
 
+fn not_proved(cli: &str, failed: &[Check]) -> ConformanceReport {
+    let mut r = report(cli, failed);
+    r.checks.push(CheckResult::not_proved(
+        Check::OperatorBoundary,
+        "not proved: no fleetd serves the command channel",
+    ));
+    r
+}
+
+/// A check that is not proved because fleetd was not ready changes the
+/// health of no profile: a healthy profile stays healthy, and an unhealthy
+/// one stays unhealthy. A failed check of the same run still marks.
+#[test]
+fn not_proved_check_changes_no_health() {
+    let mut w = World::new();
+    let task = w.ready("t", "opus");
+    assert_eq!(w.conformance(&not_proved("claude", &[])), Vec::new());
+    assert_eq!(w.health("opus"), Health::Healthy);
+    assert!(is_bound(&w.choices(), &task));
+    assert!(w.events().is_empty(), "{:?}", w.events());
+
+    w.conformance(&report("claude", &[Check::LaunchHeadless]));
+    assert_eq!(w.conformance(&not_proved("claude", &[])), Vec::new());
+    assert!(matches!(w.health("opus"), Health::Unhealthy { .. }));
+
+    let mut w = World::new();
+    let marks = w.conformance(&not_proved("claude", &[Check::SharedWrite]));
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    let Health::Unhealthy { reason } = w.health("opus") else {
+        panic!("opus is healthy");
+    };
+    assert!(reason.contains(Check::SharedWrite.name()), "{reason}");
+    assert!(!reason.contains(Check::OperatorBoundary.name()), "{reason}");
+}
+
 #[test]
 fn failed_conformance_marks_each_profile_of_the_cli() {
     let mut w = World::new();

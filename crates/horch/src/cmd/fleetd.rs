@@ -83,7 +83,7 @@ use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
-use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::fleetd::worktree_custody::adapters::git::{CliWorktreeGit, FLEETD_GIT_LIMIT};
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::messaging::delivery::{self, TypedLine};
@@ -845,7 +845,8 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     let worker = WorkerDeps { guard };
     handlers_worker::register(&mut handlers, &worker);
     handlers_cli::register(&mut handlers);
-    let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root);
+    let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root)
+        .with_time_limit(FLEETD_GIT_LIMIT);
     handlers_custody::register(
         &mut handlers,
         Arc::new(Custody {
@@ -1200,10 +1201,10 @@ fn with_pass<T>(
     let ideas = LiveIdeas {
         ctx,
         sandboxes: &sandboxes,
-        git: ProjectGitGateway::new(CliWorktreeGit::new(
-            &ctx.bins.harness.git,
-            &settings.fleet_root,
-        )),
+        git: ProjectGitGateway::new(
+            CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root)
+                .with_time_limit(FLEETD_GIT_LIMIT),
+        ),
         herdr: herdr(),
     };
     let spawns = PushSpawns {

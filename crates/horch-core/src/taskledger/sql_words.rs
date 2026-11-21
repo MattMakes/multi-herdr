@@ -55,6 +55,15 @@ pub const WORKTREES_LANDED: &[WorktreeStatus] =
 /// Worktrees with nothing left to do: the folder is gone.
 pub const WORKTREES_GONE: &[WorktreeStatus] = &[WorktreeStatus::Cleaned, WorktreeStatus::Abandoned];
 
+/// `?first, ?first+1, ...`: `n` numbered marks of an `IN (...)` list, so
+/// a set reader binds each key of its set in 1 statement.
+pub fn marks(first: usize, n: usize) -> String {
+    (first..first + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// `'word'`: one status word as SQL text.
 pub fn word(status: impl Display) -> String {
     format!("'{status}'")

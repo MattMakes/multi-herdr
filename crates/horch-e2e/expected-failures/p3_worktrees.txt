@@ -1,2 +1,0 @@
-# Red tests of crates/horch-e2e/tests/p3_worktrees.rs.
-fm27_only_landed_or_rescued_trees_are_removed | 3 | a landing through a bundle never makes a landed tree; ticket 168 (T-207) of fleetd-finish removes this entry
