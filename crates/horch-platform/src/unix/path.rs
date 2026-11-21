@@ -10,7 +10,6 @@ pub const HOME_VAR: &str = "HOME";
 pub const CONFIG_BASE_VAR: Option<&str> = None;
 pub const INSTALL_BASE_VAR: Option<&str> = None;
 
-/// A path of macOS or Linux has no verbatim form.
 pub fn for_child(text: &OsStr) -> OsString {
     text.to_owned()
 }
