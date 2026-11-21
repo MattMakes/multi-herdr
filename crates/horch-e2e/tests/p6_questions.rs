@@ -538,6 +538,10 @@ const DEAD_LAUNCH_LOG: &str = "dead-launch.log";
 
 const DEAD_LAUNCH_RELEASE: &str = "dead-launch.release";
 
+/// The first pane run of a worker hangs and never starts the agent, so the
+/// spawn reports nothing until the test writes [`DEAD_LAUNCH_RELEASE`]. T-254
+/// (d8a08e35) ends an attempt `crashed` at once on a `launch_failed` report,
+/// so only a launch with no report reaches the start timeout.
 fn dead_first_launch(h: &mut Harness, _fleet: &Path) {
     let herdr = h.bin.join("herdr");
     let wrapper = format!(

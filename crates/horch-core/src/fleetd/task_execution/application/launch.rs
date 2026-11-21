@@ -489,6 +489,7 @@ pub fn launch(
         }
     }
     let l = push_launch(conn, &p)?;
+    // The row comes before the effect: the spawn reads the resume here.
     let resume = resume_of(conn, attempt_id, ports)?;
     conn.execute(
         "UPDATE workers SET resumed_from_session = ?2 WHERE worker_id = ?1",
@@ -1067,6 +1068,8 @@ mod tests {
         assert_eq!(decide(TreeFact::Ready, &[]), Decision::Launch);
     }
 
+    /// Security of RR-12: a session id becomes 1 CLI argument, so only a
+    /// plain id of a bounded length passes, and never an option.
     #[test]
     fn session_id_form_refuses_an_option_and_odd_bytes() {
         assert!(session_id_ok("5bd39a10-8a9f-43b8-a26f-3e68992c7d58"));

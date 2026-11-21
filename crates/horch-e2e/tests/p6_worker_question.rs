@@ -454,6 +454,8 @@ fn session_of(w: &World, attempt: &str) -> String {
     })
 }
 
+/// RR-12, design line 1015: fleetd resumes the session of the worker with
+/// the answer, through the resume form of the adapter, and records it.
 #[test]
 fn answered_question_resumes_the_session_of_the_worker() {
     let w = World::new("p6-wq-resume", "stay", &question_tell(QUESTION));
@@ -480,11 +482,14 @@ fn answered_question_resumes_the_session_of_the_worker() {
         "the worker row records the resumed session\n{}",
         w.context()
     );
+    // T-15 retired the manual resume: no CLI user can start one.
     let o = w.h.run(&["spawn", "--resume", &session]);
     assert!(!o.status.success(), "horch spawn --resume: {}", text(&o));
     assert_eq!(w.attempts(&task).len(), 2, "{}", w.context());
 }
 
+/// RR-12, design line 1015: a resume that fails at once gives a fresh
+/// attempt from the question, the answer and the committed work.
 #[test]
 fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
     let commit = "printf 'work\\n' > work.txt && @GIT@ add work.txt && \
@@ -501,6 +506,8 @@ fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
     let session = session_of(&w, &a1);
     let answer = "The guide names port 8080.";
     answer_by_tell(&w, &task, &id, answer);
+    // Design line 1236: an exit with no result ends `no_result`, and line
+    // 1237: it burns 1 attempt, so the fresh attempt waits its backoff.
     let a3 = w.wait_past_backoff("the fresh attempt after the failed resume", || {
         w.attempts(&task).get(2).map(|a| a.0.clone())
     });
