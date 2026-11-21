@@ -13,7 +13,7 @@
 //! - A valid `result.json` of the newest attempt of a `running` or
 //!   `stalled` task moves the task to `verifying`. Only the verifier moves
 //!   a task to `done`. A result with the key `unlanded` then parks the task
-//!   with its tree ([`verifier::park_unlanded`], RR-14).
+//!   with its tree (`verifier::park_unlanded`, RR-14).
 //! - A valid question file of the newest attempt of a `running` task ends
 //!   the attempt with the outcome `asked`, which burns no attempt, and
 //!   moves the task to `blocked_on_user`. In the same transaction the file
