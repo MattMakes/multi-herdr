@@ -331,8 +331,6 @@ impl Lead {
         sent
     }
 
-    /// A raw request of `kind` with an empty payload and the operator
-    /// token on the channel.
     fn raw_kind(&self, kind: Kind, call_id: &str) -> Value {
         let fleet_root = Paths::from_env(&ProcessEnv).fleet_root;
         let token = match std::fs::read_to_string(fleet_root.join("run").join("operator.token")) {

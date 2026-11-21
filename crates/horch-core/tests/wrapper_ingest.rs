@@ -150,7 +150,6 @@ impl World {
             .unwrap();
     }
 
-    /// Read and apply the wrapper files at time `at`, and give the report.
     fn ingest_report(&mut self, at: &str, procs: &dyn ProcessFacts) -> attempt_files::Report {
         let read = self.read();
         let reads = std::slice::from_ref(&read);
@@ -696,14 +695,9 @@ fn horch_ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     assert_eq!(w.worker_row().status().unwrap(), WorkerStatus::Stopped);
 }
 
-// ─── SR-8: the wrapper is recorded before its agent starts ──────────────
-
-/// The pid and the start time of the wrapper of the wrapper-only tests.
 const WRAPPER: (u32, u64) = (5004241, 66);
 
 impl World {
-    /// The attempt goes back to `launching`, and fleetd launched it: its
-    /// launch record exists.
     fn launched(&self) {
         self.launching();
         effects::write_launch(
@@ -717,7 +711,6 @@ impl World {
         .unwrap();
     }
 
-    /// The attempt goes back to `launching`, with no launch record.
     fn launching(&self) {
         self.store
             .conn()
@@ -728,7 +721,6 @@ impl World {
             .unwrap();
     }
 
-    /// A heartbeat of the wrapper `wrapper` before its agent starts.
     fn wrapper_only(&self, seq: u64, wrapper: u32) {
         let mut hb = self.heartbeat_json(seq, 0, "starting");
         hb["pid"] = serde_json::Value::Null;
@@ -747,10 +739,6 @@ fn recorded(p: (u32, u64)) -> (Option<i64>, Option<i64>) {
     (Some(i64::from(p.0)), Some(p.1 as i64))
 }
 
-/// The wrapper writes its heartbeat before its agent starts: the file
-/// names the wrapper and no agent, and fleetd records the wrapper of the
-/// launched attempt on its worker row. The test process is fleetd here, so
-/// the file that it writes names fleetd, which is never a wrapper.
 #[test]
 fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
     let mut w = World::new();
@@ -779,8 +767,6 @@ fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
     );
 }
 
-/// A second wrapper-only heartbeat with another pid does not replace a
-/// recorded wrapper that still runs.
 #[test]
 fn wrapper_only_heartbeat_does_not_replace_a_recorded_wrapper_that_runs() {
     let mut w = World::new();
@@ -798,7 +784,6 @@ fn wrapper_only_heartbeat_does_not_replace_a_recorded_wrapper_that_runs() {
     assert!(report.wrappers.is_empty(), "{report:?}");
 }
 
-/// fleetd records a wrapper only for an attempt that it launched.
 #[test]
 fn wrapper_only_heartbeat_of_an_attempt_with_no_launch_is_not_used() {
     let mut w = World::new();
@@ -811,8 +796,6 @@ fn wrapper_only_heartbeat_of_an_attempt_with_no_launch_is_not_used() {
     assert!(report.wrappers.is_empty(), "{report:?}");
 }
 
-/// A heartbeat in the folder of an attempt that the ledger does not have
-/// is refused: no row changes.
 #[test]
 fn heartbeat_of_an_unknown_attempt_is_refused() {
     let mut w = World::new();

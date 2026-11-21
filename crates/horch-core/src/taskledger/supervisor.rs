@@ -536,8 +536,6 @@ pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkin
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
         let tick = Duration::from_millis(100).min(every);
-        // The first beat is at once: it names the wrapper before its agent
-        // starts, so that fleetd can record the wrapper (SR-8).
         let mut since = every;
         let mut log = CheckinLog::default();
         loop {
@@ -1099,7 +1097,6 @@ mod tests {
         );
     }
 
-    /// The pid and a start time of the wrapper of the gate tests.
     const ME: (u32, u64) = (5004241, 66);
 
     fn set_supervisor(db: &Path, worker: &str, p: (u32, u64)) {
@@ -1113,8 +1110,6 @@ mod tests {
             .unwrap();
     }
 
-    /// SR-8: the wrapper starts its agent only after fleetd recorded the
-    /// wrapper on its worker row.
     #[test]
     fn wrapper_waits_until_fleetd_records_it_on_its_worker_row() {
         let f = fixture("working");
@@ -1129,8 +1124,6 @@ mod tests {
         later.join().unwrap();
     }
 
-    /// An idea-lead wrapper is recorded on its attempt row by the pane read
-    /// of the pass.
     #[test]
     fn wrapper_recorded_on_its_attempt_row_is_recorded() {
         let f = fixture("working");
@@ -1144,9 +1137,6 @@ mod tests {
         wait_recorded(&f.db, &f.worker, ME, Duration::from_secs(30)).unwrap();
     }
 
-    /// Fail closed: with no record of this wrapper in the limit, the wait
-    /// fails, and the caller starts no agent. A record of another process,
-    /// or of this pid with another start time, is not a record of it.
     #[test]
     fn wrapper_with_no_record_in_the_limit_fails() {
         let f = fixture("working");

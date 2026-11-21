@@ -3351,12 +3351,6 @@ fn take(
     Ok(chosen)
 }
 
-/// The keys of the `due` jobs (with the keys `ids`) that part 3 may start,
-/// in the turn order of the cursor of the job starts, at most `budget`: a
-/// git writer only when it is the oldest due git writer of its repository
-/// and no git writer of its repository runs (MAP.md of fleetd-p3, Q12). A
-/// writer that waits keeps its turn: the git writers of 1 repository start
-/// first in, first out, so newer writers do not pass it.
 fn startable(
     tx: &Transaction<'_>,
     due: &[JobRow],
@@ -5458,8 +5452,6 @@ mod tests {
         conn
     }
 
-    /// Queue a run of `kind` of the repository [`REPO`] with the subject
-    /// `subject`. Gives its id.
     fn queue(conn: &Connection, kind: Kind, subject: &str) -> i64 {
         let new = jobs_store::NewRun {
             kind,
@@ -5474,8 +5466,6 @@ mod tests {
         jobs_store::insert(conn, &new).unwrap()
     }
 
-    /// The job starts of 1 pass: the ids of the runs that start, which
-    /// become `running`.
     fn starts(conn: &mut Connection) -> Vec<i64> {
         let tx = conn.transaction().unwrap();
         let due = jobs::due_to_start(&tx, FleetSeconds(0)).unwrap();
@@ -5500,9 +5490,6 @@ mod tests {
             .unwrap();
     }
 
-    /// A rescue that waits behind a running fetch starts before a newer
-    /// fetch, also when a job that is no git writer moved the cursor past
-    /// the rescue.
     #[test]
     fn rescue_queued_while_a_fetch_runs_starts_before_a_newer_fetch() {
         let mut conn = ledger();
@@ -5518,8 +5505,6 @@ mod tests {
         assert_eq!(starts(&mut conn), [newer]);
     }
 
-    /// A fetch that waits behind a running git writer starts before the
-    /// newer writers that come after it.
     #[test]
     fn fetch_is_not_starved_by_a_row_of_writers() {
         let mut conn = ledger();

@@ -329,12 +329,6 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
-/// SR-8, FM-32 (T-172): no agent code runs before fleetd has recorded the
-/// wrapper of its attempt. The fault point `hold-launching` stops the pass
-/// from recording the pane wrapper of each lead attempt, so its wrapper
-/// waits and never starts its agent, and the start timeout ends the
-/// attempt. While the lead attempt launches, the operator approves the
-/// waiting idea: no request of the operator waits for a launch.
 #[test]
 fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
     let w = World::start("p6-fr10-e", "clarify", Some("hold-launching:I-0002"));
@@ -361,8 +355,6 @@ fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
         text(&o),
         w.context()
     );
-    // The start timeout counts on the fleet clock, which lags the wall
-    // clock when the passes are slow.
     loop {
         let now = w.wait("the fleet clock", || w.fleet_clock());
         if now >= due {
@@ -390,11 +382,6 @@ fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
     );
 }
 
-/// SR-8, FM-32 (T-172): at its first instruction the agent of an attempt
-/// that just launched finds the process of its attempt recorded. So each
-/// `operator` kind that it sends raw on the channel with the operator
-/// token is refused as a fleet process, and its `requests` row records the
-/// refusal.
 #[test]
 fn fr10_f_agent_at_its_first_instruction_is_refused_for_each_operator_kind() {
     let w = World::new("p6-fr10-f", "clarify");

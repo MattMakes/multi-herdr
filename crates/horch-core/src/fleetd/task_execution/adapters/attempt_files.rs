@@ -384,7 +384,6 @@ impl Ingest<'_> {
     }
 
     /// Use the snapshot `f` of attempt `id` when its `seq` is new.
-    /// `launched`: fleetd launched the attempt.
     fn heartbeat(
         &mut self,
         id: &str,
@@ -571,9 +570,6 @@ fn agent_process(
     Some(((pid, start), (wrapper, wrapper_start)))
 }
 
-/// The wrapper, as (PID, start time), of a heartbeat `hb` that names no
-/// agent: it runs, it is not fleetd, and the worker row `w` has no wrapper
-/// or has this one. A wrapper that the row has is never replaced here.
 fn wrapper_process(
     hb: &HeartbeatFile,
     w: &workers::Worker,
