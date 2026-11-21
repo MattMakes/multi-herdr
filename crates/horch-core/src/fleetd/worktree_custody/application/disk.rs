@@ -137,11 +137,6 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// Each row that is not `removed`, with the state of the idea of its task,
-/// in 1 statement: 2 queries for each tree made 1 pass with 10,000 trees
-/// spend seconds (T-292). The removal of a tree failed when its newest
-/// `worktree_remove` run for its path, without `keep_branch`, failed
-/// ([`removal_failed`](crate::fleetd::worktree_custody::application::remove::removal_failed)).
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT w.worktree_id, w.state, w.task_id IS NOT NULL, w.created_at, w.bytes_on_disk,
@@ -183,8 +178,6 @@ mod tests {
     use crate::taskledger::store::Store;
     use crate::taskledger::testing::count_statements;
 
-    /// The reader of each tree before T-292: 2 queries for each tree. The
-    /// set reader must give the same rows.
     fn measured_one_by_one(conn: &Connection) -> Vec<Measured> {
         let mut stmt = conn
             .prepare(
@@ -221,7 +214,6 @@ mod tests {
             .collect()
     }
 
-    /// A ledger with 1 run, its idea, and `n` tasks, each with 1 tree.
     fn ledger(n: usize) -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
@@ -260,7 +252,6 @@ mod tests {
         (tmp, store)
     }
 
-    /// A `worktree_remove` run of the tree `id` at `path`.
     fn removal(conn: &Connection, id: &str, key: &str, run: i64, state: &str) {
         conn.execute(
             "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)
@@ -270,10 +261,6 @@ mod tests {
         .unwrap();
     }
 
-    /// T-292: the set read gives the rows of the read of each tree, on a
-    /// mixed ledger: a removed tree, a tree with no task, a failed removal,
-    /// a failed removal with a later passed run, and a failed removal of
-    /// another path of the same tree.
     #[test]
     fn measured_gives_the_rows_of_the_read_of_each_tree() {
         let (_tmp, store) = ledger(6);
@@ -298,9 +285,6 @@ mod tests {
         assert_eq!(measured(c).unwrap(), want);
     }
 
-    /// T-292, by count: the disk budget sums the bytes of all trees, so it
-    /// stays whole in 1 pass. It reads them in the same statements for 3
-    /// trees and for 300.
     #[test]
     fn measured_runs_the_same_statements_for_3_and_300_trees() {
         let count = |n: usize| {

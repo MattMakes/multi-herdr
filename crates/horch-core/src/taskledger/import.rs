@@ -1132,7 +1132,6 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The select of [`sync_worktrees`].
 fn cancelled_open_trees_sql() -> String {
     format!(
         "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
@@ -1166,7 +1165,6 @@ fn sync_custody_trees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The statement of [`sync_custody_trees`].
 fn custody_trees_sql() -> String {
     format!(
             "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
@@ -1203,7 +1201,6 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The select of [`sync_tasks`].
 fn reaped_tasks_sql() -> String {
     format!(
         "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status
@@ -1579,8 +1576,6 @@ mod trf_45_tests {
 mod sync_native_tests {
     use super::*;
 
-    /// The plan of `sql` on `conn`, 1 line for each step. Each parameter
-    /// gets a text value.
     fn plan(conn: &Connection, sql: &str) -> Vec<String> {
         let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let args = vec!["now"; stmt.parameter_count()];
@@ -1590,10 +1585,6 @@ mod sync_native_tests {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// T-292: each statement of `sync_native` reads `import_findings` 1
-    /// time, not 1 time for each worktree or task. A correlated subquery
-    /// with no index on `import_findings` read 10,000 findings for each of
-    /// 10,000 trees: 11 s in 1 pass of fleetd.
     #[test]
     fn each_sync_statement_reads_the_findings_once() {
         let tmp = tempfile::tempdir().unwrap();

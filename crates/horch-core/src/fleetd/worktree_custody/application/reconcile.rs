@@ -596,8 +596,6 @@ fn set_aside(removing: &BTreeSet<String>, facts: &Facts, row: &WorktreeRow) -> b
     in_work_dir || removing.contains(&row.worktree_id)
 }
 
-/// The trees with a `queued` or `running` `worktree_remove` run, read in 1
-/// statement for any count of trees (T-292).
 fn removing(conn: &Connection) -> Result<BTreeSet<String>> {
     let mut stmt = conn
         .prepare("SELECT subject FROM jobs WHERE kind = ?1 AND state IN ('queued', 'running')")?;
@@ -749,7 +747,6 @@ mod removing_tests {
     use crate::taskledger::testing::count_statements;
     use rusqlite::params;
 
-    /// A ledger with `n` trees of no task.
     fn ledger(n: usize) -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
@@ -778,10 +775,6 @@ mod removing_tests {
         .unwrap();
     }
 
-    /// T-292: the set read names each tree that the read of each tree
-    /// (`jobs_store::active`) finds, on a mixed ledger: a queued removal, a
-    /// running one, a passed one, a failed then queued one, and an active
-    /// job of another kind.
     #[test]
     fn removing_names_the_trees_of_the_read_of_each_tree() {
         let (_tmp, store) = ledger(6);
@@ -806,8 +799,6 @@ mod removing_tests {
         assert_eq!(removing(c).unwrap(), want);
     }
 
-    /// T-292, by count: the I6 check of 3 trees and of 300 runs the same
-    /// statements. It must see each tree, so it stays whole.
     #[test]
     fn check_i6_runs_the_same_statements_for_3_and_300_trees() {
         let count = |n: usize| {

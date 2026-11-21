@@ -491,9 +491,6 @@ fn ready_task(
     })
 }
 
-/// Each task that holds its paths, in seq order of each run, with its
-/// Own files. 2 statements for any count of tasks (T-292): a bind
-/// compares its Own files with each of them, so this read stays whole.
 fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
     let words: Vec<String> = HOLDING.iter().map(|s| word(*s)).collect();
     let holding = words.join(", ");
@@ -776,8 +773,6 @@ mod running_tasks_tests {
     use super::*;
     use crate::taskledger::store::Store;
 
-    /// A ledger with 1 run and the tasks `tasks`: (id, status, kind,
-    /// worktree mode, parallel, Own files, do-not-touch files).
     type Row<'a> = (
         &'a str,
         &'a str,
@@ -823,7 +818,6 @@ mod running_tasks_tests {
         (tmp, store)
     }
 
-    /// The read of each task, 1 by 1, as `choices` did it before T-292.
     fn running_one_by_one(conn: &Connection) -> Vec<RunningTask> {
         task_ids(conn, &HOLDING)
             .unwrap()
@@ -842,8 +836,6 @@ mod running_tasks_tests {
             .collect()
     }
 
-    /// The set read gives the tasks of the read of each task, with the
-    /// same Own files: the bind compare of Own files does not change.
     #[test]
     fn running_tasks_gives_the_rows_of_the_read_of_each_task() {
         let (_tmp, store) = ledger(&[
@@ -887,8 +879,6 @@ mod running_tasks_tests {
         assert_eq!(set[0].own, ["src/a.rs", "src/b.rs"]);
     }
 
-    /// T-292, by count: the read of 3 running tasks and of 300 runs the
-    /// same statements.
     #[test]
     fn running_tasks_runs_the_same_statements_for_3_and_300_tasks() {
         let count = |n: usize| {

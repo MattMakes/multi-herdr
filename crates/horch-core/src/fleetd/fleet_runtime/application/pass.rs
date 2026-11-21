@@ -1308,7 +1308,7 @@ impl<'a> Pass<'a> {
             needs_you: self.ports.needs_you,
             sent: &read.sent,
             exited: &wrappers.exited,
-            personas: worker_personas(&tx)?,
+            personas_at_start: worker_personas(&tx)?,
         };
         let mut doorbells = Vec::new();
         rules.run(&read, &mut stops, &mut doorbells)?;
@@ -2124,11 +2124,7 @@ struct Rules<'a> {
     /// The push attempts whose `exit.json` this pass ingested.
     exited: &'a [String],
     judge_branches: JudgeGit<'a>,
-    /// The persona of each worker row at the start of part 2, read in 1
-    /// statement: 1 query for each lease made 1 pass with 10,000 leases
-    /// spend seconds (T-292). A worker bound later in the pass is read
-    /// alone.
-    personas: BTreeMap<String, Option<String>>,
+    personas_at_start: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2171,7 +2167,7 @@ impl Rules<'_> {
     }
 
     fn persona_of(&self, worker: &str) -> Result<Option<String>> {
-        if let Some(persona) = self.personas.get(worker) {
+        if let Some(persona) = self.personas_at_start.get(worker) {
             return Ok(persona.clone());
         }
         Ok(workers::find(self.tx, worker)?.and_then(|w| w.persona))
@@ -2611,9 +2607,7 @@ impl Rules<'_> {
         Ok(())
     }
 
-    /// Step 6: the lease part of I1, at most `pass_budget` lease writes
-    /// and deletes (T-292): N repairs take at most N / `pass_budget` + 1
-    /// passes.
+    /// Step 6: the lease part of I1.
     fn check_i1(&self) -> Result<()> {
         let limits = |worker: &str| self.limits(worker);
         let budget = PassBudget::new(self.config.pass_budget).rows();
@@ -3174,16 +3168,15 @@ fn verifying(tx: &Connection, task: &str) -> Result<bool> {
 
 /// Whether the `exit.json` of attempt `attempt` had the outcome hint
 /// `quota`: the ingest recorded [`attempt_files::QUOTA_HINT`] on it.
-/// The persona of each worker row, by worker id.
+fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
+    let hint = attempt_files::QUOTA_HINT;
+    door::has_fact(tx, Entity::Attempt, attempt, EventKind::Note, hint)
+}
+
 fn worker_personas(tx: &Connection) -> Result<BTreeMap<String, Option<String>>> {
     let mut stmt = tx.prepare("SELECT worker_id, persona FROM workers")?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
-    let hint = attempt_files::QUOTA_HINT;
-    door::has_fact(tx, Entity::Attempt, attempt, EventKind::Note, hint)
 }
 
 /// The cause of the hold of each project with no fast gate, by project

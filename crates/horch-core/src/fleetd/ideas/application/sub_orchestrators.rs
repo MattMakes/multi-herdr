@@ -694,9 +694,6 @@ fn planning(ideas: &[IdeaFacts]) -> Option<Need> {
 
 /// The idea in [`IN_FLIGHT`] of the oldest open question of the feature of
 /// `ideas`, else of its oldest `failed` task that waits for its replan.
-/// Whether an open task of the idea `idea` failed: 1 statement for any
-/// count of tasks (T-292). A failed task is open: its status is not
-/// `done` or `cancelled`.
 fn has_failed_task(conn: &Connection, idea: &str) -> Result<bool> {
     let failed = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM tasks WHERE idea_id = ?1 AND status = ?2)",
@@ -745,8 +742,6 @@ mod has_failed_task_tests {
     use crate::taskledger::testing::count_statements;
     use rusqlite::params;
 
-    /// A ledger with 1 run, its idea, and 1 task in each status of
-    /// `statuses`. It gives the id of the idea.
     fn ledger(statuses: &[&str]) -> (tempfile::TempDir, Store, String) {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
@@ -772,7 +767,6 @@ mod has_failed_task_tests {
         (tmp, store, idea.expect("the run has its idea"))
     }
 
-    /// The read of each open task, as `work` did it before T-292.
     fn failed_one_by_one(conn: &Connection, idea: &str) -> bool {
         attempts::open_tasks_of_idea(conn, idea)
             .unwrap()
@@ -780,8 +774,6 @@ mod has_failed_task_tests {
             .any(|t| tasks::get(conn, t).unwrap().status == TaskStatus::Failed.as_str())
     }
 
-    /// T-292: the 1-statement read gives the answer of the read of each
-    /// open task, with and without a failed task among other statuses.
     #[test]
     fn has_failed_task_gives_the_answer_of_the_read_of_each_task() {
         let mixed = [
@@ -804,8 +796,6 @@ mod has_failed_task_tests {
         }
     }
 
-    /// T-292, by count: the read for 3 open tasks and for 300 runs the
-    /// same statements.
     #[test]
     fn has_failed_task_runs_the_same_statements_for_3_and_300_tasks() {
         let count = |n: usize| {

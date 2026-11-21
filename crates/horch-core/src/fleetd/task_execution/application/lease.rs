@@ -1120,9 +1120,6 @@ mod tests {
         assert_eq!(breaches(&l), Vec::<String>::new());
     }
 
-    /// T-292: 1 call writes or deletes at most `budget` leases, and each
-    /// call repairs rows that the call before did not, so 5 missing leases
-    /// with a budget of 2 are all written in 3 calls.
     #[test]
     fn check_i1_within_repairs_at_most_its_budget_of_leases() {
         let mut l = fixture(0);
@@ -1141,7 +1138,6 @@ mod tests {
         assert_eq!(written, [2, 4, 5]);
     }
 
-    /// A fixture with `n` claimed tasks, each with its lease.
     fn claimed_tasks(n: usize) -> Fixture {
         let mut l = fixture(0);
         for i in 0..n {
@@ -1151,8 +1147,6 @@ mod tests {
         l
     }
 
-    /// T-292, by count: with a budget of 2, 1 call runs the same
-    /// statements for 3 missing leases and for 30.
     #[test]
     fn check_i1_within_runs_the_same_statements_for_3_and_30_repairs() {
         let count = |n: usize| {
@@ -1167,9 +1161,6 @@ mod tests {
         assert_eq!(count(3), count(30));
     }
 
-    /// T-292, by count: the renewal check of 3 leases and of 30, with no
-    /// observed attempt, runs the same statements. The lease expiry stays
-    /// whole in 1 pass: each lease is judged in each pass.
     #[test]
     fn renew_or_expire_leases_runs_the_same_statements_for_3_and_30_leases() {
         let count = |n: usize| {

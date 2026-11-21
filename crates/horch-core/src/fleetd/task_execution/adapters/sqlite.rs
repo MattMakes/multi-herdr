@@ -198,10 +198,6 @@ pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(Stri
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The task row of each task with a live attempt, by task id, read in 1
-/// statement: 1 query for each task made 1 pass of fleetd with 10,000 live
-/// tasks spend seconds here (T-292). A live attempt whose task or run is
-/// missing is an error, as it was with 1 query for each task.
 fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
     let mut stmt = conn.prepare(
         "SELECT t.task_id, t.status, t.current_worker_id, t.attempts - t.attempt_floor,
@@ -469,9 +465,6 @@ mod tests {
     use super::*;
     use crate::taskledger::store::Store;
 
-    /// 1 run with `max_attempts` 5 and the tasks `(id, status, attempts,
-    /// attempt_floor, attempt state)`, each with its worker `W-<id>` and its
-    /// attempt `<id>/A1`.
     fn ledger(tasks: &[(&str, &str, i64, i64, &str)]) -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
@@ -511,9 +504,6 @@ mod tests {
         (tmp, store)
     }
 
-    /// The task of each live attempt, with the holder of a `running` or
-    /// `verifying` task, its attempts since the floor and the
-    /// `max_attempts` of its run. A task with no live attempt is not read.
     #[test]
     fn rows_reads_the_task_of_each_live_attempt() {
         let (_tmp, store) = ledger(&[
@@ -543,9 +533,6 @@ mod tests {
         assert_eq!(rows.workers.len(), 5);
     }
 
-    /// T-292: `rows` runs the same statements for 3 live tasks and for
-    /// 300: 1 statement for each task made 1 pass of 10,000 live tasks
-    /// spend seconds.
     #[test]
     fn rows_runs_the_same_statements_for_3_and_300_live_tasks() {
         let count = |n: usize| {
