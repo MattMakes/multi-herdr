@@ -141,16 +141,19 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     let ticket = dir.join("01-a.md");
     std::fs::write(&ticket, "# 01: Feature\n\n**Check:** none\n").unwrap();
-    let task = seed_task(h, &run, &ticket, "opus");
-    Store::open(&ledger(h))
-        .unwrap()
-        .conn()
-        .execute(
-            "UPDATE tasks SET check_none = 1 WHERE task_id = ?1",
-            [&task.task_id],
-        )
-        .unwrap();
-    let bound = horch_e2e::bind::bind(h, "opus", None);
+    // No pass of the test fleetd may dispatch the task before the bind.
+    let bound = h.without_fleetd(|| {
+        let task = seed_task(h, &run, &ticket, "opus");
+        Store::open(&ledger(h))
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE tasks SET check_none = 1 WHERE task_id = ?1",
+                [&task.task_id],
+            )
+            .unwrap();
+        horch_e2e::bind::bind(h, "opus", None)
+    });
     let (w, task) = (bound.worker_id, bound.task_id);
     let path = wait_for("the active tree of the task", || {
         pass(h);
