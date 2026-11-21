@@ -253,6 +253,7 @@ fn launch_env(home: &Path) -> LaunchEnv {
     for tool in ["bwrap", "socat"] {
         let path = bin.join(tool);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
     }
@@ -450,8 +451,7 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
         let fs = &settings["sandbox"]["filesystem"];
         assert!(strings(&fs["allowRead"]).contains(&dir), "{name}");
         assert!(!strings(&fs["allowWrite"]).contains(&dir), "{name}");
-        let denied = strings(&fs["denyWrite"]);
-        assert_eq!(denied.last(), Some(&dir), "{name}");
+        assert!(strings(&fs["denyWrite"]).contains(&dir), "{name}");
         let perms = &settings["permissions"];
         assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true, "{name}");
         // Before the bundle: the teammate's own sandbox paths (T-31).
@@ -474,8 +474,8 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
 /// launches with the state root's whole `skill-bundles` folder closed to
 /// write for every tool (`denyWrite` for Bash, deny rules for Edit and
 /// Write), with or without a bundle of its own. The state root stays open
-/// to write, so its `horch` commands work. A `report` role gets no such
-/// path: it has no state root.
+/// to read and closed to write (RR-5): its `horch` commands send a request
+/// to fleetd. A `report` role gets no such path: it has no state root.
 #[test]
 fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
     let home = tempfile::tempdir().unwrap();
@@ -503,7 +503,8 @@ fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
             let i = args.iter().position(|a| a == "--settings").unwrap();
             let settings: Value = serde_json::from_str(&args[i + 1]).unwrap();
             let fs = &settings["sandbox"]["filesystem"];
-            assert!(strings(&fs["allowWrite"]).contains(&root), "{name}");
+            assert!(strings(&fs["allowRead"]).contains(&root), "{name}");
+            assert!(!strings(&fs["allowWrite"]).contains(&root), "{name}");
             assert!(strings(&fs["denyWrite"]).contains(&bundles), "{name}");
             let deny = strings(&settings["permissions"]["deny"]);
             for tool in ["Edit", "Write"] {

@@ -5,7 +5,7 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(crate) use crate::unix::process::alive;
+pub(crate) use crate::unix::process::{alive, group_of, session_of};
 
 /// Clock ticks since boot: field 22 of `/proc/<pid>/stat`.
 pub(crate) fn start_time(pid: i32) -> Option<u64> {

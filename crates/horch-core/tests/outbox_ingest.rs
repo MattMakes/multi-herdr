@@ -151,7 +151,7 @@ impl World {
     /// Part 2 of 1 pass, in its own transaction.
     fn ingest(&mut self, reads: &[OutboxRead]) -> Report {
         let tx = self.conn.transaction().unwrap();
-        let report = outbox_ingest::ingest(&tx, Some(GUARD), reads).unwrap();
+        let report = outbox_ingest::ingest(&tx, Some(GUARD), reads, 900).unwrap();
         tx.commit().unwrap();
         report
     }
@@ -260,6 +260,7 @@ fn result_json(a: &AttemptRef) -> String {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
     .to_json()
 }

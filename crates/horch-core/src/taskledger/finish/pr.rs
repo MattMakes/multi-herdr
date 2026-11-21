@@ -641,6 +641,7 @@ mod tests {
         assert_eq!(with_new_sections(&b, &sections), b, "idempotent");
     }
 
+    #[cfg(unix)]
     const FAKE_GH: &str = r#"#!/bin/sh
 [ "$1" = warm ] && exit 0
 d="$(dirname "$0")"
@@ -652,8 +653,10 @@ h=$(sed -n "${n}p" "$d/heads")
 printf '{"headRefOid":"%s"}' "$h"
 "#;
 
+    #[cfg(unix)]
     fn no_sleep(_: std::time::Duration) {}
 
+    #[cfg(unix)]
     const NO_WAIT: HeadWait = HeadWait {
         tries: 6,
         pause: std::time::Duration::from_secs(5),
@@ -662,6 +665,7 @@ printf '{"headRefOid":"%s"}' "$h"
 
     /// A repo whose remote `origin` has `run` at commit `old`, a local
     /// commit `new` on top, and a fake gh in its own directory.
+    #[cfg(unix)]
     struct World {
         _tmp: tempfile::TempDir,
         root: std::path::PathBuf,
@@ -671,10 +675,11 @@ printf '{"headRefOid":"%s"}' "$h"
         new: String,
     }
 
+    #[cfg(unix)]
     impl World {
         fn new(push_new: bool) -> World {
             let tmp = tempfile::tempdir().unwrap();
-            let top = tmp.path().canonicalize().unwrap();
+            let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
             let root = top.join("repo");
             std::fs::create_dir_all(&root).unwrap();
             let git = crate::taskledger::git::Git::new("git");
@@ -734,6 +739,7 @@ printf '{"headRefOid":"%s"}' "$h"
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn trf_50_lagging_pr_head_passes_when_the_remote_branch_holds_the_commit() {
         let w = World::new(true);
@@ -750,6 +756,7 @@ printf '{"headRefOid":"%s"}' "$h"
         assert_eq!(w.gh_reads(), 6, "6 re-reads, then pass");
     }
 
+    #[cfg(unix)]
     #[test]
     fn trf_50_pr_head_catches_up_on_a_later_read() {
         let w = World::new(true);
@@ -760,6 +767,7 @@ printf '{"headRefOid":"%s"}' "$h"
         assert_eq!(w.gh_reads(), 2, "pass at the read that holds it");
     }
 
+    #[cfg(unix)]
     #[test]
     fn trf_50_unpushed_commit_still_fails_and_names_the_remote_tip() {
         let w = World::new(false);

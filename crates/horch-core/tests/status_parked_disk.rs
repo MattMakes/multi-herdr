@@ -3,6 +3,7 @@
 
 mod i308_support;
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Instant;
@@ -77,6 +78,7 @@ fn status_sums_the_stored_bytes_and_walks_no_folder() {
     // the stored 5 GB must still count.
     let locked = dir.path().join("locked");
     write(&locked, "big.bin", &"x".repeat(1000));
+    #[cfg(unix)]
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
     // A folder with a real tree, much smaller than its stored 1 GB.
     let tree = dir.path().join("tree");
@@ -94,6 +96,7 @@ fn status_sums_the_stored_bytes_and_walks_no_folder() {
     let started = Instant::now();
     let line = parked_line(&store, &run);
     let took = started.elapsed();
+    #[cfg(unix)]
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     assert_eq!(

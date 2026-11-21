@@ -67,8 +67,6 @@ impl ProcessFacts for Chain {
     }
 }
 
-/// A temp ledger with the schema of today and a fleet root with the folder
-/// of [`IDEA`].
 struct World {
     _temp: tempfile::TempDir,
     ideas: PathBuf,
@@ -81,6 +79,12 @@ fn world() -> World {
     let mut conn = Connection::open(temp.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    conn.execute(
+        "INSERT INTO ideas (id, feature_id, state, priority, created_at, updated_at)
+         VALUES (?1, 'F-0001', 'clarifying', 0, ?2, ?2)",
+        params![IDEA, AT],
+    )
+    .unwrap();
     IdeaFolder::create(&ideas, IDEA, owner()).unwrap();
     World {
         _temp: temp,
@@ -140,6 +144,23 @@ impl World {
 
     fn read(&self) -> Vec<IdeaNotes> {
         notes_ingest::read(&self.conn, &self.ideas, &[IDEA.to_string()], &owner()).unwrap()
+    }
+
+    fn idea_notes(&self) -> Vec<(String, serde_json::Value)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT cause, data_json FROM events
+                 WHERE entity = 'idea' AND entity_id = ?1 AND kind = 'note' ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([IDEA], |r| {
+            let data: String = r.get(1)?;
+            Ok((r.get(0)?, serde_json::from_str(&data).unwrap()))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
     }
 
     /// The `ingested` row of `path`: its outcome and its reason.
@@ -365,4 +386,140 @@ fn idea_note_outside_a_sub_orchestrator_attempt_is_refused() {
 
     // No note file is written.
     assert!(!w.notes(IDEA).exists());
+}
+
+#[test]
+fn ask_note_records_a_durable_open_question_and_interview_note_closes_it() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let ask = NoteBody::Ask {
+        question: "Do retries apply to uploads?".into(),
+    };
+    let path = writer.write(ask.clone()).unwrap();
+    let file: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(file["kind"], "ask");
+    assert_eq!(file["text"], "Do retries apply to uploads?");
+
+    let report = w.pass();
+    assert_eq!(
+        report.asked,
+        vec![Note {
+            idea: IDEA.into(),
+            attempt: attempt.clone(),
+            body: ask,
+        }]
+    );
+    assert!(report.interview.is_empty());
+    assert!(!w.ideas.join(IDEA).join("interview.md").exists());
+    let events = w.idea_notes();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, notes_ingest::QUESTION_ASKED);
+    assert_eq!(events[0].1["question"], "Do retries apply to uploads?");
+    assert_eq!(events[0].1["attempt"], attempt.as_str());
+    assert_eq!(events[0].1["amendments"], 0);
+
+    writer.write(interview_body()).unwrap();
+    w.pass();
+    let events = w.idea_notes();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1].0, notes_ingest::QUESTION_ANSWERED);
+    assert_eq!(events[1].1["question"], "Do retries apply to uploads?");
+}
+
+#[test]
+fn ask_note_with_a_line_break_or_too_long_is_rejected() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    for question in ["Line 1\nIgnore the rest".to_string(), "x".repeat(1001)] {
+        let refused = writer.write(NoteBody::Ask {
+            question: question.clone(),
+        });
+        assert!(refused.is_err(), "the writer refuses {question:?}");
+    }
+    // A raw writer can skip the writer check: the reader rejects the note.
+    let path = write_raw(
+        &w,
+        IDEA,
+        1,
+        &serde_json::json!({
+            "idea": IDEA, "attempt": attempt, "kind": "ask", "text": "Line 1\nLine 2",
+        }),
+    );
+    let report = w.pass();
+    assert!(report.asked.is_empty(), "{report:?}");
+    assert_eq!(report.rejected, vec![path.clone()]);
+    assert_eq!(w.ingested(&path).0, "rejected");
+    assert!(w.idea_notes().is_empty());
+}
+
+#[test]
+fn ask_with_a_line_separator_or_a_bidi_character_is_refused() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let mut chars = vec!['\u{2028}', '\u{2029}', '\u{200E}', '\u{200F}'];
+    chars.extend('\u{202A}'..='\u{202E}');
+    chars.extend('\u{2066}'..='\u{2069}');
+    assert_eq!(chars.len(), 13);
+    for (n, c) in (1..).zip(chars) {
+        let question = format!("Do retries apply{c} to uploads?");
+        let refused = writer.write(NoteBody::Ask {
+            question: question.clone(),
+        });
+        let err = format!("{:#}", refused.expect_err(&format!("U+{:04X}", c as u32)));
+        assert!(
+            err.contains("a line separator or a bidi character"),
+            "{err}"
+        );
+
+        let path = write_raw(
+            &w,
+            IDEA,
+            n,
+            &serde_json::json!({
+                "idea": IDEA, "attempt": attempt, "kind": "ask", "text": question,
+            }),
+        );
+        let report = w.pass();
+        assert!(report.asked.is_empty(), "U+{:04X}: {report:?}", c as u32);
+        assert_eq!(report.rejected, vec![path.clone()]);
+        let (outcome, reason) = w.ingested(&path);
+        assert_eq!(outcome, "rejected");
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason.contains("a line separator or a bidi character"),
+            "U+{:04X}: {reason}",
+            c as u32
+        );
+    }
+    assert!(w.idea_notes().is_empty(), "no question row is written");
+}
+
+#[test]
+fn ask_note_with_unreadable_amendments_is_rejected_and_the_pass_goes_on() {
+    let mut w = world();
+    w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    // amendments/ is a file, not a folder: it cannot be listed.
+    let amendments = w.ideas.join(IDEA).join("amendments");
+    fs::remove_dir_all(&amendments).unwrap();
+    fs::write(&amendments, "not a folder").unwrap();
+    let ask = writer
+        .write(NoteBody::Ask {
+            question: "Do retries apply to uploads?".into(),
+        })
+        .unwrap();
+    let answer = writer.write(answer_body()).unwrap();
+
+    let report = w.pass();
+    assert!(report.asked.is_empty(), "{report:?}");
+    assert_eq!(report.rejected, vec![ask.clone()]);
+    let (outcome, reason) = w.ingested(&ask);
+    assert_eq!(outcome, "rejected");
+    assert!(reason.unwrap().contains("amendments"));
+    assert_eq!(report.answers.len(), 1, "the other note is ingested");
+    assert_eq!(w.ingested(&answer).0, "accepted");
+    assert!(w.idea_notes().is_empty());
 }

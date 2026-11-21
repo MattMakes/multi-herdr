@@ -208,6 +208,15 @@ const PROMPT: &str = "ORACLE PROMPT: do the task.";
 const FRESH_ID: &str = "00000000-0000-4000-8000-000000000001";
 const RESUME_ID: &str = "00000000-0000-4000-8000-000000000002";
 
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 /// A temp world with the environment pinned. Restores it on drop.
 struct World {
     _guard: MutexGuard<'static, ()>,
@@ -229,7 +238,7 @@ impl World {
         let state = root.join("state");
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
         std::fs::create_dir_all(&state).unwrap();
-        std::fs::create_dir_all(root.join("bin")).unwrap();
+        stub_sandbox_tools(&root.join("bin"));
         std::fs::write(home.join(".claude/settings.json"), SETTINGS_JSON).unwrap();
         std::fs::write(
             home.join(".claude/plugins/installed_plugins.json"),
@@ -257,6 +266,7 @@ impl World {
             ("HORCH_DATA_DIR", Some(root.join("data"))),
             ("XDG_STATE_HOME", None),
             ("XDG_DATA_HOME", None),
+            ("HORCH_LEDGER_DB", None),
             // A herdr pane sets it, and a sandboxed Claude teammate
             // (idea-lead) allows its socket.
             ("HERDR_SOCKET_PATH", None),

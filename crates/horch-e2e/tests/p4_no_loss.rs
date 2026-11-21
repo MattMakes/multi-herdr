@@ -364,7 +364,8 @@ impl World {
     /// `fault`. Then wait until each job process that a pass started has
     /// ended, so the next pass reads its result.
     ///
-    /// The `PATH` of the pass is an empty folder: the fakes of the harness
+    /// The `PATH` of the pass is an empty folder (and the host tools on
+    /// Linux, see `pass_path`): the fakes of the harness
     /// are not on it, so the scan of the CLI binaries of Phase 7 finds no
     /// CLI and queues no docs or conformance job. Git, herdr and the agents
     /// have their absolute paths in the sealed environment.
@@ -374,7 +375,7 @@ impl World {
         let mut cmd = self
             .h
             .horch(&["ledger", "watch", "--once", "--force", "--json"]);
-        cmd.env("PATH", &no_clis);
+        cmd.env("PATH", pass_path(&self.h.root, no_clis));
         if let Some(fault) = fault {
             cmd.env("HORCH_FAULT", format!("{DELIVERY_PROBE_FAULT},{fault}"));
         }
@@ -576,8 +577,12 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert!(w.feature_rescues().is_empty(), "no rescue ref yet");
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()), "no tip moved");
 
-    // The next pass writes the rescue ref of the old tip.
-    w.pass();
+    // A later pass writes the rescue ref of the old tip. Under load a pass
+    // can reach its time budget (PL-5) before this effect, and the next
+    // pass gives it again, so wait for the ref, not for 1 pass.
+    w.pass_until("the rescue ref of the old tip", |w| {
+        (!w.feature_rescues().is_empty()).then_some(())
+    });
     let rescues = w.feature_rescues();
     assert_eq!(rescues.len(), 1, "{rescues:?}\n{}", w.diagnostics());
     assert_eq!(rescues[0].1, old, "the rescue ref holds the old tip");
@@ -684,4 +689,15 @@ fn i12_stash_entry_blocks_the_deletion_of_its_branch() {
         [stashed],
     );
     assert_eq!(row.as_deref(), Some("landed"));
+}
+
+fn pass_path(root: &std::path::Path, no_clis: std::path::PathBuf) -> std::ffi::OsString {
+    #[cfg(target_os = "linux")]
+    let dirs = vec![no_clis, root.join("host-bin")];
+    #[cfg(not(target_os = "linux"))]
+    let dirs = {
+        let _ = root;
+        vec![no_clis]
+    };
+    std::env::join_paths(dirs).expect("the harness folders hold no PATH separator")
 }

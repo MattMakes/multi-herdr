@@ -25,6 +25,7 @@ use std::process::{Child, Command, Output};
 
 use horch_core::taskledger::runs::root_key;
 use horch_core::taskledger::schema;
+use horch_core::taskledger::Store;
 use horch_core::{clock, procid};
 use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::Connection;
@@ -41,6 +42,8 @@ const LIST_PERIOD_S: i64 = 60;
 const PASSES: i64 = 3 * LIST_PERIOD_S / STEP_S;
 /// The wall time of the first checkin of the old supervisor.
 const T0: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
+
+const RUN: &str = "zeta";
 
 /// The live task, its attempt, its worker and its tree.
 const TASK_A: &str = "T-1";
@@ -160,19 +163,88 @@ fn tree_with_1_commit(h: &Harness, name: &str) -> (PathBuf, String) {
     (path, head)
 }
 
-/// The Phase 2 ledger of `h`: run `r1` of its project.
-/// - [`TASK_A`] is `running` with the live attempt [`ATTEMPT_A`] and its
-///   lease. Its worker [`WORKER_A`] has the agent `agent`, and its tree
-///   [`TREE_A`] at `tree_a` is `open`.
-/// - [`TASK_B`] is held. Its attempt [`ATTEMPT_B`] ended, its worker
-///   [`WORKER_B`] is dead, and its tree [`TREE_B`] at `tree_b` is `open`.
-/// - The `fleetd` row of the Phase 2 fleetd has the fleet clock at
-///   [`CLOCK`].
-fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) {
+struct Wrapper {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    replies: std::io::BufReader<std::process::ChildStdout>,
+    dir: PathBuf,
+    runs: u32,
+}
+
+impl Wrapper {
+    fn start(h: &Harness) -> Wrapper {
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"while read -r s; do /bin/sh "$s" >"$s.out" 2>"$s.err"; echo $?; done"#,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let replies = std::io::BufReader::new(child.stdout.take().unwrap());
+        Wrapper {
+            child,
+            stdin,
+            replies,
+            dir: h.root.clone(),
+            runs: 0,
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn run(&mut self, cmd: &Command) -> Output {
+        use std::io::{BufRead, Write};
+        use std::os::unix::process::ExitStatusExt;
+        self.runs += 1;
+        let script = self.dir.join(format!("worker-{}.sh", self.runs));
+        let quote =
+            |s: &std::ffi::OsStr| format!("'{}'", s.to_string_lossy().replace('\'', r"'\''"));
+        let mut text = String::new();
+        if let Some(dir) = cmd.get_current_dir() {
+            text += &format!("cd {}\n", quote(dir.as_os_str()));
+        }
+        text += "exec /usr/bin/env -i";
+        for (key, value) in cmd.get_envs() {
+            if let Some(value) = value {
+                text += &format!(" {}={}", quote(key), quote(value));
+            }
+        }
+        text += &format!(" {}", quote(cmd.get_program()));
+        for arg in cmd.get_args() {
+            text += &format!(" {}", quote(arg));
+        }
+        std::fs::write(&script, text + "\n").unwrap();
+        writeln!(self.stdin, "{}", script.display()).unwrap();
+        let mut reply = String::new();
+        self.replies.read_line(&mut reply).unwrap();
+        let code: i32 = reply.trim().parse().unwrap();
+        let read = |ext: &str| std::fs::read(format!("{}.{ext}", script.display())).unwrap();
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: read("out"),
+            stderr: read("err"),
+        }
+    }
+}
+
+impl Drop for Wrapper {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn phase_2_ledger(h: &Harness, agent: &Agent, wrapper: &Wrapper, (tree_a, tree_b): (&Path, &Path)) {
     let project = &h.project;
     let base = git_in(h, project, &["rev-parse", "main"]);
     let mut conn = Connection::open(db(h)).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_2_VERSION).unwrap();
+    let wrapper = wrapper.pid();
     let t0 = rfc3339(T0);
     let host = horch_core::taskledger::util::host_name();
     conn.execute(
@@ -182,8 +254,8 @@ fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) 
     .unwrap();
     conn.execute(
         "INSERT INTO runs (run_id, project_id, slug, status, started_at)
-            VALUES ('r1', 'p', 'zeta', 'active', ?1)",
-        [&t0],
+            VALUES ('r1', 'p', ?1, 'active', ?2)",
+        (RUN, &t0),
     )
     .unwrap();
     conn.execute(
@@ -220,8 +292,8 @@ fn phase_2_ledger(h: &Harness, agent: &Agent, (tree_a, tree_b): (&Path, &Path)) 
             ATTEMPT_A,
             TASK_A,
             WORKER_A,
-            agent.pid(),
-            agent.started,
+            wrapper,
+            procid::start_time(wrapper).expect("the start time of the wrapper"),
             &t0,
             CLOCK,
             ATTEMPT_B,
@@ -289,10 +361,13 @@ fn horch_at(h: &Harness, at: i64, args: &[&str]) -> Output {
 }
 
 /// Run `horch` at the wall time `at` as the worker [`WORKER_A`].
-fn worker_at(h: &Harness, at: i64, args: &[&str]) -> Output {
+fn worker_at(h: &Harness, wrapper: &mut Wrapper, at: i64, args: &[&str]) -> Output {
     let mut cmd = h.horch(args);
     cmd.env("HORCH_WORKER_ID", WORKER_A);
-    run_at(cmd, at, args)
+    cmd.env("HORCH_NOW", rfc3339(at));
+    let o = wrapper.run(&cmd);
+    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
+    o
 }
 
 fn run_at(mut cmd: Command, at: i64, args: &[&str]) -> Output {
@@ -390,15 +465,14 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     let (tree_b, head_b) = tree_with_1_commit(&h, "wt-b");
     std::fs::write(tree_b.join("notes.txt"), MODIFIED).unwrap();
     std::fs::write(tree_b.join(UNTRACKED), UNTRACKED_TEXT).unwrap();
-    phase_2_ledger(&h, &agent, (&tree_a, &tree_b));
+    let mut wrapper = Wrapper::start(&h);
+    phase_2_ledger(&h, &agent, &wrapper, (&tree_a, &tree_b));
 
-    // The update: the binary of this branch opens the ledger, and the
-    // migration runs.
     let mut now = T0 + STEP_S;
     checkin(&h, now);
-    let o = horch_at(&h, now, &["ledger", "show", TASK_A, "--json"]);
+    drop(Store::open(&db(&h)).unwrap());
     let conn = Connection::open(db(&h)).unwrap();
-    assert_eq!(user_version(&conn), schema::VERSION, "{}", text(&o));
+    assert_eq!(user_version(&conn), schema::VERSION);
     let (state, owner, _) = tree_row(&conn, TREE_A);
     assert_eq!(state, "active", "the backfill");
     assert_eq!(owner.as_deref(), Some(ATTEMPT_A), "the backfill");
@@ -406,6 +480,8 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     assert_eq!(state, "orphaned", "the backfill");
     assert_eq!(owner, None, "the backfill");
     drop(conn);
+    h.serve_fleetd();
+    h.stop_fleetd();
 
     // 3 periods of the worktree_list job: the old supervisor checks in,
     // the agent records progress, and fleetd runs 1 pass, each 30 s.
@@ -414,8 +490,14 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
         now += STEP_S;
         h.advance_fleet_clock(STEP_S);
         checkin(&h, now);
-        worker_at(&h, now, &["ledger", "progress", "building"]);
-        let o = horch_at(&h, now, &["ledger", "watch", "--once", "--force", "--json"]);
+        worker_at(&h, &mut wrapper, now, &["ledger", "progress", "building"]);
+        let o = horch_at(
+            &h,
+            now,
+            &[
+                "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+            ],
+        );
         seen.push(text(&o));
     }
     // More passes at the same time, with no other bound than the wait:
@@ -424,7 +506,7 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
     now += STEP_S;
     h.advance_fleet_clock(STEP_S);
     checkin(&h, now);
-    worker_at(&h, now, &["ledger", "progress", "building"]);
+    worker_at(&h, &mut wrapper, now, &["ledger", "progress", "building"]);
     let mut last = String::new();
     wait_for_or(
         "the rescue of B, queued and observed",
@@ -432,7 +514,9 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
             last = text(&horch_at(
                 &h,
                 now,
-                &["ledger", "watch", "--once", "--force", "--json"],
+                &[
+                    "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+                ],
             ));
             let conn = Connection::open(db(&h)).unwrap();
             tree_row(&conn, TREE_B).2

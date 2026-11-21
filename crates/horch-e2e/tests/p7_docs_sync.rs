@@ -484,13 +484,10 @@ impl World {
         })
     }
 
-    /// A drift: a new Claude Code binary whose run ends with no
-    /// `outbox/result.json`, after a first round that passed. Gives the
-    /// failed `conformance` run of the new binary.
     fn drift(&self) -> Job {
         let first = self.first_round();
         let last = first.iter().map(|j| j.id).max().unwrap();
-        self.install("claude", NEW_CLAUDE, ",exit_without_result");
+        self.install("claude", NEW_CLAUDE, ",ignore_stop_gate");
         let docs = self.ended_after("docs_sync", "claude", last);
         let run = self.ended_after("conformance", "claude", docs.id);
         assert_eq!(run.state, "failed", "{run:?}\n{}", self.diagnostics());
@@ -620,7 +617,7 @@ fn new_fake_cli_version_fails_a_check_marks_its_profiles_unhealthy_and_adds_1_id
 
     let report = w.report("claude", NEW_CLAUDE);
     let failed: Vec<Check> = report.failed();
-    assert!(failed.contains(&Check::SharedWrite), "{report:?}");
+    assert!(failed.contains(&Check::StopGate), "{report:?}");
 
     // Each profile of the agent `claude` is unhealthy. A failed run of
     // another CLI marks only the profiles of its own agent.
@@ -659,7 +656,7 @@ fn new_fake_cli_version_fails_a_check_marks_its_profiles_unhealthy_and_adds_1_id
     };
     assert!(at(&title) < at(&changes.display().to_string()), "{body}");
     assert!(
-        at(&changes.display().to_string()) < at(Check::SharedWrite.name()),
+        at(&changes.display().to_string()) < at(Check::StopGate.name()),
         "{body}"
     );
 
@@ -811,7 +808,7 @@ fn operator_boundary() {
             // An adapter with no sandbox on this OS (ticket 24). Claude
             // Code and Codex have one on each OS of the fleet.
             Verdict::NotSupported => adapter != "claude" && adapter != "codex",
-            Verdict::Fail => false,
+            Verdict::Fail | Verdict::NotProved => false,
         };
         if !ok {
             failed.push(format!("{adapter}: {r:?}"));

@@ -752,3 +752,60 @@ fn restart_of_the_fleetd_label_calls_the_manager() {
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(calls[0].contains(service::LABEL), "{calls:?}");
 }
+
+#[test]
+fn a_non_default_ledger_gets_its_own_valid_label() {
+    assert_eq!(service::LABEL, "horch-fleetd");
+    service::validate_label(service::LABEL).expect("the default label is valid");
+    let label = service::ledger_label(&[0xab, 0xcd, 0xef, 0x01, 0xff, 0x00]);
+    assert_eq!(label, "horch-fleetd-abcdef01");
+    service::validate_label(&label).expect("a ledger label is valid");
+    assert_ne!(
+        service::ledger_label(&[0, 0, 0, 1]),
+        service::ledger_label(&[0, 0, 0, 2])
+    );
+}
+
+#[test]
+fn a_ledger_label_names_only_its_own_files_and_manager_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let mut spec = spec(&folder);
+    spec.label = service::ledger_label(&[0x12, 0x34, 0x56, 0x78]);
+    let (manager, log) = stand_in(dir.path(), &folder, 0);
+
+    service::ensure(&spec, &manager).expect("ensure");
+
+    let names: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(!names.is_empty());
+    for name in &names {
+        assert!(name.starts_with("horch-fleetd-12345678"), "{names:?}");
+    }
+    let calls = calls(&log);
+    assert!(!calls.is_empty());
+    for call in &calls {
+        assert!(
+            !call.replace(&spec.label, "").contains(service::LABEL),
+            "a call names the default label: {call}"
+        );
+    }
+}
+
+#[test]
+fn definitions_refuse_an_invalid_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = "a".repeat(service::LABEL_MAX + 1);
+    for label in [
+        "", "../x", "a/b", r"a\b", "x y", ".hidden", "-x", "a..b", &long,
+    ] {
+        let mut spec = spec(dir.path());
+        spec.label = label.to_string();
+        let err = service::definitions(&spec).expect_err(label);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{label:?}");
+        service::validate_label(label).expect_err(label);
+    }
+    service::validate_label(&"a".repeat(service::LABEL_MAX)).expect("64 bytes is valid");
+}

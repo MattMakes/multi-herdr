@@ -43,6 +43,38 @@ pub fn create_dir_mode(builder: &mut DirBuilder, mode: u32) -> Result<(), NotSup
     os::create_dir_mode(builder, mode)
 }
 
+/// Make the folder `path` and each missing parent, each new one with access
+/// for its owner only. A folder that exists keeps its access.
+///
+/// macOS and Linux: mode 0700. Windows: this user is the owner, and a
+/// protected DACL allows only this user, for the folder and for each file
+/// and folder made in it.
+pub fn create_dir_owner_only(path: &Path) -> io::Result<()> {
+    os::create_dir_owner_only(path)
+}
+
+/// Create the new file `path` for write, with access for its owner only
+/// from the create on. A file at `path` is an `AlreadyExists` error.
+///
+/// macOS and Linux: mode 0600. Windows: this user is the owner, and a
+/// protected DACL allows only this user.
+pub fn create_new_owner_only(path: &Path) -> io::Result<File> {
+    os::create_new_owner_only(path)
+}
+
+/// Check that only the owner of the open file or folder `file` has access
+/// to it. `rule` is the unix mode of the rule, 0600 for a file or 0700 for
+/// a folder. The error is the reason, as the user reads it. The caller
+/// checks the owner with [`owner_of`].
+///
+/// macOS and Linux: the mode of `meta` has no bit of group or others, else
+/// the reason is "mode `<mode>` is wider than `<rule>`". Windows: the DACL of
+/// the handle has no allow rule for a user other than the owner, `SYSTEM`
+/// and `Administrators`, and no rule of another type than allow or deny.
+pub fn check_owner_only(file: &File, meta: &Metadata, rule: u32) -> Result<(), String> {
+    os::check_owner_only(file, meta, rule)
+}
+
 /// Fsync the dir `dir`, so a rename or a create inside it is durable.
 ///
 /// Windows: an `Unsupported` error that holds [`NotSupported`]. Windows
@@ -160,6 +192,15 @@ pub fn make_executable(path: &Path) -> io::Result<()> {
 /// (`telemetry/cursor.rs:84`).
 pub fn file_identity(meta: &Metadata) -> (u64, u64) {
     os::file_identity(meta)
+}
+
+/// The device and the inode of the file or folder of `meta`, as `stat`
+/// gives them.
+///
+/// Windows: [`NotSupported`]. Stable Rust gives no volume serial number and
+/// no file index, so this OS gives no identity of a folder.
+pub fn device_and_inode(meta: &Metadata) -> Result<(u64, u64), NotSupported> {
+    os::device_and_inode(meta)
 }
 
 /// An exclusive `flock` on the dir of a lock, held while 1 process breaks

@@ -32,6 +32,12 @@
 //! checks it: the process runs, its parent (the wrapper) runs, neither is
 //! fleetd, and while a recorded wrapper runs, a new agent must be its
 //! child. A fact that the platform does not give fails the check.
+//!
+//! The wrapper writes its first heartbeat before its agent starts, with
+//! its own PID and no agent, and starts the agent only when fleetd has
+//! recorded it (SR-8, FM-32). fleetd records such a wrapper only for an
+//! attempt that it launched (its launch record exists) and that is not
+//! ended, and only when the worker row has no wrapper or has this one.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -42,6 +48,7 @@ use horch_platform::channel::User;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 
+use crate::fleetd::fleet_runtime::adapters::effects;
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, has_fact};
 use crate::fleetd::fleet_runtime::application::ledger::{record, Cause, DoorError};
@@ -52,7 +59,7 @@ use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::domain::repair::{REPAIR_CAUSE, REPAIR_LINE};
-use crate::fleetd::task_execution::domain::task::Recorded;
+use crate::fleetd::task_execution::domain::task::{AttemptState, Recorded};
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::supervisor::{
     self, Ended, ExitFile, HeartbeatFile, OutcomeHint, SessionFile, EXIT_JSON, HEARTBEAT_JSON,
@@ -95,6 +102,8 @@ pub struct WrapperFile<T> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WrapperRead {
     pub attempt: AttemptRef,
+    /// fleetd launched the attempt: its launch record exists.
+    pub launched: bool,
     pub heartbeat: Option<WrapperFile<HeartbeatFile>>,
     pub exit: Option<WrapperFile<ExitFile>>,
     pub session: Option<WrapperFile<SessionFile>>,
@@ -183,6 +192,7 @@ pub fn read(
         };
         out.push(WrapperRead {
             attempt: a.clone(),
+            launched: effects::read_launch(fleet_root, &a.attempt_id)?.is_some(),
             heartbeat: read_file(conn, &dir, HEARTBEAT_JSON, a, &rule(heartbeat_max_bytes))?,
             exit: read_file(conn, &dir, EXIT_JSON, a, &rule(EXIT_MAX_BYTES))?,
             session: read_file(conn, &dir, SESSION_JSON, a, &rule(SESSION_MAX_BYTES))?
@@ -321,7 +331,7 @@ pub fn ingest(
             continue;
         };
         if let Some(f) = &r.heartbeat {
-            ingest.heartbeat(id, &worker, f)?;
+            ingest.heartbeat(id, &worker, r.launched, f)?;
         }
         // session.json first: it names the session record that the exit ends.
         if let Some(f) = &r.session {
@@ -374,17 +384,23 @@ impl Ingest<'_> {
     }
 
     /// Use the snapshot `f` of attempt `id` when its `seq` is new.
-    fn heartbeat(&mut self, id: &str, worker: &str, f: &WrapperFile<HeartbeatFile>) -> Result<()> {
+    fn heartbeat(
+        &mut self,
+        id: &str,
+        worker: &str,
+        launched: bool,
+        f: &WrapperFile<HeartbeatFile>,
+    ) -> Result<()> {
         let Found::Valid { file: hb, .. } = &f.found else {
             // A rejected snapshot is recorded like a message, and its path
             // is not read again.
             self.message(f)?;
             return Ok(());
         };
-        let last: Option<i64> = self.tx.query_row(
-            "SELECT heartbeat_seq FROM attempts WHERE id = ?1",
+        let (last, state): (Option<i64>, String) = self.tx.query_row(
+            "SELECT heartbeat_seq, state FROM attempts WHERE id = ?1",
             [id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let Ok(seq) = i64::try_from(hb.seq) else {
             return Ok(());
@@ -413,6 +429,19 @@ impl Ingest<'_> {
                     i64::from(wrapper.0),
                     wrapper.1 as i64
                 ],
+            )?;
+            let recorded = Recorded {
+                pid: wrapper.0,
+                pid_start: Some(wrapper.1),
+            };
+            self.report.wrappers.insert(id.to_string(), recorded);
+        } else if let Some(wrapper) = wrapper_process(hb, &before, self.procs)
+            .filter(|_| launched && state != AttemptState::Ended.as_str())
+        {
+            self.tx.execute(
+                "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3
+                 WHERE worker_id = ?1",
+                params![worker, i64::from(wrapper.0), wrapper.1 as i64],
             )?;
             let recorded = Recorded {
                 pid: wrapper.0,
@@ -539,6 +568,28 @@ fn agent_process(
         }
     }
     Some(((pid, start), (wrapper, wrapper_start)))
+}
+
+/// The wrapper, as (PID, start time), of a heartbeat `hb` that names no
+/// agent: it runs, it is not fleetd, and the worker row `w` has no wrapper
+/// or has this one. A wrapper that the row has is never replaced here.
+fn wrapper_process(
+    hb: &HeartbeatFile,
+    w: &workers::Worker,
+    procs: &dyn ProcessFacts,
+) -> Option<(u32, u64)> {
+    if hb.pid.is_some() {
+        return None;
+    }
+    let fleetd = std::process::id();
+    let pid = hb.wrapper.filter(|&p| p > 1 && p != fleetd)?;
+    let start = procs.start_time(pid)?;
+    let recorded = (w.supervisor_pid, w.supervisor_started);
+    match recorded {
+        (None, None) => Some((pid, start)),
+        (Some(p), Some(s)) if i64::from(pid) == p && start as i64 == s => Some((pid, start)),
+        _ => None,
+    }
 }
 
 /// Whether the agent of `hb` wrote output after the checkin `last`.

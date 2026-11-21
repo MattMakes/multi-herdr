@@ -91,6 +91,10 @@ fn world(name: &str) -> World {
         .tempdir_in("/tmp")
         .expect("creating short state directory");
     h.state = short_state.path().to_path_buf();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HORCH_ROLE", "sonnet-1");
     let pane = create_target_pane(&h);
@@ -232,6 +236,7 @@ fn install_codex_queue(h: &mut Harness, exit: i32) -> PathBuf {
 }
 
 fn install_thread_record(h: &Harness) {
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "record-e2e".into(),
@@ -383,6 +388,7 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     )
     .unwrap();
     let worker_pane = create_target_pane(&h);
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "worker-e2e".into(),

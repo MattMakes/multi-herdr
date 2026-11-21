@@ -827,6 +827,22 @@ fn execpolicy_blocks_are_unchanged() {
             "fleet agents do not merge a pull request",
         ),
         ("\"gh\", \"release\"", "fleet agents do not make a release"),
+        (
+            "\"gh\", \"issue\", \"comment\"",
+            "fleet agents do not message people outside the fleet",
+        ),
+        (
+            "\"gh\", \"pr\", \"comment\"",
+            "fleet agents do not message people outside the fleet",
+        ),
+        (
+            "\"gh\", \"pr\", \"review\"",
+            "fleet agents do not message people outside the fleet",
+        ),
+        (
+            "\"gh\", \"discussion\"",
+            "fleet agents do not message people outside the fleet",
+        ),
     ];
     let pushes: Vec<String> = r
         .exec_rules()

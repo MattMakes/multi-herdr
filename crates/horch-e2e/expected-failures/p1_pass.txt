@@ -1,0 +1,2 @@
+# Red tests of crates/horch-e2e/tests/p1_pass.rs (fleetd-finish ticket 37, T-39).
+# Each entry is temporary: removed by ticket 41 or 42 of fleetd-finish.

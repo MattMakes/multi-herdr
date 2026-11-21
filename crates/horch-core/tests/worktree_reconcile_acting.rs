@@ -26,10 +26,11 @@ use horch_core::fleetd::fleet_runtime::adapters::scans::{
 use horch_core::fleetd::fleet_runtime::application::jobs::{
     self, outcome, result_data, CheckRunner, JobCtx, JobRunner, SandboxProfiles,
 };
-use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
+use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
+use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
@@ -432,7 +433,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx(&config), &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
         self.observe_end(id)
@@ -831,4 +832,86 @@ fn refused_removal_keeps_the_tree_and_is_not_queued_again() {
         "late work\n"
     );
     assert_eq!(w.open_kinds().len(), 1, "{:?}", w.open_kinds());
+}
+
+#[test]
+fn landing_tree_of_a_landed_branch_is_removed_and_its_branch_deleted_only_if_merged() {
+    let mut w = world();
+    let task = w.task_of_run("active");
+    let mut paths = Vec::new();
+    for (name, merge) in [("merged", true), ("kept", false)] {
+        let path = w.tree(name, Some(&task), "landing");
+        let file = format!("{name}.txt");
+        write(&path.join(&file), "work\n");
+        git(&path, &["add", &file]);
+        git(&path, &["commit", "-q", "-m", "work"]);
+        if merge {
+            git(
+                &w.repo,
+                &["merge", "-q", "--ff-only", &format!("fleet/{name}")],
+            );
+        }
+        let branch = format!("fleet/{name}");
+        w.conn
+            .execute(
+                "INSERT INTO branches (name, feature_id, task_id, landing_state, owner, due_at)
+                 SELECT ?1, id, ?2, 'in_bundle', 'fleetd', 0 FROM features LIMIT 1",
+                [branch.as_str(), task.as_str()],
+            )
+            .unwrap();
+        let cause = Cause {
+            actor: Actor::Horch,
+            text: "test",
+        };
+        let tx = w
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        transition(
+            &tx,
+            None,
+            Entity::TaskBranch,
+            &branch,
+            "landed",
+            cause,
+            &NeedsYouList,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        paths.push((name, path, git(&w.repo, &["rev-parse", &branch])));
+    }
+
+    let report = w.pass();
+
+    assert_eq!(report.landed, ["merged", "kept"], "{report:?}");
+    assert_eq!(report.removals, ["merged", "kept"], "{report:?}");
+    assert!(report.rescues.is_empty(), "{report:?}");
+    for (name, _, head) in &paths {
+        assert_eq!(w.row(name).state, WorktreeState::Landed);
+        let landed: String = w
+            .conn
+            .query_row(
+                "SELECT landed_commit FROM worktrees WHERE worktree_id = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(&landed, head);
+        let runs = w.jobs_of(Kind::WorktreeRemove, name);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        let ended = w.run(runs[0].0);
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    }
+    w.pass();
+
+    for (name, path, _) in &paths {
+        let row = w.row(name);
+        assert_eq!(row.state, WorktreeState::Removed);
+        assert_eq!(row.status, WorktreeStatus::Cleaned, "the cleanup of today");
+        assert!(!path.exists());
+    }
+    let branches = git(&w.repo, &["branch", "--list", "fleet/*"]);
+    assert!(!branches.contains("fleet/merged"), "{branches}");
+    assert!(branches.contains("fleet/kept"), "{branches}");
+    assert_eq!(w.all_jobs(), 2, "no rescue job");
 }

@@ -1,9 +1,10 @@
 //! FR-5: the supervisor assigns tasks to workers (push), and no agent
 //! queries the ledger for open tasks. The choice of a task is
 //! `dispatch::choices` (the rules of `dispatch::choose`), and only the bind
-//! module and the dispatch points call it, each before the pane exists:
-//! fleetd (`dispatch_due`), the `spawn` request handler of fleetd
-//! (`handlers_worker.rs`) and `horch spawn` (`taskledger_spawn.rs`).
+//! module and the dispatch point call it, before the pane exists: fleetd
+//! (`dispatch_due`). `horch spawn` no longer chooses a task (ticket 48 of
+//! fleetd-p6). `horch status` calls `choices` only to read the holds of
+//! each task (`holds.rs`) and binds nothing.
 //!
 //! `pick_task`, the search of `horch ledger claim`, and `tasks::claim` are
 //! gone (T-871). `CLAIM_TASK`, the first line that told a worker to search,
@@ -101,9 +102,7 @@ fn callers(name: &str) -> Vec<(String, usize)> {
 
 const APP_DISPATCH: &str = "crates/horch-core/src/fleetd/task_execution/application/dispatch.rs";
 const DOMAIN_DISPATCH: &str = "crates/horch-core/src/fleetd/task_execution/domain/dispatch.rs";
-const SPAWN: &str = "crates/horch/src/cmd/taskledger_spawn.rs";
-const SPAWN_HANDLER: &str =
-    "crates/horch-core/src/fleetd/fleet_runtime/application/handlers_worker.rs";
+const HOLDS: &str = "crates/horch-core/src/fleetd/fleet_runtime/application/holds.rs";
 const TASKS: &str = "crates/horch-core/src/taskledger/tasks.rs";
 
 #[test]
@@ -130,17 +129,17 @@ fn only_the_bind_and_its_dispatch_points_choose_a_task() {
     offenders.extend(
         choosers
             .iter()
-            .filter(|(f, _)| f != APP_DISPATCH && f != SPAWN && f != SPAWN_HANDLER)
+            .filter(|(f, _)| f != APP_DISPATCH && f != HOLDS)
             .map(|(f, n)| format!("{f}:{n}: choices(")),
     );
     assert!(
         offenders.is_empty(),
-        "FR-5: only the bind module, fleetd and horch spawn choose a task:\n{}",
+        "FR-5: only the bind module, fleetd and the holds view choose a task:\n{}",
         offenders.join("\n")
     );
     assert!(
-        choosers.iter().any(|(f, _)| f == SPAWN),
-        "horch spawn chooses the task that it binds"
+        choosers.iter().any(|(f, _)| f == APP_DISPATCH),
+        "fleetd chooses the task that it binds"
     );
 }
 

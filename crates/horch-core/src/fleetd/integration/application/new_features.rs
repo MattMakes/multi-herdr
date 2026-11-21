@@ -127,7 +127,7 @@ pub fn is_kebab_case(name: &str) -> bool {
 
 /// The kebab-case name of the ticket title `title`: each run of characters
 /// that are not ASCII letters or digits becomes 1 `-`, cut to
-/// [`MAX_TITLE_NAME`] characters at a `-` when it can.
+/// `MAX_TITLE_NAME` characters at a `-` when it can.
 pub fn name_from_title(title: &str) -> String {
     let lower = title.to_ascii_lowercase();
     let words: Vec<&str> = lower

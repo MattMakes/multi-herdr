@@ -505,6 +505,7 @@ fn pass_ingests_progress_result_and_heartbeat() {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     };
     write_mode(
         &outbox.join("result.json"),
@@ -516,6 +517,7 @@ fn pass_ingests_progress_result_and_heartbeat() {
         attempt: short(&attempt).into(),
         pid: None,
         pgid: None,
+        wrapper: None,
         mux_pane: None,
         proc_state: None,
         agent_state: None,

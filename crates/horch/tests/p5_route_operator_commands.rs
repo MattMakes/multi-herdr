@@ -24,14 +24,13 @@ use horch_core::fleetd::fleet_runtime::adapters::token_file;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
-use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::jobs::Kind as JobKind;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature};
+use horch_core::fleetd::integration::adapters::sqlite as rows;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
 use horch_core::fleetd::integration::application::landing;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
@@ -96,24 +95,12 @@ impl World {
                     ..Default::default()
                 };
                 let run = runs::create(tx, &proj, &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
                     &horch_core::taskledger::util::now(),
                     true,
                 )?;
-                let feature = NewFeature {
-                    id: FEATURE,
-                    name: Some("r1"),
-                    branch: Some(RUN_BRANCH),
-                    primary_branch: "main",
-                };
-                let cause = Cause {
-                    actor: Actor::Horch,
-                    text: "feature accepted",
-                };
-                rows::insert_feature(tx, None, &feature, cause)?;
                 Ok(run)
             })
             .unwrap();

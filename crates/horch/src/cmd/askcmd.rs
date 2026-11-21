@@ -38,7 +38,7 @@ pub fn run(ctx: &RuntimeContext, args: AskArgs) -> Result<ExitCode> {
             return Ok(ExitCode::from(1));
         }
     };
-    let path = out.write_question(&horch_core::taskledger::util::now(), &question)?;
+    let path = out.write_question(&horch_core::taskledger::util::now(), &question, None)?;
     output::println(&format!("wrote {}", path.display()));
     Ok(ExitCode::SUCCESS)
 }

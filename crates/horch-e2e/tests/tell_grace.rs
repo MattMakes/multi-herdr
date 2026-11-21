@@ -11,6 +11,10 @@
 use std::process::Output;
 use std::time::{Duration, Instant};
 
+use horch_core::execution::legacy::Record;
+use horch_core::execution::records::SessionLedger;
+use horch_core::messaging::brief::Brief;
+use horch_core::messaging::mailbox::Mailbox;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
 
@@ -30,22 +34,51 @@ fn herdr(h: &Harness, args: &[&str]) -> Output {
 }
 
 fn records(h: &Harness) -> Vec<Value> {
-    let slug: String = h
-        .project
-        .to_string_lossy()
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                b as char
-            } else {
-                '-'
-            }
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
+        .read()
+        .map(|all| {
+            all.into_iter()
+                .map(|r| serde_json::to_value(r).unwrap())
+                .collect()
         })
-        .collect();
-    h.stored_ledger(&slug)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
+}
+
+fn smoke_pane(h: &Harness) -> String {
+    let split = herdr(h, &["pane", "split", "w1:p1", "--direction", "right"]);
+    assert!(split.status.success(), "{}", text(&split));
+    let reply: Value = serde_json::from_slice(&split.stdout).unwrap();
+    let pane = reply["result"]["pane"]["pane_id"]
+        .as_str()
+        .expect("the reply names the new pane")
+        .to_string();
+    let brief: Brief = serde_json::from_value(serde_json::json!({
+        "schema": 2,
+        "role": "smoke-1",
+        "teammate": "smoke",
+        "agent": "none",
+        "model": "none",
+        "record_id": "r-smoke",
+        "session_id": "",
+        "resume": false,
+        "project_dir": h.project,
+    }))
+    .unwrap();
+    let mailbox = Mailbox::under(&h.state, "w1");
+    std::fs::create_dir_all(mailbox.dir()).unwrap();
+    mailbox.write_brief(&brief).unwrap();
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
+        .insert(Record {
+            record_id: "r-smoke".into(),
+            agent: "none".into(),
+            tier: "smoke".into(),
+            model: "none".into(),
+            role: "smoke-1".into(),
+            task: "smoke".into(),
+            ..Record::default()
+        })
+        .unwrap();
+    pane
 }
 
 /// Poll `f` every 50 ms until it is true; false after `limit`.
@@ -92,6 +125,38 @@ fn polls_before_line(h: &Harness, pane: &str, marker: &str) -> Option<usize> {
     Some(polls)
 }
 
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 /// U-70: with the default grace, the smoke worker's `horch done` reports to
 /// the orchestrator without the grace wait: it looks at the orchestrator's
 /// pane once and types the report. A grace wait polls that pane until an
@@ -101,6 +166,10 @@ fn polls_before_line(h: &Harness, pane: &str, marker: &str) -> Option<usize> {
 #[test]
 fn worker_done_reports_without_the_default_tell_grace() {
     let mut h = Harness::new("tell-grace");
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
     // `seal` sets the variable to 0; an empty value is the default grace.
     h.set("HORCH_TELL_GRACE_MS", "");
     let quota = fixtures().join("quota/all-ok.json");
@@ -117,19 +186,16 @@ fn worker_done_reports_without_the_default_tell_grace() {
     let out = register.output().unwrap();
     assert!(out.status.success(), "{}", text(&out));
 
-    let out = h.run(&["spawn", "smoke", "--from-pane", "w1:p1", "--no-tile"]);
+    h.serve_fleetd();
+    let pane = smoke_pane(&h);
+    let line = format!("{} worker smoke-1", Harness::horch_bin().display());
+    let out = herdr(&h, &["pane", "run", &pane, &line]);
     assert!(out.status.success(), "{}", text(&out));
-    let pane = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .last()
-        .unwrap()
-        .trim()
-        .to_string();
 
     let is_done = |h: &Harness| {
         records(h)
             .iter()
-            .any(|r| r["pane_id"] == pane.as_str() && r["status"] == "done")
+            .any(|r| r["role"] == "smoke-1" && r["status"] == "done")
     };
     assert!(
         within(Duration::from_secs(30), || is_done(&h)),
@@ -158,4 +224,5 @@ fn worker_done_reports_without_the_default_tell_grace() {
         "done looked at the orchestrator pane {polls} times before its report: \
          tell waited for its grace"
     );
+    stop_fleetd_and_jobs(&h);
 }

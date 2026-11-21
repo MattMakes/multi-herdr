@@ -1,0 +1,561 @@
+//! FR-10 through the binary: no process of a fleet attempt can record an
+//! approval, also after its attempt ended, and no agent outlives its
+//! attempt (ticket 60 of fleetd-build, T-898; `docs/specs/fleetd/design.md`:
+//! FR-10, SR-8, FM-32).
+//!
+//! Each test makes its own ledger, fleet root and git project in a temp
+//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
+//! idea-lead of `horch_e2e::fr10_agent`. A word `[fr10:<key>]` in the text
+//! of an idea gives the key of its fake, and the word
+//! `[fr10:target=<idea id>]` gives the idea that the fake tries to approve.
+//!
+//! In each case the idea stays in `awaiting_approval`. A try through the
+//! CLI is refused with a reason that names the caller as a fleet process.
+//! A raw request with the operator token is refused by fleetd with such a
+//! reason, and its `requests` row records the try (design, "The `requests`
+//! row records the decision"). A forged `approval.json` is ignored, and 1
+//! event of the idea records it.
+//!
+//! What the PID rule (`fleet_process`) covers: the process tree, the
+//! process group and the session of each wrapper and agent that fleetd
+//! recorded, of live attempts and of attempts that ended in the last 24 h.
+//! An orphan that leaves all 3 (a double fork with a new session) is
+//! covered only by the sandbox: the conformance check "Operator boundary"
+//! proves for each exec adapter that such an orphan cannot read the
+//! operator token, connect to the channel or write a request file
+//! (`crates/horch-core/tests/p7_operator_boundary.rs`). A profile with no
+//! sandbox gets no dispatch (design A37). A fake agent here has no
+//! sandbox, so this file has no orphan test.
+
+#![cfg(unix)]
+
+use std::path::PathBuf;
+use std::process::Output;
+use std::time::Duration;
+
+use horch_core::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
+use horch_core::fleetd::fleet_runtime::domain::requests::{Class, Kind};
+use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+use rusqlite::{Connection, OpenFlags};
+use serde_json::Value;
+
+const FLEET_TOML: &str = "pass_period_s = 1\nstop_grace_s = 5\n";
+
+const LATER_TICKS: i64 = 3;
+
+const FLEET_PROCESS: &str = "fleet process";
+
+const WAITING_IDEA: &str = "Show the queue length in the status bar";
+
+fn lead_of(key: &str, target: &str) -> String {
+    format!("Show the disk use [fr10:{key}] [fr10:target={target}]")
+}
+
+fn text(o: &Output) -> String {
+    format!(
+        "status: {}\nstdout: {}\nstderr: {}",
+        o.status,
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
+}
+
+struct World {
+    h: Harness,
+}
+
+impl World {
+    fn new(name: &str, scenario: &str) -> World {
+        World::start(name, scenario, None)
+    }
+
+    fn start(name: &str, scenario: &str, fault: Option<&str>) -> World {
+        let mut h = Harness::new(name).with_git();
+        if let Some(fault) = fault {
+            h.set("HORCH_FAULT", fault);
+        }
+        let fleet = h.root.join("fleet");
+        std::fs::create_dir_all(&fleet).unwrap();
+        std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
+        h.set(
+            "HORCH_LEDGER_DB",
+            h.root.join("ledger.sqlite3").to_string_lossy(),
+        );
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
+        h.set("HORCH_NO_WAKE", "1");
+        h.set("HORCH_NO_WATCHDOG", "1");
+        h.set(
+            "HORCH_QUOTA_FILE",
+            fixtures().join("quota/all-ok.json").to_string_lossy(),
+        );
+        let docs = h.root.join("docs-fixture");
+        std::fs::create_dir_all(&docs).unwrap();
+        h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
+        h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
+        h.fleet_workspace();
+        let w = World { h };
+        std::fs::write(
+            w.h.project.join("fleet.toml"),
+            "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+        )
+        .unwrap();
+        w.git(&["add", "-A"]);
+        w.git(&["commit", "-q", "-m", "base"]);
+        w.h.serve_fleetd();
+        w
+    }
+
+    fn folder(&self, idea: &str) -> PathBuf {
+        self.h.fleet_root().join("ideas").join(idea)
+    }
+
+    fn git(&self, args: &[&str]) {
+        let o = self
+            .h
+            .git_cmd(args)
+            .current_dir(&self.h.project)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
+    }
+
+    fn add(&self, idea: &str) -> String {
+        let o = self.h.run(&["idea", "add", idea]);
+        assert!(o.status.success(), "horch idea add: {}", text(&o));
+        self.wait("the idea file of the new idea", || {
+            self.rows("SELECT id FROM ideas ORDER BY id")
+                .into_iter()
+                .find(|id| {
+                    std::fs::read_to_string(self.folder(id).join("idea.md"))
+                        .is_ok_and(|t| t.contains(idea))
+                })
+        })
+    }
+
+    fn rows(&self, sql: &str) -> Vec<String> {
+        let path = self.h.root.join("ledger.sqlite3");
+        let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+            return Vec::new();
+        };
+        let _ = conn.busy_timeout(Duration::from_secs(5));
+        let Ok(mut stmt) = conn.prepare(sql) else {
+            return Vec::new();
+        };
+        let n = stmt.column_count();
+        stmt.query_map([], |r| {
+            let mut cols = Vec::new();
+            for i in 0..n {
+                let v: rusqlite::types::Value = r.get(i)?;
+                cols.push(match v {
+                    rusqlite::types::Value::Null => "-".to_string(),
+                    rusqlite::types::Value::Integer(i) => i.to_string(),
+                    rusqlite::types::Value::Real(f) => f.to_string(),
+                    rusqlite::types::Value::Text(t) => t,
+                    rusqlite::types::Value::Blob(_) => "<blob>".to_string(),
+                });
+            }
+            Ok(cols.join(" "))
+        })
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+    }
+
+    fn one(&self, sql: &str) -> Option<String> {
+        self.rows(sql).into_iter().next()
+    }
+
+    fn idea_state(&self, idea: &str) -> Option<String> {
+        self.one(&format!("SELECT state FROM ideas WHERE id = '{idea}'"))
+    }
+
+    fn fleet_clock(&self) -> Option<i64> {
+        self.one("SELECT fleet_clock_s FROM fleetd WHERE id = 1")?
+            .parse()
+            .ok()
+    }
+
+    fn later_passes(&self) {
+        let from = self.wait("the fleet clock", || self.fleet_clock());
+        self.wait("later ticks of the fleet clock", || {
+            (self.fleet_clock()? >= from + LATER_TICKS).then_some(())
+        });
+    }
+
+    fn fake_call(&self, key: &str) -> Value {
+        self.wait(&format!("the fake idea-lead to log {key}"), || {
+            self.h
+                .calls_of("claude")
+                .into_iter()
+                .find(|c| c.get(key).is_some())
+        })
+    }
+
+    fn assert_still_waiting(&self, idea: &str) {
+        self.wait("the idea in awaiting_approval", || {
+            (self.idea_state(idea).as_deref() == Some("awaiting_approval")).then_some(())
+        });
+        self.later_passes();
+        assert_eq!(
+            self.idea_state(idea).as_deref(),
+            Some("awaiting_approval"),
+            "{}",
+            self.context()
+        );
+        assert_eq!(
+            self.one(&format!(
+                "SELECT IFNULL(approved_sha256, '-') FROM ideas WHERE id = '{idea}'"
+            ))
+            .as_deref(),
+            Some("-"),
+            "{}",
+            self.context()
+        );
+        let moves = self.rows(&format!(
+            "SELECT to_state FROM events WHERE entity = 'idea' AND entity_id = '{idea}'
+               AND to_state IS NOT NULL"
+        ));
+        assert!(!moves.iter().any(|s| s == "specifying"), "{moves:?}");
+        let applied = self.rows(&format!(
+            "SELECT request_id FROM requests WHERE kind = 'idea_approve' AND state = 'applied'
+               AND json_extract(payload_json, '$.idea') = '{idea}'"
+        ));
+        assert!(applied.is_empty(), "{applied:?}\n{}", self.context());
+    }
+
+    fn assert_cli_refused(&self, name: &str, tried: &Value) {
+        assert_ne!(tried["exit"], 0, "{name}: {tried}\n{}", self.context());
+        let err = tried["stderr"].as_str().unwrap_or_default();
+        assert!(
+            err.contains("refused inside a fleet attempt") && err.contains(FLEET_PROCESS),
+            "{name}: {tried}"
+        );
+    }
+
+    fn assert_raw_refused(&self, tried: &Value) {
+        self.assert_raw_refused_with(tried, FLEET_PROCESS);
+    }
+
+    fn assert_raw_refused_with(&self, tried: &Value, want: &str) {
+        let reply: Value = tried["reply"]
+            .as_str()
+            .and_then(|r| serde_json::from_str(r).ok())
+            .unwrap_or(Value::Null);
+        assert_eq!(reply["state"], "refused", "{tried}\n{}", self.context());
+        let reason = reply["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains(want), "{tried}");
+        let id = tried["request_id"].as_str().unwrap();
+        let row = self.wait("the row of the raw request", || {
+            self.one(&format!(
+                "SELECT state || ' ' || IFNULL(reason, '-') FROM requests WHERE request_id = '{id}'"
+            ))
+        });
+        assert!(row.starts_with("refused ") && row.contains(want), "{row}");
+    }
+
+    fn context(&self) -> String {
+        let show =
+            |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
+        let mut calls: Vec<String> = self
+            .h
+            .calls_of("claude")
+            .into_iter()
+            .map(|c| c.to_string())
+            .collect();
+        calls.truncate(6);
+        [
+            show(
+                "ideas",
+                "SELECT id, state, IFNULL(approved_sha256, '-') FROM ideas",
+            ),
+            show(
+                "idea events",
+                "SELECT entity_id, kind, IFNULL(to_state, '-'), text FROM events
+                 WHERE entity = 'idea' ORDER BY rowid",
+            ),
+            show(
+                "requests",
+                "SELECT request_id, kind, state, IFNULL(reason, '-') FROM requests ORDER BY rowid",
+            ),
+            show(
+                "jobs",
+                "SELECT id, kind, state, time_limit_s, IFNULL(started_at, '-'),
+                        IFNULL(ended_at, '-'), IFNULL(result_json, '-')
+                 FROM jobs ORDER BY id",
+            ),
+            show(
+                "worker_launch_failed payloads",
+                "SELECT request_id, payload_json FROM requests
+                 WHERE kind = 'worker_launch_failed' ORDER BY rowid",
+            ),
+            show(
+                "attempts",
+                "SELECT id, IFNULL(pid, '-'), IFNULL(pid_start, '-'), state,
+                        started_at, IFNULL(ended_at, '-'), IFNULL(outcome, '-')
+                 FROM attempts ORDER BY rowid",
+            ),
+            format!("claude calls:\n  {}\n", calls.join("\n  ")),
+            format!(
+                "fleetd.stderr:\n{}\n",
+                std::fs::read_to_string(self.h.root.join("fleetd.stderr")).unwrap_or_default()
+            ),
+        ]
+        .concat()
+    }
+
+    fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
+        wait_for_or(what, f, || self.context())
+    }
+}
+
+fn alive(pid: i64) -> bool {
+    // SAFETY: signal 0 sends nothing; `pid` is a pid that a fake logged.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[test]
+fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
+    let w = World::new("p6-fr10-a", "clarify");
+    let waiting = w.add(WAITING_IDEA);
+    w.add(&lead_of("approve_waiting", &waiting));
+    let call = w.fake_call("tries");
+    assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
+    let attempts = call["attempts"].to_string();
+    assert!(
+        attempts.contains(" live"),
+        "the own attempt is live: {attempts}"
+    );
+    w.assert_cli_refused("cli", &call["tries"]["cli"]);
+    w.assert_raw_refused(&call["tries"]["raw"]);
+    w.assert_still_waiting(&waiting);
+}
+
+/// SR-8, FM-32 (T-172): no agent code runs before fleetd has recorded the
+/// wrapper of its attempt. The fault point `hold-launching` stops the pass
+/// from recording the pane wrapper of each lead attempt, so its wrapper
+/// waits and never starts its agent, and the start timeout ends the
+/// attempt. While the lead attempt launches, the operator approves the
+/// waiting idea: no request of the operator waits for a launch.
+#[test]
+fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
+    let w = World::start("p6-fr10-e", "clarify", Some("hold-launching:I-0002"));
+    let waiting = w.add(WAITING_IDEA);
+    assert_eq!(waiting, "I-0001", "{}", w.context());
+    w.wait("the idea in awaiting_approval", || {
+        (w.idea_state(&waiting).as_deref() == Some("awaiting_approval")).then_some(())
+    });
+    let lead = w.add(&lead_of("approve_launching", &waiting));
+    assert_eq!(lead, "I-0002", "{}", w.context());
+    let attempt = format!("{lead}/clarifying/1");
+    w.wait("the pane of the held lead attempt", || {
+        w.one(&format!(
+            "SELECT w.pane_id FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+               WHERE a.id = '{attempt}' AND a.state = 'launching' AND a.pid IS NULL
+                 AND w.pane_id IS NOT NULL"
+        ))
+    });
+    let due = w.wait("the fleet clock", || w.fleet_clock()) + START_TIMEOUT_S;
+    let o = w.h.run(&["idea", "approve", &waiting]);
+    assert!(
+        o.status.success(),
+        "the operator approves while {attempt} launches: {}\n{}",
+        text(&o),
+        w.context()
+    );
+    // The start timeout counts on the fleet clock, which lags the wall
+    // clock when the passes are slow.
+    loop {
+        let now = w.wait("the fleet clock", || w.fleet_clock());
+        if now >= due {
+            break;
+        }
+        w.wait("a later tick of the fleet clock", || {
+            (w.fleet_clock()? > now).then_some(())
+        });
+    }
+    let end = w.wait("the end of the held attempt", || {
+        w.one(&format!(
+            "SELECT outcome FROM attempts WHERE id = '{attempt}' AND state = 'ended'"
+        ))
+    });
+    assert_eq!(end, "timed_out", "{}", w.context());
+    let ran: Vec<Value> =
+        w.h.calls_of("claude")
+            .into_iter()
+            .filter(|c| c.get("attempts").is_some() || c.get("kinds").is_some())
+            .collect();
+    assert!(
+        ran.is_empty(),
+        "an agent of {lead} ran before fleetd recorded its wrapper: {ran:?}\n{}",
+        w.context()
+    );
+}
+
+/// SR-8, FM-32 (T-172): at its first instruction the agent of an attempt
+/// that just launched finds the process of its attempt recorded. So each
+/// `operator` kind that it sends raw on the channel with the operator
+/// token is refused as a fleet process, and its `requests` row records the
+/// refusal.
+#[test]
+fn fr10_f_agent_at_its_first_instruction_is_refused_for_each_operator_kind() {
+    let w = World::new("p6-fr10-f", "clarify");
+    let waiting = w.add(WAITING_IDEA);
+    w.wait("the idea in awaiting_approval", || {
+        (w.idea_state(&waiting).as_deref() == Some("awaiting_approval")).then_some(())
+    });
+    w.add(&lead_of("approve_launching", &waiting));
+    let call = w.fake_call("kinds");
+    assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
+    let attempts: Vec<String> = serde_json::from_value(call["attempts"].clone()).unwrap();
+    assert!(
+        attempts.len() == 1 && !attempts[0].ends_with(" -"),
+        "the own attempt has a recorded process at the first instruction: {attempts:?}\n{}",
+        w.context()
+    );
+    w.assert_cli_refused("cli", &call["tries"]["cli"]);
+    w.assert_raw_refused(&call["tries"]["raw"]);
+    let kinds = call["kinds"].as_object().cloned().unwrap_or_default();
+    let operator: Vec<&str> = Kind::ALL
+        .iter()
+        .filter(|k| k.class() == Class::Operator)
+        .map(|k| k.as_str())
+        .collect();
+    let sent: Vec<&str> = kinds.keys().map(String::as_str).collect();
+    let mut want = operator.clone();
+    want.sort_unstable();
+    assert_eq!(sent, want, "{}", w.context());
+    for (kind, tried) in &kinds {
+        assert!(tried.get("reply").is_some(), "{kind}: {tried}");
+        w.assert_raw_refused(tried);
+    }
+    w.assert_still_waiting(&waiting);
+}
+
+#[test]
+fn fix_a_idea_lead_attempt_stays_live_while_its_agent_runs() {
+    let w = World::new("p6-fr10-fa", "");
+    let idea = w.add("Show the disk use [fr10:stay]");
+    w.fake_call("note");
+    w.later_passes();
+    w.later_passes();
+    let attempts = w.rows(&format!(
+        "SELECT id || ' ' || state || ' ' || IFNULL(outcome, '-') FROM attempts
+           WHERE idea_id = '{idea}' ORDER BY rowid"
+    ));
+    assert_eq!(
+        attempts,
+        [format!("{idea}/clarifying/1 live -")],
+        "{}",
+        w.context()
+    );
+    let launches =
+        w.h.calls_of("claude")
+            .into_iter()
+            .filter(|c| c.get("note").is_some())
+            .count();
+    assert_eq!(launches, 1, "1 launch of the agent\n{}", w.context());
+}
+
+#[test]
+fn fix_a_idea_note_of_the_idea_lead_is_accepted() {
+    let w = World::new("p6-fr10-fb", "");
+    let idea = w.add("Show the disk use [fr10:stay]");
+    let call = w.fake_call("note");
+    let note = &call["note"];
+    assert_eq!(note["exit"], 0, "{note}\n{}", w.context());
+    let notes = std::fs::read_dir(w.folder(&idea).join("notes"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(notes, 1, "the note file\n{}", w.context());
+}
+
+#[test]
+fn fr10_b_agent_after_its_attempt_ended_cannot_approve_and_is_stopped() {
+    let w = World::new("p6-fr10-b", "clarify");
+    let waiting = w.add(WAITING_IDEA);
+    let own = w.add(&lead_of("outlive", &waiting));
+    for idea in [&waiting, &own] {
+        w.wait("the idea in awaiting_approval", || {
+            (w.idea_state(idea).as_deref() == Some("awaiting_approval")).then_some(())
+        });
+    }
+    let o = w.h.run(&["idea", "approve", &own]);
+    assert!(o.status.success(), "the operator approves: {}", text(&o));
+    let call = w.fake_call("tries");
+    assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
+    let attempts: Vec<String> = serde_json::from_value(call["attempts"].clone()).unwrap();
+    assert!(
+        !attempts.is_empty() && attempts.iter().all(|a| a.ends_with(" ended")),
+        "the attempt ended before the tries: {attempts:?}\n{}",
+        w.context()
+    );
+    w.assert_cli_refused("cli", &call["tries"]["cli"]);
+    w.assert_raw_refused(&call["tries"]["raw"]);
+    w.assert_still_waiting(&waiting);
+    let pid = call["pid"].as_i64().unwrap();
+    w.wait("the stop of the agent that outlived its attempt", || {
+        (!alive(pid)).then_some(())
+    });
+}
+
+#[test]
+fn fr10_c_child_shell_and_detached_child_cannot_approve() {
+    let w = World::new("p6-fr10-c", "clarify");
+    let waiting = w.add(WAITING_IDEA);
+    w.add(&lead_of("approve_waiting", &waiting));
+    let call = w.fake_call("tries");
+    w.assert_cli_refused("child_shell", &call["tries"]["child_shell"]);
+    w.assert_cli_refused("detached", &call["tries"]["detached"]);
+    w.assert_still_waiting(&waiting);
+}
+
+#[test]
+fn fr10_d_agent_written_approval_is_not_accepted() {
+    let w = World::new("p6-fr10-d", "");
+    let idea = w.add("Show the queue length [fr10:forge]");
+    let call = w.fake_call("forged");
+    assert_eq!(call["forged"], true, "{call}");
+    assert!(w.folder(&idea).join("approval.json").is_file());
+    w.assert_still_waiting(&idea);
+    let ignored = w.rows(&format!(
+        "SELECT cause FROM events WHERE entity = 'idea' AND entity_id = '{idea}'
+           AND cause LIKE 'approval.json ignored%'"
+    ));
+    assert_eq!(ignored.len(), 1, "{ignored:?}\n{}", w.context());
+}
+
+#[test]
+fn a_system_idea_in_awaiting_approval_does_not_change_which_idea_the_agent_tries_to_approve() {
+    let w = World::new("p6-fr10-sys", "clarify,ignore_stop_gate");
+    w.add("Show the disk use [fr10:stay]");
+    let system = w.wait("the system idea of the failed conformance job", || {
+        w.one(
+            "SELECT entity_id FROM events WHERE entity = 'idea'
+               AND cause LIKE 'adapter-conformance-failed%' LIMIT 1",
+        )
+    });
+    w.wait("the system idea in awaiting_approval", || {
+        (w.idea_state(&system).as_deref() == Some("awaiting_approval")).then_some(())
+    });
+    let waiting = w.add(WAITING_IDEA);
+    assert!(
+        system < waiting,
+        "the system idea is first: {system} {waiting}"
+    );
+    w.add(&lead_of("approve_waiting", &waiting));
+    let call = w.fake_call("tries");
+    assert_eq!(call["target"], waiting.as_str(), "{}", w.context());
+    let attempts = call["attempts"].to_string();
+    assert!(
+        attempts.contains(" live"),
+        "the own attempt is live: {attempts}"
+    );
+    w.assert_cli_refused("cli", &call["tries"]["cli"]);
+    w.assert_raw_refused(&call["tries"]["raw"]);
+    w.assert_still_waiting(&waiting);
+    assert_eq!(
+        w.idea_state(&system).as_deref(),
+        Some("awaiting_approval"),
+        "{}",
+        w.context()
+    );
+}

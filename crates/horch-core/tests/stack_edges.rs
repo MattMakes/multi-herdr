@@ -494,7 +494,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         self.job(id)
@@ -883,6 +883,7 @@ fn both_gates_run_again_after_the_rebase() {
     // The fast gate: a ready task branch is bundled on the new tip, and its
     // fast gate judges the bundle over the new tip.
     w.gate_passed(full[1].id);
+    w.idea(&upper, "I-2", "in_progress");
     w.task_branch(&upper, &upper_branch, "fleet/t3", "t3.txt", "ready");
     w.bundles_pass(clock + 2);
     let builds = w.jobs_of(Kind::BundleBuild);

@@ -184,9 +184,18 @@ impl World {
         run
     }
 
+    fn put_idea_in_flight(&self, run: &Run) {
+        self.sql(
+            "UPDATE ideas SET state = 'in_progress'
+              WHERE feature_id = (SELECT 'F-' || printf('%04d', rowid) FROM runs WHERE run_id = ?1)",
+            &[&run.run_id],
+        );
+    }
+
     /// A task of `run`, whose idea is in the state of [`World::run`].
     fn task(&self, run: &Run, name: &str) -> String {
         let t = NewTask::work(name, &format!("{name}.md"), "opus");
+        self.put_idea_in_flight(run);
         let task = tasks::add(&self.conn, run, &t, Actor::Orchestrator)
             .unwrap()
             .task_id;

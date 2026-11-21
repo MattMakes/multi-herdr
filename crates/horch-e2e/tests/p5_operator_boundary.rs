@@ -586,6 +586,48 @@ impl World {
         }
         out
     }
+
+    fn feature_state(&self) -> Vec<String> {
+        let conn = self.conn();
+        let run = self.run.run_id.as_str();
+        let mut out = Vec::new();
+        let mut rows = |sql: &str, params: &[&str]| {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let found = stmt
+                .query_map(rusqlite::params_from_iter(params), |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap();
+            out.extend(found.map(Result::unwrap));
+        };
+        rows(
+            "SELECT 'task ' || task_id || ' ' || status FROM tasks WHERE run_id = ?1 ORDER BY task_id",
+            &[run],
+        );
+        rows(
+            "SELECT 'worker ' || worker_id || ' ' || status FROM workers WHERE run_id = ?1 ORDER BY worker_id",
+            &[run],
+        );
+        rows(
+            "SELECT 'attempt ' || a.id || ' ' || a.state FROM attempts a
+              JOIN workers w ON w.worker_id = a.worker_id WHERE w.run_id = ?1 ORDER BY a.id",
+            &[run],
+        );
+        rows(
+            "SELECT 'feature ' || id || ' ' || state FROM features WHERE id = ?1",
+            &[FEATURE],
+        );
+        rows(
+            "SELECT 'branch ' || name || ' ' || COALESCE(landing_state, '-') FROM branches
+              WHERE name = ?1 OR name LIKE ?1 || '/%' ORDER BY name",
+            &[FEATURE_BRANCH],
+        );
+        rows(
+            "SELECT 'run ' || run_id || ' ' || status FROM runs WHERE run_id = ?1",
+            &[run],
+        );
+        out
+    }
 }
 
 /// The feature [`FEATURE`] of the project `project` and its internal run,
@@ -651,7 +693,7 @@ fn link_bwrap(h: &Harness) {
 
 /// The reason of a refusal on the channel from a peer in a worker attempt.
 fn peer_reason(a: &Attempt) -> String {
-    format!("the peer process is in live attempt {}", a.id)
+    format!("the peer process is a fleet process of attempt {}", a.id)
 }
 
 /// The reason of a refusal of an operator request with no valid token.
@@ -757,6 +799,22 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
         !read.text.contains(&token),
         "the attacker never prints the token"
     );
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
         w.state(),
         before,
@@ -814,60 +872,32 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
 
 // ─── REQUIRED item 3: the operator-only commands ────────────────────────
 
-/// Where an operator-only command run from a worker attempt is refused.
-enum RefusedBy {
-    /// fleetd: the command sends its request, and the peer process check
-    /// refuses it.
-    Fleetd,
-    /// The command itself, before it sends a request, with this line. fleetd
-    /// refuses its kind too: attack 3 of
-    /// [`operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind`].
-    Client(&'static str),
-}
+const INSIDE_ATTEMPT: &str = "refused inside a fleet attempt";
 
 /// The task branch of the worker of a test, in the ledger and in git, so
 /// that `horch branch abandon` finds it.
 const TASK_BRANCH: &str = "fleet/F-0001/attack";
 
-/// Each operator-only command, run from a live worker attempt with
-/// `HORCH_ROLE=orchestrator` and with no `HORCH_ROLE`, is refused: its
-/// `requests` rows are refused by fleetd with a null `auth`, and the state
-/// of the ledger does not change. The attacker keeps `HORCH_WORKER_ID` only
-/// for `horch ledger worktree drop`, which needs it. `horch rescue drop`
-/// needs a rescue ref in git: its own test is
-/// [`operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd`].
 #[test]
 fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_command() {
     let mut w = World::new("p5-sr8-commands");
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let task = a.task.clone().unwrap();
     w.task_branch(&a);
-    let commands: Vec<(Vec<&str>, RefusedBy)> = vec![
-        (vec!["job", "requeue", "1"], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "requeue", &task, "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (vec!["ledger", "cancel", &task, "attack"], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "waive", &task, "F1", "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (vec!["task", "requeue", &task, "attack"], RefusedBy::Fleetd),
-        (vec!["task", "cancel", &task, "attack"], RefusedBy::Fleetd),
-        (vec!["worktree", "restore", TASK_BRANCH], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "worktree", "drop", "attack", "--reason", "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (
-            vec!["feature", "abandon", FEATURE],
-            RefusedBy::Client("refused inside a fleet attempt"),
-        ),
-        (vec!["branch", "abandon", TASK_BRANCH], RefusedBy::Fleetd),
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["job", "requeue", "1"],
+        vec!["ledger", "requeue", &task, "attack"],
+        vec!["ledger", "cancel", &task, "attack"],
+        vec!["ledger", "waive", &task, "F1", "attack"],
+        vec!["task", "requeue", &task, "attack"],
+        vec!["task", "cancel", &task, "attack"],
+        vec!["worktree", "restore", TASK_BRANCH],
+        vec!["ledger", "worktree", "drop", "attack", "--reason", "attack"],
+        vec!["feature", "abandon", FEATURE],
+        vec!["branch", "abandon", TASK_BRANCH],
     ];
     let before = w.state();
-    for (args, refused_by) in &commands {
+    for args in &commands {
         for role in [Some("orchestrator"), None] {
             let shown = format!("horch {} with HORCH_ROLE {role:?}", args.join(" "));
             let seen = w.requests().len();
@@ -875,19 +905,8 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
             let rows = w.requests().split_off(seen);
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(!out.status.success(), "{shown} is refused: {stderr}");
-            match refused_by {
-                RefusedBy::Fleetd => {
-                    assert!(!rows.is_empty(), "{shown} reaches fleetd: {stderr}");
-                    for row in &rows {
-                        assert_refused(row, &peer_reason(&a));
-                    }
-                    assert!(stderr.contains(&peer_reason(&a)), "{shown}: {stderr}");
-                }
-                RefusedBy::Client(line) => {
-                    assert!(rows.is_empty(), "{shown} sends no request: {rows:#?}");
-                    assert!(stderr.contains(line), "{shown}: {stderr}");
-                }
-            }
+            assert!(rows.is_empty(), "{shown} sends no request: {rows:#?}");
+            assert!(stderr.contains(INSIDE_ATTEMPT), "{shown}: {stderr}");
         }
     }
     assert_eq!(
@@ -900,11 +919,8 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
 /// The rescue ref that the attacker tries to drop.
 const RESCUE_REF: &str = "refs/horch/rescue/attack/1";
 
-/// REQUIRED item 3 for `horch rescue drop`: from a live worker attempt,
-/// with `HORCH_ROLE` set or removed, fleetd refuses its `rescue_drop`
-/// request, and the rescue ref stays.
 #[test]
-fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
+fn operator_only_rescue_drop_from_a_worker_is_refused() {
     let mut w = World::new("p5-sr8-rescue");
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let tip = w.h.head_sha().unwrap();
@@ -926,9 +942,15 @@ fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
             "horch rescue drop is refused: {stderr}"
         );
         let rows = w.requests().split_off(seen);
-        assert_eq!(rows.len(), 1, "horch rescue drop reaches fleetd: {stderr}");
-        assert_eq!(rows[0].kind, "rescue_drop");
-        assert_refused(&rows[0], &peer_reason(&a));
+        assert!(
+            rows.is_empty(),
+            "horch rescue drop sends no request: {rows:#?}"
+        );
+        assert!(stderr.contains(INSIDE_ATTEMPT), "{stderr}");
+        assert!(
+            stderr.contains(&a.id),
+            "the refusal names the attempt: {stderr}"
+        );
         let kept =
             w.h.git_cmd(&["rev-parse", "--verify", RESCUE_REF])
                 .output()
@@ -1278,7 +1300,23 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         ],
     );
     let bundle = w.bundle(&main).to_string();
-    let before = w.state();
+    wait_for_or(
+        "fleetd to move the bundled branch to ready and to drop its bundle",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 FROM branches b, bundles u
+                      WHERE b.name = 'fleet/F-0001/gated' AND b.landing_state = 'ready'
+                        AND u.id = ?1 AND u.state = 'dropped'",
+                    [&bundle],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
+    let before = w.feature_state();
     let req = GateRequest {
         kind: JobKind::FastGate,
         subject: &bundle,
@@ -1337,10 +1375,288 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         Vec::new(),
         "no request of the gate reaches fleetd"
     );
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
         w.request_files(),
         BTreeSet::new(),
         "no request file is left"
     );
-    assert_eq!(w.state(), before, "the gate changes no state of the ledger");
+    assert_eq!(
+        w.feature_state(),
+        before,
+        "the gate changes no state of the ledger"
+    );
+}
+
+const PANE_COMMAND_ENV: &str = "P5_T899_PANE_COMMAND";
+
+fn sandboxed_herdr(fake: &Path, fleet: &Path, writable: &Path) -> String {
+    let run = fleet.join("run");
+    let denied = Denials {
+        read: vec![token_file::path(fleet)],
+        connect: vec![run.join("fleetd.sock")],
+        write: vec![run],
+    };
+    let mut inner = Command::new("/bin/sh");
+    inner.args(["-c", &format!("eval \"${PANE_COMMAND_ENV}\"")]);
+    let cmd = match sandboxed(inner, &[writable.to_path_buf()], &denied) {
+        Ok(cmd) => cmd,
+        Err(gap) => panic!("this host has no worker sandbox: {gap}"),
+    };
+    let mut line = vec![quoted(&cmd.get_program().to_string_lossy())];
+    line.extend(cmd.get_args().map(|a| quoted(&a.to_string_lossy())));
+    format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+         if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
+         {PANE_COMMAND_ENV}=\"$4\"; export {PANE_COMMAND_ENV}\n\
+         exec {fake} pane run \"$3\" {sandboxed}\n\
+         fi\n\
+         exec {fake} \"$@\"\n",
+        fake = quoted(&fake.to_string_lossy()),
+        sandboxed = quoted(&line.join(" ")),
+    )
+}
+
+fn push_fleet(name: &str, scenario: &str) -> Harness {
+    let mut h = Harness::new(name).with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WAKE", "1");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    let quota = horch_e2e::harness::fixtures().join("quota/all-ok.json");
+    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+    h.set("HORCH_FAKE_SCENARIO", scenario);
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {o:?}");
+    }
+    std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
+    let fake = Harness::horch_bin().with_file_name("fake-herdr");
+    let top = h.root.canonicalize().unwrap();
+    let hook = sandboxed_herdr(&fake, &root.canonicalize().unwrap(), &top);
+    let herdr = h.write_warmed("herdr-sandboxed", hook.as_bytes());
+    let workspace = h.fleet_workspace();
+    h.set("HORCH_WORKSPACE_ID", workspace);
+    h.set("HORCH_HERDR_BIN", herdr.to_string_lossy());
+    let dir = h.project.join("tickets");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ticket = dir.join("t0.md");
+    std::fs::write(&ticket, "# T0\n").unwrap();
+    let run = horch_e2e::ledger_seed::seed_run(&h, "token-lock", Some(1), "w1:p1");
+    horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "opus");
+    h.serve_fleetd();
+    h
+}
+
+fn task_attempt(h: &Harness) -> Option<(String, String, Option<String>, String)> {
+    let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).ok()?;
+    store
+        .conn()
+        .query_row(
+            "SELECT a.id, a.state, a.outcome, w.status
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.task_id IS NOT NULL ORDER BY a.rowid LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+}
+
+fn pane_output(h: &Harness) -> String {
+    let name = h.log.file_name().unwrap().to_string_lossy().into_owned();
+    let mut out = String::new();
+    for e in std::fs::read_dir(h.log.parent().unwrap())
+        .unwrap()
+        .flatten()
+    {
+        let file = e.file_name().to_string_lossy().into_owned();
+        if file.starts_with(&format!("{name}.pane-")) && file.ends_with(".out") {
+            out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+        }
+    }
+    out
+}
+
+fn request_rows(h: &Harness) -> Vec<(String, String, Option<String>)> {
+    let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT kind, state, reason FROM requests ORDER BY rowid")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    rows.collect::<rusqlite::Result<_>>().unwrap()
+}
+
+fn agent_result(h: &Harness) -> Option<Value> {
+    let tasks = h.fleet_root().join("tasks");
+    let tasks = tasks.to_string_lossy();
+    h.calls_of("claude")
+        .into_iter()
+        .rev()
+        .filter(|c| c["argv"].to_string().contains(tasks.as_ref()))
+        .find_map(|c| c.get("result").cloned())
+}
+
+#[test]
+fn wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read() {
+    let h = push_fleet("p5-t899-token", "exec,commit,result");
+    let context = |h: &Harness| {
+        format!(
+            "attempt: {:?}\nrequests: {:?}\nresult: {:?}\npanes:\n{}",
+            task_attempt(h),
+            request_rows(h),
+            agent_result(h),
+            pane_output(h)
+        )
+    };
+    let (id, _, outcome, worker) = wait_for_or(
+        "the verifier to end the attempt",
+        || {
+            std::thread::sleep(Duration::from_secs(1));
+            task_attempt(&h).filter(|a| a.1 == "ended")
+        },
+        || context(&h),
+    );
+    let shown = context(&h);
+    assert!(
+        agent_result(&h).is_some_and(|r| r["exit"] == 0),
+        "the agent sent its result: {shown}"
+    );
+    assert!(
+        matches!(outcome.as_deref(), Some("verified" | "rejected")),
+        "the attempt ends by its result: {shown}"
+    );
+    assert_ne!(worker, "launch_failed", "{shown}");
+    let panes = pane_output(&h);
+    assert!(!panes.is_empty(), "the pane shows the wrapper: {shown}");
+    for word in [
+        "operator token",
+        "operator.token",
+        "refused",
+        "not recorded",
+    ] {
+        assert!(
+            !panes.contains(word),
+            "the wrapper output has {word:?}: {shown}"
+        );
+    }
+    for (kind, state, reason) in request_rows(&h) {
+        let reason = reason.unwrap_or_default();
+        assert!(
+            !reason.contains(&id),
+            "a request names the attempt: {kind} {state} {reason}\n{shown}"
+        );
+    }
+}
+
+fn sealed_env_of(h: &Harness, canary_ledger: &Path, canary_fleet: &Path) -> Vec<(String, String)> {
+    let mut cmd = Command::new("/usr/bin/env");
+    cmd.env("HORCH_LEDGER_DB", canary_ledger)
+        .env("FLEET_ROOT", canary_fleet);
+    h.seal(&mut cmd);
+    let out = cmd.output().expect("running env");
+    assert!(out.status.success(), "env failed: {out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
+    let outer = tempfile::tempdir().unwrap();
+    let canary_ledger = outer.path().join("canary_ledger.sqlite3");
+    let canary_fleet = outer.path().join("canary_fleet");
+    let canary_text = outer.path().to_string_lossy().into_owned();
+
+    let named = Harness::new("p5-rr5-named");
+    let env = sealed_env_of(&named, &canary_ledger, &canary_fleet);
+    let get = |env: &[(String, String)], key: &str| {
+        env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get(&env, "HORCH_LEDGER_DB").map(PathBuf::from),
+        Some(named.ledger_db()),
+        "a harness that names its ledger gives that ledger, not the canary"
+    );
+    assert_eq!(get(&env, "FLEET_ROOT"), None, "{env:?}");
+    for (k, v) in &env {
+        assert!(!v.contains(&canary_text), "{k}={v} names the canary");
+    }
+
+    let mut bare = Harness::new("p5-rr5-bare");
+    bare.unset("HORCH_LEDGER_DB");
+    let env = sealed_env_of(&bare, &canary_ledger, &canary_fleet);
+    assert_eq!(get(&env, "HORCH_LEDGER_DB"), None, "{env:?}");
+    assert_eq!(get(&env, "FLEET_ROOT"), None, "{env:?}");
+    for (k, v) in &env {
+        assert!(!v.contains(&canary_text), "{k}={v} names the canary");
+    }
+    let mut map = horch_core::runtime::MapEnv::new(&bare.project);
+    for (k, v) in &env {
+        map = map.with(k, v);
+    }
+    let ctx = horch_core::runtime::RuntimeContext::from_env(&map).unwrap();
+    assert_eq!(ctx.paths.ledger_db, bare.home.join(".horch/ledger.sqlite3"));
+    assert_eq!(ctx.paths.ledger_db, bare.ledger_db());
+    assert_eq!(ctx.paths.fleet_root, bare.home.join(".horch/fleet"));
+    assert_eq!(ctx.paths.fleet_root, bare.fleet_root());
+    assert_eq!(ctx.paths.ledger_override, None);
+
+    let mut cmd = Command::new(Harness::horch_bin());
+    cmd.env("HORCH_LEDGER_DB", &canary_ledger)
+        .env("FLEET_ROOT", &canary_fleet)
+        .args(["ledger", "status"]);
+    bare.seal(&mut cmd);
+    let out = cmd.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&bare.ledger_db().to_string_lossy().into_owned()),
+        "horch ledger status looks for the ledger of the harness: {stderr}"
+    );
+    assert!(!stderr.contains(&canary_text), "{stderr}");
+    assert!(!canary_ledger.exists(), "the canary ledger was created");
+    assert!(!canary_fleet.exists(), "the canary fleet root was created");
+    assert_eq!(
+        std::fs::read_dir(outer.path()).unwrap().count(),
+        0,
+        "nothing was written beside the canary"
+    );
 }

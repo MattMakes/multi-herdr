@@ -263,7 +263,7 @@ impl World {
         };
         let written = jobs::run_job(
             &ctx,
-            &mut self.conn,
+            &self.conn,
             id,
             me,
             &CheckRunner {

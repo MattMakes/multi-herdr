@@ -6,10 +6,11 @@
 //! either reads.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use horch_platform::start::{self, Command};
+use horch_platform::start;
 use serde::Deserialize;
 
 use super::{Ctx, Outcome};
@@ -276,11 +277,44 @@ fn rust_sources(names: &str, dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `cargo clippy` with only the cognitive-complexity lint, capped at warn so
-/// a `#![deny(...)]` in the code does not stop the build.
-fn clippy(dir: &Path) -> Command {
-    let mut cmd = start::command("cargo");
-    cmd.args([
+/// What 1 tool of the step gave: whether it exited 0, and its stderr. Its
+/// stdout is in the file that the runner got.
+pub struct ToolRun {
+    pub success: bool,
+    pub stderr: String,
+}
+
+/// What starts the tools of the step: `cargo clippy` and the analyser.
+/// Both run code of the branch (a build script, a config), so fleetd
+/// starts them in the sandbox profile of the task's worker (SR-4).
+pub trait ToolRunner {
+    /// Run `program` with `args` in `dir`, and wait for it. Its stdout goes
+    /// to the file `stdout`.
+    fn run(&self, program: &Path, args: &[OsString], dir: &Path, stdout: &Path) -> Result<ToolRun>;
+}
+
+/// The tools in this process, with its rights: the finish of a worker,
+/// which runs as that worker.
+pub struct InProcess;
+
+impl ToolRunner for InProcess {
+    fn run(&self, program: &Path, args: &[OsString], dir: &Path, stdout: &Path) -> Result<ToolRun> {
+        let mut cmd = start::command(program);
+        cmd.args(args).current_dir(dir);
+        crate::runtime::process::scrub_child_env(&mut cmd);
+        cmd.stdout(std::fs::File::create(stdout)?);
+        let out = cmd.output()?;
+        Ok(ToolRun {
+            success: out.status.success(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        })
+    }
+}
+
+/// The args of `cargo clippy` with only the cognitive-complexity lint,
+/// capped at warn so a `#![deny(...)]` in the code does not stop the build.
+fn clippy_args() -> Vec<OsString> {
+    [
         "clippy",
         "--quiet",
         "--workspace",
@@ -293,24 +327,24 @@ fn clippy(dir: &Path) -> Command {
         CLIPPY_LINT,
         "--cap-lints",
         "warn",
-    ])
-    .current_dir(dir);
-    crate::runtime::process::scrub_child_env(&mut cmd);
-    cmd
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect()
 }
 
 /// Run clippy in `dir` and return its findings in the changed Rust files,
 /// before the changed-function filter. Its JSON goes to `evidence`.
 fn analyse_rust(
+    runner: &dyn ToolRunner,
     dir: &Path,
     evidence: &Path,
 ) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
-    let mut cmd = clippy(dir);
-    cmd.stdout(std::fs::File::create(evidence)?);
-    let out = cmd.output().context("running cargo clippy")?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let tail: Vec<&str> = stderr.trim().lines().rev().take(20).collect();
+    let out = runner
+        .run(Path::new("cargo"), &clippy_args(), dir, evidence)
+        .context("running cargo clippy")?;
+    if !out.success {
+        let tail: Vec<&str> = out.stderr.trim().lines().rev().take(20).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
         return Ok(Err(Outcome::fail(
             "clippy failed",
@@ -355,31 +389,33 @@ fn sources(names: &str) -> Vec<String> {
 /// is excluded by its config (tests, for example).
 const NO_SOURCES: &str = "No source files found matching the provided patterns";
 
-/// The analyser and where it runs.
 struct Analyser<'a> {
     node: &'a Path,
     cli: &'a Path,
     dir: &'a Path,
+    runner: &'a dyn ToolRunner,
 }
 
 impl Analyser<'_> {
-    /// The command that runs the analyser on `files`, with `config` when
-    /// they have one.
-    fn command(&self, files: &[String], config: Option<&Path>) -> Command {
-        let mut cmd = if self.cli.extension().is_some_and(|e| e == "js") {
-            let mut c = start::command(self.node);
-            c.arg(self.cli);
-            c
+    fn command(&self, files: &[String], config: Option<&Path>) -> (&Path, Vec<OsString>) {
+        let mut args: Vec<OsString> = Vec::new();
+        let program = if self.cli.extension().is_some_and(|e| e == "js") {
+            args.push(self.cli.into());
+            self.node
         } else {
-            start::command(self.cli)
+            self.cli
         };
-        cmd.args(["--format", "json", "--threshold-action", "none"]);
+        args.extend(
+            ["--format", "json", "--threshold-action", "none"]
+                .into_iter()
+                .map(OsString::from),
+        );
         if let Some(config) = config {
-            cmd.arg("--config").arg(config);
+            args.push("--config".into());
+            args.push(config.into());
         }
-        cmd.args(files).current_dir(self.dir);
-        crate::runtime::process::scrub_child_env(&mut cmd);
-        cmd
+        args.extend(files.iter().map(OsString::from));
+        (program, args)
     }
 }
 
@@ -417,25 +453,22 @@ impl Analyser<'_> {
         config: Option<&Path>,
         evidence: &Path,
     ) -> Result<std::result::Result<Option<String>, Outcome>> {
-        let mut cmd = self.command(files, config);
+        let (program, args) = self.command(files, config);
         // The report goes to a file, not a pipe: node exits before a piped
         // stdout drains, and a pipe keeps only the first 64 KiB.
-        cmd.stdout(std::fs::File::create(evidence)?);
-        let out = cmd
-            .output()
+        let out = self
+            .runner
+            .run(program, &args, self.dir, evidence)
             .with_context(|| format!("running {}", self.cli.display()))?;
         let json = std::fs::read_to_string(evidence)?;
         if json.trim().is_empty() {
-            if String::from_utf8_lossy(&out.stderr).contains(NO_SOURCES) {
+            if out.stderr.contains(NO_SOURCES) {
                 return Ok(Ok(None));
             }
             return Ok(Err(Outcome::fail(
                 "no output",
                 Some(evidence.to_path_buf()),
-                &format!(
-                    "the analyser printed nothing: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                ),
+                &format!("the analyser printed nothing: {}", out.stderr.trim()),
             )));
         }
         Ok(Ok(Some(json)))
@@ -473,17 +506,23 @@ impl Analyser<'_> {
 /// The violations in changed functions of the Rust `files`, from clippy
 /// in `dir`: the found list, or the failed outcome when clippy failed.
 pub fn rust_violations(
+    runner: &dyn ToolRunner,
     dir: &Path,
     files: &[String],
     changed: &BTreeMap<String, Vec<(u64, u64)>>,
     evidence: &Path,
 ) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
-    Ok(analyse_rust(dir, evidence)?
+    Ok(analyse_rust(runner, dir, evidence)?
         .map(|found| keep_changed(found, &rust_starts(dir, files), changed)))
 }
 
-/// The step.
+/// The step, with its tools in this process.
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
+    step_with(cx, &InProcess)
+}
+
+/// The step, with its tools started by `runner`.
+pub fn step_with(cx: &Ctx<'_>, runner: &dyn ToolRunner) -> Result<Outcome> {
     let git = &cx.tools.git;
     let base = cx.diff_base()?;
     let names = git.run(
@@ -521,6 +560,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
             node: &cx.tools.node,
             cli,
             dir: &cx.dir,
+            runner,
         };
         match analyser.run_groups(&files, &cx.evidence_dir, cx.seq)? {
             Ok(r) => reports = r,
@@ -538,7 +578,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     }
     if !rust.is_empty() {
         let path = cx.evidence_dir.join(format!("{}-clippy.json", cx.seq));
-        match rust_violations(&cx.dir, &rust, &changed, &path)? {
+        match rust_violations(runner, &cx.dir, &rust, &changed, &path)? {
             Ok(v) => found.extend(v),
             Err(failed) => return Ok(failed),
         }
@@ -680,7 +720,7 @@ pub fn tangled(v: &[u32]) -> u32 {
         assert_eq!(files, vec!["src/lib.rs".to_string()]);
         let diff = git.run(d, &["diff", "-U0", "base...HEAD", "--"]).unwrap();
         let evidence = d.join("clippy.json");
-        rust_violations(d, &files, &changed_lines(&diff), &evidence)
+        rust_violations(&InProcess, d, &files, &changed_lines(&diff), &evidence)
             .unwrap()
             .expect("clippy runs")
     }
@@ -754,6 +794,7 @@ printf ']}\n'
             node: Path::new("/bin/sh"),
             cli: &cli,
             dir: &dir,
+            runner: &InProcess,
         };
         let files = vec![
             "skills/hark/engine/hark/dsp.py".to_string(),
@@ -810,6 +851,7 @@ printf ']}\n'
                 node: Path::new("/bin/sh"),
                 cli: &cli,
                 dir: top.path(),
+                runner: &InProcess,
             };
             match analyser
                 .run_groups(&["tests/test_a.py".to_string()], top.path(), 2)

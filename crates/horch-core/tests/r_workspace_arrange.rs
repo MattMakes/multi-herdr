@@ -1,6 +1,7 @@
 //! `arrange::run` and `arrange::workspace_of` against a scripted `herdr`:
 //! the plan report, the refusals, the fast path and the move path. The script
 //! answers each herdr call with canned JSON and moves nothing.
+#![cfg(unix)]
 
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::workspace::arrange;

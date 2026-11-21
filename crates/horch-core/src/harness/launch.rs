@@ -156,7 +156,7 @@ impl LaunchEnv {
             horch_exe: PathBuf::from("horch"),
             home: None,
             opencode_config_content: None,
-            path: None,
+            path: Some(test_sandbox_tools_path()),
             pathext: None,
             blender_path: None,
             blender_app: None,
@@ -182,7 +182,28 @@ impl LaunchEnv {
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()
     }
+}
 
+#[cfg(test)]
+fn test_sandbox_tools_path() -> std::ffi::OsString {
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.with_file_name("horch-test-sandbox-tools");
+        if !dir.is_dir() {
+            let own =
+                exe.with_file_name(format!("horch-test-sandbox-tools.{}", std::process::id()));
+            super::claude::sandbox_tools_path(&own, true);
+            if std::fs::rename(&own, &dir).is_err() {
+                std::fs::remove_dir_all(&own).unwrap();
+            }
+        }
+        std::env::join_paths([&dir]).unwrap()
+    })
+    .clone()
+}
+
+impl LaunchEnv {
     /// `~/` in a teammate path, expanded against [`LaunchEnv::home`].
     pub(crate) fn expand_home(&self, path: &str) -> PathBuf {
         crate::roster::expand_home(path, self.home())
@@ -573,13 +594,15 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
 }
 
 /// The exec launch of 1 attempt (fleetd-p7 ticket 17). The preparation is
-/// the one of [`run_flow_code`]: skills, trust, the window decision, the
+/// the one of `run_flow_code`: skills, trust, the window decision, the
 /// adapter's `prepare` and the agent git env of SR-3. The command is the
 /// exec launch of the adapter, with `task_dir` (the attempt folder) and the
 /// workdir as its writable folders, and `req.prompt` as its prompt: the
-/// path of `inbox/START.md`, or the line of a resume. `run` starts the
-/// command and waits for it. Only Claude Code has an exec form of a resume.
-pub(crate) fn run_exec_flow<T>(
+/// path of `inbox/START.md`, or the line of a resume. A fresh launch puts
+/// the skills briefing of the bundle first, as [`command_with_skills_in`]
+/// does, and a resumed session has it already. `run` starts the command and waits for
+/// it. Only Claude Code has an exec form of a resume.
+pub fn run_exec_flow<T>(
     ctx: &RuntimeContext,
     req: LaunchRequest<'_>,
     task_dir: &Path,
@@ -613,6 +636,14 @@ pub(crate) fn run_exec_flow<T>(
     }
     env.task_dir = Some(task_dir.to_path_buf());
     env.worktree = Some(workdir.clone());
+    let prompt = match &launch.skills {
+        Some(bundle) if !req.session.is_resume() => format!(
+            "{}\n{EXEC_START_LINE}\n{}",
+            bundle.briefing_in(&teammate, env.home()),
+            req.prompt
+        ),
+        _ => req.prompt.to_string(),
+    };
     // The skills of the bundle, as an interactive launch exposes them
     // (`command_with_skills_in`): Claude Code reads them from a
     // `--plugin-dir`. Codex has them in its private home already.
@@ -629,21 +660,22 @@ pub(crate) fn run_exec_flow<T>(
     let mut cmd = match kind {
         HarnessKind::Claude => {
             let session = session_for(kind.adapter().capabilities(), req.session);
-            super::claude::exec_command(&env, &teammate, session, Path::new(req.prompt))?
+            super::claude::exec_command(&env, &teammate, session, Path::new(&prompt))?
         }
-        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, req.prompt)?,
+        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, &prompt)?,
         HarnessKind::Antigravity => {
             let model = teammate
                 .model
                 .as_deref()
                 .with_context(|| format!("teammate '{}' has no model", teammate.name))?;
+            super::antigravity::seed_stop_hook(&workdir, &env.horch_exe)?;
             super::antigravity::exec_command(&super::antigravity::ExecLaunch {
                 bin: &env.bins.antigravity,
                 model,
                 effort: teammate.effort.as_deref(),
                 home: &ctx.paths.home,
                 workdir: &workdir,
-                prompt: req.prompt,
+                prompt: &prompt,
             })
         }
         other => bail!("{other:?} has no exec adapter"),
@@ -666,6 +698,9 @@ pub(crate) fn run_exec_flow<T>(
     launch.prepared.finish();
     out
 }
+
+const EXEC_START_LINE: &str =
+    "The last line of this prompt is the path of your task file, START.md. Read it and follow it.";
 
 /// What a launch holds from its preparation until the agent exits.
 struct PreparedLaunch {
@@ -1579,7 +1614,7 @@ mod tests {
         crate::runtime::process::make_executable(&on_path).unwrap();
         let app = tmp.path().join("Blender");
         std::fs::write(&app, "#!/bin/sh\n").unwrap();
-        let none = std::env::join_paths([tmp.path().join("none")]).unwrap();
+        let none = super::super::claude::sandbox_tools_path(&tmp.path().join("none"), true);
 
         let r = Roster::builtin().unwrap();
         let artist = r.require("blender-artist").unwrap();
@@ -1795,7 +1830,7 @@ mod tests {
                 "--settings",
                 // The sandbox of each worker (fleetd-p5 39) and its operator
                 // boundary of the fleet root.
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Bash(gh issue comment:*)","Bash(gh pr comment:*)","Bash(gh pr review:*)","Bash(gh discussion:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -2913,7 +2948,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -2978,7 +3017,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -3025,7 +3068,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"skill-creator@claude-plugins-official": false},
@@ -3160,6 +3207,10 @@ mod tests {
                 None,
                 None,
             ),
+            path: Some(super::super::claude::sandbox_tools_path(
+                &tmp.path().join("tools"),
+                true,
+            )),
             ..LaunchEnv::for_test()
         };
         let r = Roster::builtin().unwrap();
@@ -3280,7 +3331,11 @@ mod tests {
         let ctx = RuntimeContext::from_env(
             &MapEnv::new(&workdir)
                 .with("HOME", &home.to_string_lossy())
-                .with("PATH", "/nonexistent")
+                .with(
+                    "PATH",
+                    &super::super::claude::sandbox_tools_path(&root.join("sandbox-bin"), true)
+                        .to_string_lossy(),
+                )
                 .with("HORCH_CLAUDE_BIN", &claude.to_string_lossy())
                 .with("HORCH_CODEX_BIN", &codex.to_string_lossy())
                 .with(
@@ -3345,6 +3400,7 @@ mod tests {
         for dir in ["home", "work", "task"] {
             std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
         }
+        super::super::claude::sandbox_tools_path(&tmp.path().join("bin"), true);
         let env = crate::runtime::context::MapEnv::new(tmp.path().join("work"))
             .with("HOME", &p("home"))
             .with("PATH", &p("bin"))

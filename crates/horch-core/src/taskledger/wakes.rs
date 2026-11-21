@@ -532,7 +532,7 @@ fn task_of(conn: &Connection, worker_id: &str) -> Option<tasks::Task> {
 }
 
 /// The `held` QUESTION wake of `task`, held after too many attempts, else
-/// `None`. The key holds its attempts ([`held_state`]), not the board: the
+/// `None`. The key holds its attempts (`held_state`), not the board: the
 /// reap's wake and the reconciled wake (TRF-51) are 1 row.
 ///
 /// Interim: removed when T-547 and T-553 wire the routed functions.

@@ -17,10 +17,11 @@
 //!    no row and replies `{"state": "refused", "reason"}` with no
 //!    `request_id`.
 //! 3. It collects the facts: the peer user (SR-5), the token (SR-8) and the
-//!    peer process fact against the live attempts of the ledger (SR-8),
+//!    fleet process fact of the peer process (`fleet_process`, SR-8, FR-10),
 //!    and decides with [`authorize`].
 //! 4. It records and applies the request with [`handle`] (RR-8, FM-15),
-//!    and writes the reply line. Then it closes the connection.
+//!    and writes the reply line until [`READ_DEADLINE`] from the start of
+//!    the write. Then it closes the connection.
 //!
 //! An error ends only that connection: a failed write of the ledger closes
 //! it with no reply, and the client asks for the result of its
@@ -31,6 +32,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -41,7 +43,7 @@ use horch_platform::NotSupported;
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::peer_process::{
-    peer_in_live_attempt, AttemptProcess, Fact, PlatformFacts,
+    fleet_process, recorded_processes, Fact, PlatformFacts,
 };
 use crate::fleetd::fleet_runtime::adapters::request_wire::{parse_request, Request};
 use crate::fleetd::fleet_runtime::adapters::{config_file, fleetd_row, token_file};
@@ -54,11 +56,9 @@ use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::fleet_runtime::domain::operator::AttemptFacts;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
-use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
-use crate::fleetd::task_execution::domain::task::Recorded;
 
-/// The deadline of 1 connection: the read of its line, and on unix the
-/// write of its reply. It is the connect time of today
+/// The deadline of 1 connection: the read of its line, and the write of
+/// its reply. It is the connect time of today
 /// (`preservation-05-contracts-and-values.md`, row V-18).
 pub const READ_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -69,6 +69,16 @@ pub const NAME_TAKEN_KIND: &str = "channel_name_taken";
 /// The time between 2 accepts after an accept fails, so that an error that
 /// stays does not keep 1 core busy.
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
+
+const STOP_POLL: Duration = Duration::from_millis(50);
+
+const WAKE_WAIT: Duration = Duration::from_millis(100);
+
+const WAKE_POLL: Duration = Duration::from_millis(10);
+
+const STOP_MARGIN: Duration = Duration::from_secs(5);
+
+const DRAIN_QUIET: Duration = Duration::from_millis(100);
 
 /// The channel of the fleet at `fleet_root`.
 pub fn socket_path(fleet_root: &Path) -> PathBuf {
@@ -100,8 +110,10 @@ impl Default for Options {
 #[derive(Debug)]
 pub struct ChannelServer {
     socket: PathBuf,
+    read_deadline: Duration,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<()>>>,
+    acceptor: Option<JoinHandle<()>>,
 }
 
 impl ChannelServer {
@@ -144,18 +156,36 @@ impl ChannelServer {
             ledger_user: ledger_user.to_string(),
         };
         let stop = Arc::new(AtomicBool::new(false));
+        let (accepted, connections) = mpsc::sync_channel(0);
+        let acceptor = {
+            let stop = Arc::clone(&stop);
+            thread::Builder::new()
+                .name("fleetd-channel-accept".into())
+                .spawn(move || accept_loop(&listener, &stop, &accepted))
+                .context("starting the accept thread of the channel")?
+        };
         let thread = {
             let stop = Arc::clone(&stop);
             thread::Builder::new()
                 .name("fleetd-channel".into())
-                .spawn(move || server.run(&listener, &stop))
-                .context("starting the thread of the channel")?
+                .spawn(move || server.run(&connections, &stop))
         };
-        Ok(ChannelServer {
+        let mut server = ChannelServer {
             socket,
+            read_deadline: options.read_deadline,
             stop,
-            thread: Some(thread),
-        })
+            thread: None,
+            acceptor: Some(acceptor),
+        };
+        match thread {
+            Ok(thread) => server.thread = Some(thread),
+            Err(e) => {
+                server.stop.store(true, Ordering::SeqCst);
+                server.wake_acceptor();
+                return Err(e).context("starting the thread of the channel");
+            }
+        }
+        Ok(server)
     }
 
     /// End the server: it serves no new connection. The error is the end
@@ -169,14 +199,44 @@ impl ChannelServer {
             return Ok(());
         };
         self.stop.store(true, Ordering::SeqCst);
-        // Wake the accept. A server that already ended refuses the connect.
-        drop(Stream::connect(
-            &self.socket,
-            Instant::now() + READ_DEADLINE,
-        ));
-        thread
+        let limit = Instant::now() + self.read_deadline * 2 + STOP_MARGIN;
+        while !thread.is_finished() {
+            if Instant::now() >= limit {
+                self.wake_acceptor();
+                bail!("the thread of the channel did not end at the stop");
+            }
+            thread::sleep(WAKE_POLL);
+        }
+        let ended = thread
             .join()
-            .map_err(|_| anyhow!("the thread of the channel panicked"))?
+            .map_err(|_| anyhow!("the thread of the channel panicked"));
+        self.wake_acceptor();
+        ended?
+    }
+
+    /// When the path is gone, no connect can reach the listener: the
+    /// accept thread stays in `accept`, and the stop does not wait for it.
+    fn wake_acceptor(&mut self) {
+        let Some(acceptor) = self.acceptor.take() else {
+            return;
+        };
+        let limit = Instant::now() + STOP_MARGIN;
+        while !acceptor.is_finished() {
+            if Instant::now() >= limit {
+                return;
+            }
+            match Stream::connect(&self.socket, Instant::now() + WAKE_WAIT) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+                other => drop(other),
+            }
+            // At most 1 connect in each WAKE_WAIT, so the connects do not
+            // fill the queue of the socket.
+            let next = Instant::now() + WAKE_WAIT;
+            while !acceptor.is_finished() && Instant::now() < next {
+                thread::sleep(WAKE_POLL);
+            }
+        }
+        let _ = acceptor.join();
     }
 }
 
@@ -230,6 +290,23 @@ fn open_name_taken_item(
     Ok(())
 }
 
+fn accept_loop(listener: &Listener, stop: &AtomicBool, accepted: &SyncSender<(Stream, Peer)>) {
+    loop {
+        let connection = listener.accept();
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        match connection {
+            Ok(connection) => {
+                if accepted.send(connection).is_err() {
+                    return;
+                }
+            }
+            Err(_) => thread::sleep(ACCEPT_RETRY),
+        }
+    }
+}
+
 /// The state of the thread of the channel.
 struct Server {
     fleet_root: PathBuf,
@@ -242,15 +319,17 @@ struct Server {
 }
 
 impl Server {
-    fn run(mut self, listener: &Listener, stop: &AtomicBool) -> Result<()> {
+    fn run(mut self, connections: &Receiver<(Stream, Peer)>, stop: &AtomicBool) -> Result<()> {
         loop {
-            let accepted = listener.accept();
             if stop.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let Ok((stream, peer)) = accepted else {
-                thread::sleep(ACCEPT_RETRY);
-                continue;
+            let (stream, peer) = match connections.recv_timeout(STOP_POLL) {
+                Ok(connection) => connection,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!("the accept thread of the channel ended")
+                }
             };
             // Each other error ends only this connection.
             if let Err(lost @ DoorError::GenerationLost { .. }) = self.serve(&stream, &peer) {
@@ -271,6 +350,7 @@ impl Server {
                     self.max_bytes
                 );
                 write_reply(stream, &refusal_line(&reason), self.options.read_deadline);
+                drain_input(stream, self.options.read_deadline);
                 return Ok(());
             }
             // A silent or slow client, or a client that went away.
@@ -367,68 +447,65 @@ fn refusal_line(reason: &str) -> String {
     )
 }
 
-/// Write `line` to `stream` and wait at most `timeout` for each write. A
-/// failed write ends only this connection. Windows has no write timeout
-/// on a pipe, so there the write waits until the client reads.
 fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
-    if let Err(e) = stream.set_write_timeout(timeout) {
-        if e.kind() != io::ErrorKind::Unsupported {
+    let deadline = Instant::now() + timeout;
+    let mut rest = line.as_bytes();
+    let mut writer = stream;
+    while !rest.is_empty() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_write_timeout(left).is_err() {
             return;
         }
+        match writer.write(rest) {
+            Ok(0) => return,
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
     }
-    let mut writer = stream;
-    let _ = writer
-        .write_all(line.as_bytes())
-        .and_then(|()| writer.flush());
+    let _ = writer.flush();
 }
 
-/// Is the process of `peer` in a live attempt. A fact that is not
-/// supported or that fails to read is [`PeerProcess::Unknown`].
+/// A close of a Unix socket with unread bytes makes the next read of the
+/// client fail with `ECONNRESET` on Linux, after the reply, so the client must
+/// not see that close before it has read the reply.
+fn drain_input(stream: &Stream, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    let mut chunk = [0u8; 4096];
+    let mut reader = stream;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(left.min(DRAIN_QUIET)).is_err() {
+            return;
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
+}
+
 fn peer_process(conn: &Connection, peer: &Peer) -> PeerProcess {
     let Ok(pid) = peer.pid else {
         return PeerProcess::Unknown;
     };
-    let Ok(Some(live)) = live_attempts(conn) else {
+    let Ok(Some((recorded, rows))) = recorded_processes(conn) else {
         return PeerProcess::Unknown;
     };
-    let processes: Vec<AttemptProcess> = live.iter().map(|(p, _)| p.clone()).collect();
-    match peer_in_live_attempt(pid, &processes, &PlatformFacts) {
+    match fleet_process(pid, &recorded, &PlatformFacts) {
         Fact::No => PeerProcess::Outside,
         Fact::Unknown => PeerProcess::Unknown,
         Fact::Yes(ids) => PeerProcess::Inside(
             ids.iter()
-                .filter_map(|id| live.iter().find(|(p, _)| &p.attempt == id))
-                .map(|(_, facts)| facts.clone())
+                .filter_map(|id| rows.iter().find(|r| &r.attempt == id))
+                .map(|r| AttemptFacts {
+                    attempt: r.attempt.clone(),
+                    task: r.task.clone(),
+                    persona: r.persona.clone().unwrap_or_default(),
+                })
                 .collect(),
         ),
     }
-}
-
-/// The process and the facts of each attempt that is not ended and has a
-/// pid. `None` when such an attempt has no valid pid or start time: its
-/// process fact is unknown.
-fn live_attempts(conn: &Connection) -> Result<Option<Vec<(AttemptProcess, AttemptFacts)>>> {
-    let mut live = Vec::new();
-    for (row, persona) in attempts_store::open_attempts_with_persona(conn)? {
-        let Some(Recorded {
-            pid,
-            pid_start: Some(start),
-        }) = row.process
-        else {
-            return Ok(None);
-        };
-        live.push((
-            AttemptProcess {
-                attempt: row.id.clone(),
-                wrapper_pid: pid,
-                wrapper_start: start,
-            },
-            AttemptFacts {
-                attempt: row.id,
-                task: row.task_id,
-                persona: persona.unwrap_or_default(),
-            },
-        ));
-    }
-    Ok(Some(live))
 }

@@ -89,7 +89,7 @@ pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
 }
 
 /// [`commands_with_environment`] where neither `ps -E` nor `/proc` exists.
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn commands_with_environment() -> std::collections::HashMap<u32, String> {
     Default::default()
 }

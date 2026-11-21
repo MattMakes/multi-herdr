@@ -269,6 +269,20 @@ impl World {
         id
     }
 
+    fn ask_note(&self, idea: &str, attempt: &str, question: &str) {
+        let notes = self.root().join("ideas").join(idea).join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        for dir in [notes.parent().unwrap(), notes.as_path()] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let note = serde_json::json!({
+            "idea": idea, "attempt": attempt, "kind": "ask", "text": question,
+        });
+        let path = notes.join("1.json");
+        fs::write(&path, note.to_string()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     /// An applied `idea_amend` request of `idea` whose result names the
     /// amendment `n` with `text`.
     fn amend_request(&self, idea: &str, n: u32, text: &str) {
@@ -753,6 +767,7 @@ fn pass_never_waits_for_a_sub_orchestrator() {
     let asking = w.add_idea(FEATURE);
     w.move_idea(&asking, "clarifying");
     let sub = w.live_sub_orchestrator(&asking, "clarifying");
+    w.ask_note(&asking, &sub, "Do retries apply to uploads?");
     let captured = w.add_idea(FEATURE_2);
     let mut fake = Fake::new(&w);
     let worker: String = w

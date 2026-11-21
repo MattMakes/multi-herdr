@@ -8,13 +8,15 @@
 //! - Part 1 of a pass calls [`read`] for the outboxes of its outbox scan.
 //!   Each file passes the owner and mode checks of the protected file
 //!   reader. A path with a `rejected` row is not read again.
-//! - Part 2 calls [`ingest`] in its transaction. `result.json` and the
+//! - Part 2 calls [`ingest()`] in its transaction. `result.json` and the
 //!   question files go to [`super::ingest`]. Each file is ingested 1 time:
 //!   a message by its `ingested` row, the log by its offset, which moves
 //!   only from the offset that part 1 read.
 //! - A progress line becomes the rows of `horch ledger progress`: the
 //!   progress of the worker, its event, and the activity of a live attempt
 //!   on the fleet clock. A line that fails is skipped with 1 event.
+//! - A `context-warned` line becomes 1 `context-warned` event of the session
+//!   record of the worker (G5): a process of the attempt cannot write it.
 //! - The handoff result (Q4) ends its attempt with the outcome
 //!   `handed_off`, burns no attempt, and moves the task to `ready`. The
 //!   handoff path is kept only when its real path is inside the worktree or
@@ -27,6 +29,8 @@ use anyhow::Result;
 use horch_platform::channel::User;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::compaction::policy::EVENT_WARNED;
+use crate::execution::store::record_history_in;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::task_execution::adapters::ingested_store as store;
@@ -211,8 +215,14 @@ fn log_offset(conn: &Connection, path: &Path) -> Result<Option<u64>> {
 }
 
 /// Part 2: record each file of `reads` 1 time and act on it, in the open
-/// transaction `tx`. The fleetd of generation `guard` writes.
-pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) -> Result<Report> {
+/// transaction `tx`. The fleetd of generation `guard` writes. A question
+/// gets the time limit `question_limit_s`.
+pub fn ingest(
+    tx: &Connection,
+    guard: Option<Generation>,
+    reads: &[OutboxRead],
+    question_limit_s: u64,
+) -> Result<Report> {
     // The message ingest checks the transaction and the generation first.
     let messages: Vec<ingest::OutboxRead> = reads
         .iter()
@@ -221,7 +231,7 @@ pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) 
             files: r.messages.clone(),
         })
         .collect();
-    let done = ingest::ingest(tx, guard, &messages)?;
+    let done = ingest::ingest(tx, guard, &messages, question_limit_s)?;
     let mut report = Report {
         to_verifying: done.to_verifying,
         to_blocked: done.to_blocked,
@@ -363,6 +373,10 @@ fn ingest_progress(
             let live = state != AttemptState::Ended.as_str();
             for line in lines {
                 match &line.read {
+                    Ok(l) if l.kind == LineKind::ContextWarned => {
+                        record_warned(tx, &worker, &l.text)?;
+                        report.progress_lines += 1;
+                    }
                     Ok(l) => {
                         record_line(tx, a, &worker, live, l.kind, &l.text)?;
                         report.progress_lines += 1;
@@ -422,8 +436,15 @@ fn attempt_row(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String
 fn event_kind(kind: LineKind) -> EventKind {
     match kind {
         LineKind::Progress => EventKind::Progress,
-        LineKind::Note => EventKind::Note,
+        LineKind::Note | LineKind::ContextWarned => EventKind::Note,
     }
+}
+
+fn record_warned(tx: &Connection, worker: &str, text: &str) -> Result<()> {
+    let Some(record_id) = workers::find(tx, worker)?.and_then(|w| w.legacy_record_id) else {
+        return Ok(());
+    };
+    record_history_in(tx, &record_id, EVENT_WARNED, text, &util::now())
 }
 
 /// The rows of `horch ledger progress` for 1 line: the progress of the

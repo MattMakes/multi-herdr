@@ -4,14 +4,16 @@
 //! (TRF-45, D10), 1 row per [`LedgerRecordV1`], the record as JSON. Only
 //! fleetd writes the ledger (RR-5): a read-modify-write reads the rows
 //! read-only and sends the changed rows to fleetd in 1 `session_records`
-//! request (T-884). The old JSON ledger
+//! request (T-884). The wrapper of a worker sends no request (T-899): its
+//! changed rows stay in its process, and fleetd gets its session from
+//! `session.json` of its attempt. The old JSON ledger
 //! at `<state_root>/<slug>.json` (the path and slug rule of every earlier
 //! version) is read, never written: `horch ledger import` copies it, and a
 //! record only it holds moves into the table at the next write.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::OptionalExtension;
@@ -28,7 +30,7 @@ use crate::execution::model::{
 };
 use crate::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use crate::fleetd::fleet_runtime::adapters::request_wire::Outcome;
-use crate::fleetd::fleet_runtime::domain::requests::Kind;
+use crate::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use crate::ids::{IdError, PaneId, WorkspaceId};
 use crate::runtime::{Paths, RuntimeContext};
 use crate::skills::activation::ResolvedSkillRef;
@@ -412,6 +414,40 @@ pub fn record_exit_in(
     Ok(ended)
 }
 
+/// Add the history entry `event` with `text` at `at` to the session record
+/// `record_id`, in the open transaction `tx` of the ledger file that holds
+/// it. A record that this file does not hold changes nothing.
+pub fn record_history_in(
+    tx: &rusqlite::Connection,
+    record_id: &str,
+    event: &str,
+    text: &str,
+    at: &str,
+) -> Result<()> {
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT record_json FROM session_records WHERE record_id = ?1",
+            [record_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(json) = json else {
+        return Ok(());
+    };
+    let mut r: LedgerRecordV1 = serde_json::from_str(&json)?;
+    r.updated_at = at.to_string();
+    r.history.push(HistoryEntry {
+        at: at.to_string(),
+        event: event.to_string(),
+        text: text.to_string(),
+    });
+    tx.execute(
+        "UPDATE session_records SET record_json = ?2, updated_at = ?3 WHERE record_id = ?1",
+        rusqlite::params![record_id, serde_json::to_string(&r)?, at],
+    )?;
+    Ok(())
+}
+
 /// The reason of a `session_records` request that fleetd refuses because a
 /// row changed after its client read it. The client reads again and sends
 /// again.
@@ -593,6 +629,20 @@ fn put_row(
     Ok(())
 }
 
+/// What became of the change of 1 [`ExecutionStore::update_written`].
+#[derive(Debug, PartialEq)]
+pub enum SessionWrite {
+    /// The change is in the ledger, or no row changed. The wrapper of a
+    /// worker keeps its change in its process.
+    Committed,
+    /// fleetd is down: the change waits in the request file `path` and is
+    /// not in the ledger.
+    Queued {
+        request_id: RequestId,
+        path: PathBuf,
+    },
+}
+
 /// The most reads of 1 [`ExecutionStore::update`] whose change fleetd
 /// refuses with [`SESSION_RECORD_CHANGED`].
 const UPDATE_TRIES: usize = 3;
@@ -677,6 +727,18 @@ fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<S
             })
         })
         .collect())
+}
+
+/// True when the ledger has its `session_records` table. The first writer
+/// creates the file before its migration commits the tables, so a reader
+/// that opens the file in between finds a ledger with no table and no rows.
+fn has_session_records_table(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'session_records')",
+        [],
+        |row| row.get(0),
+    )?)
 }
 
 /// The session records in `db` when the file exists, without creating it.
@@ -779,6 +841,14 @@ pub fn read_all_sessions(
         .map(|p| (p.path, p.records))
         .collect()
 }
+
+struct WrapperRow {
+    db: PathBuf,
+    slug: String,
+    record: LedgerRecordV1,
+}
+
+static WRAPPER_ROWS: Mutex<Vec<WrapperRow>> = Mutex::new(Vec::new());
 
 /// A project's executions.
 ///
@@ -896,7 +966,7 @@ impl ExecutionStore {
     /// The records as stored, without the overlay: what a write starts
     /// from.
     fn read_file(&self) -> Result<Vec<LedgerRecordV1>> {
-        let rows = read_session_rows(&self.db, Some(&self.slug));
+        let rows = self.with_wrapper_rows(read_session_rows(&self.db, Some(&self.slug)));
         Ok(merge_legacy(
             self.read_legacy()?,
             rows.into_iter().map(|r| r.record).collect(),
@@ -952,24 +1022,91 @@ impl ExecutionStore {
         out
     }
 
-    /// The stored rows of this project, read-only. A file that does not
-    /// exist has none.
     fn stored_rows(&self) -> Result<Vec<SessionRow>> {
         if !self.db.is_file() {
-            return Ok(Vec::new());
+            return Ok(self.with_wrapper_rows(Vec::new()));
         }
         let store = crate::taskledger::Store::open_read_only(&self.db)
             .with_context(|| format!("reading the session records in {}", self.db.display()))?;
-        session_rows(store.conn(), Some(&self.slug))
+        if !has_session_records_table(store.conn())? {
+            return Ok(self.with_wrapper_rows(Vec::new()));
+        }
+        Ok(self.with_wrapper_rows(session_rows(store.conn(), Some(&self.slug))?))
+    }
+
+    fn with_wrapper_rows(&self, mut rows: Vec<SessionRow>) -> Vec<SessionRow> {
+        if !channel_client::is_wrapper_process() {
+            return rows;
+        }
+        let kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+        for k in kept
+            .iter()
+            .filter(|k| k.db == self.db && k.slug == self.slug)
+        {
+            let row = SessionRow {
+                project_root: self.project.clone(),
+                slug: self.slug.clone(),
+                json: serde_json::to_string(&k.record).unwrap_or_default(),
+                record: k.record.clone(),
+            };
+            match rows
+                .iter_mut()
+                .find(|r| r.record.record_id == k.record.record_id)
+            {
+                Some(r) => *r = row,
+                None => rows.push(row),
+            }
+        }
+        rows
+    }
+
+    fn keep_in_wrapper(&self, rows: Vec<SessionRowChange>) {
+        let mut kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+        for change in rows {
+            let same = |k: &WrapperRow| {
+                k.db == self.db && k.slug == self.slug && k.record.record_id == change.record_id
+            };
+            kept.retain(|k| !same(k));
+            if let Some(record) = change.record {
+                kept.push(WrapperRow {
+                    db: self.db.clone(),
+                    slug: self.slug.clone(),
+                    record,
+                });
+            }
+        }
     }
 
     /// Mutate the records and send the change to fleetd, the only writer of
-    /// the ledger (RR-5, T-884): 1 `session_records` request with each
+    /// the ledger (RR-5, T-884). The wrapper of a worker keeps the change
+    /// in its process (`Self::keep_in_wrapper`). Else 1 `session_records` request with each
     /// changed row and the hash of each row as it was read. fleetd refuses a
     /// row that changed after the read; then `f` runs again on a new read,
     /// so 2 writers cannot lose a change. When fleetd is down, the request
-    /// waits in a request file, and fleetd applies it at its start.
-    pub fn update<T>(&self, mut f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
+    /// waits in a request file and is not committed: this prints so on
+    /// stderr. A caller that needs the committed rows uses
+    /// [`Self::update_written`].
+    pub fn update<T>(&self, f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
+        let (out, written) = self.update_written(f)?;
+        if let SessionWrite::Queued { request_id, path } = written {
+            eprintln!(
+                "the session records of {} are not committed: request {request_id} waits in {}. \
+                 When fleetd refuses it at start, 1 needs-you item names it.",
+                self.project,
+                path.display()
+            );
+        }
+        Ok(out)
+    }
+
+    /// [`Self::update`], and whether the change is committed or only
+    /// queued in a request file. fleetd applies a queued change at its
+    /// start, or refuses it with 1 needs-you item when a row changed after
+    /// the read (RR-8, FM-15).
+    pub fn update_written<T>(
+        &self,
+        mut f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>,
+    ) -> Result<(T, SessionWrite)> {
         for _ in 0..UPDATE_TRIES {
             let rows = self.stored_rows()?;
             let stored: HashMap<String, String> = rows
@@ -983,19 +1120,25 @@ impl ExecutionStore {
             let out = f(&mut records)?;
             let changed = row_changes(&stored, &records)?;
             if changed.is_empty() {
-                return Ok(out);
+                return Ok((out, SessionWrite::Committed));
+            }
+            if channel_client::is_wrapper_process() {
+                self.keep_in_wrapper(changed);
+                return Ok((out, SessionWrite::Committed));
             }
             if let Some(writer) = &self.writer {
                 match self.apply(writer, changed) {
-                    Ok(()) => return Ok(out),
+                    Ok(()) => return Ok((out, SessionWrite::Committed)),
                     Err(e) if e.downcast_ref::<SessionRecordChanged>().is_some() => continue,
                     Err(e) => return Err(e),
                 }
             }
             match self.send(changed)? {
-                Sent::Queued { .. } => return Ok(out),
+                Sent::Queued { request_id, path } => {
+                    return Ok((out, SessionWrite::Queued { request_id, path }))
+                }
                 Sent::Replied(reply) => match reply.outcome {
-                    Outcome::Applied(_) => return Ok(out),
+                    Outcome::Applied(_) => return Ok((out, SessionWrite::Committed)),
                     Outcome::Refused(reason) if reason.contains(SESSION_RECORD_CHANGED) => {}
                     Outcome::Refused(reason) => bail!(
                         "fleetd refused the session records of {}: {reason}",

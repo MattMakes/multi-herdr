@@ -54,6 +54,11 @@ pub struct HeartbeatFile {
     /// The PID of the agent, once it started.
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
+    /// The PID of the wrapper that wrote the file. Before its agent starts,
+    /// fleetd records the wrapper of a launched attempt from it (SR-8). A
+    /// wrapper of an older version writes none.
+    #[serde(default)]
+    pub wrapper: Option<u32>,
     /// The pane of the wrapper.
     pub mux_pane: Option<String>,
     /// `running` while the agent process lives, then `exited`.
@@ -226,6 +231,7 @@ impl AttemptFiles {
             attempt: self.attempt(),
             pid,
             pgid: None,
+            wrapper: Some(std::process::id()),
             mux_pane: facts.mux_pane.clone(),
             proc_state: pid.map(|p| {
                 let state = if horch_platform::process::alive(p) {
@@ -530,7 +536,9 @@ pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkin
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
         let tick = Duration::from_millis(100).min(every);
-        let mut since = Duration::ZERO;
+        // The first beat is at once: it names the wrapper before its agent
+        // starts, so that fleetd can record the wrapper (SR-8).
+        let mut since = every;
         let mut log = CheckinLog::default();
         loop {
             if flag.load(Ordering::SeqCst) {
@@ -551,6 +559,57 @@ pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkin
         stop,
         thread: Some(thread),
     }
+}
+
+/// The time between 2 reads of the ledger while a wrapper waits for its
+/// record.
+pub const RECORD_POLL: Duration = Duration::from_millis(250);
+
+/// SR-8, FM-32: wait until fleetd has recorded the wrapper `me` (its PID
+/// and start time) of the worker `worker_id`, on the worker row or on an
+/// attempt of the worker that is not ended. The wrapper starts its agent
+/// only after this, so no agent code runs while its attempt has no
+/// recorded process. The wait opens the ledger `db` read-only for each
+/// read. `limit` counts with [`Instant`], which does not count a sleep of
+/// the machine on macOS and Linux. With no record in `limit`, the wait
+/// fails, and the caller starts no agent.
+pub fn wait_recorded(db: &Path, worker_id: &str, me: (u32, u64), limit: Duration) -> Result<()> {
+    let until = Instant::now() + limit;
+    loop {
+        if is_recorded(db, worker_id, me) {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            bail!(
+                "fleetd did not record this wrapper (pid {}) of worker {worker_id} in {} s, so the agent does not start",
+                me.0,
+                limit.as_secs()
+            );
+        }
+        std::thread::sleep(RECORD_POLL);
+    }
+}
+
+fn is_recorded(db: &Path, worker_id: &str, me: (u32, u64)) -> bool {
+    let Ok(store) = Store::open_read_only(db) else {
+        return false;
+    };
+    let Ok(start) = i64::try_from(me.1) else {
+        return false;
+    };
+    store
+        .conn()
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM workers
+                  WHERE worker_id = ?1 AND supervisor_pid = ?2 AND supervisor_started = ?3
+                 UNION ALL
+                 SELECT 1 FROM attempts
+                  WHERE worker_id = ?1 AND state != 'ended' AND pid = ?2 AND pid_start = ?3)",
+            rusqlite::params![worker_id, me.0, start],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
 }
 
 /// The longest time 1 repeated checkin error stays silent.
@@ -1038,5 +1097,66 @@ mod tests {
                 .as_deref(),
             Some("horch worker: checkin failed: a")
         );
+    }
+
+    const ME: (u32, u64) = (5004241, 66);
+
+    fn set_supervisor(db: &Path, worker: &str, p: (u32, u64)) {
+        Store::open(db)
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
+                params![worker, p.0, p.1 as i64],
+            )
+            .unwrap();
+    }
+
+    /// SR-8: the wrapper starts its agent only after fleetd recorded the
+    /// wrapper on its worker row.
+    #[test]
+    fn wrapper_waits_until_fleetd_records_it_on_its_worker_row() {
+        let f = fixture("working");
+        let (db, worker) = (f.db.clone(), f.worker.clone());
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            set_supervisor(&db, &worker, ME);
+        });
+        let begin = Instant::now();
+        wait_recorded(&f.db, &f.worker, ME, Duration::from_secs(30)).unwrap();
+        assert!(begin.elapsed() >= Duration::from_millis(300));
+        later.join().unwrap();
+    }
+
+    #[test]
+    fn wrapper_recorded_on_its_attempt_row_is_recorded() {
+        let f = fixture("working");
+        f.store
+            .conn()
+            .execute(
+                "UPDATE attempts SET pid = ?2, pid_start = ?3 WHERE worker_id = ?1",
+                params![f.worker, ME.0, ME.1 as i64],
+            )
+            .unwrap();
+        wait_recorded(&f.db, &f.worker, ME, Duration::from_secs(30)).unwrap();
+    }
+
+    /// Fail closed: with no record of this wrapper in the limit, the wait
+    /// fails, and the caller starts no agent. A record of another process,
+    /// or of this pid with another start time, is not a record of it.
+    #[test]
+    fn wrapper_with_no_record_in_the_limit_fails() {
+        let f = fixture("working");
+        set_supervisor(&f.db, &f.worker, (ME.0, ME.1 + 1));
+        let limit = Duration::from_millis(600);
+        let begin = Instant::now();
+        let err = wait_recorded(&f.db, &f.worker, ME, limit).unwrap_err();
+        assert!(begin.elapsed() >= limit);
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("fleetd did not record this wrapper"),
+            "{text}"
+        );
+        assert!(text.contains("the agent does not start"), "{text}");
     }
 }

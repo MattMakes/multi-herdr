@@ -11,12 +11,14 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
+use horch_core::execution::legacy::HistoryEntry;
 use horch_core::execution::lifecycle::{
     self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
 };
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
+use horch_core::fleetd::task_execution::domain::outbox::{warned_text, LineKind, PROGRESS_JSONL};
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery::{self, TypedLine};
@@ -98,13 +100,6 @@ pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str)
     outgoing.push().map(|_| ())
 }
 
-/// Record `text` as the answer of the `questions` row of mail question
-/// `id`, before the push closes the mail question: a worker that exited
-/// with its question gets the answer at the next claim of its task. fleetd
-/// writes it: 1 `question_answer` request (RR-5, T-885). Its handler first
-/// syncs the row of a question that no pass has seen yet. A question with
-/// no row (its worker holds no task, or it has its answer) records nothing.
-/// A refused or queued request is an error, so the question stays open.
 fn record_answer(ctx: &RuntimeContext, workspace: &str, id: &str, text: &str) -> Result<()> {
     if !ctx.paths.ledger_db.exists() {
         return Ok(());
@@ -245,15 +240,11 @@ fn queue_as<'a>(
         let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
-        // Worker mail holds no question for the orchestrator. The pass of
-        // fleetd keeps the question waits from the mail (T-885).
-        if role == "orchestrator" {
-            if from != HORCH && asks_a_question(text) {
-                if let Err(error) = write_question_file(ctx, text) {
-                    eprintln!(
-                        "horch tell: the question file of the attempt is not written ({error:#}); mail remains durable"
-                    );
-                }
+        if role == "orchestrator" && from != HORCH && asks_a_question(text) {
+            if let Err(error) = write_question_file(ctx, text, id.as_str()) {
+                eprintln!(
+                    "horch tell: the question file of the attempt is not written ({error:#}); mail remains durable"
+                );
             }
         }
         queued = Some(id);
@@ -855,14 +846,22 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
 
 /// The `horch note` warning of record `record_id`, if it warns: the row is
 /// built as `horch context` builds it, and the rule is
-/// [`policy::should_warn`]. On a warning it records `context-warned`
-/// (its error ignored) and returns the rendered `warning` line, or
-/// `warning-orchestrator` for an orchestrator record.
+/// [`policy::should_warn`]. On a warning it records `context-warned` and
+/// returns the rendered `warning` line, or `warning-orchestrator` for an
+/// orchestrator record.
 pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
     let record = src.ledger.get(record_id)?;
     let Some((row, tokens)) = warn_row(src, record) else {
         return Ok(None);
     };
+    let outbox = super::askcmd::own_writer(src.ctx).ok().and_then(Result::ok);
+    if outbox
+        .as_ref()
+        .is_some_and(|out| warned_in_attempt(out, &row))
+    {
+        return Ok(None);
+    }
+    let text = warned_text(tokens, row.threshold);
     let key = if row.record.is_orchestrator() {
         "warning-orchestrator"
     } else {
@@ -878,12 +877,36 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
         ("handoff", handoff.as_str()),
     ]);
     let line = prompts::context_message(src.roster, key, &vars)?;
-    let _ = src.ledger.record_event(
-        record_id,
-        policy::EVENT_WARNED,
-        &format!("tokens {tokens} threshold {threshold}"),
-    );
+    let recorded = match &outbox {
+        Some(out) => out.append(
+            LineKind::ContextWarned,
+            &horch_core::clock::now_stamp(),
+            &text,
+        ),
+        None => src
+            .ledger
+            .record_event(record_id, policy::EVENT_WARNED, &text),
+    };
+    if let Err(e) = recorded {
+        eprintln!("horch: the context warning of {record_id} is not recorded: {e:#}");
+    }
     Ok(Some(line))
+}
+
+fn warned_in_attempt(out: &OutboxWriter, row: &context::Row) -> bool {
+    let Ok(log) = std::fs::read_to_string(out.outbox().join(PROGRESS_JSONL)) else {
+        return false;
+    };
+    let mut history = row.record.history.clone();
+    history.extend(log.lines().filter_map(|l| {
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        (v["kind"] == LineKind::ContextWarned.as_str()).then(|| HistoryEntry {
+            at: v["at"].as_str().unwrap_or_default().to_string(),
+            event: policy::EVENT_WARNED.to_string(),
+            text: v["text"].as_str().unwrap_or_default().to_string(),
+        })
+    }));
+    policy::already_asked(&history, row.last_compaction())
 }
 
 /// The context row of a live `record` and its tokens, when the rule warns.
@@ -913,8 +936,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
     // A worker in a live attempt writes `result.json` with `status:
     // completed`, as `horch ledger done` does; fleetd finishes the task.
     if super::askcmd::own_writer(ctx)?.is_ok() {
-        let notes = unlanded.map(|reason| format!("unlanded: {reason}"));
-        super::taskledger::write_completed(ctx, summary, notes)?;
+        let _ = super::taskledger::write_completed(ctx, summary, unlanded)?;
         return Ok(());
     }
     if super::taskledger::is_ledger_worker(ctx) {
@@ -1313,12 +1335,7 @@ fn asks_a_question(text: &str) -> bool {
     })
 }
 
-/// The QUESTION line of `horch tell` from a process in a live attempt
-/// writes 1 question file in the outbox of that attempt, through the same
-/// writer as `horch ask`. A longer `text` is cut to fit
-/// `question_max_bytes`; the mail keeps all of it. A process in no
-/// attempt writes no file.
-fn write_question_file(ctx: &RuntimeContext, text: &str) -> Result<()> {
+fn write_question_file(ctx: &RuntimeContext, text: &str, mail_id: &str) -> Result<()> {
     let Ok(out) = super::askcmd::own_writer(ctx)? else {
         return Ok(());
     };
@@ -1333,11 +1350,12 @@ fn write_question_file(ctx: &RuntimeContext, text: &str) -> Result<()> {
             attempt: a.attempt().to_string(),
             at: at.clone(),
             text: text.to_string(),
+            mail_id: Some(mail_id.to_string()),
         }
         .to_json(u64::MAX)
         .map_or(u64::MAX, |json| json.len() as u64)
     });
-    out.write_question(&at, head)?;
+    out.write_question(&at, head, Some(mail_id))?;
     Ok(())
 }
 
@@ -1375,6 +1393,7 @@ mod tests {
 
     /// A context in herdr pane p2 of workspace w1, with a fake herdr and a
     /// scratch ledger. The second value is the folder of the workspace locks.
+    #[cfg(unix)]
     fn register_ctx(dir: &std::path::Path) -> (RuntimeContext, std::path::PathBuf) {
         let bin = dir.join("herdr");
         let warm = crate::test_support::write_warmed(
@@ -1406,6 +1425,7 @@ mod tests {
     /// TRF-39: `horch register orchestrator` while a live orchestrator holds
     /// the workspace lock refuses with the holder's PID and keeps the route.
     /// Other roles register as before.
+    #[cfg(unix)]
     #[test]
     fn trf_39_register_refuses_the_orchestrator_role_while_another_holds_the_lock() {
         use horch_core::taskledger::orchestrator;
@@ -1434,6 +1454,7 @@ mod tests {
 
     /// TRF-39: with the workspace lock free, `horch register orchestrator`
     /// takes the lock, writes the route, and frees the lock when it ends.
+    #[cfg(unix)]
     #[test]
     fn trf_39_register_takes_the_orchestrator_role_when_the_lock_is_free() {
         use horch_core::taskledger::orchestrator;
@@ -1449,6 +1470,38 @@ mod tests {
         );
     }
 
+    fn serve_session_records_and_progress(
+        ctx: &RuntimeContext,
+    ) -> horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer {
+        use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+        use horch_core::fleetd::fleet_runtime::adapters::token_file;
+        use horch_core::fleetd::fleet_runtime::application::handlers_cli;
+        use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+        use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+        let db = horch_core::execution::store::session_db(&ctx.paths);
+        let root = horch_core::execution::store::session_fleet_root(&ctx.paths, &db);
+        drop(horch_core::taskledger::Store::open(&db).unwrap());
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
+            rusqlite::params![pid, start as i64, horch_core::taskledger::util::now()],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        token_file::ensure(&root).unwrap();
+        let mut handlers = Handlers::new();
+        handlers.insert(Kind::SessionRecords, |tx, p| {
+            horch_core::execution::store::apply_session_records(tx, p)
+        });
+        handlers_cli::register(&mut handlers);
+        ChannelServer::start(&root, conn, Generation(1), handlers).unwrap()
+    }
+
     /// TRF-45: `horch note`, `horch ledger progress` and `horch ledger note`
     /// are 1 command. With a record and a worker row, each writes the
     /// session record's history and the worker row's progress. Without a
@@ -1462,6 +1515,7 @@ mod tests {
         let root = dir.path().join("repo");
         let state = dir.path().join("state");
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
         let db = dir.path().join("ledger.sqlite3");
         let mut store = horch_core::taskledger::Store::open(&db).unwrap();
         let wid = store
@@ -1507,12 +1561,7 @@ mod tests {
             RuntimeContext::from_env(&env).unwrap()
         };
         let both = ctx(Some("r-1"), Some(&wid));
-        // The fleetd of the session records (T-884).
-        let _fleetd =
-            horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(
-                &both.paths,
-            )
-            .unwrap();
+        let _fleetd = serve_session_records_and_progress(&both);
         SessionLedger::open_in(&both)
             .unwrap()
             .add(horch_core::execution::records::NewRecord {

@@ -30,6 +30,9 @@ use horch_core::fleetd::ideas::application::questions::{self, Ask};
 use horch_core::taskledger::Store;
 use horch_e2e::bind::{bind, try_bind};
 use horch_e2e::harness::{fixtures, wait_for, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
+
+const RUN: &str = "p2";
 
 /// The design lease of a profile, in seconds of the fleet clock.
 const LEASE_S: i64 = 120;
@@ -111,7 +114,12 @@ impl Fleet {
     /// 1 forced pass of fleetd, while the test fleetd is down.
     fn pass(&self) -> String {
         let o = self.h.without_fleetd(|| {
-            self.run_as(None, &["ledger", "watch", "--once", "--force", "--json"])
+            self.run_as(
+                None,
+                &[
+                    "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+                ],
+            )
         });
         assert!(o.status.success(), "horch ledger watch: {}", text(&o));
         text(&o)
@@ -129,18 +137,23 @@ impl Fleet {
         self.pass()
     }
 
-    /// 1 run with the extra flags `run` and 1 task T-1 of `opus`. 1 pass
-    /// writes the `fleetd` row, so the fleet clock exists before the claim.
-    fn run_with_task(&self, run: &[&str]) {
-        let mut new = vec!["ledger", "run", "new", "p2"];
-        new.extend_from_slice(run);
-        self.ok(&new);
+    fn run_with_task(&self, max_attempts: Option<i64>) {
+        let run = seed_run(&self.h, RUN, None, "w1:p1");
+        if let Some(max) = max_attempts {
+            Store::open(&self.db())
+                .unwrap()
+                .conn()
+                .execute(
+                    "UPDATE runs SET max_attempts = ?1 WHERE run_id = ?2",
+                    rusqlite::params![max, run.run_id],
+                )
+                .unwrap();
+        }
         let dir = self.h.project.join("tickets");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("t1.md");
         std::fs::write(&p, "# T1\n").unwrap();
-        let p = p.to_string_lossy();
-        self.ok(&["ledger", "add", "--file", &p, "--primary", "opus"]);
+        seed_task(&self.h, &run, &p, "opus");
         self.pass();
     }
 
@@ -403,7 +416,7 @@ impl Drop for Agent {
 #[test]
 fn rr1_stopped_worker_is_caught_within_1_lease() {
     let mut f = Fleet::new("p2-rr1");
-    f.run_with_task(&[]);
+    f.run_with_task(None);
     let agent = Agent::start();
     let w = f.claimed(&agent);
     assert_eq!(
@@ -446,7 +459,7 @@ fn rr1_stopped_worker_is_caught_within_1_lease() {
 #[test]
 fn rr2_expired_lease_never_leaves_the_task_assigned() {
     let mut f = Fleet::new("p2-rr2");
-    f.run_with_task(&[]);
+    f.run_with_task(None);
     let agent = Agent::start();
     let w = f.claimed(&agent);
     let (_, log) = f.passes_until_not_running(600, |_| {});
@@ -485,14 +498,24 @@ impl Fleet {
         self.advance_clocks(nb - self.clock());
     }
 
-    /// 1 attempt that exits with no result, and the pass that sees it.
-    /// The log of the pass.
     fn failed_attempt(&mut self) -> String {
         self.through_backoff();
         let agent = Agent::start();
         self.claimed(&agent);
         agent.kill();
-        self.pass()
+        let mut log = self.pass();
+        wait_for("the rescue of the tree of the failed attempt", || {
+            let orphaned = self.number(
+                "SELECT COUNT(*) FROM worktrees
+                 WHERE state IN ('reserved', 'created', 'active', 'orphaned')",
+            );
+            if orphaned == 0 {
+                return Some(());
+            }
+            log.push_str(&self.pass_after(STEP_S));
+            None
+        });
+        log
     }
 
     /// Fail attempts until T-1 is not `ready`. Each status on the way is
@@ -515,7 +538,7 @@ impl Fleet {
 fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
     const MAX: i64 = 2;
     let mut f = Fleet::new("p2-rr6");
-    f.run_with_task(&["--max-attempts", &MAX.to_string()]);
+    f.run_with_task(Some(MAX));
     let mut log = Vec::new();
     // The first MAX attempts fail: the task is `failed`.
     f.fail_until_not_ready(MAX, &mut log);
@@ -523,7 +546,7 @@ fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
     assert_eq!(t.status, "failed", "{t:?}\n{}", log.join("\n"));
     assert_eq!(t.attempts, MAX, "{t:?}\n{}", log.join("\n"));
     // The replan.
-    log.push(f.ok(&["task", "requeue", "T-1", "replan"]));
+    log.push(f.ok(&["task", "requeue", "T-1", "replan", "--run", RUN]));
     // The next MAX attempts fail: the task is `escalated`.
     f.fail_until_not_ready(MAX, &mut log);
     let log = log.join("\n");
@@ -535,11 +558,22 @@ fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
         2 * MAX,
         "MAX attempts, the replan, MAX attempts\n{log}"
     );
-    let items = f.number(
-        "SELECT COUNT(*) FROM needs_you WHERE state = 'open' AND entity = 'task'
-         AND entity_id = (SELECT task_id FROM tasks)",
+    let c = rusqlite::Connection::open(f.db()).unwrap();
+    let kinds: Vec<String> = c
+        .prepare(
+            "SELECT kind FROM needs_you WHERE state = 'open' AND entity = 'task'
+             AND entity_id = (SELECT task_id FROM tasks) ORDER BY kind",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        kinds,
+        ["held", "task_escalated"],
+        "the escalation item and the question of the held task name the escalated task, and no other item does\n{log}"
     );
-    assert_eq!(items, 1, "1 needs-you item names the escalated task\n{log}");
     // An escalated task gets no attempt by itself.
     let o = f.pass_after(3600);
     assert_eq!(f.task().status, "escalated", "{o}");
@@ -549,11 +583,16 @@ fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
 #[test]
 fn cancel_of_a_running_task_stops_its_process_before_the_task_is_cancelled() {
     let f = Fleet::new("p2-cancel-running");
-    f.run_with_task(&[]);
+    f.run_with_task(None);
     let agent = Agent::start();
     let w = f.claimed(&agent);
     let (attempt, _) = f.attempt_of(&w);
-    let o = f.ok(&["task", "cancel", "T-1", "not needed"]);
+    let mut o = f.ok(&["task", "cancel", "T-1", "not needed", "--run", RUN]);
+    assert!(o.contains("T-1 is not cancelled yet"), "{o}");
+    wait_for("the cancel of the task by a pass", || {
+        o.push_str(&f.pass());
+        (f.task().status == "cancelled").then_some(())
+    });
     let t = f.task();
     assert_eq!(t.status, "cancelled", "{o}");
     assert!(!agent.alive(), "the agent outlived the cancel\n{o}");
@@ -569,7 +608,7 @@ fn cancel_of_a_running_task_stops_its_process_before_the_task_is_cancelled() {
 #[test]
 fn cancel_of_a_blocked_on_user_task_is_immediate() {
     let f = Fleet::new("p2-cancel-blocked");
-    f.run_with_task(&[]);
+    f.run_with_task(None);
     let agent = Agent::start();
     let w = f.claimed(&agent);
     let (attempt, _) = f.attempt_of(&w);
@@ -580,7 +619,7 @@ fn cancel_of_a_blocked_on_user_task_is_immediate() {
     let ask = Ask {
         task_id: &t.id,
         attempt_id: &attempt,
-        mail_id: "m1",
+        mail_id: Some("m1"),
         text: "which way?",
         asked_at: &now,
     };
@@ -592,7 +631,7 @@ fn cancel_of_a_blocked_on_user_task_is_immediate() {
     agent.kill();
     let o = f.pass();
     assert_eq!(f.task().status, "blocked_on_user", "{o}");
-    let o = f.ok(&["task", "cancel", "T-1", "not needed"]);
+    let o = f.ok(&["task", "cancel", "T-1", "not needed", "--run", RUN]);
     assert!(o.contains("T-1 cancelled."), "{o}");
     assert_eq!(f.task().status, "cancelled", "{o}");
 }
@@ -609,7 +648,7 @@ fn cancel_of_a_waiting_quota_task_is_immediate() {
     let file = f.h.root.join("quota.json");
     std::fs::write(&file, quota).unwrap();
     f.h.set("HORCH_QUOTA_FILE", file.to_string_lossy());
-    f.run_with_task(&[]);
+    f.run_with_task(None);
     let agent = Agent::start();
     f.claimed(&agent);
     let o = f.pass();
@@ -617,7 +656,7 @@ fn cancel_of_a_waiting_quota_task_is_immediate() {
     wait_for("the stop of the agent by the quota rule", || {
         agent.gone().then_some(())
     });
-    let o = f.ok(&["task", "cancel", "T-1", "not needed"]);
+    let o = f.ok(&["task", "cancel", "T-1", "not needed", "--run", RUN]);
     assert!(o.contains("T-1 cancelled."), "{o}");
     assert_eq!(f.task().status, "cancelled", "{o}");
     assert_eq!(f.lease_rows(), 0, "{o}");
@@ -627,7 +666,7 @@ fn cancel_of_a_waiting_quota_task_is_immediate() {
 #[test]
 fn fm14_no_second_attempt_starts_while_the_old_process_lives() {
     let mut f = Fleet::new("p2-fm14");
-    f.run_with_task(&[]);
+    f.run_with_task(None);
     let old = Agent::stubborn();
     let first = f.claimed(&old);
     let (_, log) = f.passes_until_not_running(600, |_| {});

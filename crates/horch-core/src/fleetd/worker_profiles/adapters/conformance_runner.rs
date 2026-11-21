@@ -45,7 +45,8 @@ use crate::fleetd::worker_profiles::application::conformance::{
     read_probe_report, ConformanceLaunch,
 };
 use crate::fleetd::worker_profiles::domain::conformance::{
-    Check, Hook, LaunchEnd, Observation, PrivateHome, MARKER_SKILL, TEST_MCP_SERVER,
+    Check, Hook, HostFolder, LaunchEnd, Observation, PrivateHome, Unreachable, MARKER_SKILL,
+    TEST_MCP_SERVER,
 };
 use crate::fleetd::worker_profiles::domain::operator_boundary::{Act, OperatorPaths};
 use crate::harness::launch::{self, LaunchRequest};
@@ -137,7 +138,7 @@ impl ConformanceLaunch for ConformanceRunner<'_> {
     /// The boundary of the adapter for the fleet root of this process, and
     /// the operator acts that this process cannot do itself. The Codex
     /// boundary reads the facts of the Codex binary under test.
-    fn operator_boundary(&mut self) -> Result<Vec<String>, String> {
+    fn operator_boundary(&mut self) -> Result<Vec<Unreachable>, String> {
         let root = &self.ctx.paths.fleet_root;
         let boundary =
             validation::operator_boundary_with_bins(self.teammate, root, &self.ctx.bins.harness);
@@ -179,7 +180,16 @@ impl ConformanceRunner<'_> {
             let _ = std::fs::remove_dir_all(marker);
         }
         let watched = watched?;
-        Ok(observe(watched, files, dir, home, &setup.teammate, cli))
+        let fleet_root = host_folder(&self.ctx.paths.fleet_root);
+        Ok(observe(
+            watched,
+            files,
+            dir,
+            home,
+            &setup.teammate,
+            cli,
+            fleet_root,
+        ))
     }
 
     /// The throwaway task folder `dir` of 1 launch of `check`: its work
@@ -245,8 +255,9 @@ impl ConformanceRunner<'_> {
         let setup = self.setup(dir, Check::LaunchHeadless)?;
         let session = SessionMode::Fresh(None);
         let req = setup.request(self, &session);
+        let bundles = setup.ctx.paths.state_root.join("skill-bundles");
         launch::run_exec_flow(&setup.ctx, req, setup.files.dir(), |cmd| {
-            rendered_launch(cli, &cmd, dir)
+            rendered_launch(cli, &cmd, dir, &bundles)
         })
     }
 }
@@ -303,10 +314,7 @@ fn config_file(cli: ExecCli, cmd: &Command) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-/// The text of the launch `cmd`: 1 line for each argv word, then the config
-/// file of the adapter. The path of the throwaway folder `dir` and of the
-/// private home become fixed words.
-fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
+fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path, bundles: &Path) -> Result<String> {
     let mut text = String::new();
     text.push_str(&cmd.get_program().to_string_lossy());
     for arg in cmd.get_args() {
@@ -321,9 +329,11 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
         }
         homes.push(home);
     }
-    // The skills bundle of Claude Code: a new folder for each launch.
     if let Some(bundle) = plugin_dir(cmd) {
         homes.push(bundle);
+    }
+    if let Ok(entries) = std::fs::read_dir(bundles) {
+        homes.extend(entries.filter_map(|e| e.ok()).map(|e| e.path()));
     }
     homes.push(dir.to_path_buf());
     // The longest path first, so a folder inside another becomes its word.
@@ -354,35 +364,62 @@ fn plugin_dir(cmd: &Command) -> Option<PathBuf> {
 /// How long the runner waits for its own connect to the channel.
 const CHANNEL_CONNECT_LIMIT: Duration = Duration::from_secs(5);
 
-/// The operator acts that this process cannot do itself, outside the
-/// sandbox, each with its reason. A token that is missing or empty, a
-/// channel with no listener or a missing request folder would refuse the
-/// act inside the sandbox too. The runner opens the token but does not
-/// read it, and it writes no request file.
-fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
+fn operator_reach(operator: &OperatorPaths) -> Vec<Unreachable> {
     let token = std::fs::File::open(&operator.token)
         .and_then(|f| f.metadata())
         .map_err(|e| e.to_string())
         .and_then(|m| match m.len() {
             0 => Err("the token file is empty".to_owned()),
             _ => Ok(()),
-        });
+        })
+        .map_err(|why| (why, false));
     let deadline = std::time::Instant::now() + CHANNEL_CONNECT_LIMIT;
+    // No socket, or a socket that no process accepts on: no channel
+    // server exists.
     let channel = horch_platform::channel::Stream::connect(&operator.channel, deadline)
         .map(drop)
-        .map_err(|e| e.to_string());
+        .map_err(|e| {
+            let no_server = matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            );
+            (e.to_string(), no_server)
+        });
     let requests = match operator.requests.is_dir() {
-        true => Ok(()),
+        true => probe_write(&operator.requests),
         false => Err(format!("{} is not a folder", operator.requests.display())),
-    };
+    }
+    .map_err(|why| (why, false));
     [
         (Act::ReadToken, token),
         (Act::ConnectChannel, channel),
         (Act::WriteRequests, requests),
     ]
     .into_iter()
-    .filter_map(|(act, reach)| reach.err().map(|why| format!("{act}: {why}")))
+    .filter_map(|(act, reach)| {
+        reach.err().map(|(why, no_server)| Unreachable {
+            act,
+            why,
+            no_server,
+        })
+    })
     .collect()
+}
+
+fn probe_write(folder: &Path) -> std::result::Result<(), String> {
+    let probe = folder.join(format!(
+        ".conformance-reach-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|f| {
+            drop(f);
+            std::fs::remove_file(&probe)
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// The private config home of the launch `cmd`, with [`MARKER_SKILL`] put
@@ -694,6 +731,7 @@ fn observe(
     private_home: PrivateHome,
     teammate: &Teammate,
     cli: ExecCli,
+    fleet_root: HostFolder,
 ) -> Observation {
     let Watched { end, seen } = watched;
     let end = match (seen.dialog, seen.no_event_in_time) {
@@ -738,5 +776,20 @@ fn observe(
         compaction_setting: cli != ExecCli::Antigravity,
         stop_hook: seen.stop_hook,
         repair_started,
+        fleet_root,
+    }
+}
+
+/// The identity of `folder` on the host, read by the runner outside the
+/// sandbox: `<device>:<inode>`. An OS with no device and inode of a folder
+/// gives no identity, which the verdict reads as "not visible".
+fn host_folder(folder: &Path) -> HostFolder {
+    let id = std::fs::metadata(folder)
+        .map_err(|e| e.to_string())
+        .and_then(|m| horch_platform::fs::device_and_inode(&m).map_err(|e| e.to_string()))
+        .map(|(dev, ino)| format!("{dev}:{ino}"));
+    HostFolder {
+        path: folder.display().to_string(),
+        id,
     }
 }

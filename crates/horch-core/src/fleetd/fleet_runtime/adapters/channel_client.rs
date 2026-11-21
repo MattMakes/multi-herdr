@@ -10,17 +10,27 @@
 //! mismatch or an unknown fact sends nothing: a process of the same user
 //! can remove the socket file and bind its own. After a lost reply, it
 //! reads the `requests` row of its `request_id` before it sends again.
+//!
+//! The wrapper of a worker (`horch worker`) and each process of a live
+//! attempt send no request and never read the operator token (T-899): the
+//! facts of a wrapper go by the files of its attempt. This refusal comes
+//! before the token read, but it is not the boundary. The peer process
+//! check of fleetd and the worker sandbox stay the boundary.
 
-use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::channel::Stream;
 use horch_platform::fs as platform;
+use horch_platform::NotSupported;
 use serde_json::{Map, Value};
 
+use crate::fleetd::fleet_runtime::adapters::peer_process::{
+    fleet_process, recorded_processes, Fact, PlatformFacts,
+};
 use crate::fleetd::fleet_runtime::adapters::request_wire::{parse_reply, Outcome, Reply, Request};
 use crate::fleetd::fleet_runtime::adapters::{config_file, requests_store, token_file};
 use crate::fleetd::fleet_runtime::domain::requests::{check_size, Class, Kind, RequestId};
@@ -40,6 +50,20 @@ const REPLY_WAIT: Duration = Duration::from_secs(30);
 /// lost reply, when the `requests` row is missing or `pending`.
 const MAX_SENDS: usize = 3;
 
+static WRAPPER: AtomicBool = AtomicBool::new(false);
+
+/// Mark this process as the wrapper of a worker (`horch worker`). From
+/// then on, [`send`] refuses each request before it reads the operator
+/// token, and [`is_wrapper_process`] is true.
+pub fn mark_wrapper_process() {
+    WRAPPER.store(true, Ordering::SeqCst);
+}
+
+/// True when this process is the wrapper of a worker.
+pub fn is_wrapper_process() -> bool {
+    WRAPPER.load(Ordering::SeqCst)
+}
+
 /// What became of 1 request.
 #[derive(Debug)]
 pub enum Sent {
@@ -56,7 +80,9 @@ pub enum Sent {
 
 /// Send 1 `operator` request of `kind` with `payload` to fleetd, with the
 /// operator token. It sends nothing to a server that is not the fleetd of
-/// the `fleetd` row. When fleetd is down, it writes the request file.
+/// the `fleetd` row. When fleetd is down, it writes the request file. The
+/// wrapper of a worker and a process of a live attempt send nothing and
+/// do not read the token (`refuse_fleet_caller`).
 pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Result<Sent> {
     if kind.class() != Class::Operator {
         bail!(
@@ -64,6 +90,7 @@ pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Re
             kind.as_str()
         );
     }
+    refuse_fleet_caller(ctx, kind)?;
     let root = &ctx.paths.fleet_root;
     let max_bytes = config_file::load(root)?.request_max_bytes;
     let token = token_file::read(root).context("reading the operator token")?;
@@ -98,6 +125,32 @@ pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Re
     bail!(
         "request {id} got no reply after {MAX_SENDS} sends; `horch request {id}` prints its state"
     )
+}
+
+fn refuse_fleet_caller(ctx: &RuntimeContext, kind: Kind) -> Result<()> {
+    let kind = kind.as_str();
+    if is_wrapper_process() {
+        bail!(
+            "the wrapper of a worker sends no operator request ({kind}): its facts go by the files of its attempt"
+        );
+    }
+    if let Fact::Yes(attempts) = own_fact(ctx) {
+        bail!(
+            "refused inside a fleet attempt: this process is a fleet process of attempt {}, so it sends no operator request ({kind}). Run it yourself from a terminal outside the fleet.",
+            attempts.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn own_fact(ctx: &RuntimeContext) -> Fact {
+    let Ok(Some(store)) = crate::taskledger::open_existing_read_only(ctx) else {
+        return Fact::No;
+    };
+    match recorded_processes(store.conn()) {
+        Ok(Some((recorded, _))) => fleet_process(std::process::id(), &recorded, &PlatformFacts),
+        Ok(None) | Err(_) => Fact::Unknown,
+    }
 }
 
 /// A new `request_id`: 1 UUID v4.
@@ -255,15 +308,10 @@ fn queue(fleet_root: &Path, id: &RequestId, line: &str) -> Result<Sent> {
     })
 }
 
-/// Make the request folder with mode 0700 when it is missing. A link or a
-/// file at that path is an error.
+/// Make the request folder with access for its owner only (mode 0700 on
+/// unix) when it is missing. A link or a file at that path is an error.
 fn make_request_folder(folder: &Path) -> Result<()> {
-    let mut builder = DirBuilder::new();
-    builder.recursive(true);
-    platform::create_dir_mode(&mut builder, 0o700)
-        .map_err(|e| anyhow!("making {} with mode 0700: {e}", folder.display()))?;
-    builder
-        .create(folder)
+    platform::create_dir_owner_only(folder)
         .with_context(|| format!("making {}", folder.display()))?;
     let meta = std::fs::symlink_metadata(folder)
         .with_context(|| format!("reading {}", folder.display()))?;
@@ -273,18 +321,15 @@ fn make_request_folder(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `bytes` to `path` atomically: write `<path>.tmp` with mode 0600,
-/// fsync it, rename it to `path`, then fsync the folder. A reader never
-/// sees a part of the file at `path`.
+/// Write `bytes` to `path` atomically: write `<path>.tmp` with access for
+/// its owner only (mode 0600 on unix), fsync it, rename it to `path`, then
+/// fsync the folder where the OS can. A reader never sees a part of the
+/// file at `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    platform::create_mode(&mut options, 0o600).map_err(|e| anyhow!("mode 0600: {e}"))?;
-    let mut file = options
-        .open(&tmp)
+    let mut file = platform::create_new_owner_only(&tmp)
         .with_context(|| format!("creating {}", tmp.display()))?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
@@ -293,7 +338,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         return Err(anyhow!(e));
     }
     if let Some(folder) = path.parent() {
-        platform::sync_dir(folder).with_context(|| format!("syncing {}", folder.display()))?;
+        match platform::sync_dir(folder) {
+            Err(e) if e.get_ref().is_some_and(|inner| inner.is::<NotSupported>()) => {}
+            synced => synced.with_context(|| format!("syncing {}", folder.display()))?,
+        }
     }
     Ok(())
 }

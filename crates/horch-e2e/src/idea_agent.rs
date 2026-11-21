@@ -12,7 +12,8 @@
 //! - `die_mid_interview`: record 1 interview note, then exit 137 with no
 //!   `assumptions.md`.
 //! - `clarify`: write `assumptions.md` with a `feature:` line and record 2
-//!   interview notes (`horch idea note`). Logged as `notes`.
+//!   interview notes (`horch idea note`), except a question that
+//!   interview.md holds already. Logged as `notes`.
 //! - `clarify_open`: as `clarify`, and the file has 1 `[open]` item.
 //! - `specify`: write `spec.md` and `requirements.yaml`; each requirement
 //!   cites an assumption.
@@ -22,11 +23,16 @@
 //!   feature of the idea with `horch idea note --question`, case `covered`
 //!   with a `--cite` of `assumptions.md`, or case `own_decision`. Logged as
 //!   `answers`.
+//! - `await_approval`: before `forge_approval`, `approve_inside` and
+//!   `operator_request`, wait until the idea is in `awaiting_approval`
+//!   (at most `AWAIT_APPROVAL`). Logged as `awaited` with the state seen.
 //! - `forge_approval`: write `approval.json` with the sha256 of
 //!   `assumptions.md`, as if the operator approved it.
 //! - `approve_inside`: run `horch idea approve <idea>`. Logged as `approve`.
 //! - `operator_request`: send a raw `idea_approve` request with no token,
 //!   on the channel and as a request file. Logged as `operator_request`.
+//! - `stay`: fake-claude only, as `stay` of fake-codex: after the other
+//!   keys, the pane launch blocks until it is killed.
 //!
 //! Keys of the fake judge: `verdict_pass`, `verdict_critical`,
 //! `verdict_high` write `review.md` in the worktree of the attempt and
@@ -47,10 +53,10 @@ use horch_core::taskledger::Store;
 use serde_json::{json, Map, Value};
 
 use crate::agent::{git, horch, worktree};
-use crate::{hash16, scenario_has, Call};
+use crate::{hang, hash16, scenario_has, Call};
 
 /// The idea-lead keys that need the idea folder.
-const IDEA_KEYS: [&str; 11] = [
+const IDEA_KEYS: [&str; 12] = [
     "die_mid_interview",
     "clarify",
     "clarify_open",
@@ -59,6 +65,7 @@ const IDEA_KEYS: [&str; 11] = [
     "ticket_cycle",
     "answer_covered",
     "answer_own",
+    "await_approval",
     "forge_approval",
     "approve_inside",
     "operator_request",
@@ -70,17 +77,27 @@ const FEATURE_LINE: &str = "The feature of your idea is ";
 /// The keys of the fake judge.
 pub(crate) const VERDICT_KEYS: [&str; 3] = ["verdict_pass", "verdict_critical", "verdict_high"];
 
-/// The verdict file of the fake judge, in its worktree.
-const VERDICT_FILE: &str = "review.md";
+pub(crate) const VERDICT_FILE: &str = "review.md";
 
 /// The file mode of each file that the fake writes.
 const FILE_MODE: u32 = 0o600;
+
+const AWAIT_APPROVAL: Duration = Duration::from_secs(60);
 
 /// The longest wait for a connect to the channel.
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 
 /// Run the Phase 6 keys of `$HORCH_FAKE_SCENARIO` for a pane launch.
+/// With `stay`, fake-claude then blocks until it is killed.
 pub fn play(call: &mut Call) {
+    lead_keys(call);
+    if call.fake == "claude" && scenario_has("stay") {
+        call.flush();
+        hang();
+    }
+}
+
+fn lead_keys(call: &mut Call) {
     if !IDEA_KEYS.iter().any(|k| scenario_has(k)) {
         return;
     }
@@ -102,10 +119,14 @@ pub fn play(call: &mut Call) {
     let open = scenario_has("clarify_open");
     if open || scenario_has("clarify") {
         lead.write("assumptions.md", &lead.assumptions(open));
-        let notes = [
-            lead.note("Which file does the idea change?", "fake.txt"),
-            lead.note("How many tasks does it need?", "1 task"),
-        ];
+        let notes: Vec<Value> = [
+            ("Which file does the idea change?", "fake.txt"),
+            ("How many tasks does it need?", "1 task"),
+        ]
+        .into_iter()
+        .filter(|(q, a)| !lead.answered(q, a))
+        .map(|(q, a)| lead.note(q, a))
+        .collect();
         call.extra.insert("notes".into(), json!(notes));
     }
     if scenario_has("specify") {
@@ -127,6 +148,11 @@ pub fn play(call: &mut Call) {
     if !answers.is_empty() {
         call.extra.insert("answers".into(), json!(answers));
     }
+    if scenario_has("await_approval") {
+        call.extra
+            .insert("awaited".into(), json!(await_approval(&lead.idea)));
+        call.flush();
+    }
     if scenario_has("forge_approval") {
         lead.write("approval.json", &lead.approval());
     }
@@ -142,7 +168,7 @@ pub fn play(call: &mut Call) {
 }
 
 /// The first word of `argv` that is a folder with an `idea.md`.
-fn idea_folder(argv: &[String]) -> Option<PathBuf> {
+pub(crate) fn idea_folder(argv: &[String]) -> Option<PathBuf> {
     argv.iter()
         .flat_map(|a| a.split_whitespace())
         .map(PathBuf::from)
@@ -189,6 +215,11 @@ impl Lead {
         if let Err(e) = write_file(&path, text) {
             eprintln!("fake idea-lead: {e}");
         }
+    }
+
+    fn answered(&self, question: &str, answer: &str) -> bool {
+        std::fs::read_to_string(self.folder.join("interview.md"))
+            .is_ok_and(|t| t.contains(&format!("\n{question}\n\nAnswer: {answer}\n")))
     }
 
     /// Record 1 interview note: `<question> - <answer>`.
@@ -320,6 +351,27 @@ impl Lead {
     }
 }
 
+fn await_approval(idea: &str) -> Option<String> {
+    let end = Instant::now() + AWAIT_APPROVAL;
+    loop {
+        let state = idea_state(idea);
+        if state.as_deref() == Some("awaiting_approval") || Instant::now() >= end {
+            return state;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn idea_state(idea: &str) -> Option<String> {
+    let store = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db).ok()?;
+    store
+        .conn()
+        .query_row("SELECT state FROM ideas WHERE id = ?1", [idea], |r| {
+            r.get(0)
+        })
+        .ok()
+}
+
 /// The feature id that the launch argument names in its line `The
 /// feature of your idea is F-NNNN.`, as the brief of fleetd gives it.
 fn feature_id(argv: &[String]) -> Option<String> {
@@ -346,7 +398,7 @@ fn open_question(idea: &str) -> Option<String> {
 }
 
 /// Send `request` on the channel of the fleet; the reply line, or the error.
-fn send_on_channel(fleet_root: &Path, request: &Request) -> Value {
+pub(crate) fn send_on_channel(fleet_root: &Path, request: &Request) -> Value {
     let channel = fleet_root.join("run").join("fleetd.sock");
     let stream =
         match horch_platform::channel::Stream::connect(&channel, Instant::now() + CONNECT_WAIT) {
@@ -386,9 +438,7 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("writing {}: {e:#}", path.display()))
 }
 
-/// The fake judge: write the verdict of its key in `review.md` and commit
-/// it.
-pub(crate) fn judge(call: &mut Call) {
+pub(crate) fn judge(call: &mut Call, file: &str) {
     let verdict = if scenario_has("verdict_critical") {
         (
             "critical_open",
@@ -406,14 +456,12 @@ pub(crate) fn judge(call: &mut Call) {
         verdict.0, verdict.1
     );
     let dir = worktree();
-    let out = std::fs::write(dir.join(VERDICT_FILE), text)
-        .map_err(|e| format!("writing {VERDICT_FILE}: {e}"))
-        .and_then(|()| {
-            let message = format!("fake {}: verdict {}", call.fake, verdict.0);
-            git(&dir, &["add", "--", VERDICT_FILE])?;
-            git(&dir, &["commit", "-q", "-m", &message, "--", VERDICT_FILE])?;
-            git(&dir, &["rev-parse", "HEAD"])
-        });
+    let out = write_file(&dir.join(file), &text).and_then(|()| {
+        let message = format!("fake {}: verdict {}", call.fake, verdict.0);
+        git(&dir, &["add", "--", file])?;
+        git(&dir, &["commit", "-q", "-m", &message, "--", file])?;
+        git(&dir, &["rev-parse", "HEAD"])
+    });
     let logged = match out {
         Ok(head) => json!({"verdict": verdict.0, "head": head}),
         Err(e) => json!({"error": e}),

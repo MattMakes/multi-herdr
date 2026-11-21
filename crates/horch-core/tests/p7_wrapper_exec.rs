@@ -9,8 +9,10 @@
 //! as the harness of `horch-e2e` does. No test reads the clock of this
 //! machine or waits for a time: each waits for the end of the fake.
 
-use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+#[path = "support/fakes.rs"]
+mod fakes;
+
+use std::path::PathBuf;
 
 use horch_core::execution::lifecycle::{
     run_exec, write_exec_exit, ExecAttempt, ExecCli, ExecEnd, TRANSCRIPT_JSONL,
@@ -30,66 +32,8 @@ use serde_json::{json, Value};
 /// The fakes of the exec CLIs.
 const FAKES: [&str; 3] = ["fake-claude", "fake-codex", "fake-antigravity"];
 
-/// The folder of the built fakes: `target/<profile>`, beside this test.
-fn bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let mut dir = exe.parent().unwrap().to_path_buf();
-    if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-        dir.pop();
-    }
-    dir
-}
-
-/// The variables cargo sets for a test process. A nested build that sees
-/// them has another fingerprint, and builds each crate again.
-const CARGO_RUN_VARS: &[&str] = &[
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_CRATE_NAME",
-    "CARGO_BIN_NAME",
-    "CARGO_PRIMARY_PACKAGE",
-    "CARGO_TARGET_TMPDIR",
-    "CARGO_RUSTC_CURRENT_DIR",
-    "OUT_DIR",
-];
-
-/// Build the fakes 1 time in this test process, into the target folder
-/// of this test. `cargo test -p horch-core` does not build them.
 fn fake(name: &str) -> PathBuf {
-    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let dir = bin_dir();
-    BUILT.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut cmd = StdCommand::new(cargo);
-        for (key, _) in std::env::vars_os() {
-            let key = key.to_string_lossy();
-            if key.starts_with("CARGO_PKG_") || CARGO_RUN_VARS.contains(&key.as_ref()) {
-                cmd.env_remove(key.as_ref());
-            }
-        }
-        cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .args(["build", "--locked", "-p", "horch-e2e"]);
-        for bin in FAKES {
-            cmd.args(["--bin", bin]);
-        }
-        match dir.file_name().and_then(|n| n.to_str()) {
-            Some("debug") | None => {}
-            Some("release") => {
-                cmd.arg("--release");
-            }
-            Some(profile) => {
-                cmd.args(["--profile", profile]);
-            }
-        }
-        cmd.arg("--target-dir").arg(dir.parent().unwrap());
-        let out = cmd.output().unwrap();
-        assert!(
-            out.status.success(),
-            "the build of the fakes failed: {cmd:?}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    });
-    dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    fakes::fake(&FAKES, name)
 }
 
 /// 1 attempt folder with its `inbox/START.md`, a fake log, and the wrapper
@@ -454,12 +398,23 @@ fn teammate(agent: &str, mode: Option<&str>) -> Teammate {
 fn interactive_attempt_is_unchanged() {
     // The mode of the profile decides the launch (FR-6).
     for agent in ["claude", "codex", "antigravity"] {
-        assert_eq!(ExecCli::of(&teammate(agent, None)), None, "{agent}");
         assert_eq!(
             ExecCli::of(&teammate(agent, Some("interactive"))),
             None,
             "{agent}"
         );
+    }
+    assert_eq!(
+        ExecCli::of(&teammate("claude", None)),
+        Some(ExecCli::Claude)
+    );
+    assert_eq!(ExecCli::of(&teammate("codex", None)), Some(ExecCli::Codex));
+    assert_eq!(
+        ExecCli::of(&teammate("antigravity", None)),
+        Some(ExecCli::Antigravity)
+    );
+    for agent in ["opencode", "pi", "prime", "none"] {
+        assert_eq!(ExecCli::of(&teammate(agent, None)), None, "{agent}");
     }
     assert_eq!(
         ExecCli::of(&teammate("claude", Some("exec"))),

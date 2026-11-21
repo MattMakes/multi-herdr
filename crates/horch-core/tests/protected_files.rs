@@ -1,15 +1,18 @@
 //! The protected file reader (ticket 07 of fleetd-p5): SR-5, SR-6, FM-23.
 //! Each rejected case asserts its reason text.
-#![cfg(unix)]
 
-use std::fs::{self, File, Permissions};
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::fs::{self, File};
+use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use horch_core::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 use horch_platform::channel::User;
+use horch_platform::fs as platform;
 
-/// A temporary folder with the root `outbox/` (mode 0700) in it.
 struct Setup {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -20,8 +23,7 @@ impl Setup {
     fn new() -> Setup {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("outbox");
-        fs::create_dir(&root).unwrap();
-        set_mode(&root, 0o700);
+        platform::create_dir_owner_only(&root).unwrap();
         Setup {
             _tmp: tmp,
             root,
@@ -43,14 +45,14 @@ impl Setup {
     }
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
 }
 
-/// Write `bytes` to `path` with mode 0600.
 fn write_file(path: &Path, bytes: &[u8]) {
-    fs::write(path, bytes).unwrap();
-    set_mode(path, 0o600);
+    let mut file = platform::create_new_owner_only(path).unwrap();
+    file.write_all(bytes).unwrap();
 }
 
 fn reason(path: &Path, rule: &Rule<'_>) -> String {
@@ -60,6 +62,7 @@ fn reason(path: &Path, rule: &Rule<'_>) -> String {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn symlink_is_rejected() {
     let s = Setup::new();
@@ -71,6 +74,7 @@ fn symlink_is_rejected() {
     assert_eq!(reason(&link, &s.rule(1024)), "the file is a link");
 }
 
+#[cfg(unix)]
 #[test]
 fn fifo_is_rejected() {
     let s = Setup::new();
@@ -108,6 +112,7 @@ fn file_over_its_limit_is_rejected_without_reading_it_all() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn file_with_mode_0644_is_rejected() {
     let s = Setup::new();
@@ -118,6 +123,7 @@ fn file_with_mode_0644_is_rejected() {
     assert_eq!(reason(&path, &s.rule(1024)), "mode 0644 is wider than 0600");
 }
 
+#[cfg(unix)]
 #[test]
 fn folder_with_mode_0755_is_rejected() {
     let s = Setup::new();
@@ -135,6 +141,7 @@ fn folder_with_mode_0755_is_rejected() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn real_path_outside_the_root_is_rejected() {
     let s = Setup::new();
@@ -157,6 +164,7 @@ fn real_path_outside_the_root_is_rejected() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn file_of_another_owner_is_rejected() {
     let s = Setup::new();
@@ -189,4 +197,54 @@ fn valid_file_is_read() {
     let bytes = read_protected(&path, &s.rule(1024)).unwrap();
 
     assert_eq!(bytes, b"{\"status\":\"done\"}");
+}
+
+#[test]
+fn valid_owner_only_file_and_request_spool_succeed_on_host_platform() {
+    let s = Setup::new();
+    let path = s.root.join("result.json");
+    write_file(&path, b"{\"status\":\"done\"}");
+
+    assert_eq!(
+        read_protected(&path, &s.rule(1024)).unwrap(),
+        b"{\"status\":\"done\"}"
+    );
+
+    let other = match &s.owner {
+        User::Uid(uid) => User::Uid(uid + 1),
+        User::Sid(sid) => User::Sid(format!("{sid}-1")),
+    };
+    let rule = Rule {
+        root: &s.root,
+        owner: &other,
+        limit: 1024,
+    };
+    assert!(
+        reason(&path, &rule).starts_with("owner "),
+        "{}",
+        reason(&path, &rule)
+    );
+
+    grant_others(&path);
+    let wide = reason(&path, &s.rule(1024));
+    assert!(
+        wide == "mode 0604 is wider than 0600"
+            || wide.starts_with("the access list allows S-1-1-0"),
+        "{wide}"
+    );
+}
+
+#[cfg(unix)]
+fn grant_others(path: &Path) {
+    set_mode(path, 0o604);
+}
+
+#[cfg(windows)]
+fn grant_others(path: &Path) {
+    let granted = std::process::Command::new("icacls")
+        .arg(path)
+        .args(["/grant", "*S-1-1-0:(R)"])
+        .status()
+        .unwrap();
+    assert!(granted.success());
 }

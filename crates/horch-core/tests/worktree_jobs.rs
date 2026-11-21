@@ -72,7 +72,7 @@ fn world_in(dir: tempfile::TempDir) -> World {
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
-    let repo = repo.canonicalize().unwrap();
+    let repo = horch_platform::path::for_child(&repo.canonicalize().unwrap());
     git(&repo, &["init", "-q", "-b", "main"]);
     std::fs::write(repo.join("a.txt"), "a\n").unwrap();
     git(&repo, &["add", "a.txt"]);
@@ -264,7 +264,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         self.job(id)
@@ -286,11 +286,15 @@ fn make_executable(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Windows has no executable bit to set.
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
+
 /// The job process of the run `id`, as `horch job run <id>` runs it: it
 /// waits until the run is `running`, then runs the executor with the
 /// recorded pid, on its own connection.
 fn job_process(db: &Path, config: &FleetConfig, id: i64) -> Option<State> {
-    let mut conn = open(db);
+    let conn = open(db);
     let until = Instant::now() + Duration::from_secs(20);
     let pid = loop {
         let row = jobs_store::get(&conn, id).unwrap().unwrap();
@@ -310,7 +314,7 @@ fn job_process(db: &Path, config: &FleetConfig, id: i64) -> Option<State> {
         profiles: &NoProfiles,
         sweep: None,
     };
-    jobs::run_job(&ctx, &mut conn, id, pid, &checks)
+    jobs::run_job(&ctx, &conn, id, pid, &checks)
         .unwrap()
         .map(|o| o.state())
 }
@@ -796,6 +800,259 @@ fn second_git_writing_job_of_1_repo_waits_for_the_first() {
     assert_eq!(git(&w.tree_path("t2"), &["rev-parse", "HEAD"]), w.base);
     kill(&w.job(first));
     kill(&ended);
+}
+
+#[cfg(unix)]
+fn sleeping(seconds: &str) -> LaunchSpec {
+    LaunchSpec {
+        program: "sleep".into(),
+        args: vec![seconds.into()],
+        cwd: None,
+        env_rule: Default::default(),
+        detach: true,
+        output: None,
+    }
+}
+
+#[cfg(unix)]
+fn start_sleeping(
+    w: &mut World,
+    runner: &mut JobRunner<'_>,
+    id: i64,
+    seconds: &str,
+    clock: i64,
+) -> bool {
+    let job = w.job(id);
+    let config = w.config.clone();
+    runner
+        .start(
+            &ctx(&config),
+            &mut w.conn,
+            &job,
+            &sleeping(seconds),
+            FleetSeconds(clock),
+        )
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn observe_run(
+    w: &mut World,
+    id: i64,
+    liveness: horch_core::fleetd::fleet_runtime::adapters::scans::Liveness,
+    clock: i64,
+) -> jobs::Observed {
+    use horch_core::fleetd::fleet_runtime::adapters::scans::ProcessFact;
+
+    let config = w.config.clone();
+    let facts = [ProcessFact {
+        key: id.to_string(),
+        liveness,
+    }];
+    let tx = w
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let seen = jobs::observe(&ctx(&config), &tx, &facts, FleetSeconds(clock)).unwrap();
+    tx.commit().unwrap();
+    seen
+}
+
+#[cfg(unix)]
+fn alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[cfg(unix)]
+fn wait_gone(runner: &mut JobRunner<'_>, pid: u32) {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        runner.reap();
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if !alive {
+            return;
+        }
+        assert!(Instant::now() < until, "the process {pid} is gone");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+fn rescue_and_observe(w: &mut World, row: &WorktreeRow, rescue: i64) -> String {
+    use horch_core::fleetd::fleet_runtime::adapters::job_result_file::{self, JobResult};
+    use horch_core::fleetd::worktree_custody::application::rescue::{
+        self as rescue_app, Observed as RescueObserved,
+    };
+
+    let ran = rescue_git::rescue(&w.fleet_git(), &w.fleet_root(), row);
+    assert!(ran.outcome.passed, "{}", ran.outcome.text);
+    let result = JobResult {
+        job_id: rescue,
+        run: w.job(rescue).run,
+        passed: true,
+        verdict: true,
+        text: ran.outcome.text,
+        data: ran.data,
+    };
+    job_result_file::write(&w.fleet_root(), &result).unwrap();
+    let config = w.config.clone();
+    let done = jobs::end_from_files(&ctx(&config), &mut w.conn).unwrap();
+    assert_eq!(done, vec![(rescue, State::Passed)]);
+    let job = w.job(rescue);
+    let tx = w
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let observed = rescue_app::observe(&ctx(&config), &tx, &job).unwrap();
+    tx.commit().unwrap();
+    match observed {
+        RescueObserved::Rescued(rescue_ref) => rescue_ref,
+        other => panic!("the row is not rescued: {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn hung_fetch_process_past_deadline_is_killed_and_releases_git_writer_for_queued_rescue() {
+    use horch_core::fleetd::fleet_runtime::adapters::scans::Liveness;
+
+    let mut w = world();
+    w.config.stop_grace_s = 1;
+    let row = w.made("t1");
+    w.conn
+        .execute(
+            "UPDATE worktrees SET state = 'orphaned' WHERE worktree_id = ?1",
+            [&row.worktree_id],
+        )
+        .unwrap();
+    let repo = w.repo.display().to_string();
+    let fetch = w.queue(Kind::Fetch, &repo, "fetch origin");
+    w.conn
+        .execute("UPDATE jobs SET time_limit_s = 5 WHERE id = ?1", [fetch])
+        .unwrap();
+    let rescue_key = rescue_git::rescue_key(&row.path, &w.base);
+    let rescue = w.queue(Kind::Rescue, &row.worktree_id, &rescue_key);
+    let mut runner = JobRunner::new(&Launcher);
+
+    let hung = start_fetch_that_ignores_term(&mut w, &mut runner, fetch);
+    assert_eq!(hung.state, State::Running);
+    assert_eq!(hung.deadline, Some(FleetSeconds(5)));
+    assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
+    assert!(
+        !start_sleeping(&mut w, &mut runner, rescue, "0", 1),
+        "the rescue waits for the fetch"
+    );
+    assert_eq!(w.job(rescue).state, State::Queued);
+
+    term_then_kill_after_the_grace(&mut w, &mut runner, fetch, &repo);
+
+    let ended = observe_run(&mut w, fetch, Liveness::Dead, 8);
+    assert_eq!(ended.ended, vec![(fetch, State::Abandoned)]);
+    assert_eq!(w.job(fetch).state, State::Abandoned);
+    assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
+
+    assert!(start_sleeping(&mut w, &mut runner, rescue, "0", 8));
+    assert_eq!(w.job(rescue).state, State::Running);
+    assert_rescue_saves_the_tree(&mut w, &row, rescue);
+    runner.reap();
+}
+
+#[cfg(unix)]
+fn start_fetch_that_ignores_term(w: &mut World, runner: &mut JobRunner<'_>, fetch: i64) -> JobRow {
+    let ready = w.dir.path().join("fetch-ready");
+    let hung_spec = LaunchSpec {
+        program: "sh".into(),
+        args: vec![
+            "-c".into(),
+            format!("trap '' TERM; : > '{}'; exec sleep 60", ready.display()).into(),
+        ],
+        cwd: None,
+        env_rule: Default::default(),
+        detach: true,
+        output: None,
+    };
+    let job = w.job(fetch);
+    let config = w.config.clone();
+    assert!(runner
+        .start(
+            &ctx(&config),
+            &mut w.conn,
+            &job,
+            &hung_spec,
+            FleetSeconds(0)
+        )
+        .unwrap());
+    let until = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() {
+        assert!(Instant::now() < until, "the fetch process ignores TERM");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    w.job(fetch)
+}
+
+#[cfg(unix)]
+fn term_then_kill_after_the_grace(
+    w: &mut World,
+    runner: &mut JobRunner<'_>,
+    fetch: i64,
+    repo: &str,
+) {
+    use horch_core::fleetd::fleet_runtime::adapters::scans::Liveness;
+
+    let pid = w.job(fetch).pid.unwrap();
+    let before = observe_run(w, fetch, Liveness::Alive, 4);
+    assert!(before.ended.is_empty() && before.stops.is_empty());
+    let seen = observe_run(w, fetch, Liveness::Alive, 6);
+    assert!(seen.ended.is_empty(), "the process still lives: {seen:?}");
+    assert_eq!(seen.stops.len(), 1, "{seen:?}");
+    assert!(!seen.stops[0].kill, "the first stop is the TERM: {seen:?}");
+    assert!(jobs::stop(&seen.stops[0]), "the TERM reached the process");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(alive(pid), "the fetch process ignores the TERM");
+    let in_grace = observe_run(w, fetch, Liveness::Alive, 6);
+    assert!(
+        in_grace.stops.is_empty(),
+        "no stop in the grace: {in_grace:?}"
+    );
+    let seen = observe_run(w, fetch, Liveness::Alive, 7);
+    assert_eq!(seen.stops.len(), 1, "{seen:?}");
+    assert!(seen.stops[0].kill, "the KILL after the grace: {seen:?}");
+    assert_eq!(w.job(fetch).state, State::Running);
+    assert!(jobs::git_writer_busy(&w.conn, repo).unwrap());
+    assert!(jobs::stop(&seen.stops[0]), "the KILL reached the process");
+    wait_gone(runner, pid);
+}
+
+#[cfg(unix)]
+fn assert_rescue_saves_the_tree(w: &mut World, row: &WorktreeRow, rescue: i64) {
+    use horch_core::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
+
+    let rescue_ref = rescue_and_observe(w, row, rescue);
+    assert!(
+        rescue_ref.starts_with("refs/horch/rescue/t1/"),
+        "{rescue_ref}"
+    );
+    let saved = trees::get(&w.conn, "t1").unwrap().unwrap();
+    assert_eq!(saved.state, WorktreeState::Rescued);
+    assert_eq!(saved.rescue_ref.as_deref(), Some(rescue_ref.as_str()));
+    let commit = git(&w.repo, &["rev-parse", &rescue_ref]);
+    assert_eq!(git(&w.repo, &["rev-parse", &format!("{commit}^")]), w.base);
+    assert_eq!(
+        git(&w.repo, &["show", &format!("{commit}:new.txt")]),
+        "new",
+        "the untracked file is saved"
+    );
+    assert!(w.tree_path("t1").join("new.txt").is_file());
 }
 
 #[test]

@@ -6,29 +6,26 @@
 //! Each test runs the `horch` binary with a real fleetd in stand-in mode
 //! (`docs/tickets/fleetd-p1/MAP.md`, Q8) on the ledger of its harness. A
 //! `sleep` child of the test is the agent of each worker, and only fleetd
-//! sees that an agent died. The tests make their ledger rows in 2 ways:
-//!
-//! - The RR-4 and RR-7 tests run a plan of 3 tasks. The test binds each
-//!   task to a worker with `horch_e2e::bind` (FR-5), then runs `finish` and
-//!   `done` as the worker.
-//! - The FM-11 test binds 1 task with `horch_e2e::bind`, then writes the
-//!   supervisor process of the worker and the agent of the orchestrator in
-//!   the ledger. The scan test writes its 10,000 rows of each kind in the
-//!   ledger directly, with no `horch` command.
+//! sees that an agent died.
 
 #![cfg(unix)]
 
 use std::fs::File;
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use horch_core::fleetd::fleet_runtime::adapters::scans::outbox_dir;
+use horch_core::fleetd::task_execution::adapters::task_files::{attempt_dir, write_attempt_files};
+use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
 use horch_core::procid;
 use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::taskledger::{util, Store};
 use horch_e2e::harness::{Harness, DELIVERY_PROBE_FAULT};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 const SIGKILL: i32 = 9;
@@ -56,22 +53,6 @@ fn text(o: &Output) -> String {
 fn ok(h: &Harness, args: &[&str]) -> String {
     let o = h.run(args);
     assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-/// Run `horch` as the worker `worker`. It must succeed.
-fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
-    let o = h
-        .horch(args)
-        .env("HORCH_WORKER_ID", worker)
-        .output()
-        .unwrap();
-    assert!(
-        o.status.success(),
-        "horch {} as {worker}: {}",
-        args.join(" "),
-        text(&o)
-    );
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
@@ -107,15 +88,63 @@ fn fleet_root(h: &Harness) -> PathBuf {
 }
 
 /// Poll `f` every 100 ms for at most `secs` seconds.
-fn wait_until<T>(what: &str, secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
+fn wait_until<T>(what: &str, secs: u64, f: impl FnMut() -> Option<T>) -> T {
+    wait_until_or(what, secs, f, String::new)
+}
+
+fn wait_until_or<T>(
+    what: &str,
+    secs: u64,
+    mut f: impl FnMut() -> Option<T>,
+    evidence: impl Fn() -> String,
+) -> T {
     let until = Instant::now() + Duration::from_secs(secs);
     loop {
         if let Some(v) = f() {
             return v;
         }
-        assert!(Instant::now() < until, "after {secs} s: {what}");
+        assert!(
+            Instant::now() < until,
+            "after {secs} s: {what}\n{}",
+            evidence()
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn evidence(h: &Harness) -> String {
+    let store = Store::open_read_only(&db(h)).unwrap();
+    let rows = |sql: &str| -> Vec<String> {
+        let mut stmt = store.conn().prepare(sql).unwrap();
+        let found = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        found
+    };
+    let moves = rows(
+        "SELECT entity || ' ' || entity_id || ': ' || COALESCE(from_state, '') || ' -> '
+             || COALESCE(to_state, '') || ' (' || COALESCE(cause, '') || ')'
+         FROM events WHERE to_state IS NOT NULL OR entity = 'attempt' ORDER BY event_id",
+    );
+    let attempts =
+        rows("SELECT id || ' ' || state || ' ' || COALESCE(outcome, '') FROM attempts ORDER BY id");
+    let jobs = rows(
+        "SELECT id || ' ' || kind || ' ' || subject || ' ' || state || ' '
+             || COALESCE(result_json, '') FROM jobs ORDER BY id",
+    );
+    let mut out = format!(
+        "moves:\n{}\nattempts: {attempts:?}\njobs: {jobs:?}\n",
+        moves.join("\n")
+    );
+    for n in 0.. {
+        if !h.root.join(format!("fleetd-{n}.stderr")).exists() {
+            break;
+        }
+        out.push_str(&format!("fleetd {n}: {}\n", fleetd_output(h, n)));
+    }
+    out
 }
 
 // ─── fleetd ─────────────────────────────────────────────────────────────
@@ -123,7 +152,7 @@ fn wait_until<T>(what: &str, secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
 /// The PID and start time of the fleetd that the `fleetd` row of the ledger
 /// names (design, "Ledger"). `None` while no row exists.
 fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
-    let store = Store::open(db).ok()?;
+    let store = Store::open_read_only(db).ok()?;
     let (pid, started): (i64, i64) = store
         .conn()
         .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
@@ -317,18 +346,32 @@ impl Drop for Agent {
     }
 }
 
-/// 1 worker of persona `opus` whose agent is a live [`Agent`].
 struct Worker {
     id: String,
     agent: Agent,
+    task_id: String,
+    attempt: String,
+    add_job: Option<i64>,
 }
 
-/// A new worker of persona `opus` with a live [`Agent`], bound to the next
-/// startable task (FR-5). Returns the worker and the seq of its task.
+impl Worker {
+    fn task_yaml(&self, h: &Harness) -> PathBuf {
+        attempt_dir(&fleet_root(h), &self.task_id, &self.attempt).join("task.yaml")
+    }
+}
+
 fn bind(h: &Harness) -> (Worker, i64) {
     let agent = Agent::start();
-    let bound = horch_e2e::bind::bind(h, "opus", Some(agent.pid()));
-    let seq = horch_core::taskledger::Store::open(&db(h))
+    let bound = wait_until_or(
+        "a task of opus binds, also one whose orphaned worktree fleetd rescues first",
+        60,
+        || horch_e2e::bind::try_bind(h, "opus", Some(agent.pid())).ok(),
+        || {
+            let why = horch_e2e::bind::try_bind(h, "opus", Some(agent.pid())).err();
+            format!("{why:?}\n{}", evidence(h))
+        },
+    );
+    let seq = horch_core::taskledger::Store::open_read_only(&db(h))
         .and_then(|store| {
             Ok(store.conn().query_row(
                 "SELECT seq FROM tasks WHERE task_id = ?1",
@@ -337,24 +380,62 @@ fn bind(h: &Harness) -> (Worker, i64) {
             )?)
         })
         .unwrap();
+    let tree = bound.worktree.expect("a worktree task binds a worktree");
+    let attempt = format!("A{}", bound.attempt);
+    let facts = TaskFacts {
+        task: format!("t{seq}"),
+        task_id: bound.task_id.clone(),
+        run: "alpha".into(),
+        attempt: attempt.clone(),
+        profile: "opus".into(),
+        worktree: tree.path,
+        branch: tree.branch,
+        read_first: format!("tickets/t{seq}.md"),
+        goal: format!("t{seq}"),
+        check: Some("true".into()),
+        kind: None,
+        ticket_snapshot: format!("# T{seq}\n"),
+        extra: None,
+        handoff: None,
+        idea: None,
+        feature: None,
+        covers: Vec::new(),
+        verdict: None,
+    };
+    write_attempt_files(&fleet_root(h), &facts, &[]).unwrap();
     let w = Worker {
         id: bound.worker_id,
         agent,
+        task_id: bound.task_id,
+        attempt,
+        add_job: tree.add_job,
     };
     (w, seq)
 }
 
-/// The work of `w` on its bound task `seq`: its worktree, 1 commit, the
-/// finish steps and `horch ledger done`. Then its agent exits, as an agent
-/// does after `done`; only fleetd ends the attempt.
+fn yaml_value(yaml: &str, key: &str) -> String {
+    let prefix = format!("{key}: ");
+    let value = yaml
+        .lines()
+        .find_map(|l| l.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("no {key} in task.yaml: {yaml}"));
+    value.trim_matches('"').to_string()
+}
+
+fn wait_for_worktree(h: &Harness, w: &Worker) -> PathBuf {
+    let yaml = std::fs::read_to_string(w.task_yaml(h)).unwrap();
+    let path = PathBuf::from(yaml_value(&yaml, "worktree"));
+    wait_until(
+        &format!("the worktree_add job of fleetd makes {}", path.display()),
+        60,
+        || path.join(".git").exists().then_some(()),
+    );
+    path
+}
+
 fn complete(h: &Harness, w: &mut Worker, seq: i64) {
     let name = format!("t{seq}");
-    let out = ok_as(h, &w.id, &["ledger", "worktree", "new", &name]);
-    let path = PathBuf::from(
-        out.lines()
-            .find_map(|l| l.strip_prefix("path: "))
-            .unwrap_or_else(|| panic!("no worktree path in: {out}")),
-    );
+    let path = wait_for_worktree(h, w);
     let file = format!("{name}.txt");
     std::fs::write(path.join(&file), "work\n").unwrap();
     for args in [
@@ -364,8 +445,38 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
         let o = h.git_cmd(args).current_dir(&path).output().unwrap();
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
-    ok_as(h, &w.id, &["ledger", "finish"]);
-    ok_as(h, &w.id, &["ledger", "done", &format!("{name} is done")]);
+    let o = h
+        .git_cmd(&["rev-parse", "HEAD"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git rev-parse: {}", text(&o));
+    let commit = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let yaml = std::fs::read_to_string(w.task_yaml(h)).unwrap();
+    let outbox = PathBuf::from(yaml_value(&yaml, "report_to"));
+    let result = serde_json::json!({
+        "task": w.task_id,
+        "attempt": w.attempt,
+        "status": "completed",
+        "summary": format!("{name} is done"),
+        "commits": [commit],
+        "files_changed": [file],
+    });
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&outbox)
+        .unwrap();
+    let tmp = outbox.join("result.json.tmp");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .unwrap()
+        .write_all(result.to_string().as_bytes())
+        .unwrap();
+    std::fs::rename(&tmp, outbox.join("result.json")).unwrap();
     w.agent.kill();
 }
 
@@ -373,46 +484,26 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
 /// numbers of the run never reap a quiet worker during a test: only a dead
 /// agent ends an attempt.
 fn plan(h: &Harness, tasks: usize) {
-    // The test fleetd applies the routed plan; the test then runs its own
-    // fleetd.
-    h.serve_fleetd();
-    ok(
-        h,
-        &[
-            "ledger",
-            "run",
-            "new",
-            "alpha",
-            "--steps",
-            "check",
-            "--check",
-            "true",
-            "--check-every",
-            "3600",
-            "--stall-rounds",
-            "1000",
-        ],
-    );
+    let run = seed_run(h, "alpha", None, "w1:p1");
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE runs SET finish_steps = '[\"check\"]', check_every_s = 3600,
+                 stall_rounds = 1000
+             WHERE run_id = ?1",
+            [&run.run_id],
+        )
+        .unwrap();
     for n in 1..=tasks {
-        let p = ticket(h, &format!("t{n}"), &format!("# T{n}\n"));
-        ok(
-            h,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                &p.to_string_lossy(),
-                "--primary",
-                "opus",
-            ],
-        );
+        let p = ticket(h, &format!("t{n}"), &format!("# T{n}\n**Check:** `true`\n"));
+        seed_task(h, &run, &p, "opus");
     }
-    h.stop_fleetd();
 }
 
 /// The status of the task `seq`.
 fn task_status(h: &Harness, seq: i64) -> String {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row("SELECT status FROM tasks WHERE seq = ?1", [seq], |r| {
@@ -422,11 +513,11 @@ fn task_status(h: &Harness, seq: i64) -> String {
 }
 
 fn live_attempts(h: &Harness) -> i64 {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
-            "SELECT count(*) FROM attempts WHERE state <> 'ended'",
+            "SELECT count(*) FROM attempts WHERE state <> 'ended' AND task_id IS NOT NULL",
             [],
             |r| r.get(0),
         )
@@ -445,7 +536,7 @@ struct TaskOutcome {
 }
 
 fn outcomes(h: &Harness) -> Vec<TaskOutcome> {
-    let store = Store::open(&db(h)).unwrap();
+    let store = Store::open_read_only(&db(h)).unwrap();
     let conn = store.conn();
     let mut tasks = conn
         .prepare("SELECT task_id, seq, status, attempts FROM tasks ORDER BY seq")
@@ -490,7 +581,16 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     let (mut w2, s2) = bind(h);
     let (mut w3, s3) = bind(h);
     assert_eq!([s1, s2, s3], [1, 2, 3], "each bind takes the next task");
+    for w in [&w1, &w2, &w3] {
+        wait_for_worktree(h, w);
+    }
     complete(h, &mut w1, 1);
+    wait_until_or(
+        "the verifier of fleetd moves task 1 to done",
+        60,
+        || (task_status(h, 1) == "done").then_some(()),
+        || evidence(h),
+    );
     if kill_fleetd {
         fleetds.kill_last();
     }
@@ -514,9 +614,15 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     let (mut w4, s4) = bind(h);
     assert_eq!(s4, 2, "the new worker is bound to task 2");
     complete(h, &mut w4, 2);
-    wait_until("fleetd ends each attempt whose agent exited", 30, || {
-        (live_attempts(h) == 0).then_some(())
-    });
+    wait_until_or(
+        "the verifier moves each task to done, and fleetd ends each attempt",
+        60,
+        || {
+            let done = (1..=3).all(|seq| task_status(h, seq) == "done");
+            (done && live_attempts(h) == 0).then_some(())
+        },
+        || evidence(h),
+    );
     after_a_whole_pass(h, pid);
     let last = fleetds.children.len() - 1;
     assert!(
@@ -527,8 +633,6 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     outcomes(h)
 }
 
-/// The end state of the plan of [`run_plan`]: each task done once, task 2
-/// after 1 more attempt.
 fn plan_done() -> Vec<TaskOutcome> {
     let done = |seq: i64, ends: &[&str]| -> TaskOutcome {
         let attempts = ends
@@ -543,9 +647,9 @@ fn plan_done() -> Vec<TaskOutcome> {
         }
     };
     vec![
-        done(1, &["done"]),
-        done(2, &["no_result", "done"]),
-        done(3, &["done"]),
+        done(1, &["verified"]),
+        done(2, &["no_result", "verified"]),
+        done(3, &["verified"]),
     ]
 }
 
@@ -556,7 +660,7 @@ fn plan_done() -> Vec<TaskOutcome> {
 type CursorRow = (Option<String>, String, Option<String>);
 
 fn cursor(h: &Harness, kind: &str) -> Option<CursorRow> {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
@@ -642,11 +746,38 @@ fn seed_folders(h: &Harness, agent: &Agent) {
 
 // ─── the tests ──────────────────────────────────────────────────────────
 
+#[derive(Default)]
+struct HeartbeatGaps {
+    last: Option<(u64, u64)>,
+}
+
+impl HeartbeatGaps {
+    fn see(&mut self, h: &Harness) {
+        let Some(hb) = heartbeat(h) else { return };
+        let (Some(pid), at) = (hb["pid"].as_u64(), awake_ms(&hb)) else {
+            return;
+        };
+        if let Some((last_pid, before)) = self.last {
+            let gap = at.saturating_sub(before);
+            assert!(
+                last_pid != pid || gap < HANG_LIMIT_MS,
+                "2 heartbeats are {gap} ms of awake time apart with {FOLDERS} folders of each kind"
+            );
+        }
+        self.last = Some((pid, at));
+    }
+}
+
 /// Wait until the `pass_cursors` row of each kind of [`FOLDER_SCANS`]
 /// differs from its row in `before`: a pass stored each folder cursor again.
 /// Returns the new rows.
-fn cursors_moved(h: &Harness, before: &[Option<CursorRow>]) -> Vec<CursorRow> {
+fn cursors_moved(
+    h: &Harness,
+    before: &[Option<CursorRow>],
+    gaps: &mut HeartbeatGaps,
+) -> Vec<CursorRow> {
     wait_until("a pass moves the cursor of each folder scan", 120, || {
+        gaps.see(h);
         let now: Vec<Option<CursorRow>> = FOLDER_SCANS.iter().map(|k| cursor(h, k)).collect();
         let moved = now.iter().zip(before).all(|(n, b)| n.is_some() && n != b);
         moved.then(|| now.into_iter().flatten().collect())
@@ -668,6 +799,7 @@ fn cursors_moved(h: &Harness, before: &[Option<CursorRow>]) -> Vec<CursorRow> {
 #[test]
 fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart()
 {
+    horch_e2e::expected::check(file!(), "scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart", || {
     let h = world("p1-scan", &format!("{FAST_PASSES}scan_budget_ms = 1\n"));
     plan(&h, 0);
     let agent = Agent::start();
@@ -675,9 +807,10 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
     let mut fleetds = Fleetds::new(&h);
     start_fleetd(&h, &mut fleetds, None);
 
+    let mut gaps = HeartbeatGaps::default();
     let mut before = vec![None; FOLDER_SCANS.len()];
     for _ in 0..3 {
-        before = cursors_moved(&h, &before).into_iter().map(Some).collect();
+        before = cursors_moved(&h, &before, &mut gaps).into_iter().map(Some).collect();
     }
     fleetds.kill_last();
     let middle = FOLDERS / 2;
@@ -706,7 +839,11 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
     }
 
     let second = start_fleetd(&h, &mut fleetds, None);
-    let first_pass = cursors_moved(&h, &stored.iter().cloned().map(Some).collect::<Vec<_>>());
+    let first_pass = cursors_moved(
+        &h,
+        &stored.iter().cloned().map(Some).collect::<Vec<_>>(),
+        &mut gaps,
+    );
     for ((kind, (after, lap, _)), (now_after, now_lap, now_prev)) in
         FOLDER_SCANS.iter().zip(&stored).zip(first_pass)
     {
@@ -733,6 +870,7 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
         )),
         "{check}"
     );
+    });
 }
 
 /// RR-4: the watcher reports no file event, and the plan still ends with
@@ -751,6 +889,93 @@ fn rr4_tasks_complete_with_all_file_watch_events_dropped() {
             "with no file event, the scan of {kind} read no folder"
         );
     }
+}
+
+fn settled_heartbeat(h: &Harness, pid: u32) -> u64 {
+    let mut last: Option<(u64, Instant)> = None;
+    wait_until(
+        &format!("the heartbeat of fleetd PID {pid} settles"),
+        30,
+        || {
+            let hb = heartbeat(h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
+            let at = awake_ms(&hb);
+            match last {
+                Some((before, since)) if before == at => {
+                    (since.elapsed() >= Duration::from_secs(2)).then_some(at)
+                }
+                _ => {
+                    last = Some((at, Instant::now()));
+                    None
+                }
+            }
+        },
+    )
+}
+
+const LONG_PERIOD_S: u64 = 300;
+
+const WAKE_WAIT_S: u64 = 15;
+
+fn commit_to_ledger(h: &Harness) {
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute("UPDATE runs SET check_every_s = check_every_s", [])
+        .unwrap();
+}
+
+fn woke_by(h: &Harness, pid: u32, before: u64, event: &str) {
+    wait_until(
+        &format!("{event} wakes a pass of fleetd PID {pid} before its period of {LONG_PERIOD_S} s"),
+        WAKE_WAIT_S,
+        || {
+            let hb = heartbeat(h).filter(|hb| hb["pid"].as_u64() == Some(u64::from(pid)))?;
+            (awake_ms(&hb) != before).then_some(())
+        },
+    );
+}
+
+#[test]
+fn rr4_file_request_and_job_events_wake_pass_before_period() {
+    let h = world("p1-rr4-wake", &format!("pass_period_s = {LONG_PERIOD_S}\n"));
+    plan(&h, 1);
+    let run = fleet_root(&h).join("run");
+    for dir in ["requests", "jobs"] {
+        std::fs::create_dir_all(run.join(dir)).unwrap();
+    }
+    let mut fleetds = Fleetds::new(&h);
+    let pid = start_fleetd(&h, &mut fleetds, None);
+    let (_w, seq) = bind(&h);
+    let (task, attempt): (String, String) = Store::open_read_only(&db(&h))
+        .unwrap()
+        .conn()
+        .query_row(
+            "SELECT a.task_id, a.id FROM attempts a JOIN tasks t ON t.task_id = a.task_id
+             WHERE t.seq = ?1",
+            [seq],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let outbox = outbox_dir(&fleet_root(&h), &task, &attempt);
+    let before = settled_heartbeat(&h, pid);
+    std::fs::create_dir_all(&outbox).unwrap();
+    commit_to_ledger(&h);
+    woke_by(&h, pid, before, "a commit to the ledger");
+    let before = settled_heartbeat(&h, pid);
+    std::fs::write(
+        run.join("requests").join("wake.json"),
+        "{\"kind\": \"wake\"}\n",
+    )
+    .unwrap();
+    woke_by(&h, pid, before, "a request file");
+
+    let before = settled_heartbeat(&h, pid);
+    std::fs::write(outbox.join("result.json"), "{}\n").unwrap();
+    woke_by(&h, pid, before, "a result.json in the outbox");
+
+    let before = settled_heartbeat(&h, pid);
+    std::fs::write(run.join("jobs").join("J-1-1.json"), "{}\n").unwrap();
+    woke_by(&h, pid, before, "a job result file");
 }
 
 /// RR-7: the same plan, once with 1 fleetd and once with fleetd killed by
@@ -809,7 +1034,7 @@ fn lines(path: &Path) -> usize {
 
 /// The count of events that move `entity` `id` from `from` to `to`.
 fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64 {
-    Store::open(&db(h))
+    Store::open_read_only(&db(h))
         .unwrap()
         .conn()
         .query_row(
@@ -821,90 +1046,39 @@ fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64
         .unwrap()
 }
 
-/// The attempts of orchestrators: the respawns, which have no task
-/// (MAP.md, Q6).
-fn orchestrator_attempts(h: &Harness) -> Vec<String> {
-    let store = Store::open(&db(h)).unwrap();
-    let mut stmt = store
-        .conn()
-        .prepare("SELECT id FROM attempts WHERE task_id IS NULL ORDER BY id")
-        .unwrap();
-    let ids = stmt
-        .query_map([], |r| r.get(0))
+/// The state and the run number of the job `id`.
+fn job(h: &Harness, id: i64) -> (String, i64) {
+    Store::open_read_only(&db(h))
         .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    ids
-}
-
-/// The launches of an orchestrator respawn: each `pane run` in the fake
-/// herdr of a command with `HORCH_ORCHESTRATOR_RESPAWN`.
-fn respawn_launches(h: &Harness) -> usize {
-    h.calls_of("herdr")
-        .iter()
-        .filter(|c| c["argv"][0] == "pane" && c["argv"][1] == "run")
-        .filter(|c| {
-            c["argv"][3]
-                .as_str()
-                .is_some_and(|cmd| cmd.contains("HORCH_ORCHESTRATOR_RESPAWN"))
+        .conn()
+        .query_row("SELECT state, run FROM jobs WHERE id = ?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
         })
-        .count()
+        .unwrap()
 }
 
-/// The harness of the FM-11 test: the fake herdr has the workspace `w1`,
-/// and each `horch` command runs in it, so the run records `w1` as the
-/// workspace of its orchestrator.
-fn fleet_world(name: &str) -> Harness {
-    let mut h = world(name, FAST_PASSES);
-    let quota = horch_e2e::harness::fixtures().join("quota/all-ok.json");
-    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
-    let mut create = Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", text(&o));
-    h
-}
-
-/// FM-11: fleetd dies after the commit of part 2 and before its effects.
-/// The pass ended the attempt of a dead agent and queued its task again,
-/// and wrote the respawn of a dead orchestrator as an attempt in
-/// `launching`. It did not stop the supervisor process of the worker and
-/// did not launch the orchestrator. The next fleetd does each effect once:
-/// 1 stop of the supervisor and 1 launch of the orchestrator. It does not
-/// end the attempt, queue the task or write a respawn a second time.
 #[test]
 fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
-    let h = fleet_world("p1-fm11");
+    let h = world("p1-fm11", FAST_PASSES);
     plan(&h, 1);
     let (mut w, seq) = bind(&h);
     assert_eq!(seq, 1);
+    let add_job = w.add_job.expect("the bind queues the worktree_add job");
+    let job_id = add_job.to_string();
+    let tree = PathBuf::from(yaml_value(
+        &std::fs::read_to_string(w.task_yaml(&h)).unwrap(),
+        "worktree",
+    ));
     let stops = h.root.join("stops.txt");
     let mut supervisor = Polite::start(&stops);
     let pid = supervisor.0.id();
     let start = procid::start_time(pid).expect("the start time of the supervisor") as i64;
-    let mut gone = Agent::start();
-    let orch_pid = gone.pid();
-    let orch_start = procid::start_time(orch_pid).expect("the start time of the agent") as i64;
-    gone.kill();
     let store = Store::open(&db(&h)).unwrap();
     store
         .conn()
         .execute(
             "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
             (&w.id, pid, start),
-        )
-        .unwrap();
-    // The orchestrator of the run registered, and its agent is gone.
-    store
-        .conn()
-        .execute(
-            "UPDATE workers SET agent_pid = ?1, agent_started = ?2
-             WHERE worker_id = (SELECT orchestrator_worker_id FROM runs)",
-            (orch_pid, orch_start),
         )
         .unwrap();
     let (task, attempt): (String, String) = store
@@ -938,36 +1112,50 @@ fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
         ("ready".to_string(), 1),
         "the pass committed the end of the attempt and the requeue before it died"
     );
-    let respawn = orchestrator_attempts(&h);
-    assert_eq!(
-        respawn.len(),
-        1,
-        "the pass committed 1 respawn before it died"
-    );
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(lines(&stops), 0, "no stop before the restart");
     assert!(
         !supervisor.exited(),
         "the supervisor runs until the restart"
     );
-    assert_eq!(respawn_launches(&h), 0, "no launch before the restart");
+    assert_eq!(
+        (
+            job(&h, add_job),
+            transitions(&h, "job", &job_id, "queued", "running")
+        ),
+        (("queued".to_string(), 1), 0),
+        "no start of the worktree_add job before the restart\n{}",
+        evidence(&h)
+    );
+    assert!(!tree.exists(), "no worktree before the restart");
 
     let fleetd = start_fleetd(&h, &mut fleetds, None);
     wait_until("the restarted fleetd stops the supervisor", 30, || {
         supervisor.exited().then_some(())
     });
-    wait_until("the restarted fleetd launches the respawn", 30, || {
-        (respawn_launches(&h) > 0).then_some(())
-    });
+    wait_until_or(
+        "the restarted fleetd starts the worktree_add job, and it passes",
+        60,
+        || (job(&h, add_job).0 == "passed").then_some(()),
+        || evidence(&h),
+    );
     for _ in 0..3 {
         after_a_whole_pass(&h, fleetd);
     }
     assert_eq!(lines(&stops), 1, "1 stop of the supervisor");
-    assert_eq!(respawn_launches(&h), 1, "1 launch of the respawn");
     assert_eq!(
-        orchestrator_attempts(&h),
-        respawn,
-        "the respawn has 1 attempt"
+        (
+            job(&h, add_job),
+            transitions(&h, "job", &job_id, "queued", "running")
+        ),
+        (("passed".to_string(), 1), 1),
+        "1 start of the worktree_add job, in its first run\n{}",
+        evidence(&h)
+    );
+    assert!(
+        tree.join(".git").exists(),
+        "the job made the worktree {}",
+        tree.display()
     );
     assert_eq!(
         transitions(&h, "attempt", &attempt, "live", "ended"),

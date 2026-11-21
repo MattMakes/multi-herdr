@@ -9,6 +9,7 @@
 //! and ends the run from its result file, as a pass of fleetd ends it.
 //! Git is the host git on a temp repository. `gh` is a fake script. No
 //! test calls the real `gh` or a real remote.
+#![cfg(unix)]
 
 #[path = "common/warm.rs"]
 mod warm;
@@ -215,21 +216,31 @@ impl World {
     /// The `worktree_triage` request of `decision` on the row of `name`,
     /// as the command sends it.
     fn send(&mut self, name: &str, decision: &str, direction: &str) -> Outcome {
-        let row = self
-            .rows()
-            .into_iter()
-            .find(|r| r.name == name)
-            .unwrap_or_else(|| panic!("no triage row {name}"));
+        self.send_all(&[(name, decision, direction)])
+    }
+
+    fn send_all(&mut self, items: &[(&str, &str, &str)]) -> Outcome {
+        let rows = self.rows();
+        let decisions: Vec<Value> = items
+            .iter()
+            .map(|&(name, decision, direction)| {
+                let row = rows
+                    .iter()
+                    .find(|r| r.name == name)
+                    .unwrap_or_else(|| panic!("no triage row {name}"));
+                json!({
+                    "row": row,
+                    "decision": decision,
+                    "direction": (!direction.is_empty()).then_some(direction),
+                    "line": 3,
+                    "ticket": null,
+                })
+            })
+            .collect();
         let payload = json!({
             "root": self.root,
             "primary": "opus",
-            "decisions": [{
-                "row": row,
-                "decision": decision,
-                "direction": (!direction.is_empty()).then_some(direction),
-                "line": 3,
-                "ticket": null,
-            }],
+            "decisions": decisions,
         });
         let n = NEXT_ID.fetch_add(1, Ordering::SeqCst);
         let Value::Object(payload) = payload else {
@@ -272,6 +283,10 @@ impl World {
     /// Start the job `id` as `true`, run its executor on a read-only
     /// connection, then end it from its result file.
     fn run(&mut self, id: i64) -> JobRow {
+        self.run_editing(id, |_| {})
+    }
+
+    fn run_editing(&mut self, id: i64, edit: impl FnOnce(&mut Value)) -> JobRow {
         let job = jobs_store::get(&self.conn, id).unwrap().unwrap();
         assert_eq!(job.kind, JobKind::TriageApply);
         let spec = LaunchSpec {
@@ -306,6 +321,14 @@ impl World {
         jobs::run_job(&ctx, read_only.conn(), id, pid, &checks).unwrap();
         drop(read_only);
         assert_eq!(counts(&self.conn), before, "the job process writes no row");
+        let run = jobs_store::get(&self.conn, id).unwrap().unwrap().run;
+        let file = self
+            .top
+            .join("fleet/run/jobs")
+            .join(format!("{id}-{run}.json"));
+        let mut result: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        edit(&mut result["data"]);
+        std::fs::write(&file, serde_json::to_vec(&result).unwrap()).unwrap();
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
@@ -572,6 +595,36 @@ fn a_failed_removal_after_the_rescue_keeps_the_rescue_ref() {
     assert_eq!(row[1].as_deref(), Some(rescue[0].as_str()));
     assert_eq!(row[2].as_deref(), Some("cleanup_failed"));
     assert_eq!(row[3], None);
+}
+
+#[test]
+fn refused_second_item_fact_does_not_roll_back_first_item_completed_rescue_and_removal() {
+    let mut w = world();
+    let tree1 = w.tree("tree1");
+    let tree2 = w.tree("tree2");
+    let result = match w.send_all(&[("tree1", "ARCHIVE", ""), ("tree2", "ARCHIVE", "")]) {
+        Outcome::Applied(v) => v,
+        Outcome::Refused(why) => panic!("refused: {why}"),
+    };
+    let job = w.run_editing(result["job"].as_i64().unwrap(), |facts| {
+        assert_eq!(facts["decisions"][0]["ok"], json!(true), "{facts}");
+        assert_eq!(facts["decisions"][0]["removed"], json!(true), "{facts}");
+        facts["decisions"][1]["archive_ref"] = json!("refs/heads/main");
+    });
+    assert_eq!(job.state, State::Passed, "{}", text(&job));
+    assert!(!tree1.exists(), "the folder of item 1 is removed");
+    let row = w.tree_row(&tree1, "state,rescue_ref,status,decision");
+    assert_eq!(row[0].as_deref(), Some("removed"));
+    let rescue = row[1].clone().expect("the verified rescue ref of item 1");
+    assert!(w.has_ref(&rescue), "{rescue}");
+    assert_eq!(row[2].as_deref(), Some("archived"));
+    assert_eq!(row[3].as_deref(), Some("ARCHIVE"));
+    let row = w.tree_row(&tree2, "status,decision,reason");
+    assert_eq!(row[0].as_deref(), Some("cleanup_failed"));
+    assert_eq!(row[1], None);
+    let reason = row[2].as_deref().unwrap_or("");
+    assert!(reason.contains("fleetd refused the facts"), "{reason}");
+    assert!(reason.contains("refs/heads/main"), "{reason}");
 }
 
 // ─── the job input ──────────────────────────────────────────────────────

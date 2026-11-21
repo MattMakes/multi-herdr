@@ -90,7 +90,11 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         state_root: ctx.paths.state_root.clone(),
         personas: super::taskledger::codex_personas(ctx),
     };
-    let sandboxes = WorkerSandboxes::new(codex, ctx.paths.fleet_root.clone());
+    let sandboxes = WorkerSandboxes::on_path(
+        codex,
+        ctx.paths.fleet_root.clone(),
+        ctx.inherited.path.clone(),
+    );
     let tools = super::taskledger::tools(ctx);
     let checks = CheckRunner {
         host: &Launcher,

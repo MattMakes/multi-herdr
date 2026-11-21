@@ -26,6 +26,26 @@ pub(crate) fn create_dir_mode(builder: &mut DirBuilder, mode: u32) -> Result<(),
     Ok(())
 }
 
+pub(crate) fn create_dir_owner_only(path: &Path) -> io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
+
+pub(crate) fn create_new_owner_only(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+pub(crate) fn check_owner_only(_file: &File, meta: &Metadata, rule: u32) -> Result<(), String> {
+    let mode = meta.mode() & 0o7777;
+    if mode & 0o077 != 0 {
+        return Err(format!("mode {mode:04o} is wider than {rule:04o}"));
+    }
+    Ok(())
+}
+
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     let f = std::fs::File::open(dir)?;
     f.sync_all()
@@ -213,6 +233,10 @@ pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
 
 pub(crate) fn file_identity(meta: &Metadata) -> (u64, u64) {
     (meta.dev(), meta.ino())
+}
+
+pub(crate) fn device_and_inode(meta: &Metadata) -> Result<(u64, u64), NotSupported> {
+    Ok((meta.dev(), meta.ino()))
 }
 
 /// [`crate::fs::BreakerGuard`]: the open dir that holds the `flock`, or

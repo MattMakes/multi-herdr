@@ -67,6 +67,12 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     ..Default::default()
                 },
             )?;
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run.run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )?;
             tasks::add(
                 tx,
                 &run,
@@ -84,11 +90,11 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     ..Default::default()
                 },
                 horch_core::fleetd::task_execution::domain::task::Recorded {
-                    pid: pid,
+                    pid,
                     pid_start: Some(started),
                 },
             )?;
-            horch_core::taskledger::testing::record_supervisor(tx, &w, 1, Some(1))?;
+            horch_core::taskledger::testing::record_supervisor(tx, &w, pid, Some(started))?;
             Ok((run, w))
         })
         .unwrap();
@@ -122,17 +128,6 @@ fn pinned_check(h: &Harness, run: &Run, at: &str) -> serde_json::Value {
     serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()[0].clone()
 }
 
-fn wakes(store: &Store, run: &Run) -> Vec<String> {
-    let mut stmt = store
-        .conn()
-        .prepare("SELECT text FROM events WHERE run_id = ?1 AND kind = 'woke' ORDER BY event_id")
-        .unwrap();
-    stmt.query_map([&run.run_id], |r| r.get::<_, String>(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-}
-
 /// The wakes that the fleetd pass wrote to the outbox of `run`. The
 /// outbox keeps them with `HORCH_NO_WAKE`, which writes no `woke` event.
 fn outbox(store: &Store, run: &Run) -> Vec<String> {
@@ -151,7 +146,7 @@ fn outbox(store: &Store, run: &Run) -> Vec<String> {
 /// no activity after its claim. The pass keeps it within stall_after_s (300
 /// s), with a proxy check and no stop. Past it the agent is hung: rung 3
 /// stops it at once, with no doorbell (the ladder rings only an idle
-/// pane), and rung 6 queues the task again with 1 wake.
+/// pane), and rung 6 queues the task again; the operator gets 1 needs-you item.
 #[test]
 fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung_3() {
     let (h, store, run, worker, mut agent) = pinned_worker("wd203-busy-pi");
@@ -231,8 +226,33 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
         "incomplete"
     );
     let w = outbox(&store, &run);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(w[0].contains("T-1: retry after 30 s"), "{}", w[0]);
+    assert!(w.is_empty(), "{w:?}");
+    let feature: String = store
+        .conn()
+        .query_row(
+            "SELECT printf('F-%04d', rowid) FROM runs WHERE run_id = ?1",
+            [&run.run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (kind, entity, entity_id, state, text): (String, String, String, String, String) = store
+        .conn()
+        .query_row(
+            "SELECT kind, entity, entity_id, state, text FROM needs_you WHERE key = ?1",
+            [format!("stuck:{feature}")],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            kind.as_str(),
+            entity.as_str(),
+            entity_id.as_str(),
+            state.as_str()
+        ),
+        ("stuck", "feature", feature.as_str(), "open"),
+        "{text}"
+    );
 }
 
 /// Write `config` as the `fleet.toml` of the fleet root of `h`: the folder
@@ -337,228 +357,8 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
     assert_eq!(kept, "open");
 }
 
-/// The wakes of `run` in the outbox that no delivery took.
-fn undelivered(store: &Store, run: &Run) -> Vec<String> {
-    let mut stmt = store
-        .conn()
-        .prepare(
-            "SELECT text FROM outbox WHERE run_id = ?1 AND delivered_at IS NULL ORDER BY rowid",
-        )
-        .unwrap();
-    stmt.query_map([&run.run_id], |r| r.get::<_, String>(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-}
-
-fn mail_in(h: &Harness, workspace: &str) -> Vec<String> {
-    horch_core::messaging::mail::Mail::under(&h.state, workspace)
-        .pending()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|m| m.text)
-        .collect()
-}
-
-/// An idle worker of a run that workspace w1 owns, checked by a watchdog
-/// pass from a process of workspace w2: the stall wake goes to w1.
 #[test]
-fn a_wake_from_another_workspace_goes_to_the_runs_workspace() {
-    let (mut h, store, run, _worker, _agent) = pinned_worker("wd218-wake-target");
-    h.unset("HORCH_NO_WAKE");
-    fake(&h, &["workspace", "create", "--label", "w1"]);
-    fake(
-        &h,
-        &[
-            "pane",
-            "test-state",
-            "w1:p1",
-            "--text",
-            "Ready",
-            "--status",
-            "idle",
-            "--agent",
-            "pi",
-        ],
-    );
-    let o = h
-        .horch(&[
-            "ledger",
-            "watch",
-            "--run",
-            &run.run_id,
-            "--once",
-            "--force",
-            "--json",
-        ])
-        .env("HORCH_NOW", "2030-01-01T00:10:00Z")
-        .env("HORCH_WORKSPACE_ID", "w2")
-        .env("HORCH_ROLE", "sonnet-2")
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let c = &serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()[0];
-    assert_eq!(c["verdict"], "no_progress", "{c}");
-    let w = wakes(&store, &run);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(w[0].contains("the run's workspace w1"), "{}", w[0]);
-    assert!(
-        mail_in(&h, "w1")
-            .iter()
-            .any(|m| m.contains("worker-1") && m.contains("shows no progress")),
-        "{:?}",
-        mail_in(&h, "w1")
-    );
-    assert!(mail_in(&h, "w2").is_empty(), "{:?}", mail_in(&h, "w2"));
-}
-
-/// A fleetd that the check of a w2 worker pane starts (with that pane's
-/// role, worker id and private TMPDIR) for a run that w1 owns sends its
-/// wakes to w1.
-#[test]
-fn a_fleetd_started_from_another_workspace_wakes_the_runs_workspace() {
-    let (mut h, store, run, worker, _agent) = pinned_worker("wd218-detached");
-    // A fleetd ran and died. The check before the next command starts
-    // fleetd again, from the w2 pane that runs that command.
-    let mut fleetds = Fleetds::new(&h);
-    fleetds.start(&h, "fleetd");
-    let (dead, _) = fleetds.kill_current();
-    h.unset("HORCH_NO_WAKE");
-    h.unset("HORCH_NO_WATCHDOG");
-    fake(&h, &["workspace", "create", "--label", "w1"]);
-    fake(
-        &h,
-        &[
-            "pane",
-            "test-state",
-            "w1:p1",
-            "--text",
-            "Ready",
-            "--status",
-            "idle",
-            "--agent",
-            "pi",
-        ],
-    );
-    // A real clock: due at once, and the loop ticks every second.
-    store
-        .conn()
-        .execute(
-            "UPDATE runs SET check_every_s = 1 WHERE run_id = ?1",
-            [&run.run_id],
-        )
-        .unwrap();
-    store
-        .conn()
-        .execute(
-            "UPDATE workers SET claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'),
-             last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour') WHERE worker_id = ?1",
-            [&worker],
-        )
-        .unwrap();
-    let pane_tmp = h.state.join("tmp").join("sonnet-2");
-    std::fs::create_dir_all(&pane_tmp).unwrap();
-    let o = h
-        .horch(&["ledger", "status", "--run", &run.run_id])
-        .env("HORCH_WORKSPACE_ID", "w2")
-        .env("HORCH_ROLE", "sonnet-2")
-        .env("HORCH_WORKER_ID", "w2-worker")
-        .env("HERDR_PANE_ID", "p_9")
-        .env("TMPDIR", &pane_tmp)
-        .output()
-        .unwrap();
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains(&format!("fleetd PID {dead} is gone.")),
-        "{err}"
-    );
-    // The pane ends and removes its private TMPDIR; fleetd goes on.
-    std::fs::remove_dir_all(&pane_tmp).unwrap();
-    horch_e2e::harness::wait_for("the stall wake in w1", || {
-        mail_in(&h, "w1")
-            .iter()
-            .any(|m| m.contains("worker-1") && m.contains("shows no progress"))
-            .then_some(())
-    });
-    assert!(mail_in(&h, "w2").is_empty(), "{:?}", mail_in(&h, "w2"));
-    let w = wakes(&store, &run);
-    assert!(
-        w.iter().all(|b| b.contains("the run's workspace w1")),
-        "{w:?}"
-    );
-}
-
-/// A fleetd that the check of a w2 worker pane starts, for a run with no
-/// workspace, does not take the pane's workspace: the detached launch drops
-/// the pane identity, so its wakes go to no workspace, never to w2.
-#[test]
-fn a_detached_fleetd_does_not_inherit_the_starting_panes_workspace() {
-    let (mut h, store, run, worker, _agent) = pinned_worker("wd218-no-workspace");
-    // A fleetd ran and died. The check before the next command starts
-    // fleetd again, from the w2 pane that runs that command.
-    let mut fleetds = Fleetds::new(&h);
-    fleetds.start(&h, "fleetd");
-    let (dead, _) = fleetds.kill_current();
-    h.unset("HORCH_NO_WAKE");
-    h.unset("HORCH_NO_WATCHDOG");
-    h.unset("HORCH_WORKSPACE_ID");
-    fake(&h, &["workspace", "create", "--label", "w1"]);
-    fake(
-        &h,
-        &[
-            "pane",
-            "test-state",
-            "w1:p1",
-            "--text",
-            "Ready",
-            "--status",
-            "idle",
-            "--agent",
-            "pi",
-        ],
-    );
-    store
-        .conn()
-        .execute(
-            "UPDATE runs SET check_every_s = 1, workspace_id = NULL WHERE run_id = ?1",
-            [&run.run_id],
-        )
-        .unwrap();
-    store
-        .conn()
-        .execute(
-            "UPDATE workers SET claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'),
-             last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour') WHERE worker_id = ?1",
-            [&worker],
-        )
-        .unwrap();
-    let o = h
-        .horch(&["ledger", "status", "--run", &run.run_id])
-        .env("HORCH_WORKSPACE_ID", "w2")
-        .env("HORCH_ROLE", "sonnet-2")
-        .env("HORCH_WORKER_ID", "w2-worker")
-        .env("HERDR_PANE_ID", "p_9")
-        .output()
-        .unwrap();
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains(&format!("fleetd PID {dead} is gone.")),
-        "{err}"
-    );
-    // With no workspace, the wake has no target: it stays in the outbox,
-    // and no workspace gets mail.
-    let w = horch_e2e::harness::wait_for("the stall wake", || {
-        let w = undelivered(&store, &run);
-        (!w.is_empty()).then_some(w)
-    });
-    assert!(w[0].contains("worker-1"), "{w:?}");
-    for ws in ["w1", "w2"] {
-        assert!(mail_in(&h, ws).is_empty(), "{ws}: {:?}", mail_in(&h, ws));
-    }
-}
-
-#[test]
-fn a_run_made_outside_herdr_warns_and_the_first_pane_plan_records_its_workspace() {
+fn a_run_made_outside_herdr_has_no_workspace_and_the_first_pane_status_records_it() {
     let mut h = Harness::new("wd218-run-new").with_git();
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
@@ -566,16 +366,8 @@ fn a_run_made_outside_herdr_warns_and_the_first_pane_plan_records_its_workspace(
     h.set("HORCH_NO_WATCHDOG", "1");
     h.unset("HORCH_WORKSPACE_ID");
     h.unset("HERDR_PANE_ID");
-    let o = h.run(&["ledger", "run", "new", "auth"]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains("warning: run auth has no workspace")
-            && err.contains(
-                "Wakes go only to an orchestrator that runs a ledger command from its pane"
-            ),
-        "{err}"
-    );
+    horch_e2e::ledger_seed::seed_run(&h, "auth", None, "w1:p1");
+    h.serve_fleetd();
     let workspace = || -> Option<String> {
         Store::open(&db)
             .unwrap()
@@ -588,25 +380,21 @@ fn a_run_made_outside_herdr_warns_and_the_first_pane_plan_records_its_workspace(
             .unwrap()
     };
     assert_eq!(workspace(), None);
-    // A worker pane of another fleet does not claim the run.
-    let o = h
-        .horch(&["ledger", "plan-workers"])
+    h.horch(&["ledger", "status"])
         .env("HORCH_WORKSPACE_ID", "w2")
         .env("HERDR_PANE_ID", "p_7")
         .env("HORCH_ROLE", "sonnet-2")
         .output()
         .unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(workspace(), None);
     let plan = |ws: &str| {
-        h.horch(&["ledger", "plan-workers"])
+        h.horch(&["ledger", "status"])
             .env("HORCH_WORKSPACE_ID", ws)
             .env("HERDR_PANE_ID", "p_1")
             .output()
             .unwrap()
     };
     let o = plan("w1");
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(
         err.matches("NOTE: run auth had no workspace. It now has workspace w1")

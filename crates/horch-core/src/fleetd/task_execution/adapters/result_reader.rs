@@ -73,6 +73,20 @@ pub struct QuestionFile {
     pub task: String,
     pub attempt: String,
     pub text: String,
+    /// The mail id of a QUESTION line of `horch tell`: 1 to
+    /// [`MAIL_ID_MAX_BYTES`] characters of `[A-Za-z0-9._-]`.
+    #[serde(default)]
+    pub mail_id: Option<String>,
+}
+
+pub const MAIL_ID_MAX_BYTES: usize = 128;
+
+fn is_mail_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAIL_ID_MAX_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// The payload of a valid file.
@@ -283,6 +297,12 @@ fn payload(
                     "{}: the question file names attempt {:?}, but its path is of attempt {attempt:?}",
                     check::ATTEMPT_ID,
                     file.attempt
+                ));
+            }
+            if file.mail_id.as_deref().is_some_and(|id| !is_mail_id(id)) {
+                return Err(format!(
+                    "{}: the question file has a mail_id that is not a mail id",
+                    check::SCHEMA
                 ));
             }
             Ok(Payload::Question(file))

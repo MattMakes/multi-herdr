@@ -8,7 +8,7 @@
 //!   sent to the wrapper. It also tries a write outside the allowed paths,
 //!   a write inside them, and the 3 operator acts, each in a child under
 //!   [`horch_platform::sandbox::sandboxed`] with the rules of its rendered
-//!   config, and records each result ([`operator_boundary`]). A config that
+//!   config, and records each result (`operator_boundary`). A config that
 //!   renders no sandbox rule runs the child with no sandbox. It then writes
 //!   `outbox/result.json` of its task folder the same way ([`write_result`]).
 //!
@@ -28,6 +28,8 @@ use crate::{scenarios, Call};
 /// The first argument of the probe child: the fake does 1 act and exits.
 const CHILD: &str = "__horch_probe_act";
 
+const ORPHAN: &str = "__horch_probe_orphan";
+
 /// The text of the scenario key `version:<text>`, else `default`.
 pub fn version_or(default: &str) -> String {
     scenarios()
@@ -40,14 +42,67 @@ pub fn version_or(default: &str) -> String {
 /// first in `main`.
 pub fn child_entry() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [first, act, path, out] = args.as_slice() {
+        if first == ORPHAN {
+            orphan_entry(act, Path::new(path), Path::new(out));
+        }
+    }
     let [first, act, path] = args.as_slice() else {
         return;
     };
     if first != CHILD {
         return;
     }
-    let path = Path::new(path);
-    let done = match act.as_str() {
+    match do_act(act, Path::new(path)) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The probe orphan: the child makes a new session (so a new process
+/// group), starts the grandchild and exits, so the grandchild has no
+/// parent, group or session of the agent. The grandchild does `act` and
+/// writes `allowed` or `refused: <why>` in `out`. This process exits when
+/// its child exited.
+#[cfg(unix)]
+fn orphan_entry(act: &str, path: &Path, out: &Path) -> ! {
+    // SAFETY: the fake is 1 thread here; each branch only calls exit,
+    // setsid, waitpid or plain Rust code.
+    unsafe {
+        let child = libc::fork();
+        if child > 0 {
+            let mut status = 0;
+            libc::waitpid(child, &mut status, 0);
+            std::process::exit(0);
+        }
+        if child < 0 {
+            std::process::exit(1);
+        }
+        libc::setsid();
+        if libc::fork() != 0 {
+            libc::_exit(0);
+        }
+    }
+    let result = match do_act(act, path) {
+        Ok(()) => "allowed".to_owned(),
+        Err(e) => format!("refused: {e}"),
+    };
+    let tmp = out.with_extension("tmp");
+    let _ = std::fs::write(&tmp, result).and_then(|()| std::fs::rename(&tmp, out));
+    std::process::exit(0);
+}
+
+#[cfg(not(unix))]
+fn orphan_entry(_act: &str, _path: &Path, _out: &Path) -> ! {
+    std::process::exit(1);
+}
+
+fn do_act(act: &str, path: &Path) -> Result<(), String> {
+    match act {
+        "stat" => identity(path).map(|id| print!("{id}")),
         "write" => std::fs::write(path, "horch probe\n").map_err(|e| e.to_string()),
         "read" => match std::fs::read(path) {
             Ok(bytes) if bytes.is_empty() => Err("the read gave no bytes".to_owned()),
@@ -56,14 +111,20 @@ pub fn child_entry() {
         },
         "connect" => connect(path),
         other => Err(format!("unknown act {other}")),
-    };
-    match done {
-        Ok(()) => std::process::exit(0),
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
     }
+}
+
+#[cfg(unix)]
+fn identity(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .map(|m| format!("{}:{}", m.dev(), m.ino()))
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn identity(_path: &Path) -> Result<String, String> {
+    Err("no device and inode on this OS".to_owned())
 }
 
 #[cfg(unix)]
@@ -423,14 +484,105 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
         "sandbox".into(),
         json!(if rules.is_some() { "on" } else { "none" }),
     );
+    let fleet_root = paths.run.parent().unwrap_or(&paths.run);
+    report.insert("fleet_root".into(), json!(seen_in_child(rules, fleet_root)));
+    let mut orphan = Map::new();
     for (name, act, path) in acts {
-        let result = in_child(rules, act, &path);
+        let result = match name {
+            "write_outside" => write_outside(rules, &path),
+            _ => in_child(rules, act, &path),
+        };
         if act == "write" {
             let _ = std::fs::remove_file(&path);
         }
+        if matches!(name, "read_token" | "connect_channel" | "write_requests") {
+            let escapes = crate::scenario_has("orphan_escapes");
+            let out = cwd.join(format!("{tag}-orphan-{name}"));
+            let result = in_orphan(rules.filter(|_| !escapes), act, &path, &out);
+            if act == "write" {
+                let _ = std::fs::remove_file(&path);
+            }
+            orphan.insert(name.into(), Value::String(result));
+        }
         report.insert(name.into(), Value::String(result));
     }
+    report.insert("orphan".into(), Value::Object(orphan));
     Value::Object(report)
+}
+
+/// The outside write of the probe, at a path that is real on the host:
+/// the sandbox must see the real folder of `path`, and after the write
+/// the host must have no file at `path`.
+fn write_outside(rules: Option<&Rules>, path: &Path) -> String {
+    let folder = path.parent().unwrap_or(path);
+    let host = identity(folder);
+    let seen = seen_in_child(rules, folder);
+    if host.as_deref() != Ok(seen.as_str()) {
+        return format!(
+            "not run: the sandbox does not see the real {}: it sees {seen}, the host has {}",
+            folder.display(),
+            host.unwrap_or_else(|e| format!("refused: {e}"))
+        );
+    }
+    let result = in_child(rules, "write", path);
+    if result.starts_with("refused") && path.exists() {
+        return format!(
+            "allowed: {} is on the host, the child said {result}",
+            path.display()
+        );
+    }
+    result
+}
+
+fn seen_in_child(rules: Option<&Rules>, path: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("not run: {e}"),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(CHILD).arg("stat").arg(path);
+    if let Some(rules) = rules {
+        cmd = match sandboxed(cmd, &rules.writable, &rules.denials) {
+            Ok(cmd) => cmd,
+            Err(e) => return format!("not run: {e}"),
+        };
+    }
+    cmd.stdin(std::process::Stdio::null());
+    match cmd.output() {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        Ok(out) => format!("refused: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        Err(e) => format!("not run: {e}"),
+    }
+}
+
+fn in_orphan(rules: Option<&Rules>, act: &str, path: &Path, out: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("not run: {e}"),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(ORPHAN).arg(act).arg(path).arg(out);
+    if let Some(rules) = rules {
+        cmd = match sandboxed(cmd, &rules.writable, &rules.denials) {
+            Ok(cmd) => cmd,
+            Err(e) => return format!("not run: {e}"),
+        };
+    }
+    cmd.stdin(std::process::Stdio::null());
+    if let Err(e) = cmd.output() {
+        return format!("not run: {e}");
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(result) = std::fs::read_to_string(out) {
+            let _ = std::fs::remove_file(out);
+            return result;
+        }
+        if std::time::Instant::now() >= end {
+            return "not run: the orphan wrote no result in 10 s".to_owned();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn in_child(rules: Option<&Rules>, act: &str, path: &Path) -> String {

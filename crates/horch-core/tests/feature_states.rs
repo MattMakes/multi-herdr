@@ -741,3 +741,83 @@ fn remote_none_reads_the_local_primary_branch() {
     w.follow();
     assert_eq!(w.state(), "merged");
 }
+
+#[test]
+fn invalid_feature_row_between_two_valid_rows_fails_only_its_row_and_advances_both_valid_rows() {
+    use horch_core::fleetd::ideas::application::needs_you::open_items;
+    use horch_core::fleetd::integration::application::features::FOLLOW_FAILED_KIND;
+
+    let w = bare_world();
+    for n in [2, 3] {
+        let branch = format!("fleet/r{n}");
+        git(&w.repo, &["branch", &branch]);
+        let new_run = NewRun {
+            slug: format!("r{n}"),
+            base_branch: Some("main".into()),
+            run_branch: Some(branch.clone()),
+            ..Default::default()
+        };
+        let run = runs::create(&w.conn, &w.repo, &new_run).unwrap();
+        let id = format!("F-{n:04}");
+        let name = format!("r{n}");
+        let new = NewFeature {
+            id: &id,
+            name: Some(&name),
+            branch: Some(&branch),
+            primary_branch: "main",
+        };
+        let tx = w.conn.unchecked_transaction().unwrap();
+        rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
+        schema::run_idea(&tx, &run.run_id, &util::now(), true).unwrap();
+        tx.commit().unwrap();
+    }
+    w.fetched_main(&w.tip("main"));
+    w.conn
+        .execute("UPDATE features SET state = 'ready'", [])
+        .unwrap();
+    w.conn
+        .execute(
+            "UPDATE features SET branch = 'fleet/r2 bad' WHERE id = 'F-0002'",
+            [],
+        )
+        .unwrap();
+    let state = |id: &str| rows::feature(&w.conn, id).unwrap().unwrap().state;
+    let failed = || -> Vec<(String, String)> {
+        open_items(&w.conn)
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.kind == FOLLOW_FAILED_KIND)
+            .map(|i| (i.key, i.entity_id))
+            .collect()
+    };
+
+    let ctx = w.jobs();
+    let f = Features {
+        jobs: &ctx,
+        git: &w.git,
+    };
+    let tx = w.conn.unchecked_transaction().unwrap();
+    let steps = features::follow(&f, &tx, FleetSeconds(0)).unwrap();
+    tx.commit().unwrap();
+    let ids: Vec<&str> = steps.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["F-0001", "F-0002", "F-0003"]);
+    assert!(matches!(steps[1].1, features::Step::Waits(_)), "{steps:?}");
+    assert_eq!(state("F-0001"), "open");
+    assert_eq!(state("F-0002"), "ready");
+    assert_eq!(state("F-0003"), "open");
+    let item = (format!("{FOLLOW_FAILED_KIND}:F-0002"), "F-0002".to_string());
+    assert_eq!(failed(), vec![item.clone()]);
+
+    w.follow();
+    assert_eq!(failed(), vec![item]);
+
+    w.conn
+        .execute(
+            "UPDATE features SET branch = 'fleet/r2' WHERE id = 'F-0002'",
+            [],
+        )
+        .unwrap();
+    w.follow();
+    assert_eq!(state("F-0002"), "open");
+    assert!(failed().is_empty());
+}

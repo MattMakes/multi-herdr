@@ -19,6 +19,10 @@
 //!   launch, and an attempt with no record is launched by the next pass.
 //!   The record names no process: the spawn opens the pane and exits, and
 //!   the agent of the attempt is not the spawn.
+//! - [`resume_of`]: RR-12. Before the launch record, the worker row of an
+//!   attempt after an answered question records the session it resumes
+//!   (`workers.resumed_from_session`). The spawn reads it there, so no
+//!   argument of a CLI user can start a resume.
 
 use std::path::Path;
 
@@ -31,6 +35,8 @@ use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
+use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::commands;
@@ -40,7 +46,7 @@ use crate::fleetd::task_execution::domain::task::{
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, ProgressSource, TaskStatus};
 use crate::taskledger::sql_words::WORKTREES_GONE;
 use crate::taskledger::{runs, tasks, util, workers};
 
@@ -258,6 +264,27 @@ fn crash(tx: &Connection, guard: Option<Generation>, p: &Pending, why: &str) -> 
     commands::schedule_retry(tx, &p.task_id, why)
 }
 
+/// The spawn of worker `worker_id` failed before its agent ran, for `why`:
+/// end each push attempt of the worker in `launching` `crashed` in `tx`,
+/// as a failed tree does. Its launch record stays, so no pass launches it
+/// again. Gives the ended attempts.
+pub fn end_failed_spawn(
+    tx: &Connection,
+    guard: Option<Generation>,
+    worker_id: &str,
+    why: &str,
+) -> Result<Vec<String>> {
+    let mut ended = Vec::new();
+    for p in pending(tx)?
+        .into_iter()
+        .filter(|p| p.worker_id == worker_id)
+    {
+        crash(tx, guard, &p, why)?;
+        ended.push(p.id);
+    }
+    Ok(ended)
+}
+
 /// Part 2 of a pass, in the open transaction `tx` of the fleetd of
 /// generation `guard`: the decision for each push attempt in `launching`,
 /// with `alive` as the process facts of part 1. It ends each attempt whose
@@ -341,6 +368,155 @@ pub trait Launches {
 
     /// The launch of `horch spawn <persona> --attempt <id>` for `l`.
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec>;
+
+    /// The harness of `persona` when its adapter has a resume form, else
+    /// `None`: the next attempt then starts a fresh session. A host that
+    /// knows no roster resumes nothing.
+    fn resuming_harness(&self, _persona: &str) -> Option<String> {
+        None
+    }
+}
+
+/// The most bytes of a session id that a resume passes to a CLI.
+pub const SESSION_ID_MAX_BYTES: usize = 128;
+
+/// Whether `id` has the form of a session id that a resume can pass as 1
+/// CLI argument: 1 to [`SESSION_ID_MAX_BYTES`] ASCII letters, digits, `-`
+/// and `_`, and no `-` first, so it is never an option.
+pub fn session_id_ok(id: &str) -> bool {
+    (1..=SESSION_ID_MAX_BYTES).contains(&id.len())
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The session that the attempt `p` resumes (RR-12, design line 1015):
+/// the session of the attempt just before it, when that attempt ended
+/// `asked`, a question of it is answered, the session id that fleetd
+/// ingested has the form of [`session_id_ok`], and both personas run on 1
+/// harness with a resume form. Else `None`, and a fresh session starts
+/// from the question, the answer and the committed work. A resume that
+/// fails ends its attempt with an outcome other than `asked` (`no_result`
+/// for an exit with no result), so the attempt after it is fresh.
+pub fn resume_of(conn: &Connection, p_id: &str, ports: &dyn Launches) -> Result<Option<String>> {
+    let Some(p) = pending_one(conn, p_id)? else {
+        return Ok(None);
+    };
+    let prev = conn
+        .query_row(
+            "SELECT a.id, a.outcome, w.session_id, w.persona
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.task_id = ?1 AND a.id <> ?2
+             ORDER BY a.rowid DESC LIMIT 1",
+            params![p.task_id, p.id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((prev_id, outcome, Some(session), prev_persona)) = prev else {
+        return Ok(None);
+    };
+    if outcome.as_deref() != Some(Outcome::Asked.as_str()) || !session_id_ok(&session) {
+        return Ok(None);
+    }
+    let answered = questions_store::answered_of_attempt(conn, &prev_id)?;
+    let persona = workers::get(conn, &p.worker_id)?
+        .persona
+        .unwrap_or_default();
+    let now = ports.resuming_harness(&persona);
+    let then = ports.resuming_harness(prev_persona.as_deref().unwrap_or_default());
+    Ok((answered && now.is_some() && now == then).then_some(session))
+}
+
+/// RR-12, design line 1015: the CLI refused the resume of the attempt
+/// `attempt_id`, because the session is gone, when every fact holds:
+/// - fleetd recorded a resume on its worker row: only [`launch`] writes it,
+///   from [`resume_of`], so no agent can set it;
+/// - the attempt just before it ended `asked`. The attempt after a refused
+///   resume follows a `resume_refused` attempt, so the outcome holds at
+///   most 1 time for each answer, and the row keeps it over a restart;
+/// - it ended within [`START_TIMEOUT_S`] of its start;
+/// - its agent reported no progress.
+///
+/// The caller asks only for an exit with no result, and no open question.
+pub fn resume_refused(conn: &Connection, attempt_id: &str) -> Result<bool> {
+    let row = conn
+        .query_row(
+            "SELECT a.started_at, w.resumed_from_session, w.last_progress_source,
+                (SELECT b.outcome FROM attempts b
+                 WHERE b.task_id = a.task_id AND b.rowid < a.rowid
+                 ORDER BY b.rowid DESC LIMIT 1)
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.id = ?1",
+            params![attempt_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((Some(started_at), Some(_), progress, Some(before))) = row else {
+        return Ok(false);
+    };
+    let in_window =
+        util::seconds_between(&started_at, &util::now()).is_some_and(|s| s <= START_TIMEOUT_S);
+    Ok(before == Outcome::Asked.as_str()
+        && in_window
+        && progress.as_deref() != Some(ProgressSource::Agent.as_str()))
+}
+
+/// The attempt `attempt_id` of task `task_id` ended `resume_refused`: the
+/// task moves to `ready` at once, with no `not_before`, and burns no
+/// attempt. Its next attempt follows no `asked` attempt, so [`resume_of`]
+/// gives it a fresh session, and its START.md holds the question, the
+/// answer and the committed work. A cancelled task stays as it is.
+pub fn on_resume_refused(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task_id: &str,
+    attempt_id: &str,
+) -> Result<()> {
+    if tasks::cancel_requested(tx, task_id)?.is_some() {
+        return Ok(());
+    }
+    // No attempt is burned: the next claim adds 1 to `attempts`, and the
+    // floor moves with it.
+    tx.execute(
+        "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
+            not_before = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![task_id, util::now()],
+    )?;
+    let text = format!(
+        "RR-12: the CLI refused the resume of attempt {attempt_id}; a fresh attempt \
+         starts from the question, the answer and the committed work"
+    );
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: &text,
+    };
+    let ready = TaskStatus::Ready.as_str();
+    transition(
+        tx,
+        guard,
+        Entity::Task,
+        task_id,
+        ready,
+        cause,
+        &NeedsYouList,
+    )?;
+    Ok(())
 }
 
 /// What [`launch`] did.
@@ -359,8 +535,8 @@ pub enum Launch {
 /// after the commit of its rows, through `host`, the launcher of fleetd
 /// (SR-7). It decides again on the rows and the processes of now, so a
 /// process that a stop of this pass did not end yet keeps the launch for
-/// a later pass. A spawn that fails ends its worker row `launch_failed`,
-/// and the start timeout ends the attempt.
+/// a later pass. A spawn that fails ends its worker row `launch_failed`
+/// and its attempt `crashed` at once, as [`end_failed_spawn`] does.
 pub fn launch(
     conn: &Connection,
     fleet_root: &Path,
@@ -394,6 +570,12 @@ pub fn launch(
         }
     }
     let l = push_launch(conn, &p)?;
+    // The row comes before the effect: the spawn reads the resume here.
+    let resume = resume_of(conn, attempt_id, ports)?;
+    conn.execute(
+        "UPDATE workers SET resumed_from_session = ?2 WHERE worker_id = ?1",
+        params![l.worker_id, resume],
+    )?;
     let record = LaunchRecord {
         attempt: attempt_id.to_string(),
         launched_at: clock,
@@ -407,7 +589,8 @@ pub fn launch(
         Ok(started) => Ok(Launch::Launched(started)),
         Err(e) => {
             let reason = format!("the launch of attempt {attempt_id} did not start: {e:#}");
-            workers::launch_failed(conn, &l.worker_id, &reason)?;
+            // Rung 6: a crash burns 1 attempt; the backoff and max_attempts bound the retries.
+            util::atomic(conn, |tx| end_failed_spawn(tx, None, &l.worker_id, &reason))?;
             Err(e).with_context(|| format!("launching attempt {attempt_id}"))
         }
     }
@@ -425,9 +608,8 @@ mod tests {
     use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
     use crate::fleetd::ideas::application::needs_you::NeedsYouList;
-    use crate::fleetd::task_execution::adapters::sqlite as store;
+    use crate::fleetd::task_execution::application::commands;
     use crate::fleetd::task_execution::application::dispatch::{bind, Bound, DispatchCtx};
-    use crate::fleetd::task_execution::application::{commands, quota};
     use crate::fleetd::task_execution::domain::task::{ProcessScope, Reap, RowRef, Target};
     use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
     use crate::fleetd::worker_profiles::application::ports::{EnvRule, LaunchError};
@@ -483,7 +665,7 @@ mod tests {
     impl World {
         fn new() -> World {
             let tmp = tempfile::tempdir().unwrap();
-            let top = tmp.path().canonicalize().unwrap();
+            let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
             let root = top.join("repo");
             let fleet_root = top.join("fleet");
             std::fs::create_dir_all(&root).unwrap();
@@ -666,6 +848,10 @@ mod tests {
                 output: None,
             })
         }
+
+        fn resuming_harness(&self, _: &str) -> Option<String> {
+            Some("claude".into())
+        }
     }
 
     impl ProcessHost for Fake {
@@ -697,11 +883,6 @@ mod tests {
     fn launching_attempt_is_launched_once_after_the_commit() {
         let mut w = World::new();
         let b = bound_with_tree(&mut w, "once");
-        let row = store::attempts_of_worker(w.store.conn(), &b.worker_id).unwrap();
-        assert!(
-            !quota::is_restart(&row[0]),
-            "a push attempt is not a restart on a fallback"
-        );
         let f = Fake::default();
         let plan = w.plan(&f.alive_fn());
         assert_eq!(plan.launches, std::slice::from_ref(&b.attempt_id));
@@ -967,5 +1148,29 @@ mod tests {
         assert_eq!(decide(TreeFact::Ready, &[OLD]), Decision::Stop(vec![OLD]));
         assert_eq!(decide(TreeFact::Adding, &[]), Decision::WaitTree);
         assert_eq!(decide(TreeFact::Ready, &[]), Decision::Launch);
+    }
+
+    /// Security of RR-12: a session id becomes 1 CLI argument, so only a
+    /// plain id of a bounded length passes, and never an option.
+    #[test]
+    fn session_id_form_refuses_an_option_and_odd_bytes() {
+        assert!(session_id_ok("5bd39a10-8a9f-43b8-a26f-3e68992c7d58"));
+        assert!(session_id_ok("thread_1"));
+        for bad in ["", "-c", "--resume", "a b", "a;b", "a/b", "a\nb", "é"] {
+            assert!(!session_id_ok(bad), "{bad:?}");
+        }
+        assert!(session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES)));
+        assert!(!session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES + 1)));
+    }
+
+    #[test]
+    fn launch_with_no_question_records_no_resume() {
+        let mut w = World::new();
+        let b = bound_with_tree(&mut w, "fresh");
+        let f = Fake::default();
+        reap(w.launch(&b.attempt_id, &f).unwrap());
+        let worker = workers::get(w.store.conn(), &b.worker_id).unwrap();
+        assert_eq!(worker.resumed_from_session, None);
+        assert_eq!(resume_of(w.store.conn(), &b.attempt_id, &f).unwrap(), None);
     }
 }

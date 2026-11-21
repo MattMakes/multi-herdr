@@ -26,7 +26,6 @@ use horch_core::fleetd::fleet_runtime::domain::health::Hold;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::application::cancel;
-use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane, Recorded};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
@@ -101,12 +100,6 @@ impl World {
 
     fn file(&self, name: &str) -> PathBuf {
         self.dir.join(name)
-    }
-
-    fn lines(&self, name: &str) -> usize {
-        std::fs::read_to_string(self.file(name))
-            .map(|t| t.lines().count())
-            .unwrap_or(0)
     }
 
     fn settings(&self) -> Settings {
@@ -292,28 +285,18 @@ fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
 
 // ─── the outside ────────────────────────────────────────────────────────
 
-/// The outside of the tests: no herdr snapshot and no observation, so an
-/// attempt earns no activity past its claim. With `claude_used`, the pools
-/// read `claude` at that share and `codex` at 0, and the roster has `dev`
-/// on claude with the fallback `alt` on codex. A restart appends 1 line
-/// to `restarts.txt`.
 struct Fake {
     claude_used: Option<f64>,
-    restarts: PathBuf,
 }
 
 impl Fake {
-    fn new(w: &World) -> Fake {
-        Fake {
-            claude_used: None,
-            restarts: w.file("restarts.txt"),
-        }
+    fn new(_w: &World) -> Fake {
+        Fake { claude_used: None }
     }
 
-    fn limited(w: &World) -> Fake {
+    fn limited(_w: &World) -> Fake {
         Fake {
             claude_used: Some(1.0),
-            ..Fake::new(w)
         }
     }
 }
@@ -378,23 +361,6 @@ impl Outside for Fake {
         };
         let quota = QuotaView::new(file, Utc::now(), Policy::default(), true);
         Some(PoolFacts { roster, quota })
-    }
-
-    fn restart_spec(&self, r: &Restart) -> anyhow::Result<LaunchSpec> {
-        let script = format!(
-            "echo '{} {}' >> '{}'",
-            r.attempt,
-            r.persona,
-            self.restarts.display()
-        );
-        Ok(LaunchSpec {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), script.into()],
-            cwd: None,
-            env_rule: Default::default(),
-            detach: true,
-            output: None,
-        })
     }
 }
 
@@ -625,48 +591,15 @@ fn usage_limited_worker_restarts_on_the_fallback_and_burns_no_attempt() {
 
     w.pass_at(10, &worker, &fake);
     let attempts = w.attempts(&task);
-    assert_eq!(attempts.len(), 2, "{attempts:?}");
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
     assert_eq!(attempts[0].1, "ended");
     assert_eq!(attempts[0].2.as_deref(), Some("quota"));
-    assert_eq!(attempts[1].1, "launching", "the restart on the fallback");
     let t = w.task(&task);
-    assert_eq!(t.status, "ready");
+    assert_eq!(t.status, "ready", "ready for the fallback at once");
     assert_eq!(t.claimable_by.as_deref(), Some("alt"));
+    assert_eq!(t.not_before, None, "a usage limit sets no backoff");
     assert_eq!(burned(&t), 0, "a usage limit burns no attempt");
-
     assert!(agent.exits(), "the stop of the old attempt ended the agent");
-    w.pass_at(20, &worker, &fake);
-    assert!(
-        wait_for(|| w.lines("restarts.txt") == 1),
-        "the fallback started"
-    );
-    let line = std::fs::read_to_string(w.file("restarts.txt")).unwrap();
-    assert_eq!(line.trim(), format!("{} alt", attempts[1].0));
-}
-
-#[test]
-fn stop_of_the_old_attempt_comes_before_the_spawn_on_the_fallback() {
-    let mut w = world();
-    let mut agent = Agent::run("trap '' TERM INT HUP; while :; do sleep 0.1; done");
-    let (task, worker) = w.claimed_task(&agent);
-    let fake = Fake::limited(&w);
-
-    w.pass_at(10, &worker, &fake);
-    assert_eq!(w.attempts(&task)[1].1, "launching");
-    w.pass_at(15, &worker, &fake);
-    assert!(agent.alive(), "it ignores the polite stop");
-    assert_eq!(w.lines("restarts.txt"), 0, "no spawn while it lives");
-
-    // Past the grace of the polite stop (stop_grace_s, 20 s): the kill.
-    w.pass_at(45, &worker, &fake);
-    assert!(agent.exits(), "the kill ended it");
-    assert_eq!(w.lines("restarts.txt"), 0);
-
-    w.pass_at(50, &worker, &fake);
-    assert!(
-        wait_for(|| w.lines("restarts.txt") == 1),
-        "the spawn after the old process is gone"
-    );
 }
 
 /// herdr and the transcript: an agent that is alive and shows nothing.
@@ -718,8 +651,7 @@ fn stall_rounds_of_today_no_longer_reap_a_worker() {
         )
         .unwrap();
     let fake = Fake::new(&w);
-    let state = w.file("state");
-    let duties = WatchdogDuties::new(&Quiet, &NoEffects, state).forced();
+    let duties = WatchdogDuties::new(&Quiet, &NoEffects).forced();
 
     for clock in [10, 20, 30] {
         w.pass_with(clock, &worker, &fake, &duties);
@@ -1009,4 +941,125 @@ fn a_doorbell_that_was_not_typed_is_typed_by_the_next_pass() {
     assert_eq!(*bells.typed.borrow(), ["w1:p2"]);
     assert_eq!(doorbell_events(&w), 1);
     assert_eq!(w.task(&task).status, "running");
+}
+
+fn assert_no_lost_task(w: &World) {
+    let lost: Vec<String> = w
+        .conn
+        .prepare(
+            "SELECT task_id FROM tasks t WHERE status IN ('leased', 'running')
+               AND NOT EXISTS (SELECT 1 FROM attempts a
+                               WHERE a.task_id = t.task_id AND a.state != 'ended')
+               AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.task_id = t.task_id)",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "running with no attempt and no lease: {lost:?}"
+    );
+}
+
+#[test]
+fn a_launch_timeout_of_a_task_attempt_gives_the_task_a_retry() {
+    use horch_core::fleetd::fleet_runtime::adapters::effects::{write_launch, LaunchRecord};
+    use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    agent.kill();
+    let attempt = w.attempts(&task)[0].0.clone();
+    w.conn
+        .execute(
+            "UPDATE attempts SET state = 'launching', pid = NULL, pid_start = NULL WHERE id = ?1",
+            [&attempt],
+        )
+        .unwrap();
+    let record = LaunchRecord {
+        attempt: attempt.clone(),
+        launched_at: FleetSeconds(0),
+        process: None,
+    };
+    write_launch(&w.root(), &record).unwrap();
+    let fake = Fake::new(&w);
+
+    w.pass_at(30, &worker, &fake);
+    assert_eq!(w.attempts(&task)[0].1, "launching");
+    assert_eq!(w.task(&task).status, "running");
+    assert_no_lost_task(&w);
+
+    for clock in [100, 160, 220] {
+        w.pass_at(clock, &worker, &fake);
+        assert_no_lost_task(&w);
+    }
+    let attempts = w.attempts(&task);
+    assert_eq!(attempts[0].1, "ended", "{attempts:?}");
+    assert_eq!(attempts[0].2.as_deref(), Some("timed_out"));
+    let t = w.task(&task);
+    assert_eq!(t.status, "ready", "rung 6 queued it again");
+    assert_eq!(t.attempts, 1, "the timeout burned 1 attempt");
+    assert!(t.not_before.is_some(), "a backoff");
+    assert_eq!(i1_breaches(&w, &task), 0, "no I1 item");
+}
+
+fn i1_breaches(w: &World, task: &str) -> i64 {
+    w.conn
+        .query_row(
+            "SELECT count(*) FROM needs_you WHERE key = ?1 AND state = 'open'",
+            [format!("invariant_breach:I1:task:{task}")],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_running_task_with_no_attempt_and_no_lease_is_an_i1_breach() {
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    agent.kill();
+    let attempt = w.attempts(&task)[0].0.clone();
+    w.conn
+        .execute(
+            "UPDATE attempts SET state = 'ended', outcome = 'timed_out' WHERE id = ?1",
+            [&attempt],
+        )
+        .unwrap();
+    w.conn
+        .execute("DELETE FROM leases WHERE task_id = ?1", [&task])
+        .unwrap();
+    let fake = Fake::new(&w);
+
+    w.pass_at(10, &worker, &fake);
+    assert_eq!(w.task(&task).status, "running");
+    assert_eq!(i1_breaches(&w, &task), 1, "the pass opened the I1 item");
+}
+
+#[test]
+fn a_dead_attempt_of_a_leased_task_gives_the_task_a_retry() {
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    w.conn
+        .execute(
+            "UPDATE tasks SET status = 'leased' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
+    agent.kill();
+    let fake = Fake::new(&w);
+
+    for clock in [10, 20] {
+        w.pass_at(clock, &worker, &fake);
+        assert_no_lost_task(&w);
+    }
+    let attempts = w.attempts(&task);
+    assert_eq!(attempts[0].1, "ended", "{attempts:?}");
+    let t = w.task(&task);
+    assert_eq!(t.status, "ready", "rung 6 queued it again");
+    assert_eq!(i1_breaches(&w, &task), 0, "no I1 item");
 }

@@ -976,21 +976,19 @@ mod phase4 {
         task_id: String,
         task_yaml: std::path::PathBuf,
         worktree: std::path::PathBuf,
+        wrapper: std::process::Child,
+        launches: usize,
     }
 
-    fn horch_ok(h: &Harness, worker: Option<&str>, args: &[&str]) -> String {
-        let mut cmd = h.horch(args);
-        if let Some(w) = worker {
-            cmd.env("HORCH_WORKER_ID", w);
+    impl Drop for Attempt {
+        fn drop(&mut self) {
+            drop(self.wrapper.stdin.take());
+            let _ = self.wrapper.wait();
         }
-        let o = cmd.output().unwrap();
-        assert!(
-            o.status.success(),
-            "horch {args:?}: {}{}",
-            String::from_utf8_lossy(&o.stdout),
-            String::from_utf8_lossy(&o.stderr)
-        );
-        String::from_utf8_lossy(&o.stdout).into_owned()
+    }
+
+    fn quoted(text: &std::ffi::OsStr) -> String {
+        format!("'{}'", text.to_string_lossy().replace('\'', "'\\''"))
     }
 
     fn git_ok(h: &Harness, dir: &Path, args: &[&str]) -> String {
@@ -999,6 +997,17 @@ mod phase4 {
         let o = cmd.output().unwrap();
         assert!(o.status.success(), "git {args:?}: {o:?}");
         String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    fn sealed_path(h: &Harness) -> String {
+        let mut probe = Command::new("true");
+        h.seal(&mut probe);
+        probe
+            .get_envs()
+            .find_map(|(k, v)| (k == "PATH").then_some(v).flatten())
+            .expect("the sealed PATH")
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn attempt(name: &str) -> Attempt {
@@ -1012,33 +1021,28 @@ mod phase4 {
         h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
-        let path = format!("{}:{}", h.bin.display(), horch_e2e::bin_dir().display());
+        // On Linux the sealed PATH holds `bwrap`, and fleetd runs the git of
+        // the worktree job only in its sandbox.
+        let path = format!("{}:{}", sealed_path(&h), horch_e2e::bin_dir().display());
         h.set("PATH", path);
         std::fs::create_dir_all(h.project.join("tickets")).unwrap();
         std::fs::write(h.project.join("tickets/t1.md"), "# T1\n").unwrap();
         git_ok(&h, &h.project, &["add", "tickets/t1.md"]);
         git_ok(&h, &h.project, &["commit", "-q", "-m", "t1"]);
         h.serve_fleetd();
-        horch_ok(&h, None, &["ledger", "run", "new", "r1"]);
-        horch_ok(
-            &h,
-            None,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                "tickets/t1.md",
-                "--primary",
-                "opus",
-            ],
-        );
+        let run = horch_e2e::ledger_seed::seed_run(&h, "r1", None, "w1:p1");
+        horch_e2e::ledger_seed::seed_task(&h, &run, &h.project.join("tickets/t1.md"), "opus");
         let new = horch_core::taskledger::workers::NewWorker {
             persona: "opus".into(),
             role: Some("opus1".into()),
             ..Default::default()
         };
-        let worker = horch_e2e::bind::bind_worker(&h, new, None).worker_id;
-        horch_ok(&h, Some(&worker), &["ledger", "worktree", "new", "feat"]);
+        let wrapper = std::process::Command::new("/bin/sh")
+            .args(["-c", "while IFS= read -r line; do eval \"$line\"; done"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let worker = horch_e2e::bind::bind_worker(&h, new, Some(wrapper.id())).worker_id;
         let conn = rusqlite::Connection::open(&db).unwrap();
         let (task_id, n): (String, i64) = conn
             .query_row(
@@ -1047,13 +1051,18 @@ mod phase4 {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        let worktree: String = conn
-            .query_row(
-                "SELECT path FROM worktrees WHERE task_id = ?1",
-                [&task_id],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let (worktree, branch): (String, String) =
+            horch_e2e::harness::wait_for("the worktree of the bound task", || {
+                let row: (String, String, String) = conn
+                    .query_row(
+                        "SELECT path, branch, state FROM worktrees WHERE task_id = ?1",
+                        [&task_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .ok()?;
+                (row.2 != "reserved" && Path::new(&row.0).join(".git").exists())
+                    .then_some((row.0, row.1))
+            });
         let facts = TaskFacts {
             task: "T1".into(),
             task_id: task_id.clone(),
@@ -1061,7 +1070,7 @@ mod phase4 {
             attempt: format!("A{n}"),
             profile: "opus".into(),
             worktree: worktree.clone(),
-            branch: "fleet/r1-T1-feat".into(),
+            branch,
             read_first: "tickets/t1.md".into(),
             goal: "T1".into(),
             check: None,
@@ -1083,6 +1092,8 @@ mod phase4 {
             task_id,
             task_yaml: files.task_yaml,
             worktree: worktree.into(),
+            wrapper,
+            launches: 0,
         }
     }
 
@@ -1101,10 +1112,47 @@ mod phase4 {
             let mut cmd = Command::new(self.h.bin.join(name));
             cmd.args(args);
             self.h.seal(&mut cmd);
-            cmd.current_dir(&self.worktree);
-            let o = cmd.output().unwrap();
+            let o = self.run_in_wrapper(&cmd);
             assert!(o.status.success(), "{name}: {o:?}");
             o
+        }
+
+        fn run_in_wrapper(&mut self, cmd: &Command) -> Output {
+            use std::io::Write as _;
+            use std::os::unix::process::ExitStatusExt as _;
+            self.launches += 1;
+            let base = self.h.root.join(format!("launch-{}", self.launches));
+            let [out, err, status] = ["out", "err", "status"].map(|e| base.with_extension(e));
+            let env: Vec<String> = cmd
+                .get_envs()
+                .filter_map(|(k, v)| v.map(|v| format!("{}={}", k.to_string_lossy(), quoted(v))))
+                .collect();
+            let args: Vec<String> = cmd.get_args().map(quoted).collect();
+            let line = format!(
+                "{{ cd {} && env -i {} {} {}; }} > {} 2> {}; echo $? > {}.tmp; mv {}.tmp {}",
+                quoted(self.worktree.as_os_str()),
+                env.join(" "),
+                quoted(cmd.get_program()),
+                args.join(" "),
+                quoted(out.as_os_str()),
+                quoted(err.as_os_str()),
+                quoted(status.as_os_str()),
+                quoted(status.as_os_str()),
+                quoted(status.as_os_str()),
+            );
+            let stdin = self.wrapper.stdin.as_mut().unwrap();
+            writeln!(stdin, "{line}").unwrap();
+            stdin.flush().unwrap();
+            let code = horch_e2e::harness::wait_for("the launched fake to end", || {
+                std::fs::read_to_string(&status).ok()
+            });
+            Output {
+                status: std::process::ExitStatus::from_raw(
+                    code.trim().parse::<i32>().unwrap() << 8,
+                ),
+                stdout: std::fs::read(&out).unwrap_or_default(),
+                stderr: std::fs::read(&err).unwrap_or_default(),
+            }
         }
 
         fn head(&self) -> String {
@@ -1163,18 +1211,22 @@ mod phase4 {
     #[test]
     fn noresult_scenario_writes_nothing() {
         let mut a = attempt("fakes-noresult");
+        let listing = |a: &Attempt| {
+            let mut left: Vec<String> = std::fs::read_dir(a.dir())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            left.sort();
+            left
+        };
         let before = a.head();
+        let folder = listing(&a);
         a.launch("codex", "noresult");
         assert_eq!(a.head(), before);
-        let mut left: Vec<String> = std::fs::read_dir(a.dir())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, ["inbox", "task.yaml"], "the attempt folder changed");
+        assert_eq!(listing(&a), folder, "the attempt folder changed");
         // `noresult` wins over `result`: the agent exits with no result.
         a.launch("codex", "result,noresult");
-        assert!(!a.dir().join("outbox").exists());
+        assert!(!a.dir().join("outbox/result.json").exists());
     }
 
     #[test]

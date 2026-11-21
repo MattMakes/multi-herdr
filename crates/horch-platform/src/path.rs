@@ -3,7 +3,7 @@
 //! The gaps of an OS are in the rows "Paths and home dirs" and "Symlinks" of
 //! `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The variable that names the home folder: `HOME`, or `USERPROFILE` on
 /// Windows. The caller reads it and falls back to `.` when it is unset or
@@ -106,4 +106,97 @@ pub fn inspect_junction_target(path: &Path) -> JunctionAction {
             .map(|mut d| d.next().is_none())
             .unwrap_or(false);
     plan_junction(true, is_link, is_empty_dir)
+}
+
+/// `path` in the form that a child process reads. On Windows,
+/// `canonicalize` gives a verbatim path (`\\?\C:\dir`), and git and other
+/// programs refuse it, so this gives the plain form of [`plain_of_verbatim`]
+/// when one names the same file. Elsewhere it gives `path` unchanged.
+pub fn for_child(path: &Path) -> PathBuf {
+    PathBuf::from(crate::os::path::for_child(path.as_os_str()))
+}
+
+/// The plain Win32 form of the verbatim path `text`, when that form names
+/// the same file: `\\?\C:\dir` gives `C:\dir`, and
+/// `\\?\UNC\server\share` gives `\\server\share`. `None` when `text` has
+/// no such prefix, or when the plain form is not valid or names another file:
+/// a length of the legacy limit (260 UTF-16 units) or more, a UNC path
+/// with no server or no share, an empty component, a `.` or
+/// `..` component, a reserved device name, a trailing dot or space, a `/`,
+/// or a character that Win32 refuses. The logic is text only, so it is the
+/// same on each OS.
+pub fn plain_of_verbatim(text: &str) -> Option<String> {
+    let (plain, rest, least) = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        (format!(r"\\{unc}"), unc, 2)
+    } else {
+        let local = text.strip_prefix(r"\\?\")?;
+        let drive = local.as_bytes();
+        if drive.len() < 3 || !drive[0].is_ascii_alphabetic() || &drive[1..3] != b":\\" {
+            return None;
+        }
+        (local.to_string(), &local[3..], 0)
+    };
+    if plain.encode_utf16().count() >= LEGACY_MAX_PATH {
+        return None;
+    }
+    let rest = rest.strip_suffix('\\').unwrap_or(rest);
+    let names: Vec<&str> = if rest.is_empty() {
+        Vec::new()
+    } else {
+        rest.split('\\').collect()
+    };
+    (names.len() >= least && names.into_iter().all(plain_component)).then_some(plain)
+}
+
+/// The legacy limit of a Win32 path, `MAX_PATH`, with its closing NUL.
+const LEGACY_MAX_PATH: usize = 260;
+
+const RESERVED_NAMES: [&str; 30] = [
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
+];
+
+/// Whether `name` means the same file with and without the verbatim prefix.
+fn plain_component(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." || name.ends_with(['.', ' ']) {
+        return false;
+    }
+    if name
+        .chars()
+        .any(|c| c < ' ' || matches!(c, '/' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+    {
+        return false;
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    !RESERVED_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(stem))
 }

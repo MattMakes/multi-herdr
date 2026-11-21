@@ -18,9 +18,11 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 use horch_core::procid;
+use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::{watchdog, Store};
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{wait_for, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 const SIGKILL: i32 = 9;
@@ -32,12 +34,6 @@ fn text(o: &Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
-}
-
-fn ok(h: &Harness, args: &[&str]) -> String {
-    let o = h.run(args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
 /// A harness with its own ledger file and a git repository. No command
@@ -116,42 +112,28 @@ fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc, started: Option<u64>
     lock
 }
 
+fn set_thresholds(h: &Harness, run: &Run, check_every_s: i64, stall_rounds: i64) {
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE runs SET check_every_s = ?2, stall_rounds = ?3 WHERE run_id = ?1",
+            rusqlite::params![run.run_id, check_every_s, stall_rounds],
+        )
+        .unwrap();
+}
+
 /// Phase P in `h`: run `zeta` with 1 bound task and a live fake worker.
 /// Many stall rounds keep a check from reaping the live worker. Gives the
 /// worker id, its agent and the run id.
 fn phase_p_run(h: &Harness) -> (String, Proc, String) {
-    // The test fleetd applies the routed setup; the test runs its own
-    // fleetd and checks after it.
-    h.serve_fleetd();
-    ok(
-        h,
-        &[
-            "ledger",
-            "run",
-            "new",
-            "zeta",
-            "--check-every",
-            "1",
-            "--stall-rounds",
-            "1000",
-        ],
-    );
+    let run = seed_run(h, "zeta", None, "w1:p1");
+    set_thresholds(h, &run, 1, 1000);
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
     let ticket = dir.join("t0.md");
     std::fs::write(&ticket, "# T0\n").unwrap();
-    ok(
-        h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &ticket.to_string_lossy(),
-            "--primary",
-            "opus",
-        ],
-    );
-    h.stop_fleetd();
+    seed_task(h, &run, &ticket, "opus");
     let agent = Proc::sleep();
     let w = horch_e2e::bind::bind(h, "opus", Some(agent.pid)).worker_id;
     let run_id = texts(h, "SELECT run_id FROM runs").remove(0);
@@ -196,7 +178,9 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
         remaining.is_empty(),
         "the record of the old watchdog is cleared"
     );
-    assert!(!lock.exists(), "the lock of the old watchdog is removed");
+    wait_for("the lock of the old watchdog to be removed", || {
+        (!lock.exists()).then_some(())
+    });
     let events = texts(
         &h,
         "SELECT data_json FROM events WHERE cause = 'old_watchdog_stopped'",

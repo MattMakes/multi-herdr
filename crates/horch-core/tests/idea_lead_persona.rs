@@ -38,6 +38,7 @@ fn launch_env(home: &Path) -> LaunchEnv {
     for tool in ["bwrap", "socat"] {
         let path = bin.join(tool);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
     }
@@ -117,7 +118,7 @@ fn idea_lead_sandbox_denies_the_operator_path() {
     let fs = &own["filesystem"];
     assert_eq!(
         strings(&fs["allowWrite"]),
-        [ideas.clone()],
+        std::slice::from_ref(&ideas),
         "its idea folders only"
     );
     assert!(

@@ -82,7 +82,7 @@ fn exe(name: &str) -> String {
 }
 
 impl Harness {
-    /// On unix the preferred root is `/tmp/horch-e2e-<name>-<pid>-<n>`, with
+    /// On unix the preferred root is `<ROOT_PARENT>/horch-e2e-<name>-<pid>-<n>`, with
     /// `<name>` cut to its first 12 characters and `<n>` in hex. When the
     /// process cannot write there, `TMPDIR` is used only if Prime's longest
     /// daemon socket path stays below macOS's 104-byte limit.
@@ -91,7 +91,7 @@ impl Harness {
         let dir_name = format!("horch-e2e-{short}-{}-{:x}", std::process::id(), unique());
         #[cfg(unix)]
         let root = {
-            let preferred = Path::new("/tmp").join(&dir_name);
+            let preferred = Path::new(ROOT_PARENT).join(&dir_name);
             let _ = std::fs::remove_dir_all(&preferred);
             let preferred_writable = std::fs::create_dir_all(&preferred).is_ok();
             let fallback =
@@ -141,6 +141,8 @@ impl Harness {
         let machine = h.root.join("healthy-machine.json");
         std::fs::write(&machine, HEALTHY_MACHINE).expect("writing the machine fixture");
         h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
+        let ledger = h.root.join("ledger").join("ledger.sqlite3");
+        h.set("HORCH_LEDGER_DB", ledger.to_string_lossy());
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));
@@ -166,7 +168,34 @@ impl Harness {
             #[cfg(not(unix))]
             let _ = std::fs::copy(sqlite, h.bin.join(exe("sqlite3")));
         }
+        #[cfg(target_os = "linux")]
+        {
+            const FLEETD_SANDBOX_TOOLS: [&str; 2] = ["bwrap", "socat"];
+            let host = h.host_bin();
+            std::fs::create_dir_all(&host).expect("creating the host tool dir");
+            for tool in FLEETD_SANDBOX_TOOLS {
+                if let Some(real) = find_on_real_path(tool) {
+                    let _ = std::os::unix::fs::symlink(real, host.join(tool));
+                }
+            }
+        }
         h
+    }
+
+    #[cfg(target_os = "linux")]
+    fn host_bin(&self) -> PathBuf {
+        self.root.join("host-bin")
+    }
+
+    fn sealed_path(&self) -> String {
+        #[cfg(target_os = "linux")]
+        let dirs = vec![self.bin.clone(), self.host_bin()];
+        #[cfg(not(target_os = "linux"))]
+        let dirs = vec![self.bin.clone()];
+        std::env::join_paths(dirs)
+            .expect("the harness folders hold no PATH separator")
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Give this harness a real git repository: 2 files and 1 commit on branch
@@ -359,9 +388,10 @@ impl Harness {
             .map_err(|e| format!("{e:#}"))
     }
 
-    /// Run `horch`, returning its output.
+    /// Run `horch`, returning its output, for at most [`DEADLINE`]
+    /// ([`output_within`]).
     pub fn run(&self, args: &[&str]) -> Output {
-        self.horch(args).output().expect("running horch")
+        output_within(&mut self.horch(args), DEADLINE)
     }
 
     /// Apply the sealed environment to any command.
@@ -370,7 +400,7 @@ impl Harness {
         cmd.current_dir(&self.project);
         let tmp = self.tmp.to_string_lossy().into_owned();
         let mut env: BTreeMap<String, String> = BTreeMap::new();
-        env.insert("PATH".into(), self.bin.to_string_lossy().into_owned());
+        env.insert("PATH".into(), self.sealed_path());
         env.insert("HOME".into(), self.home.to_string_lossy().into_owned());
         env.insert(
             "USERPROFILE".into(),
@@ -443,8 +473,9 @@ impl Harness {
         cmd.envs(env);
     }
 
-    /// The task ledger of the sealed environment: `HORCH_LEDGER_DB`, else
-    /// `<home>/.horch/ledger.sqlite3`.
+    /// The task ledger of the sealed environment: `HORCH_LEDGER_DB`, which
+    /// is `<root>/ledger/ledger.sqlite3` by default, else (after
+    /// `unset("HORCH_LEDGER_DB")`) `<home>/.horch/ledger.sqlite3`.
     pub fn ledger_db(&self) -> PathBuf {
         self.env
             .get("HORCH_LEDGER_DB")
@@ -652,7 +683,8 @@ fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bo
 impl Drop for Harness {
     fn drop(&mut self) {
         drop(self.fleetd.get_mut().take());
-        let leaked = match reap(&self.root, &self.log) {
+        let mut leaked = stop_jobs(&self.ledger_db());
+        leaked.extend(match reap(&self.root, &self.log, reap_grace()) {
             Ok(leaked) => leaked,
             // A test that passes while its processes cannot be seen can
             // leave one running for hours: fail it, unless it already fails.
@@ -663,7 +695,7 @@ impl Drop for Harness {
                 eprintln!("teardown could not list the processes of this test ({error})");
                 Vec::new()
             }
-        };
+        });
         if !std::thread::panicking() {
             check_built_fakes();
             assert!(
@@ -671,7 +703,7 @@ impl Drop for Harness {
                 "the test leaked {} process(es) that outlived teardown by {:?}; \
                  teardown killed them:\n{}",
                 leaked.len(),
-                REAP_GRACE,
+                reap_grace(),
                 leaked.join("\n")
             );
         }
@@ -682,8 +714,138 @@ impl Drop for Harness {
 }
 
 /// How long teardown waits for the harness's processes to end after it
-/// signals them.
-const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+/// signals them. A process ends on SIGTERM only when its current syscall
+/// returns, and on a loaded host 1 `rename` can block for seconds (T-114).
+fn reap_grace() -> std::time::Duration {
+    let design = horch_core::fleetd::fleet_runtime::domain::config::FleetConfig::default();
+    std::time::Duration::from_secs(design.stop_grace_s) + PS_SCAN_MARGIN
+}
+
+const PS_SCAN_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The process group of each run in the `jobs` table of the ledger `db`
+/// that is still the group of its recorded leader (pid and start time).
+#[cfg(unix)]
+fn job_groups(db: &Path) -> Vec<u32> {
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let read = || -> Result<Vec<(u32, u64)>, String> {
+        let store =
+            horch_core::taskledger::Store::open_read_only(db).map_err(|e| format!("{e:#}"))?;
+        let mut stmt = store
+            .conn()
+            .prepare(
+                "SELECT pid, pid_start FROM jobs WHERE pid IS NOT NULL AND pid_start IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    };
+    let rows = read().unwrap_or_else(|error| {
+        eprintln!(
+            "warning: teardown could not read the jobs of {}: {error}",
+            db.display()
+        );
+        Vec::new()
+    });
+    // Only a live leader proves a recorded group (D242-F1): a member of a
+    // job group whose leader is gone gets no signal here, so it shows as a
+    // leak of the test.
+    let mut groups: Vec<u32> = rows
+        .into_iter()
+        .filter(|&(pid, started)| {
+            pid > 1 && horch_platform::group::is_group_leader(pid, started).unwrap_or(false)
+        })
+        .map(|(pid, _)| pid)
+        .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+}
+
+/// Stop each job of the world, by the group that its row in `db` records,
+/// and return the processes that still run after the stop.
+///
+/// A job may outlive its fleetd: the next fleetd observes a `running` job
+/// by its pid and start time, and ends it `abandoned` only when its process
+/// is gone (`docs/specs/fleetd/design.md`, "Long work is a job"). So the
+/// stop of the test fleetd does not end its jobs, and a job process need not
+/// name the harness root, which [`reap`] looks for. Like the stop of a job
+/// at its deadline, each group gets SIGTERM, then SIGKILL after the stop
+/// grace of the design. A process in an uninterruptible syscall acts on a
+/// signal only when the syscall returns, so the wait for the end is
+/// [`EXIT_LIMIT`]. Never a group of another world: a group id stays ours
+/// while the group has members.
+#[cfg(unix)]
+fn stop_jobs(db: &Path) -> Vec<String> {
+    use crate::process::signal_groups;
+    let groups = job_groups(db);
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    let running = |groups: &[u32]| -> Vec<crate::process::Process> {
+        let members: Vec<crate::process::Process> = groups
+            .iter()
+            .flat_map(|g| {
+                horch_core::procid::group_members(*g)
+                    .into_iter()
+                    .map(|pid| crate::process::Process {
+                        pid,
+                        pgid: *g,
+                        command: String::new(),
+                    })
+            })
+            .collect();
+        let states = states_of(&members);
+        members
+            .into_iter()
+            .filter(|p| after_grace(states.get(&p.pid).map(String::as_str)) == AfterGrace::Running)
+            .collect()
+    };
+    let wait = |groups: &[u32], limit: std::time::Duration| {
+        let until = std::time::Instant::now() + limit;
+        loop {
+            let left = running(groups);
+            if left.is_empty() || std::time::Instant::now() >= until {
+                return left;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    signal_groups(&groups, "TERM");
+    let design = horch_core::fleetd::fleet_runtime::domain::config::FleetConfig::default();
+    let left = wait(&groups, std::time::Duration::from_secs(design.stop_grace_s));
+    if left.is_empty() {
+        return Vec::new();
+    }
+    let mut kill: Vec<u32> = left.iter().map(|p| p.pgid).collect();
+    kill.sort_unstable();
+    kill.dedup();
+    signal_groups(&kill, "KILL");
+    let left = wait(&kill, EXIT_LIMIT);
+    let commands: std::collections::HashMap<u32, String> = crate::process::processes()
+        .into_iter()
+        .map(|p| (p.pid, p.command))
+        .collect();
+    left.into_iter()
+        .map(|p| {
+            format!(
+                "{} {} (a job process of group {}, alive {EXIT_LIMIT:?} after its SIGKILL)",
+                p.pid,
+                commands.get(&p.pid).map_or("?", String::as_str),
+                p.pgid
+            )
+        })
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn stop_jobs(_db: &Path) -> Vec<String> {
+    Vec::new()
+}
 
 /// End every process this harness started, and return the ones that
 /// leaked.
@@ -692,18 +854,19 @@ const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// fake-herdr `exec` pane commands running: `horch worker` and a `stay`
 /// fake run for ever. Teardown sends SIGTERM to the process group of every
 /// pane that fake-herdr recorded and that is still the same group (the
-/// leader's start time matches, see [`horch_core::procid::is_same_group`]), and
+/// leader runs with its start time, see
+/// [`horch_platform::group::is_group_leader`]: with the leader gone, the id
+/// can be of a group of another process by reuse, D242-F1), and
 /// to the group of every process whose command line or environment names
 /// the harness root (a fake, a pane whose start was never recorded, the
 /// detached mail courier, which redelivers until `horch inbox`
 /// acknowledges). A process of those groups, or one that names the root,
-/// that still runs after [`REAP_GRACE`] leaked: it gets SIGKILL and is
+/// that still runs after `grace` leaked: it gets SIGKILL and is
 /// returned. The error is that the processes could not be listed within
-/// [`REAP_GRACE`].
+/// `grace`.
 #[cfg(unix)]
-fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
+fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<Vec<String>> {
     use crate::process::{commands_with_environment, signal_groups, try_processes, Process};
-    use horch_core::procid::is_same_group;
     let mut state = log.as_os_str().to_owned();
     state.push(".state.json");
     let state: Value = std::fs::read_to_string(&state)
@@ -724,13 +887,8 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         .flatten()
         .filter_map(|(_, pid)| u32::try_from(pid.as_u64()?).ok())
         .collect();
-    let Some(all) = process_list_or_sandbox(
-        try_processes,
-        REAP_GRACE,
-        &recorded,
-        own_group,
-        signal_groups,
-    )?
+    let Some(all) =
+        process_list_or_sandbox(try_processes, grace, &recorded, own_group, signal_groups)?
     else {
         return Ok(Vec::new());
     };
@@ -741,7 +899,9 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         .filter_map(|(pane, pid)| {
             let pid = u32::try_from(pid.as_u64()?).ok()?;
             let started = state["started"][pane.as_str()].as_u64()?;
-            is_same_group(pid, started).then_some(pid)
+            horch_platform::group::is_group_leader(pid, started)
+                .unwrap_or(false)
+                .then_some(pid)
         })
         .collect();
     let names_root = |p: &Process, environments: &std::collections::HashMap<u32, String>| {
@@ -765,14 +925,14 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
     // can be given it.
     let left = |signalled: &[u32]| -> std::io::Result<Vec<Process>> {
         let environments = commands_with_environment();
-        Ok(listed(try_processes, REAP_GRACE)?
+        Ok(listed(try_processes, grace)?
             .into_iter()
             .filter(|p| {
                 p.pid != me && (signalled.contains(&p.pgid) || names_root(p, &environments))
             })
             .collect())
     };
-    let until = std::time::Instant::now() + REAP_GRACE;
+    let until = std::time::Instant::now() + grace;
     // The pids that ran when the first SIGTERM went out. With its group:
     // every process, in the group it was in, that has had one since.
     let first: Vec<u32> = all.iter().map(|p| p.pid).collect();
@@ -802,7 +962,14 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
         signalled.extend(late.iter().map(|p| (p.pid, p.pgid)));
         groups.extend(late_groups);
         if std::time::Instant::now() >= until {
-            let mut kill: Vec<u32> = left
+            let states = states_of(&left);
+            let (exiting, running): (Vec<Process>, Vec<Process>) = left
+                .into_iter()
+                .filter(|p| after_grace(states.get(&p.pid).map(String::as_str)) != AfterGrace::Gone)
+                .partition(|p| {
+                    after_grace(states.get(&p.pid).map(String::as_str)) == AfterGrace::InExit
+                });
+            let mut kill: Vec<u32> = running
                 .iter()
                 .map(|p| p.pgid)
                 .filter(|g| *g > 1 && Some(*g) != own_group)
@@ -810,7 +977,7 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
             kill.sort_unstable();
             kill.dedup();
             signal_groups(&kill, "KILL");
-            return Ok(left
+            let mut leaked: Vec<String> = running
                 .into_iter()
                 .map(|p| {
                     let when = if first.contains(&p.pid) {
@@ -820,15 +987,115 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
                     };
                     format!("{} {} ({when})", p.pid, p.command)
                 })
-                .collect());
+                .collect();
+            leaked.extend(wait_exits(exiting, EXIT_LIMIT, states_of));
+            return Ok(leaked);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
 #[cfg(not(unix))]
-fn reap(_root: &Path, _log: &Path) -> std::io::Result<Vec<String>> {
+fn reap(_root: &Path, _log: &Path, _grace: std::time::Duration) -> std::io::Result<Vec<String>> {
     Ok(Vec::new())
+}
+
+/// How long teardown waits, after the grace, for a process that is in its
+/// exit to be gone. At load average 81 processes stayed in their exit for
+/// up to 120 s after SIGTERM (T-276).
+#[cfg(unix)]
+const EXIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterGrace {
+    Gone,
+    /// A zombie (`Z`, or `X` on Linux) or in its exit (the macOS flag `E`):
+    /// it took the signal, and only the kernel still works on it.
+    InExit,
+    /// Any other state, `U` too: a process in an uninterruptible syscall
+    /// with the signal pending has not yet acted on it.
+    Running,
+}
+
+#[cfg(unix)]
+fn after_grace(state: Option<&str>) -> AfterGrace {
+    match state {
+        None => AfterGrace::Gone,
+        Some(s) if s.starts_with(['Z', 'X']) || s.contains('E') => AfterGrace::InExit,
+        Some(_) => AfterGrace::Running,
+    }
+}
+
+#[cfg(unix)]
+fn states_of(processes: &[crate::process::Process]) -> std::collections::HashMap<u32, String> {
+    if processes.is_empty() {
+        return Default::default();
+    }
+    let pids: Vec<String> = processes.iter().map(|p| p.pid.to_string()).collect();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        // ps exits 1 when 1 pid is gone, so only its output counts.
+        match std::process::Command::new("/bin/ps")
+            .args(["-o", "pid=,stat=", "-p", &pids.join(",")])
+            .output()
+        {
+            Ok(out) => {
+                return String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut parts = line.split_whitespace();
+                        Some((parts.next()?.parse().ok()?, parts.next()?.to_string()))
+                    })
+                    .collect()
+            }
+            Err(_) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return Default::default(),
+        }
+    }
+}
+
+/// A pid that `states` lists in a state out of its exit is a new process:
+/// an exit does not go back.
+#[cfg(unix)]
+fn wait_exits(
+    mut exiting: Vec<crate::process::Process>,
+    limit: std::time::Duration,
+    states: impl Fn(&[crate::process::Process]) -> std::collections::HashMap<u32, String>,
+) -> Vec<String> {
+    let start = std::time::Instant::now();
+    loop {
+        let now = states(&exiting);
+        exiting.retain(|p| {
+            let still = after_grace(now.get(&p.pid).map(String::as_str)) == AfterGrace::InExit;
+            if !still {
+                eprintln!(
+                    "teardown: {} {} was in its exit at the end of the grace and was gone {:?} later",
+                    p.pid,
+                    p.command,
+                    start.elapsed()
+                );
+            }
+            still
+        });
+        if exiting.is_empty() {
+            return Vec::new();
+        }
+        if start.elapsed() >= limit {
+            return exiting
+                .into_iter()
+                .map(|p| {
+                    format!(
+                        "{} {} (in its exit for more than {limit:?})",
+                        p.pid, p.command
+                    )
+                })
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// The file in each harness root that names the test process that owns it:
@@ -842,10 +1109,19 @@ fn tmpdir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+/// The preferred parent of a harness root. On Linux it is not `/tmp`: the
+/// sandbox (`bwrap`) mounts a new tmpfs on `/tmp`, so the "Sandbox
+/// boundary" write next to a work folder under `/tmp` lands in that tmpfs
+/// and is not refused, and each claude and codex profile is unhealthy.
+#[cfg(target_os = "linux")]
+const ROOT_PARENT: &str = "/var/tmp";
+#[cfg(all(unix, not(target_os = "linux")))]
+const ROOT_PARENT: &str = "/tmp";
+
 /// The dirs that hold harness roots.
 fn harness_parents() -> Vec<PathBuf> {
     #[cfg(unix)]
-    return vec![PathBuf::from("/tmp"), tmpdir()];
+    return vec![PathBuf::from(ROOT_PARENT), tmpdir()];
     #[cfg(not(unix))]
     return vec![std::env::temp_dir()];
 }
@@ -885,7 +1161,7 @@ fn stop_stale_harnesses(parent: &Path) -> Vec<String> {
         if horch_core::procid::alive(pid, started) {
             continue;
         }
-        leaked.extend(reap(&root, &root.join("fake.log")).unwrap_or_default());
+        leaked.extend(reap(&root, &root.join("fake.log"), reap_grace()).unwrap_or_default());
         let _ = std::fs::remove_file(&owner);
     }
     leaked
@@ -977,6 +1253,34 @@ const CARGO_RUN_VARS: &[&str] = &[
     "OUT_DIR",
 ];
 
+/// The profile folder of the test binary `exe`: `<target>/<profile>` or
+/// `<target>/<triple>/<profile>`, where cargo also puts `horch` and the
+/// fakes. cargo 1.100 runs a test from
+/// `<profile>/build/<package>/<hash>/out/`, an older cargo from
+/// `<profile>/deps/` (T-59).
+pub(crate) fn built_dir_of(exe: &Path) -> PathBuf {
+    let dir = exe.parent().expect("exe dir");
+    let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+    if name(dir).as_deref() == Some("deps") {
+        return dir.parent().expect("profile dir").to_path_buf();
+    }
+    let build = dir.ancestors().nth(3);
+    if name(dir).as_deref() == Some("out") && build.and_then(name).as_deref() == Some("build") {
+        return build
+            .and_then(Path::parent)
+            .expect("profile dir")
+            .to_path_buf();
+    }
+    dir.to_path_buf()
+}
+
+fn cargo_profile(built: &Path) -> &str {
+    match built.file_name().and_then(|n| n.to_str()) {
+        Some("debug") | None => "dev",
+        Some(profile) => profile,
+    }
+}
+
 /// The cargo command that builds `horch` and the fakes into `built`, with
 /// the profile, the target triple and the target folder of this test
 /// process. `built` is `<root>/<profile>` for a host build, and
@@ -1003,12 +1307,12 @@ fn build_command(built: &Path, triple: &str) -> Command {
         "horch-e2e",
         "--bins",
     ]);
-    match built.file_name().and_then(|n| n.to_str()) {
-        Some("debug") | None => {}
-        Some("release") => {
+    match cargo_profile(built) {
+        "dev" => {}
+        "release" => {
             cmd.arg("--release");
         }
-        Some(profile) => {
+        profile => {
             cmd.args(["--profile", profile]);
         }
     }
@@ -1117,6 +1421,82 @@ pub fn wait_for_or<T>(
     );
 }
 
+/// `cmd.output()`, for at most `limit`: the child must exit, and its stdout
+/// and stderr must close, before `limit`. Else the child and its process
+/// group are killed, and the call panics with the command line and the
+/// output so far. A pipe stays open after the exit when a process that the
+/// child started holds it: on Windows the detached mail courier of
+/// `horch tell` did so for hours (CI run 4).
+pub fn output_within(cmd: &mut Command, limit: Duration) -> Output {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+    let line = format!("{cmd:?}");
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    horch_platform::group::new_group(cmd);
+    let began = Instant::now();
+    let mut child = cmd
+        .spawn()
+        .unwrap_or_else(|e| panic!("starting {line}: {e}"));
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let text = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&text);
+        let reader = std::thread::spawn(move || {
+            let Some(mut pipe) = pipe else { return };
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    return;
+                }
+                into.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        });
+        (text, reader)
+    };
+    let (stdout, out_reader) = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let (stderr, err_reader) = read(child.stderr.take().map(|p| Box::new(p) as _));
+    let mut status = None;
+    while began.elapsed() < limit {
+        if status.is_none() {
+            status = match child.try_wait() {
+                Ok(status) => status,
+                Err(e) => {
+                    horch_platform::group::kill_child_group(&mut child);
+                    let _ = child.wait();
+                    panic!("waiting for {line}: {e}");
+                }
+            };
+        }
+        if let Some(status) =
+            status.filter(|_| out_reader.is_finished() && err_reader.is_finished())
+        {
+            let _ = (out_reader.join(), err_reader.join());
+            let status = child.wait().unwrap_or(status);
+            let take = |text: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *text.lock().unwrap());
+            return Output {
+                status,
+                stdout: take(stdout),
+                stderr: take(stderr),
+            };
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    horch_platform::group::kill_child_group(&mut child);
+    let _ = child.wait();
+    let state = match status {
+        Some(status) => format!("exited with {status}, but its stdout or stderr stayed open"),
+        None => "did not exit".to_string(),
+    };
+    let text = |t: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&t.lock().unwrap()).into_owned();
+    panic!(
+        "{line} {state} after {} s; its process group was killed\n--- stdout so far ---\n{}\n--- stderr so far ---\n{}",
+        limit.as_secs_f32(),
+        text(&stdout),
+        text(&stderr)
+    );
+}
+
 /// The repository root, from this crate's manifest dir.
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1196,9 +1576,119 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        build_command, choose_harness_root, listed, process_list_or_sandbox, stop_stale_harnesses,
-        OWNER_FILE,
+        build_command, built_dir_of, cargo_profile, choose_harness_root, listed,
+        process_list_or_sandbox, reap, reap_grace, stop_stale_harnesses, OWNER_FILE,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn after_the_grace_a_process_in_its_exit_is_told_from_a_running_one() {
+        use super::{after_grace, AfterGrace};
+        assert_eq!(after_grace(None), AfterGrace::Gone);
+        for state in ["Z", "Z+", "X", "?E", "UE", "SE", "RE+"] {
+            assert_eq!(after_grace(Some(state)), AfterGrace::InExit, "{state}");
+        }
+        for state in ["S", "Ss", "S+", "R", "R+", "U", "Us", "T", "I", "SN"] {
+            assert_eq!(after_grace(Some(state)), AfterGrace::Running, "{state}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn bounded_panic(script: &str, limit: Duration) -> String {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::output_within(&mut cmd, limit)
+        }))
+        .expect_err("the wait must end with a panic");
+        panic.downcast_ref::<String>().cloned().unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_within_its_limit_gives_its_output() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let out = super::output_within(&mut cmd, Duration::from_secs(60));
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_that_a_grandchild_holds_open_ends_the_wait_with_a_panic() {
+        let began = std::time::Instant::now();
+        let message = bounded_panic("sleep 600 & echo $!", Duration::from_secs(2));
+        assert!(began.elapsed() < Duration::from_secs(30), "{message}");
+        assert!(
+            message.contains("exited with exit status: 0, but its stdout or stderr stayed open"),
+            "{message}"
+        );
+        assert!(message.contains("sleep 600 & echo $!"), "{message}");
+        let sleeper: u32 = message
+            .split("--- stdout so far ---\n")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .and_then(|pid| pid.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no pid in the stdout so far: {message}"));
+        crate::harness::wait_for("the end of the killed grandchild", || {
+            (!horch_core::procid::alive(sleeper, None)).then_some(())
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_never_exits_ends_the_wait_with_a_panic() {
+        let message = bounded_panic("echo started; sleep 600", Duration::from_secs(1));
+        assert!(message.contains("did not exit after 1 s"), "{message}");
+        assert!(
+            message.contains("--- stdout so far ---\nstarted\n"),
+            "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn process(pid: u32) -> crate::process::Process {
+        crate::process::Process {
+            pid,
+            pgid: pid,
+            command: format!("horch job run {pid}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_in_its_exit_leaks_only_when_its_exit_outlasts_the_limit() {
+        use std::collections::HashMap;
+        let polls = Cell::new(0);
+        let ends = |_: &[crate::process::Process]| {
+            polls.set(polls.get() + 1);
+            let mut states = HashMap::new();
+            if polls.get() < 3 {
+                states.insert(7, "?E".to_string());
+                states.insert(8, "Z".to_string());
+            } else {
+                states.insert(8, "S".to_string());
+            }
+            states
+        };
+        let leaked = super::wait_exits(vec![process(7), process(8)], Duration::from_secs(60), ends);
+        assert_eq!(leaked, Vec::<String>::new());
+        assert_eq!(
+            polls.get(),
+            3,
+            "the wait ends when both are out of their exit"
+        );
+
+        let stays = |_: &[crate::process::Process]| HashMap::from([(9, "?E".to_string())]);
+        let leaked = super::wait_exits(vec![process(9)], Duration::from_millis(300), stays);
+        assert_eq!(leaked.len(), 1, "{leaked:?}");
+        assert!(
+            leaked[0].starts_with("9 horch job run 9 (in its exit"),
+            "{leaked:?}"
+        );
+    }
 
     /// T-842: the harness builds `horch` and the fakes before their first
     /// use, so no binary is older than a source file it is built from.
@@ -1260,6 +1750,40 @@ mod tests {
             args("/w/target/ci"),
             with(&["--profile", "ci", "--target-dir", "/w/target"])
         );
+    }
+
+    #[test]
+    fn profile_comes_from_the_target_layout_of_old_and_new_cargo() {
+        let profile = |exe: &str| {
+            let built = built_dir_of(Path::new(exe));
+            (cargo_profile(&built).to_string(), built)
+        };
+        let triple = "/w/target/x86_64-unknown-linux-gnu";
+        for (root, want) in [
+            ("/w/target/debug", "dev"),
+            ("/w/target/release", "release"),
+            ("/w/target/ci", "ci"),
+            (&format!("{triple}/debug")[..], "dev"),
+        ] {
+            for exe in [
+                format!("{root}/build/horch-e2e/ce99708c1aeeb00b/out/mail-ce99708c1aeeb00b"),
+                format!("{root}/deps/mail-ce99708c1aeeb00b"),
+            ] {
+                assert_eq!(
+                    profile(&exe),
+                    (want.to_string(), PathBuf::from(root)),
+                    "{exe}"
+                );
+            }
+        }
+        let new = "/w/target/debug/build/horch-e2e/ce99708c1aeeb00b/out/mail-ce99708c1aeeb00b";
+        let args: Vec<String> =
+            build_command(&built_dir_of(Path::new(new)), "aarch64-apple-darwin")
+                .get_args()
+                .skip(7)
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+        assert_eq!(args, ["--target-dir", "/w/target"]);
     }
 
     /// T-842 F1: a test built with `--target <triple>` or with
@@ -1423,5 +1947,124 @@ mod tests {
             "the stale root is stopped once, so its owner file goes"
         );
         assert!(live_runs, "the live root's process was stopped");
+    }
+
+    fn stopping_in(root: &Path, on_term: &str) -> u32 {
+        std::fs::create_dir_all(root).unwrap();
+        let ready = root.join("ready");
+        let script = format!(
+            "$SIG{{TERM}} = {on_term}; open my $f, '>', $ARGV[0]; print $f $$; close $f; sleep 600;"
+        );
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "perl -e \"$0\" \"$1\" </dev/null >/dev/null 2>&1 &"])
+            .arg(script)
+            .arg(&ready);
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        assert!(cmd.status().unwrap().success());
+        super::wait_for("the process to set its SIGTERM handler", || {
+            std::fs::read_to_string(&ready).ok()?.trim().parse().ok()
+        })
+    }
+
+    #[test]
+    fn a_process_that_stops_within_the_stop_grace_is_not_leaked() {
+        let root = super::tmpdir().join(format!("h-slow-{:x}", super::unique()));
+        let pid = stopping_in(&root, "sub { select(undef, undef, undef, 8); exit 0 }");
+        let started = std::time::Instant::now();
+
+        let leaked = reap(&root, &root.join("fake.log"), reap_grace());
+
+        let took = started.elapsed();
+        let runs = horch_core::fsx::pid_alive(pid);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(leaked.unwrap(), Vec::<String>::new());
+        assert!(!runs, "teardown returned while the process ran");
+        assert!(
+            took >= Duration::from_secs(8),
+            "the stop took {took:?}: it must be slower than the old 5 s wait"
+        );
+    }
+
+    fn sleeping_job(ready: &Path) -> u32 {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "perl -e 'setpgrp(0, 0); open my $f, q(>), $ARGV[0]; print $f $$; close $f; sleep 600' \"$0\" </dev/null >/dev/null 2>&1 &",
+        ])
+        .arg(ready)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir("/");
+        assert!(cmd.status().unwrap().success());
+        super::wait_for("the job process to lead its group", || {
+            let pid: u32 = std::fs::read_to_string(ready).ok()?.trim().parse().ok()?;
+            let started = horch_core::procid::start_time(pid)?;
+            horch_core::procid::is_same_group(pid, started).then_some(pid)
+        })
+    }
+
+    /// T-365: a job of the world outlives the stop of its fleetd by design,
+    /// so the teardown stops it by the group that the `jobs` table records,
+    /// and no process of the world runs after the teardown.
+    #[cfg(unix)]
+    #[test]
+    fn the_teardown_stops_each_job_of_the_world_by_its_recorded_group() {
+        use super::{after_grace, states_of, AfterGrace};
+        let mut h = super::Harness::new("job-teardown");
+        let db = h.root.join("ledger.sqlite3");
+        h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+        let ready = super::tmpdir().join(format!("h-job-{:x}", super::unique()));
+        let pid = sleeping_job(&ready);
+        let started = horch_core::procid::start_time(pid).expect("the job process runs");
+        let store = horch_core::taskledger::Store::open(&db).unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO jobs (kind, subject, input_key, state, pid, pid_start, time_limit_s,
+                     deadline, created_at, started_at)
+                 VALUES ('docs_sync', 'herdr 0', '0', 'running', ?1, ?2, 3600, 3600,
+                     '2026-11-21T00:00:00Z', '2026-11-21T00:00:00Z')",
+                rusqlite::params![pid, started],
+            )
+            .unwrap();
+        drop(store);
+
+        drop(h);
+
+        let job = crate::process::Process {
+            pid,
+            pgid: pid,
+            command: String::new(),
+        };
+        let state = states_of(std::slice::from_ref(&job));
+        let runs = after_grace(state.get(&pid).map(String::as_str)) == AfterGrace::Running
+            && horch_core::procid::is_same(pid, started);
+        if runs {
+            // SAFETY: plain syscall; the group is the one this test started.
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        }
+        let _ = std::fs::remove_file(&ready);
+        assert!(
+            !runs,
+            "the job process {pid} of the world still runs after the teardown"
+        );
+    }
+
+    #[test]
+    fn a_process_that_ignores_sigterm_is_killed_and_reported() {
+        let root = super::tmpdir().join(format!("h-stuck-{:x}", super::unique()));
+        let pid = stopping_in(&root, "'IGNORE'");
+
+        let leaked = reap(&root, &root.join("fake.log"), Duration::from_secs(1)).unwrap();
+
+        super::wait_for("the killed process to end", || {
+            (!horch_core::fsx::pid_alive(pid)).then_some(())
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(leaked.len(), 1, "{leaked:?}");
+        assert!(
+            leaked[0].starts_with(&format!("{pid} ")),
+            "the report names the process: {leaked:?}"
+        );
     }
 }

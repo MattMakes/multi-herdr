@@ -8,9 +8,11 @@
 //! time, as `p7_wrapper_exec.rs` does. No test waits for a time: a failure
 //! of "Launch headless" uses a fake that exits with no event.
 
+#[path = "support/fakes.rs"]
+mod fakes;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 use std::time::Duration;
 
 use horch_core::fleetd::worker_profiles::adapters::conformance_runner::ConformanceRunner;
@@ -30,66 +32,8 @@ use serde_json::{json, Value};
 /// The fakes that the tests launch.
 const FAKES: [&str; 4] = ["fake-claude", "fake-codex", "fake-antigravity", "fake-pi"];
 
-/// The folder of the built fakes: `target/<profile>`, beside this test.
-fn bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let mut dir = exe.parent().unwrap().to_path_buf();
-    if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-        dir.pop();
-    }
-    dir
-}
-
-/// The variables cargo sets for a test process. A nested build that sees
-/// them has another fingerprint, and builds each crate again.
-const CARGO_RUN_VARS: &[&str] = &[
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_CRATE_NAME",
-    "CARGO_BIN_NAME",
-    "CARGO_PRIMARY_PACKAGE",
-    "CARGO_TARGET_TMPDIR",
-    "CARGO_RUSTC_CURRENT_DIR",
-    "OUT_DIR",
-];
-
-/// Build the fakes 1 time in this test process, into the target folder
-/// of this test. `cargo test -p horch-core` does not build them.
 fn fake(name: &str) -> PathBuf {
-    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let dir = bin_dir();
-    BUILT.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut cmd = StdCommand::new(cargo);
-        for (key, _) in std::env::vars_os() {
-            let key = key.to_string_lossy();
-            if key.starts_with("CARGO_PKG_") || CARGO_RUN_VARS.contains(&key.as_ref()) {
-                cmd.env_remove(key.as_ref());
-            }
-        }
-        cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .args(["build", "--locked", "-p", "horch-e2e"]);
-        for bin in FAKES {
-            cmd.args(["--bin", bin]);
-        }
-        match dir.file_name().and_then(|n| n.to_str()) {
-            Some("debug") | None => {}
-            Some("release") => {
-                cmd.arg("--release");
-            }
-            Some(profile) => {
-                cmd.args(["--profile", profile]);
-            }
-        }
-        cmd.arg("--target-dir").arg(dir.parent().unwrap());
-        let out = cmd.output().unwrap();
-        assert!(
-            out.status.success(),
-            "the build of the fakes failed: {cmd:?}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    });
-    dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    fakes::fake(&FAKES, name)
 }
 
 /// The variables of the host that a CLI reads as its compaction setting.
@@ -115,9 +59,18 @@ fn sealed(dir: &Path, name: &str) -> PathBuf {
     script
 }
 
-/// A test machine in `/tmp`: a home, the horch folders, a fleet root and
-/// the scratch folder of the throwaway task folders. Each CLI binary is a
-/// fake.
+/// The folder of each test machine. On Linux the sandbox mounts a new
+/// empty tmpfs on `/tmp`, so a folder in `/tmp` is not visible in it.
+fn machine_root() -> PathBuf {
+    if cfg!(target_os = "linux") {
+        PathBuf::from("/var/tmp")
+    } else if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    }
+}
+
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
@@ -125,7 +78,11 @@ struct Machine {
 
 impl Machine {
     fn new() -> Machine {
-        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        Machine::new_in(machine_root())
+    }
+
+    fn new_in(root: impl AsRef<std::path::Path>) -> Machine {
+        let tmp = tempfile::tempdir_in(root).unwrap();
         for d in ["home", "state", "data", "ledger/fleet", "scratch", "bin"] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
@@ -387,7 +344,11 @@ fn shared_write_reaches_outbox_result_json() {
 #[test]
 fn shared_write_fails_when_the_agent_ends_without_the_write() {
     let m = Machine::new();
-    let r = m.check(&claude(), "exit_without_result", Check::SharedWrite);
+    let r = m.check(
+        &claude(),
+        "conformance,exit_without_result",
+        Check::SharedWrite,
+    );
     assert_verdict(&r, Check::SharedWrite, Verdict::Fail);
     assert!(r.evidence.contains("outbox/result.json"), "{r:?}");
 }
@@ -400,6 +361,31 @@ fn sandbox_write_outside_is_refused() {
     let r = m.check(&claude(), "conformance", Check::SandboxBoundary);
     assert_verdict(&r, Check::SandboxBoundary, Verdict::Pass);
     assert!(r.evidence.contains("refused"), "{r:?}");
+}
+
+#[test]
+fn sandbox_boundary_fails_when_the_sandbox_does_not_see_the_real_folder() {
+    let not_seen = |r: &CheckResult| {
+        assert_verdict(r, Check::SandboxBoundary, Verdict::Fail);
+        assert!(
+            r.evidence
+                .starts_with("the outside write: not run: the sandbox does not see the real "),
+            "{r:?}"
+        );
+    };
+    let m = Machine::new();
+    let settings = m.home().join("override-settings.json");
+    let rules =
+        json!({"sandbox": {"enabled": true, "filesystem": {"denyRead": [m.path("scratch")]}}});
+    std::fs::write(&settings, rules.to_string()).unwrap();
+    let mut t = claude();
+    t.args = vec!["--settings".into(), settings.to_string_lossy().into_owned()];
+    not_seen(&m.check(&t, "conformance", Check::SandboxBoundary));
+
+    if cfg!(target_os = "linux") {
+        let old = Machine::new_in("/tmp");
+        not_seen(&old.check(&claude(), "conformance", Check::SandboxBoundary));
+    }
 }
 
 #[test]
@@ -450,7 +436,11 @@ fn hooks_reach_the_wrapper() {
 #[test]
 fn hooks_fire_fails_when_no_stop_reaches_the_wrapper() {
     let m = Machine::new();
-    let r = m.check(&claude(), "exit_without_result", Check::HooksFire);
+    let r = m.check(
+        &claude(),
+        "conformance,exit_without_result",
+        Check::HooksFire,
+    );
     assert_verdict(&r, Check::HooksFire, Verdict::Fail);
     assert!(r.evidence.contains("no stop"), "{r:?}");
 }

@@ -350,7 +350,7 @@ fn production_sources() -> Vec<(String, String)> {
             let text = fs::read_to_string(&path).unwrap();
             let prod: Vec<&str> = text
                 .lines()
-                .take_while(|l| l.trim() != "#[cfg(test)]")
+                .take_while(|l| !matches!(l.trim(), "#[cfg(test)]" | "#[cfg(all(test, unix))]"))
                 .collect();
             let rel = path.strip_prefix(crates).unwrap().display().to_string();
             (rel, prod.join("\n"))
@@ -391,6 +391,7 @@ fn no_code_path_creates_a_task_without_an_idea() {
         sources.iter().any(|(f, _)| f.ends_with("planned_tasks.rs")),
         "the scan reads the production code"
     );
+    const E2E_TEST_FIXTURE: &str = "horch-e2e/src/ledger_seed.rs";
     let mut inserts = Vec::new();
     let mut ideas = Vec::new();
     for (file, text) in &sources {
@@ -399,7 +400,10 @@ fn no_code_path_creates_a_task_without_an_idea() {
             inserts.push(file.clone());
         }
         // The release backfill writes the idea of a run: only schema.rs.
-        if flat.contains("run_idea(") && !file.ends_with("taskledger/schema.rs") {
+        if flat.contains("run_idea(")
+            && !file.ends_with("taskledger/schema.rs")
+            && file != E2E_TEST_FIXTURE
+        {
             ideas.push(file.clone());
         }
     }

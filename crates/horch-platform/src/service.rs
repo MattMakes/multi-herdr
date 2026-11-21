@@ -36,7 +36,42 @@ use crate::NotSupported;
 pub(crate) const HANG_LIMIT_S: u32 = 30;
 
 /// The label of the fleetd service of the default ledger of the OS user.
+/// Another ledger gets its own label ([`ledger_label`]), so it never
+/// replaces or restarts the installed service.
 pub const LABEL: &str = "horch-fleetd";
+
+/// The most bytes of a service label ([`validate_label`]).
+pub const LABEL_MAX: usize = 64;
+
+/// The label of the fleetd service of a ledger that is not the default
+/// ledger: `horch-fleetd-<8 hex chars>`, from the first 4 bytes of
+/// `digest`, the SHA-256 of the canonical path of the ledger.
+pub fn ledger_label(digest: &[u8]) -> String {
+    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("{LABEL}-{hex}")
+}
+
+/// An `InvalidInput` error when `label` cannot name a service: it is empty,
+/// longer than [`LABEL_MAX`] bytes, does not start with an ASCII letter or
+/// digit, or has a character other than an ASCII letter, a digit, `-`, `_`
+/// or `.`. The label is a file name in the definition folder and an
+/// argument of the service manager, so a path separator or `..` is refused.
+pub fn validate_label(label: &str) -> io::Result<()> {
+    let starts_ok = label
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric());
+    let chars_ok = label
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !starts_ok || !chars_ok || label.len() > LABEL_MAX || label.contains("..") {
+        return Err(invalid(format!(
+            "the service label {label:?} is not valid: use 1 to {LABEL_MAX} ASCII letters, \
+             digits, '-', '_' or '.', and start with a letter or a digit"
+        )));
+    }
+    Ok(())
+}
 
 /// The service manager command of this OS, for [`ensure`] and
 /// [`restart`]: `launchctl` on macOS, `systemctl` on Linux and `schtasks`
@@ -80,10 +115,11 @@ pub struct Spec {
 /// - Windows: `<label>.xml`, a task that runs `<exe> fleetd` at logon, and
 ///   `<label>.check.xml`, a task that runs `<exe> fleetd check` every 30 s.
 ///
-/// An `InvalidInput` error: `exe` is not UTF-8, an env name is empty or has
-/// `=` or NUL, an env value has NUL, or the OS is Windows and the env is not
-/// empty.
+/// An `InvalidInput` error: the label is not valid ([`validate_label`]),
+/// `exe` is not UTF-8, an env name is empty or has `=` or NUL, an env value
+/// has NUL, or the OS is Windows and the env is not empty.
 pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
+    validate_label(&spec.label)?;
     for (name, value) in &spec.env {
         if name.is_empty() || name.contains(['=', '\0']) || value.contains('\0') {
             return Err(invalid(format!("the env entry {name:?} is not valid")));

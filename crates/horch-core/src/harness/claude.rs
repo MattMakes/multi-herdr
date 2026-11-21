@@ -180,7 +180,8 @@ pub(super) fn claude_command(
 /// --include-hook-events`, with `--permission-mode dontAsk`, its explicit
 /// allow rules and `--permission-prompts none`, so no dialog can stop it
 /// (FM-18), and [`EXEC_COMPACT_WINDOW`] in the settings env (FR-9). The
-/// prompt is the path of the attempt's `inbox/START.md`. The rest is the
+/// prompt is the skills briefing, then the path of the attempt's
+/// `inbox/START.md` (`launch::run_exec_flow`). The rest is the
 /// interactive launch of today: the `--settings` overlay and
 /// `--strict-mcp-config`, no `CLAUDE_CONFIG_DIR`. The command is scrubbed;
 /// the caller starts it through the launcher.
@@ -1215,10 +1216,12 @@ fn deny_git_worktree(
     )
 }
 
-/// SR-3: no agent pushes, merges a PR or makes a release, so a worker's
-/// Bash may not run `git push`, `gh pr merge` or `gh release`. The agent
-/// hooks path also refuses a push; this rule also stops `--no-verify`. A
-/// fleet orchestrator gets no such rule.
+/// SR-3: no agent pushes, merges a PR, makes a release or messages anyone
+/// outside the fleet, so a worker's Bash may not run a command of
+/// [`launch_env::DENIED_COMMANDS`] (`git push`, `gh pr merge`,
+/// `gh release`, `gh issue comment`, `gh pr comment`, `gh pr review`,
+/// `gh discussion`). The agent hooks path also refuses a push; this rule
+/// also stops `--no-verify`. A fleet orchestrator gets no such rule.
 fn deny_agent_push(
     teammate: &Teammate,
     settings: &mut serde_json::Map<String, Value>,
@@ -1226,14 +1229,10 @@ fn deny_agent_push(
     if !is_worker(teammate) {
         return Ok(false);
     }
-    let [push, merge, release] = launch_env::DENIED_COMMANDS.map(launch_env::claude_deny_rule);
     add_entries(
         settings,
-        [
-            (PERMS, "deny", push),
-            (PERMS, "deny", merge),
-            (PERMS, "deny", release),
-        ],
+        launch_env::DENIED_COMMANDS
+            .map(|words| (PERMS, "deny", launch_env::claude_deny_rule(words))),
     )
 }
 
@@ -1645,17 +1644,19 @@ pub(crate) fn sandbox_host_problem(path: Option<&std::ffi::OsStr>) -> Option<Str
     match std::env::consts::OS {
         "macos" => host.map(|_| format!("{SANDBOX_EXEC} is missing")),
         "linux" => {
+            let bwrap = crate::runtime::process::which(path, None, "bwrap");
             let socat = crate::runtime::process::which(path, None, "socat");
-            let missing: Vec<&str> = [("bwrap", host.is_some()), ("socat", socat.is_none())]
+            let missing: Vec<&str> = [("bwrap", bwrap.is_none()), ("socat", socat.is_none())]
                 .into_iter()
                 .filter_map(|(bin, missing)| missing.then_some(bin))
                 .collect();
-            (!missing.is_empty()).then(|| {
-                format!(
+            if !missing.is_empty() {
+                return Some(format!(
                     "{} not on PATH; install bubblewrap and socat",
                     missing.join(" and ")
-                )
-            })
+                ));
+            }
+            host.map(|gap| gap.to_string())
         }
         other => host.map(|_| format!("Claude Code has no sandbox on {other}")),
     }
@@ -2885,6 +2886,10 @@ mod tests {
             "Bash(git push:*)",
             "Bash(gh pr merge:*)",
             "Bash(gh release:*)",
+            "Bash(gh issue comment:*)",
+            "Bash(gh pr comment:*)",
+            "Bash(gh pr review:*)",
+            "Bash(gh discussion:*)",
             "Read(//fleet/run/**)",
             "Edit(//fleet/run/**)"
         ]);
@@ -2904,7 +2909,7 @@ mod tests {
         let cmd = claude_command(&env, &own, Session::Unmanaged, "", None).unwrap();
         assert_eq!(
             settings_arg(&cmd)["permissions"]["deny"],
-            json!(want.as_array().unwrap()[..7])
+            json!(want.as_array().unwrap()[..11])
         );
     }
 
@@ -2925,7 +2930,11 @@ mod tests {
                 "Bash(git worktree prune:*)",
                 "Bash(git push:*)",
                 "Bash(gh pr merge:*)",
-                "Bash(gh release:*)"
+                "Bash(gh release:*)",
+                "Bash(gh issue comment:*)",
+                "Bash(gh pr comment:*)",
+                "Bash(gh pr review:*)",
+                "Bash(gh discussion:*)"
             ]})
         );
     }

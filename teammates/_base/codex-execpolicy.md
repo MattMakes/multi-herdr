@@ -57,6 +57,19 @@ rules:
   - pattern: '"gh", "release"'
     decision: forbidden
     justification: fleet agents do not make a release
+  # SR-3: no agent messages anyone outside the fleet.
+  - pattern: '"gh", "issue", "comment"'
+    decision: forbidden
+    justification: fleet agents do not message people outside the fleet
+  - pattern: '"gh", "pr", "comment"'
+    decision: forbidden
+    justification: fleet agents do not message people outside the fleet
+  - pattern: '"gh", "pr", "review"'
+    decision: forbidden
+    justification: fleet agents do not message people outside the fleet
+  - pattern: '"gh", "discussion"'
+    decision: forbidden
+    justification: fleet agents do not message people outside the fleet
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

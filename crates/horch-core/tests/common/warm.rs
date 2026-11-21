@@ -1,6 +1,7 @@
 //! A fake executable that is written and warmed, shared by the integration
 //! tests that load it with `#[path = "common/warm.rs"] mod warm;`.
 
+#[cfg(unix)]
 use std::path::Path;
 
 /// Write `script` to `path` as an executable and run it once with `args`,
@@ -9,6 +10,7 @@ use std::path::Path;
 /// thread that forks while another writes a script can hold it open for
 /// writing, so exec fails with "Text file busy" until that child execs;
 /// retry until it does.
+#[cfg(unix)]
 pub fn write_warmed(path: &Path, script: &str, args: &[&str]) -> std::process::Output {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, script).unwrap();

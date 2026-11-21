@@ -24,8 +24,8 @@ use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::retry::{self, Policy};
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::{
-    dead_attempts, held_attempt, orphans, AttemptState, Facts, KeptPane, Reap, Recorded, RowRef,
-    Stop,
+    dead_attempts, held_attempt, orphans, AttemptState, Facts, KeptGroup, KeptPane, Reap, Recorded,
+    RowRef, Stop,
 };
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::workers;
@@ -33,6 +33,8 @@ use crate::taskledger::{tasks, util};
 
 /// The kind of the needs-you item of a pane that is not closed.
 const PANE_KEPT: &str = "pane_kept";
+
+const GROUP_KEPT: &str = "group_kept";
 
 /// The commands write rows and events together: refuse a connection with
 /// no open transaction.
@@ -54,17 +56,34 @@ fn cause(text: &str) -> Cause<'_> {
 /// `ended` with the outcome `outcome`, in the transaction of `done`. A
 /// worker with no attempt that holds it writes nothing.
 pub fn end_own_attempt(tx: &Connection, worker_id: &str, outcome: &str) -> Result<()> {
+    let text = format!("its worker ran horch ledger done: {outcome}");
+    let by = Cause {
+        actor: Actor::Worker,
+        text: &text,
+    };
+    end_held_attempt(tx, worker_id, outcome, by)
+}
+
+/// `horch ledger stop`: the attempt that worker `worker_id` holds moves to
+/// `ended` with the outcome `killed`, in the transaction of the stop. The
+/// pass then stops its processes with the ladder, as for each ended
+/// attempt (I5). A worker with no attempt that holds it writes nothing.
+pub fn end_stopped_attempt(tx: &Connection, worker_id: &str, reason: &str) -> Result<()> {
+    let text = format!("its worker was stopped: {reason}");
+    let by = Cause {
+        actor: Actor::Orchestrator,
+        text: &text,
+    };
+    end_held_attempt(tx, worker_id, Outcome::Killed.as_str(), by)
+}
+
+fn end_held_attempt(tx: &Connection, worker_id: &str, outcome: &str, by: Cause<'_>) -> Result<()> {
     check_open(tx)?;
     let attempts = store::attempts_of_worker(tx, worker_id)?;
     let Some(a) = held_attempt(worker_id, &attempts) else {
         return Ok(());
     };
     store::set_ended(tx, &a.id, outcome, &util::now())?;
-    let text = format!("its worker ran horch ledger done: {outcome}");
-    let by = Cause {
-        actor: Actor::Worker,
-        text: &text,
-    };
     transition(
         tx,
         None,
@@ -213,7 +232,38 @@ pub fn mark_orphans(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
     let rows = store::rows(tx, &util::host_name())?;
     let out = orphans(&rows, facts);
     keep_panes(tx, &out.kept)?;
+    keep_groups(tx, &out.kept_groups)?;
     Ok(out.stops)
+}
+
+/// Open 1 needs-you item for each process group in `kept`: the leader of
+/// the row is gone, and a new process has its pid, so fleetd does not stop
+/// the group (FM-22).
+pub fn keep_groups(tx: &Connection, kept: &[KeptGroup]) -> Result<()> {
+    for k in kept {
+        let (entity, id) = match &k.row {
+            RowRef::Worker(id) => (Entity::Worker, id),
+            RowRef::Attempt(id) => (Entity::Attempt, id),
+        };
+        let key = format!("{GROUP_KEPT}:{}", k.group);
+        let text = format!(
+            "fleetd did not stop process group {} of {entity} {id}: the leader of the row is \
+             gone, and a new process has its pid, so the group can be a new group. Stop the \
+             processes of the row yourself when they still run.",
+            k.group
+        );
+        needs_you::open_item(
+            tx,
+            &Write {
+                key: &key,
+                kind: GROUP_KEPT,
+                entity: entity.as_str(),
+                entity_id: id,
+                text: &text,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// Open 1 needs-you item for each pane in `kept`.

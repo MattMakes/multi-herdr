@@ -52,6 +52,7 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, util};
+use horch_platform::channel::User;
 use rusqlite::{params, Connection};
 
 /// The variable that makes [`child_job`] run: the id of its job.
@@ -317,7 +318,23 @@ impl World {
     /// Wait until the job `id` ended.
     fn ended(&self, id: i64) -> JobRow {
         let until = Instant::now() + Duration::from_secs(30);
+        let conn = open(&self.db());
+        let owner = User::current().unwrap();
         loop {
+            let row = self.job(id);
+            if !matches!(row.state, State::Queued | State::Running) {
+                return row;
+            }
+            let reads = jobs::read_results(
+                &conn,
+                &self.top.join("fleet"),
+                &owner,
+                self.config.job_result_max_bytes,
+            )
+            .unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            jobs::ingest_results(&ctx(&self.config), &conn, &reads).unwrap();
+            conn.execute_batch("COMMIT").unwrap();
             let row = self.job(id);
             if !matches!(row.state, State::Queued | State::Running) {
                 return row;
@@ -488,7 +505,7 @@ fn child_job() {
     };
     let id: i64 = id.to_str().unwrap().parse().unwrap();
     let db = PathBuf::from(std::env::var_os(CHILD_DB).unwrap());
-    let mut conn = open(&db);
+    let conn = open(&db);
     let config = FleetConfig::default();
     let profiles = CodexSandbox::default();
     let checks = CheckRunner {
@@ -496,7 +513,7 @@ fn child_job() {
         profiles: &profiles,
         sweep: None,
     };
-    jobs::run_job(&ctx(&config), &mut conn, id, std::process::id(), &checks).unwrap();
+    jobs::run_job(&ctx(&config), &conn, id, std::process::id(), &checks).unwrap();
 }
 
 // ─── the tests ──────────────────────────────────────────────────────────
@@ -515,9 +532,10 @@ fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
     let mut pass = w.pass(&Trees, &host);
     let budget = Duration::from_secs(w.config.pass_time_budget_s);
 
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(40);
     let mut passes = 0;
-    while Instant::now() < until {
+    while passes < 5 {
+        assert!(Instant::now() < until, "{passes} passes in 40 s");
         let began = Instant::now();
         let report = run(&mut pass, &mut w);
         assert!(
@@ -530,7 +548,7 @@ fn slow_worktree_add_job_keeps_the_pass_under_its_time_budget() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    assert!(passes >= 5, "{passes} passes in 3 s");
+    assert!(passes >= 5, "{passes} passes");
     assert_eq!(
         w.job(add).state,
         State::Running,

@@ -19,6 +19,7 @@ use test_jobs::TestJobs;
 
 /// A git that writes each call to `<top>/git.log`, then runs the host git.
 /// With `fail_trash`, a write of a trash ref fails.
+#[cfg(unix)]
 fn recording_git(top: &Path, fail_trash: bool) -> (Git, PathBuf) {
     let log = top.join("git.log");
     let bin = top.join("fake-git");
@@ -322,6 +323,7 @@ fn gc_keeps_a_trash_ref_at_29_days_and_deletes_it_at_31() {
     assert!(w.has_ref("refs/horch/archive/kept"));
 }
 
+#[cfg(unix)]
 #[test]
 fn no_decision_forces_git_or_force_deletes_a_branch() {
     let mut w = World::new();
@@ -356,6 +358,7 @@ fn no_decision_forces_git_or_force_deletes_a_branch() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn delete_deletes_no_branch_and_no_folder_when_the_trash_ref_write_fails() {
     let mut w = World::new();
@@ -470,6 +473,7 @@ fn finish_with_no_active_run_fails_and_keeps_everything() {
     assert!(path.exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_pushes_opens_a_pull_request_and_archives_the_folder() {
     let mut w = World::new();
@@ -516,6 +520,7 @@ fn pr_pushes_opens_a_pull_request_and_archives_the_folder() {
     assert_eq!(column(&w, &path, "decision").as_deref(), Some("PR"));
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_is_not_offered_without_gh_or_without_a_remote() {
     let w = World::new();

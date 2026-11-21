@@ -1,6 +1,8 @@
 //! SR-3 (ticket 22 of fleetd-p4): no agent pushes. Each worker gets a git
 //! hooks path whose `pre-push` hook refuses, and the profiles of Claude Code
-//! and Codex deny `git push`, `gh pr merge` and `gh release`. horch's own
+//! and Codex deny `git push`, `gh pr merge` and `gh release`. They also deny
+//! the external messages: `gh issue comment`, `gh pr comment`,
+//! `gh pr review` and `gh discussion`. horch's own
 //! git calls set `-c core.hooksPath=/dev/null`, and a `-c` value wins over
 //! the `GIT_CONFIG_*` values of the environment, so the old finish path
 //! still pushes. The other hooks of the repository still run for an agent.
@@ -287,7 +289,7 @@ fn claude_deny(root: &Path, teammate: &Teammate) -> Vec<String> {
 }
 
 #[test]
-fn claude_profile_denies_git_push_by_default() {
+fn claude_profile_denies_git_push_and_external_messages_by_default() {
     let tmp = tempfile::tempdir().unwrap();
     let worker = Teammate {
         name: "plain-worker".into(),
@@ -299,10 +301,14 @@ fn claude_profile_denies_git_push_by_default() {
         "Bash(git push:*)",
         "Bash(gh pr merge:*)",
         "Bash(gh release:*)",
+        "Bash(gh issue comment:*)",
+        "Bash(gh pr comment:*)",
+        "Bash(gh pr review:*)",
+        "Bash(gh discussion:*)",
     ] {
         assert!(deny.iter().any(|d| d == rule), "{rule} not in {deny:?}");
     }
-    assert_eq!(DENIED_COMMANDS.len(), 3);
+    assert_eq!(DENIED_COMMANDS.len(), 7);
 }
 
 /// The rendered rules of a Codex worker launch: its private `CODEX_HOME`
@@ -310,7 +316,7 @@ fn claude_profile_denies_git_push_by_default() {
 /// `prefix_rule`. Windows shares 1 rules file and gets no forbidden rule.
 #[cfg(unix)]
 #[test]
-fn codex_profile_forbids_git_push_by_default() {
+fn codex_profile_forbids_git_push_and_external_messages_by_default() {
     use horch_core::harness::PrepareRequest;
     use horch_core::roster::Roster;
 
@@ -363,4 +369,147 @@ fn codex_profile_forbids_git_push_by_default() {
         });
         assert!(forbidden, "no forbidden rule for [{pattern}] in:\n{rules}");
     }
+}
+
+/// An address that no host answers (RFC 5737, TEST-NET-1): a webhook at
+/// this address never gets a message, so the test sends none.
+const OFF_HOST_WEBHOOK: &str = "http://192.0.2.1:9/hook";
+const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
+
+#[cfg(unix)]
+fn check_launches(
+    root: &Path,
+    checks: &[&str],
+) -> Vec<Option<horch_core::fleetd::worker_profiles::application::ports::LaunchSpec>> {
+    use horch_core::fleetd::fleet_runtime::application::jobs::SandboxProfiles;
+    use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::workers::{self, NewWorker};
+    use horch_core::taskledger::{finish::CodexSandbox, schema};
+
+    let mut conn = rusqlite::Connection::open(root.join("ledger.sqlite3")).unwrap();
+    schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+    let project = root.join("repo");
+    std::fs::create_dir_all(&project).unwrap();
+    let run = runs::create(
+        &conn,
+        &project,
+        &NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let worker = workers::insert(
+        &conn,
+        &NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "opus".into(),
+            harness: Some("claude".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let worker = workers::get(&conn, &worker).unwrap();
+    let sandboxes = WorkerSandboxes::on_path(
+        CodexSandbox::default(),
+        root.join("fleet"),
+        std::env::var_os("PATH"),
+    );
+    checks
+        .iter()
+        .map(|check| sandboxes.check_launch(&worker, &project, check).unwrap())
+        .collect()
+}
+
+#[cfg(unix)]
+fn run_check(
+    spec: &horch_core::fleetd::worker_profiles::application::ports::LaunchSpec,
+) -> std::process::Output {
+    let mut cmd = std::process::Command::new(&spec.program);
+    cmd.args(&spec.args);
+    if let Some(dir) = &spec.cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.output().unwrap()
+}
+
+#[cfg(unix)]
+fn sandbox_loopback_check() -> String {
+    "perl -MIO::Socket::INET -e '\
+         alarm 20; \
+         my $l = IO::Socket::INET->new(Listen => 1, LocalAddr => \"127.0.0.1\", LocalPort => 0) \
+           or die \"listen: $!\"; \
+         my $p = $l->sockport; \
+         my $pid = fork; defined $pid or die \"fork: $!\"; \
+         if (!$pid) { exec \"curl\", \"--silent\", \"--show-error\", \"--max-time\", \"5\", \
+           \"--data\", \"hello\", \"http://127.0.0.1:$p/\"; die \"exec: $!\" } \
+         my $c = $l->accept or die \"accept: $!\"; \
+         my $r = \"\"; while ($r !~ /hello/ && sysread($c, my $b, 1024)) { $r .= $b } \
+         print \"GOT $r\\n\"; \
+         print $c \"HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"; \
+         close $c; waitpid $pid, 0; exit($? >> 8)'"
+        .to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn verifier_check_sends_no_message_outside_the_fleet() {
+    use horch_core::fleetd::worker_profiles::adapters::check_sandbox::NETWORK_RULE;
+    use std::io::{Read, Write};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let curl = |url: &str| format!("curl --silent --show-error --max-time 5 --data hello {url}");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let host = curl(&format!("http://127.0.0.1:{port}/"));
+    let launches = check_launches(
+        tmp.path(),
+        &[&sandbox_loopback_check(), &host, &curl(OFF_HOST_WEBHOOK)],
+    );
+    let Some(spec) = &launches[0] else {
+        return;
+    };
+    // The loopback works in the sandbox, so the off-host refusal below is
+    // the network rule and not a sandbox with no network at all.
+    let out = run_check(spec);
+    assert!(ok(&out), "{}", show(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("GOT POST") && stdout.contains("hello"),
+        "no request on the loopback of the sandbox: {}",
+        show(&out)
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("SR-3"),
+        "a passing check prints no refusal: {}",
+        show(&out)
+    );
+
+    if SANDBOX_HAS_ITS_OWN_LOOPBACK {
+        let out = run_check(launches[1].as_ref().unwrap());
+        assert_eq!(out.status.code(), Some(7), "{}", show(&out));
+        drop(listener);
+    } else {
+        let webhook = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).unwrap();
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        let out = run_check(launches[1].as_ref().unwrap());
+        assert!(ok(&out), "{}", show(&out));
+        assert!(webhook.join().unwrap().contains("hello"), "no request");
+    }
+
+    // A webhook on another host: the check fails with exit 7 (curl could
+    // not connect), never with a timeout, and says why.
+    let out = run_check(launches[2].as_ref().unwrap());
+    assert_eq!(out.status.code(), Some(7), "{}", show(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(NETWORK_RULE), "{}", show(&out));
+    assert!(stderr.contains("SR-3") && stderr.contains("off-host network"));
 }

@@ -2,10 +2,13 @@
 //! pane, and the worker hands them to its agent through the child's
 //! environment only.
 
+#![cfg(unix)]
+
 use std::path::PathBuf;
 use std::process::Output;
 
-use horch_e2e::harness::{fixtures, Harness};
+use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 /// The overrides only the brief can carry: the worker below runs without them.
@@ -19,12 +22,59 @@ fn text(o: &Output) -> String {
     )
 }
 
+fn briefs(h: &Harness) -> Vec<PathBuf> {
+    std::fs::read_dir(h.state.join("herdr-orchestration-w1"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".brief.json"))
+        .collect()
+}
+
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 #[test]
 fn arc_07_e2e_bin_overrides_reach_worker() {
-    let mut h = Harness::new("arc07");
+    let mut h = Harness::new("arc07").with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
+    h.set("HORCH_FAKE_SCENARIO", "exec");
     // Distinct values, so the brief cannot have picked up a default.
     let fakes: Vec<(&str, PathBuf)> = CARRIED
         .iter()
@@ -33,27 +83,60 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
     for (key, path) in &fakes {
         h.set(key, path.to_string_lossy());
     }
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", text(&o));
+    }
+    // A pane of a real herdr does not inherit the environment of the
+    // process that launched it, so the pane run of this wrapper drops the 3
+    // overrides: the brief is their only way to the worker.
+    let fake = h.bin.join("herdr");
+    let wrapper = h.write_warmed(
+        "herdr-bare-pane",
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = warm ]; then exit 0; fi\n\
+             if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
+             \x20 unset {carried}\n\
+             fi\n\
+             exec '{fake}' \"$@\"\n",
+            carried = CARRIED.join(" "),
+            fake = fake.display()
+        )
+        .as_bytes(),
+    );
+    h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
+    let workspace = h.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    h.set("HORCH_WORKSPACE_ID", workspace);
 
-    // Workspace w1 with its root pane w1:p1, as `horch fleet` would leave it.
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let created = create
-        .args(["workspace", "create", "--label", "arc07"])
-        .output()
-        .unwrap();
-    assert!(created.status.success(), "{}", text(&created));
-
-    let out = h.run(&["spawn", "sonnet", "--from-pane", "w1:p1", "--no-tile"]);
-    assert!(out.status.success(), "{}", text(&out));
-    let pane = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .last()
-        .unwrap()
-        .trim()
-        .to_string();
+    let ticket = h.project.join("brief-1.md");
+    std::fs::write(&ticket, "# Brief\n**Check:** `true`\n").unwrap();
+    let run = seed_run(&h, "brief", Some(1), "w1:p1");
+    seed_task(&h, &run, &ticket, "sonnet");
+    h.serve_fleetd();
 
     // The brief on disk: schema 2, every override, the v1 keys kept.
-    let brief_path = h.state.join("herdr-orchestration-w1/sonnet-1.brief.json");
+    let brief_path = wait_for_or(
+        "the brief of the worker",
+        || briefs(&h).into_iter().next(),
+        || format!("{:?}", h.calls()),
+    );
     let brief: Value =
         serde_json::from_str(&std::fs::read_to_string(&brief_path).unwrap()).unwrap();
     assert_eq!(brief["schema"], 2);
@@ -75,24 +158,18 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         "a v1 worker still finds the claude override"
     );
 
-    // The worker side: `horch worker` in the new pane, which (like a real
-    // pane) does not inherit the spawner's environment, so the three
-    // overrides are absent from it.
-    let mut worker = h.horch(&["worker", "sonnet-1"]);
-    worker.env("HERDR_PANE_ID", &pane);
-    worker.env_remove("HORCH_WORKSPACE_ID");
-    for key in CARRIED {
-        worker.env_remove(key);
-    }
-    let out = worker.output().unwrap();
-    assert!(out.status.success(), "{}", text(&out));
-
     // The agent the worker launched received them from the transport env.
-    let claude = h
-        .calls_of("claude")
-        .into_iter()
-        .last()
-        .expect("the worker launched claude");
+    let tasks = h.fleet_root().join("tasks").to_string_lossy().into_owned();
+    let claude = wait_for_or(
+        "the worker launched claude",
+        || {
+            h.calls_of("claude")
+                .into_iter()
+                .rev()
+                .find(|c| c["argv"].to_string().contains(&tasks))
+        },
+        || format!("{:?}", h.calls()),
+    );
     let keys: Vec<String> = serde_json::from_value(claude["env_keys"].clone()).unwrap();
     for key in CARRIED.iter().chain(&[
         "HORCH_ROLE",
@@ -105,4 +182,5 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
     assert!(!keys.iter().any(|k| k == "ANTHROPIC_API_KEY"), "{keys:?}");
     // fake-claude flags an `ANTHROPIC_API_KEY` in its environment.
     assert_eq!(claude["violations"], serde_json::json!([]), "{claude}");
+    stop_fleetd_and_jobs(&h);
 }

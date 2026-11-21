@@ -416,7 +416,8 @@ pub fn task_holds(
 /// The hold of each task whose `reserved` tree waits for its `queued`
 /// `worktree_add` run while another git writer of its repository runs:
 /// "git job <kind> <id> holds <repo>" (1 git writer for each repository,
-/// MAP.md of fleetd-p3, Q12).
+/// MAP.md of fleetd-p3, Q12), or while the group of an abandoned git
+/// writer of it still runs (`jobs::group_left_holds`).
 fn git_job_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for tree in trees::in_states(conn, &[WorktreeState::Reserved])? {
@@ -430,6 +431,18 @@ fn git_job_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
         let repo = tree.repo_root;
         if let Some(j) = jobs::git_writers_running(conn, &repo)?.first() {
             let cause = format!("git job {} {} holds {repo}", j.kind.as_str(), j.id);
+            out.insert(task, cause);
+        } else if let Some(h) = jobs::group_left_holds(conn, Some(&repo))?.first() {
+            let cause = format!(
+                "the group {group} of the abandoned git job {kind} {id} (run {run}) \
+                 holds {repo}: {members} still run; fleetd sends them no signal, \
+                 so the operator must end them by hand",
+                group = h.group,
+                kind = h.kind.as_str(),
+                id = h.job_id,
+                run = h.run,
+                members = h.members_text(),
+            );
             out.insert(task, cause);
         }
     }

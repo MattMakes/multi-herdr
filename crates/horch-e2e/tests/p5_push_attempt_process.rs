@@ -354,11 +354,14 @@ fn push_attempt_agent_killed_while_it_works_ends_by_its_exit() {
     // pane holds only the fakes, so the script names /bin/sleep.
     let h = slow_fleet("p5-push-kill", "exec", "exec /bin/sleep 600");
     queue_one(&h, "push-kill");
-    // The ingest records the agent and its wrapper from 1 heartbeat.
-    let live = live_with_wrapper(&h);
-    let agent = live
-        .agent_pid
-        .unwrap_or_else(|| panic!("no agent PID: {live:?}"));
+    // The ingest records the wrapper from its first heartbeat, before the
+    // agent starts (SR-8), and the agent from a later heartbeat.
+    live_with_wrapper(&h);
+    let agent = until(&h, "the agent PID of the live attempt", || {
+        first_attempt(&h)
+            .filter(|a| a.state == "live")
+            .and_then(|a| a.agent_pid)
+    });
     let o = std::process::Command::new("kill")
         .args(["-KILL", &agent.to_string()])
         .output()

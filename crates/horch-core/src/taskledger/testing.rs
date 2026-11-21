@@ -20,6 +20,36 @@ use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::util;
 use crate::taskledger::workers::NewWorker;
 
+/// Run `f` and count the SQL statements that `conn` compiles while it runs
+/// (T-292): the authorizer of SQLite sees each SELECT (also a subquery),
+/// INSERT and DELETE 1 time, and each column of an UPDATE 1 time. A
+/// statement of the statement cache is not compiled again, and is not
+/// counted. A reader that runs 1 statement for each row gives a count that
+/// grows with the rows; a set reader gives the same count for 10 rows and
+/// for 10,000.
+pub fn count_statements<T>(conn: &Connection, f: impl FnOnce() -> T) -> (T, usize) {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&count);
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if matches!(
+            ctx.action,
+            AuthAction::Select
+                | AuthAction::Insert { .. }
+                | AuthAction::Update { .. }
+                | AuthAction::Delete { .. }
+        ) {
+            seen.fetch_add(1, Ordering::Relaxed);
+        }
+        Authorization::Allow
+    }));
+    let out = f();
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    (out, count.load(Ordering::Relaxed))
+}
+
 /// Bind the ready task `task_id` to a new worker of `worker.persona` and
 /// bring its attempt to `live`, in 1 transaction of `conn`:
 ///

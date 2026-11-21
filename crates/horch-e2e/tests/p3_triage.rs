@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use horch_core::fleetd::fleet_runtime::adapters::job_result_file;
 use horch_core::taskledger::store::Store;
 use horch_e2e::harness::{wait_for, Harness};
 
@@ -96,10 +97,16 @@ fn commit_all(h: &Harness, dir: &Path, message: &str) {
 /// a `triage_apply` job (T-888): the command prints that the job is queued,
 /// so this waits until the job ended and gives the line of its result.
 fn apply(h: &Harness, name: &str, decision: &str) -> String {
-    let body = format!(
-        "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n\
-         | W1 | {name} | | {decision} | |\n"
-    );
+    apply_many(h, &[("W1", name, decision)])
+}
+
+fn apply_many(h: &Harness, rows: &[(&str, &str, &str)]) -> String {
+    let mut body =
+        "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n"
+            .to_string();
+    for (id, name, decision) in rows {
+        body.push_str(&format!("| {id} | {name} | | {decision} | |\n"));
+    }
     let p = h.root.join("reply.md");
     std::fs::write(&p, body).unwrap();
     let last = "SELECT CAST(COALESCE(MAX(id), 0) AS TEXT) FROM jobs WHERE kind = 'triage_apply'";
@@ -107,7 +114,7 @@ fn apply(h: &Harness, name: &str, decision: &str) -> String {
     let before = last(h);
     let o = h.run(&["worktree", "triage", "apply", &p.to_string_lossy()]);
     let said = out(&o);
-    assert!(said.starts_with("W1 "), "{}", text(&o));
+    assert!(said.starts_with(&format!("{} ", rows[0].0)), "{}", text(&o));
     let job = last(h);
     if job == before {
         return said;
@@ -509,4 +516,196 @@ fn a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_re
     // removal adapter, in the job (T-888): no worktree_remove job ran.
     assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
     assert!(jobs(&h, "worktree_remove").is_empty());
+}
+
+#[test]
+fn multi_item_triage_apply_preserves_completed_first_item_when_second_item_fails() {
+    let h = world("p3-triage-multi");
+    let path_a = folder(&h, "feat-a");
+    std::fs::write(path_a.join("feat-a.txt"), "changed\n").unwrap();
+    std::fs::write(path_a.join("new-a.txt"), "untracked\n").unwrap();
+    let path_b = folder(&h, "feat-b");
+    git_in(&h, &path_b, &["checkout", "--quiet", "--detach"]);
+    std::fs::write(path_b.join("only-b.txt"), "unique\n").unwrap();
+    commit_all(&h, &path_b, "unique");
+    let unique = git_in(&h, &path_b, &["rev-parse", "HEAD"]);
+    let path_c = folder(&h, "feat-c");
+    git_in(
+        &h,
+        &h.project,
+        &["update-ref", "refs/horch/archive/feat-c", &unique],
+    );
+
+    let said = apply_many(
+        &h,
+        &[
+            ("W1", "feat-a", "DELETE"),
+            ("W2", "feat-b", "DELETE"),
+            ("W3", "feat-c", "ARCHIVE"),
+        ],
+    );
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 3, "{said}");
+    assert!(
+        lines[0].starts_with("W1 feat-a DELETE: trashed at refs/horch/trash/feat-a/"),
+        "{said}"
+    );
+    assert!(
+        lines[1].starts_with(
+            "W2 feat-b DELETE FAILED: the worktree HEAD is detached at a unique commit; nothing removed"
+        ),
+        "{said}"
+    );
+    assert!(
+        lines[2].starts_with(&format!(
+            "W3 feat-c ARCHIVE FAILED: refs/horch/archive/feat-c holds other work ({unique}); nothing removed"
+        )),
+        "{said}"
+    );
+
+    assert!(!path_a.exists());
+    let trash = refs(&h, "refs/horch/trash/feat-a/");
+    assert_eq!(trash.len(), 1, "{trash:?}");
+    let rescue = refs(&h, "refs/horch/rescue/");
+    assert_eq!(rescue.len(), 1, "{rescue:?}");
+    for r in [&trash[0], &rescue[0]] {
+        assert_eq!(show(&h, r, "feat-a.txt"), "changed", "{r}");
+        assert_eq!(show(&h, r, "new-a.txt"), "untracked", "{r}");
+    }
+    assert!(!git_ok(
+        &h,
+        &h.project,
+        &["rev-parse", "--verify", "refs/heads/feat-a"]
+    ));
+    assert_eq!(states(&h, &path_a), ["removed"]);
+    let row = |path: &Path, column: &str| {
+        query(
+            &h,
+            &format!(
+                "SELECT {column} FROM worktrees WHERE path = '{}'",
+                stored(&h, path)
+            ),
+        )
+    };
+    assert_eq!(row(&path_a, "status"), ["trashed"]);
+    assert_eq!(row(&path_a, "rescue_ref"), [rescue[0].clone()]);
+
+    for (path, file) in [(&path_b, "only-b.txt"), (&path_c, "feat-c.txt")] {
+        assert!(path.join(file).exists(), "{}", path.display());
+        assert_eq!(
+            row(path, "status"),
+            ["cleanup_failed"],
+            "{}",
+            path.display()
+        );
+        assert_ne!(states(&h, path), ["removed"], "{}", path.display());
+    }
+    assert_eq!(git_in(&h, &path_b, &["rev-parse", "HEAD"]), unique);
+    assert_eq!(rev(&h, "refs/horch/archive/feat-c"), unique);
+    assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
+}
+
+#[test]
+fn multi_item_triage_apply_ingest_keeps_the_first_item_when_the_fact_of_the_second_is_refused() {
+    let mut h = world("p3-triage-multi-ingest");
+    let path_a = folder(&h, "feat-a");
+    std::fs::write(path_a.join("feat-a.txt"), "changed\n").unwrap();
+    std::fs::write(path_a.join("new-a.txt"), "untracked\n").unwrap();
+    let path_b = folder(&h, "feat-b");
+    git_in(&h, &path_b, &["checkout", "--quiet", "--detach"]);
+    std::fs::write(path_b.join("only-b.txt"), "unique\n").unwrap();
+    commit_all(&h, &path_b, "unique");
+    let hold = h.project.join(".git").join("hold-triage-job");
+    std::fs::write(&hold, "").unwrap();
+    let real = h.git_bin().unwrap().to_path_buf();
+    let script = format!(
+        "#!/bin/sh\ncase \" $* \" in\n  *\" commit \"*)\n    while [ -e '{hold}' ]; do sleep 0.1; done\n    ;;\nesac\nexec '{real}' \"$@\"\n",
+        hold = hold.display(),
+        real = real.display(),
+    );
+    let bin = h.write_bin("git-held", script.as_bytes());
+    h.set("HORCH_GIT_BIN", bin.to_string_lossy());
+    h.without_fleetd(|| ());
+
+    let rows = [("W1", "feat-a", "DELETE"), ("W2", "feat-b", "DELETE")];
+    let mut body =
+        "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n"
+            .to_string();
+    for (id, name, decision) in rows {
+        body.push_str(&format!("| {id} | {name} | | {decision} | |\n"));
+    }
+    let reply = h.root.join("reply.md");
+    std::fs::write(&reply, body).unwrap();
+    let o = h.run(&["worktree", "triage", "apply", &reply.to_string_lossy()]);
+    assert!(out(&o).starts_with("W1 "), "{}", text(&o));
+    let (job, run) = wait_for("the triage_apply job to run", || {
+        query(
+            &h,
+            "SELECT id || ' ' || run FROM jobs WHERE kind = 'triage_apply' AND state = 'running'",
+        )
+        .into_iter()
+        .next()
+    })
+    .split_once(' ')
+    .map(|(j, r)| (j.parse::<i64>().unwrap(), r.parse::<i64>().unwrap()))
+    .unwrap();
+    assert!(refs(&h, "refs/horch/rescue/").is_empty());
+    assert!(path_a.exists());
+
+    let result = job_result_file::path(&h.fleet_root(), job, run);
+    h.without_fleetd(|| {
+        std::fs::remove_file(&hold).unwrap();
+        wait_for("the job to write its result file", || {
+            result.is_file().then_some(())
+        });
+        let mut file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&result).unwrap()).unwrap();
+        assert_eq!(file["data"]["decisions"][0]["ok"], true, "{file}");
+        assert_eq!(file["data"]["decisions"][1]["ok"], false, "{file}");
+        file["data"]["decisions"][1]["rescue_ref"] = "refs/horch/rescue/forged/1".into();
+        std::fs::write(&result, serde_json::to_vec(&file).unwrap()).unwrap();
+    });
+    wait_for("fleetd to end the triage_apply job", || {
+        (jobs(&h, "triage_apply") == ["passed"]).then_some(())
+    });
+
+    assert!(!path_a.exists());
+    let trash = refs(&h, "refs/horch/trash/feat-a/");
+    assert_eq!(trash.len(), 1, "{trash:?}");
+    let rescue = refs(&h, "refs/horch/rescue/");
+    assert_eq!(rescue.len(), 1, "{rescue:?}");
+    for r in [&trash[0], &rescue[0]] {
+        assert_eq!(show(&h, r, "feat-a.txt"), "changed", "{r}");
+        assert_eq!(show(&h, r, "new-a.txt"), "untracked", "{r}");
+    }
+    assert!(!git_ok(
+        &h,
+        &h.project,
+        &["rev-parse", "--verify", "refs/heads/feat-a"]
+    ));
+    assert_eq!(states(&h, &path_a), ["removed"]);
+    let row = |path: &Path, column: &str| {
+        query(
+            &h,
+            &format!(
+                "SELECT {column} FROM worktrees WHERE path = '{}'",
+                stored(&h, path)
+            ),
+        )
+    };
+    assert_eq!(row(&path_a, "status"), ["trashed"]);
+    assert_eq!(row(&path_a, "rescue_ref"), [rescue[0].clone()]);
+
+    assert!(path_b.join("only-b.txt").exists());
+    assert_eq!(row(&path_b, "status"), ["cleanup_failed"]);
+    assert_ne!(states(&h, &path_b), ["removed"]);
+    let refused = query(
+        &h,
+        "SELECT text FROM events WHERE kind = 'cleanup_failed' AND text LIKE 'Triage W2 %'",
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].contains("fleetd refused the facts of this decision"),
+        "{refused:?}"
+    );
 }

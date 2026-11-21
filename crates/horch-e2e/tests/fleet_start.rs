@@ -3,8 +3,12 @@
 //! a fleet with no orchestrator pane (FM-16).
 
 use horch_core::execution::records::SessionLedger;
+use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
+
+#[path = "common/attempt.rs"]
+mod attempt;
 
 fn err(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
@@ -148,14 +152,18 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
         "doctor created the default ledger"
     );
     h.set("HORCH_WORKSPACE_ID", "w1");
-    let o = h.run(&[
-        "spawn",
-        "sonnet",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--force",
-    ]);
+    h.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
+    let sessions = h.state.join("ledger.sqlite3");
+    h.set("HORCH_LEDGER_DB", sessions.to_string_lossy());
+    attempt::limit_jobs(&h.fleet_root());
+    h.serve_fleetd();
+    attempt::wait_for_quiet_jobs(&sessions);
+    h.unset("HORCH_LEDGER_DB");
+    attempt::limit_jobs(&h.fleet_root());
+    let mut tasks = Fleetds::on(&h, default_ledger(&h));
+    tasks.serve(&h, "tasks-fleetd");
+    attempt::wait_for_quiet_jobs(&default_ledger(&h));
+    let o = attempt::spawn_served_attempt(&h, "sonnet");
     assert!(o.status.success(), "{}{}", out(&o), err(&o));
     let note = format!("horch: NOTE: {warning}");
     assert_eq!(err(&o).matches(&note).count(), 1, "{}", err(&o));

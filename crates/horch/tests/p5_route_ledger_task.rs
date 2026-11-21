@@ -13,12 +13,14 @@
 
 #![cfg(unix)]
 
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::{parse_reply, Outcome, Request};
 use horch_core::fleetd::fleet_runtime::adapters::token_file;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
@@ -27,8 +29,11 @@ use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, Work
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use horch_core::fleetd::integration::application::commands::RefTips;
-use horch_core::taskledger::model::WorkerKind;
+use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
@@ -43,11 +48,23 @@ struct Out {
     err: String,
 }
 
-struct NoRefs;
+struct HeadOnly;
 
-impl RefTips for NoRefs {
-    fn tip(&self, _repo: &Path, _name: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
+impl RefTips for HeadOnly {
+    fn tip(&self, repo: &Path, name: &str) -> anyhow::Result<Option<String>> {
+        if name != "HEAD" {
+            return Ok(None);
+        }
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()?;
+        Ok(out
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 }
 
@@ -114,7 +131,7 @@ impl World {
             Arc::new(Custody {
                 guard: Generation(1),
                 config: FleetConfig::default(),
-                refs: Box::new(NoRefs),
+                refs: Box::new(HeadOnly),
             }),
         );
         let conn = Connection::open(w.ledger()).unwrap();
@@ -213,11 +230,57 @@ impl World {
             .unwrap()
     }
 
+    fn run(&self, base: Option<&str>) -> String {
+        let mut store = Store::open(&self.ledger()).unwrap();
+        store
+            .immediate(|tx| {
+                let new = NewRun {
+                    slug: "r1".into(),
+                    base_branch: base.map(Into::into),
+                    ..Default::default()
+                };
+                let run = runs::create(tx, &self.proj(), &new)?;
+                horch_core::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+                Ok(run.run_id)
+            })
+            .unwrap()
+    }
+
+    fn raw_request_refusal(&self, kind: Kind, payload: serde_json::Value) -> String {
+        let serde_json::Value::Object(payload) = payload else {
+            panic!("a payload is an object");
+        };
+        let token = token_file::read(&self.fleet()).unwrap();
+        let request = Request {
+            request_id: RequestId::parse("raw-in-attempt").unwrap(),
+            kind,
+            payload,
+            token: Some(token.text().to_string()),
+        };
+        let stream =
+            std::os::unix::net::UnixStream::connect(self.fleet().join("run/fleetd.sock")).unwrap();
+        (&stream).write_all(request.to_line().as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        match parse_reply(reply.as_bytes(), 1 << 20).unwrap().outcome {
+            Outcome::Refused(reason) => reason,
+            Outcome::Applied(result) => panic!("fleetd applied {kind:?}: {result}"),
+        }
+    }
+
     /// A run `r1` with the task T-1 of [`TICKET`].
     fn run_with_task(&self) {
-        std::fs::write(self.proj().join("t1.md"), TICKET).unwrap();
-        self.ok(&["ledger", "run", "new", "r1"]);
-        self.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+        let run_id = self.run(None);
+        let mut store = Store::open(&self.ledger()).unwrap();
+        store
+            .immediate(|tx| {
+                let run = runs::get(tx, &run_id)?;
+                let mut new = NewTask::work("Alpha task", "t1.md", "dev");
+                new.ticket_snapshot = Some(TICKET.to_string());
+                tasks::add(tx, &run, &new, Actor::Orchestrator)?;
+                Ok(())
+            })
+            .unwrap();
     }
 
     /// A worker of the run that holds T-1 and has a live attempt whose
@@ -327,17 +390,10 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "cancelled");
     assert_eq!(
         w.requests(),
-        applied(&[
-            "run_new",
-            "task_add",
-            "task_requeue",
-            "ledger_waive",
-            "task_cancel"
-        ])
+        applied(&["task_requeue", "ledger_waive", "task_cancel"])
     );
 }
 
-/// A worker can set `HORCH_ROLE`; fleetd knows the worker by its process.
 #[test]
 fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
     let w = World::up();
@@ -348,10 +404,25 @@ fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
         &[("HORCH_ROLE", "orchestrator")],
     );
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
-    assert!(o.err.contains("refused: "), "{}", o.err);
+    assert!(
+        o.err.contains("refused inside a fleet attempt")
+            && o.err.contains("fleet process of attempt a1"),
+        "{}",
+        o.err
+    );
+    assert!(w.requests().is_empty(), "{:?}", w.requests());
+
+    let reason = w.raw_request_refusal(
+        Kind::TaskCancel,
+        serde_json::json!({ "task": "T-1", "reason": "mine now" }),
+    );
+    assert!(
+        reason.contains("the peer process is a fleet process of attempt a1"),
+        "{reason}"
+    );
     assert_eq!(
-        w.requests().last().unwrap(),
-        &("task_cancel".to_string(), "refused".to_string())
+        w.requests(),
+        vec![("task_cancel".to_string(), "refused".to_string())]
     );
     assert_ne!(w.one("SELECT status FROM tasks WHERE seq = 1"), "cancelled");
 }
@@ -363,11 +434,27 @@ fn worker_that_removes_horch_role_is_refused_by_fleetd() {
     w.attempt_of_this_process();
     let o = w.horch_with(&["ledger", "requeue", "T-1", "again"], &[]);
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
-    assert!(o.err.contains("refused: "), "{}", o.err);
-    assert_eq!(
-        w.requests().last().unwrap(),
-        &("task_requeue".to_string(), "refused".to_string())
+    assert!(
+        o.err.contains("refused inside a fleet attempt")
+            && o.err.contains("fleet process of attempt a1"),
+        "{}",
+        o.err
     );
+    assert!(w.requests().is_empty(), "{:?}", w.requests());
+
+    let reason = w.raw_request_refusal(
+        Kind::TaskRequeue,
+        serde_json::json!({ "task": "T-1", "reason": "again" }),
+    );
+    assert!(
+        reason.contains("the peer process is a fleet process of attempt a1"),
+        "{reason}"
+    );
+    assert_eq!(
+        w.requests(),
+        vec![("task_requeue".to_string(), "refused".to_string())]
+    );
+    assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "ready");
 }
 
 #[test]
@@ -380,17 +467,18 @@ fn worktree_drop_sends_worktree_drop() {
     std::fs::write(proj.join("t1.md"), TICKET).unwrap();
     git(&proj, &["add", "t1.md"]);
     git(&proj, &["commit", "-q", "-m", "first"]);
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let id = w.ok(&[
-        "ledger",
-        "worker",
-        "new",
-        "--persona",
-        "dev",
-        "--role",
-        "dev-1",
-    ]);
-    let id = id.out.trim().to_string();
+    let run_id = w.run(Some("main"));
+    let id = workers::insert(
+        &w.conn(),
+        &NewWorker {
+            run_id,
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            role: Some("dev-1".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let env = [("HORCH_WORKER_ID", id.as_str())];
 
     let o = w.ok_with(&["ledger", "worktree", "scratch", "try"], &env);
@@ -418,7 +506,7 @@ fn worktree_drop_sends_worktree_drop() {
     assert_eq!(w.one("SELECT status FROM worktrees"), "abandoned");
     assert_eq!(
         w.requests(),
-        applied(&["run_new", "worker_new", "worktree_scratch", "worktree_drop"])
+        applied(&["worktree_scratch", "worktree_drop"])
     );
 }
 

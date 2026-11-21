@@ -65,10 +65,10 @@ fn text(o: &Output) -> String {
 /// its worker holds in the live push attempt `A1`, and the worktree of
 /// that task.
 struct World {
+    fleetds: Fleetds,
     h: Harness,
     task_id: String,
     worktree: PathBuf,
-    fleetds: Fleetds,
 }
 
 impl World {
@@ -323,7 +323,7 @@ impl World {
     /// ledger open, as on a live fleet, so the WAL files of the ledger
     /// exist: a read-only open in the sandbox cannot make them.
     fn start_fleetd(&mut self) {
-        self.fleetds.start(&self.h, "fleetd");
+        self.fleetds.serve(&self.h, "fleetd");
     }
 
     /// Wait until fleetd ingested the progress line `text` of the worker:

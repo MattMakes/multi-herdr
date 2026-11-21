@@ -238,11 +238,13 @@ impl World {
     }
 
     /// 1 forced pass of `horch ledger watch --once`, while no fleetd runs.
-    /// Its process is new, so its first tick adds 0 to the fleet clock.
-    fn pass(&self) {
-        let o = self
-            .h
-            .run(&["ledger", "watch", "--once", "--force", "--json"]);
+    /// Its process is new, so its first tick adds 0 to the fleet clock. It
+    /// names `run`: a failed conformance job adds a drift idea, whose
+    /// feature has its own active run.
+    fn pass(&self, run: &Run) {
+        let o = self.h.run(&[
+            "ledger", "watch", "--once", "--force", "--json", "--run", &run.slug,
+        ]);
         assert!(o.status.success(), "horch ledger watch: {}", text(&o));
     }
 
@@ -439,7 +441,7 @@ fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
     let left = due - w.fleet_clock();
     assert!(left > 0, "the sleep used up the fleet time of the branch");
     w.h.advance_fleet_clock(left - 1);
-    w.pass();
+    w.pass(&run);
     assert!(
         w.overdue_items().is_empty(),
         "the deadline fired 1 s before the rest of its fleet time\n{}",
@@ -447,7 +449,7 @@ fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
     );
     assert_eq!(w.branch(&branch).0, ready);
     w.h.advance_fleet_clock(1);
-    w.pass();
+    w.pass(&run);
     assert_eq!(
         w.overdue_items(),
         [overdue_key(&branch)],

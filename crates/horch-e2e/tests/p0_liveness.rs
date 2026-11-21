@@ -9,13 +9,15 @@ use std::path::PathBuf;
 use std::process::{Child, Output};
 use std::time::{Duration, Instant};
 
-use horch_core::taskledger::model::WorkerStatus;
+use horch_core::taskledger::model::{Actor, WorkerStatus};
 use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 use horch_e2e::expected::check;
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, wait_for, wait_for_or, Harness};
+use horch_e2e::ledger_seed::seed_run;
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -25,12 +27,6 @@ fn text(o: &Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
-}
-
-fn ok(h: &Harness, args: &[&str]) -> String {
-    let o = h.run(args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    text(&o)
 }
 
 fn json_of(h: &Harness, args: &[&str]) -> Value {
@@ -59,9 +55,16 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
+/// The run of [`queue`]. A failed conformance job of the fake agents adds
+/// a drift idea, whose feature has its own active run, so each `horch
+/// ledger` call names this run.
+const RUN: &str = "eps";
+
 /// 1 forced watchdog pass, as today's checks run it.
 fn watch_once(h: &Harness, env: &[(&str, &str)]) -> (Output, Value) {
-    let mut cmd = h.horch(&["ledger", "watch", "--once", "--force", "--json"]);
+    let mut cmd = h.horch(&[
+        "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+    ]);
     cmd.envs(env.iter().copied());
     let o = cmd.output().unwrap();
     assert!(o.status.success(), "horch ledger watch: {}", text(&o));
@@ -109,22 +112,17 @@ impl Drop for Agent {
     }
 }
 
-/// 1 task of `persona` (with `fallback`, if any) in a new run.
-fn queue(h: &Harness, run: &[&str], persona: &str, fallback: Option<&str>) {
-    // The test fleetd applies the routed setup. The test then runs its own
-    // passes and fleetd.
-    h.serve_fleetd();
-    let mut new = vec!["ledger", "run", "new", "eps"];
-    new.extend_from_slice(run);
-    ok(h, &new);
+fn queue(h: &Harness, persona: &str, fallback: Option<&str>) {
+    let run = seed_run(h, RUN, None, "w1:p1");
     let p = ticket(h, "t0", "# T0\n");
-    let p = p.to_string_lossy();
-    let mut add = vec!["ledger", "add", "--file", &p, "--primary", persona];
-    if let Some(f) = fallback {
-        add.extend_from_slice(&["--fallback", f]);
-    }
-    ok(h, &add);
-    h.stop_fleetd();
+    let new = NewTask {
+        fallback: fallback.map(str::to_string),
+        ..NewTask::work("T0", &p.to_string_lossy(), persona)
+    };
+    let mut store = Store::open(&db(h)).unwrap();
+    store
+        .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
+        .unwrap();
 }
 
 /// Bind the task of [`queue`] to a new worker of `persona` whose agent is
@@ -133,14 +131,15 @@ fn bind(h: &Harness, persona: &str, agent: &Agent) -> String {
     horch_e2e::bind::bind(h, persona, Some(agent.pid())).worker_id
 }
 
-/// The status and the attempt count of the only task of the ledger.
 fn task_row(h: &Harness) -> (String, i64) {
     let store = Store::open(&db(h)).unwrap();
     store
         .conn()
-        .query_row("SELECT status, attempts FROM tasks", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT status, attempts - attempt_floor FROM tasks",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap()
 }
 
@@ -181,7 +180,7 @@ fn fm3_idle_claim_is_caught_in_under_10_min() {
     check(file!(), "fm3_idle_claim_is_caught_in_under_10_min", || {
         let h = fleet("p0-fm3");
         let agent = Agent::start();
-        queue(&h, &[], "opus", None);
+        queue(&h, "opus", None);
         // The first pass writes the fleetd row and starts the fleet clock.
         watch_once(&h, &[]);
         bind(&h, "opus", &agent);
@@ -229,7 +228,7 @@ fn fm4_dead_agent_ends_its_attempt_within_30_s() {
         || {
             let h = fleet("p0-fm4");
             let mut agent = Agent::start();
-            queue(&h, &[], "opus", None);
+            queue(&h, "opus", None);
             bind(&h, "opus", &agent);
             // fleetd supervises the run, with the default policy.
             let mut fleetds = Fleetds::new(&h);
@@ -261,13 +260,16 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
         "fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt",
         || {
             let mut h = fleet("p0-fm5");
+            let workspace = h.fleet_workspace();
+            h.set("HORCH_WORKSPACE_ID", workspace);
+            declare_gates(&h);
             let quota = fixtures().join("quota/claude-exhausted-codex-ok.json");
             h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
             // The wall clock of the fixture, before its 7 d window resets, so
             // that the claude pool reads as limited on each day of a run.
             h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
             let mut agent = Agent::start();
-            queue(&h, &[], "opus", Some("codex-sol"));
+            queue(&h, "opus", Some("codex-sol"));
             let w = bind(&h, "opus", &agent);
             let (_, attempts) = task_row(&h);
             let mut seen = Vec::new();
@@ -307,11 +309,9 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             let (status, now) = task_row(&h);
             assert_eq!(now, attempts, "the usage limit burned an attempt\n{shown}");
             let persona = shown["task"]["claimable_by"].as_str().unwrap_or_default();
-            // The codex pool of the fixture is not limited, so the task
-            // restarts on the fallback, with 1 new worker and 1 attempt.
             assert_eq!(
                 (status.as_str(), persona),
-                ("ready", "codex-sol"),
+                ("leased", "codex-sol"),
                 "the design moves the task to its fallback codex-sol\n{shown}"
             );
             let restart: Vec<String> = store
@@ -331,6 +331,21 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             );
         },
     );
+}
+
+fn declare_gates(h: &Harness) {
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", text(&o));
+    }
 }
 
 /// The wall clock after the sleep. The bind writes the wall clock of the
@@ -361,7 +376,7 @@ fn sleep_does_not_expire_a_lease() {
     check(file!(), "sleep_does_not_expire_a_lease", || {
         let mut h = fleet("p0-sleep");
         let mut agent = Agent::start();
-        queue(&h, &[], "opus", None);
+        queue(&h, "opus", None);
         bind(&h, "opus", &agent);
         // No fleetd ran yet: the bind takes its lease at fleet clock 0,
         // and the first fleetd starts the clock at 0.
@@ -416,6 +431,7 @@ fn pane_fleet(name: &str, config: &str) -> (Harness, Store, String) {
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_FAKE_SCENARIO", "exec");
+    remove_agent_clis_so_fleetd_queues_no_conformance_job(&h);
     h.set("HORCH_LEDGER_DB", db(&h).to_string_lossy());
     let root = h.root.join("fleet");
     std::fs::create_dir_all(&root).unwrap();
@@ -436,6 +452,15 @@ fn pane_fleet(name: &str, config: &str) -> (Harness, Store, String) {
         })
         .unwrap();
     (h, store, run.run_id)
+}
+
+/// The operator boundary probe of a conformance job writes a request file
+/// of mode 0644, and a pass that reads it opens a needs-you item at a
+/// random time (T-268).
+fn remove_agent_clis_so_fleetd_queues_no_conformance_job(h: &Harness) {
+    for cli in ["claude", "codex", "agy"] {
+        std::fs::remove_file(h.bin.join(cli)).unwrap();
+    }
 }
 
 /// Call the fake herdr of `h`; gives its stdout.

@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use horch_core::fleetd::fleet_runtime::adapters::clock_store::awake_now;
+use horch_core::fleetd::fleet_runtime::adapters::effects::read_heartbeat;
 use horch_core::procid;
 use horch_core::taskledger::Store;
 use horch_e2e::harness::Harness;
@@ -44,6 +46,19 @@ fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
         })
         .ok()?;
     Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()))
+}
+
+fn heartbeat_age(root: &Path, pid: u32) -> Option<Duration> {
+    let hb = read_heartbeat(root)
+        .ok()
+        .flatten()
+        .filter(|hb| hb.pid == pid)?;
+    let now = awake_now().ok()?;
+    if now.boot_id != hb.awake.boot_id {
+        return None;
+    }
+    let ms = now.awake_ms.checked_sub(hb.awake.awake_ms)?;
+    Some(Duration::from_millis(ms))
 }
 
 /// The hung fleetd that the test started, and each fleetd that the `fleetd`
@@ -123,8 +138,24 @@ fn fm12_hung_fleetd_is_restarted_on_each_os() {
             );
             std::thread::sleep(Duration::from_millis(100));
         }
-        // Its heartbeat is older than the hang limit after this sleep.
-        std::thread::sleep(HANG_LIMIT + Duration::from_secs(2));
+        let root = h.fleet_root();
+        let stale = HANG_LIMIT + Duration::from_secs(2);
+        let until = Instant::now() + stale + Duration::from_secs(60);
+        loop {
+            let age = heartbeat_age(&root, hung);
+            if age.is_some_and(|a| a > stale) {
+                break;
+            }
+            if let Some(why) = exited(fleetds.child.as_mut().unwrap(), "with hang-pass exited") {
+                panic!("{why}");
+            }
+            assert!(
+                Instant::now() < until,
+                "the heartbeat of the hung fleetd (PID {hung}) is not {stale:?} old after {:?}: its age is {age:?}",
+                stale + Duration::from_secs(60)
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
         if let Some(why) = exited(fleetds.child.as_mut().unwrap(), "with hang-pass exited") {
             panic!("{why}");
         }

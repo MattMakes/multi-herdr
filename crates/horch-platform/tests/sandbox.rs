@@ -222,6 +222,7 @@ fn hiding_sandbox_cannot_write_in_a_hidden_path_that_is_also_writable() {
     assert!(!file.exists(), "the sandbox let the command write {file:?}");
 }
 
+#[cfg(unix)]
 #[test]
 fn hiding_sandbox_cannot_connect_to_a_unix_socket_in_a_hidden_folder() {
     // A socket path has a short limit (SUN_LEN), so this folder is in /tmp.

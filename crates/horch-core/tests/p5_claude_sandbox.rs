@@ -32,8 +32,12 @@ struct Fleet {
 }
 
 fn fleet() -> Fleet {
-    use std::os::unix::fs::DirBuilderExt;
-    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let base = if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let root = tempfile::tempdir_in(base).unwrap();
     let ledger_dir = root.path().join("ledger");
     let fleet_root = ledger_dir.join("fleet");
     let paths = OperatorPaths::of(&fleet_root);
@@ -42,10 +46,12 @@ fn fleet() -> Fleet {
     for dir in [&task_dir, &worktree, &root.path().join("bin")] {
         std::fs::create_dir_all(dir).unwrap();
     }
-    std::fs::DirBuilder::new()
-        .mode(0o700)
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
         .create(&paths.run)
         .unwrap();
+    #[cfg(not(unix))]
+    std::fs::create_dir(&paths.run).unwrap();
     std::fs::create_dir(&paths.requests).unwrap();
     std::fs::write(&paths.token, "secret\n").unwrap();
     Fleet {
@@ -68,6 +74,7 @@ impl Fleet {
         for tool in ["bwrap", "socat"] {
             let path = bin.join(tool);
             std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
                 .unwrap();
         }

@@ -31,18 +31,17 @@ use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun as NewLedgerRun, Run};
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::workers::{self, NewWorker};
-use horch_core::taskledger::{util, Store};
+use horch_core::taskledger::{schema, util, Store};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-/// No test of this file runs git: git has no ref.
 struct NoRefs;
 
 impl RefTips for NoRefs {
-    fn tip(&self, _repo: &Path, _name: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
+    fn tip(&self, _repo: &Path, name: &str) -> anyhow::Result<Option<String>> {
+        Ok((name == "HEAD").then(|| HEAD.to_string()))
     }
 }
 const BASE: &str = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
@@ -73,7 +72,7 @@ fn world() -> World {
                  VALUES (1, 1, ?1, 0, ?2, 0, ?2)",
                 params![std::process::id(), util::now()],
             )?;
-            runs::create(
+            let run = runs::create(
                 tx,
                 &root,
                 &NewLedgerRun {
@@ -82,7 +81,9 @@ fn world() -> World {
                     run_branch: Some(RUN_BRANCH.into()),
                     ..Default::default()
                 },
-            )
+            )?;
+            schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+            Ok(run)
         })
         .unwrap();
     let conn = Connection::open(&db).unwrap();
@@ -361,6 +362,10 @@ fn worktree_drop_keeps_each_refusal_of_today() {
             with(clean(&branch), "dirty", Value::Null),
             "the fact dirty is unknown; nothing removed".to_string(),
         ),
+        (
+            with(clean(&branch), "head", json!(BASE)),
+            "worktree HEAD changed during the drop checks; nothing removed".to_string(),
+        ),
     ];
     for (facts, words) in refusals {
         let p = w.drop_payload("t1", facts);
@@ -492,10 +497,33 @@ fn worktree_triage_queues_its_jobs() {
         })
     };
 
-    for d in ["ARCHIVE", "DELETE", "LAND", "PR"] {
+    let queued = w.applied(Kind::WorktreeTriage, triage("ARCHIVE", &sha));
+    let job = queued["job"]
+        .as_i64()
+        .expect("the id of the triage_apply job");
+    assert_eq!(
+        queued,
+        json!({
+            "applied": [],
+            "failed": 0,
+            "job": job,
+            "queued": [format!(
+                "W1 _scratch/t1 ARCHIVE: queued in the triage_apply job {job}; \
+                 horch worktree triage shows the result"
+            )],
+        })
+    );
+    let row_of_job = jobs_store::get(&w.conn, job).unwrap().unwrap();
+    assert_eq!(row_of_job.kind, JobKind::TriageApply);
+    assert_eq!(row_of_job.state, State::Queued);
+    assert_eq!(row_of_job.subject, root);
+    for d in ["DELETE", "LAND", "PR"] {
         assert_eq!(
             w.refused(Kind::WorktreeTriage, triage(d, &sha)),
-            format!("{d} of W1 is not handled in this version; nothing is applied")
+            format!(
+                "the triage_apply job {job} of {root} is queued; \
+                 send the reply again after it ends"
+            )
         );
     }
     let bad = w.refused(Kind::WorktreeTriage, triage("FINISH", "00"));
@@ -503,7 +531,7 @@ fn worktree_triage_queues_its_jobs() {
     let tasks_before = w.count("SELECT count(*) FROM tasks");
 
     let out = w.applied(Kind::WorktreeTriage, triage("FINISH", &sha));
-    assert_eq!(out["failed"], 0);
+    assert_eq!(out["failed"], 0, "{out}");
     let a = &out["applied"][0];
     assert_eq!(a["ok"], true);
     let task_id = a["queued"]["task_id"].as_str().unwrap();

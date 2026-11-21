@@ -28,7 +28,7 @@ use std::process::ExitStatus;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
-use horch_platform::sandbox::{sandboxed, Denials};
+use horch_platform::sandbox::{sandboxed_job, Denials};
 use horch_platform::shell::CHECK_SHELL;
 use horch_platform::start::{self, Command};
 use horch_platform::NotSupported;
@@ -71,7 +71,7 @@ pub fn no_gate_sandbox_key(feature_id: &str) -> String {
 
 /// The gate sandbox: `cmd` that can write only below `writable` and in its
 /// temp folder, with the operator acts `denied`
-/// ([`horch_platform::sandbox::sandboxed`]). A test gives a host with no
+/// ([`horch_platform::sandbox::sandboxed_job`]). A test gives a host with no
 /// sandbox.
 pub type GateSandbox = fn(Command, &[PathBuf], &Denials) -> Result<Command, NotSupported>;
 
@@ -165,7 +165,7 @@ pub fn end_hold(ctx: &JobCtx<'_>, tx: &Connection, feature_id: &str) -> Result<b
 
 /// Runs the job `row` in the gate sandbox of this host.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
-    run_in(conn, row, sandboxed)
+    run_in(conn, row, sandboxed_job)
 }
 
 /// [`run`] with the gate sandbox `sandbox`. It writes no row: the
@@ -469,14 +469,19 @@ static GATE_GROUP: AtomicI32 = AtomicI32::new(0);
 
 /// Start `spec` through `host` and wait for it. The gate leads its own
 /// group. A stop of this job process at its deadline kills that group
-/// first, so no gate outlives its job. Windows has no signal handlers:
-/// there the gate lives on after the stop
-/// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
-/// row "Signals and stop").
+/// first, so no gate outlives its job. A stop between the launch and the
+/// store of the group waits in the hold until the group is stored
+/// (T-369). Windows has no signal handlers: there the gate lives on after
+/// the stop (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
+/// section 6, row "Signals and stop").
 fn run_gate(host: &dyn ProcessHost, spec: &LaunchSpec) -> Result<ExitStatus> {
     let _ = horch_platform::signal::kill_group_on_termination(&GATE_GROUP);
-    let mut launched = host.launch(spec)?;
-    GATE_GROUP.store(i32::try_from(launched.pid).unwrap_or(0), Ordering::SeqCst);
+    let mut launched = {
+        let _hold = horch_platform::signal::hold_termination();
+        let launched = host.launch(spec)?;
+        GATE_GROUP.store(i32::try_from(launched.pid).unwrap_or(0), Ordering::SeqCst);
+        launched
+    };
     let status = launched.child.wait();
     GATE_GROUP.store(0, Ordering::SeqCst);
     Ok(status?)
@@ -494,5 +499,21 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     Cause {
         actor: Actor::Horch,
         text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleetd::fleet_runtime::application::jobs::stop_window;
+
+    #[test]
+    fn a_stop_between_the_launch_and_the_store_of_the_gate_ends_its_group() {
+        stop_window::prove(
+            "fleetd::integration::adapters::exec_gate::tests::a_stop_between_the_launch_and_the_store_of_the_gate_ends_its_group",
+            |host, spec| {
+                let _ = run_gate(host, spec);
+            },
+        );
     }
 }

@@ -2,7 +2,11 @@
 //!
 //! SR-3: no agent pushes, deploys or messages outside the fleet. In Phase 4
 //! no agent pushes at all; each push is the push job of fleetd
-//! (`docs/tickets/fleetd-p4/MAP.md`, Q13). 2 guards hold it:
+//! (`docs/tickets/fleetd-p4/MAP.md`, Q13). An agent also sends no message
+//! to a person outside the fleet: [`DENIED_COMMANDS`] names the `gh`
+//! commands that comment on, review or discuss an issue or a pull request,
+//! and a check has no off-host network (`horch_platform::sandbox`,
+//! `Network::Local`). 2 guards hold the push:
 //!
 //! - The environment of each worker sets `core.hooksPath` to
 //!   `<fleet root>/hooks/agent` through `GIT_CONFIG_COUNT`, and the
@@ -22,9 +26,19 @@ use std::path::{Path, PathBuf};
 /// The message of the `pre-push` hook of an agent.
 pub const PRE_PUSH_REFUSAL: &str = "fleet agents do not push; fleetd pushes the feature branch";
 
-/// The commands that the profile of an agent denies, as words.
-pub const DENIED_COMMANDS: [&[&str]; 3] =
-    [&["git", "push"], &["gh", "pr", "merge"], &["gh", "release"]];
+/// The commands that the profile of an agent denies, as words. The first 3
+/// push, merge and release (SR-3). The others send a message outside the
+/// fleet: a comment or a review on a pull request, a comment on an issue,
+/// and a discussion.
+pub const DENIED_COMMANDS: [&[&str]; 7] = [
+    &["git", "push"],
+    &["gh", "pr", "merge"],
+    &["gh", "release"],
+    &["gh", "issue", "comment"],
+    &["gh", "pr", "comment"],
+    &["gh", "pr", "review"],
+    &["gh", "discussion"],
+];
 
 /// The hook names of git (`githooks(5)`) other than `pre-push`. The agent
 /// hooks folder has a pass-through hook for each.
@@ -137,14 +151,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_rules_deny_push_merge_and_release() {
+    fn claude_rules_deny_push_merge_release_and_external_messages() {
         let rules = DENIED_COMMANDS.map(claude_deny_rule);
         assert_eq!(
             rules,
             [
                 "Bash(git push:*)",
                 "Bash(gh pr merge:*)",
-                "Bash(gh release:*)"
+                "Bash(gh release:*)",
+                "Bash(gh issue comment:*)",
+                "Bash(gh pr comment:*)",
+                "Bash(gh pr review:*)",
+                "Bash(gh discussion:*)"
             ]
         );
     }

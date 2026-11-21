@@ -8,7 +8,7 @@
 //!   after `finish_exited`: a task that a result moved out of `running` in
 //!   the pass is not expired ("Order inside 1 pass"). The expiry of the
 //!   lease of a resolver or fix attempt of a `done` task ends that attempt
-//!   and moves no task ([`end_repair_attempt`], ticket 33).
+//!   and moves no task (`end_repair_attempt`, ticket 33).
 //! - `transition()`, the 1 door, deletes the lease of each task that moves
 //!   to a state that holds no lease, in the transaction of the move. The
 //!   I1 check of the pass ([`check_i1`]) deletes a row that another writer
@@ -244,11 +244,32 @@ pub fn check_i1(
     clock: FleetSeconds,
     limits: &dyn Fn(&str) -> Limits,
 ) -> Result<()> {
+    check_i1_within(tx, guard, clock, limits, usize::MAX)
+}
+
+/// [`check_i1`] with at most `budget` lease writes and deletes (PL-5,
+/// T-292). A write or a delete repairs its row, so the next call repairs
+/// other rows: N repairs are done in at most N / `budget` + 1 calls. A
+/// task with 2 live attempts opens its needs-you item in each call, with
+/// no budget: that item writes no lease, and its key keeps it to 1 row.
+pub fn check_i1_within(
+    tx: &Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    limits: &dyn Fn(&str) -> Limits,
+    budget: usize,
+) -> Result<()> {
     check_pass(tx, guard)?;
     let (tasks, worker_of) = task_leases(tx)?;
     let repairs = i1_repairs(&tasks);
     let lease_s = |attempt: &str| limits(&worker_of[attempt]).lease_s;
+    let mut rows = 0;
     for repair in &repairs {
+        let row = !matches!(repair, Repair::TwoLive { .. });
+        if row && rows == budget {
+            continue;
+        }
+        rows += usize::from(row);
         apply(tx, guard, clock, repair, &lease_s)?;
     }
     resolve_ended_breaches(tx, &repairs)
@@ -1097,5 +1118,62 @@ mod tests {
             .unwrap();
         l.check_i1(20);
         assert_eq!(breaches(&l), Vec::<String>::new());
+    }
+
+    #[test]
+    fn check_i1_within_repairs_at_most_its_budget_of_leases() {
+        let mut l = fixture(0);
+        for n in 0..5 {
+            l.add_task(&format!("t{n}"));
+            l.claimed();
+        }
+        l.store.conn().execute("DELETE FROM leases", []).unwrap();
+        let mut written = Vec::new();
+        for _ in 0..3 {
+            l.store
+                .immediate(|tx| check_i1_within(tx, Some(GEN), FleetSeconds(10), &limits, 2))
+                .unwrap();
+            written.push(l.leases().len());
+        }
+        assert_eq!(written, [2, 4, 5]);
+    }
+
+    fn claimed_tasks(n: usize) -> Fixture {
+        let mut l = fixture(0);
+        for i in 0..n {
+            l.add_task(&format!("t{i}"));
+            l.claimed();
+        }
+        l
+    }
+
+    #[test]
+    fn check_i1_within_runs_the_same_statements_for_3_and_30_repairs() {
+        let count = |n: usize| {
+            let mut l = claimed_tasks(n);
+            l.store.conn().execute("DELETE FROM leases", []).unwrap();
+            let tx = l.store.conn_mut().transaction().unwrap();
+            let ((), statements) = crate::taskledger::testing::count_statements(&tx, || {
+                check_i1_within(&tx, Some(GEN), FleetSeconds(10), &limits, 2).unwrap()
+            });
+            statements
+        };
+        assert_eq!(count(3), count(30));
+    }
+
+    /// The lease expiry stays whole in 1 pass: each lease is judged in each pass.
+    #[test]
+    fn renew_or_expire_leases_runs_the_same_statements_for_3_and_30_leases() {
+        let count = |n: usize| {
+            let mut l = claimed_tasks(n);
+            let tx = l.store.conn_mut().transaction().unwrap();
+            let (expired, statements) = crate::taskledger::testing::count_statements(&tx, || {
+                renew_or_expire_leases(&tx, Some(GEN), FleetSeconds(10), &BTreeMap::new(), &limits)
+                    .unwrap()
+            });
+            assert_eq!(expired, vec![]);
+            statements
+        };
+        assert_eq!(count(3), count(30));
     }
 }

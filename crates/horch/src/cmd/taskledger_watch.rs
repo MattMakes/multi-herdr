@@ -133,15 +133,19 @@ fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
     use horch_core::taskledger::runs::{self, NewRun};
     use horch_core::taskledger::schema::run_idea;
     use horch_core::taskledger::util;
+    #[cfg(unix)]
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
+    #[cfg(unix)]
     use horch_core::workspace::herdr::Herdr;
     use std::path::Path;
+    #[cfg(unix)]
     use std::time::{Duration, UNIX_EPOCH};
 
     /// A worker row of a new run in `dir`. The tests set the fields `observe`
@@ -179,6 +183,7 @@ mod tests {
     /// A herdr that answers by pane: `p1` has a status, a change count and a
     /// screen; `p2` has a screen but no status; `p3` has a status but no
     /// screen; any other pane fails both.
+    #[cfg(unix)]
     fn herdr(dir: &Path) -> Herdr {
         let bin = dir.join("herdr");
         // macOS scans a new executable at its first exec: warm it.
@@ -199,6 +204,7 @@ mod tests {
         Herdr::with_bin(bin)
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -225,6 +231,7 @@ mod tests {
         assert!(!alive(&w), "no pid");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_pane_and_the_screen_are_read_apart_and_only_for_a_worker_with_a_pane() {
         let dir = tempfile::tempdir().unwrap();
@@ -267,6 +274,7 @@ mod tests {
         assert_eq!(on(&mut w, None), Observation::default());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_transcript_gives_its_size_and_the_time_it_was_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -425,8 +433,6 @@ mod tests {
     /// `horch ledger watch --once` runs the Phase 4 pass of fleetd: its 1
     /// pass binds the ready task of a run to a push attempt
     /// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
-    /// The run has no orchestrator pane, so its spawn waits: the bind is the
-    /// fact that this test reads.
     #[test]
     fn watch_once_runs_the_phase4_pass() {
         use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -460,7 +466,19 @@ mod tests {
             "a",
         ]);
         let db = dir.join("ledger.sqlite3");
+        // The job host of the pass is the sibling horch of the exe. A stub
+        // that fails stands in for it, so no horch of the PATH runs.
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let failing_job_host = bin.join("horch");
+        std::fs::write(&failing_job_host, "#!/bin/sh\nexit 1\n").unwrap();
+        horch_platform::fs::make_executable(&failing_job_host).unwrap();
+        // fleetd finds the sandbox tool on the PATH of its context (SR-4):
+        // give it the PATH that the branch below reads.
+        let path = std::env::var("PATH").unwrap_or_default();
         let env = MapEnv::new(dir)
+            .with_exe(bin.join("horch-test"))
+            .with("PATH", &path)
             .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
             .with("HORCH_DATA_DIR", dir.join("data").to_str().unwrap())
             .with("HORCH_LEDGER_DB", db.to_str().unwrap())
@@ -495,8 +513,8 @@ mod tests {
 
         super::once_report(&ctx, &run, true, true).unwrap();
 
-        // A host with no check sandbox holds the persona (SR-4).
-        if horch_platform::sandbox::host_problem(None).is_some() {
+        let path = std::env::var_os("PATH");
+        if horch_platform::sandbox::host_problem(path.as_deref()).is_some() {
             let status: String = store
                 .conn()
                 .query_row(
@@ -508,15 +526,23 @@ mod tests {
             assert_eq!(status, "ready", "no check sandbox: no bind");
             return;
         }
-        let (status, via): (String, String) = store
+        // The launch has no herdr, so the attempt ends crashed in the same
+        // pass and rung 6 of the stall ladder makes the task ready after a
+        // backoff (T-307).
+        let (status, not_before, via, outcome): (String, Option<i64>, String, String) = store
             .conn()
             .query_row(
-                "SELECT t.status, a.via FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+                "SELECT t.status, t.not_before, a.via, a.outcome
+                 FROM tasks t JOIN attempts a ON a.task_id = t.task_id
                  WHERE t.task_id = ?1",
                 [&task],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!((status.as_str(), via.as_str()), ("leased", "push"));
+        assert_eq!(
+            (status.as_str(), via.as_str(), outcome.as_str()),
+            ("ready", "push", "crashed")
+        );
+        assert!(not_before.is_some(), "no backoff after the crashed attempt");
     }
 }

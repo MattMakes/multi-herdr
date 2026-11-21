@@ -149,7 +149,11 @@ impl World {
         };
         // Each persona has a check sandbox: the host facts do not decide a
         // test.
-        let mut sandboxes = WorkerSandboxes::new(CodexSandbox::default(), dir.join("fleet"));
+        let mut sandboxes = WorkerSandboxes::on_path(
+            CodexSandbox::default(),
+            dir.join("fleet"),
+            std::env::var_os("PATH"),
+        );
         sandboxes.gap = None;
         World {
             _temp: None,
@@ -277,6 +281,7 @@ impl World {
             attempt: attempt.into(),
             pid: None,
             pgid: None,
+            wrapper: None,
             mux_pane: None,
             proc_state: None,
             agent_state: None,
@@ -301,6 +306,7 @@ impl World {
             acceptance_self_check: Vec::new(),
             notes_for_next: None,
             handoff: None,
+            unlanded: None,
         };
         let outbox = attempt_dir(&self.root(), task, attempt).join("outbox");
         fs::create_dir_all(&outbox).unwrap();

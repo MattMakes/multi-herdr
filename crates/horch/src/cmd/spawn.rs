@@ -182,8 +182,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         .and_then(|c| c.worker_id.as_deref());
     let ledger = match super::taskledger_spawn::prepare(ctx, &args, controller_row)? {
         Prepared::NoRun => None,
-        Prepared::Pane(l) => Some(l),
-        Prepared::Ended(line) => return Ok(line),
+        Prepared::Pane(l) => Some(*l),
     };
     // A push attempt is bound to a ready task, and an idea-lead attempt has
     // its idea, so neither is over the plan.
@@ -207,9 +206,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
 /// it joins a run, a `--resume` spawn too (TRF-33): the line that names
 /// `START.md` of its push attempt. Else none.
 pub(crate) fn worker_task(ledger: Option<&super::taskledger_spawn::LedgerSpawn>) -> String {
-    ledger
-        .and_then(|l| l.first_line.clone())
-        .unwrap_or_default()
+    ledger.map(|l| l.first_line.clone()).unwrap_or_default()
 }
 
 /// Refuse a claiming spawn that its run's plan does not need (gap G-A): the
@@ -245,7 +242,12 @@ fn spawn_worker(
     } else {
         worker_task(ledger)
     };
-    let req = build_request(&args, &task)?;
+    let mut req = build_request(&args, &task)?;
+    req.resume_session = ledger
+        .and_then(|l| l.push.as_ref())
+        .and_then(|p| p.resume.clone())
+        .map(SessionId::new)
+        .transpose()?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
     let planned = plan_request(ctx, &req, &sc, existing.as_ref());

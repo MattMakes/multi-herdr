@@ -26,12 +26,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
+use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::Kind;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::ideas_store;
+use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::integration::adapters::exec_gate::{self, GateRequest};
 use crate::fleetd::integration::adapters::project_file;
 use crate::fleetd::integration::adapters::sqlite as rows;
@@ -51,6 +52,10 @@ const FULL_GATE: &str = "full";
 /// The states of an idea that do not hold its feature in `open` (design,
 /// "The feature state machine").
 const SETTLED_IDEA: [&str; 3] = ["integrating", "cancelled", "parked"];
+
+/// The kind of the needs-you item of a feature that [`follow`] cannot
+/// follow: its rows roll back, and the other features of the pass go on.
+pub const FOLLOW_FAILED_KIND: &str = "feature_follow_failed";
 
 /// What [`follow`] reads with.
 pub struct Features<'a> {
@@ -109,10 +114,60 @@ pub fn follow_in(
         if features.is_some_and(|ids| !ids.contains(&id)) {
             continue;
         }
-        let step = follow_one(f, tx, &id, clock).with_context(|| format!("feature {id}"))?;
+        tx.execute_batch("SAVEPOINT feature_follow")?;
+        let step = match follow_one(f, tx, &id, clock) {
+            Ok(step) => {
+                tx.execute_batch("RELEASE feature_follow")?;
+                f.jobs.needs_you.resolve_item(tx, &follow_failed_key(&id))?;
+                step
+            }
+            Err(e) => {
+                tx.execute_batch("ROLLBACK TO feature_follow; RELEASE feature_follow")?;
+                open_follow_failed(f, tx, &id, &e)?;
+                Step::Waits(format!("{e:#}"))
+            }
+        };
         steps.push((id, step));
     }
+    end_follow_failed(f, tx)?;
     Ok(steps)
+}
+
+fn follow_failed_key(id: &str) -> String {
+    format!("{FOLLOW_FAILED_KIND}:{id}")
+}
+
+fn open_follow_failed(
+    f: &Features<'_>,
+    tx: &Connection,
+    id: &str,
+    e: &anyhow::Error,
+) -> Result<()> {
+    let text =
+        format!("fleetd cannot follow the feature {id}: {e:#}. fleetd tries again on each pass.");
+    f.jobs.needs_you.open_item(
+        tx,
+        &NewItem {
+            key: &follow_failed_key(id),
+            kind: FOLLOW_FAILED_KIND,
+            entity: Entity::Feature,
+            entity_id: id,
+            text: &text,
+        },
+    )
+}
+
+fn end_follow_failed(f: &Features<'_>, tx: &Connection) -> Result<()> {
+    let live = live_features(tx)?;
+    for key in needs_you::open_keys(tx, FOLLOW_FAILED_KIND)? {
+        let Some(id) = key.strip_prefix(&format!("{FOLLOW_FAILED_KIND}:")) else {
+            continue;
+        };
+        if !live.iter().any(|l| l == id) {
+            f.jobs.needs_you.resolve_item(tx, &key)?;
+        }
+    }
+    Ok(())
 }
 
 /// The `open` and `ready` features, by id.
@@ -238,9 +293,9 @@ pub(crate) fn read_tips(
     let Some(feature) = git.tip(&repo, &format!("refs/heads/{branch}"))? else {
         return Ok(Err(format!("git has no branch {branch}")));
     };
-    let settings = match project_settings(git, &repo, &feature) {
+    let settings = match project_settings(git, &repo, &feature)? {
         Ok(s) => s,
-        Err(e) => return Ok(Err(format!("{e:#}"))),
+        Err(e) => return Ok(Err(e)),
     };
     let primary_branch = &row.primary_branch;
     let primary = match settings.remote {
@@ -260,16 +315,19 @@ pub(crate) fn read_tips(
 }
 
 /// The project file at the feature tip `tip`, or the defaults when the
-/// commit has none.
+/// commit has none. The outer `Err` is a failed read of git; the inner
+/// `Err` is the line of a project file that does not parse.
 pub(crate) fn project_settings(
     git: &dyn IntegrationGitGateway,
     repo: &Path,
     tip: &str,
-) -> Result<ProjectSettings> {
-    match git.fleet_toml(repo, tip)? {
-        Some(text) => project_file::parse(&text).with_context(|| format!("at {tip}")),
+) -> Result<Result<ProjectSettings, String>> {
+    Ok(match git.fleet_toml(repo, tip)? {
+        Some(text) => project_file::parse(&text)
+            .with_context(|| format!("at {tip}"))
+            .map_err(|e| format!("{e:#}")),
         None => Ok(ProjectSettings::default()),
-    }
+    })
 }
 
 /// Whether the feature `id` has at least 1 idea, and each of its ideas is

@@ -1,10 +1,11 @@
 //! The concern path for Windows.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::path::{inspect_junction_target, JunctionAction};
+use crate::path::{inspect_junction_target, plain_of_verbatim, JunctionAction};
 use crate::NotSupported;
 
 const OS: &str = "windows";
@@ -16,6 +17,13 @@ pub const CLAUDE_MANAGED_SETTINGS: &str = r"C:\Program Files\ClaudeCode\managed-
 pub const BLENDER_APP: Option<&str> = None;
 pub const GODOT_APP: Option<&str> = None;
 pub const GODOT_MONO_APP: Option<&str> = None;
+
+pub fn for_child(text: &OsStr) -> OsString {
+    match text.to_str().and_then(plain_of_verbatim) {
+        Some(plain) => plain.into(),
+        None => text.to_owned(),
+    }
+}
 
 pub fn passwd_home() -> Result<Option<PathBuf>, NotSupported> {
     Err(NotSupported::new("path", OS))

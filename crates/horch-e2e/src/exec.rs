@@ -1,7 +1,8 @@
 //! Exec mode of the fake agents (fleetd-p7 ticket 16).
 //!
 //! A fake that gets the exec argv of its adapter (tickets 13 to 15) reads
-//! the prompt path, `inbox/START.md`, and prints the stream lines of
+//! the path on the last line of the prompt, `inbox/START.md`, and prints
+//! the stream lines of
 //! `crates/horch-core/tests/fixtures/streams/<cli>-exec.jsonl`, without the
 //! doc keys of the fixture. With no key it prints the progress lines, then
 //! 1 result line, and exits 0.
@@ -153,12 +154,15 @@ fn agy_kind(line: &Value) -> Kind {
     }
 }
 
-/// Run `call` in exec mode for `cli` with the prompt at `prompt`. Never
+/// Run `call` in exec mode for `cli` with `prompt`: the skills briefing,
+/// if any, then the path of `START.md` on its last line. The argv of `call`
+/// keeps the full prompt. Never
 /// returns: the fake exits or hangs as its scenario says. The Phase 4 keys
 /// of [`crate::agent`] run first, so `bound` records the state at entry.
 pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     crate::agent::play(&mut call);
-    let (check, stop_gate) = match std::fs::read_to_string(prompt) {
+    let path = prompt.lines().last().unwrap_or(prompt);
+    let (check, stop_gate) = match std::fs::read_to_string(path) {
         Ok(text) => {
             let check = text.starts_with(CHECK_PROMPT_HEAD);
             let stop_gate = text == STOP_GATE_PROMPT;
@@ -167,7 +171,7 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         }
         Err(e) => {
             call.violate(format!(
-                "the exec prompt {prompt} (START.md) is not a readable file: {e}"
+                "the exec prompt path {path} (START.md) is not a readable file: {e}"
             ));
             call.flush();
             std::process::exit(2);
@@ -218,7 +222,9 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     // the fleet.
     let conformance = check || scenario_has("conformance");
     let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
-    if (scenario_has("exit_without_result") && !check) || (obeys_stop_gate && conformance) {
+    let ends_with_no_result =
+        scenario_has("exit_without_result") && (!check || scenario_has("conformance"));
+    if ends_with_no_result || (obeys_stop_gate && conformance) {
         call.flush();
         std::process::exit(0);
     }
@@ -226,7 +232,7 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     if conformance {
         let hooks = hook_events(&progress);
         let mut report = probe::report(cli, &call.argv, hooks);
-        report["result_write"] = Value::String(probe::write_result(cli, &call.argv, prompt));
+        report["result_write"] = Value::String(probe::write_result(cli, &call.argv, path));
         let text = report.to_string();
         call.extra.insert("conformance".into(), report);
         match cli {

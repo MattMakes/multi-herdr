@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use horch_e2e::harness::{wait_for, Harness};
+use horch_e2e::ledger_seed::seed_run;
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -91,6 +92,41 @@ fn triage_json(h: &Harness) -> Value {
     serde_json::from_slice(&o.stdout).unwrap()
 }
 
+fn applied(h: &Harness, reply: &Path) -> String {
+    let last = |h: &Harness| -> i64 {
+        let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
+        store
+            .conn()
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM jobs WHERE kind = 'triage_apply'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = last(h);
+    ok(
+        h,
+        &["worktree", "triage", "apply", &reply.to_string_lossy()],
+    );
+    let job = last(h);
+    assert_ne!(job, before, "the apply queued no triage_apply job");
+    let result = wait_for("the triage_apply job to end", || {
+        let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
+        store
+            .conn()
+            .query_row(
+                "SELECT result_json FROM jobs WHERE id = ?1 AND state IN ('passed', 'failed')",
+                [job],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+    });
+    let result: Value = serde_json::from_str(&result).unwrap();
+    result["text"].as_str().unwrap_or_default().to_string()
+}
+
 #[test]
 fn triage_lists_a_parked_folder_and_prints_the_reply_template() {
     let h = world("i308-list");
@@ -129,7 +165,7 @@ fn a_bad_reply_names_its_lines_and_runs_nothing() {
 #[test]
 fn finish_queues_a_task_that_inherits_the_worktree() {
     let h = world("i308-finish");
-    ok(&h, &["ledger", "run", "new", "alpha"]);
+    seed_run(&h, "alpha", None, "w1:p1");
     let path = folder(&h, "T7-cache");
     let r = reply(
         &h,
@@ -167,7 +203,7 @@ fn archive_restore_and_gc_through_the_cli() {
     let path = folder(&h, "feat");
     std::fs::write(path.join("untracked.txt"), "keep\n").unwrap();
     let r = reply(&h, &[("W1", "feat", "archive", "")]);
-    let said = ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
+    let said = applied(&h, &r);
     assert!(
         said.starts_with("W1 feat ARCHIVE: archived at refs/horch/archive/feat"),
         "{said}"
@@ -175,97 +211,24 @@ fn archive_restore_and_gc_through_the_cli() {
     assert!(!path.exists());
     let said = ok(&h, &["worktree", "restore", "feat"]);
     assert!(said.starts_with("restored "), "{said}");
-    // A worktree_add job of the next pass makes the tree (ticket 25 of
-    // fleetd-p5, T-474).
-    let untracked = path.join("untracked.txt");
-    wait_for("the restored tree", || {
-        std::fs::read_to_string(&untracked).ok()
+    // `git worktree add` creates each file before it writes it, so the test
+    // reads the file after the job ended.
+    wait_for("the worktree_add job of the restore to pass", || {
+        let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
+        let state: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT state FROM jobs WHERE kind = 'worktree_add' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        (state.as_deref() == Some("passed")).then_some(())
     });
+    let untracked = path.join("untracked.txt");
     assert_eq!(std::fs::read_to_string(&untracked).unwrap(), "keep\n");
     assert_eq!(
         ok(&h, &["ledger", "gc"]).trim(),
         "No trash ref is older than 30 days."
     );
-}
-
-/// A run `alpha` with task T-1 bound to a worker that made the worktree
-/// `T1-f` and committed in it. Returns the worker id and the path.
-fn claimed_worktree(h: &Harness) -> (String, PathBuf) {
-    ok(h, &["ledger", "run", "new", "alpha"]);
-    let dir = h.project.join("tickets");
-    std::fs::create_dir_all(&dir).unwrap();
-    let t = dir.join("01-f.md");
-    std::fs::write(&t, "# 01: Feature\n").unwrap();
-    ok(
-        h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &t.to_string_lossy(),
-            "--primary",
-            "opus",
-        ],
-    );
-    let w = horch_e2e::bind::bind(h, "opus", None).worker_id;
-    let as_worker = |args: &[&str]| {
-        let mut cmd = h.horch(args);
-        cmd.env("HORCH_WORKER_ID", &w);
-        let o = cmd.output().unwrap();
-        assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-        out(&o)
-    };
-    let said = as_worker(&["ledger", "worktree", "new", "f"]);
-    let path = PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
-    std::fs::write(path.join("f.txt"), "work\n").unwrap();
-    git_in(h, &path, &["add", "f.txt"]);
-    git_in(h, &path, &["commit", "--quiet", "--no-gpg-sign", "-m", "f"]);
-    (w, path)
-}
-
-fn name_of(path: &Path) -> String {
-    path.file_name().unwrap().to_string_lossy().into_owned()
-}
-
-#[test]
-fn run_close_refuses_while_a_parked_worktree_has_no_decision() {
-    let h = world("i308-close");
-    let (_, path) = claimed_worktree(&h);
-    ok(&h, &["ledger", "cancel", "T-1", "not needed now"]);
-    // A parked worktree with no decision leaves the run unsettled (TRF-15).
-    let o = h.run(&["ledger", "status"]);
-    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
-    let status = out(&o);
-    assert!(status.contains("Parked worktrees: 1 ("), "{status}");
-    let o = h.run(&["ledger", "run", "close"]);
-    assert!(!o.status.success(), "{}", text(&o));
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains(&path.to_string_lossy().into_owned()), "{err}");
-    assert!(err.contains("horch worktree triage"), "{err}");
-    let r = reply(&h, &[("W1", &name_of(&path), "KEEP", "")]);
-    ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
-    // Run close also needs a passing gate on the run-branch tip (TRF-20).
-    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
-    let said = ok(&h, &["ledger", "run", "close"]);
-    assert!(said.contains("Run alpha closed as done."), "{said}");
-}
-
-#[test]
-fn run_close_abandon_cancels_then_refuses_until_the_worktree_is_decided() {
-    let h = world("i308-abandon");
-    let (_, path) = claimed_worktree(&h);
-    let o = h.run(&["ledger", "run", "close", "--abandon", "stop here"]);
-    assert!(!o.status.success(), "{}", text(&o));
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("horch worktree triage"), "{err}");
-    // The cancel stands; the run stays active until the decision.
-    let t: Value = serde_json::from_str(&ok(&h, &["ledger", "show", "T-1", "--json"])).unwrap();
-    assert_eq!(t["task"]["status"], "cancelled", "{t:#}");
-    let rows = triage_json(&h);
-    assert_eq!(rows["rows"][0]["status"], "abandoned", "{rows:#}");
-    let r = reply(&h, &[("W1", &name_of(&path), "ARCHIVE", "")]);
-    ok(&h, &["worktree", "triage", "apply", &r.to_string_lossy()]);
-    assert!(!path.exists());
-    let said = ok(&h, &["ledger", "run", "close", "--abandon", "stop here"]);
-    assert!(said.contains("Run alpha closed as abandoned"), "{said}");
 }

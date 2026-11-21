@@ -5,7 +5,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use horch_e2e::harness::{copy_tree, fixtures, Harness};
+use horch_core::execution::records::SessionLedger;
+use horch_e2e::harness::{copy_tree, fixtures, wait_for_or, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 fn pass(step: &str) {
@@ -88,6 +90,38 @@ fn check_golden(name: &str, frame: &str) {
     assert_eq!(frame, want, "{name}");
 }
 
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 #[test]
 fn the_hermetic_story() {
     story(false);
@@ -99,6 +133,158 @@ fn the_hermetic_story() {
 #[test]
 fn the_hermetic_story_with_an_ollama_that_starts_in_7_s() {
     story(true);
+}
+
+fn refused_launch_changes_nothing() {
+    let mut g = Harness::new("story-refused").with_git();
+    g.set(
+        "HORCH_LEDGER_DB",
+        g.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    g.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
+    g.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    g.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
+    g.set(
+        "HORCH_QUOTA_FILE",
+        fixtures()
+            .join("quota/all-exhausted.json")
+            .to_string_lossy(),
+    );
+    g.set("HORCH_FAKE_SCENARIO", "exec");
+    let root = g.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        g.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        assert!(g.git_cmd(args).output().unwrap().status.success());
+    }
+    let workspace = g.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    g.set("HORCH_WORKSPACE_ID", workspace);
+
+    let ticket = g.project.join("opus-1.md");
+    std::fs::write(&ticket, "# Opus\n**Check:** `true`\n").unwrap();
+    let run = seed_run(&g, "refused", Some(1), "w1:p1");
+    seed_task(&g, &run, &ticket, "opus");
+    g.serve_fleetd();
+    let shown = || {
+        let o = g.run(&["ledger", "show", "T-1", "--json"]);
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    wait_for_or(
+        "the refusal of the launch",
+        || {
+            shown()
+                .contains("launch_failed: REFUSED: opus cannot start.")
+                .then_some(())
+        },
+        shown,
+    );
+    let ledger = SessionLedger::for_project(&g.state, &g.project.to_string_lossy());
+    assert!(ledger.read().unwrap().is_empty(), "no session record");
+    let pane_calls: Vec<String> = g
+        .calls_of("herdr")
+        .iter()
+        .map(|c| c["argv"].to_string())
+        .filter(|a| a.contains("\"split\"") || a.contains("\"run\""))
+        .collect();
+    assert!(
+        pane_calls.is_empty(),
+        "no pane split or run: {pane_calls:?}"
+    );
+    assert!(!g
+        .state
+        .join("herdr-orchestration-w1")
+        .join("opus-1.brief.json")
+        .exists());
+    stop_fleetd_and_jobs(&g);
+}
+
+fn claude_probe_reads_exhausted(h: &mut Harness) {
+    h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
+    h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
+    let q: Value =
+        serde_json::from_slice(&h.run(&["quota", "--refresh", "--json"]).stdout).unwrap();
+    assert_eq!(q["pools"]["claude"]["state"], "exhausted");
+    let seven = q["pools"]["claude"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "7d" && w["scope_model"].is_null())
+        .unwrap()
+        .clone();
+    assert_eq!(seven["used"].as_f64(), Some(1.0));
+    assert_eq!(seven["resets_at"], "2026-10-02T13:59:59Z");
+    assert!(h.violations().is_empty(), "{:?}", h.violations());
+    h.unset("HORCH_FAKE_SCENARIO");
+}
+
+fn nothing_persists(h: &Harness) {
+    for p in h
+        .state_files()
+        .into_iter()
+        .filter(|p| p.starts_with(h.state.join("telemetry")))
+    {
+        let text = std::fs::read_to_string(&p).unwrap_or_default();
+        for s in [
+            "SENTINEL-CONTENT",
+            "sentinel@example.invalid",
+            "acct_",
+            "user.email",
+        ] {
+            assert!(!text.contains(s), "{s} in {}", p.display());
+        }
+    }
+}
+
+fn usage_agrees_with_cost(h: &mut Harness) {
+    for project in ["/work/alpha", "/work/beta"] {
+        h.set("HORCH_PROJECT_DIR", project);
+        let usage: Value =
+            serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
+                .unwrap();
+        let one_report_of_every_call = ["cost", "--json", "--since", "2000-01-01"];
+        let cost: Value = serde_json::from_slice(&h.run(&one_report_of_every_call).stdout).unwrap();
+        for row in cost["rows"].as_array().unwrap() {
+            let rec = usage["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["record_id"] == row["record_id"])
+                .unwrap();
+            for class in [
+                "input",
+                "cache_write_5m",
+                "cache_write_1h",
+                "cache_read",
+                "output",
+            ] {
+                assert_eq!(
+                    rec["tokens"][class], row["tokens"][class],
+                    "{} {class}",
+                    row["record_id"]
+                );
+            }
+            assert!(close(
+                rec["cost_usd"].as_f64().unwrap(),
+                row["cost"].as_f64().unwrap()
+            ));
+        }
+    }
 }
 
 /// The story of the module doc. `slow_ollama` delays every `ollama` call by
@@ -195,23 +381,7 @@ fn story(slow_ollama: bool) {
     pass("3 stage 2 totals equal EXPECTED.md, no duplicate key");
     pass("4 a collector killed mid-tick loses and repeats nothing");
 
-    // 5. The Claude probe, against today's real state.
-    h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
-    h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
-    let q: Value =
-        serde_json::from_slice(&h.run(&["quota", "--refresh", "--json"]).stdout).unwrap();
-    assert_eq!(q["pools"]["claude"]["state"], "exhausted");
-    let seven = q["pools"]["claude"]["windows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["name"] == "7d" && w["scope_model"].is_null())
-        .unwrap()
-        .clone();
-    assert_eq!(seven["used"].as_f64(), Some(1.0));
-    assert_eq!(seven["resets_at"], "2026-10-02T13:59:59Z");
-    assert!(h.violations().is_empty(), "{:?}", h.violations());
-    h.unset("HORCH_FAKE_SCENARIO");
+    claude_probe_reads_exhausted(&mut h);
     pass("5 quota --refresh: claude exhausted, 7d 1.00, no fake violation");
 
     // 6-8. The gate, on quota fixtures.
@@ -234,20 +404,10 @@ fn story(slow_ollama: bool) {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("REFUSED: opus cannot start."));
     pass("7 route opus: REFUSED, exit 3");
-    let ledger = h.state.join("-work-alpha.json");
-    let before = std::fs::read(&ledger).unwrap();
-    let herdr_calls = h.calls_of("herdr").len();
-    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
-    assert_eq!(out.status.code(), Some(3));
-    assert_eq!(std::fs::read(&ledger).unwrap(), before);
-    assert_eq!(
-        h.calls_of("herdr").len(),
-        herdr_calls,
-        "no herdr call, so no pane split"
-    );
+    refused_launch_changes_nothing();
     h.unset("HORCH_QUOTA_FILE");
     h.unset("HORCH_WORKSPACE_ID");
-    pass("8 spawn opus: exit 3, ledger unchanged, no pane split");
+    pass("8 launch of opus: REFUSED, no record, no pane split");
 
     // 9. One frame of the screen, from the stage 2 snapshot.
     let out = h.run(&["telemetry", "render", "--size", "120x40", "--window", "7d"]);
@@ -266,59 +426,9 @@ fn story(slow_ollama: bool) {
     );
     pass("9 render 120x40 equals golden/telemetry-e2e.txt");
 
-    // 10. Nothing that must not persist did (TEL-11).
-    for p in h
-        .state_files()
-        .into_iter()
-        .filter(|p| p.starts_with(h.state.join("telemetry")))
-    {
-        let text = std::fs::read_to_string(&p).unwrap_or_default();
-        for s in [
-            "SENTINEL-CONTENT",
-            "sentinel@example.invalid",
-            "acct_",
-            "user.email",
-        ] {
-            assert!(!text.contains(s), "{s} in {}", p.display());
-        }
-    }
+    nothing_persists(&h);
     pass("10 no content or identity in the state dir");
 
-    // 11. horch usage agrees with horch cost, record by record (TEL-10).
-    for project in ["/work/alpha", "/work/beta"] {
-        h.set("HORCH_PROJECT_DIR", project);
-        let usage: Value =
-            serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
-                .unwrap();
-        // A filter makes 1 report on stdout; this one covers every call.
-        let cost: Value =
-            serde_json::from_slice(&h.run(&["cost", "--json", "--since", "2000-01-01"]).stdout)
-                .unwrap();
-        for row in cost["rows"].as_array().unwrap() {
-            let rec = usage["records"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["record_id"] == row["record_id"])
-                .unwrap();
-            for class in [
-                "input",
-                "cache_write_5m",
-                "cache_write_1h",
-                "cache_read",
-                "output",
-            ] {
-                assert_eq!(
-                    rec["tokens"][class], row["tokens"][class],
-                    "{} {class}",
-                    row["record_id"]
-                );
-            }
-            assert!(close(
-                rec["cost_usd"].as_f64().unwrap(),
-                row["cost"].as_f64().unwrap()
-            ));
-        }
-    }
+    usage_agrees_with_cost(&mut h);
     pass("11 usage --json equals cost --json per record");
 }

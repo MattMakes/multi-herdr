@@ -710,6 +710,26 @@ pub fn landing_states_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Op
     Ok(states.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The landing state of each task branch of `names`, by name: 1 statement
+/// for any count of names. A name with no task branch row is not in the
+/// map.
+pub fn task_branch_landing_states<'a>(
+    conn: &Connection,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, Option<String>>> {
+    let names: Vec<&str> = names.into_iter().collect();
+    let sql = format!(
+        "SELECT name, landing_state FROM branches
+         WHERE task_id IS NOT NULL AND name IN ({})",
+        crate::taskledger::sql_words::marks(1, names.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(names), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The name of each branch row, sorted.
 pub fn branch_names(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT name FROM branches ORDER BY name")?;

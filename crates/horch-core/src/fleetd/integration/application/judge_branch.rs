@@ -242,6 +242,56 @@ pub fn follow(j: &JudgeBranches<'_>, tx: &Connection) -> Result<Vec<Effect>> {
     Ok(effects)
 }
 
+fn judged_passes(tx: &Connection, judged: &str) -> Result<Option<(String, Vec<String>)>> {
+    let verdicts = verdict_file::recorded(tx, judged)?;
+    let Some(onto) = verdicts
+        .last()
+        .filter(|v| structural::is_pass(v))
+        .map(|v| v.tip.clone())
+    else {
+        return Ok(None);
+    };
+    let passes = verdicts
+        .into_iter()
+        .filter(structural::is_pass)
+        .map(|v| v.tip)
+        .collect();
+    Ok(Some((onto, passes)))
+}
+
+/// Whether the judge branch of the judge task `judge` holds the judged tip
+/// of `judged_passes`: the rule by which [`follow`] moves nothing. With
+/// no judge branch that waits, no tip of it, or no passed check of the
+/// judged task, it holds nothing.
+pub fn holds_judged_tip(
+    git: &dyn IntegrationGitGateway,
+    refs: &dyn JudgeBranchRefs,
+    tx: &Connection,
+    judge: &tasks::Task,
+) -> Result<bool> {
+    let Some(judged) = judged_task(&judge.kind, judge.parent_task_id.as_deref()) else {
+        return Ok(false);
+    };
+    let Some((onto, _)) = judged_passes(tx, judged)? else {
+        return Ok(false);
+    };
+    let mut branch = None;
+    for state in WAITING {
+        branch = branch.or(rows::task_branches_in(tx, state.as_str())?
+            .into_iter()
+            .find(|(_, task)| *task == judge.task_id)
+            .map(|(name, _)| name));
+    }
+    let Some(branch) = branch else {
+        return Ok(false);
+    };
+    let repo = PathBuf::from(runs::get(tx, &judge.run_id)?.project_root);
+    let Some(tip) = git.tip(&repo, &format!("refs/heads/{branch}"))? else {
+        return Ok(false);
+    };
+    refs.contains(&repo, &tip, &onto)
+}
+
 fn follow_one(
     j: &JudgeBranches<'_>,
     tx: &Connection,
@@ -260,20 +310,9 @@ fn follow_one(
     if tasks::get(tx, judged_id)?.status != TaskStatus::Verifying.as_str() {
         return Ok(None);
     }
-    let verdicts = verdict_file::recorded(tx, judged_id)?;
-    // The newest verdict must be a passed check: its tip is the judged tip.
-    let Some(onto) = verdicts
-        .last()
-        .filter(|v| structural::is_pass(v))
-        .map(|v| v.tip.clone())
-    else {
+    let Some((onto, passes)) = judged_passes(tx, judged_id)? else {
         return Ok(None);
     };
-    let passes: Vec<String> = verdicts
-        .into_iter()
-        .filter(structural::is_pass)
-        .map(|v| v.tip)
-        .collect();
     let repo = PathBuf::from(runs::get(tx, &judge.run_id)?.project_root);
     let Some(tip) = j.git.tip(&repo, &format!("refs/heads/{branch}"))? else {
         return Ok(None);

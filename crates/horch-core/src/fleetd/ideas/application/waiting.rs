@@ -7,13 +7,16 @@
 //!
 //! An idea waits on you in 2 states only:
 //! - `awaiting_approval`: it waits for your approval.
-//! - `clarifying` with a question open: its live sub-orchestrator waits at
-//!   its prompt for your answer. The ledger has no row for an interview
-//!   question, so the caller gives this fact in [`Wait::asking`]: each
+//! - `clarifying` with a question open: the ledger holds a durable open
+//!   interview question of the idea ([`QUESTION_ASKED`], from an `ask`
+//!   note), and its live sub-orchestrator waits at its prompt for your
+//!   answer. The caller gives the prompt fact in [`Wait::asking`]: each
 //!   clarifying idea whose live sub-orchestrator pane herdr shows at its
-//!   prompt (agent status `idle` or `done`). After the idle stop no process
-//!   is left to ask, and the wait holds until your answer arrives as a new
-//!   file in `amendments/` (`horch idea amend`).
+//!   prompt (agent status `idle` or `done`). An idle pane only corroborates
+//!   the question: with no open question it is not a wait (R5-F2). The
+//!   question closes on an `interview` note ([`QUESTION_ANSWERED`]) or a new
+//!   file in `amendments/` (`horch idea amend`). After the idle stop no
+//!   process is left to ask, and the wait holds until your answer arrives.
 //!
 //! In each other state an idle pane is not a wait on you, and the stall
 //! rules apply.
@@ -64,6 +67,7 @@ use crate::fleetd::ideas::adapters::needs_you_folder::Mirrored;
 use crate::fleetd::ideas::adapters::notify::{notify, Notice};
 use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::ideas::application::notes_ingest::{QUESTION_ANSWERED, QUESTION_ASKED};
 use crate::fleetd::ideas::application::park_cancel::{self, PARKED};
 use crate::fleetd::ideas::application::sub_orchestrators::{IDLE_STOP, IN_FLIGHT};
 use crate::fleetd::ideas::domain::needs_you::Write;
@@ -224,7 +228,11 @@ fn keep_idea(
         .iter()
         .map(|(a, _)| a)
         .find(|a| a.state != AttemptState::Ended);
-    if !waits(tx, ctx, &row, live, &tries)? {
+    let question = match row.state.as_str() {
+        "clarifying" => open_interview_question(tx, ctx, idea)?,
+        _ => None,
+    };
+    if !waits(tx, ctx, &row, live, &tries, question.as_deref())? {
         if row.waiting_on_you_since.is_some() {
             set_waiting(tx, idea, None)?;
             needs_you::resolve(tx, &waiting_key(idea))?;
@@ -254,7 +262,7 @@ fn keep_idea(
             kind: WAITING,
             entity: Entity::Idea.as_str(),
             entity_id: idea,
-            text: &waiting_text(&row.state, idea, &since, n),
+            text: &waiting_text(&row.state, idea, &since, n, question.as_deref()),
         },
     )?;
     if let Some(a) = live {
@@ -271,10 +279,12 @@ fn waits(
     row: &IdeaRow,
     live: Option<&AttemptRow>,
     tries: &[(AttemptRow, Option<String>)],
+    question: Option<&str>,
 ) -> Result<bool> {
     let last_outcome = tries.last().and_then(|(_, o)| o.as_deref());
     Ok(match row.state.as_str() {
         "awaiting_approval" => true,
+        "clarifying" if question.is_none() => false,
         "clarifying" => match live {
             Some(_) => ctx.asking.contains(&row.id),
             None => {
@@ -419,8 +429,7 @@ fn park(tx: &Connection, ctx: &Wait<'_>, idea: &str, out: &mut Waits) -> Result<
     Ok(())
 }
 
-/// The text of the waiting item of `idea` in `state`, after `n` reminders.
-fn waiting_text(state: &str, idea: &str, since: &str, n: u64) -> String {
+fn waiting_text(state: &str, idea: &str, since: &str, n: u64, question: Option<&str>) -> String {
     let mut text = if state == "awaiting_approval" {
         format!(
             "Idea {idea} waits for your approval since {since}. Read it with \
@@ -434,6 +443,9 @@ fn waiting_text(state: &str, idea: &str, since: &str, n: u64) -> String {
              `horch idea amend {idea} \"<answer>\"`."
         )
     };
+    if let Some(q) = question {
+        text.push_str(&format!(" The question of its sub-orchestrator: {q:?}"));
+    }
     if n > 0 {
         text.push_str(&format!(" Reminder {n}."));
     }
@@ -448,6 +460,28 @@ fn phase_attempts(conn: &Connection, idea: &str) -> Result<Vec<(AttemptRow, Opti
         .into_iter()
         .filter(|(a, _)| a.id.starts_with(&prefix))
         .collect())
+}
+
+fn open_interview_question(
+    conn: &Connection,
+    ctx: &Wait<'_>,
+    idea: &str,
+) -> Result<Option<String>> {
+    let facts = facts_of(conn, Entity::Idea, idea, EventKind::Note)?;
+    let Some(at) = facts.iter().rposition(|f| f.cause == QUESTION_ASKED) else {
+        return Ok(None);
+    };
+    if facts[at + 1..].iter().any(|f| f.cause == QUESTION_ANSWERED) {
+        return Ok(None);
+    }
+    let data: serde_json::Value = serde_json::from_str(&facts[at].data_json).unwrap_or_default();
+    let at_ask = data["amendments"].as_u64().unwrap_or(u64::MAX);
+    if u64::try_from(amendments(ctx, idea)?).unwrap_or(0) > at_ask {
+        return Ok(None);
+    }
+    Ok(Some(
+        data["question"].as_str().unwrap_or_default().to_string(),
+    ))
 }
 
 /// Whether a new amendment of `idea` arrived after the last idle stop of

@@ -192,7 +192,7 @@ impl World {
             docs: None,
             conformance: Some(suite),
         };
-        jobs::run_job_with(&ctx, &mut self.conn, id, pid, &runners)
+        jobs::run_job_with(&ctx, &self.conn, id, pid, &runners)
             .unwrap()
             .expect("the job process runs its row");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
@@ -299,6 +299,15 @@ fn conformance_job_of_an_unknown_cli_fails_with_a_result() {
     assert!(suite.ran.borrow().is_empty());
 }
 
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 /// A context for the rendering of a launch: temp folders, a stub CLI
 /// binary for each exec CLI.
 fn render_ctx(tmp: &Path) -> RuntimeContext {
@@ -327,6 +336,7 @@ fn render_ctx(tmp: &Path) -> RuntimeContext {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         env = env.with(key, &s(bin));
     }
+    stub_sandbox_tools(&tmp.join("bin"));
     RuntimeContext::from_env(&env).unwrap()
 }
 
@@ -344,6 +354,44 @@ fn hash_of(
         first_event_limit: FIRST_EVENT_LIMIT,
     };
     runner.adapter_hash().unwrap()
+}
+
+fn codex_with_operator_skills(tmp: &Path, names: &[&str]) -> horch_core::roster::Teammate {
+    for name in names {
+        let dir = tmp.join("home/.agents/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Operator skill {name}.\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+    let mut t = reference_profile(ExecCli::Codex);
+    t.operator_skills = Some(horch_core::roster::OperatorSkills {
+        dir: "~/.agents/skills".into(),
+        names: names.iter().map(|n| n.to_string()).collect(),
+    });
+    t
+}
+
+#[test]
+fn codex_adapter_hash_hides_the_skills_bundle_folder() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let ctx = render_ctx(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    let profile = codex_with_operator_skills(tmp.path(), &["probe-a"]);
+    let first = hash_of(&ctx, &profile, &scratch);
+    assert_eq!(hash_of(&ctx, &profile, &scratch), first);
+}
+
+#[test]
+fn codex_adapter_hash_changes_when_the_briefing_changes() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let ctx = render_ctx(tmp.path());
+    let scratch = tmp.path().join("scratch");
+    let one = codex_with_operator_skills(tmp.path(), &["probe-a"]);
+    let two = codex_with_operator_skills(tmp.path(), &["probe-a", "probe-b"]);
+    assert_ne!(hash_of(&ctx, &one, &scratch), hash_of(&ctx, &two, &scratch));
 }
 
 #[test]

@@ -107,14 +107,50 @@ pub fn on_termination_set(
 /// signal with its default action, as without the handler. The handler sets
 /// `group` to 0 when it takes it. The caller stores the group of the work
 /// that must not outlive it, and 0 when none runs. The handlers are
-/// installed at the first call only. A later call points them at the
-/// `group` of that call.
+/// installed at the first call only. Each call adds its `group`: the
+/// handler kills the group of every call, at most 8 distinct statics.
 ///
 /// Windows gives [`NotSupported`]: it has no signal handlers and no
 /// process groups. `docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
 /// section 6, row "Signals and stop" ("no signal handlers"), names the gap.
 pub fn kill_group_on_termination(group: &'static AtomicI32) -> Result<(), NotSupported> {
     os::kill_group_on_termination(group)
+}
+
+/// Hold the handler of [`kill_group_on_termination`] until the returned
+/// guard drops: a `SIGINT`, `SIGTERM` or `SIGHUP` that comes in the hold
+/// acts at its end. The handler then records only the first such signal.
+/// At the end of the last open hold, also on an early return or a panic,
+/// each registered group is killed with `SIGKILL`, and this process ends by
+/// the recorded signal with its default action, 1 time. A second signal in
+/// the hold does not act again.
+///
+/// Use it around the start of a child and the store of its group, so that
+/// a stop never comes after the child exists and before its group is known
+/// to the handler. Keep the hold short: it delays the stop of this process.
+/// Without [`kill_group_on_termination`] there is no handler, and the hold
+/// changes nothing.
+///
+/// Windows: the hold changes nothing. Windows has no termination handler
+/// here: a stop is `TerminateProcess` or a console control event, and
+/// [`kill_group_on_termination`] gives [`NotSupported`].
+/// `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
+/// row "Signals and stop" ("no signal handlers"), names the gap.
+pub fn hold_termination() -> TerminationHold {
+    os::hold_termination();
+    TerminationHold { _open: () }
+}
+
+/// The guard of [`hold_termination`]. Its drop ends the hold.
+#[must_use = "the hold ends when the guard drops"]
+pub struct TerminationHold {
+    _open: (),
+}
+
+impl Drop for TerminationHold {
+    fn drop(&mut self) {
+        os::end_termination_hold();
+    }
 }
 
 /// Let this process live on after `SIGHUP`, the signal of a closed

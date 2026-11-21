@@ -101,3 +101,20 @@ pub fn seed_task(h: &Harness, run: &Run, ticket: &Path, primary: &str) -> Task {
         .immediate(|tx| tasks::add(tx, run, &new, Actor::Orchestrator))
         .expect("seeding the task")
 }
+
+/// 1 worker row of `run` for the persona `persona`, in the workspace of
+/// `run`, with no attempt, as `horch ledger worker new --persona <persona>`
+/// made it. Returns its worker id.
+pub fn seed_worker(h: &Harness, run: &Run, persona: &str) -> String {
+    let new = NewWorker {
+        run_id: run.run_id.clone(),
+        kind: Some(WorkerKind::Worker),
+        persona: persona.into(),
+        workspace_id: run.workspace_id.clone(),
+        ..Default::default()
+    };
+    let mut store = Store::open(&h.ledger_db()).expect("opening the ledger of the harness");
+    store
+        .immediate(|tx| workers::insert(tx, &new))
+        .expect("seeding the worker")
+}

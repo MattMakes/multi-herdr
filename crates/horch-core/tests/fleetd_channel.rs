@@ -265,6 +265,46 @@ fn silent_client_is_dropped_at_its_deadline_and_the_next_is_served() {
     server.stop().unwrap();
 }
 
+/// A reply far larger than the buffer of the channel: 4096 bytes on a
+/// Windows pipe, a few KiB on a Unix socket.
+const LARGE_REPLY: usize = 128 * 1024;
+
+#[test]
+fn non_reading_client_with_large_reply_does_not_block_next_client_or_server_stop() {
+    let w = World::new();
+    let mut handlers = Handlers::new();
+    handlers.insert(Kind::TaskCancel, |_, _| {
+        Ok(json!({ "pad": "x".repeat(LARGE_REPLY) }))
+    });
+    let options = Options {
+        read_deadline: Duration::from_millis(300),
+        ..Options::default()
+    };
+    let server =
+        ChannelServer::start_with(w.root(), w.conn(), Generation(1), handlers, options).unwrap();
+
+    let silent = connect(&w.socket());
+    let first = request(Kind::TaskCancel, Some(w.token()));
+    (&silent).write_all(first.to_line().as_bytes()).unwrap();
+
+    let next = request(Kind::TaskCancel, Some(w.token()));
+    let got = reply(&ask(&w.socket(), next.to_line().as_bytes()));
+    assert_eq!(got.request_id, next.request_id);
+    assert_eq!(
+        got.outcome,
+        Outcome::Applied(json!({ "pad": "x".repeat(LARGE_REPLY) }))
+    );
+
+    let stopping = Instant::now();
+    server.stop().unwrap();
+    assert!(
+        stopping.elapsed() < Duration::from_secs(2),
+        "the stop ends in time: {:?}",
+        stopping.elapsed()
+    );
+    drop(silent);
+}
+
 #[test]
 fn worker_kind_on_the_channel_is_refused_and_recorded() {
     let w = World::new();
@@ -335,7 +375,7 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     let Outcome::Refused(reason) = got.outcome else {
         panic!("a process of a live attempt is refused: {got:?}");
     };
-    assert!(reason.contains("live attempt A-1"), "{reason}");
+    assert!(reason.contains("fleet process of attempt A-1"), "{reason}");
     assert_eq!(w.calls(), 0);
     let (state, _, auth, _) = w.row(&req.request_id).unwrap();
     assert_eq!((state.as_str(), auth), ("refused", None));
@@ -388,4 +428,42 @@ fn old_socket_file_is_replaced_but_a_regular_file_is_not() {
         )
         .unwrap();
     assert_eq!(open, 1, "1 needs-you item names the file");
+}
+
+fn ends_in_time<F>(server: ChannelServer, end: F) -> Option<anyhow::Result<()>>
+where
+    F: FnOnce(ChannelServer) -> anyhow::Result<()> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(end(server));
+    });
+    rx.recv_timeout(Duration::from_secs(1)).ok()
+}
+
+/// On Windows the channel is a pipe, and the path is no file.
+#[cfg(unix)]
+#[test]
+fn stop_completes_when_socket_folder_is_removed_before_stop() {
+    for explicit_stop in [true, false] {
+        let w = World::new();
+        let server = w.start(Options::default()).unwrap();
+        let req = request(Kind::TaskCancel, Some(w.token()));
+        let got = reply(&ask(&w.socket(), req.to_line().as_bytes()));
+        assert!(matches!(got.outcome, Outcome::Applied(_)), "{got:?}");
+        std::fs::remove_dir_all(w.root().join("run")).unwrap();
+
+        let ended = if explicit_stop {
+            ends_in_time(server, ChannelServer::stop)
+        } else {
+            ends_in_time(server, |server| {
+                drop(server);
+                Ok(())
+            })
+        };
+        let result = ended.unwrap_or_else(|| {
+            panic!("the end (explicit stop: {explicit_stop}) did not return in 1 second")
+        });
+        result.unwrap();
+    }
 }

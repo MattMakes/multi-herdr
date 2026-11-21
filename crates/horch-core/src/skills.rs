@@ -371,7 +371,11 @@ mod tests {
                 "Bash(git worktree prune:*)",
                 "Bash(git push:*)",
                 "Bash(gh pr merge:*)",
-                "Bash(gh release:*)"
+                "Bash(gh release:*)",
+                "Bash(gh issue comment:*)",
+                "Bash(gh pr comment:*)",
+                "Bash(gh pr review:*)",
+                "Bash(gh discussion:*)"
             ])
         );
         assert_eq!(value["statusLine"]["command"], "keep");

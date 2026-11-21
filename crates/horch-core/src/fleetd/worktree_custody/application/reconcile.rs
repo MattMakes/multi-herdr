@@ -22,7 +22,7 @@
 //! outside the pass, and the guard of the remove job checks each tree
 //! again at its removal.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -31,7 +31,7 @@ use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store;
 use crate::fleetd::fleet_runtime::adapters::scans::{FolderFact, Presence};
-use crate::fleetd::fleet_runtime::adapters::sqlite::{has_fact, state_of};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{has_fact, last_moves_to, state_of};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, result_data, JobCtx, JobKey, NewItem, Queued,
 };
@@ -42,6 +42,8 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::rollup::idea_state_of_task;
+use crate::fleetd::integration::adapters::sqlite as branches_store;
+use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, ListResult};
 use crate::fleetd::worktree_custody::adapters::rescue_git::{rescue_key, Rescue};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
@@ -50,9 +52,11 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{
 use crate::fleetd::worktree_custody::application::{create, remove, rescue};
 use crate::fleetd::worktree_custody::domain::removal::quarantine_path;
 use crate::fleetd::worktree_custody::domain::worktree::{
-    self as rules, Attempt, Breach, Folder, Owner, OwnerGone, RunBranch, Seen, TreeJob,
+    self as rules, Attempt, Breach, Folder, LandingTree, Owner, OwnerGone, RunBranch, Seen,
+    TaskNow, TreeJob,
 };
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus, WorktreeStatus};
+use crate::taskledger::store::one_snapshot;
 use crate::taskledger::{runs, tasks, util, workers};
 
 /// The folders under `<project>/.worktrees/` of 1 repository (Q4).
@@ -93,8 +97,13 @@ pub struct Report {
     pub observed: Vec<i64>,
     pub adopted: Vec<String>,
     pub orphaned: Vec<String>,
-    /// Moved to `created`: the task is parked by `done --unlanded`.
+    /// Moved to `created`: the task is parked by `done --unlanded`, or it
+    /// waits for its next attempt.
     pub created: Vec<String>,
+    /// Moved to `landing`: the attempt ended verified.
+    pub landing: Vec<String>,
+    /// Moved from `landing` to `landed`: the task branch is `landed`.
+    pub landed: Vec<String>,
     pub vanished: Vec<String>,
     /// The rows that got new facts from a `worktree_list` result.
     pub refreshed: Vec<String>,
@@ -120,7 +129,9 @@ fn by_horch(text: &str) -> Cause<'_> {
 /// tree with no row as `orphaned`; write the facts of the `worktree_list`
 /// results; move each `active` row whose owner is gone; escalate each
 /// vanished folder; queue the rescue of each orphan and the removal of each
-/// landed tree. Each step reads the rows that the step before it wrote.
+/// landed tree. Between the owners and the escalation, each `landing` row
+/// follows its task branch. Each step reads the rows that the step before
+/// it wrote.
 pub fn reconcile_worktrees(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -132,6 +143,7 @@ pub fn reconcile_worktrees(
     adopt(ctx, tx, facts, &mut report)?;
     refresh(tx, facts, &mut report)?;
     owners(ctx, tx, &mut report)?;
+    landings(ctx, tx, &mut report)?;
     escalate_vanished(ctx, tx, facts, clock, &mut report)?;
     act(ctx, tx, clock, &mut report)?;
     Ok(report)
@@ -147,6 +159,7 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
         .collect();
     let known = known_paths(live.iter().copied(), facts);
     let seen = seen(conn, &rows, facts)?;
+    let removing = removing(conn)?;
     let mut out: Vec<Breach> = rules::adoptions(&known, &seen, &[])
         .into_iter()
         .map(|a| Breach::NoRow {
@@ -157,7 +170,12 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
     for r in &rows {
         let id = r.worktree_id.clone();
         let state = r.state.as_str();
-        if rules::vanished(state, folder(facts, &id), false, set_aside(conn, facts, r)?) {
+        if rules::vanished(
+            state,
+            folder(facts, &id),
+            false,
+            set_aside(&removing, facts, r),
+        ) {
             out.push(Breach::NoFolder { id });
         } else if r.state == WorktreeState::Reserved && add_run(conn, r)?.is_none() {
             out.push(Breach::ReservedWithNoJob { id });
@@ -483,7 +501,11 @@ fn moved(ctx: &JobCtx<'_>, tx: &Connection, id: &str, to: &str, cause: &str) -> 
 }
 
 /// The owner of the `active` row `row`, as the ledger gives it.
-fn owner(tx: &Connection, row: &WorktreeRow) -> Result<Owner> {
+fn owner(
+    tx: &Connection,
+    row: &WorktreeRow,
+    outcomes: &BTreeMap<String, Option<String>>,
+) -> Result<Owner> {
     let attempt = match row.owner_attempt.as_deref() {
         Some(a) => Some(match state_of(tx, Entity::Attempt, a)?.as_deref() {
             None => Attempt::Missing,
@@ -504,25 +526,58 @@ fn owner(tx: &Connection, row: &WorktreeRow) -> Result<Owner> {
     Ok(Owner {
         attempt,
         worker_live,
-        task_parked: task.as_ref().is_some_and(|t| t.is_parked()),
-        task_cancelled: task
-            .as_ref()
-            .is_some_and(|t| t.status == TaskStatus::Cancelled.as_str()),
+        task: task.as_ref().map_or(TaskNow::Other, task_now),
+        ended_clean: rules::clean_end(outcome_of(outcomes, row)),
     })
 }
 
-/// Move each `active` row whose owner is gone: `created` for a parked
-/// task, else `orphaned` in this pass (FM-25, Q10, Q23).
+fn outcome_of<'a>(
+    outcomes: &'a BTreeMap<String, Option<String>>,
+    row: &WorktreeRow,
+) -> Option<&'a str> {
+    let attempt = row.owner_attempt.as_deref()?;
+    outcomes.get(attempt)?.as_deref()
+}
+
+/// The outcome of the owner attempt of each row of `rows`, in 1 statement
+/// for any count of rows.
+fn owner_outcomes(
+    tx: &Connection,
+    rows: &[WorktreeRow],
+) -> Result<BTreeMap<String, Option<String>>> {
+    attempts_store::outcomes_of(tx, rows.iter().filter_map(|r| r.owner_attempt.as_deref()))
+}
+
+fn task_now(task: &tasks::Task) -> TaskNow {
+    if task.is_parked() {
+        return TaskNow::Parked;
+    }
+    match TaskStatus::parse(&task.status) {
+        Ok(TaskStatus::Verifying) => TaskNow::Verifying,
+        Ok(TaskStatus::Done) => TaskNow::Done,
+        Ok(TaskStatus::Ready | TaskStatus::BlockedOnUser | TaskStatus::WaitingQuota) => {
+            TaskNow::Retried
+        }
+        Ok(TaskStatus::Cancelled) => TaskNow::Cancelled,
+        _ => TaskNow::Other,
+    }
+}
+
+/// Move each `active` row whose owner is gone: `landing` for a verified
+/// task, `created` for a parked or retried task, else `orphaned` in this
+/// pass (FM-25, Q10, Q23).
 fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
-    for row in store::in_states(tx, &[WorktreeState::Active])? {
+    let (rows, outcomes) = one_snapshot(tx, || {
+        let rows = store::in_states(tx, &[WorktreeState::Active])?;
+        let outcomes = owner_outcomes(tx, &rows)?;
+        Ok((rows, outcomes))
+    })?;
+    for row in rows {
         let id = row.worktree_id.as_str();
-        let (to, cause, list) = match rules::owner_gone(&owner(tx, &row)?) {
+        let (to, cause, list) = match rules::owner_gone(&owner(tx, &row, &outcomes)?) {
             None => continue,
-            Some(OwnerGone::Created) => (
-                "created",
-                "its task is parked by done --unlanded",
-                &mut report.created,
-            ),
+            Some(OwnerGone::Created(cause)) => ("created", cause, &mut report.created),
+            Some(OwnerGone::Landing) => ("landing", rules::VERIFIED, &mut report.landing),
             Some(OwnerGone::Orphaned(cause)) => ("orphaned", cause, &mut report.orphaned),
         };
         if moved(ctx, tx, id, to, cause)? {
@@ -532,6 +587,65 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
                 store::set_owner(tx, id, None)?;
             }
             list.push(id.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The landing state of the task branch of each `landing` row, by branch
+/// name, and the stamp of the last event that moved that branch to
+/// `landed`. Each is 1 set read of the context that owns its table, on 1
+/// snapshot: 2 statements for any count of rows.
+struct Branches {
+    states: BTreeMap<String, Option<String>>,
+    landed_at: BTreeMap<String, String>,
+}
+
+impl Branches {
+    fn read(tx: &Connection, rows: &[WorktreeRow], with_landed_at: bool) -> Result<Branches> {
+        let names = || rows.iter().map(|r| r.branch.as_str());
+        one_snapshot(tx, || {
+            let states = branches_store::task_branch_landing_states(tx, names())?;
+            let landed_at = if with_landed_at {
+                last_moves_to(tx, Entity::TaskBranch, names(), "landed")?
+            } else {
+                BTreeMap::new()
+            };
+            Ok(Branches { states, landed_at })
+        })
+    }
+
+    fn state(&self, row: &WorktreeRow) -> Option<&str> {
+        self.states.get(&row.branch)?.as_deref()
+    }
+}
+
+/// Move each `landing` row whose task branch is `landed` to `landed`, at
+/// the HEAD that a `worktree_list` run read after the landing: its landed
+/// commit, the 1 record of the landing for the removal guard and for
+/// `horch ledger unfinished`. A row with no such read waits for it. A row
+/// whose branch is `abandoned` gets its rescue in [`act`].
+fn landings(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
+    let (rows, branches) = one_snapshot(tx, || {
+        let rows = store::in_states(tx, &[WorktreeState::Landing])?;
+        let branches = Branches::read(tx, &rows, true)?;
+        Ok((rows, branches))
+    })?;
+    for row in rows {
+        let landed_at = branches.landed_at.get(&row.branch);
+        if rules::landing_next(branches.state(&row)) != Some(LandingTree::Landed) {
+            continue;
+        }
+        let Some(head) = row.head_sha.as_deref() else {
+            continue;
+        };
+        if !rules::read_after_landing(row.seen_at.as_deref(), landed_at.map(String::as_str)) {
+            continue;
+        }
+        let id = row.worktree_id.as_str();
+        store::set_landed(tx, id, head)?;
+        if moved(ctx, tx, id, "landed", "its task branch is landed")? {
+            report.landed.push(id.to_string());
         }
     }
     Ok(())
@@ -579,7 +693,7 @@ fn names_row(result: &ListResult, path: &str, row: &WorktreeRow) -> bool {
 
 /// Whether a removal set the tree of `row` aside: its remove run is
 /// active, or its quarantine folder is in the work directory.
-fn set_aside(conn: &Connection, facts: &Facts, row: &WorktreeRow) -> Result<bool> {
+fn set_aside(removing: &BTreeSet<String>, facts: &Facts, row: &WorktreeRow) -> bool {
     let quarantine = quarantine_path(Path::new(&row.path), &row.worktree_id);
     let quarantine = quarantine.display().to_string();
     let in_work_dir = facts
@@ -587,7 +701,13 @@ fn set_aside(conn: &Connection, facts: &Facts, row: &WorktreeRow) -> Result<bool
         .iter()
         .filter(|d| d.repo == row.repo_root)
         .any(|d| d.folders.contains(&quarantine));
-    Ok(in_work_dir || jobs_store::active(conn, Kind::WorktreeRemove, &row.worktree_id)?.is_some())
+    in_work_dir || removing.contains(&row.worktree_id)
+}
+
+/// 1 statement for any count of trees: check_i6 and escalate_vanished judge
+/// each tree, so this read stays whole.
+fn removing(conn: &Connection) -> Result<BTreeSet<String>> {
+    jobs_store::active_subjects(conn, Kind::WorktreeRemove)
 }
 
 /// Escalate each folder that vanished without a removal by fleetd: 1
@@ -599,13 +719,14 @@ fn escalate_vanished(
     clock: FleetSeconds,
     report: &mut Report,
 ) -> Result<()> {
+    let removing = removing(tx)?;
     for row in all_rows(tx)? {
         let id = row.worktree_id.as_str();
         let gone = rules::vanished(
             row.state.as_str(),
             folder(facts, id),
             in_git(facts, &row),
-            set_aside(tx, facts, &row)?,
+            set_aside(&removing, facts, &row),
         );
         if !gone {
             continue;
@@ -649,13 +770,24 @@ fn escalate_vanished(
     Ok(())
 }
 
-/// Queue 1 `rescue` run of each `orphaned` row with no rescue ref, and 1
+/// Queue 1 `rescue` run of each `orphaned` row and of each `landing` row
+/// whose task branch is `abandoned`, and 1
 /// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9) and of
 /// each `rescued` row whose idea is `merged` ("Ideas finish clean"). A row
 /// whose folder vanished is escalated, not queued. A row with an active run
 /// of that kind is not queued again.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
-    for row in all_rows(tx)? {
+    let (rows, branches) = one_snapshot(tx, || {
+        let rows = all_rows(tx)?;
+        let landing: Vec<WorktreeRow> = rows
+            .iter()
+            .filter(|r| r.state == WorktreeState::Landing)
+            .cloned()
+            .collect();
+        let branches = Branches::read(tx, &landing, false)?;
+        Ok((rows, branches))
+    })?;
+    for row in rows {
         let id = row.worktree_id.as_str();
         if report.vanished.iter().any(|v| v == id) {
             continue;
@@ -669,6 +801,13 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
             Some(TreeJob::Remove) => {
                 if remove::queue_auto_remove(ctx, tx, &row, "its tree is landed", clock)? {
                     report.removals.push(id.to_string());
+                }
+            }
+            Some(TreeJob::Add) | None if row.state == WorktreeState::Landing => {
+                if rules::landing_next(branches.state(&row)) == Some(LandingTree::Rescue)
+                    && queue_rescue(ctx, tx, &row, clock)?
+                {
+                    report.rescues.push(id.to_string());
                 }
             }
             Some(TreeJob::Add) | None => {
@@ -722,4 +861,334 @@ fn queue_rescue(
     }
     let queued = jobs::queue(ctx, tx, &key, Some(&row.repo_root), clock)?;
     Ok(matches!(queued, Queued::New(_)))
+}
+
+#[cfg(test)]
+mod removing_tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+    use rusqlite::params;
+
+    fn ledger(n: usize) -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                for i in 0..n {
+                    tx.execute(
+                        "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base,
+                             status, created_at)
+                         VALUES (?1, '/p', ?2, ?1, 'main', 'open', 'now')",
+                        params![format!("WT{i:04}"), format!("/p/.worktrees/{i}")],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    fn job(conn: &Connection, kind: &str, id: &str, run: i64, state: &str) {
+        conn.execute(
+            "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)
+             VALUES (?1, ?2, 'k', ?3, ?4, 60, 'now')",
+            params![kind, id, run, state],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn removing_names_the_trees_of_the_read_of_each_tree() {
+        let (_tmp, store) = ledger(6);
+        let c = store.conn();
+        job(c, "worktree_remove", "WT0000", 1, "queued");
+        job(c, "worktree_remove", "WT0001", 1, "running");
+        job(c, "worktree_remove", "WT0002", 1, "passed");
+        job(c, "worktree_remove", "WT0003", 1, "failed");
+        job(c, "worktree_remove", "WT0003", 2, "queued");
+        job(c, "worktree_add", "WT0004", 1, "queued");
+        let want: BTreeSet<String> = all_rows(c)
+            .unwrap()
+            .into_iter()
+            .filter(|r| {
+                jobs_store::active(c, Kind::WorktreeRemove, &r.worktree_id)
+                    .unwrap()
+                    .is_some()
+            })
+            .map(|r| r.worktree_id)
+            .collect();
+        assert_eq!(want.len(), 3);
+        assert_eq!(removing(c).unwrap(), want);
+    }
+
+    #[test]
+    fn check_i6_runs_the_same_statements_for_3_and_300_trees() {
+        let count = |n: usize| {
+            let (_tmp, store) = ledger(n);
+            let (breaches, statements) = count_statements(store.conn(), || {
+                check_i6(store.conn(), &Facts::default()).unwrap()
+            });
+            assert_eq!(breaches, vec![]);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
+}
+
+#[cfg(test)]
+mod landing_reads_tests {
+    use super::*;
+    use crate::fleetd::fleet_runtime::adapters::sqlite::{append_event, Event};
+    use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+    use rusqlite::{params, OptionalExtension};
+
+    struct TreeWorld {
+        _tmp: tempfile::TempDir,
+        store: Store,
+    }
+
+    fn ledger(trees: &[(&str, &str, &str, Option<&str>)]) -> TreeWorld {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now');",
+                )?;
+                let idea = crate::taskledger::schema::run_idea(tx, "r1", "now", true)?;
+                tx.execute(
+                    "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                         claimable_by, status, created_at, updated_at, idea_id)
+                     VALUES ('t1', 'r1', 1, 't1', 'a.md', 'opus', 'opus', 'running', 'now', 'now',
+                         ?1)",
+                    [idea],
+                )?;
+                tx.execute_batch(
+                    "INSERT INTO workers (worker_id, run_id, persona, host, status, task_id)
+                     VALUES ('w1', 'r1', 'opus', 'h', 'working', 't1');
+                     INSERT INTO features (id, name, branch, primary_branch, state, created_at,
+                         updated_at)
+                     VALUES ('F1', 'f', 'feat', 'main', 'open', 'now', 'now');",
+                )?;
+                for (id, state, branch, owner) in trees {
+                    tx.execute(
+                        "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch,
+                             base, status, state, created_at, owner_attempt)
+                         VALUES (?1, 't1', '/p', '/p/.worktrees/' || ?1, ?2, 'main', 'open', ?3,
+                             'now', ?4)",
+                        params![id, branch, state, owner],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        TreeWorld { _tmp: tmp, store }
+    }
+
+    impl TreeWorld {
+        fn branch(&mut self, name: &str, state: &str, landed_at: Option<&str>) {
+            self.store
+                .immediate(|tx| {
+                    tx.execute(
+                        "INSERT INTO branches (name, feature_id, task_id, landing_state, owner,
+                             due_at)
+                         VALUES (?1, 'F1', 't1', ?2, 'fleetd', 0)",
+                        params![name, state],
+                    )?;
+                    if let Some(at) = landed_at {
+                        let e = Event {
+                            entity: Entity::TaskBranch,
+                            id: name,
+                            from: Some("in_bundle"),
+                            to: "landed",
+                            cause: "test",
+                            actor: Actor::Horch,
+                        };
+                        append_event(tx, &e)?;
+                        tx.execute(
+                            "UPDATE events SET at = ?1 WHERE event_id = last_insert_rowid()",
+                            [at],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        fn attempt(&mut self, id: &str, outcome: Option<&str>) {
+            self.store
+                .immediate(|tx| {
+                    tx.execute(
+                        "INSERT INTO attempts (id, task_id, worker_id, state, outcome)
+                         VALUES (?1, 't1', 'w1', 'ended', ?2)",
+                        params![id, outcome],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+    }
+
+    fn branch_of_one_by_one(
+        tx: &Connection,
+        row: &WorktreeRow,
+    ) -> (Option<String>, Option<String>) {
+        let state: Option<Option<String>> = tx
+            .query_row(
+                "SELECT landing_state FROM branches WHERE name = ?1 AND task_id IS NOT NULL",
+                [&row.branch],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        let landed_at: Option<String> = tx
+            .query_row(
+                "SELECT max(at) FROM events
+                 WHERE entity = ?1 AND entity_id = ?2 AND to_state = 'landed'",
+                [Entity::TaskBranch.as_str(), row.branch.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (state.flatten(), landed_at)
+    }
+
+    fn outcome_of_one_by_one(tx: &Connection, row: &WorktreeRow) -> Option<String> {
+        let attempt = row.owner_attempt.as_deref()?;
+        tx.query_row(
+            "SELECT outcome FROM attempts WHERE id = ?1",
+            [attempt],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .unwrap()
+        .flatten()
+    }
+
+    #[test]
+    fn the_set_reads_give_the_facts_of_the_read_of_each_row() {
+        let outcomes = [
+            Some("done"),
+            Some("crashed"),
+            Some("asked"),
+            Some("idle"),
+            None,
+        ];
+        let mut l = ledger(&[
+            ("L1", "landing", "b-landed", None),
+            ("L2", "landing", "b-abandoned", None),
+            ("L3", "landing", "b-no-event", None),
+            ("L4", "landing", "b-no-row", None),
+            ("L5", "landing", "b-landed-twice", None),
+            ("A0", "active", "b-a0", None),
+        ]);
+        let ids: Vec<String> = (0..outcomes.len()).map(|i| format!("t1/A{i}")).collect();
+        for (attempt, outcome) in ids.iter().zip(outcomes) {
+            l.attempt(attempt, outcome);
+        }
+        l.store
+            .immediate(|tx| {
+                for (i, attempt) in ids.iter().enumerate() {
+                    tx.execute(
+                        "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch,
+                             base, status, state, created_at, owner_attempt)
+                         VALUES (?1, 't1', '/p', '/p/.worktrees/' || ?1, ?1, 'main', 'open',
+                             'active', 'now', ?2)",
+                        params![format!("A{}", i + 1), attempt],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        l.branch("b-landed", "landed", Some("2026-11-21T01:00:00Z"));
+        l.branch("b-abandoned", "abandoned", None);
+        l.branch("b-no-event", "landed", None);
+        l.branch("b-landed-twice", "landed", Some("2026-11-21T01:00:00Z"));
+        l.store
+            .immediate(|tx| {
+                let e = Event {
+                    entity: Entity::TaskBranch,
+                    id: "b-landed-twice",
+                    from: Some("in_bundle"),
+                    to: "landed",
+                    cause: "test",
+                    actor: Actor::Horch,
+                };
+                append_event(tx, &e)?;
+                tx.execute(
+                    "UPDATE events SET at = '2026-11-21T02:00:00Z'
+                     WHERE event_id = last_insert_rowid()",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let c = l.store.conn();
+
+        let landing = store::in_states(c, &[WorktreeState::Landing]).unwrap();
+        assert_eq!(landing.len(), 5);
+        let branches = Branches::read(c, &landing, true).unwrap();
+        for row in &landing {
+            let set = (
+                branches.state(row).map(str::to_string),
+                branches.landed_at.get(&row.branch).cloned(),
+            );
+            assert_eq!(set, branch_of_one_by_one(c, row), "{}", row.worktree_id);
+        }
+        assert_eq!(
+            branches.landed_at.get("b-landed-twice").map(String::as_str),
+            Some("2026-11-21T02:00:00Z")
+        );
+
+        let active = store::in_states(c, &[WorktreeState::Active]).unwrap();
+        assert_eq!(active.len(), 1 + outcomes.len());
+        let set = owner_outcomes(c, &active).unwrap();
+        for row in &active {
+            assert_eq!(
+                outcome_of(&set, row).map(str::to_string),
+                outcome_of_one_by_one(c, row),
+                "{}",
+                row.worktree_id
+            );
+        }
+    }
+
+    /// T-286, by count: the steps `landings` and `act` run the same
+    /// statements for 3 and for 300 `landing` rows.
+    #[test]
+    fn landings_and_act_run_the_same_statements_for_3_and_300_landing_rows() {
+        let count = |n: usize| {
+            let names: Vec<(String, String)> = (0..n)
+                .map(|i| (format!("L{i:04}"), format!("b{i:04}")))
+                .collect();
+            let trees: Vec<(&str, &str, &str, Option<&str>)> = names
+                .iter()
+                .map(|(id, b)| (id.as_str(), "landing", b.as_str(), None))
+                .collect();
+            let mut l = ledger(&trees);
+            for (_, b) in &names {
+                l.branch(b, "in_bundle", None);
+            }
+            let config = FleetConfig::default();
+            let ctx = JobCtx {
+                guard: None,
+                config: &config,
+                needs_you: &NeedsYouList,
+            };
+            let tx = l.store.conn_mut().transaction().unwrap();
+            let mut report = Report::default();
+            let ((), statements) = count_statements(&tx, || {
+                landings(&ctx, &tx, &mut report).unwrap();
+                act(&ctx, &tx, FleetSeconds(0), &mut report).unwrap();
+            });
+            assert_eq!(report, Report::default());
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }

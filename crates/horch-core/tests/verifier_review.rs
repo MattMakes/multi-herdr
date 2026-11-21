@@ -105,12 +105,18 @@ fn policy(_: &Task) -> Policy {
     Policy::default()
 }
 
-/// No worker of a test has a sandbox profile.
-struct NoProfiles;
+struct TestProfile;
 
-impl SandboxProfiles for NoProfiles {
-    fn check_launch(&self, _: &Worker, _: &Path, _: &str) -> Result<Option<LaunchSpec>> {
-        Ok(None)
+impl SandboxProfiles for TestProfile {
+    fn check_launch(&self, _: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>> {
+        Ok(Some(LaunchSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), check.into()],
+            cwd: Some(dir.to_path_buf()),
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        }))
     }
 }
 
@@ -387,7 +393,7 @@ impl World {
             row.input_key
         );
         let me = std::process::id();
-        let mut conn = Connection::open(&self.ledger).unwrap();
+        let conn = Connection::open(&self.ledger).unwrap();
         conn.execute(
             "UPDATE jobs SET state = 'running', pid = ?2, started_at = ?3 WHERE id = ?1",
             params![row.id, me, util::now()],
@@ -400,10 +406,10 @@ impl World {
         };
         let checks = CheckRunner {
             host: &Launcher,
-            profiles: &NoProfiles,
+            profiles: &TestProfile,
             sweep: Some(&self.tools),
         };
-        let o = jobs::run_job(&ctx, &mut conn, row.id, me, &checks)
+        let o = jobs::run_job(&ctx, &conn, row.id, me, &checks)
             .unwrap()
             .expect("the job process wrote its result");
         let file = job_result_file::path(&self.top().join("fleet"), row.id, row.run);

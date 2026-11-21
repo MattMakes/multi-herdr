@@ -1115,23 +1115,7 @@ pub fn sync_native(conn: &Connection) -> Result<()> {
 
 /// A finding for each cancelled task that still has an open worktree.
 fn sync_worktrees(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
-         FROM tasks t JOIN runs r ON r.run_id = t.run_id JOIN worktrees w ON w.task_id = t.task_id
-         WHERE t.origin = 'native' AND t.status = {cancelled}
-           AND (w.status IN ({unfinished})
-                -- The cancel keeps the folder of the worktree it abandons (#136).
-                OR (w.status = {abandoned} AND w.cleaned_at IS NULL))
-           AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id
-                           AND f.kind = 'task_cancelled_open_worktree')",
-        cancelled = word(TaskStatus::Cancelled),
-        unfinished = sql_words::list(&[
-            WorktreeStatus::Open,
-            WorktreeStatus::Unlanded,
-            WorktreeStatus::CleanupFailed
-        ]),
-        abandoned = word(WorktreeStatus::Abandoned)
-    ))?;
+    let mut stmt = conn.prepare(&cancelled_open_trees_sql())?;
     let rows = stmt
         .query_map([], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(String, String, String, String, String, i64)>>>()?;
@@ -1148,6 +1132,29 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Reads `import_findings` 1 time, not 1 time for each row: the sync
+/// compares each row with all findings.
+fn cancelled_open_trees_sql() -> String {
+    format!(
+        "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
+         FROM tasks t JOIN runs r ON r.run_id = t.run_id JOIN worktrees w ON w.task_id = t.task_id
+         WHERE t.origin = 'native' AND t.status = {cancelled}
+           AND (w.status IN ({unfinished})
+                -- The cancel keeps the folder of the worktree it abandons (#136).
+                OR (w.status = {abandoned} AND w.cleaned_at IS NULL))
+           AND w.worktree_id NOT IN (SELECT f.worktree_id FROM import_findings f
+                                     WHERE f.kind = 'task_cancelled_open_worktree'
+                                       AND f.worktree_id IS NOT NULL)",
+        cancelled = word(TaskStatus::Cancelled),
+        unfinished = sql_words::list(&[
+            WorktreeStatus::Open,
+            WorktreeStatus::Unlanded,
+            WorktreeStatus::CleanupFailed
+        ]),
+        abandoned = word(WorktreeStatus::Abandoned)
+    )
+}
+
 /// A finding `worktree_unlanded` for each tree of a native task that is
 /// `orphaned` or `rescued`, or that has a rescue ref, when no finding names
 /// the tree yet (RR-15). A tree with a rescue ref gets its finding also
@@ -1156,8 +1163,14 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
 /// decision. 1 statement finds and inserts, so 2 calls never insert 2
 /// findings for 1 tree.
 fn sync_custody_trees(conn: &Connection) -> Result<()> {
-    conn.execute(
-        &format!(
+    conn.execute(&custody_trees_sql(), [util::now()])?;
+    Ok(())
+}
+
+/// Reads `import_findings` 1 time, not 1 time for each row: the sync
+/// compares each row with all findings.
+fn custody_trees_sql() -> String {
+    format!(
             "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
              SELECT r.project_id, t.run_id, {kind}, t.task_id, w.worktree_id,
                  'T-' || t.seq || ': the worktree ' || w.path || ' (' || w.state
@@ -1166,28 +1179,16 @@ fn sync_custody_trees(conn: &Connection) -> Result<()> {
              FROM worktrees w JOIN tasks t ON t.task_id = w.task_id JOIN runs r ON r.run_id = t.run_id
              WHERE t.origin = 'native'
                AND (w.state IN ('orphaned', 'rescued') OR w.rescue_ref IS NOT NULL)
-               AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id)",
+               AND w.worktree_id NOT IN (SELECT f.worktree_id FROM import_findings f
+                                         WHERE f.worktree_id IS NOT NULL)",
             kind = word(FindingKind::WorktreeUnlanded),
             open = word(FindingStatus::Open)
-        ),
-        [util::now()],
-    )?;
-    Ok(())
+    )
 }
 
 /// A finding for each unfinished task of an ended run whose worker died on it.
 fn sync_tasks(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status
-         FROM tasks t JOIN runs r ON r.run_id = t.run_id
-         WHERE t.origin = 'native' AND r.status <> {active} AND t.status NOT IN ({ended})
-           AND EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.task_id AND w.status = {incomplete})
-           AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.task_id = t.task_id
-                           AND f.kind = 'reaped_never_finished')",
-        active = word(RunStatus::Active),
-        ended = sql_words::list(sql_words::TASKS_ENDED),
-        incomplete = word(WorkerStatus::Incomplete)
-    ))?;
+    let mut stmt = conn.prepare(&reaped_tasks_sql())?;
     let rows = stmt
         .query_map([], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(String, String, String, i64, String)>>>()?;
@@ -1204,6 +1205,23 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Reads `import_findings` 1 time, not 1 time for each row: the sync
+/// compares each row with all findings.
+fn reaped_tasks_sql() -> String {
+    format!(
+        "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status
+         FROM tasks t JOIN runs r ON r.run_id = t.run_id
+         WHERE t.origin = 'native' AND r.status <> {active} AND t.status NOT IN ({ended})
+           AND EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.task_id AND w.status = {incomplete})
+           AND t.task_id NOT IN (SELECT f.task_id FROM import_findings f
+                                 WHERE f.kind = 'reaped_never_finished'
+                                   AND f.task_id IS NOT NULL)",
+        active = word(RunStatus::Active),
+        ended = sql_words::list(sql_words::TASKS_ENDED),
+        incomplete = word(WorkerStatus::Incomplete)
+    )
+}
+
 /// Every open finding, newest first; of 1 project when `root` is given. It
 /// only reads: the pass of fleetd writes the findings of native runs
 /// ([`sync_native`]), so `horch ledger unfinished` works on a read-only
@@ -1211,7 +1229,7 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
 ///
 /// The detail of a finding whose tree has a rescue ref names that ref. A
 /// finding is not listed while the work of its tree is landed
-/// ([`work_landed`]); a tree with work that did not land stays listed
+/// (`work_landed`); a tree with work that did not land stays listed
 /// until a decision, also when its task is done (RR-15).
 pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinished>> {
     let mut stmt = conn.prepare(&format!(
@@ -1557,5 +1575,39 @@ mod trf_45_tests {
                 ("note".into(), "third note".into()),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod sync_native_tests {
+    use super::*;
+
+    fn plan(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let args = vec!["now"; stmt.parameter_count()];
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(3))
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn each_sync_statement_reads_the_findings_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        for sql in [
+            cancelled_open_trees_sql(),
+            custody_trees_sql(),
+            reaped_tasks_sql(),
+        ] {
+            let plan = plan(store.conn(), &sql);
+            let per_row = plan
+                .windows(2)
+                .any(|w| w[0].starts_with("CORRELATED") && w[1] == "SCAN f");
+            assert!(
+                !per_row,
+                "a correlated read of import_findings in {sql}: {plan:#?}"
+            );
+        }
     }
 }

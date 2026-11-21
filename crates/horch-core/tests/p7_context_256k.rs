@@ -17,15 +17,25 @@ fn teammates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates")
 }
 
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 /// A context with an empty temp home: no operator window anywhere.
 fn empty_home_ctx(tmp: &Path) -> RuntimeContext {
     let home = tmp.join("home");
     let workdir = tmp.join("project");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&workdir).unwrap();
+    stub_sandbox_tools(&tmp.join("bin"));
     let env = MapEnv::new(&workdir)
         .with("HOME", &home.to_string_lossy())
-        .with("PATH", "/nonexistent")
+        .with("PATH", &tmp.join("bin").to_string_lossy())
         .with(
             "HORCH_CLAUDE_MANAGED_SETTINGS",
             &tmp.join("managed-settings.json").to_string_lossy(),

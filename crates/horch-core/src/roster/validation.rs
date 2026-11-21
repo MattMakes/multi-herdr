@@ -1839,7 +1839,7 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
 /// Exempt: the top-tier seats, which wait in `waiting_quota`; the fleet
 /// orchestrators and the recipe panes, which take no ledger task; and
 /// `agent: none`, which runs no agent. A worker profile is also complete
-/// ([`missing_profile_fields`]).
+/// (`missing_profile_fields`).
 pub fn profile_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
     for t in roster.teammates.values() {

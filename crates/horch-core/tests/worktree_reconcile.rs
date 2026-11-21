@@ -997,3 +997,205 @@ fn worktree_list_result_refreshes_head_dirty_and_size() {
     assert_eq!(bad_row.head_sha, None, "a fact that git could not give");
     assert_eq!(bad_row.seen_at, None);
 }
+
+impl World {
+    fn task_branch(&mut self, branch: &str, task: &str, state: &str) {
+        self.sql(
+            "INSERT INTO branches (name, feature_id, task_id, landing_state, owner, due_at)
+             SELECT ?1, id, ?2, 'in_bundle', 'fleetd', 0 FROM features LIMIT 1",
+            &[branch, task],
+        );
+        if state != "in_bundle" {
+            self.task_branch_to(branch, state);
+        }
+    }
+
+    fn list_at(&self, id: &str, path: &str, head: &str, seen_at: &str) -> Facts {
+        let mut listed = self.listed(&[(path, "b", Some(id))]);
+        listed.result.trees[1].head = Some(head.to_string());
+        listed.seen_at = seen_at.to_string();
+        Facts {
+            folders: vec![folder_fact(id, Presence::Present)],
+            lists: vec![listed],
+            ..Facts::default()
+        }
+    }
+
+    fn task_branch_to(&mut self, branch: &str, state: &str) {
+        self.store
+            .immediate(|tx| {
+                transition(
+                    tx,
+                    None,
+                    Entity::TaskBranch,
+                    branch,
+                    state,
+                    cause(),
+                    &NeedsYouList,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn jobs_of(&self, kind: &str, id: &str) -> i64 {
+        self.count(
+            "SELECT count(*) FROM jobs WHERE kind = ?1 AND subject = ?2",
+            &[kind, id],
+        )
+    }
+}
+
+#[test]
+fn verified_attempt_moves_its_tree_to_landing_with_no_rescue() {
+    let mut w = World::new();
+    let (task, worker, attempt) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some(&attempt)),
+    );
+    w.sql(
+        "UPDATE attempts SET state = 'ended', outcome = 'done' WHERE id = ?1",
+        &[&attempt],
+    );
+    w.sql(
+        "UPDATE tasks SET status = 'verifying' WHERE task_id = ?1",
+        &[&task],
+    );
+    let facts = w.list_at("wt1", &path, "h1", "2026-11-17T10:00:00Z");
+    let report = w.reconcile(&facts);
+    assert_eq!(w.row("wt1").state, WorktreeState::Active, "{report:?}");
+
+    w.sql(
+        "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+        &[&task],
+    );
+    let report = w.reconcile(&facts);
+
+    assert_eq!(report.landing, vec!["wt1".to_string()]);
+    assert!(report.orphaned.is_empty(), "{report:?}");
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing);
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+    let again = w.reconcile(&facts);
+    assert!(again.rescues.is_empty(), "{again:?}");
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+}
+
+#[test]
+fn landed_task_branch_moves_its_landing_tree_to_landed_and_queues_1_removal() {
+    let mut w = World::new();
+    let (task, _, _) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in("wt1", &path, "landing", (Some(&task), None, None));
+    let branch = w.row("wt1").branch;
+    w.task_branch(&branch, &task, "in_bundle");
+    let before = w.list_at("wt1", &path, "h1", "2000-01-01T00:00:00Z");
+    let report = w.reconcile(&before);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing, "{report:?}");
+
+    w.task_branch_to(&branch, "landed");
+    let report = w.reconcile(&before);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing, "{report:?}");
+
+    let after = w.list_at("wt1", &path, "h2", "2999-01-01T00:00:00Z");
+    let report = w.reconcile(&after);
+
+    assert_eq!(report.landed, vec!["wt1".to_string()]);
+    assert_eq!(report.removals, vec!["wt1".to_string()]);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landed);
+    assert_eq!(w.row("wt1").status, WorktreeStatus::Landed);
+    let landed: String = w
+        .conn()
+        .query_row(
+            "SELECT landed_commit FROM worktrees WHERE worktree_id = 'wt1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(landed, "h2");
+    assert_eq!(w.jobs_of("worktree_remove", "wt1"), 1);
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+    let again = w.reconcile(&after);
+    assert!(again.removals.is_empty(), "{again:?}");
+    assert_eq!(w.jobs_of("worktree_remove", "wt1"), 1);
+}
+
+#[test]
+fn abandoned_task_branch_queues_1_rescue_of_its_landing_tree() {
+    let mut w = World::new();
+    let (task, _, _) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in("wt1", &path, "landing", (Some(&task), None, None));
+    let branch = w.row("wt1").branch;
+    w.task_branch(&branch, &task, "abandoned");
+    let facts = w.list_at("wt1", &path, "h1", "2999-01-01T00:00:00Z");
+
+    let report = w.reconcile(&facts);
+    let again = w.reconcile(&facts);
+
+    assert_eq!(report.rescues, vec!["wt1".to_string()]);
+    assert!(again.rescues.is_empty(), "{again:?}");
+    assert_eq!(w.jobs_of("rescue", "wt1"), 1);
+    assert_eq!(w.jobs_of("worktree_remove", "wt1"), 0);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing);
+}
+
+#[test]
+fn retried_attempt_moves_its_tree_to_created_with_no_owner() {
+    let mut w = World::new();
+    let (task, worker, attempt) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some(&attempt)),
+    );
+    w.sql(
+        "UPDATE attempts SET state = 'ended', outcome = 'rejected' WHERE id = ?1",
+        &[&attempt],
+    );
+    w.sql(
+        "UPDATE tasks SET status = 'ready', current_worker_id = NULL WHERE task_id = ?1",
+        &[&task],
+    );
+
+    let report = w.reconcile(&Facts::default());
+
+    assert_eq!(report.created, vec!["wt1".to_string()]);
+    assert!(report.orphaned.is_empty(), "{report:?}");
+    let row = w.row("wt1");
+    assert_eq!(row.state, WorktreeState::Created);
+    assert_eq!(row.owner_attempt, None);
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+}
+
+#[test]
+fn crashed_attempt_of_a_retried_task_orphans_its_tree() {
+    let mut w = World::new();
+    let (task, worker, attempt) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some(&attempt)),
+    );
+    w.sql(
+        "UPDATE attempts SET state = 'ended', outcome = 'crashed' WHERE id = ?1",
+        &[&attempt],
+    );
+    w.sql(
+        "UPDATE tasks SET status = 'ready', current_worker_id = NULL WHERE task_id = ?1",
+        &[&task],
+    );
+
+    let report = w.reconcile(&Facts::default());
+
+    assert_eq!(report.orphaned, vec!["wt1".to_string()]);
+    assert!(report.created.is_empty(), "{report:?}");
+    assert_eq!(w.row("wt1").state, WorktreeState::Orphaned);
+}

@@ -15,12 +15,12 @@ use std::time::Duration;
 
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use horch_core::fleetd::fleet_runtime::application::jobs::{
-    self, CheckRunner, JobCtx, JobRunner, Queued, SandboxProfiles,
+    self, CheckRunner, JobCtx, JobKey, JobRunner, Queued, SandboxProfiles,
 };
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
-use horch_core::fleetd::fleet_runtime::domain::jobs::{Outcome, State};
+use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, Outcome, State};
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::exec_fetch::{self, Tools};
 use horch_core::fleetd::integration::adapters::project_file;
@@ -29,8 +29,12 @@ use horch_core::fleetd::integration::application::remote;
 use horch_core::fleetd::integration::domain::project::Remote;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
+use horch_core::fleetd::worktree_custody::adapters::rescue_git;
+use horch_core::fleetd::worktree_custody::adapters::sqlite::{
+    self as trees, NewWorktree, WorktreeRow,
+};
 use horch_core::runtime::MapEnv;
-use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::model::{Actor, WorktreeStatus};
 use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::Store;
@@ -191,6 +195,76 @@ impl World {
             .unwrap()
             .pid
             .unwrap()
+    }
+
+    fn try_start(&mut self, id: i64, clock: i64) -> bool {
+        let config = self.config.clone();
+        let job = jobs_store::get(&self.conn, id).unwrap().unwrap();
+        let spec = LaunchSpec {
+            program: "true".into(),
+            args: Vec::new(),
+            cwd: None,
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        };
+        JobRunner::new(&Launcher)
+            .start(
+                &ctx(&config),
+                &mut self.conn,
+                &job,
+                &spec,
+                FleetSeconds(clock),
+            )
+            .unwrap()
+    }
+
+    fn orphan(&mut self, name: &str) -> WorktreeRow {
+        let new = NewWorktree {
+            worktree_id: name.to_string(),
+            task_id: None,
+            worker_id: None,
+            repo_root: self.repo().to_string(),
+            path: self
+                .repo
+                .join(".worktrees")
+                .join(name)
+                .display()
+                .to_string(),
+            branch: format!("fleet/{name}"),
+            base: "main".to_string(),
+            base_commit: None,
+            status: WorktreeStatus::Open,
+            mode: None,
+        };
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        trees::insert_orphan(&tx, None, &new, cause("folder found")).unwrap();
+        tx.commit().unwrap();
+        trees::get(&self.conn, name).unwrap().unwrap()
+    }
+
+    fn queue_rescue(&mut self, row: &WorktreeRow) -> i64 {
+        let config = self.config.clone();
+        let input_key = rescue_git::rescue_key(&row.path, "head");
+        let key = JobKey {
+            kind: Kind::Rescue,
+            subject: &row.worktree_id,
+            input_key: &input_key,
+        };
+        let repo = self.repo().to_string();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let queued = jobs::queue(&ctx(&config), &tx, &key, Some(&repo), FleetSeconds(0)).unwrap();
+        tx.commit().unwrap();
+        match queued {
+            Queued::New(id) => id,
+            other => panic!("no new rescue run: {other:?}"),
+        }
     }
 
     /// The executor of the run `id` with the pid `pid`, as `horch job run`
@@ -537,6 +611,55 @@ fn fetch_job_process_writes_no_row_and_a_second_ingest_changes_nothing() {
     .unwrap();
     assert_eq!(w.ingest(), Vec::new());
     assert_eq!(snapshot(&w.conn), after);
+}
+
+#[test]
+fn fetch_on_project_with_no_origin_fails_promptly_and_releases_git_writer_for_rescue() {
+    let mut w = world();
+    git(&w.repo, &["remote", "remove", "origin"]);
+    let orphan = w.orphan("t1");
+    let fetch_id = match w.queue(&Remote::default(), 0) {
+        Some(Queued::New(id)) => id,
+        other => panic!("no new fetch run: {other:?}"),
+    };
+    let rescue_id = w.queue_rescue(&orphan);
+    let repo = w.repo().to_string();
+    assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
+
+    let pid = w.start(fetch_id, 0);
+
+    assert_eq!(
+        jobs_store::get(&w.conn, fetch_id).unwrap().unwrap().state,
+        State::Running
+    );
+    assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
+    assert!(!w.try_start(rescue_id, 0), "the fetch holds the repository");
+    assert_eq!(
+        jobs_store::get(&w.conn, rescue_id).unwrap().unwrap().state,
+        State::Queued
+    );
+
+    w.run_job(fetch_id, pid);
+    assert_eq!(w.ingest(), vec![(fetch_id, State::Failed)]);
+
+    let fetch = jobs_store::get(&w.conn, fetch_id).unwrap().unwrap();
+    let text = jobs::outcome(&fetch).expect("a result").text;
+    assert!(text.contains("git fetch origin failed"), "{text}");
+    assert_eq!(
+        rows::remote_tip(&w.conn, &repo, "main").unwrap(),
+        None,
+        "no tip of a fetch that failed on its first run"
+    );
+    assert!(!jobs::git_writer_busy(&w.conn, &repo).unwrap());
+    assert!(
+        w.try_start(rescue_id, 1),
+        "the rescue starts after the fetch"
+    );
+    assert_eq!(
+        jobs_store::get(&w.conn, rescue_id).unwrap().unwrap().state,
+        State::Running
+    );
+    assert!(jobs::git_writer_busy(&w.conn, &repo).unwrap());
 }
 
 /// The rows that an ingest can change: each job, remote tip, event,

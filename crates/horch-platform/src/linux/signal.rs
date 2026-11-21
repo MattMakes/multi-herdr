@@ -2,8 +2,8 @@
 //! kernel has them (5.3 and later).
 
 pub(crate) use crate::unix::signal::{
-    kill_group_on_termination, on_termination_set, outlive_hangup, signal_if_same, stop_same,
-    terminate_politely,
+    end_termination_hold, hold_termination, kill_group_on_termination, on_termination_set,
+    outlive_hangup, signal_if_same, stop_same, terminate_politely,
 };
 
 /// The pidfd route, else the check and `kill` of the shared unix code.

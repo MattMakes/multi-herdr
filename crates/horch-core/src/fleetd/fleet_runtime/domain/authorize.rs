@@ -9,8 +9,9 @@
 //! 3. A caller that is not the user of the ledger, or an unknown caller, is
 //!    refused (SR-5).
 //! 4. An `operator` kind with no valid token is refused (SR-8).
-//! 5. On the channel, a peer in a live attempt, or a peer whose fact is
-//!    unknown, is refused (SR-8). No attempt has operator rights: Phase 6
+//! 5. On the channel, a peer that is a fleet process (FR-10: a process of
+//!    an attempt that is live or that ended a short time ago), or a peer
+//!    whose fact is unknown, is refused (SR-8). No attempt has operator rights: Phase 6
 //!    removed the orchestrator seat (FM-32; ticket 44 of fleetd-p6).
 //!
 //! Else the request is authorized. A guard whose fact is unknown does not
@@ -46,13 +47,13 @@ pub enum Source {
     RequestFile,
 }
 
-/// Is the peer process of the channel in a live attempt.
+/// Is the peer process of the channel a fleet process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerProcess {
-    /// The peer is outside each live attempt.
+    /// The peer is not a fleet process.
     Outside,
-    /// The peer is in each of these live attempts, as the ledger records
-    /// them.
+    /// The peer is a process of each of these attempts, as the ledger
+    /// records them.
     Inside(Vec<AttemptFacts>),
     /// A fact of the peer is not supported or fails to read.
     Unknown,
@@ -107,8 +108,6 @@ fn check_caller(facts: &RequestFacts) -> Result<(), String> {
     }
 }
 
-/// SR-8: only a peer outside each live attempt. A peer in a live attempt
-/// is refused, whatever its task or persona.
 fn check_peer(peer: &PeerProcess) -> Result<String, String> {
     match peer {
         PeerProcess::Outside => Ok("token; peer outside each live attempt".into()),
@@ -116,9 +115,12 @@ fn check_peer(peer: &PeerProcess) -> Result<String, String> {
             Err("the peer process is unknown, so the peer process check does not hold".into())
         }
         PeerProcess::Inside(attempts) => match attempts.first() {
-            None => Err("the peer process is in a live attempt that the fact does not name".into()),
+            None => Err(
+                "the peer process is a fleet process of an attempt that the fact does not name"
+                    .into(),
+            ),
             Some(a) => Err(format!(
-                "the peer process is in live attempt {} of persona {}",
+                "the peer process is a fleet process of attempt {} of persona {}",
                 a.attempt, a.persona
             )),
         },
@@ -261,7 +263,7 @@ mod tests {
             ..channel()
         };
         let reason = refusal(&facts);
-        assert!(reason.contains("live attempt A-3"), "{reason}");
+        assert!(reason.contains("fleet process of attempt A-3"), "{reason}");
         // An attempt with a null task.
         let facts = RequestFacts {
             source: Source::Channel {
@@ -269,7 +271,7 @@ mod tests {
             },
             ..channel()
         };
-        assert!(refusal(&facts).contains("live attempt A-4"));
+        assert!(refusal(&facts).contains("fleet process of attempt A-4"));
         // 2 attempts hold the peer: the reason names the first.
         let facts = RequestFacts {
             source: Source::Channel {
@@ -280,7 +282,7 @@ mod tests {
             },
             ..channel()
         };
-        assert!(refusal(&facts).contains("live attempt A-1"));
+        assert!(refusal(&facts).contains("fleet process of attempt A-1"));
         // No attempt named: the fact says nothing, so it does not hold.
         let facts = RequestFacts {
             source: Source::Channel {

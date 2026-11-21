@@ -31,7 +31,12 @@ pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
 
 /// The `-D` parameters and the `-p` profile of `sandbox-exec`. `rules` are
 /// in order: the last rule that matches an act wins.
-pub(crate) fn args(rules: &[Rule<'_>], _temp: bool, network: Network) -> Vec<OsString> {
+pub(crate) fn args(
+    rules: &[Rule<'_>],
+    _temp: bool,
+    network: Network,
+    _own_pids: bool,
+) -> Vec<OsString> {
     let mut profile = String::from(
         "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\"))",
     );
@@ -67,8 +72,13 @@ pub(crate) fn args(rules: &[Rule<'_>], _temp: bool, network: Network) -> Vec<OsS
         value.push(folder);
         args.extend([OsString::from("-D"), value]);
     }
-    if network == Network::Denied {
-        profile.push_str("(deny network*)");
+    match network {
+        Network::Open => {}
+        Network::Denied => profile.push_str("(deny network*)"),
+        Network::Local => profile.push_str(
+            "(deny network-outbound (remote ip))\
+             (allow network-outbound (remote ip \"localhost:*\"))",
+        ),
     }
     args.extend([OsString::from("-p"), OsString::from(profile)]);
     args

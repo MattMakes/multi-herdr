@@ -45,6 +45,11 @@ fn main() {
     }
     if let Some((cli, prompt)) = horch_e2e::exec::Cli::of_argv("claude", &call.argv) {
         let prompt = prompt.to_owned();
+        let conformance_check = std::fs::read_to_string(&prompt)
+            .is_ok_and(|t| t.starts_with("This is a conformance check of horch."));
+        if scenario_has("inspect_skills") && !conformance_check {
+            inspect_skills(&call.argv);
+        }
         horch_e2e::exec::run(call, cli, &prompt);
     }
     let probe = call
@@ -53,7 +58,9 @@ fn main() {
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
         horch_e2e::agent::play(&mut call);
-        horch_e2e::idea_agent::play(&mut call);
+        if !horch_e2e::fr10_agent::play(&mut call) {
+            horch_e2e::idea_agent::play(&mut call);
+        }
         if scenario_has("inspect_skills") {
             inspect_skills(&call.argv);
         }

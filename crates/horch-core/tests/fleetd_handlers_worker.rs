@@ -384,53 +384,6 @@ fn worker_of_other_run(w: &World) -> String {
 }
 
 #[test]
-fn spawn_adopt_adopts_a_restart_row_once() {
-    let mut w = world();
-    let task = w.add("T", WorktreeMode::Shared);
-    let wid = w.bind(&task);
-    w.conn
-        .execute(
-            "UPDATE workers SET target_task_id = ?2 WHERE worker_id = ?1",
-            params![wid, task],
-        )
-        .unwrap();
-    let payload = json!({
-        "run_id": w.run.run_id, "worker_id": wid, "persona": "opus",
-        "target_task_id": task, "spawn_pid": "4242",
-    });
-    let out = w.send(Kind::SpawnAdopt, payload.clone());
-    assert_eq!(out["worker_id"], json!(wid));
-    let data: String = w
-        .conn
-        .query_row(
-            "SELECT data_json FROM events WHERE entity_id = ?1 AND cause = 'adopted_by_spawn'",
-            [&wid],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(data.contains("4242"), "{data}");
-    let why = w.refused(Kind::SpawnAdopt, payload);
-    assert!(why.contains("another spawn adopted the row"), "{why}");
-    let why = w.refused(
-        Kind::SpawnAdopt,
-        json!({
-            "run_id": w.run.run_id, "worker_id": wid, "persona": "codex",
-            "target_task_id": task, "spawn_pid": "1",
-        }),
-    );
-    assert!(why.contains("not a row of persona codex"), "{why}");
-    let other = worker_of_other_run(&w);
-    let why = w.refused(
-        Kind::SpawnAdopt,
-        json!({
-            "run_id": w.run.run_id, "worker_id": other, "persona": "opus",
-            "target_task_id": task, "spawn_pid": "1",
-        }),
-    );
-    assert!(why.contains("not a row of run r1"), "{why}");
-}
-
-#[test]
 fn spawn_gate_note_writes_1_note_about_the_run_and_the_worker() {
     let mut w = world();
     let wid = w.worker(None);
@@ -471,13 +424,8 @@ fn worker_launched_records_the_pane_and_the_launch() {
             "harness": "claude", "model": "m1", "effort": "high",
         }),
     );
-    let row: (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = w
+    type Cols = Option<String>;
+    let row: (Cols, Cols, Cols, Cols, Cols) = w
         .conn
         .query_row(
             "SELECT pane_id, role, harness, model, effort FROM workers WHERE worker_id = ?1",
@@ -535,4 +483,59 @@ fn worker_launch_failed_ends_an_unclaimed_row() {
     );
     assert!(why.contains("is not a worker of run"), "{why}");
     assert_eq!(workers::get(&w.conn, &other).unwrap().status, "spawning");
+}
+
+#[test]
+fn worker_launch_failed_of_a_push_attempt_ends_it_crashed_and_queues_the_task() {
+    let mut w = world();
+    let task = w.add("T", WorktreeMode::Shared);
+    let wid = w.bind(&task);
+    let attempt = format!("{task}/A1");
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "no record matches 'x'" }),
+    );
+    assert_eq!(workers::get(&w.conn, &wid).unwrap().status, "launch_failed");
+    let (state, outcome): (String, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE id = ?1",
+            [&attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), outcome.as_deref()),
+        ("ended", Some("crashed")),
+        "{}",
+        w.rows()
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(
+        (t.status.as_str(), t.attempts),
+        ("ready", 1),
+        "{}",
+        w.rows()
+    );
+    assert_eq!(t.current_worker_id, None, "{}", w.rows());
+
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "again" }),
+    );
+    let ended: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM attempts WHERE task_id = ?1 AND state = 'ended'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ended, 1, "{}", w.rows());
+    assert_eq!(
+        tasks::get(&w.conn, &task).unwrap().attempts,
+        1,
+        "{}",
+        w.rows()
+    );
 }

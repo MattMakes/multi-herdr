@@ -4,8 +4,8 @@
 //!
 //! Requirements: SR-5, SR-6, FM-23. The checks run in the order of
 //! Protocol rule 7 of `docs/specs/fleetd/design.md`. A guard whose fact is
-//! unknown does not hold: on Windows the platform gives no mode, so each
-//! file is refused with the reason "mode unknown".
+//! unknown does not hold. The access rule is the unix mode on macOS and
+//! Linux, and the DACL on Windows ([`platform::check_owner_only`]).
 
 use std::fs::{self, File, Metadata};
 use std::io::Read;
@@ -13,11 +13,6 @@ use std::path::Path;
 
 use horch_platform::channel::User;
 use horch_platform::fs as platform;
-
-/// The permission bits of group and others. A protected file is 0600 or
-/// narrower, and each folder from the root to the file is 0700 or
-/// narrower.
-const GROUP_AND_OTHERS: u32 = 0o077;
 
 /// The rule that a protected file must meet. The caller gives it.
 #[derive(Debug, Clone, Copy)]
@@ -97,8 +92,9 @@ fn check_folders(real: &Path, real_root: &Path, owner: &User) -> Result<(), Reje
     Ok(())
 }
 
-/// Check that `owner` owns `file` and that its mode is `rule` or narrower.
-/// The error is the reason text.
+/// Check that `owner` owns `file` and that only its owner has access to
+/// it: on unix, its mode is `rule` or narrower. The error is the reason
+/// text.
 fn check_owner_and_mode(
     file: &File,
     meta: &Metadata,
@@ -113,11 +109,7 @@ fn check_owner_and_mode(
             user_text(owner)
         ));
     }
-    let mode = platform::mode_of(meta).map_err(|_| "mode unknown".to_string())? & 0o7777;
-    if mode & GROUP_AND_OTHERS != 0 {
-        return Err(format!("mode {mode:04o} is wider than {rule:04o}"));
-    }
-    Ok(())
+    platform::check_owner_only(file, meta, rule)
 }
 
 /// Read `file` when its size is at most `limit`. A size over the limit is

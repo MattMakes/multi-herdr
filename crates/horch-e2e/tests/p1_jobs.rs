@@ -11,20 +11,25 @@
 #![cfg(unix)]
 
 use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use horch_core::fleetd::fleet_runtime::adapters::clock_store::{self, awake_now};
 use horch_core::fleetd::fleet_runtime::adapters::effects::read_heartbeat;
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::{parse_reply, Request};
 use horch_core::fleetd::fleet_runtime::adapters::{config_file, jobs_store};
 use horch_core::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey, Queued};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::is_hung;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State, NEEDS_YOU_KIND};
+use horch_core::fleetd::fleet_runtime::domain::requests::{Kind as RequestKind, RequestId};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::procid;
-use horch_core::taskledger::Store;
+use horch_core::taskledger::{finish, Store};
 use horch_e2e::harness::Harness;
+use horch_e2e::ledger_seed::{seed_run, seed_task};
+use horch_platform::channel::Stream;
 
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
@@ -52,14 +57,6 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
-    let mut cmd = h.horch(args);
-    cmd.env("HORCH_WORKER_ID", worker);
-    let o = cmd.output().unwrap();
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
 /// A harness with its own ledger file and a git repository.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
@@ -67,7 +64,6 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
-    h.serve_fleetd();
     h
 }
 
@@ -187,36 +183,35 @@ fn start_fleetd(h: &Harness, fleetds: &mut Fleetds) -> u32 {
     }
 }
 
-/// A run with the default check `check`, and its task 1 bound to a Codex
-/// worker with a worktree. The agent of the worker is a live `sleep` child
-/// of the test, kept in `fleetds` for the teardown. Returns the task id.
 fn checked_task(h: &Harness, fleetds: &mut Fleetds, check: &str) -> String {
-    ok(h, &["ledger", "run", "new", "jobs", "--check", check]);
+    let run = seed_run(h, "jobs", None, "w1:p1");
+    finish::set_default_check(Store::open(&db(h)).unwrap().conn(), &run.run_id, check).unwrap();
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("t1.md");
     std::fs::write(&p, "# T1\n").unwrap();
-    ok(
-        h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &p.to_string_lossy(),
-            "--primary",
-            CODEX_PERSONA,
-        ],
-    );
+    let seeded = seed_task(h, &run, &p, CODEX_PERSONA);
+    run_check_in_shared_checkout(h, &seeded.task_id);
     let agent = Command::new("sleep").arg("3600").spawn().unwrap();
     let agent_pid = agent.id();
     fleetds.children.push(agent);
-    let w = horch_e2e::bind::bind(h, CODEX_PERSONA, Some(agent_pid)).worker_id;
-    ok_as(h, &w, &["ledger", "worktree", "new", "work"]);
+    horch_e2e::bind::bind(h, CODEX_PERSONA, Some(agent_pid));
     Store::open(&db(h))
         .unwrap()
         .conn()
         .query_row("SELECT task_id FROM tasks WHERE seq = 1", [], |r| r.get(0))
         .unwrap()
+}
+
+fn run_check_in_shared_checkout(h: &Harness, task_id: &str) {
+    Store::open(&db(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+            [task_id],
+        )
+        .unwrap();
 }
 
 /// Queue 1 `task_check` job of `task` at the fleet clock, through the jobs
@@ -412,7 +407,7 @@ fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_go
     assert_eq!(ended[0].id, first);
     assert_3_abandoned_runs(&ended, limit);
     assert_each_run_waited_for_its_backoff(&ended);
-    assert_no_4th_run_starts(&h);
+    assert_no_4th_run_starts(&h, &ended[2]);
     assert_requeue_starts_run_4(&h, ended[2].id);
 }
 
@@ -475,9 +470,17 @@ fn assert_each_run_waited_for_its_backoff(ended: &[jobs_store::JobRow]) {
     }
 }
 
-/// No 4th run starts: wait longer than the longest backoff and some passes.
-fn assert_no_4th_run_starts(h: &Harness) {
-    std::thread::sleep(Duration::from_secs(BACKOFF_S[2] + 4));
+fn assert_no_4th_run_starts(h: &Harness, third: &jobs_store::JobRow) {
+    let until = third.deadline.expect("the deadline of run 3").0 + BACKOFF_S[2] as i64 + 2;
+    wait_for(
+        h,
+        "the fleet clock to pass the backoff of run 4",
+        Duration::from_secs(30),
+        || {
+            let store = Store::open(&db(h)).unwrap();
+            (clock_store::read(store.conn()).unwrap().0 >= until).then_some(())
+        },
+    );
     let rows = job_rows(&db(h));
     assert_eq!(
         rows.len(),
@@ -499,4 +502,114 @@ fn assert_requeue_starts_run_4(h: &Harness, last: i64) {
     assert_eq!(fourth.abandoned_runs, 0, "{fourth:#?}");
     assert_eq!(needs_you(&db(h), "open"), 0);
     assert_eq!(needs_you(&db(h), "resolved"), 1);
+}
+
+fn tokenless_request_line(id: &str) -> String {
+    Request {
+        request_id: RequestId::parse(id).unwrap(),
+        kind: RequestKind::SpawnGateNote,
+        payload: serde_json::Map::new(),
+        token: None,
+    }
+    .to_line()
+}
+
+fn connect_and_send(channel: &Path, id: &str) -> Stream {
+    let stream = Stream::connect(channel, Instant::now() + Duration::from_secs(5)).unwrap();
+    let mut writer = &stream;
+    writer
+        .write_all(tokenless_request_line(id).as_bytes())
+        .and_then(|()| writer.flush())
+        .unwrap();
+    stream
+}
+
+#[test]
+fn running_job_and_non_reading_channel_client_do_not_block_passes_or_bounded_fleetd_stop() {
+    let h = world("p1-job-channel");
+    write_short_job_config(&h);
+    let mut fleetds = Fleetds::new(&h);
+    let task = checked_task(&h, &mut fleetds, "/bin/sleep 60");
+    start_fleetd(&h, &mut fleetds);
+    let fleetd = fleetds.current().expect("the fleetd row");
+    let id = queue_check(&h, &task, None);
+    let job = |db: &Path| {
+        jobs_store::get(Store::open(db).unwrap().conn(), id)
+            .unwrap()
+            .unwrap()
+    };
+    let channel = fleet_root(&h).join("run/fleetd.sock");
+    wait_for(
+        &h,
+        "the job to run and the channel to exist",
+        Duration::from_secs(30),
+        || (job(&db(&h)).state == State::Running && channel.exists()).then_some(()),
+    );
+
+    let stalled = connect_and_send(&channel, "00000000-0000-4000-8000-000000000001");
+    let hb0 = read_heartbeat(&fleet_root(&h))
+        .unwrap()
+        .expect("the heartbeat of fleetd");
+
+    let two_pass_periods_ms = 2_000;
+    wait_for(
+        &h,
+        "the heartbeat to advance while a client does not read",
+        Duration::from_secs(15),
+        || {
+            let hb = read_heartbeat(&fleet_root(&h)).unwrap()?;
+            let advanced = hb.awake.awake_ms >= hb0.awake.awake_ms + two_pass_periods_ms;
+            (advanced && !is_hung(&hb, &awake_now().unwrap(), HANG_LIMIT_S)).then_some(())
+        },
+    );
+    assert_eq!(job(&db(&h)).state, State::Running);
+
+    let second = connect_and_send(&channel, "00000000-0000-4000-8000-000000000002");
+    second.set_read_timeout(Duration::from_secs(10)).unwrap();
+    let mut line = Vec::new();
+    BufReader::new(&second)
+        .read_until(b'\n', &mut line)
+        .unwrap();
+    let reply = parse_reply(&line, 65_536).unwrap();
+    assert_eq!(
+        reply.request_id.as_str(),
+        "00000000-0000-4000-8000-000000000002"
+    );
+    ok(&h, &["fleetd", "check"]);
+    let board = h.run(&["ledger", "status"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&board.stdout),
+        String::from_utf8_lossy(&board.stderr),
+    );
+    assert!(
+        out.starts_with("Run jobs (active).")
+            && out.trim_end().ends_with("Not complete.")
+            && err.is_empty(),
+        "horch ledger status exits 1 on an incomplete run, and must print only the board: {}",
+        text(&board)
+    );
+    assert_eq!(
+        fleetds.current(),
+        Some(fleetd),
+        "the check restarted fleetd while a client did not read"
+    );
+
+    stop(fleetd.0, fleetd.1, SIGTERM);
+    let child = fleetds
+        .children
+        .iter_mut()
+        .find(|c| c.id() == fleetd.0)
+        .expect("the child of fleetd");
+    let status = wait_for(
+        &h,
+        "fleetd to end after SIGTERM",
+        Duration::from_secs(10),
+        || child.try_wait().unwrap(),
+    );
+    assert!(
+        !procid::alive(fleetd.0, fleetd.1),
+        "fleetd (PID {}) ended with {status} but its process is alive",
+        fleetd.0
+    );
+    drop(stalled);
 }

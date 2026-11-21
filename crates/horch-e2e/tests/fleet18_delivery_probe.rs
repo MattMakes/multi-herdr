@@ -1,7 +1,6 @@
 //! #61: the real CLI verifies delivery rather than assuming a successful write.
 #![cfg(unix)]
 
-use horch_core::messaging::mail::Mail;
 use horch_e2e::harness::{fixtures, Harness};
 
 fn world(name: &str, scenario: &str) -> Harness {
@@ -87,73 +86,4 @@ fn g61_doctor_typing_failure_warns_without_failing_or_leaking_workspace() {
             .any(|c| c["argv"][0] == "workspace" && c["argv"][1] == "close"),
         "{stderr}"
     );
-}
-
-#[test]
-fn g61_fleet_confirms_only_after_orchestrator_runs_inbox() {
-    let mut h = world("g61-fleet-ack", "exec,fleet_probe_ack");
-    h.set("HORCH_FAULT", CONFIRM_FAULTS);
-    let out = h.run(&["fleet", "--no-update"]);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "{text}");
-    assert!(text.contains("fleet delivery: confirmed"), "{text}");
-    assert!(Mail::under(&h.state, "w1").pending().unwrap().is_empty());
-}
-
-#[test]
-fn g61_fleet_without_ack_warns_and_keeps_probe_pending() {
-    let mut h = world("g61-fleet-no", "");
-    h.set("HORCH_FAULT", "delivery-probe-ms:100");
-    let out = h.run(&["fleet", "--no-update"]);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "{text}");
-    assert!(text.contains("warning: fleet delivery"), "{text}");
-    assert!(
-        text.contains("not acknowledged") || text.contains("no relay") || text.contains("not idle"),
-        "{text}"
-    );
-    let mail = Mail::under(&h.state, "w1").pending().unwrap();
-    assert!(mail
-        .iter()
-        .any(|m| m.text.contains("run horch inbox to confirm delivery")));
-}
-
-#[test]
-fn g61_fleet_probe_never_falls_back_to_separate_text_and_enter() {
-    let h = world("g61-atomic", "fleet_probe_ack,fail_typing");
-    let out = h.run(&["fleet", "--no-update"]);
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "{text}");
-    assert!(text.contains("warning: fleet delivery"), "{text}");
-    let calls = h.calls_of("herdr");
-    assert!(calls
-        .iter()
-        .any(|c| c["argv"][0] == "agent" && c["argv"][1] == "prompt"));
-    let non_atomic = calls
-        .iter()
-        .filter(|c| {
-            c["argv"][0] == "pane" && (c["argv"][1] == "send-text" || c["argv"][1] == "send-keys")
-        })
-        .count();
-    assert_eq!(
-        non_atomic, 0,
-        "a failed probe must leave the live TUI input untouched"
-    );
-    assert!(Mail::under(&h.state, "w1")
-        .pending()
-        .unwrap()
-        .iter()
-        .any(|m| m.text.contains("confirm delivery")));
 }

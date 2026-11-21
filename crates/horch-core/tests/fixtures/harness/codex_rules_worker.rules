@@ -63,3 +63,23 @@ prefix_rule(
     decision = "forbidden",
     justification = "herdr-fleet: fleet agents do not make a release",
 )
+prefix_rule(
+    pattern = ["gh", "issue", "comment"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not message people outside the fleet",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "comment"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not message people outside the fleet",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "review"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not message people outside the fleet",
+)
+prefix_rule(
+    pattern = ["gh", "discussion"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not message people outside the fleet",
+)

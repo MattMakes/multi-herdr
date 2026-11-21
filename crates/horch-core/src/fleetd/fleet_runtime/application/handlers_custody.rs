@@ -258,6 +258,9 @@ fn worktree_drop(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }
     let wt = worktree_ops::find_in(tx, &d.run_id, &d.name)?;
     refuse_drop(&d, &wt.branch)?;
+    if d.facts.path_exists {
+        refuse_moved_head(c, Path::new(&wt.path), &d.facts.head)?;
+    }
     let job = if d.facts.path_exists {
         Some(queue_drop(
             c,
@@ -303,6 +306,20 @@ fn refuse_drop(d: &WorktreeDrop, recorded: &str) -> Result<()> {
         bail!("worktree has unpublished commits that exist nowhere else; use --keep-branch; nothing removed");
     }
     Ok(())
+}
+
+/// The refusal of a tree at `path` whose HEAD is not `checked`, the HEAD
+/// that the checks of the command used (RR-13). fleetd reads the HEAD in
+/// the transaction that writes the drop. A commit after this read is not
+/// lost: the `rescue` job reads the HEAD again and saves it, and the
+/// `worktree_remove` job removes the tree only when its HEAD is the parent
+/// of the rescue commit.
+fn refuse_moved_head(c: &Custody, path: &Path, checked: &str) -> Result<()> {
+    match c.refs.tip(path, "HEAD")? {
+        Some(head) if head == checked => Ok(()),
+        Some(_) => bail!("worktree HEAD changed during the drop checks; nothing removed"),
+        None => bail!("worktree HEAD is unreadable; nothing removed"),
+    }
 }
 
 /// The fact `name`, or a refusal when the command did not read it.

@@ -113,7 +113,7 @@ fn world() -> World {
 /// A world whose feature has no gate tree yet.
 fn bare_world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = horch_platform::path::for_child(&temp.path().canonicalize().unwrap());
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);

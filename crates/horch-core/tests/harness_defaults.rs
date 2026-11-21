@@ -74,8 +74,19 @@ fn ctx_with(home: &Path, workdir: &Path, vars: &[(&str, &str)]) -> RuntimeContex
     RuntimeContext::from_env(&env).unwrap()
 }
 
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 fn launch_env(home: &Path) -> LaunchEnv {
-    LaunchEnv::from_context(&ctx_with(home, home, &[]))
+    let bin = home.join("bin");
+    stub_sandbox_tools(&bin);
+    LaunchEnv::from_context(&ctx_with(home, home, &[("PATH", &bin.to_string_lossy())]))
 }
 
 fn build(env: &LaunchEnv, t: &Teammate) -> Command {
@@ -717,12 +728,7 @@ fn hdf_05_every_claude_launch_turns_attribution_off() {
     // A sandboxed teammate refuses to launch on Linux unless bwrap and socat
     // are on PATH. Stubs let the builder run on every host.
     let bin = home.path().join("bin");
-    for tool in ["bwrap", "socat"] {
-        let path = bin.join(tool);
-        write(&path, "#!/bin/sh\nexit 0\n");
-        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
-    }
+    stub_sandbox_tools(&bin);
     let env = LaunchEnv::from_context(&ctx_with(
         home.path(),
         home.path(),
@@ -831,11 +837,116 @@ fn codex_toml_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+fn agy_push_env(home: &Path) -> (LaunchEnv, PathBuf) {
+    let worktree = home.join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    git(&worktree, &["init", "-q"]);
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    let mut env = push_env(home);
+    env.worktree = Some(worktree.clone());
+    (env, worktree)
+}
+
+fn agy_stop_commands(worktree: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(worktree.join(".agents/hooks.json")) else {
+        return Vec::new();
+    };
+    let hooks: Value = serde_json::from_str(&text).unwrap();
+    hooks
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|h| h["Stop"].as_array().cloned().unwrap_or_default())
+        .map(|h| {
+            assert_eq!(h["type"], "command");
+            h["command"].as_str().unwrap().to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn antigravity_push_launch_has_a_stop_hook_that_runs_result_check() {
+    let home = tempfile::tempdir().unwrap();
+    let (env, worktree) = agy_push_env(home.path());
+    std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+    std::fs::write(
+        worktree.join(".agents/hooks.json"),
+        json!({"mine": {"Stop": [{"type": "command", "command": "mine"}]}}).to_string(),
+    )
+    .unwrap();
+    build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+    let commands = agy_stop_commands(&worktree);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands.iter().any(|c| c == "mine"), "{commands:?}");
+    assert!(
+        commands.iter().any(|c| c.starts_with(STOP_HOOK)),
+        "{commands:?}"
+    );
+    let status = git(
+        &worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(status.is_empty(), "{status}");
+}
+
+#[test]
+fn antigravity_push_launch_keeps_a_tracked_hooks_file() {
+    let home = tempfile::tempdir().unwrap();
+    let (env, worktree) = agy_push_env(home.path());
+    let tracked = json!({"project": {"Stop": [{"type": "command", "command": "p"}]}}).to_string();
+    std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+    std::fs::write(worktree.join(".agents/hooks.json"), &tracked).unwrap();
+    git(&worktree, &["add", ".agents/hooks.json"]);
+    git(&worktree, &["commit", "-q", "-m", "hooks"]);
+    build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".agents/hooks.json")).unwrap(),
+        tracked
+    );
+    let status = git(
+        &worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(status.is_empty(), "{status}");
+}
+
+#[cfg(unix)]
+#[test]
+fn antigravity_push_launch_writes_through_no_symlink() {
+    let home = tempfile::tempdir().unwrap();
+    let outside = home.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    for link in [".agents", ".agents/hooks.json"] {
+        let (env, worktree) = agy_push_env(&home.path().join(link.replace('/', "-")));
+        if link == ".agents/hooks.json" {
+            std::fs::create_dir_all(worktree.join(".agents")).unwrap();
+            std::os::unix::fs::symlink(outside.join("hooks.json"), worktree.join(link)).unwrap();
+        } else {
+            std::os::unix::fs::symlink(&outside, worktree.join(link)).unwrap();
+        }
+        build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+        assert!(!outside.join("hooks.json").exists(), "{link}");
+    }
+}
+
 #[test]
 fn claim_attempt_has_no_stop_hook() {
     let home = tempfile::tempdir().unwrap();
-    let mut env = push_env(home.path());
+    let (mut env, worktree) = agy_push_env(home.path());
     env.task_dir = None;
+    build(&env, &teammate("w", HarnessKind::Antigravity, vec![]));
+    assert!(!worktree.join(".agents/hooks.json").exists());
     let claude = argv(&build(&env, &teammate("w", HarnessKind::Claude, vec![])));
     if claude.iter().any(|a| a == "--settings") {
         assert!(claude_stop_commands(&settings_arg(&claude)).is_empty());
@@ -845,4 +956,91 @@ fn claim_attempt_has_no_stop_hook() {
         !config_pairs(&codex).iter().any(|p| p.starts_with("hooks.")),
         "{codex:?}"
     );
+}
+
+fn exec_prompt(agent: HarnessKind) -> String {
+    use horch_core::execution::SessionMode;
+    use horch_core::harness::launch::LaunchRequest;
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let skill = home.join(".agents/skills/present");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: present\ndescription: An installed operator skill.\n---\nbody\n",
+    )
+    .unwrap();
+    for dir in ["work", "task"] {
+        std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+    }
+    let p = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+    stub_sandbox_tools(&tmp.path().join("bin"));
+    let ctx = ctx_with(
+        &home,
+        &tmp.path().join("work"),
+        &[
+            ("PATH", &p("bin")),
+            ("HORCH_STATE_DIR", &p("state")),
+            ("HORCH_DATA_DIR", &p("data")),
+        ],
+    );
+    let mut v = serde_json::to_value(Teammate {
+        name: "exec-skills".into(),
+        agent,
+        model: Some("m".into()),
+        sandbox: Some(serde_json::Map::new()),
+        ..Teammate::default()
+    })
+    .unwrap();
+    v["mode"] = json!("exec");
+    v["phase"] = json!("implementation");
+    v["operator_skills"] = json!({"dir": "~/.agents/skills", "names": ["present", "missing"]});
+    let teammate: Teammate = serde_json::from_value(v).unwrap();
+    let session = SessionMode::Fresh(None);
+    let req = LaunchRequest {
+        role: "exec-skills",
+        teammate: &teammate,
+        session: &session,
+        prompt: "/task/inbox/START.md",
+        model_override: None,
+        exec_rules: &[],
+        child_env: Vec::new(),
+        record: None,
+        fleet_window: None,
+        briefing_skill: None,
+    };
+    let args =
+        launch::run_exec_flow(&ctx, req, &tmp.path().join("task"), |cmd| Ok(argv(&cmd))).unwrap();
+    args.last().cloned().unwrap_or_default()
+}
+
+#[test]
+fn exec_launch_gives_the_skills_briefing() {
+    // Claude Code names a bundle skill with the plugin prefix `horch:`.
+    for (agent, line) in [
+        (
+            HarnessKind::Claude,
+            "- horch:present: An installed operator skill.",
+        ),
+        (
+            HarnessKind::Codex,
+            "- present: An installed operator skill.",
+        ),
+    ] {
+        let prompt = exec_prompt(agent);
+        assert!(prompt.contains(line), "{agent:?}: {prompt}");
+        assert!(
+            prompt.contains("Skipped: operator skill missing is not installed on this host"),
+            "{agent:?}: {prompt}"
+        );
+        assert!(
+            prompt.ends_with("\n/task/inbox/START.md"),
+            "{agent:?}: {prompt}"
+        );
+        let label = prompt.lines().rev().nth(1).unwrap_or_default();
+        assert!(
+            label.contains("last line") && label.contains("START.md"),
+            "{agent:?}: {prompt}"
+        );
+    }
 }

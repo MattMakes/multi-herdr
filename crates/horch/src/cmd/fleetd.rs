@@ -26,7 +26,7 @@
 //! launcher.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,21 +40,27 @@ use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use horch_core::fleetd::fleet_runtime::adapters::clock_store::awake_now;
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::adapters::effects::{
-    exe_of, read_heartbeat, this_exe, write_heartbeat,
+    exe_of, read_heartbeat, this_exe, write_heartbeat, WATCH_LIMIT,
 };
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
-use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
+use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
+    fleet_process, recorded_processes, Fact, PlatformFacts,
+};
+use horch_core::fleetd::fleet_runtime::adapters::scans::{
+    outbox_dir, requests_dir, CliPath, FolderItem,
+};
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
     idea_lead_launch, HerdrObserver, WatchdogDuties,
 };
-use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    IdeaPorts, Outside, Pass, PassError, PoolFacts, Ports, Primary, Settings, TaskWork, IDEAS_DIR,
+    IdeaPorts, Outside, Pass, PassError, PoolFacts, Ports, Primary, Settings, TaskWork,
+    DROP_WATCH_EVENTS, IDEAS_DIR,
 };
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::application::{handlers_run, holds};
@@ -73,12 +79,12 @@ use horch_core::fleetd::integration::application::commands::GitRefTips;
 use horch_core::fleetd::integration::application::ports::IntegrationGitGateway;
 use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
-use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
-use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::fleetd::worktree_custody::adapters::git::{CliWorktreeGit, FLEETD_GIT_LIMIT};
+use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_git_version;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::messaging::delivery::{self, TypedLine};
@@ -89,7 +95,7 @@ use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::runs;
 use horch_core::taskledger::sql_words::list;
-use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
+use horch_core::taskledger::store::{canonical, default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{watchdog, LedgerWriter, Store};
@@ -97,7 +103,9 @@ use horch_core::workspace::herdr::Herdr;
 use horch_platform::channel::User;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
+use horch_platform::watch::Watcher;
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 use super::taskledger_watch::LiveEffects;
 use crate::output;
@@ -347,10 +355,40 @@ pub(crate) fn restart_older(fleet: &Fleet<'_>, installed: &Path) -> Result<Optio
 /// `exe`, and wait for the new fleetd in the row.
 fn restart(fleet: &Fleet<'_>, old: Fleetd, found: Found, exe: &Path) -> Result<Option<Fleetd>> {
     if fleet.mode == Mode::StandIn {
+        refuse_fleet_caller(fleet.ledger)?;
         stop(fleet, old, found)?;
     }
     (fleet.start)(exe)?;
     Ok(wait_for_new(fleet.ledger, old))
+}
+
+fn refuse_fleet_caller(ledger: &Path) -> Result<()> {
+    let reason = match own_fact(ledger) {
+        Fact::No => return Ok(()),
+        Fact::Yes(attempts) => format!(
+            "this process is a fleet process of attempt {}",
+            attempts.join(", ")
+        ),
+        Fact::Unknown => {
+            "horch cannot prove that this process runs outside a fleet attempt, because a process fact is unknown".into()
+        }
+    };
+    bail!(
+        "a fleet process stops and starts no fleetd: {reason}. Run `horch fleetd check` yourself from a terminal outside the fleet"
+    )
+}
+
+fn own_fact(ledger: &Path) -> Fact {
+    if !ledger.is_file() {
+        return Fact::No;
+    }
+    let Ok(store) = Store::open_read_only(ledger) else {
+        return Fact::Unknown;
+    };
+    match recorded_processes(store.conn()) {
+        Ok(Some((recorded, _))) => fleet_process(std::process::id(), &recorded, &PlatformFacts),
+        Ok(None) | Err(_) => Fact::Unknown,
+    }
 }
 
 /// Stop the old fleetd `old` by its PID and start time, then wait until
@@ -439,14 +477,38 @@ fn this_mode(ctx: &RuntimeContext) -> Mode {
 /// The service of fleetd on the binary `exe`, for the default ledger of the
 /// OS user.
 pub(crate) fn service_spec(exe: &Path) -> Result<service::Spec> {
+    let home = service::os_user_home().context("finding the home of the OS user")?;
+    service_spec_for(exe, &default_path(&home), Some(&home))
+}
+
+pub(crate) fn service_spec_for(
+    exe: &Path,
+    ledger: &Path,
+    os_home: Option<&Path>,
+) -> Result<service::Spec> {
+    let label = service_label(ledger, os_home);
+    let env = if label == service::LABEL {
+        Vec::new()
+    } else {
+        vec![(
+            "HORCH_LEDGER_DB".into(),
+            ledger.to_string_lossy().into_owned(),
+        )]
+    };
     Ok(service::Spec {
-        label: service::LABEL.into(),
+        label,
         exe: exe.to_path_buf(),
-        // The default ledger with no FLEET_ROOT needs no env, and a Windows
-        // task refuses one.
-        env: Vec::new(),
+        env,
         folder: service::default_folder().context("finding the folder of the fleetd service")?,
     })
+}
+
+pub(crate) fn service_label(ledger: &Path, os_home: Option<&Path>) -> String {
+    let real = canonical(ledger);
+    if os_home.is_some_and(|home| canonical(&default_path(home)) == real) {
+        return service::LABEL.into();
+    }
+    service::ledger_label(&Sha256::digest(real.as_os_str().as_encoded_bytes()))
 }
 
 /// Start fleetd from `exe` in `mode`.
@@ -540,11 +602,94 @@ fn write_start_heartbeat(root: &Path, generation: Generation, exe: &Exe) -> Resu
 /// A SIGTERM came: the loop ends after the pass that runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
-/// Sleep `d`, or less when a SIGTERM comes.
-fn sleep_unless_term(d: Duration) {
+fn sleep_unless_term(d: Duration, woke: &mut dyn FnMut() -> bool) {
     let until = Instant::now() + d;
-    while !TERM.load(Ordering::SeqCst) && Instant::now() < until {
+    while !TERM.load(Ordering::SeqCst) && Instant::now() < until && !woke() {
         std::thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
+    }
+}
+
+struct Wake {
+    root: PathBuf,
+    ledger: Option<Connection>,
+    watcher: Option<Watcher>,
+    watched: BTreeSet<PathBuf>,
+    armed_version: Option<i64>,
+}
+
+impl Wake {
+    fn new(root: &Path, ledger: &Path) -> Wake {
+        Wake {
+            root: root.to_path_buf(),
+            ledger: ledger_conn(ledger).ok(),
+            watcher: Watcher::new().ok(),
+            watched: BTreeSet::new(),
+            armed_version: None,
+        }
+    }
+
+    fn arm(&mut self) {
+        let dirs = self.folders();
+        if let Some(w) = self.watcher.as_mut() {
+            let wanted: BTreeSet<&PathBuf> = dirs.iter().collect();
+            self.watched.retain(|d| {
+                let keep = wanted.contains(d);
+                if !keep {
+                    w.remove(d);
+                }
+                keep
+            });
+            for d in &dirs {
+                if self.watched.len() >= WATCH_LIMIT {
+                    break;
+                }
+                if !self.watched.contains(d) && w.add(d).is_ok() {
+                    self.watched.insert(d.clone());
+                }
+            }
+            let _events_of_the_pass = w.changed();
+        }
+        self.armed_version = self.data_version();
+    }
+
+    fn woke(&mut self) -> bool {
+        let files = self
+            .watcher
+            .as_mut()
+            .is_some_and(|w| !w.changed().is_empty());
+        files || (self.armed_version.is_some() && self.data_version() != self.armed_version)
+    }
+
+    fn data_version(&self) -> Option<i64> {
+        let conn = self.ledger.as_ref()?;
+        conn.query_row("PRAGMA data_version", [], |r| r.get(0)).ok()
+    }
+
+    fn folders(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![requests_dir(&self.root), self.root.join("run").join("jobs")];
+        let Some(conn) = self.ledger.as_ref() else {
+            return dirs;
+        };
+        let attempts = conn
+            .prepare(
+                "SELECT task_id, id FROM attempts
+                 WHERE state <> 'ended' AND task_id IS NOT NULL ORDER BY id LIMIT ?1",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([WATCH_LIMIT / 2], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default();
+        for (task, attempt) in attempts {
+            let outbox = outbox_dir(&self.root, &task, &attempt);
+            if let Some(dir) = outbox.parent() {
+                dirs.push(dir.to_path_buf());
+            }
+            dirs.push(outbox);
+        }
+        dirs
     }
 }
 
@@ -573,6 +718,20 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     // fleetd row: an install after the row is then a new binary.
     let own_exe = this_exe();
     let horch = std::env::current_exe().context("finding the horch binary")?;
+    if let Fact::Yes(attempts) = own_fact(&ctx.paths.ledger_db) {
+        bail!(
+            "horch fleetd: refused inside a fleet attempt: this process is a fleet process of attempt {}. Only an operator process or the service manager starts fleetd",
+            attempts.join(", ")
+        );
+    }
+    // T-389: the rule of the rescue, 1 time, before the fleetd row and any job.
+    if let Err(problem) = rescue_git_version(
+        &ctx.bins.harness.git,
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+    ) {
+        bail!("horch fleetd: refused: {problem}");
+    }
     let root = &ctx.paths.fleet_root;
     let writer = LedgerWriter::fleetd();
     let mut store = writer.open(&ctx.paths.ledger_db)?;
@@ -584,7 +743,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     write_start_heartbeat(root, started.generation, &own_exe)?;
-    let settings = settings(ctx, started.generation, &horch)?;
+    let settings = settings(ctx, started.generation)?;
     take_over(ctx, &mut store, &settings)?;
     drop(store);
     let period = Duration::from_secs(settings.config.pass_period_s);
@@ -602,13 +761,22 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         lock: RefCell::new(Some(started.lock)),
     };
     let handlers = request_handlers(ctx, &settings);
+    let wake = (!settings.faults.has(DROP_WATCH_EVENTS))
+        .then(|| RefCell::new(Wake::new(root, &ctx.paths.ledger_db)));
     with_pass(ctx, &writer, settings, false, |pass, _| {
         let Some(_channel) = start_channel(ctx, pass, &mut conn, handlers) else {
             return;
         };
         run_loop(
             period,
-            &mut || one_pass(pass, &mut conn),
+            &mut || {
+                let passed = one_pass(pass, &mut conn);
+                if let Some(w) = &wake {
+                    w.borrow_mut().arm();
+                }
+                passed
+            },
+            &mut || wake.as_ref().is_some_and(|w| w.borrow_mut().woke()),
             &|| self_restart.changed(),
             &mut || self_restart.restart(),
         )
@@ -670,13 +838,9 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     );
     let worker = WorkerDeps { guard };
     handlers_worker::register(&mut handlers, &worker);
-    handlers_cli::register(
-        &mut handlers,
-        CliHandlers {
-            state_root: ctx.paths.state_root.clone(),
-        },
-    );
-    let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root);
+    handlers_cli::register(&mut handlers);
+    let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root)
+        .with_time_limit(FLEETD_GIT_LIMIT);
     handlers_custody::register(
         &mut handlers,
         Arc::new(Custody {
@@ -828,7 +992,9 @@ impl IdeaPorts for LiveIdeas<'_> {
     }
 
     fn now(&self) -> chrono::DateTime<chrono::FixedOffset> {
-        chrono::Local::now().fixed_offset()
+        horch_core::clock::now()
+            .with_timezone(&chrono::Local)
+            .fixed_offset()
     }
 
     fn notify(&self, mirrored: &Mirrored, seq: u64) -> Result<()> {
@@ -848,7 +1014,11 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
         state_root: ctx.paths.state_root.clone(),
         personas: super::taskledger::codex_personas(ctx),
     };
-    WorkerSandboxes::new(codex, ctx.paths.fleet_root.clone())
+    WorkerSandboxes::on_path(
+        codex,
+        ctx.paths.fleet_root.clone(),
+        ctx.inherited.path.clone(),
+    )
 }
 
 /// The spawn of each push attempt that fleetd bound:
@@ -861,6 +1031,15 @@ struct PushSpawns<'a> {
 impl Launches for PushSpawns<'_> {
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec> {
         spawn_spec(self.ctx, &self.herdr, l.clone())
+    }
+
+    fn resuming_harness(&self, persona: &str) -> Option<String> {
+        let roster = super::load_roster_unwarned(self.ctx, None).ok()?;
+        let agent = roster.get(persona)?.agent;
+        agent
+            .capabilities()
+            .resumes
+            .then(|| agent.as_str().to_string())
     }
 }
 
@@ -947,14 +1126,13 @@ fn idea_lead_spec(
     spawn_spec(ctx, herdr, push).map(Some)
 }
 
-/// The settings of the fleetd of `generation` that runs `horch`.
-fn settings(ctx: &RuntimeContext, generation: Generation, horch: &Path) -> Result<Settings> {
+fn settings(ctx: &RuntimeContext, generation: Generation) -> Result<Settings> {
     let root = &ctx.paths.fleet_root;
     Ok(Settings {
         fleet_root: root.clone(),
         generation,
         config: config_file::load(root)?,
-        horch: horch.to_path_buf(),
+        horch: ctx.bins.horch_exe.clone(),
         faults: ctx.settings.faults.clone(),
     })
 }
@@ -979,6 +1157,8 @@ fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) -> Re
     Ok(())
 }
 
+const HERDR_CALL_LIMIT: Duration = Duration::from_secs(5);
+
 /// Build the pass of fleetd on this machine with `settings`, and give it
 /// with its run duties to `f`. `force` checks each working worker in each
 /// pass, due or not. The daemon and `horch ledger watch --once` use it, so
@@ -990,7 +1170,7 @@ fn with_pass<T>(
     force: bool,
     f: impl FnOnce(&mut Pass<'_>, &WatchdogDuties<'_>) -> T,
 ) -> T {
-    let herdr = || Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = || Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(HERDR_CALL_LIMIT);
     let outside = Live {
         ctx,
         herdr: herdr(),
@@ -998,7 +1178,7 @@ fn with_pass<T>(
     };
     let observer = HerdrObserver { herdr: herdr() };
     let effects = LiveEffects { ctx, writer };
-    let duties = WatchdogDuties::new(&observer, &effects, ctx.paths.state_root.clone());
+    let duties = WatchdogDuties::new(&observer, &effects);
     let duties = if force { duties.forced() } else { duties };
     let ports = Ports {
         outside: &outside,
@@ -1012,10 +1192,10 @@ fn with_pass<T>(
     let ideas = LiveIdeas {
         ctx,
         sandboxes: &sandboxes,
-        git: ProjectGitGateway::new(CliWorktreeGit::new(
-            &ctx.bins.harness.git,
-            &settings.fleet_root,
-        )),
+        git: ProjectGitGateway::new(
+            CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root)
+                .with_time_limit(FLEETD_GIT_LIMIT),
+        ),
         herdr: herdr(),
     };
     let spawns = PushSpawns {
@@ -1048,13 +1228,12 @@ pub(crate) enum Once {
 /// and takes over the old watchdogs. When a fleetd holds the lock, it runs
 /// no pass and stops nothing.
 pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
-    let horch = std::env::current_exe().context("finding the horch binary")?;
     let writer = LedgerWriter::fleetd();
     let mut store = writer.open(&ctx.paths.ledger_db)?;
     let Some(started) = fleetd_row::start(&ctx.paths.fleet_root, &mut store)? else {
         return Ok(Once::Held(read_row(&ctx.paths.ledger_db)?));
     };
-    let settings = settings(ctx, started.generation, &horch)?;
+    let settings = settings(ctx, started.generation)?;
     take_over(ctx, &mut store, &settings)?;
     drop(store);
     let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
@@ -1141,6 +1320,7 @@ enum Passed {
 fn run_loop(
     period: Duration,
     pass: &mut dyn FnMut() -> Passed,
+    woke: &mut dyn FnMut() -> bool,
     changed: &dyn Fn() -> bool,
     restart: &mut dyn FnMut(),
 ) {
@@ -1153,7 +1333,7 @@ fn run_loop(
             restart();
             return;
         }
-        sleep_unless_term(period.saturating_sub(began.elapsed()));
+        sleep_unless_term(period.saturating_sub(began.elapsed()), woke);
     }
 }
 
@@ -1301,10 +1481,6 @@ impl Outside for Live<'_> {
 
     fn doorbell(&self, pane: &str) -> Result<()> {
         delivery::send_line(&self.herdr, pane, TypedLine::Doorbell)
-    }
-
-    fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
-        super::recipes::restart_spec(self.ctx, r)
     }
 
     /// Each tool of `docs-sources.toml` whose version command names a
@@ -1569,6 +1745,124 @@ mod tests {
         assert!(checked.new.is_some_and(alive));
     }
 
+    fn record_this_process_as_an_attempt(w: &World) {
+        use horch_core::taskledger::workers::{self, NewWorker};
+        let pid = std::process::id();
+        let start = horch_core::procid::start_time(pid).unwrap();
+        let store = Store::open(&w.ledger).unwrap();
+        let conn = store.conn();
+        let run = runs::create(conn, w.dir.path(), &runs::solo_new_run("w1")).unwrap();
+        let worker = workers::insert(
+            conn,
+            &NewWorker {
+                run_id: run.run_id,
+                persona: "dev".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attempts (id, worker_id, pid, pid_start, state, started_at)
+             VALUES ('A-1', ?1, ?2, ?3, 'live', '2026-11-18T12:00:00Z')",
+            rusqlite::params![worker, pid, i64::try_from(start).unwrap()],
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stand_in_start_from_a_fleet_process_gives_fleetd_no_fault_and_no_caller_env() {
+        let w = World::new();
+        record_this_process_as_an_attempt(&w);
+        let hung = w.process();
+        w.record(hung);
+        w.heartbeat(hung, 31);
+        let dead = Fleetd {
+            pid_start: hung.pid_start + 1,
+            ..hung
+        };
+        for (old, found) in [(hung, "hung"), (dead, "dead")] {
+            w.record(old);
+            let (checked, starts) = w.run(Mode::StandIn, check_with);
+            let err = format!("{:#}", checked.expect_err(found));
+            assert!(
+                err.contains("fleet process of attempt A-1"),
+                "{found}: {err}"
+            );
+            assert!(
+                starts.is_empty(),
+                "{found}: a fleet process started {starts:?}"
+            );
+            assert_eq!(w.row(), Some(old), "{found}: the fleetd row changed");
+            assert!(alive(hung), "{found}: a fleet process stopped the fleetd");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fleet_process_runs_no_fleetd_daemon() {
+        let w = World::new();
+        record_this_process_as_an_attempt(&w);
+        let env = MapEnv::new(w.root.parent().unwrap())
+            .with("HOME", &w.root.to_string_lossy())
+            .with("HORCH_LEDGER_DB", &w.ledger.to_string_lossy())
+            .with("FLEET_ROOT", &w.root.to_string_lossy())
+            .with("HORCH_FAULT", "hang-pass");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = format!(
+            "{:#}",
+            daemon(&ctx).expect_err("a fleet process ran fleetd")
+        );
+        assert!(err.contains("fleet process of attempt A-1"), "{err}");
+        assert_eq!(w.row(), None, "the refused fleetd wrote the fleetd row");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_old_git_refuses_the_fleetd_start() {
+        let w = World::new();
+        let bin = w.dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let out = crate::test_support::write_warmed(
+            &bin.join("git"),
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\necho 'git version 2.39.5'\n",
+            &["warm"],
+        );
+        assert!(out.status.success());
+        let env = MapEnv::new(w.root.parent().unwrap())
+            .with("HOME", &w.root.to_string_lossy())
+            .with("HORCH_LEDGER_DB", &w.ledger.to_string_lossy())
+            .with("FLEET_ROOT", &w.root.to_string_lossy())
+            .with("PATH", &bin.to_string_lossy());
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = format!(
+            "{:#}",
+            daemon(&ctx).expect_err("fleetd started on git 2.39.5")
+        );
+        assert!(err.contains("horch fleetd: refused"), "{err}");
+        assert!(err.contains("2.39.5"), "{err}");
+        assert!(err.contains("needs git 2.41 or newer"), "{err}");
+        assert_eq!(w.row(), None, "the refused fleetd wrote the fleetd row");
+        if w.ledger.is_file() {
+            let store = Store::open_read_only(&w.ledger).unwrap();
+            let jobs: i64 = store
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'jobs'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if jobs == 1 {
+                let n: i64 = store
+                    .conn()
+                    .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(n, 0, "the refused fleetd queued a job");
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn check_leaves_a_fresh_fleetd() {
@@ -1647,6 +1941,99 @@ mod tests {
         assert_eq!(mode(&p, None), Mode::StandIn);
     }
 
+    #[test]
+    fn the_service_label_is_horch_fleetd_only_for_the_default_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_home = dir.path().join("os-user");
+        std::fs::create_dir_all(&os_home).unwrap();
+        let default = default_path(&os_home);
+        assert_eq!(service_label(&default, Some(&os_home)), service::LABEL);
+
+        let a = dir.path().join("a").join("ledger.sqlite3");
+        let b = dir.path().join("b").join("ledger.sqlite3");
+        let label_a = service_label(&a, Some(&os_home));
+        let label_b = service_label(&b, Some(&os_home));
+        for label in [&label_a, &label_b] {
+            assert!(label.starts_with("horch-fleetd-"), "{label}");
+            assert_eq!(label.len(), "horch-fleetd-".len() + 8, "{label}");
+            service::validate_label(label).unwrap();
+        }
+        assert_ne!(label_a, label_b);
+        assert_eq!(service_label(&a, Some(&os_home)), label_a, "stable");
+        assert_ne!(service_label(&default, None), service::LABEL);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_service_label_uses_the_canonical_ledger_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_home = dir.path().join("os-user");
+        std::fs::create_dir_all(&os_home).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&os_home, &link).unwrap();
+        assert_eq!(
+            service_label(&default_path(&link), Some(&os_home)),
+            service::LABEL
+        );
+        let other = dir.path().join("other").join("ledger.sqlite3");
+        let via_dots = dir
+            .path()
+            .join("other")
+            .join("..")
+            .join("other")
+            .join("ledger.sqlite3");
+        std::fs::create_dir_all(dir.path().join("other")).unwrap();
+        assert_eq!(
+            service_label(&via_dots, Some(&os_home)),
+            service_label(&other, Some(&os_home))
+        );
+    }
+
+    #[test]
+    fn the_service_spec_of_a_non_default_ledger_names_its_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let os_home = dir.path().join("os-user");
+        let exe = dir.path().join("horch");
+        let spec = service_spec_for(&exe, &default_path(&os_home), Some(&os_home)).unwrap();
+        assert_eq!(spec.label, service::LABEL);
+        assert!(spec.env.is_empty(), "{:?}", spec.env);
+        let other = dir.path().join("ledger.sqlite3");
+        let spec = service_spec_for(&exe, &other, Some(&os_home)).unwrap();
+        assert_eq!(spec.label, service_label(&other, Some(&os_home)));
+        assert_eq!(
+            spec.env,
+            vec![(
+                "HORCH_LEDGER_DB".to_string(),
+                other.to_string_lossy().into_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn rr4_a_wake_runs_the_next_pass_before_the_period() {
+        let passes = std::cell::Cell::new(0);
+        let mut pass = || {
+            passes.set(passes.get() + 1);
+            Passed::Ran
+        };
+        let mut woke = || passes.get() == 1;
+        let changed = || passes.get() == 2;
+        let began = Instant::now();
+        run_loop(
+            Duration::from_secs(60),
+            &mut pass,
+            &mut woke,
+            &changed,
+            &mut || {},
+        );
+        assert_eq!(passes.get(), 2, "the wake ran a 2nd pass");
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the 2nd pass waited {:?} of the period of 60 s",
+            began.elapsed()
+        );
+    }
+
     /// Preservation 04 S10: a fleetd whose binary file changed starts the
     /// new binary once, after the heartbeat of its pass, and ends its loop.
     /// It never stops a pass.
@@ -1671,7 +2058,13 @@ mod tests {
         };
         let changed = || binary_changed(&started);
         let mut restart = || events.borrow_mut().push("restart");
-        run_loop(Duration::ZERO, &mut pass, &changed, &mut restart);
+        run_loop(
+            Duration::ZERO,
+            &mut pass,
+            &mut || false,
+            &changed,
+            &mut restart,
+        );
         assert_eq!(
             *events.borrow(),
             ["pass", "heartbeat", "pass", "heartbeat", "restart"]
@@ -1680,5 +2073,33 @@ mod tests {
         // not a new binary.
         std::fs::remove_file(&exe).unwrap();
         assert!(!binary_changed(&started), "a missing binary");
+    }
+
+    #[test]
+    fn a_job_host_of_the_pass_runs_the_sibling_horch_and_not_this_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = dir.path().join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let test_binary = deps.join("horch-0123456789abcdef");
+        let sibling = deps.join(format!("horch{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&test_binary, "").unwrap();
+        std::fs::write(&sibling, "").unwrap();
+        let env = MapEnv::new(dir.path())
+            .with(
+                "HORCH_STATE_DIR",
+                dir.path().join("state").to_str().unwrap(),
+            )
+            .with("HORCH_DATA_DIR", dir.path().join("data").to_str().unwrap())
+            .with_exe(&test_binary);
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let settings = settings(&ctx, Generation(1)).unwrap();
+        let spec = horch_core::fleetd::fleet_runtime::application::jobs::job_spec(
+            &settings.horch,
+            1,
+            None,
+        );
+        assert_eq!(spec.program, sibling);
+        assert_ne!(spec.program, test_binary);
+        assert_ne!(spec.program, std::env::current_exe().unwrap());
     }
 }

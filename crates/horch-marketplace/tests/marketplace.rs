@@ -438,6 +438,7 @@ fn mkt_06_rejects_traversal() {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn mkt_06_rejects_symlink() {
     let tmp = tempfile::tempdir().unwrap();

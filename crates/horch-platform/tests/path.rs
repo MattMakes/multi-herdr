@@ -176,3 +176,118 @@ fn inspect_junction_target_reads_the_path() {
     std::fs::write(dir.join("file"), "x").unwrap();
     assert_eq!(inspect_junction_target(&dir), JunctionAction::Refuse);
 }
+
+#[test]
+fn plain_of_verbatim_drops_the_prefix_of_a_drive_path() {
+    assert_eq!(
+        path::plain_of_verbatim(r"\\?\C:\Users\a\gate-F-0001").as_deref(),
+        Some(r"C:\Users\a\gate-F-0001")
+    );
+    assert_eq!(path::plain_of_verbatim(r"\\?\d:\").as_deref(), Some(r"d:\"));
+    assert_eq!(
+        path::plain_of_verbatim(r"\\?\C:\dir\").as_deref(),
+        Some(r"C:\dir\")
+    );
+}
+
+#[test]
+fn plain_of_verbatim_gives_a_unc_path_its_two_slashes() {
+    assert_eq!(
+        path::plain_of_verbatim(r"\\?\UNC\server\share\dir").as_deref(),
+        Some(r"\\server\share\dir")
+    );
+    assert_eq!(path::plain_of_verbatim(r"\\?\UNC\server"), None);
+    assert_eq!(path::plain_of_verbatim(r"\\?\UNC\"), None);
+}
+
+#[test]
+fn plain_of_verbatim_leaves_a_path_with_no_prefix() {
+    for text in [r"C:\dir", r"\\server\share", "/tmp/a", r"\\.\pipe\x", ""] {
+        assert_eq!(path::plain_of_verbatim(text), None, "{text}");
+    }
+    assert_eq!(path::plain_of_verbatim(r"\\?\Volume{1234}\dir"), None);
+    assert_eq!(path::plain_of_verbatim(r"\\?\C:"), None);
+}
+
+#[test]
+fn plain_of_verbatim_keeps_the_prefix_of_a_path_at_the_legacy_limit() {
+    let at_limit = format!(r"\\?\C:\{}", "a".repeat(260 - 3));
+    assert_eq!(path::plain_of_verbatim(&at_limit), None);
+    let below = format!(r"\\?\C:\{}", "a".repeat(259 - 3));
+    assert_eq!(path::plain_of_verbatim(&below).map(|p| p.len()), Some(259));
+}
+
+#[test]
+fn plain_of_verbatim_keeps_the_prefix_of_a_name_that_the_plain_form_changes() {
+    for name in [
+        "NUL",
+        "con",
+        "Aux.txt",
+        "COM1",
+        "lpt9.log",
+        "COM\u{b9}",
+        "CONIN$",
+        "nul .txt",
+        "dir.",
+        "dir ",
+        ".",
+        "..",
+        "a/b",
+        "a:b",
+        "a*b",
+        "a?b",
+        "a\u{1}b",
+    ] {
+        let text = format!(r"\\?\C:\top\{name}\end");
+        assert_eq!(path::plain_of_verbatim(&text), None, "{name}");
+    }
+    assert_eq!(path::plain_of_verbatim(r"\\?\C:\a\\b"), None);
+    for name in ["CONSOLE", "nulls", "COM10", "a.b", ".git", "a b"] {
+        let text = format!(r"\\?\C:\top\{name}");
+        assert!(path::plain_of_verbatim(&text).is_some(), "{name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn for_child_leaves_a_unix_path() {
+    let p = std::path::Path::new(r"/tmp/\\?\C:\x");
+    assert_eq!(path::for_child(p), p);
+}
+
+#[cfg(windows)]
+#[test]
+fn for_child_gives_a_canonical_folder_in_its_plain_form() {
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    let plain = path::for_child(&temp);
+    assert!(
+        !plain.to_string_lossy().starts_with(r"\\?\"),
+        "{}",
+        plain.display()
+    );
+    assert_eq!(plain.canonicalize().unwrap(), temp);
+}
+
+#[test]
+fn a_started_command_gets_each_verbatim_path_in_its_plain_form() {
+    let mut cmd = horch_platform::start::command("git");
+    cmd.arg(r"\\?\C:\a")
+        .args(["-C", r"\\?\UNC\s\h\b", "--detach"])
+        .current_dir(r"\\?\C:\work");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let dir = cmd
+        .get_current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    if cfg!(windows) {
+        assert_eq!(args, [r"C:\a", "-C", r"\\s\h\b", "--detach"]);
+        assert_eq!(dir, r"C:\work");
+    } else {
+        assert_eq!(args, [r"\\?\C:\a", "-C", r"\\?\UNC\s\h\b", "--detach"]);
+        assert_eq!(dir, r"\\?\C:\work");
+    }
+}

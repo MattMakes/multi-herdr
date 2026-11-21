@@ -2,6 +2,7 @@
 //! complexity-sweep, pr, code-sweep, `finish` and `done` (#137, #138, #141,
 //! #144, #146). Each test pins the outcome text of 1 path, so a refactor
 //! that changes a path fails here.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
@@ -12,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use test_jobs::TestJobs;
 
+use horch_core::fleetd::task_execution::application::commands;
 use horch_core::taskledger::finish::{
     self, codesweep, land, CodexSandbox, Ctx, FinishReport, Step, Tools, WorktreeRow,
 };
@@ -72,7 +74,7 @@ struct World {
 impl World {
     fn new(steps: &[StepName], remote: bool) -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -143,7 +145,7 @@ impl World {
     }
 
     fn top(&self) -> PathBuf {
-        self.tmp.path().canonicalize().unwrap()
+        horch_platform::path::for_child(&self.tmp.path().canonicalize().unwrap())
     }
 
     /// A claimed task of a new `persona` worker; returns the worker id.
@@ -802,6 +804,7 @@ esac
 "#;
 
 /// A fake gh, warmed once, whose `pr view` prints `ghstate/view.json`.
+#[cfg(unix)]
 fn fake_gh(w: &World) -> PathBuf {
     let state = w.top().join("ghstate");
     std::fs::create_dir_all(state.join("calls")).unwrap();
@@ -851,6 +854,7 @@ fn pr_has_no_pull_request_without_a_remote() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -919,6 +923,7 @@ fn pr_creates_the_pull_request_and_writes_the_section_of_the_task() {
     assert_eq!(calls[3][1], "view");
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -942,6 +947,7 @@ fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -964,6 +970,7 @@ fn pr_writes_no_section_for_a_task_that_landed_no_commit_of_its_own() {
     assert_eq!(gh_calls(&state).len(), calls, "no gh call for the 2nd task");
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_lists_only_the_commits_a_task_added_after_the_earlier_lands() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -981,6 +988,7 @@ fn pr_lists_only_the_commits_a_task_added_after_the_earlier_lands() {
     assert!(!body.contains("one.txt"), "the first task's commit: {body}");
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -992,6 +1000,7 @@ fn pr_still_opens_the_pull_request_when_the_task_landed_a_new_commit() {
     assert_eq!(gh_calls(&state)[0][..2], ["pr", "create"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn pr_fails_when_its_head_lacks_the_landed_commit() {
     let mut w = World::new(&[StepName::Land, StepName::Pr], true);
@@ -1523,7 +1532,13 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     let run = w.run.clone();
     let db = w.root.parent().unwrap().join("ledger.sqlite3");
     let ended = horch_core::taskledger::Store::open(&db)
-        .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &id, Some(1))))
+        .and_then(|mut s| {
+            s.immediate(|tx| {
+                let ended = supervisor::settle(tx, &id, Some(1))?;
+                commands::end_own_attempt(tx, &id, "the agent exited")?;
+                Ok(ended)
+            })
+        })
         .unwrap();
     assert_eq!(
         ended,

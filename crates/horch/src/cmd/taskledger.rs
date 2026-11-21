@@ -568,9 +568,13 @@ fn run_command(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode>
     // Each command opens the ledger read-only (RR-5): a command that changes
     // state sends a request to fleetd (T-885).
     let store = read_only(ctx)?;
+    let record = store.read_only_record();
     // One entry per `Group`, in its order.
     let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
-    dispatch[group_of(&command) as usize](ctx, store, command)
+    dispatch[group_of(&command) as usize](ctx, store, command).map_err(|e| {
+        let command = std::env::args().collect::<Vec<_>>().join(" ");
+        horch_core::taskledger::store::read_only_failure(&command, record.as_ref(), e)
+    })
 }
 
 /// The ledger, opened read-only. fleetd creates it at its start.
@@ -741,10 +745,7 @@ fn worker_files_cmd(ctx: &RuntimeContext, command: &LedgerCommand) -> Result<Opt
         C::Progress { text } => progress(ctx, LineKind::Progress, text)?,
         C::Note { text } => progress(ctx, LineKind::Note, text)?,
         C::Done { summary, unlanded } => {
-            let notes = unlanded
-                .as_ref()
-                .map(|reason| format!("unlanded: {reason}"));
-            write_completed(ctx, &summary.join(" "), notes)?
+            write_completed(ctx, &summary.join(" "), unlanded.as_deref())?
         }
         C::Finish { .. } => super::taskledger_finish::finish_cmd(ctx)?,
         C::Handoff { path } => handoff(ctx, path)?,
@@ -766,12 +767,10 @@ fn own_outbox(ctx: &RuntimeContext, store: &Store) -> Result<OutboxWriter> {
     OutboxWriter::of_this_process(&ctx.paths.fleet_root, store.conn(), &config, &PlatformFacts)
 }
 
-/// Write `result.json` with `status: completed`, `summary` and `notes` to
-/// the outbox of the own attempt: `horch ledger done` and `finish`.
 pub(super) fn write_completed(
     ctx: &RuntimeContext,
     summary: &str,
-    notes: Option<String>,
+    unlanded: Option<&str>,
 ) -> Result<ExitCode> {
     let out = own_outbox(ctx, &read_only(ctx)?)?;
     let a = out.attempt();
@@ -783,8 +782,9 @@ pub(super) fn write_completed(
         commits: Vec::new(),
         files_changed: Vec::new(),
         acceptance_self_check: Vec::new(),
-        notes_for_next: notes,
+        notes_for_next: None,
         handoff: None,
+        unlanded: unlanded.map(str::to_string),
     })?;
     output::println(&format!("wrote {}", path.display()));
     output::println(FLEETD_FINISHES);
@@ -2148,7 +2148,6 @@ mod tests {
             .filter(|c| takes_check(c))
             .map(|c| c.get_name())
             .collect();
-        assert!(with_check.contains(&"add"), "{with_check:?}");
         assert!(with_check.contains(&"reopen"), "{with_check:?}");
         for sub in &with_check {
             assert!(

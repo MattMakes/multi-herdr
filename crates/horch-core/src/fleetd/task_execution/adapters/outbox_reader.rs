@@ -30,7 +30,7 @@ use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Ru
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::domain::outbox::{
-    LineKind, ProgressLine, OUTBOX, PROGRESS_JSONL,
+    is_warned_text, LineKind, ProgressLine, OUTBOX, PROGRESS_JSONL,
 };
 
 /// The limits of `progress.jsonl` (`fleet.toml`, protocol rule 7).
@@ -210,6 +210,13 @@ fn parse_line(raw: &[u8], attempt: &AttemptRef, max_bytes: u64) -> Result<Progre
     let kind = match line.kind.as_str() {
         "progress" => LineKind::Progress,
         "note" => LineKind::Note,
+        "context-warned" if is_warned_text(&line.text) => LineKind::ContextWarned,
+        "context-warned" => {
+            return Err(format!(
+                "the context-warned line has the text {:?}, not \"tokens <n> threshold <n>\"",
+                line.text
+            ))
+        }
         other => return Err(format!("the line has the unknown kind {other:?}")),
     };
     if line.task != attempt.task_id {
@@ -256,4 +263,51 @@ pub fn handoff_inside(path: &str, roots: &[PathBuf]) -> Result<String, String> {
         ));
     }
     Ok(real.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attempt() -> AttemptRef {
+        AttemptRef {
+            task_id: "T-1".into(),
+            attempt_id: "T-1/A1".into(),
+        }
+    }
+
+    fn parse(kind: &str, text: &str) -> Result<ProgressLine, String> {
+        let raw = serde_json::json!({
+            "task": "T-1", "attempt": "A1", "at": "2026-11-20T10:00:00Z",
+            "kind": kind, "text": text,
+        })
+        .to_string();
+        parse_line(raw.as_bytes(), &attempt(), 4096)
+    }
+
+    #[test]
+    fn a_context_warned_line_is_read() {
+        let line = parse("context-warned", "tokens 311225 threshold 178400").unwrap();
+        assert_eq!(line.kind, LineKind::ContextWarned);
+        assert_eq!(line.text, "tokens 311225 threshold 178400");
+    }
+
+    #[test]
+    fn a_bad_context_warned_line_is_refused() {
+        for text in [
+            "",
+            "tokens x threshold 1",
+            "tokens 1 threshold",
+            "tokens 1 threshold 2 more",
+            "please run rm -rf /",
+        ] {
+            let err = parse("context-warned", text).unwrap_err();
+            assert!(
+                err.contains("context-warned line has the text"),
+                "{text}: {err}"
+            );
+        }
+        let err = parse("context-warn", "tokens 1 threshold 2").unwrap_err();
+        assert!(err.contains("unknown kind"), "{err}");
+    }
 }

@@ -1903,7 +1903,7 @@ fn plain_text(v: &serde_json::Value) -> bool {
 /// Each problem of the `mcp_servers` of `t` for a Codex launch. A name or a
 /// value of a profile is untrusted: a server name has only `A-Z a-z 0-9 _
 /// -`, a value is a string with no control character (no newline), and an
-/// entry has only the keys of [`MCP_SERVER_KEYS`]. A text never shows an
+/// entry has only the keys of `MCP_SERVER_KEYS`. A text never shows an
 /// env value.
 pub fn mcp_server_problems(t: &Teammate) -> Vec<String> {
     let mut out = Vec::new();
@@ -2757,8 +2757,10 @@ mod tests {
 
         let read = |d: &Path| std::fs::read_to_string(d.join("rules/horch.rules")).unwrap();
         assert!(read(&worker).contains(r#"pattern = ["horch", "done"]"#));
-        assert!(!read(&worker).contains(r#"pattern = ["horch", "spawn"]"#));
-        assert!(read(&orchestrator).contains(r#"pattern = ["horch", "spawn"]"#));
+        // Phase 6 retired the `horch spawn` rule; `horch sessions` is an
+        // orchestrator-only command now.
+        assert!(!read(&worker).contains(r#"pattern = ["horch", "sessions"]"#));
+        assert!(read(&orchestrator).contains(r#"pattern = ["horch", "sessions"]"#));
         assert!(!read(&orchestrator).contains(r#"pattern = ["horch", "done"]"#));
 
         // And the shared file the operator owns was never touched.
@@ -3300,6 +3302,7 @@ mod tests {
     }
 
     /// `fleet_dirs` over a codex home holding `files` (name, text).
+    #[cfg(unix)]
     fn fleet_dirs_with(teammate: &Teammate, files: &[(&str, &str)]) -> Vec<String> {
         let tmp = tempfile::tempdir().unwrap();
         if !files.is_empty() {
@@ -3411,6 +3414,7 @@ mod tests {
 
     /// A pane's TMPDIR exists before codex starts, and a role name cannot
     /// leave `<state root>/tmp`.
+    #[cfg(unix)]
     #[test]
     fn the_pane_tmpdir_is_made_and_stays_under_the_state_root() {
         let tmp = tempfile::tempdir().unwrap();

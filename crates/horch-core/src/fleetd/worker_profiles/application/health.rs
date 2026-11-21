@@ -72,12 +72,17 @@ pub fn mark_healthy(
 /// the conformance run `report` (the docs source `agy` is the harness
 /// `antigravity`), in `tx`: unhealthy after a failed run, with
 /// the failed checks as the cause, and healthy again after a passed run.
+/// A run with no failed check and a check that is not proved (fleetd was
+/// not ready) marks no profile: it does not prove the adapter.
 pub fn mark_after_conformance(
     tx: &Connection,
     guard: Option<Generation>,
     report: &ConformanceReport,
     profiles: &[(&str, HarnessKind)],
 ) -> Result<Vec<Mark>> {
+    if report.failure().is_none() && report.has_not_proved() {
+        return Ok(Vec::new());
+    }
     let unhealthy = unhealthy_profiles(tx)?;
     let of_cli: Vec<(String, Health)> = profiles
         .iter()
@@ -100,6 +105,26 @@ pub fn mark_after_conformance(
             Mark::Healthy(_) => passed.as_str(),
         };
         write(tx, guard, Some(mark), cause)?;
+    }
+    Ok(marks)
+}
+
+/// Mark each profile of `profiles` whose agent is the harness of the CLI
+/// `cli` unhealthy with `reason`, in `tx`: a conformance run of `cli` that
+/// gave no report that can be read fails closed (FM-19).
+pub fn mark_cli_unhealthy(
+    tx: &Connection,
+    guard: Option<Generation>,
+    cli: &str,
+    reason: &str,
+    profiles: &[(&str, HarnessKind)],
+) -> Result<Vec<Mark>> {
+    let mut marks = Vec::new();
+    for (name, _) in profiles
+        .iter()
+        .filter(|(_, agent)| exec_harness(cli) == Some(*agent))
+    {
+        marks.extend(mark_unhealthy(tx, guard, name, reason)?);
     }
     Ok(marks)
 }

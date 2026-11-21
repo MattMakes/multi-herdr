@@ -125,7 +125,7 @@ impl World {
     fn pass(&mut self, attempts: &[AttemptRef]) -> Report {
         let reads = ingest::read(&self.conn, &self.root(), attempts, self.max_bytes).unwrap();
         let tx = self.conn.transaction().unwrap();
-        let report = ingest::ingest(&tx, Some(GUARD), &reads).unwrap();
+        let report = ingest::ingest(&tx, Some(GUARD), &reads, 900).unwrap();
         tx.commit().unwrap();
         report
     }
@@ -179,6 +179,7 @@ fn result_json(task: &str, attempt: &str, summary: &str) -> String {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
     .to_json()
 }
@@ -360,7 +361,7 @@ fn result_wins_over_a_lease_expiry_in_the_same_pass() {
     let attempts = [with_result.clone(), without.clone()];
     let reads = ingest::read(&w.conn, &w.root(), &attempts, w.max_bytes).unwrap();
     let tx = w.conn.transaction().unwrap();
-    ingest::ingest(&tx, Some(GUARD), &reads).unwrap();
+    ingest::ingest(&tx, Some(GUARD), &reads, 900).unwrap();
     let expired =
         lease::renew_or_expire_leases(&tx, Some(GUARD), clock, &BTreeMap::new(), &limits).unwrap();
     tx.commit().unwrap();

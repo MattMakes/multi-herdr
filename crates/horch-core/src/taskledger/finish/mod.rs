@@ -543,7 +543,7 @@ pub(crate) fn lease_tree(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) ->
 
 /// The custody setup of a command that needs a tree: the config of the
 /// fleet of the writable ledger `store`, the job context of a command, its
-/// own connection, then [`create_and_wait`] for `lease`. It gives the id of the
+/// own connection, then `create_and_wait` for `lease`. It gives the id of the
 /// tree. `horch ledger worktree new` and `horch worktree restore` call it.
 pub fn lease_and_wait(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
     with_custody(store, |conn, ctx| {
@@ -959,11 +959,15 @@ impl<'a> VerifierAttempt<'a> {
         record(store, &self.0.task, &self.0.w, self.seq(name)?, name, o)
     }
 
-    /// The complexity-sweep of this attempt, with no row: the job process
-    /// writes no row.
-    pub fn complexity_sweep(&self, conn: &Connection) -> Result<Outcome> {
+    /// The complexity-sweep of this attempt, with its tools started by
+    /// `runner`, with no row: the job process writes no row.
+    pub fn complexity_sweep(
+        &self,
+        conn: &Connection,
+        runner: &dyn complexity::ToolRunner,
+    ) -> Result<Outcome> {
         let seq = self.seq(StepName::ComplexitySweep)?;
-        complexity::step(&self.0.ctx(conn, seq)?)
+        complexity::step_with(&self.0.ctx(conn, seq)?, runner)
     }
 
     fn seq(&self, name: StepName) -> Result<i64> {

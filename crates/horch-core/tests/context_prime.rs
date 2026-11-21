@@ -13,6 +13,7 @@ use horch_core::compaction::window::{WindowDecision, WindowSource};
 use horch_core::execution::legacy::LedgerRecordV1;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::SessionMode;
+use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records;
 use horch_core::harness::launch::{self, window_decision, window_in_effect, DiscoveryTarget};
 use horch_core::harness::{CommandSpec, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session};
 use horch_core::ids::SessionId;
@@ -38,9 +39,14 @@ impl World {
     fn new() -> World {
         // A short path: the daemon socket path of a launch must stay within
         // 103 bytes, and the default temp dir of macOS is long.
+        let root = if cfg!(unix) {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
         let tmp = tempfile::Builder::new()
             .prefix("hp")
-            .tempdir_in("/tmp")
+            .tempdir_in(root)
             .unwrap();
         let home = tmp.path().join("home");
         let workdir = tmp.path().join("project");
@@ -488,6 +494,7 @@ fn ctx_05_prime_launch_records_the_applied_window() {
     let warm = warm::write_warmed(&w.fake_prime(), "#!/bin/sh\nexit 0\n", &["warm"]);
     assert!(warm.status.success());
     let ctx = w.ctx(&[]);
+    let _fleetd = serve_session_records(&ctx.paths).unwrap();
     let (roster, mut t) = prime_teammate();
     // No skills: a resume checks them against the record, which has none.
     t.phase = None;

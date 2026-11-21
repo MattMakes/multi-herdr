@@ -12,11 +12,9 @@ use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 use crate::execution::lifecycle::TRANSCRIPT_JSONL;
-use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::questions_store;
-use crate::fleetd::ideas::application::questions;
-use crate::fleetd::ideas::domain::questions::{Question, State as QuestionState};
+use crate::fleetd::ideas::domain::questions::State as QuestionState;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::adapters::waits_store::{self, WaitRow};
@@ -778,8 +776,6 @@ pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
     )
 }
 
-/// Set the wait `kind` of `worker`: its calendar deadline `seconds` from
-/// now, and its cap `due_at` [`max_wait_s`] after the fleet clock.
 /// The mode of the newest attempt of `worker`, as its launch fixed it: exec
 /// when its attempt folder holds the exec stream ([`TRANSCRIPT_JSONL`]),
 /// which the wrapper opens before it starts the CLI. The profile of today
@@ -810,6 +806,8 @@ pub fn attempt_mode(conn: &Connection, worker: &str) -> Mode {
     }
 }
 
+/// Set the wait `kind` of `worker`: its calendar deadline `seconds` from
+/// now, and its cap `due_at` `max_wait_s` after the fleet clock.
 pub fn set_wait(
     conn: &Connection,
     worker: &str,
@@ -958,11 +956,7 @@ fn behind(conn: &Connection, w: &Worker, row: &WaitRow, task_ids: &[String]) -> 
     })
 }
 
-/// The waits of `worker` that count as activity now. A wait past its
-/// deadline or its cap `due_at`, or with no live row behind it, ends with a
-/// `wait_ended` event. A wait with a proof of work gets its cap moved
-/// ([`waits::judge`]).
-pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+fn judged(conn: &Connection, worker: &str) -> Result<Vec<(WaitRow, Vec<String>, Verdict)>> {
     let rows = waits_store::of_worker(conn, worker)?;
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -984,21 +978,56 @@ pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
             due_at,
             deadline_passed: row.deadline <= now,
         };
-        match waits::judge(&wait, &facts) {
+        let verdict = waits::judge(&wait, &facts);
+        out.push((row, task_ids, verdict));
+    }
+    Ok(out)
+}
+
+fn held(row: WaitRow, task_ids: Vec<String>, until: i64) -> Wait {
+    Wait {
+        kind: row.kind,
+        reason: row.reason,
+        started_at: row.started_at,
+        deadline: row.deadline,
+        task_ids,
+        due_at: until,
+        question_id: row.question_id,
+    }
+}
+
+/// The waits of `worker` that count as activity now, with no write: the
+/// view of a read-only command. A wait that [`waiting`] would end is left
+/// out, and a held wait shows its moved cap.
+pub fn waits_now(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+    Ok(judged(conn, worker)?
+        .into_iter()
+        .filter_map(|(row, task_ids, verdict)| match verdict {
+            Verdict::Ends(_) => None,
+            Verdict::Holds { due_at } => Some(held(row, task_ids, due_at)),
+        })
+        .collect())
+}
+
+/// The waits of `worker` that count as activity now. A wait past its
+/// deadline or its cap `due_at`, or with no live row behind it, ends with a
+/// `wait_ended` event. A wait with a proof of work gets its cap moved
+/// ([`waits::judge`]). A read-only command calls [`waits_now`].
+pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+    let verdicts = judged(conn, worker)?;
+    if verdicts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let w = get(conn, worker)?;
+    let mut out = Vec::new();
+    for (row, task_ids, verdict) in verdicts {
+        match verdict {
             Verdict::Ends(cause) => end_wait(conn, &w, &row.kind, &row.reason, cause)?,
             Verdict::Holds { due_at: until } => {
                 if row.due_at != Some(until) {
                     waits_store::set_due_at(conn, worker, &row.kind, until)?;
                 }
-                out.push(Wait {
-                    kind: row.kind,
-                    reason: row.reason,
-                    started_at: row.started_at,
-                    deadline: row.deadline,
-                    task_ids,
-                    due_at: until,
-                    question_id: row.question_id,
-                });
+                out.push(held(row, task_ids, until));
             }
         }
     }
@@ -1015,220 +1044,6 @@ pub fn closing_event(verb: &str) -> Option<EventKind> {
     }
 }
 
-/// Close each open horch question once a ledger action it names happened
-/// after it was asked (TRF-26). The task is looked up in every run of
-/// `workspace`.
-fn close_acted_questions(
-    conn: &Connection,
-    mail: &crate::messaging::mail::Mail,
-    workspace: &str,
-) -> Result<()> {
-    let mut runs: Option<Vec<String>> = None;
-    for q in mail.open_questions()? {
-        if q.closes_on.is_empty() {
-            continue;
-        }
-        let runs = match &mut runs {
-            Some(runs) => runs,
-            None => {
-                let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE workspace_id = ?1")?;
-                let ids = stmt
-                    .query_map([workspace], |r| r.get(0))?
-                    .collect::<rusqlite::Result<Vec<String>>>()?;
-                runs.insert(ids)
-            }
-        };
-        let asked = crate::clock::stamp(q.created_at.into());
-        if acted_since(conn, runs, &q.closes_on, &asked)? {
-            mail.close_question(&q.id.short())?;
-        }
-    }
-    Ok(())
-}
-
-/// Whether an action of `actions` (`<verb> T-<n>`) has an event at or after
-/// `since` for its task in one of `runs`.
-fn acted_since(
-    conn: &Connection,
-    runs: &[String],
-    actions: &[String],
-    since: &str,
-) -> Result<bool> {
-    for action in actions {
-        let Some((verb, key)) = action.split_once(' ') else {
-            continue;
-        };
-        let Some(kind) = closing_event(verb) else {
-            continue;
-        };
-        for run in runs {
-            let Ok(task) = super::tasks::resolve(conn, run, key) else {
-                continue;
-            };
-            let seen: i64 = conn.query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM events WHERE task_id = ?1 AND {} AND at >= ?3",
-                    util::kind_is("?2")
-                ),
-                params![task.task_id, kind.as_str(), since],
-                |r| r.get(0),
-            )?;
-            if seen > 0 {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Project the messaging layer's authoritative questions into ledger waits.
-/// First close the horch questions whose ledger action happened. Each open
-/// question of a working worker with a task gets 1 `questions` row
-/// ([`questions::ask`]). The question wait of the worker points at the row
-/// of its oldest open question, names the question by id (`#<id>`), and
-/// keeps its cap while it points at the same row. A row whose mail
-/// question is no longer open goes to `answered`, and its wait ends.
-pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &str) -> Result<()> {
-    let mail = crate::messaging::mail::Mail::under(state, workspace);
-    close_acted_questions(conn, &mail, workspace)?;
-    let open = mail.open_questions()?;
-    close_answered_rows(conn, workspace, &open)?;
-    let mut by_role: std::collections::BTreeMap<&str, Vec<&crate::messaging::mail::Message>> =
-        std::collections::BTreeMap::new();
-    for q in &open {
-        by_role.entry(q.from.as_str()).or_default().push(q);
-    }
-    let working = word(WorkerStatus::Working);
-    // The pass reads only the workers that a question or a question wait
-    // names, not each worker of the workspace (PL-5).
-    let mut asked = conn.prepare(&format!(
-        "SELECT worker_id FROM workers WHERE workspace_id=?1 AND status={working} AND role=?2"
-    ))?;
-    for (role, asked_by_role) in &by_role {
-        let ids = asked
-            .query_map(params![workspace, role], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for id in ids {
-            wait_on_questions(conn, &get(conn, &id)?, asked_by_role)?;
-        }
-    }
-    let mut waits = conn.prepare(&format!(
-        "SELECT w.worker_id, w.role FROM worker_waits q JOIN workers w ON w.worker_id = q.worker_id
-         WHERE q.kind='question' AND w.workspace_id=?1 AND w.status={working}"
-    ))?;
-    let waiting_workers = waits
-        .query_map([workspace], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, role) in waiting_workers {
-        if !role.is_some_and(|r| by_role.contains_key(r.as_str())) {
-            end_question_wait(conn, &get(conn, &id)?)?;
-        }
-    }
-    Ok(())
-}
-
-/// End the question wait of `w`, when it has one: no open question is
-/// behind it.
-fn end_question_wait(conn: &Connection, w: &Worker) -> Result<()> {
-    let Some(row) = waits_store::of_worker(conn, &w.worker_id)?
-        .into_iter()
-        .find(|r| r.kind == QUESTION_WAIT)
-    else {
-        return Ok(());
-    };
-    end_wait(conn, w, QUESTION_WAIT, &row.reason, End::QuestionClosed)
-}
-
-/// Write the `questions` rows of the open mail questions `open` of
-/// worker `w`, oldest first, and point its question wait at the oldest.
-/// A worker with no task asks for nothing that a row can hold.
-fn wait_on_questions(
-    conn: &Connection,
-    w: &Worker,
-    open: &[&crate::messaging::mail::Message],
-) -> Result<()> {
-    let Some(task) = w.task_id.as_deref() else {
-        return Ok(());
-    };
-    let attempt =
-        crate::fleetd::task_execution::adapters::sqlite::attempts_of_worker(conn, &w.worker_id)?
-            .into_iter()
-            .rfind(|a| a.task_id.as_deref() == Some(task))
-            .map_or_else(|| w.worker_id.clone(), |a| a.id);
-    let clock = lease::fleet_clock(conn)?;
-    let limit = FleetConfig::default().question_limit_s;
-    let mut rows: Vec<(&crate::messaging::mail::Message, Question)> = Vec::new();
-    for q in open {
-        let asked_at = crate::clock::stamp(q.created_at.into());
-        let ask = questions::Ask {
-            task_id: task,
-            attempt_id: &attempt,
-            mail_id: q.id.as_str(),
-            text: &q.text,
-            asked_at: &asked_at,
-        };
-        let row = questions::ask(conn, &ask, clock, limit)?;
-        // An answer recorded before its delivery closed the mail question
-        // leaves the row answered: no wait points at it.
-        if row.state == QuestionState::Open {
-            rows.push((q, row));
-        }
-    }
-    let Some((oldest, row)) = rows.first() else {
-        return end_question_wait(conn, w);
-    };
-    let started: chrono::DateTime<chrono::Utc> = oldest.created_at.into();
-    let earlier = waits_store::of_worker(conn, &w.worker_id)?
-        .into_iter()
-        .find(|r| r.kind == QUESTION_WAIT);
-    // Polling never extends a wait: the cap of a wait on the same row stays.
-    let due_at = earlier
-        .filter(|r| r.question_id.as_deref() == Some(row.id.as_str()))
-        .and_then(|r| r.due_at)
-        .unwrap_or_else(|| clock.0.saturating_add(max_wait_s()));
-    let wait = WaitRow {
-        kind: QUESTION_WAIT.to_string(),
-        reason: format!("#{} {}", oldest.id.short(), oldest.text),
-        started_at: crate::clock::stamp(started),
-        deadline: crate::clock::stamp(started + chrono::Duration::days(7)),
-        task_ids: "[]".to_string(),
-        due_at: Some(due_at),
-        question_id: Some(row.id.clone()),
-    };
-    waits_store::put(conn, &w.worker_id, &wait)
-}
-
-/// Each `questions` row that waits for an answer, of a feature whose
-/// internal run (`F-<run rowid>`, fleetd-p6 MAP.md Q5) is of `workspace`,
-/// and whose mail question is not in `open`, goes to `answered`. An answer
-/// through `horch tell --answers` recorded its text before the mail
-/// question closed.
-fn close_answered_rows(
-    conn: &Connection,
-    workspace: &str,
-    open: &[crate::messaging::mail::Message],
-) -> Result<()> {
-    let mut stmt =
-        conn.prepare("SELECT printf('F-%04d', rowid) FROM runs WHERE workspace_id = ?1")?;
-    let features = stmt
-        .query_map([workspace], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
-    for (q, mail_id) in questions::open_with_mail(conn)? {
-        if !features.contains(&q.feature_id) {
-            continue;
-        }
-        if !open
-            .iter()
-            .any(|m| Some(m.id.as_str()) == mail_id.as_deref())
-        {
-            questions::answered(conn, &q, None)?;
-        }
-    }
-    Ok(())
-}
-
 pub fn role_state(conn: &Connection, workspace: &str, role: &str) -> Result<String> {
     let w = optional(conn.query_row(
         "SELECT * FROM workers WHERE workspace_id=?1 AND role=?2 ORDER BY rowid DESC LIMIT 1",
@@ -1243,7 +1058,7 @@ pub fn role_state(conn: &Connection, workspace: &str, role: &str) -> Result<Stri
         [&w.worker_id],
         |r| r.get(0),
     ))?;
-    let waits = waiting(conn, &w.worker_id)?;
+    let waits = waits_now(conn, &w.worker_id)?;
     Ok(format!(
         " watchdog={}{}",
         verdict.as_deref().unwrap_or("unchecked"),
@@ -1345,107 +1160,6 @@ mod tests {
                 Ok((run.run_id, worker))
             })
             .unwrap()
-    }
-
-    fn question_wait(conn: &Connection, worker: &str) -> Option<Wait> {
-        waiting(conn, worker)
-            .unwrap()
-            .into_iter()
-            .find(|w| w.kind == "question")
-    }
-
-    /// TRF-25: the question wait names its question by id. An answer to
-    /// the first question moves the wait to the second, with the second's
-    /// start; an answer to the second ends it.
-    #[test]
-    fn trf_25_a_question_wait_is_keyed_by_question_id() {
-        use crate::messaging::mail::Mail;
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (_, worker) = asker(&mut s);
-        let mail = Mail::under(dir.path(), "w1");
-        let first = mail.enqueue("worker-1", "QUESTION: which?").unwrap();
-        let second = mail.enqueue("worker-1", "QUESTION: where?").unwrap();
-        let open = mail.open_questions().unwrap();
-
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        let wait = question_wait(s.conn(), &worker).expect("a question wait");
-        assert_eq!(wait.reason, format!("#{} QUESTION: which?", first.short()));
-
-        mail.close_question(&first.short()).unwrap().unwrap();
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        let wait = question_wait(s.conn(), &worker).expect("a question wait");
-        assert_eq!(wait.reason, format!("#{} QUESTION: where?", second.short()));
-        assert_eq!(
-            wait.started_at,
-            crate::clock::stamp(open[1].created_at.into())
-        );
-
-        mail.close_question(&second.short()).unwrap().unwrap();
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        assert!(question_wait(s.conn(), &worker).is_none());
-    }
-
-    fn held_question(mail: &crate::messaging::mail::Mail, task: &str) {
-        mail.enqueue(
-            "horch",
-            &format!(
-                "[horch] QUESTION: {task} is held. Ask the operator: requeue it \
-                 (horch ledger requeue {task} \"<reason>\"), or cancel it \
-                 (horch ledger cancel {task} \"<reason>\")."
-            ),
-        )
-        .unwrap();
-    }
-
-    fn hold(conn: &Connection, run: &str) -> crate::taskledger::tasks::Task {
-        conn.execute(
-            "UPDATE tasks SET status = 'escalated', held_reason = '3 attempts failed'
-             WHERE run_id = ?1",
-            [run],
-        )
-        .unwrap();
-        crate::taskledger::tasks::resolve(conn, run, "T-1").unwrap()
-    }
-
-    /// TRF-26: a horch question stays open until the ledger action it
-    /// names runs: `requeue T-1` closes it.
-    #[test]
-    fn trf_26_a_requeue_closes_the_held_question() {
-        use crate::messaging::mail::Mail;
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (run, _) = asker(&mut s);
-        let task = hold(s.conn(), &run);
-        let mail = Mail::under(dir.path(), "w1");
-        held_question(&mail, "T-1");
-        held_question(&mail, "T-9");
-
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        assert_eq!(mail.open_questions().unwrap().len(), 2);
-
-        crate::taskledger::tasks::requeue_by_operator(s.conn(), &task, "go").unwrap();
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        let open = mail.open_questions().unwrap();
-        assert_eq!(open.len(), 1, "only the T-1 question closes");
-        assert!(open[0].text.contains("T-9 is held"));
-    }
-
-    /// TRF-26: `cancel T-1`, the other action the question names, closes
-    /// it too.
-    #[test]
-    fn trf_26_a_cancel_closes_the_held_question() {
-        use crate::messaging::mail::Mail;
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (run, _) = asker(&mut s);
-        let task = hold(s.conn(), &run);
-        let mail = Mail::under(dir.path(), "w1");
-        held_question(&mail, "T-1");
-
-        crate::taskledger::tasks::cancel(s.conn(), &task, "drop").unwrap();
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        assert!(mail.open_questions().unwrap().is_empty());
     }
 
     #[test]
@@ -1680,6 +1394,20 @@ mod tests {
     }
 
     #[test]
+    fn waits_now_leaves_out_an_ended_wait_with_no_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        set_wait(s.conn(), &worker, BACKGROUND_WAIT, "build", &[], 24 * 3600).unwrap();
+        set_clock(s.conn(), 4_600);
+        assert!(waits_now(s.conn(), &worker).unwrap().is_empty());
+        assert!(row(s.conn(), &worker, BACKGROUND_WAIT).is_some());
+        assert!(ended(s.conn(), &worker).is_empty());
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(ended(s.conn(), &worker).len(), 1);
+    }
+
+    #[test]
     fn background_wait_of_a_worker_with_no_agent_pid_holds_to_its_cap() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
@@ -1719,68 +1447,6 @@ mod tests {
         set_clock(s.conn(), 4_600);
         assert!(waiting(s.conn(), &worker).unwrap().is_empty());
         assert_eq!(ended(s.conn(), &worker).len(), 1);
-    }
-
-    fn mail_question(dir: &Path, text: &str) -> crate::messaging::mail::Id {
-        crate::messaging::mail::Mail::under(dir, "w1")
-            .enqueue("worker-1", text)
-            .unwrap()
-    }
-
-    #[test]
-    fn question_wait_points_at_its_open_questions_row() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (_, worker) = claimed(&mut s);
-        mail_question(dir.path(), "QUESTION: which?");
-        mail_question(dir.path(), "QUESTION: where?");
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-
-        let rows: Vec<(String, String, String, i64)> = {
-            let mut stmt = s
-                .conn()
-                .prepare("SELECT id, feature_id, state, due_at FROM questions ORDER BY id")
-                .unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap()
-        };
-        assert_eq!(rows.len(), 2, "1 row for each open question: {rows:?}");
-        assert!(
-            rows.iter()
-                .all(|r| r.1 == "F-0001" && r.2 == "open" && r.3 == 1_900),
-            "the feature of the run of the task: {rows:?}"
-        );
-        let wait = question_wait(s.conn(), &worker).expect("a question wait");
-        assert_eq!(wait.question_id.as_deref(), Some(rows[0].0.as_str()));
-        assert!(rows[0].0.ends_with("/Q1"), "{rows:?}");
-        assert_eq!(wait.due_at, 4_600);
-    }
-
-    #[test]
-    fn question_wait_ends_when_its_row_is_answered() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (_, worker) = claimed(&mut s);
-        let id = mail_question(dir.path(), "QUESTION: which?");
-        sync_questions(s.conn(), dir.path(), "w1").unwrap();
-        let qid = question_wait(s.conn(), &worker)
-            .unwrap()
-            .question_id
-            .unwrap();
-
-        // The answer by id records its text, then closes the mail question.
-        let answered = questions::answer_mail(s.conn(), id.as_str(), "the first").unwrap();
-        assert_eq!(answered.as_deref(), Some(qid.as_str()));
-        assert!(question_wait(s.conn(), &worker).is_none());
-        assert_eq!(
-            ended(s.conn(), &worker),
-            ["question_closed: the question wait ended (#".to_string()
-                + &id.short()
-                + " QUESTION: which?)"]
-        );
     }
 
     #[test]

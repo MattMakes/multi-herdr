@@ -1,23 +1,11 @@
-//! End-to-end: the spawn path that `intake spawn` uses works from inside a
-//! worker (skill-intake T-27, spec 6.1 H-1 and H-6, 6.5).
-//!
-//! The argv is read from `scripts/skill-intake/tests/fixtures/spawn-argv.json`,
-//! the file `test_roles.py` (T-21) reads too, so a change to its shape on the
-//! Python side fails here. The teammates are test-only (`agent: none`), so
-//! no model session starts.
-//!
-//! TRF-43: `horch spawn` refuses task text, except a `spawn_only`
-//! controller's brief to a `horch_access: report` role (T-56). The caller
-//! must run in the agent process that horch recorded on the controller's
-//! ledger row (T-58). No pane here runs an agent, so a test records this
-//! test process as the controller's agent: each `horch spawn` it runs is a
-//! child of it.
-
 #![cfg(unix)]
 
 use std::process::Output;
 
+use horch_core::taskledger::workers::NewWorker;
+use horch_e2e::bind::bind_worker;
 use horch_e2e::harness::{fixtures, repo_root, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -27,11 +15,6 @@ fn text(o: &Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
-}
-
-fn json_of(h: &Harness, args: &[&str]) -> Value {
-    let o = h.run(args);
-    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
 /// The spawn argv of the shared fixture, with `{teammate}` and `{brief}`
@@ -93,27 +76,14 @@ fn roster_harness(label: &str) -> Harness {
     h
 }
 
-/// Spawn `args` from the operator pane `w1:p1`; return the new pane id.
-fn spawn_pane(h: &Harness, args: &[&str]) -> String {
-    let mut all = vec!["spawn"];
-    all.extend_from_slice(args);
-    all.extend_from_slice(&["--from-pane", "w1:p1", "--no-tile"]);
-    let o = h.run(&all);
-    assert!(o.status.success(), "{}", text(&o));
-    String::from_utf8_lossy(&o.stdout)
-        .lines()
-        .last()
-        .expect("spawn prints the pane id")
-        .trim()
-        .to_string()
-}
-
 /// Register `role` on `pane`, as its `horch worker` does when the pane
 /// starts (no pane runs a command here).
 fn register(h: &Harness, role: &str, pane: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let path = h.state.join(format!("herdr-orchestration-w1/{role}.id"));
+    let dir = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{role}.id"));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -155,250 +125,88 @@ fn record_agent(h: &Harness, worker_id: &str, pid: u32) {
     .unwrap();
 }
 
-/// A controller `ctl-1` in a new run, with its worker row. Its agent is
-/// not recorded yet.
-fn controller_in_run(h: &Harness) -> (String, String, Value) {
-    let run = run_id(h);
-    queue_for(h, "ctl");
-    let ctl = spawn_pane(h, &["ctl", "--exact"]);
-    register(h, "ctl-1", &ctl);
-    let row = ledger_workers(h)
-        .into_iter()
-        .find(|w| w["persona"] == "ctl")
-        .expect("the controller has a worker row");
-    (run, ctl, row)
-}
-
-fn ledger_worker(h: &Harness, worker_id: &str) -> Value {
-    json_of(h, &["ledger", "show", worker_id, "--json"])["worker"].clone()
-}
-
-fn run_id(h: &Harness) -> String {
-    let o = h.run(&["ledger", "run", "new", "intake-run"]);
-    assert!(o.status.success(), "{}", text(&o));
-    let run = json_of(h, &["ledger", "status", "--json"]);
-    run["run"]["run_id"].as_str().expect("a run id").to_string()
-}
-
-/// The ledger worker rows (kind `worker`) of the active run.
-fn ledger_workers(h: &Harness) -> Vec<Value> {
-    let st = json_of(h, &["ledger", "status", "--json"]);
-    st["workers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|w| w["worker"].clone())
-        .filter(|w| w["kind"] == "worker")
-        .collect()
-}
-
-fn brief_of(h: &Harness, role: &str) -> Value {
-    let path = h
-        .state
-        .join(format!("herdr-orchestration-w1/{role}.brief.json"));
-    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    serde_json::from_str(&raw).expect("the brief is JSON")
-}
-
-/// Queue 1 startable task for `persona` in the active run: a task-less
-/// spawn into a run needs one (TRF-31).
-fn queue_for(h: &Harness, persona: &str) {
+fn worker_in_run(h: &Harness, persona: &str, pane: &str) -> String {
+    let run = seed_run(h, "intake-run", None, "w1:p1");
     let file = h.project.join(format!("{persona}-ticket.md"));
     std::fs::write(&file, format!("# {persona}\n**Check:** `true`\n")).unwrap();
-    let file = file.to_string_lossy().into_owned();
-    let o = h.run(&["ledger", "add", "--file", &file, "--primary", persona]);
-    assert!(o.status.success(), "{}", text(&o));
+    seed_task(h, &run, &file, persona);
+    let worker = NewWorker {
+        persona: persona.to_string(),
+        pane_id: Some(pane.to_string()),
+        workspace_id: Some("w1".to_string()),
+        ..Default::default()
+    };
+    bind_worker(h, worker, None).worker_id
 }
 
-/// T-38: a `spawn_only` controller that is a worker of a ledger run spawns
-/// a role with task text, and no one set `HORCH_RUN_ID`: the role has a
-/// worker row in the controller's run, and its brief carries the row id,
-/// which its pane gets as `HORCH_WORKER_ID`. The controller itself claims
-/// its task, as every worker does (TRF-43).
-#[test]
-fn a_controller_in_a_run_spawns_a_role_that_joins_the_run() {
-    let h = roster_harness("intake-join");
-    let (run, ctl, ctl_row) = controller_in_run(&h);
-    record_agent(
-        &h,
-        ctl_row["worker_id"].as_str().unwrap(),
-        std::process::id(),
-    );
-
-    let o = spawn_from(&h, &ctl, "intake-smoke");
-    assert!(o.status.success(), "{}", text(&o));
-
-    let row = ledger_workers(&h)
-        .into_iter()
-        .find(|w| w["persona"] == "intake-smoke")
-        .unwrap_or_else(|| panic!("the role has no worker row: {}", text(&o)));
-    assert_eq!(row["run_id"], run.as_str(), "{row}");
-    assert_eq!(row["kind"], "worker", "{row}");
-    assert_ne!(row["worker_id"], ctl_row["worker_id"]);
-    let brief = brief_of(&h, "intake-smoke-1");
-    assert_eq!(brief["worker_id"], row["worker_id"], "{brief}");
-    assert_eq!(brief["controller"], "ctl-1", "{brief}");
-    assert_eq!(
-        brief["task"],
-        "Read and follow ".to_string()
-            + &h.project.join("brief.md").to_string_lossy()
-            + " exactly.",
-        "the role keeps its task text and is not told to claim"
-    );
+fn worker_rows(h: &Harness) -> i64 {
+    let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
+    store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM workers WHERE kind = 'worker'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
 }
 
-/// TRF-43 (T-58): a controller outside every run has no ledger row, so
-/// horch recorded no agent for it, and its brief is refused. The refusal
-/// says to queue the work as a ledger task. No role pane opens, and no row
-/// is written, also while the project has an active run.
+fn assert_refused_and_nothing_left(h: &Harness, pane: &str, teammate: &str) {
+    let rows = worker_rows(h);
+    let calls = h.calls_of("herdr").len();
+    let o = spawn_from(h, pane, teammate);
+    assert!(!o.status.success(), "{}", text(&o));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("horch spawn is retired"), "{}", text(&o));
+    let briefs: Vec<_> = std::fs::read_dir(h.state.join("herdr-orchestration-w1"))
+        .map(|d| {
+            d.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".brief.json"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        briefs.is_empty(),
+        "a refused spawn wrote a brief: {briefs:?}"
+    );
+    let split = h.calls_of("herdr").into_iter().skip(calls).any(|c| {
+        let argv: Vec<String> = serde_json::from_value(c["argv"].clone()).unwrap_or_default();
+        argv.iter().any(|a| a == "split" || a == "run")
+    });
+    assert!(!split, "a refused spawn split or ran a pane");
+    assert_eq!(worker_rows(h), rows, "a refused spawn left a worker row");
+}
+
 #[test]
 fn trf_43_a_controller_outside_every_run_cannot_send_a_brief() {
     let h = roster_harness("intake-outside");
-    // No run is active yet: the controller joins none.
-    let ctl = spawn_pane(&h, &["ctl", "--exact"]);
-    register(&h, "ctl-1", &ctl);
-    run_id(&h);
-    assert!(ledger_workers(&h).iter().all(|w| w["persona"] != "ctl"));
-
-    let o = spawn_from(&h, &ctl, "intake-smoke");
-    assert!(!o.status.success(), "{}", text(&o));
-    let stderr = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        stderr.contains("horch spawn takes no task text")
-            && stderr.contains("ctl-1 is in no ledger run, so it sends no brief")
-            && stderr.contains("horch ledger task \"<title>\" --persona ctl, then spawn ctl."),
-        "{}",
-        text(&o)
-    );
-    assert!(ledger_workers(&h).is_empty(), "a refused spawn left a row");
-    let role_brief = h
-        .state
-        .join("herdr-orchestration-w1/intake-smoke-1.brief.json");
-    assert!(!role_brief.exists(), "a refused spawn wrote a brief");
+    register(&h, "ctl-1", "w1:p1");
+    assert_eq!(worker_rows(&h), 0);
+    assert_refused_and_nothing_left(&h, "w1:p1", "intake-smoke");
 }
 
-/// TRF-43 (T-58): `HERDR_PANE_ID` alone does not make a caller the
-/// controller. A caller outside the process tree of the controller's
-/// recorded agent is refused, and no role row is left.
 #[test]
 fn trf_43_a_spoofed_pane_id_cannot_send_a_brief() {
     let h = roster_harness("intake-spoof");
-    let (_, ctl, ctl_row) = controller_in_run(&h);
-    let ctl_id = ctl_row["worker_id"].as_str().unwrap();
-    // No agent recorded: the spawn is refused.
-    let o = spawn_from(&h, &ctl, "intake-smoke");
-    assert!(!o.status.success(), "{}", text(&o));
+    let ctl = worker_in_run(&h, "ctl", "w1:p2");
+    register(&h, "ctl-1", "w1:p2");
     // The recorded agent is a process that is no ancestor of the caller.
     let mut other = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
         .unwrap();
-    record_agent(&h, ctl_id, other.id());
-    let spoofed = spawn_from(&h, &ctl, "intake-smoke");
+    record_agent(&h, &ctl, other.id());
+    assert_refused_and_nothing_left(&h, "w1:p2", "intake-smoke");
     let _ = other.kill();
     let _ = other.wait();
-    for o in [o, spoofed] {
-        assert!(!o.status.success(), "{}", text(&o));
-        let stderr = String::from_utf8_lossy(&o.stderr);
-        assert!(
-            stderr.contains("horch spawn takes no task text")
-                && stderr.contains("--persona intake-smoke"),
-            "{}",
-            text(&o)
-        );
-    }
-    assert!(
-        ledger_workers(&h)
-            .iter()
-            .all(|w| w["persona"] != "intake-smoke"),
-        "a refused spawn left a row"
-    );
 }
 
-/// Report 56: a report role with a ledger row and no claimed task runs to
-/// `horch done`. Its `agent: none` worker runs `horch done` with the env
-/// that the report socket's `done` uses. The row ends `done`, and no
-/// BLOCKED line or error reaches the controller.
-#[test]
-fn a_report_role_with_a_row_and_no_task_runs_to_done() {
-    // A short label: the report socket path under the harness state root
-    // must stay under the 104-byte macOS `SUN_LEN`.
-    let h = roster_harness("i-done");
-    let (_, ctl, ctl_row) = controller_in_run(&h);
-    record_agent(
-        &h,
-        ctl_row["worker_id"].as_str().unwrap(),
-        std::process::id(),
-    );
-
-    // Only the role's pane runs its command.
-    let o = spawn_from_with(
-        &h,
-        &ctl,
-        "intake-smoke",
-        &[("HORCH_FAKE_SCENARIO", "exec,stay")],
-    );
-    assert!(o.status.success(), "{}", text(&o));
-    let row = ledger_workers(&h)
-        .into_iter()
-        .find(|w| w["persona"] == "intake-smoke")
-        .expect("the role has a worker row");
-    let id = row["worker_id"].as_str().unwrap().to_string();
-    assert!(row["task_id"].is_null(), "{row}");
-
-    let pane = row["pane_id"].as_str().unwrap().replace(':', "_");
-    let mut out = h.log.clone().into_os_string();
-    out.push(format!(".pane-{pane}.out"));
-    let screen = || std::fs::read_to_string(&out).unwrap_or_default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let ended = loop {
-        let w = ledger_worker(&h, &id);
-        if w["ended_at"].is_string() {
-            break w;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the row never ended: {w}\npane output:\n{}",
-            screen()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    };
-    assert_eq!(
-        ended["status"],
-        "done",
-        "{ended}\npane output:\n{}",
-        screen()
-    );
-    assert!(ended["task_id"].is_null(), "{ended}");
-    let mail = h.state.join("herdr-orchestration-w1");
-    let blocked = std::fs::read_dir(&mail)
-        .unwrap()
-        .flatten()
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .filter(|t| t.contains("BLOCKED") || t.contains("error"))
-        .collect::<Vec<_>>();
-    assert!(blocked.is_empty(), "{blocked:?}");
-}
-
-/// TRF-43: a worker without `spawn_only` cannot send task text, also to a
-/// report role. The refusal names `horch ledger task`, and no row is left.
 #[test]
 fn trf_43_a_worker_without_spawn_only_cannot_send_a_brief() {
     let h = roster_harness("intake-plain");
-    let plain = spawn_pane(&h, &["smoke", "--exact"]);
-    register(&h, "smoke-1", &plain);
-    run_id(&h);
-
+    worker_in_run(&h, "smoke", "w1:p2");
+    register(&h, "smoke-1", "w1:p2");
     for teammate in ["intake-smoke", "smoke"] {
-        let o = spawn_from(&h, &plain, teammate);
-        assert!(!o.status.success(), "{}", text(&o));
-        let stderr = String::from_utf8_lossy(&o.stderr);
-        assert!(
-            stderr.contains("horch spawn takes no task text")
-                && stderr.contains(&format!("--persona {teammate}")),
-            "{}",
-            text(&o)
-        );
+        assert_refused_and_nothing_left(&h, "w1:p2", teammate);
     }
-    assert!(ledger_workers(&h).is_empty(), "a refused spawn left a row");
 }

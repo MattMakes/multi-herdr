@@ -23,7 +23,7 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use super::reply::Decided;
-use super::{human_bytes, listed_worktrees, refs, Row};
+use super::{has_no_branch, human_bytes, listed_worktrees, refs, Row};
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, JobCtx, JobKey, Queued as JobQueued, Ran,
@@ -350,7 +350,7 @@ fn check_identity(git: &Git, wt: &WorktreeRow) -> Result<()> {
         return Ok(());
     }
     match git.current_branch(dir) {
-        Some(_) if wt.branch.is_empty() => Ok(()),
+        Some(_) if has_no_branch(&wt.branch) => Ok(()),
         Some(b) if b == wt.branch => Ok(()),
         Some(b) => bail!(
             "the worktree is on {b}, not its recorded branch {}; nothing removed",
@@ -425,7 +425,7 @@ fn prepare(git: &Git, root: &Path, row: &Row, wt: &WorktreeRow) -> Result<String
 /// `unsafe_to_remove` against `holder`, a ref that holds the work.
 fn must_be_safe(git: &Git, root: &Path, wt: &WorktreeRow, holder: &str, tip: &str) -> Result<()> {
     let mut w = wt.clone();
-    if w.branch.is_empty() {
+    if has_no_branch(&w.branch) {
         w.branch = tip.to_string();
     }
     if let Some(why) = land::unsafe_to_remove(git, root, &w, holder, None)? {
@@ -483,7 +483,7 @@ fn settle_gone(store: &mut Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) 
     } else {
         Folder::Missing
     };
-    let holds_tip = if wt.branch.is_empty() {
+    let holds_tip = if has_no_branch(&wt.branch) {
         None
     } else {
         let tip = env.git.rev(env.root, &wt.branch).ok();
@@ -670,7 +670,7 @@ fn archive_at(fx: &mut dyn Folders, env: &Env<'_>, f: &Freeing<'_>, before: &str
     refs::write(env.git, env.root, &r, &f.tip)?;
     must_be_safe(env.git, env.root, wt, &r, &f.tip)?;
     let bytes = fx.free(env, f, &r)?;
-    let branch = if wt.branch.is_empty() {
+    let branch = if has_no_branch(&wt.branch) {
         String::new()
     } else {
         format!("; the branch {} stays", wt.branch)
@@ -726,7 +726,7 @@ fn delete_branch(
     tip: &str,
 ) -> Result<String> {
     let b = &wt.branch;
-    if b.is_empty() || !git.branch_exists(root, b) {
+    if has_no_branch(b) || !git.branch_exists(root, b) {
         return Ok("no branch to delete".into());
     }
     if refs::read(git, root, trash).as_deref() != Some(tip) {
@@ -1618,7 +1618,7 @@ impl Folders for InJob<'_> {
         }
         // The folder is gone: the rows may go to `removed` only when
         // `holder` holds the tip of the branch and git lists no folder.
-        let holds_tip = if wt.branch.is_empty() {
+        let holds_tip = if has_no_branch(&wt.branch) {
             None
         } else {
             let tip = env.git.rev(env.root, &wt.branch).ok();
@@ -1655,9 +1655,10 @@ impl Folders for InJob<'_> {
 /// Write the rows of the result `ran` of the `triage_apply` run `job`, in
 /// `tx` of fleetd. The result file is untrusted: each fact must name the
 /// ledger row of its item of the input, in its order, and each ref, commit
-/// and text is checked before a write. An error refuses each fact of the
-/// run, and the caller rolls back each write of this call. Each state move
-/// goes through `transition()`.
+/// and text is checked before a write. Each decision settles under its own
+/// savepoint: a refused fact rolls back the writes of its own decision and
+/// fails only that decision, and the other decisions of the run stay
+/// (R2-F1; FM-11). Each state move goes through `transition()`.
 pub fn ingest(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, ran: &Ran) -> Result<()> {
     let Some(facts) = facts_of::<JobFacts>(ran.data.as_ref())? else {
         return Ok(());
@@ -1672,41 +1673,57 @@ pub fn ingest(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, ran: &Ran) -> Res
     }
     for (item, fact) in input.items.iter().zip(&facts.decisions) {
         let decision = TriageDecision::parse(&item.decision)?;
-        check_fact(item, decision, fact)?;
         let wt = finish::worktree(tx, &item.worktree_id)?;
-        if !fact.ok {
-            // The run can fail after it rescued or removed the folder: the
-            // rows keep what it did before the failure (T-887).
-            let id = wt.worktree_id.as_str();
-            match (fact.removed, fact.rescue_ref.as_deref()) {
-                (true, r) => settle_removed(ctx, tx, id, r)?,
-                (false, Some(r)) => settle_rescued(ctx, tx, id, r)?,
-                (false, None) => {}
+        tx.execute_batch("SAVEPOINT triage_decision")?;
+        match ingest_one(ctx, tx, item, decision, &wt, fact) {
+            Ok(()) => tx.execute_batch("RELEASE triage_decision")?,
+            Err(why) => {
+                tx.execute_batch("ROLLBACK TO triage_decision; RELEASE triage_decision")?;
+                let why = format!("fleetd refused the facts of this decision: {why:#}");
+                failed(tx, &item.row, &wt, decision, &why)?;
             }
-            failed(tx, &item.row, &wt, decision, &fact.text)?;
-            continue;
         }
-        if let Some(c) = &fact.landed_commit {
-            tx.execute(
-                "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
-                params![wt.worktree_id, c, util::now()],
-            )?;
-        }
-        settle_removed(ctx, tx, &wt.worktree_id, fact.rescue_ref.as_deref())?;
-        let done = Done {
-            status: Some(match decision {
-                TriageDecision::Delete => WorktreeStatus::Trashed,
-                TriageDecision::Land => WorktreeStatus::Cleaned,
-                _ => WorktreeStatus::Archived,
-            }),
-            archive_ref: fact.archive_ref.clone(),
-            bytes_freed: fact.bytes_freed,
-            text: fact.text.clone(),
-            queued: None,
-        };
-        record(tx, &item.row, &wt, decision, &done)?;
     }
     Ok(())
+}
+
+fn ingest_one(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    item: &JobItem,
+    decision: TriageDecision,
+    wt: &WorktreeRow,
+    fact: &DecisionFacts,
+) -> Result<()> {
+    check_fact(item, decision, fact)?;
+    let id = wt.worktree_id.as_str();
+    if !fact.ok {
+        match (fact.removed, fact.rescue_ref.as_deref()) {
+            (true, r) => settle_removed(ctx, tx, id, r)?,
+            (false, Some(r)) => settle_rescued(ctx, tx, id, r)?,
+            (false, None) => {}
+        }
+        return failed(tx, &item.row, wt, decision, &fact.text);
+    }
+    if let Some(c) = &fact.landed_commit {
+        tx.execute(
+            "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
+            params![id, c, util::now()],
+        )?;
+    }
+    settle_removed(ctx, tx, id, fact.rescue_ref.as_deref())?;
+    let done = Done {
+        status: Some(match decision {
+            TriageDecision::Delete => WorktreeStatus::Trashed,
+            TriageDecision::Land => WorktreeStatus::Cleaned,
+            _ => WorktreeStatus::Archived,
+        }),
+        archive_ref: fact.archive_ref.clone(),
+        bytes_freed: fact.bytes_freed,
+        text: fact.text.clone(),
+        queued: None,
+    };
+    record(tx, &item.row, wt, decision, &done)
 }
 
 /// Refuse a fact that does not fit its item: another ledger row, a text

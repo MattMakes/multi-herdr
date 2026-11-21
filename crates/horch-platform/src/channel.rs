@@ -130,9 +130,10 @@ impl Stream {
 
     /// Make each later write of this stream wait at most `timeout`. A write
     /// that waits longer fails with `WouldBlock` or `TimedOut`. A zero
-    /// `timeout` is `InvalidInput`. Windows gives `Unsupported`: a write on
-    /// a pipe waits until the other side reads the bytes that do not fit in
-    /// the buffer of the pipe.
+    /// `timeout` is `InvalidInput`. A pipe on Windows has no write timeout,
+    /// so there a watchdog cancels a write that waits longer, and the write
+    /// fails with `TimedOut`. Bytes of a cancelled write can be lost, so the
+    /// caller ends the connection after a write that timed out.
     pub fn set_write_timeout(&self, timeout: Duration) -> io::Result<()> {
         os::channel::set_write_timeout(&self.0, timeout)
     }

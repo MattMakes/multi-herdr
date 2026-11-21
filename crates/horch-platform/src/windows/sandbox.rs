@@ -15,6 +15,11 @@ pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
 
 /// Windows has no sandbox host, so it has no arguments. [`program`] gives
 /// `NotSupported` first, so no caller gets here.
-pub(crate) fn args(_rules: &[Rule<'_>], _temp: bool, _network: Network) -> Vec<OsString> {
+pub(crate) fn args(
+    _rules: &[Rule<'_>],
+    _temp: bool,
+    _network: Network,
+    _own_pids: bool,
+) -> Vec<OsString> {
     Vec::new()
 }

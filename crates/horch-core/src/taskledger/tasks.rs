@@ -58,7 +58,7 @@ pub struct Task {
     pub kind: String,
     pub parent_task_id: Option<String>,
     /// The stored word. Its JSON is the shown word `status` and the stored
-    /// word `state` ([`status_json`]).
+    /// word `state` (`status_json`).
     #[serde(flatten, serialize_with = "status_json")]
     pub status: String,
     pub attempts: i64,
@@ -456,6 +456,30 @@ pub fn files(conn: &Connection, task_id: &str, mode: FileMode) -> Result<Vec<Str
         .query_map(params![task_id, mode.as_str()], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(rows)
+}
+
+/// The files of `mode` of each task in 1 of `statuses`, by task, each list
+/// sorted: 1 statement for any count of tasks.
+pub fn files_of_tasks_in(
+    conn: &Connection,
+    statuses: &[TaskStatus],
+    mode: FileMode,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    let sql = format!(
+        "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
+         WHERE t.status IN ({}) AND f.mode = ?1 ORDER BY f.task_id, f.path",
+        super::sql_words::list(statuses)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([mode.as_str()], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for row in rows {
+        let (task_id, path) = row?;
+        out.entry(task_id).or_default().push(path);
+    }
+    Ok(out)
 }
 
 /// Queue 1 task. Blockers must already exist in the run, so a single add
@@ -1878,7 +1902,7 @@ mod tests {
         let a = Ask {
             task_id: &task,
             attempt_id: "A1",
-            mail_id: "m1",
+            mail_id: Some("m1"),
             text: "QUESTION: which file?\u{1b}[2J",
             asked_at: "2026-11-17T00:00:00Z",
         };

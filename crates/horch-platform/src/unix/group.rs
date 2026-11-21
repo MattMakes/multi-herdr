@@ -11,11 +11,15 @@ pub(crate) fn new_group(cmd: &mut Command) {
 /// `SIGKILL` to group `pgid`. 0 names the group of the caller, and a value
 /// above `i32::MAX` becomes a negative `pid_t`, so both send nothing.
 fn kill_pgid(pgid: u32) -> bool {
+    signal_pgid(pgid, libc::SIGKILL)
+}
+
+fn signal_pgid(pgid: u32, signal: libc::c_int) -> bool {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return false;
     };
     // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe { libc::killpg(group, libc::SIGKILL) == 0 }
+    unsafe { libc::killpg(group, signal) == 0 }
 }
 
 pub(crate) fn kill_group_id(pgid: u32) -> Result<bool, NotSupported> {
@@ -26,6 +30,11 @@ pub(crate) fn kill_group_id(pgid: u32) -> Result<bool, NotSupported> {
 /// group is ours.
 pub(crate) fn kill_child_group(child: &mut Child) -> bool {
     kill_pgid(child.id())
+}
+
+/// `SIGTERM` to the group of `child`, which is ours as above.
+pub(crate) fn term_child_group(child: &mut Child) -> bool {
+    signal_pgid(child.id(), libc::SIGTERM)
 }
 
 /// `waitid` on `child` with `WNOWAIT`: it does not reap. The caller reads
@@ -61,6 +70,12 @@ pub(crate) fn detach(cmd: &mut Command) -> Result<(), NotSupported> {
     Ok(())
 }
 
+/// std opens each descriptor close-on-exec: the child inherits only its
+/// stdio.
+pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
 pub(crate) fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupported> {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return Ok(false);
@@ -71,6 +86,15 @@ pub(crate) fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupporte
         // SAFETY: signal 0 checks that the group has a member; nothing is sent.
         None => (unsafe { libc::kill(-group, 0) }) == 0,
     })
+}
+
+pub(crate) fn is_group_leader(pgid: u32, started: u64) -> Result<bool, NotSupported> {
+    let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
+        return Ok(false);
+    };
+    // SAFETY: plain syscall; a pid that has gone answers -1.
+    Ok(crate::process::start_time(pgid) == Some(started)
+        && (unsafe { libc::getpgid(group) }) == group)
 }
 
 /// The process group of the child holds it: nothing to set up or to end

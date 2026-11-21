@@ -184,7 +184,7 @@ fn open_one(
         onto,
         pair: &pair,
         feature_tests: feature_tests(&run_tasks),
-        primary_tests: features::project_settings(r.git, repo, onto)
+        primary_tests: features::project_settings(r.git, repo, onto)?
             .ok()
             .and_then(|s| s.gates.fast),
     };

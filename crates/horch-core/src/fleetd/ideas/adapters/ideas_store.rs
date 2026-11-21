@@ -210,3 +210,28 @@ pub fn covers(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<_>>()?;
     Ok(ids)
 }
+
+/// The ids of the ideas in `state`: 1 statement for any count of ideas.
+pub fn ids_in_state(conn: &Connection, state: &str) -> Result<std::collections::BTreeSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM ideas WHERE state = ?1")?;
+    let ids = stmt.query_map([state], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The state of each idea of `ids`, by id, in 1 statement for any count of
+/// ids. An id with no idea is not in the map.
+pub fn states_of<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT id, state FROM ideas WHERE id IN ({})",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}

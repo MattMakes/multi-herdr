@@ -9,6 +9,7 @@
 //! no I/O.
 
 use super::clock::FleetSeconds;
+use super::pass::{stop_step, StopStep};
 
 /// The class of a job kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,7 +370,8 @@ pub enum Seen {
     /// It ends in this state.
     Ends(State),
     /// It is past its deadline and its process runs: stop it after the
-    /// commit. `kill` is true past the deadline plus `stop_grace_s`.
+    /// commit. The first stop is the `SIGTERM` (`kill` false); `kill` is
+    /// true when `stop_grace_s` after the recorded `SIGTERM` is over.
     Stop { kill: bool },
     /// It goes on.
     Runs,
@@ -377,11 +379,16 @@ pub enum Seen {
 
 /// What a pass does at `clock` with a `running` run whose process is
 /// `process`, whose stored result ends it in `result` (when it wrote one),
-/// with its `deadline`. A written result wins over each other fact.
+/// with its `deadline`, and whose stop sent `SIGTERM` at `term_at` (`None`:
+/// not yet). A written result wins over each other fact. The kill comes
+/// only after a `SIGTERM` and its grace, so the handler of the job process
+/// can kill the groups that it started; the grace is on the fleet clock,
+/// so a pass never waits for it.
 pub fn observe(
     process: Process,
     result: Option<State>,
     deadline_at: FleetSeconds,
+    term_at: Option<FleetSeconds>,
     stop_grace_s: u64,
     clock: FleetSeconds,
 ) -> Seen {
@@ -390,8 +397,10 @@ pub fn observe(
     }
     match process {
         Process::Gone => Seen::Ends(State::Abandoned),
-        Process::Alive if clock >= deadline_at => Seen::Stop {
-            kill: clock >= deadline(deadline_at, stop_grace_s),
+        Process::Alive if clock >= deadline_at => match stop_step(term_at, clock, stop_grace_s) {
+            StopStep::Polite => Seen::Stop { kill: false },
+            StopStep::Wait => Seen::Runs,
+            StopStep::Kill => Seen::Stop { kill: true },
         },
         Process::Alive | Process::Unknown => Seen::Runs,
     }
@@ -514,32 +523,58 @@ mod tests {
         let d = FleetSeconds(50);
         let before = FleetSeconds(49);
         let at = FleetSeconds(50);
+        let in_grace = FleetSeconds(69);
         let past_grace = FleetSeconds(70);
         let ok = Some(State::Passed);
         assert_eq!(
-            observe(Process::Gone, ok, d, 20, before),
+            observe(Process::Gone, ok, d, None, 20, before),
             Seen::Ends(State::Passed)
         );
         assert_eq!(
-            observe(Process::Alive, ok, d, 20, past_grace),
+            observe(Process::Alive, ok, d, Some(at), 20, past_grace),
             Seen::Ends(State::Passed)
         );
         assert_eq!(
-            observe(Process::Gone, None, d, 20, before),
+            observe(Process::Gone, None, d, None, 20, before),
             Seen::Ends(State::Abandoned)
         );
-        assert_eq!(observe(Process::Alive, None, d, 20, before), Seen::Runs);
         assert_eq!(
-            observe(Process::Alive, None, d, 20, at),
+            observe(Process::Alive, None, d, None, 20, before),
+            Seen::Runs
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, None, 20, at),
             Seen::Stop { kill: false }
         );
         assert_eq!(
-            observe(Process::Alive, None, d, 20, past_grace),
+            observe(Process::Alive, None, d, Some(at), 20, in_grace),
+            Seen::Runs
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, Some(at), 20, past_grace),
             Seen::Stop { kill: true }
         );
         assert_eq!(
-            observe(Process::Unknown, None, d, 20, past_grace),
+            observe(Process::Unknown, None, d, Some(at), 20, past_grace),
             Seen::Runs
+        );
+    }
+
+    #[test]
+    fn a_run_first_seen_past_its_deadline_and_grace_gets_the_term_before_the_kill() {
+        let d = FleetSeconds(50);
+        let late = FleetSeconds(500);
+        assert_eq!(
+            observe(Process::Alive, None, d, None, 20, late),
+            Seen::Stop { kill: false }
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, Some(late), 20, FleetSeconds(519)),
+            Seen::Runs
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, Some(late), 20, FleetSeconds(520)),
+            Seen::Stop { kill: true }
         );
     }
 

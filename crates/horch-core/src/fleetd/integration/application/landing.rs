@@ -42,6 +42,10 @@ use crate::taskledger::{runs, tasks, util};
 /// The kind of the needs-you item of a task branch past its time limit.
 pub const OVERDUE_KIND: &str = "landing_overdue";
 
+/// The kind of the needs-you item of a task branch that [`follow`] cannot
+/// follow: its rows roll back, and the other branches of the pass go on.
+pub const FOLLOW_FAILED_KIND: &str = "landing_follow_failed";
+
 /// The pass cursor of [`follow`].
 pub const CURSOR: &str = RowKind::Branches.as_str();
 
@@ -240,11 +244,63 @@ pub fn follow(
         .take(budget)
     {
         cursor.step(name, &now);
-        effects.extend(follow_one(l, tx, clock, name)?);
+        tx.execute_batch("SAVEPOINT landing_branch")?;
+        match follow_one(l, tx, clock, name) {
+            Ok(effect) => {
+                tx.execute_batch("RELEASE landing_branch")?;
+                l.jobs
+                    .needs_you
+                    .resolve_item(tx, &follow_failed_key(name))?;
+                effects.extend(effect);
+            }
+            Err(e) => {
+                tx.execute_batch("ROLLBACK TO landing_branch; RELEASE landing_branch")?;
+                open_follow_failed(l.jobs, tx, name, &e)?;
+            }
+        }
     }
     cursors_store::save(tx, CURSOR, &cursor)?;
     end_items(l.jobs, tx, clock)?;
+    end_follow_failed(l.jobs, tx, &names)?;
     Ok(effects)
+}
+
+fn follow_failed_key(branch: &str) -> String {
+    format!("{FOLLOW_FAILED_KIND}:{branch}")
+}
+
+fn open_follow_failed(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    branch: &str,
+    e: &anyhow::Error,
+) -> Result<()> {
+    let text = format!(
+        "fleetd cannot follow the task branch {branch}: {e:#}. fleetd tries again on each \
+         pass. Run `horch branch abandon {branch}` to end the branch."
+    );
+    ctx.needs_you.open_item(
+        tx,
+        &NewItem {
+            key: &follow_failed_key(branch),
+            kind: FOLLOW_FAILED_KIND,
+            entity: Entity::TaskBranch,
+            entity_id: branch,
+            text: &text,
+        },
+    )
+}
+
+fn end_follow_failed(ctx: &JobCtx<'_>, tx: &Connection, open: &[String]) -> Result<()> {
+    for key in needs_you::open_keys(tx, FOLLOW_FAILED_KIND)? {
+        let Some(branch) = key.strip_prefix(&format!("{FOLLOW_FAILED_KIND}:")) else {
+            continue;
+        };
+        if !open.iter().any(|n| n == branch) {
+            ctx.needs_you.resolve_item(tx, &key)?;
+        }
+    }
+    Ok(())
 }
 
 /// The task branches that are not terminal, by name.

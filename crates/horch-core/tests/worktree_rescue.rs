@@ -339,7 +339,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx(&config), &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
         self.job(id)
@@ -776,7 +776,7 @@ fn rescue_job_at_its_limit_is_not_rescued_and_runs_again_after_its_backoff() {
     // Past its limit and its grace, the pass stops the run.
     let seen = w.see(id, Liveness::Alive, limit + grace + 1);
     assert_eq!(seen.stops.len(), 1, "{seen:?}");
-    assert!(seen.stops[0].kill);
+    assert!(!seen.stops[0].kill, "the first stop is the TERM");
     jobs::stop(&seen.stops[0]);
     // Its process is gone with no result.
     let at = limit + grace + 2;

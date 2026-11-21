@@ -134,7 +134,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap()
+        jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap()
     }
 
     /// Part 1: read the result files with the size limit `max_bytes`.
@@ -456,4 +456,125 @@ fn crash_after_the_commit_only_archives_the_file() {
     assert!(outcome(&w.row(id)).unwrap().passed);
     // A second archive of the same reads is safe.
     jobs::archive_results(&w.root(), &reads).unwrap();
+}
+
+fn run_job_as(w: &mut World, id: i64, me: u32) -> Option<Outcome> {
+    let ctx = JobCtx {
+        guard: None,
+        config: &w.config,
+        needs_you: &NeedsYouList,
+    };
+    let checks = CheckRunner {
+        host: &Launcher,
+        profiles: &NoProfiles,
+        sweep: None,
+    };
+    jobs::run_job(&ctx, &w.conn, id, me, &checks).unwrap()
+}
+
+#[test]
+fn unrecorded_or_mismatched_pid_process_cannot_write_job_result_file() {
+    let mut w = world();
+    let launcher = Launcher;
+    let mut runner = JobRunner::new(&launcher);
+    let id = w.running(&mut runner, Kind::DocsSync);
+    let recorded_pid = w.row(id).pid.unwrap();
+    let wrong_pid = recorded_pid.wrapping_add(1);
+    let before = w.row(id);
+    let changes = w.conn.total_changes();
+
+    assert!(run_job_as(&mut w, id, wrong_pid).is_none());
+    assert!(!files::path(&w.root(), id, 1).exists());
+    assert!(!files::folder(&w.root()).exists() || names(&files::folder(&w.root())).is_empty());
+    assert_eq!(w.row(id).state, State::Running);
+    assert_eq!(w.row(id).result_json, None);
+    assert_eq!(w.row(id), before);
+    assert_eq!(w.conn.total_changes(), changes, "run_job wrote the ledger");
+
+    assert!(run_job_as(&mut w, id, recorded_pid).is_some());
+    assert!(files::path(&w.root(), id, 1).is_file());
+
+    let ended = w.running(&mut runner, Kind::Push);
+    let ended_pid = w.row(ended).pid.unwrap();
+    let gone = ProcessFact {
+        key: ended.to_string(),
+        liveness: Liveness::Dead,
+    };
+    let seen = w.tx(|ctx, tx| jobs::observe(ctx, tx, &[gone], FleetSeconds(1)).unwrap());
+    assert_eq!(seen.ended, vec![(ended, State::Abandoned)]);
+    assert!(run_job_as(&mut w, ended, ended_pid).is_none());
+    assert!(!files::path(&w.root(), ended, 1).exists());
+    assert_eq!(w.row(ended).state, State::Abandoned);
+}
+
+#[test]
+fn queued_job_has_no_pid_and_gets_no_result_file() {
+    let mut w = world();
+    let id = w.queue(Kind::DocsSync, "F-2", 0);
+    assert_eq!(w.row(id).pid, None);
+    assert!(run_job_as(&mut w, id, 4242).is_none());
+    assert!(!files::path(&w.root(), id, 1).exists());
+    assert_eq!(w.row(id).state, State::Queued);
+    assert_eq!(w.row(id).result_json, None);
+}
+
+fn assert_one_ignored_note(w: &World, id: i64, run: i64, state: &str) {
+    let notes = w.events(id, "note");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains(&format!("ignored the result file of run {run}"))
+            && notes[0].contains(state),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn result_file_for_queued_or_already_ended_job_is_ignored_and_logged_once() {
+    let mut w = world();
+    let launcher = Launcher;
+    let mut runner = JobRunner::new(&launcher);
+
+    let done = w.running(&mut runner, Kind::DocsSync);
+    let first = files::write(&w.root(), &passed(done, 1, "real")).unwrap();
+    let (reads, ended) = w.pass_no_archive();
+    assert_eq!(ended, vec![(done, State::Passed)]);
+    jobs::archive_results(&w.root(), &reads).unwrap();
+    assert!(!first.exists());
+
+    let queued = w.queue(Kind::Push, "F-1", 0);
+    assert_eq!(w.row(queued).state, State::Queued);
+
+    let forged_queued = files::write(&w.root(), &passed(queued, 1, "forged while queued")).unwrap();
+    let forged_done = files::write(&w.root(), &passed(done, 2, "forged after pass")).unwrap();
+    let again_first = files::write(&w.root(), &passed(done, 1, "forged again")).unwrap();
+    assert_eq!(again_first, first);
+
+    let (reads, ended) = w.pass_no_archive();
+    assert_eq!(reads.len(), 3);
+    assert_eq!(ended, vec![]);
+
+    assert_eq!(w.row(queued).state, State::Queued);
+    assert_eq!(w.row(queued).result_json, None);
+    assert_eq!(w.moves_to(queued, State::Passed), 0);
+    assert_eq!(w.moves_to(queued, State::Failed), 0);
+    assert_one_ignored_note(&w, queued, 1, "queued");
+    assert_eq!(w.ingested(&forged_queued), Some(("accepted".into(), None)));
+
+    let row = w.row(done);
+    assert_eq!(row.state, State::Passed);
+    assert_eq!(outcome(&row).unwrap().text, "real");
+    assert_eq!(w.moves_to(done, State::Passed), 1);
+    assert_one_ignored_note(&w, done, 2, "passed");
+    assert!(reads
+        .iter()
+        .any(|r| r.path == again_first && matches!(r.read, Read::Seen)));
+    assert_eq!(w.ingested(&forged_done), Some(("accepted".into(), None)));
+
+    let again = w.read(w.config.job_result_max_bytes);
+    assert_eq!(again.len(), 3);
+    assert!(again.iter().all(|r| matches!(r.read, Read::Seen)));
+    assert_eq!(w.ingest(&again), vec![]);
+    assert_eq!(w.events(queued, "note").len(), 1);
+    assert_eq!(w.events(done, "note").len(), 1);
+    assert_eq!(w.row(queued).state, State::Queued);
 }
