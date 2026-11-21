@@ -72,7 +72,7 @@ fn world_in(dir: tempfile::TempDir) -> World {
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
-    let repo = repo.canonicalize().unwrap();
+    let repo = horch_platform::path::for_child(&repo.canonicalize().unwrap());
     git(&repo, &["init", "-q", "-b", "main"]);
     std::fs::write(repo.join("a.txt"), "a\n").unwrap();
     git(&repo, &["add", "a.txt"]);

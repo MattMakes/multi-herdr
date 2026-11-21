@@ -679,7 +679,7 @@ printf '{"headRefOid":"%s"}' "$h"
     impl World {
         fn new(push_new: bool) -> World {
             let tmp = tempfile::tempdir().unwrap();
-            let top = tmp.path().canonicalize().unwrap();
+            let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
             let root = top.join("repo");
             std::fs::create_dir_all(&root).unwrap();
             let git = crate::taskledger::git::Git::new("git");

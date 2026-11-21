@@ -3015,7 +3015,7 @@ mod tests {
                 use crate::taskledger::tasks::{self, NewTask};
                 use crate::taskledger::workers::{self, NewWorker};
                 let tmp = tempfile::tempdir().unwrap();
-                let top = tmp.path().canonicalize().unwrap();
+                let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
                 let project = top.join("repo");
                 std::fs::create_dir_all(&project).unwrap();
                 let project_text = project.to_string_lossy().into_owned();

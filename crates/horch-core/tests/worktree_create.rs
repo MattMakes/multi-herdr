@@ -110,7 +110,7 @@ impl World {
     /// and a run of the repository.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);

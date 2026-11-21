@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn git_ref_tips_reads_a_project_below_home() {
         let home = tempfile::tempdir().unwrap();
-        let home_path = home.path().canonicalize().unwrap();
+        let home_path = horch_platform::path::for_child(&home.path().canonicalize().unwrap());
         let repo = home_path.join("projects").join("app");
         std::fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| {
