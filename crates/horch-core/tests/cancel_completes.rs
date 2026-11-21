@@ -1,10 +1,3 @@
-//! A cancel of a task with a live attempt reaches `cancelled` through the
-//! pass, and the pass reports no I1 item for the task while the cancel
-//! waits (`docs/tickets/fleetd-finish/192-cancel-with-live-process-never-completes.md`).
-//!
-//! Each test uses a temp ledger and a temp fleet root, and runs the pass as
-//! a library call. The agent is a real process in its own process group. A
-//! thread of the test reaps it, as the pane of a real agent does.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -35,10 +28,8 @@ use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection};
 
-/// The most passes that a cancel may take.
 const PASSES: i64 = 10;
 
-/// A temp ledger at generation 1, a fleet root and 1 run.
 struct World {
     dir: PathBuf,
     _temp: tempfile::TempDir,
@@ -63,7 +54,6 @@ fn world() -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &dir, &new_run).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     std::fs::create_dir_all(dir.join("fleet")).unwrap();
     World {
@@ -94,8 +84,6 @@ impl World {
         }
     }
 
-    /// A `running` task of persona `dev`, bound to a worker with the agent
-    /// `agent`: 1 live attempt. Gives the task id.
     fn running_task(&self, agent: Recorded) -> String {
         let mut new = NewTask::work("t", "tickets/t.md", "dev");
         new.worktree_mode = WorktreeMode::Shared;
@@ -112,7 +100,6 @@ impl World {
         task.task_id
     }
 
-    /// `horch ledger cancel` of `task`: its first transaction.
     fn cancel(&mut self, task: &str) {
         let tx = self.conn.transaction().unwrap();
         let t = tasks::get(&tx, task).unwrap();
@@ -125,7 +112,6 @@ impl World {
         tasks::get(&self.conn, task).unwrap().status
     }
 
-    /// The I1 items of `task` that the pass opened, open or not.
     fn i1_items(&self, task: &str) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -140,7 +126,6 @@ impl World {
             .collect()
     }
 
-    /// 1 pass at the fleet clock `clock`.
     fn pass_at(&mut self, clock: i64) {
         self.conn
             .execute("UPDATE fleetd SET fleet_clock_s = ?1 WHERE id = 1", [clock])
@@ -157,8 +142,6 @@ impl World {
         assert!(report.failed.is_empty(), "{report:?}");
     }
 
-    /// Passes 1 s of fleet clock apart, until `task` is `cancelled` or
-    /// [`PASSES`] passes ran. Each I1 item of the task fails the test.
     fn passes_until_cancelled(&mut self, task: &str) {
         for n in 1..=PASSES {
             self.pass_at(n);
@@ -173,8 +156,6 @@ impl World {
     }
 }
 
-/// An agent process in its own process group. A thread reaps it when it
-/// exits; `exited` gets its exit then.
 struct Agent {
     recorded: Recorded,
     exited: mpsc::Receiver<()>,
@@ -197,12 +178,10 @@ impl Agent {
             let _ = child.wait();
             let _ = tx.send(());
         });
-        // The shell starts its children first.
         std::thread::sleep(Duration::from_millis(300));
         Agent { recorded, exited }
     }
 
-    /// Whether it exited and was reaped within 10 s.
     fn exits(&self) -> bool {
         self.exited.recv_timeout(Duration::from_secs(10)).is_ok()
     }
@@ -217,7 +196,6 @@ impl Drop for Agent {
     }
 }
 
-/// The outside of the pass: no herdr snapshot, no pools, no launch.
 struct NoPanes;
 
 impl Outside for NoPanes {
@@ -246,8 +224,6 @@ impl Outside for NoPanes {
     }
 }
 
-/// The agent runs at the cancel: the pass stops it, sees it gone, and
-/// moves the task to `cancelled`.
 #[test]
 fn a_cancel_of_a_task_with_a_live_agent_completes() {
     let mut w = world();
@@ -260,7 +236,6 @@ fn a_cancel_of_a_task_with_a_live_agent_completes() {
     assert!(agent.exits(), "the pass stopped the agent");
 }
 
-/// The agent ignores the polite stop: the kill of the stop ladder ends it.
 #[test]
 fn a_cancel_of_a_task_whose_agent_ignores_the_polite_stop_completes() {
     let mut w = world();
@@ -273,8 +248,6 @@ fn a_cancel_of_a_task_whose_agent_ignores_the_polite_stop_completes() {
     assert!(agent.exits(), "the pass killed the agent");
 }
 
-/// The agent already finished before the cancel: the pass sees it gone and
-/// moves the task to `cancelled`.
 #[test]
 fn a_cancel_of_a_task_whose_agent_already_finished_completes() {
     let mut w = world();

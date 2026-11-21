@@ -3095,9 +3095,6 @@ fn check_world(
                 pid,
                 horch_core::procid::start_time(pid),
             )?;
-            // The bind of the test process writes the real host name, and
-            // fleetd runs with the HORCH_HOSTNAME of push_env. fleetd judges
-            // and stops only the processes of a row of its own host.
             tx.execute(
                 "UPDATE workers SET host = 'test-host' WHERE worker_id = ?1",
                 [&c.worker_id],
