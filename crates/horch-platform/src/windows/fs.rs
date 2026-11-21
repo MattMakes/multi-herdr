@@ -13,18 +13,19 @@ use windows_sys::Win32::Foundation::{
     LocalFree, ERROR_SUCCESS, GENERIC_WRITE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-    SE_FILE_OBJECT,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SetSecurityInfo,
+    SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetAce, IsWellKnownSid, WinBuiltinAdministratorsSid, WinLocalSystemSid,
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    EqualSid, GetAce, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, IsWellKnownSid,
+    WinBuiltinAdministratorsSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+    DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 
 use crate::channel::User;
@@ -63,7 +64,12 @@ impl OwnerOnly {
         // `O:` sets the owner, also for an elevated token whose default
         // owner is `Administrators`. `D:P` is a protected DACL, so the
         // object takes no rule from its folder. `FA` is all file access.
-        let text = wide_text(&format!("O:{sid}D:P(A;{inherit};FA;;;{sid})"));
+        OwnerOnly::from_sddl(&format!("O:{sid}D:P(A;{inherit};FA;;;{sid})"))
+    }
+
+    /// The descriptor of the SDDL text `text`.
+    fn from_sddl(text: &str) -> io::Result<OwnerOnly> {
+        let text = wide_text(text);
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         // SAFETY: `text` ends with a NUL, and `descriptor` is valid for 1
         // write. The size pointer may be null.
@@ -90,6 +96,76 @@ impl OwnerOnly {
             bInheritHandle: 0,
         }
     }
+
+    /// Give the existing folder or file `path` the owner and the protected
+    /// DACL of this descriptor. The DACL goes first: an owner holds
+    /// `WRITE_DAC` but not always `WRITE_OWNER`, and the new DACL gives this
+    /// user all access, `WRITE_OWNER` too.
+    fn set_on(&self, path: &Path) -> io::Result<()> {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl: *mut ACL = ptr::null_mut();
+        let mut owner: PSID = ptr::null_mut();
+        // SAFETY: `self.0` is a valid descriptor, and each output is valid
+        // for 1 write. `dacl` and `owner` point into `self.0`, which lives
+        // until the end of this function.
+        let read = unsafe {
+            GetSecurityDescriptorDacl(self.0, &mut present, &mut dacl, &mut defaulted) != 0
+                && GetSecurityDescriptorOwner(self.0, &mut owner, &mut defaulted) != 0
+        };
+        if !read {
+            return Err(io::Error::last_os_error());
+        }
+        let info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        set_security(path, WRITE_DAC, info, ptr::null_mut(), dacl)?;
+        set_security(
+            path,
+            WRITE_OWNER,
+            OWNER_SECURITY_INFORMATION,
+            owner,
+            ptr::null(),
+        )
+    }
+}
+
+/// Open `path` itself, never the target of a link, with the access
+/// `access`, and set the parts `info` of its security from `owner` and
+/// `dacl`. A reparse point is an `InvalidInput` error.
+fn set_security(
+    path: &Path,
+    access: u32,
+    info: OBJECT_SECURITY_INFORMATION,
+    owner: PSID,
+    dacl: *const ACL,
+) -> io::Result<()> {
+    let file = OpenOptions::new()
+        .access_mode(access | READ_CONTROL | FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is a reparse point", path.display()),
+        ));
+    }
+    // SAFETY: the handle of `file` is open for the call, and `owner` and
+    // `dacl` are null or valid for the call. The group and SACL are null,
+    // because `info` does not name them.
+    let status = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            info,
+            owner,
+            ptr::null_mut(),
+            dacl,
+            ptr::null(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
 }
 
 impl Drop for OwnerOnly {
@@ -108,13 +184,36 @@ fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain([0]).collect()
 }
 
+/// [`crate::fs::create_dir_owner_only`]. The folder `path` that exists
+/// already is made owner-only too ([`keep_owner_only`]). An existing parent
+/// keeps its access.
 pub(crate) fn create_dir_owner_only(path: &Path) -> io::Result<()> {
+    if !path.is_dir() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            make_missing_dirs(parent)?;
+        }
+        if make_dir(path)? {
+            return Ok(());
+        }
+    }
+    keep_owner_only(path)
+}
+
+/// Make each missing folder of `path`, each new one owner-only. An
+/// existing folder keeps its access.
+fn make_missing_dirs(path: &Path) -> io::Result<()> {
     if path.is_dir() {
         return Ok(());
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        create_dir_owner_only(parent)?;
+        make_missing_dirs(parent)?;
     }
+    make_dir(path).map(|_| ())
+}
+
+/// Make the folder `path`, owner-only. `false` when a folder is at `path`
+/// already.
+fn make_dir(path: &Path) -> io::Result<bool> {
     let descriptor = OwnerOnly::new("OICI")?;
     let attributes = descriptor.attributes();
     let name = wide_path(path);
@@ -123,11 +222,64 @@ pub(crate) fn create_dir_owner_only(path: &Path) -> io::Result<()> {
     if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
         let e = io::Error::last_os_error();
         if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() {
-            return Ok(());
+            return Ok(false);
         }
         return Err(e);
     }
-    Ok(())
+    Ok(true)
+}
+
+/// Make sure that this user owns the existing folder `path` and that its
+/// DACL is owner-only, as [`check_owner_only`] checks it. An older horch
+/// made the folder with an inherited DACL, or with the owner
+/// `Administrators` on an elevated token (D266-F1). When the check fails,
+/// this user becomes the owner and the folder gets the protected DACL of a
+/// new folder, then the check runs again. A folder that this user may not
+/// change, a link, or a check that still fails is a `PermissionDenied`
+/// error that names the folder.
+fn keep_owner_only(path: &Path) -> io::Result<()> {
+    let refused = |reason: String| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "folder {} is not owner-only, and horch cannot make it owner-only: {reason}",
+                path.display()
+            ),
+        )
+    };
+    let me = current_user()?;
+    if owner_only_gap(path, &me).map_err(refused)?.is_none() {
+        return Ok(());
+    }
+    OwnerOnly::new("OICI")?.set_on(path).map_err(|e| {
+        refused(format!(
+            "the change of its owner and access list failed: {e}"
+        ))
+    })?;
+    match owner_only_gap(path, &me).map_err(refused)? {
+        None => Ok(()),
+        Some(gap) => Err(refused(gap)),
+    }
+}
+
+/// `None` when `me` owns the folder `path` and its DACL is owner-only, else
+/// the gap. The error is a folder that cannot be checked.
+fn owner_only_gap(path: &Path, me: &User) -> Result<Option<String>, String> {
+    let folder =
+        open_no_follow(path).map_err(|e| format!("the open without a link failed: {e}"))?;
+    let meta = folder.metadata().map_err(|e| format!("stat failed: {e}"))?;
+    if !meta.is_dir() {
+        return Err("not a folder".into());
+    }
+    let owner = owner_of(&folder).map_err(|e| format!("the owner is unknown: {e}"))?;
+    if owner != *me {
+        let found = match &owner {
+            User::Sid(sid) => sid.clone(),
+            User::Uid(uid) => uid.to_string(),
+        };
+        return Ok(Some(format!("its owner is {found}, not this user")));
+    }
+    Ok(check_owner_only(&folder, &meta, 0o700).err())
 }
 
 pub(crate) fn create_new_owner_only(path: &Path) -> io::Result<File> {
@@ -342,5 +494,73 @@ pub(crate) struct BreakerGuard;
 impl BreakerGuard {
     pub(crate) fn take(_lock: &Path) -> Option<BreakerGuard> {
         Some(BreakerGuard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Make the folder `path` with the SDDL descriptor `sddl`, as an older
+    /// horch or another program made it.
+    fn make_dir_with(path: &Path, sddl: &str) {
+        let descriptor = OwnerOnly::from_sddl(sddl).unwrap();
+        let attributes = descriptor.attributes();
+        let name = wide_path(path);
+        // SAFETY: `name` ends with a NUL, and `attributes` and the
+        // descriptor that it points to live until the call returns.
+        let made = unsafe { CreateDirectoryW(name.as_ptr(), &attributes) };
+        assert_ne!(made, 0, "{}", io::Error::last_os_error());
+    }
+
+    /// The gap of the folder `path`, `None` when it is owner-only.
+    fn gap(path: &Path) -> Option<String> {
+        owner_only_gap(path, &current_user().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_existing_folder_with_an_open_dacl_becomes_owner_only() {
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("jobs");
+        // Each user has all access, and each file made in it inherits it.
+        make_dir_with(&jobs, "D:(A;OICI;FA;;;WD)");
+        assert!(gap(&jobs).is_some(), "the old folder is not owner-only");
+
+        create_dir_owner_only(&jobs).unwrap();
+        assert_eq!(gap(&jobs), None);
+
+        let file = jobs.join("result.json");
+        drop(create_new_owner_only(&file).unwrap());
+        let opened = File::open(&file).unwrap();
+        check_owner_only(&opened, &opened.metadata().unwrap(), 0o600).unwrap();
+    }
+
+    #[test]
+    fn an_owner_only_folder_is_kept_and_a_second_call_changes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("run").join("jobs");
+        create_dir_owner_only(&jobs).unwrap();
+        create_dir_owner_only(&jobs).unwrap();
+        assert_eq!(gap(&jobs), None);
+        assert_eq!(gap(&root.path().join("run")), None);
+    }
+
+    #[test]
+    fn an_existing_parent_keeps_its_access() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("shared");
+        make_dir_with(&parent, "D:(A;OICI;FA;;;WD)");
+        create_dir_owner_only(&parent.join("jobs")).unwrap();
+        assert_eq!(gap(&parent.join("jobs")), None);
+        assert!(gap(&parent).is_some(), "only the asked folder changes");
+    }
+
+    #[test]
+    fn a_file_at_the_path_is_refused_with_the_folder_name() {
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("jobs");
+        std::fs::write(&jobs, b"").unwrap();
+        let e = create_dir_owner_only(&jobs).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists, "{e}");
     }
 }
