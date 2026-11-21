@@ -329,9 +329,14 @@ fn trace_writes(conn: &Connection) {
 fn trace_to(conn: &Connection, file: PathBuf) {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        // The savepoint of [`one_snapshot`] writes nothing: it gives a
+        // read of 2 or more statements 1 snapshot.
         let read = matches!(
             ctx.action,
             AuthAction::Read { .. } | AuthAction::Select | AuthAction::Function { .. }
+        ) || matches!(
+            ctx.action,
+            AuthAction::Savepoint { savepoint_name, .. } if savepoint_name == SNAPSHOT
         );
         if !read {
             use std::io::Write;
@@ -474,16 +479,19 @@ impl Store {
 /// when `conn` has none (in WAL mode, 1 transaction reads 1 snapshot), and
 /// it nests in the open transaction of a caller with no new `BEGIN`.
 pub fn one_snapshot<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    conn.execute_batch("SAVEPOINT one_snapshot")?;
+    conn.execute_batch(&format!("SAVEPOINT {SNAPSHOT}"))?;
     let out = f();
     let end = if out.is_ok() {
-        "RELEASE one_snapshot"
+        format!("RELEASE {SNAPSHOT}")
     } else {
-        "ROLLBACK TO one_snapshot; RELEASE one_snapshot"
+        format!("ROLLBACK TO {SNAPSHOT}; RELEASE {SNAPSHOT}")
     };
-    conn.execute_batch(end)?;
+    conn.execute_batch(&end)?;
     out
 }
+
+/// The name of the savepoint of [`one_snapshot`].
+const SNAPSHOT: &str = "one_snapshot";
 
 /// 1 optional value of a query.
 pub fn optional<T>(r: rusqlite::Result<T>) -> Result<Option<T>> {
