@@ -263,6 +263,31 @@ impl ConformanceReport {
         self.checks.iter().any(|r| r.verdict == Verdict::NotProved)
     }
 
+    /// The cause of the dispatch hold after the run `run` of the job
+    /// subject `subject`, which has no failed check and a check that is not
+    /// proved: each such check with its evidence, and the run that is
+    /// awaited (D244-F1). `None` for any other run.
+    pub fn not_proved_cause(&self, run: i64, subject: &str) -> Option<String> {
+        if self.failure().is_some() {
+            return None;
+        }
+        let checks: Vec<String> = self
+            .checks
+            .iter()
+            .filter(|r| r.verdict == Verdict::NotProved)
+            .map(|r| format!("{}: {}", r.check.name(), r.evidence))
+            .collect();
+        (!checks.is_empty()).then(|| {
+            format!(
+                "conformance run {run} of {} {} did not prove {}; dispatch waits for a passed \
+                 conformance run of {subject}, which a fleetd with a channel server queues",
+                self.cli,
+                self.version,
+                checks.join("; ")
+            )
+        })
+    }
+
     /// The failure of the run that makes a drift idea: [`Self::failure`],
     /// unless the adapter has no sandbox on this OS ("Operator boundary"
     /// is not supported). No worker of such a CLI runs on this OS (A37),

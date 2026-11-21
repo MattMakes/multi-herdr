@@ -166,7 +166,7 @@ use crate::fleetd::worker_profiles::application::docs_jobs::{
 };
 use crate::fleetd::worker_profiles::application::drift_idea::{add_drift_idea, KIND as DRIFT};
 use crate::fleetd::worker_profiles::application::health::{
-    mark_after_conformance, mark_cli_unhealthy,
+    mark_after_conformance, mark_cli_unhealthy, ConformanceRun,
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worker_profiles::domain::conformance::ConformanceReport;
@@ -4525,7 +4525,11 @@ impl Pass<'_> {
         let row = jobs_store::get(tx, id)?.with_context(|| format!("no job {id}"))?;
         let no_report = match conformance_report(&row) {
             Ok(Some(report)) => {
-                mark_after_conformance(tx, guard, &report, profiles)?;
+                let run = ConformanceRun {
+                    id,
+                    subject: &row.subject,
+                };
+                mark_after_conformance(tx, guard, &run, &report, profiles)?;
                 if report.drift().is_some() {
                     note = self.drift(tx, &report, &mut failed)?;
                 }

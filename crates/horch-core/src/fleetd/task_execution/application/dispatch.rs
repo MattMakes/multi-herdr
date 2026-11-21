@@ -677,6 +677,9 @@ fn choices_now(
     holds
         .unhealthy
         .extend(health::unhealthy_profiles(conn)?.into_keys());
+    // A task of a profile whose last conformance run did not prove a check
+    // waits for a passed run, with the cause (D244-F1, SR-8, FR-8).
+    holds.personas.extend(health::not_proved_profiles(conn)?);
     for t in &ready {
         if !holds.personas.contains_key(&t.persona) && !sandboxes.supported(&t.persona) {
             holds

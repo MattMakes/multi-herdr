@@ -6,6 +6,11 @@
 //! `profile_healthy` event, with the contract of the mark in `data_json`.
 //! No event means healthy. Each mark is 1 event row in the caller's
 //! transaction, and a mark that does not change the health writes none.
+//!
+//! A healthy profile whose last conformance run did not prove a check is
+//! held (D244-F1): its last event of the 3 kinds is a `note` hold. The hold
+//! is not a failed health: it adds no drift idea, and a passed run of its
+//! CLI releases it with a `profile_healthy` event.
 
 use std::collections::BTreeMap;
 
@@ -23,13 +28,38 @@ use crate::fleetd::worker_profiles::domain::health::{self, Health, Mark, PROFILE
 use crate::harness::HarnessKind;
 use crate::taskledger::model::{Actor, EventKind};
 
-const KINDS: [EventKind; 2] = [EventKind::ProfileUnhealthy, EventKind::ProfileHealthy];
+/// The kind of the hold of a profile whose last conformance run did not
+/// prove a check. Only this module writes a `note` about a profile.
+const NOT_PROVED: EventKind = EventKind::Note;
+
+const KINDS: [EventKind; 3] = [
+    EventKind::ProfileUnhealthy,
+    EventKind::ProfileHealthy,
+    NOT_PROVED,
+];
+
+/// The conformance run of a report: its job id and its job subject.
+pub struct ConformanceRun<'a> {
+    pub id: i64,
+    pub subject: &'a str,
+}
 
 /// Each unhealthy profile, with the cause of its mark.
 pub fn unhealthy_profiles(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    last_of_kind(conn, EventKind::ProfileUnhealthy)
+}
+
+/// Each profile that is held because its last conformance run did not
+/// prove a check, with the cause of its hold: 1 statement for all profiles.
+pub fn not_proved_profiles(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    last_of_kind(conn, NOT_PROVED)
+}
+
+/// Each profile whose last event of [`KINDS`] is of `kind`, with its cause.
+fn last_of_kind(conn: &Connection, kind: EventKind) -> Result<BTreeMap<String, String>> {
     Ok(last_named_facts(conn, PROFILE, &KINDS)?
         .into_iter()
-        .filter(|f| f.kind == EventKind::ProfileUnhealthy.as_str())
+        .filter(|f| f.kind == kind.as_str())
         .map(|f| (f.id, f.cause))
         .collect())
 }
@@ -73,26 +103,48 @@ pub fn mark_healthy(
 /// `antigravity`), in `tx`: unhealthy after a failed run, with
 /// the failed checks as the cause, and healthy again after a passed run.
 /// A run with no failed check and a check that is not proved (fleetd was
-/// not ready) marks no profile: it does not prove the adapter.
+/// not ready) does not prove the adapter: it holds each healthy profile,
+/// and an unhealthy one stays unhealthy. Gives the health marks.
 pub fn mark_after_conformance(
     tx: &Connection,
     guard: Option<Generation>,
+    run: &ConformanceRun<'_>,
     report: &ConformanceReport,
     profiles: &[(&str, HarnessKind)],
 ) -> Result<Vec<Mark>> {
-    if report.failure().is_none() && report.has_not_proved() {
-        return Ok(Vec::new());
-    }
-    let unhealthy = unhealthy_profiles(tx)?;
-    let of_cli: Vec<(String, Health)> = profiles
+    let last: BTreeMap<String, (String, String)> = last_named_facts(tx, PROFILE, &KINDS)?
+        .into_iter()
+        .map(|f| (f.id, (f.kind, f.cause)))
+        .collect();
+    let of_cli = profiles
         .iter()
         .filter(|(_, agent)| exec_harness(&report.cli) == Some(*agent))
-        .map(|(name, _)| {
-            let now = match unhealthy.get(*name) {
-                Some(reason) => Health::Unhealthy {
-                    reason: reason.clone(),
-                },
-                None => Health::Healthy,
+        .map(|(name, _)| (*name, last.get(*name)));
+    if let Some(cause) = report.not_proved_cause(run.id, run.subject) {
+        let healthy = of_cli
+            .filter(|(_, l)| l.is_none_or(|(kind, _)| kind == EventKind::ProfileHealthy.as_str()));
+        for (name, _) in healthy {
+            hold(tx, guard, name, &cause)?;
+        }
+        return Ok(Vec::new());
+    }
+    let failed = report.failure().is_some();
+    let of_cli: Vec<(String, Health)> = of_cli
+        .map(|(name, l)| {
+            let now = match l {
+                Some((kind, reason)) if kind == EventKind::ProfileUnhealthy.as_str() => {
+                    Health::Unhealthy {
+                        reason: reason.clone(),
+                    }
+                }
+                // A held profile is not proved: a failed run marks it
+                // unhealthy, and a passed run marks it healthy.
+                Some((kind, reason)) if kind == NOT_PROVED.as_str() && !failed => {
+                    Health::Unhealthy {
+                        reason: reason.clone(),
+                    }
+                }
+                _ => Health::Healthy,
             };
             (name.to_string(), now)
         })
@@ -127,6 +179,23 @@ pub fn mark_cli_unhealthy(
         marks.extend(mark_unhealthy(tx, guard, name, reason)?);
     }
     Ok(marks)
+}
+
+/// The `note` hold of `profile` with `cause`, in `tx`.
+fn hold(tx: &Connection, guard: Option<Generation>, profile: &str, cause: &str) -> Result<()> {
+    let data = json!({ "profile_id": profile, "hold": "not proved" }).to_string();
+    append_named_fact(
+        tx,
+        guard,
+        &NamedFact {
+            kind: NOT_PROVED,
+            about: PROFILE,
+            id: profile,
+            cause,
+            actor: Actor::Horch,
+            data_json: &data,
+        },
+    )
 }
 
 /// The event of `mark`, with `cause`, in `tx`.

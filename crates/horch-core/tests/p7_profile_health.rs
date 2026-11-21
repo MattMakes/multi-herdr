@@ -13,7 +13,7 @@ use horch_core::fleetd::task_execution::application::stall;
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
 use horch_core::fleetd::task_execution::domain::stall::Decision;
 use horch_core::fleetd::worker_profiles::application::health::{
-    health, mark_after_conformance, mark_healthy, mark_unhealthy,
+    health, mark_after_conformance, mark_healthy, mark_unhealthy, ConformanceRun,
 };
 use horch_core::fleetd::worker_profiles::domain::conformance::{
     Check, CheckResult, ConformanceReport,
@@ -104,9 +104,28 @@ impl World {
     }
 
     fn conformance(&mut self, report: &ConformanceReport) -> Vec<Mark> {
+        let subject = format!("{} 0123456789abcdef", report.cli);
+        self.conformance_run(1, &subject, report)
+    }
+
+    /// The marks after the conformance run `run` of the job subject
+    /// `subject`.
+    fn conformance_run(
+        &mut self,
+        run: i64,
+        subject: &str,
+        report: &ConformanceReport,
+    ) -> Vec<Mark> {
+        let ran = ConformanceRun { id: run, subject };
         self.store
-            .immediate(|tx| mark_after_conformance(tx, None, report, &PROFILES))
+            .immediate(|tx| mark_after_conformance(tx, None, &ran, report, &PROFILES))
             .unwrap()
+    }
+
+    /// The same ledger, opened again: a restart of fleetd.
+    fn restart(&mut self) {
+        let path = self._dir.path().join("ledger.sqlite3");
+        self.store = Store::open(&path).unwrap();
     }
 
     /// The health events, oldest first: kind, entity, entity id, cause and
@@ -223,16 +242,24 @@ fn not_proved(cli: &str, failed: &[Check]) -> ConformanceReport {
     r
 }
 
+/// The hold of the profile `profile` whose last conformance run did not
+/// prove a check: its persona hold, with the cause.
+fn not_proved_hold(c: &[Choice], task_id: &str, profile: &str) -> String {
+    match hold_of(c, task_id) {
+        Some(Hold::Persona { persona, cause }) if persona == profile => cause,
+        other => panic!("the task of {profile} is not held as not proved: {other:?}"),
+    }
+}
+
 /// A check that is not proved because fleetd was not ready changes the
 /// health of no profile: a healthy profile stays healthy, and an unhealthy
 /// one stays unhealthy. A failed check of the same run still marks.
 #[test]
 fn not_proved_check_changes_no_health() {
     let mut w = World::new();
-    let task = w.ready("t", "opus");
+    w.ready("t", "opus");
     assert_eq!(w.conformance(&not_proved("claude", &[])), Vec::new());
     assert_eq!(w.health("opus"), Health::Healthy);
-    assert!(is_bound(&w.choices(), &task));
     assert!(w.events().is_empty(), "{:?}", w.events());
 
     w.conformance(&report("claude", &[Check::LaunchHeadless]));
@@ -247,6 +274,109 @@ fn not_proved_check_changes_no_health() {
     };
     assert!(reason.contains(Check::SharedWrite.name()), "{reason}");
     assert!(!reason.contains(Check::OperatorBoundary.name()), "{reason}");
+}
+
+/// D244-F1: a first conformance run whose check is not proved holds each
+/// profile of the CLI, and a later passed run of the same key releases it.
+/// A profile of another CLI is not held.
+#[test]
+fn first_not_proved_run_holds_the_profile_until_a_passed_run() {
+    let mut w = World::new();
+    let task = w.ready("t", "opus");
+    let other = w.ready("other", "codex-sol");
+    w.conformance_run(4, "claude 0123456789abcdef", &not_proved("claude", &[]));
+
+    let c = w.choices();
+    not_proved_hold(&c, &task, "opus");
+    assert!(is_bound(&c, &other), "{c:?}");
+    assert_eq!(tasks::get(w.store.conn(), &task).unwrap().status, "ready");
+
+    let marks = w.conformance_run(5, "claude 0123456789abcdef", &report("claude", &[]));
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    assert!(is_bound(&w.choices(), &task));
+}
+
+/// The hold text names the run that did not prove, the check and its
+/// evidence, and the run that is awaited.
+#[test]
+fn not_proved_hold_names_its_cause_and_the_awaited_run() {
+    let mut w = World::new();
+    let task = w.ready("t", "opus");
+    w.conformance_run(4, "claude 0123456789abcdef", &not_proved("claude", &[]));
+
+    let cause = not_proved_hold(&w.choices(), &task, "opus");
+    assert_eq!(
+        cause,
+        "conformance run 4 of claude 9.8.7 did not prove Operator boundary: \
+         not proved: no fleetd serves the command channel; dispatch waits for a \
+         passed conformance run of claude 0123456789abcdef, which a fleetd with \
+         a channel server queues"
+    );
+    let hold = hold_of(&w.choices(), &task).unwrap();
+    assert_eq!(hold.to_string(), format!("persona opus: {cause}"));
+}
+
+/// A held profile whose next run fails is unhealthy, as after any failed
+/// run, and a passed run marks it healthy again.
+#[test]
+fn held_profile_with_a_failed_run_is_unhealthy() {
+    let mut w = World::new();
+    let task = w.ready("t", "opus");
+    w.conformance_run(4, "claude 0123456789abcdef", &not_proved("claude", &[]));
+    not_proved_hold(&w.choices(), &task, "opus");
+    w.conformance_run(
+        5,
+        "claude 0123456789abcdef",
+        &report("claude", &[Check::StopGate]),
+    );
+
+    assert!(matches!(w.health("opus"), Health::Unhealthy { .. }));
+    assert_eq!(
+        hold_of(&w.choices(), &task),
+        Some(Hold::UnhealthyProfile {
+            profile: "opus".into()
+        })
+    );
+    w.conformance_run(6, "claude 0123456789abcdef", &report("claude", &[]));
+    assert!(is_bound(&w.choices(), &task));
+}
+
+/// A new CLI binary or a new horch binary is a new key: a run of the new
+/// key that does not prove a check holds the profile again, after a passed
+/// run of the old key, until a passed run of the new key.
+#[test]
+fn not_proved_run_of_a_new_key_holds_again_until_its_proof() {
+    let mut w = World::new();
+    let task = w.ready("t", "opus");
+    w.conformance_run(4, "claude 0123456789abcdef", &report("claude", &[]));
+    assert!(is_bound(&w.choices(), &task));
+
+    let mut new = not_proved("claude", &[]);
+    new.version = "9.9.0".into();
+    new.adapter_hash = "sha256:4567".into();
+    w.conformance_run(7, "claude fedcba9876543210", &new);
+    let cause = not_proved_hold(&w.choices(), &task, "opus");
+    assert!(cause.contains("run 7 of claude 9.9.0"), "{cause}");
+    assert!(cause.contains("claude fedcba9876543210"), "{cause}");
+
+    let mut proof = report("claude", &[]);
+    proof.version = "9.9.0".into();
+    w.conformance_run(8, "claude fedcba9876543210", &proof);
+    assert!(is_bound(&w.choices(), &task));
+}
+
+/// The hold and its release are rows: a restart of fleetd keeps each.
+#[test]
+fn restart_keeps_the_hold_and_the_proof() {
+    let mut w = World::new();
+    let task = w.ready("t", "opus");
+    w.conformance_run(4, "claude 0123456789abcdef", &not_proved("claude", &[]));
+    w.restart();
+    not_proved_hold(&w.choices(), &task, "opus");
+
+    w.conformance_run(5, "claude 0123456789abcdef", &report("claude", &[]));
+    w.restart();
+    assert!(is_bound(&w.choices(), &task));
 }
 
 #[test]
