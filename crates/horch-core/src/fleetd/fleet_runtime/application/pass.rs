@@ -295,6 +295,13 @@ pub trait Outside {
     fn cli_binaries(&self) -> Vec<CliPath> {
         Vec::new()
     }
+
+    /// The state root that holds the project facts, which `START.md` of a
+    /// push attempt gives (G56). `None`, as a fake of a test: `START.md`
+    /// has no facts section.
+    fn state_root(&self) -> Option<&Path> {
+        None
+    }
 }
 
 /// The roster and the pool readings of 1 pass.
@@ -809,7 +816,11 @@ impl<'a> Pass<'a> {
         if self.work.is_some() {
             // `task.yaml` and `START.md` of each bound attempt come before
             // its launch, also after a crash between the commit and them.
-            failed.extend(write_task_files(conn, &self.settings.fleet_root));
+            failed.extend(write_task_files(
+                conn,
+                &self.settings.fleet_root,
+                self.ports.outside.state_root(),
+            ));
         }
         let activity = effects::write_activity(&self.settings.fleet_root, &decided.activity);
         let passed = std::mem::take(&mut decided.passed);
@@ -3348,8 +3359,8 @@ fn via(conn: &Connection, id: &str) -> Result<String> {
 
 /// Write `task.yaml` and `START.md` of each push attempt in `launching`
 /// that has none. Gives the lines of the writes that failed.
-fn write_task_files(conn: &Connection, root: &Path) -> Vec<String> {
-    match dispatch::write_missing_task_files(conn, root, &[]) {
+fn write_task_files(conn: &Connection, root: &Path, state_root: Option<&Path>) -> Vec<String> {
+    match dispatch::write_missing_task_files_in(conn, root, state_root, &[]) {
         Ok(written) => written
             .into_iter()
             .filter_map(|(id, r)| {

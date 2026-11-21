@@ -1346,6 +1346,10 @@ struct Live<'a> {
 }
 
 impl Outside for Live<'_> {
+    fn state_root(&self) -> Option<&Path> {
+        Some(&self.ctx.paths.state_root)
+    }
+
     /// Each pane of each herdr workspace, with the process that herdr
     /// started in it (`shell_pid`) and its start time: the fact that proves
     /// a pane is the pane of a row (FM-22). A pane whose process-info fails,
