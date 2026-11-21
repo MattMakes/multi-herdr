@@ -837,8 +837,6 @@ fn bind_uses_pre_read_sandboxed_base_tips_and_runs_no_git_in_write_tx() {
     assert_eq!(row.base_commit, Some(tip));
 }
 
-/// A launcher whose host call fails each time, as when the OS refuses to
-/// start `horch spawn`. It counts the calls.
 #[derive(Default)]
 struct RefusingHost {
     calls: std::cell::Cell<usize>,
@@ -919,7 +917,6 @@ fn failed_host_launch_ends_the_attempt_at_once_and_rung_6_bounds_the_retries() {
         assert!(r.is_err(), "the pass reports the failed launch");
         assert_eq!(host.calls.get(), n as usize);
 
-        // The same pass ended the attempt: no wait for the start timeout.
         assert_eq!(
             w.attempts(&id).last().map(|a| (a.0.clone(), a.1.clone())),
             Some((attempt.clone(), "ended".to_string()))
@@ -948,7 +945,6 @@ fn failed_host_launch_ends_the_attempt_at_once_and_rung_6_bounds_the_retries() {
         assert_eq!(row.status, "ready");
         assert_eq!(row.not_before, Some(clock + wait), "the backoff of rung 6");
 
-        // No bind before the end of the backoff.
         let early = w.dispatch(
             &Holds {
                 clock: clock + wait - 1,
@@ -960,7 +956,6 @@ fn failed_host_launch_ends_the_attempt_at_once_and_rung_6_bounds_the_retries() {
         clock += wait;
     }
 
-    // A task that failed at the bound is never bound or launched again.
     set_clock(&w, clock + 10_000);
     let d = w.dispatch(
         &Holds {
