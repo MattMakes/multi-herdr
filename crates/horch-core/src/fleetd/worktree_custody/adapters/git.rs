@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -735,7 +735,9 @@ impl CliWorktreeGit {
         let out = self.runner.clone().with_sandbox(sandbox).output(dir, &full);
         GIT_GROUP.store(0, Ordering::SeqCst);
         out.map_err(|e| match e {
-            GitError::TimedOut { .. } => anyhow::anyhow!("{e}; {}", locks_left(&self.writable)),
+            GitError::TimedOut { .. } => {
+                anyhow::anyhow!("{e}; {}", locks_left(&self.fleet_root, &self.writable))
+            }
             e => anyhow::anyhow!("{e}"),
         })
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))
@@ -770,7 +772,10 @@ impl CliWorktreeGit {
 /// `.lock` file that stays makes each later git that takes it fail with
 /// "File exists": the text names each file, so the cause is in the error.
 /// The `objects` folders hold no lock and are not read.
-fn locks_left(writable: &[PathBuf]) -> String {
+/// The paths go to the lock journal of `fleet_root` before the error of
+/// the git returns, so a crash of fleetd after the stop keeps them
+/// (D266-F3).
+fn locks_left(fleet_root: &Path, writable: &[PathBuf]) -> String {
     let mut locks = Vec::new();
     let mut todo: Vec<PathBuf> = writable.to_vec();
     while let Some(dir) = todo.pop() {
@@ -792,37 +797,81 @@ fn locks_left(writable: &[PathBuf]) -> String {
         return "no .lock file stays in the git folders that it could write".to_string();
     }
     locks.sort();
-    if let Ok(mut left) = LOCKS_LEFT.lock() {
-        left.extend(locks.iter().map(PathBuf::from));
-    }
+    let journal = match journal_locks(fleet_root, locks.iter().map(PathBuf::from)) {
+        Ok(()) => String::new(),
+        Err(e) => format!(" The lock journal of fleetd failed: {e:#}."),
+    };
     format!(
         ".lock files in the git folders after the stop: {}. Each later git that takes 1 of \
          these locks fails at once with \"File exists\" until the operator removes the file \
-         by hand, when no git runs in that repository",
+         by hand, when no git runs in that repository.{journal}",
         locks.join(", ")
     )
 }
 
-/// Each `.lock` file that stayed after the stop of a git of this process at
-/// its time limit. A path stays here until its file is gone, so a pass that
-/// rolls back writes the item again.
-static LOCKS_LEFT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
-
-/// The `.lock` files that stayed after a stop of a git of this process at
-/// its time limit, also the ones that are gone since.
-pub fn locks_left_after_stops() -> Vec<PathBuf> {
-    LOCKS_LEFT
-        .lock()
-        .map(|left| left.iter().cloned().collect())
-        .unwrap_or_default()
+/// The lock journal of the fleet at `fleet_root`: a JSON list of each
+/// `.lock` file that stayed after the stop of a git of the fleet at its time
+/// limit. It is in the run folder, owner-only, which git cannot read. A path
+/// stays in it until its file is gone, so each pass after a crash or a
+/// rolled-back transaction opens its needs-you item again (D266-F3).
+pub fn lock_journal(fleet_root: &Path) -> PathBuf {
+    fleet_root.join("run").join(LOCK_JOURNAL)
 }
 
-/// Forget the `.lock` file `path` of [`locks_left_after_stops`]: its file
-/// is gone.
-pub fn forget_lock_left(path: &Path) {
-    if let Ok(mut left) = LOCKS_LEFT.lock() {
-        left.remove(path);
+const LOCK_JOURNAL: &str = "git-locks-left.json";
+
+/// Change the lock journal of `fleet_root` with `change`, under its folder
+/// lock: a job process and fleetd can write it at the same moment.
+fn change_journal(fleet_root: &Path, change: impl FnOnce(&mut BTreeSet<PathBuf>)) -> Result<()> {
+    let run = fleet_root.join("run");
+    private_folder(&run)?;
+    let _held = crate::fsx::DirLock::acquire(
+        &run,
+        LOCK_JOURNAL,
+        Duration::from_secs(60),
+        Duration::from_secs(10),
+    )?;
+    let mut paths: BTreeSet<PathBuf> = read_journal(fleet_root)?.into_iter().collect();
+    let before = paths.clone();
+    change(&mut paths);
+    if paths == before {
+        return Ok(());
     }
+    let bytes = serde_json::to_vec(&paths).context("the lock journal serializes")?;
+    Ok(crate::fsx::write_atomic(
+        &lock_journal(fleet_root),
+        &bytes,
+        0o600,
+    )?)
+}
+
+fn read_journal(fleet_root: &Path) -> Result<Vec<PathBuf>> {
+    let path = lock_journal(fleet_root);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .with_context(|| format!("reading the lock journal {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("reading the lock journal {}", path.display())),
+    }
+}
+
+/// Add `locks` to the lock journal of `fleet_root`.
+fn journal_locks(fleet_root: &Path, locks: impl IntoIterator<Item = PathBuf>) -> Result<()> {
+    change_journal(fleet_root, |paths| paths.extend(locks))
+}
+
+/// The `.lock` files of the lock journal of `fleet_root`, also the ones
+/// that are gone since.
+pub fn locks_left_after_stops(fleet_root: &Path) -> Result<Vec<PathBuf>> {
+    read_journal(fleet_root)
+}
+
+/// Remove the `.lock` file `path` from the lock journal of `fleet_root`:
+/// its file is gone.
+pub fn forget_lock_left(fleet_root: &Path, path: &Path) -> Result<()> {
+    change_journal(fleet_root, |paths| {
+        paths.remove(path);
+    })
 }
 
 /// The group of this job process while 1 of its sandboxed git calls runs,
@@ -1102,7 +1151,7 @@ fn parse_list(out: &str) -> Vec<ListEntry> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A repository with 2 commits on `main` and the branch `feat` at the
@@ -1297,6 +1346,54 @@ mod tests {
         assert!(text.contains("ran past its time limit of 1 s"), "{text}");
         assert!(text.contains("no .lock file stays"), "{text}");
         assert!(!git_dir.join("refs/heads/x.lock").exists());
+    }
+
+    /// Run a git of the fleet at `fleet_root` in a new repository in `dir`
+    /// that holds `refs/heads/x.lock`, ignores `SIGTERM` and is killed at its
+    /// limit of 1 s. Gives the lock file, which stays.
+    #[cfg(unix)]
+    pub(crate) fn kill_a_git_that_holds_a_lock(dir: &Path, fleet_root: &Path) -> PathBuf {
+        let (repo, tip) = one_commit(dir);
+        let git_dir = repo.join(".git");
+        let bin = locking_git(dir, &git_dir, "");
+        CliWorktreeGit::new(&bin, fleet_root)
+            .with_home(dir.join("home"))
+            .with_sandbox_host(same_host)
+            .writing(std::slice::from_ref(&git_dir))
+            .with_time_limit(Duration::from_secs(1))
+            .git(&repo, &["update-ref", "refs/heads/x", &tip])
+            .unwrap_err();
+        let lock = git_dir.join("refs/heads/x.lock");
+        assert!(lock.exists(), "the KILL leaves the lock");
+        lock
+    }
+
+    /// The lock file of a killed git is in the owner-only lock journal of
+    /// the fleet when its error returns, and leaves it only by
+    /// [`forget_lock_left`] (D266-F3).
+    #[cfg(unix)]
+    #[test]
+    fn a_git_killed_at_its_limit_journals_its_lock_before_its_error_returns() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fleet_root = dir.path().join("fleet");
+        let lock = kill_a_git_that_holds_a_lock(dir.path(), &fleet_root);
+        assert_eq!(
+            locks_left_after_stops(&fleet_root).unwrap(),
+            std::slice::from_ref(&lock)
+        );
+        let mode = std::fs::metadata(lock_journal(&fleet_root))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "owner-only");
+        journal_locks(&fleet_root, [lock.clone()]).unwrap();
+        assert_eq!(
+            locks_left_after_stops(&fleet_root).unwrap(),
+            std::slice::from_ref(&lock)
+        );
+        forget_lock_left(&fleet_root, &lock).unwrap();
+        assert!(locks_left_after_stops(&fleet_root).unwrap().is_empty());
     }
 
     #[cfg(unix)]

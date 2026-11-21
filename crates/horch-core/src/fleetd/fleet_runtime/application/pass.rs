@@ -892,7 +892,7 @@ impl<'a> Pass<'a> {
     /// line of each later pass whose git takes the lock: that git fails at
     /// once with "File exists", and the error of git names the `.lock` file.
     fn record_locks_left(&self, conn: &mut Connection) -> Result<()> {
-        if crate::fleetd::worktree_custody::adapters::git::locks_left_after_stops().is_empty() {
+        if !jobs::locks_journaled(conn)? {
             return Ok(());
         }
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

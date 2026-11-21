@@ -563,25 +563,31 @@ fn tell_group_left(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
 /// prove that no other git holds it.
 ///
 /// The open item is the row of the lock (A24, D254-F3): it is written in
-/// `tx`, so a restart of fleetd after the commit keeps it. The paths of
-/// this process ([`worktree_git::locks_left_after_stops`]) get an item when
-/// they have none. Each open item whose file is gone is resolved.
+/// `tx`, so a restart of fleetd after the commit keeps it. The git wrote
+/// each path to the lock journal of the fleet root of the ledger before
+/// its error returned, so a crash before this commit keeps it too
+/// (D266-F3): each path of the journal gets an item when it has none, and
+/// leaves the journal only when its file is gone. Each open item whose
+/// file is gone is resolved.
 pub fn record_locks_left(ctx: &JobCtx<'_>, tx: &Connection) -> Result<()> {
     let prefix = format!("{}:git_lock:", jobs::NEEDS_YOU_KIND);
     let open: BTreeSet<String> = needs_you_store::open_keys(tx, jobs::NEEDS_YOU_KIND)?
         .into_iter()
         .filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned))
         .collect();
+    let root = journal_root(tx);
     for path in &open {
         if !Path::new(path).exists() {
             ctx.needs_you.resolve_item(tx, &format!("{prefix}{path}"))?;
-            worktree_git::forget_lock_left(Path::new(path));
         }
     }
-    for lock in worktree_git::locks_left_after_stops() {
+    let Some(root) = root else {
+        return Ok(());
+    };
+    for lock in worktree_git::locks_left_after_stops(&root)? {
         let path = lock.display().to_string();
         if !lock.exists() {
-            worktree_git::forget_lock_left(&lock);
+            worktree_git::forget_lock_left(&root, &lock)?;
             continue;
         }
         if open.contains(&path) {
@@ -604,6 +610,21 @@ pub fn record_locks_left(ctx: &JobCtx<'_>, tx: &Connection) -> Result<()> {
         ctx.needs_you.open_item(tx, &item)?;
     }
     Ok(())
+}
+
+/// Whether the lock journal of the fleet root of the ledger of `conn`
+/// holds a path: then [`record_locks_left`] has work.
+pub fn locks_journaled(conn: &Connection) -> Result<bool> {
+    match journal_root(conn) {
+        Some(root) => Ok(!worktree_git::locks_left_after_stops(&root)?.is_empty()),
+        None => Ok(false),
+    }
+}
+
+/// The fleet root of the ledger of `conn`, whose run folder holds the lock
+/// journal. `None` for a ledger with no file: no git of a fleet wrote one.
+fn journal_root(conn: &Connection) -> Option<PathBuf> {
+    executors::fleet_root(conn).ok()
 }
 
 const TERM_SENT: &str = "the stop sends SIGTERM to the job process";
@@ -1867,6 +1888,91 @@ pub(crate) mod stop_window {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod lock_journal_tests {
+    use super::*;
+    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+    use crate::fleetd::worktree_custody::adapters::git::tests::kill_a_git_that_holds_a_lock;
+    use crate::taskledger::store::Store;
+
+    const CHILD: &str = "HORCH_LOCK_JOURNAL_CHILD";
+    const CHILD_ROOT: &str = "HORCH_LOCK_JOURNAL_CHILD_ROOT";
+
+    /// Not a test of its own: a fleetd that kills a git at its limit and
+    /// then crashes before any pass transaction.
+    #[test]
+    fn child_kills_a_git_and_crashes() {
+        use crate::runtime::context::{EnvSource, ProcessEnv};
+        let (Some(dir), Some(root)) = (ProcessEnv.var_os(CHILD), ProcessEnv.var_os(CHILD_ROOT))
+        else {
+            return;
+        };
+        kill_a_git_that_holds_a_lock(Path::new(&dir), Path::new(&root));
+        std::process::exit(0);
+    }
+
+    fn lock_items(conn: &Connection) -> Vec<String> {
+        needs_you_store::open_keys(conn, jobs::NEEDS_YOU_KIND)
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains(":git_lock:"))
+            .collect()
+    }
+
+    fn pass(store: &mut Store) {
+        let config = FleetConfig::default();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        store.immediate(|tx| record_locks_left(&ctx, tx)).unwrap();
+    }
+
+    /// A restart of fleetd between the `SIGKILL` of a git and the next pass
+    /// transaction (D254-F3, D266-F3): the first pass of the new process
+    /// opens 1 item for the lock, the next pass opens no second one, and
+    /// the pass after the operator removes the file resolves it and empties
+    /// the journal.
+    #[test]
+    fn a_restart_between_the_kill_of_a_git_and_the_pass_keeps_its_lock_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let root = executors::fleet_root(store.conn()).unwrap();
+        let child = "fleetd::fleet_runtime::application::jobs::lock_journal_tests::\
+                     child_kills_a_git_and_crashes";
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", child, "--nocapture", "--test-threads=1"])
+            .env(CHILD, dir.path())
+            .env(CHILD_ROOT, &root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let lock = dir.path().join("repo/.git/refs/heads/x.lock");
+        assert!(lock.exists(), "the lock stays after the crash");
+        assert!(lock_items(store.conn()).is_empty(), "no pass ran");
+
+        pass(&mut store);
+        let key = format!("{}:git_lock:{}", jobs::NEEDS_YOU_KIND, lock.display());
+        assert_eq!(lock_items(store.conn()), std::slice::from_ref(&key));
+        pass(&mut store);
+        assert_eq!(
+            lock_items(store.conn()),
+            std::slice::from_ref(&key),
+            "1 item"
+        );
+        assert!(locks_journaled(store.conn()).unwrap(), "the file stays");
+
+        std::fs::remove_file(&lock).unwrap();
+        pass(&mut store);
+        assert!(lock_items(store.conn()).is_empty(), "resolved");
+        assert!(
+            !locks_journaled(store.conn()).unwrap(),
+            "the journal is empty"
+        );
     }
 }
 
