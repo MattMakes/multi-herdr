@@ -7,9 +7,10 @@ phase: validation
 model: gpt-5.6-sol
 # When this model's usage pool cannot serve a spawn (horch route codex-reviewer).
 fallbacks: [opus]
-# high, like the claude reviewers: a missed finding costs a review round
-# (cezaar#40). Not xhigh or max: diminishing returns above high.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: like the claude reviewers, a missed finding costs a
+# review round (cezaar#40); not xhigh or max: diminishing returns above high.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 skills: [code-review, security-review]

@@ -99,7 +99,27 @@ fallbacks: []
 # validates it per agent. `horch spawn --effort` overrides it for one spawn.
 # Levels are not comparable across vendors: "high" on codex is not "high" on
 # claude.
+# THE CEILING: the fleet runs at Opus 5.5 at medium effort, at most. An effort
+# above medium (high | xhigh | max, on any agent) fails `--check` unless the
+# file carries the operator's `signoff:` (below).
 effort: medium
+
+# The operator's sign-off for a teammate above the fleet ceiling (Opus 5.5 at
+# medium). ONLY THE OPERATOR WRITES THIS LINE. An agent, a skill or a script
+# never adds, edits or copies one; it proposes the change and stops.
+# One line: the date, who signed, and why, e.g.
+#   signoff: "2026-11-21 <operator>: Lean proofs fail review at medium"
+# `horch teammates --check`:
+#   - fails an effort above medium without it;
+#   - fails one that is empty, does not start with a yyyy-mm-dd date, or
+#     gives no reason after ": ";
+#   - fails one on a teammate that is not above the ceiling (stale: remove it);
+#   - warns, and does not fail, for a worker seat on a reserved model (fable,
+#     gpt-6-astra) without it. The orchestrators are exempt from that warning.
+# `horch spawn --effort` / `--model` and the `horch fleet <flavor>` choice are
+# the operator's own decisions for one launch. They are not roster settings
+# and need no sign-off here. See teammates/README.md, "The ceiling".
+signoff:
 
 # ─── compaction amounts per teammate ────────────────────────────────────────
 # compact_at: horch's watch base. horch watches the lower of it and 80% of the

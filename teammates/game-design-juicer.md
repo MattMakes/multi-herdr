@@ -11,9 +11,10 @@ phase: plan
 # serve a spawn, it runs on opus with this persona, skills and effort.
 model: fable
 fallbacks: [opus]
-# high: taste and balance calls are where reasoning depth pays. It stays
-# high on the opus fallback.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: taste and balance calls are where reasoning depth pays;
+# it stayed high on the opus fallback.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 permission_mode: auto

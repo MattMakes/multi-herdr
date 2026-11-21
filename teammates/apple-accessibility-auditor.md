@@ -16,8 +16,10 @@ requires: [xcode]
 # apple-accessibility-auditor). The Codex pane audits the source without the
 # live accessibility tree; the persona says to report that.
 fallbacks: [codex-terra]
-# high: a missed finding costs a review round, the same as qa-engineer.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a missed finding costs a review round, the same as
+# qa-engineer.
+effort: medium
 compact_window: 150000
 compact_at: 135000
 

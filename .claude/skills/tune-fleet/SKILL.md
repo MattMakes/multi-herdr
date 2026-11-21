@@ -80,17 +80,32 @@ first-party page as **unverified**. Then:
 
 Each rule below comes from cezaar#40 or from measurement in this repo:
 
-1. **Effort follows the role, not the model.**
+1. **The ceiling is Opus 5.5 at medium, for every role.** Inside it, effort
+   follows the role, not the model:
    - builders: medium, or low when the brief is a complete spec;
-   - reviewers and planners: high;
+   - reviewers and planners: medium;
    - researchers: medium;
    - runners: low;
    - the orchestrator: medium.
+
+   A level above medium (`high`, `xhigh`, `max`, on any harness), or a
+   reserved-tier model (`fable`, `gpt-6-astra`) on a worker seat, is a
+   proposal to the operator. It lands only with the operator's own
+   `signoff: "<yyyy-mm-dd> <who>: <why>"` line in the teammate file. This
+   skill never writes, edits or copies a sign-off: give the operator the
+   teammate, the level, the numbers and the reason, and stop. Without the
+   line, `horch teammates --check` fails the level. See "The ceiling" in
+   `teammates/README.md` and ADR 0195.
 2. **Lower effort** where a role is expensive and its output passes review
    the first time.
-3. **Raise effort** where a role's output keeps failing review rounds. One
-   extra round usually costs more than the higher level. For a one-off, prefer
-   `horch spawn --effort` over a file change.
+3. **Propose a raise to the operator** where a role's output keeps failing
+   review rounds. One extra round usually costs more than the higher level.
+   Inside the ceiling (low to medium), make the change yourself. Above
+   medium, write the proposal with the failed review rounds per role and
+   the `horch cost` numbers, and leave the file at medium until the operator
+   signs. A
+   one-off uses `horch spawn --effort`, which is the operator's own decision
+   for 1 launch and not a roster setting.
 4. **Move work down a tier** (opus → sonnet, sol → terra → luna) when plans
    are complete enough that the cheaper model follows them. The fix for a
    cheap model failing is usually a better plan, not a bigger model.
@@ -106,22 +121,29 @@ Each rule below comes from cezaar#40 or from measurement in this repo:
 7. **Local and free tiers are judged on quality, not cost.** pi costs
    wall-clock time. The opencode free tier costs confidentiality.
 8. **Keep the reserved tiers reserved.** Never give a worker `fable` or
-   `astra`. The operator's one-spawn `horch spawn --model` is not a roster
-   setting.
+   `astra`. A worker seat on one of them needs the operator's `signoff:`,
+   like a level above medium (rule 1). The operator's one-spawn
+   `horch spawn --model`, and the `horch fleet <flavor>` choice of the
+   orchestrator's model, are not roster settings.
 
 ## 5. Edit
 
 For each change, edit the teammate's frontmatter:
-- set the new `model:` or `effort:` value;
+- set the new `model:` or `effort:` value, never above the ceiling: a level
+  above medium waits for the operator's `signoff:` line, which only the
+  operator writes;
 - add a `#` comment directly above it that gives the reason and the number
   behind it, e.g. `# medium -> low: 3 runs, 0 review rounds failed, -38%`;
+- when a level goes back under the ceiling, tell the operator to remove the
+  `signoff:` line: the check fails a sign-off on a teammate that is not
+  above the ceiling;
 - update the matching row of the effort table in `teammates/README.md`, and
   the teammate table in `README.md`.
 
 ## 6. Verify
 
 ```bash
-horch teammates --check          # the level is valid for the agent
+horch teammates --check          # the level is valid and inside the ceiling
 cargo test --workspace           # argv tests pin some levels; update them
 horch smoke fleet                # spends no tokens
 horch doctor                     # no env var or setting overrides the new levels
@@ -133,5 +155,7 @@ Write `ai_docs/reports/tuning-<yyyy-mm-dd>.md` with these sections:
 - the runs measured: ledger path, `--since`, session count;
 - a before/after table per changed teammate: model, effort, cost per
   session, review rounds;
+- the proposals above the ceiling that await the operator's sign-off:
+  teammate, model, proposed level, review rounds failed, the reason;
 - the facts re-verified, with sources, and any that stayed unverified;
 - what to measure next time to confirm or revert each change.

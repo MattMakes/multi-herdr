@@ -10,10 +10,11 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn (horch route architect-reviewer).
 fallbacks: [codex-sol]
-# high: a missed finding costs a review round, which cost more than the
-# review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
-# spend at xhigh). high, not xhigh: diminishing returns above it.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a missed finding costs a review round, which cost more
+# than the review itself in cezaar#40's baseline (reviewers+judges were 71% of
+# worker spend at xhigh); not xhigh: diminishing returns above high.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 

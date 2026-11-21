@@ -20,9 +20,10 @@ requires: [godot]
 # sandbox settings. A Codex pane can commit: its folder, .git included,
 # is writable in the fleet_write profile.
 fallbacks: [codex-sol]
-# high: a profiler reads numbers and must not guess at causes; a wrong
-# hot-spot costs a second capture. Same as ue-qa-engineer.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a profiler reads numbers and must not guess at causes;
+# a wrong hot-spot costs a second capture, the same as ue-qa-engineer.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 permission_mode: auto

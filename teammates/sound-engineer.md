@@ -13,8 +13,10 @@ system_prompt: sr_eng_system_prompt
 # No fallback: the hark venv, ffmpeg and the optional ML models are not
 # live-checked in the Codex sandbox. When the Claude pool is out,
 # `horch route` refuses and the orchestrator waits.
-# high: each sound is a search over candidates, aimed and checked by ear.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: each sound is a search over candidates, aimed and
+# checked by ear.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 permission_mode: auto

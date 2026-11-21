@@ -10,7 +10,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -43,7 +43,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -76,7 +76,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -109,7 +109,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -142,7 +142,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -175,7 +175,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -208,7 +208,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -241,7 +241,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -274,7 +274,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "architect-reviewer"
       },
@@ -1243,7 +1243,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1276,7 +1276,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1309,7 +1309,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1342,7 +1342,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1375,7 +1375,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1408,7 +1408,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1441,7 +1441,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1474,7 +1474,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -1507,7 +1507,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "high",
+        "effort": "medium",
         "model": "gpt-5.6-sol",
         "name": "codex-reviewer"
       },
@@ -4078,7 +4078,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4111,7 +4111,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4144,7 +4144,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4177,7 +4177,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4210,7 +4210,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4243,7 +4243,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4276,7 +4276,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4309,7 +4309,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4342,7 +4342,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-hardening"
       },
@@ -4375,7 +4375,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4408,7 +4408,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4441,7 +4441,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4474,7 +4474,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4507,7 +4507,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4540,7 +4540,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4573,7 +4573,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4606,7 +4606,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -4639,7 +4639,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "opus",
         "name": "opus-verify"
       },
@@ -6530,7 +6530,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6563,7 +6563,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6596,7 +6596,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6629,7 +6629,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6662,7 +6662,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6695,7 +6695,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6728,7 +6728,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6761,7 +6761,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6794,7 +6794,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "product-lead"
       },
@@ -6827,7 +6827,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -6860,7 +6860,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -6893,7 +6893,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -6926,7 +6926,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -6959,7 +6959,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -6992,7 +6992,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -7025,7 +7025,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -7058,7 +7058,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -7091,7 +7091,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "qa-engineer"
       },
@@ -7673,7 +7673,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7706,7 +7706,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7739,7 +7739,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7772,7 +7772,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7805,7 +7805,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7838,7 +7838,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7871,7 +7871,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7904,7 +7904,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -7937,7 +7937,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-bugfix"
       },
@@ -8564,7 +8564,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8597,7 +8597,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8630,7 +8630,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8663,7 +8663,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8696,7 +8696,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8729,7 +8729,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8762,7 +8762,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8795,7 +8795,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -8828,7 +8828,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "max",
+        "effort": "medium",
         "model": "sonnet",
         "name": "sonnet-sweep"
       },
@@ -9158,7 +9158,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9191,7 +9191,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9224,7 +9224,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9257,7 +9257,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9290,7 +9290,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9323,7 +9323,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9356,7 +9356,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9389,7 +9389,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },
@@ -9422,7 +9422,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "high",
+        "effort": "medium",
         "model": "opus",
         "name": "staff-engineer"
       },

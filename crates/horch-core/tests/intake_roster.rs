@@ -49,7 +49,7 @@ const ROLES: [Role; 5] = [
     Role {
         name: "intake-auditor",
         model: "opus",
-        effort: "high",
+        effort: "medium",
         tools: &["Read", "Grep", "Glob", "Write", "Bash"],
         allow_read: &["contaminated"],
         allow_write: &["contaminated"],
@@ -205,7 +205,7 @@ fn t26_the_skill_importer_is_the_offered_controller() {
     assert!(!t.hidden);
     assert!(t.offer_when.is_empty(), "offered everywhere");
     assert_eq!(t.model.as_deref(), Some("opus"));
-    assert_eq!(t.effort.as_deref(), Some("high"));
+    assert_eq!(t.effort.as_deref(), Some("medium"));
     assert_eq!(
         &t.allowed_tools,
         &r.require("sonnet").unwrap().allowed_tools

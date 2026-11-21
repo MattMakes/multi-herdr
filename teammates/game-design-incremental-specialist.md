@@ -16,10 +16,11 @@ system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn. codex-sol can run python3
 # and read JSON, which is all the skill needs.
 fallbacks: [codex-sol]
-# high: a wrong model (an additive pool read as a multiplier, a reset that
-# keeps the wrong thing) or a failed design presented as ready gives a
-# confident, wrong verdict that the whole build then follows.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a wrong model (an additive pool read as a multiplier, a
+# reset that keeps the wrong thing) or a failed design presented as ready
+# gives a confident, wrong verdict that the whole build then follows.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 permission_mode: auto

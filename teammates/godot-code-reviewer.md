@@ -17,8 +17,10 @@ offer_when: ["project.godot"]
 requires: [godot]
 # When this model's usage pool cannot serve a spawn (horch route godot-code-reviewer).
 fallbacks: [codex-sol]
-# high: a missed finding costs a review round, the same as qa-engineer.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: a missed finding costs a review round, the same as
+# qa-engineer.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 

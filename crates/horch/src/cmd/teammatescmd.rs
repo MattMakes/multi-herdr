@@ -118,6 +118,7 @@ pub struct MatrixRow {
     pub model: String,
     pub effort: String,
     pub effort_is_explicit: bool,
+    pub signoff: Option<String>,
     pub phase: String,
     pub skills: Vec<String>,
     pub plugin_skills: Vec<String>,
@@ -146,6 +147,7 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
         agent: t.agent.to_string(),
         effort_is_explicit: t.effort.is_some(),
         effort,
+        signoff: t.signoff.clone(),
         phase: t.phase.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
         skills: t.skills.clone(),
         plugin_skills: t
@@ -246,6 +248,10 @@ fn row_notes(r: &MatrixRow) -> Vec<String> {
             !r.requires.is_empty(),
             format!("requires {}", r.requires.join(", ")),
         ),
+        (
+            r.signoff.is_some(),
+            format!("signoff: {}", r.signoff.as_deref().unwrap_or_default()),
+        ),
     ];
     flags
         .into_iter()
@@ -263,6 +269,9 @@ pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
         eprintln!("warning: {w}");
     }
     for w in horch_core::roster::validation::context_policy_warnings(&roster) {
+        eprintln!("warning: {w}");
+    }
+    for w in horch_core::roster::validation::ceiling_warnings(&roster) {
         eprintln!("warning: {w}");
     }
     if problems.is_empty() {
@@ -324,6 +333,7 @@ mod tests {
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
         let actual = serde_yaml::to_value(Teammate {
             fallbacks: vec![String::new()],
+            signoff: Some(String::new()),
             system_prompt: Some(String::new()),
             compact_window: Some(1),
             compact_at: Some(1),
@@ -431,6 +441,7 @@ mod tests {
             model: "m".into(),
             effort: "inherits config.toml".into(),
             effort_is_explicit: false,
+            signoff: None,
             phase: "-".into(),
             skills: vec![],
             plugin_skills: vec![],
@@ -464,6 +475,33 @@ mod tests {
         plain.requires.clear();
         let table = super::matrix_table(&[plain]);
         assert!(table.lines().nth(2).unwrap().ends_with("| unknown |  |"));
+    }
+
+    #[test]
+    fn the_matrix_shows_a_signoff_in_the_notes_and_in_json() {
+        let signoff = "2026-11-21 operator: proofs need the depth";
+        let signed = Teammate {
+            name: "t".into(),
+            effort: Some("high".into()),
+            signoff: Some(signoff.into()),
+            hidden: true,
+            ..Teammate::default()
+        };
+        let row = super::matrix_row(&signed);
+        assert_eq!(
+            serde_json::to_value(&row).unwrap()["signoff"],
+            serde_json::json!(signoff)
+        );
+        let table = super::matrix_table(&[row]);
+        let line = table.lines().nth(2).unwrap();
+        assert!(
+            line.ends_with(&format!("| hidden, signoff: {signoff} |")),
+            "{line}"
+        );
+
+        let unsigned = super::matrix_row(&Teammate::default());
+        assert!(serde_json::to_value(&unsigned).unwrap()["signoff"].is_null());
+        assert!(!super::matrix_table(&[unsigned]).contains("signoff"));
     }
 
     #[test]

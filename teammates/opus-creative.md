@@ -11,9 +11,9 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # No fallbacks: a substitute model would give the council 2 designs from 1
 # model. The orchestrator runs with the seats that start (orchestrate §10).
-# high: open design is where reasoning depth pays. Raise one spawn with
-# --effort.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: open design is where reasoning depth pays.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 permission_mode: auto

@@ -10,9 +10,11 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # When this model's usage pool cannot serve a spawn (horch route root-cause-auditor).
 fallbacks: [codex-sol]
-# high: the verdict on each site is a judgement about intent and history. A
-# wrong "patched-around" verdict costs a rewrite of code that was right.
-effort: high
+# high -> medium (2026-11-21): the fleet ceiling is Opus 5.5 at medium. Restoring high needs the operator's signoff.
+# It was high because: the verdict on each site is a judgement about intent
+# and history; a wrong "patched-around" verdict costs a rewrite of code that
+# was right.
+effort: medium
 compact_window: 200000
 compact_at: 135000
 # Edit stays allowed: fixing a site at its root is half of this seat's job.

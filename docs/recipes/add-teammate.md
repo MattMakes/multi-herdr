@@ -27,6 +27,10 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
    `permission_mode` and tools. Drop `generic:` for a specialist. Do not use
    `fable` or `gpt-6-astra`: only the orchestrator and the 2 code-defined
    creative seats may use them, and adding a file cannot grant a seat.
+   Set `effort` to `medium` or lower: the fleet ceiling is Opus 5.5 at
+   medium, and `--check` fails a level above it without `signoff:`. Only
+   the operator writes that line; leave it empty
+   ([ADR 0195](../adr/0195-nothing-runs-above-opus-5-5-at-medium-without-the-operators-sign-off.md)).
    Optional skill fields (see [Skill fields](#skill-fields)):
    `available_skills` and `operator_skills`.
    A spawnable `agent: claude` teammate needs `disallowed_tools: [Agent]`.
