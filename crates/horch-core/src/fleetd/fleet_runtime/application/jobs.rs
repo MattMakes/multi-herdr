@@ -1766,6 +1766,7 @@ pub(crate) mod stop_window {
     use super::*;
     use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
     use crate::fleetd::worker_profiles::application::ports::{EnvRule, LaunchError, Launched};
+    use crate::runtime::context::{EnvSource, ProcessEnv};
     use std::time::{Duration, Instant};
 
     /// The key of the job child: the file where it records the launched
@@ -1802,7 +1803,7 @@ pub(crate) mod stop_window {
     /// sleeps 600 s. The proof: the child ends by the signal, and the
     /// launched group is gone within 10 s.
     pub(crate) fn prove(test: &str, run: impl FnOnce(&dyn ProcessHost, &LaunchSpec)) {
-        if let Some(record) = crate::runtime::context::ProcessEnv.var_os(CHILD) {
+        if let Some(record) = ProcessEnv.var_os(CHILD) {
             let spec = LaunchSpec {
                 program: PathBuf::from("/bin/sh"),
                 args: vec!["-c".into(), "sleep 600".into()],
