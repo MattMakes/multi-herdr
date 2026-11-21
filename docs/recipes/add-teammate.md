@@ -51,7 +51,7 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
    `teammates/`. Check: `cargo build --workspace --bins` and then
    `./target/debug/horch teammates --check` exits 0, and
    `./target/debug/horch teammates --matrix` shows a row for `<name>`.
-5. Tell the tests about it. All 3 are needed or the gate fails:
+5. Tell the tests about it. All 4 are needed or the gate fails:
    - Add `<name>` to `SKIP_NEW_TEAMMATES` in
      `crates/horch-core/tests/baseline_oracles.rs` and
      `crates/horch-core/tests/skills_catalog.rs` (alphabetical, 1 name per
@@ -64,9 +64,14 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
    - In the same file, test
      `roster_check_demands_the_subagent_deny_on_every_claude_fleet_pane`:
      raise the count by 1 for a spawnable `agent: claude` teammate.
+   - In `crates/horch-e2e/tests/fleet18_brief_worktree.rs`, test
+     `g58_claude_workers_share_read_only_preapprovals`: raise the count by 1
+     for an `agent: claude` teammate whose `base` is `fleet-worker` or
+     `report-worker`. Its `allowed_tools` must equal those of `sonnet`.
    Check: `cargo test -p horch-core --test baseline_oracles`,
    `cargo test -p horch-core --test skills_catalog`,
-   `cargo test -p horch-core roster::`.
+   `cargo test -p horch-core roster::`,
+   `cargo test -p horch-e2e --test fleet18_brief_worktree`.
 6. Add the teammate to the team tables in `teammates/README.md` and, for a
    commonly used role, to the teammate table in `README.md`. If the
    orchestrator needs to know when to use it beyond the `brief_description`,
@@ -82,6 +87,7 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
 | `crates/horch-core/tests/baseline_oracles.rs` | `SKIP_NEW_TEAMMATES` | required |
 | `crates/horch-core/tests/skills_catalog.rs` | `SKIP_NEW_TEAMMATES` | required |
 | `crates/horch-core/src/roster/validation.rs` | phase-defaults arm; Claude fleet-pane count | required when not implementation phase; required for a spawnable Claude teammate |
+| `crates/horch-e2e/tests/fleet18_brief_worktree.rs` | Claude worker count in `g58_claude_workers_share_read_only_preapprovals` | required for a Claude `fleet-worker` or `report-worker` teammate |
 | `teammates/README.md` | team table | required |
 | `README.md` | teammate table | optional |
 | `skills/orchestrate/SKILL.md` | when to pick it | optional |
