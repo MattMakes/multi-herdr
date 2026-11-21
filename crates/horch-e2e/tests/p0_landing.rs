@@ -163,9 +163,6 @@ fn pass(h: &Harness, before: impl FnOnce()) {
     );
 }
 
-/// Whether a pass ended after `t`. Each pass writes `activity.json` before
-/// its effects and `heartbeat.json` after them, and the start heartbeat
-/// comes before the first `activity.json`.
 fn pass_ended_since(h: &Harness, t: SystemTime) -> bool {
     let run = h.fleet_root().join("run");
     let mtime = |name: &str| {
@@ -179,8 +176,6 @@ fn pass_ended_since(h: &Harness, t: SystemTime) -> bool {
     }
 }
 
-/// The task attempts in `launching` that fleetd launched and whose spawn
-/// still runs: its worker is `spawning` and has no pane yet.
 fn unrecorded_launches(h: &Harness) -> Vec<String> {
     let launches = h.fleet_root().join("run").join("launches");
     ledger_rows(
@@ -382,7 +377,6 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
             h.set("HORCH_LEDGER_DB", db.to_string_lossy());
             h.set("HORCH_NO_WAKE", "1");
             h.set("HORCH_NO_WATCHDOG", "1");
-            // No wake pass, so no launch starts after `pass` waited for its spawns: the test stops fleetd many times, the fleet clock adds 0 s on the 1st tick after each restart, so the 30 s backoff of a retry never ends here, and this test is of the bundle rule, not of the retry.
             h.set("HORCH_FAULT", "drop-watch-events");
             h.set(
                 "HORCH_QUOTA_FILE",

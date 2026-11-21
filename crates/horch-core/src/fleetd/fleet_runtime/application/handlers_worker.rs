@@ -183,9 +183,6 @@ pub struct WorkerLaunchFailedPayload {
     pub reason: String,
 }
 
-/// The spawn failed before the worker ran: the row ends `launch_failed`, as
-/// `horch spawn` wrote it. Its push attempt in `launching` ends `crashed`,
-/// so rung 6 queues the task again at once.
 fn worker_launch_failed(
     tx: &Transaction<'_>,
     deps: &WorkerDeps,

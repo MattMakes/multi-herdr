@@ -261,8 +261,7 @@ fn crash(tx: &Connection, guard: Option<Generation>, p: &Pending, why: &str) -> 
 /// The spawn of worker `worker_id` failed before its agent ran, for `why`:
 /// end each push attempt of the worker in `launching` `crashed` in `tx`,
 /// as a failed tree does. Its launch record stays, so no pass launches it
-/// again, and the start timeout counts only while fleetd runs. Gives the
-/// ended attempts.
+/// again. Gives the ended attempts.
 pub fn end_failed_spawn(
     tx: &Connection,
     guard: Option<Generation>,

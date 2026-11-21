@@ -458,10 +458,6 @@ fn worker_launch_failed_ends_an_unclaimed_row() {
     assert_eq!(workers::get(&w.conn, &other).unwrap().status, "spawning");
 }
 
-/// A spawn of a push attempt that fails ends the attempt `crashed` at
-/// once: rung 6 burns 1 attempt and queues the task again, so its next
-/// attempt does not wait for the start timeout. A start timeout counts
-/// only on the fleet clock, which stops while fleetd is down (T-254).
 #[test]
 fn worker_launch_failed_of_a_push_attempt_ends_it_crashed_and_queues_the_task() {
     let mut w = world();
@@ -496,7 +492,6 @@ fn worker_launch_failed_of_a_push_attempt_ends_it_crashed_and_queues_the_task() 
     );
     assert_eq!(t.current_worker_id, None, "{}", w.rows());
 
-    // A second report of the same failure ends no attempt and burns none.
     w.send(
         Kind::WorkerLaunchFailed,
         json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "again" }),
