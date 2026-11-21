@@ -162,11 +162,8 @@ fn jobs_backoff(ctx: &JobCtx<'_>, refusals: u64) -> i64 {
     i64::try_from(s).unwrap_or(i64::MAX)
 }
 
-/// The cause of the fact of 1 refusal of a removal that can go away.
 const REFUSED: &str = "removal_refused_for_now";
 
-/// 1 refusal that can go away: its run and the fleet clock of the pass
-/// that saw it.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 struct Refusal {
     job: i64,

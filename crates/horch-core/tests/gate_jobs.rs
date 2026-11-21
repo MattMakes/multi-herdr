@@ -1033,8 +1033,6 @@ fn marked(marker: &str) -> Vec<String> {
         .collect()
 }
 
-// ─── the end of a tree that its owner gave up ───────────────────────────
-
 /// The end of a gate tree and of a tree that a worker dropped
 /// (preservation-04 row W11, RR-13; ticket 164 of fleetd-finish), and the
 /// retry of a removal that a process in the tree refused (FM-27, "The
@@ -1109,7 +1107,6 @@ mod tree_end {
                 .unwrap()
         }
 
-        /// Each run of `kind` of the tree `id`, oldest first.
         fn runs_of(&self, kind: Kind, id: &str) -> Vec<JobRow> {
             let mut stmt = self
                 .conn
@@ -1180,7 +1177,6 @@ mod tree_end {
             path
         }
 
-        /// A task of the run whose idea is `merged`.
         fn task_of_merged_idea(&mut self) -> String {
             let run = self.run.clone();
             let new = NewTask::work("t1", "t1.md", "dev");
@@ -1240,7 +1236,6 @@ mod tree_end {
         let tree = w.gate_tree();
         let id = tree.worktree_id.clone();
         let repo = w.repo.clone();
-        // A file that is only in the tree: the rescue keeps it first.
         std::fs::write(w.gate_path().join("unique.txt"), "unique\n").unwrap();
         assert!(w
             .tx(|ctx, tx| gate_tree::release(ctx, tx, &repo, FEATURE, "its feature is merged"))
@@ -1271,8 +1266,6 @@ mod tree_end {
         assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
     }
 
-    /// A tree with no task that nobody released or dropped is rescued and
-    /// stays: no removal without a decision.
     #[test]
     fn rescued_tree_with_no_task_that_nobody_gave_up_stays() {
         let mut w = world();
@@ -1332,7 +1325,6 @@ mod tree_end {
         assert_eq!(w.rescue_refs("moved"), ["refs/horch/rescue/moved/1"]);
     }
 
-    /// The rescued tree of a merged idea, with its removal queued.
     fn merged_and_rescued(w: &mut World) -> PathBuf {
         let task = w.task_of_merged_idea();
         let path = w.orphan("done", Some(&task));
@@ -1357,7 +1349,6 @@ mod tree_end {
             text(&first)
         );
 
-        // Inside the backoff of 30 s: no new run, and no item.
         let report = w.pass_at(10);
         assert!(report.removals.is_empty(), "{report:?}");
         assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
@@ -1379,8 +1370,6 @@ mod tree_end {
         assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
     }
 
-    /// At `abandoned_run_limit` refusals by a process in the tree, 1 item
-    /// opens and no new run is queued. The tree stays.
     #[test]
     fn removal_refused_by_a_process_at_the_limit_opens_1_item_and_stops() {
         let mut w = world();
@@ -1408,8 +1397,6 @@ mod tree_end {
         assert!(path.is_dir());
     }
 
-    /// A refusal for a cause that cannot go away (a file that changed after
-    /// the rescue) is not run again.
     #[test]
     fn removal_refused_for_a_changed_file_is_not_run_again() {
         let mut w = world();

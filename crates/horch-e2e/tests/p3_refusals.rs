@@ -533,10 +533,8 @@ fn dropped_scratch_trees(h: &Harness, w: &str) -> Vec<(PathBuf, String, bool)> {
         trees.push((path, branch, keep));
     }
     for (path, _, _) in &trees {
-        // The removal follows the verified rescue of a dropped tree, so a
-        // later pass can show it removed already.
         wait_for_or(
-            "the rescue of the dropped scratch tree",
+            "the rescue or the removal of the dropped scratch tree",
             || {
                 h.advance_fleet_clock(30);
                 pass(h);
@@ -768,8 +766,6 @@ fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
         || dump(&h),
     );
     assert!(path.exists());
-    // After the removal a new attempt of the task can reserve the same
-    // path: read the row by its id.
     let id = column(&h, &path, "worktree_id");
     let state = || {
         query(
@@ -961,8 +957,6 @@ fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
         refs(&h, &format!("refs/horch/rescue/{id}/")),
         [format!("refs/horch/rescue/{id}/1")]
     );
-    // The passes adopt the folder `other` too and rescue it: count the
-    // jobs of the tree only.
     let of_tree = |kind: &str| {
         query(
             &h,

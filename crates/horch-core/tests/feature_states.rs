@@ -822,7 +822,6 @@ fn invalid_feature_row_between_two_valid_rows_fails_only_its_row_and_advances_bo
     assert!(failed().is_empty());
 }
 
-/// The state and the owner-ended fact of the gate tree of [`FEATURE`].
 fn gate_tree_end(w: &World) -> (String, bool) {
     use horch_core::fleetd::worktree_custody::application::remove;
     let tree = gate_tree::of_feature(&w.conn, &w.project_root(), FEATURE)
