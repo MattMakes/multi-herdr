@@ -660,12 +660,19 @@ fn commit_gates(h: &Harness) {
 #[test]
 fn fm27_trees_that_are_not_landed_are_not_removed() {
     let _serial = serial();
-    let h = world("p3-fm27-keep");
+    let h = fleet("p3-fm27-keep");
     let run = seed(&h, "fm27", Some("land"));
+    let mut agents = Agents(Vec::new());
     let (_, task) = h.without_fleetd(|| {
         queue(&h, &run, "t1");
-        bind_next(&h)
+        live_bind(&h, &mut agents)
     });
+    // The test runs longer than a lease of the fleet clock and has no
+    // worker that renews it: the lease of the live attempt is long.
+    exec(
+        &h,
+        &format!("UPDATE leases SET expires_at = expires_at + 86400 WHERE task_id = '{task}'"),
+    );
     let open = active_tree(&h, &task);
     let open_work = work_in(&h, &open, "open");
     let hand = hand_tree(&h, "hand", "hand-branch");
