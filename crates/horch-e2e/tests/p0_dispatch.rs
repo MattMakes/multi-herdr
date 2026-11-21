@@ -203,17 +203,6 @@ fn the_worker(st: &Value) -> (String, String) {
     (field("worker_id"), field("role"))
 }
 
-/// The status row of task `seq` in `st`.
-fn task_row(st: &Value, seq: i64) -> Value {
-    st["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["task"]["seq"] == seq)
-        .unwrap_or_else(|| panic!("no task {seq}: {st}"))
-        .clone()
-}
-
 #[test]
 fn fm2_agent_that_never_claims_has_its_task_bound_at_spawn() {
     horch_e2e::expected::check(
@@ -250,19 +239,39 @@ fn fm2_agent_that_never_claims_has_its_task_bound_at_spawn() {
                 entry["task_yaml_exists"] == true,
                 "the task.yaml of the agent is missing at entry: {entry}"
             );
-            // The ledger agrees: the task is bound to the 1 worker.
+            // The ledger agrees: the task has a push attempt of the 1 worker.
+            // The agent exits with no result, so a later pass can end that
+            // attempt (no_result) and make the task ready again: read the
+            // attempt, not the status row of the task.
             // `status` exits 1 while work remains.
             let o = h.run(&["ledger", "status", "--json"]);
             let st: Value =
                 serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
             let (id, label) = the_worker(&st);
-            let row = task_row(&st, 1);
-            assert!(
-                row["worker"] == label.as_str() && row["task"]["status"] != "queued",
+            assert_eq!(entry["worker_id"], id.as_str(), "{entry}");
+            let conn = rusqlite::Connection::open_with_flags(
+                h.ledger_db(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let bound: Vec<(String, String)> = conn
+                .prepare(
+                    "SELECT w.role, a.via FROM attempts a
+                     JOIN tasks t ON t.task_id = a.task_id
+                     JOIN workers w ON w.worker_id = a.worker_id
+                     WHERE t.seq = 1 AND a.worker_id = ?1",
+                )
+                .unwrap()
+                .query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(
+                bound,
+                [(label.clone(), "push".to_string())],
                 "the task is not bound to worker {label}: {}",
                 text(&o)
             );
-            assert_eq!(entry["worker_id"], id.as_str(), "{entry}");
         },
     );
 }
