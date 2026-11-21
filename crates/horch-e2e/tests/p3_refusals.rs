@@ -426,7 +426,6 @@ fn rr13_a_commit_after_an_accepted_drop_is_kept_in_the_rescue_ref() {
 // ─── the drop through the rescue and remove jobs ────────────────────────
 
 #[test]
-#[ignore = "flaky until T-199: a job process of fleetd races the removal guard, a failed removal is not tried again, and a drop makes 2 rescue runs for 1 tree"]
 fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
     let h = world("p3-ref-drop");
     let (w, task, path) = claimed(&h, "land");
@@ -523,12 +522,16 @@ fn dropped_scratch_trees(h: &Harness, w: &str) -> Vec<(PathBuf, String, bool)> {
         trees.push((path, branch, keep));
     }
     for (path, _, _) in &trees {
+        // The removal follows the verified rescue of a dropped tree, so a
+        // later pass can show it removed already.
         wait_for_or(
             "the rescue of the dropped scratch tree",
             || {
                 h.advance_fleet_clock(30);
                 pass(h);
-                (column(h, path, "state") == "rescued").then_some(())
+                ["rescued", "removed"]
+                    .contains(&column(h, path, "state").as_str())
+                    .then_some(())
             },
             || dump(h),
         );
@@ -537,25 +540,31 @@ fn dropped_scratch_trees(h: &Harness, w: &str) -> Vec<(PathBuf, String, bool)> {
 }
 
 #[test]
-fn drop_of_a_scratch_tree_rescues_it_and_keeps_its_branch_until_the_removal() {
+fn drop_of_a_scratch_tree_rescues_it_before_the_removal() {
     let h = world("p3-ref-scratch");
     let (w, _, _) = claimed(&h, "land");
-    for (path, branch, _) in dropped_scratch_trees(&h, &w) {
+    for (path, branch, keep) in dropped_scratch_trees(&h, &w) {
         let id = column(&h, &path, "worktree_id");
         let rescue = refs(&h, &format!("refs/horch/rescue/{id}/"));
         assert_eq!(rescue.first(), Some(&format!("refs/horch/rescue/{id}/1")));
-        assert!(path.is_dir());
-        assert!(git_ok(
-            &h,
-            &h.project,
-            &["rev-parse", "--verify", &format!("refs/heads/{branch}")]
-        ));
+        let m = moves(&h, &path);
+        assert!(m.contains(&"orphaned>rescued".to_string()), "{m:?}");
+        assert!(
+            !m.iter().any(|s| s.ends_with(">removed")) || m.ends_with(&["rescued>removed".into()]),
+            "{m:?}"
+        );
+        if keep {
+            assert!(git_ok(
+                &h,
+                &h.project,
+                &["rev-parse", "--verify", &format!("refs/heads/{branch}")]
+            ));
+        }
         assert_eq!(column(&h, &path, "reason"), "stop");
     }
 }
 
 #[test]
-#[ignore = "flaky until T-199: fleetd never removes a rescued tree that has no task (a scratch tree), and the removal guard races a job process of fleetd"]
 fn drop_of_a_merged_branch_deletes_it_and_keep_branch_keeps_it() {
     let h = world("p3-ref-keep");
     let (w, task, _) = claimed(&h, "land");
@@ -683,7 +692,6 @@ fn set_idea_of(h: &Harness, task: &str, state: &str) {
 }
 
 #[test]
-#[ignore = "flaky until T-199: a git child of fleetd races the removal guard, and a failed removal is not tried again"]
 fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     let h = world("p3-ref-cleanup");
     let (w, _task, path) = claimed(&h, "land,cleanup");
@@ -727,7 +735,6 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
 }
 
 #[test]
-#[ignore = "flaky until T-199: a git child of fleetd races the removal guard, and a failed removal is not tried again"]
 fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
     let h = world("p3-ref-orphan-merged");
     let mut agent = std::process::Command::new("/bin/sleep")
@@ -749,18 +756,33 @@ fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
         || dump(&h),
     );
     assert!(path.exists());
+    // After the removal a new attempt of the task can reserve the same
+    // path: read the row by its id.
+    let id = column(&h, &path, "worktree_id");
+    let state = || {
+        query(
+            &h,
+            &format!("SELECT state FROM worktrees WHERE worktree_id = '{id}'"),
+        )
+    };
     merge_idea_of(&h, &task);
     wait_for_or(
         "the removal of the rescued tree of the merged idea",
         || {
             h.advance_fleet_clock(30);
             pass(&h);
-            (column(&h, &path, "state") == "removed").then_some(())
+            (state() == ["removed"]).then_some(())
         },
         || dump(&h),
     );
-    assert!(!path.exists());
-    let m = moves(&h, &path);
+    let m = query(
+        &h,
+        &format!(
+            "SELECT from_state || '>' || to_state FROM events
+             WHERE entity = 'worktree' AND entity_id = '{id}' AND to_state IS NOT NULL
+             ORDER BY rowid"
+        ),
+    );
     assert!(
         m.ends_with(&[
             "active>orphaned".into(),
@@ -769,9 +791,13 @@ fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
         ]),
         "{m:?}"
     );
-    assert_eq!(jobs(&h, "rescue"), ["passed"]);
-    assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
-    let id = column(&h, &path, "worktree_id");
+    for kind in ["rescue", "worktree_remove"] {
+        let runs = query(
+            &h,
+            &format!("SELECT state FROM jobs WHERE kind = '{kind}' AND subject = '{id}'"),
+        );
+        assert_eq!(runs, ["passed"], "{kind}");
+    }
     assert_eq!(
         refs(&h, &format!("refs/horch/rescue/{id}/")),
         [format!("refs/horch/rescue/{id}/1")]
@@ -825,7 +851,6 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
 // ─── dismiss --cleanup ──────────────────────────────────────────────────
 
 #[test]
-#[ignore = "flaky until T-199: a job process of fleetd races the removal guard, and a failed removal is not tried again"]
 fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
     let h = world("p3-ref-dismiss");
     let (w, task, path) = claimed(&h, "land");
@@ -924,89 +949,95 @@ fn dismiss_cleanup_rescues_then_removes_only_the_recorded_path() {
         refs(&h, &format!("refs/horch/rescue/{id}/")),
         [format!("refs/horch/rescue/{id}/1")]
     );
-    assert_eq!(jobs(&h, "rescue"), ["passed"]);
-    assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
+    // The passes adopt the folder `other` too and rescue it: count the
+    // jobs of the tree only.
+    let of_tree = |kind: &str| {
+        query(
+            &h,
+            &format!(
+                "SELECT state FROM jobs WHERE kind = '{kind}' AND subject = '{id}' ORDER BY id"
+            ),
+        )
+    };
+    assert_eq!(of_tree("rescue"), ["passed"]);
+    assert_eq!(of_tree("worktree_remove"), ["passed"]);
     assert_eq!(column(&h, &path, "state"), "removed");
 }
 
 #[test]
 fn run_gate_folder_is_added_and_removed_through_the_jobs() {
-    horch_e2e::expected::check(
-        file!(),
-        "run_gate_folder_is_added_and_removed_through_the_jobs",
-        || {
-            use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
-            use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-            use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
-            use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-            use horch_core::fleetd::worktree_custody::application::gate_tree::{
-                self, GateTree, GateTreeRequest,
-            };
+    use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
+    use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+    use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+    use horch_core::fleetd::worktree_custody::application::gate_tree::{
+        self, GateTree, GateTreeRequest,
+    };
 
-            let h = world("p3-ref-gate");
-            let run = seed_alpha(&h, "land");
-            let feature = query(&h, "SELECT id FROM features").pop().unwrap();
-            let repo = std::fs::canonicalize(&h.project).unwrap();
-            let gate = gate_tree::path(&repo, &feature);
-            let main = git_in(&h, &h.project, &["rev-parse", "main"]);
-            let config = FleetConfig::default();
-            let reserved = h.without_fleetd(|| {
-                let mut store = Store::open(&ledger(&h)).unwrap();
-                store
-                    .immediate(|tx| {
-                        let ctx = JobCtx {
-                            guard: None,
-                            config: &config,
-                            needs_you: &NeedsYouList,
-                        };
-                        let req = GateTreeRequest {
-                            feature_id: &feature,
-                            run_id: &run.run_id,
-                            repo: &repo,
-                            base: "fleet/alpha",
-                            tip: &main,
-                        };
-                        gate_tree::reserve(&ctx, tx, &req, FleetSeconds(0))
-                    })
-                    .unwrap()
-            });
-            assert!(
-                matches!(reserved, GateTree::Reserved { .. }),
-                "{reserved:?}"
-            );
-            wait_for("the gate tree to be created", || {
-                pass(&h);
-                (column(&h, &gate, "state") == "created").then_some(())
-            });
-            assert!(gate.join(".git").exists());
-            assert_eq!(git_in(&h, &gate, &["rev-parse", "HEAD"]), main);
-            assert_eq!(jobs(&h, "worktree_add"), ["passed"]);
-            assert_eq!(
-                query(
-                    &h,
-                    "SELECT task_id FROM worktrees WHERE path LIKE '%gate-%'"
-                ),
-                [""]
-            );
-            let id = column(&h, &gate, "worktree_id");
+    let h = world("p3-ref-gate");
+    let run = seed_alpha(&h, "land");
+    let feature = query(&h, "SELECT id FROM features").pop().unwrap();
+    let repo = std::fs::canonicalize(&h.project).unwrap();
+    let gate = gate_tree::path(&repo, &feature);
+    let main = git_in(&h, &h.project, &["rev-parse", "main"]);
+    let config = FleetConfig::default();
+    let reserved = h.without_fleetd(|| {
+        let mut store = Store::open(&ledger(&h)).unwrap();
+        store
+            .immediate(|tx| {
+                let ctx = JobCtx {
+                    guard: None,
+                    config: &config,
+                    needs_you: &NeedsYouList,
+                };
+                let req = GateTreeRequest {
+                    feature_id: &feature,
+                    run_id: &run.run_id,
+                    repo: &repo,
+                    base: "fleet/alpha",
+                    tip: &main,
+                };
+                gate_tree::reserve(&ctx, tx, &req, FleetSeconds(0))
+            })
+            .unwrap()
+    });
+    assert!(
+        matches!(reserved, GateTree::Reserved { .. }),
+        "{reserved:?}"
+    );
+    wait_for("the gate tree to be created", || {
+        pass(&h);
+        (column(&h, &gate, "state") == "created").then_some(())
+    });
+    assert!(gate.join(".git").exists());
+    assert_eq!(git_in(&h, &gate, &["rev-parse", "HEAD"]), main);
+    assert_eq!(jobs(&h, "worktree_add"), ["passed"]);
+    assert_eq!(
+        query(
+            &h,
+            "SELECT task_id FROM worktrees WHERE path LIKE '%gate-%'"
+        ),
+        [""]
+    );
+    let id = column(&h, &gate, "worktree_id");
 
-            let released = h.without_fleetd(|| {
-                let mut store = Store::open(&ledger(&h)).unwrap();
-                store
-                    .immediate(|tx| {
-                        let ctx = JobCtx {
-                            guard: None,
-                            config: &config,
-                            needs_you: &NeedsYouList,
-                        };
-                        gate_tree::release(&ctx, tx, &repo, &feature, "its feature is merged")
-                    })
-                    .unwrap()
-            });
-            assert!(released);
-            assert_eq!(column(&h, &gate, "state"), "orphaned");
-            wait_for_or(
-        "the removal of the gate tree (fleetd never removes a released gate tree; ticket 164 (T-199) of fleetd-finish removes this entry)",
+    let released = h.without_fleetd(|| {
+        let mut store = Store::open(&ledger(&h)).unwrap();
+        store
+            .immediate(|tx| {
+                let ctx = JobCtx {
+                    guard: None,
+                    config: &config,
+                    needs_you: &NeedsYouList,
+                };
+                gate_tree::release(&ctx, tx, &repo, &feature, "its feature is merged")
+            })
+            .unwrap()
+    });
+    assert!(released);
+    assert_eq!(column(&h, &gate, "state"), "orphaned");
+    wait_for_or(
+        "the removal of the gate tree",
         || {
             h.advance_fleet_clock(30);
             pass(&h);
@@ -1021,19 +1052,17 @@ fn run_gate_folder_is_added_and_removed_through_the_jobs() {
             format!("{trees:#?}\n{jobs:#?}")
         },
     );
-            assert!(!gate.exists());
-            assert_eq!(
-                refs(&h, &format!("refs/horch/rescue/{id}/")),
-                [format!("refs/horch/rescue/{id}/1")]
-            );
-            assert_eq!(jobs(&h, "rescue"), ["passed"]);
-            assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
-            let m = moves(&h, &gate);
-            assert!(
-                m.ends_with(&["orphaned>rescued".into(), "rescued>removed".into()]),
-                "{m:?}"
-            );
-            assert_eq!(column(&h, &gate, "status"), "cleaned");
-        },
+    assert!(!gate.exists());
+    assert_eq!(
+        refs(&h, &format!("refs/horch/rescue/{id}/")),
+        [format!("refs/horch/rescue/{id}/1")]
     );
+    assert_eq!(jobs(&h, "rescue"), ["passed"]);
+    assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
+    let m = moves(&h, &gate);
+    assert!(
+        m.ends_with(&["orphaned>rescued".into(), "rescued>removed".into()]),
+        "{m:?}"
+    );
+    assert_eq!(column(&h, &gate, "status"), "cleaned");
 }
