@@ -378,19 +378,13 @@ pub fn answer_question(tx: &Connection, ctx: &Answering<'_>, note: &Note) -> Res
 /// this order after a crash between the commit of an answer and its
 /// [`Recorded::write`].
 pub fn pending_answer_files(conn: &Connection, root: &Path, owner: &User) -> Result<Vec<Recorded>> {
-    let mut stmt = conn.prepare(
-        "SELECT data_json FROM events WHERE kind = ?1 AND entity = ?2
-           AND json_extract(data_json, '$.effects') IS NOT NULL
-         ORDER BY event_id",
-    )?;
-    let rows = stmt.query_map(
-        rusqlite::params![EventKind::Question.as_str(), Entity::Task.as_str()],
-        |r| r.get::<_, String>(0),
-    )?;
     let mut sha_after_pending: HashMap<String, Option<String>> = HashMap::new();
     let mut out = Vec::new();
-    for raw in rows {
-        let data: Value = serde_json::from_str(&raw?)?;
+    for fact in door::facts_after(conn, Entity::Task, EventKind::Question, 0)? {
+        let data: Value = serde_json::from_str(&fact.data_json)?;
+        if data.get("effects").is_none_or(Value::is_null) {
+            continue;
+        }
         let Some(mut r) = Recorded::of_event(&data) else {
             continue;
         };
@@ -656,19 +650,16 @@ fn intended_assumptions(
     idea: &str,
     disk: Option<String>,
 ) -> Result<Option<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT data_json FROM events WHERE kind = ?1 AND entity = ?2
-           AND json_extract(data_json, '$.effects.idea') = ?3
-           AND json_extract(data_json, '$.effects.assumptions') IS NOT NULL
-         ORDER BY event_id",
-    )?;
-    let rows = stmt.query_map(
-        rusqlite::params![EventKind::Question.as_str(), Entity::Task.as_str(), idea],
-        |r| r.get::<_, String>(0),
-    )?;
     let mut file = disk;
-    for raw in rows {
-        let data: Value = serde_json::from_str(&raw?)?;
+    for fact in door::facts_after(conn, Entity::Task, EventKind::Question, 0)? {
+        let data: Value = serde_json::from_str(&fact.data_json)?;
+        if data.pointer("/effects/idea").and_then(Value::as_str) != Some(idea)
+            || data
+                .pointer("/effects/assumptions")
+                .is_none_or(Value::is_null)
+        {
+            continue;
+        }
         let Some(a) = Recorded::of_event(&data).and_then(|r| r.assumptions) else {
             continue;
         };

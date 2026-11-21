@@ -30,7 +30,7 @@ use horch_platform::channel::User;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::compaction::policy::EVENT_WARNED;
-use crate::execution::legacy::{HistoryEntry, Record};
+use crate::execution::store::record_history_in;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::task_execution::adapters::ingested_store as store;
@@ -444,29 +444,7 @@ fn record_warned(tx: &Connection, worker: &str, text: &str) -> Result<()> {
     let Some(record_id) = workers::find(tx, worker)?.and_then(|w| w.legacy_record_id) else {
         return Ok(());
     };
-    let json: Option<String> = tx
-        .query_row(
-            "SELECT record_json FROM session_records WHERE record_id = ?1",
-            [&record_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(json) = json else {
-        return Ok(());
-    };
-    let mut record: Record = serde_json::from_str(&json)?;
-    let at = util::now();
-    record.updated_at = at.clone();
-    record.history.push(HistoryEntry {
-        at: at.clone(),
-        event: EVENT_WARNED.to_string(),
-        text: text.to_string(),
-    });
-    tx.execute(
-        "UPDATE session_records SET record_json = ?2, updated_at = ?3 WHERE record_id = ?1",
-        params![record_id, serde_json::to_string(&record)?, at],
-    )?;
-    Ok(())
+    record_history_in(tx, &record_id, EVENT_WARNED, text, &util::now())
 }
 
 /// The rows of `horch ledger progress` for 1 line: the progress of the

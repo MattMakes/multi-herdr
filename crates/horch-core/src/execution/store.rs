@@ -414,6 +414,40 @@ pub fn record_exit_in(
     Ok(ended)
 }
 
+/// Add the history entry `event` with `text` at `at` to the session record
+/// `record_id`, in the open transaction `tx` of the ledger file that holds
+/// it. A record that this file does not hold changes nothing.
+pub fn record_history_in(
+    tx: &rusqlite::Connection,
+    record_id: &str,
+    event: &str,
+    text: &str,
+    at: &str,
+) -> Result<()> {
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT record_json FROM session_records WHERE record_id = ?1",
+            [record_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(json) = json else {
+        return Ok(());
+    };
+    let mut r: LedgerRecordV1 = serde_json::from_str(&json)?;
+    r.updated_at = at.to_string();
+    r.history.push(HistoryEntry {
+        at: at.to_string(),
+        event: event.to_string(),
+        text: text.to_string(),
+    });
+    tx.execute(
+        "UPDATE session_records SET record_json = ?2, updated_at = ?3 WHERE record_id = ?1",
+        rusqlite::params![record_id, serde_json::to_string(&r)?, at],
+    )?;
+    Ok(())
+}
+
 /// The reason of a `session_records` request that fleetd refuses because a
 /// row changed after its client read it. The client reads again and sends
 /// again.
