@@ -33,6 +33,7 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::time::Duration;
 
+use horch_core::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Class, Kind};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
@@ -352,6 +353,7 @@ fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
                  AND w.pane_id IS NOT NULL"
         ))
     });
+    let due = w.wait("the fleet clock", || w.fleet_clock()) + START_TIMEOUT_S;
     let o = w.h.run(&["idea", "approve", &waiting]);
     assert!(
         o.status.success(),
@@ -359,6 +361,17 @@ fn fr10_e_no_agent_runs_before_fleetd_records_its_wrapper() {
         text(&o),
         w.context()
     );
+    // The start timeout counts on the fleet clock, which lags the wall
+    // clock when the passes are slow.
+    loop {
+        let now = w.wait("the fleet clock", || w.fleet_clock());
+        if now >= due {
+            break;
+        }
+        w.wait("a later tick of the fleet clock", || {
+            (w.fleet_clock()? > now).then_some(())
+        });
+    }
     let end = w.wait("the end of the held attempt", || {
         w.one(&format!(
             "SELECT outcome FROM attempts WHERE id = '{attempt}' AND state = 'ended'"
