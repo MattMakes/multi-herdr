@@ -3146,6 +3146,8 @@ fn lost_tasks(tx: &Connection) -> Result<Vec<String>> {
             || t.lease_attempt.is_some()
             || open.iter().any(|a| a.task_id == t.task_id)
             || tasks::get(tx, &t.task_id)?.attempts == 0
+            // A cancel that waits for its stop: `complete_cancels` moves it.
+            || tasks::cancel_requested(tx, &t.task_id)?.is_some()
         {
             continue;
         }

@@ -3094,7 +3094,15 @@ fn check_world(
                 &c.worker_id,
                 pid,
                 horch_core::procid::start_time(pid),
-            )
+            )?;
+            // The bind of the test process writes the real host name, and
+            // fleetd runs with the HORCH_HOSTNAME of push_env. fleetd judges
+            // and stops only the processes of a row of its own host.
+            tx.execute(
+                "UPDATE workers SET host = 'test-host' WHERE worker_id = ?1",
+                [&c.worker_id],
+            )?;
+            Ok(())
         })
         .unwrap();
     h.serve_fleetd();
@@ -3115,50 +3123,49 @@ fn worktree_status(h: &Harness, short: &str) -> String {
 
 #[test]
 fn a_cancelled_task_does_not_land_or_turn_done() {
-    horch_e2e::expected::check(
-        file!(),
-        "a_cancelled_task_does_not_land_or_turn_done",
-        || {
-            let (h, c) = check_world(
-                "tl-cancel-land",
-                &[StepName::Land, StepName::Cleanup],
-                "true",
-                "stop_grace_s = 1\n",
-            );
-            let before = (rev(&h, "fleet/alpha"), remote_refs(&h));
-
-            let o = ok(&h, &["ledger", "cancel", "T-1", "operator dropped it"]);
-            assert!(
-                o.contains("T-1 cancelled.") || o.contains("T-1 is not cancelled yet"),
-                "{o}"
-            );
-            wait_push("T-1 is cancelled", || {
-                let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-                (t["task"]["status"] == "cancelled").then_some(())
-            });
-            assert_eq!(worker_status(&h, &c.worker_id).0, "stopped");
-
-            wait_push("the worktree of T-1 is abandoned", || {
-                (worktree_status(&h, "T-1") == "abandoned").then_some(())
-            });
-            assert_eq!((rev(&h, "fleet/alpha"), remote_refs(&h)), before);
-            let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-            assert_eq!(t["task"]["status"], "cancelled", "{t}");
-
-            let st = out(&h.run(&["ledger", "status"]));
-            assert!(st.contains("T-1   abandoned"), "{st}");
-            assert!(c.path.join("c.txt").exists());
-            let unf = ok(&h, &["ledger", "unfinished"]);
-            assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
-
-            let o = h.run(&["ledger", "requeue", "T-1", "wanted after all"]);
-            assert!(!o.status.success(), "{}", text(&o));
-            assert!(text(&o).contains(": cancelled -> ready"), "{}", text(&o));
-            assert!(c.path.join("c.txt").exists());
-            let unf = ok(&h, &["ledger", "unfinished"]);
-            assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
-        },
+    let (h, mut c) = check_world(
+        "tl-cancel-land",
+        &[StepName::Land, StepName::Cleanup],
+        "true",
+        "stop_grace_s = 1\n",
     );
+    let before = (rev(&h, "fleet/alpha"), remote_refs(&h));
+
+    let o = ok(&h, &["ledger", "cancel", "T-1", "operator dropped it"]);
+    assert!(
+        o.contains("T-1 cancelled.") || o.contains("T-1 is not cancelled yet"),
+        "{o}"
+    );
+    // fleetd stops the agent. The test reaps it, as the pane shell of a real
+    // agent does: a zombie still has its pid, so fleetd sees it alive.
+    wait_push("fleetd stops the agent of T-1", || {
+        c.agent.child.try_wait().unwrap().map(|_| ())
+    });
+    wait_push("T-1 is cancelled", || {
+        let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+        (t["task"]["status"] == "cancelled").then_some(())
+    });
+    assert_eq!(worker_status(&h, &c.worker_id).0, "stopped");
+
+    wait_push("the worktree of T-1 is abandoned", || {
+        (worktree_status(&h, "T-1") == "abandoned").then_some(())
+    });
+    assert_eq!((rev(&h, "fleet/alpha"), remote_refs(&h)), before);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
+
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(st.contains("T-1   abandoned"), "{st}");
+    assert!(c.path.join("c.txt").exists());
+    let unf = ok(&h, &["ledger", "unfinished"]);
+    assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
+
+    let o = h.run(&["ledger", "requeue", "T-1", "wanted after all"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains(": cancelled -> ready"), "{}", text(&o));
+    assert!(c.path.join("c.txt").exists());
+    let unf = ok(&h, &["ledger", "unfinished"]);
+    assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
 }
 
 fn check_job_of(h: &Harness, task_id: &str) -> Option<i64> {
@@ -3175,39 +3182,37 @@ fn check_job_of(h: &Harness, task_id: &str) -> Option<i64> {
 
 #[test]
 fn a_cancel_during_the_check_lands_nothing() {
-    horch_e2e::expected::check(file!(), "a_cancel_during_the_check_lands_nothing", || {
-        let hold = "/usr/bin/touch started; while [ ! -f go ]; do /bin/sleep 0.1; done";
-        let (h, c) = check_world(
-            "tl-cancel-lock",
-            &[StepName::Land, StepName::Cleanup],
-            hold,
-            "stop_grace_s = 1\n",
-        );
-        let before = rev(&h, "fleet/alpha");
-        let task_id = c.task_id.clone();
-        let tree = c.path.clone();
-        c.finish();
-        wait_pipeline("the check of T-1 to start", || {
-            tree.join("started").exists().then_some(())
-        });
-        ok(&h, &["ledger", "cancel", "T-1", "dropped during the check"]);
-        std::fs::write(tree.join("go"), "").unwrap();
-        let job = wait_pipeline("the check job of T-1", || check_job_of(&h, &task_id));
-        wait_pipeline("the check job to end", || {
-            let row = job_row(&h, job);
-            (row.state != JobState::Queued && row.state != JobState::Running).then_some(())
-        });
-        wait_push("T-1 is cancelled", || {
-            let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-            (t["task"]["status"] == "cancelled").then_some(())
-        });
-        wait_push("the worktree of T-1 is abandoned", || {
-            (worktree_status(&h, "T-1") == "abandoned").then_some(())
-        });
-        assert_eq!(rev(&h, "fleet/alpha"), before);
-        let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-        assert_eq!(t["task"]["status"], "cancelled", "{t}");
+    let hold = "/usr/bin/touch started; while [ ! -f go ]; do /bin/sleep 0.1; done";
+    let (h, c) = check_world(
+        "tl-cancel-lock",
+        &[StepName::Land, StepName::Cleanup],
+        hold,
+        "stop_grace_s = 1\n",
+    );
+    let before = rev(&h, "fleet/alpha");
+    let task_id = c.task_id.clone();
+    let tree = c.path.clone();
+    c.finish();
+    wait_pipeline("the check of T-1 to start", || {
+        tree.join("started").exists().then_some(())
     });
+    ok(&h, &["ledger", "cancel", "T-1", "dropped during the check"]);
+    std::fs::write(tree.join("go"), "").unwrap();
+    let job = wait_pipeline("the check job of T-1", || check_job_of(&h, &task_id));
+    wait_pipeline("the check job to end", || {
+        let row = job_row(&h, job);
+        (row.state != JobState::Queued && row.state != JobState::Running).then_some(())
+    });
+    wait_push("T-1 is cancelled", || {
+        let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+        (t["task"]["status"] == "cancelled").then_some(())
+    });
+    wait_push("the worktree of T-1 is abandoned", || {
+        (worktree_status(&h, "T-1") == "abandoned").then_some(())
+    });
+    assert_eq!(rev(&h, "fleet/alpha"), before);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
 }
 
 #[test]
