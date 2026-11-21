@@ -457,3 +457,63 @@ fn worker_launch_failed_ends_an_unclaimed_row() {
     assert!(why.contains("is not a worker of run"), "{why}");
     assert_eq!(workers::get(&w.conn, &other).unwrap().status, "spawning");
 }
+
+/// A spawn of a push attempt that fails ends the attempt `crashed` at
+/// once: rung 6 burns 1 attempt and queues the task again, so its next
+/// attempt does not wait for the start timeout. A start timeout counts
+/// only on the fleet clock, which stops while fleetd is down (T-254).
+#[test]
+fn worker_launch_failed_of_a_push_attempt_ends_it_crashed_and_queues_the_task() {
+    let mut w = world();
+    let task = w.add("T", WorktreeMode::Shared);
+    let wid = w.bind(&task);
+    let attempt = format!("{task}/A1");
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "no record matches 'x'" }),
+    );
+    assert_eq!(workers::get(&w.conn, &wid).unwrap().status, "launch_failed");
+    let (state, outcome): (String, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE id = ?1",
+            [&attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), outcome.as_deref()),
+        ("ended", Some("crashed")),
+        "{}",
+        w.rows()
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(
+        (t.status.as_str(), t.attempts),
+        ("ready", 1),
+        "{}",
+        w.rows()
+    );
+    assert_eq!(t.current_worker_id, None, "{}", w.rows());
+
+    // A second report of the same failure ends no attempt and burns none.
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "again" }),
+    );
+    let ended: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM attempts WHERE task_id = ?1 AND state = 'ended'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ended, 1, "{}", w.rows());
+    assert_eq!(
+        tasks::get(&w.conn, &task).unwrap().attempts,
+        1,
+        "{}",
+        w.rows()
+    );
+}

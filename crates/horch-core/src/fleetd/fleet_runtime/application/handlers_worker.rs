@@ -35,6 +35,7 @@ use crate::fleetd::fleet_runtime::application::requests::Handlers;
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::fleet_runtime::domain::requests::{check_spawn_record, Kind};
 use crate::fleetd::task_execution::application::commands as task_commands;
+use crate::fleetd::task_execution::application::launch as push_launch;
 use crate::taskledger::model::{Actor, EventKind, StopRequester, WorkerStatus};
 use crate::taskledger::stop;
 use crate::taskledger::util::{self, About};
@@ -55,8 +56,9 @@ pub fn register(handlers: &mut Handlers, _deps: &WorkerDeps) {
     handlers.insert(Kind::WorkerLaunched, |tx, p| {
         worker_launched(tx, &record(Kind::WorkerLaunched, p)?)
     });
-    handlers.insert(Kind::WorkerLaunchFailed, |tx, p| {
-        worker_launch_failed(tx, &record(Kind::WorkerLaunchFailed, p)?)
+    let d = deps.clone();
+    handlers.insert(Kind::WorkerLaunchFailed, move |tx, p| {
+        worker_launch_failed(tx, &d, &record(Kind::WorkerLaunchFailed, p)?)
     });
     handlers.insert(Kind::SessionRecords, |tx, p| {
         crate::execution::store::apply_session_records(tx, p)
@@ -182,11 +184,20 @@ pub struct WorkerLaunchFailedPayload {
 }
 
 /// The spawn failed before the worker ran: the row ends `launch_failed`, as
-/// `horch spawn` wrote it.
-fn worker_launch_failed(tx: &Transaction<'_>, p: &WorkerLaunchFailedPayload) -> Result<Value> {
+/// `horch spawn` wrote it. Its push attempt in `launching` ends `crashed`,
+/// so rung 6 queues the task again at once.
+fn worker_launch_failed(
+    tx: &Transaction<'_>,
+    deps: &WorkerDeps,
+    p: &WorkerLaunchFailedPayload,
+) -> Result<Value> {
     worker_of_run(tx, &p.run_id, &p.worker_id)?;
-    workers::launch_failed(tx, &p.worker_id, &p.reason)?;
-    Ok(json!({ "worker_id": p.worker_id }))
+    let why = format!("its spawn failed: {}", p.reason);
+    let ended = push_launch::end_failed_spawn(tx, Some(deps.guard), &p.worker_id, &why)?;
+    if ended.is_empty() {
+        workers::launch_failed(tx, &p.worker_id, &p.reason)?;
+    }
+    Ok(json!({ "worker_id": p.worker_id, "ended": ended }))
 }
 
 // ─── worker_stop ────────────────────────────────────────────────────────
