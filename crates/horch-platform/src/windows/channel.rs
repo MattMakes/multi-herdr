@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use windows_sys::core::PWSTR;
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, LocalFree, DUPLICATE_SAME_ACCESS, ERROR_BROKEN_PIPE, ERROR_OPERATION_ABORTED,
-    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    INVALID_HANDLE_VALUE,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT,
+    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -259,34 +259,28 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
 
 /// End the connection of the server side, and free the instance for the
 /// next client. `DisconnectNamedPipe` discards the bytes that the client did
-/// not read, so a helper thread first waits with `FlushFileBuffers` until
-/// the client reads them, for at most [`DRAIN_LIMIT`].
-fn end_connection(instance: &Arc<Instance>, cut: bool) {
-    let (flushed, drained) = mpsc::channel();
+/// not read, so `FlushFileBuffers` first waits until the client reads them,
+/// for at most [`DRAIN_LIMIT`]. The handle is synchronous, so the system runs
+/// 1 call on it at a time: a disconnect while the flush waits would wait for
+/// the flush, for ever. The flush therefore runs on this thread and is
+/// cancelled before the disconnect starts.
+fn end_connection(instance: &Instance, cut: bool) {
     let pipe = instance.pipe.as_raw_handle();
-    let flush = (!cut).then(|| {
-        let instance = Arc::clone(instance);
-        thread::Builder::new()
-            .name("horch-pipe-drain".into())
-            .spawn(move || {
-                // SAFETY: the pipe is open while `instance` holds it.
-                unsafe { FlushFileBuffers(instance.pipe.as_raw_handle()) };
-                let _ = flushed.send(());
-            })
-            .ok()
-    });
-    let flush = flush.flatten();
-    // Without a thread, the sender is gone and this returns at once.
-    let _ = drained.recv_timeout(DRAIN_LIMIT);
-    // SAFETY: `pipe` is open while `instance` holds it.
-    unsafe { DisconnectNamedPipe(pipe) };
-    if let Some(flush) = flush {
-        // A flush that starts after the disconnect fails at once. A flush
-        // that started before it and still waits stops here.
-        // SAFETY: the thread handle is open until the join.
-        unsafe { CancelSynchronousIo(flush.as_raw_handle()) };
-        let _ = flush.join();
+    if !cut {
+        // A cancelled flush, or a flush with no watchdog, leaves the unread
+        // bytes to the disconnect.
+        let _ = cancel_after(DRAIN_LIMIT, || {
+            // SAFETY: `pipe` is open while `instance` holds it, and the
+            // caller holds `instance` until this function returns.
+            if unsafe { FlushFileBuffers(pipe) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
+    // SAFETY: `pipe` is open while `instance` holds it. No other I/O on it
+    // is pending: `cancel_after` returns only after the flush returned.
+    unsafe { DisconnectNamedPipe(pipe) };
     *instance.busy.lock().unwrap_or_else(PoisonError::into_inner) = false;
     instance.free.notify_one();
 }
@@ -337,18 +331,30 @@ impl Stream {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let Some(timeout) = timeout else {
-            return self.file().read(buf);
+            return self.read_file(buf);
         };
         match self.wait_for_bytes(Instant::now() + timeout)? {
             // The other side closed: the read reports the end.
-            None => self.file().read(buf),
+            None => self.read_file(buf),
             Some(0) => Err(io::ErrorKind::TimedOut.into()),
             Some(waiting) => {
                 let n = buf
                     .len()
                     .min(usize::try_from(waiting).unwrap_or(usize::MAX));
-                self.file().read(&mut buf[..n])
+                self.read_file(&mut buf[..n])
             }
+        }
+    }
+
+    /// 1 read of the pipe. The server ends a connection with
+    /// `DisconnectNamedPipe`, and then a read of the client fails with
+    /// `ERROR_PIPE_NOT_CONNECTED` (233), not `ERROR_BROKEN_PIPE`, which the
+    /// standard library reads as the end. Both mean that the other side ended
+    /// the connection, so both read as the end of the stream.
+    fn read_file(&self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.file().read(buf) {
+            Err(e) if is_end(&e) => Ok(0),
+            other => other,
         }
     }
 
@@ -371,7 +377,7 @@ impl Stream {
             };
             if peeked == 0 {
                 let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                if is_end(&error) {
                     return Ok(None);
                 }
                 return Err(error);
@@ -382,6 +388,14 @@ impl Stream {
             thread::sleep(READ_POLL);
         }
     }
+}
+
+/// True for the errors of a pipe whose other side ended the connection: a
+/// closed handle (`ERROR_BROKEN_PIPE`) or a server disconnect
+/// (`ERROR_PIPE_NOT_CONNECTED`).
+fn is_end(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32)
+        || error.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32)
 }
 
 /// Run the synchronous I/O `io` on this thread. A watchdog thread cancels it
@@ -789,24 +803,69 @@ mod tests {
         });
     }
 
+    /// The time limit of a test that a fault of the channel can hang.
+    const TEST_LIMIT: Duration = Duration::from_secs(30);
+
+    /// Run `test` on its own thread, and fail when it does not end within
+    /// `limit`: a hang fails the test and does not stop the test binary.
+    fn within(limit: Duration, test: impl FnOnce() + Send + 'static) {
+        let (done, finished) = mpsc::channel::<()>();
+        let body = thread::spawn(move || {
+            test();
+            drop(done);
+        });
+        if finished.recv_timeout(limit) == Err(RecvTimeoutError::Timeout) {
+            panic!("the test did not end within {limit:?}");
+        }
+        if let Err(panic) = body.join() {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     #[test]
     fn client_that_never_reads_the_reply_does_not_block_the_next_client() {
-        let name = unique_name("never-reads");
-        let listener = bind(&name).unwrap();
-        thread::scope(|scope| {
-            let server = scope.spawn(|| echo(&listener, 2));
-            // This client sends 1 line, never reads the reply and keeps its
-            // handle open.
-            let silent = connect(&name, far_deadline()).unwrap();
-            (&silent).write_all(b"silent\n").unwrap();
+        within(TEST_LIMIT, || {
+            let name = unique_name("never-reads");
+            let listener = bind(&name).unwrap();
+            thread::scope(|scope| {
+                let server = scope.spawn(|| echo(&listener, 2));
+                // This client sends 1 line, never reads the reply and keeps
+                // its handle open.
+                let silent = connect(&name, far_deadline()).unwrap();
+                (&silent).write_all(b"silent\n").unwrap();
 
-            // The server ends that connection after DRAIN_LIMIT. Without
-            // that limit, this connect stops at its deadline with TimedOut.
-            // The next client gets all of its reply.
-            let next = connect(&name, far_deadline()).unwrap();
-            assert_eq!(ask(&next, "next\n"), "next\n");
-            assert_eq!(server.join().unwrap(), ["silent\n", "next\n"]);
-            drop(silent);
+                // The server ends that connection after DRAIN_LIMIT. Without
+                // that limit, this connect stops at its deadline with
+                // TimedOut. The next client gets all of its reply.
+                let next = connect(&name, far_deadline()).unwrap();
+                assert_eq!(ask(&next, "next\n"), "next\n");
+                assert_eq!(server.join().unwrap(), ["silent\n", "next\n"]);
+                drop(silent);
+            });
+        });
+    }
+
+    #[test]
+    fn client_reads_the_reply_to_the_end_after_the_server_ends_the_connection() {
+        within(TEST_LIMIT, || {
+            let name = unique_name("read-to-end");
+            let listener = bind(&name).unwrap();
+            thread::scope(|scope| {
+                let server = scope.spawn(|| echo(&listener, 1));
+                let client = connect(&name, far_deadline()).unwrap();
+                (&client).write_all(b"ping\n").unwrap();
+
+                // The server disconnects after the reply. The read after the
+                // reply is the end of the stream, not error 233.
+                let mut reply = Vec::new();
+                (&client).read_to_end(&mut reply).unwrap();
+                assert_eq!(reply, b"ping\n");
+                assert_eq!(server.join().unwrap(), ["ping\n"]);
+
+                // A read with a timeout also reads the end.
+                set_read_timeout(&client, Duration::from_secs(5)).unwrap();
+                assert_eq!((&client).read(&mut [0u8; 8]).unwrap(), 0);
+            });
         });
     }
 
