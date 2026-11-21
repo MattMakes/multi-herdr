@@ -357,6 +357,12 @@ again. A teammate file, a fallback, a router or planner choice and a
 competition still cannot reach a reserved tier. A Claude model on a Codex
 teammate is refused: pick a Claude teammate.
 
+`game-design-juicer` is a third Fable seat, by the operator's exception
+(`SEATS_WITH_FALLBACKS`). It starts only when named, like the council seats,
+but it names `opus` as its fallback: when Fable's own window is used up and
+Opus still has room, it runs on Opus at the same high effort. A pool-wide
+Claude limit blocks both.
+
 Every other briefing is written for an Opus or Codex-Sol reader: the
 orchestrator does the reasoning that needs its tier, writes the result to a
 file, and hands the execution down. The seats are a list in the code
@@ -431,6 +437,7 @@ registry to update.
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
 | `architect-reviewer-light` | Claude | Opus | medium | Code-sweep rounds 2 and 3 only. Read-only    |
+| `root-cause-auditor`   | Claude | Opus   | high   | Finds code patched around a stale comment or core flaw; fixes the root cause when told |
 | `codex-reviewer-light` | Codex  | Terra  | medium | Code-sweep rounds 2 and 3 only               |
 | `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
 | `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
@@ -443,6 +450,9 @@ registry to update.
 | `fable-creative`       | Claude | Fable  | high   | Creative council seat; also combines the designs |
 | `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
 | `opus-creative`        | Claude | Opus   | high   | Creative council seat |
+| `game-design-juicer`   | Claude | Fable (Opus fallback) | high | Studies a game or design doc; proposes balanced juice |
+| `game-design-incremental-specialist` | Claude | Opus | high | Incremental and idle game math: designs, proves and rebalances progression; says "not ready" when the proof fails |
+| `addictive-game-design-reviewer` | Claude | Opus | high | Reviews a built incremental game's source; ranks what to rebalance, redo, add or remove |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
@@ -554,7 +564,9 @@ A fleet boots from this repository alone. The orchestrator briefing, the worker
 briefing and the orchestration playbook all ship here: the two briefings in
 [`teammates/_base/`](teammates/), the playbook as the bundled
 [`orchestrate`](skills/orchestrate/SKILL.md) skill, attached to
-`orchestrator` and `orchestrator-codex` by name. No `~/.claude/skills` entry
+`orchestrator` and `orchestrator-codex` by name. Both also carry
+[`make-videos`](skills/make-videos/SKILL.md), which turns a game's git history
+into a devblog video series. No `~/.claude/skills` entry
 and no plugin is required or consulted at boot, and an installed `horch` works
 with no checkout because both are compiled in.
 
@@ -1084,9 +1096,9 @@ lands: the verifier of fleetd runs its steps, and landing follows.
 
 | profile | steps before land | token cost |
 |---|---|---|
-| `full` | check, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
-| `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
-| `minimal` | check | lowest |
+| `full` | check, comment-sweep, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
+| `light` (default) | check, comment-sweep, complexity-sweep | low: the check is the task's own command; comment-sweep is 1 `comment-remover` worker per task; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
+| `minimal` | check, comment-sweep | lowest: the check and 1 `comment-remover` worker per task |
 
 Worktrees that no step takes to an outcome are *parked*:
 `horch worktree triage` lists them with the facts for a decision, and `horch worktree triage apply` runs the operator's decisions. See
@@ -1107,6 +1119,28 @@ when the project has a matching file (`offer_when`). Skills are bundled
 team, how to refresh a copied skill and what `horch agent-list` shows. [docs/README.md](docs/README.md) is the
 contributor handbook, including the gate rules: never run the gate under
 `git rebase -x`, and run it through the slot wrapper when other gates run.
+
+## ui-prop-tester: property testing for web and terminal UIs
+
+`ui-prop-tester` is a second binary in this workspace (`crates/ui-prop-tester`).
+It walks a web page in Chromium or a program in a pseudo-terminal with seeded
+random actions and checks temporal properties after every step. It is not
+part of a horch release archive; build it from a checkout:
+
+```bash
+cargo install --path crates/ui-prop-tester
+ui-prop-tester browser test --headless --time-limit 60s --output-path run.trace http://localhost:3000
+ui-prop-tester terminal test --actions-max 200 --output-path repl.trace python3 -q
+ui-prop-tester trace run.trace
+ui-prop-tester browser shrink --trace run.trace --output-path min.trace
+```
+
+Exit 0 means no violation within the limits, 1 an operational error, 2 a
+property violation. The bundled `ui-prop-tester` skill
+([skills/ui-prop-tester/SKILL.md](skills/ui-prop-tester/SKILL.md)) teaches
+agents the workflow and the specification API; `qa-engineer` and
+`frontend-developer` can load it. The behaviour spec is
+[docs/specs/ui-prop-tester.md](docs/specs/ui-prop-tester.md).
 
 ## Keeping the docs current
 

@@ -19,13 +19,14 @@ A bundle is one of these kinds:
 - `code-analysis` uses project-native analyzers. It bundles no JavaScript engine, metric implementation, config generator, plugins, or dependency installation. Available measurements are reported honestly; an unavailable analyzer gets an explicitly qualitative review, not fabricated scores.
 - `security-review` is a direct audit workflow with trust-boundary mapping, deduplication, false-positive verification, and evidence reports. It ships no scanner scripts, language catalogs, report assembler, or hierarchical agent pipeline.
 - `orchestrate` is own text, reconciled from the retired external `herdr-orchestrator` and `herdr-worker` skills against the real `horch` CLI: every command, flag and lifecycle claim in those two files was checked against `horch --help` and either carried, corrected or dropped. It is attached to `orchestrator` and `orchestrator-codex` by name and belongs to no phase.
+- `make-videos` is own text, from the operator's brief for devblog videos of a game. It plans a series from the git history (milestones, a plan table, scripts and packaging under `devblog/`), holds 2 operator gates, and sends each approved cut through [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md). It also updates a series that exists. It is attached to `orchestrator` and `orchestrator-codex` by name and belongs to no phase.
 - `skill-creator` is a verbatim copy of a whole skill directory. It is attached to the Claude `orchestrator` by name and belongs to no phase. `horch teammates --check` fails any other teammate that names it, and every Claude pane switches off the official plugin and the claude.ai-synced copy. The skill tells its user to spawn subagents and to run `claude -p`; the orchestrator's persona tells it to take the skill's no-subagent path instead.
 - 13 Godot skills are adapted copies of the `godot-incremental` plugin of `MattMakes/skill-marketplace`: `godot-balance-model-data`, `godot-bot-balance-loop`, `godot-feature-seams-and-saves`, `godot-fleet-game-dev`, `godot-game-audio`, `godot-headless-runs`, `godot-perf-measure`, `godot-pixel-art-pipeline`, `godot-release-and-store`, `godot-safe-refactor`, `godot-test-loop`, `godot-upgrade-tree-design` and `godot-visual-verification`. The adaptations: each name has the `godot-` prefix; each plugin script is a code block on a `references/script-*.md` page; each `SKILL.md` moves detail into `references/*.md` to stay within the 12 KB budget.
 - `tdd` retains red/green/refactor for meaningful behavior changes and removes unrelated skill-authoring machinery and destructive instructions to delete existing work. Structural checks are appropriate for low-impact prose/config changes.
 
 ## Copied files
 
-[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator`, the 27 copied [Blender skills that ship scripts](#blender-skills), the own-text `blender-3d-print` (2 Python scripts), the 8 [`video-*` skills that ship scripts](#video-skills), the own-text `one-page-design` (its page checker, the checker tests and an HTML starter page) [`skill-intake`](#skill-intake) (its `intake` tool), and the 2 [sound skills](#sound-skills): `hark` (its engine package and launcher) and `sound-sourcing` (its workflow scripts and JSON templates) are exempt from the text-only rule, plus 1 file: `godot-build-verify/scripts/godot-run.sh`, the wrapper for every Godot call (SKL-11 keeps its execute bit). No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
+[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator`, the 27 copied [Blender skills that ship scripts](#blender-skills), the own-text `blender-3d-print` (2 Python scripts), the 8 [`video-*` skills that ship scripts](#video-skills), the own-text `one-page-design` (its page checker, the checker tests and an HTML starter page) [`skill-intake`](#skill-intake) (its `intake` tool), and the 2 [sound skills](#sound-skills): `hark` (its engine package and launcher) and `sound-sourcing` (its workflow scripts and JSON templates) are exempt from the text-only rule, plus 2 files: `godot-build-verify/scripts/godot-run.sh`, the wrapper for every Godot call, and `ui-prop-tester/scripts/ui-prop-tester`, the launcher of the [UI property testing skill](#ui-property-testing-skill) (SKL-11 keeps their execute bits). No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
 
 To refresh a copied skill:
 
@@ -46,6 +47,7 @@ To refresh a copied skill:
 | [document](document/SKILL.md) | adapted |
 | [execute](execute/SKILL.md) | adapted |
 | [handoff](handoff/SKILL.md) | adapted |
+| [make-videos](make-videos/SKILL.md) | own text |
 | [orchestrate](orchestrate/SKILL.md) | own text |
 | [pre-flight](pre-flight/SKILL.md) | adapted |
 | [research-codebase](research-codebase/SKILL.md) | adapted |
@@ -58,10 +60,13 @@ To refresh a copied skill:
 
 | Skill | Kind |
 | --- | --- |
+| [addictive-game-design-review](addictive-game-design-review/SKILL.md) | own text |
 | [art-direction](art-direction/SKILL.md) | combined and rewritten |
 | [brand-identity](brand-identity/SKILL.md) | combined and rewritten |
 | [design-imagery](design-imagery/SKILL.md) | combined and rewritten |
 | [design-system](design-system/SKILL.md) | combined and rewritten |
+| [game-juice](game-juice/SKILL.md) | own text |
+| [incremental-game-design](incremental-game-design/SKILL.md) | own text |
 | [landing-page](landing-page/SKILL.md) | combined and rewritten |
 | [motion-gsap](motion-gsap/SKILL.md) | combined and rewritten |
 | [one-page-design](one-page-design/SKILL.md) | own text |
@@ -120,7 +125,7 @@ The specs the clean writers worked from are in [docs/cleanroom/pixel-vfx/](../do
 
 ## Engineering and product skills
 
-These skills belong to no phase; each attaches by name to the specialist whose work it covers. 6 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, and `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`). 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
+These skills belong to no phase; each attaches by name to the specialist whose work it covers. 7 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`), and `patch-around-audit` is for `root-cause-auditor`: it finds code that was patched around a stale comment, test or core flaw (guards, special cases, flags and wrappers beside an anchor that nobody changed), writes a report with the evidence and the decisions it needs, and fixes a site at its root when the task says so. 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
 
 | Skill | Kind |
 | --- | --- |
@@ -130,8 +135,17 @@ These skills belong to no phase; each attaches by name to the specialist whose w
 | [creative-council](creative-council/SKILL.md) | own text |
 | [data-migrations](data-migrations/SKILL.md) | own text |
 | [improve-codebase-architecture](improve-codebase-architecture/SKILL.md) | adapted |
+| [patch-around-audit](patch-around-audit/SKILL.md) | own text |
 | [product-requirements](product-requirements/SKILL.md) | own text |
 | [system-design](system-design/SKILL.md) | own text |
+
+## UI property testing skill
+
+`ui-prop-tester` is own text, written clean-room from the behaviour spec in [docs/specs/ui-prop-tester.md](../docs/specs/ui-prop-tester.md). It teaches the `ui-prop-tester` tool (the `crates/ui-prop-tester` workspace crate): seeded random walks over a web page in Chromium or a program in a pseudo-terminal, with temporal properties checked after every step, and trace reading, replay and shrinking for each failure. It belongs to no phase; `qa-engineer` and `frontend-developer` name it under `available_skills`. It ships 3 things: `SKILL.md`, 4 reference pages (specifications, browser, terminal, traces) and the launcher `scripts/ui-prop-tester`. The launcher runs `UI_PROP_TESTER_BIN`, then `ui-prop-tester` on `PATH`, then a cached build under `~/.local/state/horch/ui-prop-tester/bin/` that it builds from a multi-herdr checkout on first use; with no binary and no checkout it exits 3 and prints the `cargo install` command. The tool is not part of a horch release archive.
+
+| Skill | Kind |
+| --- | --- |
+| [ui-prop-tester](ui-prop-tester/SKILL.md) | own text |
 
 ## Unreal Engine skills
 
@@ -250,7 +264,7 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 
 ## Godot skills
 
-Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 80 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 13 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`, `godot-save-security`). Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the own-text skills was run on Godot 4.7.2. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
+Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 81 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 14 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`, `godot-save-security`, `godot-library`). `godot-library` is a reference library, not a procedure: its `SKILL.md` is an index and each of its 35 `references/*.md` shelves holds the advanced and less-common techniques of one area, written from the stable manual, the class reference and the engine team's release notes and articles. Every Godot teammate expects it and names the shelves for its role in the 2nd paragraph of its briefing. Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the other own-text skills was run on Godot 4.7.2; the library's code blocks were checked against the 4.7.2 class reference and get their first engine parse in the gate. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
 
 **Proof levels.** A note `proof: <level>` next to a claim says how far this repository proved it on Godot 4.7.2:
 
@@ -304,6 +318,7 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-input-handling](godot-input-handling/SKILL.md) | combined |
 | [godot-inventory-system](godot-inventory-system/SKILL.md) | combined |
 | [godot-language-choice](godot-language-choice/SKILL.md) | own text |
+| [godot-library](godot-library/SKILL.md) | own text |
 | [godot-limboai](godot-limboai/SKILL.md) | renamed |
 | [godot-localization](godot-localization/SKILL.md) | renamed |
 | [godot-math-essentials](godot-math-essentials/SKILL.md) | renamed |
@@ -342,3 +357,14 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-version-migration](godot-version-migration/SKILL.md) | own text |
 | [godot-visual-verification](godot-visual-verification/SKILL.md) | adapted |
 | [godot-xr-development](godot-xr-development/SKILL.md) | combined |
+## Clean-room intake: comment-pruning
+
+`comment-pruning` belongs to no phase. It is own text, written clean-room with `skill-intake`. A security sweep read a local source named `comment-removal` (licence class none, sha256 `6df588214ed1`) in a quarantine, one role worker wrote behaviour specs in its own words, and a second role worker that never saw the source wrote the skill from the specs alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+The specs the writer worked from and the sweep result are in [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/).
+
+| Skill | Kind |
+| --- | --- |
+| [comment-pruning](comment-pruning/SKILL.md) | own text (clean-room) |
+
+

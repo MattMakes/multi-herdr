@@ -140,7 +140,8 @@ pub enum LedgerCommand {
         command: WorktreeCommand,
     },
     /// (worker) Run the run's finish steps in order (under `--verify full`:
-    /// check, code-sweep, complexity-sweep, recheck, land, pr, cleanup).
+    /// check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr,
+    /// cleanup).
     /// Stops at the first that does not pass; fix it and run finish again.
     Finish {
         #[arg(long)]

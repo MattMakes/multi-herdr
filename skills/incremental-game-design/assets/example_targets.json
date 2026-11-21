@@ -1,0 +1,26 @@
+{
+  "play_pattern": "continuous",
+  "targets": {
+    "length_h": {"value": 6, "tolerance": 0.15, "unsupported": false},
+    "purchase_gap": {"largest_max_min": 2, "first_max_min": 2, "unlock_max_min": 10, "unlock_first_hour_max_min": 5, "unsupported": false},
+    "demo_end": {"minutes": 120, "before_system": "S23", "unsupported": true},
+    "unlocks": {"first_5_min_min": 3, "first_hour": 6, "first_hour_tolerance": 1, "each_later_hour_min": 4, "unsupported": true},
+    "idle": {"open_1h": [0.0, 1.0], "open_8h": [0.0, 1.0], "open_24h": [0.0, 1.0], "open_7d": [0.0, 1.0], "unsupported": false},
+    "active_factor": {"value": 2, "unsupported": true},
+    "reset_gap": {"X_e": 1, "X_p": 10, "Dg": 2, "unsupported": false},
+    "play_test_speed": {"k": 10, "D_h_s": 2, "unsupported": true},
+    "run_min": 15,
+    "active_slow_max": 1.25
+  },
+  "notes": [
+    "Moss Works on Steam, decisions of the operator on 2026-11-14, with the bands of group A3 of the interview.",
+    "length_h is the length to the hard end (S28.last_step): 6 active hours, inside the default band 3 to 6 hours (SG:177-178).",
+    "The demo ends at 120 minutes, before the Dew Garden (S23) opens. This is longer than the guide band of 15 to 30 minutes (SG:183). The nearest proof is the 1 to 2 hour Tower Wizard prototype (SG:189), so the record marks it unsupported.",
+    "purchase_gap replaces the session target: the largest gap between purchases is at most 2 minutes, and the first purchase comes inside 2 minutes (SG:180-181).",
+    "The unlock gap targets (purchase_gap.unlock_max_min 10 and unlock_first_hour_max_min 5) are designer targets with no source (CT6, CT7): the operator set them on 2026-11-14. 5 minutes is the first-hour result that ticket T-16 required.",
+    "The unlock targets, the active factor and the play-test speed have no source in the short games (SG:198-204). They are designer targets, not supported by a source.",
+    "run_min is the run length of the reset layer: 15 minutes, the default of the balance math.",
+    "No offline gain, so the targets have no closed idle value. The open idle bands are the law band 0 to 1, not targets.",
+    "unlocks.first_hour 6 is below the count that the 5-minute first-hour gap forces: ceil(60 / 5) - 1 = 11 (references/interview.md, A1.3). The solver takes the band of a continuous game from the gap, so the record marks the unlocks unsupported. The value 6 stays, because the committed design tests/designs/moss-works-demo uses it for its first stage times."
+  ]
+}

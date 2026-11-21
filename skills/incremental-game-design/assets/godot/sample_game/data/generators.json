@@ -1,0 +1,58 @@
+{
+  "generators": [
+    {
+      "id": "candle",
+      "name": "Candle",
+      "cost": 10,
+      "cost_growth": 1.5,
+      "income": 0.4,
+      "level_growth": 1.22,
+      "unlock_at": 0
+    },
+    {
+      "id": "lantern",
+      "name": "Lantern",
+      "cost": 200,
+      "cost_growth": 1.5,
+      "income": 2.5,
+      "level_growth": 1.22,
+      "unlock_at": 80
+    },
+    {
+      "id": "oil_lamp",
+      "name": "Oil lamp",
+      "cost": 6000,
+      "cost_growth": 1.5,
+      "income": 18.0,
+      "level_growth": 1.22,
+      "unlock_at": 2500
+    },
+    {
+      "id": "gas_lamp",
+      "name": "Gas lamp",
+      "cost": 250000,
+      "cost_growth": 1.5,
+      "income": 150.0,
+      "level_growth": 1.22,
+      "unlock_at": 120000
+    },
+    {
+      "id": "arc_lamp",
+      "name": "Arc lamp",
+      "cost": 4000000,
+      "cost_growth": 1.5,
+      "income": 1400.0,
+      "level_growth": 1.22,
+      "unlock_at": 12000000
+    },
+    {
+      "id": "sun_tower",
+      "name": "Sun tower",
+      "cost": 100000000,
+      "cost_growth": 1.5,
+      "income": 15000.0,
+      "level_growth": 1.22,
+      "unlock_at": 1200000000
+    }
+  ]
+}

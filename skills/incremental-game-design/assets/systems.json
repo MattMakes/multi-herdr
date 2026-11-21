@@ -1,0 +1,3722 @@
+{
+  "schema_version": 1,
+  "title": "The systems of the catalog, for scripts",
+  "note": "references/systems-catalog.md is the authority. This file holds the same facts. A citation is prefix:line. The prefixes are in 'sources'. A variant with sourced_range false has no sourced range. The design solver uses only variants with sourced_range true. Each starter set and each variant has the key proof_class: proved (a law covers it and the solver writes it), simulated (a tool writes it and only the simulator checks it), or none (no tool writes it yet). proof_class is the class when the rest of the selection is proved. proof_class_sim_path is the class of a variant when another choice takes the simulation path. tests/test_interview_honesty.py finds each class by a run.",
+  "sources": {
+    "O": "references/other-games-math.md",
+    "A": "research/other-games/a_cookie_ad_synergism.md",
+    "B": "research/other-games/b_realm_ngu_clickerheroes.md",
+    "C": "research/other-games/c_kittens_trimps_evolve_melvor.md",
+    "D": "research/other-games/d_exponential_others_general.md",
+    "P": "references/reference-game-patterns.md",
+    "M": "references/reference-game-math.md",
+    "X": "references/system-archetypes.md",
+    "TA": "research/tools_a.md",
+    "TB": "research/tools_b.md",
+    "SA": "docs/research/skill-audit.md",
+    "IA": "docs/research/moss-works-idle-vs-active.md",
+    "RP": "docs/research/reference-game-pacing.md",
+    "BM": "references/balance-math.md",
+    "SG": "references/short-games.md"
+  },
+  "decisions": [
+    {
+      "id": "D1",
+      "date": "2026-11-13",
+      "text": "S04 is core. The variant S04.none is permitted only when S22 is the spine."
+    },
+    {
+      "id": "D2",
+      "date": "2026-11-13",
+      "text": "Each game needs 1 or more presence gates (S07, S08, S09). The default is S08."
+    },
+    {
+      "id": "D3",
+      "date": "2026-11-13",
+      "text": "An open game with no input has no separate rule. The presence gate covers it."
+    },
+    {
+      "id": "D4",
+      "date": "2026-11-13",
+      "text": "S10 can fill the S05 slot only when the visitor does not bank."
+    },
+    {
+      "id": "D5",
+      "date": "2026-11-13",
+      "text": "S24 does not run while the game is closed, by default."
+    },
+    {
+      "id": "D6",
+      "date": "2026-11-13",
+      "text": "S26 is optional."
+    },
+    {
+      "id": "D7",
+      "date": "2026-11-13",
+      "text": "S18 is a separate optional system."
+    },
+    {
+      "id": "D8",
+      "date": "2026-11-13",
+      "text": "S07 stays a presence gate of the core slot. It is not a core system alone."
+    },
+    {
+      "id": "D9",
+      "date": "2026-11-14",
+      "text": "The skill has 2 play patterns: continuous and check_in. The interview asks the pattern first. With continuous, S06 is not core (default none) and the presence gate slot is optional."
+    },
+    {
+      "id": "D10",
+      "date": "2026-11-14",
+      "text": "For continuous: S05 is core with the default S05.manual_then_automate. S24 and S28 are core. S04 is optional, and S04.none is permitted with S29 or S22. A continuous selection with no S28 is refused. check_in keeps D1 to D9."
+    },
+    {
+      "id": "D11",
+      "date": "2026-11-15",
+      "text": "For continuous: S04.none is also permitted with S28 and with no S29 and no S22. The game is 1 long run to the hard end, and the run itself is the permanent progress. The solver proves it with the laws L1, L2, L3, L8 and L9 (references/balance-math.md, 1 long run with no reset). Ticket 40, repair 3."
+    }
+  ],
+  "play_patterns": [
+    {
+      "id": "continuous",
+      "name": "Continuous play (a desktop or Steam game)",
+      "text": "The player plays in long sittings: the demo in 1 sitting, the full game possibly in 1 sitting. The game gives no idle or offline benefit. A session is the whole sitting.",
+      "decision": "D9",
+      "core": [
+        "S01",
+        "S02",
+        "S03",
+        "S05",
+        "S24",
+        "S28"
+      ],
+      "class_changes": {
+        "S04": "optional",
+        "S06": "optional",
+        "S24": "core",
+        "S28": "core"
+      },
+      "gate_min": 0,
+      "offline_default": "none",
+      "idle_targets": [
+        "open_1h",
+        "open_8h",
+        "open_24h",
+        "open_7d"
+      ],
+      "idle_default": {
+        "open_1h": [
+          0.0,
+          1.0
+        ],
+        "open_8h": [
+          0.0,
+          1.0
+        ],
+        "open_24h": [
+          0.0,
+          1.0
+        ],
+        "open_7d": [
+          0.0,
+          1.0
+        ]
+      },
+      "note": "The generator lines still pay while the game is open. The closed-game parts of PO6 to PO9 are not applicable when the model has no offline gain. The idle bands are the law band 0 to 1, not targets (decision D10: no idle-value targets).",
+      "decisions": [
+        "D9",
+        "D10",
+        "D11"
+      ],
+      "recommended": {
+        "S05": "S05.active_lane",
+        "S24": "S24.auto_buy",
+        "S28": "S28.last_step"
+      },
+      "no_reset_needs": [
+        "S22",
+        "S29",
+        "S28"
+      ],
+      "target_bands": [
+        {
+          "id": "CT1",
+          "name": "length to the hard end",
+          "unit": "active hours",
+          "band": [
+            2,
+            10
+          ],
+          "default": [
+            3,
+            6
+          ],
+          "source": "SG:177, SG:178",
+          "proven_game": "9 of 11 short games measure 1 to 11 hours (SG:177)"
+        },
+        {
+          "id": "CT2",
+          "name": "first purchase",
+          "unit": "minutes",
+          "band": [
+            0,
+            2
+          ],
+          "default": 2,
+          "source": "SG:180",
+          "proven_game": "Shelldiver: 4 to 5 upgrades after each 1 to 2 minute dive (SG:180)"
+        },
+        {
+          "id": "CT3",
+          "name": "largest gap between purchases",
+          "unit": "minutes",
+          "band": [
+            0,
+            2
+          ],
+          "default": 2,
+          "source": "SG:181",
+          "proven_game": "Shelldiver, single source (SG:181)"
+        },
+        {
+          "id": "CT4",
+          "name": "demo length",
+          "unit": "minutes",
+          "band": [
+            15,
+            30
+          ],
+          "band_management": [
+            40,
+            60
+          ],
+          "default": [
+            15,
+            30
+          ],
+          "source": "SG:183",
+          "proven_game": null,
+          "note": "A guide consensus with no conclusive data. A demo of 2 hours or more is flagged: the nearest proof is the 1 to 2 hour Tower Wizard prototype (SG:189)."
+        },
+        {
+          "id": "CT5",
+          "name": "extension past the demo",
+          "unit": "parts",
+          "rule": "each part past the demo adds new content: a new era, area, system or reset mechanic",
+          "source": "SG:185",
+          "proven_game": "new eras, areas and prestige mechanics (SG:185)"
+        },
+        {
+          "id": "CT6",
+          "name": "no source",
+          "unit": "",
+          "targets": [
+            "unlocks in the first 10 minutes and the first hour",
+            "an active factor",
+            "the count of resets",
+            "a play-test speed"
+          ],
+          "source": "SG:198-205",
+          "proven_game": null,
+          "note": "The interview marks each of these targets: no source. It gives no band. A designer value is a designer target, not supported by a source: a warning, not a refusal."
+        },
+        {
+          "id": "CT7",
+          "name": "largest gap between unlocks",
+          "unit": "minutes",
+          "default": {
+            "first_hour": 5,
+            "whole": 10
+          },
+          "targets": [
+            "purchase_gap.unlock_first_hour_max_min",
+            "purchase_gap.unlock_max_min"
+          ],
+          "source": "SG:198",
+          "proven_game": null,
+          "note": "No short game counts unlocks in time (SG:198). The defaults are designer targets of the operator (ticket 19, 2026-11-14): 5 minutes is the first-hour result that ticket T-16 required. The proof row PC4 checks both. The designer sets them."
+        }
+      ]
+    },
+    {
+      "id": "check_in",
+      "name": "Check-in play (a mobile idle game)",
+      "text": "The player checks in for short sessions of about 15 minutes. The game pays offline gains while it is closed.",
+      "decision": "D9",
+      "core": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06"
+      ],
+      "class_changes": {},
+      "gate_min": 1,
+      "offline_default": "S06.penalty_cap",
+      "idle_targets": [
+        "open_1h",
+        "open_8h",
+        "open_24h",
+        "open_7d",
+        "closed_1h",
+        "closed_8h",
+        "closed_24h",
+        "closed_7d"
+      ],
+      "idle_default": null,
+      "note": "The rules of the catalog before 2026-11-14: S06 is core, 1 or more presence gates, and the idle bands of T4."
+    }
+  ],
+  "core_slot": {
+    "name": "presence gate",
+    "members": [
+      "S07",
+      "S08",
+      "S09"
+    ],
+    "min": 1,
+    "default": "S08"
+  },
+  "systems": [
+    {
+      "id": "S01",
+      "name": "Generator line",
+      "class": "core",
+      "recommended": "S01.geometric",
+      "slot": null,
+      "needs": [],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "none",
+      "growth_role": "source",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S01.geometric",
+          "proof_class": "proved",
+          "proof_class_sim_path": "proved",
+          "kind": "variant",
+          "family": "cost a x b^owned; income v x owned x multipliers",
+          "games": "Cookie Clicker, Clicker Heroes, Kittens Game",
+          "parameters": {
+            "b": {
+              "min": 1.07,
+              "max": 1.15,
+              "default": 1.15,
+              "source": "O:48-49"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "additive value for each unit"
+        },
+        {
+          "id": "S01.steep",
+          "proof_class": "proved",
+          "proof_class_sim_path": "proved",
+          "kind": "variant",
+          "family": "cost a x b^owned; income v x owned x multipliers",
+          "games": "Trimps, Evolve",
+          "parameters": {
+            "b": {
+              "min": 1.2,
+              "max": 1.3,
+              "default": 1.2,
+              "source": "O:39-41"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "additive value for each unit"
+        },
+        {
+          "id": "S01.ladder",
+          "proof_class": "proved",
+          "proof_class_sim_path": "proved",
+          "kind": "variant",
+          "family": "cost a_i x b_i^owned, 1 ratio b_i for each tier i",
+          "games": "Idle Wizard",
+          "parameters": {
+            "b_i": {
+              "min": 1.16,
+              "max": 1.19,
+              "default": 1.16,
+              "source": "C:255"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "additive value for each unit"
+        },
+        {
+          "id": "S01.polynomial",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "cost (n + 1)^k x 1e6 in a later era",
+          "games": "Universal Paperclips",
+          "parameters": {
+            "k": {
+              "min": 2.25,
+              "max": 2.25,
+              "default": 2.25,
+              "source": "D:202"
+            }
+          },
+          "sourced_range": true,
+          "r": "not covered by L1",
+          "r_note": "polynomial cost; balance-math limit 4"
+        },
+        {
+          "id": "S01.ratio_floor",
+          "kind": "modifier",
+          "family": "b >= b_floor after each reduction",
+          "games": "Evolve",
+          "parameters": {
+            "b_floor": {
+              "min": 1.005,
+              "max": 1.005,
+              "default": 1.005,
+              "source": "O:52"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a floor keeps the line from being free"
+        },
+        {
+          "id": "S01.bulk",
+          "kind": "helper",
+          "family": "bulk cost a x b^k x (b^n - 1) / (b - 1); max affordable floor(log_b(c x (b - 1) / (a x b^k) + 1))",
+          "games": "genre",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "derived from the line parameters (O:53-54)"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "name": "Multiplier upgrade",
+      "class": "core",
+      "recommended": "S02.levelled_factor",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "none",
+      "growth_role": "multiplier",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S02.add_in_group",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "base x (1 + sum of group 1) x (1 + sum of group 2); line cost a x b^L, value +v for each level",
+          "games": "IOM, Cookie Clicker",
+          "parameters": {
+            "b": {
+              "min": 1.2,
+              "max": 1.5,
+              "default": 1.2,
+              "source": "M:107-108"
+            },
+            "v": {
+              "min": 0.03,
+              "max": 0.1,
+              "default": 0.03,
+              "source": "M:109"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "linear value against geometric cost (M:109-111)"
+        },
+        {
+          "id": "S02.levelled_factor",
+          "proof_class": "proved",
+          "proof_class_sim_path": "proved",
+          "kind": "variant",
+          "family": "line cost a x b^L, value d^L, in a new group",
+          "games": "Universal Paperclips, genre",
+          "parameters": {
+            "b": {
+              "min": 1.15,
+              "max": 10,
+              "default": 2,
+              "source": "O:188, D:195"
+            },
+            "d": {
+              "min": 1.1,
+              "max": 2,
+              "default": 1.1,
+              "source": "O:188, D:195"
+            }
+          },
+          "sourced_range": true,
+          "r": "ln(d) / ln(b)",
+          "r_note": "0.14 at d 1.1 and b 2; 0.30 at d 2 and b 10; 0.68 at d 1.1 and b 1.15 (computed)"
+        },
+        {
+          "id": "S02.multiply_all",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "each line is its own group: power = base x product of all factors",
+          "games": "Legends of IdleOn",
+          "parameters": {},
+          "sourced_range": true,
+          "r": "sum of r over all lines",
+          "r_note": "factors add their exponents (O:189); numbers explode (O:127)"
+        },
+        {
+          "id": "S02.published_order",
+          "kind": "helper",
+          "family": "(A_base x M_base x M_temp + A_temp) x M_illus + A_illus",
+          "games": "Realm Grinder",
+          "parameters": {},
+          "sourced_range": true,
+          "r": "largest r in each sum",
+          "r_note": "O:120"
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "name": "Spine with a wall",
+      "class": "core",
+      "recommended": "S03.exponential",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ],
+        [
+          "S02"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "moves in all 3 modes unless S07 is selected",
+      "growth_role": "wall and content gate",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S03.exponential",
+          "proof_class": "proved",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "requirement h_n = h_1 x g^(n - 1)",
+          "games": "IOM, Trimps, Clicker Heroes",
+          "parameters": {
+            "g": {
+              "min": 1.145,
+              "max": 2.8,
+              "default": 2.8,
+              "source": "M:31, O:160-161, B:248"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the spine adds no power; its level is about ln(P) / ln(g) (RP:212-217)"
+        },
+        {
+          "id": "S03.regime_change",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "h_n = h_1 x g1^(n - 1) up to step n_c, then ratio g2",
+          "games": "IOM",
+          "parameters": {
+            "g1": {
+              "min": 2.8,
+              "max": 2.8,
+              "default": 2.8,
+              "source": "M:31"
+            },
+            "g2": {
+              "min": 30,
+              "max": 30,
+              "default": 30,
+              "source": "M:31-32"
+            },
+            "n_c": {
+              "min": 60,
+              "max": 60,
+              "default": 60,
+              "source": "M:31-32"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the spine adds no power"
+        },
+        {
+          "id": "S03.poly_then_exp",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "(RP + 1)^e up to RP_c, then 1e-30 x g^(0.33 x RP)",
+          "games": "Realm Grinder",
+          "parameters": {
+            "e": {
+              "min": 6.5,
+              "max": 6.5,
+              "default": 6.5,
+              "source": "O:168-169"
+            },
+            "g": {
+              "min": 1.033,
+              "max": 1.033,
+              "default": 1.033,
+              "source": "O:168-169"
+            },
+            "RP_c": {
+              "min": 10000,
+              "max": 10000,
+              "default": 10000,
+              "source": "O:168-169"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the spine adds no power"
+        },
+        {
+          "id": "S03.piecewise",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "step +s each, then +2 more for each step past n1, then +0.2% of the total for each step past n2",
+          "games": "Antimatter Dimensions",
+          "parameters": {
+            "s": {
+              "min": 60,
+              "max": 60,
+              "default": 60,
+              "source": "O:165-167"
+            },
+            "n1": {
+              "min": 100,
+              "max": 100,
+              "default": 100,
+              "source": "O:165-167"
+            },
+            "n2": {
+              "min": 800,
+              "max": 800,
+              "default": 800,
+              "source": "O:165-167"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the spine adds no power"
+        },
+        {
+          "id": "S03.xp_doubling",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "requirement doubles each N levels",
+          "games": "Melvor Idle",
+          "parameters": {
+            "N": {
+              "min": 7,
+              "max": 7,
+              "default": 7,
+              "source": "O:176-178"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the spine adds no power"
+        },
+        {
+          "id": "S03.threshold_volume",
+          "kind": "helper",
+          "family": "a threshold test (stat >= armor) plus a volume test (damage over time >= health)",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "M:43-46"
+        },
+        {
+          "id": "S03.polynomial_base",
+          "kind": "helper",
+          "family": "power base (L + 1)(L + 2) / 2",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "M:37; other systems must supply power (M:47-49)"
+        }
+      ]
+    },
+    {
+      "id": "S04",
+      "name": "Reset layer",
+      "class": "core",
+      "recommended": "S04.power",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ],
+        [
+          "S03"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [
+        {
+          "with": "S15",
+          "condition": "an S15 line with r >= 1 and no cap",
+          "source": "SA:11"
+        }
+      ],
+      "presence_role": "needs a visit to cash",
+      "growth_role": "reset",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S04.power",
+          "proof_class": "proved",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "G = (E / c)^p; effect +e for each point, additive",
+          "games": "AdVenture Capitalist, Realm Grinder, Idle Wizard, Cookie Clicker, Egg Inc., IOM",
+          "parameters": {
+            "p": {
+              "min": 0.21,
+              "max": 0.5,
+              "default": 0.5,
+              "source": "O:62-65, M:235-239"
+            },
+            "e": {
+              "min": 0.01,
+              "max": 0.1,
+              "default": 0.02,
+              "source": "O:75-77"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the layer adds no line; it sets lambda = p q / (1 - R) (BM D12)"
+        },
+        {
+          "id": "S04.log",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "G = floor(k x log10(total))",
+          "games": "Clicker Heroes",
+          "parameters": {
+            "k": {
+              "min": 5,
+              "max": 5,
+              "default": 5,
+              "source": "O:68"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the source is a third layer; s is near 0, so no best reset exists (BM L6)"
+        },
+        {
+          "id": "S04.threshold",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "1 point for each unit above a threshold K0; efficiency 1 - K0 / K",
+          "games": "Kittens Game",
+          "parameters": {
+            "K0": {
+              "min": 70,
+              "max": 70,
+              "default": 70,
+              "source": "O:69, O:96-98"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the threshold sets the run length (O:69)"
+        },
+        {
+          "id": "S04.steps",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "round(a(z - z0) + g^sqrt(a(z - z0))) x a multiplier that steps 1, 5, 10, 30 at story points",
+          "games": "Trimps",
+          "parameters": {
+            "a": {
+              "min": 1.35,
+              "max": 1.35,
+              "default": 1.35,
+              "source": "O:70"
+            },
+            "z0": {
+              "min": 19,
+              "max": 19,
+              "default": 19,
+              "source": "O:70"
+            },
+            "g": {
+              "min": 1.23,
+              "max": 1.23,
+              "default": 1.23,
+              "source": "O:70"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "sub-exponential in the zone z"
+        },
+        {
+          "id": "S04.power_of_log",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "G = floor(m x 10^(log10(x) / 308 - 0.75)) (rebuilt)",
+          "games": "Antimatter Dimensions",
+          "parameters": {
+            "root": {
+              "min": 308,
+              "max": 308,
+              "default": 308,
+              "source": "O:67"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "about a 308th root for each layer (O:67)"
+        },
+        {
+          "id": "S04.none",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "no reset layer",
+          "games": "Melvor Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "permitted only when S22 is the spine (decision D1, C:189)"
+        },
+        {
+          "id": "S04.gain_cap",
+          "kind": "modifier",
+          "family": "above the cap: cap + overflow / (overflow + cap) x cap",
+          "games": "Evolve",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the gain can at most double (O:143)"
+        },
+        {
+          "id": "S04.reset_rule",
+          "kind": "helper",
+          "family": "reset when G >= X x L",
+          "games": "genre",
+          "parameters": {
+            "X": {
+              "min": 0.5,
+              "max": 2,
+              "default": 1,
+              "source": "O:86-88"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the rule gain at +50% to +200% of held currency"
+        },
+        {
+          "id": "S04.best_multiplier",
+          "kind": "helper",
+          "family": "best mean reset multiplier e^(z(y + 1) / (1 - x))",
+          "games": "Exponential Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "about 2.7 (O:92-95)"
+        }
+      ]
+    },
+    {
+      "id": "S05",
+      "name": "Active action",
+      "class": "core",
+      "recommended": "S05.active_lane",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [
+        {
+          "with": "S06",
+          "condition": "S06 at 100% with no cap and a small S05",
+          "source": "IA:8, SA:12"
+        }
+      ],
+      "presence_role": "active premium",
+      "growth_role": "source or multiplier",
+      "scope": "S to M",
+      "variants": [
+        {
+          "id": "S05.active_lane",
+          "proof_class": "proved",
+          "proof_class_sim_path": "proved",
+          "kind": "variant",
+          "family": "income x a while active; x1 open; x f_closed closed",
+          "games": "IOM",
+          "parameters": {
+            "a": {
+              "min": 1.25,
+              "max": 1.25,
+              "default": 1.25,
+              "source": "TB:61, TA:507"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a constant factor adds no exponent"
+        },
+        {
+          "id": "S05.kill_lane",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "a second currency x m for each active kill",
+          "games": "Idle Slayer",
+          "parameters": {
+            "m": {
+              "min": 100,
+              "max": 100,
+              "default": 100,
+              "source": "D:107"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a constant factor adds no exponent"
+        },
+        {
+          "id": "S05.click_chance",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "chance % = clicks^e",
+          "games": "Realm Grinder",
+          "parameters": {
+            "e": {
+              "min": 0.25,
+              "max": 0.25,
+              "default": 0.25,
+              "source": "B:54"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the chance has no purchase line"
+        },
+        {
+          "id": "S05.route_reserve",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "reserve (L + 1)^e_idle for the idle route, (L + 1)^e_active for the active route",
+          "games": "Clicker Heroes",
+          "parameters": {
+            "e_idle": {
+              "min": 2,
+              "max": 2,
+              "default": 2,
+              "source": "B:235"
+            },
+            "e_active": {
+              "min": 2.5,
+              "max": 2.5,
+              "default": 2.5,
+              "source": "B:235"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the route has no purchase line"
+        },
+        {
+          "id": "S05.click_income",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "a click pays a base value",
+          "games": "Realm Grinder, Cookie Clicker",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "no sourced formula for the base click value"
+        },
+        {
+          "id": "S05.timing_skill",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "a timing skill pays a bonus",
+          "games": "Exponential Idle",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "A:358 names it with no formula"
+        },
+        {
+          "id": "S05.visitor",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "S10 with no bank fills the slot (decision D4)",
+          "games": "Cookie Clicker",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the parameters are those of S10.window"
+        },
+        {
+          "id": "S05.boost_window",
+          "kind": "modifier",
+          "family": "a boost before the reset gain formula",
+          "games": "Egg Inc.",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "D:268 gives no constant"
+        },
+        {
+          "id": "S05.manual_then_automate",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "phase 1: only the manual action pays, and open and closed pay 0; an S24 unlock replaces the manual action at a share z of the game",
+          "games": "Nodebuster, Digseum, Scritchy Scratchy, Gnorp Apologue, Shelldiver",
+          "parameters": {
+            "z": {
+              "min": 0.5,
+              "max": 0.5,
+              "default": 0.5,
+              "source": "SG:65-66"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a phase change; the laws of BM do not cover it, so a simulation must check it (BM section 7)"
+        }
+      ]
+    },
+    {
+      "id": "S06",
+      "name": "Offline rule",
+      "class": "core",
+      "recommended": "S06.penalty_cap",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [
+        {
+          "with": "S05",
+          "condition": "S06 at 100% with no cap and a small S05",
+          "source": "IA:8, SA:12"
+        }
+      ],
+      "presence_role": "closed-game rule",
+      "growth_role": "cap on time",
+      "scope": "S to M",
+      "variants": [
+        {
+          "id": "S06.penalty_cap",
+          "proof_class": "proved",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "paid = min(away, T_cap) x f_closed x rate",
+          "games": "IOM, Melvor Idle",
+          "parameters": {
+            "f_closed": {
+              "min": 0.85,
+              "max": 0.92,
+              "default": 0.85,
+              "source": "RP:9-10, RP:250-252"
+            },
+            "T_cap_h": {
+              "min": 12,
+              "max": 24,
+              "default": 12,
+              "source": "RP:9, C:207"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a cap on time; past the cap the share falls as 1 / T (RP:303)"
+        },
+        {
+          "id": "S06.decay_table",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "rate 100% for hour 1, 70% for hours 2 to 6, then 50%",
+          "games": "a design blog",
+          "parameters": {
+            "f_h1": {
+              "min": 1.0,
+              "max": 1.0,
+              "default": 1.0,
+              "source": "D:362"
+            },
+            "f_h2_6": {
+              "min": 0.7,
+              "max": 0.7,
+              "default": 0.7,
+              "source": "D:362"
+            },
+            "f_after": {
+              "min": 0.5,
+              "max": 0.5,
+              "default": 0.5,
+              "source": "D:362"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "no cap is stated; check PO9"
+        },
+        {
+          "id": "S06.offline_bonus",
+          "kind": "modifier",
+          "family": "bonus (ln(1 + x))^e % on offline production",
+          "games": "Realm Grinder",
+          "parameters": {
+            "e": {
+              "min": 2.5,
+              "max": 2.5,
+              "default": 2.5,
+              "source": "B:52"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a rate factor"
+        },
+        {
+          "id": "S06.expected_values",
+          "kind": "helper",
+          "family": "expected values replace random rolls offline",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "P:269-273"
+        }
+      ]
+    },
+    {
+      "id": "S07",
+      "name": "Attempt on a cooldown",
+      "class": "core_slot",
+      "slot": "presence gate",
+      "needs": [
+        [
+          "S03"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "spine needs a visit",
+      "growth_role": "wall and clock",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S07.cooldown_attempt",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "attempts = ceil(health / (dps x fight_s)); 1 attempt each cooldown_s of real time",
+          "games": "IOM",
+          "parameters": {
+            "fight_s": {
+              "min": 30,
+              "max": 30,
+              "default": 30,
+              "source": "M:35"
+            },
+            "cooldown_s": {
+              "min": 840,
+              "max": 1200,
+              "default": 1200,
+              "source": "M:35, RP:38"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a clock; stages for each visit <= ceil(V / C) (BM L5)"
+        },
+        {
+          "id": "S07.time_to_clear",
+          "kind": "helper",
+          "family": "time = attempts x 1200 s x cooldown multiplier / game speed",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "TA:803; the sources differ on game speed (RP:371)"
+        }
+      ]
+    },
+    {
+      "id": "S08",
+      "name": "Bank with a cap",
+      "class": "core_slot",
+      "slot": "presence gate",
+      "needs": [
+        [
+          "S10",
+          "S26",
+          "S01"
+        ]
+      ],
+      "needs_note": "a timed reward or a resource with storage",
+      "conflicts": [],
+      "presence_role": "bank with a cap",
+      "growth_role": "cap and clock",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S08.timed_bank",
+          "proof_class": "proved",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "bank = min(bank + elapsed / period_s, cap) (inference from P:257-259)",
+          "games": "IOM",
+          "parameters": {
+            "period_s": {
+              "min": 364,
+              "max": 600,
+              "default": 600,
+              "source": "TA:238, RP:41"
+            },
+            "cap": {
+              "min": 2,
+              "max": 184,
+              "default": 2,
+              "source": "P:258-259"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a cap: T_cap = cap x period_s (BM L5)"
+        },
+        {
+          "id": "S08.storage",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "an upgrade costs share x the current maximum and multiplies the maximum by m",
+          "games": "Trimps",
+          "parameters": {
+            "share": {
+              "min": 0.25,
+              "max": 0.25,
+              "default": 0.25,
+              "source": "C:103"
+            },
+            "m": {
+              "min": 2,
+              "max": 2,
+              "default": 2,
+              "source": "C:103"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a cap on stock"
+        },
+        {
+          "id": "S08.check_in",
+          "kind": "helper",
+          "family": "fill time = 60 x cap / items per hour; check-in interval = shortest fill time",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "TB:382, M:229-230"
+        }
+      ]
+    },
+    {
+      "id": "S09",
+      "name": "Real-time clock",
+      "class": "core_slot",
+      "slot": "presence gate",
+      "needs": [
+        [
+          "S23",
+          "S19",
+          "S22"
+        ]
+      ],
+      "needs_note": "a system to put on the clock",
+      "conflicts": [
+        {
+          "with": null,
+          "condition": "a global time scale on all clocks",
+          "source": "IA:13"
+        }
+      ],
+      "presence_role": "real-time clock",
+      "growth_role": "clock",
+      "scope": "S to M",
+      "variants": [
+        {
+          "id": "S09.daily_cycle",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "a 24-hour cycle; each level gives +e to its building",
+          "games": "Cookie Clicker",
+          "parameters": {
+            "period_h": {
+              "min": 24,
+              "max": 24,
+              "default": 24,
+              "source": "A:63"
+            },
+            "e": {
+              "min": 0.01,
+              "max": 0.01,
+              "default": 0.01,
+              "source": "A:63-64"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a clock"
+        },
+        {
+          "id": "S09.speed_free_drop",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "drop chance = action seconds x level / k",
+          "games": "Melvor Idle",
+          "parameters": {
+            "k": {
+              "min": 25000000,
+              "max": 25000000,
+              "default": 25000000,
+              "source": "O:215-216"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "speed does not change drops for each hour"
+        },
+        {
+          "id": "S09.rotation",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "targets move each period_s of real time",
+          "games": "IOM",
+          "parameters": {
+            "period_s": {
+              "min": 1800,
+              "max": 1800,
+              "default": 1800,
+              "source": "M:222"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a clock"
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "name": "Random visitor",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01",
+          "S11",
+          "S26"
+        ]
+      ],
+      "needs_note": "a reward table that pays S01 currency, S11 or S26",
+      "conflicts": [],
+      "presence_role": "active pulse",
+      "growth_role": "source in bursts",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S10.window",
+          "proof_class": "none",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "spawn between t_min and t_max, chance for each frame ((t - t_min) / (t_max - t_min))^5 (reconstructed); reward min(share x bank, k x income) + 13; no bank",
+          "games": "Cookie Clicker",
+          "parameters": {
+            "t_min_s": {
+              "min": 300,
+              "max": 300,
+              "default": 300,
+              "source": "A:55-56"
+            },
+            "t_max_s": {
+              "min": 900,
+              "max": 900,
+              "default": 900,
+              "source": "A:55-56"
+            },
+            "share": {
+              "min": 0.15,
+              "max": 0.15,
+              "default": 0.15,
+              "source": "A:57"
+            },
+            "k_s": {
+              "min": 900,
+              "max": 900,
+              "default": 900,
+              "source": "A:57"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a burst source"
+        },
+        {
+          "id": "S10.banked",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "1 visitor each interval_s of game time, banked",
+          "games": "IOM",
+          "parameters": {
+            "interval_s": {
+              "min": 1200,
+              "max": 1200,
+              "default": 1200,
+              "source": "M:220"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a banked visitor also pays idle players, so it cannot fill S05 (decision D4)"
+        },
+        {
+          "id": "S10.expected_value",
+          "kind": "helper",
+          "family": "expected value of a roll 1 + p x (k - 1)",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "M:168"
+        }
+      ]
+    },
+    {
+      "id": "S11",
+      "name": "Timed buff",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ],
+        [
+          "S10",
+          "S19",
+          "S05"
+        ]
+      ],
+      "needs_note": "S01 and a source of buffs",
+      "conflicts": [],
+      "presence_role": "active bonus",
+      "growth_role": "multiplier, temporary",
+      "scope": "S to M",
+      "variants": [
+        {
+          "id": "S11.uptime",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "rate = raw x u x k + raw x (1 - u), u = buff minutes per hour / 60; free and paid buffs share 1 budget",
+          "games": "Cookie Clicker, IOM",
+          "parameters": {
+            "k": {
+              "min": 7,
+              "max": 7,
+              "default": 7,
+              "source": "A:58"
+            },
+            "duration_s": {
+              "min": 77,
+              "max": 77,
+              "default": 77,
+              "source": "A:58"
+            },
+            "budget_min_per_h": {
+              "min": 60,
+              "max": 60,
+              "default": 60,
+              "source": "P:295-296"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a temporary factor (TB:64-65, TB:78)"
+        },
+        {
+          "id": "S11.spell_cost",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "spell cost C^(1 + (c0 - M) x T) by tier T",
+          "games": "Realm Grinder",
+          "parameters": {
+            "c0": {
+              "min": 0.6,
+              "max": 0.6,
+              "default": 0.6,
+              "source": "B:43"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a cost rule"
+        }
+      ]
+    },
+    {
+      "id": "S12",
+      "name": "Milestone multiplier on count",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "none",
+      "growth_role": "multiplier",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S12.count_steps",
+          "proof_class": "none",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "x m for each n owned",
+          "games": "AdVenture Capitalist, Clicker Heroes, Antimatter Dimensions, NGU Idle, Idle Wizard",
+          "parameters": {
+            "m": {
+              "min": 1.025,
+              "max": 4,
+              "default": 2,
+              "source": "O:202-203, A:117, B:157"
+            },
+            "n": {
+              "min": 10,
+              "max": 100,
+              "default": 25,
+              "source": "O:202-203, A:117, B:157"
+            }
+          },
+          "sourced_range": true,
+          "r": "ln(m) / (n x ln(b))",
+          "r_note": "0.41 for x2 each 25 at b 1.07; 0.82 for x4 each 25 at b 1.07 (computed)"
+        },
+        {
+          "id": "S12.ladder",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "x1.10 at 10 owned, rising to x1.50 at 100",
+          "games": "Idle Wizard",
+          "parameters": {},
+          "sourced_range": true,
+          "r": "ln(m) / (n x ln(b))",
+          "r_note": "B:388"
+        }
+      ]
+    },
+    {
+      "id": "S13",
+      "name": "Cap and cap raiser",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S19",
+          "S22",
+          "S23",
+          "S03"
+        ]
+      ],
+      "needs_note": "a line with a cap and a far system that raises it",
+      "conflicts": [],
+      "presence_role": "none",
+      "growth_role": "cap or softcap",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S13.raised_cap",
+          "proof_class": "none",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "cap = c0 + c1 x spine level",
+          "games": "IOM",
+          "parameters": {
+            "c0": {
+              "min": 30,
+              "max": 30,
+              "default": 30,
+              "source": "P:52-53"
+            },
+            "c1": {
+              "min": 5,
+              "max": 5,
+              "default": 5,
+              "source": "P:52-53"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "r = 0 above the cap"
+        },
+        {
+          "id": "S13.hard_cap",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "level <= cap; a percentage <= pct_cap",
+          "games": "Realm Grinder, Melvor Idle",
+          "parameters": {
+            "cap": {
+              "min": 25,
+              "max": 25,
+              "default": 25,
+              "source": "B:59"
+            },
+            "pct_cap": {
+              "min": 0.8,
+              "max": 1.0,
+              "default": 0.95,
+              "source": "O:150"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "r = 0 above the cap"
+        },
+        {
+          "id": "S13.asymptote",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "bonus rises to a limit; triangular root (sqrt(1 + 8x / k) - 1) / 2",
+          "games": "Kittens Game",
+          "parameters": {
+            "limit": {
+              "min": 2.0,
+              "max": 2.0,
+              "default": 2.0,
+              "source": "O:142"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "double the input gives about x1.41 (O:141)"
+        },
+        {
+          "id": "S13.held_cap",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "cap = c0 + second currency",
+          "games": "Evolve",
+          "parameters": {
+            "c0": {
+              "min": 250,
+              "max": 250,
+              "default": 250,
+              "source": "O:144"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a second currency lifts the cap of the first"
+        },
+        {
+          "id": "S13.rate_table",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "marginal-rate table: 100% of the first block, 50% of the next, 40% of the next",
+          "games": "Synergism",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "O:146"
+        },
+        {
+          "id": "S13.self_limiting",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "dq/dt = 8 q1 q2 / (1 + q)",
+          "games": "Exponential Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "O:152"
+        },
+        {
+          "id": "S13.rate_cap",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "at most k levels each second",
+          "games": "NGU Idle",
+          "parameters": {
+            "k": {
+              "min": 50,
+              "max": 50,
+              "default": 50,
+              "source": "O:149"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "more resource then gives nothing"
+        }
+      ]
+    },
+    {
+      "id": "S14",
+      "name": "Hold bonus",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S04",
+          "S26"
+        ]
+      ],
+      "needs_note": "a held currency",
+      "conflicts": [],
+      "presence_role": "grows while idle",
+      "growth_role": "multiplier",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S14.per_unit",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "+e for each unspent unit, up to n_max units",
+          "games": "Idle Champions, AdVenture Capitalist, Cookie Clicker",
+          "parameters": {
+            "e": {
+              "min": 0.01,
+              "max": 0.02,
+              "default": 0.01,
+              "source": "B:300, D:299"
+            },
+            "n_max": {
+              "min": 100,
+              "max": 100,
+              "default": 100,
+              "source": "A:65"
+            }
+          },
+          "sourced_range": true,
+          "r": 1,
+          "r_note": "in the held amount, for an additive bonus for each unit (inference)"
+        },
+        {
+          "id": "S14.reserve",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "reserve (L + 1)^e",
+          "games": "Clicker Heroes",
+          "parameters": {
+            "e": {
+              "min": 2,
+              "max": 2,
+              "default": 2,
+              "source": "B:234-235"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a reserve rule"
+        },
+        {
+          "id": "S14.checkpoints",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "bonuses at 10, 25, 50 and 95% of a pool",
+          "games": "Melvor Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "C:215"
+        },
+        {
+          "id": "S14.spend_limit",
+          "kind": "helper",
+          "family": "spend at most 20% for x2, up to 60% for x10 or more; best bank 100 minutes of income",
+          "games": "AdVenture Capitalist, Cookie Clicker",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "D:300, A:57, O:221-222"
+        }
+      ]
+    },
+    {
+      "id": "S15",
+      "name": "Prestige shop",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S04"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [
+        {
+          "with": "S04",
+          "condition": "an S15 line with r >= 1 and no cap",
+          "source": "SA:11"
+        }
+      ],
+      "presence_role": "none",
+      "growth_role": "multiplier",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S15.geometric",
+          "proof_class": "proved",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "cost a x b^l, linear value; a few perks at a steeper ratio b_limit",
+          "games": "Trimps, IOM",
+          "parameters": {
+            "b": {
+              "min": 1.25,
+              "max": 1.35,
+              "default": 1.3,
+              "source": "C:104, M:92"
+            },
+            "b_limit": {
+              "min": 1.5,
+              "max": 5,
+              "default": 2,
+              "source": "C:104"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "linear value (M:109-111)"
+        },
+        {
+          "id": "S15.ratio_cut",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "each point cuts every price ratio by cut",
+          "games": "Kittens Game",
+          "parameters": {
+            "cut": {
+              "min": 0.01,
+              "max": 0.0225,
+              "default": 0.01,
+              "source": "O:50-51"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "1.15 to 1.07 gives about x2.07 units for the same spend (computed from C:67)"
+        },
+        {
+          "id": "S15.best_level",
+          "kind": "helper",
+          "family": "best level sqrt(souls / 5) for cost n; (souls / 5)^(2/5) for cost n^1.5",
+          "games": "Clicker Heroes",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "O:211-212"
+        }
+      ]
+    },
+    {
+      "id": "S16",
+      "name": "Second reset layer",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S04"
+        ],
+        [
+          "S15"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "needs a visit",
+      "growth_role": "reset",
+      "scope": "M to L",
+      "variants": [
+        {
+          "id": "S16.layer_power",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "G2 = (G1 total / c2)^p2",
+          "games": "Synergism",
+          "parameters": {
+            "p2": {
+              "min": 0.01,
+              "max": 0.03,
+              "default": 0.03,
+              "source": "O:66"
+            }
+          },
+          "sourced_range": true,
+          "r": "not covered by L1",
+          "r_note": "a second layer; L7 is a conjecture here (BM limit 7)"
+        },
+        {
+          "id": "S16.log",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "G2 = floor(k x log10(souls))",
+          "games": "Clicker Heroes",
+          "parameters": {
+            "k": {
+              "min": 5,
+              "max": 5,
+              "default": 5,
+              "source": "O:68"
+            }
+          },
+          "sourced_range": true,
+          "r": "not covered by L1",
+          "r_note": "BM limit 7"
+        },
+        {
+          "id": "S16.wall_offset",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "wall 1e27 x g^R; the next layer subtracts an offset from R",
+          "games": "Realm Grinder",
+          "parameters": {
+            "g": {
+              "min": 100,
+              "max": 100,
+              "default": 100,
+              "source": "O:163-164, B:38"
+            }
+          },
+          "sourced_range": true,
+          "r": "not covered by L1",
+          "r_note": "BM limit 7"
+        },
+        {
+          "id": "S16.compress",
+          "kind": "modifier",
+          "family": "old bonuses become B^(c / A) at the new layer",
+          "games": "Realm Grinder",
+          "parameters": {
+            "c": {
+              "min": 0.1,
+              "max": 0.1,
+              "default": 0.1,
+              "source": "B:47, O:145"
+            }
+          },
+          "sourced_range": true,
+          "r": "not covered by L1",
+          "r_note": "BM limit 7"
+        }
+      ]
+    },
+    {
+      "id": "S17",
+      "name": "Challenge run",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S04"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "active to start",
+      "growth_role": "multiplier or exponent change",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S17.record",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "5 x (floor(z / 100)^2 + floor(z / 100)) + (floor(z / 100) + 1) x floor((z mod 100) / 10), additive",
+          "games": "Trimps",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "C:109"
+        },
+        {
+          "id": "S17.exponent",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "reset power p0 + completions x step",
+          "games": "Synergism",
+          "parameters": {
+            "p0": {
+              "min": 0.5,
+              "max": 0.5,
+              "default": 0.5,
+              "source": "A:189"
+            },
+            "step": {
+              "min": 0.01,
+              "max": 0.01,
+              "default": 0.01,
+              "source": "A:189"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "it raises p, so recheck lambda (BM L6)"
+        },
+        {
+          "id": "S17.boss_base",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "boss requirement g^n, with g lower for later bosses",
+          "games": "NGU Idle",
+          "parameters": {
+            "g": {
+              "min": 1.2,
+              "max": 2,
+              "default": 2,
+              "source": "B:133-134"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a wall"
+        },
+        {
+          "id": "S17.exponent_softcap",
+          "kind": "modifier",
+          "family": "(product of multipliers)^DR",
+          "games": "Synergism",
+          "parameters": {},
+          "sourced_range": false,
+          "r": "DR x sum of r",
+          "r_note": "A:209-210 gives no DR value"
+        },
+        {
+          "id": "S17.speed_divider",
+          "kind": "modifier",
+          "family": "speed divided by fixed constants",
+          "games": "NGU Idle",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "B:136-137 gives no constants"
+        }
+      ]
+    },
+    {
+      "id": "S18",
+      "name": "Chained producers",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "it replaces or extends the line",
+      "conflicts": [],
+      "presence_role": "grows as a power of idle time",
+      "growth_role": "source",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S18.tier_chain",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "x_i <- x_i + x_(i+1) x rate_i x dt; tier 1 rate 1, other tiers rate k; cost x c for each 10 bought",
+          "games": "Antimatter Dimensions, Exponential Idle",
+          "parameters": {
+            "k": {
+              "min": 0.1,
+              "max": 0.1,
+              "default": 0.1,
+              "source": "A:111-112"
+            },
+            "c": {
+              "min": 1000,
+              "max": 1000000000000000.0,
+              "default": 1000,
+              "source": "A:116"
+            }
+          },
+          "sourced_range": true,
+          "r": "not covered by L1",
+          "r_note": "each tier adds 1 power of t (O:196-198, BM limit 3)"
+        }
+      ]
+    },
+    {
+      "id": "S19",
+      "name": "Collection with set bonus",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S03",
+          "S10",
+          "S22"
+        ]
+      ],
+      "needs_note": "a drop source",
+      "conflicts": [],
+      "presence_role": "drops in all 3 modes",
+      "growth_role": "multiplier and content gate",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S19.per_item",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "+e for each item; each upgrade multiplies (1 + milk x factor)",
+          "games": "Cookie Clicker",
+          "parameters": {
+            "e": {
+              "min": 0.04,
+              "max": 0.04,
+              "default": 0.04,
+              "source": "A:52-53"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a factor for each item"
+        },
+        {
+          "id": "S19.gear_level",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "base x (1 + (ilvl - 1) x k), raised to the stack count",
+          "games": "Idle Champions",
+          "parameters": {
+            "k": {
+              "min": 0.004,
+              "max": 0.004,
+              "default": 0.004,
+              "source": "B:296-298"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "linear value for each level"
+        },
+        {
+          "id": "S19.drop_roll",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "drop value 1 + p x (k - 1); mean wait 1 / (p x rolls each hour); the unlucky 1 in 20 waits about 3 / p",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "M:168-170 gives the formulas, not a range for p"
+        },
+        {
+          "id": "S19.per_owned_term",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "terms 'for each X owned' in the main stat",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "M:61 gives no constant"
+        }
+      ]
+    },
+    {
+      "id": "S20",
+      "name": "Task list with a shop",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "3 or more systems for the tasks to name",
+      "conflicts": [],
+      "presence_role": "mostly active",
+      "growth_role": "content gate and multiplier",
+      "scope": "S to M",
+      "variants": [
+        {
+          "id": "S20.task_coins",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "c coins for each task; n tasks in t tiers; a tier opens when the tier before is done",
+          "games": "IOM",
+          "parameters": {
+            "c": {
+              "min": 10,
+              "max": 10,
+              "default": 10,
+              "source": "P:329-332"
+            },
+            "n": {
+              "min": 100,
+              "max": 100,
+              "default": 100,
+              "source": "P:329-332"
+            },
+            "t": {
+              "min": 3,
+              "max": 3,
+              "default": 3,
+              "source": "P:329-332"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a content gate"
+        },
+        {
+          "id": "S20.percent_per_task",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "+e for each achievement",
+          "games": "Cookie Clicker",
+          "parameters": {
+            "e": {
+              "min": 0.04,
+              "max": 0.04,
+              "default": 0.04,
+              "source": "A:52"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a factor for each task"
+        },
+        {
+          "id": "S20.completion_point",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "1 completion point for each permanent unlock",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "P:203-204"
+        }
+      ]
+    },
+    {
+      "id": "S21",
+      "name": "Allocation pool",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "a pool resource and 2 or more sinks",
+      "conflicts": [],
+      "presence_role": "all 3 modes; the split persists",
+      "growth_role": "source or multiplier",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S21.root_speed",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "speed = share^e for each sink",
+          "games": "NGU Idle",
+          "parameters": {
+            "e": {
+              "min": 0.1667,
+              "max": 0.5,
+              "default": 0.5,
+              "source": "O:148, B:151, B:161"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "no purchase line; roots force a spread (B:187)"
+        },
+        {
+          "id": "S21.level_time",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "level N to N + 1 takes (N + 1) x base time",
+          "games": "NGU Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "B:113"
+        },
+        {
+          "id": "S21.slot_speed",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "speed for each slot 100%, 70%, 57%, 49.3% for 1 to 4 slots",
+          "games": "NGU Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "B:162"
+        }
+      ]
+    },
+    {
+      "id": "S22",
+      "name": "Skill track",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "actions in other systems",
+      "conflicts": [],
+      "presence_role": "trains offline up to the S06 cap",
+      "growth_role": "content gate",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S22.xp_doubling",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "XP floor((L - 1 + 300 x 2^((L - 1) / N)) / 4)",
+          "games": "Melvor Idle",
+          "parameters": {
+            "N": {
+              "min": 7,
+              "max": 7,
+              "default": 7,
+              "source": "O:177"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a content gate"
+        },
+        {
+          "id": "S22.geometric",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "XP for level L = a x b^(L - 1)",
+          "games": "IOM, Idle Wizard",
+          "parameters": {
+            "b": {
+              "min": 1.09,
+              "max": 1.2,
+              "default": 1.2,
+              "source": "M:89, B:382"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a content gate"
+        },
+        {
+          "id": "S22.falling_base",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "base 1.208 - min(0.164, 0.215 x lvl / (lvl + 100))",
+          "games": "Legends of IdleOn",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "O:153; it avoids an exponential curve with no end (B:356)"
+        }
+      ]
+    },
+    {
+      "id": "S23",
+      "name": "Minigame with export",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "1 link in and 2 links out (X:55-56)",
+      "conflicts": [],
+      "presence_role": "has its own clock",
+      "growth_role": "multiplier",
+      "scope": "L",
+      "variants": [
+        {
+          "id": "S23.small_copy",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "enemy 4 + 7w; currency (w^2 + w) / 2; cost ratio b",
+          "games": "IOM",
+          "parameters": {
+            "b": {
+              "min": 1.25,
+              "max": 1.25,
+              "default": 1.25,
+              "source": "M:247-249"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the export is a factor"
+        },
+        {
+          "id": "S23.product_export",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "total export = product over the sub-games",
+          "games": "Exponential Idle",
+          "parameters": {},
+          "sourced_range": true,
+          "r": "sum of r over the sub-games",
+          "r_note": "D:56"
+        },
+        {
+          "id": "S23.subgame_growth",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "d(rho)/dt = K x rho^x x t^y x rho_pub^z",
+          "games": "Exponential Idle",
+          "parameters": {},
+          "sourced_range": false,
+          "r": "x",
+          "r_note": "D:45 gives no range for x, y, z"
+        }
+      ]
+    },
+    {
+      "id": "S24",
+      "name": "Automation unlock",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "the manual system that it automates",
+      "conflicts": [
+        {
+          "with": "S06",
+          "condition": "automation that runs while closed",
+          "source": "RP:12, P:193-195"
+        }
+      ],
+      "presence_role": "moves active work to open idle",
+      "growth_role": "automation",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S24.auto_reset",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "reset when timer(pt x d(ln(ln(db / b + 1))) < 1) > k x tr and db > b",
+          "games": "Exponential Idle",
+          "parameters": {
+            "k": {
+              "min": 3,
+              "max": 3,
+              "default": 3,
+              "source": "D:48"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "off while closed (decision D5)"
+        },
+        {
+          "id": "S24.auto_buy",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "an auto flag runs a buyer",
+          "games": "IOM, AdVenture Capitalist",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "no sourced formula for the value of automation"
+        }
+      ]
+    },
+    {
+      "id": "S25",
+      "name": "Rotating event",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S03"
+        ]
+      ],
+      "needs_note": "live operation",
+      "conflicts": [
+        {
+          "with": null,
+          "condition": "main-game power inside the event",
+          "source": "P:318-320"
+        }
+      ],
+      "presence_role": "real-time clock",
+      "growth_role": "clock and content",
+      "scope": "L",
+      "variants": [
+        {
+          "id": "S25.periodic",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "an event of on_days in each period_days, with the small copy formulas",
+          "games": "IOM",
+          "parameters": {
+            "on_days": {
+              "min": 30,
+              "max": 30,
+              "default": 30,
+              "source": "M:225"
+            },
+            "period_days": {
+              "min": 60,
+              "max": 60,
+              "default": 60,
+              "source": "M:225"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a clock"
+        },
+        {
+          "id": "S25.concave_conversion",
+          "kind": "helper",
+          "family": "event points to rewards: 2 million to about 500 thousand, 24 million to about 730 thousand, 57.4 million to 833 thousand",
+          "games": "Idle Champions",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "B:302"
+        }
+      ]
+    },
+    {
+      "id": "S26",
+      "name": "Premium currency with many faucets",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "3 or more faucets and a sink ladder",
+      "conflicts": [],
+      "presence_role": "faucets bank",
+      "growth_role": "source of a second currency",
+      "scope": "M to L",
+      "variants": [
+        {
+          "id": "S26.faucet_sum",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "net each hour = sum of faucets - sinks; flat or linear prices",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "TB:346-354 and M:85-87 give no price range"
+        },
+        {
+          "id": "S26.compounding",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "EB% = SE x (10 + SF) x (1 + (5 + PB) / 100)^PE",
+          "games": "Egg Inc.",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the rare currency compounds as 1.05^PE (D:249, D:265)"
+        },
+        {
+          "id": "S26.break_even",
+          "kind": "helper",
+          "family": "a break-even that moves: -63 an hour at grade 0, +291 an hour at grade 45",
+          "games": "IOM",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "M:190-193"
+        }
+      ]
+    },
+    {
+      "id": "S27",
+      "name": "Line rebirth",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "",
+      "conflicts": [],
+      "presence_role": "active",
+      "growth_role": "local reset and multiplier",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S27.rebirth_cost",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "cost a x g^G x b^L; each G gives +k capacity",
+          "games": "Trimps",
+          "parameters": {
+            "g": {
+              "min": 1.75,
+              "max": 1.75,
+              "default": 1.75,
+              "source": "C:103"
+            },
+            "b": {
+              "min": 1.4,
+              "max": 1.4,
+              "default": 1.4,
+              "source": "C:103"
+            },
+            "k": {
+              "min": 0.2,
+              "max": 0.2,
+              "default": 0.2,
+              "source": "C:103"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a local reset"
+        },
+        {
+          "id": "S27.step_gain",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "each step: gain x m and +n maximum levels",
+          "games": "Revolution Idle",
+          "parameters": {
+            "m": {
+              "min": 10,
+              "max": 10,
+              "default": 10,
+              "source": "D:149"
+            },
+            "n": {
+              "min": 10,
+              "max": 10,
+              "default": 10,
+              "source": "D:149"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a local reset"
+        }
+      ]
+    },
+    {
+      "id": "S28",
+      "name": "Hard end",
+      "class": "optional",
+      "slot": null,
+      "needs": [],
+      "needs_note": "S03 (S28.last_step) or a last purchase line",
+      "conflicts": [],
+      "presence_role": "-",
+      "growth_role": "end",
+      "scope": "S",
+      "variants": [
+        {
+          "id": "S28.last_step",
+          "proof_class": "proved",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "the game ends at the last step N of the spine S03",
+          "games": "Tower Wizard, Spaceplan",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "N comes from BM L8 and the length target"
+        },
+        {
+          "id": "S28.last_purchase",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "a last purchase of cost K ends the game",
+          "games": "Nodebuster, Universal Paperclips",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "1 game gives 1 cost in its own currency (SG:69)"
+        },
+        {
+          "id": "S28.full_tree",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "the game ends when each node of the tree is bought",
+          "games": "Shelldiver",
+          "parameters": {},
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the end is the sum of the tree costs"
+        },
+        {
+          "id": "S28.time_to_end",
+          "kind": "helper",
+          "family": "hours of the active player to the hard end",
+          "games": "genre",
+          "parameters": {
+            "T_end_h": {
+              "min": 2,
+              "max": 10,
+              "default": 4,
+              "source": "SG:54, SG:177"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "proof row PC1"
+        }
+      ]
+    },
+    {
+      "id": "S29",
+      "name": "Run on a limit",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01",
+          "S05"
+        ],
+        [
+          "S02"
+        ]
+      ],
+      "needs_note": "a run income (S01 or S05) and a tree (S02 lines in the run currency)",
+      "conflicts": [],
+      "presence_role": "the run needs input",
+      "growth_role": "clock and source",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S29.health_pressure",
+          "proof_class": "none",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "the run ends at health 0; enemy health and damage rise during the run; uncollected loot is lost",
+          "games": "Nodebuster",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "SG:60-62 give no constant"
+        },
+        {
+          "id": "S29.air",
+          "proof_class": "none",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "the run ends when the air runs out",
+          "games": "Shelldiver",
+          "parameters": {
+            "run_s": {
+              "min": 60,
+              "max": 120,
+              "default": 120,
+              "source": "SG:78"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a clock of game time"
+        },
+        {
+          "id": "S29.battery_inventory",
+          "proof_class": "none",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "the run ends at a full inventory or a low battery; at battery 0 or health 0 the carried loot is lost",
+          "games": "A Game About Digging a Hole",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "SG:101-102 give no constant"
+        },
+        {
+          "id": "S29.purchase_rhythm",
+          "kind": "helper",
+          "family": "n purchases after each run",
+          "games": "Shelldiver",
+          "parameters": {
+            "n": {
+              "min": 4,
+              "max": 5,
+              "default": 4,
+              "source": "SG:79"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "the rhythm, not a line"
+        },
+        {
+          "id": "S29.permanent_tree",
+          "kind": "modifier",
+          "family": "nodes with several levels each, bought with the run currency between runs; no reset clears them",
+          "games": "Nodebuster, Shelldiver, Digseum",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "no sourced cost formula (SG:205)"
+        }
+      ]
+    },
+    {
+      "id": "S30",
+      "name": "Upkeep",
+      "class": "optional",
+      "slot": null,
+      "needs": [
+        [
+          "S01"
+        ]
+      ],
+      "needs_note": "a producer line (S01) whose units add to the need; care lines (an S02 entry with the role care, or the care line of the solver) or an allocation pool (S21) pay the capacity",
+      "conflicts": [],
+      "presence_role": "active: the player buys care; open: u holds; closed: no change for continuous",
+      "growth_role": "a bounded factor (BM L7) while the capacity keeps up; a brake when the need grows faster than the capacity (BM 3b)",
+      "scope": "M",
+      "variants": [
+        {
+          "id": "S30.need_capacity",
+          "proof_class": "simulated",
+          "proof_class_sim_path": "simulated",
+          "kind": "variant",
+          "family": "u = max(floor, min(1, C / N)^e); N = N0 + h x units; C = C0 x c^k for k care levels (or C0 + c x k)",
+          "games": "Factorio (power), Kittens Game (happiness)",
+          "parameters": {
+            "e": {
+              "min": 1,
+              "max": 1,
+              "default": 1,
+              "source": "Factorio wiki, Electric system: machines slow down proportionally to the power available (https://wiki.factorio.com/Electric_system), sourced"
+            }
+          },
+          "sourced_range": true,
+          "r": 0,
+          "r_note": "a bounded factor (BM L7) while the capacity keeps up; a brake when N grows faster than C (BM 3b)"
+        },
+        {
+          "id": "S30.pool_share",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "u = min(1, carers x c / (h x workers)); the carers come from a pool (S21) and produce nothing",
+          "games": "Evolve (entertainers against job stress)",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "no sourced constant; job stress rises with the population (https://wooledge.org/~greg/evolve/guide.html), sourced"
+        },
+        {
+          "id": "S30.decay_refill",
+          "proof_class": "none",
+          "proof_class_sim_path": "none",
+          "kind": "variant",
+          "family": "each unit drains a stock at h per second; care refills the stock; an empty stock stops the unit (u = 0)",
+          "games": "Oxygen Not Included (calories)",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "1000 kcal per cycle for each unit, a stock of 4000 kcal, death at 0 (https://oxygennotincluded.wiki.gg/wiki/Duplicant), sourced; no incremental gives a constant"
+        },
+        {
+          "id": "S30.penalty_points",
+          "kind": "modifier",
+          "family": "below 100 morale, 1 point of production for each point; above 100, half a point for each point",
+          "games": "Evolve",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "a linear factor u = M / 100 below 100 (https://wooledge.org/~greg/evolve/guide.html), sourced"
+        },
+        {
+          "id": "S30.switch_point",
+          "kind": "helper",
+          "family": "the best purchase is care while u < 1 and c^e / cost of care > f (N / (N + h))^e / cost of the producer; else a producer",
+          "games": "genre",
+          "parameters": {},
+          "sourced_range": false,
+          "r": 0,
+          "r_note": "BM 3b, inferred"
+        }
+      ]
+    }
+  ],
+  "starter_sets": [
+    {
+      "id": "K1",
+      "proof_class": "none",
+      "name": "Small active clicker",
+      "proof": "Cookie Clicker (A:35-65)",
+      "systems": {
+        "S01": "S01.geometric",
+        "S02": null,
+        "S03": null,
+        "S04": "S04.power",
+        "S05": "S05.click_income",
+        "S06": null,
+        "S10": "S10.window",
+        "S11": "S11.uptime",
+        "S12": "S12.count_steps",
+        "S14": "S14.per_unit",
+        "S20": "S20.percent_per_task"
+      },
+      "parameters": {
+        "S04.power": {
+          "p": 0.333
+        }
+      },
+      "added_by_rule": {
+        "S08": "S08.timed_bank"
+      },
+      "rule_note": "Decision D2: the proof game has no cited presence gate, so the default S08 is added.",
+      "exception": null,
+      "pattern": "check_in"
+    },
+    {
+      "id": "K2",
+      "proof_class": "none",
+      "name": "Slow idle with a second clock",
+      "proof": "IOM (P:50-347, RP:9-16)",
+      "systems": {
+        "S01": "S01.steep",
+        "S02": "S02.add_in_group",
+        "S03": "S03.regime_change",
+        "S04": "S04.power",
+        "S05": "S05.active_lane",
+        "S06": "S06.penalty_cap",
+        "S07": "S07.cooldown_attempt",
+        "S08": "S08.timed_bank",
+        "S09": "S09.rotation",
+        "S10": "S10.banked",
+        "S11": "S11.uptime",
+        "S13": "S13.raised_cap",
+        "S19": "S19.drop_roll",
+        "S23": "S23.small_copy",
+        "S26": "S26.faucet_sum"
+      },
+      "parameters": {
+        "S04.power": {
+          "p": 0.44
+        },
+        "S01.steep": {
+          "b": 1.3
+        }
+      },
+      "added_by_rule": {},
+      "rule_note": "",
+      "exception": null,
+      "pattern": "check_in"
+    },
+    {
+      "id": "K3",
+      "proof_class": "none",
+      "name": "Run-based push with a strong reset",
+      "proof": "Trimps (C:103-110)",
+      "systems": {
+        "S01": "S01.steep",
+        "S02": null,
+        "S03": "S03.exponential",
+        "S04": "S04.steps",
+        "S05": null,
+        "S06": null,
+        "S08": "S08.storage",
+        "S15": "S15.geometric",
+        "S17": "S17.record",
+        "S27": "S27.rebirth_cost"
+      },
+      "parameters": {
+        "S03.exponential": {
+          "g": 2
+        }
+      },
+      "added_by_rule": {},
+      "rule_note": "The proof game has no cited S05 or S06 formula. The designer picks the variant.",
+      "exception": null,
+      "pattern": "check_in"
+    },
+    {
+      "id": "K4",
+      "proof_class": "none",
+      "name": "Layered exponent game",
+      "proof": "Antimatter Dimensions (A:110-146)",
+      "systems": {
+        "S01": null,
+        "S02": null,
+        "S03": "S03.piecewise",
+        "S04": "S04.power_of_log",
+        "S05": null,
+        "S06": null,
+        "S12": "S12.count_steps",
+        "S16": null,
+        "S17": null,
+        "S18": "S18.tier_chain"
+      },
+      "parameters": {
+        "S12.count_steps": {
+          "m": 2,
+          "n": 10
+        }
+      },
+      "added_by_rule": {
+        "S08": "S08.timed_bank",
+        "S15": null
+      },
+      "rule_note": "Decision D2: the proof game has no cited presence gate, so the default S08 is added. S16 needs S15, so S15 is added.",
+      "exception": null,
+      "pattern": "check_in"
+    },
+    {
+      "id": "K5",
+      "proof_class": "none",
+      "name": "Skill tracks with no reset",
+      "proof": "Melvor Idle (C:189-237)",
+      "systems": {
+        "S01": null,
+        "S02": null,
+        "S03": "S03.xp_doubling",
+        "S04": "S04.none",
+        "S05": null,
+        "S06": "S06.penalty_cap",
+        "S09": "S09.speed_free_drop",
+        "S13": "S13.hard_cap",
+        "S14": "S14.checkpoints",
+        "S19": null,
+        "S22": "S22.xp_doubling"
+      },
+      "parameters": {
+        "S06.penalty_cap": {
+          "T_cap_h": 24
+        }
+      },
+      "added_by_rule": {},
+      "rule_note": "",
+      "exception": "S04.none is permitted because S22 is the spine (decision D1).",
+      "pattern": "check_in"
+    },
+    {
+      "id": "K6",
+      "proof_class": "none",
+      "name": "Business idle",
+      "proof": "AdVenture Capitalist (D:274-317)",
+      "systems": {
+        "S01": "S01.geometric",
+        "S02": null,
+        "S03": null,
+        "S04": "S04.power",
+        "S05": null,
+        "S06": null,
+        "S12": "S12.count_steps",
+        "S14": "S14.per_unit",
+        "S15": null,
+        "S24": "S24.auto_buy"
+      },
+      "parameters": {
+        "S04.power": {
+          "p": 0.5
+        },
+        "S14.per_unit": {
+          "e": 0.02
+        }
+      },
+      "added_by_rule": {
+        "S08": "S08.timed_bank"
+      },
+      "rule_note": "Decision D2: the proof game has no cited presence gate, so the default S08 is added.",
+      "exception": null,
+      "pattern": "check_in"
+    },
+    {
+      "id": "K7",
+      "proof_class": "simulated",
+      "name": "Short active push with a reset and a hard end",
+      "pattern": "continuous",
+      "proof": "Nodebuster (SG:49-72), Scritchy Scratchy (SG:126-133)",
+      "systems": {
+        "S01": "S01.geometric",
+        "S02": "S02.levelled_factor",
+        "S03": "S03.exponential",
+        "S04": "S04.power",
+        "S05": "S05.active_lane",
+        "S24": "S24.auto_buy",
+        "S28": "S28.last_step"
+      },
+      "parameters": {},
+      "added_by_rule": {},
+      "rule_note": "The short games give the pattern: active play first, automation later, a reset, a hard end (SG:58-71, SG:128-133). They cite no formula, so each variant is a variant that the solver proves (references/design-solver.md).",
+      "exception": null
+    },
+    {
+      "id": "K8",
+      "proof_class": "none",
+      "name": "Run on a limit with no reset",
+      "pattern": "continuous",
+      "proof": "Shelldiver (SG:74-84), A Game About Digging a Hole (SG:97-105)",
+      "systems": {
+        "S01": "S01.geometric",
+        "S02": "S02.levelled_factor",
+        "S03": "S03.exponential",
+        "S04": "S04.none",
+        "S05": "S05.active_lane",
+        "S24": "S24.auto_buy",
+        "S28": "S28.full_tree",
+        "S29": "S29.air"
+      },
+      "parameters": {},
+      "added_by_rule": {},
+      "rule_note": "The short games give the pattern: a run on a limit, upgrades between runs, no reset, the end at the full tree (SG:76-84, SG:99-105). The laws give no run length with no reset, so the solver takes the simulation path. The scaffold has no writer for S28.full_tree, so the set has the proof class none: no model. With S28.last_step in place of S28.full_tree, the set gives a simulated model.",
+      "exception": "S04.none is permitted because S29 gives the permanent progress (decision D10)."
+    },
+    {
+      "id": "K9",
+      "proof_class": "simulated",
+      "name": "1 long run with no reset and a hard end",
+      "pattern": "continuous",
+      "proof": "Digseum (SG:86-95), Spaceplan (SG:135-140), Universal Paperclips (SG:142-149)",
+      "systems": {
+        "S01": "S01.geometric",
+        "S02": "S02.levelled_factor",
+        "S03": "S03.exponential",
+        "S04": "S04.none",
+        "S05": "S05.active_lane",
+        "S24": "S24.auto_buy",
+        "S28": "S28.last_step"
+      },
+      "parameters": {},
+      "added_by_rule": {},
+      "rule_note": "The short games give the pattern: 1 run with no reset and no run on a limit, new sites or eras that open in order, a manual action, automation that replaces the manual work, and a hard end (SG:91-95, SG:139-140, SG:146-149). The solver sets R = 1 and proves the growth class (PO1, L1 and L2), the unlock rate (PO10, L3), the time to the hard end (PO12, L8) and the play-test speed (PO13, L9). The rows of the reset loop (PO2 to PO5) are not applicable. The set has the class simulated, not proved: no law covers S24 (the auto-buy) or the idle value of the open game with no reset (PO6).",
+      "exception": "S04.none is permitted because S28 ends the 1 long run and the run is the permanent progress (decision D11)."
+    }
+  ],
+  "target_bands": [
+    {
+      "id": "T1",
+      "name": "length",
+      "unit": "active hours",
+      "default": 20,
+      "tolerance": 0.15,
+      "source": "BM:388",
+      "proven_game": null,
+      "note": "No local source measures the active hours of a proven game (RP:8, RP:72-76)."
+    },
+    {
+      "id": "T2",
+      "name": "session",
+      "unit": "minutes",
+      "default": 15,
+      "band": {
+        "median_gap_max": 15,
+        "largest_gap_max": 20
+      },
+      "source": "BM:389",
+      "proven_game": "IOM: check-in interval 20 minutes at the start (RP:338-341)"
+    },
+    {
+      "id": "T3",
+      "name": "unlocks",
+      "unit": "unlocks",
+      "default": {
+        "first_5_min_min": 3,
+        "first_hour": 6,
+        "first_hour_tolerance": 1,
+        "each_later_hour_min": 4
+      },
+      "source": "BM:238, BM:390, BM:302",
+      "proven_game": "IOM: 12 systems in the first 10 minutes, at most 3 more in the first hour (RP:167-168)"
+    },
+    {
+      "id": "T4",
+      "name": "idle value",
+      "unit": "idle gain / active gain",
+      "default": {
+        "open_1h": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "open_8h": {
+          "min": 0.3,
+          "max": 0.5
+        },
+        "open_24h": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "open_7d": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "closed_1h": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "closed_8h": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "closed_24h": {
+          "min": 0.1,
+          "max": 0.25
+        },
+        "closed_7d": {
+          "min": 0.0,
+          "max": 1.0
+        }
+      },
+      "rule": "Each value is above 0 and below 1. Each value falls as the time away rises (BM L4 property 1, inference for the order).",
+      "source": "BM:391, BM:393",
+      "proven_game": "IOM income share against active play: closed 74% at 1 h and 8 h, 37% at 24 h, 12% at 72 h (RP:298-301)"
+    },
+    {
+      "id": "T5",
+      "name": "reset gap",
+      "unit": "patient speed / early speed",
+      "default": {
+        "X_e": 1,
+        "X_p": 10,
+        "Dg": 2
+      },
+      "source": "BM:392, BM:192",
+      "proven_game": null,
+      "note": "No local source measures the reset gap of a proven game. Worked example 2 gives 1.84 (BM:453)."
+    },
+    {
+      "id": "T6",
+      "name": "play-test speed",
+      "unit": "x game speed",
+      "default": {
+        "k": 10,
+        "D_h_s": 2
+      },
+      "rule": "T_X >= 10 x k x D_h",
+      "source": "BM:258, BM:420",
+      "proven_game": null,
+      "note": "Moss Works at x100 finishes in 3.75 real minutes (IA:13)."
+    },
+    {
+      "id": "T7",
+      "name": "active slow",
+      "unit": "slow time / greedy time",
+      "default": {
+        "max": 1.25
+      },
+      "source": "BM:393",
+      "proven_game": null,
+      "note": "A fixed band. The interview does not ask it."
+    }
+  ],
+  "answer_rules": [
+    {
+      "id": "AR1",
+      "when": {
+        "system": "S04",
+        "variant": "S04.none"
+      },
+      "remove": [
+        "S15",
+        "S16",
+        "S17"
+      ],
+      "remove_unless": {
+        "S14": "S26"
+      },
+      "require": [
+        "S22"
+      ],
+      "note": "Decision D1.",
+      "restrict": {}
+    },
+    {
+      "id": "AR2",
+      "when": {
+        "gate_includes": "S08"
+      },
+      "remove": [
+        "S08"
+      ],
+      "remove_unless": {},
+      "require": [],
+      "note": "Do not ask S08 in part C.",
+      "restrict": {}
+    },
+    {
+      "id": "AR3",
+      "when": {
+        "gate_includes": "S09"
+      },
+      "remove": [
+        "S09"
+      ],
+      "remove_unless": {},
+      "require": [],
+      "note": "Do not ask S09 in part C.",
+      "restrict": {}
+    },
+    {
+      "id": "AR4",
+      "when": {
+        "system": "S05",
+        "variant": "S05.visitor"
+      },
+      "remove": [
+        "S10"
+      ],
+      "remove_unless": {},
+      "require": [
+        "S10"
+      ],
+      "note": "S10 is selected with S10.window. Decision D4.",
+      "restrict": {}
+    },
+    {
+      "id": "AR5",
+      "when": {
+        "refused": "S15"
+      },
+      "remove": [
+        "S16"
+      ],
+      "remove_unless": {},
+      "require": [],
+      "note": "S16 needs S15.",
+      "restrict": {}
+    },
+    {
+      "id": "AR6",
+      "when": {
+        "refused_all": [
+          "S10",
+          "S19"
+        ],
+        "S05_not": [
+          "S05.active_lane",
+          "S05.kill_lane"
+        ]
+      },
+      "remove": [
+        "S11"
+      ],
+      "remove_unless": {},
+      "require": [],
+      "note": "S11 has no buff source.",
+      "restrict": {}
+    },
+    {
+      "id": "AR7",
+      "when": {
+        "refused_all": [
+          "S23",
+          "S19",
+          "S22"
+        ]
+      },
+      "remove": [
+        "S09"
+      ],
+      "remove_unless": {
+        "S09": "gate"
+      },
+      "require": [],
+      "note": "S09 has nothing to put on the clock.",
+      "restrict": {}
+    },
+    {
+      "id": "AR8",
+      "when": {
+        "refused_all": [
+          "S19",
+          "S22",
+          "S23"
+        ]
+      },
+      "remove": [],
+      "remove_unless": {},
+      "require": [],
+      "note": "S13 needs a far system. With no S19, S22 or S23, the skill offers only S13.raised_cap, which the spine S03 raises.",
+      "restrict": {
+        "S13": [
+          "S13.raised_cap"
+        ]
+      }
+    },
+    {
+      "id": "AR9",
+      "when": {
+        "selected": "S24"
+      },
+      "remove": [],
+      "remove_unless": {},
+      "require": [],
+      "note": "S24 does not run while closed (decision D5).",
+      "restrict": {}
+    },
+    {
+      "id": "AR10",
+      "when": {
+        "play_pattern": "continuous"
+      },
+      "remove": [],
+      "remove_unless": {},
+      "require": [],
+      "note": "Decisions D9 and D10. S06 is optional with the default none. The presence gate slot is optional. S04 is optional. S05 (default S05.manual_then_automate), S24 and S28 are core. Ask the targets of part A for continuous: no idle-value targets, the largest gap between purchases in place of the session, and the demo question.",
+      "restrict": {}
+    },
+    {
+      "id": "AR11",
+      "when": {
+        "play_pattern": "continuous",
+        "system": "S04",
+        "variant": "S04.none"
+      },
+      "remove": [
+        "S15",
+        "S16",
+        "S17"
+      ],
+      "remove_unless": {
+        "S14": "S26"
+      },
+      "require": [],
+      "require_one_of": [
+        "S29",
+        "S22"
+      ],
+      "note": "Decision D10. With no reset layer, a run with a permanent tree (S29) or a skill track (S22) is the permanent progress. Rule R1 does not apply.",
+      "restrict": {}
+    },
+    {
+      "id": "AR12",
+      "when": {
+        "play_pattern": "continuous",
+        "refused": "S28"
+      },
+      "remove": [],
+      "remove_unless": {},
+      "require": [
+        "S28"
+      ],
+      "note": "Decision D10. S28 is core for continuous: the skill does not accept a continuous selection with no hard end.",
+      "restrict": {}
+    }
+  ],
+  "interview_order": {
+    "note": "The order of references/interview.md, section 'The order of the interview'. Each question uses only answers of the questions before it. tests/test_interview_order.py checks it. depends_on holds the dependencies of the target questions. part_b gives the question of part B for each system. The dependencies of the systems come from answer_rules and needs.",
+    "steps": [
+      {
+        "step": 1,
+        "name": "the play pattern",
+        "questions": [
+          "P1"
+        ]
+      },
+      {
+        "step": 2,
+        "name": "the targets that depend on nothing",
+        "questions": [
+          "A1.1",
+          "A1.2",
+          "A3.1",
+          "A3.2",
+          "A3.2b",
+          "A1.3",
+          "A1.4",
+          "A2.1",
+          "A2.2",
+          "A2.4"
+        ]
+      },
+      {
+        "step": 3,
+        "name": "the starter set or the core systems",
+        "questions": [
+          "K",
+          "B1.1",
+          "B1.2",
+          "B1.3",
+          "B1.4",
+          "B1.5",
+          "B1.6",
+          "B2.1",
+          "B2.2",
+          "B2.2e",
+          "B2.3"
+        ]
+      },
+      {
+        "step": 4,
+        "name": "the targets that depend on a core system",
+        "questions": [
+          "A2.3",
+          "A3.4",
+          "T.run"
+        ]
+      },
+      {
+        "step": 5,
+        "name": "the optional systems in groups",
+        "questions": [
+          "C1",
+          "C2",
+          "C3",
+          "C4",
+          "C5",
+          "C6",
+          "C7",
+          "C8"
+        ]
+      },
+      {
+        "step": 6,
+        "name": "the targets that depend on an optional system",
+        "questions": [
+          "A3.3"
+        ]
+      },
+      {
+        "step": 7,
+        "name": "the confirmation",
+        "questions": [
+          "F1"
+        ]
+      }
+    ],
+    "part_b": {
+      "S03": "B1.1",
+      "S07": "B1.2",
+      "S08": "B1.2",
+      "S09": "B1.2",
+      "S05": "B1.3",
+      "S06": "B1.4",
+      "S28": "B1.5",
+      "S24": "B1.6",
+      "S01": "B2.1",
+      "S02": "B2.2",
+      "S04": "B2.3"
+    },
+    "depends_on": {
+      "A1.3": [
+        "A1.2",
+        "A3.2b"
+      ],
+      "A1.4": [
+        "A1.2",
+        "A3.2b"
+      ],
+      "B2.2e": [
+        "B2.2"
+      ],
+      "A2.3": [
+        "B2.3"
+      ],
+      "A3.4": [
+        "B1.3"
+      ],
+      "T.run": [
+        "B2.3"
+      ],
+      "A3.3": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "C7",
+        "C8"
+      ],
+      "C1": [
+        "B2.3"
+      ],
+      "C2": [
+        "B2.3"
+      ],
+      "C3": [
+        "B1.2",
+        "B1.3"
+      ],
+      "C7": [
+        "B2.3"
+      ],
+      "C8": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "C7"
+      ],
+      "F1": [
+        "A3.3"
+      ]
+    },
+    "groups": [
+      {
+        "id": "C1",
+        "name": "far systems",
+        "systems": [
+          "S19",
+          "S22",
+          "S23",
+          "S29"
+        ],
+        "note": "Other systems need these answers: S09, S11 and S13 need S19, S22 or S23 (rules R6 to R8). With no reset, rule R11 needs S29 or S22, else the game is 1 long run.",
+        "asked_when": "always"
+      },
+      {
+        "id": "C2",
+        "name": "reset extras",
+        "systems": [
+          "S15",
+          "S17"
+        ],
+        "asked_when": "S04 is not S04.none",
+        "note": "Rules R1 and R11 skip this group when the game has no reset layer."
+      },
+      {
+        "id": "C3",
+        "name": "active and presence extras",
+        "systems": [
+          "S08",
+          "S10",
+          "S24",
+          "S28"
+        ],
+        "note": "S24 and S28 are asked here only for check_in. continuous asks them in part B (B1.5 and B1.6).",
+        "asked_when": "always"
+      },
+      {
+        "id": "C4",
+        "name": "line growth",
+        "systems": [
+          "S12",
+          "S16",
+          "S18",
+          "S27"
+        ],
+        "note": "S16 needs S15 of group C2 (rule R5).",
+        "asked_when": "always"
+      },
+      {
+        "id": "C5",
+        "name": "breadth and economy",
+        "systems": [
+          "S20",
+          "S21",
+          "S25",
+          "S26"
+        ],
+        "asked_when": "always",
+        "note": ""
+      },
+      {
+        "id": "C6",
+        "name": "systems that need an earlier answer",
+        "systems": [
+          "S09",
+          "S11",
+          "S13",
+          "S30"
+        ],
+        "note": "S09 needs S19, S22 or S23. S11 needs S10, S19 or S05. S13 needs S19, S22 or S23, else only S13.raised_cap. S30 needs care lines or S21.",
+        "asked_when": "always"
+      },
+      {
+        "id": "C7",
+        "name": "hold bonus",
+        "systems": [
+          "S14"
+        ],
+        "asked_when": "S04 is not S04.none, or S26 is selected",
+        "note": "S14 needs S04 or S26 (rule R1)."
+      },
+      {
+        "id": "C8",
+        "name": "pitch mechanics with no card",
+        "systems": [],
+        "note": "1 question for each mechanic of the pitch that no answer covers (interview section 5).",
+        "asked_when": "always"
+      }
+    ]
+  }
+}

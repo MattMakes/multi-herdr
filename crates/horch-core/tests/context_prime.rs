@@ -42,6 +42,7 @@ impl World {
         let tmp = tempfile::Builder::new()
             .prefix("hp")
             .tempdir_in("/tmp")
+            .or_else(|_| tempfile::Builder::new().prefix("hp").tempdir())
             .unwrap();
         let home = tmp.path().join("home");
         let workdir = tmp.path().join("project");

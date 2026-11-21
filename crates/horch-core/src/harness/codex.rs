@@ -3412,6 +3412,35 @@ mod tests {
         }
     }
 
+    /// A write pane's TMPDIR is a made dir inside the profile's granted
+    /// workspace root.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_pane_tmpdir_is_inside_its_granted_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_ctx, prepared) = prepare_in(
+            tmp.path(),
+            &Teammate {
+                permission_mode: Some(crate::roster::PermissionMode::Auto),
+                ..Default::default()
+            },
+        );
+        let value = |key: &str| -> String {
+            let pair = prepared
+                .extra_args
+                .iter()
+                .find_map(|a| a.strip_prefix(key))
+                .unwrap_or_else(|| panic!("{key} missing"));
+            serde_json::from_str::<String>(pair.trim_end_matches("=true}"))
+                .or_else(|_| serde_json::from_str::<String>(pair))
+                .unwrap()
+        };
+        let root = PathBuf::from(value("permissions.fleet_write.workspace_roots={"));
+        let tmpdir = PathBuf::from(value("shell_environment_policy.set.TMPDIR="));
+        assert!(tmpdir.starts_with(&root), "{tmpdir:?} not in {root:?}");
+        assert!(tmpdir.is_dir());
+    }
+
     /// A pane's TMPDIR exists before codex starts, and a role name cannot
     /// leave `<state root>/tmp`.
     #[cfg(unix)]

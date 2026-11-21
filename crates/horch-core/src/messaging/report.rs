@@ -481,7 +481,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_closed_socket_is_an_error() {
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = tmp.path().join("r.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let mute = std::thread::spawn(move || {
@@ -506,7 +509,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_server_answers_over_the_socket_and_removes_it_on_drop() {
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = socket_path(tmp.path(), "r1");
         let (seen, exec) = recorder();
         let server = Server::start(path.clone(), Some("orchestrator".into()), exec).unwrap();

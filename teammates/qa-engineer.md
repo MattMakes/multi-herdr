@@ -18,6 +18,7 @@ compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [check, debug, tdd]
+available_skills: [ui-prop-tester]
 mcp_servers:
   playwright: {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.

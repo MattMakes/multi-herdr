@@ -1,0 +1,68 @@
+{
+  "play_pattern": "continuous",
+  "targets": {
+    "length_h": {
+      "value": 6,
+      "tolerance": 0.15,
+      "unsupported": false
+    },
+    "purchase_gap": {
+      "largest_max_min": 2,
+      "first_max_min": 2,
+      "unlock_max_min": 10,
+      "unlock_first_hour_max_min": 5,
+      "unsupported": false
+    },
+    "unlocks": {
+      "first_5_min_min": 3,
+      "first_hour": 11,
+      "first_hour_tolerance": 0,
+      "each_later_hour_min": 5,
+      "unsupported": true
+    },
+    "idle": {
+      "open_1h": [
+        0.0,
+        1.0
+      ],
+      "open_8h": [
+        0.0,
+        1.0
+      ],
+      "open_24h": [
+        0.0,
+        1.0
+      ],
+      "open_7d": [
+        0.0,
+        1.0
+      ],
+      "unsupported": false
+    },
+    "active_factor": {
+      "value": 1.25,
+      "unsupported": false
+    },
+    "reset_gap": {
+      "X_e": 1,
+      "X_p": 10,
+      "Dg": 2,
+      "unsupported": false
+    },
+    "play_test_speed": {
+      "k": 10,
+      "D_h_s": 2,
+      "unsupported": true
+    },
+    "run_min": 15,
+    "active_slow_max": 1.25
+  },
+  "notes": [
+    "The default targets of the play pattern continuous for a game whose designer does not answer (Existing game, step 3; Design forward, step 2). Copy this file and keep its values.",
+    "No demo end: a demo end is a decision of the designer. Add targets.demo_end only when the request names a demo.",
+    "length_h is the length to the hard end: 6 active hours, inside the default band 3 to 6 hours (SG:177-178).",
+    "purchase_gap: the largest gap between purchases is at most 2 minutes, and the first purchase comes inside 2 minutes (SG:180-181). The unlock gap targets 10 and 5 minutes are designer targets with no source (CT6, CT7).",
+    "The unlock counts follow from the gap targets (references/interview.md, A1.3 and A1.4): the first-hour gap of 5 minutes needs ceil(60 / 5) - 1 = 11 unlocks or more in the first hour (pw_design.first_hour_band), and the gap of 10 minutes needs ceil(60 / 10) - 1 = 5 unlocks or more in each later hour. No source counts unlocks (SG:198), so the record marks them unsupported.",
+    "The active factor is x1.25, the sourced value of S05.active_lane (TB:61, TA:507). The play-test speed has no source in the short games (SG:204): it is a designer target, not supported by a source."
+  ]
+}

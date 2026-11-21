@@ -376,6 +376,7 @@ ledger_enum!(
     /// The finish steps (section 5.5), in their default order.
     StepName {
         Check = "check",
+        CommentSweep = "comment-sweep",
         CodeSweep = "code-sweep",
         ComplexitySweep = "complexity-sweep",
         Recheck = "recheck",
@@ -436,7 +437,8 @@ pub const VERIFY_ENV: &str = "HORCH_VERIFY";
 
 impl VerifyProfile {
     /// The profile `horch fleet` and `horch ledger run new` use when none is
-    /// named: tests must pass, but no AI reviewer workers are queued.
+    /// named: tests must pass and comments go, but no AI reviewer workers
+    /// are queued.
     pub const DEFAULT: VerifyProfile = VerifyProfile::Light;
 
     /// The finish steps of the profile, in pipeline order.
@@ -444,10 +446,13 @@ impl VerifyProfile {
         use StepName::*;
         match self {
             VerifyProfile::Full => default_finish_steps(),
-            // No code-sweep, so no recheck: nothing commits between check
-            // and land but a fix, and a fix re-runs check from the top.
-            VerifyProfile::Light => vec![Check, ComplexitySweep, Land, Pr, Cleanup],
-            VerifyProfile::Minimal => vec![Check, Land, Pr, Cleanup],
+            // No code-sweep, so no recheck: what commits between check and
+            // land is a fix or the comment-sweep, and each moves the tree,
+            // which re-runs check from the top.
+            VerifyProfile::Light => {
+                vec![Check, CommentSweep, ComplexitySweep, Land, Pr, Cleanup]
+            }
+            VerifyProfile::Minimal => vec![Check, CommentSweep, Land, Pr, Cleanup],
         }
     }
 
@@ -455,10 +460,12 @@ impl VerifyProfile {
     pub fn summary(self) -> &'static str {
         match self {
             VerifyProfile::Full => {
-                "check, code-sweep (AI reviewer workers), complexity-sweep, recheck"
+                "check, comment-sweep, code-sweep (AI reviewer workers), complexity-sweep, recheck"
             }
-            VerifyProfile::Light => "check and complexity-sweep; no AI reviewer workers",
-            VerifyProfile::Minimal => "check only",
+            VerifyProfile::Light => {
+                "check, comment-sweep and complexity-sweep; no AI reviewer workers"
+            }
+            VerifyProfile::Minimal => "check and comment-sweep",
         }
     }
 

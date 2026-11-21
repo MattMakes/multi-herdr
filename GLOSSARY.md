@@ -67,7 +67,7 @@ _Avoid_: assign, pick up
 
 **Finish step**:
 1 of the ordered, evidence-checked steps every attempt passes before it
-can be done: check, code-sweep, complexity-sweep, recheck, land, pr,
+can be done: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr,
 cleanup.
 _Avoid_: gate (alone), post-step
 

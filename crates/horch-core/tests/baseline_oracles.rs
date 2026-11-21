@@ -68,6 +68,7 @@ fn check_oracle(rel: &str, actual: &str) {
 /// oracle loops skip them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
+    "addictive-game-design-reviewer",
     "antigravity",
     "app-release-preparer",
     "apple-accessibility-auditor",
@@ -81,10 +82,13 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "blender-qa",
     "codex-reviewer-light",
     "codex-swift-reviewer",
+    "comment-remover",
     "design-critic",
     "design-director",
     "design-system-engineer",
     "fable-creative",
+    "game-design-incremental-specialist",
+    "game-design-juicer",
     "godot-ai-programmer",
     "godot-animator",
     "godot-code-reviewer",
@@ -115,6 +119,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "one-page-design",
     "opus-creative",
     "pixel-vfx-artist",
+    "root-cause-auditor",
     "skill-importer",
     "sound-engineer",
     "spec-writer",

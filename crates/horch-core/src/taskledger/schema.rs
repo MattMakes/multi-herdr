@@ -12,9 +12,13 @@ use rusqlite::{Connection, OptionalExtension};
 use super::model::*;
 use super::sql_words::word;
 
-/// The version of the Phase 1 tables of fleetd (`v8`). A test that
+/// The version of the finish step `comment-sweep` (`comment_sweep_step`).
+/// horch 0.4.10 of main wrote it as version 8, so it keeps that number.
+pub const COMMENT_SWEEP_VERSION: i64 = 8;
+
+/// The version of the Phase 1 tables of fleetd (`phase_1`). A test that
 /// tests that step builds or migrates to this version, not to [`VERSION`].
-pub const PHASE_1_VERSION: i64 = 8;
+pub const PHASE_1_VERSION: i64 = COMMENT_SWEEP_VERSION + 1;
 
 /// The version of the Phase 2 tables and columns of fleetd (`phase_2`).
 pub const PHASE_2_VERSION: i64 = PHASE_1_VERSION + 1;
@@ -354,8 +358,27 @@ fn task_steps() -> String {
     note TEXT,
     PRIMARY KEY (task_id, worker_id, seq)
 );"#,
-        step_name = StepName::check("name"),
+        step_name = V1_STEP_NAME,
         step_status = StepStatus::check("status"),
+    )
+}
+
+/// `task_steps.name` as version 1 wrote it. Version 1 runs as a migration,
+/// so its text keeps these words; version 8 adds `comment-sweep`.
+const V1_STEP_NAME: &str = "CHECK (name IN ('check', 'code-sweep', 'complexity-sweep', 'recheck', 'land', 'pr', 'cleanup'))";
+
+/// Version 8: the finish step `comment-sweep`. SQLite cannot change a
+/// `CHECK`, so `task_steps` is built again under its own name and its rows
+/// copied. No table points at it.
+fn comment_sweep_step() -> String {
+    let table = task_steps()
+        .replace("CREATE TABLE task_steps (", "CREATE TABLE task_steps_v8 (")
+        .replace(V1_STEP_NAME, &StepName::check("name"));
+    format!(
+        "{table}
+INSERT INTO task_steps_v8 SELECT * FROM task_steps;
+DROP TABLE task_steps;
+ALTER TABLE task_steps_v8 RENAME TO task_steps;"
     )
 }
 
@@ -816,10 +839,10 @@ fn attempts_backfill() -> String {
     )
 }
 
-/// Version 8: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
+/// Version 9: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
 /// "Ledger"; docs/tickets/fleetd-p1/MAP.md, Q5 to Q7), `events` with the
 /// columns of a transition, and the attempts of the live workers.
-fn v8() -> String {
+fn phase_1() -> String {
     [
         fleetd_table(),
         attempts_table(),
@@ -1706,8 +1729,12 @@ fn migrate_unchecked(
         tx.execute_batch(&v7())
             .context("adding the trace-fixes columns and tables")?;
     }
+    if due(COMMENT_SWEEP_VERSION) {
+        tx.execute_batch(&comment_sweep_step())
+            .context("adding the comment-sweep finish step")?;
+    }
     if due(PHASE_1_VERSION) {
-        tx.execute_batch(&v8())
+        tx.execute_batch(&phase_1())
             .context("adding the fleetd tables and the attempts of live workers")?;
         no_broken_reference(&tx, PHASE_1_VERSION)?;
     }
@@ -2212,7 +2239,8 @@ mod v7_tests {
             v5(),
             V6.into(),
             v7(),
-            v8(),
+            comment_sweep_step(),
+            phase_1(),
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
@@ -2259,6 +2287,34 @@ mod v7_tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap()
+    }
+
+    #[test]
+    fn cms_07_migration_keeps_the_step_rows_and_takes_the_comment_sweep_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        version_6_file(&path);
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let old: (String, String) = conn
+            .query_row("SELECT name, status FROM task_steps", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(old, ("check".to_string(), "passed".to_string()));
+        conn.execute(
+            "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+             VALUES ('t1', 'w1', 2, 'comment-sweep', 'pending')",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+                 VALUES ('t1', 'w1', 3, 'no-such-step', 'pending')",
+                [],
+            )
+            .is_err());
     }
 
     #[test]

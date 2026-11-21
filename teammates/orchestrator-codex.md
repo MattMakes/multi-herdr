@@ -8,7 +8,7 @@ agent: codex
 # (design, "Exec or interactive").
 mode: interactive
 phase: plan
-skills: [orchestrate]
+skills: [orchestrate, make-videos]
 model: gpt-6-astra
 effort: medium
 compact_at: 300000

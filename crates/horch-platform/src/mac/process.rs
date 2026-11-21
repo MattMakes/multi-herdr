@@ -33,6 +33,54 @@ pub(crate) fn start_time(pid: i32) -> Option<u64> {
     bsd_info(pid).map(|info| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
 }
 
+/// The size of Darwin's `kinfo_proc` on 64-bit macOS.
+const KINFO_PROC_SIZE: usize = 648;
+/// The offset of `kp_eproc.e_ppid` in `kinfo_proc`.
+const KINFO_PROC_PPID: usize = 560;
+
+/// `kern.proc.pid.<pid>`: the `kinfo_proc` of `pid`. Claude's macOS
+/// sandbox permits this query where it blocks `proc_pidinfo`.
+fn kinfo_proc(pid: i32) -> Option<[u8; KINFO_PROC_SIZE]> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut bytes = [0_u8; KINFO_PROC_SIZE];
+    let mut len = KINFO_PROC_SIZE;
+    // SAFETY: `bytes` has `len` writable bytes, `mib` holds 4 valid
+    // integers, and the remaining input pointers are null.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            bytes.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0 && len == KINFO_PROC_SIZE).then_some(bytes)
+}
+
+/// The start time from `kinfo_proc`: `kp_proc.p_starttime`, a `timeval`
+/// at offset 0. Microseconds since the epoch, as [`start_time`].
+pub(crate) fn sysctl_start_time(pid: i32) -> Option<u64> {
+    let bytes = kinfo_proc(pid)?;
+    // SAFETY: `bytes` holds a whole `kinfo_proc`, which starts with a
+    // `timeval`; the buffer need not be aligned, so read it unaligned.
+    let started = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<libc::timeval>()) };
+    let seconds = u64::try_from(started.tv_sec).ok()?;
+    let micros = u64::try_from(started.tv_usec).ok()?;
+    (micros < 1_000_000)
+        .then_some(())
+        .and_then(|()| seconds.checked_mul(1_000_000)?.checked_add(micros))
+}
+
+/// The parent pid from `kinfo_proc`: `kp_eproc.e_ppid`.
+pub(crate) fn sysctl_parent(pid: i32) -> Option<u32> {
+    let bytes = kinfo_proc(pid)?;
+    let field = bytes.get(KINFO_PROC_PPID..KINFO_PROC_PPID + 4)?;
+    let ppid = i32::from_ne_bytes(field.try_into().ok()?);
+    u32::try_from(ppid).ok()
+}
+
 pub(crate) fn started_at(pid: i32) -> Option<SystemTime> {
     let micros = start_time(pid)?;
     Some(UNIX_EPOCH + Duration::from_micros(micros))

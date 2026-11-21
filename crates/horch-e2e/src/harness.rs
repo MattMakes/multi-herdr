@@ -1647,14 +1647,25 @@ mod tests {
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         assert!(cmd.status().unwrap().success());
         let lock = state.join("mail/w1/courier.lock");
-        super::wait_for("the courier to hold its lock", || {
+        let pid = super::wait_for("the courier to hold its lock", || {
             let out = std::process::Command::new("lsof")
                 .arg("-t")
                 .arg(&lock)
                 .output()
                 .ok()?;
             String::from_utf8_lossy(&out.stdout).trim().parse().ok()
-        })
+        });
+        // The sandbox fallback can signal only the groups fake-herdr recorded.
+        // This fixture starts no fake-herdr, so record the courier's real group.
+        // SAFETY: getpgid only reads process metadata for the known live pid.
+        let group = unsafe { libc::getpgid(pid as libc::pid_t) };
+        assert!(group > 1, "courier {pid} has invalid process group {group}");
+        std::fs::write(
+            root.join("fake.log.state.json"),
+            serde_json::json!({ "pids": { "courier": group } }).to_string(),
+        )
+        .unwrap();
+        pid
     }
 
     /// Q3: a harness root whose owner test process has ended gets its
@@ -1674,6 +1685,9 @@ mod tests {
 
         let leaked = stop_stale_harnesses(&parent);
 
+        super::wait_for("the stale courier to stop", || {
+            (!horch_core::fsx::pid_alive(stale_pid)).then_some(())
+        });
         let stale_runs = horch_core::fsx::pid_alive(stale_pid);
         let live_runs = horch_core::fsx::pid_alive(live_pid);
         let owner_left = stale.join(OWNER_FILE).exists();

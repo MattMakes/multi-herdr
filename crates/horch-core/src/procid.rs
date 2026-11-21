@@ -58,6 +58,20 @@ pub fn is_same(pid: u32, started: u64) -> bool {
     start_time(pid) == Some(started)
 }
 
+/// Whether `pid` has `started`, using the macOS `KERN_PROC_PID` query that
+/// Claude's sandbox permits for an ancestor outside the sandbox. False on
+/// other platforms.
+pub fn is_same_sandboxed(pid: u32, started: u64) -> bool {
+    horch_platform::process::start_time_sandboxed(pid) == Some(started)
+}
+
+/// The parent of `pid`, from the macOS `KERN_PROC_PID` query that Claude's
+/// sandbox permits where it blocks `proc_pidinfo`. `None` on other
+/// platforms.
+pub fn parent_sandboxed(pid: u32) -> Option<u32> {
+    horch_platform::process::parent_sandboxed(pid)
+}
+
 /// Whether process group `pgid` is still the one whose leader started at
 /// `started`: the leader runs with that start time and still leads the
 /// group; or the leader has ended and the group still has members, which
@@ -148,6 +162,30 @@ mod tests {
         assert!(alive(me, None), "an old record: the pid exists");
         assert!(!is_same(me, started + 1));
         assert!(!alive(me, Some(started + 1)), "a reused pid is dead");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_same_process_start() {
+        let me = std::process::id();
+        assert_eq!(
+            horch_platform::process::start_time_sandboxed(me),
+            start_time(me),
+            "the sandbox fallback keeps the recorded identity"
+        );
+        assert!(is_same_sandboxed(me, start_time(me).unwrap()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_parent() {
+        // SAFETY: `getppid` has no preconditions.
+        let parent = unsafe { libc::getppid() };
+        assert_eq!(
+            parent_sandboxed(std::process::id()),
+            u32::try_from(parent).ok()
+        );
+        assert_eq!(parent_sandboxed(i32::MAX as u32), None, "no such process");
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
