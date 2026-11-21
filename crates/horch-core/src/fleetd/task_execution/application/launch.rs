@@ -490,6 +490,8 @@ pub fn on_resume_refused(
     if tasks::cancel_requested(tx, task_id)?.is_some() {
         return Ok(());
     }
+    // No attempt is burned: the next claim adds 1 to `attempts`, and the
+    // floor moves with it.
     tx.execute(
         "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
             not_before = NULL, updated_at = ?2

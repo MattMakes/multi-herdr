@@ -273,6 +273,8 @@ impl World {
         wait_for_or(what, f, || self.context())
     }
 
+    /// The attempts of `task` that its retry budget counts:
+    /// `attempts - attempt_floor`.
     fn used(&self, task: &str) -> i64 {
         self.one(&format!(
             "SELECT attempts - attempt_floor FROM tasks WHERE task_id = {}",
@@ -730,6 +732,7 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
             })
             .collect()
     };
+    // The attempt row comes before its CLI starts: wait for the call.
     w.wait("a call of the sub-orchestrator CLI", || {
         (!lead_calls().is_empty()).then_some(())
     });
