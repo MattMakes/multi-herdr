@@ -34,7 +34,7 @@ impl Class {
 
 /// Each request kind: the table "Request kinds" of
 /// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
-/// state, with the 4 kinds of the records of 1 spawn of fleetd (ticket 23
+/// state, with the 3 kinds of the records of 1 spawn of fleetd (ticket 23
 /// of fleetd-p5), the 4 kinds of the last direct writers of the CLI after
 /// `rescue_drop` (T-885), then the idea kinds of Phase 6 (design, "Each
 /// request kind has a class"), then `session_records`, the writes of the
@@ -50,7 +50,6 @@ pub enum Kind {
     LedgerReopen,
     LedgerDismiss,
     WorkerStop,
-    SpawnAdopt,
     SpawnGateNote,
     WorkerLaunched,
     WorkerLaunchFailed,
@@ -82,7 +81,7 @@ pub enum Kind {
 impl Kind {
     /// Each kind, in the order of the MAP table, then the idea kinds, then
     /// `session_records`.
-    pub const ALL: [Kind; 36] = [
+    pub const ALL: [Kind; 35] = [
         Kind::LedgerImport,
         Kind::LedgerGc,
         Kind::TaskRequeue,
@@ -92,7 +91,6 @@ impl Kind {
         Kind::LedgerReopen,
         Kind::LedgerDismiss,
         Kind::WorkerStop,
-        Kind::SpawnAdopt,
         Kind::SpawnGateNote,
         Kind::WorkerLaunched,
         Kind::WorkerLaunchFailed,
@@ -133,7 +131,6 @@ impl Kind {
             Kind::LedgerReopen => "ledger_reopen",
             Kind::LedgerDismiss => "ledger_dismiss",
             Kind::WorkerStop => "worker_stop",
-            Kind::SpawnAdopt => "spawn_adopt",
             Kind::SpawnGateNote => "spawn_gate_note",
             Kind::WorkerLaunched => "worker_launched",
             Kind::WorkerLaunchFailed => "worker_launch_failed",
@@ -215,10 +212,11 @@ const DIRECT: &str =
 /// What you do in place of `horch ledger worker new` and `worker pid`.
 const RECORDS: &str = "fleetd records each attempt at its launch";
 
-/// Each retired kind (tickets 47 and 48 of fleetd-p6). fleetd refuses a
+/// Each retired kind (tickets 47 and 48 of fleetd-p6, and `spawn_adopt` of
+/// T-302: no client sends it after T-895). fleetd refuses a
 /// request of one with the reason `retired kind: <instead>`: a request
 /// file of an old client, written before the update.
-pub const RETIRED: [Retired; 14] = [
+pub const RETIRED: [Retired; 15] = [
     Retired {
         kind: "run_new",
         command: "horch ledger run new",
@@ -267,6 +265,11 @@ pub const RETIRED: [Retired; 14] = [
     Retired {
         kind: "worker_pid",
         command: "horch ledger worker pid",
+        instead: RECORDS,
+    },
+    Retired {
+        kind: "spawn_adopt",
+        command: "the adoption of a restart row by horch spawn",
         instead: RECORDS,
     },
     Retired {
@@ -505,16 +508,6 @@ impl IdeaAdd {
 /// records of 1 spawn (ticket 23 of fleetd-p5). `None` for each other kind.
 fn spawn_record_fields(kind: Kind) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match kind {
-        Kind::SpawnAdopt => Some((
-            &[
-                "run_id",
-                "worker_id",
-                "persona",
-                "target_task_id",
-                "spawn_pid",
-            ],
-            &[],
-        )),
         Kind::SpawnGateNote => Some((&["text"], &["run_id", "worker_id"])),
         Kind::WorkerLaunched => Some((
             &["run_id", "worker_id", "pane", "role", "harness", "model"],
@@ -623,7 +616,7 @@ mod tests {
     /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md` with no
     /// retired kind, then the idea kinds of Phase 6, then `session_records`
     /// (T-884).
-    const MAP_TABLE: [(&str, Class); 36] = [
+    const MAP_TABLE: [(&str, Class); 35] = [
         ("ledger_import", Class::Operator),
         ("ledger_gc", Class::Operator),
         ("task_requeue", Class::Operator),
@@ -633,7 +626,6 @@ mod tests {
         ("ledger_reopen", Class::Operator),
         ("ledger_dismiss", Class::Operator),
         ("worker_stop", Class::Operator),
-        ("spawn_adopt", Class::Operator),
         ("spawn_gate_note", Class::Operator),
         ("worker_launched", Class::Operator),
         ("worker_launch_failed", Class::Operator),
@@ -704,6 +696,11 @@ mod tests {
             retired("run_new").map(|r| r.command),
             Some("horch ledger run new")
         );
+        assert_eq!(
+            retired("spawn_adopt").map(|r| r.instead),
+            Some(RECORDS),
+            "no client sends spawn_adopt after T-895"
+        );
         assert_eq!(retired("idea_add"), None);
     }
 
@@ -762,7 +759,6 @@ mod tests {
             Ok(())
         );
         for kind in [
-            Kind::SpawnAdopt,
             Kind::SpawnGateNote,
             Kind::WorkerLaunched,
             Kind::WorkerLaunchFailed,

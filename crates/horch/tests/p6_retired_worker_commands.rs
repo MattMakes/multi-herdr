@@ -1,6 +1,7 @@
 //! The worker request kinds are retired (ticket 48 of fleetd-p6; REQUIRED
 //! item 2): `spawn`, `worker_new`, `worker_pid`, `worker_reap`,
-//! `orchestrator_claim`, `orchestrator_stop` and `task_unblock`. Each old
+//! `orchestrator_claim`, `orchestrator_stop` and `task_unblock`, and
+//! `spawn_adopt` (T-302: no client sends it after T-895). Each old
 //! command exits 1, writes nothing and prints the line of the table "Old
 //! flow and new" of `docs/tickets/fleetd-p6/MAP.md`. fleetd refuses a
 //! request file of a retired kind with the reason `retired kind: <new
@@ -60,8 +61,8 @@ const CLAIM: &str = "horch fleet start starts fleetd and herdr with no orchestra
 /// The new action of `horch fleet stop`.
 const FLEET_STOP: &str = r#"No orchestrator runs, so there is none to stop. fleetd and the herdr server stay under the service manager of the OS. To stop 1 worker: horch ledger stop <worker> "<reason>""#;
 
-/// Each kind that this ticket retires and its new action.
-const RETIRED_KINDS: [(&str, &str); 7] = [
+/// Each kind that this ticket and T-302 retire, and its new action.
+const RETIRED_KINDS: [(&str, &str); 8] = [
     ("spawn", SPAWN),
     ("worker_new", RECORDS),
     ("worker_pid", RECORDS),
@@ -69,6 +70,7 @@ const RETIRED_KINDS: [(&str, &str); 7] = [
     ("orchestrator_claim", CLAIM),
     ("orchestrator_stop", FLEET_STOP),
     ("task_unblock", UNBLOCK),
+    ("spawn_adopt", RECORDS),
 ];
 
 /// The 16 operator kinds of the design ("Each request kind has a class").
@@ -110,8 +112,7 @@ const KEPT: [&str; 7] = [
 /// the restart on a fallback), and the last direct writers of the CLI
 /// (T-885), and the write of the session records through fleetd
 /// (`session_records`, T-884).
-const RECORDS_OF_TODAY: [&str; 9] = [
-    "spawn_adopt",
+const RECORDS_OF_TODAY: [&str; 8] = [
     "spawn_gate_note",
     "worker_launched",
     "worker_launch_failed",
@@ -167,12 +168,20 @@ impl World {
     /// task and worker handlers.
     fn up() -> World {
         let mut w = World::down();
+        let handlers = w.handlers();
+        w.server =
+            Some(ChannelServer::start(&w.fleet(), w.conn(), Generation(1), handlers).unwrap());
+        w
+    }
+
+    /// The task and worker handlers of fleetd.
+    fn handlers(&self) -> Handlers {
         let mut handlers = Handlers::new();
         handlers_task::register(
             &mut handlers,
             TaskHandlers {
                 config: Arc::new(FleetConfig::default()),
-                evidence_root: w.root().join("evidence"),
+                evidence_root: self.root().join("evidence"),
             },
         );
         handlers_worker::register(
@@ -181,9 +190,7 @@ impl World {
                 guard: Generation(1),
             },
         );
-        w.server =
-            Some(ChannelServer::start(&w.fleet(), w.conn(), Generation(1), handlers).unwrap());
-        w
+        handlers
     }
 
     fn root(&self) -> PathBuf {
@@ -393,7 +400,11 @@ fn kind_catalog_is_the_table_of_the_design_and_the_kept_kinds() {
             format!("retired kind: {instead}")
         );
     }
-    assert_eq!(RETIRED.len(), 14, "MAP.md retires 14 kinds");
+    assert_eq!(
+        RETIRED.len(),
+        15,
+        "MAP.md retires 14 kinds, and T-302 retires spawn_adopt"
+    );
 }
 
 #[test]
@@ -663,4 +674,121 @@ fn retired_worker_kind_request_file_is_refused_with_the_new_action() {
         );
     }
     assert_eq!(w.requests(), Vec::<(String, String)>::new());
+}
+
+/// A `spawn_adopt` request file with the operator token and the payload of
+/// a restart row that the old handler adopted: fleetd rejects it as
+/// retired, records the rejection in `ingested` and in 1 needs-you item,
+/// and changes no other row (SR-8, R8-F3).
+#[test]
+fn spawn_adopt_request_file_is_refused_as_retired_and_changes_no_row() {
+    let w = World::down();
+    let run = w.run();
+    let task = w.task(&run, "opus", None);
+    let worker = w.worker(&run, "opus", "opus-1");
+    let conn = w.conn();
+    conn.execute(
+        "UPDATE workers SET target_task_id = ?2, attempt = 1 WHERE worker_id = ?1",
+        params![worker, task],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO attempts (id, task_id, worker_id, state, via, started_at)
+         VALUES (?1, ?2, ?3, 'launching', 'push', ?4)",
+        params![format!("{task}/A1"), task, worker, util::now()],
+    )
+    .unwrap();
+    let rows = |c: &Connection| -> (i64, String, String) {
+        c.query_row(
+            "SELECT (SELECT COUNT(*) FROM events WHERE entity != 'needs_you'),
+                    (SELECT status || '|' || IFNULL(agent_pid, '') FROM workers WHERE worker_id = ?1),
+                    (SELECT state FROM attempts WHERE worker_id = ?1)",
+            [&worker],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    };
+    let before = rows(&conn);
+    let fleet = w.fleet();
+    let token = token_file::ensure(&fleet).unwrap();
+    let dir = requests_dir(&fleet);
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    let id = "5b1d2c3e-4f50-4a61-8b72-9c0d1e2f3a4b";
+    let line = json!({
+        "request_id": id,
+        "kind": "spawn_adopt",
+        "payload": {
+            "run_id": run.run_id, "worker_id": worker, "persona": "opus",
+            "target_task_id": task, "spawn_pid": "4242",
+        },
+        "token": token.text(),
+    });
+    let path = dir.join(format!("{id}.json"));
+    write_0600(&path, &format!("{line}\n"));
+    let owner = User::current().unwrap();
+    let spool = Spool {
+        fleet_root: &fleet,
+        owner: &owner,
+        token: Some(&token),
+        max_bytes: 64 * 1024,
+        guard: Generation(1),
+    };
+    let start = Instant::now();
+    let mut now = move || start;
+    let mut clock = ScanClock {
+        deadline: Deadline::pass(start, 3600),
+        now: &mut now,
+        stamp: "2026-11-20T00:00:00Z",
+    };
+    let mut scan_conn = w.conn();
+    let outcome = scan(
+        &mut scan_conn,
+        &spool,
+        &mut Cursor::new("2026-11-20T00:00:00Z"),
+        &mut clock,
+        &w.handlers(),
+    )
+    .unwrap();
+    let ScanOutcome::Read(read) = outcome else {
+        panic!("expected a scan of the folder, got {outcome:?}");
+    };
+    let [fact] = read.facts.as_slice() else {
+        panic!("expected 1 fact, got {:?}", read.facts);
+    };
+    let reason = format!("retired kind: {RECORDS}");
+    assert_eq!(fact.handled, Handled::Rejected(reason.clone()));
+    assert_eq!(w.requests(), Vec::<(String, String)>::new());
+    let ingested: (String, String) = conn
+        .query_row(
+            "SELECT outcome, reason FROM ingested WHERE path = ?1",
+            [path.display().to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(ingested, ("rejected".to_string(), reason));
+    let adopted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE cause = 'adopted_by_spawn'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(adopted, 0, "no handler adopted the row");
+    let item: (String, String, String) = conn
+        .query_row(
+            "SELECT kind, entity, state FROM needs_you WHERE entity_id = ?1",
+            [path.display().to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        item,
+        (
+            "request_file_rejected".to_string(),
+            "request_file".to_string(),
+            "open".to_string()
+        )
+    );
+    assert_eq!(rows(&conn), before, "the refusal changes no row");
 }

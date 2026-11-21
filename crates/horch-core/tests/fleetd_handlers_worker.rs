@@ -13,18 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use horch_core::fleetd::fleet_runtime::adapters::clock_store;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{register, WorkerDeps};
-use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers};
 use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
-use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-use horch_core::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
-use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -121,27 +115,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The bind of `task` to 1 push attempt in `launching` of a new
-    /// `spawning` worker, as the dispatch of fleetd does it. Gives its
-    /// worker.
-    fn bind(&mut self, task: &str) -> String {
-        let tx = self.conn.transaction().unwrap();
-        let config = FleetConfig::default();
-        let git = Git::new("git");
-        let ctx = DispatchCtx {
-            jobs: JobCtx {
-                guard: Some(Generation(1)),
-                config: &config,
-                needs_you: &NeedsYouList,
-            },
-            clock: clock_store::read(&tx).unwrap(),
-            git: &git,
-        };
-        let bound = dispatch::bind(&tx, &ctx, task, "opus", &NewWorker::default()).unwrap();
-        tx.commit().unwrap();
-        bound.worker_id
-    }
-
     fn add(&self, title: &str, mode: WorktreeMode) -> String {
         let mut t = NewTask::work(title, &format!("docs/{title}.md"), "opus");
         t.ticket_snapshot = Some("# A ticket\n".into());
@@ -381,53 +354,6 @@ fn worker_of_other_run(w: &World) -> String {
         },
     )
     .unwrap()
-}
-
-#[test]
-fn spawn_adopt_adopts_a_restart_row_once() {
-    let mut w = world();
-    let task = w.add("T", WorktreeMode::Shared);
-    let wid = w.bind(&task);
-    w.conn
-        .execute(
-            "UPDATE workers SET target_task_id = ?2 WHERE worker_id = ?1",
-            params![wid, task],
-        )
-        .unwrap();
-    let payload = json!({
-        "run_id": w.run.run_id, "worker_id": wid, "persona": "opus",
-        "target_task_id": task, "spawn_pid": "4242",
-    });
-    let out = w.send(Kind::SpawnAdopt, payload.clone());
-    assert_eq!(out["worker_id"], json!(wid));
-    let data: String = w
-        .conn
-        .query_row(
-            "SELECT data_json FROM events WHERE entity_id = ?1 AND cause = 'adopted_by_spawn'",
-            [&wid],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(data.contains("4242"), "{data}");
-    let why = w.refused(Kind::SpawnAdopt, payload);
-    assert!(why.contains("another spawn adopted the row"), "{why}");
-    let why = w.refused(
-        Kind::SpawnAdopt,
-        json!({
-            "run_id": w.run.run_id, "worker_id": wid, "persona": "codex",
-            "target_task_id": task, "spawn_pid": "1",
-        }),
-    );
-    assert!(why.contains("not a row of persona codex"), "{why}");
-    let other = worker_of_other_run(&w);
-    let why = w.refused(
-        Kind::SpawnAdopt,
-        json!({
-            "run_id": w.run.run_id, "worker_id": other, "persona": "opus",
-            "target_task_id": task, "spawn_pid": "1",
-        }),
-    );
-    assert!(why.contains("not a row of run r1"), "{why}");
 }
 
 #[test]
