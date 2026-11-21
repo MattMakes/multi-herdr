@@ -92,13 +92,42 @@ fn with_agy(h: &mut Harness) {
     h.set("HORCH_QUOTA_FILE", path.to_string_lossy());
 }
 
+/// The calls of the fakes, and each attempt with the moves of the ledger,
+/// so a failed wait names how an attempt ended.
 fn context(h: &Harness) -> String {
-    h.calls()
+    let calls = h
+        .calls()
         .iter()
         .filter(|c| c["fake"] != "herdr")
         .map(|c| format!("{} {}", c["fake"], c["argv"]))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    let attempts = try_rows(
+        h,
+        "SELECT id || ' ' || state || ' ' || COALESCE(outcome, '') FROM attempts ORDER BY id",
+    );
+    let moves = try_rows(
+        h,
+        "SELECT at || ' ' || entity || ' ' || entity_id || ': ' || COALESCE(from_state, '')
+             || ' -> ' || COALESCE(to_state, '') || ' (' || COALESCE(cause, '') || ')'
+         FROM events WHERE to_state IS NOT NULL ORDER BY event_id",
+    );
+    format!(
+        "attempts: {attempts:?}\nmoves:\n{}\ncalls:\n{calls}",
+        moves.join("\n")
+    )
+}
+
+/// The rows of `sql`, or the error as 1 row: the context of a failed wait
+/// must not panic.
+fn try_rows(h: &Harness, sql: &str) -> Vec<String> {
+    let read = || -> rusqlite::Result<Vec<String>> {
+        let conn = rusqlite::Connection::open(h.ledger_db())?;
+        let mut stmt = conn.prepare(sql)?;
+        let found = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        found.collect()
+    };
+    read().unwrap_or_else(|e| vec![format!("the ledger read failed: {e}")])
 }
 
 fn launch_of(h: &Harness, fake: &str) -> Value {
