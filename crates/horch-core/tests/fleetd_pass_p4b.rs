@@ -1079,7 +1079,9 @@ fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item(
     let on_hang = format!("trap '' TERM; : > '{}'", lock.display());
     let bin = hang_once_git(&w, "diff", &on_hang);
     let out = passes_with_git(&w, &bin, Some(&lock));
-    assert!(out.contains("SIGKILL ended its group"), "{out}");
+    // On Linux the git runs in its sandbox, and the sandbox ends on the
+    // TERM: the text then says that SIGKILL ended the rest of its group.
+    assert!(out.contains("SIGKILL ended"), "{out}");
     assert!(out.contains(&lock.display().to_string()), "{out}");
     let key = format!("job_abandoned:git_lock:{}", lock.display());
     assert!(
