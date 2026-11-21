@@ -16,6 +16,8 @@
 //! resolved when the decision no longer holds. [`decision`] is also the
 //! read of the global hold `WorktreeDisk` (`holds()` of fleet runtime).
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use rusqlite::Connection;
 
@@ -26,8 +28,10 @@ use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State as JobState};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::task_execution::adapters::sqlite as task_store;
-use crate::fleetd::worktree_custody::adapters::sqlite as store;
-use crate::fleetd::worktree_custody::application::remove::queue_auto_remove;
+use crate::fleetd::worktree_custody::adapters::sqlite::{
+    self as store, WorktreeRow, WorktreeState,
+};
+use crate::fleetd::worktree_custody::application::remove::{queue_auto_remove, TreeJobs};
 use crate::fleetd::worktree_custody::domain::disk::{
     self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND,
 };
@@ -96,20 +100,34 @@ pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
 
 /// Queue 1 `worktree_remove` run of each tree of `d`, oldest first. A
 /// tree with an active run, or whose same removal failed, is not queued
-/// again. Give the trees with a new run.
+/// again. Give the trees with a new run. 1 snapshot reads the rows and
+/// the job runs of the trees and of their repositories: 2 statements for
+/// any count of trees.
 fn queue_removals(
     ctx: &JobCtx<'_>,
     tx: &Connection,
     d: &Decision,
     clock: FleetSeconds,
 ) -> Result<Vec<String>> {
+    let (rows, jobs) = one_snapshot(tx, || {
+        let rows: BTreeMap<String, WorktreeRow> = store::in_states(tx, &WorktreeState::ALL)?
+            .into_iter()
+            .filter(|r| d.remove.contains(&r.worktree_id))
+            .map(|r| (r.worktree_id.clone(), r))
+            .collect();
+        let kinds = [Kind::WorktreeRemove, Kind::Rescue, Kind::WorktreeList];
+        let ids = rows.keys().map(String::as_str);
+        let repos = rows.values().map(|r| r.repo_root.as_str());
+        let jobs = TreeJobs::read(tx, &kinds, ids.chain(repos))?;
+        Ok((rows, jobs))
+    })?;
     let mut removals = Vec::new();
     for id in &d.remove {
-        let Some(row) = store::get(tx, id)? else {
+        let Some(row) = rows.get(id) else {
             continue;
         };
         let cause = "the worktrees are above their disk budget";
-        if queue_auto_remove(ctx, tx, &row, cause, clock)? {
+        if queue_auto_remove(ctx, tx, &jobs, row, cause, clock)? {
             removals.push(id.clone());
         }
     }
@@ -312,6 +330,44 @@ mod tests {
             let (_tmp, store) = ledger(n);
             let (rows, statements) = count_statements(store.conn(), || measured(store.conn()));
             assert_eq!(rows.unwrap().len(), n);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
+
+    /// T-408: queue_removals reads the rows and the runs of 3 and of 300
+    /// trees of the decision in the same statements. Each tree has an
+    /// active removal, so no run is added.
+    #[test]
+    fn queue_removals_of_3_and_300_trees_run_the_same_statements() {
+        use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+        use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+        use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
+        let count = |n: usize| {
+            let (_tmp, store) = ledger(n);
+            let c = store.conn();
+            c.execute_batch("UPDATE worktrees SET state = 'landed'")
+                .unwrap();
+            let remove: Vec<String> = (0..n).map(|i| format!("WT{i:04}")).collect();
+            for (i, id) in remove.iter().enumerate() {
+                let key = remove_key(&format!("/p/.worktrees/{i}"), false);
+                removal(c, id, &key, 1, "queued");
+            }
+            let d = Decision {
+                total: 0,
+                budget: 0,
+                remove,
+                hold: false,
+            };
+            let config = FleetConfig::default();
+            let ctx = JobCtx {
+                guard: None,
+                config: &config,
+                needs_you: &NeedsYouList,
+            };
+            let (queued, statements) =
+                count_statements(c, || queue_removals(&ctx, c, &d, FleetSeconds(0)).unwrap());
+            assert_eq!(queued, Vec::<String>::new());
             statements
         };
         assert_eq!(count(3), count(300));

@@ -32,7 +32,7 @@ use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store;
 use crate::fleetd::fleet_runtime::adapters::scans::{FolderFact, Presence};
-use crate::fleetd::fleet_runtime::adapters::sqlite::{has_fact, last_moves_to};
+use crate::fleetd::fleet_runtime::adapters::sqlite::last_moves_to;
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, result_data, JobCtx, JobKey, NewItem, Queued,
 };
@@ -42,7 +42,7 @@ use crate::fleetd::fleet_runtime::application::ledger::{
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-use crate::fleetd::ideas::application::rollup::idea_state_of_task;
+use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::integration::adapters::sqlite as branches_store;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, ListResult};
@@ -50,6 +50,7 @@ use crate::fleetd::worktree_custody::adapters::rescue_git::{rescue_key, Rescue};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, NewWorktree, WorktreeRow, WorktreeState,
 };
+use crate::fleetd::worktree_custody::application::remove::{Notes, TreeJobs};
 use crate::fleetd::worktree_custody::application::{create, remove, rescue};
 use crate::fleetd::worktree_custody::domain::removal::quarantine_path;
 use crate::fleetd::worktree_custody::domain::worktree::{
@@ -153,14 +154,18 @@ pub fn reconcile_worktrees(
 /// The breaches of I6 that `facts` show, in `conn`. A breach is reported;
 /// the rule that repairs it acts on the next pass.
 pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
-    let rows = store::in_states(conn, &WorktreeState::ALL)?;
+    let (rows, jobs, removing) = one_snapshot(conn, || {
+        let rows = store::in_states(conn, &WorktreeState::ALL)?;
+        let kinds = [Kind::WorktreeAdd, Kind::WorktreeRemove];
+        let jobs = TreeJobs::read(conn, &kinds, rows.iter().map(|r| r.worktree_id.as_str()))?;
+        Ok((rows, jobs, removing(conn)?))
+    })?;
     let live: Vec<&WorktreeRow> = rows
         .iter()
         .filter(|r| r.state != WorktreeState::Removed)
         .collect();
     let known = known_paths(live.iter().copied(), facts);
-    let seen = seen(conn, &rows, facts)?;
-    let removing = removing(conn)?;
+    let seen = seen(&jobs, &rows, facts);
     let mut out: Vec<Breach> = rules::adoptions(&known, &seen, &[])
         .into_iter()
         .map(|a| Breach::NoRow {
@@ -178,7 +183,7 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
             set_aside(&removing, facts, r),
         ) {
             out.push(Breach::NoFolder { id });
-        } else if r.state == WorktreeState::Reserved && add_run(conn, r)?.is_none() {
+        } else if r.state == WorktreeState::Reserved && add_run(&jobs, r).is_none() {
             out.push(Breach::ReservedWithNoJob { id });
         } else if r.state == WorktreeState::Removed
             && !rules::removal_saved(r.status.as_str(), r.rescue_ref.as_deref())
@@ -196,9 +201,8 @@ fn all_rows(tx: &Connection) -> Result<Vec<WorktreeRow>> {
     store::in_states(tx, &WorktreeState::ALL)
 }
 
-fn add_run(conn: &Connection, row: &WorktreeRow) -> Result<Option<jobs_store::JobRow>> {
-    let key = worktree_add_key(row);
-    jobs_store::latest(conn, Kind::WorktreeAdd, &row.worktree_id, &key)
+fn add_run<'a>(jobs: &'a TreeJobs, row: &WorktreeRow) -> Option<&'a jobs_store::JobRow> {
+    jobs.latest(Kind::WorktreeAdd, &row.worktree_id, &worktree_add_key(row))
 }
 
 /// Observe the last run of the job that each row waits for, when it
@@ -208,32 +212,45 @@ fn add_run(conn: &Connection, row: &WorktreeRow) -> Result<Option<jobs_store::Jo
 /// have yet, and a run that is not observed gets a second rescue. A passed
 /// rescue whose ref the row has already is the rescue of an earlier orphan
 /// of a reused tree: it does not save the tree now, so it is not observed.
+///
+/// 1 snapshot reads the rows and the runs of their jobs: 2 statements for
+/// any count of rows.
 fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
-    for row in all_rows(tx)? {
+    let (rows, jobs) = one_snapshot(tx, || {
+        let rows = all_rows(tx)?;
+        let kinds = [Kind::WorktreeAdd, Kind::Rescue, Kind::WorktreeRemove];
+        let waiting = rows
+            .iter()
+            .filter(|r| rules::awaited(r.state.as_str()).is_some())
+            .map(|r| r.worktree_id.as_str());
+        let jobs = TreeJobs::read(tx, &kinds, waiting)?;
+        Ok((rows, jobs))
+    })?;
+    for row in rows {
         let id = row.worktree_id.as_str();
         let Some(awaited) = rules::awaited(row.state.as_str()) else {
             continue;
         };
         let run = match awaited {
-            TreeJob::Add => add_run(tx, &row)?,
-            TreeJob::Rescue => jobs_store::last(tx, Kind::Rescue, id)?,
-            TreeJob::Remove => remove::latest_removal(tx, id, &row.path)?,
+            TreeJob::Add => add_run(&jobs, &row),
+            TreeJob::Rescue => jobs.last(Kind::Rescue, id),
+            TreeJob::Remove => jobs.latest_removal(id, &row.path),
         };
         let Some(job) = run.filter(|j| matches!(j.state, State::Passed | State::Failed)) else {
             continue;
         };
-        if awaited == TreeJob::Rescue && applied(&job, &row) {
+        if awaited == TreeJob::Rescue && applied(job, &row) {
             continue;
         }
         match awaited {
             TreeJob::Add => {
-                create::observe(ctx, tx, &job)?;
+                create::observe(ctx, tx, job)?;
             }
             TreeJob::Rescue => {
-                rescue::observe(ctx, tx, &job)?;
+                rescue::observe(ctx, tx, job)?;
             }
             TreeJob::Remove => {
-                remove::observe(ctx, tx, &job)?;
+                remove::observe(ctx, tx, job)?;
             }
         }
         report.observed.push(job.id);
@@ -268,12 +285,12 @@ fn known_paths<'a>(
 /// [`admits`] gives as a tree now. A folder of a work directory is a tree
 /// only when the last `worktree_list` result of its repository names it:
 /// with no result yet, its adoption waits for one.
-fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Seen>> {
+fn seen(jobs: &TreeJobs, rows: &[WorktreeRow], facts: &Facts) -> Vec<Seen> {
     let mut out = Vec::new();
     for l in &facts.lists {
         for (n, e) in l.result.entries.iter().enumerate() {
             let main = n == 0 || e.bare;
-            if !main && !admits(conn, rows, facts, l, &e.path)? {
+            if !main && !admits(jobs, rows, facts, l, &e.path) {
                 continue;
             }
             out.push(Seen {
@@ -285,7 +302,7 @@ fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Se
             });
         }
     }
-    Ok(out)
+    out
 }
 
 /// What shows that the folder of an entry of a `worktree_list` result is
@@ -327,19 +344,13 @@ fn evidence(facts: &Facts, rows: &[WorktreeRow], list: &Listed, path: &str) -> E
 /// Whether the entry `path` of `list` is a tree now: its folder is not
 /// shown gone by a scan of this pass, and no passed removal of the path
 /// made the list result stale.
-fn admits(
-    conn: &Connection,
-    rows: &[WorktreeRow],
-    facts: &Facts,
-    list: &Listed,
-    path: &str,
-) -> Result<bool> {
+fn admits(jobs: &TreeJobs, rows: &[WorktreeRow], facts: &Facts, list: &Listed, path: &str) -> bool {
     let shown = match evidence(facts, rows, list, path) {
         Evidence::RowScan(f) => f == Folder::Present,
         Evidence::WorkDirScan { listed } => listed,
         Evidence::ListOnly => true,
     };
-    Ok(shown && !stale(conn, rows, list, path)?)
+    shown && !stale(jobs, rows, list, path)
 }
 
 /// Whether a passed removal of the folder `path` was queued after the run
@@ -348,16 +359,11 @@ fn admits(
 /// can. A list run queued after the removal but started before its end is
 /// not stale by this rule: the scan of [`evidence`] shows that the folder
 /// is gone.
-fn stale(conn: &Connection, rows: &[WorktreeRow], list: &Listed, path: &str) -> Result<bool> {
-    for row in rows.iter().filter(|r| r.path == path) {
-        let Some(job) = jobs_store::last(conn, Kind::WorktreeRemove, &row.worktree_id)? else {
-            continue;
-        };
-        if job.state == State::Passed && job.id > list.job {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+fn stale(jobs: &TreeJobs, rows: &[WorktreeRow], list: &Listed, path: &str) -> bool {
+    rows.iter()
+        .filter(|r| r.path == path)
+        .filter_map(|r| jobs.last(Kind::WorktreeRemove, &r.worktree_id))
+        .any(|job| job.state == State::Passed && job.id > list.job)
 }
 
 /// The folders of the work directories that no row owns and that the
@@ -393,11 +399,16 @@ fn short_branch(full: &str) -> String {
 /// folder at its path gets a new row, as [`check_i6`] reads it. A folder
 /// that git does not name is reported in `not_trees` and gets no row.
 fn adopt(ctx: &JobCtx<'_>, tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
-    let rows = all_rows(tx)?;
+    let (rows, jobs) = one_snapshot(tx, || {
+        let rows = all_rows(tx)?;
+        let ids = rows.iter().map(|r| r.worktree_id.as_str());
+        let jobs = TreeJobs::read(tx, &[Kind::WorktreeRemove], ids)?;
+        Ok((rows, jobs))
+    })?;
     let live = rows.iter().filter(|r| r.state != WorktreeState::Removed);
     let known = known_paths(live, facts);
     report.not_trees = plain_folders(&known, facts);
-    let seen = seen(tx, &rows, facts)?;
+    let seen = seen(&jobs, &rows, facts);
     // The runs are read only for the repositories of a tree to adopt.
     let repos: BTreeSet<String> = rules::adoptions(&known, &seen, &[])
         .into_iter()
@@ -725,8 +736,9 @@ fn escalate_vanished(
     clock: FleetSeconds,
     report: &mut Report,
 ) -> Result<()> {
-    let removing = removing(tx)?;
-    for row in all_rows(tx)? {
+    let (rows, removing, notes) =
+        one_snapshot(tx, || Ok((all_rows(tx)?, removing(tx)?, Notes::read(tx)?)))?;
+    for row in rows {
         let id = row.worktree_id.as_str();
         let gone = rules::vanished(
             row.state.as_str(),
@@ -738,13 +750,7 @@ fn escalate_vanished(
             continue;
         }
         report.vanished.push(id.to_string());
-        if has_fact(
-            tx,
-            Entity::Worktree,
-            id,
-            EventKind::Note,
-            rules::VANISHED_KIND,
-        )? {
+        if notes.has(id, rules::VANISHED_KIND) {
             continue;
         }
         let data = json!({ "path": row.path, "fleet_clock": clock.0 });
@@ -784,8 +790,13 @@ fn escalate_vanished(
 /// A removal refused by a process in the tree runs again
 /// ([`remove::retry`]). A row whose folder vanished is escalated, not
 /// queued. A row with an active run of that kind is not queued again.
+///
+/// 1 snapshot reads the rows, the task branches of the `landing` rows, the
+/// notes and the job runs of the trees and of their repositories, and the
+/// idea states of the tasks of the `rescued` rows: 7 statements for any
+/// count of rows.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
-    let (rows, branches, ended) = one_snapshot(tx, || {
+    let (rows, branches, notes, jobs, ideas) = one_snapshot(tx, || {
         let rows = all_rows(tx)?;
         let landing: Vec<WorktreeRow> = rows
             .iter()
@@ -793,7 +804,12 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
             .cloned()
             .collect();
         let branches = Branches::read(tx, &landing, false)?;
-        Ok((rows, branches, remove::owners_ended(tx)?))
+        let kinds = [Kind::Rescue, Kind::WorktreeRemove, Kind::WorktreeList];
+        let ids = rows.iter().map(|r| r.worktree_id.as_str());
+        let repos = rows.iter().map(|r| r.repo_root.as_str());
+        let jobs = TreeJobs::read(tx, &kinds, ids.chain(repos))?;
+        let ideas = IdeaStates::read(tx, &rows)?;
+        Ok((rows, branches, Notes::read(tx)?, jobs, ideas))
     })?;
     for row in rows {
         let id = row.worktree_id.as_str();
@@ -801,24 +817,25 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
             continue;
         }
         let removable = matches!(row.state, WorktreeState::Landed | WorktreeState::Rescued);
-        if removable && remove::retry(ctx, tx, &row, clock)? {
+        if removable && remove::retry(ctx, tx, &jobs, &notes, &row, clock)? {
             report.removals.push(id.to_string());
             continue;
         }
         match rules::to_queue(row.state.as_str()) {
             Some(TreeJob::Rescue) => {
-                if queue_rescue(ctx, tx, &row, clock)? {
+                if queue_rescue(ctx, tx, &jobs, &row, clock)? {
                     report.rescues.push(id.to_string());
                 }
             }
             Some(TreeJob::Remove) => {
-                if remove::queue_auto_remove(ctx, tx, &row, "its tree is landed", clock)? {
+                let cause = "its tree is landed";
+                if remove::queue_auto_remove(ctx, tx, &jobs, &row, cause, clock)? {
                     report.removals.push(id.to_string());
                 }
             }
             Some(TreeJob::Add) | None if row.state == WorktreeState::Landing => {
                 if rules::landing_next(branches.state(&row)) == Some(LandingTree::Rescue)
-                    && queue_rescue(ctx, tx, &row, clock)?
+                    && queue_rescue(ctx, tx, &jobs, &row, clock)?
                 {
                     report.rescues.push(id.to_string());
                 }
@@ -827,16 +844,16 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
                 if row.state != WorktreeState::Rescued {
                     continue;
                 }
-                let owner = ended.get(id);
+                let owner = notes.ended.get(id);
                 let keep_branch = owner.is_some_and(|o| o.keep_branch);
-                let cause = if idea_merged(tx, &row)? {
+                let cause = if ideas.merged(&row) {
                     "its idea is merged"
-                } else if given_up(tx, &row, owner)? {
+                } else if given_up(&jobs, &row, owner) {
                     "its owner gave it up, and its rescue ref is verified"
                 } else {
                     continue;
                 };
-                if remove::auto_remove(ctx, tx, &row, cause, keep_branch, clock)? {
+                if remove::auto_remove(ctx, tx, &jobs, &row, cause, keep_branch, clock)? {
                     report.removals.push(id.to_string());
                 }
             }
@@ -851,30 +868,48 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
 /// with the rescue ref of the rescue run that it queued; a later rescue
 /// holds work that came after the drop. A tree with no task that nobody
 /// gave up stays.
-fn given_up(
-    tx: &Connection,
-    row: &WorktreeRow,
-    owner: Option<&remove::OwnerEnded>,
-) -> Result<bool> {
+/// The rescue run of a drop is a run of the tree, so `jobs` holds it.
+fn given_up(jobs: &TreeJobs, row: &WorktreeRow, owner: Option<&remove::OwnerEnded>) -> bool {
     let Some(owner) = owner else {
-        return Ok(false);
+        return false;
     };
     if row.task_id.is_some() {
-        return Ok(false);
+        return false;
     }
     let Some(job) = owner.rescue_job else {
-        return Ok(true);
+        return true;
     };
-    Ok(jobs_store::get(tx, job)?.is_some_and(|j| applied(&j, row)))
+    jobs.get(Kind::Rescue, &row.worktree_id, job)
+        .is_some_and(|j| applied(j, row))
 }
 
-/// Whether the idea of the task of `row` is `merged`. A row with no task
-/// has no idea.
-fn idea_merged(tx: &Connection, row: &WorktreeRow) -> Result<bool> {
-    let Some(task) = row.task_id.as_deref() else {
-        return Ok(false);
-    };
-    Ok(idea_state_of_task(tx, task)?.as_deref() == Some("merged"))
+/// The idea state of the task of each `rescued` row, by task id: 2 set
+/// reads of the contexts that own the tables.
+struct IdeaStates(BTreeMap<String, String>);
+
+impl IdeaStates {
+    fn read(tx: &Connection, rows: &[WorktreeRow]) -> Result<IdeaStates> {
+        let tasks = rows
+            .iter()
+            .filter(|r| r.state == WorktreeState::Rescued)
+            .filter_map(|r| r.task_id.as_deref());
+        let ideas = attempts_store::ideas_of_tasks(tx, tasks)?;
+        let states = ideas_store::states_of(tx, ideas.values().map(String::as_str))?;
+        let by_task = ideas
+            .into_iter()
+            .filter_map(|(task, idea)| Some((task, states.get(&idea)?.clone())))
+            .collect();
+        Ok(IdeaStates(by_task))
+    }
+
+    /// Whether the idea of the task of `row` is `merged`. A row with no
+    /// task has no idea.
+    fn merged(&self, row: &WorktreeRow) -> bool {
+        row.task_id
+            .as_deref()
+            .and_then(|t| self.0.get(t))
+            .is_some_and(|s| s == "merged")
+    }
 }
 
 /// Queue the `rescue` run of the orphan `row` at the HEAD that the last
@@ -888,6 +923,7 @@ fn idea_merged(tx: &Connection, row: &WorktreeRow) -> Result<bool> {
 fn queue_rescue(
     ctx: &JobCtx<'_>,
     tx: &Connection,
+    jobs: &TreeJobs,
     row: &WorktreeRow,
     clock: FleetSeconds,
 ) -> Result<bool> {
@@ -900,8 +936,8 @@ fn queue_rescue(
         subject: &row.worktree_id,
         input_key: &input_key,
     };
-    let last = jobs_store::latest(tx, Kind::Rescue, &row.worktree_id, &input_key)?;
-    if last.is_some_and(|j| j.state == State::Failed) {
+    let last = jobs.latest(Kind::Rescue, &row.worktree_id, &input_key);
+    if last.is_some_and(|j| j.state == State::Failed) || !jobs.queues(ctx, &key) {
         return Ok(false);
     }
     let queued = jobs::queue(ctx, tx, &key, Some(&row.repo_root), clock)?;
@@ -1232,6 +1268,202 @@ mod landing_reads_tests {
                 act(&ctx, &tx, FleetSeconds(0), &mut report).unwrap();
             });
             assert_eq!(report, Report::default());
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
+}
+
+/// T-408: each step of a pass reads its rows and their facts in a fixed
+/// count of statements, for any count of rows.
+#[cfg(test)]
+mod pass_reads_tests {
+    use super::*;
+    use crate::fleetd::fleet_runtime::adapters::sqlite::{append_fact, Fact};
+    use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+    use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
+    use crate::fleetd::worktree_custody::application::ports::ListEntry;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+    use rusqlite::params;
+
+    fn ledger() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now');",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    /// The row `id` in `state` at `/p/.worktrees/<id>`, with HEAD `h`.
+    fn tree(c: &Connection, id: &str, state: &str, task: Option<&str>) -> WorktreeRow {
+        c.execute(
+            "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status,
+                 state, created_at, head_sha)
+             VALUES (?1, ?2, '/p', '/p/.worktrees/' || ?1, ?1, 'main', 'open', ?3, 'now', 'h')",
+            params![id, task, state],
+        )
+        .unwrap();
+        store::get(c, id).unwrap().unwrap()
+    }
+
+    fn job(c: &Connection, kind: Kind, subject: &str, key: &str, state: &str) -> i64 {
+        c.execute(
+            "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)
+             VALUES (?1, ?2, ?3, 1, ?4, 60, 'now')",
+            params![kind.as_str(), subject, key, state],
+        )
+        .unwrap();
+        c.last_insert_rowid()
+    }
+
+    fn note(c: &Connection, id: &str, cause: &str, data: &str) {
+        let f = Fact {
+            kind: EventKind::Note,
+            entity: Entity::Worktree,
+            id,
+            cause,
+            actor: Actor::Horch,
+            data_json: data,
+        };
+        append_fact(c, &f).unwrap();
+    }
+
+    fn task(c: &Connection, id: &str, seq: usize) {
+        let idea = crate::taskledger::schema::run_idea(c, "r1", "now", true).unwrap();
+        c.execute(
+            "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                 claimable_by, status, created_at, updated_at, idea_id)
+             VALUES (?1, 'r1', ?2, ?1, 'a.md', 'opus', 'opus', 'running', 'now', 'now', ?3)",
+            params![id, seq as i64, idea],
+        )
+        .unwrap();
+    }
+
+    /// check_i6 with a `reserved` row and its `worktree_add` run, and a
+    /// `worktree_list` result that names each row: the read of the add run
+    /// of each row and of the last removal of each listed path.
+    #[test]
+    fn check_i6_reads_the_add_runs_and_removals_of_3_and_300_trees_in_the_same_statements() {
+        let count = |n: usize| {
+            let (_tmp, mut store) = ledger();
+            let tx = store.conn_mut().transaction().unwrap();
+            let mut facts = Facts::default();
+            let mut entries = vec![ListEntry {
+                path: "/p".into(),
+                head: Some("h".into()),
+                branch: None,
+                detached: true,
+                bare: false,
+                locked: None,
+                prunable: None,
+            }];
+            for i in 0..n {
+                let id = format!("R{i:04}");
+                let row = tree(&tx, &id, "reserved", None);
+                job(
+                    &tx,
+                    Kind::WorktreeAdd,
+                    &id,
+                    &worktree_add_key(&row),
+                    "queued",
+                );
+                job(&tx, Kind::WorktreeRemove, &id, "k", "passed");
+                facts.folders.push(FolderFact {
+                    key: id.clone(),
+                    presence: Presence::Present,
+                });
+                entries.push(ListEntry {
+                    path: row.path.clone(),
+                    ..entries[0].clone()
+                });
+            }
+            facts.lists.push(Listed {
+                repo: "/p".into(),
+                job: i64::MAX,
+                seen_at: "now".into(),
+                result: ListResult {
+                    entries,
+                    trees: Vec::new(),
+                },
+            });
+            let (breaches, statements) = count_statements(&tx, || check_i6(&tx, &facts).unwrap());
+            assert_eq!(breaches, vec![]);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
+
+    /// observe_runs, escalate_vanished and act over rows of each kind that
+    /// they read and do not act on:
+    /// - an `orphaned` row with an active rescue run;
+    /// - a `landed` row with an active removal;
+    /// - a `rescued` row whose idea is not merged;
+    /// - a `rescued` row with no task, given up by a drop whose rescue run
+    ///   did not save it;
+    /// - a `created` row whose folder vanished, escalated already.
+    #[test]
+    fn observe_escalate_and_act_read_3_and_300_trees_of_each_kind_in_the_same_statements() {
+        let count = |n: usize| {
+            let (_tmp, mut store) = ledger();
+            let tx = store.conn_mut().transaction().unwrap();
+            let mut facts = Facts::default();
+            let mut vanished = Vec::new();
+            for i in 0..n {
+                let o = tree(&tx, &format!("O{i:04}"), "orphaned", None);
+                job(
+                    &tx,
+                    Kind::Rescue,
+                    &o.worktree_id,
+                    &rescue_key(&o.path, "h"),
+                    "queued",
+                );
+                let l = tree(&tx, &format!("L{i:04}"), "landed", None);
+                let key = remove_key(&l.path, false);
+                job(&tx, Kind::WorktreeRemove, &l.worktree_id, &key, "queued");
+                let t = format!("T{i:04}");
+                task(&tx, &t, i + 1);
+                tree(&tx, &format!("M{i:04}"), "rescued", Some(&t));
+                let d = tree(&tx, &format!("D{i:04}"), "rescued", None);
+                let rescue = job(&tx, Kind::Rescue, &d.worktree_id, "k", "passed");
+                let ended = json!({ "keep_branch": false, "rescue_job": rescue }).to_string();
+                note(&tx, &d.worktree_id, remove::OWNER_ENDED, &ended);
+                let v = tree(&tx, &format!("V{i:04}"), "created", None);
+                note(&tx, &v.worktree_id, rules::VANISHED_KIND, "{}");
+                facts.folders.push(FolderFact {
+                    key: v.worktree_id.clone(),
+                    presence: Presence::Missing,
+                });
+                vanished.push(v.worktree_id);
+            }
+            let config = FleetConfig::default();
+            let ctx = JobCtx {
+                guard: None,
+                config: &config,
+                needs_you: &NeedsYouList,
+            };
+            let mut report = Report::default();
+            let ((), statements) = count_statements(&tx, || {
+                observe_runs(&ctx, &tx, &mut report).unwrap();
+                escalate_vanished(&ctx, &tx, &facts, FleetSeconds(0), &mut report).unwrap();
+                act(&ctx, &tx, FleetSeconds(0), &mut report).unwrap();
+            });
+            assert_eq!(
+                report,
+                Report {
+                    vanished,
+                    ..Report::default()
+                }
+            );
             statements
         };
         assert_eq!(count(3), count(300));

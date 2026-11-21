@@ -607,6 +607,24 @@ pub fn name_taken(conn: &Connection, name: &str, branch: &str) -> Result<bool> {
     )?)
 }
 
+/// The state of each feature of `ids`, by id: 1 statement for any count
+/// of ids. An id with no row is not in the map.
+pub fn feature_states<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT id, state FROM features WHERE id IN ({})",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The ids of the features, by id; with `live`, only the `open` and
 /// `ready` features.
 pub fn feature_ids(conn: &Connection, live: bool) -> Result<Vec<String>> {

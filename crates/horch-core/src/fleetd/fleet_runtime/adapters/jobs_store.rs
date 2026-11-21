@@ -141,6 +141,24 @@ pub fn latest_states<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Each run of a kind of `kinds` whose subject is in `subjects`, oldest
+/// first: 1 statement for any count of subjects.
+pub fn of_subjects<'a>(
+    conn: &Connection,
+    kinds: &[Kind],
+    subjects: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<JobRow>> {
+    let subjects: Vec<&str> = subjects.into_iter().collect();
+    let filter = format!(
+        "WHERE kind IN ({}) AND subject IN ({}) ORDER BY id",
+        crate::taskledger::sql_words::marks(1, kinds.len()),
+        crate::taskledger::sql_words::marks(kinds.len() + 1, subjects.len())
+    );
+    let mut values: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+    values.extend(subjects);
+    rows(conn, &filter, rusqlite::params_from_iter(values))
+}
+
 /// The newest run of `kind` and `subject`, of any input key.
 pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRow>> {
     one(

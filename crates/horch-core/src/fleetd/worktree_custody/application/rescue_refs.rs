@@ -20,11 +20,13 @@
 //! No use case of fleetd deletes a `unique` ref: only your drop does (I10).
 //! Over the budget, fleetd deletes nothing (FM-40).
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
-use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, entered_at, Fact};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, last_moves_to, Fact};
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
@@ -37,6 +39,7 @@ use crate::fleetd::worktree_custody::domain::rescue_class::{
     self as rules, Class, Content, FeatureRefs, Owner, RefOwner, BUDGET_KEY, ENDED, NEEDS_YOU_KEY,
 };
 use crate::taskledger::model::{Actor, EventKind};
+use crate::taskledger::store::one_snapshot;
 
 /// The rescue ref facts of 1 repository, from its last passed
 /// `worktree_list` run. `refs` is `None` when the run could not list them.
@@ -163,6 +166,11 @@ pub fn collect(
     now: DateTime<Utc>,
 ) -> Result<Collection> {
     let mut c = Collection::default();
+    let features = lists
+        .iter()
+        .flat_map(|l| l.refs.iter().flatten())
+        .filter_map(|r| r.feature.as_deref());
+    let ended_at = features_ended_s(tx, features)?;
     for list in lists {
         for r in list.refs.iter().flatten() {
             let class = class(r);
@@ -172,10 +180,7 @@ pub fn collect(
             };
             tally.count += 1;
             tally.bytes = tally.bytes.saturating_add(r.bytes.unwrap_or(0));
-            let ended = match &r.feature {
-                Some(id) => feature_ended_s(tx, id)?,
-                None => None,
-            };
+            let ended = r.feature.as_ref().and_then(|id| ended_at.get(id).copied());
             if rules::expired(class, ended, now.timestamp(), ctx.config.retention_days) {
                 c.deletions.push(Deletion {
                     repo: list.repo.clone(),
@@ -208,18 +213,35 @@ pub fn collect(
     Ok(c)
 }
 
-/// When the feature `id` moved to `merged` or `abandoned`, in Unix seconds;
-/// `None` while it is open or ready.
-fn feature_ended_s(conn: &Connection, id: &str) -> Result<Option<i64>> {
-    match rows::feature(conn, id)? {
-        Some(f) if ENDED.contains(&f.state.as_str()) => {}
-        _ => return Ok(None),
-    }
-    let at = entered_at(conn, Entity::Feature, id, &ENDED)?;
-    Ok(at
-        .as_deref()
-        .and_then(crate::clock::parse)
-        .map(|t| t.timestamp()))
+/// When each feature of `ids` that is `merged` or `abandoned` moved to 1
+/// of those states, in Unix seconds, by id. A feature that is open or
+/// ready, or with no such move, is not in the map. 1 snapshot reads the
+/// states and the last move to each ended state: 3 statements for any
+/// count of features.
+fn features_ended_s<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, i64>> {
+    one_snapshot(conn, || {
+        let states = rows::feature_states(conn, ids)?;
+        let ended = || {
+            states
+                .iter()
+                .filter(|(_, s)| ENDED.contains(&s.as_str()))
+                .map(|(id, _)| id.as_str())
+        };
+        let mut at: BTreeMap<String, String> = BTreeMap::new();
+        for state in ENDED {
+            for (id, t) in last_moves_to(conn, Entity::Feature, ended(), state)? {
+                let last = at.entry(id).or_default();
+                *last = std::cmp::max(last.clone(), t);
+            }
+        }
+        Ok(at
+            .into_iter()
+            .filter_map(|(id, t)| Some((id, crate::clock::parse(&t)?.timestamp())))
+            .collect())
+    })
 }
 
 /// Delete the ref of `d` only when it still names `d.tip`: `git update-ref
@@ -317,4 +339,110 @@ pub fn drop_ref(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted
         );
     }
     Ok(done)
+}
+
+/// T-408: collect reads the features of all rescue refs in set reads.
+#[cfg(test)]
+mod collect_reads_tests {
+    use rusqlite::params;
+
+    use super::*;
+    use crate::fleetd::fleet_runtime::adapters::sqlite::{append_event, Event};
+    use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+
+    /// The feature `id` in `state`, moved to it at `at` when `at` is given.
+    fn feature(c: &Connection, id: &str, state: &str, at: Option<&str>) {
+        c.execute(
+            "INSERT INTO features (id, name, branch, primary_branch, state, created_at, updated_at)
+             VALUES (?1, ?1, ?1, 'main', ?2, 'now', 'now')",
+            params![id, state],
+        )
+        .unwrap();
+        let Some(at) = at else {
+            return;
+        };
+        let e = Event {
+            entity: Entity::Feature,
+            id,
+            from: Some("open"),
+            to: state,
+            cause: "test",
+            actor: Actor::Horch,
+        };
+        append_event(c, &e).unwrap();
+        c.execute(
+            "UPDATE events SET at = ?1 WHERE event_id = last_insert_rowid()",
+            [at],
+        )
+        .unwrap();
+    }
+
+    fn superseded(name: &str, feature: &str) -> RefFacts {
+        RefFacts {
+            name: name.to_string(),
+            tip: "t".to_string(),
+            branch: Some(feature.to_string()),
+            feature: Some(feature.to_string()),
+            bytes: Some(1),
+            in_newer_tip: Some(true),
+            in_landed: None,
+        }
+    }
+
+    /// For each i of `n`: a ref of a merged and of an abandoned feature,
+    /// ended long ago, is deleted; a ref of an open feature, of a merged
+    /// feature with no move event, and of a feature with no row stays.
+    /// The deletions are the ones of the read of each feature, and 3 and
+    /// 300 of each run the same statements.
+    #[test]
+    fn collect_of_3_and_300_refs_of_each_kind_runs_the_same_statements() {
+        let count = |n: usize| {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+            let tx = store.conn_mut().transaction().unwrap();
+            let old = Some("2020-01-01T00:00:00Z");
+            let mut refs = Vec::new();
+            let mut want = Vec::new();
+            for i in 0..n {
+                for (kind, state, at, deleted) in [
+                    ("M", "merged", old, true),
+                    ("A", "abandoned", old, true),
+                    ("O", "open", None, false),
+                    ("N", "merged", None, false),
+                ] {
+                    let id = format!("{kind}{i:04}");
+                    feature(&tx, &id, state, at);
+                    let name = format!("refs/horch/rescue/{id}/1");
+                    refs.push(superseded(&name, &id));
+                    if deleted {
+                        want.push(name);
+                    }
+                }
+                refs.push(superseded(
+                    &format!("refs/horch/rescue/X{i:04}/1"),
+                    "no-row",
+                ));
+            }
+            let lists = [RepoFacts {
+                repo: "/p".to_string(),
+                refs: Some(refs),
+            }];
+            let config = FleetConfig::default();
+            let ctx = JobCtx {
+                guard: None,
+                config: &config,
+                needs_you: &NeedsYouList,
+            };
+            let now = crate::clock::parse("2026-11-21T00:00:00Z").unwrap();
+            let (c, statements) =
+                count_statements(&tx, || collect(&ctx, &tx, &lists, now).unwrap());
+            let got: Vec<String> = c.deletions.into_iter().map(|d| d.name).collect();
+            assert_eq!(got, want);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }
