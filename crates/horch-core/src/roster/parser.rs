@@ -132,13 +132,19 @@ mod tests {
     #[test]
     fn a_crlf_file_parses_to_the_same_teammate_and_base_as_its_lf_form() {
         let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-        let lf = std::fs::read_to_string(teammates.join("opus.md")).unwrap();
+        // A Windows checkout can give these files CRLF already: take the
+        // LF form first, or the CRLF form would hold `\r\r\n`.
+        let lf = std::fs::read_to_string(teammates.join("opus.md"))
+            .unwrap()
+            .replace("\r\n", "\n");
         let crlf = lf.replace('\n', "\r\n");
         assert_eq!(
             parse_teammate("opus", &crlf).unwrap(),
             parse_teammate("opus", &lf).unwrap()
         );
-        let lf = std::fs::read_to_string(teammates.join("_base/channel.md")).unwrap();
+        let lf = std::fs::read_to_string(teammates.join("_base/channel.md"))
+            .unwrap()
+            .replace("\r\n", "\n");
         let crlf = lf.replace('\n', "\r\n");
         assert_eq!(
             parse_base("channel", &crlf).unwrap(),

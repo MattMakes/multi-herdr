@@ -251,7 +251,7 @@ fn f7_bad_base_file_keeps_the_builtin_base() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("teammates");
     std::fs::create_dir_all(dir.join("_base")).unwrap();
-    let path = dir.join("_base/fleet-worker.md");
+    let path = dir.join("_base").join("fleet-worker.md");
     std::fs::write(&path, "no frontmatter here\n").unwrap();
 
     let r = Roster::load_layered(None, Some(&dir), None).unwrap();
