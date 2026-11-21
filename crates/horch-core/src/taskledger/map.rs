@@ -597,16 +597,24 @@ fn ticket_path(row: &[String], dir: &Path) -> Option<PathBuf> {
         .find(|p| p.extension().is_some_and(|e| e == "md") && p.is_file())
 }
 
-/// `ticket` as written relative to `relative_to` when it resolves inside it.
+/// `text` with `/` for each `\`: the form of a path in output that a worker
+/// or a file reads, the same on each OS. Windows prints `tickets\MAP.md`.
+pub(crate) fn forward_slashes(text: &str) -> String {
+    text.replace('\\', "/")
+}
+
+/// `ticket` as written relative to `relative_to` when it resolves inside it,
+/// with `/` on each OS.
 fn project_path(ticket: &Path, relative_to: &Path) -> String {
     let canon = ticket.canonicalize().unwrap_or(ticket.to_path_buf());
     let base = relative_to
         .canonicalize()
         .unwrap_or(relative_to.to_path_buf());
-    canon
+    let text = canon
         .strip_prefix(&base)
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| canon.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| canon.to_string_lossy().into_owned());
+    forward_slashes(&text)
 }
 
 /// The personas of a ticket; a `Persona` cell wins over the ticket's line.
@@ -1257,6 +1265,16 @@ mod tests {
         assert_eq!(f.parallel, Some(false));
         assert_eq!(f.check.as_deref(), Some("cargo test -p x"));
         assert_eq!(f.own, vec!["src/a.rs", "src/b/"]);
+    }
+
+    /// Windows prints `tickets\\MAP.md` for the relative path of a ticket file
+    /// (tests of `taskledger::map` in CI run 5, for example
+    /// `a_map_with_issue_blockers`); the product text has `/` on each OS.
+    #[test]
+    fn a_windows_form_path_prints_with_forward_slashes() {
+        assert_eq!(forward_slashes("tickets\\MAP.md"), "tickets/MAP.md");
+        assert_eq!(forward_slashes("a\\b\\c.md"), "a/b/c.md");
+        assert_eq!(forward_slashes("tickets/MAP.md"), "tickets/MAP.md");
     }
 
     #[test]

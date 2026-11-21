@@ -37,7 +37,22 @@ fn golden(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden")
         .join(format!("{name}.txt"));
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    lf_text(&text)
+}
+
+/// `text` with LF line ends. A Windows checkout of a golden file can have CRLF
+/// (`core.autocrlf`); the product prompts have LF on each OS.
+fn lf_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// A golden file with CRLF line ends reads as the LF text of the product.
+#[test]
+fn a_crlf_golden_reads_as_its_lf_form() {
+    assert_eq!(lf_text("a\r\nb\r\n"), "a\nb\n");
+    assert_eq!(lf_text("a\nb\n"), "a\nb\n");
 }
 
 /// Compare against the compiled-in roster, not a runtime directory: this must
