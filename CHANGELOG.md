@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.2 - 2026-11-21
+
 - Fix: the video, design and `ui-prop-tester` tools no longer leave copies of
   Google Chrome on a macOS disk. Chrome copies its app into a
   `code_sign_clone` folder at each start. A Chrome that a tool killed during
