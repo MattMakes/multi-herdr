@@ -214,8 +214,6 @@ fn profile_is_marked_healthy_again_when_conformance_passes() {
     assert!(is_bound(&w.choices(), &task));
 }
 
-/// [`report`] with "Operator boundary" not proved: no fleetd served the
-/// command channel of the run.
 fn not_proved(cli: &str, failed: &[Check]) -> ConformanceReport {
     let mut r = report(cli, failed);
     r.checks.push(CheckResult::not_proved(
@@ -225,9 +223,6 @@ fn not_proved(cli: &str, failed: &[Check]) -> ConformanceReport {
     r
 }
 
-/// A check that is not proved because fleetd was not ready changes the
-/// health of no profile: a healthy profile stays healthy, and an unhealthy
-/// one stays unhealthy. A failed check of the same run still marks.
 #[test]
 fn not_proved_check_changes_no_health() {
     let mut w = World::new();

@@ -186,8 +186,6 @@ fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        // The helper exits with no wait: the detached child must outlive
-        // it. The parent test stops that child by its pid.
         let pid = group::spawn_detached(&mut cmd)
             .expect("start the detached child")
             .id();

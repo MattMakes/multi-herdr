@@ -501,7 +501,6 @@ fn moved(ctx: &JobCtx<'_>, tx: &Connection, id: &str, to: &str, cause: &str) -> 
 }
 
 /// The owner of the `active` row `row`, as the ledger gives it.
-/// `outcomes` are the outcomes of the owner attempts of the `active` rows.
 fn owner(
     tx: &Connection,
     row: &WorktreeRow,
@@ -540,8 +539,6 @@ fn outcome_of<'a>(
     outcomes.get(attempt)?.as_deref()
 }
 
-/// The outcome of the owner attempt of each row of `rows`, in 1 statement
-/// for any count of rows.
 fn owner_outcomes(
     tx: &Connection,
     rows: &[WorktreeRow],
@@ -593,10 +590,6 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
     Ok(())
 }
 
-/// The landing state of the task branch of each `landing` row, by branch
-/// name, and the stamp of the last event that moved that branch to
-/// `landed`. Each is 1 set read of the context that owns its table, on 1
-/// snapshot: 2 statements for any count of rows.
 struct Branches {
     states: BTreeMap<String, Option<String>>,
     landed_at: BTreeMap<String, String>,
@@ -952,8 +945,6 @@ mod landing_reads_tests {
         store: Store,
     }
 
-    /// A ledger with 1 task, 1 worker and 1 feature. Each tree of `trees`
-    /// is (id, state, branch, owner attempt).
     fn ledger(trees: &[(&str, &str, &str, Option<&str>)]) -> TreeWorld {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
@@ -1038,7 +1029,6 @@ mod landing_reads_tests {
         }
     }
 
-    /// The reads of 1 row, as the steps read them before the set reads.
     fn branch_of_one_by_one(
         tx: &Connection,
         row: &WorktreeRow,
@@ -1162,8 +1152,6 @@ mod landing_reads_tests {
         }
     }
 
-    /// T-286, by count: the steps `landings` and `act` run the same
-    /// statements for 3 and for 300 `landing` rows.
     #[test]
     fn landings_and_act_run_the_same_statements_for_3_and_300_landing_rows() {
         let count = |n: usize| {

@@ -374,8 +374,6 @@ fn operator_reach(operator: &OperatorPaths) -> Vec<Unreachable> {
         })
         .map_err(|why| (why, false));
     let deadline = std::time::Instant::now() + CHANNEL_CONNECT_LIMIT;
-    // No socket, or a socket that no process accepts on: no channel
-    // server exists.
     let channel = horch_platform::channel::Stream::connect(&operator.channel, deadline)
         .map(drop)
         .map_err(|e| {
@@ -781,8 +779,7 @@ fn observe(
 }
 
 /// The identity of `folder` on the host, read by the runner outside the
-/// sandbox: `<device>:<inode>`. An OS with no device and inode of a folder
-/// gives no identity, which the verdict reads as "not visible".
+/// sandbox: `<device>:<inode>`.
 fn host_folder(folder: &Path) -> HostFolder {
     let id = std::fs::metadata(folder)
         .map_err(|e| e.to_string())
