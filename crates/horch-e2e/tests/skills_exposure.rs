@@ -99,12 +99,29 @@ fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
 
 const PROBE_FLAGS: [&str; 2] = ["--version", "--input-format"];
 
+/// The calls of agent fake `fake` that are not a probe and not a launch of
+/// the adapter conformance job of the test fleetd. That job launches each
+/// agent in its own folder `<fleet root>/conformance/conformance-<id>`, and
+/// it can finish before the spawn when the host is fast. It is not the
+/// worker's agent.
 fn agent_calls(h: &Harness, fake: &str) -> Vec<Value> {
+    let fleet = h.fleet_root();
+    let roots = [fleet.clone(), fleet.canonicalize().unwrap_or(fleet)];
+    let folders: Vec<String> = roots
+        .iter()
+        .map(|r| {
+            r.join("conformance/conformance-")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
     h.calls_of(fake)
         .into_iter()
         .filter(|c| {
             let argv = strings(&c["argv"]);
-            !argv.iter().any(|a| PROBE_FLAGS.contains(&a.as_str()))
+            !argv.iter().any(|a| {
+                PROBE_FLAGS.contains(&a.as_str()) || folders.iter().any(|f| a.contains(f.as_str()))
+            })
         })
         .collect()
 }
