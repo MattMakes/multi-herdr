@@ -117,6 +117,7 @@ headless Chrome:
 
 ```bash
 "$CHROME" --headless=new --disable-gpu --hide-scrollbars \
+  --disable-features=MacAppCodeSignClone \
   --window-size=1920,1080 --screenshot=qa/directions/d1.png \
   "file://$PWD/directions/d1/index.html"
 ```

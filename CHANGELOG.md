@@ -4,6 +4,21 @@
 
 ## Unreleased
 
+- Fix: the video, design and `ui-prop-tester` tools no longer leave copies of
+  Google Chrome on a macOS disk. Chrome copies its app into a
+  `code_sign_clone` folder at each start. A Chrome that a tool killed during
+  its start left that copy behind, about 2 GB apparent size for each one, and
+  macOS recorded each copy as one more "Google Chrome" in its Local Network
+  privacy list. With many conflicting records, the operator's own Chrome can
+  lose access to devices on the local network (`ERR_ADDRESS_UNREACHABLE`).
+  Each tool now starts Chrome with `--disable-features=MacAppCodeSignClone`,
+  so Chrome makes no copy. The tools are `render_frames.mjs`,
+  `text_audit.mjs`, `capture.mjs`, `materials.mjs`, `check_page.py` and
+  `ui-prop-tester`. The commands in the `video-direction` and
+  `video-motion-match` skills have the switch too. Old copies stay in
+  `$TMPDIR/../X/com.google.Chrome.code_sign_clone/`: quit Chrome, then delete
+  that folder.
+
 ## v0.5.1 - 2026-11-17
 
 - The `incremental-game-design` skill of `game-design-incremental-specialist`

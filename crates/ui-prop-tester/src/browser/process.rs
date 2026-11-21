@@ -107,7 +107,11 @@ impl ChromeProcess {
                 "--disable-sync",
                 "--disable-extensions",
                 "--disable-smooth-scrolling",
-                "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,DialMediaRouteProvider",
+                // MacAppCodeSignClone: on macOS, Chrome copies its app into a code_sign_clone
+                // folder at each start. A Chrome killed during its start leaves that copy on
+                // the disk, and macOS records each copy as one more "Google Chrome" in its
+                // privacy lists. The switch stops the copy.
+                "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,DialMediaRouteProvider,MacAppCodeSignClone",
                 "--metrics-recording-only",
                 "--password-store=basic",
                 "--use-mock-keychain",
