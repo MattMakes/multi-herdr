@@ -38,8 +38,7 @@ struct World {
 impl World {
     fn new() -> World {
         // A short path: the daemon socket path of a launch must stay within
-        // 103 bytes, and the default temp dir of macOS is long. Windows has
-        // no `/tmp`: it uses its temp folder.
+        // 103 bytes, and the default temp dir of macOS is long.
         let root = if cfg!(unix) {
             PathBuf::from("/tmp")
         } else {

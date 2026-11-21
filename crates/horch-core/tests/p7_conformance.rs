@@ -61,7 +61,6 @@ fn sealed(dir: &Path, name: &str) -> PathBuf {
 
 /// The folder of each test machine. On Linux the sandbox mounts a new
 /// empty tmpfs on `/tmp`, so a folder in `/tmp` is not visible in it.
-/// Windows has no `/tmp`: it uses its temp folder.
 fn machine_root() -> PathBuf {
     if cfg!(target_os = "linux") {
         PathBuf::from("/var/tmp")

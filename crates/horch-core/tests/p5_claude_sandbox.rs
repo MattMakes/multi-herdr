@@ -32,7 +32,6 @@ struct Fleet {
 }
 
 fn fleet() -> Fleet {
-    // Windows has no `/tmp`: it uses its temp folder.
     let base = if cfg!(unix) {
         PathBuf::from("/tmp")
     } else {
