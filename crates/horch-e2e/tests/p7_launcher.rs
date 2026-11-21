@@ -471,7 +471,6 @@ fn seed(h: &Harness, check: &str, agent: &Child) -> (String, PathBuf, PathBuf) {
         ticket_snapshot: "# t1\n".into(),
         extra: None,
         handoff: None,
-        unlanded: None,
         idea: None,
         feature: None,
         covers: Vec::new(),

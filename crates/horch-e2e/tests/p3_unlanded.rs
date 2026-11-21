@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use horch_core::fleetd::task_execution::application::dispatch::Bound;
-use horch_core::taskledger::finish;
 use horch_core::taskledger::finish::codesweep::REVIEWERS;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::Run;
@@ -351,11 +350,10 @@ fn finding_of(h: &Harness, path: &Path) -> Value {
     of[0].clone()
 }
 
+/// The worker `w` runs `horch ledger done --unlanded` in its fleetd
+/// attempt. The next passes park its task.
 fn park(h: &Harness, w: &str, reason: &str) {
-    h.without_fleetd(|| {
-        let mut store = Store::open(&ledger(h)).unwrap();
-        finish::complete(&mut store, w, "parked", Some(reason)).unwrap();
-    });
+    ok_in_attempt(h, w, &["ledger", "done", "--unlanded", reason, "parked"]);
 }
 
 fn parked(h: &Harness) -> (String, PathBuf, Run) {

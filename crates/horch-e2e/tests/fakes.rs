@@ -1065,7 +1065,6 @@ mod phase4 {
             ticket_snapshot: "# T1\n".into(),
             extra: None,
             handoff: None,
-            unlanded: None,
             idea: None,
             feature: None,
             covers: Vec::new(),

@@ -385,7 +385,6 @@ mod tests {
             ticket_snapshot: "# t\n".into(),
             extra: None,
             handoff: None,
-            unlanded: None,
             idea: None,
             feature: None,
             covers: Vec::new(),

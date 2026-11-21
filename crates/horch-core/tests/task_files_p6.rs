@@ -32,7 +32,6 @@ fn facts(root: &Path) -> TaskFacts {
         ticket_snapshot: "# 07: retry\n\nDo the work.\n".into(),
         extra: None,
         handoff: None,
-        unlanded: None,
         idea: Some("I-0007".into()),
         feature: Some("F-0003".into()),
         covers: vec!["R1".into(), "R2".into()],

@@ -50,7 +50,6 @@ fn facts(root: &Path) -> TaskFacts {
         ticket_snapshot: SNAPSHOT.into(),
         extra: None,
         handoff: None,
-        unlanded: None,
         idea: None,
         feature: None,
         covers: Vec::new(),
