@@ -1906,7 +1906,6 @@ fn sandbox_calls(h: &Harness) -> Vec<Value> {
         .collect()
 }
 
-/// The processes with `marker` in their command line.
 fn marked(marker: &str) -> Vec<String> {
     horch_e2e::process::try_processes()
         .expect("listing the processes")

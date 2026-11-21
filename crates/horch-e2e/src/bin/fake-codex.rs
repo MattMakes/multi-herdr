@@ -465,9 +465,6 @@ fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     cmd
 }
 
-/// `command` in the job sandbox of the platform: writes only to `writable`
-/// and the temp folder, and a PID namespace that a KILL of the job group
-/// ends. With no platform sandbox the command runs unconfined.
 #[cfg(not(target_os = "macos"))]
 fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     let plain = || {
