@@ -99,6 +99,8 @@ fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
 
 const PROBE_FLAGS: [&str; 2] = ["--version", "--input-format"];
 
+/// A launch of the fleetd conformance job (in `<fleet root>/conformance/conformance-<id>`)
+/// is not the worker's agent: it can finish before the spawn on a fast host.
 fn agent_calls(h: &Harness, fake: &str) -> Vec<Value> {
     let fleet = h.fleet_root();
     let roots = [fleet.clone(), fleet.canonicalize().unwrap_or(fleet)];
