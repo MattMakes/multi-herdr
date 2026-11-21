@@ -2631,8 +2631,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .collect();
         assert_eq!(
             covered.len(),
-            82,
-            "the rule should cover 82 claude teammates"
+            83,
+            "the rule should cover 83 claude teammates"
         );
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");
         assert!(!covered.contains(&"audio-reviewer"), "{covered:?}");
