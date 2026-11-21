@@ -50,12 +50,12 @@ _FADE_TOP_HZ = 0.45 * SR
 _CYCLE = 2.0 * pi
 _TINY = 1e-12
 _EMPTY = 1e-30
-_SHORTEST = 1e-4  # seconds; keeps time constants above 0
+_SHORTEST = 1e-4
 _SHORTEST_HIT = 1e-5
-_BYPASS = 0.005  # width, pan and wet at or under this do nothing
+_BYPASS = 0.005
 _SEMITONES = 12.0
-_MS = 48  # samples in 1 ms
-_HALF_SPAN = 120  # samples each side of a level window
+_MS = 48
+_HALF_SPAN = 120
 _HOP = 240
 _QUARTER_OCT = 2 ** 0.25
 
@@ -199,7 +199,7 @@ def _taper_end(sig: ndarray, cnt: int) -> ndarray:
     if cnt <= 0:
         return sig
     gain = cos(linspace(0, pi / 2, cnt)) ** 2
-    gain[-1] = 0.0  # the float cosine of pi/2 is a little above 0
+    gain[-1] = 0.0
     return _apply_gain(sig, slice(-cnt, None), gain)
 
 
@@ -245,8 +245,6 @@ def finish(y: ndarray, r: np.random.Generator, hp: float = 80, lp: float = 12000
     return _close_edges(spaced, end_db, fade)
 
 
-# Measures of a finished render. They need no model.
-
 def _first_at(mask: ndarray) -> int | None:
     found = flatnonzero(mask)
     if len(found):
@@ -263,7 +261,6 @@ def _power_curve(sig: ndarray) -> ndarray:
     return convolve(window, ones(10) / 10, mode="same")
 
 
-# Power ratios for drops of 20, 30, 40 and 45 dB.
 _DROP_20 = 1e-2
 _DROP_30 = 1e-3
 _DROP_40 = 1e-4

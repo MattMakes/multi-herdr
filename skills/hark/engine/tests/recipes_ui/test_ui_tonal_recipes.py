@@ -24,8 +24,6 @@ def inside(m: dict, study: dict) -> int:
     return sum(1 for k, (lo, hi, _) in study.items() if m.get(k) is not None and lo <= m[k] <= hi)
 
 
-# ---------------------------------------------------------------- ui_pop
-
 def test_ui_pop_metadata():
     assert ui_pop.TARGET == "a soft rounded pop, a small bubble popping in a user interface"
     assert ui_pop.ALTS == ["a mouse click", "a water drop", "a wooden knock", "a synth beep", "a finger snap"]
@@ -80,8 +78,6 @@ def test_ui_pop_sweep_replaces_glide():
     p = dict(ui_pop.DEFAULTS, bend=24, sweep=0.1, jit=0, room=0)
     assert np.isfinite(ui_pop.render(p, np.random.default_rng(1))).all()
 
-
-# --------------------------------------------------------------- shutter
 
 def test_shutter_metadata_and_tables():
     assert shutter.TARGET == "a camera shutter click"

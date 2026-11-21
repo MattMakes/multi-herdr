@@ -1,13 +1,3 @@
-//! pi: `pi --model <pattern> --thinking <level> -- "<prompt>"`.
-//!
-//! pi's `--session-id` creates the session if it is missing, so horch mints
-//! the id and nothing is discovered after launch.
-//!
-//! Each launch also loads horch's compaction extension
-//! (`assets/pi/horch-compact.ts`, X3) with `--extension`: pi's summary is
-//! then built from the session, with no model call, and keeps horch's
-//! keep-list. The operator's `~/.pi/agent` is not read or written.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,12 +11,8 @@ use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
-/// The fleet compaction extension, as this horch build ships it.
 pub(crate) const COMPACT_EXTENSION: &str = include_str!("../../assets/pi/horch-compact.ts");
 
-/// Where a launch keeps the extension: under the state root, named by the
-/// first 12 hex digits of its SHA-256. A new horch version writes a new
-/// file, so a live pane's file never changes under it.
 pub(crate) fn compact_extension_path(state_root: &Path) -> PathBuf {
     let digest = Sha256::digest(COMPACT_EXTENSION.as_bytes());
     let hex: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
@@ -36,10 +22,6 @@ pub(crate) fn compact_extension_path(state_root: &Path) -> PathBuf {
         .join(format!("horch-compact-{hex}.ts"))
 }
 
-/// Make the extension file hold exactly the embedded bytes, mode 0600, in
-/// dirs of mode 0700. A Codex pane can write the state root (W21), so an
-/// existing file is compared byte for byte, and anything else - other
-/// bytes, a link, another mode - is replaced (temp name, then rename).
 pub(crate) fn install_compact_extension(state_root: &Path) -> Result<PathBuf> {
     let path = compact_extension_path(state_root);
     let dir = path.parent().expect("the path has a parent");
@@ -52,7 +34,6 @@ pub(crate) fn install_compact_extension(state_root: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// A regular file (not a link) with mode 0600 and the embedded bytes.
 fn is_intact(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && private_mode(&m))
         && std::fs::read(path).is_ok_and(|bytes| bytes == COMPACT_EXTENSION.as_bytes())
@@ -76,9 +57,6 @@ impl Harness for Pi {
         HarnessKind::Pi
     }
 
-    /// `--extension <path>` for the fleet compaction extension. pi loads an
-    /// explicit path also under `--no-extensions`. When the file cannot be
-    /// written, the pane starts without it and pi writes its own summary.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         let mut prepared = Prepared::default();
         match install_compact_extension(&ctx.paths.state_root) {
@@ -114,9 +92,6 @@ impl Harness for Pi {
     }
 }
 
-/// pi and Prime Agent read skills from `--skill <dir>`. One flag names the
-/// bundle's `skills/` directory, which holds exactly the activated skills; it
-/// goes into `args`, before the `--` that fences off the prompt.
 pub(super) fn with_skill_flag(teammate: &Teammate, skills: &Bundle) -> Teammate {
     let mut adjusted = teammate.clone();
     adjusted.args.extend([
@@ -126,11 +101,6 @@ pub(super) fn with_skill_flag(teammate: &Teammate, skills: &Bundle) -> Teammate 
     adjusted
 }
 
-/// pi and Prime Agent: `<bin> --model <pattern> --thinking <level> -- "<prompt>"`.
-///
-/// Neither has an approval gate to bypass: their tools run, which is what makes
-/// them usable in a pane nobody is watching. `permission_mode` therefore has
-/// nothing to map onto, and the roster check rejects it rather than pretending.
 pub(super) fn pi_family_command(
     bin: std::path::PathBuf,
     teammate: &Teammate,
@@ -149,22 +119,15 @@ pub(super) fn pi_family_command(
     push_isolation_args(&mut cmd, teammate, caps);
     push_session_args(&mut cmd, session, caps);
     cmd.args(&teammate.args);
-    // `--` ends option parsing: without it a prompt beginning with a dash would
-    // be read as a flag.
     cmd.arg("--").arg(prompt);
     Ok(cmd)
 }
 
-/// The Rust build of Prime refuses every tool selection flag ("Unknown
-/// option", exit 1), and the roster check rejects `tools:` and
-/// `disallowed_tools` on a Prime teammate, so these only ever fire for pi.
 fn push_tool_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
     if !caps.tool_selection {
         return;
     }
     if let Some(tools) = &teammate.tools {
-        // `Some([])` means "no tools at all", which is its own flag here
-        // rather than an empty list.
         if tools.is_empty() {
             cmd.arg("--no-tools");
         } else {
@@ -177,10 +140,6 @@ fn push_tool_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
     }
 }
 
-/// Discovery of everything the repo or the operator might have lying around.
-/// Nothing here is on by default in a fleet: a worker with one narrow job
-/// should not inherit a project's extensions or the operator's skills.
-/// Prime 0.10.0 loads no extensions and refuses `--no-extensions`.
 fn push_isolation_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabilities) {
     if teammate.inherit_plugins {
         return;
@@ -193,10 +152,6 @@ fn push_isolation_args(cmd: &mut Command, teammate: &Teammate, caps: &Capabiliti
         .arg("--no-themes");
 }
 
-/// pi's `--session-id` creates the session if it does not exist, so a fresh
-/// launch and a resume are the same flag with a different id. Prime has no
-/// such flag: `horch worker` gives it a `--session-dir` it owns instead, and
-/// reads back whatever session appears there.
 fn push_session_args(cmd: &mut Command, session: Session<'_>, caps: &Capabilities) {
     let (flag, id) = match (session, caps.caller_minted_session) {
         (Session::Fresh(id) | Session::Resume(id), true) => ("--session-id", id),
@@ -213,8 +168,6 @@ mod tests {
     use super::*;
     use crate::runtime::MapEnv;
 
-    /// Prepare one pi pane with `tmp/home` as `$HOME` and `tmp/state` as
-    /// the state root.
     fn prepare_in(tmp: &Path) -> (RuntimeContext, Prepared) {
         let home = tmp.join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -263,8 +216,6 @@ mod tests {
         assert_eq!(mode(path.parent().unwrap()), 0o700);
         assert_eq!(mode(&tmp.path().join("state/pi")), 0o700);
 
-        // The flag goes into the teammate's args: before the `--` that
-        // fences off the prompt, and after `--no-extensions`.
         let mut teammate = Teammate {
             agent: HarnessKind::Pi,
             model: Some("ollama/qwen3.8".into()),
@@ -292,8 +243,6 @@ mod tests {
             .collect()
     }
 
-    /// The flags the Rust build of Prime 0.10.0 refuses with "Unknown
-    /// option" and exit 1.
     const PRIME_REFUSED: [&str; 6] = [
         "--no-extensions",
         "-e",
@@ -303,9 +252,6 @@ mod tests {
         "--exclude-tools",
     ];
 
-    /// A Prime command holds no flag that Prime 0.10.0 refuses, also with
-    /// tool lists set (the roster check rejects them first); a pi command
-    /// still has each of them.
     #[test]
     fn arc_10_a_prime_command_has_no_flag_prime_refuses() {
         for tools in [Some(vec![]), Some(vec!["read".to_string()])] {
@@ -386,7 +332,6 @@ mod tests {
         );
         assert_eq!(deny[2..4], ["--exclude-tools", "bash,edit"]);
 
-        // Tools first, then the deny list, then isolation, then `args`.
         let all = full_args(
             &pi_with(|t| {
                 t.effort = Some("high".into());
@@ -509,8 +454,6 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().ino(), before);
     }
 
-    /// A Codex pane can write the state root (W21): a changed file, a link,
-    /// or a loose mode is written again before pi loads it.
     #[test]
     fn x3_a_changed_extension_file_is_written_again() {
         let tmp = tempfile::tempdir().unwrap();
@@ -526,8 +469,6 @@ mod tests {
         prepare_in(tmp.path());
         assert_eq!(mode(&path), 0o600);
 
-        // A link to a file with the same bytes is still replaced, and its
-        // target is not touched.
         let elsewhere = tmp.path().join("elsewhere.ts");
         std::fs::write(&elsewhere, COMPACT_EXTENSION).unwrap();
         std::fs::remove_file(&path).unwrap();

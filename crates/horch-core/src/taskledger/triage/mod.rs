@@ -1,14 +1,3 @@
-//! Worktree triage (#308): every worktree that no step will take to an
-//! outcome, with the facts an operator needs to decide about it.
-//!
-//! [`collect`] lists the parked rows: ledger worktrees that no live worker
-//! holds and that are not `cleaned`, `archived` or `trashed`, and folders
-//! under `.worktrees/` that git knows and the ledger does not. Each row gets
-//! an ID (`W1`, `W2`, ...) in name order. The decisions are applied in
-//! [`apply`]; [`collect`] only reads the repository and the folders. A full
-//! measure stores each ledger row's bytes, so `ledger status` can sum them
-//! without a walk.
-
 pub mod apply;
 mod facts;
 pub mod refs;
@@ -28,41 +17,27 @@ use super::store::optional;
 
 pub use facts::{Age, Diff, Disk, Uncommitted};
 
-/// How much [`collect`] measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Measure {
-    /// Every fact: git history, the diff, the disk.
     Full,
-    /// Only which rows exist, their tips and branches: for a count, or for
-    /// `apply`.
     Ids,
 }
 
-/// 1 parked worktree.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Row {
-    /// `W1`, `W2`, ... in name order.
     pub id: String,
-    /// The folder's path under `.worktrees/`, or its last component.
     pub name: String,
-    /// `ledger` (a ledger row) or `folder` (git knows it, the ledger does not).
     pub origin: String,
     pub worktree_id: Option<String>,
-    /// The ledger status.
     pub status: Option<String>,
-    /// The decision recorded at an earlier triage (`KEEP` rows come back).
     pub decision: Option<String>,
-    /// `T-<seq> <title>`.
     pub task: Option<String>,
     pub task_id: Option<String>,
     pub run_id: Option<String>,
-    /// The open `import_findings` rows about this worktree.
     pub findings: Vec<i64>,
-    /// `None` for a detached HEAD.
     pub branch: Option<String>,
     pub path: String,
     pub base: String,
-    /// The commit the work is at; `None` when the branch and folder are gone.
     pub tip: Option<String>,
     pub on_disk: bool,
     pub age: Age,
@@ -71,16 +46,12 @@ pub struct Row {
     pub behind: usize,
     pub diff: Diff,
     pub uncommitted: Uncommitted,
-    /// Every commit has a patch-equivalent commit in base.
     pub superseded: bool,
-    /// Conflicting files of a merge into base; `None` when git cannot tell.
     pub conflicts: Option<usize>,
-    /// The newest finish step and its result.
     pub last_check: Option<String>,
     pub why_parked: Option<String>,
 }
 
-/// What a ledger row says, before the git facts.
 struct LedgerRow {
     worktree_id: String,
     repo_root: String,
@@ -98,7 +69,6 @@ struct LedgerRow {
     run_id: Option<String>,
 }
 
-/// The statuses of a worktree that is done with, one way or another.
 pub const SETTLED: [WorktreeStatus; 3] = [
     WorktreeStatus::Cleaned,
     WorktreeStatus::Archived,
@@ -146,7 +116,6 @@ fn canonical(p: &str) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
 }
 
-/// Whether a live worker holds the row: its own worker, or its task's.
 fn held_by_live_worker(conn: &Connection, row: &LedgerRow) -> Result<bool> {
     let current: Option<String> = match &row.task_id {
         Some(t) => optional(conn.query_row(
@@ -170,8 +139,6 @@ fn held_by_live_worker(conn: &Connection, row: &LedgerRow) -> Result<bool> {
     Ok(false)
 }
 
-/// Whether the row waits for a step that will take it on: a task that is
-/// queued, running or landing has a worker coming.
 fn task_pending(row: &LedgerRow) -> bool {
     row.task.as_ref().is_some_and(|(_, _, status, _)| {
         [TaskStatus::Queued, TaskStatus::Running, TaskStatus::Landing]
@@ -180,8 +147,6 @@ fn task_pending(row: &LedgerRow) -> bool {
     })
 }
 
-/// Whether nothing is left of the row to decide about: no folder, and no
-/// branch (or a row the ledger already marked as cleaned up).
 fn nothing_left(git: &Git, root: &Path, row: &LedgerRow) -> bool {
     !Path::new(&row.path).exists()
         && (row.cleaned_at.is_some()
@@ -189,7 +154,6 @@ fn nothing_left(git: &Git, root: &Path, row: &LedgerRow) -> bool {
             || !git.branch_exists(root, &row.branch))
 }
 
-/// Whether a ledger row is parked: no step will take it to an outcome.
 fn is_parked(conn: &Connection, git: &Git, root: &Path, row: &LedgerRow) -> Result<bool> {
     if nothing_left(git, root, row) {
         return Ok(false);
@@ -203,8 +167,6 @@ fn is_parked(conn: &Connection, git: &Git, root: &Path, row: &LedgerRow) -> Resu
     Ok(!task_pending(row) && !held_by_live_worker(conn, row)?)
 }
 
-/// The name of a worktree folder: its path under `<root>/.worktrees/`, else
-/// its last component.
 pub fn name_of(root: &Path, path: &Path) -> String {
     let under = root.join(".worktrees");
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -218,7 +180,6 @@ pub fn name_of(root: &Path, path: &Path) -> String {
     }
 }
 
-/// 1 entry of `git worktree list --porcelain`.
 #[derive(Debug, Clone)]
 pub(super) struct Listed {
     pub(super) path: String,
@@ -243,8 +204,6 @@ pub(super) fn listed_worktrees(git: &Git, root: &Path) -> Vec<Listed> {
     entries
 }
 
-/// Folders under `<root>/.worktrees/` that git knows and no unsettled ledger
-/// row names.
 fn folder_rows(git: &Git, root: &Path, known: &HashSet<PathBuf>) -> Vec<Listed> {
     let under = canonical(&root.join(".worktrees").to_string_lossy());
     listed_worktrees(git, root)
@@ -256,7 +215,6 @@ fn folder_rows(git: &Git, root: &Path, known: &HashSet<PathBuf>) -> Vec<Listed> 
         .collect()
 }
 
-/// The base a folder row is measured against: the default branch.
 pub fn default_branch(git: &Git, root: &Path) -> Option<String> {
     let remote_head = git
         .try_run(
@@ -278,7 +236,6 @@ pub fn default_branch(git: &Git, root: &Path) -> Option<String> {
         .or_else(|| git.current_branch(root))
 }
 
-/// The open findings about the worktree `id` at `path`.
 fn findings_of(conn: &Connection, id: Option<&str>, path: &str) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT finding_id FROM import_findings WHERE status = {open}
@@ -293,7 +250,6 @@ fn findings_of(conn: &Connection, id: Option<&str>, path: &str) -> Result<Vec<i6
     Ok(ids)
 }
 
-/// The newest finish step of `task_id`, as `<step> <status>`.
 fn last_check(conn: &Connection, task_id: Option<&str>) -> Result<Option<String>> {
     let Some(task) = task_id else {
         return Ok(None);
@@ -306,7 +262,6 @@ fn last_check(conn: &Connection, task_id: Option<&str>) -> Result<Option<String>
     ))
 }
 
-/// Why the row is parked: its reason, its task's summary, its worker's end.
 fn why_parked(conn: &Connection, row: &LedgerRow) -> Result<Option<String>> {
     let worker: Option<(Option<String>, Option<String>)> = match &row.worker_id {
         Some(w) => optional(conn.query_row(
@@ -330,7 +285,6 @@ fn why_parked(conn: &Connection, row: &LedgerRow) -> Result<Option<String>> {
     Ok((!parts.is_empty()).then(|| parts.join("; ")))
 }
 
-/// A row before its ID and git facts.
 fn ledger_row_of(conn: &Connection, root: &Path, l: &LedgerRow) -> Result<Row> {
     let mut row = Row::blank(root, &l.path, &l.base);
     row.origin = "ledger".into();
@@ -362,7 +316,6 @@ fn folder_row_of(conn: &Connection, root: &Path, l: &Listed, base: &str) -> Resu
 }
 
 impl Row {
-    /// A row with only an ID and a name, for tests of the reply parser.
     #[doc(hidden)]
     pub fn for_test(id: &str, name: &str) -> Row {
         let mut row = Row::blank(Path::new("/"), &format!("/{name}"), "main");
@@ -402,7 +355,6 @@ impl Row {
     }
 }
 
-/// The parked ledger rows of the repository at `root`.
 fn parked_ledger_rows(
     conn: &Connection,
     git: &Git,
@@ -423,8 +375,6 @@ fn parked_ledger_rows(
     Ok((rows, known))
 }
 
-/// Every parked worktree of the repository at `root` (its main checkout),
-/// in name order with IDs `W1`, `W2`, ...
 pub fn collect(conn: &Connection, git: &Git, root: &Path, measure: Measure) -> Result<Vec<Row>> {
     let (mut rows, known) = parked_ledger_rows(conn, git, root)?;
     let base = default_branch(git, root).unwrap_or_else(|| "HEAD".into());
@@ -436,14 +386,12 @@ pub fn collect(conn: &Connection, git: &Git, root: &Path, measure: Measure) -> R
         row.id = format!("W{}", i + 1);
         facts::measure(git, root, row, measure);
     }
-    // A read-only open lists without the bytes cache: the cache is optional.
     if measure == Measure::Full && !conn.is_readonly(rusqlite::MAIN_DB)? {
         store_bytes(conn, &rows)?;
     }
     Ok(rows)
 }
 
-/// Keep each measured ledger row's bytes and the time, for `ledger status`.
 fn store_bytes(conn: &Connection, rows: &[Row]) -> Result<()> {
     let at = super::util::now();
     for row in rows {
@@ -458,15 +406,12 @@ fn store_bytes(conn: &Connection, rows: &[Row]) -> Result<()> {
     Ok(())
 }
 
-/// [`collect`] on a machine with no ledger file: folder rows only. The scan
-/// does not create the file (#199).
 pub fn collect_without_ledger(git: &Git, root: &Path, measure: Measure) -> Result<Vec<Row>> {
     let mut conn = Connection::open_in_memory()?;
     super::schema::migrate(&mut conn)?;
     collect(&conn, git, root, measure)
 }
 
-/// The total bytes on disk of `rows` (measured rows only).
 pub fn total_bytes(rows: &[Row]) -> u64 {
     rows.iter()
         .filter_map(|r| r.disk.as_ref())
@@ -474,14 +419,11 @@ pub fn total_bytes(rows: &[Row]) -> u64 {
         .sum()
 }
 
-/// `--json`: `{"rows": [...], "pr_offered": <bool>}`. `pr_offered` is
-/// whether `gh` and a git remote exist, so `PR` is a valid decision.
 pub fn to_json(rows: &[Row], pr_offered: bool) -> String {
     serde_json::to_string_pretty(&serde_json::json!({ "rows": rows, "pr_offered": pr_offered }))
         .unwrap_or_default()
 }
 
-/// A byte count for people: `1.2 GB`, `340 MB`, `12 KB`.
 pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)];
     UNITS
@@ -491,7 +433,6 @@ pub fn human_bytes(bytes: u64) -> String {
         .unwrap_or_else(|| format!("{bytes} B"))
 }
 
-/// 1 line of facts per row, then the reply template.
 pub fn render(rows: &[Row]) -> String {
     if rows.is_empty() {
         return "No parked worktrees.\n".to_string();

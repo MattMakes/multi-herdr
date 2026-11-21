@@ -1,46 +1,7 @@
-//! Equalise the worker grid's column widths.
-//!
-//! # Why this exists
-//!
-//! `crate::workspace::layout::analyze_with` decides whether the grid is ragged by unioning the
-//! *exact integer* edges of every half-height pane and asking whether any pane
-//! strictly contains an edge the other row produced. It never reads the split
-//! tree. So identical column boundaries in both rows are not a nicety - they are
-//! the precondition the analysis is built on.
-//!
-//! Fresh splits satisfy that precondition but produce a halving cascade: three
-//! columns come out 1/2, 1/4, 1/4. Once any single divider drifts, the two rows
-//! stop agreeing on integers, `analyze` invents phantom columns, and it reports
-//! `ragged` for a grid whose rows both hold N panes. Acting on that advice adds a
-//! third pane to a column, which drives the grid to `offgrid`, where the advisor
-//! has no suggestion at all. Equalising is what keeps both rows on the same
-//! integers, so it repairs the advisor rather than threatening it.
-//!
-//! # Model
-//!
-//! A row is a right-leaning binary chain, not a flat N-way container: divider `k`
-//! is owned by a split spanning `[pos[k-1], x1]`. Moving it rescales everything
-//! to its right proportionally. Both facts are reproduced by [`plan`], so a
-//! planned op sequence matches what herdr actually does.
-//!
-//! # Convergence under interleaving
-//!
-//! The target is absolute, not relative: column `k` of an `n`-column row belongs
-//! at `x0 + round(k * w / n)`, derived only from the row's current extent and
-//! pane count. Two passes running concurrently therefore aim at the *same*
-//! schedule, so a nudge from one pass is never undone by the other - it is at
-//! worst redundant. That makes [`plan`] idempotent (see `plan_is_idempotent`) and
-//! interleaved passes converge on the next pass instead of oscillating, which is
-//! why the driver needs no locking. See `interleaved_passes_converge`.
-
 use crate::workspace::model::{Layout, LayoutPane};
 
-/// A column boundary within one cell of its target is left alone. Absorbs both
-/// border rows and herdr's rounding of a split ratio to four decimal places.
 const TOLERANCE: i64 = 1;
 
-/// Which way a divider moves. `herdr pane resize` also accepts up and down; the
-/// worker grid only ever moves vertical dividers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeDir {
     Left,
@@ -56,29 +17,20 @@ impl ResizeDir {
     }
 }
 
-/// One `herdr pane resize` call.
-///
-/// `amount` is a delta expressed as a fraction of the split container that owns
-/// the divider, which is what herdr's `--amount` means.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResizeOp {
     pub pane: String,
     pub direction: ResizeDir,
     pub amount: f64,
-    /// Where the divider sits now, and where this op aims it. Reported by
-    /// `horch balance --dry-run`.
     pub from_x: i64,
     pub to_x: i64,
 }
 
-/// One row of the worker grid, left to right.
 struct Row {
-    /// `(pane_id, x, width)`.
     panes: Vec<(String, i64, i64)>,
 }
 
 impl Row {
-    /// The left edge of the first pane and the right edge of the last.
     fn extent(&self) -> (i64, i64) {
         let first = &self.panes[0];
         let last = &self.panes[self.panes.len() - 1];
@@ -86,19 +38,11 @@ impl Row {
     }
 }
 
-/// Split the tab into its two worker rows, or `None` when this is not a settled
-/// 2-row grid.
-///
-/// Rows are grouped by `y`, never by `x`, so this stays correct precisely when
-/// the columns have drifted - which is the case that needs repairing.
 fn worker_rows(layout: &Layout, orchestrator: Option<&str>) -> Option<Vec<Row>> {
     let rows = two_rows(&grid_workers(layout, orchestrator)?)?;
     rows_match(&rows).then_some(rows)
 }
 
-/// The orchestrator is whatever the mailbox registered, else the leftmost
-/// full-height pane. Same rule as `layout::analyze`, so both agree on which
-/// panes form the grid.
 fn grid_orchestrator(layout: &Layout, orchestrator: Option<&str>) -> Option<String> {
     match orchestrator.filter(|s| !s.is_empty()) {
         Some(id) => Some(id.to_string()),
@@ -115,9 +59,6 @@ fn is_full(layout: &Layout, height: i64) -> bool {
     height >= layout.area.height - 1
 }
 
-/// Every pane but the orchestrator, or `None` when there is none or one owns a
-/// full-height column: the grid is mid-build and the advisor's `unpaired`
-/// handling should run before anything is equalised.
 fn grid_workers<'l>(layout: &'l Layout, orchestrator: Option<&str>) -> Option<Vec<&'l LayoutPane>> {
     let orch = grid_orchestrator(layout, orchestrator);
     let workers: Vec<&LayoutPane> = layout
@@ -128,7 +69,6 @@ fn grid_workers<'l>(layout: &'l Layout, orchestrator: Option<&str>) -> Option<Ve
     Some(workers).filter(|w| !w.is_empty() && !w.iter().any(|p| is_full(layout, p.rect.height)))
 }
 
-/// The workers grouped by `y` into 2 rows, each left to right.
 fn two_rows(workers: &[&LayoutPane]) -> Option<Vec<Row>> {
     let mut ys: Vec<i64> = workers.iter().map(|p| p.rect.y).collect();
     ys.sort_unstable();
@@ -148,41 +88,21 @@ fn two_rows(workers: &[&LayoutPane]) -> Option<Vec<Row>> {
     })
 }
 
-/// Whether the 2 rows hold the same number of panes (at least 2) over the
-/// same extent.
-///
-/// Unequal row lengths mean the grid is genuinely ragged - a column is half
-/// built or half drained. Equalising one row alone would move it off the other
-/// row's integers and manufacture exactly the phantom raggedness this module
-/// exists to prevent. Leave it for the advisor's ragged handling.
 fn rows_match(rows: &[Row]) -> bool {
     let n = rows[0].panes.len();
     n >= 2 && rows[1].panes.len() == n && rows[0].extent() == rows[1].extent()
 }
 
-/// Whether this tab is a settled 2-row worker grid, and so something [`plan`] is
-/// willing to touch at all.
-///
-/// False while a column is half built or half drained. An empty plan means one of
-/// two quite different things, and callers reporting to a human want to tell them
-/// apart.
 pub fn balanceable(layout: &Layout, orchestrator: Option<&str>) -> bool {
     worker_rows(layout, orchestrator).is_some()
 }
 
-/// The full sequence of resizes that makes every worker column the same width.
-///
-/// Pure: it plans against the geometry it is given, simulating herdr's
-/// proportional rescale so later ops in the sequence are planned against the
-/// positions the earlier ones will produce. Empty when the grid is already even,
-/// or when it is not a settled 2-row grid.
 pub fn plan(layout: &Layout, orchestrator: Option<&str>) -> Vec<ResizeOp> {
     worker_rows(layout, orchestrator)
         .map(|rows| rows.iter().flat_map(row_ops).collect())
         .unwrap_or_default()
 }
 
-/// The resizes that make 1 row's columns equal.
 fn row_ops(row: &Row) -> Vec<ResizeOp> {
     let n = row.panes.len();
     let (x0, x1) = row.extent();
@@ -191,13 +111,10 @@ fn row_ops(row: &Row) -> Vec<ResizeOp> {
         return ops;
     }
 
-    // `pos[k]` is the left edge of column k, so `pos[k]` for k >= 1 is
-    // divider k. Updated as we go to mirror what herdr will have done.
     let mut pos: Vec<i64> = row.panes.iter().map(|(_, x, _)| *x).collect();
 
     for k in 1..n {
         if let Some(op) = divider_op(row, &pos, k, (x0, x1)) {
-            // Moving divider k rescales the subtree to its right proportionally.
             let before = x1 - op.from_x;
             let after = x1 - op.to_x;
             for p in pos.iter_mut().skip(k + 1) {
@@ -211,16 +128,12 @@ fn row_ops(row: &Row) -> Vec<ResizeOp> {
     ops
 }
 
-/// The resize that puts divider `k` on its target, or `None` when it is
-/// within the tolerance or its container has no width.
 fn divider_op(row: &Row, pos: &[i64], k: usize, (x0, x1): (i64, i64)) -> Option<ResizeOp> {
     let n = row.panes.len();
     let w = x1 - x0;
     let target = x0 + ((k as f64) * (w as f64) / (n as f64)).round() as i64;
     let current = pos[k];
     let delta = target - current;
-    // Right-leaning chain: divider k is owned by a split spanning
-    // [pos[k-1], x1], and `--amount` is a fraction of that span.
     let container = x1 - pos[k - 1];
     if delta.abs() <= TOLERANCE || container <= 0 {
         return None;
@@ -244,8 +157,6 @@ mod tests {
     use super::*;
     use crate::workspace::model::{LayoutPane, Rect};
 
-    /// Build a tab: a full-height orchestrator on the left, then two worker rows
-    /// described by their column boundaries.
     fn grid(area_w: i64, orch_w: i64, top: &[i64], bottom: &[i64]) -> Layout {
         let h = 56;
         let mut panes = vec![LayoutPane {
@@ -285,12 +196,6 @@ mod tests {
         }
     }
 
-    /// Apply a planned op the way herdr does, so tests can check convergence
-    /// rather than just the shape of the first op.
-    ///
-    /// Models the right-leaning chain: the divider sits at the far edge of a leaf
-    /// column whose container runs from the previous divider to the row's right
-    /// edge, and moving it rescales the subtree to its right proportionally.
     fn apply(layout: &Layout, op: &ResizeOp) -> Layout {
         let mut out = layout.clone();
         let (row_y, divider) = {
@@ -303,7 +208,6 @@ mod tests {
         };
         let row: Vec<&LayoutPane> = out.panes.iter().filter(|p| p.rect.y == row_y).collect();
         let x1 = row.iter().map(|p| p.rect.x + p.rect.width).max().unwrap();
-        // The container's left edge is the divider before this one.
         let left = row
             .iter()
             .map(|p| p.rect.x)
@@ -335,8 +239,6 @@ mod tests {
         out
     }
 
-    /// The two properties that matter: both rows on identical integers (what
-    /// `layout::analyze` needs), and every column within a cell of even.
     fn assert_balanced(layout: &Layout) {
         let top = edges(layout, 1);
         assert_eq!(
@@ -376,7 +278,6 @@ mod tests {
         layout
     }
 
-    /// The halving cascade a fresh 2x3 grid comes out of `pane split` with.
     fn fresh_2x3() -> Layout {
         grid(306, 153, &[179, 256, 294, 332], &[179, 256, 294, 332])
     }
@@ -385,12 +286,9 @@ mod tests {
     fn fresh_three_column_grid_needs_one_op_per_row() {
         let ops = plan(&fresh_2x3(), Some("orch"));
         assert_eq!(ops.len(), 2, "1/2,1/4,1/4 -> thirds is one divider per row");
-        // Matches the move verified against herdr 0.7.4: divider 1 from 256 to
-        // 230, addressed as the second column's left edge.
         assert_eq!(ops[0].direction, ResizeDir::Left);
         assert_eq!(ops[0].pane, "r0c1");
         assert_eq!((ops[0].from_x, ops[0].to_x), (256, 230));
-        // 26 cells of a 153-cell container.
         assert!((ops[0].amount - 26.0 / 153.0).abs() < 1e-9);
     }
 
@@ -403,15 +301,12 @@ mod tests {
 
     #[test]
     fn repairs_a_drifted_row() {
-        // One row equalised, the other still a halving cascade: the exact state
-        // that makes `analyze` report 5 phantom columns and `ragged-bottom`.
         let drifted = grid(306, 153, &[179, 230, 281, 332], &[179, 256, 294, 332]);
         assert_balanced(&run(drifted));
     }
 
     #[test]
     fn four_columns_converge() {
-        // 1/2, 1/4, 1/8, 1/8 - the cascade four fresh splits produce.
         let fresh = grid(
             400,
             200,
@@ -430,18 +325,12 @@ mod tests {
         );
     }
 
-    /// Two workers finishing at once means two balance passes can interleave.
-    /// Because the target schedule is absolute, a nudge from one pass is at worst
-    /// redundant to the other, so the grid still converges - no locking needed.
     #[test]
     fn interleaved_passes_converge() {
         let start = fresh_2x3();
-        // Pass A applies its first op; pass B planned against the ORIGINAL
-        // geometry and applies a now-stale op on top.
         let stale = plan(&start, Some("orch")).remove(0);
         let after_a = apply(&start, &stale);
         let interleaved = apply(&after_a, &stale);
-        // The stale op overshot, but a fresh pass still lands the grid evenly.
         let out = run(interleaved);
         assert_balanced(&out);
         assert!(plan(&out, Some("orch")).is_empty());
@@ -455,8 +344,6 @@ mod tests {
 
     #[test]
     fn ragged_grid_is_left_alone() {
-        // A column half drained: bottom has 2 panes where top has 3. Equalising
-        // the bottom row alone would move it off the top row's integers.
         let ragged = grid(306, 153, &[179, 256, 294, 332], &[179, 256, 332]);
         assert!(plan(&ragged, Some("orch")).is_empty());
     }
@@ -497,18 +384,15 @@ mod tests {
         let named = plan(&fresh_2x3(), Some("orch"));
         assert!(!named.is_empty());
         assert_eq!(plan(&fresh_2x3(), None), named);
-        // An empty name counts as none.
         assert_eq!(plan(&fresh_2x3(), Some("")), named);
     }
 
     #[test]
     fn only_a_settled_two_row_grid_is_balanceable() {
         assert!(balanceable(&fresh_2x3(), Some("orch")));
-        // No workers at all.
         let mut alone = fresh_2x3();
         alone.panes.truncate(1);
         assert!(!balanceable(&alone, Some("orch")));
-        // Three worker rows.
         let mut three = fresh_2x3();
         three.panes.push(LayoutPane {
             pane_id: "third".into(),
@@ -520,7 +404,6 @@ mod tests {
             },
         });
         assert!(!balanceable(&three, Some("orch")));
-        // Rows that end at different edges.
         let uneven = grid(306, 153, &[179, 256, 332], &[179, 256, 300]);
         assert!(!balanceable(&uneven, Some("orch")));
         assert!(plan(&uneven, Some("orch")).is_empty());
@@ -528,7 +411,6 @@ mod tests {
 
     #[test]
     fn a_divider_right_of_its_target_moves_left_and_one_left_of_it_moves_right() {
-        // 2 columns over [179, 332): the even divider is at 256.
         let right_of = grid(306, 153, &[179, 290, 332], &[179, 290, 332]);
         let ops = plan(&right_of, Some("orch"));
         assert_eq!(ops.len(), 2);

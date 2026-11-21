@@ -17,8 +17,6 @@ from typing import Any
 
 import pytest
 
-# ---------------------------------------------------------------- fake agy
-
 FAKE_AGY = """#!/bin/sh
 if [ -n "$FAKE_AGY_LOG" ]; then
   printf '%s\\n' "$@" >> "$FAKE_AGY_LOG"

@@ -1,14 +1,9 @@
-//! Smoke tests for the fakes themselves: each fake answers the calls horch
-//! makes, in the shape horch parses. These are not requirement tests.
-
 use std::path::Path;
 use std::process::{Command, Output};
 
 use horch_e2e::harness::Harness;
 use serde_json::Value;
 
-/// Run one fake by the name of the program it stands in for, in the sealed
-/// environment of `h`.
 fn fake(h: &Harness, name: &str, args: &[&str]) -> Output {
     let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let mut cmd = Command::new(h.bin.join(exe));
@@ -17,8 +12,6 @@ fn fake(h: &Harness, name: &str, args: &[&str]) -> Output {
     cmd.output().expect("running a fake")
 }
 
-/// A fake's `--version` line. A failure names how the fake ended, so an
-/// empty answer under load shows its exit status or signal.
 fn version(h: &Harness, name: &str) -> String {
     let out = fake(h, name, &["--version"]);
     assert!(
@@ -80,7 +73,6 @@ fn fake_herdr_split_adds_pane_and_close_removes_it() {
     assert!(!fake(&h, "herdr", &["pane", "get", &new]).status.success());
     assert!(!fake(&h, "herdr", &["pane", "close", &new]).status.success());
 
-    // Both calls stay violations, so existing assertions keep their meaning.
     let violations = h.violations();
     assert!(
         violations.iter().any(|v| v.contains("pane split")),
@@ -101,7 +93,6 @@ fn fake_herdr_fail_split_and_fail_run() {
         .unwrap()
         .to_string();
 
-    // A list: `fail_split` combines with other scenarios.
     h.set("HORCH_FAKE_SCENARIO", "exec,fail_split");
     let split = fake(
         &h,
@@ -111,7 +102,6 @@ fn fake_herdr_fail_split_and_fail_run() {
     assert_eq!(split.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&split.stderr).contains("fail_split"));
     assert_eq!(pane_ids(&h), [root.as_str()], "state unchanged");
-    // `pane run` is not affected by `fail_split`.
     assert!(fake(&h, "herdr", &["pane", "run", &root, "true"])
         .status
         .success());
@@ -123,7 +113,6 @@ fn fake_herdr_fail_split_and_fail_run() {
     assert_eq!(run.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&run.stderr).contains("fail_run"));
     assert_eq!(pane_ids(&h), [root.as_str()], "state unchanged");
-    // And `fail_run` does not stop a split.
     assert!(fake(&h, "herdr", &["pane", "split", &root])
         .status
         .success());
@@ -174,8 +163,6 @@ fn fake_herdr_close_kills_the_exec_process() {
     assert!(!alive(&pid), "pane close kills the pane process");
 }
 
-/// herdr 0.8.2 has no top-level `wait`; `pane wait-output` matches pane
-/// text, and a timeout is exit 1 with the `timeout` error code.
 #[cfg(unix)]
 #[test]
 fn fake_herdr_answers_wait_output_like_herdr_0_8_2() {
@@ -191,7 +178,6 @@ fn fake_herdr_answers_wait_output_like_herdr_0_8_2() {
     assert_eq!(old.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&old.stderr).contains("unknown command: wait"));
 
-    // Typed but not entered: the line shows, its output does not.
     let typed = "echo SMOKE_TEST_$((40+2))";
     assert!(fake(&h, "herdr", &["pane", "send-text", &root, typed])
         .status
@@ -238,7 +224,6 @@ fn fake_opencode_session_list_matches_cwd() {
     let mut h = Harness::new("fakes-opencode");
     assert_eq!(version(&h, "opencode"), "1.18.33");
 
-    // The same call horch makes, through the library that parses it.
     let listed = fake(&h, "opencode", &["session", "list", "--format", "json"]);
     assert!(listed.status.success());
     let text = String::from_utf8_lossy(&listed.stdout).into_owned();
@@ -252,9 +237,6 @@ fn fake_opencode_session_list_matches_cwd() {
         std::fs::canonicalize(dir).unwrap(),
         std::fs::canonicalize(&h.project).unwrap()
     );
-    // The fields `horch_core::harness::opencode::parse_sessions` reads: `created` is
-    // milliseconds since the epoch and is recent, so the "after launch" filter
-    // keeps it.
     let created = records[0]["created"].as_u64().unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -265,7 +247,6 @@ fn fake_opencode_session_list_matches_cwd() {
         "{created} vs {now}"
     );
 
-    // A launch is recorded and exits 0 at once; a resume names its session.
     let launch = fake(
         &h,
         "opencode",
@@ -285,7 +266,6 @@ fn fake_opencode_session_list_matches_cwd() {
     assert_eq!(last["resumed"], "ses_old");
     assert_eq!(last["session_id"], id.as_str());
 
-    // `stay` keeps a launch alive until it is killed.
     h.set("HORCH_FAKE_SCENARIO", "stay");
     let mut cmd = Command::new(h.bin.join("opencode"));
     cmd.args(["--model", "opencode/m", "--prompt", "go"]);
@@ -327,8 +307,6 @@ fn fake_opencode_writes_transcript_rows_when_asked() {
     assert_eq!(rows[0]["n"], 1);
 }
 
-/// `prime-agent` with `TMPDIR` set, as horch scopes `status` and
-/// `shutdown`.
 fn fake_in(h: &Harness, tmpdir: &str, args: &[&str]) -> Output {
     let mut cmd = Command::new(h.bin.join("prime-agent"));
     cmd.args(args);
@@ -372,7 +350,6 @@ fn fake_prime_creates_session_file() {
     assert!(socket.is_file(), "the socket path exists");
     let id = horch_e2e::prime_session_id(&sessions_arg);
     assert!(id.starts_with("prime_") && id.len() == 6 + 16, "{id}");
-    // `find_session` takes the newest `.jsonl` in the directory.
     let files: Vec<_> = std::fs::read_dir(&sessions)
         .unwrap()
         .flatten()
@@ -392,7 +369,6 @@ fn fake_prime_creates_session_file() {
     assert_eq!(call["session_id"], id.as_str());
     assert_eq!(call["model"], "anthropic/claude-opus-5-5");
 
-    // A resume reuses the file it is given and mints no second one.
     let resume_file = files[0].to_string_lossy().into_owned();
     let mut resume_args = launch_args.to_vec();
     resume_args.splice(8..8, ["--resume", &resume_file]);
@@ -403,7 +379,6 @@ fn fake_prime_creates_session_file() {
         resume_file.as_str()
     );
 
-    // With no launch alive, `status --json` lists no daemon.
     let status = |h: &Harness, tmpdir: &str| -> Vec<Value> {
         json(&fake_in(h, tmpdir, &["status", "--json"]))
             .as_array()
@@ -412,7 +387,6 @@ fn fake_prime_creates_session_file() {
     };
     assert!(status(&h, &tmpdir).is_empty());
 
-    // `stay`: the launch is the daemon for its socket until it is stopped.
     h.set("HORCH_FAKE_SCENARIO", "stay");
     let mut cmd = Command::new(h.bin.join("prime-agent"));
     cmd.args(launch_args);
@@ -430,12 +404,10 @@ fn fake_prime_creates_session_file() {
         std::os::unix::net::UnixStream::connect(&socket).is_ok(),
         "a stay launch listens on its socket"
     );
-    // Another TMPDIR scans another dir: it sees and stops nothing.
     let elsewhere = format!("{}/", h.state.join("prime/other").display());
     assert!(status(&h, &elsewhere).is_empty());
     let out = json(&fake_in(&h, &elsewhere, &["shutdown", "--force", "--json"]));
     assert_eq!(out, serde_json::json!({"stopped": [], "failed": []}));
-    // Without --force: refused.
     let refused = fake_in(&h, &tmpdir, &["shutdown", "--json"]);
     assert!(!refused.status.success());
     let out = json(&refused);
@@ -445,7 +417,6 @@ fn fake_prime_creates_session_file() {
         .unwrap()
         .starts_with("confirmation required"));
     assert_eq!(child.try_wait().unwrap(), None);
-    // With --force: this launch stops.
     let stop = fake_in(&h, &tmpdir, &["shutdown", "--force", "--json"]);
     assert!(stop.status.success());
     let out = json(&stop);
@@ -458,8 +429,6 @@ fn fake_prime_creates_session_file() {
     );
 }
 
-/// The options Prime 0.10.0 refuses: "Unknown option", exit 1, and the
-/// call is still recorded.
 #[test]
 fn fake_prime_refuses_the_options_prime_0_10_refuses() {
     let h = Harness::new("fakes-prime-refused");
@@ -478,16 +447,11 @@ fn fake_prime_refuses_the_options_prime_0_10_refuses() {
             format!("Error: Unknown option: {flag}")
         );
     }
-    // After `--` it is prompt text.
     let out = fake(&h, "prime-agent", &["--model", "m/x", "--", "-e"]);
     assert!(out.status.success());
     assert_eq!(h.calls_of("prime").len(), 7);
 }
 
-/// Git output with each strict ISO UTC date `...T12:00:00Z` written as
-/// `...T12:00:00+00:00`. Git 2.50 prints the `Z` form for `%cI` and `%aI`;
-/// git 2.39 prints the `+00:00` form. Only a whole word that is a date
-/// changes, so a `Z` in a name stays.
 fn utc_offset_date(text: &str) -> String {
     let word = |w: &str| match w.strip_suffix('Z') {
         Some(time) if time.len() == 19 && time.as_bytes()[10] == b'T' => format!("{time}+00:00"),
@@ -500,7 +464,6 @@ fn utc_offset_date(text: &str) -> String {
 fn harness_with_git_makes_repo() {
     let h = Harness::new("fakes-git").with_git();
     let Some(git) = h.git_bin().map(|p| p.to_path_buf()) else {
-        // `with_git` already refused to go on under HORCH_REQUIRE_GIT=1.
         return;
     };
     assert!(git.is_absolute());
@@ -510,7 +473,6 @@ fn harness_with_git_makes_repo() {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
 
-    // 2 files, 1 commit, branch `main`, a clean tree.
     assert_eq!(git_out(&h, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
     assert_eq!(git_out(&h, &["rev-list", "--count", "HEAD"]), "1");
     assert_eq!(
@@ -526,11 +488,9 @@ fn harness_with_git_makes_repo() {
         "Horch Fixture <fixture@horch.invalid> 2026-09-28T12:00:00+00:00"
     );
 
-    // Pinned: the same fixture gives the same commit in every harness.
     let other = Harness::new("fakes-git-2").with_git();
     assert_eq!(other.head_sha(), Some(sha));
 
-    // The environment horch sees is pinned and names git by absolute path.
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg("/usr/bin/env");
     h.seal(&mut cmd);
@@ -546,8 +506,6 @@ fn harness_with_git_makes_repo() {
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "");
     assert!(!env.lines().any(|l| l.starts_with("ANTHROPIC_API_KEY=")));
 
-    // NFR-01: the fakes and exactly that one git are allowed; nothing else is,
-    // and git is not on the sealed PATH.
     assert!(h.allows_program(&h.bin.join("claude")));
     assert!(h.allows_program(&git));
     assert!(!h.allows_program(Path::new("/usr/bin/sh")));
@@ -558,13 +516,11 @@ fn harness_with_git_makes_repo() {
     assert!(String::from_utf8_lossy(&cmd.output().unwrap().stdout)
         .trim()
         .is_empty());
-    // Without `with_git`, no git is allowed.
     let plain = Harness::new("fakes-nogit");
     assert!(plain.git_bin().is_none() && plain.head_sha().is_none());
     assert!(!plain.allows_program(&git));
 }
 
-/// Start fake herdr `args` in the sealed environment of `h` without waiting.
 fn start_herdr(h: &Harness, args: &[&str]) -> std::process::Child {
     let mut cmd = Command::new(h.bin.join(format!("herdr{}", std::env::consts::EXE_SUFFIX)));
     cmd.args(args)
@@ -574,7 +530,6 @@ fn start_herdr(h: &Harness, args: &[&str]) -> std::process::Child {
     cmd.spawn().expect("starting fake herdr")
 }
 
-/// Wait up to `secs` for `child`. `None` when it still runs then.
 fn wait_up_to(child: &mut std::process::Child, secs: u64) -> Option<std::process::ExitStatus> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < until {
@@ -586,19 +541,15 @@ fn wait_up_to(child: &mut std::process::Child, secs: u64) -> Option<std::process
     None
 }
 
-/// The state lock dir of `h`'s fake herdr.
 fn state_lock(h: &Harness) -> std::path::PathBuf {
     let mut p = h.log.clone().into_os_string();
     p.push(".state.lock");
     p.into()
 }
 
-/// A call made after the test removed its temp dir (a detached `horch tile`
-/// can make one) fails at once. It used to wait for the lock for ever.
 #[test]
 fn fake_herdr_fails_when_the_harness_root_is_gone() {
     let mut h = Harness::new("fakes-gone");
-    // The fakes stay reachable; only the log's directory goes.
     let gone = h.root.join("gone");
     h.set("HORCH_FAKE_LOG", gone.join("fake.log").to_string_lossy());
     let mut child = start_herdr(&h, &["pane", "list"]);
@@ -612,8 +563,6 @@ fn fake_herdr_fails_when_the_harness_root_is_gone() {
     assert!(err.contains("the harness is gone"), "{err}");
 }
 
-/// A lock left by a dead call is taken over; a live holder's lock is kept,
-/// however long it holds it.
 #[cfg(unix)]
 #[test]
 fn fake_herdr_breaks_only_a_dead_holders_lock() {
@@ -644,7 +593,6 @@ fn fake_herdr_breaks_only_a_dead_holders_lock() {
     assert!(status.success());
 }
 
-/// Whether a process with this pid runs.
 #[cfg(unix)]
 fn runs(pid: &str) -> bool {
     Command::new("/bin/sh")
@@ -654,7 +602,6 @@ fn runs(pid: &str) -> bool {
         .success()
 }
 
-/// Wait up to 10 s for `file` to hold a pid, and return it.
 #[cfg(unix)]
 fn pid_in(file: &Path) -> String {
     let started = std::time::Instant::now();
@@ -672,9 +619,6 @@ fn pid_in(file: &Path) -> String {
     }
 }
 
-/// A test that ends with a pane open (it failed before `horch done`, or
-/// never closed it) leaves nothing running: teardown kills the pane's
-/// process group, and the test does not fail for it.
 #[cfg(unix)]
 #[test]
 fn teardown_kills_the_open_panes() {
@@ -697,20 +641,13 @@ fn teardown_kills_the_open_panes() {
     assert!(!runs(&pid), "teardown kills the pane command");
 }
 
-/// The mail courier redelivers until `horch inbox` acknowledges, so a test
-/// that queues orchestrator mail leaves it running. Only its environment
-/// names the harness root, not its command line: teardown finds it by its
-/// environment, stops it, and the test does not fail for it.
 #[cfg(unix)]
 #[test]
 fn teardown_stops_the_mail_courier_of_its_state() {
     let h = Harness::new("teardown-courier");
-    // Orchestrator mail and no orchestrator: the courier waits for one.
     horch_core::messaging::mail::Mail::under(&h.state, "w1")
         .enqueue("sonnet-1", "DONE: x")
         .unwrap();
-    // Started as horch starts it: detached (the shell exits) in its own
-    // process group, with the harness paths only in its environment.
     let mut cmd = Command::new("/bin/sh");
     h.seal(&mut cmd);
     cmd.args([
@@ -738,21 +675,16 @@ fn teardown_stops_the_mail_courier_of_its_state() {
     drop(h);
     let stopped = !runs(&pid);
     if !stopped {
-        // SIGKILL, so this test never leaks the process itself.
         let _ = Command::new("/bin/kill").args(["-9", &pid]).status();
     }
     assert!(stopped, "teardown stops the courier {pid}");
 }
 
-/// A process can start after teardown's first SIGTERM: a pane command
-/// that starts the mail courier on its way out. Teardown stops it too, and
-/// the test does not fail for it.
 #[cfg(unix)]
 #[test]
 fn teardown_stops_a_process_that_starts_after_its_first_signal() {
     let h = Harness::new("teardown-late");
     let warm = "if [ \"$1\" = warm ]; then\n  exit 0\nfi\n";
-    // macOS scans a new executable at its first exec, for seconds.
     let late = h.write_warmed(
         "late",
         format!("#!/bin/sh\n{warm}while :; do /bin/sleep 1; done\n").as_bytes(),
@@ -765,10 +697,8 @@ fn teardown_stops_a_process_that_starts_after_its_first_signal() {
         .as_bytes(),
     );
     let ready = h.tmp.join("starter.ready");
-    // Outside the harness root: teardown removes the root.
     let outside = tempfile::tempdir().unwrap();
     let late_started = outside.path().join("late.started");
-    // Not this test's child: the outer shell exits.
     let mut cmd = Command::new("/bin/sh");
     cmd.args([
         "-c",
@@ -791,15 +721,12 @@ fn teardown_stops_a_process_that_starts_after_its_first_signal() {
     let root = h.root.clone();
 
     let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
-    // The late process can be stopped before it runs a line, so it is
-    // found by its path, which names this harness.
     let still: Vec<String> = horch_e2e::process::processes()
         .into_iter()
         .filter(|p| p.command.contains(&*late.to_string_lossy()))
         .map(|p| p.pid.to_string())
         .collect();
     for pid in &still {
-        // SIGKILL, so this test never leaks the process itself.
         let _ = Command::new("/bin/kill").args(["-9", pid]).status();
     }
     let was_started = late_started.exists();
@@ -815,17 +742,10 @@ fn teardown_stops_a_process_that_starts_after_its_first_signal() {
     }
 }
 
-/// A process can leave its group between teardown's look and its SIGTERM:
-/// the mail courier, forked into the pane's group, calls `setsid` before
-/// it execs. Its pid ran at the first SIGTERM, but the signal missed it.
-/// Teardown signals its new group too, and the test does not fail for it.
 #[cfg(unix)]
 #[test]
 fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
     let h = Harness::new("teardown-mover");
-    // The first SIGTERM moves it to a group of its own, as `setsid` before
-    // that SIGTERM would; the next one ends it.
-    // macOS scans a new executable at its first exec, for seconds.
     let mover = h.write_warmed(
         "mover",
         b"#!/usr/bin/perl\nuse POSIX ();\nexit 0 if $ARGV[0] eq 'warm';\n\
@@ -834,8 +754,6 @@ fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
           sleep 1 while 1;\n",
     );
     let pidfile = h.tmp.join("mover.pid");
-    // A member of a group whose leader, the outer shell, exits: `setsid`
-    // fails for a group leader.
     let mut cmd = Command::new("/bin/sh");
     cmd.args(["-c", "\"$0\" \"$1\" </dev/null >/dev/null 2>&1 &"])
         .arg(&mover)
@@ -847,7 +765,6 @@ fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
     let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
     let stopped = !runs(&pid);
     if !stopped {
-        // SIGKILL, so this test never leaks the process itself.
         let _ = Command::new("/bin/kill").args(["-9", &pid]).status();
     }
     assert!(stopped, "teardown stops the process {pid}");
@@ -857,22 +774,16 @@ fn teardown_stops_a_process_that_leaves_its_group_before_the_signal() {
     }
 }
 
-/// A process that outlives teardown's SIGTERM fails the test, and teardown
-/// kills it.
 #[cfg(unix)]
 #[test]
 fn teardown_fails_a_test_that_leaks_a_process() {
     let h = Harness::new("teardown-leak");
-    // Named by the harness root, in its own process group, deaf to SIGTERM.
-    // macOS scans a new executable at its first exec, for up to 35 s under
-    // load: past the 10 s that pid_in waits for the pid.
     let stubborn = h.write_warmed(
         "stubborn",
         b"#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\ntrap '' TERM\necho $$ > \"$1\"\nwhile :; do /bin/sleep 1; done\n",
     );
     let pidfile = h.tmp.join("stubborn.pid");
     let mut cmd = Command::new(&stubborn);
-    // Not the test's own output: a pipe it held open would stall the run.
     cmd.arg(&pidfile)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -882,10 +793,8 @@ fn teardown_fails_a_test_that_leaks_a_process() {
     let pid = pid_in(&pidfile);
 
     let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
-    // The process is this test's child: reap it, or it stays a zombie.
     let ended = wait_up_to(&mut child, 2).is_some();
     if !ended {
-        // SIGKILL, so this test never leaks the process itself.
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -896,7 +805,6 @@ fn teardown_fails_a_test_that_leaks_a_process() {
     assert!(message.contains("stubborn"), "{message}");
 }
 
-/// Append one record to the fake log, the way a fake does.
 fn record(h: &Harness, line: Value) {
     use std::io::Write;
     let mut log = std::fs::OpenOptions::new()
@@ -907,8 +815,6 @@ fn record(h: &Harness, line: Value) {
     writeln!(log, "{line}").unwrap();
 }
 
-/// The operating system reuses a pid under fork load. Two processes of one
-/// fake that got the same pid are 2 calls, not 1.
 #[test]
 fn calls_of_keeps_two_calls_that_share_a_pid() {
     let h = Harness::new("fakes-pid-reuse");
@@ -926,8 +832,6 @@ fn calls_of_keeps_two_calls_that_share_a_pid() {
     assert_eq!(calls[1]["argv"][0], "second");
 }
 
-/// A fake that logs as it goes writes several lines for one call: the last
-/// one wins, and a record with no `call_id` still merges by pid.
 #[test]
 fn calls_of_merges_the_lines_of_one_call() {
     let h = Harness::new("fakes-call-lines");
@@ -947,8 +851,6 @@ fn calls_of_merges_the_lines_of_one_call() {
     assert_eq!(herdr[0]["n"], 2);
 }
 
-/// Every flush of one real call carries the same `call_id`, and 2 calls
-/// carry 2 ids.
 #[test]
 fn a_fake_logs_one_call_id_per_process() {
     let h = Harness::new("fakes-call-id");

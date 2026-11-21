@@ -42,7 +42,7 @@ KEY_SUFFIX = "_API_KEY"
 KEY_NAME = KEY_PREFIX + KEY_SUFFIX
 
 Source = namedtuple("Source", "rel name lines")
-Unit = namedtuple("Unit", "lines makefile inline", defaults=(False,))  # lines: [(line number, text)]
+Unit = namedtuple("Unit", "lines makefile inline", defaults=(False,))
 
 SCRIPT_EXTS = frozenset(
     ".sh .bash .zsh .fish .ksh .py .pyw .js .mjs .cjs .ts .tsx .jsx .rb .pl .pm .php "
@@ -73,12 +73,6 @@ INVISIBLE = _cp_class(
 BIDI = _cp_class((0x202A, 0x202E), (0x2066, 0x2069))
 TAGS = _cp_class((0xE0000, 0xE007F))
 
-# ---- INJ patterns -----------------------------------------------------------
-
-# "silently" counts only as an order. A negation earlier in the same clause
-# ("do not delete items silently") or a failure description ("fails silently",
-# "ignored silently") does not count. A clause starts at the text start, after
-# . ; ! ? : , or a newline, or at and/but/or/then/so.
 _CLAUSE_START = r"(?:(?<![^.;!?:,\n])|\b(?:and|but|or|then|so)\b)"
 _NEGATION = r"\b(?:not|never|dont)\b|n't\b"
 SILENT_ORDER = (
@@ -144,8 +138,6 @@ BLOCK_MARKS = frozenset((">", "|", ">-", "|-", ">+", "|+"))
 BASH_UNSCOPED = re.compile(r"\bBash\b(?!\s*\()|\bBash\(\s*\*(?:\s*:\s*\*)?\s*\)")
 CLAIMS_EVERY_TASK = re.compile(r"\b(?:always\s+use|use\s+for\s+every|use\s+before\s+any)\b", re.I)
 KEY_REF = re.compile(r"\b" + KEY_NAME + r"\b")
-
-# ---- SCR patterns -----------------------------------------------------------
 
 NETWORK = re.compile(
     r"(?<![\w./-])(?:curl|wget)\b|(?<![\w./-])(?:nc|ncat|netcat|ssh|scp)\s+[^\s|;&]"
@@ -233,9 +225,6 @@ GIT_DESTRUCTIVE = re.compile(
 )
 HEX_ESCAPES = re.compile(r"(?:\\x[0-9a-fA-F]{2}){41,}")
 QUOTED_LONG = re.compile(r"""(['"])([^'"\n]{101,})\1""")
-
-
-# ---- framework ----------------------------------------------------------------
 
 
 def _hit(rule: str, severity: str, src: Source, line: int, text: str, malicious: bool = False) -> dict:
@@ -333,7 +322,7 @@ def scan_file(rel: str, text: str, tree: frozenset | None = None) -> list[dict]:
     """Every INJ, SCR and SUP hit in one text file (not yet numbered: see
     `finish`). `tree`, every path in the tree, enables the SUP lockfile check."""
     if text.startswith(BOM):
-        text = text[1:]  # U+FEFF at byte 0 is a BOM, not INJ-01
+        text = text[1:]
     lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
     src = Source(rel, rel.rsplit("/", 1)[-1], lines)
     units, code_lines = code_units(src)
@@ -351,8 +340,6 @@ def write_jsonl(path: Path, hits: list[dict]) -> None:
             f.write(json.dumps(public, ensure_ascii=True) + "\n")
     os.replace(tmp, path)
 
-
-# ---- code units ---------------------------------------------------------------
 
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)")
 
@@ -415,9 +402,6 @@ def code_units(src: Source) -> tuple[list[Unit], set[int]]:
     return units, code_lines
 
 
-# ---- INJ rules ----------------------------------------------------------------
-
-
 def text_hits(src: Source, code_lines: set[int]) -> list[dict]:
     hits = _line_rule(src, "INJ-01", "high", INVISIBLE)
     hits += [_hit("INJ-02", "critical", src, n, ln, True) for n, ln in _numbered(src) if TAGS.search(ln)]
@@ -430,7 +414,7 @@ def text_hits(src: Source, code_lines: set[int]) -> list[dict]:
         hits += _inj09(src)
     hits += _line_rule(src, "INJ-07", "high", REMOTE)
     hits += _inj08(src, code_lines)
-    hits += _line_rule(src, "SCR-03", "critical", KEY_REF)  # any reference, in any text file
+    hits += _line_rule(src, "SCR-03", "critical", KEY_REF)
     return hits
 
 
@@ -478,7 +462,7 @@ def _inj03(src: Source, regions: list[Region]) -> list[dict]:
         flat = r.text.replace("\n", " ")
         agent = AGENT_IMPERATIVE.search(flat)
         if r.kind == "details" and not agent and not IMPERATIVE.search(r.text):
-            continue  # a <details> block is a finding only when it holds an imperative
+            continue
         hits.append(_hit("INJ-03", "high" if agent else "medium", src, r.start, flat))
     return hits
 
@@ -571,9 +555,6 @@ def _inj09(src: Source) -> list[dict]:
     if desc and (len(desc[1].strip("'\"")) > 1024 or CLAIMS_EVERY_TASK.search(desc[1])):
         hits.append(_hit("INJ-09", "medium", src, desc[0], "description: " + desc[1]))
     return hits
-
-
-# ---- SCR rules ----------------------------------------------------------------
 
 
 def secret_class(line: str) -> str | None:

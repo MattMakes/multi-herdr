@@ -342,7 +342,6 @@ def derive_links(m):
     return links.out
 
 
-# ------------------------------------------------------------------ lulls: causes, zones, robustness
 def main_currency(m):
     n = {}
     for p in m["purchases"]:
@@ -551,7 +550,6 @@ def run_profile(m, hours, prof, P):
     return sim, A
 
 
-# ----------------------------------------------------------------------------- tables
 def _never_status(st):
     if st["first_avail"] is None:
         return "never affordable: its requirements were never met"
@@ -640,7 +638,6 @@ def wall_rows(m, sim, limit=300):
     return out
 
 
-# ----------------------------------------------------------------------------- sensitivity
 def _scaled(c, f):
     """Growth x f. For an exp cost the change is held to half of (growth - 1): x0.95 on 1.07 would make
     the line almost free."""

@@ -1,24 +1,3 @@
-//! The orchestrator's respawn, rarely and under guards (trace-fixes C7, D6).
-//!
-//! - The fleet orchestrator's pane launcher holds 1 lock per herdr workspace
-//!   ([`lock`]) while its agent runs. So 2 orchestrators never run in 1
-//!   workspace. The launcher waits for its agent, so the lock lives exactly
-//!   as long as the agent.
-//! - Each watchdog pass runs [`check`]. A live lock holder is the agent PID
-//!   of the run's registered orchestrator: [`check`] records it on the
-//!   worker row. A recorded PID that is gone, with no live lock holder, is a
-//!   confirmed death.
-//! - A confirmed death in an active run with no deliberate stop
-//!   ([`record_stop`]) respawns the orchestrator: at most 1 per
-//!   [`RESPAWN_EVERY_S`] and [`RESPAWNS_PER_RUN`] per run. The old row ends
-//!   handed off to [`HANDOFF_FILE`] (the C4 path), and a new orchestrator row
-//!   takes its place. The caller starts the agent with [`first_instruction`].
-//! - The new row is launch-pending (`spawning`) until a pass observes the
-//!   lock holder: then it is `working`. A pending row with no lock holder
-//!   did not start (a crash before the launch, or a failed launch). Each
-//!   pass launches it again inside the same guards, and each launch counts 1
-//!   respawn (TRF-38).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -32,29 +11,20 @@ use super::sql_words::word;
 use super::util::{self, About};
 use super::workers::{self, NewWorker, Worker};
 
-/// At most 1 respawn in this many seconds (spec section 5).
 pub const RESPAWN_EVERY_S: i64 = 600;
 
-/// At most this many respawns in 1 run (spec section 5).
 pub const RESPAWNS_PER_RUN: i64 = 3;
 
-/// The handoff file a respawned orchestrator reads first (C7).
 pub const HANDOFF_FILE: &str = "ai_docs/handoffs/orchestrator-whats-next.md";
 
-/// The environment variable that tells a fleet orchestrator pane it is a
-/// respawn: `<run slug> <respawn number>`.
 pub const RESPAWN_ENV: &str = "HORCH_ORCHESTRATOR_RESPAWN";
 
-/// The text every respawn event starts with, so status and history find it.
 pub const RESPAWNED: &str = "orchestrator-respawned";
 
-/// The decisions file of run `slug` (C7).
 pub fn decisions_file(slug: &str) -> String {
     format!("ai_docs/plans/{slug}/decisions.md")
 }
 
-/// The first instruction of a respawned orchestrator (C7): the handoff, the
-/// decisions and the run status, in that order.
 pub fn first_instruction(slug: &str, number: i64) -> String {
     format!(
         "== Respawn ==\n\
@@ -69,23 +39,19 @@ pub fn first_instruction(slug: &str, number: i64) -> String {
     )
 }
 
-/// Read [`RESPAWN_ENV`]: the run slug and the respawn number.
 pub fn parse_respawn_env(value: &str) -> Option<(String, i64)> {
     let (slug, number) = value.trim().rsplit_once(' ')?;
     let number = number.parse().ok()?;
     (!slug.is_empty()).then(|| (slug.to_string(), number))
 }
 
-/// The respawn guard of 1 run, from its `runs` row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Guard {
-    /// When `horch fleet stop` or `run close` stopped the orchestrator.
     pub stopped_at: Option<String>,
     pub respawns: i64,
     pub last_respawn_at: Option<String>,
 }
 
-/// The respawn guard of `run_id`.
 pub fn guard(conn: &Connection, run_id: &str) -> Result<Guard> {
     Ok(conn.query_row(
         "SELECT orchestrator_stopped_at, orchestrator_respawns, last_respawn_at
@@ -101,8 +67,6 @@ pub fn guard(conn: &Connection, run_id: &str) -> Result<Guard> {
     )?)
 }
 
-/// Record a deliberate stop of the orchestrator of `run_id`: no respawn
-/// follows. The first stop time stays. True when this call recorded it.
 pub fn record_stop(conn: &Connection, run_id: &str) -> Result<bool> {
     let n = conn.execute(
         "UPDATE runs SET orchestrator_stopped_at = ?2
@@ -112,10 +76,6 @@ pub fn record_stop(conn: &Connection, run_id: &str) -> Result<bool> {
     Ok(n == 1)
 }
 
-/// The run that an orchestrator launched in `workspace` of project `root`
-/// continues (TRF-38): the active run of the respawn slug `respawn`, else the
-/// 1 active non-solo run of `workspace`, else the 1 active non-solo run of
-/// the project. `None` when 0 or 2+ runs fit.
 pub fn launch_run(
     conn: &Connection,
     root: &Path,
@@ -141,16 +101,10 @@ pub fn launch_run(
     })
 }
 
-/// What 1 orchestrator launch did to its run ([`claim`]).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Claimed {
-    /// The run is not active, or it already had this workspace and no stop.
     Unchanged,
-    /// The workspace or the stop changed: the text of the 1 `note` event.
     Changed(String),
-    /// The run's orchestrator still runs in the run's workspace: the run
-    /// stays there. `text` says why. `workspace` and `pid` name the run's
-    /// workspace and the lock holder's PID that the claim read.
     Skipped {
         text: String,
         workspace: String,
@@ -158,12 +112,6 @@ pub enum Claimed {
     },
 }
 
-/// An orchestrator took the pane-launch lock of `workspace` in `pane` for
-/// `run_id` (TRF-38). In `tx`: the run moves to `workspace`, its stop is
-/// cleared, and the run's orchestrator row is a live row of this pane.
-/// 1 `note` event names the old and new values when the workspace or the
-/// stop changes. A run never moves to a workspace with another active
-/// non-solo run, and never away from a workspace whose orchestrator lives.
 pub fn claim(
     tx: &Transaction,
     run_id: &str,
@@ -181,7 +129,6 @@ pub fn claim(
     )
 }
 
-/// [`claim`] on an explicit pane host `backend`.
 pub fn claim_on(
     tx: &Transaction,
     run_id: &str,
@@ -246,8 +193,6 @@ pub fn claim_on(
     Ok(Claimed::Changed(text))
 }
 
-/// Fail when another active non-solo run of the project of `run` is in
-/// `workspace` (D13: 1 run per workspace).
 fn refuse_a_taken_workspace(tx: &Transaction, run: &runs::Run, workspace: &str) -> Result<()> {
     let other = runs::of_project(tx, Path::new(&run.project_root))?
         .into_iter()
@@ -267,9 +212,6 @@ fn refuse_a_taken_workspace(tx: &Transaction, run: &runs::Run, workspace: &str) 
     }
 }
 
-/// The run's orchestrator row as a live row of `workspace` and `pane`: the
-/// registered row when it is live, else a new row that follows it. The
-/// watchdog then registers this launcher's PID on it.
 fn live_orchestrator(
     tx: &Transaction,
     run: &runs::Run,
@@ -319,7 +261,6 @@ fn live_orchestrator(
     Ok(id)
 }
 
-/// The folder of the workspace locks: beside the ledger, as the watchdog's.
 pub fn lock_dir(ledger_db: &Path) -> PathBuf {
     ledger_db
         .parent()
@@ -327,7 +268,6 @@ pub fn lock_dir(ledger_db: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("locks"))
 }
 
-/// The lock name of `workspace`, safe as a file name.
 fn lock_name(workspace: &str) -> String {
     let safe: String = workspace
         .chars()
@@ -342,8 +282,6 @@ fn lock_name(workspace: &str) -> String {
     format!("orchestrator-{safe}")
 }
 
-/// Take the orchestrator lock of `workspace`. `None` while a live process
-/// holds it. A dead holder's lock is broken. The guard releases on drop.
 pub fn lock(dir: &Path, workspace: &str) -> Result<Option<crate::fsx::DirLockGuard>> {
     match crate::fsx::DirLock::acquire(
         dir,
@@ -357,14 +295,12 @@ pub fn lock(dir: &Path, workspace: &str) -> Result<Option<crate::fsx::DirLockGua
     }
 }
 
-/// The live process that holds the orchestrator lock of a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Holder {
     pub pid: u32,
     pub started: Option<u64>,
 }
 
-/// The live holder of the orchestrator lock of `workspace`, if any.
 pub fn holder(dir: &Path, workspace: &str) -> Option<Holder> {
     let owner = dir
         .join(format!("{}.lock", lock_name(workspace)))
@@ -375,17 +311,12 @@ pub fn holder(dir: &Path, workspace: &str) -> Option<Holder> {
     crate::procid::alive(pid, started).then_some(Holder { pid, started })
 }
 
-/// What [`check`] reads outside the ledger.
 pub trait Probe {
-    /// The live holder of the orchestrator lock of `workspace`.
     fn holder(&self, workspace: &str) -> Option<Holder>;
-    /// Whether `pid` runs with start time `started`.
     fn alive(&self, pid: u32, started: Option<u64>) -> bool;
-    /// Whether herdr still has `workspace`. `None` when herdr cannot say.
     fn workspace_open(&self, workspace: &str) -> Option<bool>;
 }
 
-/// The probe of a real machine; `herdr_open` answers for the workspace.
 pub struct Os<'a> {
     pub lock_dir: &'a Path,
     pub herdr_open: &'a dyn Fn(&str) -> Option<bool>,
@@ -408,54 +339,40 @@ impl Probe for Os<'_> {
     }
 }
 
-/// 1 respawn that [`check`] decided: the caller starts the agent.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Respawn {
     pub run_id: String,
     pub slug: String,
     pub project_root: String,
     pub workspace_id: String,
-    /// The pane of the dead orchestrator, which may still exist.
     pub old_pane_id: Option<String>,
     pub old_worker_id: String,
     pub new_worker_id: String,
-    /// 1 for the first respawn of the run.
     pub number: i64,
-    /// The finish steps of the run, for the briefing's profile.
     pub finish_steps: Vec<String>,
 }
 
 impl Respawn {
-    /// The value of [`RESPAWN_ENV`] for this respawn.
     pub fn env_value(&self) -> String {
         format!("{} {}", self.slug, self.number)
     }
 }
 
-/// What 1 [`check`] did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Outcome {
-    /// Nothing to do: the run is not active, the stop is recorded, the
-    /// orchestrator lives, ended, or never had a PID recorded.
     Nothing,
-    /// The live lock holder's PID is now the orchestrator's agent PID.
     Registered(u32),
-    /// The orchestrator is dead; the next respawn is allowed in this many s.
     Waiting(i64),
-    /// The orchestrator is dead and ended with no respawn, for this reason.
     NotRespawned(String),
-    /// The orchestrator is dead and a new row takes its place.
     Respawned(Respawn),
 }
 
-/// The result of 1 [`check`]: the outcome and the new outbox row, if any.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Checked {
     pub outcome: Outcome,
     pub wake_id: Option<String>,
 }
 
-/// 1 watchdog pass over the orchestrator of `run_id` at `now`, in `tx`.
 pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Result<Checked> {
     let nothing = || {
         Ok(Checked {
@@ -490,7 +407,6 @@ pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Re
         return pending(tx, &run, &orch, &workspace, now, probe);
     }
     let Some(pid) = orch.agent_pid else {
-        // Never registered: a death cannot be confirmed.
         return nothing();
     };
     if probe.alive(pid as u32, orch.agent_started.map(|s| s as u64)) {
@@ -509,9 +425,6 @@ pub fn check(tx: &Transaction, run_id: &str, now: &str, probe: &dyn Probe) -> Re
     }
 }
 
-/// Record the live lock holder as the orchestrator's agent, when it is not
-/// already recorded. A launch-pending row becomes `working` here, and only
-/// here.
 fn register(tx: &Transaction, orch: &Worker, h: Holder, now: &str) -> Result<Checked> {
     let same =
         orch.agent_pid == Some(h.pid as i64) && orch.agent_started == h.started.map(|s| s as i64);
@@ -542,8 +455,6 @@ fn register(tx: &Transaction, orch: &Worker, h: Holder, now: &str) -> Result<Che
     })
 }
 
-/// A confirmed death: respawn inside the limits, wait for the 10 min, or
-/// end with no respawn after the last one.
 fn dead(
     tx: &Transaction,
     run: &runs::Run,
@@ -585,8 +496,6 @@ fn dead(
             ..Default::default()
         },
     )?;
-    // `spawning` is launch-pending: it is `working` after a pass observes
-    // the lock holder ([`register`]).
     tx.execute(
         &format!(
             "UPDATE workers SET status = {spawning} WHERE worker_id = ?1",
@@ -639,13 +548,9 @@ fn dead(
     })
 }
 
-/// Whether the guards allow the next respawn of `run_id` at `now`.
 enum Allowed {
-    /// Yes: the number of the next respawn.
     Next(i64),
-    /// Not yet: the seconds until the next respawn is allowed.
     Wait(i64),
-    /// No: the run used its [`RESPAWNS_PER_RUN`].
     Spent,
 }
 
@@ -664,7 +569,6 @@ fn allowed(tx: &Transaction, run_id: &str, now: &str) -> Result<Allowed> {
     })
 }
 
-/// Count respawn `number` of `run_id` at `now`.
 fn count_respawn(tx: &Transaction, run_id: &str, number: i64, now: &str) -> Result<()> {
     tx.execute(
         "UPDATE runs SET orchestrator_respawns = ?2, last_respawn_at = ?3 WHERE run_id = ?1",
@@ -673,10 +577,6 @@ fn count_respawn(tx: &Transaction, run_id: &str, number: i64, now: &str) -> Resu
     Ok(())
 }
 
-/// A launch-pending orchestrator with no lock holder: its launch did not
-/// happen or did not start an agent (C-01). Launch it again inside the
-/// guards; each launch counts 1 respawn. After the last respawn it ends
-/// `launch_failed`. A gone workspace ends it; an unknown one waits.
 fn pending(
     tx: &Transaction,
     run: &runs::Run,
@@ -762,13 +662,10 @@ fn pending(
             number,
             finish_steps: run.finish_steps.clone(),
         }),
-        // The first launch's wake names this row; durable mail keeps it.
         wake_id: None,
     })
 }
 
-/// End the orchestrator with no respawn, and say why in 1 event. A
-/// launch-pending row ends `launch_failed`, a dead agent `incomplete`.
 fn end_without_respawn(
     tx: &Transaction,
     run: &runs::Run,
@@ -800,10 +697,6 @@ fn end_without_respawn(
     })
 }
 
-/// Record that the start of `respawn` failed. The respawn still counts, so
-/// a launch that always fails cannot loop. The row stays launch-pending: a
-/// later pass launches it again inside the guards, until the last respawn
-/// ends it (TRF-38).
 pub fn launch_failed(conn: &Connection, respawn: &Respawn, error: &str) -> Result<()> {
     util::event(
         conn,
@@ -821,8 +714,6 @@ pub fn launch_failed(conn: &Connection, respawn: &Respawn, error: &str) -> Resul
     )
 }
 
-/// The status line of the respawns of `run_id`; `None` before the first
-/// respawn and before a stop.
 pub fn status_line(conn: &Connection, run_id: &str) -> Result<Option<String>> {
     let g = guard(conn, run_id)?;
     let mut parts = Vec::new();
@@ -846,7 +737,6 @@ mod tests {
     use crate::taskledger::Store;
     use std::cell::Cell;
 
-    /// A probe with a set lock holder, set live PIDs and a set workspace.
     struct Fake {
         holder: Cell<Option<Holder>>,
         alive: Cell<bool>,
@@ -875,8 +765,6 @@ mod tests {
         }
     }
 
-    /// A run in workspace `w1` with an orchestrator row whose agent PID 4242
-    /// is recorded.
     fn world() -> (tempfile::TempDir, Store, String) {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -915,7 +803,6 @@ mod tests {
         (dir, store, run_id)
     }
 
-    /// The fake clock: the ledger stamp `secs` after `t0`.
     fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
         crate::clock::stamp(*t0 + chrono::Duration::seconds(secs))
     }
@@ -927,8 +814,6 @@ mod tests {
             .outcome
     }
 
-    /// Make the current orchestrator row a registered, now dead, agent, as
-    /// a pass that observed its lock holder leaves it.
     fn register_dead(store: &Store, run_id: &str) {
         let run = runs::get(store.conn(), run_id).unwrap();
         store
@@ -1006,7 +891,6 @@ mod tests {
         assert_eq!((w.agent_pid, w.agent_started), (Some(777), Some(9)));
         assert_eq!(pass(&mut store, &run_id, &now, &probe), Outcome::Nothing);
 
-        // A live recorded PID with no lock (an old launcher) is alive too.
         probe.holder.set(None);
         probe.alive.set(true);
         assert_eq!(pass(&mut store, &run_id, &now, &probe), Outcome::Nothing);
@@ -1018,11 +902,9 @@ mod tests {
         let now = crate::clock::now_stamp();
         let run = runs::get(store.conn(), &run_id).unwrap();
         let orch = run.orchestrator_worker_id.unwrap();
-        // herdr cannot say whether the workspace exists.
         let probe = Fake::dead();
         probe.open.set(None);
         assert_eq!(pass(&mut store, &run_id, &now, &probe), Outcome::Nothing);
-        // No agent PID was ever recorded.
         store
             .conn()
             .execute(
@@ -1092,7 +974,6 @@ mod tests {
             })
             .unwrap();
         assert!(guard(store.conn(), &run_id).unwrap().stopped_at.is_some());
-        // Even with the stop cleared, a closed run does not respawn.
         store
             .conn()
             .execute(
@@ -1113,7 +994,6 @@ mod tests {
         let t0 = crate::clock::now();
         let probe = Fake::dead();
         let mut respawns = Vec::new();
-        // A pass every 30 s for 50 min; each new orchestrator dies at once.
         for secs in (0..=3000).step_by(30) {
             match pass(&mut store, &run_id, &at(&t0, secs), &probe) {
                 Outcome::Respawned(r) => {
@@ -1129,12 +1009,10 @@ mod tests {
                 other => panic!("at {secs} s: {other:?}"),
             }
         }
-        // After the 3rd respawn the next death ends with no wait.
         assert_eq!(respawns, vec![(0, 1), (600, 2), (1200, 3), (1230, 0)]);
         let g = guard(store.conn(), &run_id).unwrap();
         assert_eq!((g.respawns, g.last_respawn_at), (3, Some(at(&t0, 1200))));
 
-        // Each respawn is 1 event, 1 wake, and status shows the count.
         let events: i64 = store
             .conn()
             .query_row(
@@ -1169,7 +1047,6 @@ mod tests {
         store.immediate(|tx| claim(tx, run_id, ws, Some("p9"), probe))
     }
 
-    /// The `note` events of `run_id` that a launch claim wrote.
     fn claim_events(store: &Store, run_id: &str) -> Vec<String> {
         let mut stmt = store
             .conn()
@@ -1209,7 +1086,6 @@ mod tests {
         assert!(!text.contains("workspace"), "{text}");
         assert_eq!(guard(store.conn(), &run_id).unwrap().stopped_at, None);
         assert_eq!(claim_events(&store, &run_id), vec![text]);
-        // The live orchestrator row stays the run's, now in this pane.
         let after = runs::get(store.conn(), &run_id).unwrap();
         assert_eq!(after.orchestrator_worker_id, run.orchestrator_worker_id);
         let w = workers::get(
@@ -1219,13 +1095,11 @@ mod tests {
         .unwrap();
         assert_eq!(w.pane_id.as_deref(), Some("p9"));
 
-        // A 2nd launch changes nothing and writes no event.
         assert_eq!(
             claim_in(&mut store, &run_id, "w1", &Fake::dead()).unwrap(),
             Claimed::Unchanged
         );
         assert_eq!(claim_events(&store, &run_id).len(), 1);
-        // The watchdog now respawns again.
         let now = crate::clock::now_stamp();
         assert!(matches!(
             pass(&mut store, &run_id, &now, &Fake::dead()),
@@ -1236,7 +1110,6 @@ mod tests {
     #[test]
     fn trf_38_launch_in_a_new_workspace_moves_the_run() {
         let (dir, mut store, run_id) = world();
-        // The old workspace was gone: the watchdog ended the orchestrator.
         let probe = Fake::dead();
         probe.open.set(Some(false));
         let now = crate::clock::now_stamp();
@@ -1263,7 +1136,6 @@ mod tests {
         assert_eq!(claim_events(&store, &run_id), vec![text]);
         let run = runs::get(store.conn(), &run_id).unwrap();
         assert_eq!(run.workspace_id.as_deref(), Some("w2"));
-        // A new live orchestrator row in w2 follows the ended one.
         let w = workers::get(store.conn(), run.orchestrator_worker_id.as_deref().unwrap()).unwrap();
         assert_ne!(run.orchestrator_worker_id, old);
         assert_eq!(w.previous_worker_id, old);
@@ -1275,7 +1147,6 @@ mod tests {
             ),
             ("working", Some("w2"), Some("p9"))
         );
-        // The watchdog registers the launcher that holds the w2 lock.
         let live = Fake::dead();
         live.holder.set(Some(Holder {
             pid: 31,
@@ -1286,7 +1157,6 @@ mod tests {
             Outcome::Registered(31)
         );
 
-        // A run whose orchestrator lives in its workspace does not move.
         assert_eq!(
             claim_in(&mut store, &run_id, "w3", &live).unwrap(),
             Claimed::Skipped {
@@ -1314,7 +1184,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // A solo run never blocks a move.
                 runs::create(tx, dir.path(), &runs::solo_new_run("w3"))
             })
             .unwrap();
@@ -1330,11 +1199,9 @@ mod tests {
         assert!(guard(store.conn(), &run_id).unwrap().stopped_at.is_some());
         assert!(claim_events(&store, &run_id).is_empty());
 
-        // 2 active runs and none in w4: a launch there claims neither.
         assert!(launch_run(store.conn(), dir.path(), "w4", None)
             .unwrap()
             .is_none());
-        // A respawn names its run.
         assert_eq!(
             launch_run(store.conn(), dir.path(), "w4", Some("r1"))
                 .unwrap()

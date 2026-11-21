@@ -1,9 +1,3 @@
-//! `horch ledger handoff` (trace-fixes C4, TRF-37): the worker ends handed
-//! off, its task is queued again first, and the next claim prints
-//! `PRIOR WORK: read <path> first` before the ticket snapshot. The test runs
-//! the binary on a temp git project, with the watchdog and wakes off and no
-//! herdr pane.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -43,7 +37,6 @@ impl World {
         self.tmp.path().join("proj")
     }
 
-    /// Run horch; `worker` sets `HORCH_WORKER_ID`. Returns code, stdout, stderr.
     fn run(&self, worker: Option<&str>, args: &[&str]) -> (i32, String, String) {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -96,7 +89,6 @@ fn trf_37_handoff_requeues_the_task_and_the_next_claim_reads_the_handoff_first()
     let first = w.hire();
     w.ok(Some(&first), &["ledger", "claim"]);
 
-    // A missing handoff file is refused, and the task stays with the worker.
     let (code, _, err) = w.run(Some(&first), &["ledger", "handoff", "ai_docs/h.md"]);
     assert_ne!(code, 0);
     assert!(err.contains("does not exist"), "{err}");

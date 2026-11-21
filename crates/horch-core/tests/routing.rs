@@ -1,6 +1,3 @@
-//! ARC-12 and ARC-13: routing is pure, matches the A0 oracle, and names why
-//! each teammate is excluded.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -19,14 +16,12 @@ use horch_core::routing::policy::{BalanceMode, Policy};
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use serde_json::{json, Value};
 
-/// The time and policy the A0 routing oracle pinned.
 const ROUTING_NOW: &str = "2026-09-28T18:00:00Z";
 
 fn core_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The repo roster without reading `HOME` or `HORCH_TEAMMATES_DIR`.
 fn roster() -> Roster {
     let mut r = Roster::builtin().unwrap();
     r.overlay(&core_dir().join("../../teammates")).unwrap();
@@ -49,9 +44,6 @@ fn view(name: &str) -> QuotaView {
     view_at(&fixture(name))
 }
 
-// ─── ARC-12 ─────────────────────────────────────────────────────────────────
-
-/// The object `horch route --json` prints, from the routing module.
 fn route_json(
     t: &Teammate,
     roster: &Roster,
@@ -133,7 +125,6 @@ fn arc_12_decisions_match_baseline() {
             });
             assert_eq!(&got, want, "{stem}: {key}");
 
-            // The typed forms agree with the decision.
             let typed = RoutingDecision::from(&d);
             let prov = RoutingProvenance::from_decision(
                 t,
@@ -169,9 +160,6 @@ fn arc_12_decisions_match_baseline() {
     assert!(cells >= 12 * 33 * 9, "{cells}");
 }
 
-// ─── ARC-13 ─────────────────────────────────────────────────────────────────
-
-/// The source of `routing/` before its test module.
 fn production_source(path: &Path) -> String {
     let text = std::fs::read_to_string(path).unwrap();
     match text.find("#[cfg(test)]") {
@@ -203,7 +191,6 @@ fn arc_13_routing_never_launches() {
         }
         scanned += 1;
     }
-    // mod, policy, quota, balance, eligible, decision.
     assert_eq!(scanned, 6);
 }
 
@@ -256,7 +243,6 @@ fn arc_13_exclusion_reasons() {
         seen.insert(reason, name.to_string());
     };
 
-    // The fallback rules, from a request's `fallbacks:`.
     let ok = view("all-ok");
     let asker = r.require("asker").unwrap().clone();
     let fb = eligible_fallbacks(&asker, &r, &ok);
@@ -268,7 +254,6 @@ fn arc_13_exclusion_reasons() {
     assert_eq!(verdict_of(&fb, "asker").fallback_index, None);
     assert_eq!(verdict_of(&fb, "codex-sol").fallback_index, Some(4));
 
-    // The planner's rules, over the whole roster.
     let all = roster_eligibility(&r, &ok, &EligibilityFilter::default());
     expect(&all, "modelless", ExclusionReason::Unspawnable);
     expect(&all, "codex-minimal", ExclusionReason::EffortUnsupported);
@@ -296,7 +281,6 @@ fn arc_13_exclusion_reasons() {
 
     assert_eq!(seen.len(), 11, "every reason produced: {seen:?}");
 
-    // The wire form: snake_case reasons, the verdict flattened.
     let e = serde_json::to_value(verdict_of(&fb, "ghost")).unwrap();
     assert_eq!(e["verdict"], "excluded");
     assert_eq!(e["reason"], "not_in_roster");
@@ -347,8 +331,6 @@ fn arc_28_a_router_never_picks_a_seat() {
     );
 }
 
-// ─── ARC-14 ─────────────────────────────────────────────────────────────────
-
 #[test]
 fn arc_14_legacy_record_resumes_with_provenance() {
     let r = roster();
@@ -377,7 +359,6 @@ fn arc_14_legacy_record_resumes_with_provenance() {
     assert_eq!(wire["mode"], "resume");
     assert_eq!(wire["pool_state"], "unknown");
 
-    // A record from before A5 has no `routing` key and saves without one.
     let rec: horch_core::execution::legacy::Record = serde_json::from_value(json!({
         "record_id": "r1", "session_id": null, "agent": "claude", "tier": "opus",
         "model": "opus", "role": "opus-1", "status": "done", "task": "",

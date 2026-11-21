@@ -52,8 +52,6 @@ __all__ = ["KIND", "NAME", "VERSION", "KNOBS", "DETAIL", "fit", "render", "check
            "weights", "bandwidths", "n_frames", "compare", "fit_report", "to_code"]
 
 
-# ================================================================ band axis
-
 def warp(f: Any) -> np.ndarray:
     """The band axis: ln(1 + f / 80)."""
     return np.log1p(np.asarray(f, dtype=float) / 80.0)
@@ -137,8 +135,6 @@ def _group_blend(cent_v) -> np.ndarray:
     return np.array([[np.interp(vv, lgv, eye[gv]) for gv in range(len(lgv))] for vv in lc])
 
 
-# ================================================================ analysis
-
 def _hann(nn: int) -> np.ndarray:
     wv = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(nn) / nn)
     return wv / np.sqrt(np.sum(wv ** 2))
@@ -188,8 +184,6 @@ def _stereo_powers(av: np.ndarray, T: int) -> dict:
         acc["C"].append(np.sum(np.real(XL[:, sv] * np.conj(XR[:, sv])), axis=1))
     return {ix: np.array(vv) for ix, vv in acc.items()}
 
-
-# ================================================================ ridges
 
 def _ridge_floor(P_db: np.ndarray) -> np.ndarray:
     medv = median_filter(P_db, size=(8, 1), mode="nearest")
@@ -324,8 +318,6 @@ def _remove_ridges(dmat: np.ndarray, rdg_l: list, cent_v) -> None:
         dmat[:, within] = np.maximum(dmat[:, within] - sub, 0.05 * dmat[:, within])
 
 
-# ================================================================ gesture smoothing
-
 def _onset_frame(dmat: np.ndarray) -> int:
     totv = db(dmat.sum(axis=0))
     return int(np.argmax(totv >= totv.max() - 30))
@@ -380,8 +372,6 @@ def _adapt_k(dmat: np.ndarray, ix: int, start_i: int, tol_db: float) -> tuple[in
     return ix, wandr
 
 
-# ================================================================ denoise
-
 def _cell_weights(smat: np.ndarray, bwv: np.ndarray, span: float = 50.0) -> np.ndarray:
     gmat = smat + 10 * np.log10(bwv)[:, None]
     return np.clip((gmat - (gmat.max() - span)) / 25, 0.0, 1.0)
@@ -424,8 +414,6 @@ def _denoise(smat: np.ndarray, cnt: int, ix: int, cent_v) -> tuple[np.ndarray, i
     acc = wmat * winner + (1 - wmat) * smat
     return np.maximum(acc, smat.max() - 90), rnk
 
-
-# ================================================================ synthesis core
 
 def _gens(seed: int) -> list:
     ss = np.random.SeedSequence(abs(int(seed)) % 2 ** 32)
@@ -679,8 +667,6 @@ def _ridge_power(tgv, rdg_l, ix2, fft_n) -> np.ndarray:
     return pmat
 
 
-# ================================================================ gain correction
-
 def _gain_iter(smat, ix, start_i, cnt, cent_v, is_on, cfg) -> np.ndarray:
     gn = smat.copy()
     topv = smat.max()
@@ -695,8 +681,6 @@ def _gain_iter(smat, ix, start_i, cnt, cent_v, is_on, cfg) -> np.ndarray:
         gn = np.maximum(gn + 0.85 * np.clip(diffv, -12, 12), topv - 90)
     return gn
 
-
-# ================================================================ stereo trajectory
 
 def _stereo_traj(stv: dict | None) -> dict | None:
     if stv is None:
@@ -721,8 +705,6 @@ def _fill_quiet(ildv: np.ndarray, iccv: np.ndarray, pgm: np.ndarray) -> None:
             ildv[gv, ~act_v[gv]] = np.sum(wv * ildv[gv]) / wv.sum()
             iccv[gv, ~act_v[gv]] = np.sum(wv * iccv[gv]) / wv.sum()
 
-
-# ================================================================ keyframes
 
 def _greedy_keys(tv, ymat, wmat, tolv, max_keys, required) -> list[int]:
     T = len(tv)
@@ -769,8 +751,6 @@ def _stereo_key_weight(stv: dict) -> np.ndarray:
     return 0.5 * lw[:, None] * stv["share"][None, :] * 7
 
 
-# ================================================================ fine curve
-
 def _psd_grid(x: np.ndarray, gridv: np.ndarray) -> np.ndarray:
     from scipy.signal import welch
     nn = min(4096, 2 ** int(np.floor(np.log2(max(len(x), 256)))))
@@ -804,8 +784,6 @@ def _render_mono(model: dict, seed: int, txt_v=True, rsig=None) -> np.ndarray:
                   ridges=model.get("ridges") if rsig is None else None,
                   fine=model.get("fine"), ridge_sig=rsig)
 
-
-# ================================================================ texture statistics
 
 def _group_env(model: dict, cnt: int) -> np.ndarray:
     cent_v = centers(model["bands"]["n"])
@@ -901,8 +879,6 @@ def _nanmean(vals) -> float:
     vv = [x for x in vals if x is not None and np.isfinite(x)]
     return float(np.mean(vv)) if vv else float("nan")
 
-
-# ================================================================ texture fit
 
 def _tex_renders(model, txt_v, ridge_sigs, cnt) -> list:
     mv = dict(model, texture=txt_v)
@@ -1110,8 +1086,6 @@ def _fixed_depth(real: dict, dv: float, base_l: list, rendered: list, lowv: np.n
     return dv
 
 
-# ================================================================ fit
-
 def _opts(**kw) -> dict:
     ov = {"n_bands": 48, "tol_db": 1.0, "max_keys": 160, "gesture_ms": 25, "max_rank": 16, "iters": 3,
          "diff_frames": 3, "ridges": True, "fine": False, "texture": True, "stereo": True,
@@ -1191,8 +1165,6 @@ def _stereo_keys(stv: dict | None, key_l) -> dict | None:
     return {"groups": list(GROUPS), "ild": np.round(stv["ild"][:, key_l].T, 2).tolist(),
             "icc": np.round(stv["icc"][:, key_l].T, 3).tolist()}
 
-
-# ================================================================ render
 
 def _centroids(key_db: np.ndarray, cent_v) -> tuple[np.ndarray, float]:
     pv = 10 ** (key_db / 10) * bandwidths(cent_v)[None, :]
@@ -1361,8 +1333,6 @@ def pass_pan(y: np.ndarray, t_pk: float, tau: float, amount: float) -> np.ndarra
     return np.column_stack([yyv[:, 0] * np.sqrt(2) * np.cos(ang), yyv[:, 1] * np.sqrt(2) * np.sin(ang)])
 
 
-# ================================================================ trajectory, summary
-
 def trajectory(model: dict) -> dict:
     """The gesture's motion per keyframe."""
     cent_v = centers(model["bands"]["n"])
@@ -1450,8 +1420,6 @@ def _texture_words(texv) -> str:
     return ", ".join(acc)
 
 
-# ================================================================ face
-
 def check(model: Any) -> None:
     """ValueError when the model is not a spectral_noise model of a supported version."""
     check_kind(model, KIND, VERSION)
@@ -1478,8 +1446,6 @@ def to_code(model: dict, var: str = "MODEL") -> str:
             f"{var} = " + pprint.pformat(lite, width=110, compact=True) + "\n\n\n"
             f"def render(seed=0, **knobs):\n    return spectral.render({var}, seed, **knobs)\n")
 
-
-# ================================================================ compare
 
 def _trim(x: np.ndarray) -> np.ndarray:
     ev = db(np.convolve(x ** 2, np.ones(48) / 48, mode="same")[::48])

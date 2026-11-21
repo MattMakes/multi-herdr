@@ -21,7 +21,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import print_check as pc  # same folder; the skill is self-contained
+import print_check as pc
 import threemf
 
 LOG = []
@@ -79,7 +79,7 @@ def boolean(bm, cutters, operation):
     for o in objs:
         bpy.data.meshes.remove(o.data)
     bpy.data.collections.remove(coll)
-    bmesh.ops.dissolve_degenerate(out, dist=pc.EDGE_EPS_MM, edges=out.edges[:])  # booleans leave slivers
+    bmesh.ops.dissolve_degenerate(out, dist=pc.EDGE_EPS_MM, edges=out.edges[:])
     return out
 
 
@@ -124,7 +124,6 @@ def safe_fixes(bm, args):
 
     open_edges = [e for e in bm.edges if len(e.link_faces) == 1]
     if open_edges and args.solidify_mm:
-        # An open sheet: give it a thickness. Capping it would make a zero-volume shell.
         bmesh.ops.solidify(bm, geom=bm.faces[:], thickness=args.solidify_mm)
         log("solidify", f"open surface with {len(open_edges)} boundary edges, {args.solidify_mm:g} mm thick")
     elif open_edges:

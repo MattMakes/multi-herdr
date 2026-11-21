@@ -1,35 +1,14 @@
-//! Typed identities.
-//!
-//! Every id the fleet passes around is a string on disk and on the wire, and
-//! most of them still are in memory. These newtypes are where that ends: a
-//! value of one of these types has been validated once, at the boundary, and
-//! cannot be confused with an id of another kind. The serialized form is the
-//! bare string, so a newtype field reads and writes exactly the string it replaces
-//! (`serde(try_from, into)` rather than `transparent`, which cannot validate).
-
 use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 
-/// Why a string was rejected as an id. `kind` is the id type's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdError {
-    Empty {
-        kind: &'static str,
-    },
-    ControlChar {
-        kind: &'static str,
-    },
-    /// A `RoleName` with `/`, `\` or `..`.
-    PathLike {
-        kind: &'static str,
-        value: String,
-    },
-    /// Not `<workspace>:<role>`.
-    BadWorkerId {
-        value: String,
-    },
+    Empty { kind: &'static str },
+    ControlChar { kind: &'static str },
+    PathLike { kind: &'static str, value: String },
+    BadWorkerId { value: String },
 }
 
 impl fmt::Display for IdError {
@@ -49,8 +28,6 @@ impl fmt::Display for IdError {
 
 impl std::error::Error for IdError {}
 
-/// The rule every id shares: non-empty, and nothing a terminal or a log line
-/// would interpret.
 fn validate_plain(kind: &'static str, value: &str) -> Result<(), IdError> {
     if value.is_empty() {
         Err(IdError::Empty { kind })
@@ -61,12 +38,10 @@ fn validate_plain(kind: &'static str, value: &str) -> Result<(), IdError> {
     }
 }
 
-/// Any UUID, or a legacy hand-made id such as `rec-o1` (OD7): the plain rule.
 fn validate_execution_id(kind: &'static str, value: &str) -> Result<(), IdError> {
     validate_plain(kind, value)
 }
 
-/// A role names a mailbox file and a pane, so it must stay one path segment.
 fn validate_role_name(kind: &'static str, value: &str) -> Result<(), IdError> {
     validate_plain(kind, value)?;
     if value.contains('/') || value.contains('\\') || value.contains("..") {
@@ -78,7 +53,6 @@ fn validate_role_name(kind: &'static str, value: &str) -> Result<(), IdError> {
     Ok(())
 }
 
-/// `<workspace>:<role>`, with exactly one `:` between two non-empty parts.
 fn validate_worker_id(kind: &'static str, value: &str) -> Result<(), IdError> {
     validate_plain(kind, value)?;
     match value.split_once(':') {
@@ -145,35 +119,14 @@ macro_rules! string_id {
     };
 }
 
-string_id!(
-    /// One run of one worker or orchestrator: a ledger record id. New ids are
-    /// UUIDv7; legacy records carry v4 UUIDs or hand-made ids such as `rec-o1`.
-    ExecutionId,
-    validate_execution_id
-);
+string_id!(ExecutionId, validate_execution_id);
 string_id!(TaskId, validate_plain);
-string_id!(
-    /// An agent CLI's own session handle, the one `--resume` takes.
-    SessionId,
-    validate_plain
-);
-string_id!(
-    /// A worker within the fleet: `<workspace>:<role>`.
-    WorkerId,
-    validate_worker_id
-);
-string_id!(
-    /// A worker's role in its workspace, such as `opus-2`.
-    RoleName,
-    validate_role_name
-);
+string_id!(SessionId, validate_plain);
+string_id!(WorkerId, validate_worker_id);
+string_id!(RoleName, validate_role_name);
 string_id!(SkillId, validate_plain);
 string_id!(ModelId, validate_plain);
-string_id!(
-    /// A `teammates/<name>.md` roster entry.
-    TeammateName,
-    validate_plain
-);
+string_id!(TeammateName, validate_plain);
 string_id!(PaneId, validate_plain);
 string_id!(WorkspaceId, validate_plain);
 string_id!(ExperimentId, validate_plain);
@@ -182,18 +135,12 @@ string_id!(EventId, validate_plain);
 string_id!(JudgmentId, validate_plain);
 
 impl WorkerId {
-    /// `<workspace>:<role>`. Both parts are validated already; a herdr
-    /// workspace id has no `:`, so the result is a well-formed `WorkerId`.
     pub(crate) fn new_for(workspace: &WorkspaceId, role: &RoleName) -> Self {
         Self(format!("{workspace}:{role}"))
     }
 }
 
 impl ExperimentId {
-    /// The experiment's 8-character prefix in candidate branch names
-    /// (`mh/exp/<exp8>/...`): the last 8 letters and digits of the id. A
-    /// UUIDv7 starts with its millisecond timestamp, so the head is shared by
-    /// experiments started close together; the tail is random.
     pub fn short(&self) -> String {
         let plain: Vec<char> = self.0.chars().filter(char::is_ascii_alphanumeric).collect();
         plain[plain.len().saturating_sub(8)..].iter().collect()
@@ -203,7 +150,6 @@ impl ExperimentId {
 macro_rules! mintable {
     ($($name:ident),*) => {$(
         impl $name {
-            /// Mint a fresh UUIDv7 id timestamped `at`.
             pub fn mint(at: DateTime<Utc>) -> Self {
                 Self(mint_v7(at).to_string())
             }
@@ -213,15 +159,8 @@ macro_rules! mintable {
 
 mintable!(ExecutionId, EventId, ExperimentId, RoundId, JudgmentId);
 
-/// A UUIDv7 for `at`, built by hand from v4 randomness (OD7) so the uuid
-/// crate's feature set stays as it is.
-///
-/// Bytes 0..6 hold the big-endian Unix millisecond timestamp, so ids sort by
-/// time; the version nibble is 7 and the RFC 4122 variant bits are kept from
-/// the v4 source. The remaining 74 bits are random.
 pub(crate) fn mint_v7(at: DateTime<Utc>) -> uuid::Uuid {
     let mut bytes = *uuid::Uuid::new_v4().as_bytes();
-    // A pre-1970 instant has no v7 encoding; clamp rather than wrap.
     let ms = at.timestamp_millis().max(0) as u64;
     bytes[..6].copy_from_slice(&ms.to_be_bytes()[2..]);
     bytes[6] = (bytes[6] & 0x0f) | 0x70;
@@ -252,7 +191,6 @@ mod tests {
             assert!(WorkerId::new(bad).is_err(), "{bad:?} should be rejected");
         }
 
-        // Deserialization runs the validator; serialization is the bare string.
         assert!(serde_json::from_str::<RoleName>(r#""../etc""#).is_err());
         let back: RoleName = serde_json::from_str(r#""opus-2""#).unwrap();
         assert_eq!(back, role);

@@ -1,8 +1,3 @@
-//! `horch tile` - rearrange every pane in the workspace into the fleet grid.
-//!
-//! The herdr call sequence lives in [`horch_core::workspace::arrange`]; this is
-//! the command: it waits, picks the workspace and prints the report.
-
 use std::time::Duration;
 
 use anyhow::Result;
@@ -11,7 +6,6 @@ use horch_core::workspace::{arrange, PaneHost};
 
 use crate::output;
 
-/// `horch tile`.
 pub fn tile(
     ctx: &RuntimeContext,
     pane: Option<&str>,
@@ -41,8 +35,6 @@ pub fn tile(
 mod tests {
     use super::*;
 
-    /// Tiling skips the telemetry workspace by its label, so core's copy of
-    /// the label must match the one `horch telemetry` creates.
     #[test]
     fn the_telemetry_label_matches_the_one_tiling_skips() {
         assert_eq!(

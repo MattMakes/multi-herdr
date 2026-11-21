@@ -1,8 +1,4 @@
 extends RefCounted
-## The meters of the tuning bench: the traces of the players go in, the 8 meters come out.
-##
-## A target is a range. A value inside the target has the status "pass". A value past the target and inside
-## the tolerance has the status "pass (in range)". Only a value outside the range has the status "fail".
 
 const BenchJson := preload("res://addons/tuning_bench/bench_json.gd")
 const Knobs := preload("res://addons/tuning_bench/bench_knobs.gd")
@@ -13,7 +9,6 @@ const FAIL := "fail"
 const NA := "n/a"
 const DEFAULT_TOLERANCE := 0.2
 const PURCHASE_KINDS: Array[String] = ["buy", "once", "other"]
-## Meter 8 names at most this count of numbers with no effect.
 const MAX_DEAD_LINES := 12
 
 
@@ -28,7 +23,6 @@ static func _rank(status: String) -> int:
 	return 0
 
 
-## Return the worst status of a list.
 static func worst(statuses: Array) -> String:
 	var out: String = NA
 	for status: Variant in statuses:
@@ -37,7 +31,6 @@ static func worst(statuses: Array) -> String:
 	return out
 
 
-## A target "about x": pass inside half of the tolerance, in range inside the tolerance.
 static func about(value: float, target: float, tolerance: float) -> String:
 	var miss: float = absf(value - target)
 	if miss <= absf(target) * tolerance * 0.5 + 1.0e-12:
@@ -67,7 +60,6 @@ static func median(values: Array) -> float:
 	return percentile(values, 0.5)
 
 
-## Return a percentile of a list. The list does not need an order.
 static func percentile(values: Array, share: float) -> float:
 	if values.is_empty():
 		return 0.0
@@ -119,8 +111,6 @@ static func _phase_seconds(trace: Dictionary) -> Dictionary:
 	return out
 
 
-## Return the times at which 1 or more purchases came, in order. The purchases of the bot count, and with
-## `with_auto` also the purchases that the game made by itself (the list "auto" of the trace).
 static func purchase_moments(trace: Dictionary, with_auto: bool = true) -> Array:
 	var seen: Dictionary = {}
 	for purchase: Array in trace["purchases"]:
@@ -133,7 +123,6 @@ static func purchase_moments(trace: Dictionary, with_auto: bool = true) -> Array
 	return out
 
 
-## Return the count of the purchases that the game made by itself.
 static func auto_count(trace: Dictionary) -> int:
 	var count: int = 0
 	for purchase: Array in trace.get("auto", []):
@@ -141,8 +130,6 @@ static func auto_count(trace: Dictionary) -> int:
 	return count
 
 
-## Return why the run of a player stopped: "end" (progress 1), "stalled" (the stall rule of the runner),
-## "m6" (the limit of the range of meter 6) or "max_hours".
 static func stop_of(trace: Dictionary) -> String:
 	if trace["ended"]:
 		return "end"
@@ -151,15 +138,10 @@ static func stop_of(trace: Dictionary) -> String:
 	return str(trace.get("limit_kind", "max_hours"))
 
 
-## Return the count of the purchases of a run: by the bot and by the game.
 static func purchase_count(trace: Dictionary) -> int:
 	return (trace["purchases"] as Array).size() + auto_count(trace)
 
 
-## Return the text for a player that cannot move, or "" for a player that ended or that still moved at its limit.
-## 0 purchases in the whole run: "the idle player cannot start: the game needs the manual action" (a player with
-## `active_share` 0), or "... cannot start: no purchase in <h> h" (a player that uses the manual action).
-## A stall after 1 or more purchases: "the idle player stalls at <h> h: no purchase and no progress for <n> h".
 static func stuck_text(id: String, trace: Dictionary) -> String:
 	if trace["ended"]:
 		return ""
@@ -180,7 +162,6 @@ static func _gaps_min(moments: Array) -> Array:
 	return gaps
 
 
-## Return the class of a gain: "none", "low", "medium" or "high".
 static func impact_class(gain: float, target: Dictionary) -> String:
 	if gain == 0.0:
 		return "none"
@@ -196,9 +177,6 @@ static func _meter(id: String, name: String, unit: String) -> Dictionary:
 		"phases": {}, "hint": [], "lines": []}
 
 
-## Compute the result of a run. `traces` maps a player id to its trace. `order` is the order of the players.
-## `pending` lists the players that did not run yet: the result is then the result of the main player alone.
-## A meter has the key "lines": more lines of text that go below "text" (for example "by hand: ..." of M2).
 static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, order: Array, k: Dictionary, check: Dictionary, pending: Array = []) -> Dictionary:
 	var bench: Dictionary = ctx["bench"]
 	var main_id: String = ""
@@ -233,7 +211,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 
 	var meters: Array = []
 
-	# M1 Game length.
 	var m1: Dictionary = _meter("M1", "Game length", "h")
 	var t1: Dictionary = _target(targets, "length_h")
 	var hours: float = length_s / 3600.0
@@ -258,7 +235,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 		m1["text"] = "%s h%s" % [_f(hours), tail]
 		m1["status"] = about(hours, float(t1["about"]), _tol(t1)) if t1.has("about") else PASS
 	elif stuck_text(main_id, main) != "":
-		# The main player cannot move. This is a finding about the game, not about the limit of the run.
 		m1["text"] = stuck_text(main_id, main) + tail
 		m1["status"] = FAIL
 	else:
@@ -270,10 +246,8 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m1["hint"] = Knobs.hint(ctx, ["cost_base", "wall", "effect", "effect_factor", "cost_growth"])
 	meters.append(m1)
 
-	# M2 Time between upgrades.
 	var m2: Dictionary = _meter("M2", "Time between upgrades", "min")
 	var t2: Dictionary = _target(targets, "upgrade_gap_min")
-	# The purchases of the bot and the purchases that the game made by itself (auto-buy) both count.
 	var moments: Array = purchase_moments(main)
 	var main_auto: int = auto_count(main)
 	var gaps: Array = _gaps_min(moments)
@@ -321,7 +295,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m2["hint"] = Knobs.hint(ctx, ["cost_growth", "cost_base", "effect", "effect_factor", "auto_at"])
 	meters.append(m2)
 
-	# M3 Time between new things.
 	var m3: Dictionary = _meter("M3", "Time between new things", "min")
 	var t3: Dictionary = _target(targets, "content_gap_min")
 	var content_times: Array = []
@@ -355,7 +328,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m3["hint"] = Knobs.hint(ctx, ["unlock_at", "wall", "cost_base"])
 	meters.append(m3)
 
-	# M4 Impact of an upgrade.
 	var m4: Dictionary = _meter("M4", "Impact of an upgrade", "gain")
 	var t4: Dictionary = _target(targets, "impact")
 	var counts: Dictionary = {"none": 0, "low": 0, "medium": 0, "high": 0}
@@ -372,7 +344,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 		if not gains_by_phase.has(phase_id):
 			gains_by_phase[phase_id] = []
 		(gains_by_phase[phase_id] as Array).append(gain)
-	# An auto purchase has no measured impact: the bench does not see the income before and after it.
 	var not_measured: String = ""
 	if main_auto > 0:
 		not_measured = "; %d auto purchases not measured" % main_auto
@@ -407,7 +378,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m4["hint"] = Knobs.hint(ctx, ["effect", "effect_factor", "effect_growth", "cost_growth"])
 	meters.append(m4)
 
-	# M5 Phase balance.
 	var m5: Dictionary = _meter("M5", "Phase balance", "share")
 	var t5: Dictionary = _target(targets, "phase_share")
 	var parts5: PackedStringArray = PackedStringArray()
@@ -453,7 +423,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m5["hint"] = hint5
 	meters.append(m5)
 
-	# M6 Active against idle.
 	var m6: Dictionary = _meter("M6", "Active against idle", "ratio")
 	var t6: Dictionary = _target(targets, "idle_ratio")
 	if t6.has("min") or t6.has("max"):
@@ -466,14 +435,11 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	else:
 		var idle: Dictionary = traces[idle_id]
 		if not idle["ended"] and purchase_count(idle) == 0:
-			# The player bought nothing in the whole run. The ratio has no meaning: the meter is not a failure
-			# of the balance. Meter 1 has the same text.
 			m6["text"] = stuck_text(idle_id, idle)
 		elif not idle["ended"] or not main["ended"]:
 			if not idle["ended"] and idle.get("stalled", false):
 				m6["text"] = stuck_text(idle_id, idle)
 			elif not idle["ended"] and str(idle.get("limit_kind", "")) == "m6":
-				# The run stopped early: a longer run cannot come back into the range of this meter.
 				m6["text"] = "the %s player does not end inside %s h (limit of the M6 range)" % [idle_id, _f(float(idle["limit_s"]) / 3600.0)]
 			else:
 				m6["text"] = "the %s player does not end in %s h" % [idle_id if not idle["ended"] else main_id, _f(max_hours)]
@@ -500,7 +466,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m6["hint"] = hint6
 	meters.append(m6)
 
-	# M7 Reset rhythm.
 	var m7: Dictionary = _meter("M7", "Reset rhythm", "resets")
 	var t7: Dictionary = _target(targets, "resets")
 	var has_reset: bool = false
@@ -550,7 +515,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m7["hint"] = hint7
 	meters.append(m7)
 
-	# M8 Waits and dead content.
 	var m8: Dictionary = _meter("M8", "Waits and dead content", "share")
 	var t8: Dictionary = _target(targets, "wait_share_max")
 	var longest_target: float = float(t2.get("longest_max", 2.0))
@@ -570,8 +534,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	var unused: Array = []
 	for id: Variant in main["actions"]:
 		var used: Dictionary = main["actions"][id]
-		# A purchase that the game made by itself is a use of the action. A free choice of the player
-		# (`"bot": false`) is not for the bot: it is never "never used".
 		if (used["times"] as Array).is_empty() and int(used.get("auto_count", 0)) == 0 and used.get("bot", true):
 			unused.append(id)
 	unused.sort()
@@ -581,7 +543,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	var check_state: String = "not checked"
 	if check.get("dead", null) is Array:
 		if check.has("ledger_hash") and str(check["ledger_hash"]) != Knobs.ledger_hash(ctx):
-			# The numbers of the ledger changed after the self-check ran.
 			check_state = "stale"
 			dead_text = "numbers with no effect: self-check is stale"
 		else:
@@ -592,7 +553,6 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 				if not entry is Dictionary:
 					continue
 				var dead_id: String = str((entry as Dictionary).get("id", ""))
-				# The reason `dead_ok` of the bench file of now counts, not the one of the time of the check.
 				var accepted: bool = (entry as Dictionary).has("dead_ok")
 				if ledger.has(dead_id):
 					accepted = (ledger[dead_id] as Dictionary).has("dead_ok")
@@ -631,12 +591,10 @@ static func compute(ctx: Dictionary, targets: Dictionary, traces: Dictionary, or
 	m8["hint"] = Knobs.hint(ctx, ["cost_growth", "wall", "unlock_at"])
 	meters.append(m8)
 
-	# The table of the actions.
 	var actions_out: Array = []
 	var ids: Array = (main["actions"] as Dictionary).keys()
 	var all_times: Dictionary = {}
 	for id: Variant in ids:
-		# The times of the purchases of the bot and of the game together, in order, each time 1 time.
 		var both: Dictionary = {}
 		for t: Variant in main["actions"][id]["times"]:
 			both[float(t)] = true

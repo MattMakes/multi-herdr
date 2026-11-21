@@ -1,44 +1,19 @@
 class_name GameCore
 extends RefCounted
-## The math of Lamp Road. This script is the core of the game.
-##
-## The core has static functions only. The state is plain data: numbers, strings, lists and dictionaries.
-## The core uses no node, no autoload, no signal, no file, no clock and no engine random function.
-## A random value comes from the seed that is in the state.
-## A function changes only the state that the caller gives. A function never changes `data`.
-##
-## `data` maps each data file to its parsed content. The session and the tuning bench give it.
 
 const GENERATORS_FILE := "res://data/generators.json"
 const UPGRADES_FILE := "res://data/upgrades.json"
 const STAGES_FILE := "res://data/stages.json"
 const ECONOMY_FILE := "res://data/economy.json"
 
-## Each stage that the player passes adds this share to the income.
 const STAGE_INCOME_BONUS := 0.1
-## After a reset the player starts with this amount of light for each ember.
 const EMBER_START_LIGHT := 5.0
-## The count of clicks in 1 second of the manual action.
 const CLICKS_PER_S := 3.0
-## The lamplighter buys at most this count of lamp levels in 1 step.
 const AUTO_BUYS_PER_STEP := 1000
 
 const NEVER := 1.0e300
 const AUTO_ID := "lamplighter"
 
-# A HOLD ACTION. The manual action of Lamp Road is a click: `active` gives light for the clicks of `seconds`.
-# A game in which the income is higher while the player holds a button uses this pattern in its place:
-#     static func active(state, data, seconds) -> Array:
-#         state["hold_credit"] = float(state["hold_credit"]) + seconds     # the hand gives hold time
-#         return []
-#     static func step(state, data, dt) -> Array:
-#         var held: float = minf(float(state["hold_credit"]), dt)          # the part of this step with the hold
-#         state["hold_credit"] = float(state["hold_credit"]) - held
-#         _earn(state, rate(state, data) * ((dt - held) + held * hold_factor))
-# The session calls `active(dt)` and then `step(dt)` in each frame while the button is down. The bench calls
-# `step` and then `active(decision_s x active_share)`, so the hold of the bot comes 1 decision late.
-# `click.hold_power` in data/economy.json is the number for such a rule. Lamp Road does not have the rule,
-# so that number is dead on purpose (README.md).
 const RNG_MOD := 2147483648
 
 
@@ -58,7 +33,6 @@ static func _economy(data: Dictionary) -> Dictionary:
 	return data[ECONOMY_FILE]
 
 
-## Make the state of a new game.
 static func new_state(data: Dictionary, seed: int = 1) -> Dictionary:
 	var state: Dictionary = {"seed": seed, "rng": absi(seed) % RNG_MOD, "light": 0.0, "run_earned": 0.0,
 		"lifetime": 0.0, "levels": {}, "upgrades": {}, "stage": 0, "embers": 0, "resets": 0, "seen": {},
@@ -69,7 +43,6 @@ static func new_state(data: Dictionary, seed: int = 1) -> Dictionary:
 	return state
 
 
-## Check the state again after the data changed. The session calls this after a reload of the data.
 static func refresh(state: Dictionary, data: Dictionary) -> Array:
 	for generator: Dictionary in _generators(data):
 		if not (state["levels"] as Dictionary).has(generator["id"]):
@@ -78,9 +51,6 @@ static func refresh(state: Dictionary, data: Dictionary) -> Array:
 	return _unlocks(state, data)
 
 
-## Advance the game by `dt` seconds. Return the events.
-## The lamplighter (the auto-buy) buys inside the step, at the time at which the light is enough.
-## A long step thus gives the same purchases as many short steps.
 static func step(state: Dictionary, data: Dictionary, dt: float) -> Array:
 	var events: Array = []
 	var left: float = dt
@@ -107,8 +77,6 @@ static func step(state: Dictionary, data: Dictionary, dt: float) -> Array:
 	return events
 
 
-## The player closed the game for `seconds`. Give the light of the offline rule. Return the events.
-## The rule: the income of now x `offline.rate`, for at most `offline.cap_minutes`. The lamplighter does not work.
 static func away(state: Dictionary, data: Dictionary, seconds: float) -> Array:
 	var offline: Dictionary = _economy(data)["offline"]
 	var counted: float = clampf(seconds, 0.0, float(offline["cap_minutes"]) * 60.0)
@@ -120,7 +88,6 @@ static func away(state: Dictionary, data: Dictionary, seconds: float) -> Array:
 	return events
 
 
-## Return the lamp that the lamplighter buys now, or an empty dictionary when the lamplighter is not there yet.
 static func _auto_target(state: Dictionary, data: Dictionary) -> Dictionary:
 	var auto: Dictionary = _economy(data)["auto_buy"]
 	if not (state["seen"] as Dictionary).has(AUTO_ID) or state.get("auto_off", false):
@@ -131,7 +98,6 @@ static func _auto_target(state: Dictionary, data: Dictionary) -> Dictionary:
 	return {}
 
 
-## The player does the manual action for this time. Return the events.
 static func active(state: Dictionary, data: Dictionary, seconds: float) -> Array:
 	_earn(state, click_value(state, data) * CLICKS_PER_S * seconds)
 	if float(state["lifetime"]) >= float(state["watch"]):
@@ -139,7 +105,6 @@ static func active(state: Dictionary, data: Dictionary, seconds: float) -> Array
 	return []
 
 
-## Return the light that 1 click gives.
 static func click_value(state: Dictionary, data: Dictionary) -> float:
 	var click: Dictionary = _economy(data)["click"]
 	var factor: float = 1.0
@@ -149,7 +114,6 @@ static func click_value(state: Dictionary, data: Dictionary) -> float:
 	return float(click["power"]) * factor + float(click["rate_seconds"]) * rate(state, data)
 
 
-## Return the income of 1 generator at a level, with no upgrade.
 static func generator_output(generator: Dictionary, level: int) -> float:
 	if level <= 0:
 		return 0.0
@@ -159,12 +123,10 @@ static func generator_output(generator: Dictionary, level: int) -> float:
 	return float(generator["income"]) * (pow(growth, float(level)) - 1.0) / (growth - 1.0)
 
 
-## Return the price of the next level of 1 generator.
 static func generator_cost(generator: Dictionary, level: int) -> float:
 	return float(generator["cost"]) * pow(float(generator["cost_growth"]), float(level))
 
 
-## Return the income for each second, with no manual action.
 static func rate(state: Dictionary, data: Dictionary) -> float:
 	var economy: Dictionary = _economy(data)
 	var owned: Dictionary = state["upgrades"]
@@ -190,7 +152,6 @@ static func rate(state: Dictionary, data: Dictionary) -> float:
 	return total
 
 
-## Return 0 at the start and 1 when the player passed each stage.
 static func progress(state: Dictionary, data: Dictionary) -> float:
 	var count: int = _stages(data).size()
 	if count == 0:
@@ -198,17 +159,14 @@ static func progress(state: Dictionary, data: Dictionary) -> float:
 	return clampf(float(int(state["stage"])) / float(count), 0.0, 1.0)
 
 
-## Return the amount of light.
 static func wealth(state: Dictionary, _data: Dictionary) -> float:
 	return float(state["light"])
 
 
-## Return the largest correct time step. The income is constant between 2 actions, so a long step is correct.
 static func max_step(_data: Dictionary) -> float:
 	return 3600.0
 
 
-## Return the embers that a reset gives now.
 static func reset_embers(state: Dictionary, data: Dictionary) -> int:
 	var reset: Dictionary = _economy(data)["reset"]
 	if float(state["run_earned"]) < float(reset["need_light"]):
@@ -216,7 +174,6 @@ static func reset_embers(state: Dictionary, data: Dictionary) -> int:
 	return int(floor(pow(float(state["run_earned"]) / float(reset["gain_div"]), float(reset["gain_exp"]))))
 
 
-## Return each thing that the player can do or see now.
 static func actions(state: Dictionary, data: Dictionary) -> Array:
 	var out: Array = []
 	var seen: Dictionary = state["seen"]
@@ -252,15 +209,12 @@ static func actions(state: Dictionary, data: Dictionary) -> Array:
 			"affordable": gives >= 1, "element": "reset", "group": "Road", "embers": gives,
 			"gain": float(gives) / float(maxi(int(state["embers"]), 1))})
 	if seen.has(AUTO_ID):
-		# The switch of the lamplighter. It is a free choice that the player can change back: `"bot": false`.
-		# The view shows it. The bot of the tuning bench never does it, so the lamplighter stays on in a bench run.
 		var on: bool = not state.get("auto_off", false)
 		out.append({"id": AUTO_ID, "kind": "other", "label": "Lamplighter: %s" % ("on" if on else "off"), "cost": 0.0,
 			"affordable": true, "element": AUTO_ID, "group": "Road", "bot": false, "on": on})
 	return out
 
 
-## Do 1 action. Return the events. A refused action gives 1 event "refused" and changes nothing.
 static func apply(state: Dictionary, data: Dictionary, action_id: String) -> Array:
 	var seen: Dictionary = state["seen"]
 	if not seen.has(action_id):
@@ -337,14 +291,12 @@ static func _earn(state: Dictionary, amount: float) -> void:
 	state["lifetime"] = float(state["lifetime"]) + amount
 
 
-## Return a value from 0 to 1 from the seed of the state.
 static func _random(state: Dictionary) -> float:
 	var next: int = (int(state["rng"]) * 1103515245 + 12345) % RNG_MOD
 	state["rng"] = next
 	return float(next) / float(RNG_MOD)
 
 
-## Mark each thing that the player can see now. Return 1 event "unlock" for each new thing.
 static func _unlocks(state: Dictionary, data: Dictionary) -> Array:
 	var events: Array = []
 	var seen: Dictionary = state["seen"]
@@ -358,7 +310,6 @@ static func _unlocks(state: Dictionary, data: Dictionary) -> Array:
 	var at: int = int(state["stage"])
 	if at < stages.size():
 		var stage: Dictionary = stages[at]
-		# A mile shows when the player earned its unlock amount after the mile before it.
 		var need: float = float(state["mile_mark"]) + float(stage["unlock_at"])
 		watch = _unlock_one(seen, events, stage["id"], str(stage["name"]), need, lifetime, watch)
 	var reset: Dictionary = _economy(data)["reset"]

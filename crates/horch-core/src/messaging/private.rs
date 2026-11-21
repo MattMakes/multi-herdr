@@ -1,34 +1,19 @@
-//! Messaging dirs and files only this user can read or change (#77).
-//!
-//! The registry, briefs, spool and mail hold task text, reports and the
-//! binaries a worker runs. A dir is created mode 0700 and a file mode 0600.
-//! An existing dir that another user owns, or that others can write to, is
-//! refused: whoever can write it can plant a brief or an `orchestrator.id`.
-//! An own dir that only its group can write (umask 002 made it so) is made
-//! 0700 and used.
-
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-/// The owner and the permission bits of a dir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Facts {
     pub uid: u32,
     pub mode: u32,
 }
 
-/// What to do with an existing dir that passed [`judge`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// Mode 0700 already.
     Private,
-    /// This user's dir with other bits set, but others cannot write it:
-    /// set it to 0700.
     Tighten,
 }
 
-/// Refuse a dir that `me` does not own, or that others can write.
 pub(crate) fn judge(path: &Path, facts: Facts, me: u32) -> Result<Verdict> {
     if facts.uid != me {
         bail!(
@@ -53,9 +38,6 @@ pub(crate) fn judge(path: &Path, facts: Facts, me: u32) -> Result<Verdict> {
     })
 }
 
-/// [`judge`] the old temp dir `path` more strictly: it is in a dir all
-/// users share, so it must be a real dir, not a link, and its group must
-/// not write it either. It is never changed.
 pub(crate) fn judge_shared(path: &Path, facts: Facts, is_link: bool, me: u32) -> Result<()> {
     if is_link {
         bail!("{} is a link; horch does not follow it", path.display());
@@ -88,8 +70,6 @@ fn me() -> u32 {
     unsafe { libc::getuid() }
 }
 
-/// [`judge`] the existing dir `path`, and make an own dir 0700. A missing
-/// dir passes.
 pub(crate) fn check(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -112,8 +92,6 @@ pub(crate) fn check(path: &Path) -> Result<()> {
     }
 }
 
-/// [`judge_shared`] the existing old temp dir `path`, without following a
-/// link.
 pub(crate) fn check_shared(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -133,8 +111,6 @@ pub(crate) fn check_shared(path: &Path) -> Result<()> {
     }
 }
 
-/// Create `path` and its missing parents mode 0700, or check the existing
-/// dir and make it 0700.
 pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -149,13 +125,11 @@ pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
     check(path)
 }
 
-/// Replace `path` with `bytes`, mode 0600, atomically.
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     crate::fsx::write_atomic(path, bytes, crate::fsx::PRIVATE_FILE)
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Create the new file `path` mode 0600; it must not exist.
 pub(crate) fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -203,8 +177,6 @@ mod tests {
         }
     }
 
-    /// An own dir that only its group can write is the umask 002 default of
-    /// earlier releases: it is made 0700, not refused.
     #[test]
     fn an_own_dir_others_cannot_write_is_accepted() {
         let path = Path::new("/state/mail/w1");
@@ -229,8 +201,6 @@ mod tests {
         }
     }
 
-    /// The old temp dir is in a dir all users share: a link, or a dir its
-    /// group can write, is refused there.
     #[test]
     fn a_shared_dir_must_be_a_real_dir_its_group_cannot_write() {
         let path = Path::new("/tmp/herdr-orchestration-w1");
@@ -287,7 +257,6 @@ mod tests {
         ensure_dir(&old).unwrap();
         assert_eq!(mode(&old), 0o700);
 
-        // umask 002 made the dirs of earlier releases 0775.
         let group = tmp.path().join("group");
         std::fs::create_dir(&group).unwrap();
         std::fs::set_permissions(&group, std::fs::Permissions::from_mode(0o775)).unwrap();

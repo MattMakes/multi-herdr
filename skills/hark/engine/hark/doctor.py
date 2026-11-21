@@ -27,12 +27,7 @@ from hark.models._cache_report import fetch, models
 
 DATA_FILES = ("listen/vocab.json", "listen/vocab_stats.json", "listen/realness_model.json",
               "timeline/launch_profile.json")
-# These data files are built by the user, not shipped (ARCHITECTURE 12). When one
-# is absent the doctor adds a note with the command that builds it.
 OPTIONAL_DATA = {"listen/vocab_stats.json": "python -m hark.listen.vocabulary --build-stats REF ..."}
-
-
-# the sound bank -------------------------------------------------------
 
 
 def _count_entries(path: str) -> int | None:
@@ -84,17 +79,11 @@ def bank_info() -> dict:
         return {"error": f"{type(exc).__name__}: {report.one_line(exc)}"}
 
 
-# load timing ----------------------------------------------------------
-
-
 def _load_models() -> dict:
     """Load and time both models; MLMissing or RuntimeError propagate."""
     from hark.models._load_timing import time_both
 
     return time_both()
-
-
-# problems and notes ---------------------------------------------------
 
 
 def _package_problems(pkgs: dict[str, str]) -> list[str]:
@@ -242,9 +231,6 @@ def check(load: bool = False, fetch_missing: bool = False) -> dict:
     state["notes"] = advice
     state["summary"] = _summary(state["bank"], faults, advice)
     return state
-
-
-# command line ---------------------------------------------------------
 
 
 def run_cli(args: argparse.Namespace) -> int:

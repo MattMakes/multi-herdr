@@ -65,13 +65,11 @@ class ExtractTest(unittest.TestCase):
 class ParseTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # C5: SKILL.md and own.md are copies of the sample, so 2 parses serve the 4 runs.
         patch = mock.patch.object(gbc, "check", once(gbc.check))
         patch.start()
         cls.addClassCleanup(patch.stop)
 
     def setUp(self):
-        # A clean checkout (the gate's) has no .worktrees/_scratch yet.
         parent = gbc.REPO / ".worktrees" / "_scratch"
         parent.mkdir(parents=True, exist_ok=True)
         self.scratch = Path(tempfile.mkdtemp(dir=parent))
@@ -94,7 +92,6 @@ class ParseTest(unittest.TestCase):
         args = ("--scratch", self.scratch, "--strict-own", copied, "--baseline", baseline)
         code, out, err = run(*args, skill / "SKILL.md")
         self.assertEqual(code, 0, out)
-        # U-22: a copied failure is counted, not printed.
         self.assertNotIn("Parse Error", out)
         self.assertIn("gdscript_blocks_check: 1 copied blocks fail in 1 skills, report only (baseline 1,", out)
         self.assertIn("1 fail (1 copied)", err)

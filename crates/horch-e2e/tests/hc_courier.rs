@@ -1,6 +1,3 @@
-//! End-to-end: a detached courier for a workspace recorded on `hc` routes its
-//! pane calls through `hc` and never invokes `herdr` (HCB-06).
-
 use std::process::Command;
 
 use horch_core::execution::legacy::{LedgerRecordV1, KIND_ORCHESTRATOR, STATUS_WORKING};
@@ -37,8 +34,6 @@ fn hcb_06_a_detached_courier_for_an_hc_workspace_calls_hc() {
     let term = created["address"].as_str().unwrap().to_string();
     h.set_hc_terminal_status(&term, Some(("claude-code", "idle")), Some(1000));
 
-    // Clear the log of our own setup `hc run` so everything logged next comes
-    // from the courier alone.
     let _ = std::fs::remove_file(h.state.join("fake-hc.log"));
 
     let env = MapEnv::new(&h.project)
@@ -74,9 +69,6 @@ fn hcb_06_a_detached_courier_for_an_hc_workspace_calls_hc() {
     let mail = Mail::under(&h.state, "sp01");
     mail.enqueue("sonnet-1", "DONE: finished slice").unwrap();
 
-    // Start the courier outside any pane or project: no HORCH_BACKEND, no
-    // HC_TERMINAL_ID, no HERDR_PANE_ID, and HORCH_PROJECT_DIR pointing at an
-    // unrelated directory so cross-project lookup resolves `sp01` -> `hc`.
     let mut courier_cmd = h.horch(&["mail", "courier", "--workspace", "sp01"]);
     courier_cmd
         .current_dir(&h.tmp)

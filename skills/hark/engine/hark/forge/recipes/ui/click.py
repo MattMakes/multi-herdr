@@ -18,7 +18,6 @@ ALTS = ["a coin dropped on a table", "a mechanical keyboard key press", "a camer
 REFSET = "click"
 REFS = [f"{L.ref_root()}/ui/ui_click_{i:02d}.wav" for i in range(1, 5)]
 
-# The full space. thock narrows body_f and hp below 150 and 80 (Q-RANGE-1: widened).
 SPACE = {
     "pitch": (1200, 9500, "log"),
     "bright": (0.0, 1.0),

@@ -25,7 +25,6 @@ from hark.forge.engine.eval.scrub_paths import EVAL_DIR, REPO
 SR = bt.SR
 V1_ROOT = REPO / "out" / "forge_v1"
 V2_ROOT = REPO / "out" / "forge_v2"
-# (answer name, category, first-version final folder, file stem)
 V1 = [("key press", "typing_key"), ("UI click", "click"), ("pop", "pop"), ("fast whoosh", "whoosh_fast"),
       ("impact", "impact")]
 CHECKS = [("var_cos", "span", 0.01), ("tone_db", "low", 0.3), ("env_oct", "low", 0.03), ("curve_db", "low", 0.5),
@@ -34,8 +33,6 @@ CHECKS = [("var_cos", "span", 0.01), ("tone_db", "low", 0.3), ("env_oct", "low",
           ("margin", "model", 0.05), ("as_names", "model", 0.05)]
 GAP_S, GROUP_GAP_S, LEAD_S, TAIL_S = 1.0, 3.0, 1.0, 1.0
 
-
-# ---------------------------------------------------------------- verdicts
 
 def _dist(rule: str, v: float, reals: list[float]) -> float:
     if rule == "low":
@@ -77,8 +74,6 @@ def verdict(rule: str, a: Any, b: Any, reals: Sequence[Any], eps: float) -> str:
         res = _dist_verdict(rule, a, b, vals, eps)
     return res
 
-
-# ---------------------------------------------------------------- results
 
 def _results(path: Path | None) -> tuple[dict, dict, Path]:
     v1 = EVAL_DIR / "results_v1.json"
@@ -152,8 +147,6 @@ def _stale(r2: dict, cats: Sequence[str]) -> list[str]:
     made = _made_time(r2)
     return [] if made is None else [cat for cat in cats if _cat_stale(r2, cat, made)]
 
-
-# ---------------------------------------------------------------- listening file
 
 def _ext(x: np.ndarray) -> float:
     return max(bt.extent_s(x), 1e-4)

@@ -1,6 +1,3 @@
-//! A9: the versioned skill catalog and the activation plan (SKL-01, SKL-02,
-//! SKL-03, SKL-07, SKL-08, SKL-11).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -15,22 +12,16 @@ use horch_core::skills::{
 };
 use horch_marketplace::LockEntry;
 
-/// Every agent loads skills: these tests judge the plan, not this host.
 const ANY_AGENT: SupportCheck = |_| Ok(());
 
-/// `t`'s skills on `base`, resolved as the launch resolves them, with no
-/// home.
 fn resolve(base: &SkillCatalog, t: &Teammate) -> anyhow::Result<SkillResolution> {
     SkillResolution::read(base.clone(), Some(t), None, ANY_AGENT)
 }
 
-/// The activation plan of `t` on `base`, as [`resolve`] gives it.
 fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivationPlan> {
     resolve(base, t)?.plan(t)
 }
 
-/// Skills written in this repository: their `copied.json` entry lists no
-/// copied files.
 const REPO_ORIGINAL: &[&str] = &[
     "addictive-game-design-review",
     "api-contracts",
@@ -106,9 +97,6 @@ fn oracles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracles/skills")
 }
 
-/// Teammates added after the A0 freeze. They have no oracle file and the
-/// oracle loop skips them; a missing file for any other teammate still
-/// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
     "addictive-game-design-reviewer",
     "antigravity",
@@ -213,7 +201,6 @@ fn skl_01_bundled_catalog_versions_and_digests() {
     let catalog = SkillCatalog::bundled().unwrap();
     assert_eq!(catalog, SkillCatalog::bundled().unwrap(), "stable digests");
 
-    // Every skill directory is in the catalog, and nothing else is.
     let on_disk: BTreeSet<String> = std::fs::read_dir(skills_dir())
         .unwrap()
         .map(|e| e.unwrap())
@@ -234,8 +221,6 @@ fn skl_01_bundled_catalog_versions_and_digests() {
         assert_eq!(entry.source_label(), "bundled");
         assert!(!entry.description.trim().is_empty(), "{id}");
 
-        // The digest is the marketplace tree digest of the skill directory
-        // when no file is executable; an execute bit changes it (SKL-11).
         if BUNDLED_SKILL_EXECUTABLES
             .iter()
             .any(|p| p.starts_with(&format!("{id}/")))
@@ -256,8 +241,6 @@ fn skl_01_bundled_catalog_versions_and_digests() {
             "{id}"
         );
 
-        // A repo-original skill has an entry with no copied files; every
-        // other skill names at least one.
         let c = entry.copied.as_ref().unwrap_or_else(|| panic!("{id}"));
         if REPO_ORIGINAL.contains(&id) {
             assert!(c.copied_files.is_empty(), "{id}");
@@ -268,8 +251,6 @@ fn skl_01_bundled_catalog_versions_and_digests() {
     }
 }
 
-/// `copied.json` parses one entry per skill; a path outside the skill
-/// directory, an unknown field and a duplicate name fail.
 #[test]
 fn skills_copied_parses() {
     let text = r#"{
@@ -294,8 +275,6 @@ fn skills_copied_parses() {
     let dup = text.replace(r#""name": "own""#, r#""name": "part""#);
     assert!(parse_copied(&dup).is_err());
 
-    // U-49: budget_exempt carries a reason, and only on a skill that is not
-    // verbatim (a verbatim skill is already exempt).
     assert_eq!(parsed["part"].budget_exempt, None);
     let part = r#"{"name": "part", "copied_files": ["SKILL.md"]}"#;
     let exempt = |field: &str| text.replace(part, &part.replace('}', &format!(", {field}}}")));
@@ -312,8 +291,6 @@ fn skills_copied_parses() {
     assert!(parse_copied(&both).is_err());
 }
 
-/// U-49: `verbatim: true` means an unchanged copy of the whole directory, so
-/// `copied_files` lists every file of a verbatim skill.
 #[test]
 fn skills_verbatim_lists_every_file() {
     let catalog = SkillCatalog::bundled().unwrap();
@@ -336,18 +313,9 @@ fn skills_verbatim_lists_every_file() {
     assert!(verbatim > 0);
 }
 
-/// A verbatim skill (`"verbatim": true` in copied.json) is an unchanged
-/// copy and is exempt from the size budget. So is a skill whose entry gives a
-/// `budget_exempt` reason. Any other skill meets it.
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
-/// Skill ids exempt from the size budget: every skill whose copied.json
-/// entry says `verbatim: true` or gives a `budget_exempt` reason.
-///
-/// A renamed or combined Godot skill (`godot-*`, Godot wave GW3-GW7) keeps
-/// its copied `SKILL.md` at upstream length, so its entry gives a
-/// `budget_exempt` reason (U-49). It is not verbatim.
 fn budget_exempt() -> BTreeSet<String> {
     let catalog = SkillCatalog::bundled().unwrap();
     catalog
@@ -361,7 +329,6 @@ fn budget_exempt() -> BTreeSet<String> {
         .collect()
 }
 
-/// `(SKILL.md bytes, directory bytes)` of every bundled skill.
 fn skill_sizes() -> BTreeMap<&'static str, (usize, usize)> {
     let mut sizes: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for (path, bytes) in BUNDLED_SKILL_FILES {
@@ -377,8 +344,6 @@ fn skill_sizes() -> BTreeMap<&'static str, (usize, usize)> {
     sizes
 }
 
-/// U-49: a `budget_exempt` reason is for a skill over the budget. When a
-/// refresh brings the skill under it, the stale reason fails here.
 #[test]
 fn skills_budget_exempt_only_over_budget() {
     let catalog = SkillCatalog::bundled().unwrap();
@@ -404,7 +369,6 @@ fn skills_bundled_size_budget() {
     let exempt = budget_exempt();
     let mut dirs: BTreeMap<&str, usize> = BTreeMap::new();
     for (path, bytes) in BUNDLED_SKILL_FILES {
-        // Top-level files (README.md, copied.json) belong to no skill.
         let Some((id, rel)) = path.split_once('/') else {
             continue;
         };
@@ -424,21 +388,6 @@ fn skills_bundled_size_budget() {
     }
 }
 
-/// Skills that ship files other than `.md` and `.txt`; they are the only
-/// skills exempt from the text-only rule. `skill-creator` ships Python
-/// scripts and HTML assets. The 27 copied Blender skills ship Python scripts,
-/// and `blender-addon-development` also ships 1 `.toml` manifest. The own-text
-/// `blender-3d-print` ships 2 Python scripts that its `SKILL.md` runs.
-/// `blender-workflow-recipes` holds `.md` files only, so it is not listed.
-/// The `video-*` skills listed here ship their own runnable checker,
-/// capture and render scripts. The own-text `one-page-design` ships its page
-/// checker script, the checker's tests and an HTML starter page.
-/// `skill-intake` ships its `intake` tool as real `.py` files, so the gate's
-/// tests and the skill digest cover the tool itself. The own-text
-/// `incremental-game-design` ships its solver, proof, simulator and workbook
-/// scripts, its Godot project scan, JSON assets (the system catalog, example
-/// models and targets), and Godot files: the tuning bench addon and a sample
-/// game (`.gd`, `.tscn`, `.godot`).
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -484,17 +433,11 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "video-storyboard",
 ];
 
-/// Single files exempt from the text-only rule; the rest of their skill is
-/// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,
-/// and SKL-11 keeps its execute bit in a bundle.
 const EXEMPT_FILES: &[&str] = &[
     "godot-build-verify/scripts/godot-run.sh",
     "ui-prop-tester/scripts/ui-prop-tester",
 ];
 
-/// Skill files are `.md` or `.txt`, except the skills in
-/// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. A verbatim
-/// skill is exempt only when `EXEMPT_FROM_TEXT_ONLY` lists it.
 #[test]
 fn skills_bundled_text_only() {
     for (path, _) in BUNDLED_SKILL_FILES {
@@ -508,8 +451,6 @@ fn skills_bundled_text_only() {
     }
 }
 
-/// No bundled skill ships a licence or notice file (operator rule,
-/// 2026-10-04: the copies are personal and carry no licence or credit).
 #[test]
 fn skills_bundled_no_licence_files() {
     for (path, _) in BUNDLED_SKILL_FILES {
@@ -523,8 +464,6 @@ fn skills_bundled_no_licence_files() {
     }
 }
 
-/// `skills/copied.json` lists its skills sorted by name, so a merge that
-/// appends an entry fails here instead of drifting.
 #[test]
 fn skills_copied_sorted_by_name() {
     let raw = std::fs::read_to_string(skills_dir().join("copied.json")).unwrap();
@@ -540,9 +479,6 @@ fn skills_copied_sorted_by_name() {
     assert_eq!(names, sorted, "copied.json skills are not sorted by name");
 }
 
-/// Every skill table in `skills/README.md` is sorted by its first column,
-/// except the process-order "Source mapping" table, and every bundled skill
-/// has exactly one row across the tables.
 #[test]
 fn skills_readme_tables_sorted_one_row_per_skill() {
     let readme = std::fs::read_to_string(skills_dir().join("README.md")).unwrap();
@@ -565,7 +501,6 @@ fn skills_readme_tables_sorted_one_row_per_skill() {
             check(section, &mut table);
             section = h;
         }
-        // A skill row starts with `| [name](name/SKILL.md)`.
         let name = line
             .strip_prefix("| [")
             .and_then(|r| r.split_once("](").map(|(n, _)| n))
@@ -597,8 +532,6 @@ fn skills_readme_tables_sorted_one_row_per_skill() {
     assert_eq!(unique, on_disk, "README rows and bundled skills differ");
 }
 
-/// `build.rs` never bundles a dotfile or a file under a dot directory. The
-/// fixture `skills/.dotfile-fixture` exists on disk and must not appear.
 #[test]
 fn skills_bundled_skip_dotfiles() {
     assert!(skills_dir().join(".dotfile-fixture").is_file());
@@ -610,8 +543,6 @@ fn skills_bundled_skip_dotfiles() {
     }
 }
 
-/// The lock override rule: a `bundled:` lock entry never replaces the
-/// compiled-in copy; any other lock entry does, and new ids are added.
 #[test]
 fn skl_01_lock_entries_merge_by_the_override_rule() {
     let bundled = SkillCatalog::bundled().unwrap();
@@ -683,7 +614,6 @@ fn skl_02_activation_matches_legacy_selection() {
 #[test]
 fn skl_03_policy_mapping() {
     let catalog = SkillCatalog::bundled().unwrap();
-    // `tdd` is both the teammate's own and an implementation phase skill.
     let t = Teammate {
         name: "mapper".into(),
         skills: vec!["trace".into(), "tdd".into()],
@@ -727,7 +657,6 @@ fn skl_03_policy_mapping() {
         assert_eq!((&r.version, r.digest), (&entry.version, entry.digest));
     }
 
-    // No phase: only the teammate's own skills activate.
     let unphased = Teammate {
         phase: None,
         ..t.clone()
@@ -735,7 +664,6 @@ fn skl_03_policy_mapping() {
     let plan = plan_for(&unphased, &catalog).unwrap();
     assert_eq!(plan.activated_ids(), ["tdd", "trace"]);
 
-    // The plan is data: it round-trips through JSON.
     let json = serde_json::to_string(&plan).unwrap();
     assert!(json.contains(r#""policy":"explicit""#), "{json}");
     assert_eq!(
@@ -747,8 +675,6 @@ fn skl_03_policy_mapping() {
 #[test]
 fn skl_07_plugin_skills_separate() {
     let catalog = SkillCatalog::bundled().unwrap();
-    // One plugin skill shares a bundled skill's name; one does not exist in
-    // the catalog at all.
     let plugin_skills: BTreeMap<String, Vec<String>> = [
         ("superpowers".to_string(), vec!["brainstorming".to_string()]),
         ("dev".to_string(), vec!["tdd".to_string()]),
@@ -761,8 +687,6 @@ fn skl_07_plugin_skills_separate() {
         plugin_skills: plugin_skills.clone(),
         ..Teammate::default()
     };
-    // No host skills read: these plugins exist on no host. A catalog without
-    // the plugin entries still keeps the plugin skills apart.
     let unread = SkillResolution::read(catalog.clone(), None, None, ANY_AGENT).unwrap();
     let plan = unread.plan(&t).unwrap();
     assert_eq!(plan.plugin_skills, plugin_skills);
@@ -775,7 +699,6 @@ fn skl_07_plugin_skills_separate() {
         .collect();
     assert!(!ids.contains(&"brainstorming"));
     assert_eq!(ids.len(), catalog.len());
-    // The plugin's `tdd` does not activate the bundled `tdd`.
     let tdd = plan.available.iter().find(|r| r.id.as_str() == "tdd");
     assert_eq!(tdd.unwrap().policy, InvocationPolicy::Available);
     assert_eq!(
@@ -793,8 +716,6 @@ fn skl_07_plugin_skills_separate() {
     );
 }
 
-/// `SkillCatalog::bundled` is built once and cloned: 2 calls give equal
-/// catalogs.
 #[test]
 fn bundled_catalog_is_the_same_on_every_call() {
     let first = SkillCatalog::bundled().unwrap();
@@ -803,11 +724,6 @@ fn bundled_catalog_is_the_same_on_every_call() {
     assert_eq!(first, second);
 }
 
-/// A catalog extended for a teammate holds its named plugin skills as
-/// `<plugin>:<skill>`, and the plan activates them (Explicit), so the
-/// ledger records them (SKL-04). An unnamed plugin skill is in neither
-/// list, and a plugin skill named like a bundled one still does not
-/// activate the bundled one (SKL-07).
 #[test]
 fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
     let tmp = tempfile::tempdir().unwrap();
@@ -848,7 +764,6 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
     assert_eq!(entry.description, "Plugin review.");
     let digest = horch_marketplace::integrity::tree_digest(&root.join("skills/review")).unwrap();
     assert_eq!(entry.digest.to_string(), digest);
-    // No plugin version: the label says plugin.
     assert_eq!(
         entry.version.0,
         format!("plugin+{}", &digest["sha256:".len()..][..12])
@@ -882,8 +797,6 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
     let tdd = plan.available.iter().find(|r| r.id.as_str() == "tdd");
     assert_eq!(tdd.unwrap().policy, InvocationPolicy::Available);
 
-    // An agent that does not load skills as plugins, and a teammate with
-    // skills off, add nothing.
     for other in [
         Teammate {
             agent: HarnessKind::Codex,
@@ -897,7 +810,6 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
         let c = resolve(&bundled, &other).unwrap();
         assert_eq!(c.catalog().len(), bundled.len());
     }
-    // A plugin that does not resolve fails the extension, as the launch would.
     let missing = Teammate {
         plugin_dirs: Vec::new(),
         ..t.clone()
@@ -906,8 +818,6 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
     assert!(err.contains("plugin 'code' is neither"), "{err}");
 }
 
-/// `text` without the SKL-10 sentence that names skills outside the
-/// bundle: a sanctioned change after the baselines were frozen.
 fn without_outside_sentence(text: &str) -> String {
     const START: &str = " Your skills name ";
     const END: &str = " only when your step needs it.";
@@ -920,11 +830,6 @@ fn without_outside_sentence(text: &str) -> String {
     }
 }
 
-/// The briefing equals the frozen baseline with the bundle path replaced,
-/// and with the SKL-10 sentence (skills named outside the bundle) removed
-/// from both sides: that sentence is a sanctioned change. The baselines
-/// share `tests/oracles/skills/` with `oracle_skills_match`, whose bless
-/// writes the sentence in; every other byte stays frozen.
 #[test]
 fn skl_08_briefing_matches_baseline_modulo_path() {
     let catalog = SkillCatalog::bundled().unwrap();
@@ -944,8 +849,6 @@ fn skl_08_briefing_matches_baseline_modulo_path() {
             let text = match plan_for(&t, &catalog) {
                 Err(e) => format!("ERROR: {e:#}\n"),
                 Ok(plan) => {
-                    // The A0 roster has no plugin_skills; their lines need
-                    // the operator's installed plugins.
                     assert!(plan.plugin_skills.is_empty(), "{name}");
                     match MaterializedSkills::materialize(&plan, &catalog, tmp.path(), &execution)
                         .unwrap()
@@ -999,8 +902,6 @@ fn skl_08_materialize_rejects_path_like_execution_ids() {
     };
     let plan = plan_for(&t, &catalog).unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    // The id check refuses each one with its own error. Without it, the file
-    // system alone refuses "", "." and ".." (they exist) with another error.
     for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
         let err = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), bad)
             .err()
@@ -1018,8 +919,6 @@ fn skl_08_materialize_rejects_path_like_execution_ids() {
     );
 }
 
-/// A materialized bundle writes an executable skill file with mode 755
-/// and any other file without an execute bit.
 #[cfg(unix)]
 #[test]
 fn skl_11_materialized_bundle_keeps_the_execute_bit() {
@@ -1048,10 +947,6 @@ fn skl_11_materialized_bundle_keeps_the_execute_bit() {
     assert_eq!(mode("SKILL.md") & 0o111, 0);
 }
 
-// ─── available_skills and operator_skills ──────────────────────────────────
-
-/// The `{who}:` problems `--check` reports for `t`, on the repo roster with
-/// `home` as the launch home.
 fn check_problems(t: Teammate, home: Option<&Path>) -> Vec<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
     let mut roster = Roster::load_layered(home, None, Some(dir.to_str().unwrap())).unwrap();
@@ -1064,7 +959,6 @@ fn check_problems(t: Teammate, home: Option<&Path>) -> Vec<String> {
         .collect()
 }
 
-/// A valid fleet worker to vary: the repo's `backend-developer`, renamed.
 fn probe() -> Teammate {
     Teammate {
         name: "probe".into(),
@@ -1072,9 +966,6 @@ fn probe() -> Teammate {
     }
 }
 
-/// `available_skills:` are activated as Offered, so they are materialized,
-/// and the briefing names them under "Also available" without their
-/// description. A phase skill named there stays Deterministic.
 #[test]
 fn available_skills_are_materialized_and_named_without_description() {
     let catalog = SkillCatalog::bundled().unwrap();
@@ -1130,7 +1021,6 @@ fn available_skills_are_materialized_and_named_without_description() {
     assert!(!text.contains(&words), "no description for trace:\n{text}");
     assert!(text.contains("- horch:tdd: "), "{text}");
 
-    // Without a phase or skills, the offered skill alone makes a bundle.
     let only = Teammate {
         name: "only-offered".into(),
         available_skills: vec!["trace".into()],
@@ -1153,8 +1043,6 @@ fn available_skills_are_materialized_and_named_without_description() {
     assert!(!text.contains(&words), "{text}");
 }
 
-/// `--check` refuses an unknown offered skill, one already in `skills:`,
-/// and an orchestrator-only one.
 #[test]
 fn available_skills_check_errors() {
     let unknown = Teammate {
@@ -1198,8 +1086,6 @@ fn available_skills_check_errors() {
     assert_eq!(check_problems(fine, None), Vec::<String>::new());
 }
 
-/// Write `<dir>/<name>/SKILL.md` with `body` after the frontmatter, plus one
-/// reference file.
 fn operator_skill(dir: &Path, name: &str, body: &str) {
     let skill = dir.join(name);
     std::fs::create_dir_all(skill.join("references")).unwrap();
@@ -1218,9 +1104,6 @@ fn operator(dir: &str, names: &[&str]) -> Option<horch_core::roster::OperatorSki
     })
 }
 
-/// `--check` reads the operator directory the launch will read, with `~/`
-/// expanded against the roster's home, and refuses a missing directory, a
-/// missing name, a name clash with a catalog skill, and a subagent skill.
 #[test]
 fn operator_skills_check_errors() {
     let home = tempfile::tempdir().unwrap();
@@ -1243,14 +1126,11 @@ fn operator_skills_check_errors() {
         problems(operator("~/.agents/skills", &["test-modernizer"])),
         ""
     );
-    // A host without the export is not an error: the launch skips the
-    // skill, and `--check` warns (see the next test).
     assert_eq!(
         problems(operator("~/no-such-dir", &["test-modernizer"])),
         ""
     );
     assert_eq!(problems(operator("~/.agents/skills", &["missing"])), "");
-    // The name rules hold on every host, even where the skill is missing.
     let p = problems(operator("~/no-such-dir", &["tdd"]));
     assert!(p.contains("'tdd' has the name of a catalog skill"), "{p}");
     let p = problems(operator("~/no-such-dir", &["device-interaction"]));
@@ -1258,7 +1138,6 @@ fn operator_skills_check_errors() {
         p.contains("'device-interaction' is a subagent skill"),
         "{p}"
     );
-    // A skill directory without a SKILL.md is broken, not missing.
     std::fs::create_dir_all(dir.join("empty")).unwrap();
     let p = problems(operator("~/.agents/skills", &["empty"]));
     assert!(
@@ -1283,7 +1162,6 @@ fn operator_skills_check_errors() {
     ));
     assert!(p.contains("'test-modernizer' is named twice"), "{p}");
 
-    // A harness without skills cannot load them.
     let none = Teammate {
         agent: HarnessKind::None,
         model: None,
@@ -1310,9 +1188,6 @@ fn check_warnings(t: Teammate, home: Option<&Path>) -> Vec<String> {
         .collect()
 }
 
-/// A missing directory or a missing name is a warning: each skill that the
-/// host lacks gets one line that says how to export it. A present skill
-/// gets none.
 #[test]
 fn operator_skills_missing_on_this_host_warn() {
     let home = tempfile::tempdir().unwrap();
@@ -1348,7 +1223,6 @@ fn operator_skills_missing_on_this_host_warn() {
     assert!(w[1].contains("(no ~/no-such-dir/b-skill)"), "{w:?}");
 }
 
-/// A directory that exists but cannot be read is an error, not a skip.
 #[cfg(unix)]
 #[test]
 fn operator_skills_unreadable_dir_is_an_error() {
@@ -1357,7 +1231,6 @@ fn operator_skills_unreadable_dir_is_an_error() {
     let dir = home.path().join(".agents/skills");
     operator_skill(&dir, "test-modernizer", "Modernize tests.");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    // Root reads anything; then there is nothing to test.
     let readable = std::fs::read_dir(&dir).is_ok();
     let t = Teammate {
         operator_skills: operator("~/.agents/skills", &["test-modernizer"]),
@@ -1374,8 +1247,6 @@ fn operator_skills_unreadable_dir_is_an_error() {
     );
 }
 
-/// The launch goes on without a missing operator skill. The bundle holds
-/// the rest, and the briefing names the skipped skill and the fix.
 #[test]
 fn operator_skills_missing_on_this_host_are_skipped_with_a_briefing_note() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1407,7 +1278,6 @@ fn operator_skills_missing_on_this_host_are_skipped_with_a_briefing_note() {
         "{brief}"
     );
 
-    // A missing directory skips every name; the launch still succeeds.
     let gone = Teammate {
         operator_skills: operator(&format!("{dir_text}-gone"), &["test-modernizer"]),
         ..t.clone()
@@ -1419,9 +1289,6 @@ fn operator_skills_missing_on_this_host_are_skipped_with_a_briefing_note() {
         .contains("Skipped: operator skill test-modernizer is not installed"),);
 }
 
-/// An operator skill is copied into the bundle with its references, is
-/// versioned by its tree digest, and is EXPECTED in the briefing with its
-/// description. A source that changes between plan and copy fails.
 #[test]
 fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1460,10 +1327,8 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
             && brief.contains("- horch:test-modernizer: Operator probe skill test-modernizer."),
         "{brief}"
     );
-    // The source is never touched.
     assert!(dir.join("test-modernizer/SKILL.md").is_file());
 
-    // The plan pins the digest; a source edited after planning fails.
     let resolved = resolve(&SkillCatalog::bundled().unwrap(), &t).unwrap();
     let catalog = resolved.catalog();
     let plan = resolved.plan(&t).unwrap();
@@ -1474,8 +1339,6 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
         "{err:#}"
     );
 
-    // Without the extension, the field activates nothing: the catalog
-    // decides, so `plan_launch` needs no filesystem.
     let plain = SkillResolution::read(SkillCatalog::bundled().unwrap(), None, None, ANY_AGENT)
         .unwrap()
         .plan(&t)
@@ -1483,9 +1346,6 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
     assert_eq!(plain.activated_ids(), ["tdd"]);
 }
 
-// ─── skills named outside the bundle (SKL-10) ──────────────────────────────
-
-/// The briefing of a teammate whose only skill is `skill`, with no phase.
 fn briefing_of(skill: &str) -> String {
     let catalog = SkillCatalog::bundled().unwrap();
     let t = Teammate {
@@ -1507,9 +1367,6 @@ fn briefing_of(skill: &str) -> String {
     )
 }
 
-/// SKL-10: a skill text that names catalog skills outside the bundle gets 1
-/// sentence: the distinct count, and the 3 most-named ids, ties in name
-/// order. `godot-save-load` names 4, once each.
 #[test]
 fn skl_10_briefing_names_skills_outside_the_bundle() {
     let text = briefing_of("godot-save-load");
@@ -1530,8 +1387,6 @@ fn skl_10_briefing_names_skills_outside_the_bundle() {
     );
 }
 
-/// SKL-10: `tdd` names no other catalog skill, so its briefing has no
-/// sentence.
 #[test]
 fn skl_10_briefing_has_no_sentence_without_outside_names() {
     let text = briefing_of("tdd");
@@ -1544,8 +1399,6 @@ fn mention_counts(text: &str, ids: &[&str]) -> BTreeMap<String, usize> {
     skills::reading::mentions([text.as_bytes()], &ids)
 }
 
-/// SKL-10: an id matches a whole word only: `code-review` is not named in
-/// `godot-code-review`, nor `godot-ui` in `godot-ui-theming`.
 #[test]
 fn skl_10_whole_word_match_only() {
     let ids = ["code-review", "godot-code-review", "godot-ui"];
@@ -1563,7 +1416,6 @@ fn skl_10_whole_word_match_only() {
     );
 }
 
-/// SKL-10: an id without a hyphen counts in backticks.
 #[test]
 fn skl_10_plain_id_counts_in_backticks() {
     assert_eq!(
@@ -1572,7 +1424,6 @@ fn skl_10_plain_id_counts_in_backticks() {
     );
 }
 
-/// SKL-10: an id without a hyphen counts in a link path.
 #[test]
 fn skl_10_plain_id_counts_in_a_link_path() {
     assert_eq!(
@@ -1581,7 +1432,6 @@ fn skl_10_plain_id_counts_in_a_link_path() {
     );
 }
 
-/// SKL-10: an id without a hyphen counts when a namespace qualifies it.
 #[test]
 fn skl_10_plain_id_counts_qualified() {
     assert_eq!(
@@ -1590,7 +1440,6 @@ fn skl_10_plain_id_counts_qualified() {
     );
 }
 
-/// SKL-10: an id without a hyphen does not count in plain prose.
 #[test]
 fn skl_10_plain_id_in_prose_does_not_count() {
     assert!(mention_counts(

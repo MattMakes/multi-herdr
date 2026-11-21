@@ -1,26 +1,13 @@
-//! End-to-end tests of the context policy (`docs/specs/context-policy.md`):
-//! the built `horch` binary on the context fixture home, and scans of the
-//! live check `scripts/live/context.sh` and of the CTX code (CTX-27).
-//!
-//! Hermetic: the environment is cleared (so `ANTHROPIC_API_KEY`,
-//! `CODEX_HOME`, `HORCH_TEAMMATES_DIR` and the operator's
-//! `CLAUDE_CODE_AUTO_COMPACT_WINDOW` never reach the binary); `HOME` is a
-//! temp copy of `crates/horch-core/tests/fixtures/context/home`, the state
-//! dir is temp, the project is `/fixture` (the fixture transcripts' slug),
-//! and the managed-settings path points at a file that does not exist.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// The project the fixture transcripts are under (`~/.claude/projects/-fixture`).
 const PROJECT: &str = "/fixture";
 
-/// The fixture sessions (`horch-core/tests/fixtures/context/home`).
-const OVER: &str = "11111111-1111-4111-8111-111111111111"; // 311,225 tokens
-const PENDING: &str = "22222222-2222-4222-8222-222222222222"; // compacted, post 10,486
-const SMALL: &str = "33333333-3333-4333-8333-333333333333"; // 33,352 tokens
-const CODEX: &str = "01a0de6e-0000-7000-8000-000000000001"; // 227,306 tokens
-const MISSING: &str = "99999999-9999-4999-8999-999999999999"; // no transcript
+const OVER: &str = "11111111-1111-4111-8111-111111111111";
+const PENDING: &str = "22222222-2222-4222-8222-222222222222";
+const SMALL: &str = "33333333-3333-4333-8333-333333333333";
+const CODEX: &str = "01a0de6e-0000-7000-8000-000000000001";
+const MISSING: &str = "99999999-9999-4999-8999-999999999999";
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -39,7 +26,6 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// A ledger record of the fixture project, live, in workspace `w1`.
 fn record(id: &str, role: &str, agent: &str, tier: &str, sid: &str) -> serde_json::Value {
     serde_json::json!({
         "record_id": id, "session_id": sid, "agent": agent, "tier": tier,
@@ -56,15 +42,6 @@ struct World {
 }
 
 impl World {
-    /// The fixture home with the operator's Claude window of this Mac
-    /// (500,000 in `~/.claude/settings.json`, design §8.1), so a Claude
-    /// threshold is 300,000, and a hand-written ledger:
-    /// - `orchestrator` on 3333: 33,352 tokens, `ok`;
-    /// - `sonnet-1` on 1111: 311,225 tokens, `over`;
-    /// - `opus-1` on 2222: a compaction with no response after it, `pending`;
-    /// - `codex-sol-1` on Codex 001: 227,306 tokens over the recorded fleet
-    ///   limit's threshold 160,000, `over`;
-    /// - `sonnet-2` on a session with no transcript, `no-transcript`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -122,7 +99,6 @@ impl World {
             .unwrap()
     }
 
-    /// stdout of a run that must exit 0 with nothing on stderr.
     fn stdout(&self, args: &[&str], env: &[(&str, &str)]) -> String {
         let out = self.horch(args, env);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -146,8 +122,6 @@ impl World {
     }
 }
 
-/// CTX-01, CTX-03, CTX-04, CTX-09, CTX-10 end to end: `horch context`,
-/// `horch context --over` and the `horch note` warning on the fixture home.
 #[test]
 fn ctx_01_cli_table_from_fixture_home() {
     let w = World::new();
@@ -164,8 +138,6 @@ reasons:
 ";
     assert_eq!(table, want, "\n{table}");
 
-    // TRF-08: `--over` lists every row that is not ok, its reasons, and
-    // the instruction id of each state shown.
     let over = w.stdout(&["context", "--over"], &[]);
     let lines: Vec<&str> = over.lines().collect();
     assert!(over.starts_with("ROLE "), "{over}");
@@ -191,7 +163,6 @@ reasons:
         "{over}"
     );
 
-    // Design §6.3, the rendered `warning` for sonnet-1 at 311,225 tokens.
     let warning = "NOTE: Context warning. Your context is 311225 tokens. Your threshold is 300000 tokens. \
 This horch note call is your stopping point. Do not start new work. \
 Write ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. \
@@ -201,8 +172,6 @@ Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch led
     let me = [("HORCH_RECORD_ID", "rec-s1")];
     assert_eq!(w.stdout(&["note", "step 1 done"], &me), warning);
     let handoff = "handoff: ai_docs/handoffs/sonnet-1-whats-next.md";
-    // A handoff now attempts automatic compaction. This offline fixture has
-    // no workspace; keep the note and expose that scheduling refusal.
     let handoff_out = w.horch(&["note", handoff], &me);
     assert!(handoff_out.status.success());
     assert_eq!(handoff_out.stdout, b"", "1 warning per cycle");
@@ -239,7 +208,6 @@ fn script() -> String {
     std::fs::read_to_string(repo().join("scripts/live/context.sh")).unwrap()
 }
 
-/// The text of live-check step `name` (`# ---- A2 ...` up to the next step).
 fn step(script: &str, name: &str) -> String {
     let start = script
         .find(&format!("# ---- {name} "))
@@ -249,10 +217,6 @@ fn step(script: &str, name: &str) -> String {
     rest[..end].to_string()
 }
 
-/// CTX-06: the live check exists, is executable, and checks every Claude
-/// and Codex teammate that `horch context --windows` lists: the Claude tier
-/// loop runs `/autocompact` for every claude row and every source, and the
-/// Codex step reads every codex row and the launch limit flag.
 #[test]
 fn ctx_06_live_check_covers_every_tier() {
     let path = repo().join("scripts/live/context.sh");
@@ -307,8 +271,6 @@ fn ctx_06_live_check_covers_every_tier() {
     }
 }
 
-/// CTX-17: the live check has a reader step and a compaction step for
-/// `claude` and for `codex`, and checks each by its marker.
 #[test]
 fn ctx_17_live_check_covers_claude_and_codex() {
     let s = script();
@@ -333,11 +295,6 @@ fn ctx_17_live_check_covers_claude_and_codex() {
     assert!(s.contains("B1 Claude worker round trip") && s.contains("B2 Codex worker round trip"));
 }
 
-/// CTX-17 slice 2, CTX-20: part C of the live check has a reader step for
-/// `opencode`, `pi` and `prime` against the harness's own number, a canary
-/// for pi and Prime by their compaction marker, the Prime agent dir check,
-/// and the pane steps for `opencode-pickle`, `pi` and `prime`: herdr
-/// `agent_status` busy and idle, `horch note`, and the compaction round trip.
 #[test]
 fn ctx_17_live_check_covers_slice_two_harnesses() {
     let s = script();
@@ -359,7 +316,7 @@ fn ctx_17_live_check_covers_slice_two_harnesses() {
         "the first pi and Prime turn plants a canary"
     );
     assert!(
-        c3.contains(r#"{"type":"compact"}"#),
+        c3.contains(r#"json.dumps({"type": "compact"})"#),
         "compacts with no argument"
     );
     assert!(
@@ -390,8 +347,6 @@ fn ctx_17_live_check_covers_slice_two_harnesses() {
     assert!(c5.contains("round_trip"), "the compaction round trip");
 }
 
-/// CTX-20: the live check plants a canary in the compact-instructions block
-/// and reports `honoured`, `ignored` or `not verifiable`.
 #[test]
 fn ctx_20_live_check_plants_a_canary() {
     let a6 = step(&script(), "A6");
@@ -409,8 +364,6 @@ fn ctx_20_live_check_plants_a_canary() {
     }
 }
 
-/// CTX-15: step A8 proves that a detached child outlives a Claude Bash tool
-/// call and a `codex exec` call.
 #[test]
 fn ctx_15_live_check_proves_detached_survival() {
     let a8 = step(&script(), "A8");
@@ -432,7 +385,6 @@ fn ctx_15_live_check_proves_detached_survival() {
     );
 }
 
-/// The `.rs` files under `dir`, recursively.
 fn rs_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -446,9 +398,6 @@ fn rs_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// CTX-27 (review finding 6): no CTX code reads, sets or passes
-/// `ANTHROPIC_API_KEY`: every line that names it removes it. And
-/// `Inherited::from_env` captures no `FORBIDDEN_ENV` name.
 #[test]
 fn ctx_27_no_api_key_in_context_policy_code() {
     let r = repo();
@@ -499,9 +448,6 @@ fn ctx_27_no_api_key_in_context_policy_code() {
     }
 }
 
-/// The keys of 1 JSON object, in the order the text has them (serde_json
-/// sorts a `Value`'s keys, so a `Value` cannot show the order), and the keys
-/// of its `last_compaction` object.
 struct Keys(Vec<String>, Option<Vec<String>>);
 
 impl<'de> serde::Deserialize<'de> for Keys {
@@ -529,10 +475,6 @@ impl<'de> serde::Deserialize<'de> for Keys {
     }
 }
 
-/// CTX-24: `horch context --json` on the fixture home, plus a pi session
-/// whose last entry is a compaction: every key in order, unknown values
-/// `null`. No herdr answers (`PATH` has none), so `pane` and `pane_status`
-/// are `null` and the run still exits 0 with an empty stderr.
 #[test]
 fn ctx_24_json_has_every_key_and_nulls() {
     let w = World::new();
@@ -677,7 +619,6 @@ fn ctx_24_json_has_every_key_and_nulls() {
 }
 
 impl World {
-    /// Add `rec` to the ledger.
     fn add_record(&self, rec: serde_json::Value) {
         let ledger = horch_core::execution::records::SessionLedger::for_project(
             self.root.join("state"),
@@ -689,7 +630,6 @@ impl World {
         std::fs::write(ledger.path(), serde_json::to_string(&records).unwrap()).unwrap();
     }
 
-    /// The `--json` object of `role`.
     fn json_row(&self, role: &str) -> serde_json::Value {
         let out = self.stdout(&["context", "--json"], &[]);
         let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
@@ -699,8 +639,6 @@ impl World {
     }
 }
 
-/// The text table cell of `column` in the row of `role`. Columns are apart
-/// by 2 spaces or more; a cell holds 1 space at most (`operator (now)`).
 fn cell(table: &str, role: &str, column: &str) -> String {
     let split = |line: &str| -> Vec<String> {
         line.split("  ")
@@ -718,10 +656,6 @@ fn cell(table: &str, role: &str, column: &str) -> String {
     split(row)[at].clone()
 }
 
-/// CTX-21: a teammate's `compact_at` is its watch base. On a native trigger
-/// of 467,000 a base of 60,000 gives the threshold 60,000 in `horch
-/// context`, in `--json` and in the `horch note` check, which all build the
-/// row with 1 function.
 #[test]
 fn ctx_21_compact_at_sets_base() {
     let w = World::new();
@@ -733,7 +667,6 @@ fn ctx_21_compact_at_sets_base() {
          hidden: true\nbase: fleet-worker\nagent: claude\nmodel: opus\ncompact_at: 60000\n---\nbody\n",
     )
     .unwrap();
-    // SMALL holds 33,352 tokens: under 60,000.
     w.add_record(record("rec-low", "low-1", "claude", "low-base", SMALL));
     let mut big = record("rec-big", "low-2", "claude", "low-base", OVER);
     big["updated_at"] = "2026-10-06T09:01:00Z".into();
@@ -745,7 +678,6 @@ fn ctx_21_compact_at_sets_base() {
     assert_eq!(cell(&table, "low-1", "STATE"), "ok", "\n{table}");
     assert_eq!(cell(&table, "low-2", "THRESHOLD"), "60,000", "\n{table}");
     assert_eq!(cell(&table, "low-2", "STATE"), "over", "\n{table}");
-    // A teammate with no `compact_at` keeps the fleet base.
     assert_eq!(
         cell(&table, "sonnet-1", "THRESHOLD"),
         "300,000",
@@ -777,10 +709,6 @@ fn ctx_21_compact_at_sets_base() {
     );
 }
 
-/// X1b: a substituted launch keeps the requested teammate's name and runs
-/// with its fallback's settings, so it is watched at the fallback's
-/// `compact_at`. `routing.resolved` names the fallback; a record from
-/// before routing provenance names it in `via` only.
 #[test]
 fn ctx_21_substituted_launch_takes_the_fallback_compact_at() {
     let w = World::new();
@@ -799,7 +727,6 @@ fn ctx_21_substituted_launch_takes_the_fallback_compact_at() {
          hidden: true\nbase: fleet-worker\nagent: claude\nmodel: sonnet\ncompact_at: 60000\n---\nbody\n",
     )
     .unwrap();
-    // OVER holds 311,225 tokens: over 60,000, under 300,000.
     let mut routed = record("rec-sub", "sub-1", "claude", "high-base", OVER);
     routed["model"] = "sonnet".into();
     routed["via"] = "low-base".into();
@@ -830,9 +757,6 @@ fn ctx_21_substituted_launch_takes_the_fallback_compact_at() {
     );
 }
 
-/// X1: `horch context --windows` shows each teammate's `compact_at` and
-/// where it comes from beside the threshold: `teammate` for a file that
-/// sets it, `fleet base` (300,000) for one that does not.
 #[test]
 fn ctx_21_windows_table_names_the_compact_at_source() {
     let w = World::new();
@@ -870,7 +794,6 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
         "160,000",
         "\n{windows}"
     );
-    // The first 5 columns stay where scripts/live/context.sh reads them.
     let head: Vec<&str> = windows.lines().next().unwrap().split_whitespace().collect();
     assert_eq!(
         head[..5],
@@ -878,10 +801,6 @@ fn ctx_21_windows_table_names_the_compact_at_source() {
     );
 }
 
-/// CTX-25: `horch context` counts the compactions of a session as native
-/// and horch-driven. opus-1's transcript has 1 marker at 10:05:00; a
-/// `compacted` event at 10:06:00 makes it horch-driven. The orchestrator's
-/// marker has no event: native.
 #[test]
 fn ctx_25_cli_counts_native_and_horch_compactions() {
     let w = World::new();

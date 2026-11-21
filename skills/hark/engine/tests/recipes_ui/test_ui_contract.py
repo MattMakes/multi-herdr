@@ -13,7 +13,7 @@ import pytest
 
 SR = 48000
 UI = ("click", "keypress", "typing", "toggle", "shutter", "ui_pop", "popin", "pop")
-FORGE_PEAK = 10 ** (-1 / 20)  # the forge normalises every render to -1 dBFS
+FORGE_PEAK = 10 ** (-1 / 20)
 
 
 def load(name: str):
@@ -42,7 +42,6 @@ def check_audio(y: np.ndarray) -> None:
     assert np.isfinite(y).all()
     pk = float(np.max(np.abs(y)))
     assert pk > 1e-7
-    # Recipes keep the spec level, so a raw render can pass full scale. The forge output must not.
     assert float(np.max(np.abs(forge_level(y)))) <= FORGE_PEAK + 1e-12
 
 

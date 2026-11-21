@@ -1,6 +1,3 @@
-//! ARC-08: the roster split keeps strict serde, the overlay order and every
-//! frontmatter shape the fleet has shipped.
-
 use std::path::{Path, PathBuf};
 
 use super::parser::{md_files, parse_base, parse_teammate};
@@ -14,7 +11,6 @@ fn repo_teammates() -> PathBuf {
     manifest_dir().join("../../teammates")
 }
 
-/// The built-in `opus.md`, with its `brief_description` replaced.
 fn opus_saying(brief: &str) -> String {
     let text = std::fs::read_to_string(repo_teammates().join("opus.md")).unwrap();
     text.lines()
@@ -93,14 +89,12 @@ fn arc_08_legacy_frontmatter_corpus_parses() {
         parse_base(&stem, &text).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
     }
 
-    // Before the usage-pool fallbacks (c3e673d~1).
     let fixtures = manifest_dir().join("tests/fixtures/roster");
     let text = std::fs::read_to_string(fixtures.join("pre-fallbacks/opus.md")).unwrap();
     let opus = parse_teammate("opus", &text).unwrap();
     assert!(opus.fallbacks.is_empty());
     assert_eq!(opus.effort.as_deref(), Some("medium"));
 
-    // Before codex teammates stated an effort (a1e6798).
     let text = std::fs::read_to_string(fixtures.join("pre-effort/codex-sol.md")).unwrap();
     let sol = parse_teammate("codex-sol", &text).unwrap();
     assert_eq!(sol.effort, None);
@@ -108,9 +102,6 @@ fn arc_08_legacy_frontmatter_corpus_parses() {
     assert!(sol.fallbacks.is_empty());
 }
 
-/// The roster reads files and nothing else: it never talks to the terminal
-/// server, starts a process or reads the environment. This test file is
-/// skipped: it is test code, and the test's own name holds a needle.
 #[test]
 fn arc_08_roster_never_calls_herdr() {
     let needles = ["herdr", "Herdr", "std::process", "std::env::var"];
@@ -136,8 +127,6 @@ fn arc_08_roster_never_calls_herdr() {
     assert!(scanned >= 9, "only {scanned} files scanned");
 }
 
-/// F7: a teammate file whose `requires` names a value this binary does not
-/// know, as when the live roster is ahead of the installed `horch`.
 fn write_ahead(dir: &Path, name: &str) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let text = opus_saying("ahead of the binary")
@@ -177,13 +166,11 @@ fn f7_bad_overlay_file_skips_only_that_teammate() {
     assert!(w.contains("unknown variant `no-such-tool`"), "{w}");
     assert!(w.contains("teammate 'newcomer' is not available"), "{w}");
 
-    // Spawn by name: the parse error, not "unknown teammate".
     let err = format!("{:#}", r.require("newcomer").unwrap_err());
     assert!(!err.contains("unknown teammate"), "{err}");
     assert!(err.contains("unknown variant `no-such-tool`"), "{err}");
     assert!(err.contains(&path.display().to_string()), "{err}");
 
-    // The gate stays strict.
     assert!(r.check().contains(w), "{:?}", r.check());
 }
 
@@ -269,8 +256,6 @@ fn f7_bad_base_file_keeps_the_builtin_base() {
     assert!(r.check().contains(&warnings[0]), "{:?}", r.check());
 }
 
-/// Every built-in teammate on `model: opus` carries the compiled-in
-/// `sr_eng_system_prompt`, and an overlay `system_prompt/` file replaces it.
 #[test]
 fn opus_teammates_carry_the_sr_eng_system_prompt() {
     let source =
@@ -313,7 +298,6 @@ fn opus_teammates_carry_the_sr_eng_system_prompt() {
     );
 }
 
-/// `--check` fails a prompt name with no file, and a non-Claude agent.
 #[test]
 fn check_refuses_an_unknown_or_non_claude_system_prompt() {
     let mut r = Roster::builtin().unwrap();

@@ -16,7 +16,6 @@ SR = 48000
 TARGET = "a water drop falling into water, a drip"
 ALTS = ["a bubble pop", "a mouse click", "a wooden knock", "a synth beep", "a finger snap"]
 
-# key: (range, default)
 _TABLE: dict[str, tuple[Any, float]] = {
     "f0": ((250.0, 1600.0, "log"), 520.0),
     "rise": ((0.0, 14.0), 6.0),
@@ -82,7 +81,6 @@ FAMILY: dict[str, list[dict]] = {
     "drip": [{**DEFAULTS, **{k: row[i] for k, row in _ROWS.items()}} for i in range(5)],
 }
 
-# T15 targets: key -> (lo, hi, scale), measured with tonal.measure.
 STUDY: dict[str, tuple[float, float, float]] = {
     "dur_s": (0.11, 0.33, 0.08),
     "attack_ms": (16, 66, 15),
@@ -93,7 +91,6 @@ STUDY: dict[str, tuple[float, float, float]] = {
     "corr": (0.87, 0.99, 0.1),
 }
 
-# Audit allowance: the rising pitch of a bubble is intended.
 RISES = True
 RISE_MAX_ST = 14.0
 RISE_MAX_S = 0.25

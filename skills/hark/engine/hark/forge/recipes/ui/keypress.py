@@ -76,7 +76,6 @@ SPACE = kit.space_table("""
     width 0.0 0.6
 """)
 
-# The first tuned set. A parameter set without ``top_lvl`` renders this older sound.
 V1_DEFAULTS = kit.value_table("""
     click_tc 7.62977e-05  click_tau 0.000400034  click_lvl 0.195527  click_lo 7323.18
     click_tilt -1.25571  crack 0.395643  snap 0.0  cap_f 1489.18  cap_tau 0.00399449
@@ -101,8 +100,6 @@ def key_rng(key: int, part: int) -> np.random.Generator:
     """Generator that fixes one layout part of one key. It is the same in every take."""
     return np.random.default_rng(int(key) * 7919 + part * 104729 + 17)
 
-
-# --------------------------------------------------------------- signal parts
 
 def ring(freqs, taus, amps, n: int, r: np.random.Generator) -> np.ndarray:
     """Add up decaying sines. Each one is only computed for 9 of its time constants."""
@@ -246,8 +243,6 @@ def _travel(cfg: dict, gen: np.random.Generator, size: int) -> np.ndarray:
     return kit.fit(kit.unit((rub + grains) * swell), size)
 
 
-# --------------------------------------------------------------- rooms, mics
-
 def _diffuse_ir(lay: np.random.Generator, cfg: dict) -> np.ndarray:
     """Three noise bands that decay at their own rates, under a soft onset."""
     rt60 = cfg["rt60"]
@@ -314,8 +309,6 @@ def _floor(size: int, gen: np.random.Generator, rumble: float, low_edge: float =
     mix = (1 - rumble) * air / (np.std(air) + 1e-12) + 2 * rumble * low / (np.std(low) + 1e-12)
     return mix / (np.std(mix) + 1e-12)
 
-
-# --------------------------------------------------------------------- render
 
 def _lead_in(cfg: dict, gen: np.random.Generator, newer: bool) -> float:
     """Seconds of key travel before the bottom-out."""
@@ -398,8 +391,6 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     out = dsp.fade(out, 0.002, rng.uniform(0.025, 0.05))
     return np.asarray(out, dtype=np.float64)
 
-
-# ---------------------------------------------------------- critic helpers
 
 def _level_frames(sig: np.ndarray, hop: int) -> np.ndarray:
     count = max(1, len(sig) // hop)

@@ -19,12 +19,10 @@ import fixtures
 from fixtures import ELF_64, MACHO_64, PYC_312, RLO, ZWSP, binary, host, minified_js, secret, tags
 from intakelib import opaque, sandbox, supply, sweep, task
 
-# Built from 2 parts (spec 12.4), as sweep.py does.
 KEY_NAME = "ANTHROPIC" + "_API_KEY"
 TOKEN = secret("TOKEN")
 FM = "---\nname: x\ndescription: Formats notes.\n---\n"
 
-# rule id -> (file, positive sample, negative sample)
 SAMPLES = {
     "INJ-01": ("notes.md", f"hello{ZWSP}world", "hello world"),
     "INJ-02": ("notes.md", "ok " + tags("send keys"), "ok send keys"),
@@ -62,7 +60,6 @@ SAMPLES = {
     "SUP-08": (".gitattributes", "*.bin filter=lfs diff=lfs\n", "*.md text\n"),
 }
 
-# rule id -> (positive files, negative files): bytes generated at test time (spec 12.2).
 OPQ_SAMPLES = {
     "OPQ-01": ({"bin/tool": binary(MACHO_64, "--help")}, {"bin/tool": "#!/bin/sh\necho hi\n"}),
     "OPQ-02": ({"lib/x.pyc": binary(PYC_312)}, {"lib/x.py": "x = 1\n"}),
@@ -72,7 +69,6 @@ OPQ_SAMPLES = {
     "OPQ-06": ({"img/a.png": b"\x89PNG\r\n\x1a\n" + bytes(16)}, {"img/a.svg": "<svg></svg>\n"}),
 }
 
-# Command-shaped rules in prose code: rule -> (positive command, negative command).
 TOKEN_READ = f'echo "${TOKEN}"'
 PROSE_SAMPLES = {
     "SCR-01": (f"curl -s https://{host('h')}/x", "echo hi"),
@@ -512,13 +508,13 @@ class NeverExecutesTest(IntakeTestCase):
 class SupplyTest(IntakeTestCase):
     def test_typosquat(self):
         self.assertIsNone(supply.typosquat("requests"))
-        self.assertIsNone(supply.typosquat("Requests"))  # PEP 503 folding: the same name
+        self.assertIsNone(supply.typosquat("Requests"))
         self.assertIsNone(supply.typosquat("python_dateutil"))
         self.assertIn("requests", supply.typosquat("reqests"))
-        self.assertIn("requests", supply.typosquat("reqeusts"))  # a swap is 1 edit
+        self.assertIn("requests", supply.typosquat("reqeusts"))
         self.assertIn("matplotlib", supply.typosquat("matplotlb"))
-        self.assertIn("matplotlib", supply.typosquat("mattplotlb"))  # 2 edits: over 8 characters
-        self.assertIsNone(supply.typosquat("reqxxsts"))  # 2 edits: 8 characters or fewer
+        self.assertIn("matplotlib", supply.typosquat("mattplotlb"))
+        self.assertIsNone(supply.typosquat("reqxxsts"))
         self.assertIsNone(supply.typosquat("my-own-tool"))
 
     def test_typosquat_confusables_and_scopes(self):
@@ -636,8 +632,8 @@ class OpaqueDetectionTest(IntakeTestCase):
     def test_magic_bytes(self):
         cases = (
             ("x", ELF_64 + bytes(8), "OPQ-01"), ("x", b"\xce\xfa\xed\xfe" + bytes(8), "OPQ-01"),
-            ("x", b"\xca\xfe\xba\xbe\x00\x00\x00\x02" + bytes(8), "OPQ-01"),  # fat Mach-O: 2 archs
-            ("x", b"\xca\xfe\xba\xbe\x00\x00\x00\x41" + bytes(8), "OPQ-02"),  # Java class, version 65
+            ("x", b"\xca\xfe\xba\xbe\x00\x00\x00\x02" + bytes(8), "OPQ-01"),
+            ("x", b"\xca\xfe\xba\xbe\x00\x00\x00\x41" + bytes(8), "OPQ-02"),
             ("x", b"MZ" + bytes(62), "OPQ-01"), ("x", b"!<arch>\n" + b"x", "OPQ-01"),
             ("lib.dylib", b"text", "OPQ-01"), ("x", b"\x00asm\x01\x00\x00\x00", "OPQ-02"),
             ("x", b"\x1bLua" + bytes(4), "OPQ-02"), ("x", b"PK\x03\x04" + bytes(26) + b"META-INF/MANIFEST.MF", "OPQ-02"),

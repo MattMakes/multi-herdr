@@ -1,24 +1,3 @@
-//! The report socket of a `horch_access: report` pane
-//! (`docs/security/sandboxed-pane-horch-access.md`, C1).
-//!
-//! The sandboxed agent in such a pane reaches no horch state: no state root,
-//! no ledger folder, no relay or herdr socket. Its `horch worker` parent,
-//! which runs outside the sandbox, serves 1 Unix socket for the pane, and
-//! the `horch` CLI in the pane talks only to it ([`ENV`]).
-//!
-//! Protocol: 1 request per connection. The client writes 1 JSON line of at
-//! most [`MAX_REQUEST`] bytes, then reads 1 JSON [`Reply`] line.
-//! - `{"verb":"progress","text":..}`: the parent records ledger progress
-//!   for its own worker row.
-//! - `{"verb":"tell","to":..,"text":..}`: the parent tells the brief's
-//!   controller, or else its report target ([`target`]), tagged with the
-//!   brief's role. Any other `to` is refused.
-//! - `{"verb":"done","text":..}`: the parent runs `horch done` for its own
-//!   record.
-//!
-//! Every other verb or key, a line over the limit and an empty text are
-//! refused. The role and record come from the parent, never from the pane.
-
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
@@ -43,27 +22,19 @@ use serde::{Deserialize, Serialize};
 use super::brief::Brief;
 use crate::execution::ReportTarget;
 
-/// The variable that puts the `horch` CLI in report mode. Its value is the
-/// socket path.
 pub const ENV: &str = "HORCH_REPORT_SOCKET";
 
-/// The largest request line, in bytes, without its newline: 16 KiB. A
-/// `horch done` summary is 1 paragraph, and a longer `tell` is spooled to a
-/// file by the parent.
 pub const MAX_REQUEST: usize = 16 * 1024;
 
-/// How long the server waits for 1 request line.
 #[cfg(unix)]
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The socket of the pane whose ledger record is `record_id`.
 pub fn socket_path(state_root: &Path, record_id: &str) -> PathBuf {
     state_root
         .join("report")
         .join(format!("{}.sock", super::file_safe(record_id)))
 }
 
-/// 1 request from the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
@@ -82,7 +53,6 @@ impl Request {
     }
 }
 
-/// The server's answer to 1 request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
     pub ok: bool,
@@ -99,9 +69,6 @@ impl Reply {
     }
 }
 
-/// The only role a `report` pane may `tell`: the controller that spawned
-/// it under `spawn_only`, else the orchestrator when the brief reports to
-/// it, else none.
 pub fn target(brief: &Brief) -> Option<String> {
     if let Some(controller) = &brief.controller {
         return Some(controller.clone());
@@ -109,11 +76,8 @@ pub fn target(brief: &Brief) -> Option<String> {
     (brief.report_to == ReportTarget::Orchestrator).then(|| "orchestrator".to_string())
 }
 
-/// Carries out a checked request in the parent.
 pub type Executor = dyn Fn(&Request) -> Result<()> + Send + Sync;
 
-/// Check 1 request line and run it. `report_to` is the only role `tell`
-/// may name; `None` refuses every `tell`.
 pub fn handle(line: &[u8], report_to: Option<&str>, exec: &Executor) -> Reply {
     if line.len() > MAX_REQUEST {
         return Reply::refused(format!(
@@ -150,8 +114,6 @@ pub fn handle(line: &[u8], report_to: Option<&str>, exec: &Executor) -> Reply {
 }
 
 #[cfg(unix)]
-/// Read 1 request line of at most [`MAX_REQUEST`] bytes plus its newline.
-/// A longer line comes back longer than the limit, so [`handle`] refuses it.
 fn read_request(stream: &UnixStream) -> std::io::Result<Vec<u8>> {
     let mut line = Vec::new();
     BufReader::new(stream.take(MAX_REQUEST as u64 + 2)).read_until(b'\n', &mut line)?;
@@ -173,7 +135,6 @@ fn serve_one(stream: UnixStream, report_to: Option<&str>, exec: &Executor) {
     let _ = (&stream).write_all(text.as_bytes());
 }
 
-/// The parent's socket server. It stops and removes the socket on drop.
 #[cfg(unix)]
 pub struct Server {
     path: PathBuf,
@@ -183,8 +144,6 @@ pub struct Server {
 
 #[cfg(unix)]
 impl Server {
-    /// Bind `path` (mode 0600, in a 0700 folder) and serve it on a thread,
-    /// 1 connection at a time.
     pub fn start(path: PathBuf, report_to: Option<String>, exec: Box<Executor>) -> Result<Server> {
         let dir = path.parent().context("the report socket has no folder")?;
         crate::fsx::ensure_private_dir(dir)?;
@@ -223,7 +182,6 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        // Wake the blocked accept, so the thread sees the flag.
         let _ = UnixStream::connect(&self.path);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -232,15 +190,11 @@ impl Drop for Server {
     }
 }
 
-/// Send 1 request to the socket at `path` and return the server's answer
-/// as a result.
 #[cfg(not(unix))]
 pub fn send(_path: &Path, _request: &Request) -> Result<()> {
     bail!("the report socket needs a Unix host")
 }
 
-/// Send 1 request to the socket at `path` and return the server's answer
-/// as a result.
 #[cfg(unix)]
 pub fn send(path: &Path, request: &Request) -> Result<()> {
     let mut stream = UnixStream::connect(path)
@@ -254,8 +208,6 @@ pub fn send(path: &Path, request: &Request) -> Result<()> {
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;
     if reply.is_empty() {
-        // A `horch done` that works closes this pane, and the parent dies
-        // with it before it can answer. Any other request needs an answer.
         if matches!(request, Request::Done { .. }) {
             eprintln!("horch done: the worker is closing this pane");
             return Ok(());
@@ -280,7 +232,6 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
 
-    /// An executor that records each request it runs.
     fn recorder() -> (Arc<Mutex<Vec<Request>>>, Box<Executor>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
@@ -304,9 +255,6 @@ mod tests {
         Brief::from_json(&raw.to_string()).unwrap()
     }
 
-    /// A worker the controller spawned tells only the controller, and is
-    /// refused for the orchestrator. A worker the orchestrator spawned is
-    /// unchanged: it tells only the orchestrator.
     #[test]
     fn the_controller_is_the_only_tell_target_of_its_roles() {
         use crate::execution::ReportTarget;
@@ -442,9 +390,6 @@ mod tests {
         );
     }
 
-    /// A parent that dies during a request (a `horch done` closes the pane
-    /// and the parent with it) answers nothing: `done` succeeds, and every
-    /// other verb fails.
     #[cfg(unix)]
     #[test]
     fn a_closed_socket_is_success_only_for_done() {
@@ -470,8 +415,6 @@ mod tests {
         mute.join().unwrap();
     }
 
-    /// A Unix socket path has a short length limit, so the test folder is
-    /// under `/tmp`, not the long macOS temp folder.
     #[cfg(unix)]
     #[test]
     fn the_server_answers_over_the_socket_and_removes_it_on_drop() {
@@ -511,11 +454,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("over 16384 bytes"), "{err}");
-        // A raw oversize line is refused by the server too.
         let mut raw = UnixStream::connect(&path).unwrap();
         let mut long = vec![b'x'; MAX_REQUEST + 10];
         long.push(b'\n');
-        // The server stops reading at the limit, so the tail can fail.
         let _ = raw.write_all(&long);
         let mut reply = String::new();
         BufReader::new(raw).read_line(&mut reply).unwrap();

@@ -1,14 +1,7 @@
-//! Machine probe for preflight: disk, memory, CPU, GPU class and process limits.
-//!
-//! Every probe that fails reports `Unknown`; nothing here returns an error.
-//! The fixture path is a parameter, so this module never reads the environment.
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// A measured value, or `Unknown` when the probe could not read it.
-/// Serialized as the value or `null`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     from = "Option<T>",
@@ -50,11 +43,9 @@ pub enum GpuClass {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
-    /// `"macos"`, `"linux"`, `"windows"` or another `std::env::consts::OS` value.
     pub os: String,
     pub arch: String,
     pub cpus: Known<u32>,
-    /// One minute host load; absent on platforms without getloadavg.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load_average_1m: Option<f64>,
     pub mem_total_bytes: Known<u64>,
@@ -66,7 +57,6 @@ pub struct MachineSnapshot {
     pub max_processes: Known<u64>,
 }
 
-/// Paths of the external commands the probe runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeBins {
     pub sysctl: PathBuf,
@@ -86,11 +76,8 @@ impl Default for ProbeBins {
     }
 }
 
-/// Probe the machine. `path` is the directory whose disk is measured.
-/// When `fixture` is `Some`, read the snapshot from that JSON file instead.
 pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSnapshot {
     if let Some(file) = fixture {
-        // A fixture that cannot be read never falls back to a live probe.
         return std::fs::read_to_string(file)
             .ok()
             .and_then(|text| serde_json::from_str::<MachineSnapshot>(&text).ok())
@@ -150,7 +137,6 @@ mod sys {
         // SAFETY: getloadavg writes one double to a valid out pointer.
         (unsafe { libc::getloadavg(&mut value, 1) } == 1).then_some(value)
     }
-    /// The OS host name (gethostname), if it has one.
     pub(super) fn host_name() -> Option<String> {
         let mut buf = [0u8; 256];
         // SAFETY: the buffer is 256 bytes and gethostname writes at most that.
@@ -174,8 +160,6 @@ mod sys {
 
     const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
-    // `getrlimit` takes a platform-specific integer type for the resource, so a
-    // macro keeps each call site on its own `libc` constant.
     macro_rules! rlimit {
         ($resource:expr) => {{
             // SAFETY: `limit` is a zeroed out-parameter that `getrlimit` fills in.
@@ -216,8 +200,6 @@ mod sys {
         }
     }
 
-    /// Run a command with a 2 s timeout and `ANTHROPIC_API_KEY` removed.
-    /// Return stdout on exit code 0. Any failure gives `None`.
     fn run(bin: &Path, args: &[&str]) -> Option<String> {
         let mut child = Command::new(bin)
             .args(args)
@@ -296,7 +278,6 @@ mod sys {
         }
     }
 
-    // The statvfs fields are `u32` on some unix targets, so the casts stay.
     #[allow(clippy::unnecessary_cast)]
     fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
         statvfs(path).map_or((None, None), |stat| {
@@ -324,7 +305,6 @@ mod sys {
     pub(super) fn load_average() -> Option<f64> {
         None
     }
-    /// No gethostname here: the caller reads `COMPUTERNAME`.
     pub(super) fn host_name() -> Option<String> {
         None
     }
@@ -347,7 +327,6 @@ mod sys {
     }
 }
 
-/// Parse `vm_stat` output: (free + inactive + speculative pages) x page size.
 #[cfg_attr(not(unix), allow(dead_code))]
 fn parse_vm_stat(text: &str) -> Option<u64> {
     let header = text.lines().next()?;
@@ -368,7 +347,6 @@ fn parse_vm_stat(text: &str) -> Option<u64> {
     Some(total * page_size)
 }
 
-/// Parse one `/proc/meminfo` key in kB and return bytes.
 #[cfg_attr(not(unix), allow(dead_code))]
 fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
     let rest = text
@@ -378,9 +356,6 @@ fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
     Some(kb * 1024)
 }
 
-/// This machine's name: `$HORCH_HOSTNAME` (tests), else the OS host name,
-/// else `COMPUTERNAME` or `HOSTNAME`, else `localhost`. The task ledger
-/// records it beside every PID: a PID names a process only on its host.
 pub fn host_name() -> String {
     env_nonempty("HORCH_HOSTNAME")
         .or_else(sys::host_name)
@@ -392,7 +367,6 @@ pub fn host_name() -> String {
         .unwrap_or(String::from("localhost"))
 }
 
-/// The value of an environment variable, or `None` when it is unset or empty.
 fn env_nonempty(key: &str) -> Option<String> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
@@ -484,8 +458,6 @@ mod tests {
         }
     }
 
-    /// A whole snapshot parses; the same snapshot with one extra key does not.
-    /// A partial snapshot would fail on its missing fields either way.
     #[test]
     fn machine_fixture_rejects_unknown_fields() {
         let text = std::fs::read_to_string(fixture_dir().join("mac-m5-128g.json")).unwrap();

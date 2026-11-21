@@ -1,25 +1,3 @@
-//! A recording stand-in for the Antigravity CLI, `agy`.
-//!
-//! Three kinds of call:
-//! - `--version` prints a fixed version.
-//! - `-p /usage ...` is the google pool probe: it prints a `/usage` reply
-//!   with every bucket full, or with the Argon bucket empty under the
-//!   `agy_argon_exhausted` scenario. It is not a launch.
-//! - Any other argv is a launch (`--model m [--conversation id]
-//!   --prompt-interactive p`). The fake records it with its cwd, then writes
-//!   the conversation id into `$HOME/.gemini/antigravity-cli/cache/
-//!   last_conversations.json` under the cwd, as `agy` does. A fresh launch's
-//!   id is `agy_` and `hash16` of the canonical cwd; a resume keeps the id it
-//!   was given.
-//!
-//! A launch records a violation for every key `agy` must never receive:
-//! `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` and
-//! `GOOGLE_GEMINI_BASE_URL`.
-//!
-//! Scenarios (a comma-separated list is allowed):
-//! - `default`: a launch exits 0 at once.
-//! - `stay`: a launch sleeps until killed, like a TUI in a pane.
-
 use std::path::{Path, PathBuf};
 
 use horch_e2e::{hang, hash16, say, scenario_has, Call};
@@ -71,20 +49,17 @@ fn main() {
     if let Some(home) = std::env::var_os("HOME") {
         record_conversation(&PathBuf::from(home), &cwd, &id);
     }
-    // Eager: a `stay` launch is killed, so nothing is written after it.
     call.flush();
     if scenario_has("stay") {
         hang();
     }
 }
 
-/// The id a fresh launch in `dir` gets.
 fn conversation_id(dir: &Path) -> String {
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     format!("agy_{}", hash16(&dir.to_string_lossy()))
 }
 
-/// Add `dir -> id` to the session cache, keeping the other directories.
 fn record_conversation(home: &Path, dir: &Path, id: &str) {
     let cache = home.join(".gemini/antigravity-cli/cache/last_conversations.json");
     let mut map: Value = std::fs::read_to_string(&cache)
@@ -107,7 +82,6 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
-/// `agy -p /usage --output-format json`: the agy 1.4.3 reply shape, no turn.
 fn usage(call: &Call) -> ! {
     call.flush();
     let argon_left = if scenario_has("agy_argon_exhausted") {
@@ -134,10 +108,6 @@ fn usage(call: &Call) -> ! {
     std::process::exit(0);
 }
 
-/// `agy update`: record the call, then answer as the scenario says.
-/// `update_fail:antigravity` exits 1 with a coloured error line, and
-/// `update_hang:antigravity` sleeps 60 s first. Otherwise it prints 1 line and
-/// exits 0.
 fn update(call: &Call) -> ! {
     call.flush();
     if horch_e2e::scenario_has("update_fail:antigravity") {

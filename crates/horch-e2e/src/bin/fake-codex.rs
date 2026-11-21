@@ -1,29 +1,3 @@
-//! A recording stand-in for the `codex` CLI.
-//!
-//! As a pane agent it records argv and exits 0. As `codex app-server` it
-//! speaks the JSON-RPC lines the quota probe uses, in the shape Codex 0.158.0
-//! ships.
-//!
-//! Violation: any method other than `initialize`, `initialized` and
-//! `account/rateLimits/read`. A thread or a turn is never allowed.
-//!
-//! Scenarios: `limits_weekly` (the default), `limits_5h_weekly`,
-//! `limits_not_allowed`, `hang`, `error`. `inspect_skills`: a pane launch
-//! also writes `$CODEX_HOME/skills` and the files under it to
-//! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
-//!
-//! As a pane agent, the scenario `stay` makes a launch behave like the codex
-//! TUI: a fresh launch writes a rollout file for its cwd under
-//! `$HOME/.codex/sessions/`, then the launch sleeps until killed. The session
-//! id is a UUID derived from the canonical cwd, recorded as `session_id`; a
-//! `resume <id>` launch records `resumed` and writes nothing.
-//!
-//! As `codex sandbox ... -C <dir> -- <command>` it runs the command as a
-//! child with writes confined to `dir` and the profile's workspace roots,
-//! records them as `sandbox_writable`, and exits with the command's code.
-//! On macOS the confinement is Seatbelt, as in the real CLI; elsewhere the
-//! command runs unconfined.
-
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -33,9 +7,6 @@ use serde_json::{json, Value};
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
 
 fn main() {
-    // horch reads the model catalog before each Codex launch with
-    // multi_agent off (4278edc). Answer like the real CLI and record no
-    // call: it is a lookup, not an agent run.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("models")
@@ -90,7 +61,6 @@ fn main() {
                     "code": -32603, "message": "not signed in"}})
                 .to_string()),
                 s => {
-                    // A notification first: a real server may send them any time.
                     say(&json!({"method": "account/rateLimits/updated",
                                 "params": {"rateLimits": {"primary": null}}})
                     .to_string());
@@ -107,11 +77,8 @@ fn window(used: i64, mins: i64, resets: i64) -> Value {
     json!({"usedPercent": used, "windowDurationMins": mins, "resetsAt": resets})
 }
 
-/// The `account/rateLimits/read` result. `accountId` is there on purpose:
-/// TEL-11 proves horch drops it.
 fn result(scenario: &str) -> Value {
     let (primary, secondary, allowed) = match scenario {
-        // An older plan shape: 5h in the first slot, the week in the second.
         "limits_5h_weekly" => (
             window(20, 300, 1_790_620_000),
             window(40, 10_080, 1_791_054_949),
@@ -134,7 +101,6 @@ fn result(scenario: &str) -> Value {
     })
 }
 
-/// The private home's `skills` entry, and every file under it, relative.
 fn inspect_skills() {
     let home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
     let skills = home.as_ref().map(|h| h.join("skills"));
@@ -162,7 +128,6 @@ fn list_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-/// The `stay` launch: record or write the session, then block until killed.
 fn stay(call: &mut Call) {
     if call.argv.first().map(String::as_str) == Some("resume") {
         if let Some(id) = call.argv.iter().skip(1).find(|arg| {
@@ -176,13 +141,10 @@ fn stay(call: &mut Call) {
         let id = write_rollout();
         call.extra.insert("session_id".into(), json!(id));
     }
-    // Eager: a `stay` launch is killed, so nothing is written after it.
     call.flush();
     hang();
 }
 
-/// Write `rollout-<stamp>-<uuid>.jsonl` naming this process's cwd, the file
-/// horch's session discovery reads. Returns the uuid.
 fn write_rollout() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
@@ -213,10 +175,6 @@ fn write_rollout() -> String {
     id
 }
 
-/// `codex update`: record the call, then answer as the scenario says.
-/// `update_fail:codex` exits 1 with a coloured error line, and
-/// `update_hang:codex` sleeps 60 s first. Otherwise it prints 1 line and
-/// exits 0.
 fn update(call: &Call) -> ! {
     call.flush();
     if horch_e2e::scenario_has("update_fail:codex") {
@@ -230,7 +188,6 @@ fn update(call: &Call) -> ! {
     std::process::exit(0);
 }
 
-/// `codex sandbox [opts] -- <command>`: see the module doc.
 fn sandbox(call: &mut Call) -> ! {
     let args = call.argv[1..].to_vec();
     let Some(split) = args.iter().position(|a| a == "--") else {
@@ -245,7 +202,6 @@ fn sandbox(call: &mut Call) -> ! {
         let value = opts.next();
         match opt.as_str() {
             "-C" => writable.extend(value.cloned()),
-            // `permissions.<p>.workspace_roots={"<root>"=true}`
             "-c" => writable.extend(
                 value
                     .and_then(|pair| pair.split_once(".workspace_roots="))
@@ -265,14 +221,11 @@ fn sandbox(call: &mut Call) -> ! {
     std::process::exit(code);
 }
 
-/// `command` under a Seatbelt profile that denies every write outside
-/// `writable` and `/dev`.
 #[cfg(target_os = "macos")]
 fn confined(command: &[String], writable: &[String]) -> std::process::Command {
     let allow: String = writable
         .iter()
         .map(|p| {
-            // Seatbelt matches resolved paths: /var is /private/var.
             let real = std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
             format!(" (subpath {:?})", real.to_string_lossy())
         })

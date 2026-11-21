@@ -1,20 +1,14 @@
-//! Durable, bounded project knowledge, separate from task and session notes.
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-/// Maximum number of facts retained; oldest entries expire first.
 pub const MAX_FACTS: usize = 100;
-/// Maximum bytes in one fact.
 pub const MAX_FACT_BYTES: usize = 2048;
-/// The per-project facts file. Canonical roots share facts through symlink aliases.
 pub fn path(state_root: &Path, project: &Path) -> Result<PathBuf> {
     let root = identity(project)?;
     let key = Sha256::digest(root.to_string_lossy().as_bytes());
     Ok(state_root.join("facts").join(format!("{key:x}.txt")))
 }
-// Git linked worktrees contain a gitdir pointer plus commondir. Resolve the
-// common repository directory so notes made from any checkout share a store.
 fn identity(project: &Path) -> Result<PathBuf> {
     let project = project
         .canonicalize()
@@ -41,7 +35,6 @@ fn identity(project: &Path) -> Result<PathBuf> {
     }
     Ok(project)
 }
-/// Read facts in oldest-to-newest order. A missing store is an empty store.
 pub fn read(state_root: &Path, project: &Path) -> Result<Vec<String>> {
     let path = path(state_root, project)?;
     match std::fs::read_to_string(&path) {
@@ -54,7 +47,6 @@ pub fn read(state_root: &Path, project: &Path) -> Result<Vec<String>> {
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
-/// Append one line once, retaining the newest facts. Returns whether it was added.
 pub fn record(state_root: &Path, project: &Path, fact: &str) -> Result<bool> {
     let fact = fact.trim();
     if fact.is_empty() || fact.contains(['\n', '\r']) || fact.len() > MAX_FACT_BYTES {
@@ -81,7 +73,6 @@ pub fn record(state_root: &Path, project: &Path, fact: &str) -> Result<bool> {
     )?;
     Ok(true)
 }
-/// Text for the briefing placeholder and claim output.
 pub fn display(state_root: &Path, project: &Path) -> Result<String> {
     let facts = read(state_root, project)?;
     Ok(if facts.is_empty() {
@@ -94,7 +85,6 @@ pub fn display(state_root: &Path, project: &Path) -> Result<String> {
             .join("\n")
     })
 }
-/// Host facts derive from the binary target, without ambient environment reads.
 pub fn host_line() -> String {
     let tools = if cfg!(target_os = "macos") {
         "BSD tools; no GNU timeout; sed -i requires a backup suffix"

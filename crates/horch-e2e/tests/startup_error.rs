@@ -1,17 +1,3 @@
-//! End-to-end: a worker that dies before it registers still shows its error
-//! (W13 C4).
-//!
-//! A pane line starts with `exec`, so a real pane closes when `horch worker`
-//! exits and takes the worker's stderr with it. The worker writes its startup
-//! error to a file, and `horch spawn`, which waits for the worker to register,
-//! reads that file and fails with the text.
-//!
-//! fake-herdr runs in the `exec` scenario, so the pane really runs
-//! `horch worker`. For the missing brief, a herdr wrapper gives that pane
-//! another `HORCH_WORKSPACE_ID`, so the worker looks for its brief in a
-//! mailbox that does not have it. For the late worker, a wrapper holds the
-//! pane line until the spawn has returned.
-
 use std::process::Output;
 use std::time::{Duration, Instant};
 
@@ -46,8 +32,6 @@ fn records(h: &Harness) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// A harness with workspace `w1`, whose pane `w1:p1` runs its commands
-/// (fake-herdr `exec`), and the spawn wait `wait_ms`.
 fn workspace(name: &str, wait_ms: &str) -> Harness {
     let mut h = Harness::new(name);
     let quota = fixtures().join("quota/all-ok.json");
@@ -69,7 +53,6 @@ fn spawn_smoke(h: &Harness) -> Output {
     h.run(&["spawn", "smoke", "--from-pane", "w1:p1", "--no-tile"])
 }
 
-/// Poll `f` every 50 ms until it is true; false after `limit`.
 fn within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     let until = Instant::now() + limit;
     while Instant::now() < until {
@@ -81,8 +64,6 @@ fn within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
-/// A worker that registers: the spawn waits for it, and stdout is still the
-/// pane id alone, which callers chain.
 #[cfg(unix)]
 #[test]
 fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
@@ -97,15 +78,10 @@ fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
     );
 }
 
-/// A worker that registers after the wait: the spawn succeeds with a
-/// warning on stderr, and the worker still runs to its end.
 #[cfg(unix)]
 #[test]
 fn a_worker_that_registers_after_the_wait_still_works() {
     let mut h = workspace("startup-late", "300");
-    // The pane holds its line until the gate file exists, for at most 30 s.
-    // The test makes it after the spawn returns, so the worker registers
-    // after the wait.
     let fake = h.bin.join("herdr");
     let gate = h.root.join("gate");
     let wrapper = h.write_warmed(
@@ -147,10 +123,6 @@ fn a_worker_that_registers_after_the_wait_still_works() {
 #[cfg(unix)]
 #[test]
 fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
-    // A spawn that waits out its wait succeeds with a "has not registered"
-    // warning. So a failure with the worker's error shows that spawn read
-    // the error while it waited, with no wall-clock bound: a loaded machine
-    // took over 15 s for this spawn. The wait only bounds a broken run.
     let mut h = workspace("startup-error", "60000");
     let fake = h.bin.join("herdr");
     let wrapper = h.write_warmed(
@@ -188,7 +160,6 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         text(&out)
     );
 
-    // Spawn deletes the error file after it reads it.
     let errors = h.home.join(".local/share/horch/startup-errors");
     assert!(
         errors.is_dir(),
@@ -200,7 +171,6 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         .unwrap_or_default();
     assert!(left.is_empty(), "error files left: {left:?}");
 
-    // The record ends as a failed launch, with the worker's error.
     let r = records(&h)
         .into_iter()
         .find(|r| r["role"] == "smoke-1")

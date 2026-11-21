@@ -24,10 +24,10 @@ from . import evidence, sandbox, supply
 
 SEVERITY = {"OPQ-01": "high", "OPQ-02": "high", "OPQ-03": "high", "OPQ-04": "high", "OPQ-05": "high",
             "OPQ-06": "low"}
-CAP = 500  # strings, list items and reader lines kept per record
+CAP = 500
 CALL_SITES_CAP = 200
 READER_TIMEOUT = 20
-READER_PATH = "/usr/bin:/bin"  # readers come from the system folders only
+READER_PATH = "/usr/bin:/bin"
 
 NATIVE_EXTS = frozenset(".so .dylib .dll .node .exe .a .o".split())
 BYTECODE_EXTS = frozenset(".pyc .pyo .class .jar .war .ear .wasm .beam .luac".split())
@@ -59,9 +59,6 @@ ENV_RE = re.compile(r"\$\{?([A-Z_][A-Z0-9_]{2,})|\b([A-Z][A-Z0-9]*_[A-Z0-9_]*[A-
 PATH_RE = re.compile(r"(?:~|\.{1,2})?/(?:[\w.@+-]+/)+[\w.@+-]+|~/[\w.@+-]+")
 
 
-# ---- detection ----------------------------------------------------------------
-
-
 def _u32(data: bytes, at: int, order: str) -> int:
     return int.from_bytes(data[at:at + 4], order) if len(data) >= at + 4 else -1
 
@@ -74,7 +71,6 @@ def _native(data: bytes, ext: str) -> str | None:
         return "Mach-O 32-bit"
     if head in (b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe"):
         return "Mach-O 64-bit"
-    # CA FE BA BE is a Mach-O fat header (a small arch count) or a Java class (version >= 45).
     if head == b"\xca\xfe\xba\xbf" or (head == b"\xca\xfe\xba\xbe" and 0 <= _u32(data, 4, "big") < 45):
         return "Mach-O universal binary"
     if data[:2] == b"MZ":
@@ -159,9 +155,6 @@ def opaque_hit(rule: str, kind: str, rel: str) -> dict:
     h = supply.hit(rule, SEVERITY[rule], rel, 0, kind)
     h["_path"], h["_type"] = rel, kind
     return h
-
-
-# ---- facts ------------------------------------------------------------------
 
 
 def _unique(items, cap: int = CAP) -> list[str]:
@@ -277,7 +270,7 @@ def _folder_record(root: Path, rel: str) -> tuple[dict, dict]:
 
 
 def walk(root: Path) -> list[tuple[str, Path]]:
-    from .sweep import walk as sweep_walk  # one walker: symlinks are never followed
+    from .sweep import walk as sweep_walk
 
     return sweep_walk(root)
 

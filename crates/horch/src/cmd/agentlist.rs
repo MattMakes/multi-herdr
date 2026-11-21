@@ -1,10 +1,3 @@
-//! `horch agent-list` - every agent harness horch can drive, whether its
-//! binary is there, and who uses it.
-//!
-//! The facts are gathered here (a path lookup, a `--version` probe, the cached
-//! quota view); `horch_core::harness::inventory` turns them into rows. Nothing
-//! here starts a model turn or refreshes the quota.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -36,9 +29,6 @@ pub fn agent_list(ctx: &RuntimeContext, json: bool, no_probe: bool) -> Result<()
     Ok(())
 }
 
-/// The quota as last written, never refreshed. `None` when it cannot be read.
-/// A live `--version` answer from [`gather`] wins over its cached harness
-/// error (`inventory`, U-67).
 fn cached_view(ctx: &RuntimeContext) -> Option<QuotaView> {
     let root = ctx.paths.state_root.clone();
     let policy = super::quotacmd::load_policy(ctx, &root).ok()?;
@@ -52,8 +42,6 @@ fn cached_view(ctx: &RuntimeContext) -> Option<QuotaView> {
     .ok()
 }
 
-/// Where each harness binary is, and (when `probe`) its `--version`. The
-/// probes run in parallel, each with the time limit of `probe_version`.
 pub(crate) fn gather(ctx: &RuntimeContext, probe: bool) -> BTreeMap<&'static str, BinaryFacts> {
     let paths: Vec<(&'static str, Option<PathBuf>)> = HarnessKind::ALL
         .iter()
@@ -128,7 +116,6 @@ fn table(rows: &[AgentRow], no_probe: bool) -> String {
     out
 }
 
-/// The last column of a harness row: its version, or why it has none.
 fn version_label(r: &AgentRow, no_probe: bool) -> String {
     match (&r.version, &r.broken, r.found, no_probe) {
         (Some(v), _, _, _) => v.clone(),
@@ -139,8 +126,6 @@ fn version_label(r: &AgentRow, no_probe: bool) -> String {
     }
 }
 
-/// The line of one model and the teammates that run on it, indented under
-/// the agent column.
 fn model_line(agent_w: usize, m: &ModelUse) -> String {
     let users: Vec<String> = m
         .teammates
@@ -219,7 +204,6 @@ mod tests {
                 teammates: Vec::new(),
             },
         ];
-        // The agent column is as wide as the longest name.
         assert_eq!(
             table(&[agent], false),
             lines(&[
@@ -237,7 +221,6 @@ mod tests {
     fn the_version_column_follows_what_the_probe_found() {
         let mut shown = row("a-version");
         shown.version = Some("1.2.3".into());
-        // A version wins over a broken note.
         shown.broken = Some("ignored".into());
         let mut broken = row("b-broken");
         broken.broken = Some("exit 1".into());
@@ -246,7 +229,6 @@ mod tests {
         missing.found = false;
         missing.path = None;
         missing.status = "unavailable".into();
-        // A missing binary is a dash, whatever else is known.
         missing.broken = Some("stale".into());
         let rows = [shown, broken, silent, missing];
 
@@ -266,7 +248,6 @@ mod tests {
             "             can: resume=true headless=false skills=plugin-dir",
         ]);
         assert_eq!(table(&rows, false), probed);
-        // Without a probe, only the silent binary reads differently.
         assert_eq!(
             table(&rows, true),
             probed.replace("(no answer)", "(not probed)")

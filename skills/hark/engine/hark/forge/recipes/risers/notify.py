@@ -20,7 +20,6 @@ REFSET = "pro_notify"
 SEMI = 2.0 ** (1 / 12)
 STYLES = ["ding", "success", "bell", "chime"]
 
-# key, SPACE spec, default
 _ROWS: list[tuple[str, Any, Any]] = [
     ("style", STYLES, "ding"), ("f0", (1100.0, 2600.0, "log"), 1822.0), ("att", (0.0008, 0.012, "log"), 0.003),
     ("step_db", (-36.0, -18.0), -30.0), ("hold", (0.018, 0.07), 0.032), ("hold_tau", (0.04, 0.4, "log"), 0.15),
@@ -65,8 +64,6 @@ MATS = {
     "wood": ((1, 1, 1), (3.4, 0.18, 0.3), (3.98, 0.12, 0.22), (9.2, 0.03, 0.1)),
     "fm": ((1, 1, 1),),
 }
-
-# ------------------------------------------------------------------------------------------------ families (12.6)
 
 LADDER = [1822.0 * SEMI ** kn for kn in range(5)]
 
@@ -184,8 +181,6 @@ def delivered(cat: str) -> list[tuple[str, dict]]:
     return list(zip(names[cat], (dict(cfg) for cfg in family[cat])))
 
 
-# ------------------------------------------------------------------------------------------------ knobs (12.7, 12.8)
-
 _DING_FINE = ["att", "step_db", "head_width", "hold_tau", "drop_db", "drop_ms", "ring_tau", "p2", "oct", "detune",
               "tick_db", "tick_f", "body_in", "body_tau", "body_p3", "body_p7", "drive", "verb", "rt60", "fade",
               "hp", "air", "air_tau", "p3", "p3_tau"]
@@ -225,9 +220,6 @@ def ring_scaled(cfg: dict, ring: float | None = None) -> dict:
         if kn in res:
             res[kn] = res[kn] * ring
     return res
-
-
-# ------------------------------------------------------------------------------------------------ common pieces
 
 
 def _unit_peak(wav: np.ndarray) -> np.ndarray:
@@ -297,9 +289,6 @@ def _plate(sig: np.ndarray, feedv: np.ndarray, cfg: dict, gen: np.random.Generat
     sig = sig.copy()
     sig[:len(wetv)] += cfg["verb"] * wetv
     return sig
-
-
-# ------------------------------------------------------------------------------------------------ ding (12.10)
 
 
 def _head_tone(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
@@ -394,9 +383,6 @@ def _render_ding(cfg: dict, ns: int, n_len: int, gen) -> np.ndarray:
     return _end(cfg, _soft(cfg, sig), n_len)
 
 
-# ------------------------------------------------------------------------------------------------ bell (12.10)
-
-
 def _bell_partial(cfg: dict, qv: float, ge: float, tax: np.ndarray, gen) -> np.ndarray:
     """One bell partial of ratio q: a slow beat, a decay that is faster for higher partials, the early drop."""
     tc = max(cfg["decay"] * qv ** -cfg["slope"], 0.004)
@@ -450,9 +436,6 @@ def _render_bell(cfg: dict, ns: int, n_len: int, gen) -> np.ndarray:
     if cfg["early_db"] > 0 or cfg["strike"] > -59:
         return _end(cfg, sig, n_len, max(cfg["fade"], 0.25))
     return _end(cfg, sig, n_len, max(cfg["fade"], 0.4 * n_len / SR))
-
-
-# ------------------------------------------------------------------------------------------------ chime (12.10)
 
 
 def _two_rate(cfg: dict, tm: np.ndarray, dm: float = 1.0) -> np.ndarray:
@@ -532,9 +515,6 @@ def _render_chime(cfg: dict, ns: int, n_len: int, gen) -> np.ndarray:
     return _end(cfg, sig, n_len)
 
 
-# ------------------------------------------------------------------------------------------------ render
-
-
 def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """One notify take, (n, 2) float64; n = samples of length (bell: bell_len, else at least 0.5 s)."""
     qv = dict(DEFAULTS)
@@ -555,8 +535,6 @@ def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
         cfg = {**cfg, "style": "ding"}
     return headroom(_render_ding(cfg, ns, n_len, gen))
 
-
-# ------------------------------------------------------------------------------------------------ measure (12.11)
 
 REGIONS = ((0, 150), (150, 500), (500, 1000), (1000, 4000), (4000, 12000), (12000, 24000))
 
@@ -652,9 +630,6 @@ def measure(wav: np.ndarray) -> dict:
     if ridge is not None:
         res["ridge"] = ridge
     return res
-
-
-# ------------------------------------------------------------------------------------------------ penalties (12.12)
 
 
 def outside(v: float | None, lo: float, hiv: float, sv: float) -> float:

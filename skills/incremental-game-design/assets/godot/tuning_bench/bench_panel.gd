@@ -1,8 +1,4 @@
 extends CanvasLayer
-## The panel of the tuning bench. The script builds each control; the panel has no scene file.
-##
-## Tabs: Meters, Controls, Timeline, Actions, Tools. The panel is a view of the autoload `TuningBench`.
-## It keeps no value of its own: each change goes to the bench, and the bench sends a signal back.
 
 const Knobs := preload("res://addons/tuning_bench/bench_knobs.gd")
 const Timeline := preload("res://addons/tuning_bench/bench_timeline.gd")
@@ -17,7 +13,6 @@ const STATUS_COLOR: Dictionary = {"pass": Color(0.45, 0.9, 0.5), "pass (in range
 	"fail": Color(1.0, 0.45, 0.4), "n/a": Color(0.65, 0.68, 0.74)}
 const IMPACT_COLOR: Dictionary = {"low": Color(0.45, 0.65, 0.95), "medium": Color(0.45, 0.85, 0.5), "high": Color(1.0, 0.62, 0.2)}
 const DIM := Color(0.74, 0.77, 0.83)
-## The background is opaque: the game below must not show through the text of the panel.
 const BACK := Color(0.11, 0.12, 0.15, 1.0)
 const SUFFIXES: Array[String] = ["", "k", "M", "B", "T", "Qa", "Qi", "Sx"]
 const METER_UNITS: Dictionary = {"M1": " h", "M2": " min", "M3": " min", "M4": "%", "M5": "%", "M6": " x", "M7": "", "M8": "%"}
@@ -39,11 +34,9 @@ var _setting_list: OptionButton = null
 var _fit_list: OptionButton = null
 var _confirm: ConfirmationDialog = null
 var _task_buttons: Array[Button] = []
-# True while a row of the Controls tab calls `set_k`.
 var _from_row: bool = false
 
 
-## The bench calls this before it adds the panel to the tree.
 func setup(bench: Node) -> void:
 	_bench = bench
 	layer = 100
@@ -80,8 +73,6 @@ func _ready() -> void:
 	var review: String = str(_bench.call("review_line"))
 	var texts: String = str(_bench.call("texts_line"))
 	if review != "" or texts != "":
-		# The ledger has numbers that nobody looked at, or texts of the view that hold a copy of a number.
-		# A balance number can hide in them.
 		var parts: PackedStringArray = PackedStringArray()
 		if review != "":
 			parts.append(review)
@@ -114,7 +105,6 @@ func _ready() -> void:
 	_show_result()
 
 
-## Show a tab: 0 Meters, 1 Controls, 2 Timeline, 3 Actions, 4 Tools.
 func show_tab(index: int) -> void:
 	_tabs.current_tab = index
 
@@ -153,8 +143,6 @@ func _show_status() -> void:
 		text += "\nLive game: %s." % note
 	_status.text = text
 
-
-# ---------------------------------------------------------------------------------------------- Meters
 
 func _build_meters() -> void:
 	var box: VBoxContainer = _scroll("Meters")
@@ -245,8 +233,6 @@ func _show_result() -> void:
 	_fill_actions(result)
 
 
-## Return the phase ids of a meter in the order of `phases` of the bench file. A result that came from a file
-## has its keys in the order of the alphabet, which is not the order of the game.
 static func phase_order(bench: Dictionary, values: Dictionary) -> Array:
 	var out: Array = []
 	for phase: Variant in bench.get("phases", []):
@@ -265,8 +251,6 @@ static func _phase_value(meter_id: String, value: float) -> String:
 		return "%d" % int(value)
 	return ("%.2f" % value).rstrip("0").rstrip(".") + str(METER_UNITS.get(meter_id, ""))
 
-
-# -------------------------------------------------------------------------------------------- Controls
 
 func _build_controls() -> void:
 	var page: VBoxContainer = VBoxContainer.new()
@@ -299,7 +283,6 @@ func _group_rank(group: String) -> int:
 	return 3
 
 
-## Build each row of the Controls tab again from the bench.
 func _fill_controls() -> void:
 	for child: Node in _controls_box.get_children():
 		child.queue_free()
@@ -418,8 +401,6 @@ func _add_row(content: VBoxContainer, control: Dictionary, value: float, group: 
 		"search": ("%s %s %s" % [control["name"], id, control["element"]]).to_lower()}
 
 
-## A script (or a tool of the panel) called `set_k` of the bench. Move the slider of that control.
-## A change that comes from the slider itself needs no move.
 func _on_k_set(id: String, value: float) -> void:
 	if _from_row or not _rows.has(id):
 		return
@@ -448,7 +429,6 @@ static func _k_text(control: Dictionary, value: float) -> String:
 	return "x %.2f" % value
 
 
-## Return a short text for a number.
 static func short(value: float) -> String:
 	var at: int = 0
 	var shown: float = value
@@ -487,8 +467,6 @@ func _filter(text: String) -> void:
 				(child as Control).visible = needle == "" or shown_elements.has(child.get_meta("element"))
 
 
-# -------------------------------------------------------------------------------- Timeline and actions
-
 func _build_timeline() -> void:
 	_timeline = Timeline.new()
 	_timeline.name = "Timeline"
@@ -522,7 +500,6 @@ static func _clock(seconds: Variant) -> String:
 	return "%d s" % int(s)
 
 
-## Return the text of the column "Count": all purchases, and the part that the game made by itself.
 static func count_text(action: Dictionary) -> String:
 	var by_game: int = int(action.get("auto_count", 0))
 	if by_game <= 0:
@@ -555,8 +532,6 @@ func _fill_actions(result: Dictionary) -> void:
 			elif impact == "choice":
 				item.set_tooltip_text(5, "a free choice of the player (\"bot\": false): the bot does not use it")
 
-
-# ----------------------------------------------------------------------------------------------- Tools
 
 func _build_tools() -> void:
 	var page: VBoxContainer = VBoxContainer.new()

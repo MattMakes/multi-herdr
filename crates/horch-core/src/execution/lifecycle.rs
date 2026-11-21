@@ -1,6 +1,3 @@
-//! A worker's life: [`run_worker`] starts its agent and records how it ended;
-//! [`done`] is the worker's own shutdown.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -23,7 +20,6 @@ use crate::workspace::client::WorkspaceClient;
 use crate::workspace::host::PaneHost;
 use crate::workspace::model::Pane;
 
-/// Who hears about an execution when it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportTarget {
@@ -31,21 +27,17 @@ pub enum ReportTarget {
     None,
 }
 
-/// What `horch done` knows about the worker that runs it.
 #[derive(Debug, Clone)]
 pub struct DoneRequest<'a> {
     pub record_id: &'a str,
     pub role: &'a str,
-    /// This pane's `HERDR_PANE_ID`, which `pane get` upgrades to the public id.
     pub pane: &'a str,
-    /// `HORCH_WORKSPACE_ID` when it is set; else the pane's own workspace.
     pub workspace: Option<&'a str>,
     pub summary: &'a str,
     pub report_to: ReportTarget,
     pub unlanded: Option<&'a str>,
 }
 
-/// The live facts needed to protect and report one open worktree claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimLine {
     pub branch: String,
@@ -55,15 +47,12 @@ pub struct ClaimLine {
     pub path: PathBuf,
 }
 
-/// The result of [`DoneSteps::push_report`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportStatus {
     Delivered,
     Queued(String),
 }
 
-/// The steps of [`done`] that are not workspace calls. The CLI runs them
-/// against the ledger, `horch tell`, the mailbox and the tiler.
 pub trait DoneSteps {
     fn open_claims(&self, _record_id: &str) -> Result<Vec<ClaimLine>> {
         Ok(Vec::new())
@@ -75,68 +64,30 @@ pub trait DoneSteps {
         Ok(Vec::new())
     }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
-    /// Make the report durable, or fail as nothing changed. A push that can
-    /// take long belongs in [`DoneSteps::push_report`], after the record is
-    /// done.
     fn queue_report(&self, line: &str) -> Result<()>;
-    /// Push what [`DoneSteps::queue_report`] queued, after the record is
-    /// done, so a push killed by the agent's command timeout leaves the work
-    /// done. Best effort; the default has nothing to push.
     fn push_report(&self) -> ReportStatus {
         ReportStatus::Delivered
     }
-    /// Run after the record is done and before the report push: `horch
-    /// ledger done` pushes its wake lines here, inside the same push budget,
-    /// so a kill during them leaves the work done. The default does nothing.
     fn after_mark_done(&self) {}
-    /// Whether an earlier `done` of this record reported and recorded its
-    /// summary, so a retry only closes the pane. The default says no.
     fn recorded(&self, _record_id: &str) -> Result<bool> {
         Ok(false)
     }
-    /// Note in the record's history that the report failed with `error`.
-    /// Best effort; the default does nothing.
     fn report_failed(&self, _record_id: &str, _error: &str) {}
-    /// Note that a durable report awaits redelivery. Best effort.
     fn report_queued(&self, _record_id: &str, _error: &str) {}
     fn unregister(&self, workspace: &str, role: &str);
-    /// [`DoneSteps::unregister`], where a removal that fails is returned. The
-    /// error names the role and the file that stayed; `done` warns about it
-    /// and still closes the pane. The default cannot fail.
     fn try_unregister(&self, workspace: &str, role: &str) -> Result<()> {
         self.unregister(workspace, role);
         Ok(())
     }
     fn settle(&self, workspace: &str);
-    /// One last session discovery, before the pane close ends the discovery
-    /// thread. Best effort; the default does nothing.
     fn record_session(&self, _workspace: &str, _role: &str, _record_id: &str) -> Result<()> {
         Ok(())
     }
-    /// Write the record's fleet run row (fleet-dataset §4.2). Best effort;
-    /// the default does nothing.
     fn record_run(&self, _record_id: &str) -> Result<()> {
         Ok(())
     }
 }
 
-/// Worker-facing self-shutdown, run only when the work is truly complete (not
-/// while waiting on a question).
-///
-/// The order is fixed: queue the report to the orchestrator, mark the claims
-/// unlanded, mark done in the ledger, run [`DoneSteps::after_mark_done`],
-/// push the report (best effort, within the push budget), record a session
-/// id still undiscovered, unregister the mailbox entry, settle the grid,
-/// write the fleet run row, close the pane. Everything happens BEFORE the
-/// pane close, because closing the pane kills this very process tree. The
-/// underlying agent session stays on disk and resumable.
-///
-/// A failed report stops `done` before any change: the record is not done,
-/// the claims stay open, the role stays registered and the pane stays open.
-/// The error tells the worker to retry; a worker whose report was lost must
-/// not leave. A retry after a `done` that recorded its summary (and then
-/// could not close the pane) only closes the pane. A pane that is gone at
-/// any step after the summary is recorded counts as closed: `done` succeeds.
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     if steps.recorded(req.record_id)? {
         eprintln!("horch done: an earlier horch done recorded this summary; closing the pane");
@@ -146,26 +97,21 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
     close(ws, steps, req)
 }
 
-/// Print `what: error` when `result` failed. For the best-effort steps.
 fn warn_err(result: Result<()>, what: impl std::fmt::Display) {
     if let Err(e) = result {
         eprintln!("{what}: {e:#}");
     }
 }
 
-/// [`warn_err`] for a step of the worker `role`.
 fn warn_worker(role: &str, what: &str, result: Result<()>) {
     warn_err(result, format!("horch worker[{role}]: {what}"));
 }
 
-/// The steps of [`done`] up to the summary in the ledger.
 fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     let open = steps.open_claims(req.record_id)?;
     refuse_open_claims(&open, req.unlanded)?;
     let summary = done_summary(req, &open, unregistered_entries(steps));
     queue_done_report(steps, req, &summary)?;
-    // After the report: a claim marked unlanded is not open, and a retry of
-    // a failed report must find it open to report the same line.
     if let Some(reason) = req.unlanded {
         steps.mark_unlanded(req.record_id, reason)?;
     }
@@ -177,7 +123,6 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     Ok(())
 }
 
-/// The facts of one open claim, as a refusal and a summary show them.
 fn describe_claim(claim: &ClaimLine) -> String {
     format!(
         "{} at {} ({} commits ahead of {}), worktree {}",
@@ -189,7 +134,6 @@ fn describe_claim(claim: &ClaimLine) -> String {
     )
 }
 
-/// Refuse `done` while a claim is open and no `--unlanded` reason is given.
 fn refuse_open_claims(open: &[ClaimLine], unlanded: Option<&str>) -> Result<()> {
     if open.is_empty() || unlanded.is_some() {
         return Ok(());
@@ -206,7 +150,6 @@ fn refuse_open_claims(open: &[ClaimLine], unlanded: Option<&str>) -> Result<()> 
     );
 }
 
-/// The unregistered worktrees, or none when they cannot be inspected.
 fn unregistered_entries(steps: &dyn DoneSteps) -> Vec<String> {
     steps.unregistered().unwrap_or_else(|error| {
         eprintln!("horch done: could not inspect unregistered worktrees ({error:#})");
@@ -214,10 +157,7 @@ fn unregistered_entries(steps: &dyn DoneSteps) -> Vec<String> {
     })
 }
 
-/// The summary `done` records and reports.
 fn done_summary(req: &DoneRequest, open: &[ClaimLine], unregistered: Vec<String>) -> String {
-    // `done` adds the tag and keyword itself; a summary that repeats them would
-    // arrive as `[r] DONE: [r] DONE: ...`.
     let mut summary = strip_done_prefix(req.summary, req.role).to_owned();
     if let Some(reason) = req.unlanded {
         for claim in open {
@@ -230,8 +170,6 @@ fn done_summary(req: &DoneRequest, open: &[ClaimLine], unregistered: Vec<String>
     summary
 }
 
-/// Queue the report of `done` for the orchestrator, when the record reports
-/// to it. A failure stops `done` before any change.
 fn queue_done_report(steps: &dyn DoneSteps, req: &DoneRequest, summary: &str) -> Result<()> {
     if req.report_to != ReportTarget::Orchestrator {
         return Ok(());
@@ -239,8 +177,6 @@ fn queue_done_report(steps: &dyn DoneSteps, req: &DoneRequest, summary: &str) ->
     steps
         .queue_report(&format!("[{}] DONE: {summary}", req.role))
         .inspect_err(|e| steps.report_failed(req.record_id, &format!("{e:#}")))
-        // A context, not a new error: the CLI's sandbox hint looks for
-        // the herdr failure in the chain.
         .map_err(|e| {
             e.context(
                 "horch done: the report did not reach the orchestrator.\n\
@@ -253,7 +189,6 @@ fn queue_done_report(steps: &dyn DoneSteps, req: &DoneRequest, summary: &str) ->
         })
 }
 
-/// A pushed report remains queued until its explicit inbox acknowledgement.
 fn note_queued(steps: &dyn DoneSteps, req: &DoneRequest, status: ReportStatus) {
     if let ReportStatus::Queued(cause) = status {
         eprintln!("horch done: queued, not yet acknowledged ({cause}); redelivered until horch inbox reads it");
@@ -261,18 +196,10 @@ fn note_queued(steps: &dyn DoneSteps, req: &DoneRequest, status: ReportStatus) {
     }
 }
 
-/// What `done` returns when herdr does not answer.
 const HERDR_UNREACHABLE: &str =
     "herdr is unreachable: the summary is recorded, but this pane may still be open";
 
-/// The steps of [`done`] after the summary is in the ledger: the pane closes.
 fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
-    // The record holds the summary now. The dataset coordinator closes the
-    // pane of a candidate whose record is done, so from here on it can close
-    // this pane first, at any step. A pane that is gone is closed: the steps
-    // that need only the workspace still run, and nothing fails. When herdr
-    // itself does not answer, the pane may still be open: the same steps
-    // run, and `done` fails at the end so the caller knows.
     let (pane, unreachable) = lookup_pane(ws, req.pane);
     let workspace = req
         .workspace
@@ -290,17 +217,9 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
         }
         warn_err(steps.try_unregister(workspace, req.role), "horch done");
 
-        // A departing worker leaves a hole and hands its width to whichever
-        // neighbour happens to be its split sibling, which lumps the grid
-        // rather than spreading it. Hand the tidy to a detached child: the
-        // close below kills this process tree, so by the time the hole
-        // exists, this process is gone. The child pulls the last worker into
-        // the free slot, and an overflow tab that lost its last worker closes
-        // itself.
         steps.settle(workspace);
     }
 
-    // After the session discovery, so a Codex row finds its transcript.
     warn_err(
         steps.record_run(req.record_id),
         "horch: NOTE: fleet run row not written",
@@ -309,8 +228,6 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
     close_pane(ws, pane, unreachable)
 }
 
-/// This pane, or why it is not known: `None` with no error when the pane is
-/// gone, `None` with the error when herdr does not answer.
 fn lookup_pane(ws: &dyn WorkspaceClient, pane: &str) -> (Option<Pane>, Option<anyhow::Error>) {
     match ws.pane_get(pane) {
         Ok(pane) => (Some(pane), None),
@@ -328,8 +245,6 @@ fn lookup_pane(ws: &dyn WorkspaceClient, pane: &str) -> (Option<Pane>, Option<an
     }
 }
 
-/// Close the pane. A pane that is gone counts as closed; a herdr that does
-/// not answer is an error.
 fn close_pane(
     ws: &dyn WorkspaceClient,
     pane: Option<Pane>,
@@ -345,8 +260,6 @@ fn close_pane(
     }
 }
 
-/// The outcome of a pane close that failed with `e`: an error only while the
-/// pane is still there or herdr does not answer.
 fn closed_or(ws: &dyn WorkspaceClient, pane_id: &str, e: anyhow::Error) -> Result<()> {
     if ws.pane_get(pane_id).is_ok() {
         Err(e)
@@ -357,71 +270,24 @@ fn closed_or(ws: &dyn WorkspaceClient, pane_id: &str, e: anyhow::Error) -> Resul
     }
 }
 
-/// The steps of [`run_worker`]. [`PaneWorker`] runs them for real; a test
-/// records their order.
 pub trait WorkerSteps {
-    /// Find this pane's mailbox and read the brief `horch spawn` wrote.
     fn load_brief(&mut self) -> Result<Brief>;
-    /// Take the brief's project, ledger and binary overrides as this
-    /// process's context.
     fn enter_context(&mut self, brief: &Brief) -> Result<()>;
-    /// Register the role in the mailbox, so `horch tell` reaches this pane.
     fn register(&mut self, brief: &Brief) -> Result<()>;
-    /// The record is `Running`.
     fn set_running(&mut self, brief: &Brief) -> Result<()>;
-    /// Run the agent through the harness flow and wait for it. `None`: a
-    /// signal ended it.
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>>;
-    /// Record how the agent ended ([`ExecutionStore::record_exit`]).
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()>;
-    /// Record the startup error text in the record's history
-    /// ([`record_startup_failure`]). The pane closes next and takes its
-    /// stderr with it, so the ledger keeps the only copy. The default
-    /// records nothing.
     fn startup_failed(&mut self, _brief: &Brief, _error: &str) -> Result<()> {
         Ok(())
     }
-    /// Close this worker's pane after a startup failure, so a dead worker
-    /// does not hold a pane. The default leaves the pane open.
     fn close_pane(&mut self) -> Result<()> {
         Ok(())
     }
-    /// Leave the startup error text for `horch spawn`
-    /// ([`write_startup_error`]), keyed by the brief's record, or `None`
-    /// when the brief did not load. The pane closes when this process ends
-    /// and takes its stderr with it. The default leaves nothing.
     fn leave_startup_error(&mut self, _error: &str, _brief: Option<&Brief>) -> Result<()> {
         Ok(())
     }
 }
 
-/// Run a worker: load the brief, build the context, register the mailbox,
-/// set `Running`, launch the agent through the harness flow, wait, and
-/// record its exit. Returns the agent's exit code (1 when a signal ended
-/// it), which `horch worker` exits with.
-///
-/// The order is Spec A §8 (architecture design §4.5). The worker never
-/// calls `done`: the agent runs `horch done`, which closes this pane.
-///
-/// A ledger write that fails is logged and the worker goes on: the agent
-/// must start even when its bookkeeping cannot be written. That includes
-/// `set_running`: the agent still starts, and its exit ends the record.
-///
-/// A failure after the brief loads and before the agent launches
-/// (`enter_context`, `register`) ends the record at once as
-/// `Failed(AgentExited{None})`, the same state a launch failure gets, then
-/// returns the original error. The record's history gets the error text first
-/// (event [`EVENT_STARTUP_FAILED`]), which `horch sessions` shows. Without it the record stays `Starting` with a
-/// dead worker until a deadline. The recording is best effort: its own error
-/// is logged. Then the worker closes its own pane, as `done` does; a close
-/// that fails is logged and the startup error still returns. A failure of
-/// `load_brief` records nothing in the ledger: the record is unknown.
-///
-/// Every startup failure also leaves its error text for `horch spawn`
-/// ([`WorkerSteps::leave_startup_error`]) before the pane closes. A pane
-/// line starts with `exec`, so the pane closes when this process ends, also
-/// after a `load_brief` failure, and the spawner's error is the only one the
-/// operator sees.
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
     let brief = steps.load_brief().inspect_err(|e| {
         warn_err(
@@ -453,8 +319,6 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
     Ok(code.unwrap_or(1))
 }
 
-/// Clean up after a startup failure `e`: record it, leave it for the
-/// spawner and close the pane.
 fn fail_startup(steps: &mut dyn WorkerSteps, brief: &Brief, e: &anyhow::Error) {
     let role = &brief.role;
     warn_worker(
@@ -464,8 +328,6 @@ fn fail_startup(steps: &mut dyn WorkerSteps, brief: &Brief, e: &anyhow::Error) {
             .startup_failed(brief, &format!("{e:#}"))
             .and_then(|()| steps.agent_exited(brief, None)),
     );
-    // The close ends this process, so the error is printed and left
-    // for the spawner first.
     eprintln!("horch worker[{role}]: startup failed: {e:#}");
     warn_worker(
         role,
@@ -475,12 +337,8 @@ fn fail_startup(steps: &mut dyn WorkerSteps, brief: &Brief, e: &anyhow::Error) {
     warn_worker(role, "could not close the pane", steps.close_pane());
 }
 
-/// The history event of a worker that failed before its agent launched. Its
-/// text is the error.
 pub const EVENT_STARTUP_FAILED: &str = "startup-failed";
 
-/// Add an [`EVENT_STARTUP_FAILED`] history entry with `error` to the records
-/// addressed by `key`.
 pub fn record_startup_failure(store: &ExecutionStore, key: &str, error: &str) -> Result<()> {
     let at = crate::clock::now_stamp();
     store.update_key(key, |r| {
@@ -493,12 +351,8 @@ pub fn record_startup_failure(store: &ExecutionStore, key: &str, error: &str) ->
     })
 }
 
-/// The history event of a record whose agent exited before `horch done`.
-/// Its text says how the agent ended.
 pub const EVENT_EXITED: &str = "exited";
 
-/// Add an [`EVENT_EXITED`] history entry for an agent that ended with `code`
-/// to the records addressed by `key`.
 pub fn record_early_exit(store: &ExecutionStore, key: &str, code: Option<i32>) -> Result<()> {
     let at = crate::clock::now_stamp();
     let text = match code {
@@ -515,25 +369,17 @@ pub fn record_early_exit(store: &ExecutionStore, key: &str, code: Option<i32>) -
     })
 }
 
-/// Whose startup error a file holds (#192). Roles repeat across
-/// workspaces, so the role alone does not name one worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupKey<'a> {
-    /// The record the spawner minted, which the brief carries.
     Record(&'a str),
-    /// A worker that could not read its brief: its public pane id, which
-    /// herdr gives no other pane. Its workspace can be the wrong one: that
-    /// is a common reason for a missing brief.
     Pane(&'a str),
 }
 
 impl StartupKey<'_> {
-    /// The file name, or `None` when a part could name a path.
     fn file_name(&self) -> Option<String> {
         match *self {
             StartupKey::Record(id) => is_plain(id).then(|| format!("record-{id}.txt")),
             StartupKey::Pane(pane) => {
-                // A public pane id is `<workspace>:<pane>`.
                 let name = pane.replace(':', "_");
                 is_plain(&name).then(|| format!("pane-{name}.txt"))
             }
@@ -541,23 +387,16 @@ impl StartupKey<'_> {
     }
 }
 
-/// Whether `s` is letters, digits, `-` and `_` only, and not empty.
 fn is_plain(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Where a worker's startup error waits for `horch spawn`: under the data
-/// root, which the pane command sets (`HORCH_DATA_DIR`), so the worker and
-/// its spawner agree on it before the brief is read. The data root is
-/// shared by every workspace of this user, so the file is named by
-/// [`StartupKey`], not by role. `None` when the key could name a path.
 pub fn startup_error_path(data_root: &Path, key: StartupKey<'_>) -> Option<PathBuf> {
     Some(data_root.join("startup-errors").join(key.file_name()?))
 }
 
-/// Write `error` to [`startup_error_path`], so `horch spawn` can show it.
 pub fn write_startup_error(data_root: &Path, key: StartupKey<'_>, error: &str) -> Result<()> {
     let path = startup_error_path(data_root, key)
         .with_context(|| format!("{key:?} does not name a startup error file"))?;
@@ -568,11 +407,6 @@ pub fn write_startup_error(data_root: &Path, key: StartupKey<'_>, error: &str) -
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Read and delete the startup error under `key`. A file written before
-/// `since` belongs to an earlier worker: it is deleted and not returned.
-/// `since` is compared at whole seconds, the coarsest mtime a file system
-/// keeps, so a file written in the same second as `since` counts even when
-/// its mtime reads earlier.
 pub fn take_startup_error(
     data_root: &Path,
     key: StartupKey<'_>,
@@ -591,20 +425,13 @@ pub fn take_startup_error(
     text.map(|t| t.trim_end().to_string())
 }
 
-/// How a spawned worker's start went, as [`await_worker`] saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerStart {
-    /// The worker registered its role.
     Registered,
-    /// The worker failed before it registered. The text is its error.
     Failed(String),
-    /// Neither happened within the wait. The worker can still register.
     Waiting,
 }
 
-/// Wait up to `limit` for the worker started at `since` to register
-/// (`registered`) or to leave its startup error under one of `keys`,
-/// whichever comes first. Polls every `poll`; an error found is deleted.
 pub fn await_worker(
     data_root: &Path,
     keys: &[StartupKey<'_>],
@@ -626,7 +453,6 @@ pub fn await_worker(
     }
 }
 
-/// One look at how the worker's start went: `None` while neither happened.
 fn poll_start(
     data_root: &Path,
     keys: &[StartupKey<'_>],
@@ -642,17 +468,12 @@ fn poll_start(
     }
 }
 
-/// What a harness launch needs besides the process context.
 struct AgentPlan<'a> {
     roster: &'a Roster,
     teammate: &'a Teammate,
     prompt: &'a str,
 }
 
-/// Run the agent through its harness and wait. Every flag comes from the
-/// teammate file, and every harness difference (codex rules, the Prime
-/// daemon, session discovery) from its harness module: this only says which
-/// pane, record and rules apply.
 fn run_agent(
     ctx: &RuntimeContext,
     brief: &Brief,
@@ -688,18 +509,13 @@ fn run_agent(
     code
 }
 
-/// The worker in a real herdr pane.
 pub struct PaneWorker<'a> {
     pub ctx: &'a mut RuntimeContext,
     pub role: &'a str,
-    /// Make the project the process's working directory. The CLI does it:
-    /// the agent starts there, and a relative roster path resolves from it.
     pub enter_dir: &'a dyn Fn(&Path) -> Result<()>,
     mailbox: Option<Mailbox>,
     path: Option<std::ffi::OsString>,
-    /// The agent ran: [`WorkerSteps::launch`] returned its exit.
     launched: bool,
-    /// The task ledger file and this worker's row in it, from the brief.
     ledger: Option<(PathBuf, String)>,
 }
 
@@ -720,8 +536,6 @@ impl<'a> PaneWorker<'a> {
         }
     }
 
-    /// Settle the worker row in the task ledger. The text to add to the
-    /// orchestrator's line when the task is queued again or held.
     fn ledger_exit(&self, brief: &Brief, code: Option<i32>) -> Option<String> {
         use crate::taskledger::supervisor::Ended;
         let (db, id) = self.ledger.as_ref()?;
@@ -746,7 +560,6 @@ impl<'a> PaneWorker<'a> {
         }
     }
 
-    /// Tell the orchestrator that the agent exited early.
     fn tell_early_exit(
         &self,
         brief: &Brief,
@@ -764,17 +577,13 @@ impl<'a> PaneWorker<'a> {
         Ok(())
     }
 
-    /// The roster of this launch and the teammate the brief names.
     fn load_roster(&self, brief: &Brief) -> Result<(Roster, Teammate)> {
         let ctx: &RuntimeContext = self.ctx;
-        // The teammate resolved at spawn time travels in the brief. Falling
-        // back to the roster keeps briefs written by an older horch loadable.
         let roster = Roster::load_layered(
             ctx.inherited.home_var.as_deref().map(Path::new),
             ctx.bins.roster_override.as_deref(),
             brief.teammates_dir.as_deref(),
         )?;
-        // F7: an overlay file that does not load is named once, in the pane.
         for w in roster.load_warnings() {
             eprintln!("warning: {w}");
         }
@@ -798,8 +607,6 @@ impl<'a> PaneWorker<'a> {
         )
     }
 
-    /// The task ledger gets the agent's PID the moment it starts, and a
-    /// checkin from this process while the agent runs.
     fn start_checkins(&self, brief: &Brief) -> Option<Checkins> {
         self.ledger.clone().map(|(db, id)| {
             let (obs_db, obs_id, role) = (db.clone(), id.clone(), brief.role.clone());
@@ -820,7 +627,6 @@ impl<'a> PaneWorker<'a> {
         })
     }
 
-    /// A teammate with no harness: only a note, as a smoke test of the pane.
     fn run_smoke_agent(
         &self,
         env: &[(String, String)],
@@ -856,12 +662,6 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 
     fn enter_context(&mut self, brief: &Brief) -> Result<()> {
-        // The brief is this worker's context: its project, its ledger and
-        // the binary overrides the spawner ran with. A pane is a fresh
-        // shell, so none of them are in this process's environment. They
-        // apply before any step that can fail (N-11): a startup failure is
-        // recorded in the spawner's ledger, and the pane closes through the
-        // spawner's herdr.
         let project = PathBuf::from(&brief.project_dir);
         self.ctx.paths.project_dir = Some(project.clone());
         if let Some(db) = &brief.ledger_db {
@@ -882,17 +682,10 @@ impl WorkerSteps for PaneWorker<'_> {
         (self.enter_dir)(&project)
             .with_context(|| format!("entering project dir {}", brief.project_dir))?;
         self.ctx.paths.cwd = Some(project);
-        // The briefing tells the agent to run `horch tell` / `horch note` /
-        // `horch done` by bare name, so this binary's directory has to be
-        // reachable. Without it a worker launched from a build directory
-        // would have no channel at all.
         self.path = self.ctx.prepend_own_dir_to_path();
         Ok(())
     }
 
-    /// A worker takes no orchestrator lock, so it never takes the role
-    /// `orchestrator` (TRF-39): only `horch fleet` registers it, under the
-    /// lock.
     fn register(&mut self, _brief: &Brief) -> Result<()> {
         if self.role == "orchestrator" {
             bail!("a worker cannot register the role orchestrator: only horch fleet takes it");
@@ -923,14 +716,11 @@ impl WorkerSteps for PaneWorker<'_> {
         let mailbox = self.mailbox()?;
         let (roster, teammate) = self.load_roster(brief)?;
         let prompt = self.worker_prompt(brief, &roster, &teammate)?;
-        // The agent starts in its workdir (a candidate's worktree), once the
-        // roster has resolved from the project.
         if let Some(workdir) = &brief.workdir {
             (self.enter_dir)(Path::new(workdir))
                 .with_context(|| format!("entering workdir {workdir}"))?;
         }
         let env = child_env(mailbox, brief, self.path.clone());
-        // Held until the agent exits; dropping it removes the socket.
         let _report = start_report_server(ctx, brief, &teammate, &env)?;
         let checkins = self.start_checkins(brief);
         if teammate.agent == HarnessKind::None {
@@ -947,11 +737,6 @@ impl WorkerSteps for PaneWorker<'_> {
         }
     }
 
-    /// An agent that exits before `horch done` reported nothing, and the
-    /// orchestrator would wait for it forever: the record gets an
-    /// [`EVENT_EXITED`] entry, and this process, still alive in the pane,
-    /// tells the orchestrator. Only after an agent ran: a startup failure is
-    /// `horch spawn`'s to report. A failed tell is printed.
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
         let requeued = self.ledger_exit(brief, code);
         let store = self.store()?;
@@ -974,8 +759,6 @@ impl WorkerSteps for PaneWorker<'_> {
         if let Some(brief) = brief {
             return write_startup_error(&data_root, StartupKey::Record(&brief.record_id), error);
         }
-        // herdr gives this pane its internal id; the spawner knows the
-        // public one.
         let pane = self
             .ctx
             .herdr
@@ -993,8 +776,6 @@ impl WorkerSteps for PaneWorker<'_> {
             .pane
             .as_ref()
             .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)")?;
-        // herdr gives the pane its internal id; close it by its public id,
-        // the one the ledgers record.
         let herdr = self.herdr();
         let public = herdr
             .pane_get(pane.as_ref())
@@ -1008,12 +789,10 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 }
 
-/// The only role a `report` pane may tell (`report::target`).
 fn report_target(brief: &Brief) -> Option<String> {
     report::target(brief)
 }
 
-/// The `horch` command the parent runs for 1 checked report request.
 fn report_args(request: &report::Request) -> Vec<&str> {
     match request {
         report::Request::Progress { text } => vec!["ledger", "progress", text],
@@ -1022,10 +801,6 @@ fn report_args(request: &report::Request) -> Vec<&str> {
     }
 }
 
-/// Serve the report socket of a `horch_access: report` pane for the life
-/// of its agent (`messaging::report`). This process is outside the
-/// agent's sandbox, so the request runs as `horch` with the brief's
-/// identity in `env`, never the pane's.
 #[cfg(unix)]
 fn start_report_server(
     ctx: &RuntimeContext,
@@ -1056,8 +831,6 @@ fn start_report_server(
     Ok(None)
 }
 
-/// Read the session id the launch recorded in the session ledger, and find
-/// its transcript, for the task ledger's worker row.
 fn session_lookup(
     ctx: RuntimeContext,
     record_id: String,
@@ -1082,11 +855,6 @@ fn session_lookup(
     })
 }
 
-/// What the agent inherits on top of this process's environment: the brief's
-/// transport variables (how `horch note` and `horch done` run from inside the
-/// agent know which record they belong to), the workspace this pane
-/// registered in, and the PATH that reaches this binary. Applied to the child
-/// only; this process's environment is never changed.
 pub fn child_env(
     mailbox: &Mailbox,
     brief: &Brief,
@@ -1103,12 +871,6 @@ pub fn child_env(
     env
 }
 
-/// The smoke teammate: a fake agent that verifies the machinery (spawn,
-/// register, ledger, tell, self-close) without spending any tokens.
-///
-/// These run as subprocesses invoked by bare name, deliberately: that is
-/// exactly how a real agent calls them from its shell tool, so the check also
-/// proves `horch` is reachable on the PATH the briefings promise.
 fn run_smoke(env: &[(String, String)]) -> Result<()> {
     run_horch(
         env,
@@ -1118,16 +880,11 @@ fn run_smoke(env: &[(String, String)]) -> Result<()> {
         ],
     )?;
     std::thread::sleep(Duration::from_secs(1));
-    // The smoke orchestrator is a plain shell: no agent ever shows in its
-    // pane, so `done`'s report must not wait for one (TELL_GRACE).
     let mut env = env.to_vec();
     env.push(("HORCH_TELL_GRACE_MS".into(), "0".into()));
-    // `done` closes this pane, which kills this process tree; nothing after
-    // it runs.
     run_horch(&env, &["done", "smoke: machinery verified end to end"])
 }
 
-/// The report of a worker whose agent exited before `horch done`.
 fn early_exit_line(brief: &Brief, code: Option<i32>) -> String {
     let how = match code {
         Some(code) => format!("exited with code {code}"),
@@ -1140,8 +897,6 @@ fn early_exit_line(brief: &Brief, code: Option<i32>) -> String {
     )
 }
 
-/// [`run_horch`] with its output captured: the agent's screen is this
-/// pane, so the error text goes back to the caller instead.
 fn run_horch_quiet(env: &[(String, String)], args: &[&str]) -> Result<()> {
     let out = horch_command(env)
         .args(args)
@@ -1154,18 +909,13 @@ fn run_horch_quiet(env: &[(String, String)], args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// `horch` by name, off PATH, with `env` on top of this process's
-/// environment, never in report mode.
 fn horch_command(env: &[(String, String)]) -> Command {
-    // A PATH given to the child is also the one `Command` searches.
     let mut cmd = Command::new("horch");
     process::inherit_env(&mut cmd, env.iter().map(|(k, v)| (k, v)));
     cmd.env_remove(report::ENV);
     cmd
 }
 
-/// Invoke `horch` the way an agent would: by name, off PATH, with the
-/// environment an agent in this pane would have.
 fn run_horch(env: &[(String, String)], args: &[&str]) -> Result<()> {
     let mut cmd = horch_command(env);
     let status = cmd.args(args).status().map_err(|e| {
@@ -1209,11 +959,8 @@ mod tests {
         recorded: bool,
         fail_report: bool,
         report_failures: RefCell<Vec<String>>,
-        /// `Some(cause)`: the push does not land.
         push_misses: Option<String>,
         queued: RefCell<Vec<String>>,
-        /// `mark_done`, `after_mark_done`, `push` and `unregister`, in the
-        /// order they ran.
         order: RefCell<Vec<&'static str>>,
         fail_mark_done: bool,
     }
@@ -1367,8 +1114,6 @@ mod tests {
         assert_eq!(&*steps.reports.borrow(), &["[sonnet-1] DONE: finished"]);
     }
 
-    /// W2: a report that fails leaves the claim open and the record not
-    /// done, so the retry with the same `--unlanded` reports the same line.
     #[test]
     fn w2_failed_report_leaves_the_claim_open_for_the_retry() {
         let ws = FakeWorkspace::new();
@@ -1400,9 +1145,6 @@ mod tests {
         assert!(ws.pane_ids().is_empty(), "the retry closes the pane");
     }
 
-    /// #67: the record is done before the push, so a push the agent's
-    /// command timeout kills leaves the work done. A push that does not
-    /// land is noted, and `done` still closes the pane.
     #[test]
     fn done_marks_the_record_before_the_push() {
         let ws = FakeWorkspace::new();
@@ -1420,8 +1162,6 @@ mod tests {
         assert!(ws.pane_ids().is_empty(), "the pane is closed");
     }
 
-    /// #67: the push runs after the record is done and before the pane's
-    /// closing steps; a worker that reports to nobody pushes nothing.
     #[test]
     fn done_pushes_between_the_record_and_the_close() {
         let ws = FakeWorkspace::new();
@@ -1446,10 +1186,6 @@ mod tests {
         );
     }
 
-    /// #67: a ledger write that fails after the report is queued stops
-    /// `done` before the push and the close. The queued mail stays for the
-    /// courier; the retry queues the report again (as before #67, where a
-    /// report was delivered before the same write).
     #[test]
     fn done_stops_before_the_push_when_the_record_is_not_written() {
         let ws = FakeWorkspace::new();
@@ -1465,7 +1201,6 @@ mod tests {
         assert_eq!(ws.pane_ids(), vec![pane], "the pane stays open");
     }
 
-    /// #67: a report that fails to queue is not pushed.
     #[test]
     fn done_does_not_push_a_report_that_failed() {
         let ws = FakeWorkspace::new();
@@ -1478,8 +1213,6 @@ mod tests {
         assert!(steps.order.borrow().is_empty(), "no mark, no push");
     }
 
-    /// W2: a record that an earlier `done` reported and marked is not
-    /// reported or marked again; the retry only closes the pane.
     #[test]
     fn w2_done_retry_after_a_recorded_done_only_closes() {
         let ws = FakeWorkspace::new();
@@ -1548,8 +1281,6 @@ mod tests {
         }
     }
 
-    /// Each report verb runs 1 `horch` command in the parent, and `tell`
-    /// reaches only the brief's report target.
     #[test]
     fn a_report_request_maps_to_1_horch_command() {
         let text = || "x".to_string();
@@ -1575,9 +1306,6 @@ mod tests {
         assert_eq!(report_target(&report_brief(ReportTarget::None)), None);
     }
 
-    /// A `report` teammate's parent serves the socket at the record's path;
-    /// a `full` teammate gets none. The request runs as `horch` in the
-    /// parent, so a PATH without `horch` comes back as the error.
     #[cfg(unix)]
     #[test]
     fn the_parent_serves_the_report_socket_only_for_report() {
@@ -1618,10 +1346,6 @@ mod tests {
         assert!(!path.exists());
     }
 
-    /// The brief's transport variables, the workspace and the PATH reach the
-    /// agent's command and nothing else: the test process's own environment is
-    /// the same afterwards, and `ANTHROPIC_API_KEY` is removed from the child
-    /// even when the teammate's `env` block names it.
     #[test]
     fn arc_06_transport_env_applied_to_child() {
         let before = process_env();
@@ -1699,7 +1423,6 @@ mod tests {
             .unwrap()
             .starts_with("/opt/horch/bin"));
         assert_eq!(envs.get("ANTHROPIC_API_KEY"), Some(&None), "removed");
-        // The resolved claude override is the program itself.
         assert_eq!(
             cmd.get_program(),
             std::ffi::OsStr::new("/fake/HORCH_CLAUDE_BIN")
@@ -1707,8 +1430,6 @@ mod tests {
         assert_eq!(process_env(), before, "the test process env did not change");
     }
 
-    /// `done` steps that close the pane during `settle`, the way the dataset
-    /// coordinator can close it while `horch done` runs.
     struct ClosedElsewhere<'a> {
         ws: &'a FakeWorkspace,
         pane: String,
@@ -1729,8 +1450,6 @@ mod tests {
         }
     }
 
-    /// A failed close is success when the pane is gone, and an error when
-    /// the pane is still there.
     #[test]
     fn done_close_is_idempotent() {
         fn request(pane: &str) -> DoneRequest<'_> {
@@ -1769,7 +1488,6 @@ mod tests {
         assert_eq!(ws.pane_ids(), [pane]);
     }
 
-    /// `done` steps whose mailbox removal fails, and record what ran.
     struct UnregisterFails {
         ran: RefCell<Vec<String>>,
     }
@@ -1792,8 +1510,6 @@ mod tests {
         }
     }
 
-    /// A mailbox removal that fails is a warning, not a stop: the pane still
-    /// closes and the later steps still run.
     #[test]
     fn done_closes_the_pane_when_unregister_fails() {
         let ws = FakeWorkspace::new();
@@ -1820,12 +1536,9 @@ mod tests {
         );
     }
 
-    /// `done` steps that stop herdr (the server, not the pane) at a step,
-    /// or close the pane there, and record what ran.
     struct HerdrDown<'a> {
         ws: &'a FakeWorkspace,
         pane: &'a str,
-        /// `true`: the pane closes at `at`; `false`: herdr stops answering.
         close_pane: bool,
         at: Step,
         ran: std::cell::RefCell<Vec<String>>,
@@ -1870,9 +1583,6 @@ mod tests {
         }
     }
 
-    /// After the summary is recorded, an unreachable herdr makes `done`
-    /// fail: the pane may still be open. A gone pane on a reachable herdr
-    /// is success. Both at `pane get` and at the close.
     #[test]
     fn done_fails_when_herdr_is_unreachable_but_not_when_the_pane_is_gone() {
         for at in [Step::PaneGet, Step::Close] {
@@ -1923,7 +1633,6 @@ mod tests {
         }
     }
 
-    /// A step of [`done`] before which the pane can vanish.
     #[derive(Debug, Clone, Copy, PartialEq)]
     enum Step {
         MarkDone,
@@ -1935,7 +1644,6 @@ mod tests {
         Close,
     }
 
-    /// `done` steps that close the pane before `vanish` and record what ran.
     struct VanishBefore<'a> {
         ws: &'a FakeWorkspace,
         pane: &'a str,
@@ -1955,7 +1663,6 @@ mod tests {
         fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
             self.at(Step::MarkDone);
             self.ran.borrow_mut().push(format!("mark_done {summary}"));
-            // The next step is the report, or the `pane get` without one.
             self.at(Step::Report);
             self.at(Step::PaneGet);
             Ok(())
@@ -1983,9 +1690,6 @@ mod tests {
         }
     }
 
-    /// The pane can vanish before any step of `done`. The summary is always
-    /// recorded, `done` succeeds, and the steps that need only the workspace
-    /// run when the workspace is known.
     #[test]
     fn done_succeeds_when_the_pane_vanishes_before_any_step() {
         use Step::*;
@@ -2021,8 +1725,6 @@ mod tests {
                 assert!(ws.pane_ids().is_empty(), "{vanish:?}");
                 let ran = steps.ran.into_inner();
                 assert_eq!(ran[0], "mark_done finished", "{vanish:?}");
-                // The workspace comes from the request, or from `pane get`
-                // while the pane is still there.
                 let known = workspace.is_some() || ![MarkDone, Report, PaneGet].contains(&vanish);
                 let expected = if known { 4 } else { 1 };
                 assert_eq!(ran.len(), expected, "{vanish:?}, {workspace:?}: {ran:?}");
@@ -2030,14 +1732,9 @@ mod tests {
         }
     }
 
-    /// U-40: a worker that fails at startup closes its own pane, after it
-    /// records the failure. A pane that does not close does not hide the
-    /// startup error.
     mod startup_failure {
         use super::*;
 
-        /// Steps that fail at `enter_context` and close the pane through the
-        /// fake workspace, the way `PaneWorker` does through herdr.
         struct Steps<'a> {
             ws: &'a FakeWorkspace,
             pane: String,
@@ -2045,7 +1742,6 @@ mod tests {
             fail_at: &'static str,
             startup_error: Option<String>,
             left_error: Option<String>,
-            /// The record id of the brief `leave_startup_error` got.
             left_for: Option<Option<String>>,
         }
 
@@ -2155,12 +1851,9 @@ mod tests {
             );
             assert!(ws.pane_ids().is_empty(), "the pane is closed");
             assert_eq!(steps.left_error.as_deref(), Some("enter_context failed"));
-            // #192: after the brief loads, the error is keyed by its record.
             assert_eq!(steps.left_for, Some(Some("r1".to_string())));
         }
 
-        /// W13 C4: the pane closes when `horch worker` exits, so a worker
-        /// with no brief leaves its error for `horch spawn`.
         #[test]
         fn a_missing_brief_leaves_its_error_for_the_spawner() {
             let ws = FakeWorkspace::new();
@@ -2172,7 +1865,6 @@ mod tests {
             assert!(steps.left_error.unwrap().starts_with("no brief at "));
         }
 
-        /// Steps that start and run, with the ledger writes made to fail.
         struct Flow {
             calls: Vec<String>,
             launch: Result<Option<i32>, &'static str>,
@@ -2206,8 +1898,6 @@ mod tests {
             }
         }
 
-        /// A ledger write that fails is logged and the worker goes on: the
-        /// agent starts, and its exit code is the worker's.
         #[test]
         fn a_failed_ledger_write_does_not_stop_the_worker() {
             let mut flow = Flow {
@@ -2233,8 +1923,6 @@ mod tests {
             assert_eq!(flow.calls.last().unwrap(), "agent_exited(None)");
         }
 
-        /// A launch that fails records the exit as a signal end, then
-        /// returns the launch error.
         #[test]
         fn a_failed_launch_records_the_exit_and_returns_its_error() {
             let mut flow = Flow {
@@ -2264,8 +1952,6 @@ mod tests {
             assert_eq!(take_startup_error(tmp.path(), KEY, since), None);
         }
 
-        /// A file an earlier worker left is not this worker's error: it is
-        /// deleted, and nothing is returned.
         #[test]
         fn a_stale_startup_error_is_deleted_and_ignored() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2275,7 +1961,6 @@ mod tests {
             assert!(!startup_error_path(tmp.path(), KEY).unwrap().exists());
         }
 
-        /// Write the startup error of [`KEY`] with its mtime set to `at`.
         fn write_startup_error_at(dir: &Path, at: SystemTime) {
             write_startup_error(dir, KEY, "boom").unwrap();
             let path = startup_error_path(dir, KEY).unwrap();
@@ -2283,8 +1968,6 @@ mod tests {
             file.set_modified(at).unwrap();
         }
 
-        /// A file system with whole-second mtimes stamps a file written in
-        /// the spawn's second earlier than the spawn: it still counts.
         #[test]
         fn a_startup_error_in_the_spawns_second_counts() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2297,7 +1980,6 @@ mod tests {
             );
         }
 
-        /// A file from the second before the spawn is an earlier worker's.
         #[test]
         fn a_startup_error_from_the_second_before_is_stale() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2323,10 +2005,6 @@ mod tests {
             assert!(!tmp.path().join("x.txt").exists());
         }
 
-        /// A key names its file by its kind and keeps letters, digits, `-` and
-        /// `_`. A pane id swaps its `:` for `_`; a record id does not. Anything
-        /// else, `.` and a space and a non-ASCII letter included, could name
-        /// a path and gives no file.
         #[test]
         fn a_startup_key_names_its_file_by_its_kind() {
             for (key, want) in [
@@ -2353,9 +2031,6 @@ mod tests {
             }
         }
 
-        /// #192: 2 spawns of the same role in 2 workspaces wait at the same
-        /// time. The error of 1 worker reaches only the wait of its record,
-        /// or of its pane when it had no brief.
         #[test]
         fn an_error_reaches_only_the_wait_of_its_record() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2375,7 +2050,6 @@ mod tests {
                 WorkerStart::Failed("B failed".into())
             );
 
-            // A worker with no brief keys its error by its public pane id.
             let no_brief = StartupKey::Pane("wA:p2");
             write_startup_error(tmp.path(), no_brief, "A has no brief").unwrap();
             assert_eq!(
@@ -2409,7 +2083,6 @@ mod tests {
                 ),
                 WorkerStart::Waiting
             );
-            // The error appears while the spawner waits.
             let mut polls = 0;
             let start = await_worker(tmp.path(), &[KEY], since, long, poll, &mut || {
                 polls += 1;
@@ -2479,9 +2152,6 @@ mod tests {
             );
         }
 
-        /// N-11: a project dir that is missing fails `enter_context` after
-        /// the brief's `state_dir` and `project_dir` apply, so the startup
-        /// failure and the exit reach the spawner's ledger.
         #[test]
         fn pane_worker_records_a_startup_failure_in_the_briefs_ledger() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2536,9 +2206,6 @@ mod tests {
             assert_eq!(ws.pane_ids().len(), 1);
         }
 
-        /// Report 50: worker startup takes no orchestrator lock, so a
-        /// worker never registers the role `orchestrator`. The refusal is 1
-        /// line, and it comes before herdr or the mailbox is touched.
         #[test]
         fn trf_39_a_worker_cannot_register_the_orchestrator_role() {
             let tmp = tempfile::tempdir().unwrap();

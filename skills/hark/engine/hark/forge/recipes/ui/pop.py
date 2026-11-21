@@ -24,8 +24,6 @@ REFSET = "pop"
 REFS = [f"{kit.ref_root()}/ui/ui_pop_{i:02d}.wav" for i in range(1, 5)]
 
 
-# ------------------------------------------------------------ the bubble model
-
 SPACE = kit.space_table("""
     f0 400 3500 log
     q 4 40 log
@@ -285,8 +283,6 @@ def render_v1(p: dict, rng: np.random.Generator) -> np.ndarray:
         end = _end_sample(sig, p, end, head)
     return np.asarray(dsp.fade(sig[:end], 0.001, p["cut_fade"]), dtype=np.float64)
 
-
-# ------------------------------------------------------------ designed pops
 
 V2_SPACE = kit.space_table("""
     style | chirp blip bubble
@@ -776,8 +772,6 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     return render_v2(p, rng) if "style" in (p or {}) else render_v1(p, rng)
 
 
-# ------------------------------------------------------------ member tables
-
 def _with_defaults(base: dict, table: dict[str, dict]) -> list[tuple[str, dict]]:
     return [(name, {**V2_DEFAULTS, **base, **edits}) for name, edits in table.items()]
 
@@ -813,7 +807,6 @@ ROUND6 = {
     """),
 }
 
-# The kit pops keep their numbered names (Q-POP-1).
 BUBBLES = {
     "pop_01": kit.value_table("""
         f0 520  rise 0.9  q_tau 0.014  att 0.002  room 0.15  length 0.2  tick_db 0  tick_ms 6  tick_hz 1700
@@ -909,8 +902,6 @@ ROUND5_FAMILY = _with_defaults(ROUND5_BASE, ROUND5)
 ROUND4_FAMILY = [(name, {**V2_DEFAULTS, **ROUND3[name], **ROUND4_EDITS[name]}) for name in ROUND3]
 
 
-# ------------------------------------------------------------ critic penalty
-
 V2_TARGETS = {
     "pro_pop": [("length_s", 0.025, 0.16, 0.05), ("t40_ms", 4, 70, 25), ("low_db", -200, -10, 6),
                 ("corr", 0.95, 1.0, 0.1)],
@@ -935,7 +926,7 @@ def pro_penalty(x: np.ndarray, cat: str) -> float:
     targets = V2_TARGETS.get(cat)
     if not targets:
         return 0.0
-    from hark.forge.recipes.risers import notify  # same layer; imported only when a penalty is asked for
+    from hark.forge.recipes.risers import notify
 
     stats = dict(notify.measure(x))
     stats["low_db"] = 10 * math.log10(10 ** (_lowest_share(stats["shares"]) / 10) + 1e-12)

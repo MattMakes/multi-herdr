@@ -117,7 +117,6 @@ def test_c7_bundled_profile():
         text = fh.read()
     p = json.loads(text)
     assert p["n"] == 7
-    # Seed profile (timeline A1, decision Q1): per-film values are not shipped, so films is empty.
     assert [f["id"] for f in p["films"]] == [f"ref_{k}" for k in range(1, len(p["films"]) + 1)]
     assert not re.search(r"\.(mp4|mov|wav|m4a)\b|/Users/|[A-Za-z]:\\\\|~/", text)
     from hark.timeline.critique import SPEC
@@ -245,8 +244,6 @@ def test_c14_spec_keys_in_listen_table():
     assert {k for k in SPEC if k != "p_real"} <= keys
 
 
-# ---------------------------------------------------------------- more behaviour of critique 2
-
 def test_reference_film_is_scored_leave_one_out(wav, hark_home):
     from hark.listen.profile import aggregate, film_metrics
     from hark.timeline.critique import critique
@@ -257,7 +254,7 @@ def test_reference_film_is_scored_leave_one_out(wav, hark_home):
         fm = film_metrics(p, use_ast=False)
         films.append({"id": f"ref_{k}", "style": "", "duration": fm["duration"], "has_video": False,
                       "metrics": fm["metrics"], "chance": fm["chance"], "arc": fm["arc"]})
-    prof = dict(aggregate(films), n=len(films), films=films)  # the profile JSON shape that hark profile writes
+    prof = dict(aggregate(films), n=len(films), films=films)
     res = critique(paths[1], profile=prof, use_ast=False, use_realness=False)
     assert res["reference_match"] == {"id": "ref_2", "scored_against": 2}
     assert res["profile_n"] == 2 and res["profile"] == "custom"

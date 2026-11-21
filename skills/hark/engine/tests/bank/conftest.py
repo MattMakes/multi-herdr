@@ -18,9 +18,6 @@ import pytest
 SR = 48000
 
 
-# ---------------------------------------------------------------- test recipes (ARCHITECTURE 8.2)
-
-
 def _t(n: int) -> np.ndarray:
     return np.arange(n) / SR
 
@@ -122,9 +119,6 @@ def _route_test_fit_kind(monkeypatch) -> None:
     monkeypatch.setattr(auto, "knobs_of", knobs_of)
 
 
-# ---------------------------------------------------------------- the fixture bank
-
-
 def forge_entry(cat: str, member: str, recipe: str, seed: int, **params) -> tuple[str, dict]:
     base = dict(TEST_RECIPES[recipe].DEFAULTS)
     base.update(params)
@@ -196,17 +190,13 @@ def shipped():
     from hark.forge.bank import bank
 
     folder = Path(bank.PKG_DIR) / "data"
-    # fit.json waits for the operator's CC0 decision (ARCHITECTURE 15, bank Q5); the other 3 files ship
     if not {"forge04.json", "forge_v2.json", "pluck.json"} <= {p.name for p in folder.glob("*.json")}:
         pytest.skip("needs-bank: the shipped bank files are built by integration (25b)")
     bank.reload()
     return bank
 
 
-# Gaps of the shipped bank, each one open in the integration report (T-33). Remove an id once it ships clean.
-# - forge04 members that fail their take audit, so build --forge04 leaves them out.
 OPEN_FORGE04 = frozenset({"mallet/pluck", "whoosh_big/thump_deep"})
-# - derived forge_v2 ids with no render whose default take passes sfx check (T-41): the file lists them under dropped.
 DROPPED_DERIVED = frozenset({
     "pro_typing_run/blip", "pro_typing_run/double", "pro_typing_run/glass", "pro_typing_run/soft",
     "pro_typing_run/standard", "pro_typing_run/tick",

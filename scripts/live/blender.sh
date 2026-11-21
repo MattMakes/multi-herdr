@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Live check, Blender family (U-15, U-20, U-51, U-55). Re-runs every helper of
-# the blender-modeling, blender-rigging and blender-baking skills headless on
-# the installed Blender, starts the pinned Blender Lab MCP server as
-# teammates/blender-artist.md configures it, builds 1 crate asset end to end
-# with the 4 Blender skills, and checks the MCP dependency pin.
-# Result file: docs/live-checks/blender.md. Needs Blender (BLENDER_PATH, or
-# `blender` on PATH, or /Applications/Blender.app), uv and network for the
-# first uvx download. Starts no model session.
-# Env: LIVE_BLENDER_SKIP_MCP=1 skips the 2 server steps (no uvx launch).
-#      LIVE_BLENDER_CLEAN=1 also deletes the built asset at the end.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 unset ANTHROPIC_API_KEY 2>/dev/null || true
@@ -21,12 +11,9 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2"; FAILED=1; }
 skip() { echo "SKIP $1: $2"; }
 
-# The MCP server pin. The teammate file carries it; PIN_SET is the full set
-# that uv resolved for it on 2026-10-06 (Python 3.12).
 MCP_COMMIT=2cea8d566dde07fbac28a61d698909d69724e853
 PIN_SET="annotated-doc==0.0.5 annotated-types==0.8.0 anyio==4.15.1 attrs==26.1.0 certifi==2026.7.22 cffi==2.1.1 click==8.5.0 cryptography==50.0.2 docutils==0.23 h11==0.16.0 httpcore==1.0.9 httpx==0.28.1 httpx-sse==0.4.3 idna==3.20 jsonschema==4.26.0 jsonschema-specifications==2025.9.1 markdown-it-py==4.2.0 mcp==1.30.0 mdurl==0.1.2 pycparser==3.0 pydantic==2.13.5 pydantic-core==2.46.5 pydantic-settings==2.15.0 pygments==2.21.0 pyjwt==2.15.1 python-dotenv==1.2.4 python-multipart==0.0.32 pyyaml==6.0.3 referencing==0.37.0 rich==15.0.0 rpds-py==2026.9.1 shellingham==1.5.4 sse-starlette==3.5.0 starlette==1.7.0 typer==0.27.3 typing-extensions==4.16.0 typing-inspection==0.4.4 uvicorn==0.54.0"
 
-# 1. Blender version.
 BLENDER=""
 for c in "${BLENDER_PATH:-}" "$(command -v blender 2>/dev/null || true)" /Applications/Blender.app/Contents/MacOS/Blender; do
   if [ -n "$c" ] && [ -x "$c" ]; then BLENDER=$c; break; fi
@@ -38,7 +25,6 @@ else
 fi
 run_blender() { "$BLENDER" --background --factory-startup --python "$@" 2>&1; }
 
-# The helpers under test are the skills' own code blocks, not copies.
 extract() { awk '/^```python/{f=1;next} /^```/{f=0} f' "$1" >"$2"; }
 extract skills/blender-modeling/references/mesh-helpers.md "$SCRATCH/mesh_helpers.py"
 extract skills/blender-rigging/references/rig-helpers.md "$SCRATCH/rig_helpers.py"
@@ -633,7 +619,6 @@ check(len(fr) == 1 and fr[0][1] - fr[0][0] + 1 in (30, 31), "fbx AS_Crate_LidOpe
 print("VERIFY RESULT", "PASS" if not fails else "FAIL " + ",".join(fails))
 PY
 
-# 2. U-51: every helper, headless, on this Blender. One line per helper.
 if [ -n "$BLENDER" ]; then
   for kind in mesh rig bake; do
     out=$(cd "$SCRATCH" && run_blender "check_$kind.py" || true)
@@ -651,7 +636,6 @@ else
   skip "helpers" "no Blender"
 fi
 
-# 3. U-20: the pinned MCP server, launched as the teammate file says.
 cat >"$SCRATCH/mcp.py" <<'PY'
 # MCP stdio client: launch the server exactly as the teammate's mcp_servers
 # line says, list its tools, then make 3 read-only calls. Prints MCP lines.
@@ -729,7 +713,6 @@ else
   fi
 fi
 
-# 4. U-15: 1 crate asset end to end with the 4 Blender skills, then a check in a new process.
 if [ -n "$BLENDER" ]; then
   rm -rf "$SCRATCH/asset"
   out=$(cd "$SCRATCH" && run_blender build_crate.py -- asset || true)
@@ -747,7 +730,6 @@ else
   skip "asset-build" "no Blender"
 fi
 
-# 5. U-55: the pinned flags in the teammate file resolve to PIN_SET.
 if command -v uv >/dev/null && command -v git >/dev/null; then
   ARGS=$(python3 -I -c 'import json,re,sys; l=next(l for l in open(sys.argv[1]) if re.match(r"\s+blender:\s*\{", l)); a=json.loads(l.split(":",1)[1])["args"]; print(" ".join(a[:a.index("--from")]))' teammates/blender-artist.md)
   PY_VER=$(sed -n 's/.*--python \([^ ]*\).*/\1/p' <<<"$ARGS")
@@ -767,7 +749,6 @@ else
   skip "mcp-pin" "uv or git not found"
 fi
 
-# Clean up: the server clone and the check files. Keep the asset unless asked.
 rm -rf "$SCRATCH/src" "$SCRATCH"/*.fbx "$SCRATCH"/bake_check_*.png "$SCRATCH"/mcp_probe.blend*
 [ -n "${LIVE_BLENDER_CLEAN:-}" ] && rm -rf "$SCRATCH/asset"
 exit $FAILED

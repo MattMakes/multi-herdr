@@ -61,8 +61,6 @@ class VerifyCase(IntakeTestCase):
         super().setUp()
         os.environ["SKILL_INTAKE_NO_SANDBOX"] = "1"
 
-    # ---- the front half, for real ----
-
     def front(self, files: dict, skill: str, opaque: str | None = None) -> tasklib.Task:
         """acquire through triage on `files`; a canned audit gives GATE 1 pass."""
         src = fixtures.build(self.tmp / "src", files)
@@ -112,8 +110,6 @@ class VerifyCase(IntakeTestCase):
 
     def checks(self, t: tasklib.Task) -> dict:
         return {c["check"]: c for c in self.doc(t)["checks"]}
-
-    # ---- the F-clean task, with a passing clean side ----
 
     def clean_task(self, target: str = "standalone", out: dict | None = None) -> tasklib.Task:
         t = self.front(fixtures.f_clean(), "clean-fixture")
@@ -204,7 +200,7 @@ class OpaqueTest(VerifyCase):
         out = self.verify(t, "standalone", ABORT)
         self.assertEqual(out["checks"]["findings"], "fail")
         bad = [r for r in self.doc(t)["findings"] if r["status"] == "unresolved"]
-        self.assertEqual(len(bad), 2, bad)  # both native binaries carry the URL
+        self.assertEqual(len(bad), 2, bad)
         self.assertTrue(all("string(s) in bin-fixture/SKILL.md" in r["why"] for r in bad), bad)
 
     def test_artifact_file_name_or_copy_in_output_aborts(self):
@@ -337,7 +333,6 @@ class FixListTest(VerifyCase):
         skill.write_text(CLEAN_SKILL + "\nThen stop.\n" + f"Report{ZWSP} it.\n", encoding="utf-8")
         notes = t.k / "out" / "clean-fixture" / "references" / "notes.md"
         notes.parent.mkdir()
-        # A 6-word run of the source (usage.md) split over lines 3 and 4.
         notes.write_text("# Notes\n\nFor input, give the path\nof a notes file.\n\nThat is all.\n")
         return t
 
@@ -561,7 +556,7 @@ class RenamedOutputTest(VerifyCase):
 
     def test_name_collision_aborts(self):
         t = self.renamed_cap_task()
-        self.out(t, {"clean-fixture/SKILL.md": CLEAN_SKILL})  # the spec's own name is an output folder too
+        self.out(t, {"clean-fixture/SKILL.md": CLEAN_SKILL})
         self.writer_report(t, ["spec-tally"], ["tally-words"])
         self.verify(t, "standalone", ABORT)
         self.assertIn("clean-fixture has its own output folder", self.checks(t)["spec-map"]["detail"])
@@ -698,14 +693,14 @@ class DomainSnapshotTest(VerifyCase):
         (t.k / "out" / "clean-fixture" / "extra.md").write_text("x\n")
         write_json(t.k / "status" / "writer-1.json", {"role": "writer"})
         write_json(t.k / "report.json", {"x": 1})
-        (t.c / "briefs" / "analyst-2.md").write_text("brief\n")  # the controller's write
+        (t.c / "briefs" / "analyst-2.md").write_text("brief\n")
         self.assertIsNone(domain.compare(t, "writer", before, domain.take(t)))
         self.assertEqual(list(handoff.incidents_dir(t).glob("inc-*.json")), [])
 
     def test_writer_persona_is_in_its_write_set(self):
         t = self.clean_task()
         before = domain.take(t)
-        (t.k / "persona.md").write_text("You write PDF tools.\n")  # repo install reads K/persona.md
+        (t.k / "persona.md").write_text("You write PDF tools.\n")
         self.assertIsNone(domain.compare(t, "writer", before, domain.take(t)))
         self.assertIn(t.k / "persona.md", roles._io(t, "writer", None)[1])
         self.assertIn(t.k / "persona.md", roles._io(t, "reviewer", None)[0])
@@ -714,8 +709,8 @@ class DomainSnapshotTest(VerifyCase):
     def test_writer_writing_outside_its_domain_fails_the_gate(self):
         t = self.clean_task()
         before = domain.take(t)
-        (t.d / "drafts" / "planted.json").write_text("{}\n")  # outside the writer's write set
-        (t.k / "handoff" / "spec-tally.json").unlink()  # a removal counts too
+        (t.d / "drafts" / "planted.json").write_text("{}\n")
+        (t.k / "handoff" / "spec-tally.json").unlink()
         inc = domain.compare(t, "writer", before, domain.take(t))
         self.assertIsNotNone(inc)
         self.assertEqual(inc["checks"], ["domain-snapshot"])
@@ -730,10 +725,10 @@ class DomainSnapshotTest(VerifyCase):
         t = self.clean_task()
         before = domain.take(t)
         (t.c / "sweep" / "opaque").mkdir(exist_ok=True)
-        (t.c / "sweep" / "opaque" / "scan-0001.md").write_text("Disposition: remove\n")  # allowed
-        with open(t.c / "sweep" / "scan.jsonl", "a") as f:  # not allowed
+        (t.c / "sweep" / "opaque" / "scan-0001.md").write_text("Disposition: remove\n")
+        with open(t.c / "sweep" / "scan.jsonl", "a") as f:
             f.write("\n")
-        os.symlink(self.home, t.c / "sweep" / "link")  # a folder link is recorded too
+        os.symlink(self.home, t.c / "sweep" / "link")
         inc = domain.compare(t, "auditor", before, domain.take(t))
         self.assertIn("changed C/sweep/scan.jsonl", inc["notes"])
         self.assertIn("added C/sweep/link", inc["notes"])

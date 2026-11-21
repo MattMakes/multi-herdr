@@ -19,9 +19,6 @@ def _sine(f: float, dur: float, amp: float = 0.5) -> np.ndarray:
     return amp * np.sin(2 * np.pi * f * t)
 
 
-# ---------------------------------------------------------------- AT-1, loading and merge
-
-
 def test_at_1_ids_counts_and_version_shipped(shipped, open_ids):
     b = shipped
     files = b._bank().files
@@ -29,7 +26,7 @@ def test_at_1_ids_counts_and_version_shipped(shipped, open_ids):
     want = {"forge_v2.json": 183 - len(open_ids["dropped"]), "forge04.json": 51 - len(open_ids["forge04"]),
             "pluck.json": 3}
     tags = ["forge_v2h1", "forge04h1", "pluck1h"]
-    if has_fit:  # fit.json ships only after the operator allows the 15 CC0 downloads (bank Q5)
+    if has_fit:
         want["fit.json"], tags = 15, ["forge_v2h1", "forge04h1", "fit1h", "pluck1h"]
     assert b.ids() == sorted(b.ids()) and len(b.ids()) == sum(want.values())
     assert not (open_ids["forge04"] | open_ids["dropped"]) & set(b.ids())
@@ -97,9 +94,6 @@ def test_bad_bank_files(tmp_path, fixture_bank, monkeypatch):
         bank.ids()
 
 
-# ---------------------------------------------------------------- AT-13, lookups
-
-
 def test_at_13_typo_suggests_close_id(fixture_bank):
     with pytest.raises(bank.BankError) as err:
         bank.get("click/sotf")
@@ -116,9 +110,6 @@ def test_get_returns_deep_copy_with_id(fixture_bank):
     e = bank.get("notify/m0")
     e["params"]["f0"] = 1.0
     assert bank.get("notify/m0")["params"]["f0"] == 1046.5 and e["id"] == "notify/m0"
-
-
-# ---------------------------------------------------------------- level, rate (AT-9, AT-10)
 
 
 def test_at_9_peak_over_zero_refused(fixture_bank):
@@ -150,9 +141,6 @@ def test_check_sr():
     for bad in (True, "48000", 22050, 48000.5):
         with pytest.raises(bank.BankError, match="44100, 48000, 88200, 96000"):
             bank.check_sr(bad)
-
-
-# ---------------------------------------------------------------- rendering a take (part 1, 5)
 
 
 def test_default_take_matches_meta(fixture_bank):
@@ -218,9 +206,6 @@ def test_add_warning_rebuilds_summary():
     assert result["ok"] is False and result["summary"] == "hit_1.wav: 2 warnings: first; second"
 
 
-# ---------------------------------------------------------------- measures (part 1, 6 and 8)
-
-
 def test_times_of_a_click():
     y = np.zeros(SR)
     y[int(0.25 * SR): int(0.25 * SR) + 48] = 1.0
@@ -231,7 +216,6 @@ def test_times_of_a_click():
 
 
 def test_lufs_m_max_of_a_full_scale_sine():
-    # a 997 Hz sine at 0 dBFS peak reads about -3.0 LUFS on one channel
     assert M.lufs_m_max(_sine(997, 1.0, 1.0)) == pytest.approx(-3.0, abs=0.2)
     assert M.lufs_m_max(_sine(997, 1.0), sr=44100) is None
 
@@ -263,9 +247,6 @@ def test_meta_of_keys():
     assert set(meta) >= {"dur_s", "onset_s", "peak_s", "end_s", "attack_ms", "centroid_hz", "lufs_m_max",
                          "channels", "fp"}
     assert meta["channels"] == 2 and meta["centroid_hz"] == pytest.approx(500, rel=0.05)
-
-
-# ---------------------------------------------------------------- writer and AT-2 check
 
 
 def test_writer_layout_and_atomicity(tmp_path):
@@ -308,9 +289,6 @@ def test_maintenance_cli_check(fixture_bank, capsys):
     assert "1 / 1 entries re-render as stored" in capsys.readouterr().out
     assert main(["check", "nope/x"]) == 1
     assert capsys.readouterr().err.startswith("bank: ")
-
-
-# ---------------------------------------------------------------- builders (part 1, 7)
 
 
 def _source(**kw) -> dict:
@@ -453,7 +431,6 @@ def test_build_derive_logs_target_misses(fixture_bank, tmp_path, monkeypatch):
 
 
 def test_build_derive_drops_an_id_with_no_passing_render(fixture_bank, tmp_path, monkeypatch):
-    # T-41: every render fails sfx check, so the id is left out and listed under dropped with its reason
     from hark.forge.bank import _build
 
     target = {"dur_s": 2.0, "peak_s": 0.005, "centroid_hz": 880.0, "lufs_m_max": -20.0}
@@ -467,7 +444,6 @@ def test_build_derive_drops_an_id_with_no_passing_render(fixture_bank, tmp_path,
 
 
 def test_derive_entry_takes_the_next_closest_passing_render(monkeypatch):
-    # T-41: the first render fails sfx check; the nearest candidate that passes stands in
     from hark.forge.bank import _build
 
     pool = {"near": ({"p": 1}, {}), "mid": ({"p": 2}, {}), "far": ({"p": 3}, {})}

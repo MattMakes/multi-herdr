@@ -1,11 +1,7 @@
-//! Process groups and `procid`. Here, not in `src/procid.rs`: the CMP-16
-//! audit allows a new process group only in named product files.
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use horch_core::procid;
 
-/// A group is the same while its leader is, and not once the leader
-/// is another process or the group has gone.
 #[test]
 fn a_group_is_the_same_only_while_its_leader_is() {
     use std::os::unix::process::CommandExt;
@@ -18,7 +14,6 @@ fn a_group_is_the_same_only_while_its_leader_is() {
     let started = procid::start_time(pgid).unwrap();
     assert!(procid::is_same_group(pgid, started));
     assert!(!procid::is_same_group(pgid, started + 1), "a later leader");
-    // This process runs, but leads no group of that id.
     let me = std::process::id();
     let mine = procid::start_time(me).unwrap();
     // SAFETY: `getpgid(0)` reads this process's own group and touches no memory.
@@ -30,8 +25,6 @@ fn a_group_is_the_same_only_while_its_leader_is() {
     assert!(!procid::is_same_group(pgid, started), "the group has gone");
 }
 
-/// The leader has ended but its child keeps the group: the id cannot
-/// be given out again, so the group is still ours.
 #[test]
 fn a_group_outlives_its_leader_while_it_has_members() {
     use std::os::unix::process::CommandExt;

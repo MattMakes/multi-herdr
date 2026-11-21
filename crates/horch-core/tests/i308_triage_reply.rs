@@ -1,12 +1,7 @@
-//! `horch worktree triage apply`: the reply table is parsed by code, and a
-//! bad line refuses the whole reply (#308, section 2).
-
 use horch_core::taskledger::model::TriageDecision;
 use horch_core::taskledger::triage::reply::{self, Decided};
 use horch_core::taskledger::triage::Row;
 
-/// Triage rows W1 `T7-cache` and W2 `lh-target-3`, from JSON as `--json`
-/// prints them; W3 `loose` has a detached HEAD.
 fn rows() -> Vec<Row> {
     let mut rows = Vec::new();
     for (id, name, branch) in [
@@ -79,8 +74,6 @@ fn a_finish_row_with_no_direction_is_refused_even_next_to_good_rows() {
     );
 }
 
-/// A row cut short is named with the columns it should have, and the good
-/// row next to it is still read.
 #[test]
 fn a_row_with_too_few_cells_is_named_with_the_columns() {
     let problems = parse(

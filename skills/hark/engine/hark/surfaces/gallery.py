@@ -12,7 +12,7 @@ from hark.surfaces import gallery_inputs as gi
 from hark.surfaces._flow import bind, raise_if, signature
 
 CODECS = ("flac", "wav", "mp3", "opus", "vorbis")
-LOSSY = {  # codec: (encoder, container, mime, extension, default kbps)
+LOSSY = {
     "mp3": ("libmp3lame", "mp3", "audio/mpeg", ".mp3", 192),
     "opus": ("libopus", "ogg", "audio/ogg", ".opus", 128),
     "vorbis": ("libvorbis", "ogg", "audio/ogg", ".ogg", 160),
@@ -65,9 +65,6 @@ TITLE_ONE = "hark sound gallery"
 TITLE_MANY = "hark: version comparison"
 
 
-# ---------------------------------------------------------------- families
-
-
 def family_of(cat: str) -> str:
     """The family key of a category (member list, then without pro_, then keywords, else other)."""
     for name in (cat, cat[4:] if cat.startswith("pro_") else None):
@@ -93,9 +90,6 @@ def card_order(cats: list[str]) -> list[str]:
 def display_name(cat: str) -> str:
     name = (cat[4:] if cat.startswith("pro_") else cat).replace("_", " ")
     return name[:1].upper() + name[1:]
-
-
-# ---------------------------------------------------------------- options
 
 
 KBPS_NEEDS_LOSSY = "--kbps needs an embedded lossy codec (--embed-compressed or --embed-codec mp3|opus|vorbis)"
@@ -134,9 +128,6 @@ def _versions(folder: str | None, compare: list[str] | None, sub: str, alias: di
     return {sub: {alias.get(c, c): f for c, f in found.items()}}
 
 
-# ---------------------------------------------------------------- sounds
-
-
 def _sound(path: str, rep: dict, warnings: list[str]) -> dict[str, Any] | None:
     from hark.surfaces import gallery_sound as gs
     try:
@@ -160,9 +151,6 @@ def _version(label: str, folder: str | None, warnings: list[str]) -> dict[str, A
     sounds = [s for s in (_sound(p, rep, warnings) for p in gi.sound_files(folder)) if s]
     return {"label": label, "folder": folder, "report": rep, "sounds": sounds, "bench_summary": None,
             "bench_stale": False, "bench_from": None, "has_results": False}
-
-
-# ---------------------------------------------------------------- benchmark
 
 
 def _apply_own(v: dict, cat: str, res: dict, warnings: list[str]) -> None:
@@ -237,9 +225,6 @@ def _mark_identical(versions: list[dict | None]) -> None:
             seen.setdefault(s["sha1"], v["label"])
 
 
-# ---------------------------------------------------------------- cards
-
-
 def _refs_for(card: dict, refs: str | None, warnings: list[str]) -> None:
     newest = next((v for v in reversed(card["versions"]) if v), None)
     if newest is None or not refs:
@@ -281,9 +266,6 @@ def _card(cat: str, vmap: dict[str, dict[str, str]], opts: dict, warnings: list[
     _refs_for(card, opts["refs"], warnings)
     card["span"] = gs.card_span(_durations(card))
     return card
-
-
-# ---------------------------------------------------------------- build
 
 
 def _thumbs(cards: list[dict], assets: str, warnings: list[str]) -> dict[str, int]:
@@ -507,9 +489,6 @@ def _embedded_line(r: dict[str, Any]) -> str:
     if r["codec"] and " kbps" in r["codec"]:
         line += f"; previews {r['encoded']} encoded, the rest from the cache"
     return line
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def _add_flags(p: argparse.ArgumentParser) -> None:

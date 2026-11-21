@@ -1,5 +1,3 @@
-//! Worker worktree creation, landing, and inspection.
-
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -16,8 +14,6 @@ fn landing(ctx: &RuntimeContext) -> Landing {
         .with_recorded_worktrees(recorded_worktrees(ctx))
 }
 
-/// The paths the task ledger records as worktrees. A machine with no ledger
-/// file records none, and is not given one by a scan.
 pub fn recorded_worktrees(ctx: &RuntimeContext) -> Vec<PathBuf> {
     if !ctx.paths.ledger_db.exists() {
         return Vec::new();
@@ -33,8 +29,6 @@ pub fn recorded_worktrees(ctx: &RuntimeContext) -> Vec<PathBuf> {
     }
 }
 
-/// Say so when the scan had to leave a worktree out. A path it cannot read
-/// is the operator's to fix, and `done` must not go quiet about it.
 pub fn note_skipped(command: &str, skipped: &[Skipped]) {
     for entry in skipped {
         eprintln!(
@@ -117,7 +111,6 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
     Ok(())
 }
 
-/// The word `list` prints for the state of a claim.
 fn state_label(state: ClaimState) -> &'static str {
     match state {
         ClaimState::Open => "open",
@@ -126,8 +119,6 @@ fn state_label(state: ClaimState) -> &'static str {
     }
 }
 
-/// The `unregistered:` section of `list`: `none` on 1 line, else a header and
-/// a line for each worktree that has no claim.
 fn print_unregistered(entries: &[Unregistered]) {
     if entries.is_empty() {
         println!("unregistered: none");
@@ -145,7 +136,6 @@ fn print_unregistered(entries: &[Unregistered]) {
     }
 }
 
-/// The main checkout of the project the command runs in.
 fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
     let dir = ctx.paths.project()?;
     Ok(git
@@ -153,12 +143,9 @@ fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
         .unwrap_or_else(|| dir.canonicalize().unwrap_or(dir)))
 }
 
-/// The parked worktrees of the project, measured as `measure` says.
 pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage::Row>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    // A sandboxed caller (a codex pane) cannot write the ledger. The listing
-    // then reads it read-only and skips the bytes cache (T-5).
     let store = match taskledger::open_existing(ctx) {
         Ok(store) => store,
         Err(_) => taskledger::open_existing_read_only(ctx)?,
@@ -169,7 +156,6 @@ pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage:
     }
 }
 
-/// `horch worktree triage [--json]`: the facts of every parked worktree.
 pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let rows = triage_rows(ctx, Measure::Full)?;
     let git = Git::new(&ctx.bins.harness.git);
@@ -188,7 +174,6 @@ pub fn triage(ctx: &RuntimeContext, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The reply text: the file, or stdin for `-`.
 fn read_reply(file: &str) -> Result<String> {
     if file == "-" {
         let mut text = String::new();
@@ -198,7 +183,6 @@ fn read_reply(file: &str) -> Result<String> {
     std::fs::read_to_string(file).map_err(|e| anyhow!("reading the reply {file}: {e}"))
 }
 
-/// `gh`: `HORCH_GH_BIN`, else `gh` on PATH.
 fn gh_bin() -> PathBuf {
     std::env::var_os("HORCH_GH_BIN")
         .filter(|v| !v.is_empty())
@@ -206,8 +190,6 @@ fn gh_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("gh"))
 }
 
-/// `horch worktree triage apply <file|->`: parse the operator's reply and
-/// run each decision. A bad reply runs nothing.
 pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<()> {
     let text = read_reply(file)?;
     let git = Git::new(&ctx.bins.harness.git);
@@ -246,7 +228,6 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<(
     Ok(())
 }
 
-/// Wake each run's orchestrator for the tasks that `FINISH` queued.
 fn wake_for_finish(
     ctx: &RuntimeContext,
     store: &taskledger::Store,
@@ -268,8 +249,6 @@ fn wake_for_finish(
     }
 }
 
-/// `horch worktree restore <name>`: the folder again, from its archive or
-/// trash ref.
 pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
@@ -278,7 +257,6 @@ pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `horch ledger gc`: delete the trash refs older than 30 days.
 pub fn gc(ctx: &RuntimeContext) -> Result<()> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
@@ -299,7 +277,6 @@ pub fn gc(ctx: &RuntimeContext) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Each state of a claim has its own word in the lines of `list`.
     #[test]
     fn each_claim_state_has_its_own_word() {
         assert_eq!(state_label(ClaimState::Open), "open");

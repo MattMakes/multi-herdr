@@ -30,14 +30,12 @@ EFFECT_OWNERS = ("purchases", "milestones", "ladders")
 EFFECT_KINDS = ("add", "pct", "mult", "cap")
 GRANT_NUMBERS = ("amount", "base", "growth", "count")
 REQ_ID_KIND = {"level": "purchases", "milestone": "milestones", "ladder": "ladders", "run_ladder": "ladders"}
-# The kinds of game.targets.hard_end: the event where the game ends (card S28). The key "resets" is a count.
 END_KINDS = {"axis_step": None, "purchase": "purchases", "resets": None, "milestone": "milestones"}
 PRESTIGE_DEFAULTS = (("base", 1.0, 1e-300), ("k", 1.0, 0), ("exponent", 0.5, 0), ("growth", 1.5, 0),
                      ("min_gain", 1, 0), ("min_run_seconds", 60, 0), ("policy_ratio", 1.0, 0),
                      ("peak_tolerance", 0.9, 0))
 RESET_KINDS = (("currencies", "currencies"), ("purchase_systems", "systems"), ("ladders", "ladders"))
 REVIEW_LISTS = ("findings", "lull_notes", "ideas")
-# Presence (references/model-schema.md, section "Presence"). Each field is optional: its default gives version 1.
 PRESENCE_DEFAULTS = (("open_rate", 1.0), ("open_cap_minutes", None), ("offline_cap_minutes", None),
                      ("visit_minutes", 2.0))
 PRESENCE_CAPS = ("open_cap_minutes", "offline_cap_minutes")
@@ -266,8 +264,6 @@ def _check_currencies(m, cur):
         _check_currency(c)
 
 
-# ---- purchases: one cost form inside the script (a list), two forms in the file
-
 def _entry_cost(w, c):
     check(not isinstance(c, dict), f"{w}: each entry in 'costs' must be an object")
     return dict(currency=c.get("currency"), base=c.get("base", 1), growth=c.get("growth", 1.15),
@@ -376,8 +372,6 @@ def _add_systems(m, sysids):
         _add_system(m, sysids, x)
 
 
-# ---- effects
-
 def _check_cap_target(e, w, x, ids, pmap, warn):
     check(e.get("target") not in ids["purchases"],
           f"{w}: a 'cap' effect needs a purchase id as its target, not '{e.get('target')}'")
@@ -415,15 +409,11 @@ def _check_effects(m, ids, warn):
         _check_owner_effects(kind, x, ids, pmap, warn)
 
 
-# ---- systems
-
 def _system_defaults(s):
     s.setdefault("loop", "unknown")
     s.setdefault("persists", s["loop"] in ("meta", "collection"))
     s.setdefault("clock", "game")
 
-
-# ---- requirements and grants
 
 def _check_grant(owner, gr, cur, ladder):
     check(not isinstance(gr, dict) or gr.get("currency") not in cur,
@@ -506,8 +496,6 @@ def _check_ladder(l, cur, warn):
     check_grants(w, l["grants"], cur, ladder=True)
 
 
-# ---- prestige
-
 def _check_ladder_basis(pr, ids):
     check(pr["basis_ladder"] not in ids["ladders"], f"prestige: 'basis_ladder' names the unknown ladder '{pr['basis_ladder']}'")
     pr.setdefault("formula", "power")
@@ -589,8 +577,6 @@ def _check_prestige(m, ids):
     _check_prestige_block(m, pr, ids)
 
 
-# ---- what survives the reset
-
 def _reset_set(m, key):
     return set(m["prestige"].get("resets", {}).get(key, [])) if prestige_on(m) else set()
 
@@ -634,8 +620,6 @@ def _persistence_warnings(m, warn):
         _ladder_warning(l, reset_lad, warn)
     warn.extend(_system_warnings(m, reset_sys))
 
-
-# ---- game level ids, interactions, review, bands
 
 def _check_game_ids(g, ids, warn):
     ax = g.get("progress_axis")

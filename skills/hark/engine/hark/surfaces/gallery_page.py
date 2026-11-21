@@ -32,9 +32,6 @@ def _lossy() -> dict[str, tuple]:
     return LOSSY
 
 
-# ---------------------------------------------------------------- media
-
-
 class Media:
     """URLs or data URIs for the page's audio and images, with identical audio embedded once."""
 
@@ -50,7 +47,6 @@ class Media:
         self.audio_bytes = 0
         self.image_bytes = 0
 
-    # previews ---------------------------------------------------------
     def _preview_path(self, path: str) -> str:
         with open(path, "rb") as fh:
             sha = hashlib.sha1(fh.read()).hexdigest()[:10]
@@ -87,7 +83,6 @@ class Media:
         self.previews = jobs
         self.enc_used = {os.path.basename(v) for v in jobs.values()}
 
-    # urls -------------------------------------------------------------
     def url(self, path: str) -> str:
         try:
             rel = os.path.relpath(path, self.page_dir)
@@ -145,9 +140,6 @@ def _maybe_jpeg(data: bytes, mime: str) -> tuple[bytes, str]:
         im.convert("RGB").save(buf, "JPEG", quality=JPEG_QUALITY, optimize=True, progressive=True, subsampling=0)
     jpg = buf.getvalue()
     return (jpg, "image/jpeg") if len(jpg) < len(data) else (data, mime)
-
-
-# ---------------------------------------------------------------- formats
 
 
 def _finite(v: Any) -> bool:
@@ -267,8 +259,6 @@ def loudness_target(lufs: list[float]) -> float | None:
     return round(min(LUFS_CLAMP[1], max(LUFS_CLAMP[0], t)), 1)
 
 
-# ---------------------------------------------------------------- page
-
 CSS = """
 *{box-sizing:border-box}body{margin:0;background:#f5f5f3;color:#14181f;font:14px/1.45 system-ui,sans-serif}
 main{max-width:1440px;margin:0 auto;padding:18px}h1{margin:.2em 0}.lede{max-width:70em}
@@ -328,7 +318,6 @@ class Page:
         self.multi = len(labels) > 1
         self.n_refs = sum(1 for c in cards for r in c["refs"] if r.get("path"))
 
-    # top ----------------------------------------------------------------
     def _made(self) -> list[dict]:
         return [s for c in self.cards for v in c["versions"] if v for s in v["sounds"]]
 
@@ -371,7 +360,6 @@ class Page:
         body = "".join(f"<dt>{esc(k)}</dt><dd>{esc(v)}</dd>" for k, v in rows)
         return f"<div><h4>How to read it</h4><dl>{body}</dl></div>"
 
-    # overview -------------------------------------------------------------
     def _bench_cols(self) -> set[str]:
         return {v["label"] for c in self.cards for v in c["versions"] if v and v["bench_summary"]}
 
@@ -426,7 +414,6 @@ class Page:
                 out.append((key, title, line, cards))
         return out
 
-    # nav --------------------------------------------------------------------
     def _switch(self) -> str:
         t = loudness_target([s["lufs"] for s in self._made()])
         if t is None:
@@ -439,7 +426,6 @@ class Page:
         links = "".join(f'<a href="#fam-{k}">{esc(t)} ({len(c)})</a>' for k, t, _, c in self._grouped())
         return f"<nav>{links}{self._switch()}</nav>"
 
-    # tiles ----------------------------------------------------------------
     def _img(self, s: dict) -> str:
         if not s.get("thumb"):
             return '<div class="noimg"></div>'
@@ -499,7 +485,6 @@ class Page:
         return (f'<div class="tile ref">{self._img(r)}<div class="name">{esc(os.path.basename(r["path"]))}</div>'
                 f'{self._player(r)}{self._kv(self._base_cells(r))}</div>')
 
-    # card -----------------------------------------------------------------
     def _newest(self, card: dict) -> dict | None:
         return next((v for v in reversed(card["versions"]) if v and v["sounds"]), None)
 
@@ -617,7 +602,6 @@ class Page:
                 f"{self._card_meta(card)}{self._bench_block(card)}{self._rows(card)}{self._audition(card)}"
                 f"{self._params(card)}</article>")
 
-    # whole page -------------------------------------------------------------
     def _sections(self) -> str:
         return "".join(f'<section id="fam-{k}"><h2>{esc(t)}</h2><p class="meta">{esc(line)}</p>'
                        + "".join(self.card(c) for c in cards) + "</section>" for k, t, line, cards in self._grouped())

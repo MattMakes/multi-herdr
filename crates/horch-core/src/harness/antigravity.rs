@@ -1,12 +1,3 @@
-//! Antigravity CLI: `agy --model <slug> --effort <level> --prompt-interactive "<prompt>"`.
-//!
-//! `agy` mints its own conversation ids, and `--conversation <id>` with an id
-//! it does not know silently starts a different conversation, so horch cannot
-//! choose one. The id is recovered after launch from
-//! `~/.gemini/antigravity-cli/cache/last_conversations.json`, which maps each
-//! workspace directory to its newest conversation id. A resume passes
-//! `--conversation <id>`.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
@@ -17,27 +8,15 @@ use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
 use crate::runtime::RuntimeContext;
 
-/// Variables an `agy` child never receives, on top of
-/// [`FORBIDDEN_ENV`](super::launch::FORBIDDEN_ENV). Each one moves `agy` off
-/// the operator's Google login: `GEMINI_API_KEY` (read when `modelProvider`
-/// is `gemini`), `GOOGLE_API_KEY` (the Gemini tooling's other key name) and
-/// `GOOGLE_GEMINI_BASE_URL` (sends model calls to another endpoint). Only
-/// `agy` children lose them; another harness or a tool may need them.
 pub const ANTIGRAVITY_FORBIDDEN_ENV: [&str; 3] =
     ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
 
-/// The levels `agy models` appends to a model id (`gemini-3.8-flash-low`).
-/// An id with one runs without `--effort`; a bare id needs `--effort`.
 pub const EFFORT_SUFFIXES: [&str; 3] = ["-low", "-medium", "-high"];
 
-/// The session cache under `home`.
 pub(crate) fn conversations_cache(home: &Path) -> PathBuf {
     home.join(".gemini/antigravity-cli/cache/last_conversations.json")
 }
 
-/// The conversation id the cache records for `workdir`. Directories compare
-/// canonically ([`Workdir`]). A value is the id itself, or an object with an
-/// `id` (or `conversation_id`), so a richer record still reads.
 pub fn parse_last_conversations(json: &str, workdir: &Path) -> Option<String> {
     let map = serde_json::from_str::<serde_json::Value>(json).ok()?;
     let workdir = Workdir::new(workdir);
@@ -53,19 +32,14 @@ pub fn parse_last_conversations(json: &str, workdir: &Path) -> Option<String> {
         })
 }
 
-/// The id `cache` records for `workdir`, when the cache changed at or after
-/// `since`. The file has no per-entry time, so its mtime stands in: an entry
-/// written before this launch is another worker's, or an old one.
 pub(crate) fn find_session(cache: &Path, workdir: &Path, since: SystemTime) -> Option<String> {
     let modified = std::fs::metadata(cache).and_then(|m| m.modified()).ok()?;
-    // The launch marker's mtime can be coarser than the cache's.
     if modified < since - Duration::from_secs(1) {
         return None;
     }
     parse_last_conversations(&std::fs::read_to_string(cache).ok()?, workdir)
 }
 
-/// The Antigravity adapter.
 pub struct Antigravity;
 
 impl Harness for Antigravity {
@@ -93,19 +67,11 @@ impl Harness for Antigravity {
                 ),
             }
         }
-        // Resume only: a fresh conversation's id is discovered afterwards.
         if let Session::Resume(id) = spec.session {
             cmd.arg("--conversation").arg(id);
         }
         cmd.args(&teammate.args);
-        // `agy` has no positional prompt. `--prompt-interactive` runs the
-        // opening prompt and stays in the TUI; `-p` would exit after it.
-        // Beside `--conversation` it runs as a new turn of that conversation
-        // (agy 1.3.0, `agy-resume-prompt` in scripts/live/harnesses.sh), so
-        // a resume keeps it. OpenCode ignores the same pair (`opencode.rs`).
         cmd.arg("--prompt-interactive").arg(spec.prompt);
-        // Removed, not just unset: a removed key counts as taken, so the
-        // teammate env and the child env layers cannot add it back.
         for key in ANTIGRAVITY_FORBIDDEN_ENV {
             cmd.env_remove(key);
         }
@@ -138,7 +104,6 @@ mod tests {
             .collect()
     }
 
-    /// A plain worker moved onto agy, so these tests need no roster entry.
     fn teammate() -> crate::roster::Teammate {
         let mut t = Roster::builtin()
             .unwrap()
@@ -201,7 +166,6 @@ mod tests {
         assert_eq!(args.last().unwrap(), "p");
     }
 
-    /// A fresh launch says nothing about the session: `agy` mints the id.
     #[test]
     fn a_fresh_launch_names_no_conversation() {
         let cmd = command_in(
@@ -241,8 +205,6 @@ mod tests {
         }
     }
 
-    /// Every forbidden key is removed from the child, ANTHROPIC_API_KEY
-    /// included.
     #[test]
     fn forbidden_keys_are_removed() {
         let cmd = command_in(
@@ -296,7 +258,6 @@ mod tests {
         }
     }
 
-    /// A cache written before the launch is not this worker's.
     #[test]
     fn a_stale_cache_is_ignored() {
         let tmp = tempfile::tempdir().unwrap();

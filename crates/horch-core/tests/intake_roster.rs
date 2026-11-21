@@ -1,8 +1,3 @@
-//! T-26: the skill-intake teammates (spec `ai_docs/specs/skill-intake/spec.md`
-//! sections 6.4 and 9.2). Each role's trust wall is static frontmatter, so
-//! this test pins it: tools, deny rules, and the sandbox read, write and deny
-//! lists of each side root.
-
 use std::path::Path;
 
 use horch_core::execution::SessionMode;
@@ -29,7 +24,6 @@ const INTERPRETERS: [&str; 10] = [
     "Bash(chmod *)",
 ];
 
-/// One row of the spec 6.4 table.
 struct Role {
     name: &'static str,
     model: &'static str,
@@ -38,7 +32,6 @@ struct Role {
     allow_read: &'static [&'static str],
     allow_write: &'static [&'static str],
     deny_read: &'static [&'static str],
-    /// Path rules as (tool, side root).
     path_rules: &'static [(&'static str, &'static str)],
     interpreters: bool,
     git: bool,
@@ -139,7 +132,6 @@ fn sandbox(t: &Teammate) -> Value {
     )
 }
 
-/// The common frontmatter of spec 6.4 and 9.2.
 fn assert_common(t: &Teammate, base: &str) {
     let who = &t.name;
     assert_eq!(t.agent, HarnessKind::Claude, "{who}");
@@ -157,8 +149,6 @@ fn assert_common(t: &Teammate, base: &str) {
 #[test]
 fn t26_the_role_teammates_match_the_spec_table() {
     let r = Roster::builtin().unwrap();
-    // sonnet's pre-approvals without `horch` commands: report mode refuses
-    // every `horch` command but progress, tell and done.
     let sonnet: Vec<String> = r
         .require("sonnet")
         .unwrap()
@@ -245,8 +235,6 @@ fn t26_the_skill_importer_is_the_offered_controller() {
     assert!(t.persona.contains("--exact"));
 }
 
-/// A launch environment with a temp home and stub Linux sandbox tools, so
-/// the builder runs on every host.
 fn launch_env(home: &Path) -> LaunchEnv {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -270,8 +258,6 @@ fn launch_env(home: &Path) -> LaunchEnv {
     LaunchEnv::from_context(&RuntimeContext::from_env(&env).unwrap())
 }
 
-/// Each of the 6 teammates launches with its sandbox block in `--settings`,
-/// also on the launch path without exposed skills (ticket 18).
 #[test]
 fn t26_every_intake_teammate_launches_sandboxed() {
     let home = tempfile::tempdir().unwrap();
@@ -303,7 +289,6 @@ fn t26_every_intake_teammate_launches_sandboxed() {
     }
 }
 
-/// The launched `--settings` of `t` in `env`.
 fn launched_settings(env: &LaunchEnv, t: &Teammate) -> Value {
     let cmd =
         launch::command_with_skills_in(env, t, Session::Unmanaged, "PROMPT", None, None).unwrap();
@@ -315,9 +300,6 @@ fn launched_settings(env: &LaunchEnv, t: &Teammate) -> Value {
     serde_json::from_str(&args[i + 1]).unwrap()
 }
 
-/// T-20: the 5 roles have `horch_access: report`. Their launched settings
-/// hold no state root, ledger folder, relay socket or herdr socket: only
-/// the pane's report socket. skill-importer keeps `full` and all 4 grants.
 #[test]
 fn t20_the_roles_launch_with_only_the_report_socket() {
     let home = tempfile::tempdir().unwrap();
@@ -357,8 +339,6 @@ fn t20_the_roles_launch_with_only_the_report_socket() {
     assert!(!sockets.contains(&socket.to_string_lossy().into_owned()));
 }
 
-/// The horch commands report mode refuses (T-20). A briefing that names one
-/// tells the worker to run a command that fails in its pane.
 const REFUSED: [&str; 21] = [
     "horch note",
     "horch skills",
@@ -383,8 +363,6 @@ const REFUSED: [&str; 21] = [
     "horch fleet",
 ];
 
-/// T-22: each role renders a briefing that names no command report mode
-/// refuses, for a fresh task and an idle start.
 #[test]
 fn t22_the_role_briefings_name_no_refused_horch_command() {
     let r = Roster::builtin().unwrap();
@@ -407,7 +385,6 @@ fn t22_the_role_briefings_name_no_refused_horch_command() {
             assert!(p.contains("horch done \"<summary>\""), "{name}");
         }
     }
-    // The check catches the old base: fleet-worker names refused commands.
     let mut t = r.require("intake-writer").unwrap().clone();
     t.base = Some("fleet-worker".into());
     let p =
@@ -415,10 +392,6 @@ fn t22_the_role_briefings_name_no_refused_horch_command() {
     assert!(REFUSED.iter().any(|cmd| p.contains(cmd)));
 }
 
-/// T-27: each intake teammate launches with its own skills bundle open to
-/// read (a working directory for Read, `allowRead` for Bash) and closed to
-/// write (deny rules for Edit and Write, `denyWrite` for Bash). No other
-/// bundle path is opened, and a `report` role still gets no state root.
 #[test]
 fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
     let home = tempfile::tempdir().unwrap();
@@ -454,7 +427,6 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
         assert_eq!(denied.last(), Some(&dir), "{name}");
         let perms = &settings["permissions"];
         assert_eq!(perms["blockReadsOutsideWorkingDirectories"], true, "{name}");
-        // Before the bundle: the teammate's own sandbox paths (T-31).
         let dirs = strings(&perms["additionalDirectories"]);
         assert_eq!(dirs.last(), Some(&dir), "{name}");
         let deny = strings(&perms["deny"]);
@@ -470,12 +442,6 @@ fn t27_every_intake_teammate_reads_but_does_not_write_its_bundle() {
     }
 }
 
-/// T-28: each full sandboxed teammate (skill-importer, app-release-preparer)
-/// launches with the state root's whole `skill-bundles` folder closed to
-/// write for every tool (`denyWrite` for Bash, deny rules for Edit and
-/// Write), with or without a bundle of its own. The state root stays open
-/// to write, so its `horch` commands work. A `report` role gets no such
-/// path: it has no state root.
 #[test]
 fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
     let home = tempfile::tempdir().unwrap();
@@ -520,11 +486,6 @@ fn t28_a_full_sandboxed_teammate_writes_no_skills_bundle() {
     }
 }
 
-/// T-31: each intake teammate's own `allowRead` and `allowWrite` paths, with
-/// `~` expanded, are working directories, so a Bash command that names one
-/// does not stop at a permission prompt. No other path is one: the Read tool
-/// reaches no more than Bash. An `allowRead`-only path gets an `Edit(...)`
-/// deny rule. skill-importer keeps its quarantine Read deny.
 #[test]
 fn t31_an_intake_teammate_works_in_its_own_sandbox_paths() {
     let home = tempfile::tempdir().unwrap();
@@ -557,7 +518,6 @@ fn t31_an_intake_teammate_works_in_its_own_sandbox_paths() {
                 "{name}: {dir} is not its own sandbox path"
             );
         }
-        // No `deny` list when every path is also in `allowWrite`.
         let deny = perms.get("deny").map(strings).unwrap_or_default();
         for dir in reads.iter().filter(|d| !writes.contains(d)) {
             assert!(

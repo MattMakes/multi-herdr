@@ -1,7 +1,3 @@
-//! End-to-end: what `horch fleet` and `horch orchestration` leave behind when
-//! they fail to start (#217), and what the orchestrator pane line carries
-//! (#199).
-
 use horch_core::execution::records::SessionLedger;
 use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness};
 use serde_json::Value;
@@ -30,7 +26,6 @@ fn harness(name: &str, scenario: &str) -> Harness {
     h
 }
 
-/// The ids of the workspaces fake herdr lists now.
 fn workspaces(h: &Harness) -> Vec<String> {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
@@ -52,7 +47,6 @@ fn cwd(h: &Harness) -> String {
 #[test]
 fn a_fleet_whose_orchestrator_skill_is_missing_creates_no_workspace() {
     let mut h = harness("f217-skill", "");
-    // The repo roster, with an orchestrator that names a skill no store has.
     let teammates = h.root.join("teammates");
     copy_tree(&repo_root().join("teammates"), &teammates);
     let file = teammates.join("orchestrator.md");
@@ -67,12 +61,10 @@ fn a_fleet_whose_orchestrator_skill_is_missing_creates_no_workspace() {
     let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
     assert!(err(&o).contains("no-such-skill-217"), "{}", err(&o));
-    // The failure comes before herdr creates anything, not after a close.
     assert!(!created_a_workspace(&h), "the fleet created a workspace");
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
 
-/// Whether the fake herdr was asked to create a workspace.
 fn created_a_workspace(h: &Harness) -> bool {
     h.calls_of("herdr").iter().any(|c| {
         let argv: Vec<String> = serde_json::from_value(c["argv"].clone()).unwrap_or_default();
@@ -80,9 +72,6 @@ fn created_a_workspace(h: &Harness) -> bool {
     })
 }
 
-/// #217: a roster that fails to load fails the fleet before herdr creates
-/// a workspace. Only an unreadable teammates directory fails the load; a
-/// broken file in it is a warning.
 #[cfg(unix)]
 #[test]
 fn a_fleet_whose_roster_fails_to_load_creates_no_workspace() {
@@ -93,7 +82,6 @@ fn a_fleet_whose_roster_fails_to_load_creates_no_workspace() {
     std::fs::set_permissions(&teammates, std::fs::Permissions::from_mode(0o000)).unwrap();
     h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
     let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
-    // Readable again, so the harness can remove its temp dir.
     std::fs::set_permissions(&teammates, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
     let reason = format!("loading teammates from {}", teammates.display());
@@ -153,15 +141,10 @@ fn an_orchestration_whose_pane_run_fails_closes_its_workspace() {
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
 
-/// The default task ledger of the sealed home: what a scratch fleet must
-/// not create or change.
 fn default_ledger(h: &Harness) -> std::path::PathBuf {
     h.home.join(".horch").join("ledger.sqlite3")
 }
 
-/// #199: a scratch fleet with its own `HORCH_STATE_DIR` and no
-/// `HORCH_LEDGER_DB` says which task ledger it still uses, and does not
-/// create that ledger.
 #[test]
 fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
     let mut h = harness("f199-new", "");
@@ -179,7 +162,6 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
         "the fleet created the default ledger"
     );
 
-    // `horch doctor` and `horch spawn` give the same warning, once each.
     let o = h.run(&["doctor"]);
     let doctor = format!("warning: {warning}");
     assert_eq!(err(&o).matches(&doctor).count(), 1, "{}", err(&o));
@@ -201,14 +183,11 @@ fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
     assert_eq!(err(&o).matches(&note).count(), 1, "{}", err(&o));
 }
 
-/// #199: with an existing default ledger, a scratch fleet leaves its bytes
-/// as they were.
 #[test]
 fn a_scratch_fleet_does_not_change_an_existing_default_ledger() {
     let mut h = harness("f199-old", "");
     h.unset("HORCH_LEDGER_DB");
     h.unset("HORCH_NO_WATCHDOG").unset("HORCH_NO_WAKE");
-    // The operator's real ledger, with 1 active run of this project.
     let o = h.run(&["ledger", "run", "new", "real"]);
     assert!(o.status.success(), "{}{}", out(&o), err(&o));
     let before = std::fs::read(default_ledger(&h)).unwrap();
@@ -221,8 +200,6 @@ fn a_scratch_fleet_does_not_change_an_existing_default_ledger() {
     );
 }
 
-/// #199: with `HORCH_LEDGER_DB` set, the orchestrator pane of a real fleet
-/// start carries it, and no warning prints.
 #[test]
 fn a_fleet_with_a_ledger_override_passes_it_to_the_orchestrator_pane() {
     let h = harness("f199-pane", "");

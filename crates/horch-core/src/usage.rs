@@ -1,23 +1,3 @@
-//! What a fleet run actually cost, read back from each harness's own
-//! transcripts (ImCesar/cezaar#49, extended past Claude).
-//!
-//! Attribution is exact: the ledger holds each worker's session id, and every
-//! harness names its transcript after that id. Nothing is matched by time.
-//!
-//! | harness | transcript | tokens |
-//! |---------|------------|--------|
-//! | claude  | `~/.claude/projects/*/<sid>.jsonl` | assistant `message.usage`, streamed several times per `message.id` |
-//! | codex   | `<codex home>/sessions/**/rollout-*-<sid>.jsonl` | `token_usage_record` per response; before 0.157, `token_count` totals |
-//! | pi      | `~/.pi/agent/sessions/**/*<sid>*.jsonl` | assistant `usage` per message |
-//! | prime   | the session file path the ledger stores | as pi |
-//! | opencode| `opencode.db`, via the `sqlite3` CLI | completed assistant messages |
-//!
-//! The token readers themselves live in `telemetry::readers`, shared with the
-//! telemetry collector; this module keeps the prices and the skill scan.
-//!
-//! Prices are per million tokens and dated. `--pricing <file.json>`
-//! overrides any row without a rebuild.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -25,11 +5,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Token counts in the one shape every harness is converted into.
-///
-/// `input` is fresh (uncached) input only. Codex reports cached tokens inside
-/// its input count, so its reader subtracts them; Claude and pi report them
-/// separately already.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tokens {
     pub input: u64,
@@ -53,13 +28,10 @@ impl Tokens {
     }
 }
 
-/// One session's usage, split by model because a session can switch models.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub by_model: BTreeMap<String, Tokens>,
-    /// Model API calls (distinct assistant messages, or turns for codex).
     pub calls: u64,
-    /// Skills this session loaded, with how many times.
     pub skills: BTreeMap<String, u64>,
 }
 
@@ -73,7 +45,6 @@ impl Usage {
     }
 }
 
-/// USD per million tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Price {
     pub input: f64,
@@ -96,9 +67,6 @@ impl Price {
         }
     }
 
-    /// Dollars for `t` at this price. Cache writes default to the Anthropic
-    /// multipliers, 1.25x input for the 5-minute TTL and 2x for the 1-hour
-    /// one; a harness without TTLs reports all writes as 5-minute.
     pub fn cost(&self, t: &Tokens) -> f64 {
         let w5 = self.cache_write_5m.unwrap_or(self.input * 1.25);
         let w1h = self.cache_write_1h.unwrap_or(self.input * 2.0);
@@ -111,41 +79,24 @@ impl Price {
     }
 }
 
-/// The compiled-in price table, as of 2026-09-24. The rows added on
-/// 2026-10-04 cite their sources in a comment on each row.
 pub fn builtin_prices() -> BTreeMap<String, Price> {
     let mut m = BTreeMap::new();
-    // Anthropic, from cezaar#49 (platform.claude.com pricing).
-    // Fable 5.2, from anthropic.com/claude/fable and the Fable 5.2
-    // migration guide (read 2026-11-09): $8 / $40, cache reads $0.20,
-    // writes 1.25x and 2x. The 5.1 row stays: old transcripts name it.
     m.insert("claude-fable-5-2".into(), Price::new(8.0, 40.0, 0.20));
     m.insert("claude-fable-5-1".into(), Price::new(10.0, 50.0, 0.25));
     m.insert("claude-opus-5-5".into(), Price::new(4.0, 20.0, 0.20));
     m.insert("claude-opus-5".into(), Price::new(5.0, 25.0, 0.50));
-    // Sonnet 5.5, from platform.claude.com/docs/en/about-claude/pricing
-    // (read 2026-10-04): $2 / $10, cache hits $0.20, writes 1.25x and 2x.
     m.insert("claude-sonnet-5-5".into(), Price::new(2.0, 10.0, 0.20));
     m.insert("claude-sonnet-5".into(), Price::new(2.0, 10.0, 0.20));
     m.insert("claude-haiku-4-5".into(), Price::new(1.0, 5.0, 0.10));
-    // OpenAI. Astra's cache write is published ($12.50, i.e. 1.25x).
     m.insert("gpt-6-astra".into(), Price::new(10.0, 50.0, 1.0));
-    // Sol: promotional until 2026-11-21, then $5 / $30.
     m.insert("gpt-5.6-sol".into(), Price::new(4.0, 20.0, 0.40));
-    // Terra and Luna: sources disagree; the lower figure. UNVERIFIED.
     m.insert("gpt-5.6-terra".into(), Price::new(2.0, 12.0, 0.20));
     m.insert("gpt-5.6-luna".into(), Price::new(0.20, 1.20, 0.02));
-    // Google, from ai.google.dev/gemini-api/docs/pricing (read 2026-10-04),
-    // paid tier, prompts up to 200k tokens: $2 / $12, cached $0.20. Over 200k
-    // it is $4 / $18 / $0.40; one row cannot hold both, so long prompts are
-    // under-priced. Gemini bills no cache write, only hourly storage, so a
-    // write prices as plain input.
     let gemini_pro = Price {
         cache_write_5m: Some(2.0),
         cache_write_1h: Some(2.0),
         ..Price::new(2.0, 12.0, 0.20)
     };
-    // agy names a model once per thinking level (`agy models`, 2026-10-05).
     for id in [
         "gemini-3.1-pro-preview",
         "gemini-3.1-pro-high",
@@ -153,8 +104,6 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     ] {
         m.insert(id.into(), gemini_pro);
     }
-    // 3.8 Flash: promotional until 2026-12-31, then $1.50 / $7.50, cached
-    // $0.15. One price at every prompt length; no cache write, as above.
     let gemini_flash = Price {
         cache_write_5m: Some(0.75),
         cache_write_1h: Some(0.75),
@@ -168,10 +117,6 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     ] {
         m.insert(id.into(), gemini_flash);
     }
-    // 4 Argon, Standard tier (ai.google.dev/gemini-api/docs/pricing, read
-    // 2026-10-20): introductory until 2026-11-30, then $4 / $20, cached
-    // $0.20. One price at every prompt length; implicit caching only, so a
-    // write prices as plain input.
     let gemini_argon = Price {
         cache_write_5m: Some(2.0),
         cache_write_1h: Some(2.0),
@@ -185,17 +130,9 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     ] {
         m.insert(id.into(), gemini_argon);
     }
-    // No row for `codex-auto-review`, on purpose. It is Codex's approval
-    // reviewer (`approvals_reviewer = "auto_review"`; a rollout with
-    // `thread_source: guardian_review` names it). Codex's models cache lists
-    // it hidden, and OpenAI publishes no per-token price for it
-    // (learn.chatgpt.com/docs/pricing, read 2026-10-06). Its events are
-    // listed as unpriced, never counted as $0.
     m
 }
 
-/// Merge a `--pricing` JSON file (`{"<model>": {input, output, cache_read,
-/// cache_write_5m?, cache_write_1h?}}`) over the built-in table.
 pub fn load_prices(path: Option<&Path>) -> Result<BTreeMap<String, Price>> {
     let mut prices = builtin_prices();
     if let Some(path) = path {
@@ -208,9 +145,6 @@ pub fn load_prices(path: Option<&Path>) -> Result<BTreeMap<String, Price>> {
     Ok(prices)
 }
 
-/// The price-table key for a model as a transcript or teammate names it:
-/// provider prefix, `[1m]` suffix and date stamp removed, Claude aliases
-/// resolved to the model they currently point at.
 pub(crate) fn canonical_model(model: &str) -> String {
     let lowered = model.trim().to_ascii_lowercase();
     let m = strip_model_noise(&lowered);
@@ -218,20 +152,13 @@ pub(crate) fn canonical_model(model: &str) -> String {
     alias.map_or(m, |(_, key)| key).to_string()
 }
 
-/// Short model names and the price-table key each currently points at.
 const MODEL_ALIASES: [(&str, &str); 4] = [
-    // Claude Code 2.1.321 resolves `fable` to Fable 5.2: a `claude -p
-    // --model fable` result names claude-fable-5-2 (seen 2026-11-09).
     ("fable", "claude-fable-5-2"),
     ("opus", "claude-opus-5-5"),
-    // Claude Code resolves `sonnet` to Sonnet 5.5: its transcripts name
-    // claude-sonnet-5-5 (seen 2026-10-04).
     ("sonnet", "claude-sonnet-5-5"),
     ("haiku", "claude-haiku-4-5"),
 ];
 
-/// A lower-case model name without its `[1m]` suffix, provider prefix and
-/// date stamp (claude-haiku-4-5-20251001 -> claude-haiku-4-5).
 fn strip_model_noise(m: &str) -> &str {
     let m = m.strip_suffix("[1m]").unwrap_or(m);
     let m = ["anthropic/", "openai/"]
@@ -246,15 +173,12 @@ fn strip_model_noise(m: &str) -> &str {
     }
 }
 
-/// Models that cost nothing: local Ollama and OpenCode's free tier.
 pub(crate) fn is_free(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     m.starts_with("ollama/")
         || (m.starts_with("opencode/") && (m.ends_with("-free") || m == "opencode/big-pickle"))
 }
 
-/// The price for `model`, or `None` when the table does not know it. A free
-/// model prices at zero rather than unknown.
 pub fn price_for(prices: &BTreeMap<String, Price>, model: &str) -> Option<Price> {
     if is_free(model) {
         return Some(Price::new(0.0, 0.0, 0.0));
@@ -265,17 +189,10 @@ pub fn price_for(prices: &BTreeMap<String, Price>, model: &str) -> Option<Price>
         .copied()
 }
 
-/// Dollars for `tokens` on `model`, or `None` when the table does not know
-/// the model. The one pricing function: `horch cost`, the collector and the
-/// telemetry readers that price a stored event later all call it.
 pub fn cost_of(prices: &BTreeMap<String, Price>, model: &str, tokens: &Tokens) -> Option<f64> {
     price_for(prices, model).map(|p| p.cost(tokens))
 }
 
-// ─── transcript discovery ───────────────────────────────────────────────────
-
-/// `~/.claude/projects/<any>/<sid>.jsonl`. Searched across project
-/// directories instead of re-deriving Claude's cwd slug.
 pub(crate) fn find_claude_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
     let file = format!("{session_id}.jsonl");
     for entry in std::fs::read_dir(projects).ok()?.flatten() {
@@ -287,15 +204,12 @@ pub(crate) fn find_claude_transcript(projects: &Path, session_id: &str) -> Optio
     None
 }
 
-/// A codex rollout named after `session_id`, anywhere under `sessions_dir`.
 pub(crate) fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
     find_file(sessions_dir, &|name| {
         name.starts_with("rollout-") && name.ends_with(&format!("{session_id}.jsonl"))
     })
 }
 
-/// A pi session file whose name carries `session_id`. `session_id` may also
-/// be a path already (the Prime case).
 pub(crate) fn find_pi_session(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
     let direct = PathBuf::from(session_id);
     if direct.is_file() {
@@ -317,11 +231,6 @@ fn find_file(dir: &Path, matches: &dyn Fn(&str) -> bool) -> Option<PathBuf> {
     })
 }
 
-// ─── readers ────────────────────────────────────────────────────────────────
-//
-// Only tests call the whole-file token readers below: `read_session_events`
-// takes its tokens from the telemetry readers. The skill scan is live code.
-
 #[cfg(test)]
 fn u(v: &Value, keys: &[&str]) -> u64 {
     keys.iter()
@@ -330,12 +239,6 @@ fn u(v: &Value, keys: &[&str]) -> u64 {
 }
 
 #[cfg(test)]
-/// A Claude Code transcript.
-///
-/// Streaming writes several records for one API response, each carrying the
-/// same `message.id` and usage that only grows, so the last record per id is
-/// the response. `<synthetic>` records are Claude Code's own, not API calls.
-/// Skill loads are `Skill` tool calls, counted once per `tool_use` id.
 pub(crate) fn read_claude(text: &str) -> Usage {
     let mut last: BTreeMap<String, (String, Tokens)> = BTreeMap::new();
     for line in text.lines() {
@@ -385,7 +288,6 @@ pub(crate) fn read_claude(text: &str) -> Usage {
 }
 
 #[cfg(test)]
-/// Skill loads per skill name, over the whole text.
 fn count_skills(agent: &str, text: &str) -> BTreeMap<String, u64> {
     let mut out = BTreeMap::new();
     for load in skill_loads_in(agent, text) {
@@ -394,9 +296,6 @@ fn count_skills(agent: &str, text: &str) -> BTreeMap<String, u64> {
     out
 }
 
-/// The time a transcript line was written, as a ledger stamp: its
-/// `timestamp` string, or pi's `message.timestamp` in epoch milliseconds.
-/// Empty when the line has neither.
 fn line_ts(record: &Value) -> String {
     match record.get("timestamp").and_then(Value::as_str) {
         Some(t) => crate::telemetry::readers::ts(Some(t)),
@@ -409,11 +308,6 @@ fn line_ts(record: &Value) -> String {
     }
 }
 
-/// Every skill load in one transcript of `agent`, with the time of its line.
-///
-/// Claude: `Skill` tool calls, once per `tool_use` id. Codex: shell or tool
-/// calls that read a `skills/<name>/SKILL.md`. pi and Prime: assistant
-/// messages that read one.
 pub(crate) fn skill_loads_in(agent: &str, text: &str) -> Vec<SkillLoad> {
     let read = skill_reader(agent);
     let mut seen = BTreeSet::new();
@@ -433,8 +327,6 @@ pub(crate) fn skill_loads_in(agent: &str, text: &str) -> Vec<SkillLoad> {
     out
 }
 
-/// Reads the skills one parsed transcript line loads: the record, its raw
-/// text, and the set of `tool_use` ids already counted.
 type SkillReader = fn(&Value, &str, &mut BTreeSet<String>) -> Vec<String>;
 
 fn skill_reader(agent: &str) -> SkillReader {
@@ -450,7 +342,6 @@ fn no_skills(_: &Value, _: &str, _: &mut BTreeSet<String>) -> Vec<String> {
     Vec::new()
 }
 
-/// The skill of each `Skill` tool call on an assistant line, once per id.
 fn claude_skills(record: &Value, _line: &str, seen: &mut BTreeSet<String>) -> Vec<String> {
     let mut out = Vec::new();
     if record.get("type").and_then(Value::as_str) != Some("assistant") {
@@ -466,7 +357,6 @@ fn claude_skills(record: &Value, _line: &str, seen: &mut BTreeSet<String>) -> Ve
     out
 }
 
-/// The skill a `Skill` tool_use block loads.
 fn skill_call(block: &Value) -> Option<&str> {
     let tool = block.get("name").and_then(Value::as_str);
     let call = block.get("type").and_then(Value::as_str) == Some("tool_use");
@@ -478,7 +368,6 @@ fn skill_call(block: &Value) -> Option<&str> {
     }
 }
 
-/// Skill reads in a Codex shell or tool call line.
 fn codex_skills(record: &Value, line: &str, _seen: &mut BTreeSet<String>) -> Vec<String> {
     let kind = record.pointer("/payload/type").and_then(Value::as_str);
     match kind {
@@ -487,7 +376,6 @@ fn codex_skills(record: &Value, line: &str, _seen: &mut BTreeSet<String>) -> Vec
     }
 }
 
-/// Skill reads in a pi or Prime assistant message line.
 fn pi_skills(record: &Value, line: &str, _seen: &mut BTreeSet<String>) -> Vec<String> {
     let message = record.get("message").unwrap_or(record);
     match message.get("role").and_then(Value::as_str) {
@@ -496,7 +384,6 @@ fn pi_skills(record: &Value, line: &str, _seen: &mut BTreeSet<String>) -> Vec<St
     }
 }
 
-/// Skill names in text that reads a `skills/<name>/SKILL.md` file.
 fn skill_reads(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -519,8 +406,6 @@ fn skill_reads(text: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-/// The first value under `key`, searched depth-first through `v`. A record
-/// carries at most one running total, so first and last are the same.
 fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     match v {
         Value::Object(map) => map
@@ -532,17 +417,6 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 }
 
 #[cfg(test)]
-/// A Codex rollout.
-///
-/// `token_count` events carry a running `total_token_usage` and are written
-/// twice each, so the last one is the session. `cached_input_tokens` is part
-/// of `input_tokens` and reasoning is part of `output_tokens`, so neither is
-/// added again. Newer rollouts nest the same fields elsewhere
-/// (getagentseal/codeburn#1380), hence the key search. Usage from
-/// auto-compaction is missing from the totals (openai/codex#47003), so a
-/// compacted session reads low. A session that switched models is priced
-/// entirely as its last model; the totals are not split per turn. Skill loads
-/// are shell or tool calls that read a `skills/<name>/SKILL.md`.
 pub(crate) fn read_codex(text: &str) -> Usage {
     let mut total: Option<Value> = None;
     let mut model = String::new();
@@ -577,17 +451,12 @@ pub(crate) fn read_codex(text: &str) -> Usage {
                 ..Tokens::default()
             },
         );
-        // Each distinct running total is one more model response.
         usage.calls = turns.into_iter().filter(|n| *n > 0).count() as u64;
     }
     usage
 }
 
 #[cfg(test)]
-/// A pi or Prime Agent session file: one JSON record per line, assistant
-/// messages carrying `usage`. The field names are pi's (`input`, `output`,
-/// `cacheRead`, `cacheWrite`), with the Anthropic spellings accepted too,
-/// because they were not confirmed against a live file.
 pub(crate) fn read_pi(text: &str) -> Usage {
     let mut usage = Usage::default();
     for line in text.lines() {
@@ -630,24 +499,17 @@ pub(crate) fn read_pi(text: &str) -> Usage {
     usage
 }
 
-/// Where each harness keeps its sessions on this machine.
 #[derive(Debug, Clone)]
 pub struct Locations {
     pub home: PathBuf,
-    /// `<home>/.claude/projects`: one directory per project slug.
     pub claude_projects: PathBuf,
     pub codex_sessions: PathBuf,
     pub pi_sessions: PathBuf,
-    /// OpenCode's SQLite database. `$HORCH_OPENCODE_DB` overrides.
     pub opencode_db: PathBuf,
-    /// The `sqlite3` CLI that reads `opencode_db`. `$HORCH_SQLITE3_BIN`
-    /// overrides.
     pub sqlite3: PathBuf,
 }
 
 impl Locations {
-    /// Every location for the context's home, with the environment overrides
-    /// it read applied, and the context's `sqlite3`.
     pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
         Self {
             sqlite3: ctx.bins.harness.sqlite3.clone(),
@@ -655,10 +517,6 @@ impl Locations {
         }
     }
 
-    /// Every location for a given home directory, with the overrides in
-    /// `inherited` applied: `CODEX_HOME`, `PI_CODING_AGENT_SESSION_DIR`,
-    /// `HORCH_OPENCODE_DB` and `XDG_DATA_HOME`. Tests pass a temp dir.
-    /// `sqlite3` is the plain program name.
     pub fn under_home(home: &Path, inherited: &crate::runtime::Inherited) -> Self {
         let codex_sessions =
             crate::harness::codex::codex_home(home, inherited.codex_home.as_deref())
@@ -685,24 +543,15 @@ impl Locations {
     }
 }
 
-/// Why a session has no usage row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Missing {
-    /// The ledger never learned the session id.
     NoSessionId,
-    /// The id is known but no transcript file was found for it.
     NoTranscript,
-    /// This harness's usage is not read (the smoke fake), or cannot be here
-    /// (no `sqlite3` for OpenCode).
     NotRead,
-    /// The transcript exists but could not be read.
     Failed(String),
 }
 
-/// A half-open time range of ledger stamps (`2026-10-07T09:00:00Z`): calls
-/// at or after `since` and before `until`. `None` leaves that side open, so
-/// the default span is everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Span {
     pub since: Option<String>,
@@ -717,8 +566,6 @@ impl Span {
         }
     }
 
-    /// Whether a call at `ts` is in the span. Stamps compare as strings, as
-    /// `horch usage --since` compares them, so the 2 commands agree (TEL-10).
     pub fn contains(&self, ts: &str) -> bool {
         self.since.as_deref().is_none_or(|s| ts >= s)
             && self.until.as_deref().is_none_or(|u| ts < u)
@@ -729,27 +576,20 @@ impl Span {
     }
 }
 
-/// One skill load and when the transcript says it happened ("" when the
-/// line has no time).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillLoad {
     pub ts: String,
     pub skill: String,
 }
 
-/// One session read once: every usage event and every skill load, each with
-/// its own time, so one read serves any number of spans.
 #[derive(Debug, Clone)]
 pub struct Session {
-    /// The main transcript.
     pub path: PathBuf,
     pub events: Vec<crate::telemetry::RawUsage>,
     pub skill_loads: Vec<SkillLoad>,
 }
 
 impl Session {
-    /// The usage of the calls and skill loads in `span`. A session with no
-    /// call in the span has an empty `by_model`.
     pub fn usage(&self, span: &Span) -> Usage {
         let mut usage = Usage::default();
         for e in self.events.iter().filter(|e| span.contains(&e.ts)) {
@@ -769,21 +609,11 @@ impl Session {
     }
 }
 
-/// Whether horch can find the transcript of a `kind` worker (the arms of
-/// `telemetry::readers::locate` that read a session). The doctor's watchdog
-/// check asks this instead of keeping its own list.
 pub fn has_transcript(kind: crate::harness::HarnessKind) -> bool {
     use crate::harness::HarnessKind as K;
     matches!(kind, K::Claude | K::Codex | K::OpenCode | K::Pi | K::Prime)
 }
 
-/// Find and read one session for `agent`: its usage events and skill loads.
-///
-/// Tokens come from the telemetry readers, from offset 0 with throwaway
-/// cursors, so `horch cost` and `horch usage` count the same events
-/// (TEL-10): Codex's final response (`token_usage_record`) and Claude
-/// subagent transcripts included. Skill loads are found by scanning the
-/// transcript text.
 pub fn read_session_events(
     loc: &Locations,
     agent: &str,
@@ -805,7 +635,6 @@ pub fn read_session_events(
     })
 }
 
-/// The [`Missing`] that a reader's refusal is reported as.
 fn missing_for(why: crate::telemetry::readers::Unreadable) -> Missing {
     use crate::telemetry::readers::Unreadable;
     match why {
@@ -816,8 +645,6 @@ fn missing_for(why: crate::telemetry::readers::Unreadable) -> Missing {
     }
 }
 
-/// Find and read one session's whole usage for `agent`:
-/// [`read_session_events`] over the unbounded span.
 pub fn read_session(
     loc: &Locations,
     agent: &str,
@@ -839,8 +666,6 @@ mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
-    /// Streaming repeats a message; only its last record counts, and a
-    /// 1-hour cache write is split out from the 5-minute ones.
     #[test]
     fn claude_dedups_streamed_messages_and_splits_cache_ttls() {
         let usage = read_claude(&fixture("claude.jsonl"));
@@ -867,14 +692,11 @@ mod tests {
 
         let prices = builtin_prices();
         let cost = price_for(&prices, "claude-opus-5-5").unwrap().cost(&t);
-        // 15*4 + 1000*5 + 400*8 + 50_000*0.2 + 350*20, per million.
         let expected =
             (15.0 * 4.0 + 1000.0 * 5.0 + 400.0 * 8.0 + 50_000.0 * 0.2 + 350.0 * 20.0) / 1_000_000.0;
         assert!((cost - expected).abs() < 1e-12, "{cost} vs {expected}");
     }
 
-    /// Running totals, written twice: the last one is the session. Cached
-    /// input is inside the input count and must not be charged twice.
     #[test]
     fn codex_takes_the_last_running_total_and_splits_cached_input() {
         let usage = read_codex(&fixture("codex.jsonl"));
@@ -915,10 +737,6 @@ mod tests {
         assert_eq!(usage.skills.get("debug"), Some(&1));
     }
 
-    /// Every model a built-in teammate runs on prices, or is free or local
-    /// on purpose ([`is_free`]). A teammate without a model runs its
-    /// harness's default, which no teammate file names; one with no agent
-    /// (`smoke`) runs no model.
     #[test]
     fn every_builtin_teammate_model_has_a_price_or_is_free() {
         let prices = builtin_prices();
@@ -939,8 +757,6 @@ mod tests {
         assert!(unpriced.is_empty(), "no price: {unpriced:?}");
     }
 
-    /// Fable 5.2 has its own row, the `fable` alias names it, and the 5.1 row
-    /// stays for old transcripts.
     #[test]
     fn fable_alias_prices_as_fable_5_2_and_fable_5_1_keeps_its_row() {
         let prices = builtin_prices();
@@ -954,7 +770,6 @@ mod tests {
             cache_write_1h: 1_000_000,
             ..Tokens::default()
         };
-        // Cache writes: 1.25x and 2x of $8 input.
         assert!((fable.cost(&million) - (10.0 + 16.0)).abs() < 1e-9);
         let old = price_for(&prices, "claude-fable-5-1").unwrap();
         assert_eq!((old.input, old.output, old.cache_read), (10.0, 50.0, 0.25));
@@ -990,8 +805,6 @@ mod tests {
         );
     }
 
-    /// Every noise form and alias `canonical_model` strips or resolves, alone
-    /// and stacked, and the names it must leave as they are.
     #[test]
     fn canonical_model_strips_each_noise_form_and_resolves_every_alias() {
         for (raw, key) in [
@@ -1012,8 +825,6 @@ mod tests {
         }
     }
 
-    /// `find_file` walks into sub-directories, skips files the matcher
-    /// rejects, and gives `None` for a missing directory or no match.
     #[test]
     fn find_file_walks_sub_directories_and_applies_the_matcher() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1028,10 +839,6 @@ mod tests {
         assert_eq!(find_file(&tmp.path().join("missing"), &|_| true), None);
     }
 
-    /// The skill scan per harness: Claude counts a `Skill` tool call once per
-    /// id on assistant lines only; Codex counts reads in call records; pi and
-    /// Prime count reads in assistant messages; an unknown harness and an
-    /// unparsable line count nothing.
     #[test]
     fn skill_loads_in_reads_each_harness_format() {
         let skill = |id: &str, name: &str| {
@@ -1089,8 +896,6 @@ mod tests {
         assert!(skill_loads_in("opencode", &pi).is_empty());
     }
 
-    /// `has_transcript` must follow `locate`: a harness it names reads a
-    /// session, and one it does not name is refused as `none` or unknown.
     #[test]
     fn has_transcript_agrees_with_the_telemetry_locator() {
         use crate::harness::HarnessKind;
@@ -1155,8 +960,6 @@ mod tests {
         );
     }
 
-    /// A session that cannot be read is missing for the reason of the reader
-    /// that refused it.
     #[test]
     fn a_session_that_cannot_be_read_is_missing_for_the_readers_reason() {
         let home = tempfile::tempdir().unwrap();
@@ -1172,8 +975,6 @@ mod tests {
         );
     }
 
-    /// The session's path is its main transcript; the calls and the skill
-    /// loads of a subagent's transcript count with it.
     #[test]
     fn a_session_is_its_main_transcript_with_the_subagent_ones() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1209,8 +1010,6 @@ mod tests {
         );
     }
 
-    /// A transcript that is not valid text still gives its usage: only the
-    /// scan for skill loads, which reads text, finds nothing in it.
     #[test]
     fn a_transcript_that_is_not_text_gives_its_usage_but_no_skill_loads() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1240,7 +1039,6 @@ mod tests {
         assert_eq!(prices["claude-opus-5-5"].input, 4.0);
         assert!(load_prices(Some(&tmp.path().join("missing.json"))).is_err());
     }
-    /// A Claude line at `at` with one call and, optionally, one skill load.
     fn claude_line(at: &str, id: &str, out: u64, skill: Option<&str>) -> String {
         let content = match skill {
             Some(s) => format!(
@@ -1253,9 +1051,6 @@ mod tests {
         )
     }
 
-    /// A span counts each call and each skill load by its own time: a
-    /// session that started 40 days ago shows only its last day in a 24h
-    /// span, and all of it with no span.
     #[test]
     fn tel_13_a_span_counts_calls_and_skill_loads_by_their_own_time() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1269,7 +1064,6 @@ mod tests {
             claude_line("2026-10-07T09:00:00Z", "m4", 400, None),
         ]
         .join("\n");
-        // The reader leaves a last line without a newline for the next poll.
         std::fs::write(dir.join("sid-old.jsonl"), text + "\n").unwrap();
         let loc = Locations::under_home(home, &crate::runtime::Inherited::default());
         let session = read_session_events(&loc, "claude", Some("sid-old")).unwrap();
@@ -1285,7 +1079,6 @@ mod tests {
         let month = Span::new(Some("2026-09-07T10:00:00Z"), Some("2026-10-07T10:00:00Z"));
         assert_eq!(session.usage(&month).calls, 3);
 
-        // Before the span's end only: a call at the end itself is out.
         let until = Span::new(None, Some("2026-10-07T09:00:00Z"));
         assert_eq!(session.usage(&until).tokens().output, 600);
 

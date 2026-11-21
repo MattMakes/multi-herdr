@@ -18,12 +18,10 @@ from hark.surfaces import gallery, gallery_page, llm, mcp_server
 SKILLS = Path(__file__).resolve().parents[4]
 DOC_ROOTS = (SKILLS / "hark", SKILLS / "sound-sourcing")
 
-# Distinctive L2 numbers: a doc line that quotes one must say it is a source measurement.
 L2_NUMBERS = ("0.966", "0.951", "1289", "1484", "0.958", "0.948", "0.909", "0.858", "93.2%", "96.4%", "89.1%",
               "120 of 140", "128 passed", "8 times in 15", "0.945", "0.881", "168 pass")
 SOURCE_LABEL = re.compile(r"source", re.IGNORECASE)
 
-# Sentences that state 1 user's taste as an instruction (M1.9 rule).
 PREFERENCE_PHRASES = ("the user rejects", "the user prefers", "the user hates", "the user dislikes",
                       "the user likes", "the user wants real", "the user wants no", "never use synthetic",
                       "always use real", "the operator prefers", "the operator rejects", "we prefer real")

@@ -1,6 +1,3 @@
-//! `horch worktree triage`: the facts of each parked worktree, on a real
-//! git repository in a temp dir (#308, section 1).
-
 mod i308_support;
 
 use horch_core::taskledger::triage::{self, Measure, Row};
@@ -24,7 +21,6 @@ fn a_folder_row_reports_ahead_behind_diffstat_and_uncommitted_counts() {
     commit(&feat, "src/f1.rs", "1\n2\n3\n");
     commit(&feat, "src/f2.rs", "1\n");
     commit(&w.root, "b.txt", "main moved\n");
-    // 1 modified, 1 staged, 2 untracked files, and build output.
     write(&feat, "src/f1.rs", "1\n2\nchanged\n");
     write(&feat, "s.txt", "staged\n");
     git(&feat, &["add", "s.txt"]);
@@ -98,7 +94,6 @@ fn ids_follow_the_name_order_and_the_main_checkout_is_not_a_row() {
     assert_eq!(ids, vec![("W1", "alpha"), ("W2", "zed")]);
 }
 
-/// A ledger row: `status`, with a worker in `worker_status` when given.
 fn ledger_row(w: &World, name: &str, status: &str, worker_status: Option<&str>) {
     let base = w.rev("main");
     let path = w.worktree(name, name, &base);
@@ -141,8 +136,6 @@ fn ledger_rows_are_parked_unless_a_live_worker_holds_them() {
     ledger_row(&w, "gone", "cleaned", None);
     let rows = collect(&w);
     let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-    // `busy` has a live worker; `gone` is cleaned, so its folder is a
-    // folder row again.
     assert_eq!(names, vec!["gone", "left", "unlanded"]);
     let u = row(&rows, "unlanded");
     assert_eq!(u.origin, "ledger");

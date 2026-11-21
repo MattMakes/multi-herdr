@@ -44,9 +44,6 @@ def files(write, sig):
     }
 
 
-# ---------------------------------------------------------------- describe
-
-
 def test_des_1_too_short(write, no_models):
     r = des.describe(write("short.wav", 0.5 * np.ones(int(0.003 * SR))))
     assert r["top_tags"] == [] and r["measurements"] == {"duration": 0.003}
@@ -163,9 +160,6 @@ def test_describe_cli_text(files, fake_clap, fake_ast, no_require, run_cli):
     assert code == 0 and json.loads(out)["path"] == files["click"]
 
 
-# ---------------------------------------------------------------- match
-
-
 def test_mat_1_empty_query(files, no_require, run_cli, no_models):
     for q in ([], "  ", ["ok", ""]):
         with pytest.raises(ValueError):
@@ -264,9 +258,6 @@ def test_mat_9_real_match():
     assert mat.match(path, "heavy rain on a roof")["z"] < 2
 
 
-# ---------------------------------------------------------------- rank
-
-
 def test_rnk_1_bad_path(tmp_path, no_models):
     from hark.core import audio
 
@@ -321,7 +312,7 @@ def test_rnk_6_cached_rerank(tmp_path, write, sig, fake_clap):
     windows = fake_clap.audio_windows
     assert windows > 0
     search.rank([folder], "a door knock")
-    assert fake_clap.audio_windows == windows  # every span came from the cache
+    assert fake_clap.audio_windows == windows
 
 
 @pytest.mark.ml
@@ -329,8 +320,6 @@ def test_rnk_6_cached_rerank_speed(tmp_path, write, sig):
     for i in range(3):
         write(f"pack/c{i}.wav", sig.click(dur=3.0, freq=900 + 400 * i))
     folder = str(tmp_path / "pack")
-    # Load the model and embed both queries on another folder first: the timing then compares audio work only,
-    # whatever ran before this test in the same process.
     write("warm/w.wav", sig.click(dur=0.5, freq=700))
     for query in ("a click", "a door knock"):
         search.rank([str(tmp_path / "warm")], query)

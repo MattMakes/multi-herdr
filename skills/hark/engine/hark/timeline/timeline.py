@@ -26,8 +26,6 @@ CONTEXT_S = 30.0
 DETAILS = ("low", "normal", "high")
 
 
-# ---------------------------------------------------------------- inputs
-
 def is_picture(path: str, probe: dict) -> bool:
     """A real picture stream: 0 < fps <= 240 and not an audio extension (cover art is not a picture)."""
     from hark.core.audio import AUDIO_EXTS
@@ -69,8 +67,6 @@ class _Inputs:
             raise TimelineError(f"{video} has no picture stream")
         return video
 
-
-# ---------------------------------------------------------------- result cache
 
 def _home() -> str:
     home = os.environ.get("HARK_HOME")
@@ -119,8 +115,6 @@ def _write_cache(p: str, r: dict) -> None:
         pass
 
 
-# ---------------------------------------------------------------- loading
-
 class _Range:
     """The decoded context and the analysed window, in file time."""
 
@@ -167,8 +161,6 @@ class _Range:
         self.dur = len(self.win) / SR
         self.wa, self.wb = self.t0 - self.c0, self.t0 - self.c0 + self.dur
 
-
-# ---------------------------------------------------------------- stages
 
 class _Clock:
     def __init__(self):
@@ -220,8 +212,6 @@ def _sync_blocks(targets: dict, snd: dict) -> dict:
             for kind, (times, fps) in targets.items() if times}
 
 
-# ---------------------------------------------------------------- shifting to file time
-
 def _shift_loudness(L: dict, t0: float) -> None:
     for g in L["silences"]:
         g["start"], g["end"] = round(g["start"] + t0, 2), round(g["end"] + t0, 2)
@@ -264,8 +254,6 @@ def _window_events(events, rg: _Range, grid: dict) -> list[dict]:
             out.append(ev)
     return out
 
-
-# ---------------------------------------------------------------- the run
 
 def _sound_pass(rg: _Range, clock: _Clock) -> dict:
     """Loudness, onset events, level envelopes and the beat grid of the context."""
@@ -358,8 +346,6 @@ def timeline(path, video=None, cues=None, start=None, end=None, detail="normal",
         _write_cache(cpath, r)
     return r
 
-
-# ---------------------------------------------------------------- CLI
 
 def add_window_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("file", help="audio file or video")

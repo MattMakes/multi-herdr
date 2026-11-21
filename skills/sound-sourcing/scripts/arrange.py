@@ -41,8 +41,6 @@ def decode(src: str) -> np.ndarray:
     return np.frombuffer(rep.stdout, dtype=np.float32).astype(np.float64)
 
 
-# ------------------------------------------------------------------ the arc
-
 def default_arc(count: int, dd: int) -> list[float]:
     big_until = dd + max(2, round(0.6 * (count - dd)))
     curve_ = []
@@ -72,8 +70,6 @@ def read_arc(spec: str | None) -> tuple[list[float] | None, dict]:
         return [float(val) for val in data["arc"]], meta
     return [float(val) for val in spec.split(",") if val.strip()], {}
 
-
-# ------------------------------------------------------------------ grid
 
 def fit_grid(beat_t: np.ndarray, tempo: float | None) -> dict:
     ibi = np.diff(beat_t)
@@ -168,8 +164,6 @@ def local_disagreements(z: np.ndarray, beat_grid: np.ndarray, per_bar: int, ph: 
                 dest.append(item)
     return dest
 
-
-# ------------------------------------------------------------------ bars and the walk
 
 def bar_features(wave, spec_mag, chroma, onset_env, bars_t, bar_len):
     import librosa
@@ -281,8 +275,6 @@ def walk(feat, loud, rel, curve_, opt: dict):
     return _backtrack(costs, back)
 
 
-# ------------------------------------------------------------------ main flow
-
 def _check_drop_arg(drop: str) -> None:
     if drop in ("auto", "none"):
         return
@@ -314,7 +306,7 @@ def _grid(wave: np.ndarray, beat_t: np.ndarray, cli, dur: float) -> dict:
         shift, ratio, origin = snap(wave, origin, period, dur)
     start = origin % period
     if start - period >= -0.03:
-        start -= period  # a beat a few ms before 0 is the track's first beat, not a lost one
+        start -= period
     return {"g": gd, "t0": origin, "T": period, "shift": shift, "ratio": ratio,
             "grid": np.maximum(0.0, np.arange(start, dur, period))}
 

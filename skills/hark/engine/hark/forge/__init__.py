@@ -22,7 +22,6 @@ def __getattr__(name: str):
     if name in _LOOP:
         return getattr(importlib.import_module("hark.forge.engine.loop"), name)
     if _is_sub(name):
-        # hark.forge.recipes is a callable module: hark.forge.recipes() lists the recipes.
         return importlib.import_module(f"hark.forge.{name}")
     raise AttributeError(f"module 'hark.forge' has no attribute {name!r}")
 

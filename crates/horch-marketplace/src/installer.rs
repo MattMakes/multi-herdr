@@ -1,8 +1,3 @@
-//! The install pipeline: catalog, resolve, fetch, validate, verify,
-//! materialize, lock. Every step before the lock works in a staging
-//! directory that is removed when the install ends, so a failed install
-//! leaves no lock entry and no staging behind.
-
 use std::path::PathBuf;
 
 use crate::catalog::Catalog;
@@ -28,10 +23,8 @@ pub enum Step {
     Lock,
 }
 
-/// A crash point for tests and drills. The caller maps `HORCH_FAULT` to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultPoint {
-    /// `abort-after-materialize-before-lock`
     AbortAfterMaterializeBeforeLock,
 }
 
@@ -65,7 +58,6 @@ pub struct Installer {
     catalog: Catalog,
 }
 
-/// A fetched, validated and verified tree, ready to materialize.
 struct Prepared {
     resolved: ResolvedSource,
     staging: Staging,
@@ -81,8 +73,6 @@ fn record(observer: &mut Option<&mut Vec<Step>>, step: Step) {
 }
 
 impl Installer {
-    /// `store_root` is `${XDG_DATA_HOME:-~/.local/share}/horch/`; the caller
-    /// resolves it.
     pub fn new(store_root: PathBuf, git: GitRunner) -> Self {
         Self {
             store: Store::new(store_root),
@@ -91,7 +81,6 @@ impl Installer {
         }
     }
 
-    /// The bundled skills a `bundled:<name>` source can install.
     pub fn with_catalog(mut self, catalog: Catalog) -> Self {
         self.catalog = catalog;
         self
@@ -101,8 +90,6 @@ impl Installer {
         &self.store
     }
 
-    /// Install `source` and pin it in the lock. `observer` records each
-    /// step as it starts.
     pub fn install(
         &self,
         source: &SkillSource,
@@ -110,13 +97,10 @@ impl Installer {
         mut observer: Option<&mut Vec<Step>>,
     ) -> Result<LockEntry> {
         record(&mut observer, Step::Catalog);
-        // Read the lock first, so a corrupt lock fails before any fetch.
         Lockfile::read(&self.store.lock_path())?;
         let prepared = self.prepare(source, &mut observer)?;
         let version = prepared.resolved.version(&prepared.digest);
 
-        // One install at a time changes the store: the same version directory
-        // and the lock read-modify-write must not interleave.
         let _guard = self.store.lock()?;
         record(&mut observer, Step::Materialize);
         self.store
@@ -144,7 +128,6 @@ impl Installer {
         Ok(entry)
     }
 
-    /// Resolve, fetch, validate and verify into a new staging directory.
     fn prepare(
         &self,
         source: &SkillSource,
@@ -179,8 +162,6 @@ impl Installer {
         })
     }
 
-    /// The installed skills: lock entries whose version directory exists.
-    /// A version directory without a lock entry is not listed.
     pub fn installed(&self) -> Result<Vec<InstalledSkill>> {
         let lock = Lockfile::read(&self.store.lock_path())?;
         Ok(lock
@@ -193,9 +174,6 @@ impl Installer {
             .collect())
     }
 
-    /// Install the locked skills again at their requested revision: every
-    /// skill, or only `id`. A moved branch or tag gets its new commit; a
-    /// local or bundled source gets its current files.
     pub fn update(&self, id: Option<&str>) -> Result<Vec<LockEntry>> {
         let lock = Lockfile::read(&self.store.lock_path())?;
         if let Some(id) = id {
@@ -220,10 +198,6 @@ impl Installer {
         Ok(out)
     }
 
-    /// Make every locked skill present and verified, and return the lock
-    /// entries. An existing version directory is only digest-checked, with
-    /// no network. A missing one is rebuilt from the pinned source and must
-    /// match the locked digest. The lock is not changed.
     pub fn reinstall_from_lock(&self) -> Result<Vec<LockEntry>> {
         let lock = Lockfile::read(&self.store.lock_path())?;
         for entry in &lock.skills {
@@ -238,14 +212,10 @@ impl Installer {
         Ok(lock.skills)
     }
 
-    /// Rebuild a missing locked skill from its pinned source. It must have
-    /// the locked id and digest.
     fn rebuild(&self, entry: &LockEntry) -> Result<PathBuf> {
         let source = pin(parse_source(&entry.source)?, entry);
         let prepared = self.prepare(&source, &mut None)?;
         check_prepared(&prepared, entry)?;
-        // Materialize under the store lock, as `install` does: an
-        // install of the same version must not interleave.
         let _guard = self.store.lock()?;
         self.store.materialize(
             &prepared.tree,
@@ -255,8 +225,6 @@ impl Installer {
         )
     }
 
-    /// `skills/<id>/<version>/` of a lock entry. The id and version are
-    /// checked, because the lock file is input.
     fn entry_dir(&self, entry: &LockEntry) -> Result<PathBuf> {
         let id = SkillId::parse(&entry.id)?;
         check_relative_path(&entry.version)?;
@@ -280,7 +248,6 @@ fn check_digest(entry: &LockEntry, actual: &str) -> Result<()> {
     }
 }
 
-/// The source at the locked commit, when the entry has one.
 fn pin(source: SkillSource, entry: &LockEntry) -> SkillSource {
     match &entry.resolved_commit {
         Some(commit) => source.with_revision(GitRevision::Commit(commit.clone())),
@@ -288,7 +255,6 @@ fn pin(source: SkillSource, entry: &LockEntry) -> SkillSource {
     }
 }
 
-/// A rebuilt skill must have the locked id and digest.
 fn check_prepared(prepared: &Prepared, entry: &LockEntry) -> Result<()> {
     if prepared.id.as_str() != entry.id {
         return Err(MarketplaceError::SkillMd(format!(

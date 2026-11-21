@@ -37,12 +37,10 @@ from . import domain, evidence, handoff, opaque, overlap, sandbox, scan, schema,
 
 PASS, ABORT = "pass", "abort"
 SEVERE = ("critical", "high")
-OPQ_MIN = 12  # the shortest artifact string the absence check looks for
+OPQ_MIN = 12
 OVERLAP_MAX_BYTES = 1_000_000
 
-# Never accepted in our output, whatever the spec declares (7.4).
 NEVER_ACCEPTED = frozenset({"SCR-03", "SCR-05", "SCR-07", "INJ-01", "INJ-02", "INJ-04", "INJ-06", "SUP-02"})
-# The declared capabilities (spec 6.9 `capabilities` keys) a rule hit needs, all of them.
 CAPABILITY_RULES = {
     "SCR-01": ("network",), "SCR-02": ("reads",), "SCR-04": ("network", "reads"), "SCR-06": ("runs",),
     "SCR-08": ("writes",), "SCR-11": ("writes",), "INJ-05": ("reads",),
@@ -62,8 +60,6 @@ def _join(items: list[str], cap: int = 20) -> str:
     more = f"; {len(items) - cap} more" if len(items) > cap else ""
     return "; ".join(items[:cap]) + more
 
-
-# ---- inputs ------------------------------------------------------------------
 
 def load_specs(t: task.Task) -> list[dict]:
     """The handed-off specs of K/handoff/package.json (integrity is its own check)."""
@@ -107,8 +103,6 @@ def out_skills(out: Path) -> list[str]:
 def skill_of_hit(hit: dict) -> str:
     return hit["file"].split("/", 1)[0]
 
-
-# ---- 1. re-sweep and declared capabilities -----------------------------------
 
 def writer_record(t: task.Task) -> tuple[list[str], set[str]]:
     """(spec ids, K/out folders) of the writer's K/report.json: the specs it
@@ -195,8 +189,6 @@ def resweep(out: Path, by_skill: dict[str, list[dict]], passed: set) -> dict:
     return {"hits": hits, "accepted": accepted, "new": new}
 
 
-# ---- 2. opaque absence and closing findings -----------------------------------
-
 def _strings(data: bytes) -> set[bytes]:
     return {s.strip().encode() for s in opaque.printable_strings(data) if len(s.strip()) >= OPQ_MIN}
 
@@ -264,8 +256,6 @@ def close(f: dict, entry: dict, fired: set[tuple[str | None, str]], present: dic
     return ("removed" if entry["disposition"] == "remove" else "mitigated-by-rewrite"), entry["disposition"]
 
 
-# ---- 3. leakage ----------------------------------------------------------------
-
 FRONT_NAME = re.compile(r"^name\s*:.*$")
 FRONT_DESC = re.compile(r"^description\s*:")
 
@@ -303,7 +293,7 @@ def overlap_hits(src: Path, specs: list[dict], out_texts: list[tuple[str, str]])
     index = overlap.Index(sources, code)
     hits = []
     for rel, text in out_texts:
-        body = without_front_keys(text)  # keeps the line count, so line numbers stay true
+        body = without_front_keys(text)
         for h in index.hits(rel, body):
             hits.append({"file": evidence.escape(rel), "kind": h["kind"], "source": h["source"],
                          "words": len(h["shared"].split()), "lines": shared_lines(body, h["kind"], h["shared"])})
@@ -328,8 +318,6 @@ def shared_lines(text: str, kind: str, shared: str) -> list[list[int]]:
              if flat[i] == want[0] and flat[i:i + size] == want]
     return found or [[1, len(lines)]]
 
-
-# ---- the fix list (K/fixes.json) -----------------------------------------------
 
 FIXES = "fixes.json"
 FIX_SEVERITY = ("critical", "high", "medium")
@@ -358,8 +346,6 @@ def fix_list(new_hits: list[dict], overlaps: list[dict], persona: dict | None, s
     order = sorted(entries, key=lambda e: (e[0], e[1], e[2], e[3], e[4] or ""))
     return {"fixes": [{"file": f, "lines": [a, b], "kind": k, "rule": r} for f, a, b, k, r in order]}
 
-
-# ---- 5. script tests -----------------------------------------------------------
 
 SPLIT = re.compile(r"[\s=;&|'\"(),]+")
 
@@ -421,8 +407,6 @@ def script_status(t: task.Task, scripts: list[str], box: str | None) -> list[dic
     return rows
 
 
-# ---- 6. target rules -----------------------------------------------------------
-
 def target_rules(t: task.Task, target: str) -> tuple[dict | None, str]:
     """The rules of K/context.json, or (None, why) when they are missing or not ours."""
     path = t.k / "context.json"
@@ -435,8 +419,6 @@ def target_rules(t: task.Task, target: str) -> tuple[dict | None, str]:
         return None, "the target rules in K/context.json differ from the intake rules"
     return ctx["target_rules"], ""
 
-
-# ---- 8. the teammate persona ---------------------------------------------------
 
 PERSONA = "persona.md"
 PERSONA_FAIL = ("critical", "high", "medium")
@@ -478,8 +460,6 @@ def persona_check(t: task.Task, src: Path, review: dict | None) -> tuple[dict, d
     return _check("persona", not fails, _join(fails)), record
 
 
-# ---- the stage -----------------------------------------------------------------
-
 def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     """Run every check, write C/verify.json and the gate2 result in C/task.json. Returns verify.json."""
     triage.require_gate1_pass(t)
@@ -495,7 +475,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     out_files = [(rel, p.read_bytes()) for rel, p in sweep.walk(out)] if out.is_dir() else []
     checks = []
 
-    # 1. re-sweep, with each output folder matched to its specs
     by_skill, map_problems = spec_map(t, specs, out_skills(out))
     checks.append(_check("spec-map", not map_problems, _join(map_problems)))
     rs = resweep(out, by_skill, passed)
@@ -503,8 +482,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     checks.append(_check("resweep", not severe_new, _join(
         [f"{h['rule']} {h['severity']} in {h['file']}:{h['line']}" for h in severe_new])))
 
-    # 2. close findings. A source finding names the spec's skill, so a hit in a
-    # renamed output folder fires for that skill too.
     source_names = {folder: {s["skill"]["name"] for s in group} for folder, group in by_skill.items()}
     fired = {(name, h["rule"]) for h in rs["new"] for name in {h["skill"]} | source_names.get(h["skill"], set())}
     present = {}
@@ -524,7 +501,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     severe_open = [r["finding"] for r in rows if r["status"] == "unresolved" and r["severity"] in SEVERE]
     checks.append(_check("findings", not severe_open, ("unresolved: " + _join(severe_open)) if severe_open else ""))
 
-    # 3. leakage
     integrity = handoff.verify_package(t)
     checks.append(_check("handoff-integrity", not integrity, _join(integrity)))
     out_texts = [(rel, text) for rel, data in out_files if (text := sweep.as_text(data)) is not None]
@@ -532,7 +508,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     checks.append(_check("overlap", not overlaps, _join(
         sorted({f"{h['file']} shares {h['kind']} text with {h['source']}" for h in overlaps}))))
 
-    # 4. review coverage
     missing = list(review_problems)
     for s in specs:
         wanted = [b["id"] for b in s["behaviors"]] + [i["id"] for i in s.get("replace_or_remove", [])]
@@ -545,7 +520,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     missing += [f"{fid}: no replace_or_remove item" for fid in no_item]
     checks.append(_check("review-coverage", not missing, _join(missing)))
 
-    # 5. script tests
     box = sandbox.kind()
     scripts = script_status(t, scripts_of(out, target), box)
     failed = [s["path"] for s in scripts if s["status"] == "fail"]
@@ -553,7 +527,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
     result = "fail" if failed else ("unverified" if unverified else "pass")
     checks.append(_check("scripts", result, _join([f"{p}: fail" for p in failed] + [f"{p}: unverified" for p in unverified])))
 
-    # 6. target rules
     rules, why = target_rules(t, target)
     rule_fails, flags = ([why] if why else []), []
     if rules:
@@ -568,7 +541,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
             flags += fl
     checks.append(_check("target-rules", not rule_fails, _join(rule_fails)))
 
-    # 7. domain snapshot
     incidents = []
     for p in sorted(handoff.incidents_dir(t).glob("inc-*.json")):
         inc = task.read_json(p)
@@ -576,7 +548,6 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
             incidents.append(inc["incident_id"])
     checks.append(_check("domain-snapshot", not incidents, _join(incidents)))
 
-    # 8. the teammate persona
     persona = persona_check(t, src, review)
     if persona:
         checks.append(persona[0])
@@ -593,17 +564,12 @@ def run(t: task.Task, target: str, budget_exempt: dict[str, str]) -> dict:
         "overlap": overlaps,
         "flags": flags,
         "budget_exempt": {k: evidence.escape(v) for k, v in sorted(budget_exempt.items())},
-        # output folder -> the spec ids its re-sweep hits were matched against.
         "spec_map": {k: [s["spec_id"] for s in v] for k, v in sorted(by_skill.items())},
-        # harness leftovers verify removed from K/out before the checks (targets.drop_harness_folder).
         "removed": removed,
-        # install checks every file it copies against these (spec 8.5).
         "files": {rel: hashlib.sha256(data).hexdigest() for rel, data in out_files},
-        # repo install reads K/persona.md only when its sha256 matches this record.
         "persona": persona[1] if persona else None,
     }
     task.write_json(c / "verify.json", result_doc)
-    # Written on every run, so a stale list never outlives the verify that made it.
     sizes = {rel: text.count("\n") + 1 for rel, text in out_texts}
     task.write_json(t.k / FIXES, fix_list(rs["new"], overlaps, persona[1] if persona else None, sizes))
     t.manifest["gate2"] = gate

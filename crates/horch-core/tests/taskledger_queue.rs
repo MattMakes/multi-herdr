@@ -1,7 +1,3 @@
-//! The task ledger's queue: the claimable rule, claims, fallback, cycles
-//! (#32, #33). The CLI seam has its own tests in horch-e2e; these pin the
-//! rule clause by clause.
-
 use std::path::Path;
 
 use horch_core::taskledger::model::{Actor, WorkerStatus};
@@ -110,7 +106,6 @@ fn an_exclusive_task_runs_alone() {
     add(&mut s, &run, "c", "opus", |_| {});
     let w1 = worker(&mut s, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
-    // X waits for A; C may start beside A.
     let w2 = worker(&mut s, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut s, &w2)), Some(3));
     let w3 = worker(&mut s, &run, "opus");
@@ -165,7 +160,6 @@ fn a_queued_task_behind_a_task_with_its_file_waits_on_the_file() {
     add(&mut s, &run, "b", "opus", |t| {
         t.own = vec!["crates/horch/src/cmd/taskledger.rs".into()]
     });
-    // A slot is held only for a persona with a live worker (TRF-31).
     worker(&mut s, &run, "opus");
     let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
     assert_eq!(waits.len(), 1, "{waits:?}");
@@ -279,7 +273,7 @@ fn plan_workers_subtracts_workers_on_their_way() {
     let (_d, mut s, run) = ledger();
     add(&mut s, &run, "a", "opus", |_| {});
     add(&mut s, &run, "b", "opus", |_| {});
-    worker(&mut s, &run, "opus"); // claiming, not yet claimed
+    worker(&mut s, &run, "opus");
     let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
     assert_eq!(plan[0].startable, 2);
     assert_eq!(plan[0].on_the_way, 1);
@@ -356,7 +350,6 @@ fn shared_checkout_tasks_run_one_at_a_time() {
         t.worktree_mode = WorktreeMode::Shared
     });
     add(&mut s, &run, "c", "opus", |_| {});
-    // A slot is held only for a persona with a live worker (TRF-31).
     worker(&mut s, &run, "opus");
     let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
     assert_eq!(
@@ -437,9 +430,6 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     let w = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1));
     drop(store);
-    // Take the file back to schema 2: undo v7, v6 and the v5 columns, then
-    // the 3 columns of v3 and the 2 of v4. A step left in place runs again
-    // and fails (`duplicate column name`).
     assert_eq!(
         horch_core::taskledger::schema::VERSION,
         9,

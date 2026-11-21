@@ -1,12 +1,3 @@
-//! The execution store: a project's session records.
-//!
-//! The records live in the `session_records` table of a task ledger file
-//! (TRF-45, D10), 1 row per [`LedgerRecordV1`], the record as JSON. A
-//! read-modify-write is 1 immediate SQLite transaction. The old JSON ledger
-//! at `<state_root>/<slug>.json` (the path and slug rule of every earlier
-//! version) is read, never written: `horch ledger import` copies it, and a
-//! record only it holds moves into the table at the next write.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -24,14 +15,8 @@ use crate::runtime::Paths;
 use crate::skills::activation::ResolvedSkillRef;
 use crate::workspace::client::WorkspaceClient;
 
-/// The history text of a record that [`ExecutionStore::end_if_pane_closed`]
-/// ended.
 pub const PANE_CLOSED: &str = "pane closed without horch done";
 
-/// Turn a project path into a filename, matching `tr -c 'A-Za-z0-9' '-'`.
-///
-/// Operates on bytes, exactly as `tr` does, so a multi-byte character becomes one
-/// `-` per byte and slugs computed by the bash version still resolve.
 pub fn slug(project: &str) -> String {
     project
         .bytes()
@@ -45,9 +30,6 @@ pub fn slug(project: &str) -> String {
         .collect()
 }
 
-/// Every ledger file directly under `state_root`, sorted: each `*.json` file
-/// except `policy.json`. Directories are never ledgers, so the dataset tree
-/// under `<state_root>/multi-herdr/` is never read (OD3).
 pub(crate) fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(state_root) else {
         return Vec::new();
@@ -65,9 +47,6 @@ pub(crate) fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// One ledger file's records, or `None` when it cannot be read or does not
-/// parse right now (a write by an old binary may be in flight). An empty
-/// file is an empty ledger.
 pub(crate) fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
     let text = std::fs::read_to_string(path).ok()?;
     if text.trim().is_empty() {
@@ -76,9 +55,6 @@ pub(crate) fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
     serde_json::from_str(&text).ok()
 }
 
-/// Every ledger under `state_root` that reads right now, with its path, in
-/// path order. A ledger that does not parse is left out; a reader that runs
-/// across ticks keeps its last good copy itself (the telemetry collector).
 pub fn read_all_ledgers(state_root: &Path) -> Vec<(PathBuf, Vec<LedgerRecordV1>)> {
     ledger_paths(state_root)
         .into_iter()
@@ -86,25 +62,15 @@ pub fn read_all_ledgers(state_root: &Path) -> Vec<(PathBuf, Vec<LedgerRecordV1>)
         .collect()
 }
 
-/// The `label` prefix that marks a judge record; the attempt follows it.
-/// A judge has no key of its own: `round_id` plus `judge:<attempt>` is its
-/// key (architecture design §4.3).
 const JUDGE_LABEL: &str = "judge:";
 
-/// How long a `Planned` record may wait for its pane before a later spawn
-/// treats its spawner as gone. A spawn takes seconds from insert to pane.
 pub const ABANDONED_AFTER: chrono::Duration = chrono::Duration::minutes(5);
 
-/// Why a ledger record does not convert to an [`Execution`].
 #[derive(Debug)]
 pub enum LegacyError {
     Id(IdError),
     Agent(String),
-    /// `kind`, `experiment_id`, `round_id` and `label` do not name a kind.
-    Kind {
-        record: String,
-        reason: String,
-    },
+    Kind { record: String, reason: String },
 }
 
 impl std::fmt::Display for LegacyError {
@@ -178,11 +144,6 @@ fn judge_kind(r: &LedgerRecordV1, round: &str, label: &str) -> Result<ExecutionK
     })
 }
 
-/// The typed view of a ledger record. Every key of the record has a place in
-/// [`Execution`], so [`from_execution`] gives the record back unchanged.
-///
-/// A `session_id` of `""` (the bash spelling for none) reads as
-/// [`SessionState::Unavailable`] and writes back as `""`.
 pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
     let (workspace, pane) = placement(r)?;
     Ok(Execution {
@@ -239,7 +200,6 @@ fn task_of(r: &LedgerRecordV1) -> Result<Task, LegacyError> {
     })
 }
 
-/// The ledger record of an execution: the inverse of [`to_execution`].
 pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
     let text =
         |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -301,17 +261,8 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
     }
 }
 
-/// The file name of the session records under a state root that has no
-/// task ledger of its own: a test, or a state dir moved with
-/// `HORCH_STATE_DIR` alone.
 pub const STATE_DB: &str = "ledger.sqlite3";
 
-/// The task ledger file that holds the session records of `paths`
-/// (TRF-45): the task ledger, unless the state dir moved. A state dir moved
-/// with `HORCH_STATE_DIR` (a test, a smoke run) keeps its sessions in
-/// `<state_root>/ledger.sqlite3`, as it kept its JSON ledgers in the state
-/// dir before, so it never writes another ledger's sessions. A worker pane
-/// gets the default state dir by name, which is no move.
 pub fn session_db(paths: &Paths) -> PathBuf {
     if paths.state_root == paths.default_state_root {
         paths.ledger_db.clone()
@@ -320,10 +271,6 @@ pub fn session_db(paths: &Paths) -> PathBuf {
     }
 }
 
-/// The session records file and the task ledger to overlay for a reader that
-/// knows only `state_root`: this process's own files when `state_root` is
-/// this process's state root, else `<state_root>/ledger.sqlite3` and no
-/// overlay.
 pub fn session_files(state_root: &Path) -> (PathBuf, Option<PathBuf>) {
     let paths = Paths::from_env(&crate::runtime::ProcessEnv);
     if paths.state_root == state_root {
@@ -333,15 +280,12 @@ pub fn session_files(state_root: &Path) -> (PathBuf, Option<PathBuf>) {
     }
 }
 
-/// 1 row of `session_records`.
 struct SessionRow {
     project_root: String,
     slug: String,
     record: LedgerRecordV1,
 }
 
-/// The session records of the slug `slug` (every slug with `None`), in write
-/// order. A record that does not parse is left out.
 fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT project_root, slug, record_json FROM session_records
@@ -369,8 +313,6 @@ fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<S
         .collect())
 }
 
-/// The session records in `db` when the file exists, without creating it.
-/// A ledger that does not open or read gives none: a read never fails on it.
 fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
     if !db.is_file() {
         return Vec::new();
@@ -380,8 +322,6 @@ fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
         .unwrap_or_default()
 }
 
-/// The old JSON records (read only) that no session record replaces, then
-/// the session records: 1 project's records in write order.
 fn merge_legacy(legacy: Vec<LedgerRecordV1>, rows: Vec<LedgerRecordV1>) -> Vec<LedgerRecordV1> {
     let stored: std::collections::HashSet<&str> =
         rows.iter().map(|r| r.record_id.as_str()).collect();
@@ -393,19 +333,12 @@ fn merge_legacy(legacy: Vec<LedgerRecordV1>, rows: Vec<LedgerRecordV1>) -> Vec<L
     out
 }
 
-/// 1 project's records, as [`read_all_projects`] reads them.
 pub struct ProjectRecords {
-    /// The path its JSON ledger had: `<state_root>/<slug>.json`.
     pub path: PathBuf,
-    /// The project path its session records or JSON records name.
     pub project: Option<String>,
     pub records: Vec<LedgerRecordV1>,
 }
 
-/// Every project's records under `state_root`, in path order: the old JSON
-/// ledgers (read only) merged with the session records in `db`, then the
-/// worker rows of `task_ledger` laid over each project. A JSON ledger that
-/// does not parse right now is left out.
 pub fn read_all_projects(
     state_root: &Path,
     db: &Path,
@@ -414,9 +347,6 @@ pub fn read_all_projects(
     merge_projects(state_root, read_all_ledgers(state_root), db, task_ledger)
 }
 
-/// [`read_all_projects`] over JSON ledgers the caller read already
-/// (`legacy`, path and records): a reader that keeps its last good copy of
-/// each file (the telemetry collector) passes its copies.
 pub fn merge_projects(
     state_root: &Path,
     legacy: Vec<(PathBuf, Vec<LedgerRecordV1>)>,
@@ -458,7 +388,6 @@ pub fn merge_projects(
         .collect()
 }
 
-/// [`read_all_projects`] as (path, records) pairs.
 pub fn read_all_sessions(
     state_root: &Path,
     db: &Path,
@@ -470,37 +399,21 @@ pub fn read_all_sessions(
         .collect()
 }
 
-/// A project's executions.
-///
-/// The records live in the `session_records` table of a task ledger file
-/// (TRF-45, D10): 1 row per record, the record as JSON. An old JSON ledger
-/// (`<state_root>/<slug>.json`) is read, never written: a record only it
-/// holds reads as before and moves into the table at the next write. Reads
-/// lay the task ledger's worker rows over the records (TRF-44,
-/// [`overlay_task_ledger`]). Every write is 1 immediate transaction.
 #[derive(Debug, Clone)]
 pub struct ExecutionStore {
-    /// The old JSON ledger, read only.
     path: PathBuf,
-    /// The task ledger file that holds the session records.
     db: PathBuf,
-    /// The project path as given, and its slug.
     project: String,
     slug: String,
-    /// The task ledger and the project root its runs are under.
     task_ledger: Option<(PathBuf, PathBuf)>,
 }
 
 impl ExecutionStore {
-    /// The store for an explicit state root and project path. The session
-    /// records live in `<state_root>/ledger.sqlite3`.
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
         let state_root = state_root.as_ref();
         Self::in_db(state_root, &state_root.join(STATE_DB), project)
     }
 
-    /// The store for `project` with its session records in `db` and its old
-    /// JSON ledger under `state_root`.
     pub fn in_db(state_root: &Path, db: &Path, project: &str) -> Self {
         let slug = slug(project);
         Self {
@@ -512,9 +425,6 @@ impl ExecutionStore {
         }
     }
 
-    /// The store for `project` under the state root of `paths`, with its
-    /// session records in [`session_db`], reading through the task ledger of
-    /// `paths`.
     pub fn open(paths: &Paths, project: &Path) -> Self {
         Self::in_db(
             &paths.state_root,
@@ -524,32 +434,23 @@ impl ExecutionStore {
         .with_task_ledger(&paths.ledger_db, project)
     }
 
-    /// The store for the context's state root and project, reading through
-    /// the context's task ledger.
     pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
         Ok(Self::open(&ctx.paths, &ctx.paths.project()?))
     }
 
-    /// Read the worker rows of `project`'s runs in the task ledger `db` over
-    /// the records. A ledger file that does not exist adds nothing.
     pub fn with_task_ledger(mut self, db: &Path, project: &Path) -> Self {
         self.task_ledger = Some((db.to_path_buf(), project.to_path_buf()));
         self
     }
 
-    /// The old JSON ledger of this project. Nothing writes it (TRF-45).
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The task ledger file that holds this project's session records.
     pub fn db(&self) -> &Path {
         &self.db
     }
 
-    /// All records, oldest write order preserved, with the task ledger's
-    /// worker rows laid over them ([`overlay_task_ledger`]). No records read
-    /// as an empty ledger. A read never creates a file.
     pub fn read(&self) -> Result<Vec<LedgerRecordV1>> {
         let mut records = self.read_file()?;
         if let Some((db, project)) = &self.task_ledger {
@@ -558,8 +459,6 @@ impl ExecutionStore {
         Ok(records)
     }
 
-    /// The records as stored, without the overlay: what a write starts
-    /// from.
     fn read_file(&self) -> Result<Vec<LedgerRecordV1>> {
         let rows = read_session_rows(&self.db, Some(&self.slug));
         Ok(merge_legacy(
@@ -568,14 +467,10 @@ impl ExecutionStore {
         ))
     }
 
-    /// The stored records, without the overlay, rendered as a JSON ledger
-    /// was written ([`ExecutionStore::render_json`]): what a check of the
-    /// stored bytes reads now that no JSON file is written.
     pub fn stored_json(&self) -> Result<String> {
         Self::render_json(&self.read_file()?)
     }
 
-    /// The old JSON ledger's records. An absent or empty file is none.
     fn read_legacy(&self) -> Result<Vec<LedgerRecordV1>> {
         let raw = std::fs::read_to_string(&self.path).unwrap_or_default();
         if raw.trim().is_empty() {
@@ -585,18 +480,10 @@ impl ExecutionStore {
             .with_context(|| format!("parsing ledger {}", self.path.display()))
     }
 
-    /// The bytes `ExecutionStore::write` puts on disk for `records`:
-    /// `to_string_pretty`, no trailing newline, as every earlier version.
     pub fn render_json(records: &[LedgerRecordV1]) -> Result<String> {
         Ok(serde_json::to_string_pretty(records)?)
     }
 
-    /// The ledger for people and the orchestrator LLM, newest first: what
-    /// `horch sessions` prints. Every line it needs to weigh relevance and
-    /// pick a resumable session id. Orchestrators come first, in their own
-    /// section: they are never resumed with `horch spawn`, so they must not
-    /// read as candidates among the workers. A ledger with no orchestrator
-    /// record renders as before.
     pub fn render_text(records: &[LedgerRecordV1]) -> String {
         let mut records = records.to_vec();
         if records.is_empty() {
@@ -617,9 +504,6 @@ impl ExecutionStore {
         out
     }
 
-    /// Replace this project's session records with `records`, inside the
-    /// transaction `tx`. A record's `status` is brought in line with its
-    /// `state` first. A record id that appears twice keeps its last row.
     fn write(&self, tx: &rusqlite::Transaction, records: &mut [LedgerRecordV1]) -> Result<()> {
         tx.execute("DELETE FROM session_records WHERE slug = ?1", [&self.slug])?;
         let mut insert = tx.prepare(
@@ -643,8 +527,6 @@ impl ExecutionStore {
         Ok(())
     }
 
-    /// Mutate the records and write them back, in 1 immediate transaction
-    /// of the task ledger file: 2 writers cannot interleave.
     pub fn update<T>(&self, f: impl FnOnce(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
         if let Some(dir) = self.db.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -663,8 +545,6 @@ impl ExecutionStore {
         })
     }
 
-    /// Mutate every record addressed by `key` (record id or session id).
-    /// Fails, naming the file, when none matches.
     pub(crate) fn update_key(
         &self,
         key: &str,
@@ -682,7 +562,6 @@ impl ExecutionStore {
         })
     }
 
-    /// Append a record as given. Lifecycle defaults are the caller's job.
     pub fn insert(&self, record: LedgerRecordV1) -> Result<()> {
         self.update(|records| {
             records.push(record);
@@ -690,7 +569,6 @@ impl ExecutionStore {
         })
     }
 
-    /// The newest record addressed by `key`.
     pub fn get(&self, key: &str) -> Result<LedgerRecordV1> {
         self.read()?
             .into_iter()
@@ -698,8 +576,6 @@ impl ExecutionStore {
             .with_context(|| format!("no record matches {key}"))
     }
 
-    /// Set the typed status of the records addressed by `key`; `status`
-    /// follows it. A terminal state stamps `finished_at` once.
     pub fn set_state(&self, key: &str, state: ExecutionStatus) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
@@ -713,17 +589,14 @@ impl ExecutionStore {
         })
     }
 
-    /// Record the exact skills the execution was briefed with (SKL-04).
     pub fn set_skills(&self, key: &str, skills: Vec<ResolvedSkillRef>) -> Result<()> {
         self.update_key(key, |r| r.skills = skills.clone())
     }
 
-    /// Record the launch's native-window decision (CTX-05).
     pub fn set_compact_window(&self, key: &str, window: &LedgerWindow) -> Result<()> {
         self.update_key(key, |r| r.compact_window = Some(window.clone()))
     }
 
-    /// Every record as an [`Execution`].
     pub fn load(&self) -> Result<Vec<Execution>> {
         self.read()?
             .iter()
@@ -731,18 +604,10 @@ impl ExecutionStore {
             .collect()
     }
 
-    /// Append an execution as given.
     pub fn insert_execution(&self, e: &Execution) -> Result<()> {
         self.insert(from_execution(e))
     }
 
-    /// The pane exists and runs the worker command: `Starting`, with its pane.
-    ///
-    /// The worker starts as soon as `pane run` answers, before this write.
-    /// On a loaded machine it can set `Running`, or even finish, first. Its
-    /// state stays then: only a record that no worker has touched yet
-    /// (`Planned`, or `LaunchFailed` by a spawn's recovery) becomes
-    /// `Starting`. The pane is recorded either way.
     pub fn mark_starting(&self, key: &str, pane: &str) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
@@ -758,11 +623,6 @@ impl ExecutionStore {
         })
     }
 
-    /// The worker launches its agent: `Running`. A record that has ended
-    /// keeps its end: the coordinator can time out or cancel a candidate
-    /// while its worker is still starting, and the closed pane then kills
-    /// the worker. `LaunchFailed` (a spawn's recovery) still becomes
-    /// `Running`, because the worker does run.
     pub fn mark_running(&self, key: &str) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
@@ -778,10 +638,6 @@ impl ExecutionStore {
         })
     }
 
-    /// End a record that has not ended yet with the terminal `state`. A
-    /// record that has ended keeps its end: the worker can run `horch done`
-    /// between a caller's read and this write. Returns the newest matching
-    /// record's state after the write, which the caller records.
     pub fn end_live(&self, key: &str, state: ExecutionStatus) -> Result<ExecutionStatus> {
         debug_assert!(state.is_terminal(), "end_live needs a terminal state");
         let at = crate::clock::now_stamp();
@@ -799,14 +655,6 @@ impl ExecutionStore {
         })
     }
 
-    /// The agent process ended with `code` (`None`: killed by a signal, or it
-    /// never started). A live record ends: `Done` on 0, and
-    /// `Failed(AgentExited)` otherwise, unless it is an orchestrator, which
-    /// keeps its state. A record that is already terminal (the worker ran
-    /// `horch done`) only gets the code.
-    ///
-    /// True when it ended the record: the agent left without `horch done`,
-    /// so nobody told the orchestrator.
     pub fn record_exit(&self, key: &str, code: Option<i32>) -> Result<bool> {
         let at = crate::clock::now_stamp();
         let mut ended = false;
@@ -829,22 +677,12 @@ impl ExecutionStore {
         Ok(ended)
     }
 
-    /// The recovery rule for a spawner that stopped between the insert and
-    /// the pane (a crash, or `HORCH_FAULT=abort-after-*`): a `Planned`
-    /// record without a pane whose last update is [`ABANDONED_AFTER`] or more
-    /// before `now` becomes `LaunchFailed`. Its role and brief are freed with
-    /// it. Returns the records it closed. Every `horch spawn` runs it first.
-    ///
-    /// The stage is the last one that may have run; the record cannot say
-    /// which did. A `Planned` record is never live, so until this runs only
-    /// the legacy `status` (`working`) is stale.
     pub fn recover_abandoned(&self, now: DateTime<Utc>) -> Result<Vec<LedgerRecordV1>> {
         let abandoned = |r: &LedgerRecordV1| {
             r.state == Some(ExecutionStatus::Planned)
                 && r.pane_id.is_none()
                 && crate::clock::parse(&r.updated_at).is_some_and(|t| now - t >= ABANDONED_AFTER)
         };
-        // Read first: most spawns find nothing, and then write nothing.
         if !self.read_file()?.iter().any(abandoned) {
             return Ok(Vec::new());
         }
@@ -865,13 +703,6 @@ impl ExecutionStore {
         })
     }
 
-    /// End the newest record addressed by `key` when its pane closed without
-    /// `horch done`: the record is still `working`, names a pane, and herdr
-    /// answers but does not have that pane. The record becomes
-    /// `Failed(PaneVanished)` with the history text [`PANE_CLOSED`], so
-    /// `horch spawn --resume` can reopen it. A pane that is open, a record
-    /// without a pane, an orchestrator, and a herdr that does not answer
-    /// leave the record alone. Returns whether it ended the record.
     pub fn end_if_pane_closed(&self, key: &str, ws: &dyn WorkspaceClient) -> Result<bool> {
         let at = crate::clock::now_stamp();
         match self.closed_working_record(key, ws) {
@@ -880,8 +711,6 @@ impl ExecutionStore {
         }
     }
 
-    /// The newest record `key` addresses, when it is a working worker whose
-    /// pane herdr (answering) does not have.
     fn closed_working_record(&self, key: &str, ws: &dyn WorkspaceClient) -> Option<LedgerRecordV1> {
         let record = self.get(key).ok()?;
         if record.status != STATUS_WORKING || record.is_orchestrator() {
@@ -892,7 +721,6 @@ impl ExecutionStore {
         gone.then_some(record)
     }
 
-    /// Records whose typed status is live: starting or running.
     pub fn live(&self) -> Result<Vec<LedgerRecordV1>> {
         Ok(self
             .read()?
@@ -901,8 +729,6 @@ impl ExecutionStore {
             .collect())
     }
 
-    /// The backend of any record in this store with `workspace_id == workspace`,
-    /// or `None` when no record names it.
     pub fn backend_of_workspace(&self, workspace: &str) -> Result<Option<crate::runtime::Backend>> {
         Ok(self
             .read()?
@@ -913,7 +739,6 @@ impl ExecutionStore {
     }
 }
 
-/// Find the recorded backend of `workspace` across every project in `paths`.
 pub fn workspace_backend(paths: &Paths, workspace: &str) -> Option<crate::runtime::Backend> {
     read_all_projects(
         &paths.state_root,
@@ -926,8 +751,6 @@ pub fn workspace_backend(paths: &Paths, workspace: &str) -> Option<crate::runtim
     .map(|r| r.backend)
 }
 
-/// End the still-working rows of `record_id` as `PaneVanished`. Re-checked
-/// under the lock: the worker may run `horch done` now.
 fn mark_pane_vanished(records: &mut [LedgerRecordV1], record_id: &str, at: &str) -> bool {
     let mut ended = false;
     for r in records.iter_mut() {
@@ -951,7 +774,6 @@ fn mark_pane_vanished(records: &mut [LedgerRecordV1], record_id: &str, at: &str)
     ended
 }
 
-/// The text of each record, in the given order.
 fn render_records(records: &[LedgerRecordV1], out: &mut String) {
     for r in records {
         let session = r.session_id.as_deref().unwrap_or("not-yet-known");
@@ -1003,16 +825,11 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
     }
 }
 
-/// 1 worker row of the task ledger, with the task it claimed.
 struct LedgerWorker {
     worker: crate::taskledger::workers::Worker,
-    /// `T-<seq>: <title>` of the claimed task.
     task: Option<String>,
 }
 
-/// The worker rows of every run of `project` in the task ledger `db`, newest
-/// first. A ledger file that does not exist, or that does not open or read
-/// right now, gives none: a session read never fails on the task ledger.
 fn ledger_workers(db: &Path, project: &Path) -> Vec<LedgerWorker> {
     if !db.is_file() {
         return Vec::new();
@@ -1044,7 +861,6 @@ fn ledger_workers(db: &Path, project: &Path) -> Vec<LedgerWorker> {
     read().unwrap_or_default()
 }
 
-/// The typed status of a worker row.
 fn worker_state(w: &crate::taskledger::workers::Worker) -> ExecutionStatus {
     use crate::taskledger::model::WorkerStatus as W;
     let reason = || w.end_reason.clone().unwrap_or_else(|| w.status.clone());
@@ -1067,7 +883,6 @@ fn worker_state(w: &crate::taskledger::workers::Worker) -> ExecutionStatus {
     }
 }
 
-/// The newest of a worker row's stamps.
 fn worker_updated(w: &crate::taskledger::workers::Worker) -> Option<String> {
     [
         &w.spawned_at,
@@ -1082,9 +897,6 @@ fn worker_updated(w: &crate::taskledger::workers::Worker) -> Option<String> {
     .cloned()
 }
 
-/// The JSON record a worker row stands for: the record it names, else the
-/// newest unclaimed record of its kind, role, workspace and liveness. An
-/// unnamed row matches only a record that no other row names.
 fn matching_record(
     records: &[LedgerRecordV1],
     w: &crate::taskledger::workers::Worker,
@@ -1116,9 +928,6 @@ fn matching_record(
         .map(|(i, _)| i)
 }
 
-/// Lay a worker row over its JSON record. The row wins for what it records:
-/// the claimed task, liveness, session, pane and end. The record keeps what
-/// only it has: history, skills, routing and the window decision.
 fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
     let w = &lw.worker;
     if let Some(task) = &lw.task {
@@ -1176,9 +985,6 @@ fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
     }
 }
 
-/// The record of a worker row that has no JSON record: its id is the
-/// worker id. An orchestrator row without a harness takes the harness of
-/// the newest JSON orchestrator record of its workspace.
 fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRecordV1 {
     let w = &lw.worker;
     let orchestrator = w.kind == KIND_ORCHESTRATOR;
@@ -1228,11 +1034,6 @@ fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRe
     r
 }
 
-/// Lay the task ledger's worker rows for `project` over `records` (TRF-44,
-/// D10 step 1). A row that names a record, or matches one by kind, role and
-/// workspace, updates it in place (`overlay_record`). A row without a
-/// record is added after them (`synthesized_record`). Without the ledger
-/// file the records stay as read.
 pub fn overlay_task_ledger(records: &mut Vec<LedgerRecordV1>, db: &Path, project: &Path) {
     let rows = ledger_workers(db, project);
     if rows.is_empty() {
@@ -1247,7 +1048,6 @@ pub fn overlay_task_ledger(records: &mut Vec<LedgerRecordV1>, db: &Path, project
     for lw in &rows {
         match matching_record(records, &lw.worker, &taken, &named) {
             Some(i) if taken.insert(i) => overlay_record(&mut records[i], lw),
-            // A second row of 1 record (a resume) leaves it to the newest.
             Some(_) => {}
             None => added.push(synthesized_record(lw, records)),
         }
@@ -1308,8 +1108,6 @@ mod trf_44_tests {
             .unwrap();
     }
 
-    /// A run with task T-1 and 1 worker row; `set` is the SQL `SET` list
-    /// for the row, with `?2` the task id.
     fn add_worker(f: &Fixture, new: NewWorker, set: &str) -> String {
         let mut store = Store::open(&f.db).unwrap();
         store
@@ -1392,7 +1190,6 @@ mod trf_44_tests {
         assert!(records[0].execution_status().is_live());
         let text = ExecutionStore::render_text(&records);
         assert!(text.contains("task: T-1: Fix the parser"), "{text}");
-        // The JSON file keeps what the writers wrote.
         assert_eq!(
             f.ledger.store().read_file().unwrap()[0].task,
             "Run horch ledger claim."
@@ -1497,7 +1294,6 @@ mod trf_44_tests {
             persona: "orchestrator".into(),
             ..worker("orchestrator", None)
         };
-        // The stopped row is the done record; the working row has none.
         add_worker(
             &f,
             orchestrator(),
@@ -1547,8 +1343,6 @@ mod trf_45_tests {
             .unwrap();
     }
 
-    /// Spawn, worker start and exit, note and done write the session
-    /// records and never a JSON file.
     #[test]
     fn trf_45_every_session_write_goes_to_the_table_and_no_json_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1590,8 +1384,6 @@ mod trf_45_tests {
         assert_eq!(rows, 2);
     }
 
-    /// An old JSON ledger reads as before, is never written, and its
-    /// records move into the table at the next write.
     #[test]
     fn trf_45_an_old_json_ledger_is_read_and_never_written() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1616,7 +1408,6 @@ mod trf_45_tests {
         assert_eq!(store.read().unwrap().len(), 1, "no duplicate");
     }
 
-    /// A worker row that names a record links the session record to it.
     #[test]
     fn trf_45_a_session_record_names_its_worker_row() {
         use crate::taskledger::runs::{self, NewRun};
@@ -1663,8 +1454,6 @@ mod trf_45_tests {
         assert_eq!(linked, Some(wid));
     }
 
-    /// A state dir moved alone keeps its sessions there; the default state
-    /// dir uses the task ledger.
     #[test]
     fn trf_45_session_db_is_the_task_ledger_unless_the_state_dir_moved() {
         use crate::runtime::MapEnv;

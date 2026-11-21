@@ -1,18 +1,10 @@
-//! End-to-end: each harness sees exactly the skills its teammate's activation
-//! plan activates, through its own native mechanism (SKL-06). A teammate
-//! names `tdd` and `debug` (set A); `execute`, a catalog skill it does not
-//! activate, is set B. The fakes' `inspect_skills` scenario records what the
-//! launch exposed while the agent runs.
-
 use std::path::Path;
 use std::process::Output;
 
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
 
-/// Set A, sorted.
 const ACTIVATED: [&str; 2] = ["debug", "tdd"];
-/// Set B: in the catalog, not activated.
 const NOT_ACTIVATED: &str = "execute";
 
 fn text(o: &Output) -> String {
@@ -23,7 +15,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// Write overlay teammate `name` on `agent`, naming `skills`.
 fn teammate(h: &Harness, name: &str, agent: &str, model: &str, skills: &[&str]) {
     let dir = h.home.join(".config/horch/teammates");
     std::fs::create_dir_all(&dir).unwrap();
@@ -38,8 +29,6 @@ fn teammate(h: &Harness, name: &str, agent: &str, model: &str, skills: &[&str]) 
     .unwrap();
 }
 
-/// A harness with workspace `w1` (root pane `w1:p1`), the `inspect_skills`
-/// scenario, and an overlay teammate `name` on `agent` that names `skills`.
 fn world(test: &str, name: &str, agent: &str, model: &str, skills: &[&str]) -> Harness {
     let mut h = Harness::new(test);
     h.set(
@@ -59,8 +48,6 @@ fn world(test: &str, name: &str, agent: &str, model: &str, skills: &[&str]) -> H
     h
 }
 
-/// Spawn `name`, then run its worker as the new pane would, and return what
-/// the agent's fake saw. `before_worker` runs between the two.
 fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
     let out = h.run(&["spawn", name, "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "spawn {name}: {}", text(&out));
@@ -75,8 +62,6 @@ fn launch(h: &Harness, name: &str, before_worker: impl FnOnce()) -> Value {
     worker.env("HERDR_PANE_ID", &pane);
     let out = worker.output().unwrap();
     assert!(out.status.success(), "worker {name}: {}", text(&out));
-    // fake-herdr records every mutating call (the spawn's split) as a
-    // violation; the agents' fakes record a forbidden environment.
     let violations: Vec<String> = h
         .violations()
         .into_iter()
@@ -98,13 +83,11 @@ fn strings(v: &Value) -> Vec<String> {
     serde_json::from_value(v.clone()).unwrap_or_default()
 }
 
-/// The fake saw exactly set A, and set B nowhere.
 fn sees_exactly_a(r: &Value) {
     assert_eq!(strings(&r["skills"]), ACTIVATED, "{r}");
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }
 
-/// Every dir the fake was pointed at is in this launch's skill bundle.
 fn dirs_in_bundle(r: &Value) {
     let dirs = strings(&r["dirs"]);
     assert!(!dirs.is_empty(), "{r}");
@@ -127,7 +110,6 @@ fn skl_06_e2e_exposure_claude() {
     dirs_in_bundle(&r);
     assert_eq!(strings(&r["flags"]).len(), 2, "1 --plugin-dir: {r}");
     assert_eq!(r["plugins"], serde_json::json!(["horch"]), "{r}");
-    // The bundle dir is named for the execution: the brief's record id.
     let path = h
         .state
         .join("herdr-orchestration-w1/skl-claude-1.brief.json");
@@ -212,9 +194,6 @@ fn skl_06_e2e_exposure_prime() {
     assert_eq!(strings(&r["flags"]).len(), 2, "1 --skill: {r}");
 }
 
-/// agy has no way to be pointed at a skills directory, so horch exposes
-/// none to it. A teammate that names skills is refused before any pane
-/// exists, instead of launching a worker that silently lacks them.
 #[test]
 fn skl_06_e2e_exposure_antigravity() {
     let h = world(
@@ -251,8 +230,6 @@ fn git(h: &Harness, dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?} failed: {}", text(&out));
 }
 
-/// A skill installed from a local git repository launches with git gone:
-/// the roster check accepts its id, and the launch copies it from the store.
 #[test]
 fn skl_06_e2e_marketplace_offline() {
     let mut h = world("skl06m", "skl-market", "claude", "sonnet", &["tdd"]).with_git();
@@ -287,28 +264,17 @@ fn skl_06_e2e_marketplace_offline() {
     let out = h.run(&["skills", "install", &source, "--path", "skills/demo"]);
     assert!(out.status.success(), "install: {}", text(&out));
 
-    // The roster check accepts the installed id.
     teammate(&h, "skl-market", "claude", "sonnet", &["demo", "tdd"]);
     let check = h.run(&["teammates", "--check"]);
     let said = text(&check);
     assert!(!said.contains("unknown bundled skill 'demo'"), "{said}");
 
-    // No git from here on: a launch needs neither the network nor git.
-    // `horch spawn` checks the names against the installed catalog.
     h.set("HORCH_GIT_BIN", "/nonexistent");
     let r = launch(&h, "skl-market", || {});
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }
 
-/// G3 (LA-5): a split pane does not inherit `$XDG_DATA_HOME`. The worker
-/// pane command sets the spawner's store as `HORCH_DATA_DIR` (G8; G3 used a
-/// brief field), so the worker, run without the variable, still finds a
-/// skill installed only in that store.
-///
-/// G7: the worker's agent inherits `HORCH_DATA_DIR`, so a `horch` command
-/// it runs reads the same store. The orchestrator pane command sets
-/// `HORCH_DATA_DIR` too.
 #[cfg(unix)]
 #[test]
 fn worker_reads_the_skill_store_its_spawner_read() {
@@ -350,7 +316,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     teammate(&h, "g3-market", "claude", "sonnet", &["demo", "tdd"]);
     let store = data.join("horch").to_string_lossy().into_owned();
 
-    // The agent: a probe records its environment, then runs fake claude.
     let agent_env = h.tmp.join("agent.env");
     let claude = h.bin.join("claude");
     let probe = h.write_warmed(
@@ -379,8 +344,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
         serde_json::from_str(&std::fs::read_to_string(&brief_path).unwrap()).unwrap();
     assert!(brief.get("data_root").is_none(), "{brief}");
 
-    // G8: the worker pane command names the store, and the worker runs
-    // from that line in a shell without `XDG_DATA_HOME`.
     let set = format!("'HORCH_DATA_DIR={store}'");
     let ran = h
         .calls_of("herdr")
@@ -389,8 +352,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
         .find(|line| line.contains("'worker'"))
         .expect("horch spawn ran a worker command");
     assert!(ran.contains(&set), "{ran}");
-    // The mailbox lives in the state folder, so the line names it too and
-    // the worker finds its brief without the spawner's state variable.
     let state_set = format!("'HORCH_STATE_DIR={}'", h.state.display());
     assert!(ran.contains(&state_set), "{ran}");
     let mut worker = std::process::Command::new("/bin/sh");
@@ -406,7 +367,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     let r = report(&h);
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
 
-    // The agent sees the store, and a `horch` command it runs lists it.
     let env = std::fs::read_to_string(&agent_env).unwrap();
     assert!(
         env.lines().any(|l| l == format!("HORCH_DATA_DIR={store}")),
@@ -425,8 +385,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     assert_eq!(listed["store"], store.as_str(), "{listed}");
     assert!(listed.to_string().contains("\"demo\""), "{listed}");
 
-    // The orchestrator: `horch fleet` names the store in the pane command,
-    // so `pane-launch` sees it in a shell without `XDG_DATA_HOME`.
     let project = h.project.to_string_lossy().into_owned();
     let out = h.run(&["fleet", "--cwd", &project]);
     assert!(out.status.success(), "fleet: {}", text(&out));
@@ -461,11 +419,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     );
 }
 
-/// Write an operator skill directory `<home>/.agents/skills/<name>/`, as
-/// `xcrun agent skills export` would, and overlay teammate `name` on `agent`
-/// that names `tdd` in `skills:` and the operator skill in
-/// `operator_skills:`, with the directory written `~/`-relative. The
-/// teammate states `compact_at`, so `--check` has nothing to say about it.
 fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
     let h = world(test, name, agent, model, &["tdd"]);
     let skill = h.home.join(".agents/skills/test-modernizer");
@@ -476,7 +429,6 @@ fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
     )
     .unwrap();
     std::fs::write(skill.join("references/notes.md"), "notes\n").unwrap();
-    // `--check` insists that a Claude fleet pane denies the Agent tool.
     let deny = if agent == "claude" {
         "disallowed_tools: [Agent]\n"
     } else {
@@ -494,9 +446,6 @@ fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
     h
 }
 
-/// The operator skill reaches the Claude pane through the bundle plugin,
-/// and the briefing names it as expected, with its description. The
-/// operator's directory is left as it was.
 #[test]
 fn operator_skills_e2e_exposure_claude() {
     let h = operator_world("opskc", "op-claude", "claude", "sonnet");
@@ -516,8 +465,6 @@ fn operator_skills_e2e_exposure_claude() {
         .is_file());
 }
 
-/// The spawn's ledger record lists the operator skill next to the catalog
-/// skill, with the operator version and the digest the launch copied.
 #[test]
 fn operator_skills_e2e_ledger_record_lists_them() {
     let h = operator_world("opskr", "op-record", "claude", "sonnet");
@@ -554,8 +501,6 @@ fn operator_skills_e2e_ledger_record_lists_them() {
     );
 }
 
-/// The same operator skill reaches a codex pane, linked in its private
-/// `CODEX_HOME`.
 #[test]
 fn operator_skills_e2e_exposure_codex() {
     if cfg!(windows) {
@@ -575,8 +520,6 @@ fn operator_skills_e2e_exposure_codex() {
     );
 }
 
-/// `horch teammates --check` warns on an operator skill this host lacks
-/// and still passes. The launch skips the skill and the briefing says so.
 #[test]
 fn operator_skills_e2e_check_warns_on_a_missing_name() {
     let h = operator_world("opskm", "op-missing", "claude", "sonnet");
@@ -600,11 +543,6 @@ fn operator_skills_e2e_check_warns_on_a_missing_name() {
     );
 }
 
-/// D20 item 5: `skl_06_e2e_marketplace_offline`, which runs `git init
-/// --bare`, `symbolic-ref` and commit "demo", with `GIT_DIR` and
-/// `GIT_WORK_TREE` aimed at a decoy repository leaves the decoy unchanged.
-/// The child process, not this one, gets the variables: the other tests
-/// run in parallel.
 #[test]
 fn git_env_cannot_reach_another_repository() {
     use horch_marketplace::git::{repo_state, GitRunner};
@@ -635,8 +573,6 @@ fn git_env_cannot_reach_another_repository() {
     assert_eq!(repo_state(&decoy.join(".git")), before, "the decoy changed");
 }
 
-/// Spawn `name`, run `between`, then run its worker as the new pane would,
-/// and return the worker's output, success or not.
 fn worker_after(h: &Harness, name: &str, between: impl FnOnce()) -> Output {
     let out = h.run(&["spawn", name, "--from-pane", "w1:p1", "--no-tile"]);
     assert!(out.status.success(), "spawn {name}: {}", text(&out));
@@ -652,9 +588,6 @@ fn worker_after(h: &Harness, name: &str, between: impl FnOnce()) -> Output {
     worker.output().unwrap()
 }
 
-/// An operator skill edited between the spawn (which recorded its digest)
-/// and the worker's start fails the launch: the agent never runs content
-/// the ledger did not record.
 #[test]
 fn operator_skills_e2e_changed_since_spawn_fails_the_launch() {
     let h = operator_world("opskd", "op-drift", "claude", "sonnet");
@@ -673,8 +606,6 @@ fn operator_skills_e2e_changed_since_spawn_fails_the_launch() {
     assert!(h.calls_of("claude").is_empty(), "the agent ran: {t}");
 }
 
-/// An operator skill deleted between the spawn and the worker's start fails
-/// the launch, instead of the skip that a missing skill gets at spawn.
 #[test]
 fn operator_skills_e2e_deleted_since_spawn_fails_the_launch() {
     let h = operator_world("opskg", "op-gone", "claude", "sonnet");
@@ -687,9 +618,6 @@ fn operator_skills_e2e_deleted_since_spawn_fails_the_launch() {
     assert!(h.calls_of("claude").is_empty(), "the agent ran: {t}");
 }
 
-/// A Claude plugin `code` (version 1.2.0, skills `review` and `lint`) at
-/// `<home>/plugins/code`, and overlay teammate `name` that names `tdd` and,
-/// through `plugin_dirs` and `plugin_skills`, only `code:review`.
 fn plugin_world(test: &str, name: &str) -> Harness {
     let h = world(test, name, "claude", "sonnet", &["tdd"]);
     let root = h.home.join("plugins/code");
@@ -720,7 +648,6 @@ fn plugin_world(test: &str, name: &str) -> Harness {
     h
 }
 
-/// The record of the last spawn of teammate `tier` in the project ledger.
 fn ledger_record(h: &Harness, tier: &str) -> Value {
     let slug: String = h
         .project
@@ -742,10 +669,6 @@ fn ledger_record(h: &Harness, tier: &str) -> Value {
         .unwrap_or_else(|| panic!("no {tier} record in {ledger}"))
 }
 
-/// The spawn's ledger record lists the named plugin skill as
-/// `code:review`, with the plugin's id, its version and the digest of the
-/// skill directory; the unnamed `lint` is not in it. The launch accepts
-/// the record and loads only `review` from the plugin.
 #[test]
 fn plugin_skills_e2e_ledger_record_lists_them() {
     let h = plugin_world("plgr", "plug-record");
@@ -772,8 +695,6 @@ fn plugin_skills_e2e_ledger_record_lists_them() {
     );
 }
 
-/// A plugin skill edited between the spawn and the worker's start fails
-/// the launch and names the skill; the agent never runs.
 #[test]
 fn plugin_skills_e2e_changed_since_spawn_fails_the_launch() {
     let h = plugin_world("plgd", "plug-drift");

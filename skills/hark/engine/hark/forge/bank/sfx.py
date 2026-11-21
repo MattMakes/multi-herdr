@@ -47,9 +47,6 @@ MEASURE_KEYS = ("clicks", "edge_db", "clip_runs", "overs", "dc_db", "ring_z", "t
 SR_CHOICES = (44100, 48000, 88200, 96000)
 
 
-# ---------------------------------------------------------------- detectors
-
-
 def live_ms(y: np.ndarray, sr: int = SR, db: float = LIVE_DB) -> float:
     """Total time (ms) of 1 ms windows within ``db`` of the loudest (part 2, 3.8)."""
     flat = mono(y)
@@ -183,9 +180,6 @@ def layers(y: np.ndarray, sr: int = SR) -> dict[str, Any]:
     kept = _attack_frames(env_, sr)
     attacks = [round((idx * LAYER_HOP + LAYER_WIN / 2) / sr, 3) for idx in kept]
     return {"attacks": attacks, "count": len(attacks), "pre_swell_ms": round((i6 - i30) * LAYER_HOP * 1000 / sr, 1)}
-
-
-# ---------------------------------------------------------------- the audit
 
 
 def _polish(src_obj: np.ndarray) -> dict[str, Any]:
@@ -380,9 +374,6 @@ def _audible_rules(aud: _Audit, wave: np.ndarray, category: str | None, role: st
     return {"polish": meas, "glide": gl_info, "layers": lay_info}
 
 
-# ---------------------------------------------------------------- list, render, check
-
-
 def sfx_list(category: str | None = None, kind: str | None = None) -> dict[str, Any]:
     """``{summary, version, sounds}``: the bank rows with the filters."""
     rows = bank.list_sounds(category=category, kind=kind)
@@ -445,9 +436,6 @@ def sfx_check(path_or_paths: Any, category: str | None = None, role: str | None 
     files = [sfx_check(meas, category, role) for meas in path_or_paths]
     clean = sum(1 for fpath in files if fpath["ok"])
     return {"summary": f"{clean} / {len(files)} clean", "ok": clean == len(files), "files": files}
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def _list_text(payload: dict) -> str:

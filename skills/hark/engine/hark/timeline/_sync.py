@@ -14,8 +14,6 @@ TIME_KEYS = ("t", "time", "sec", "seconds")
 FRAME_KEYS = ("f", "frame")
 
 
-# ---------------------------------------------------------------- cues
-
 def _parse_text(text: str) -> Any:
     s = text.strip()
     if s.startswith("[") or s.startswith("{"):
@@ -82,8 +80,6 @@ def cue_key(cues: Any) -> str:
     return "value:" + json.dumps(cues, sort_keys=True, default=str)
 
 
-# ---------------------------------------------------------------- chance
-
 def chance(times, lo: float, hi: float, tol: float) -> float:
     t = np.sort(np.asarray(list(times), dtype=float))
     if t.size == 0:
@@ -97,8 +93,6 @@ def chance(times, lo: float, hi: float, tol: float) -> float:
         d = np.minimum(d, np.abs(t[k - 1] - grid))
     return round(float(np.mean(d <= tol + 1e-9)), 3)
 
-
-# ---------------------------------------------------------------- sync
 
 def _prominence_thresholds(prom: np.ndarray) -> tuple[float, float]:
     """(strong, accent) prominence thresholds in dB."""

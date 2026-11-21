@@ -1,6 +1,3 @@
-//! Collector branches the other collector tests leave out: the quota file
-//! override, a cursor whose input is gone, and which records show as live.
-
 mod common;
 
 use common::*;
@@ -16,7 +13,6 @@ fn collector(w: &World) -> Collector {
     Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap()
 }
 
-/// A ledger of records `(name, kind, status, task)`, all updated at `now`.
 fn ledger(w: &World, file: &str, records: &[(&str, &str, &str, &str)]) {
     let rows: Vec<_> = records
         .iter()
@@ -60,7 +56,6 @@ fn a_quota_file_override_is_read_and_never_written() {
     let mut c = collector(&w);
     c.quota_env.quota_file = Some(over.clone());
     let snap = c.tick(now()).unwrap();
-    // The pool the override holds is the pool the snapshot shows.
     let shown: Vec<_> = snap
         .pools
         .iter()
@@ -75,7 +70,6 @@ fn a_quota_file_override_is_read_and_never_written() {
         "the state's own file is not made"
     );
 
-    // Without the override the tick writes the state's own file.
     let mut c = collector(&w);
     c.tick(now()).unwrap();
     assert!(horch_core::telemetry::dir(&w.state)
@@ -138,8 +132,6 @@ fn live_rows_show_working_records_and_hide_finished_ones_with_no_recent_event() 
         .filter(|l| l.project.as_deref() == Some("/p"))
         .map(|l| (l.role.as_str(), l.idle, l.task_head.as_str()))
         .collect();
-    // The orchestrator first, then by role. A working record with no recent
-    // event is idle; a done record with none is not listed.
     assert_eq!(
         rows,
         vec![

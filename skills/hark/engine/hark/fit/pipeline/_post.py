@@ -14,13 +14,10 @@ FADE_MIN_S = 0.00025
 PEAK_DB = -1
 TAKE_DC_HZ = 8
 GATE_SMOOTH_S = 0.001
-ATTACK_HOP = 12          # 0.25 ms frames
+ATTACK_HOP = 12
 ATTACK_FRAME_S = 0.00025
 
-Points = list  # [[t s, dB], ...]
-
-
-# ---------------------------------------------------------------- small helpers
+Points = list
 
 
 def _per_channel(y: np.ndarray, fn: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
@@ -50,18 +47,12 @@ def smooth121(x: np.ndarray) -> np.ndarray:
     return 0.25 * p[:-2] + 0.5 * p[1:-1] + 0.25 * p[2:]
 
 
-# ---------------------------------------------------------------- EQ and gain
-
-
 def eq(y: np.ndarray, gains_db: list) -> np.ndarray:
     """The forge minimum-phase third-octave EQ with 28 band gains."""
     from hark.forge.engine import fx
 
     g = np.asarray(gains_db, dtype=np.float64)
     return _per_channel(y, lambda c: np.asarray(fx.eq_bands(c, g, phase="min"), dtype=np.float64))
-
-
-# ---------------------------------------------------------------- attack clamp
 
 
 def _pre_frames(t_on: float, scale: float, anchor: float) -> int:
@@ -169,9 +160,6 @@ def attack_clamp(y: np.ndarray, pre: dict, scale: float = 1, anchor: float = 0) 
     return out
 
 
-# ---------------------------------------------------------------- envelope gain and gate
-
-
 def env_gain(y: np.ndarray, env: dict, scale: float = 1, anchor: float = 0) -> np.ndarray:
     """The optional envelope calibration curve, time-scaled about the anchor."""
     db = np.asarray(env.get("db") or [], dtype=np.float64)
@@ -225,9 +213,6 @@ def apply_post(y: np.ndarray, post: dict | None, scale: float = 1, tail: float =
     if post.get("gate"):
         y = apply_gate(y, post["gate"], scale, tmap)
     return y
-
-
-# ---------------------------------------------------------------- bed layer
 
 
 def _noise_c() -> float:
@@ -300,9 +285,6 @@ def bed_noise(bed: dict, n: int, seed: int = 0) -> np.ndarray:
 def add_bed(y: np.ndarray, bed: dict, seed: int) -> np.ndarray:
     b = bed_noise(bed, len(y), seed)
     return y + (b if y.ndim == 1 else b[:, None])
-
-
-# ---------------------------------------------------------------- take and finish
 
 
 def take_highpass(y: np.ndarray) -> np.ndarray:
