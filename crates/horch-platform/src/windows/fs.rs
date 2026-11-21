@@ -67,7 +67,6 @@ impl OwnerOnly {
         OwnerOnly::from_sddl(&format!("O:{sid}D:P(A;{inherit};FA;;;{sid})"))
     }
 
-    /// The descriptor of the SDDL text `text`.
     fn from_sddl(text: &str) -> io::Result<OwnerOnly> {
         let text = wide_text(text);
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
@@ -128,9 +127,6 @@ impl OwnerOnly {
     }
 }
 
-/// Open `path` itself, never the target of a link, with the access
-/// `access`, and set the parts `info` of its security from `owner` and
-/// `dacl`. A reparse point is an `InvalidInput` error.
 fn set_security(
     path: &Path,
     access: u32,
@@ -184,9 +180,6 @@ fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain([0]).collect()
 }
 
-/// [`crate::fs::create_dir_owner_only`]. The folder `path` that exists
-/// already is made owner-only too ([`keep_owner_only`]). An existing parent
-/// keeps its access.
 pub(crate) fn create_dir_owner_only(path: &Path) -> io::Result<()> {
     if !path.is_dir() {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -199,8 +192,6 @@ pub(crate) fn create_dir_owner_only(path: &Path) -> io::Result<()> {
     keep_owner_only(path)
 }
 
-/// Make each missing folder of `path`, each new one owner-only. An
-/// existing folder keeps its access.
 fn make_missing_dirs(path: &Path) -> io::Result<()> {
     if path.is_dir() {
         return Ok(());
@@ -211,8 +202,6 @@ fn make_missing_dirs(path: &Path) -> io::Result<()> {
     make_dir(path).map(|_| ())
 }
 
-/// Make the folder `path`, owner-only. `false` when a folder is at `path`
-/// already.
 fn make_dir(path: &Path) -> io::Result<bool> {
     let descriptor = OwnerOnly::new("OICI")?;
     let attributes = descriptor.attributes();
@@ -262,8 +251,6 @@ fn keep_owner_only(path: &Path) -> io::Result<()> {
     }
 }
 
-/// `None` when `me` owns the folder `path` and its DACL is owner-only, else
-/// the gap. The error is a folder that cannot be checked.
 fn owner_only_gap(path: &Path, me: &User) -> Result<Option<String>, String> {
     let folder =
         open_no_follow(path).map_err(|e| format!("the open without a link failed: {e}"))?;
@@ -501,8 +488,6 @@ impl BreakerGuard {
 mod tests {
     use super::*;
 
-    /// Make the folder `path` with the SDDL descriptor `sddl`, as an older
-    /// horch or another program made it.
     fn make_dir_with(path: &Path, sddl: &str) {
         let descriptor = OwnerOnly::from_sddl(sddl).unwrap();
         let attributes = descriptor.attributes();
@@ -513,7 +498,6 @@ mod tests {
         assert_ne!(made, 0, "{}", io::Error::last_os_error());
     }
 
-    /// The gap of the folder `path`, `None` when it is owner-only.
     fn gap(path: &Path) -> Option<String> {
         owner_only_gap(path, &current_user().unwrap()).unwrap()
     }

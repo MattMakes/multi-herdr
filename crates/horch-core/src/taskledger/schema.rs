@@ -2319,9 +2319,6 @@ mod v7_tests {
         conn.pragma_update(None, "user_version", version).unwrap();
     }
 
-    /// D266-F2: a ledger of an older Windows horch at version
-    /// [`PHASE_7_VERSION`], with the verbatim root of 1 project and a second
-    /// row in the plain form that the upgraded horch made.
     fn verbatim_root_file(path: &std::path::Path) {
         file_at(path, PHASE_7_VERSION);
         let conn = Connection::open(path).unwrap();
@@ -2340,7 +2337,6 @@ mod v7_tests {
         .unwrap();
     }
 
-    /// Every project row, as (id, root), by id.
     fn project_rows(conn: &Connection) -> Vec<(String, String)> {
         conn.prepare("SELECT project_id, root FROM projects ORDER BY project_id")
             .unwrap()
