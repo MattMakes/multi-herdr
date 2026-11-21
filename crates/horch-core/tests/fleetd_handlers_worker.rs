@@ -13,12 +13,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use horch_core::fleetd::fleet_runtime::adapters::clock_store;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{register, WorkerDeps};
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers};
 use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
+use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
+use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
+use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -115,6 +121,27 @@ fn world() -> World {
 }
 
 impl World {
+    /// The bind of `task` to 1 push attempt in `launching` of a new
+    /// `spawning` worker, as the dispatch of fleetd does it. Gives its
+    /// worker.
+    fn bind(&mut self, task: &str) -> String {
+        let tx = self.conn.transaction().unwrap();
+        let config = FleetConfig::default();
+        let git = Git::new("git");
+        let ctx = DispatchCtx {
+            jobs: JobCtx {
+                guard: Some(Generation(1)),
+                config: &config,
+                needs_you: &NeedsYouList,
+            },
+            clock: clock_store::read(&tx).unwrap(),
+            git: &git,
+        };
+        let bound = dispatch::bind(&tx, &ctx, task, "opus", &NewWorker::default()).unwrap();
+        tx.commit().unwrap();
+        bound.worker_id
+    }
+
     fn add(&self, title: &str, mode: WorktreeMode) -> String {
         let mut t = NewTask::work(title, &format!("docs/{title}.md"), "opus");
         t.ticket_snapshot = Some("# A ticket\n".into());
@@ -456,4 +483,59 @@ fn worker_launch_failed_ends_an_unclaimed_row() {
     );
     assert!(why.contains("is not a worker of run"), "{why}");
     assert_eq!(workers::get(&w.conn, &other).unwrap().status, "spawning");
+}
+
+#[test]
+fn worker_launch_failed_of_a_push_attempt_ends_it_crashed_and_queues_the_task() {
+    let mut w = world();
+    let task = w.add("T", WorktreeMode::Shared);
+    let wid = w.bind(&task);
+    let attempt = format!("{task}/A1");
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "no record matches 'x'" }),
+    );
+    assert_eq!(workers::get(&w.conn, &wid).unwrap().status, "launch_failed");
+    let (state, outcome): (String, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE id = ?1",
+            [&attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), outcome.as_deref()),
+        ("ended", Some("crashed")),
+        "{}",
+        w.rows()
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(
+        (t.status.as_str(), t.attempts),
+        ("ready", 1),
+        "{}",
+        w.rows()
+    );
+    assert_eq!(t.current_worker_id, None, "{}", w.rows());
+
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "again" }),
+    );
+    let ended: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM attempts WHERE task_id = ?1 AND state = 'ended'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ended, 1, "{}", w.rows());
+    assert_eq!(
+        tasks::get(&w.conn, &task).unwrap().attempts,
+        1,
+        "{}",
+        w.rows()
+    );
 }

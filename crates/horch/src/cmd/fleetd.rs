@@ -2010,9 +2010,6 @@ mod tests {
         assert!(!binary_changed(&started), "a missing binary");
     }
 
-    /// A pass of a unit test must not start the test binary as `job run
-    /// <n>`: the test binary reads those words as test filters, runs a pass
-    /// again, and starts the next one with no end.
     #[test]
     fn a_job_host_of_the_pass_runs_the_sibling_horch_and_not_this_binary() {
         let dir = tempfile::tempdir().unwrap();

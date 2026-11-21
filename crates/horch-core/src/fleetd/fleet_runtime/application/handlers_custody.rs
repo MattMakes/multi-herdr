@@ -308,12 +308,6 @@ fn refuse_drop(d: &WorktreeDrop, recorded: &str) -> Result<()> {
     Ok(())
 }
 
-/// The refusal of a tree at `path` whose HEAD is not `checked`, the HEAD
-/// that the checks of the command used (RR-13). fleetd reads the HEAD in
-/// the transaction that writes the drop. A commit after this read is not
-/// lost: the `rescue` job reads the HEAD again and saves it, and the
-/// `worktree_remove` job removes the tree only when its HEAD is the parent
-/// of the rescue commit.
 fn refuse_moved_head(c: &Custody, path: &Path, checked: &str) -> Result<()> {
     match c.refs.tip(path, "HEAD")? {
         Some(head) if head == checked => Ok(()),

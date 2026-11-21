@@ -258,6 +258,27 @@ fn crash(tx: &Connection, guard: Option<Generation>, p: &Pending, why: &str) -> 
     commands::schedule_retry(tx, &p.task_id, why)
 }
 
+/// The spawn of worker `worker_id` failed before its agent ran, for `why`:
+/// end each push attempt of the worker in `launching` `crashed` in `tx`,
+/// as a failed tree does. Its launch record stays, so no pass launches it
+/// again. Gives the ended attempts.
+pub fn end_failed_spawn(
+    tx: &Connection,
+    guard: Option<Generation>,
+    worker_id: &str,
+    why: &str,
+) -> Result<Vec<String>> {
+    let mut ended = Vec::new();
+    for p in pending(tx)?
+        .into_iter()
+        .filter(|p| p.worker_id == worker_id)
+    {
+        crash(tx, guard, &p, why)?;
+        ended.push(p.id);
+    }
+    Ok(ended)
+}
+
 /// Part 2 of a pass, in the open transaction `tx` of the fleetd of
 /// generation `guard`: the decision for each push attempt in `launching`,
 /// with `alive` as the process facts of part 1. It ends each attempt whose

@@ -61,7 +61,6 @@ const CLAIM: &str = "horch fleet start starts fleetd and herdr with no orchestra
 /// The new action of `horch fleet stop`.
 const FLEET_STOP: &str = r#"No orchestrator runs, so there is none to stop. fleetd and the herdr server stay under the service manager of the OS. To stop 1 worker: horch ledger stop <worker> "<reason>""#;
 
-/// Each kind that this ticket and T-302 retire, and its new action.
 const RETIRED_KINDS: [(&str, &str); 8] = [
     ("spawn", SPAWN),
     ("worker_new", RECORDS),
@@ -675,10 +674,6 @@ fn retired_worker_kind_request_file_is_refused_with_the_new_action() {
     assert_eq!(w.requests(), Vec::<(String, String)>::new());
 }
 
-/// A `spawn_adopt` request file with the operator token and the payload of
-/// a restart row that the old handler adopted: fleetd rejects it as
-/// retired, records the rejection in `ingested` and in 1 needs-you item,
-/// and changes no other row (SR-8, R8-F3).
 #[test]
 fn spawn_adopt_request_file_is_refused_as_retired_and_changes_no_row() {
     let w = World::down();

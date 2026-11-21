@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 
@@ -144,33 +144,45 @@ fn declare_gates(h: &Harness, fast: &str) {
 /// served fleetd, so the test waits for the pass and for the record of each
 /// launch before the next restart.
 fn pass(h: &Harness, before: impl FnOnce()) {
-    let heartbeat = h.fleet_root().join("run").join("heartbeat.json");
-    let read = || std::fs::read_to_string(&heartbeat).unwrap_or_default();
-    h.without_fleetd(before);
-    // The start writes 1 heartbeat before the channel, and the pass writes
-    // the next one. A pass that ended before this read leaves no change, so
-    // the wait is bounded.
-    let started = read();
-    let until = Instant::now() + Duration::from_secs(10);
-    while read() == started && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let mut restarted = SystemTime::now();
+    h.without_fleetd(|| {
+        before();
+        restarted = SystemTime::now();
+    });
+    wait_for_or(
+        "the pass of the new fleetd",
+        || pass_ended_since(h, restarted).then_some(()),
+        || evidence(h),
+    );
     // Each launch of the pass runs `horch spawn`, which records the pane of
     // its worker through the channel.
-    let until = Instant::now() + Duration::from_secs(30);
-    while !unrecorded_launches(h).is_empty() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(100));
+    wait_for_or(
+        "the spawn of each launch of the pass",
+        || unrecorded_launches(h).is_empty().then_some(()),
+        || evidence(h),
+    );
+}
+
+fn pass_ended_since(h: &Harness, t: SystemTime) -> bool {
+    let run = h.fleet_root().join("run");
+    let mtime = |name: &str| {
+        std::fs::metadata(run.join(name))
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    match (mtime("activity.json"), mtime("heartbeat.json")) {
+        (Some(activity), Some(heartbeat)) => activity >= t && heartbeat >= activity,
+        _ => false,
     }
 }
 
-/// The attempts in `launching` that fleetd launched and whose worker has
-/// no pane yet.
 fn unrecorded_launches(h: &Harness) -> Vec<String> {
     let launches = h.fleet_root().join("run").join("launches");
     ledger_rows(
         h,
         "SELECT a.id FROM attempts a JOIN workers w ON w.worker_id = a.worker_id \
-         WHERE a.state = 'launching' AND w.pane_id IS NULL",
+         WHERE a.state = 'launching' AND a.task_id IS NOT NULL AND w.pane_id IS NULL \
+         AND w.status = 'spawning'",
     )
     .into_iter()
     .filter(|id| {
@@ -313,6 +325,7 @@ fn evidence(h: &Harness) -> String {
         "SELECT 'branch ' || name || ' ' || ifnull(landing_state, '-') FROM branches",
         "SELECT 'bundle ' || id || ' ' || state FROM bundles",
         "SELECT 'item ' || key || ' ' || state || ' ' || text FROM needs_you",
+        "SELECT 'worker ' || worker_id || ' ' || status || ' pane ' || ifnull(pane_id, '-') FROM workers",
     ]
     .iter()
     .flat_map(|q| ledger_rows(h, q))
@@ -320,6 +333,25 @@ fn evidence(h: &Harness) -> String {
         h.calls_of("claude")
             .iter()
             .map(|c| format!("claude call: {}", c["result"])),
+    )
+    .chain(
+        std::fs::read_dir(h.fleet_root().join("run").join("launches"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| format!("launch record: {}", e.file_name().to_string_lossy())),
+    )
+    .chain(
+        std::fs::read_to_string(h.fleet_root().join("run").join("launch.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| format!("launch.log: {l}")),
+    )
+    .chain(
+        std::fs::read_to_string(h.root.join("fleetd.stderr"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| format!("fleetd: {l}")),
     )
     .collect::<Vec<_>>()
     .join("\n")
@@ -345,6 +377,8 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
             h.set("HORCH_LEDGER_DB", db.to_string_lossy());
             h.set("HORCH_NO_WAKE", "1");
             h.set("HORCH_NO_WATCHDOG", "1");
+            // No wake pass, so no launch starts after `pass` waited for its spawns: the test stops fleetd many times, the fleet clock adds 0 s on the 1st tick after each restart, so the 30 s backoff of a retry never ends here, and this test is of the bundle rule, not of the retry.
+            h.set("HORCH_FAULT", "drop-watch-events");
             h.set(
                 "HORCH_QUOTA_FILE",
                 fixtures().join("quota/all-ok.json").to_string_lossy(),
