@@ -55,6 +55,10 @@ fn is_worker(kind: &str) -> bool {
     kind == KIND_WORKER
 }
 
+fn is_herdr(backend: &crate::runtime::Backend) -> bool {
+    *backend == crate::runtime::Backend::Herdr
+}
+
 /// The name every caller still uses for a ledger record.
 pub type Record = LedgerRecordV1;
 
@@ -148,6 +152,10 @@ pub struct LedgerRecordV1 {
     /// key, and its resume then refuses a reserved model as before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub model_override: bool,
+    /// Which pane host owns this execution's workspace. Absent when `herdr`,
+    /// so records written before HCB-03 keep their bytes.
+    #[serde(default, skip_serializing_if = "is_herdr")]
+    pub backend: crate::runtime::Backend,
 }
 
 /// A launch's native auto-compact window decision, in the ledger's own
@@ -216,6 +224,7 @@ impl Default for LedgerRecordV1 {
             skills: Vec::new(),
             compact_window: None,
             model_override: false,
+            backend: crate::runtime::Backend::Herdr,
         }
     }
 }

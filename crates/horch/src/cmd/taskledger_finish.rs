@@ -16,7 +16,7 @@ use horch_core::taskledger::runs;
 use horch_core::taskledger::stop;
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 use super::taskledger::{
     codex_personas, exit_of, json, reviewers_down, stop_grace, tools, worker_id, HerdrPanes,
@@ -100,14 +100,14 @@ fn detaches(ctx: &RuntimeContext, store: &Store, wid: &str, how: &How) -> bool {
 
 /// Why horch mail to the worker would not reach this pane, if it would not.
 fn mail_unreachable(ctx: &RuntimeContext, store: &Store, wid: &str) -> Option<String> {
-    let role = match workers::get(store.conn(), wid) {
-        Ok(w) => w.role,
+    let w = match workers::get(store.conn(), wid) {
+        Ok(w) => w,
         Err(e) => return Some(format!("{e:#}")),
     };
-    let Some(role) = role else {
+    let Some(role) = w.role else {
         return Some("this worker has no role".into());
     };
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::for_backend(ctx, w.backend);
     let registered = Mailbox::resolve_in(&herdr, ctx)
         .ok()
         .and_then(|m| m.pane_for(&role));

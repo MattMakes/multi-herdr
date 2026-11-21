@@ -36,7 +36,7 @@ Work in `motion-match/<scene-id>/`.
 5. Make `contact-sheet.png`: every keyframe in a grid, each labelled with its frame number, timestamp in seconds and `tau`.
    - Warning: the local `ffmpeg` has no `drawtext` filter. Do not label tiles with `ffmpeg`.
    - Write `contact-sheet.html`: a CSS grid of `<img>` tiles with an HTML caption under each tile.
-   - Capture it with headless Chrome: `"<chrome>" --headless=new --screenshot=contact-sheet.png --window-size=1920,1080 file://$PWD/contact-sheet.html`.
+   - Capture it with headless Chrome: `"<chrome>" --headless=new --disable-features=MacAppCodeSignClone --screenshot=contact-sheet.png --window-size=1920,1080 file://$PWD/contact-sheet.html`.
 6. Write `motion-spec.json` (format below).
 
 `tau` is normalized time in [0, 1]: `tau = t / duration_sec` of the clip. A rebuilt scene of a different length maps its times by the same `tau`.

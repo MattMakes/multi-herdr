@@ -552,9 +552,13 @@ async function withChrome(fn) {
   return openPage(chrome).then(fn).finally(closeChrome.bind(null, chrome));
 }
 
+// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
+// during its start leaves that copy on the disk, and macOS records each copy as one more
+// "Google Chrome" in its privacy lists. --disable-features=MacAppCodeSignClone stops the copy.
 function chromeArgs(userDir) {
   return ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDir}`, '--hide-scrollbars',
-    '--mute-audio', '--no-first-run', '--no-default-browser-check', '--force-color-profile=srgb', 'about:blank'];
+    '--mute-audio', '--no-first-run', '--no-default-browser-check', '--force-color-profile=srgb',
+    '--disable-features=MacAppCodeSignClone', 'about:blank'];
 }
 
 function onChromeLog(log, ok, chunk) { // resolve with the DevTools URL once Chrome prints it

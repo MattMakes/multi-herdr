@@ -8,6 +8,7 @@
 use anyhow::Result;
 
 use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::model::{Direction, NewWorkspace, Pane};
 
 pub trait WorkspaceClient {
@@ -69,5 +70,49 @@ impl WorkspaceClient for Herdr {
     }
     fn server_reachable(&self) -> bool {
         Herdr::server_reachable(self)
+    }
+}
+
+impl WorkspaceClient for PaneHost {
+    fn pane_get(&self, pane: &str) -> Result<Pane> {
+        PaneHost::pane_get(self, pane)
+    }
+    fn pane_list(&self, workspace: &str) -> Result<Vec<Pane>> {
+        PaneHost::pane_list(self, workspace)
+    }
+    fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {
+        PaneHost::pane_split(self, from, direction)
+    }
+    fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
+        PaneHost::pane_run(self, pane, command)
+    }
+    fn pane_close(&self, pane: &str) -> Result<()> {
+        PaneHost::pane_close(self, pane)
+    }
+    fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
+        PaneHost::agent_prompt(self, pane, text)
+    }
+    fn pane_send_text(&self, pane: &str, text: &str) -> Result<()> {
+        PaneHost::pane_send_text(self, pane, text)
+    }
+    fn pane_send_keys(&self, pane: &str, keys: &str) -> Result<()> {
+        PaneHost::pane_send_keys(self, pane, keys)
+    }
+    fn pane_read(&self, pane: &str, source: &str) -> Result<String> {
+        PaneHost::pane_read(self, pane, source)
+    }
+    fn workspace_create(
+        &self,
+        label: &str,
+        cwd: Option<&str>,
+        focus: bool,
+    ) -> Result<NewWorkspace> {
+        PaneHost::workspace_create(self, label, cwd, focus)
+    }
+    fn workspace_close(&self, workspace: &str) -> Result<()> {
+        PaneHost::workspace_close(self, workspace)
+    }
+    fn server_reachable(&self) -> bool {
+        PaneHost::server_reachable(self)
     }
 }

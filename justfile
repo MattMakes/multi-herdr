@@ -10,8 +10,8 @@
 # on demand via `cargo run`, so they always run the current source tree,
 # never a stale installed copy - useful for development.
 #
-# All recipes need a running herdr server (launch the herdr app, or
-# `herdr server` headless), and work from ANY terminal - herdr's socket has
+# All recipes need a running herdr server (`herdr server` headless) or an
+# open Herdr app window, and work from ANY terminal - the host socket has
 # no client ancestry check.
 
 cwd := invocation_directory()

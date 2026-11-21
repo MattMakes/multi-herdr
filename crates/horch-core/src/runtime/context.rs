@@ -13,6 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
+use super::backend::Backend;
 use super::bins::{BinOverrides, HarnessBins};
 use super::fault::Faults;
 use super::paths::{nonempty_path, Paths};
@@ -110,13 +111,15 @@ impl EnvSource for MapEnv {
     }
 }
 
-/// The herdr pane and workspace this process runs in.
+/// The pane host, pane, and workspace this process runs in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HerdrEnv {
+    /// The resolved pane host backend (`herdr` or `hc`).
+    pub backend: Backend,
     /// `HORCH_WORKSPACE_ID`: the public workspace id, set for a worker's
     /// children once it has registered.
     pub workspace: Option<WorkspaceId>,
-    /// `HERDR_PANE_ID`: herdr's internal id for this pane (`p_2`).
+    /// `HERDR_PANE_ID` on `herdr`, or `HC_TERMINAL_ID` on `hc`.
     pub pane: Option<PaneId>,
 }
 
@@ -241,6 +244,11 @@ pub struct Inherited {
     /// `HERDR_SOCKET_PATH`: the herdr server socket a pane's horch commands
     /// connect to.
     pub herdr_socket_path: Option<PathBuf>,
+    /// `HC_TERMINAL_SOCKET`: the herdr-core socket a terminal's horch commands
+    /// connect to.
+    pub hc_terminal_socket: Option<PathBuf>,
+    /// `HERDR_APP_HOME`: overrides `~/.config/herdr-app` for the Herdr app socket.
+    pub herdr_app_home: Option<PathBuf>,
     /// `OPENCODE_DISABLE_EXTERNAL_SKILLS` (an OpenCode harness default yields to it).
     pub opencode_disable_external_skills: Option<String>,
     /// `RLM_MAX_DEPTH` (a Prime harness default yields to it).
@@ -292,6 +300,8 @@ impl Inherited {
             hostname: nonempty("HOSTNAME").or_else(|| nonempty("COMPUTERNAME")),
             herdr_session: nonempty("HERDR_SESSION"),
             herdr_socket_path: nonempty_path(env, "HERDR_SOCKET_PATH"),
+            hc_terminal_socket: nonempty_path(env, "HC_TERMINAL_SOCKET"),
+            herdr_app_home: nonempty_path(env, "HERDR_APP_HOME"),
             opencode_disable_external_skills: env.var("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
             rlm_max_depth: env.var("RLM_MAX_DEPTH"),
             claude_code_auto_compact_window: env.var("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
@@ -362,18 +372,34 @@ pub struct RuntimeContext {
 
 impl RuntimeContext {
     pub fn from_env(env: &dyn EnvSource) -> Result<RuntimeContext> {
+        Self::from_env_with_backend(env, None)
+    }
+
+    pub fn from_env_with_backend(
+        env: &dyn EnvSource,
+        explicit_backend: Option<&str>,
+    ) -> Result<RuntimeContext> {
         let nonempty = |key: &str| env.var(key).filter(|s| !s.is_empty());
         let inherited = Inherited::from_env(env);
 
+        let herdr_pane = nonempty("HERDR_PANE_ID");
+        let hc_terminal = nonempty("HC_TERMINAL_ID");
+        let env_backend = nonempty("HORCH_BACKEND");
+        let explicit = explicit_backend.or(env_backend.as_deref());
+        let backend =
+            super::backend::resolve(explicit, herdr_pane.is_some(), hc_terminal.is_some())?;
+        let (pane_raw, pane_var) = match backend {
+            Backend::Herdr => (herdr_pane, "HERDR_PANE_ID"),
+            Backend::Hc => (hc_terminal, "HC_TERMINAL_ID"),
+        };
+
         let herdr = HerdrEnv {
+            backend,
             workspace: nonempty("HORCH_WORKSPACE_ID")
                 .map(WorkspaceId::new)
                 .transpose()
                 .context("HORCH_WORKSPACE_ID")?,
-            pane: nonempty("HERDR_PANE_ID")
-                .map(PaneId::new)
-                .transpose()
-                .context("HERDR_PANE_ID")?,
+            pane: pane_raw.map(PaneId::new).transpose().context(pane_var)?,
         };
 
         let overrides = BinOverrides::from_env(env);
@@ -589,7 +615,12 @@ mod tests {
             ctx.bins.harness.sqlite3,
             PathBuf::from("/fake/HORCH_SQLITE3_BIN")
         );
-        assert_eq!(ctx.bins.overrides.env_pairs().len(), 10);
+        assert_eq!(ctx.bins.harness.hc, PathBuf::from("/fake/HORCH_HC_BIN"));
+        assert_eq!(
+            ctx.bins.harness.herdr_app,
+            PathBuf::from("/fake/HORCH_HERDR_APP_BIN")
+        );
+        assert_eq!(ctx.bins.overrides.env_pairs().len(), 12);
 
         let s = &ctx.settings;
         assert_eq!(s.now, crate::clock::parse("2026-09-28T18:00:00Z"));

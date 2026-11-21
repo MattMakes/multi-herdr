@@ -3,8 +3,7 @@
 //! answers each herdr call with canned JSON and moves nothing.
 
 use horch_core::runtime::{MapEnv, RuntimeContext};
-use horch_core::workspace::arrange;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::{arrange, PaneHost};
 
 #[path = "common/warm.rs"]
 mod warm;
@@ -26,7 +25,7 @@ fn layout(tab: &str, zoomed: bool, panes: &[(&str, i64, i64, i64, i64)]) -> Stri
 struct World {
     _dir: tempfile::TempDir,
     ctx: RuntimeContext,
-    herdr: Herdr,
+    herdr: PaneHost,
 }
 
 /// A script that answers `workspace list`, `tab list`, `pane list`, `pane
@@ -94,7 +93,7 @@ fn world(label: &str, tabs: &[(&str, String, &[&str])]) -> World {
         .with("HORCH_STATE_DIR", state.to_str().unwrap())
         .with("TMPDIR", dir.path().to_str().unwrap());
     let ctx = RuntimeContext::from_env(&env).unwrap();
-    let herdr = Herdr::with_bin(&script);
+    let herdr = PaneHost::herdr_bin(&script);
     World {
         _dir: dir,
         ctx,

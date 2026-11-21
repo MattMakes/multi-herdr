@@ -34,8 +34,8 @@ use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{PermissionMode, Roster};
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::client::WorkspaceClient;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::at_prompt;
+use horch_core::workspace::PaneHost;
 
 use super::context::record_kind;
 
@@ -345,14 +345,14 @@ fn plan_pane(env: &Env, role: &str) -> Result<(Record, String), String> {
 
 /// `horch mode`.
 pub fn mode(ctx: &RuntimeContext, args: &ModeArgs) -> Result<ExitCode> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = match Mailbox::resolve_in(&herdr, ctx) {
+    let mailbox = match Mailbox::resolve_in(&PaneHost::of(ctx), ctx) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("horch mode: refused: {e:#}");
             return Ok(ExitCode::from(1));
         }
     };
+    let herdr = PaneHost::for_workspace(ctx, mailbox.workspace_id());
     let ledger = SessionLedger::open_in(ctx)?;
     let roster = match super::load_roster_unwarned(ctx, None) {
         Ok(r) => r,

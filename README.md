@@ -1,8 +1,11 @@
 # multi-herdr
 
-"horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
+"horch" multi-agent orchestration layouts for [herdr](https://herdr.dev) —
+supporting both the `herdr` TUI server and `herdr-core` (`hc`) plus the Herdr
+desktop app (`herdr-app`) — in Rust.
 
-Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
+Three binaries, no runtime dependencies beyond the pane host (`herdr` or `hc` +
+`herdr-app`) itself. No bash, no jq, no
 Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
 skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
@@ -168,6 +171,7 @@ See [docs/testing-and-gates.md](docs/testing-and-gates.md) and
 
 | capability | default | turn it on | turn it off | where |
 |---|---|---|---|---|
+| Pane host backend | `hc` inside a Herdr desktop app terminal; `herdr` everywhere else | `--backend hc`, or `HORCH_BACKEND=hc` | `--backend herdr`, or `HORCH_BACKEND=herdr` | global flag, environment |
 | Update horch and the agent CLIs at fleet start | on | - | `--no-update`, or `HORCH_NO_UPDATE=1` | `horch fleet` / `horch orchestration` flag, environment |
 | Release cooldown of the agent CLI updates | 7 days | `HORCH_UPDATE_COOLDOWN_DAYS=<days>` | `HORCH_UPDATE_COOLDOWN_DAYS=0` | environment |
 | Stale-binary warning of `doctor`, `spawn`, `inbox` | on | - | `HORCH_NO_SELF_CHECK=1` | environment |
@@ -228,14 +232,48 @@ one, but only when a release is newer than its version.
 If you download an archive in a browser on macOS, clear the quarantine flag
 before you run it: `xattr -d com.apple.quarantine horch herdr-install`.
 
+### Pick and start your pane host first
+
+`horch` (and the `herdr-fleet` launcher) connects to one of **two separate
+terminal hosts**. They are independent daemons with **no bridge between them**,
+and neither `horch fleet` nor `herdr-fleet` starts a server for you — start the
+one you want first:
+
+- **Herdr desktop app (`hc` backend):** powered by `herdr-core` (`hc` +
+  `herdr-app`). Open the Herdr desktop app before starting a fleet. Terminals
+  live in `herdr-core` — visible in the Herdr app and `hc ls`, **not** in the
+  `herdr` CLI/TUI.
+- **`herdr` CLI/TUI (`herdr` backend):** powered by `herdr server`. Install it
+  with `herdr-install` if you do not have it yet, then launch `herdr` or run
+  `herdr server` headless. Terminals live in `herdr server` — visible in the
+  `herdr` CLI/TUI, **not** in the Herdr desktop app or `hc ls`.
+
+Which host `horch` / `herdr-fleet` talks to depends on the flag and the terminal
+you run it from:
+
+- **`horch fleet`** / **`herdr-fleet`** (no flag):
+  - Inside a **Herdr desktop app** terminal (`HC_TERMINAL_ID` is set) → uses
+    **`hc`** (`herdr-core` + the Herdr desktop app).
+  - Anywhere else (Ghostty, iTerm, Terminal.app, `herdr` TUI, etc.) → uses
+    **`herdr`** (`herdr server` / CLI/TUI).
+- **`horch fleet --backend herdr`** / **`herdr-fleet --backend herdr`** (or
+  `HORCH_BACKEND=herdr`) → always uses **`herdr server`** (the `herdr`
+  CLI/TUI), even from inside a Herdr desktop app terminal.
+- **`horch fleet --backend hc`** / **`herdr-fleet --backend hc`** (or
+  `HORCH_BACKEND=hc`) → always uses **`herdr-core` + the Herdr desktop app**,
+  from any terminal.
+
+`horch doctor` and `horch smoke` follow the exact same rules (pass
+`--backend hc` or `--backend herdr` to check a specific host).
+
 ### From source (contributors)
 
 Build and put the binaries on your PATH:
 
 ```bash
 cargo build --release
-./target/release/herdr-install          # if you do not have herdr yet
-./target/release/horch install           # copies horch to ~/.local/bin
+./target/release/herdr-install          # if you want the herdr CLI/TUI server and do not have it yet
+./target/release/horch install          # copies horch to ~/.local/bin
 ```
 
 `horch install` prints what to add to your PATH if the directory is not already
@@ -245,13 +283,13 @@ on it. On Windows the default install directory is
 Then check your setup and verify the machinery end to end:
 
 ```bash
-horch doctor            # herdr reachable? roster ok? host tools, effort overrides, stale state
-horch smoke messaging   # 2-pane check of the messaging primitives, no agents
-horch smoke fleet       # full spawn -> ledger -> report -> self-close check
+horch doctor                  # checks the resolved host (add --backend hc or --backend herdr to pick one)
+horch smoke messaging         # 2-pane check of the messaging primitives, no agents
+horch smoke fleet             # full spawn -> ledger -> report -> self-close check
 ```
 
-`horch doctor` stops with an error when herdr is missing or its server is
-unreachable. It then prints a warning, and still exits 0, for a roster problem,
+`horch doctor` stops with an error when the resolved pane host (`herdr`, or `hc`
++ `herdr-app`) is missing or unreachable. It then prints a warning, and still exits 0, for a roster problem,
 for a host tool that an offered teammate needs (`xcodebuild` for the Swift
 team), and for a setting that overrides every teammate's effort. Run it from
 your project directory: it counts the teammates the orchestrator would be
@@ -276,8 +314,9 @@ and keeps state whose owner is live or unknown.
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
 
-Day to day: `just install` once, then `herdr-fleet` from any project.
-To pick up new changes, run `git pull` yourself, then `just install` again.
+Day to day: `just install` once, then run `herdr-fleet` from any project (see
+[Choosing a pane host](#choosing-a-pane-host-herdr-vs-hc) below). To pick up new
+changes, run `git pull` yourself, then `just install` again.
 
 ## Releases
 
@@ -306,8 +345,47 @@ horch fleet astra      # Codex on Astra (`codex` says the same)
 horch fleet sol        # Codex on Sol
 ```
 
-`cc` and `claude` still work and mean `opus`. The launcher takes the same words:
-`herdr-fleet sol`.
+`cc` and `claude` still work and mean `opus`. The `herdr-fleet` launcher takes
+the same words and flags (for example `herdr-fleet sol`).
+
+### Choosing a pane host (`herdr` vs `hc`)
+
+The `herdr` CLI/TUI server (`herdr`) and the Herdr desktop app (`hc` /
+`herdr-core`) are **two separate daemons with no bridge between them**. Panes
+started on `hc` appear in the Herdr desktop app and `hc ls` (not in the `herdr`
+CLI/TUI); panes started on `herdr` appear in the `herdr` CLI/TUI (not in the
+Herdr desktop app or `hc ls`). Both can run side by side on the same machine.
+
+Neither `horch fleet` nor `herdr-fleet` starts `herdr server` or `herdr-core`
+for you — open the Herdr desktop app (for `hc`) or start `herdr` / `herdr
+server` (for `herdr`) first, then launch:
+
+```bash
+# Auto-detect from the terminal you run in:
+#   inside a Herdr desktop app terminal -> hc (herdr-core + Herdr desktop app)
+#   anywhere else (Ghostty, iTerm, herdr TUI, ...) -> herdr (herdr server / TUI)
+horch fleet                      # or: herdr-fleet
+
+# Always use herdr server (the herdr CLI/TUI), even inside a Herdr app terminal:
+horch fleet --backend herdr      # or: herdr-fleet --backend herdr
+
+# Always use herdr-core + the Herdr desktop app, from any terminal:
+horch fleet --backend hc         # or: herdr-fleet --backend hc
+```
+
+You can also set a shell default with `export HORCH_BACKEND=hc` or
+`export HORCH_BACKEND=herdr`. `--backend` always wins over `HORCH_BACKEND` and
+terminal auto-detection.
+
+### Pane host differences (`hc` vs `herdr`)
+
+| behavior | `herdr` (TUI server) | `hc` (`herdr-core` + `herdr-app`) |
+|---|---|---|
+| layout and tiling | `horch tile` / `horch balance` resize and reflow panes; `horch layout` shows geometry | placed once at spawn (4 workers in 2 columns on tab 1, then overflow tabs `workers 2`, `workers 3`, ... with 6 workers in 3 columns); `tile` and `balance` are no-ops; `layout` prints space, tabs, and terminals without sizes |
+| window closed | headless `herdr server` can start and run fleets | a running fleet continues via `hc` (spawns fall back to labelled `hc run` and are adopted when Herdr reopens); starting a new fleet needs an open Herdr app window |
+| supported worker harnesses | all roster harnesses | harnesses that report OSC 7501 status under `hc` (`claude`, `codex`, `antigravity`, plus `smoke`); others are refused before creating a pane |
+| Codex launch | standard `codex` | adds `--no-daemon` and passes `HORCH_BACKEND` / `HC_*` variables to the channel MCP server |
+| Claude Bash sandbox | allows `$HERDR_SOCKET_PATH` | allows the `herdr-core` and `herdr-app` sockets so `horch` commands work; because `herdr-core` can run programs outside the sandbox, Bash is not contained on `hc` (see [ADR 0003](docs/adr/0003-two-pane-hosts-behind-one-handle.md)) |
 
 To pick up an earlier orchestrator session in a new workspace, pass its session
 id: `horch fleet --resume <session-id>` (or `herdr-fleet --resume <session-id>`).
@@ -360,8 +438,8 @@ file, and hands the execution down. The seats are a list in the code
 on a reserved tier, a seat off its own tier or with fallbacks, and any fallback
 that names a seat, so the rule cannot be broken by adding a file.
 
-Everything needs a running herdr server: launch the herdr app, or run
-`herdr server` headless.
+Every command needs its chosen pane host already running: open the Herdr desktop
+app (for `hc`), or launch `herdr` / run `herdr server` headless (for `herdr`).
 
 `horch orchestration` is the simpler alternative: a fixed 5-pane workspace with
 no ledger and no dynamic spawning.
@@ -1286,7 +1364,10 @@ less often: only when their newest release has been out for a week.
 | `HORCH_VERIFY`       | The verification profile of `horch fleet` and `horch ledger run new`: `full`, `light` (default) or `minimal`, like `--verify` |
 | `HORCH_UPDATE_TIMEOUT_MS` | The time limit of 1 agent CLI updater. Defaults to 180000 |
 | `HORCH_UPDATE_COOLDOWN_DAYS` | How old an agent CLI release must be before the update step installs it. Defaults to 7; `0` turns the cooldown off |
-| `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |
+| `HORCH_BACKEND`      | Pane host backend: `herdr` (`herdr server` / CLI/TUI) or `hc` (`herdr-core` + Herdr desktop app). Overrides terminal auto-detection (`--backend` overrides this) |
+| `HORCH_HERDR_BIN`    | Which `herdr` CLI to drive. Defaults to `herdr`                |
+| `HORCH_HC_BIN`       | Which `hc` CLI to drive on the `hc` backend. Defaults to `hc`  |
+| `HORCH_HERDR_APP_BIN` | Which `herdr-app` CLI to drive on the `hc` backend. Defaults to `herdr-app` |
 | `HORCH_SQLITE3_BIN`  | Which `sqlite3` reads OpenCode's database                       |
 | `HORCH_OLLAMA_BIN`   | Which `ollama` the local-pool check asks                       |
 | `HORCH_OPENCODE_DB`  | OpenCode's database. Defaults to `~/.local/share/opencode/opencode.db` |

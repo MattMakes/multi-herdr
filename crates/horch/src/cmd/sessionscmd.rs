@@ -104,7 +104,7 @@ pub(crate) fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
         return Some(workspace.to_string());
     }
     let pane = ctx.herdr.pane.as_ref()?;
-    horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr)
+    horch_core::workspace::PaneHost::of(ctx)
         .pane_get(pane.as_str())
         .ok()
         .and_then(|p| p.workspace_id)
@@ -130,12 +130,17 @@ pub fn sessions_filtered(
     };
     let caller = caller_workspace(ctx);
     let records = session_records(ctx, all, &filter, caller.as_deref())?;
-    let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+    let reachable = horch_core::workspace::Hosts::reachable(ctx);
     let mut panes = std::collections::BTreeMap::new();
-    for workspace in records.iter().filter_map(|r| r.workspace_id.as_deref()) {
-        panes
-            .entry(workspace)
-            .or_insert_with(|| herdr.pane_list(workspace).ok());
+    for r in &records {
+        let Some(workspace) = r.workspace_id.as_deref() else {
+            continue;
+        };
+        panes.entry(workspace).or_insert_with(|| {
+            reachable
+                .get(r.backend)
+                .and_then(|host| host.pane_list(workspace).ok())
+        });
     }
     let pane_gone = |r: &horch_core::execution::legacy::Record| -> bool {
         r.execution_status().is_live()

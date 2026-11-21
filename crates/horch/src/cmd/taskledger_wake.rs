@@ -18,7 +18,7 @@ use horch_core::taskledger::util::{self, About};
 use horch_core::taskledger::watchdog;
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 use rusqlite::{Connection, Transaction};
 
 /// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr). A wake is
@@ -502,7 +502,6 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
                 return;
             }
         };
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let panes = super::taskledger::HerdrPanes::new(ctx);
     let mut ended = Vec::new();
     let mut ended_ids = Vec::new();
@@ -510,8 +509,8 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
         let pane = p.worker.pane_id.as_deref();
         match &p.ended {
             Some(status) => {
-                if let Some(pane) = pane.filter(|id| panes.exists(id)) {
-                    if let Err(e) = panes.close(pane) {
+                if let Some(pane) = pane.filter(|id| panes.exists_on(p.worker.backend, id)) {
+                    if let Err(e) = panes.close_on(p.worker.backend, pane) {
                         eprintln!("horch ledger watch: closing pane {pane} failed: {e:#}");
                     }
                 }
@@ -519,6 +518,7 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
                 ended_ids.push(p.worker.worker_id.clone());
             }
             None => {
+                let herdr = PaneHost::for_backend(ctx, p.worker.backend);
                 let state = pane
                     .and_then(|id| herdr.pane_get(id).ok())
                     .and_then(|p| p.agent_status)

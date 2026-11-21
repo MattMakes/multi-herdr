@@ -413,6 +413,9 @@ class Cdp {
 
 class ChromeStartTimeout extends Error {}
 
+// On macOS, Chrome copies its app into a code_sign_clone folder at each start. A Chrome killed
+// during its start leaves that copy on the disk, and macOS records each copy as one more
+// "Google Chrome" in its privacy lists. --disable-features=MacAppCodeSignClone stops the copy.
 const chromeArgs = (userDataDir) => [
   "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userDataDir}`,
   "--window-size=1920,1920", "--force-device-scale-factor=1", "--disable-gpu",
@@ -420,7 +423,7 @@ const chromeArgs = (userDataDir) => [
   "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
   "--disable-backgrounding-occluded-windows", "--disable-extensions",
   "--no-first-run", "--no-default-browser-check", "--disable-sync",
-  "--disable-component-update", "about:blank",
+  "--disable-component-update", "--disable-features=MacAppCodeSignClone", "about:blank",
 ];
 
 function matchDevtools(log, data, ok) {
