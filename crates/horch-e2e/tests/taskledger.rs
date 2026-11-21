@@ -1318,6 +1318,9 @@ fn trf_43_assign_is_gone() {
 #[test]
 fn the_whole_flow_on_the_fake_herdr() {
     let mut h = finish_world("tl-e2e");
+    // Each reviewer of the flow finds its findings file at its start (ticket
+    // 258): the reviews of C run during the stall ladder of step 5.
+    let _findings = FindingsWriter::start(&h);
     h.stop_fleetd();
     h.set("HORCH_STOP_GRACE_MS", "2000");
     push_env(&mut h, "exec,stay");
@@ -1365,8 +1368,18 @@ fn the_whole_flow_on_the_fake_herdr() {
     // and writes nothing.
     // 4. A lands: its result passes the verifier and its reviews, its
     // folder is gone, and C can start.
-    let reviews = land_by_push(&h, "T-2", &a_tree);
-    assert!(reviews > 0, "the code-sweep of A queued its reviews");
+    land_by_push(&h, "T-2", &a_tree);
+    let t2 = json_of(&h, &["ledger", "show", "T-2", "--json"]);
+    let reviews_of_a: i64 = Store::open(&h.ledger_db())
+        .unwrap()
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM tasks WHERE kind = 'review' AND parent_task_id = ?1",
+            [t2["task"]["task_id"].as_str().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(reviews_of_a > 0, "the code-sweep of A queued its reviews");
     // FM-16: no orchestrator is woken for C. Under fleetd the wake
     // `Tasks can start` is retired (wakes.rs, `startable_wake`): the
     // dispatcher launches C with no command, in step 5.
@@ -1465,6 +1478,26 @@ fn the_whole_flow_on_the_fake_herdr() {
             "{t} in the PR: {body}"
         );
     }
+    // Each review task of the flow is verified at its first attempt (ticket
+    // 258).
+    let review_attempts: Vec<(i64, i64)> = {
+        let store = Store::open(&h.ledger_db()).unwrap();
+        let mut stmt = store
+            .conn()
+            .prepare("SELECT seq, attempts FROM tasks WHERE kind = 'review' ORDER BY seq")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        rows
+    };
+    assert_eq!(review_attempts.len(), 9, "{review_attempts:?}");
+    assert!(
+        review_attempts.iter().all(|(_, n)| *n == 1),
+        "each review is verified at attempt 1: {review_attempts:?}"
+    );
     // Every recorded stop names an exact PID or pane.
     let shown = json_of(&h, &["ledger", "show", &wb, "--json"]);
     for s in shown["stops"].as_array().unwrap() {
@@ -1611,8 +1644,11 @@ fn wait_done_playing_reviewers(h: &Harness, short: &str) -> usize {
 /// of each level. Gives the count of files written.
 fn write_findings(h: &Harness) -> usize {
     let store = Store::open(&h.ledger_db()).unwrap();
-    let mut stmt = store
-        .conn()
+    findings_written(store.conn())
+}
+
+fn findings_written(conn: &rusqlite::Connection) -> usize {
+    let mut stmt = conn
         .prepare(
             "SELECT spec_ref FROM tasks
              WHERE kind = 'review' AND spec_ref IS NOT NULL AND status != 'cancelled'",
@@ -1630,6 +1666,48 @@ fn write_findings(h: &Harness) -> usize {
         written += 1;
     }
     written
+}
+
+/// A thread that writes the findings file of each review task as soon as
+/// the task exists, until it is dropped: a reviewer that runs while the
+/// test waits for another step (the stall ladder) finds its file. The
+/// thread reads the ledger read-only.
+struct FindingsWriter {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FindingsWriter {
+    fn start(h: &Harness) -> FindingsWriter {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (db, flag) = (h.ledger_db(), std::sync::Arc::clone(&stop));
+        let thread = std::thread::spawn(move || {
+            let conn = rusqlite::Connection::open_with_flags(
+                &db,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            conn.busy_timeout(Duration::from_secs(5)).unwrap();
+            while !flag.load(Ordering::Relaxed) {
+                findings_written(&conn);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        FindingsWriter {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for FindingsWriter {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 /// The findings of a reviewer that finds nothing.
