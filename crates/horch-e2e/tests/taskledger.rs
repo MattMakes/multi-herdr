@@ -1316,62 +1316,61 @@ fn trf_43_assign_is_gone() {
 
 #[test]
 fn the_whole_flow_on_the_fake_herdr() {
-    horch_e2e::expected::check(file!(), "the_whole_flow_on_the_fake_herdr", || {
-        let mut h = finish_world("tl-e2e");
-        h.stop_fleetd();
-        h.set("HORCH_STOP_GRACE_MS", "2000");
-        push_env(&mut h, "exec,stay");
+    let mut h = finish_world("tl-e2e");
+    h.stop_fleetd();
+    h.set("HORCH_STOP_GRACE_MS", "2000");
+    push_env(&mut h, "exec,stay");
 
-        // 1. The orchestrator queues B first: fleetd launches its agent, the
-        // fake codex that stays and never ends with a result.
-        let run = seed_run(&h, "alpha", Some(1), "w1:p1");
-        let b = ticket_of(&h, "b", "B", "codex-terra");
-        seed_blocked_task(&h, &run, &b, "codex-terra", None);
-        h.serve_fleetd();
-        let b = wait_push("B's agent PID", || {
-            worker_rows(&h)
-                .into_iter()
-                .find(|w| w["persona"] == "codex-terra" && w["agent_started"].is_i64())
-        });
-        let wb = b["worker_id"].as_str().unwrap().to_string();
-        let (bpid, bstart) = (
-            b["agent_pid"].as_i64().unwrap() as u32,
-            b["agent_started"].as_i64().unwrap() as u64,
-        );
-        // fleetd bound T-1 to B (FR-5).
-        let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-        assert_eq!(t1["task"]["current_worker_id"], wb.as_str(), "{t1}");
+    // 1. The orchestrator queues B first: fleetd launches its agent, the
+    // fake codex that stays and never ends with a result.
+    let run = seed_run(&h, "alpha", Some(1), "w1:p1");
+    let b = ticket_of(&h, "b", "B", "codex-terra");
+    seed_blocked_task(&h, &run, &b, "codex-terra", None);
+    h.serve_fleetd();
+    let b = wait_push("B's agent PID", || {
+        worker_rows(&h)
+            .into_iter()
+            .find(|w| w["persona"] == "codex-terra" && w["agent_started"].is_i64())
+    });
+    let wb = b["worker_id"].as_str().unwrap().to_string();
+    let (bpid, bstart) = (
+        b["agent_pid"].as_i64().unwrap() as u32,
+        b["agent_started"].as_i64().unwrap() as u64,
+    );
+    // fleetd bound T-1 to B (FR-5).
+    let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t1["task"]["current_worker_id"], wb.as_str(), "{t1}");
 
-        // 2. Then A and C, C blocked by A. Their agents commit their work and
-        // end with horch result. fleetd launches A beside B; C waits.
-        h.stop_fleetd();
-        h.set("HORCH_FAKE_SCENARIO", "exec,stay,commit,result");
-        for (n, t, blocked_by) in [("a", "A", None), ("c", "C", Some("T-2"))] {
-            let p = ticket_of(&h, n, t, "opus");
-            seed_blocked_task(&h, &run, &p, "opus", blocked_by);
-        }
-        h.serve_fleetd();
-        let a_tree = wait_push("A's worktree", || task_worktree(&h, "T-2"));
-        let workers: Vec<String> = worker_rows(&h)
-            .iter()
-            .map(|w| w["persona"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(workers.len(), 2, "1 worker for A and 1 for B: {workers:?}");
-        assert!(workers.iter().any(|p| p == "opus"), "{workers:?}");
-        let t3 = json_of(&h, &["ledger", "show", "T-3", "--json"]);
-        assert_eq!(t3["task"]["status"], "queued", "{t3}");
+    // 2. Then A and C, C blocked by A. Their agents commit their work and
+    // end with horch result. fleetd launches A beside B; C waits.
+    h.stop_fleetd();
+    h.set("HORCH_FAKE_SCENARIO", "exec,stay,commit,result");
+    for (n, t, blocked_by) in [("a", "A", None), ("c", "C", Some("T-2"))] {
+        let p = ticket_of(&h, n, t, "opus");
+        seed_blocked_task(&h, &run, &p, "opus", blocked_by);
+    }
+    h.serve_fleetd();
+    let a_tree = wait_push("A's worktree", || task_worktree(&h, "T-2"));
+    let workers: Vec<String> = worker_rows(&h)
+        .iter()
+        .map(|w| w["persona"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(workers.len(), 2, "1 worker for A and 1 for B: {workers:?}");
+    assert!(workers.iter().any(|p| p == "opus"), "{workers:?}");
+    let t3 = json_of(&h, &["ledger", "show", "T-3", "--json"]);
+    assert_eq!(t3["task"]["status"], "queued", "{t3}");
 
-        // 3. B stops making progress: its fake agent runs, but shows no timer
-        // and writes nothing.
-        // 4. A lands: its result passes the verifier and its reviews, its
-        // folder is gone, and C can start.
-        let reviews = land_by_push(&h, "T-2", &a_tree);
-        assert!(reviews > 0, "the code-sweep of A queued its reviews");
-        // FM-16: no orchestrator is woken for C. Under fleetd the wake
-        // `Tasks can start` is retired (wakes.rs, `startable_wake`): the
-        // dispatcher launches C with no command, in step 5.
-        let events = json_of(&h, &["ledger", "events", "--json"]);
-        assert!(
+    // 3. B stops making progress: its fake agent runs, but shows no timer
+    // and writes nothing.
+    // 4. A lands: its result passes the verifier and its reviews, its
+    // folder is gone, and C can start.
+    let reviews = land_by_push(&h, "T-2", &a_tree);
+    assert!(reviews > 0, "the code-sweep of A queued its reviews");
+    // FM-16: no orchestrator is woken for C. Under fleetd the wake
+    // `Tasks can start` is retired (wakes.rs, `startable_wake`): the
+    // dispatcher launches C with no command, in step 5.
+    let events = json_of(&h, &["ledger", "events", "--json"]);
+    assert!(
             !events
                 .as_array()
                 .unwrap()
@@ -1380,67 +1379,91 @@ fn the_whole_flow_on_the_fake_herdr() {
                     && e["text"].as_str().unwrap().contains("Tasks can start")),
             "no wake for C: {events}"
         );
-        // 5. B's checks and the stall ladder; A's worker is untouched.
-        stall_by_the_ladder(&h, &wb, bpid, bstart);
-        assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
-        // FM-16: no orchestrator is woken for B. With no live
-        // sub-orchestrator of the feature, a stall writes no wake; the stall
-        // ladder of fleetd acts on the attempt (wakes.rs).
-        let wakes = outbox(&h);
-        assert!(
-            !wakes.iter().any(|w| w.contains("shows no progress")),
-            "{wakes:?}"
-        );
-        // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
-        // Then fleetd launches C, and B again as attempt 2 of T-1, which
-        // replaces the stalled worker.
-        h.advance_fleet_clock(30);
-        let c_tree = wait_push("C's worktree", || task_worktree(&h, "T-3"));
-        let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-        let rb = wait_push("the replacement of B", || {
-            worker_rows(&h)
-                .into_iter()
-                .find(|w| w["task_id"] == t1["task"]["task_id"] && w["attempt"] == 2)
-        });
-        // FM-16: fleetd launches attempt 2 of T-1 on a new worker; no
-        // `horch spawn --replaces` names the stalled one (wakes.rs,
-        // `spawn_advice`).
-        assert_ne!(rb["worker_id"], wb.as_str(), "{rb}");
-
-        // 6. No task is left for a spare worker of opus.
-        let none = try_bind(&h, "opus", None);
-        assert!(none.is_err(), "{none:?}");
-
-        // 7. B (replaced) and C land; everything is done and cleaned.
-        let b_tree = wait_push("B's worktree", || task_worktree(&h, "T-1"));
-        land_by_push(&h, "T-1", &b_tree);
-        land_by_push(&h, "T-3", &c_tree);
-        let o = h.run(&["ledger", "status"]);
-        assert_eq!(o.status.code(), Some(0), "{}", text(&o));
-        let st = json_of(&h, &["ledger", "status", "--json"]);
-        assert!(
-            st["worktrees"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|w| w["status"] == "cleaned"),
-            "{}\n{st}",
-            not_cleaned(&st)
-        );
-        let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
-        for t in ["T-1", "T-2", "T-3"] {
-            assert!(
-                body.contains(&format!("<!-- horch:task {t} -->")),
-                "{t} in the PR: {body}"
-            );
-        }
-        // Every recorded stop names an exact PID or pane.
-        let shown = json_of(&h, &["ledger", "show", &wb, "--json"]);
-        for s in shown["stops"].as_array().unwrap() {
-            assert!(s["pid"].is_i64() || s["pane_id"].is_string(), "{s}");
-        }
-        assert!(events.as_array().is_some());
+    // 5. B's checks and the stall ladder; A's worker is untouched.
+    stall_by_the_ladder(&h, &wb, bpid, bstart);
+    assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
+    // FM-16: no orchestrator is woken for B. With no live
+    // sub-orchestrator of the feature, a stall writes no wake; the stall
+    // ladder of fleetd acts on the attempt (wakes.rs).
+    let wakes = outbox(&h);
+    assert!(
+        !wakes.iter().any(|w| w.contains("shows no progress")),
+        "{wakes:?}"
+    );
+    // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
+    // Then fleetd launches C, and B again as attempt 2 of T-1, which
+    // replaces the stalled worker.
+    h.advance_fleet_clock(30);
+    let c_tree = wait_push("C's worktree", || task_worktree(&h, "T-3"));
+    let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    let rb = wait_push("the replacement of B", || {
+        worker_rows(&h)
+            .into_iter()
+            .find(|w| w["task_id"] == t1["task"]["task_id"] && w["attempt"] == 2)
     });
+    // FM-16: fleetd launches attempt 2 of T-1 on a new worker; no
+    // `horch spawn --replaces` names the stalled one (wakes.rs,
+    // `spawn_advice`).
+    assert_ne!(rb["worker_id"], wb.as_str(), "{rb}");
+
+    // 6. No task is left for a spare worker of opus.
+    let none = try_bind(&h, "opus", None);
+    assert!(none.is_err(), "{none:?}");
+
+    // 7. B (replaced) and C land; everything is done and cleaned.
+    let b_tree = wait_push("B's worktree", || task_worktree(&h, "T-1"));
+    land_by_push(&h, "T-1", &b_tree);
+    land_by_push(&h, "T-3", &c_tree);
+    let o = h.run(&["ledger", "status"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    // Each task tree is cleaned. The feature is still open: the merge
+    // of its pull request is an act of the operator. So its 1 gate
+    // tree stays, reused by each gate, until the feature is merged or
+    // abandoned (row W11 of preservation-04; gate_tree.rs). The core
+    // tests merged_feature_releases_its_gate_tree and
+    // released_gate_tree_is_rescued_then_removed_and_its_rescue_ref_stays
+    // prove its removal after the end of the feature.
+    let trees = st["worktrees"].as_array().unwrap();
+    let (gates, tasks): (Vec<&Value>, Vec<&Value>) = trees.iter().partition(|w| {
+        Path::new(w["path"].as_str().unwrap_or_default())
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("gate-"))
+    });
+    assert!(
+        !tasks.is_empty() && tasks.iter().all(|w| w["status"] == "cleaned"),
+        "{}\n{st}",
+        not_cleaned(&st)
+    );
+    assert_eq!(gates.len(), 1, "1 gate tree of the feature: {st}");
+    let gate = gates[0];
+    assert!(gate["task"].is_null(), "{gate}");
+    assert_eq!(gate["scratch"], true, "{gate}");
+    let gate_path = gate["path"].as_str().unwrap();
+    assert!(gate_path.ends_with("/.worktrees/gate-F-0001"), "{gate}");
+    let gate_state: String = Store::open(&h.ledger_db())
+        .unwrap()
+        .conn()
+        .query_row(
+            "SELECT state FROM worktrees WHERE path = ?1",
+            [gate_path],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(gate_state, "created", "{gate}");
+    let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
+    for t in ["T-1", "T-2", "T-3"] {
+        assert!(
+            body.contains(&format!("<!-- horch:task {t} -->")),
+            "{t} in the PR: {body}"
+        );
+    }
+    // Every recorded stop names an exact PID or pane.
+    let shown = json_of(&h, &["ledger", "show", &wb, "--json"]);
+    for s in shown["stops"].as_array().unwrap() {
+        assert!(s["pid"].is_i64() || s["pane_id"].is_string(), "{s}");
+    }
+    assert!(events.as_array().is_some());
 }
 
 #[test]
