@@ -90,6 +90,9 @@ impl World {
         World::start("")
     }
 
+    /// A rescue waits for a `worktree_list` result with the HEAD of the
+    /// tree, so with the default list period of 60 s, [`World::rescued`]
+    /// uses most of its 120 s wait (T-290).
     fn with_a_rescuable_tree() -> World {
         World::start("worktree_list_period_s = 5\n")
     }
