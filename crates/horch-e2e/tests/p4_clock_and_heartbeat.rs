@@ -238,9 +238,7 @@ impl World {
     }
 
     /// 1 forced pass of `horch ledger watch --once`, while no fleetd runs.
-    /// Its process is new, so its first tick adds 0 to the fleet clock. It
-    /// names `run`: a failed conformance job adds a drift idea, whose
-    /// feature has its own active run.
+    /// Its process is new, so its first tick adds 0 to the fleet clock.
     fn pass(&self, run: &Run) {
         let o = self.h.run(&[
             "ledger", "watch", "--once", "--force", "--json", "--run", &run.slug,

@@ -55,9 +55,6 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// The run of [`queue`]. A failed conformance job of the fake agents adds
-/// a drift idea, whose feature has its own active run, so each `horch
-/// ledger` call names this run.
 const RUN: &str = "eps";
 
 /// 1 forced watchdog pass, as today's checks run it.
