@@ -1174,8 +1174,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// The stored root is the plain real path: a worktree path made from it
-    /// never starts with the Windows verbatim prefix `\\?\`.
     #[test]
     fn root_key_is_the_plain_real_path() {
         let dir = tempfile::tempdir().unwrap();

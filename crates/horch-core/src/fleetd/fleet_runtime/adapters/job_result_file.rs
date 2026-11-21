@@ -115,8 +115,6 @@ pub fn write(fleet_root: &Path, result: &JobResult) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Create the new file `path` with access for this user only, write
-/// `bytes` and sync it.
 fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = platform::create_new_owner_only(path)?;
     file.write_all(bytes)?;
@@ -228,9 +226,6 @@ pub fn archive(fleet_root: &Path, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The file that [`write`] makes passes each check of [`read_folder`]:
-    /// its owner is this user and only this user has access to it and to
-    /// `run/jobs/`.
     #[test]
     fn a_written_result_passes_the_protected_read() {
         let dir = tempfile::tempdir().unwrap();
