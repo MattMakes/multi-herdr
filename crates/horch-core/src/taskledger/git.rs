@@ -111,7 +111,7 @@ impl Git {
         } else {
             common
         };
-        Some(root.canonicalize().unwrap_or(root))
+        Some(horch_platform::path::canonicalize(&root).unwrap_or(root))
     }
 
     /// The branch checked out in `dir`, if any.

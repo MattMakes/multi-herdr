@@ -106,9 +106,11 @@ const SELECT: &str =
     "SELECT r.*, p.root FROM runs r JOIN projects p ON p.project_id = r.project_id";
 
 /// The 1 spelling a project root is stored and matched by: canonical when the
-/// folder exists (macOS `/tmp` is `/private/tmp`), else as given.
+/// folder exists (macOS `/tmp` is `/private/tmp`), else as given. It is the
+/// plain form of [`horch_platform::path::canonicalize`], never a Windows
+/// verbatim path, because each worktree path is made from it.
 pub fn root_key(root: &Path) -> String {
-    std::fs::canonicalize(root)
+    horch_platform::path::canonicalize(root)
         .unwrap_or_else(|_| root.to_path_buf())
         .to_string_lossy()
         .into_owned()
@@ -1170,6 +1172,21 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "git {args:?}: {out:?}");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The stored root is the plain real path: a worktree path made from it
+    /// never starts with the Windows verbatim prefix `\\?\`.
+    #[test]
+    fn root_key_is_the_plain_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = root_key(dir.path());
+        assert!(!key.starts_with(r"\\?\"), "{key}");
+        assert_eq!(
+            std::fs::canonicalize(&key).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
+        let gone = dir.path().join("gone");
+        assert_eq!(root_key(&gone), gone.to_string_lossy());
     }
 
     fn commit(root: &Path, file: &str) -> String {
