@@ -1452,7 +1452,13 @@ fn the_whole_flow_on_the_fake_herdr() {
         )
         .unwrap();
     assert_eq!(gate_state, "created", "{gate}");
-    let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
+    // The push job of the feature writes the pull request after the last
+    // landing; the trees can be cleaned before it ran.
+    let body = wait_push("the pull request body of the 3 tasks", || {
+        std::fs::read_to_string(h.root.join("gh/body"))
+            .ok()
+            .filter(|b| b.contains("<!-- horch:task T-3 -->"))
+    });
     for t in ["T-1", "T-2", "T-3"] {
         assert!(
             body.contains(&format!("<!-- horch:task {t} -->")),
