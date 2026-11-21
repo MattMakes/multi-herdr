@@ -185,9 +185,6 @@ pub fn parse_source(spec: &str) -> Result<SkillSource> {
     }
 }
 
-/// Whether `spec` is an absolute path in the text form of an OS: `/dir`, or on
-/// Windows `C:\dir`, `C:/dir`, `\\server\share` and `\\?\C:\dir`. The logic is
-/// text only, so it is the same on each OS.
 fn is_absolute_path_text(spec: &str) -> bool {
     let b = spec.as_bytes();
     spec.starts_with('/')
@@ -296,8 +293,6 @@ fn check_scheme(scheme: &str, authority: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// A Windows absolute path is a local source (`skills_cli.rs`
-    /// `mkt_09_cli_list_show_json` in CI run 5 passed `\\?\C:\...`).
     #[test]
     fn a_windows_absolute_path_is_a_local_source() {
         for spec in [

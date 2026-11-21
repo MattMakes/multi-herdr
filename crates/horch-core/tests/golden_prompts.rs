@@ -42,13 +42,10 @@ fn golden(name: &str) -> String {
     lf_text(&text)
 }
 
-/// `text` with LF line ends. A Windows checkout of a golden file can have CRLF
-/// (`core.autocrlf`); the product prompts have LF on each OS.
 fn lf_text(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
-/// A golden file with CRLF line ends reads as the LF text of the product.
 #[test]
 fn a_crlf_golden_reads_as_its_lf_form() {
     assert_eq!(lf_text("a\r\nb\r\n"), "a\nb\n");
