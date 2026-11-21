@@ -14,10 +14,10 @@ use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBu
 use horch_core::taskledger::schema;
 use rusqlite::Connection;
 
-/// A schema v8 ledger at `path`.
+/// A ledger at `path` at the Phase 1 version, which adds `pass_cursors`.
 fn ledger(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
-    schema::migrate_to(&mut conn, 8).unwrap();
+    schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
     conn
 }
 
