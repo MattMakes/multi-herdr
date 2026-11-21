@@ -141,7 +141,6 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     let ticket = dir.join("01-a.md");
     std::fs::write(&ticket, "# 01: Feature\n\n**Check:** none\n").unwrap();
-    // No pass of the test fleetd may dispatch the task before the bind.
     let bound = h.without_fleetd(|| {
         let task = seed_task(h, &run, &ticket, "opus");
         Store::open(&ledger(h))
@@ -380,7 +379,6 @@ fn rr13_a_commit_after_an_accepted_drop_is_kept_in_the_rescue_ref() {
     let first = commit_file(&h, &path, "first.txt");
     let o = drop_tree(&h, &w, &tree_name(&path), true);
     assert!(o.status.success(), "{}", text(&o));
-    // A commit after the drop is accepted and before its rescue job runs.
     git_in(
         &h,
         &path,

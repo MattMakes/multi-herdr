@@ -1107,9 +1107,6 @@ fn idea_lead_spec(
     spawn_spec(ctx, herdr, push).map(Some)
 }
 
-/// The settings of the fleetd of `generation`. Its job hosts run the
-/// sibling `horch` of this binary, never this binary itself: a unit test
-/// that runs a pass then starts no test binary as `job run <n>`.
 fn settings(ctx: &RuntimeContext, generation: Generation) -> Result<Settings> {
     let root = &ctx.paths.fleet_root;
     Ok(Settings {

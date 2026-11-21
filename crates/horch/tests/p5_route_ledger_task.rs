@@ -48,8 +48,6 @@ struct Out {
     err: String,
 }
 
-/// git has no ref but `HEAD`: the HEAD of the folder, which the drop
-/// handler reads.
 struct HeadOnly;
 
 impl RefTips for HeadOnly {

@@ -37,8 +37,6 @@ use serde_json::{json, Value};
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-/// No test of this file runs git: git has no ref, and the HEAD of each
-/// folder is [`HEAD`].
 struct NoRefs;
 
 impl RefTips for NoRefs {
