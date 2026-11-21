@@ -11,6 +11,7 @@
 //! Each git call goes through `CliWorktreeGit::checked`, so git runs in the
 //! sandbox and starts no hook (the fleetd git rule).
 
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -24,6 +25,7 @@ use crate::fleetd::worktree_custody::adapters::git::{
 };
 use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
 use crate::fleetd::worktree_custody::domain::rescue::{self, Facts};
+use crate::runtime::process::which;
 
 /// What a rescue saved: the result of a passed `rescue` run and the
 /// content of its manifest `<fleet root>/rescue/<worktree id>-<n>.json`.
@@ -314,6 +316,53 @@ pub(crate) fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<S
     Ok(raw(&["write-tree"])?.trim().to_string())
 }
 
+/// The `git version` line of the git `git` that the rescue runs, or the
+/// fix text when that git is not found, does not run, or is older than
+/// 2.41. `git` is the git of the fleet (`HORCH_GIT_BIN`, or `git`); a bare
+/// name is looked up on `path`, as the start of a process does. The rule is
+/// the rule of [`snapshot`], so `horch doctor` and the start of fleetd
+/// refuse the git that a rescue refuses.
+pub fn rescue_git_version(
+    git: &Path,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+) -> std::result::Result<String, String> {
+    let bin = if git.components().count() > 1 {
+        git.to_path_buf()
+    } else {
+        which(path, pathext, &git.to_string_lossy())
+            .ok_or_else(|| format!("{} not found on PATH. {RESCUE_GIT_FIX}", git.display()))?
+    };
+    let out = horch_platform::start::command(&bin)
+        .arg("version")
+        .output()
+        .map_err(|e| {
+            format!(
+                "could not run `{} version`: {e}. {RESCUE_GIT_FIX}",
+                bin.display()
+            )
+        })?;
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() {
+        return Err(format!(
+            "`{} version` failed ({}). {RESCUE_GIT_FIX}",
+            bin.display(),
+            out.status
+        ));
+    }
+    if !has_attr_source(&version) {
+        return Err(format!(
+            "{} is {version:?}, older than 2.41. {RESCUE_GIT_FIX}",
+            bin.display()
+        ));
+    }
+    Ok(format!("{}: {version}", bin.display()))
+}
+
+const RESCUE_GIT_FIX: &str = "The rescue of a worktree saves its files with the \
+     filters off, and that needs git 2.41 or newer (`--attr-source`). Install git \
+     2.41 or newer, or set HORCH_GIT_BIN to one.";
+
 /// True when the `git version` text `version` names git 2.41 or newer.
 fn has_attr_source(version: &str) -> bool {
     let number = version.trim().strip_prefix("git version ").unwrap_or("");
@@ -403,6 +452,8 @@ mod tests {
         assert!(has_attr_source("git version 3.0.0"));
         assert!(!has_attr_source("git version 2.39.5"));
         assert!(!has_attr_source("git version 2.40.1.windows.1"));
+        assert!(has_attr_source("git version 2.51.2.windows.1"));
+        assert!(!has_attr_source("git version 2.39.5 (Apple Git-154)"));
         assert!(!has_attr_source("not git"));
     }
 }

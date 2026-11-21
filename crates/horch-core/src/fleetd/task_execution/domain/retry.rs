@@ -31,10 +31,13 @@ pub enum Outcome {
     /// The context of the attempt reached the limit, and the attempt ended
     /// with a handoff (FM-20).
     ContextLimit,
+    /// The CLI refused the resume of the session of an answered question
+    /// (RR-12): the session is gone. A fresh attempt starts at once.
+    ResumeRefused,
 }
 
 impl Outcome {
-    pub const ALL: [Outcome; 10] = [
+    pub const ALL: [Outcome; 11] = [
         Outcome::Rejected,
         Outcome::Crashed,
         Outcome::TimedOut,
@@ -45,6 +48,7 @@ impl Outcome {
         Outcome::Quota,
         Outcome::CriticalOpen,
         Outcome::ContextLimit,
+        Outcome::ResumeRefused,
     ];
 
     /// The word of the design, as `attempts.outcome` stores it.
@@ -60,15 +64,21 @@ impl Outcome {
             Outcome::Quota => "quota",
             Outcome::CriticalOpen => "critical_open",
             Outcome::ContextLimit => "context_limit",
+            Outcome::ResumeRefused => "resume_refused",
         }
     }
 
-    /// A question, a usage limit, an open CRITICAL item of a judge and the
-    /// context limit burn no attempt. Each other outcome burns 1.
+    /// A question, a usage limit, an open CRITICAL item of a judge, the
+    /// context limit and a refused resume burn no attempt. Each other
+    /// outcome burns 1.
     pub fn burns_attempt(self) -> bool {
         !matches!(
             self,
-            Outcome::Asked | Outcome::Quota | Outcome::CriticalOpen | Outcome::ContextLimit
+            Outcome::Asked
+                | Outcome::Quota
+                | Outcome::CriticalOpen
+                | Outcome::ContextLimit
+                | Outcome::ResumeRefused
         )
     }
 }
@@ -225,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn the_10_stored_outcome_words_stay() {
+    fn the_11_stored_outcome_words_stay() {
         let words: Vec<&str> = Outcome::ALL.into_iter().map(Outcome::as_str).collect();
         assert_eq!(
             words,
@@ -240,6 +250,7 @@ mod tests {
                 "quota",
                 "critical_open",
                 "context_limit",
+                "resume_refused",
             ]
         );
     }
@@ -266,6 +277,7 @@ mod tests {
             Outcome::Quota,
             Outcome::CriticalOpen,
             Outcome::ContextLimit,
+            Outcome::ResumeRefused,
         ] {
             assert!(!o.burns_attempt(), "{o:?}");
         }

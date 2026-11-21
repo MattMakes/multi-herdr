@@ -2295,13 +2295,18 @@ impl Rules<'_> {
                 continue;
             }
             let persona = self.persona_of(&reap.worker)?;
-            let outcome = self.exit_outcome(
+            let mut outcome = self.exit_outcome(
                 questions_store::open_of_task(self.tx, &task_id)? > 0,
                 self.pool_limited(persona.as_deref()) || quota_hinted(self.tx, &reap.attempt)?,
             );
+            if outcome == Outcome::NoResult && push::resume_refused(self.tx, &reap.attempt)? {
+                outcome = Outcome::ResumeRefused;
+            }
             reap.outcome = outcome.as_str().to_string();
             stops.extend(commands::end_attempt(self.tx, &reap)?);
-            if outcome == Outcome::Asked {
+            if outcome == Outcome::ResumeRefused {
+                push::on_resume_refused(self.tx, self.guard, &task_id, &reap.attempt)?;
+            } else if outcome == Outcome::Asked {
                 let to = TaskStatus::BlockedOnUser.as_str();
                 let by = cause("rung 5: the worker exited with an open question");
                 transition(

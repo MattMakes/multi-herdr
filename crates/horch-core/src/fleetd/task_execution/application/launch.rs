@@ -35,6 +35,7 @@ use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
 use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
@@ -45,7 +46,7 @@ use crate::fleetd::task_execution::domain::task::{
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, ProgressSource, TaskStatus};
 use crate::taskledger::sql_words::WORKTREES_GONE;
 use crate::taskledger::{runs, tasks, util, workers};
 
@@ -432,6 +433,90 @@ pub fn resume_of(conn: &Connection, p_id: &str, ports: &dyn Launches) -> Result<
     let now = ports.resuming_harness(&persona);
     let then = ports.resuming_harness(prev_persona.as_deref().unwrap_or_default());
     Ok((answered && now.is_some() && now == then).then_some(session))
+}
+
+/// RR-12, design line 1015: the CLI refused the resume of the attempt
+/// `attempt_id`, because the session is gone, when every fact holds:
+/// - fleetd recorded a resume on its worker row: only [`launch`] writes it,
+///   from [`resume_of`], so no agent can set it;
+/// - the attempt just before it ended `asked`. The attempt after a refused
+///   resume follows a `resume_refused` attempt, so the outcome holds at
+///   most 1 time for each answer, and the row keeps it over a restart;
+/// - it ended within [`START_TIMEOUT_S`] of its start;
+/// - its agent reported no progress.
+///
+/// The caller asks only for an exit with no result, and no open question.
+pub fn resume_refused(conn: &Connection, attempt_id: &str) -> Result<bool> {
+    let row = conn
+        .query_row(
+            "SELECT a.started_at, w.resumed_from_session, w.last_progress_source,
+                (SELECT b.outcome FROM attempts b
+                 WHERE b.task_id = a.task_id AND b.rowid < a.rowid
+                 ORDER BY b.rowid DESC LIMIT 1)
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.id = ?1",
+            params![attempt_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((Some(started_at), Some(_), progress, Some(before))) = row else {
+        return Ok(false);
+    };
+    let in_window =
+        util::seconds_between(&started_at, &util::now()).is_some_and(|s| s <= START_TIMEOUT_S);
+    Ok(before == Outcome::Asked.as_str()
+        && in_window
+        && progress.as_deref() != Some(ProgressSource::Agent.as_str()))
+}
+
+/// The attempt `attempt_id` of task `task_id` ended `resume_refused`: the
+/// task moves to `ready` at once, with no `not_before`, and burns no
+/// attempt. Its next attempt follows no `asked` attempt, so [`resume_of`]
+/// gives it a fresh session, and its START.md holds the question, the
+/// answer and the committed work. A cancelled task stays as it is.
+pub fn on_resume_refused(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task_id: &str,
+    attempt_id: &str,
+) -> Result<()> {
+    if tasks::cancel_requested(tx, task_id)?.is_some() {
+        return Ok(());
+    }
+    // No attempt is burned: the next claim adds 1 to `attempts`, and the
+    // floor moves with it.
+    tx.execute(
+        "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
+            not_before = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![task_id, util::now()],
+    )?;
+    let text = format!(
+        "RR-12: the CLI refused the resume of attempt {attempt_id}; a fresh attempt \
+         starts from the question, the answer and the committed work"
+    );
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: &text,
+    };
+    let ready = TaskStatus::Ready.as_str();
+    transition(
+        tx,
+        guard,
+        Entity::Task,
+        task_id,
+        ready,
+        cause,
+        &NeedsYouList,
+    )?;
+    Ok(())
 }
 
 /// What [`launch`] did.
