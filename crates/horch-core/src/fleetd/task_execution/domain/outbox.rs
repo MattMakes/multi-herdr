@@ -173,6 +173,7 @@ pub fn handoff_result(task: &str, attempt: &str, summary: &str, path: &str) -> R
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: Some(path.to_string()),
+        unlanded: None,
     }
 }
 

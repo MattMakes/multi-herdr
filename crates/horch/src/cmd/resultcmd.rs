@@ -163,6 +163,7 @@ fn write(ctx: &RuntimeContext, out: &OutboxWriter, args: ResultArgs) -> Result<P
         acceptance_self_check: Vec::new(),
         notes_for_next: args.notes,
         handoff: None,
+        unlanded: None,
     })
 }
 

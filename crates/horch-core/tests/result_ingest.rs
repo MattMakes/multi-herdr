@@ -179,6 +179,7 @@ fn result_json(task: &str, attempt: &str, summary: &str) -> String {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
     .to_json()
 }

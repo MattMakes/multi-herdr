@@ -191,6 +191,7 @@ fn result_of(writer: &OutboxWriter, status: ResultStatus) -> ResultFile {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
 }
 

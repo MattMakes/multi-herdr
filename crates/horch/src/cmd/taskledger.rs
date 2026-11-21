@@ -745,10 +745,7 @@ fn worker_files_cmd(ctx: &RuntimeContext, command: &LedgerCommand) -> Result<Opt
         C::Progress { text } => progress(ctx, LineKind::Progress, text)?,
         C::Note { text } => progress(ctx, LineKind::Note, text)?,
         C::Done { summary, unlanded } => {
-            let notes = unlanded
-                .as_ref()
-                .map(|reason| format!("unlanded: {reason}"));
-            write_completed(ctx, &summary.join(" "), notes)?
+            write_completed(ctx, &summary.join(" "), unlanded.as_deref())?
         }
         C::Finish { .. } => super::taskledger_finish::finish_cmd(ctx)?,
         C::Handoff { path } => handoff(ctx, path)?,
@@ -770,12 +767,14 @@ fn own_outbox(ctx: &RuntimeContext, store: &Store) -> Result<OutboxWriter> {
     OutboxWriter::of_this_process(&ctx.paths.fleet_root, store.conn(), &config, &PlatformFacts)
 }
 
-/// Write `result.json` with `status: completed`, `summary` and `notes` to
-/// the outbox of the own attempt: `horch ledger done` and `finish`.
+/// Write `result.json` with `status: completed` and `summary` to the
+/// outbox of the own attempt: `horch ledger done` and `finish`. The reason
+/// of `done --unlanded` is the key `unlanded`, and fleetd parks the task
+/// (RR-14).
 pub(super) fn write_completed(
     ctx: &RuntimeContext,
     summary: &str,
-    notes: Option<String>,
+    unlanded: Option<&str>,
 ) -> Result<ExitCode> {
     let out = own_outbox(ctx, &read_only(ctx)?)?;
     let a = out.attempt();
@@ -787,8 +786,9 @@ pub(super) fn write_completed(
         commits: Vec::new(),
         files_changed: Vec::new(),
         acceptance_self_check: Vec::new(),
-        notes_for_next: notes,
+        notes_for_next: None,
         handoff: None,
+        unlanded: unlanded.map(str::to_string),
     })?;
     output::println(&format!("wrote {}", path.display()));
     output::println(FLEETD_FINISHES);

@@ -260,6 +260,7 @@ fn result_json(a: &AttemptRef) -> String {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
     .to_json()
 }

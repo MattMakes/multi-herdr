@@ -936,8 +936,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
     // A worker in a live attempt writes `result.json` with `status:
     // completed`, as `horch ledger done` does; fleetd finishes the task.
     if super::askcmd::own_writer(ctx)?.is_ok() {
-        let notes = unlanded.map(|reason| format!("unlanded: {reason}"));
-        let _ = super::taskledger::write_completed(ctx, summary, notes)?;
+        let _ = super::taskledger::write_completed(ctx, summary, unlanded)?;
         return Ok(());
     }
     if super::taskledger::is_ledger_worker(ctx) {

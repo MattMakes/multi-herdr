@@ -43,6 +43,7 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::Kind;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::ideas::domain::questions::printable;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::adapters::verdict_file;
 use crate::fleetd::task_execution::application::judge_pair::{self, Judging, Settled};
@@ -55,8 +56,11 @@ use crate::fleetd::task_execution::domain::task::{judged_task, AttemptState};
 use crate::fleetd::task_execution::domain::verification::{
     self, next_step, Decision, Facts, Next, Plan, Verdict, Verified,
 };
+use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use crate::taskledger::finish::Tools;
-use crate::taskledger::model::{Actor, FileMode, TaskStatus, WorkerStatus};
+use crate::taskledger::model::{
+    Actor, FileMode, HeldReason, TaskStatus, WorkerStatus, WorktreeStatus,
+};
 use crate::taskledger::store::Store;
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{finish, util, workers};
@@ -384,6 +388,64 @@ fn end_as(
     let reason = format!("{outcome}: attempt {}", a.id);
     workers::end(tx, &a.worker_id, status, &reason, None)?;
     Ok(())
+}
+
+/// The outcome of an attempt whose worker said that its work cannot land
+/// (`horch ledger done --unlanded`, RR-14). It burns no attempt.
+pub const UNLANDED: &str = "unlanded";
+
+/// The result of attempt `attempt_id` has the key `unlanded` with `reason`,
+/// and its task is in `verifying`: park the task (RR-14, 04 L5). The task
+/// moves to `escalated` with `held_reason` unlanded, and no check job runs.
+/// Its tree stays: `unlanded`, with no owner, and an `active` tree moves to
+/// `created`, so a requeue resumes the task in it. Its dependents stay
+/// `pending`. The attempt ends `unlanded`. `reason` and `summary` are
+/// untrusted text of the worker (SR-6): each is 1 printable line.
+pub(crate) fn park_unlanded(
+    tx: &Connection,
+    guard: Option<Generation>,
+    attempt_id: &str,
+    reason: &str,
+    summary: &str,
+) -> Result<()> {
+    let a = attempt(tx, attempt_id)?;
+    let line = |text: &str| printable(text).replace('\n', " ");
+    let reason = line(reason);
+    let text = format!("UNLANDED: {reason} | {}", line(summary));
+    if let Some(wt) = finish::worktree_of(tx, &a.task_id)? {
+        finish::set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(&reason))?;
+        trees::set_owner(tx, &wt.worktree_id, None)?;
+        let active =
+            trees::get(tx, &wt.worktree_id)?.is_some_and(|t| t.state == WorktreeState::Active);
+        if active {
+            let why = format!("unlanded: {reason}");
+            transition(
+                tx,
+                guard,
+                Entity::Worktree,
+                &wt.worktree_id,
+                WorktreeState::Created.as_str(),
+                cause(&why),
+                &NeedsYouList,
+            )?;
+        }
+    }
+    transition(
+        tx,
+        guard,
+        Entity::Task,
+        &a.task_id,
+        TaskStatus::Escalated.as_str(),
+        cause(&text),
+        &NeedsYouList,
+    )?;
+    tx.execute(
+        "UPDATE tasks SET summary = ?2, held_reason = ?3, current_worker_id = NULL,
+            updated_at = ?4
+         WHERE task_id = ?1",
+        rusqlite::params![a.task_id, text, HeldReason::Unlanded.as_str(), util::now()],
+    )?;
+    end_as(tx, guard, &a, UNLANDED, WorkerStatus::Done, &text)
 }
 
 fn cause(text: &str) -> Cause<'_> {

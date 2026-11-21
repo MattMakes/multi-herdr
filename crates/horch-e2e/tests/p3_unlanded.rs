@@ -402,6 +402,64 @@ fn pres_04_l5_unlanded_task_keeps_worktree_and_blocks_dependents() {
 }
 
 #[test]
+fn rr14_done_unlanded_in_a_fleetd_attempt_parks_the_task() {
+    let h = world("p3-unl-done");
+    let run = seed_alpha(&h, "land", None);
+    queue(&h, &run, "01-a", "opus-a", &[]);
+    queue(&h, &run, "02-b", "opus-b", &["T-1"]);
+    let (w, path) = bind_and_work(&h, "opus-a", "feat");
+    std::fs::write(path.join("notes.txt"), "untracked\n").unwrap();
+    let attempt = attempt_of(&h, 1, &w);
+    ok_in_attempt(
+        &h,
+        &w,
+        &[
+            "ledger",
+            "done",
+            "--unlanded",
+            "a red\u{1b}[2J check",
+            "parked",
+        ],
+    );
+    until("the park of the task", &h, || {
+        (task(&h, 1)["held_reason"] == "unlanded").then_some(())
+    });
+    // More passes move nothing: the verifier does not end it done.
+    for _ in 0..3 {
+        pass(&h);
+    }
+    let t1 = task(&h, 1);
+    assert_eq!(t1["held_reason"], "unlanded", "{t1}\n{}", dump(&h));
+    let shown = t1.to_string();
+    assert!(shown.contains("a red [2J check"), "{shown}");
+    assert!(!shown.contains("\\u001b"), "the reason is escaped: {shown}");
+    let outcome = query(
+        &h,
+        &format!("SELECT coalesce(outcome, '') FROM attempts WHERE id = '{attempt}'"),
+    );
+    assert_eq!(outcome, ["unlanded"], "{}", dump(&h));
+
+    // The tree is kept: not rescued, not removed, with each file.
+    assert_eq!(column(&h, &path, "state"), "created", "{}", dump(&h));
+    assert_eq!(column(&h, &path, "status"), "unlanded");
+    assert_eq!(column(&h, &path, "owner_attempt"), "");
+    assert_eq!(column(&h, &path, "rescue_ref"), "");
+    assert!(path.join("feat.txt").is_file());
+    assert!(path.join("notes.txt").is_file());
+
+    // The dependent waits.
+    assert_eq!(task(&h, 2)["state"], "pending");
+    assert!(try_bind(&h, "opus-b", None).is_err(), "T-2 waits for T-1");
+
+    // A requeue resumes the task in the same tree.
+    ok(&h, &["ledger", "requeue", "T-1", "fixed", "--run", "alpha"]);
+    let b = bind(&h, "opus-a", None);
+    assert_eq!(b.task_id, t1["task_id"], "{b:?}");
+    assert_eq!(stored(&h, &bound_tree(&b)), stored(&h, &path));
+    assert!(bound_tree(&b).join("notes.txt").is_file());
+}
+
+#[test]
 fn rr14_requeue_of_a_parked_task_runs_in_the_same_tree() {
     let h = world("p3-unl-requeue");
     let (_, path, _) = parked(&h);

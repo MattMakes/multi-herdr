@@ -1009,6 +1009,7 @@ fn result_in_the_pass_of_the_first_heartbeat_is_not_no_result() {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     };
     let path = outbox.join("result.json");
     fs::write(&path, result.to_json()).unwrap();

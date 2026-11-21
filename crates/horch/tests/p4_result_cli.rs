@@ -165,6 +165,7 @@ impl World {
             ticket_snapshot: "# Ticket One\n".into(),
             extra: None,
             handoff: None,
+            unlanded: None,
             idea: None,
             feature: None,
             covers: Vec::new(),

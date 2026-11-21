@@ -12,7 +12,8 @@
 //! - Each file gets 1 `ingested` row, by its path and its sha256: 1 time.
 //! - A valid `result.json` of the newest attempt of a `running` or
 //!   `stalled` task moves the task to `verifying`. Only the verifier moves
-//!   a task to `done`.
+//!   a task to `done`. A result with the key `unlanded` then parks the task
+//!   with its tree ([`verifier::park_unlanded`], RR-14).
 //! - A valid question file of the newest attempt of a `running` task ends
 //!   the attempt with the outcome `asked`, which burns no attempt, and
 //!   moves the task to `blocked_on_user`. In the same transaction the file
@@ -45,7 +46,7 @@ use crate::fleetd::task_execution::adapters::result_reader::{
     read_outbox, AttemptRef, FileKind, FileRead, Payload, QuestionFile, Read,
 };
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
-use crate::fleetd::task_execution::application::lease;
+use crate::fleetd::task_execution::application::{lease, verifier};
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
@@ -129,11 +130,14 @@ pub fn ingest(
                     report.rejected.push(file.path.clone());
                 }
                 Read::Valid {
-                    payload: Payload::Result(_),
+                    payload: Payload::Result(r),
                     ..
                 } => {
                     if to_verifying(tx, guard, a)? {
                         report.to_verifying.push(a.task_id.clone());
+                        if let Some(reason) = &r.unlanded {
+                            verifier::park_unlanded(tx, guard, &a.attempt_id, reason, &r.summary)?;
+                        }
                     }
                 }
                 Read::Valid {

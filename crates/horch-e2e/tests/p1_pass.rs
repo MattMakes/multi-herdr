@@ -397,6 +397,7 @@ fn bind(h: &Harness) -> (Worker, i64) {
         ticket_snapshot: format!("# T{seq}\n"),
         extra: None,
         handoff: None,
+        unlanded: None,
         idea: None,
         feature: None,
         covers: Vec::new(),

@@ -305,6 +305,7 @@ impl World {
             acceptance_self_check: Vec::new(),
             notes_for_next: None,
             handoff: None,
+            unlanded: None,
         };
         let outbox = attempt_dir(&self.root(), task, attempt).join("outbox");
         fs::create_dir_all(&outbox).unwrap();

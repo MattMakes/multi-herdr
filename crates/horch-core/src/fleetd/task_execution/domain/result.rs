@@ -61,6 +61,11 @@ pub struct ResultFile {
     /// `"reason": "handoff"` and `"handoff": <path>`, and the status is
     /// `blocked`. `None`: the file has neither key.
     pub handoff: Option<String>,
+    /// The reason of a worker whose work cannot land (RR-14, 04 L5): the
+    /// key `"unlanded"`, with the status `completed`. fleetd parks the task
+    /// with its worktree. The reason is untrusted text of the worker
+    /// (SR-6). `None`: the file has no such key.
+    pub unlanded: Option<String>,
 }
 
 /// The `reason` of a handoff result (Q4 of `docs/tickets/fleetd-p5/MAP.md`).
@@ -168,12 +173,15 @@ impl ResultFile {
             lines.push(format!("\"reason\": {}", json_string(HANDOFF_REASON)));
             lines.push(format!("\"handoff\": {}", json_string(path)));
         }
+        if let Some(reason) = &self.unlanded {
+            lines.push(format!("\"unlanded\": {}", json_string(reason)));
+        }
         format!("{{\n  {}\n}}\n", lines.join(",\n  "))
     }
 }
 
 /// The keys of the schema. Each other key is refused.
-const KEYS: [&str; 10] = [
+const KEYS: [&str; 11] = [
     "task",
     "attempt",
     "status",
@@ -184,6 +192,7 @@ const KEYS: [&str; 10] = [
     "notes_for_next",
     "reason",
     "handoff",
+    "unlanded",
 ];
 
 /// The [`ResultFile`] of a parsed JSON value.
@@ -224,7 +233,22 @@ fn from_value(value: Json) -> Result<ResultFile, String> {
         acceptance_self_check: self_checks(get("acceptance_self_check"))?,
         notes_for_next,
         handoff: handoff(get("reason"), get("handoff"), status)?,
+        unlanded: unlanded(get("unlanded"), status)?,
     })
+}
+
+/// The reason of the key `unlanded`: a string that is not empty, with the
+/// status `completed`.
+fn unlanded(value: Option<&Json>, status: ResultStatus) -> Result<Option<String>, String> {
+    let reason = match value {
+        None => return Ok(None),
+        Some(Json::Str(reason)) if !reason.trim().is_empty() => reason,
+        Some(_) => return Err("\"unlanded\" is not a string that is not empty".into()),
+    };
+    if status != ResultStatus::Completed {
+        return Err("an unlanded result has the status completed".into());
+    }
+    Ok(Some(reason.clone()))
 }
 
 /// The handoff path of the keys `reason` and `handoff`: both are given or
@@ -724,5 +748,26 @@ mod tests {
         let text = file.to_json();
         assert!(text.ends_with("}\n"));
         assert_eq!(check(&text).unwrap(), file);
+        file.unlanded = Some("a red \"check\"".into());
+        assert_eq!(check(&file.to_json()).unwrap(), file);
+    }
+
+    #[test]
+    fn an_unlanded_reason_is_a_string_of_a_completed_result() {
+        let with = |value: &str| EXAMPLE.replace("\n}", &format!(",\n  \"unlanded\": {value}\n}}"));
+        let file = check(&with("\"a red check\"")).unwrap();
+        assert_eq!(file.unlanded.as_deref(), Some("a red check"));
+        assert_eq!(check(EXAMPLE).unwrap().unlanded, None);
+        for bad in ["\"\"", "\" \"", "1", "null"] {
+            assert!(
+                matches!(check(&with(bad)), Err(Refusal::Schema(_))),
+                "{bad}"
+            );
+        }
+        let blocked = with("\"x\"").replace("\"completed\"", "\"blocked\"");
+        match check(&blocked) {
+            Err(Refusal::Schema(why)) => assert!(why.contains("completed"), "{why}"),
+            other => panic!("{other:?}"),
+        }
     }
 }
