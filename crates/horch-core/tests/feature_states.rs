@@ -821,3 +821,49 @@ fn invalid_feature_row_between_two_valid_rows_fails_only_its_row_and_advances_bo
     assert_eq!(state("F-0002"), "open");
     assert!(failed().is_empty());
 }
+
+/// The state and the owner-ended fact of the gate tree of [`FEATURE`].
+fn gate_tree_end(w: &World) -> (String, bool) {
+    use horch_core::fleetd::worktree_custody::application::remove;
+    let tree = gate_tree::of_feature(&w.conn, &w.project_root(), FEATURE)
+        .unwrap()
+        .expect("the gate tree row");
+    let ended = remove::owners_ended(&w.conn).unwrap();
+    let given_up = ended
+        .get(&tree.worktree_id)
+        .is_some_and(|e| !e.keep_branch && e.rescue_job.is_none());
+    (tree.state.as_str().to_string(), given_up)
+}
+
+/// Row W11: the move of the feature to `merged` gives its gate tree to
+/// custody in the same transaction. The reconciler rescues it, then
+/// removes it (gate_jobs.rs, `released_gate_tree_is_rescued_then_removed`).
+#[test]
+fn merged_feature_releases_its_gate_tree() {
+    let w = world();
+    w.ready();
+    assert_eq!(gate_tree_end(&w), ("created".to_string(), false));
+    let merged = w.squash_merge();
+    w.fetched_main(&merged);
+
+    w.follow();
+
+    assert_eq!(w.state(), "merged");
+    assert_eq!(gate_tree_end(&w), ("orphaned".to_string(), true));
+}
+
+/// Row W11: `horch feature abandon` gives the gate tree to custody in the
+/// transaction of the move to `abandoned`.
+#[test]
+fn abandoned_feature_releases_its_gate_tree() {
+    use horch_core::fleetd::integration::application::commands;
+    let w = world();
+    let ctx = w.jobs();
+    let tx = w.conn.unchecked_transaction().unwrap();
+
+    commands::record_feature(&ctx, &tx, FEATURE, &[], "the operator stops it").unwrap();
+
+    tx.commit().unwrap();
+    assert_eq!(w.state(), "abandoned");
+    assert_eq!(gate_tree_end(&w), ("orphaned".to_string(), true));
+}

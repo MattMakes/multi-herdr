@@ -1240,17 +1240,26 @@ mod tree_end {
         let tree = w.gate_tree();
         let id = tree.worktree_id.clone();
         let repo = w.repo.clone();
+        // A file that is only in the tree: the rescue keeps it first.
+        std::fs::write(w.gate_path().join("unique.txt"), "unique\n").unwrap();
         assert!(w
             .tx(|ctx, tx| gate_tree::release(ctx, tx, &repo, FEATURE, "its feature is merged"))
             .unwrap());
 
         let report = w.rescue(&id, 0);
+        let rescue_ref = w.tree_row(&id).rescue_ref.unwrap();
+        assert_eq!(
+            git(&w.repo, &["show", &format!("{rescue_ref}:unique.txt")]),
+            "unique"
+        );
 
         assert_eq!(report.removals, [id.clone()], "{report:?}");
         let ended = w.run(w.only_run(Kind::WorktreeRemove, &id));
         assert_eq!(ended.state, State::Passed, "{}", text(&ended));
         w.pass_at(0);
-        assert_eq!(w.tree_row(&id).state, WorktreeState::Removed);
+        let row = w.tree_row(&id);
+        assert_eq!(row.state, WorktreeState::Removed);
+        assert_eq!(row.status.as_str(), "cleaned");
         assert!(!w.gate_path().exists());
         let listed = git(&w.repo, &["worktree", "list", "--porcelain"]);
         assert!(!listed.contains("gate-F-1"), "{listed}");

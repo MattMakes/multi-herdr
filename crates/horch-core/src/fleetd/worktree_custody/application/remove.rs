@@ -334,16 +334,19 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
     ) {
         Ok(Moved::Changed) => {
             // A tree of landed work is `cleaned`, as the cleanup of today
-            // leaves it; a rescued tree keeps its status.
+            // leaves it. So is an `open` tree: settled and `ledger status`
+            // count an `open` status as work on disk (row W5). Each other
+            // status, such as `abandoned` of a drop, stays.
             tx.execute(
                 "UPDATE worktrees SET cleaned_at = ?2,
-                    status = CASE WHEN status = ?3 THEN ?4 ELSE status END
+                    status = CASE WHEN status IN (?3, ?5) THEN ?4 ELSE status END
                  WHERE worktree_id = ?1",
                 params![
                     id,
                     util::now(),
                     WorktreeStatus::Landed.as_str(),
-                    WorktreeStatus::Cleaned.as_str()
+                    WorktreeStatus::Cleaned.as_str(),
+                    WorktreeStatus::Open.as_str()
                 ],
             )?;
         }
