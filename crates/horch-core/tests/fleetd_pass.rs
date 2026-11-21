@@ -50,6 +50,8 @@ const CHILD_MODE: &str = "FLEETD_PASS_TEST_MODE";
 
 /// The id of the attempt in `launching` of the tests.
 const LAUNCHING: &str = "orchestrator/A2";
+/// The herdr pane of the worker of [`LAUNCHING`].
+const PANE: &str = "w1:p1";
 
 // ─── the world ──────────────────────────────────────────────────────────
 
@@ -190,6 +192,19 @@ impl World {
         attempts::insert_attempt(&self.conn, &row, &util::now()).unwrap();
     }
 
+    /// [`World::launching_attempt`], whose worker runs in the pane
+    /// [`PANE`]: the attempt goes `live` on its pane wrapper (FR-10).
+    fn launching_attempt_in_pane(&self) {
+        self.launching_attempt();
+        self.conn
+            .execute(
+                "UPDATE workers SET pane_id = ?2
+                 WHERE worker_id = (SELECT worker_id FROM attempts WHERE id = ?1)",
+                params![LAUNCHING, PANE],
+            )
+            .unwrap();
+    }
+
     /// An ended worker row that names the live process `p`: an orphan to
     /// stop (I5).
     fn orphan(&self, p: &Proc) {
@@ -270,11 +285,14 @@ impl World {
 
 /// The outside of the tests: no herdr snapshot, no health hold, and a
 /// launch spec that appends 1 line to `launches.txt`, then runs `then`.
+/// With `pane_root`, herdr shows the process of the launch record of
+/// [`LAUNCHING`] in the pane [`PANE`] (FR-10).
 struct Fake {
     launches: PathBuf,
     then: &'static str,
     asked: Cell<usize>,
     closed: RefCell<Vec<String>>,
+    pane_root: Option<PathBuf>,
 }
 
 impl Fake {
@@ -288,6 +306,15 @@ impl Fake {
             then,
             asked: Cell::new(0),
             closed: RefCell::new(Vec::new()),
+            pane_root: None,
+        }
+    }
+
+    /// [`Fake::new`] with the launched process of [`LAUNCHING`] in its pane.
+    fn in_pane(w: &World) -> Fake {
+        Fake {
+            pane_root: Some(w.root()),
+            ..Fake::new(w)
         }
     }
 }
@@ -296,7 +323,13 @@ impl Outside for Fake {
     fn panes(
         &self,
     ) -> Option<BTreeMap<String, horch_core::fleetd::task_execution::domain::task::InPane>> {
-        None
+        let root = self.pane_root.as_ref()?;
+        let p = effects::read_launch(root, LAUNCHING).ok()??.process?;
+        let runs = horch_core::fleetd::task_execution::domain::task::InPane::Runs {
+            pid: p.pid,
+            pid_start: p.pid_start?,
+        };
+        Some(BTreeMap::from([(PANE.to_string(), runs)]))
     }
 
     fn close_pane(&self, pane: &str) -> anyhow::Result<()> {
@@ -480,7 +513,7 @@ fn fleetd_killed_between_commit_and_effect_does_the_effect_once_on_restart() {
     let mut w = world();
     let mut orphan = Proc::polite(&w.file("stops.txt"));
     w.orphan(&orphan);
-    w.launching_attempt();
+    w.launching_attempt_in_pane();
 
     // The child commits part 2 and dies before part 3.
     let status = w.child("abort", ABORT_AFTER_COMMIT).wait().unwrap();
@@ -490,7 +523,7 @@ fn fleetd_killed_between_commit_and_effect_does_the_effect_once_on_restart() {
     assert_eq!(w.attempt_state(LAUNCHING).0, "launching");
 
     // The restarted fleetd does each effect once.
-    let fake = Fake::new(&w);
+    let fake = Fake::in_pane(&w);
     let mut pass = Pass::new(w.settings(Faults::default()), ports(&fake, &Launcher));
     let report = run(&mut pass, &mut w);
     assert!(orphan.wait_exit(), "the orphan got its stop");
@@ -652,7 +685,7 @@ fn pass_reaps(pass: &mut Pass<'_>, w: &mut World) -> bool {
 #[test]
 fn launch_is_skipped_when_a_live_process_has_the_attempt_id() {
     let mut w = world();
-    w.launching_attempt();
+    w.launching_attempt_in_pane();
     let live = Proc::sleep();
     let record = LaunchRecord {
         attempt: LAUNCHING.into(),
@@ -661,7 +694,7 @@ fn launch_is_skipped_when_a_live_process_has_the_attempt_id() {
     };
     effects::write_launch(&w.root(), &record).unwrap();
 
-    let fake = Fake::new(&w);
+    let fake = Fake::in_pane(&w);
     let mut pass = Pass::new(w.settings(Faults::default()), ports(&fake, &Launcher));
     let report = run(&mut pass, &mut w);
     assert_eq!(report.done, Vec::new());
