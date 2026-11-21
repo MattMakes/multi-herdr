@@ -1112,7 +1112,10 @@ fn run_without_gates_holds_dispatch_and_loses_no_task() {
         "the task in flight goes on\n{seen}"
     );
     assert!(agent.alive(), "the agent goes on\n{seen}");
-    let o = h.horch(&["ledger", "status"]).output().unwrap();
+    let o = h
+        .horch(&["ledger", "status", "--run", SLUG])
+        .output()
+        .unwrap();
     assert!(
         text(&o).contains("missing fast gate"),
         "horch ledger status names the hold\n{}\n{seen}",

@@ -2672,7 +2672,15 @@ fn worker_status(h: &Harness, id: &str) -> (String, String) {
 
 /// The wakes recorded for the run, oldest first.
 fn wakes(h: &Harness) -> Vec<String> {
-    json_of(h, &["ledger", "events", "--json"])
+    wakes_of(h, None)
+}
+
+/// [`wakes`] of the run `run`. A failed conformance job of the fake agents
+/// adds a drift idea, whose feature has its own active run.
+fn wakes_of(h: &Harness, run: Option<&str>) -> Vec<String> {
+    let mut args = vec!["ledger", "events", "--json"];
+    args.extend(run.iter().flat_map(|r| ["--run", *r]));
+    json_of(h, &args)
         .as_array()
         .unwrap()
         .iter()
@@ -2797,13 +2805,17 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         .unwrap();
 
     // 1 pass now: ghost2's supervisor is gone; ghost is in its launch grace.
-    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force", "--run", "a"]));
     let (st, why) = worker_status(&h, &ghost2);
     assert_eq!(st, "no_task", "{why}");
     assert!(why.contains("supervisor is gone"), "{why}");
     assert_eq!(worker_status(&h, &ghost).0, "spawning");
 
-    let o = run_env(&h, &[("HORCH_NOW", &later(200))], &["ledger", "status"]);
+    let o = run_env(
+        &h,
+        &[("HORCH_NOW", &later(200))],
+        &["ledger", "status", "--run", "a"],
+    );
     let line = out(&o)
         .lines()
         .find(|l| l.contains("spawning"))
@@ -2815,7 +2827,7 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         run_env(
             &h,
             &[("HORCH_NOW", &later(200))],
-            &["ledger", "watch", "--once", "--force"],
+            &["ledger", "watch", "--once", "--force", "--run", "a"],
         )
     });
     assert!(o.status.success(), "{}", text(&o));
@@ -2854,7 +2866,13 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
         .unwrap();
     let watch = |at: Option<String>| {
         let env: Vec<(&str, &str)> = at.iter().map(|t| ("HORCH_NOW", t.as_str())).collect();
-        let o = h.without_fleetd(|| run_env(&h, &env, &["ledger", "watch", "--once", "--force"]));
+        let o = h.without_fleetd(|| {
+            run_env(
+                &h,
+                &env,
+                &["ledger", "watch", "--once", "--force", "--run", "a"],
+            )
+        });
         assert!(o.status.success(), "{}", text(&o));
     };
     // Within the 3 min claim grace (TRF-23) the worker is never touched.
@@ -3029,7 +3047,11 @@ fn a_parked_unlanded_task_names_its_dependents_and_a_stuck_run_is_reported_once(
     for _ in 0..3 {
         pass(&h);
     }
-    assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
+    assert!(
+        wakes_of(&h, Some("a")).is_empty(),
+        "{:?}",
+        wakes_of(&h, Some("a"))
+    );
     let blockers = needs_you(&h, "blocker");
     assert_eq!(blockers.len(), 1, "{blockers:?}");
     assert!(

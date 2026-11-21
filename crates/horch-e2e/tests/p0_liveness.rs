@@ -55,9 +55,16 @@ fn db(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
+/// The run of [`queue`]. A failed conformance job of the fake agents adds
+/// a drift idea, whose feature has its own active run, so each `horch
+/// ledger` call names this run.
+const RUN: &str = "eps";
+
 /// 1 forced watchdog pass, as today's checks run it.
 fn watch_once(h: &Harness, env: &[(&str, &str)]) -> (Output, Value) {
-    let mut cmd = h.horch(&["ledger", "watch", "--once", "--force", "--json"]);
+    let mut cmd = h.horch(&[
+        "ledger", "watch", "--once", "--force", "--json", "--run", RUN,
+    ]);
     cmd.envs(env.iter().copied());
     let o = cmd.output().unwrap();
     assert!(o.status.success(), "horch ledger watch: {}", text(&o));
@@ -106,7 +113,7 @@ impl Drop for Agent {
 }
 
 fn queue(h: &Harness, persona: &str, fallback: Option<&str>) {
-    let run = seed_run(h, "eps", None, "w1:p1");
+    let run = seed_run(h, RUN, None, "w1:p1");
     let p = ticket(h, "t0", "# T0\n");
     let new = NewTask {
         fallback: fallback.map(str::to_string),
@@ -424,6 +431,7 @@ fn pane_fleet(name: &str, config: &str) -> (Harness, Store, String) {
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_FAKE_SCENARIO", "exec");
+    remove_agent_clis_so_fleetd_queues_no_conformance_job(&h);
     h.set("HORCH_LEDGER_DB", db(&h).to_string_lossy());
     let root = h.root.join("fleet");
     std::fs::create_dir_all(&root).unwrap();
@@ -444,6 +452,15 @@ fn pane_fleet(name: &str, config: &str) -> (Harness, Store, String) {
         })
         .unwrap();
     (h, store, run.run_id)
+}
+
+/// The operator boundary probe of a conformance job writes a request file
+/// of mode 0644, and a pass that reads it opens a needs-you item at a
+/// random time (T-268).
+fn remove_agent_clis_so_fleetd_queues_no_conformance_job(h: &Harness) {
+    for cli in ["claude", "codex", "agy"] {
+        std::fs::remove_file(h.bin.join(cli)).unwrap();
+    }
 }
 
 /// Call the fake herdr of `h`; gives its stdout.
