@@ -377,6 +377,7 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
             h.set("HORCH_LEDGER_DB", db.to_string_lossy());
             h.set("HORCH_NO_WAKE", "1");
             h.set("HORCH_NO_WATCHDOG", "1");
+            // No wake pass, so no launch starts after `pass` waited for its spawns: the test stops fleetd many times, the fleet clock adds 0 s on the 1st tick after each restart, so the 30 s backoff of a retry never ends here, and this test is of the bundle rule, not of the retry.
             h.set("HORCH_FAULT", "drop-watch-events");
             h.set(
                 "HORCH_QUOTA_FILE",
