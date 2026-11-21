@@ -239,6 +239,9 @@ fn fm2_agent_that_never_claims_has_its_task_bound_at_spawn() {
                 entry["task_yaml_exists"] == true,
                 "the task.yaml of the agent is missing at entry: {entry}"
             );
+            // The agent exits with no result, so a later pass can end that
+            // attempt (no_result) and make the task ready again: read the
+            // attempt, not the status row of the task.
             // `status` exits 1 while work remains.
             let o = h.run(&["ledger", "status", "--json"]);
             let st: Value =
