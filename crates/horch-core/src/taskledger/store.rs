@@ -329,6 +329,8 @@ fn trace_writes(conn: &Connection) {
 fn trace_to(conn: &Connection, file: PathBuf) {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        // The savepoint of [`one_snapshot`] writes nothing: it gives a
+        // read of 2 or more statements 1 snapshot.
         let read = matches!(
             ctx.action,
             AuthAction::Read { .. } | AuthAction::Select | AuthAction::Function { .. }
@@ -567,6 +569,9 @@ mod tests {
         assert!(text.contains("Insert"), "{text}");
     }
 
+    /// The savepoint of `one_snapshot` is a read, and a write inside it is
+    /// still traced. Another savepoint, and a name that only starts with
+    /// `one_snapshot`, are traced.
     #[cfg(debug_assertions)]
     #[test]
     fn the_trace_counts_only_the_snapshot_savepoint_as_a_read() {

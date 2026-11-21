@@ -539,6 +539,8 @@ fn outcome_of<'a>(
     outcomes.get(attempt)?.as_deref()
 }
 
+/// The outcome of the owner attempt of each row of `rows`, in 1 statement
+/// for any count of rows.
 fn owner_outcomes(
     tx: &Connection,
     rows: &[WorktreeRow],
@@ -590,6 +592,10 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
     Ok(())
 }
 
+/// The landing state of the task branch of each `landing` row, by branch
+/// name, and the stamp of the last event that moved that branch to
+/// `landed`. Each is 1 set read of the context that owns its table, on 1
+/// snapshot: 2 statements for any count of rows.
 struct Branches {
     states: BTreeMap<String, Option<String>>,
     landed_at: BTreeMap<String, String>,
@@ -1152,6 +1158,8 @@ mod landing_reads_tests {
         }
     }
 
+    /// T-286, by count: the steps `landings` and `act` run the same
+    /// statements for 3 and for 300 `landing` rows.
     #[test]
     fn landings_and_act_run_the_same_statements_for_3_and_300_landing_rows() {
         let count = |n: usize| {

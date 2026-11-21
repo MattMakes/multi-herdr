@@ -223,6 +223,9 @@ fn not_proved(cli: &str, failed: &[Check]) -> ConformanceReport {
     r
 }
 
+/// A check that is not proved because fleetd was not ready changes the
+/// health of no profile: a healthy profile stays healthy, and an unhealthy
+/// one stays unhealthy. A failed check of the same run still marks.
 #[test]
 fn not_proved_check_changes_no_health() {
     let mut w = World::new();

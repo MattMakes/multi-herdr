@@ -467,10 +467,15 @@ struct ReadyRows {
 }
 
 impl ReadyRows {
+    /// The rows of 1 moment: the statements run on 1 snapshot, so a task
+    /// that fleetd makes ready or binds between 2 statements is in every
+    /// set or in none.
     fn read(conn: &Connection) -> Result<ReadyRows> {
         Self::read_with(conn, || Ok(()))
     }
 
+    /// [`ReadyRows::read`], with `between` called after the read of the
+    /// ready tasks and before the other reads: the hook of the read race test.
     fn read_with(conn: &Connection, between: impl FnOnce() -> Result<()>) -> Result<ReadyRows> {
         one_snapshot(conn, || Self::read_now(conn, between))
     }
@@ -594,6 +599,8 @@ fn live_trees(conn: &Connection, ready: &[Task]) -> Result<BTreeMap<String, Live
     Ok(out)
 }
 
+/// 2 statements for any count of tasks, on 1 snapshot: a bind compares its
+/// Own files with each running task, so this read stays whole.
 fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
     one_snapshot(conn, || running_tasks_now(conn))
 }
@@ -635,6 +642,8 @@ pub fn choices(
     one_snapshot(conn, || choices_now(conn, holds, sandboxes, target))
 }
 
+/// [`choices`] on the snapshot of its caller: the ready and the running
+/// tasks are of 1 moment.
 fn choices_now(
     conn: &Connection,
     holds: &Holds,
@@ -1025,6 +1034,11 @@ mod ready_rows_race_tests {
         Ok(())
     }
 
+    /// A second connection commits between the read of the ready tasks and
+    /// the other reads: it binds the only ready task of `r1` and adds a
+    /// ready task of `r2`. The reader sees 1 moment: each task it gives has
+    /// its run, and the new task is in the tasks and in the Own files, or in
+    /// neither.
     #[test]
     fn ready_rows_read_one_moment_while_another_connection_commits() {
         let tmp = tempfile::tempdir().unwrap();

@@ -443,6 +443,10 @@ fn ended_again(h: &Harness, kind: &str, cli: &str) -> Option<String> {
         .ok()
 }
 
+/// Wait until `f` gives a value, for [`DEADLINE`] after the bound of 1
+/// conformance suite: the runner ends each of its launches with no stream
+/// event after [`FIRST_EVENT_LIMIT`], so a loaded host can take that long
+/// for each check.
 fn until_suite_ends<T>(
     what: &str,
     mut f: impl FnMut() -> Option<T>,
@@ -464,6 +468,14 @@ fn until_suite_ends<T>(
     );
 }
 
+/// The world of T-333: passes of `horch ledger watch --once` and no fleetd,
+/// so no command channel serves the fleet. Claude Code and Codex are
+/// conformant by design, and Antigravity has no sandbox on any OS (A37).
+/// "Operator boundary" is not proved because fleetd is not ready: it marks
+/// no profile unhealthy and adds no drift idea. The run of an unsupported
+/// CLI adds no drift idea and no needs-you item either. Then a fleetd with
+/// a channel server runs the conformance job of each CLI with a check that
+/// is not proved 1 more time, and that run passes.
 #[test]
 fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
     let h = world("p7-conformance-no-fleetd");
@@ -514,6 +526,8 @@ fn passes_with_no_fleetd_mark_no_conformant_profile_and_add_no_drift_feature() {
         passes.len(),
         diagnostics(&h)
     );
+    // OR-3: at most 1 item for the unsupported CLI, by its key. The design
+    // gives it none: `horch status` shows its profiles as not available.
     let agy_items = count(
         &h,
         "SELECT COUNT(*) FROM needs_you WHERE key LIKE '%agy%' OR entity_id LIKE '%agy%'

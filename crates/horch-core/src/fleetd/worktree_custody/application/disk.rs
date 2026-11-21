@@ -168,6 +168,10 @@ fn tree_facts(conn: &Connection) -> Result<Vec<TreeFacts>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// 4 statements for any count of trees, on 1 snapshot: the disk budget
+/// sums the bytes of all trees, so this read stays whole. The trees, the
+/// ideas of their tasks, the states of those ideas and the last removal
+/// of each tree are 1 set read each, of the context that owns the table.
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
     one_snapshot(conn, || {
         let trees = tree_facts(conn)?;

@@ -719,9 +719,13 @@ pub struct Pass<'a> {
     reproof: RefCell<Reproof>,
 }
 
+/// What 1 fleetd with a channel server did with the `conformance` runs
+/// that a pass with no channel server ran: a check of each is not proved.
 #[derive(Default)]
 struct Reproof {
     read: BTreeMap<String, i64>,
+    /// The CLIs whose not proved run this fleetd queued again: 1 new run
+    /// for each start of fleetd.
     queued: BTreeSet<String>,
 }
 
@@ -4415,6 +4419,11 @@ impl Pass<'_> {
         Ok(failed)
     }
 
+    /// When this fleetd serves the command channel: queue 1 new
+    /// `conformance` run of each CLI of `clis` whose last run ended with a
+    /// check that is not proved, 1 time for each start of fleetd. That run
+    /// had no channel server, so it proved nothing about the profile. A new
+    /// CLI binary gets its run by the docs job rules.
     fn reprove(&self, tx: &Transaction<'_>, clock: FleetSeconds, clis: &[CliBinary]) -> Result<()> {
         if !self.serving.get() {
             return Ok(());

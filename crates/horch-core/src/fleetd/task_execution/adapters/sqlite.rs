@@ -254,6 +254,7 @@ pub fn outcomes_of<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// 2 statements for any count of live tasks: each live attempt is judged in
 /// each pass, so this read stays whole.
 fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
     let mut stmt = conn.prepare(
@@ -280,6 +281,7 @@ fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<Str
     let runs = runs::of_ids(conn, rows.iter().map(|(_, run)| run.as_str()))?;
     let mut out = BTreeMap::new();
     for (mut t, run) in rows {
+        // A task with no run is not in the map: the check below fails.
         let Some(run) = runs.get(&run) else {
             continue;
         };
