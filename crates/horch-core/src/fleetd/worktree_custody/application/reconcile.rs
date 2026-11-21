@@ -947,14 +947,14 @@ mod landing_reads_tests {
     use crate::taskledger::testing::count_statements;
     use rusqlite::{params, OptionalExtension};
 
-    struct Ledger {
+    struct TreeWorld {
         _tmp: tempfile::TempDir,
         store: Store,
     }
 
     /// A ledger with 1 task, 1 worker and 1 feature. Each tree of `trees`
     /// is (id, state, branch, owner attempt).
-    fn ledger(trees: &[(&str, &str, &str, Option<&str>)]) -> Ledger {
+    fn ledger(trees: &[(&str, &str, &str, Option<&str>)]) -> TreeWorld {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
         store
@@ -991,10 +991,10 @@ mod landing_reads_tests {
                 Ok(())
             })
             .unwrap();
-        Ledger { _tmp: tmp, store }
+        TreeWorld { _tmp: tmp, store }
     }
 
-    impl Ledger {
+    impl TreeWorld {
         fn branch(&mut self, name: &str, state: &str, landed_at: Option<&str>) {
             self.store
                 .immediate(|tx| {
