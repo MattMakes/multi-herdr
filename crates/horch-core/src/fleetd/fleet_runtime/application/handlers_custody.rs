@@ -329,7 +329,8 @@ fn fact(value: Option<bool>, name: &str) -> Result<bool> {
 
 /// The job of the removal of the tree `id` at the commit `head`: its
 /// `worktree_remove` job when it is `landed` or `rescued`, else its `rescue`
-/// job after the move to `orphaned`.
+/// job after the move to `orphaned`, with the fact of the drop that the
+/// removal after the rescue reads.
 fn queue_drop(
     c: &Custody,
     tx: &Connection,
@@ -375,7 +376,13 @@ fn queue_drop(
         input_key: &input_key,
     };
     let q = jobs::queue(&ctx, tx, &key, Some(&row.repo_root), clock)?;
-    queued_id(q, "rescue", &row.path)
+    let job = queued_id(q, "rescue", &row.path)?;
+    let ended = remove::OwnerEnded {
+        keep_branch,
+        rescue_job: Some(job),
+    };
+    remove::record_owner_end(&ctx, tx, id, Actor::Worker, &ended)?;
+    Ok(job)
 }
 
 /// The id of the run of a queued job of `kind` for the tree at `path`. A

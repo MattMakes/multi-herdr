@@ -27,6 +27,7 @@ use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, DETACHED,
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, NewWorktree, WorktreeMode, WorktreeRow, WorktreeState,
 };
+use crate::fleetd::worktree_custody::application::remove::{record_owner_end, OwnerEnded};
 use crate::taskledger::model::{Actor, WorktreeStatus};
 use crate::taskledger::util;
 
@@ -141,8 +142,8 @@ pub fn of_feature(conn: &Connection, repo: &Path, feature_id: &str) -> Result<Op
 }
 
 /// Give the gate tree of the ended feature `feature_id` to custody, in
-/// `tx`: a `created` tree moves to `orphaned`, and the reconciler rescues
-/// it, then removes it. `false` when the feature has no `created` gate
+/// `tx`: a `created` tree moves to `orphaned` with the fact that its owner
+/// gave it up, and the reconciler rescues it, then removes it. `false` when the feature has no `created` gate
 /// tree.
 pub fn release(
     ctx: &JobCtx<'_>,
@@ -166,6 +167,11 @@ pub fn release(
         by_fleetd(why),
         ctx.needs_you,
     )?;
+    let ended = OwnerEnded {
+        keep_branch: false,
+        rescue_job: None,
+    };
+    record_owner_end(ctx, tx, &row.worktree_id, Actor::Horch, &ended)?;
     Ok(true)
 }
 

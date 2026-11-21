@@ -33,6 +33,21 @@ pub fn needs_you_key(id: &str) -> String {
     format!("{NEEDS_YOU_KIND}:{id}")
 }
 
+/// The refusal of a live process of the owner attempt.
+pub const OWNER_LIVE: &str = "a process of the owner attempt is live";
+
+/// The end of the refusal of the processes with their working folder in
+/// the tree.
+pub const IN_THE_TREE: &str = "have their working folder in the tree";
+
+/// Whether the refusal `reason` has a cause that can go away: a process in
+/// the tree, which ends. Each other refusal (a dirty tree, a file that
+/// changed after the rescue, a commit, a stash entry) stays until a person
+/// acts.
+pub fn transient(reason: &str) -> bool {
+    reason.contains(OWNER_LIVE) || reason.contains(IN_THE_TREE)
+}
+
 /// A fact that the executor read. `Err` holds why it could not be read.
 pub type Fact<T> = Result<T, String>;
 
@@ -222,14 +237,11 @@ pub fn decide(f: &Facts) -> Result<(), String> {
                 ));
             }
             if owner_live {
-                return Err("a process of the owner attempt is live".to_string());
+                return Err(OWNER_LIVE.to_string());
             }
             if !cwd_pids.is_empty() {
                 let pids: Vec<String> = cwd_pids.iter().map(u32::to_string).collect();
-                return Err(format!(
-                    "the processes {} have their working folder in the tree",
-                    pids.join(", ")
-                ));
+                return Err(format!("the processes {} {IN_THE_TREE}", pids.join(", ")));
             }
         }
     }
@@ -255,6 +267,24 @@ fn landed(head: &str, landed_commit: &str, dirty: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_process_in_the_tree_is_a_refusal_that_can_go_away() {
+        assert!(transient(
+            "the processes 7, 9 have their working folder in the tree"
+        ));
+        assert!(transient(
+            "in quarantine, a process of the owner attempt is live"
+        ));
+        for reason in [
+            "the folder differs from the rescue ref refs/horch/rescue/a/1: a file changed after the rescue",
+            "the tree has a modified or untracked file",
+            "a stash entry names the branch: stash@{0}: On b: x",
+            "the HEAD moved during the checks: a -> b",
+        ] {
+            assert!(!transient(reason), "{reason}");
+        }
+    }
 
     fn ok<T>(v: T) -> Fact<T> {
         Ok(v)
