@@ -374,6 +374,7 @@ fn codex_profile_forbids_git_push_and_external_messages_by_default() {
 /// An address that no host answers (RFC 5737, TEST-NET-1): a webhook at
 /// this address never gets a message, so the test sends none.
 const OFF_HOST_WEBHOOK: &str = "http://192.0.2.1:9/hook";
+const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
 
 #[cfg(unix)]
 fn check_launches(
@@ -433,9 +434,6 @@ fn run_check(
     cmd.output().unwrap()
 }
 
-/// A check that runs its own webhook on the loopback of its sandbox: perl
-/// listens on 127.0.0.1, curl posts `hello` to it, and perl prints
-/// `GOT <request>`. The alarm ends the check when curl never connects.
 #[cfg(unix)]
 fn sandbox_loopback_check() -> String {
     "perl -MIO::Socket::INET -e '\
@@ -473,8 +471,6 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
     let Some(spec) = &launches[0] else {
         return;
     };
-    // The loopback works in the sandbox, so the off-host refusal below is
-    // the network rule and not a sandbox with no network at all.
     let out = run_check(spec);
     assert!(ok(&out), "{}", show(&out));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -489,9 +485,7 @@ fn verifier_check_sends_no_message_outside_the_fleet() {
         show(&out)
     );
 
-    if cfg!(target_os = "linux") {
-        // The check has a new network namespace with its own loopback: a
-        // listener on the loopback of the host is not in it.
+    if SANDBOX_HAS_ITS_OWN_LOOPBACK {
         let out = run_check(launches[1].as_ref().unwrap());
         assert_eq!(out.status.code(), Some(7), "{}", show(&out));
         drop(listener);

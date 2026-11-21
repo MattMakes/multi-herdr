@@ -822,11 +822,6 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
     );
 }
 
-/// [`World::state`] without the rows of the drift ideas (FM-19): the boot
-/// conformance run of agy fails by design, and fleetd adds its idea, with a
-/// new feature, run and sub-orchestrator, while the test runs. The drift
-/// ids are read after the state, and a drift row never stops being one, so
-/// each drift row of the state is left out.
 fn state_without_drift_ideas(w: &World) -> Vec<String> {
     use horch_core::fleetd::worker_profiles::domain::conformance::AdapterConformanceFailed;
     let state = w.state();

@@ -552,6 +552,7 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
 /// An off-host address (TEST-NET-1). The own LAN address of this host is on
 /// the host, as loopback is, and the macOS sandbox lets a check connect to it.
 const OFF_HOST_URL: &str = "http://192.0.2.1:9/";
+const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
 
 fn loopback_server(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -583,9 +584,6 @@ fn loopback_server(
     (port, seen)
 }
 
-/// A check that runs its own webhook on the loopback of its sandbox: `perl`
-/// listens on 127.0.0.1, `curl` posts `hello` to it, and the check passes
-/// only when the request arrives. The alarm ends it when curl never connects.
 fn sandbox_loopback_check(perl: &str, curl: &str) -> String {
     format!(
         "{perl} -MIO::Socket::INET -e '\
@@ -663,9 +661,7 @@ fn sr3_check_that_connects_off_host_is_refused() {
             .any(|l| l.starts_with("check| curl: (7)") && l.contains(host))
     };
     let host_requests = loopback_requests.lock().unwrap().clone();
-    if cfg!(target_os = "linux") {
-        // The check has a new network namespace with its own loopback: a
-        // listener on the loopback of the host is not in it.
+    if SANDBOX_HAS_ITS_OWN_LOOPBACK {
         assert!(host_requests.is_empty(), "{host_requests:?}");
         assert!(refused("127.0.0.1"), "{verdict}");
     } else {
