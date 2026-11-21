@@ -433,8 +433,6 @@ mod tests {
     /// `horch ledger watch --once` runs the Phase 4 pass of fleetd: its 1
     /// pass binds the ready task of a run to a push attempt
     /// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
-    /// The test has no herdr, so the launch fails: the bind and the crashed
-    /// end of its attempt are the facts that this test reads.
     #[test]
     fn watch_once_runs_the_phase4_pass() {
         use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -468,14 +466,11 @@ mod tests {
             "a",
         ]);
         let db = dir.join("ledger.sqlite3");
-        // The job host of the pass is the sibling horch of the exe. A stub
-        // that fails stands in for it, so no horch of the PATH runs.
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("horch"), "#!/bin/sh\nexit 1\n").unwrap();
-        horch_platform::fs::make_executable(&bin.join("horch")).unwrap();
-        // fleetd finds the sandbox tool on the PATH of its context (SR-4):
-        // give it the PATH that the branch below reads.
+        let failing_job_host = bin.join("horch");
+        std::fs::write(&failing_job_host, "#!/bin/sh\nexit 1\n").unwrap();
+        horch_platform::fs::make_executable(&failing_job_host).unwrap();
         let path = std::env::var("PATH").unwrap_or_default();
         let env = MapEnv::new(dir)
             .with_exe(bin.join("horch-test"))
@@ -527,9 +522,6 @@ mod tests {
             assert_eq!(status, "ready", "no check sandbox: no bind");
             return;
         }
-        // The pass binds the task to a push attempt. The launch has no herdr,
-        // so the attempt ends crashed in the same pass and rung 6 of the
-        // stall ladder makes the task ready after a backoff (T-307).
         let (status, not_before, via, outcome): (String, Option<i64>, String, String) = store
             .conn()
             .query_row(
