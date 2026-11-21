@@ -3351,6 +3351,12 @@ fn take(
     Ok(chosen)
 }
 
+/// The keys of the `due` jobs (with the keys `ids`) that part 3 may start,
+/// in the turn order of the cursor of the job starts, at most `budget`: a
+/// git writer only when it is the oldest due git writer of its repository
+/// and no git writer of its repository runs (MAP.md of fleetd-p3, Q12). A
+/// writer that waits keeps its turn: the git writers of 1 repository start
+/// first in, first out, so newer writers do not pass it.
 fn startable(
     tx: &Transaction<'_>,
     due: &[JobRow],
@@ -5490,6 +5496,9 @@ mod tests {
             .unwrap();
     }
 
+    /// A rescue that waits behind a running fetch starts before a newer
+    /// fetch, also when a job that is no git writer moved the cursor past
+    /// the rescue.
     #[test]
     fn rescue_queued_while_a_fetch_runs_starts_before_a_newer_fetch() {
         let mut conn = ledger();

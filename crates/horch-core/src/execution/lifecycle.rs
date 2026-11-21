@@ -1196,6 +1196,14 @@ impl<'a> PaneWorker<'a> {
         ))
     }
 
+    /// SR-8, FM-32: wait until fleetd has recorded this wrapper, so that no
+    /// agent code runs while its attempt has no recorded process. The first
+    /// heartbeat names this wrapper for a push attempt; the pass records the
+    /// pane wrapper of an idea-lead attempt. The wait reads the ledger of
+    /// the brief read-only, in this process, outside the sandbox of the
+    /// agent. With no record in [`START_TIMEOUT_S`], the launch fails and
+    /// no agent starts. A wrapper with no task ledger is in no fleet
+    /// attempt, and does not wait.
     fn wait_recorded(&self) -> Result<()> {
         let Some((db, id)) = &self.ledger else {
             return Ok(());
@@ -1278,6 +1286,7 @@ impl<'a> PaneWorker<'a> {
         // Held until the agent exits; dropping it removes the socket.
         let _report = start_report_server(ctx, brief, &teammate, &env)?;
         let checkins = self.start_checkins(brief, facts.clone());
+        // The smoke agent runs in this process: it is no agent code.
         if teammate.agent != HarnessKind::None {
             self.wait_recorded()?;
         }

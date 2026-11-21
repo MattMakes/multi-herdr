@@ -739,6 +739,10 @@ fn recorded(p: (u32, u64)) -> (Option<i64>, Option<i64>) {
     (Some(i64::from(p.0)), Some(p.1 as i64))
 }
 
+/// The wrapper writes its heartbeat before its agent starts: the file
+/// names the wrapper and no agent, and fleetd records the wrapper of the
+/// launched attempt on its worker row. The test process is fleetd here, so
+/// the file that it writes names fleetd, which is never a wrapper.
 #[test]
 fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
     let mut w = World::new();
@@ -784,6 +788,7 @@ fn wrapper_only_heartbeat_does_not_replace_a_recorded_wrapper_that_runs() {
     assert!(report.wrappers.is_empty(), "{report:?}");
 }
 
+/// fleetd records a wrapper only for an attempt that it launched.
 #[test]
 fn wrapper_only_heartbeat_of_an_attempt_with_no_launch_is_not_used() {
     let mut w = World::new();
