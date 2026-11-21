@@ -68,7 +68,7 @@ fn world() -> World {
         "these tests use the fleet root of their temp ledger"
     );
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut store = Store::open(&root.join("ledger.sqlite3")).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();

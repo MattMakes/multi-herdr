@@ -97,7 +97,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// fleet clock, 1 run and its feature `F-0001` (Q5: the run rowid is 1).
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().canonicalize().unwrap();
+    let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "--quiet", "--initial-branch=main"]);

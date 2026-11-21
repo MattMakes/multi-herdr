@@ -62,7 +62,7 @@ fn git(dir: &Path, args: &[&str]) {
 /// 1 idea, added with `horch idea add` and put in `state`.
 fn world(state: &str) -> (World, String) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);

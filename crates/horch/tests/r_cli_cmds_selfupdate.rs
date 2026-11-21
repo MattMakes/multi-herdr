@@ -96,7 +96,7 @@ fn serve(offer: Offer, archive: Vec<u8>) -> String {
 
 fn world() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     for dir in ["home", "data", "state", "bin"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }

@@ -78,7 +78,7 @@ fn cause(text: &str) -> Cause<'_> {
 /// (the first tip, then the fixed tip), and the judge task in `pending`.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut conn = Connection::open(root.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();

@@ -63,7 +63,7 @@ fn assert_no_forbidden_name(seen: &str) {
 #[test]
 fn doctor_git_lfs_child_has_no_forbidden_name() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let project = root.join("project");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("Game.uproject"), "{}\n").unwrap();

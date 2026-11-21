@@ -70,7 +70,7 @@ fn git(dir: &Path, args: &[&str]) {
 /// run, and the handlers of this module.
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let root: PathBuf = top.join("repo");
     std::fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "--quiet", "-b", "main"]);

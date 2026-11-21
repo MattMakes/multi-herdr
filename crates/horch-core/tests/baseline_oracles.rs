@@ -233,7 +233,7 @@ impl World {
         let tmp = tempfile::tempdir().unwrap();
         // Canonical, so a bundle path (canonicalized by `Bundle::install`)
         // and the home share one prefix.
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let home = root.join("home");
         let state = root.join("state");
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();

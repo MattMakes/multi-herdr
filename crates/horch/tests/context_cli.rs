@@ -74,7 +74,7 @@ impl World {
     /// - `sonnet-2` on a session with no transcript, `no-transcript`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         copy_dir(
             &repo().join("crates/horch-core/tests/fixtures/context/home"),
             &root.join("home"),

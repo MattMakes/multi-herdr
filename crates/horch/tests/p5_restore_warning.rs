@@ -47,7 +47,7 @@ const WARNING: &str = "warning: herdr resumes agent panes by itself after a herd
 #[test]
 fn pres_06_s2_warns_on_herdr_resume_agents_on_restore() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     std::fs::create_dir_all(root.join("project")).unwrap();
 
     let on = root.join("on.toml");

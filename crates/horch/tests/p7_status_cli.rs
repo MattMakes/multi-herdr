@@ -44,7 +44,7 @@ impl World {
     /// A git project with 1 run `r1`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let w = World { _tmp: tmp, root };
         let proj = w.proj();
         std::fs::create_dir_all(&proj).unwrap();

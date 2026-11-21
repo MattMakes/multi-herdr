@@ -69,7 +69,7 @@ impl World {
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["home", "fleet", "proj"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }

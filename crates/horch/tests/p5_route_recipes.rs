@@ -45,7 +45,7 @@ impl World {
             .prefix("rr")
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["proj", "home", "state", "data"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }

@@ -131,7 +131,9 @@ impl World {
     /// The fleet root of the ledger: the folder `fleet` beside it, as the
     /// ledger names its folder (symlinks resolved).
     fn root(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap().join("fleet")
+        horch_platform::path::canonicalize(self.dir.path())
+            .unwrap()
+            .join("fleet")
     }
 
     fn row(&self, id: i64) -> JobRow {

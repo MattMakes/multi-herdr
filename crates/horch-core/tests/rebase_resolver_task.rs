@@ -92,7 +92,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// file of `files` in a different way, so a rebase conflicts on each one.
 fn world(files: &[&str]) -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut conn = Connection::open(root.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();

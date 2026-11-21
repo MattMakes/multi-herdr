@@ -1411,7 +1411,7 @@ fn race_driver_cannot_read_a_file_below_home_outside_the_job_paths() {
     let w = world();
     // The world folder is HOME: the repository and the fleet root are in
     // it, and so is a file of the user.
-    let home = w.dir.path().canonicalize().unwrap();
+    let home = horch_platform::path::canonicalize(w.dir.path()).unwrap();
     std::fs::write(home.join("secret.txt"), "secret\n").unwrap();
     // The program is outside HOME, so git can start it.
     let outside = tempfile::tempdir().unwrap();
@@ -1458,7 +1458,7 @@ fn race_driver_in_a_repository_below_home_cannot_read_or_list_home() {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap())
         .canonicalize()
         .unwrap();
-    let world = w.dir.path().canonicalize().unwrap();
+    let world = horch_platform::path::canonicalize(w.dir.path()).unwrap();
     let beside = world.join("secret.txt");
     std::fs::write(&beside, "secret\n").unwrap();
     // The program is outside HOME, so git can start it.

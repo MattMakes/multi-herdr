@@ -390,7 +390,7 @@ fn planned(key: &str, kind: &str) -> PlannedTask {
 #[test]
 fn planned_non_legacy_kinds_survive_dispatch_into_task_yaml() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);

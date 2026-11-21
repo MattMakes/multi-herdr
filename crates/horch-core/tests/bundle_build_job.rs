@@ -47,7 +47,7 @@ struct World {
 
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut store = Store::open(&root.join("ledger.sqlite3")).unwrap();
     let new = NewRun {
         slug: "r1".into(),

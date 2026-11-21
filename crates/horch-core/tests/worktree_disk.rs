@@ -67,7 +67,7 @@ struct World {
 
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let top = temp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(temp.path()).unwrap();
     let mut conn = Connection::open(top.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();

@@ -103,7 +103,7 @@ struct World {
 /// the `pr` key of the project file on the feature branch, if any.
 fn world(pr: Option<&str>, tasks: &[&str]) -> World {
     let dir = tempfile::tempdir().unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut conn = Connection::open(top.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -196,7 +196,9 @@ fn world(pr: Option<&str>, tasks: &[&str]) -> World {
 
 impl World {
     fn gh_dir(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap().join("gh")
+        horch_platform::path::canonicalize(self.dir.path())
+            .unwrap()
+            .join("gh")
     }
 
     fn gh_file(&self, name: &str) -> String {

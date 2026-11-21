@@ -93,7 +93,7 @@ fn worktree_git(fleet: &Path, repo: &Path) -> CliWorktreeGit {
 /// `open`, and the fetched tip of `main`.
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().canonicalize().unwrap();
+    let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "--quiet", "--initial-branch=main"]);

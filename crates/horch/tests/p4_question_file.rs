@@ -94,7 +94,7 @@ impl World {
 
     fn with_agent(outside: bool) -> World {
         let tmp = short_tempdir();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();

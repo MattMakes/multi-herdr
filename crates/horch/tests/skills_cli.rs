@@ -78,7 +78,7 @@ struct World {
 impl World {
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["home", "state", "data"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }

@@ -14,7 +14,7 @@ struct Out {
 
 fn horch(args: &[&str]) -> Out {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     std::fs::create_dir_all(root.join("home")).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_horch"))
         .args(args)

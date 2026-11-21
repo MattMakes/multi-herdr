@@ -106,7 +106,7 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
 /// and a task branch row for each.
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(temp.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);

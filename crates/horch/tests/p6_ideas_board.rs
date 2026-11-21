@@ -46,7 +46,7 @@ fn cause(text: &str) -> Cause<'_> {
 /// primary branch `main`.
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     std::fs::create_dir_all(root.join("home")).unwrap();
     let mut store = Store::open(&root.join("ledger.sqlite3")).unwrap();
     for (id, name) in [("F-0001", "f1"), ("F-0002", "f2")] {

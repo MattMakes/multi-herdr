@@ -102,7 +102,7 @@ fn self_update(root: &Path, api: &str) -> Output {
 
 fn setup(names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     for dir in ["home", "data", "state", "bin"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }

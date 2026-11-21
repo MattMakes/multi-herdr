@@ -65,7 +65,7 @@ impl World {
     }
 
     fn root(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.dir.path()).unwrap()
     }
 
     fn db(&self) -> PathBuf {

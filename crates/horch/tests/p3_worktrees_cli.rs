@@ -99,7 +99,7 @@ impl World {
 
     fn start(fleet_toml: &str) -> World {
         let tmp = short_tempdir();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let mut w = World {
             _fleetd: None,
             _agent: None,

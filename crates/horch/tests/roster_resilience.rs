@@ -11,7 +11,7 @@ use std::process::{Command, Output};
 /// binary: `requires` names a value it does not know.
 fn world() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     for dir in ["home", "state", "data", "teammates"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }

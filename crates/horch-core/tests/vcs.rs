@@ -44,7 +44,7 @@ impl Fixture {
     fn new() -> Option<Self> {
         let bin = find_git()?;
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let temp_root = std::env::temp_dir().canonicalize().unwrap();
         assert!(root.starts_with(&temp_root), "real git only on temp repos");
         let config = root.join("gitconfig");

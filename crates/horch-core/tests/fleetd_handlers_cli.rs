@@ -52,7 +52,7 @@ struct World {
 
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let root = top.join("repo");
     let state = top.join("state");
     std::fs::create_dir_all(&root).unwrap();

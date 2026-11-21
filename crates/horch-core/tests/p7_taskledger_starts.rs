@@ -157,7 +157,7 @@ fn finish_pr_check_starts_gh_without_a_forbidden_name() {
 fn finish_pr_check_in_a_parent_with_a_forbidden_name() {
     let _ = env_out();
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let (root, _) = repo(&top);
     let (_store, mut run) = run(&top, &root);
     run.pr_number = Some(1);
@@ -181,7 +181,7 @@ fn triage_pr_remote_starts_gh_without_a_forbidden_name() {
 fn triage_pr_remote_in_a_parent_with_a_forbidden_name() {
     let _ = env_out();
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let (root, _) = repo(&top);
     let gh = env_printer(&top, "gh", "gh version 2");
     assert_eq!(apply::pr_remote(&Git::new("git"), &root, &gh), None);
@@ -197,7 +197,7 @@ fn run_gate_starts_the_check_without_a_forbidden_name() {
 fn run_gate_in_a_parent_with_a_forbidden_name() {
     let _ = env_out();
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let (root, _) = repo(&top);
     let (mut store, run) = run(&top, &root);
     let tools = Tools {
@@ -233,7 +233,7 @@ fn vcs_land_starts_the_check_without_a_forbidden_name() {
 fn vcs_land_in_a_parent_with_a_forbidden_name() {
     let _ = env_out();
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let (root, config) = repo(&top);
     let landing = Landing::new("git".into(), top.join("state"))
         .with_env("GIT_CONFIG_GLOBAL", config.to_str().unwrap())

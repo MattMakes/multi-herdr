@@ -67,7 +67,7 @@ fn world() -> World {
     let outside = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let fleet_root = top.join("fleet");
     let project = top.join("repo");
     std::fs::create_dir_all(&fleet_root).unwrap();
@@ -317,7 +317,9 @@ fn the_check_sandbox_looks_on_the_path_of_fleetd() {
 #[test]
 fn the_check_sandbox_finds_its_tool_on_the_given_path() {
     let mut w = world();
-    let tools = w.dir.path().canonicalize().unwrap().join("tools");
+    let tools = horch_platform::path::canonicalize(w.dir.path())
+        .unwrap()
+        .join("tools");
     let with = WorkerSandboxes::on_path(
         w.codex(Path::new("/no/codex")),
         w.fleet_root.clone(),

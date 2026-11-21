@@ -149,7 +149,7 @@ fn assert_ok(out: &Output) {
 #[test]
 fn docs_sync_writes_each_cli_into_the_fleet_root() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     fixture(&root.join("fixture"));
     let all = sources().unwrap();
     let clis: Vec<&str> = all
@@ -198,7 +198,7 @@ fn docs_sync_writes_each_cli_into_the_fleet_root() {
 #[test]
 fn docs_sync_cli_herdr_out_refreshes_a_folder() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     fixture(&root.join("fixture"));
     // Only herdr has a binary: a sync of another CLI would fail.
     let bin = fake_bins(&root, &["herdr"]);
@@ -237,7 +237,7 @@ fn docs_sync_cli_herdr_out_refreshes_a_folder() {
 #[test]
 fn docs_sync_of_an_unknown_cli_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let bin = fake_bins(&root, &[]);
 
     let out = horch(&root, &bin, &["docs", "sync", "--cli", "nope"]);

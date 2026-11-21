@@ -82,7 +82,7 @@ fn open(db: &Path) -> Connection {
 
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let top = temp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(temp.path()).unwrap();
     let mut conn = open(&top.join("ledger.sqlite3"));
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute(

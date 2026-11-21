@@ -128,7 +128,7 @@ fn cause(text: &str) -> Cause<'_> {
 
 fn world(remote: &str) -> World {
     let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().canonicalize().unwrap();
+    let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
     let mut conn = open(&dir.join("ledger.sqlite3"));
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute(

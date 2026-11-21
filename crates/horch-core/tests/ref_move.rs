@@ -100,7 +100,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(temp.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);

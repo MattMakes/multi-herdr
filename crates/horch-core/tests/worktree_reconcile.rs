@@ -63,7 +63,7 @@ fn cause() -> Cause<'static> {
 impl World {
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let repo = top.join("repo");
         std::fs::create_dir_all(repo.join(".worktrees")).unwrap();
         let mut store = Store::open(&top.join("ledger.sqlite3")).unwrap();

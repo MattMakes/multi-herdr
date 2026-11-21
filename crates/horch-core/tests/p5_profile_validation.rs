@@ -70,7 +70,7 @@ fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let fleet_root = top.join("fleet");
     let project = top.join("repo");
     std::fs::create_dir_all(&fleet_root).unwrap();

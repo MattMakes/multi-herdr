@@ -130,7 +130,7 @@ impl World {
     /// profile `minimal`, and 1 feature with 1 idea.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -203,7 +203,7 @@ impl World {
     }
 
     fn root(&self) -> PathBuf {
-        self.tmp.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.tmp.path()).unwrap()
     }
 
     /// A new worker of the run, as push dispatch records it.

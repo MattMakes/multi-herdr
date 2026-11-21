@@ -126,7 +126,7 @@ impl World {
     /// The task is `done`, and its task branch is `in_bundle`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         let fleet_root = top.join("fleet");
         std::fs::create_dir_all(&root).unwrap();

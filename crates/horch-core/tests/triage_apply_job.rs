@@ -137,7 +137,7 @@ struct World {
 fn world() -> World {
     fake_gh();
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let root = top.join("repo");
     std::fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "--quiet", "-b", "main"]);

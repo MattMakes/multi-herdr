@@ -134,7 +134,7 @@ impl World {
     /// `profile`. The analyser of the complexity-sweep finds nothing.
     fn new(profile: VerifyProfile) -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -203,7 +203,7 @@ impl World {
     }
 
     fn top(&self) -> PathBuf {
-        self.tmp.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.tmp.path()).unwrap()
     }
 
     /// The script of the analyser of the complexity-sweep.
