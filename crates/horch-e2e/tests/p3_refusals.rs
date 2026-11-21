@@ -170,6 +170,16 @@ fn claimed_as(h: &Harness, steps: &str, agent: Option<u32>) -> (String, String, 
     (w, task, path)
 }
 
+/// The run gives each task 1 attempt: when the attempt ends, the task
+/// fails and no retry attempt takes its tree again during the test.
+fn no_retry(h: &Harness) {
+    Store::open(&ledger(h))
+        .unwrap()
+        .conn()
+        .execute("UPDATE runs SET max_attempts = 1", [])
+        .unwrap();
+}
+
 /// The values of the first column of `sql`.
 fn query(h: &Harness, sql: &str) -> Vec<String> {
     let store = Store::open(&ledger(h)).unwrap();
@@ -429,6 +439,7 @@ fn rr13_a_commit_after_an_accepted_drop_is_kept_in_the_rescue_ref() {
 fn drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal() {
     let h = world("p3-ref-drop");
     let (w, task, path) = claimed(&h, "land");
+    no_retry(&h);
     let head = commit_file(&h, &path, "unique.txt");
     let branch = git_in(&h, &path, &["branch", "--show-current"]);
     let id = column(&h, &path, "worktree_id");
@@ -742,6 +753,7 @@ fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
         .spawn()
         .unwrap();
     let (_, task, path) = claimed_as(&h, "land,cleanup", Some(agent.id()));
+    no_retry(&h);
     commit_file(&h, &path, "feature.txt");
     set_idea_of(&h, &task, "parked");
     agent.kill().unwrap();

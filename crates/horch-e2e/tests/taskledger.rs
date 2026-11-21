@@ -547,9 +547,9 @@ fn libc_sigterm() -> i32 {
     15
 }
 
-/// A fake `gh`: `pr create` prints a URL and keeps the body, `pr view`
-/// prints the body and the remote run branch's head, `pr edit` replaces
-/// the body. Calls go to `<dir>/calls`. `warm` does nothing.
+/// A fake `gh`: `pr create` prints a URL and keeps the body (`--body` or
+/// `--body-file`), `pr view` prints the body and the remote run branch's
+/// head, `pr edit` replaces the body. Calls go to `<dir>/calls`. `warm` does nothing.
 const FAKE_GH: &str = r#"#!/bin/sh
 if [ "$1" = warm ]; then exit 0; fi
 st="$FAKE_GH_DIR"
@@ -561,6 +561,7 @@ case "$cmd" in
   while [ $# -gt 0 ]; do
     case "$1" in
       --body) printf '%s' "$2" > "$st/body"; shift 2;;
+      --body-file) /bin/cat "$2" > "$st/body"; shift 2;;
       *) shift;;
     esac
   done
