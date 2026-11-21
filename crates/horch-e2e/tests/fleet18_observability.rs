@@ -1,6 +1,6 @@
 //! Behavioral coverage for fleet pitfalls #49–55.
 use horch_core::execution::records::SessionLedger;
-use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness};
+use horch_e2e::harness::{copy_tree, fixtures, repo_root, Harness, DEADLINE};
 use horch_e2e::ledger_seed::{seed_run, seed_task, seed_worker};
 use serde_json::json;
 
@@ -342,7 +342,10 @@ fn launch_attempt(h: &Harness, slug: &str) -> String {
     let ticket = h.project.join(format!("{slug}.md"));
     std::fs::write(&ticket, format!("# {slug}\n**Check:** `true`\n")).unwrap();
     let task = seed_task(h, &run, &ticket, "codex-terra");
-    wait("the launch of the worker", || {
+    // A launch is 4 serial process starts (spawn, pane, supervisor, agent)
+    // beside the conformance jobs of fleetd. At load 50 it took 29.7 s from
+    // the task row to the agent start, so it gets the harness DEADLINE.
+    wait_up_to("the launch of the worker", DEADLINE, || {
         let store = horch_core::taskledger::Store::open(&h.ledger_db()).ok()?;
         store
             .conn()
@@ -374,8 +377,12 @@ fn serve_state_fleetd(h: &mut Harness) {
     h.serve_fleetd();
 }
 
-fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+fn wait<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
+    wait_up_to(what, std::time::Duration::from_secs(30), f)
+}
+
+fn wait_up_to<T>(what: &str, limit: std::time::Duration, mut f: impl FnMut() -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
         if let Some(v) = f() {
             return v;
