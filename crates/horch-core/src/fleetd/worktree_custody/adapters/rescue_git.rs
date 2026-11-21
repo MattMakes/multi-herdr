@@ -320,7 +320,7 @@ pub(crate) fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<S
 /// fix text when that git is not found, does not run, or is older than
 /// 2.41. `git` is the git of the fleet (`HORCH_GIT_BIN`, or `git`); a bare
 /// name is looked up on `path`, as the start of a process does. The rule is
-/// the rule of [`snapshot`], so `horch doctor` and the start of fleetd
+/// the rule of `snapshot`, so `horch doctor` and the start of fleetd
 /// refuse the git that a rescue refuses.
 pub fn rescue_git_version(
     git: &Path,
