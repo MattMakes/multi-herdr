@@ -44,11 +44,15 @@ pub fn create_dir_mode(builder: &mut DirBuilder, mode: u32) -> Result<(), NotSup
 }
 
 /// Make the folder `path` and each missing parent, each new one with access
-/// for its owner only. A folder that exists keeps its access.
+/// for its owner only. An existing parent keeps its access.
 ///
-/// macOS and Linux: mode 0700. Windows: this user is the owner, and a
-/// protected DACL allows only this user, for the folder and for each file
-/// and folder made in it.
+/// macOS and Linux: mode 0700. A folder at `path` that exists keeps its
+/// mode. Windows: this user is the owner, and a protected DACL allows only
+/// this user, for the folder and for each file and folder made in it. A
+/// folder at `path` that exists gets the same owner and DACL when this user
+/// is not its owner or its DACL is not owner-only, as [`check_owner_only`]
+/// checks it. When that change fails, the error kind is `PermissionDenied`,
+/// and the message names the folder.
 pub fn create_dir_owner_only(path: &Path) -> io::Result<()> {
     os::create_dir_owner_only(path)
 }
