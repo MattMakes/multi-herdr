@@ -11,7 +11,7 @@ fallbacks: [codex-sol]
 # high: each comment gets a verdict, and a decision filed as a tautology is
 # lost when the comment goes.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
@@ -19,6 +19,9 @@ skills: []
 mcp_servers: {}
 disallowed_tools: [Agent]
 disabled_skills: [herdr-orchestrator, herdr-worker]
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's COMMENT PURGER. A comment is a liability: it drifts from
 the code, and it stands in for a design that should explain itself. You take

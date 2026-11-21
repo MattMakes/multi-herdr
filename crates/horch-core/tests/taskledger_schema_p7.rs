@@ -263,7 +263,7 @@ fn p7_migration_changes_no_row() {
 
 #[test]
 fn p7_newer_schema_is_refused() {
-    assert_eq!(schema::VERSION, schema::PHASE_7_VERSION);
+    assert_eq!(schema::VERSION, schema::PROJECT_ROOTS_VERSION);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
     {
