@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use horch_e2e::harness::{fixtures, wait_for_or, Harness, DEADLINE};
+use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags};
 
@@ -48,10 +48,10 @@ struct World {
 
 impl World {
     fn new(name: &str, scenario: &str, first: &str) -> World {
-        World::with(name, scenario, first, false)
+        World::with(name, scenario, first, Refuse::Never)
     }
 
-    fn with(name: &str, scenario: &str, first: &str, refuse_resume: bool) -> World {
+    fn with(name: &str, scenario: &str, first: &str, refuse: Refuse) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
@@ -76,7 +76,7 @@ impl World {
             std::os::unix::fs::symlink(Harness::horch_bin(), horch).unwrap();
         }
         let git = shell_word(&h.git_bin().expect("a git").to_string_lossy());
-        let wrapper = wrapper(&h.root, &first.replace("@GIT@", &git), refuse_resume);
+        let wrapper = wrapper(&h.root, &first.replace("@GIT@", &git), refuse);
         let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
         h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
         let workspace = h.fleet_workspace();
@@ -273,39 +273,66 @@ impl World {
         wait_for_or(what, f, || self.context())
     }
 
-    fn wait_past_backoff<T>(&self, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
-        let until = Instant::now() + 3 * DEADLINE;
-        while Instant::now() < until {
-            if let Some(v) = f() {
-                return v;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        panic!(
-            "timed out after {} s waiting for {what}\n{}",
-            (3 * DEADLINE).as_secs(),
-            self.context()
-        );
+    /// The attempts of `task` that its retry budget counts:
+    /// `attempts - attempt_floor`.
+    fn used(&self, task: &str) -> i64 {
+        self.one(&format!(
+            "SELECT attempts - attempt_floor FROM tasks WHERE task_id = {}",
+            quoted(task)
+        ))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("task {task} has a row\n{}", self.context()))
+    }
+
+    /// The run of `task` allows 1 more attempt than it used.
+    fn one_attempt_left(&self, task: &str) -> i64 {
+        let max = self.used(task) + 1;
+        let conn = Connection::open(self.h.ledger_db()).unwrap();
+        conn.busy_timeout(Duration::from_secs(30)).unwrap();
+        let n = conn
+            .execute(
+                "UPDATE runs SET max_attempts = ?1
+                 WHERE run_id = (SELECT run_id FROM tasks WHERE task_id = ?2)",
+                rusqlite::params![max, task],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the task has a run\n{}", self.context());
+        max
     }
 }
 
-fn wrapper(root: &Path, first: &str, refuse_resume: bool) -> String {
+/// Which launches of the fake CLI exit at once with no result.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Refuse {
+    Never,
+    /// A resume: the CLI says that the session is gone, as claude does.
+    Resume,
+    /// A resume, and each fresh launch after the first.
+    Every,
+}
+
+fn wrapper(root: &Path, first: &str, refuse: Refuse) -> String {
     let fake = Harness::horch_bin().with_file_name("fake-claude");
-    let refuse = if refuse_resume {
+    let refused = shell_word(&root.join(REFUSED_LOG).to_string_lossy());
+    let log = shell_word(&root.join(FIRST_LOG).to_string_lossy());
+    let resume = if refuse == Refuse::Never {
+        String::new()
+    } else {
         format!(
-            "*--resume*) echo \"$*\" >> {}; \
-             echo 'No conversation found with session ID' >&2; exit 1 ;;\n",
-            shell_word(&root.join(REFUSED_LOG).to_string_lossy())
+            "*--resume*) echo \"$*\" >> {refused}; \
+             echo 'No conversation found with session ID' >&2; exit 1 ;;\n"
         )
+    };
+    let fresh = if refuse == Refuse::Every {
+        format!("; echo \"$*\" >> {refused}; exit 1")
     } else {
         String::new()
     };
     format!(
         "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
-         case \"$*\" in\n*horch-conformance*) ;;\n{refuse}*/inbox/START.md*)\n\
-         if [ ! -e {log} ]; then {{ {first}\n}} > {log} 2>&1; exit 0; fi ;;\nesac\n\
+         case \"$*\" in\n*horch-conformance*) ;;\n{resume}*/inbox/START.md*)\n\
+         if [ ! -e {log} ]; then {{ {first}\n}} > {log} 2>&1; exit 0; fi{fresh} ;;\nesac\n\
          exec {fake} \"$@\"\n",
-        log = shell_word(&root.join(FIRST_LOG).to_string_lossy()),
         fake = shell_word(&fake.to_string_lossy()),
     )
 }
@@ -488,63 +515,112 @@ fn answered_question_resumes_the_session_of_the_worker() {
     assert_eq!(w.attempts(&task).len(), 2, "{}", w.context());
 }
 
-/// RR-12, design line 1015: a resume that fails at once gives a fresh
-/// attempt from the question, the answer and the committed work.
-#[test]
-fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
+/// The first launch commits work in progress, then asks [`QUESTION`].
+fn first_commits_and_asks() -> String {
     let commit = "printf 'work\\n' > work.txt && @GIT@ add work.txt && \
                   @GIT@ -c user.name=t -c user.email=t@t -c commit.gpgSign=false \
                   commit -q --no-verify -m 'work in progress'";
     let tree =
         "cd \"$(/usr/bin/sed -n 's/^worktree: //p' \"$HORCH_TASK_YAML\" | /usr/bin/tr -d '\"')\"";
-    let first = format!("{tree} && {commit} && {}", question_tell(QUESTION));
-    let w = World::with("p6-wq-refused", "stay", &first, true);
+    format!("{tree} && {commit} && {}", question_tell(QUESTION))
+}
+
+/// The lines of [`REFUSED_LOG`]: the argv of each refused launch.
+fn refused_argvs(w: &World) -> Vec<Vec<String>> {
+    std::fs::read_to_string(w.h.root.join(REFUSED_LOG))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.split_whitespace().map(str::to_string).collect())
+        .collect()
+}
+
+/// A task with 1 attempt left whose resume the CLI refuses: the refused
+/// attempt (a2), and the fresh attempt after it (a3). `max` is the
+/// attempt limit of the run.
+struct Refused {
+    w: World,
+    task: String,
+    session: String,
+    answer: &'static str,
+    a2: String,
+    a3: String,
+    max: i64,
+}
+
+fn refused_resume_at_the_last_attempt(name: &str, refuse: Refuse) -> Refused {
+    let w = World::with(name, "stay", &first_commits_and_asks(), refuse);
     let task = w.task();
     w.blocked(&task);
     let id = assert_1_row_of_the_first_attempt(&w, &task);
     let a1 = w.attempts(&task)[0].0.clone();
     let session = session_of(&w, &a1);
+    let max = w.one_attempt_left(&task);
     let answer = "The guide names port 8080.";
     answer_by_tell(&w, &task, &id, answer);
-    // Design line 1236: an exit with no result ends `no_result`, and line
-    // 1237: it burns 1 attempt, so the fresh attempt waits its backoff.
-    let a3 = w.wait_past_backoff("the fresh attempt after the failed resume", || {
+    // RR-12: no backoff, so the fresh attempt comes within 1 wait.
+    let a3 = w.wait("the fresh attempt after the refused resume", || {
         w.attempts(&task).get(2).map(|a| a.0.clone())
     });
     let a2 = w.attempts(&task)[1].clone();
     assert_eq!(
         (a2.1.as_str(), a2.2.as_str()),
-        ("ended", "no_result"),
-        "the refused resume ends no_result\n{}",
+        ("ended", "resume_refused"),
+        "the refused resume ends resume_refused\n{}",
         w.context()
     );
     assert_eq!(worker_of(&w, &a2.0, "resumed_from_session"), session);
-    let refused = std::fs::read_to_string(w.h.root.join(REFUSED_LOG)).unwrap_or_default();
     assert!(
-        refused.lines().any(|l| {
-            let argv: Vec<String> = l.split_whitespace().map(str::to_string).collect();
-            resumes(&argv, &session)
-        }),
-        "the CLI of the resumed attempt got --resume {session}: {refused:?}\n{}",
+        refused_argvs(&w).iter().any(|argv| resumes(argv, &session)),
+        "the CLI of the resumed attempt got --resume {session}\n{}",
+        w.context()
+    );
+    assert_eq!(
+        worker_of(&w, &a3, "resumed_from_session"),
+        "",
+        "the fresh attempt records no resume\n{}",
+        w.context()
+    );
+    Refused {
+        w,
+        task,
+        session,
+        answer,
+        a2: a2.0,
+        a3,
+        max,
+    }
+}
+
+/// RR-12, design line 1015: a resume that the CLI refuses because the
+/// session is gone gives a fresh attempt from the question, the answer and
+/// the committed work, also at the last attempt: the refusal burns no
+/// attempt and waits no backoff (D244-F3).
+#[test]
+fn refused_resume_at_the_last_attempt_gives_a_fresh_attempt_with_the_answer_and_the_work() {
+    let r = refused_resume_at_the_last_attempt("p6-wq-refused", Refuse::Resume);
+    let w = &r.w;
+    assert_eq!(
+        w.used(&r.task),
+        r.max,
+        "the refused resume gives its attempt back\n{}",
         w.context()
     );
     let argv = w.wait("the CLI of the fresh attempt", || {
-        argv_of(&w, &a3).into_iter().next()
+        argv_of(w, &r.a3).into_iter().next()
     });
     assert!(
         !argv.iter().any(|a| a == "--resume"),
         "the fresh attempt does not resume: {argv:?}"
     );
-    assert_eq!(worker_of(&w, &a3, "resumed_from_session"), "");
-    let start = w.wait("START.md of the fresh attempt", || w.start_md(&a3));
+    let start = w.wait("START.md of the fresh attempt", || w.start_md(&r.a3));
     assert!(
-        start.contains(QUESTION) && start.contains(answer),
+        start.contains(QUESTION) && start.contains(r.answer),
         "START.md of the fresh attempt holds the question and the answer:\n{start}"
     );
     let tree = w
         .one(&format!(
             "SELECT path FROM worktrees WHERE task_id = {}",
-            quoted(&task)
+            quoted(&r.task)
         ))
         .unwrap_or_else(|| panic!("the task has a tree\n{}", w.context()));
     let log =
@@ -557,6 +633,54 @@ fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
         "the fresh attempt keeps the committed work: {}\n{}",
         text(&log),
         w.context()
+    );
+}
+
+/// RR-12 bound: 1 fresh launch for each answer. When the fresh attempt
+/// also exits with no result, it ends `no_result` and burns the last
+/// attempt as today, and no attempt resumes again.
+#[test]
+fn fresh_attempt_after_a_refused_resume_that_fails_burns_the_attempt_and_does_not_loop() {
+    let r = refused_resume_at_the_last_attempt("p6-wq-refused-twice", Refuse::Every);
+    let w = &r.w;
+    w.wait("the end of the fresh attempt", || {
+        let a = w.attempts(&r.task).get(2).cloned()?;
+        (a.1 == "ended").then_some(())
+    });
+    let a3 = w.attempts(&r.task)[2].clone();
+    assert_eq!(
+        a3.2,
+        "no_result",
+        "the failed fresh attempt is a normal failure\n{}",
+        w.context()
+    );
+    w.wait("the task out of its retry budget", || {
+        matches!(w.status(&r.task).as_str(), "failed" | "escalated").then_some(())
+    });
+    w.passes(QUIET_PASSES);
+    assert_eq!(
+        w.attempts(&r.task).len(),
+        3,
+        "no attempt after the burned last attempt\n{}",
+        w.context()
+    );
+    // The wrapper of a2 also resumes its session 1 time with no START.md
+    // (the repair pass of FM-6). No attempt after a2 resumes it.
+    let refused = refused_argvs(w);
+    let a3_dir = w.attempt_dir(&r.a3).to_string_lossy().into_owned();
+    let names_a3 = |argv: &Vec<String>| argv.iter().any(|a| a.contains(&a3_dir));
+    assert!(
+        !refused
+            .iter()
+            .any(|argv| resumes(argv, &r.session) && names_a3(argv)),
+        "the attempt after the refused resume {} does not resume {}: {refused:?}",
+        r.a2,
+        r.session
+    );
+    assert!(
+        refused.iter().any(names_a3),
+        "the fresh attempt {} launched: {refused:?}",
+        r.a3
     );
 }
 
@@ -604,8 +728,7 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
     w.wait("a launch of the sub-orchestrator", || {
         w.one("SELECT id FROM attempts WHERE task_id IS NULL")
     });
-    w.passes(QUIET_PASSES);
-    let leads: Vec<serde_json::Value> =
+    let lead_calls = || -> Vec<serde_json::Value> {
         w.h.calls_of("claude")
             .into_iter()
             .filter(|c| {
@@ -616,12 +739,14 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
                         .any(|p| std::path::Path::new(p).join("idea.md").is_file())
                 })
             })
-            .collect();
-    assert!(
-        !leads.is_empty(),
-        "no sub-orchestrator call\n{}",
-        w.context()
-    );
+            .collect()
+    };
+    // The attempt row comes before its CLI starts: wait for the call.
+    w.wait("a call of the sub-orchestrator CLI", || {
+        (!lead_calls().is_empty()).then_some(())
+    });
+    w.passes(QUIET_PASSES);
+    let leads = lead_calls();
     let asks: Vec<String> = leads
         .iter()
         .filter(|c| c.get("ask").is_some())
