@@ -114,9 +114,10 @@ impl World {
 
     /// The adapter of this world on this host.
     fn host_sandboxes(&self) -> WorkerSandboxes {
-        WorkerSandboxes::new(
+        WorkerSandboxes::on_path(
             self.codex(&self.dir.path().join("codex")),
             self.fleet_root.clone(),
+            std::env::var_os("PATH"),
         )
     }
 

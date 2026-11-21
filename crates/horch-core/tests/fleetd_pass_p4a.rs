@@ -149,7 +149,11 @@ impl World {
         };
         // Each persona has a check sandbox: the host facts do not decide a
         // test.
-        let mut sandboxes = WorkerSandboxes::new(CodexSandbox::default(), dir.join("fleet"));
+        let mut sandboxes = WorkerSandboxes::on_path(
+            CodexSandbox::default(),
+            dir.join("fleet"),
+            std::env::var_os("PATH"),
+        );
         sandboxes.gap = None;
         World {
             _temp: None,

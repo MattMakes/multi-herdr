@@ -410,7 +410,11 @@ fn check_launches(
     )
     .unwrap();
     let worker = workers::get(&conn, &worker).unwrap();
-    let sandboxes = WorkerSandboxes::new(CodexSandbox::default(), root.join("fleet"));
+    let sandboxes = WorkerSandboxes::on_path(
+        CodexSandbox::default(),
+        root.join("fleet"),
+        std::env::var_os("PATH"),
+    );
     checks
         .iter()
         .map(|check| sandboxes.check_launch(&worker, &project, check).unwrap())

@@ -78,15 +78,11 @@ pub struct WorkerSandboxes {
 }
 
 impl WorkerSandboxes {
-    /// The check sandboxes of the fleet at `fleet_root` on this host. The
-    /// sandbox tool is found on the `PATH` of this process: the `PATH` of
-    /// the operator at the start of fleetd. No worker can change it, so no
-    /// worker can put its own `bwrap` in place of the sandbox (SR-4).
-    pub fn new(codex: CodexSandbox, fleet_root: PathBuf) -> WorkerSandboxes {
-        WorkerSandboxes::on_path(codex, fleet_root, std::env::var_os("PATH"))
-    }
-
-    /// [`WorkerSandboxes::new`] with the sandbox tool found on `path`.
+    /// The check sandboxes of the fleet at `fleet_root` on this host, with
+    /// the sandbox tool found on `path`. fleetd gives the `PATH` of its
+    /// process at its start (`RuntimeContext::inherited`). No worker can
+    /// change it, so no worker can put its own `bwrap` in place of the
+    /// sandbox (SR-4).
     pub fn on_path(
         codex: CodexSandbox,
         fleet_root: PathBuf,

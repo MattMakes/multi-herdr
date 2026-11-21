@@ -1004,7 +1004,11 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
         state_root: ctx.paths.state_root.clone(),
         personas: super::taskledger::codex_personas(ctx),
     };
-    WorkerSandboxes::new(codex, ctx.paths.fleet_root.clone())
+    WorkerSandboxes::on_path(
+        codex,
+        ctx.paths.fleet_root.clone(),
+        ctx.inherited.path.clone(),
+    )
 }
 
 /// The spawn of each push attempt that fleetd bound:

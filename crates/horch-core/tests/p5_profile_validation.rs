@@ -111,7 +111,7 @@ impl World {
         };
         WorkerSandboxes {
             gap: None,
-            ..WorkerSandboxes::new(codex, self.fleet_root.clone())
+            ..WorkerSandboxes::on_path(codex, self.fleet_root.clone(), std::env::var_os("PATH"))
         }
         .with_profiles(roster)
     }
