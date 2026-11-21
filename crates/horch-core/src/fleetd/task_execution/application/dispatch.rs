@@ -460,6 +460,8 @@ struct LiveTree {
     branch: String,
 }
 
+/// The rows of the ready tasks, read in a fixed number of statements for
+/// any count of ready tasks (A32: no statement for each row of a pass).
 struct ReadyRows {
     tasks: Vec<Task>,
     cancelled: BTreeSet<String>,
@@ -579,7 +581,8 @@ fn pairs(
     Ok(rows)
 }
 
-/// SQLite takes the bare columns from the row of `max(rowid)`.
+/// SQLite takes the bare columns from the row of `max(rowid)`: the newest
+/// row, as [`trees::of_task`] reads it.
 fn live_trees(conn: &Connection) -> Result<BTreeMap<String, LiveTree>> {
     let ready = word(TaskStatus::Ready);
     let mut stmt = conn.prepare(&format!(
