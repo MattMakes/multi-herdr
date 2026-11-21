@@ -38,6 +38,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
+use crate::fleetd::fleet_runtime::adapters::effects;
 use crate::fleetd::fleet_runtime::adapters::job_result_file::{
     self as result_file, FileRead, JobResult, Read as ResultRead,
 };
@@ -983,8 +984,10 @@ fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
 /// only while its leader runs with the recorded start and leads the group
 /// (D242-F1). With the leader gone, no signal goes out: the next pass sees
 /// the job process gone, and [`note_group_left`] records the members.
-/// Before the kill, each process of the group gets a stop that it can
-/// catch. Whether a stop was sent.
+/// Each signal goes to a process of a snapshot of the group, by its pid and
+/// start time, never to the group id ([`effects::stop_leader_group`],
+/// D254-F1). Before the kill, each process of the group gets a stop that it
+/// can catch. Whether a stop was sent.
 ///
 /// Windows has no process groups: there the stop reaches the job process
 /// only, and the processes that it started live on
@@ -1001,27 +1004,20 @@ fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
 /// check holds no git writer lock. Git of a job runs in the job group, so
 /// the kill ends git and its sandbox.
 pub fn stop(s: &Stop) -> bool {
-    use horch_platform::group;
+    stop_with(s, &mut || {})
+}
+
+/// [`stop`] with `after_check`, which runs between the check of the leader
+/// and the signals: the seam of the tests of D254-F1.
+pub fn stop_with(s: &Stop, after_check: &mut dyn FnMut()) -> bool {
     use horch_platform::signal::{stop_same, Stop as How};
     let Some(start) = s.pid_start else {
         return false;
     };
     let how = if s.kill { How::Kill } else { How::Term };
-    match group::is_group_leader(s.pid, start) {
-        Ok(false) => false,
+    match effects::stop_leader_group(s.pid, start, how, after_check) {
+        Ok(sent) => sent.unwrap_or(false),
         Err(_) => stop_same(s.pid, start, how),
-        Ok(true) if s.kill => group::kill_group_id(s.pid).unwrap_or(false),
-        Ok(true) => {
-            let members =
-                horch_platform::process::group_members(s.pid).unwrap_or_else(|_| vec![s.pid]);
-            let mut sent = false;
-            for pid in members {
-                if let Some(t) = horch_platform::process::start_time(pid) {
-                    sent |= stop_same(pid, t, how);
-                }
-            }
-            sent
-        }
     }
 }
 

@@ -759,3 +759,65 @@ fn marked(marker: &str) -> Vec<String> {
         .map(|line| line.trim().to_string())
         .collect()
 }
+
+/// A process that is in the recorded group only after the check of the
+/// leader stands for a group that took the id by reuse between the check
+/// and the signal. Neither the TERM nor the KILL of [`jobs::stop`] or of a
+/// [`ProcessScope::LeaderGroup`] stop reaches it: each signal goes to a
+/// process of the snapshot, by its pid and start time (D254-F1).
+#[test]
+fn a_reused_group_after_the_leader_check_gets_no_kill() {
+    use std::os::unix::process::CommandExt;
+    for job_stop in [true, false] {
+        for kill in [false, true] {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("60");
+            horch_platform::group::new_group(&mut cmd);
+            let mut leader = cmd.spawn().expect("start sleep");
+            let pgid = leader.id();
+            let started = horch_platform::process::start_time(pgid).expect("sleep runs");
+            let mut late = None;
+            let mut join = || {
+                let joined = Command::new("sleep")
+                    .arg("60")
+                    .process_group(i32::try_from(pgid).unwrap())
+                    .spawn()
+                    .expect("start sleep in the group");
+                late = Some(joined);
+            };
+            let sent = if job_stop {
+                let stop = Stop {
+                    job_id: 1,
+                    pid: pgid,
+                    pid_start: Some(started),
+                    kill,
+                };
+                jobs::stop_with(&stop, &mut join)
+            } else {
+                effects::stop_process_with(
+                    pgid,
+                    started,
+                    ProcessScope::LeaderGroup,
+                    kill,
+                    &mut join,
+                )
+            };
+            let mut late = late.expect("the hook ran");
+            std::thread::sleep(Duration::from_millis(200));
+            let lives = late.try_wait().unwrap().is_none();
+
+            let _ = late.kill();
+            let _ = late.wait();
+            let _ = leader.kill();
+            let _ = leader.wait();
+            assert!(
+                sent,
+                "the leader gets the stop (job: {job_stop}, kill: {kill})"
+            );
+            assert!(
+                lives,
+                "the process that is not of the snapshot gets no signal (job: {job_stop}, kill: {kill})"
+            );
+        }
+    }
+}

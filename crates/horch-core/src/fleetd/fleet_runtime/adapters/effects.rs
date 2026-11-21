@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use horch_platform::signal::{stop_same, Stop as How};
 use horch_platform::watch::Watcher;
+use horch_platform::NotSupported;
 use serde::{Deserialize, Serialize};
 
 use crate::exeid::{exe_identity, ExeIdentity};
@@ -75,23 +76,74 @@ fn run_dir(fleet_root: &Path) -> PathBuf {
 /// the process at once, and the processes that it started live on
 /// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6).
 pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -> bool {
-    use horch_platform::group;
+    stop_process_with(pid, pid_start, scope, kill, &mut || {})
+}
+
+/// [`stop_process`] with `after_check`, which runs between the check of
+/// the leader and the signals: the seam of the tests of D254-F1.
+pub fn stop_process_with(
+    pid: u32,
+    pid_start: u64,
+    scope: ProcessScope,
+    kill: bool,
+    after_check: &mut dyn FnMut(),
+) -> bool {
     let how = if kill { How::Kill } else { How::Term };
     if scope == ProcessScope::OrphanGroup {
         return stop_orphan_group(pid, how);
     }
-    // Only a live leader proves the group: with the leader gone, the id can
-    // name a group of another process by reuse (D242-F1).
-    let leads = scope == ProcessScope::LeaderGroup
-        && matches!(group::is_group_leader(pid, pid_start), Ok(true));
-    if !leads {
-        return stop_same(pid, pid_start, how);
+    if scope == ProcessScope::LeaderGroup {
+        if let Ok(Some(sent)) = stop_leader_group(pid, pid_start, how, after_check) {
+            return sent;
+        }
     }
-    if kill {
-        return group::kill_group_id(pid).unwrap_or(false);
+    stop_same(pid, pid_start, how)
+}
+
+/// The stop of the group of `leader` with `how`, while `leader` runs with
+/// the start `started` and leads the group. Whether a stop was sent, or
+/// `None` when `leader` does not lead the group: then no process of the
+/// group gets a signal here. Windows gives [`NotSupported`]: it has no
+/// process groups.
+///
+/// The order (D254-F1): (1) a snapshot of each member with its start time;
+/// (2) the check that `leader` still leads the group with `started`; (3) a
+/// signal to each process of the snapshot, by its pid and start time, for
+/// TERM and for KILL. A live leader holds its group id through steps 1 and
+/// 2, so each process of the snapshot is of the recorded group. No signal
+/// goes to the group id: the group can end after step 2, and its id can go
+/// to a group that fleetd did not start.
+///
+/// A child that starts after step 1 gets no signal here. The next pass
+/// takes a new snapshot while the leader runs. With the leader gone, the
+/// notice of an orphan group of T-319 names the child.
+///
+/// Limit: a window stays between the start-time check of 1 pid and its
+/// signal, in [`stop_same`]: the process can end in it and its pid can go
+/// to a new process. Only a handle of the OS on the process closes it.
+/// `horch-platform` could use a pidfd on Linux 5.3 and later
+/// (`pidfd_open`, then `pidfd_send_signal`); macOS has no such handle.
+pub fn stop_leader_group(
+    leader: u32,
+    started: u64,
+    how: How,
+    after_check: &mut dyn FnMut(),
+) -> Result<Option<bool>, NotSupported> {
+    let mut snapshot: Vec<(u32, u64)> = horch_platform::process::group_members(leader)?
+        .into_iter()
+        .filter(|pid| *pid != leader)
+        .filter_map(|pid| Some((pid, horch_platform::process::start_time(pid)?)))
+        .collect();
+    snapshot.push((leader, started));
+    if !horch_platform::group::is_group_leader(leader, started)? {
+        return Ok(None);
     }
-    let members = horch_platform::process::group_members(pid).unwrap_or_else(|_| vec![pid]);
-    stop_each(members, how)
+    after_check();
+    let mut sent = false;
+    for (pid, start) in snapshot {
+        sent |= stop_same(pid, start, how);
+    }
+    Ok(Some(sent))
 }
 
 fn stop_each(members: Vec<u32>, how: How) -> bool {

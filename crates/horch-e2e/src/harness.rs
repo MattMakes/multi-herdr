@@ -723,10 +723,10 @@ fn reap_grace() -> std::time::Duration {
 
 const PS_SCAN_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The process group of each run in the `jobs` table of the ledger `db`
-/// that is still the group of its recorded leader (pid and start time).
+/// The leader of each run in the `jobs` table of the ledger `db`, with its
+/// recorded start time.
 #[cfg(unix)]
-fn job_groups(db: &Path) -> Vec<u32> {
+fn job_leaders(db: &Path) -> Vec<(u32, u64)> {
     if !db.is_file() {
         return Vec::new();
     }
@@ -744,26 +744,17 @@ fn job_groups(db: &Path) -> Vec<u32> {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     };
-    let rows = read().unwrap_or_else(|error| {
+    let mut rows = read().unwrap_or_else(|error| {
         eprintln!(
             "warning: teardown could not read the jobs of {}: {error}",
             db.display()
         );
         Vec::new()
     });
-    // Only a live leader proves a recorded group (D242-F1): a member of a
-    // job group whose leader is gone gets no signal here, so it shows as a
-    // leak of the test.
-    let mut groups: Vec<u32> = rows
-        .into_iter()
-        .filter(|&(pid, started)| {
-            pid > 1 && horch_platform::group::is_group_leader(pid, started).unwrap_or(false)
-        })
-        .map(|(pid, _)| pid)
-        .collect();
-    groups.sort_unstable();
-    groups.dedup();
-    groups
+    rows.retain(|&(pid, _)| pid > 1);
+    rows.sort_unstable();
+    rows.dedup();
+    rows
 }
 
 /// Stop each job of the world, by the group that its row in `db` records,
@@ -773,65 +764,105 @@ fn job_groups(db: &Path) -> Vec<u32> {
 /// by its pid and start time, and ends it `abandoned` only when its process
 /// is gone (`docs/specs/fleetd/design.md`, "Long work is a job"). So the
 /// stop of the test fleetd does not end its jobs, and a job process need not
-/// name the harness root, which [`reap`] looks for. Like the stop of a job
-/// at its deadline, each group gets SIGTERM, then SIGKILL after the stop
-/// grace of the design. A process in an uninterruptible syscall acts on a
-/// signal only when the syscall returns, so the wait for the end is
-/// [`EXIT_LIMIT`]. Never a group of another world: a group id stays ours
-/// while the group has members.
+/// name the harness root, which [`reap`] looks for.
 #[cfg(unix)]
 fn stop_jobs(db: &Path) -> Vec<String> {
-    use crate::process::signal_groups;
-    let groups = job_groups(db);
-    if groups.is_empty() {
+    stop_job_groups(&job_leaders(db), &mut || {})
+}
+
+/// The stop of the group of each leader of `leaders` (pid and start time).
+/// Like [`horch_core::fleetd::fleet_runtime::adapters::effects::stop_leader_group`]
+/// (D254-F1): first a snapshot of each member with its start time, then the
+/// check that the leader still leads its group with its start, then a
+/// signal to each process of the snapshot by its pid and start time. Only
+/// a live leader proves a recorded group (D242-F1): a member of a job
+/// group whose leader is gone gets no signal here, so it shows as a leak of
+/// the test. No signal goes to a group id: the group can end after the
+/// check, and its id can go to a group of another world.
+///
+/// Like the stop of a job at its deadline, each process gets SIGTERM, then
+/// SIGKILL after the stop grace of the design. A process in an
+/// uninterruptible syscall acts on a signal only when the syscall returns,
+/// so the wait for the end is [`EXIT_LIMIT`]. `after_check` runs between
+/// the check and the first signal: the seam of the test of D254-F1.
+#[cfg(unix)]
+fn stop_job_groups(leaders: &[(u32, u64)], after_check: &mut dyn FnMut()) -> Vec<String> {
+    use horch_platform::signal::{stop_same, Stop};
+    let snapshot: Vec<(crate::process::Process, u64)> = leaders
+        .iter()
+        .map(|&(leader, started)| {
+            let mut members: Vec<(u32, u64)> = horch_core::procid::group_members(leader)
+                .into_iter()
+                .filter(|pid| *pid != leader)
+                .filter_map(|pid| Some((pid, horch_platform::process::start_time(pid)?)))
+                .collect();
+            members.push((leader, started));
+            (leader, started, members)
+        })
+        .filter(|&(leader, started, _)| {
+            horch_platform::group::is_group_leader(leader, started).unwrap_or(false)
+        })
+        .flat_map(|(leader, _, members)| {
+            members.into_iter().map(move |(pid, start)| {
+                let process = crate::process::Process {
+                    pid,
+                    pgid: leader,
+                    command: String::new(),
+                };
+                (process, start)
+            })
+        })
+        .collect();
+    if snapshot.is_empty() {
         return Vec::new();
     }
-    let running = |groups: &[u32]| -> Vec<crate::process::Process> {
-        let members: Vec<crate::process::Process> = groups
+    after_check();
+    let running = |of: &[(crate::process::Process, u64)]| {
+        let same: Vec<&(crate::process::Process, u64)> = of
             .iter()
-            .flat_map(|g| {
-                horch_core::procid::group_members(*g)
-                    .into_iter()
-                    .map(|pid| crate::process::Process {
-                        pid,
-                        pgid: *g,
-                        command: String::new(),
-                    })
-            })
+            .filter(|(p, start)| horch_platform::process::start_time(p.pid) == Some(*start))
             .collect();
-        let states = states_of(&members);
-        members
-            .into_iter()
-            .filter(|p| after_grace(states.get(&p.pid).map(String::as_str)) == AfterGrace::Running)
-            .collect()
+        let processes: Vec<crate::process::Process> = same.iter().map(|(p, _)| p.clone()).collect();
+        let states = states_of(&processes);
+        same.into_iter()
+            .filter(|(p, _)| {
+                after_grace(states.get(&p.pid).map(String::as_str)) == AfterGrace::Running
+            })
+            .cloned()
+            .collect::<Vec<_>>()
     };
-    let wait = |groups: &[u32], limit: std::time::Duration| {
+    let wait = |of: &[(crate::process::Process, u64)], limit: std::time::Duration| {
         let until = std::time::Instant::now() + limit;
         loop {
-            let left = running(groups);
+            let left = running(of);
             if left.is_empty() || std::time::Instant::now() >= until {
                 return left;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     };
-    signal_groups(&groups, "TERM");
+    let signal = |of: &[(crate::process::Process, u64)], how: Stop| {
+        for (p, start) in of {
+            stop_same(p.pid, *start, how);
+        }
+    };
+    signal(&snapshot, Stop::Term);
     let design = horch_core::fleetd::fleet_runtime::domain::config::FleetConfig::default();
-    let left = wait(&groups, std::time::Duration::from_secs(design.stop_grace_s));
+    let left = wait(
+        &snapshot,
+        std::time::Duration::from_secs(design.stop_grace_s),
+    );
     if left.is_empty() {
         return Vec::new();
     }
-    let mut kill: Vec<u32> = left.iter().map(|p| p.pgid).collect();
-    kill.sort_unstable();
-    kill.dedup();
-    signal_groups(&kill, "KILL");
-    let left = wait(&kill, EXIT_LIMIT);
+    signal(&left, Stop::Kill);
+    let left = wait(&left, EXIT_LIMIT);
     let commands: std::collections::HashMap<u32, String> = crate::process::processes()
         .into_iter()
         .map(|p| (p.pid, p.command))
         .collect();
     left.into_iter()
-        .map(|p| {
+        .map(|(p, _)| {
             format!(
                 "{} {} (a job process of group {}, alive {EXIT_LIMIT:?} after its SIGKILL)",
                 p.pid,
@@ -1579,6 +1610,55 @@ mod tests {
         build_command, built_dir_of, cargo_profile, choose_harness_root, listed,
         process_list_or_sandbox, reap, reap_grace, stop_stale_harnesses, OWNER_FILE,
     };
+
+    /// A process that is in a job group only after the check of its leader
+    /// stands for a group that took the id by reuse between the check and
+    /// the signal. Teardown sends it neither the TERM nor the KILL: each
+    /// signal goes to a process of the snapshot, by its pid and start time
+    /// (D254-F1). Both ignore TERM, so the KILL after the grace goes out.
+    #[test]
+    fn reused_group_after_teardown_check_gets_no_signal() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+        use std::process::{Child, Command, Stdio};
+        let ignore_term = |cmd: &mut Command| -> Child {
+            cmd.args(["-c", "trap '' TERM; echo ready; exec sleep 60 >/dev/null"])
+                .stdout(Stdio::piped());
+            let mut child = cmd.spawn().expect("start sh");
+            let mut line = String::new();
+            BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "ready\n", "sh ignores TERM");
+            child
+        };
+        let mut cmd = Command::new("sh");
+        horch_platform::group::new_group(&mut cmd);
+        let mut leader = ignore_term(&mut cmd);
+        let pgid = leader.id();
+        let started = horch_platform::process::start_time(pgid).expect("sh runs");
+        let mut late = None;
+        let left = super::stop_job_groups(&[(pgid, started)], &mut || {
+            let mut cmd = Command::new("sh");
+            cmd.process_group(i32::try_from(pgid).unwrap());
+            late = Some(ignore_term(&mut cmd));
+        });
+        let mut late = late.expect("the hook ran");
+        std::thread::sleep(Duration::from_millis(200));
+        let lives = late.try_wait().unwrap().is_none();
+        let leader_ended = leader.try_wait().unwrap().is_some();
+
+        let _ = late.kill();
+        let _ = late.wait();
+        let _ = leader.kill();
+        let _ = leader.wait();
+        assert_eq!(left, Vec::<String>::new(), "the leader ends by the KILL");
+        assert!(leader_ended, "the leader gets the KILL");
+        assert!(
+            lives,
+            "the process that is not of the snapshot gets no signal"
+        );
+    }
 
     #[cfg(unix)]
     #[test]
