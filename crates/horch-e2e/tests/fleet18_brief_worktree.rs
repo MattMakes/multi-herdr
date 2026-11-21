@@ -391,14 +391,34 @@ fn g56_later_spawn_receives_recorded_fact() {
     let run = horch_e2e::ledger_seed::seed_run(&h, "facts", Some(1), "w1:p1");
     horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "sonnet");
     h.serve_fleetd();
-    let call = horch_e2e::harness::wait_for("worker brief with project facts", || {
-        h.calls_of("claude")
-            .into_iter()
-            .find(|c| c.to_string().contains("Use portable BSD sed"))
+    // The last line of the prompt of a push attempt is the path of its
+    // START.md, and the facts section of that file holds the project facts
+    // and the host line.
+    let tasks = h.fleet_root().join("tasks");
+    let start = horch_e2e::harness::wait_for("the START.md prompt of the worker", || {
+        h.calls_of("claude").into_iter().find_map(|c| {
+            c["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| a.as_str()?.lines().last())
+                .map(std::path::PathBuf::from)
+                .find(|p| p.starts_with(&tasks) && p.ends_with("inbox/START.md"))
+        })
     });
-    let prompt = call.to_string();
-    assert!(prompt.contains(std::env::consts::OS));
-    assert!(prompt.contains(std::env::consts::ARCH));
+    let text = std::fs::read_to_string(&start).unwrap();
+    let (_, section) = text
+        .split_once("\n## Project facts\n")
+        .unwrap_or_else(|| panic!("no facts section in {}:\n{text}", start.display()));
+    assert!(
+        section.lines().any(|l| l == "- Use portable BSD sed"),
+        "{section}"
+    );
+    let host = section
+        .lines()
+        .find(|l| l.starts_with("Host: "))
+        .unwrap_or_else(|| panic!("no host line: {section}"));
+    assert!(host.contains(std::env::consts::OS), "{host}");
+    assert!(host.contains(std::env::consts::ARCH), "{host}");
 }
 #[test]
 fn g69_open_scratch_does_not_block_finish_or_done() {

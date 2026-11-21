@@ -19,7 +19,7 @@ use horch_core::fleetd::fleet_runtime::application::holds;
 use horch_core::fleetd::fleet_runtime::domain::health::Finding;
 use horch_core::fleetd::fleet_runtime::domain::requests::{retired, Kind};
 use horch_core::fleetd::task_execution::adapters::task_files::AttemptFiles;
-use horch_core::fleetd::task_execution::application::dispatch::write_task_files;
+use horch_core::fleetd::task_execution::application::dispatch::write_task_files_in;
 use horch_core::fleetd::task_execution::application::launch;
 use horch_core::fleetd::task_execution::domain::task::AttemptState;
 use horch_core::runtime::RuntimeContext;
@@ -222,7 +222,13 @@ fn push(
     persona: &str,
 ) -> Result<(String, Pushed)> {
     let (worker, attempt_id, task_id) = bound_attempt(store, attempt, run, persona)?;
-    let files = write_task_files(store.conn(), &ctx.paths.fleet_root, &attempt_id, &[])?;
+    let files = write_task_files_in(
+        store.conn(),
+        &ctx.paths.fleet_root,
+        Some(&ctx.paths.state_root),
+        &attempt_id,
+        &[],
+    )?;
     let resume = workers::get(store.conn(), &worker)?
         .resumed_from_session
         .filter(|id| launch::session_id_ok(id));

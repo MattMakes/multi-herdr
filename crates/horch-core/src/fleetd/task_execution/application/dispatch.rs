@@ -41,7 +41,7 @@ use crate::fleetd::integration::application::landing;
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
-    attempt_dir, write_attempt_files, AttemptFiles,
+    attempt_dir, write_attempt_files_with, AttemptFiles,
 };
 use crate::fleetd::task_execution::application::{outbox_ingest, repair, review};
 use crate::fleetd::task_execution::domain::dispatch::{
@@ -840,8 +840,46 @@ pub fn write_task_files(
     attempt_id: &str,
     secrets: &[Secret],
 ) -> Result<AttemptFiles> {
+    write_task_files_in(conn, fleet_root, None, attempt_id, secrets)
+}
+
+/// [`write_task_files`], and `START.md` gives the project facts of
+/// `state_root` for the project of the run (G56). `None`: no facts section.
+pub fn write_task_files_in(
+    conn: &Connection,
+    fleet_root: &Path,
+    state_root: Option<&Path>,
+    attempt_id: &str,
+    secrets: &[Secret],
+) -> Result<AttemptFiles> {
     let facts = facts(conn, fleet_root, attempt_id)?;
-    Ok(write_attempt_files(fleet_root, &facts, secrets)?)
+    write_with_facts(conn, fleet_root, state_root, &facts, secrets)
+}
+
+/// Write the files of `facts` with the project facts of `state_root`.
+fn write_with_facts(
+    conn: &Connection,
+    fleet_root: &Path,
+    state_root: Option<&Path>,
+    facts: &TaskFacts,
+    secrets: &[Secret],
+) -> Result<AttemptFiles> {
+    let project_facts = match state_root {
+        Some(state) => {
+            let run = runs::get(conn, &tasks::get(conn, &facts.task_id)?.run_id)?;
+            Some(crate::project_notes::read(
+                state,
+                Path::new(&run.project_root),
+            )?)
+        }
+        None => None,
+    };
+    Ok(write_attempt_files_with(
+        fleet_root,
+        facts,
+        project_facts.as_deref(),
+        secrets,
+    )?)
 }
 
 /// Write the 2 files of each attempt of a push dispatch in `launching`
@@ -851,6 +889,17 @@ pub fn write_task_files(
 pub fn write_missing_task_files(
     conn: &Connection,
     fleet_root: &Path,
+    secrets: &[Secret],
+) -> Result<Vec<(String, Result<AttemptFiles>)>> {
+    write_missing_task_files_in(conn, fleet_root, None, secrets)
+}
+
+/// [`write_missing_task_files`], and each `START.md` gives the project
+/// facts of `state_root` (G56). `None`: no facts section.
+pub fn write_missing_task_files_in(
+    conn: &Connection,
+    fleet_root: &Path,
+    state_root: Option<&Path>,
     secrets: &[Secret],
 ) -> Result<Vec<(String, Result<AttemptFiles>)>> {
     let mut stmt = conn.prepare(
@@ -867,7 +916,7 @@ pub fn write_missing_task_files(
         if dir.join("task.yaml").exists() {
             continue;
         }
-        let written = write_attempt_files(fleet_root, &facts, secrets).map_err(Into::into);
+        let written = write_with_facts(conn, fleet_root, state_root, &facts, secrets);
         out.push((id, written));
     }
     Ok(out)

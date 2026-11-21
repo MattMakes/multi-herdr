@@ -116,11 +116,24 @@ pub fn write_attempt_files(
     facts: &TaskFacts,
     secrets: &[Secret],
 ) -> Result<AttemptFiles, TaskFilesError> {
+    write_attempt_files_with(fleet_root, facts, None, secrets)
+}
+
+/// [`write_attempt_files`], and `START.md` ends with the section of the
+/// project facts when `project_facts` is given (G56). The first write of
+/// the attempt keeps that section in [`FACTS_MD`], and each later write
+/// renders from it: a fact recorded between 2 writes changes no byte.
+pub fn write_attempt_files_with(
+    fleet_root: &Path,
+    facts: &TaskFacts,
+    project_facts: Option<&[String]>,
+    secrets: &[Secret],
+) -> Result<AttemptFiles, TaskFilesError> {
     let dir = attempt_dir(fleet_root, &facts.task_id, &facts.attempt);
     let report_to = format!("{}/", dir.join("outbox").display());
     let read_first = read_first(fleet_root, facts);
     let yaml = render_task_yaml(facts, &report_to, &read_first);
-    let start = render_start_md(facts, &report_to, &read_first);
+    let mut start = render_start_md(facts, &report_to, &read_first);
     lint("task.yaml", &yaml, secrets).map_err(TaskFilesError::Secret)?;
     lint("inbox/START.md", &start, secrets).map_err(TaskFilesError::Secret)?;
 
@@ -130,9 +143,45 @@ pub fn write_attempt_files(
     };
     let inbox = dir.join("inbox");
     make_dirs(&dir, &inbox)?;
+    if let Some(list) = project_facts {
+        start.push('\n');
+        start.push_str(&facts_section(&dir.join(FACTS_MD), list, secrets)?);
+        lint("inbox/START.md", &start, secrets).map_err(TaskFilesError::Secret)?;
+    }
     fsx::create_immutable(&files.start_md, start.as_bytes(), MODE)?;
     fsx::create_immutable(&files.task_yaml, yaml.as_bytes(), MODE)?;
     Ok(files)
+}
+
+/// The file of the attempt folder with the section of the project facts
+/// that its `START.md` holds.
+pub const FACTS_MD: &str = "facts.md";
+
+/// The section of the project facts of the attempt: the text of `path`
+/// when an earlier write made it, else the section of each fact of `list`
+/// that the SR-2 lint passes, written to `path` 1 time. A fact that the
+/// lint refuses is left out, so no fact stops the files of a task.
+fn facts_section(
+    path: &Path,
+    list: &[String],
+    secrets: &[Secret],
+) -> Result<String, TaskFilesError> {
+    let kept: Vec<String> = list
+        .iter()
+        .filter(|f| lint("project fact", f, secrets).is_ok())
+        .cloned()
+        .collect();
+    let text = crate::project_notes::data_section(&kept);
+    match fsx::create_immutable(path, text.as_bytes(), MODE) {
+        Ok(_) => Ok(text),
+        Err(FsxError::Conflict { .. }) => std::fs::read_to_string(path).map_err(|source| {
+            TaskFilesError::Io(FsxError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        }),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Make `inbox` and its missing parents with [`DIR_MODE`], and set that
