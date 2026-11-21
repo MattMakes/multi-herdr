@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 # high: the verdict on each site is a judgement about intent and history. A
 # wrong "patched-around" verdict costs a rewrite of code that was right.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 # Edit stays allowed: fixing a site at its root is half of this seat's job.
 # The persona and the skill keep an audit read-only.

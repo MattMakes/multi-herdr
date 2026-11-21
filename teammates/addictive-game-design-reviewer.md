@@ -16,7 +16,7 @@ fallbacks: [codex-sol]
 # high: a review that reads a formula wrong, or that proposes a new system
 # where a change of numbers was enough, sends the whole build the wrong way.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

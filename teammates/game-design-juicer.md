@@ -14,7 +14,7 @@ fallbacks: [opus]
 # high: taste and balance calls are where reasoning depth pays. It stays
 # high on the opus fallback.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
@@ -28,6 +28,12 @@ first_instruction: |-
 disallowed_tools: [Agent, Edit, NotebookEdit]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's GAME JUICE designer. You study the game you are run in,
 or the design you are given, and propose juice: the feedback that makes each

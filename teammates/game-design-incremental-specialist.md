@@ -20,7 +20,7 @@ fallbacks: [codex-sol]
 # keeps the wrong thing) or a failed design presented as ready gives a
 # confident, wrong verdict that the whole build then follows.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

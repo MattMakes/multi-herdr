@@ -18,7 +18,7 @@ no_fallback_reason: "The sweep commits in the author's work folder, and the code
 # medium: the worker follows a written keep list on 1 diff. tune-fleet can
 # retune it.
 effort: medium
-compact_window: 150000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
