@@ -887,10 +887,9 @@ impl<'a> Pass<'a> {
     /// 1 short transaction after the git effects: the first write after the
     /// error of a git that ran outside a transaction (D254-F3).
     ///
-    /// Limit: a crash of fleetd between the `SIGKILL` of the git and this
-    /// commit loses the item. The operator then sees the path in the failed
-    /// line of each later pass whose git takes the lock: that git fails at
-    /// once with "File exists", and the error of git names the `.lock` file.
+    /// A crash of fleetd between the `SIGKILL` of the git and this commit
+    /// keeps the path in the lock journal, and the next pass opens the item
+    /// (D266-F3).
     fn record_locks_left(&self, conn: &mut Connection) -> Result<()> {
         if !jobs::locks_journaled(conn)? {
             return Ok(());
