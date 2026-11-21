@@ -1620,7 +1620,11 @@ struct AgentShell {
 
 impl AgentShell {
     fn start(h: &Harness) -> AgentShell {
-        let dir = h.root.join("agent-shell");
+        // 1 folder for each shell: a shared folder lets every shell run the
+        // go.sh of 1 shell and write its code file while that shell reads it.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = h.root.join(format!("agent-shell-{n}"));
         std::fs::create_dir_all(&dir).unwrap();
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new("/bin/sh");
@@ -1647,7 +1651,7 @@ impl AgentShell {
         let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
         let words: Vec<String> = args.iter().map(|a| quote(a)).collect();
         let script = format!(
-            "{} {} > {dir}/out 2>&1\necho $? > {dir}/code\n",
+            "{} {} > {dir}/out 2>&1\necho $? > {dir}/code.tmp\n/bin/mv {dir}/code.tmp {dir}/code\n",
             quote(&self.horch.to_string_lossy()),
             words.join(" "),
             dir = quote(&self.dir.to_string_lossy()),
