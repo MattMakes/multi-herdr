@@ -45,7 +45,7 @@ use crate::fleetd::worker_profiles::application::conformance::{
     read_probe_report, ConformanceLaunch,
 };
 use crate::fleetd::worker_profiles::domain::conformance::{
-    Check, Hook, LaunchEnd, Observation, PrivateHome, MARKER_SKILL, TEST_MCP_SERVER,
+    Check, Hook, HostFolder, LaunchEnd, Observation, PrivateHome, MARKER_SKILL, TEST_MCP_SERVER,
 };
 use crate::fleetd::worker_profiles::domain::operator_boundary::{Act, OperatorPaths};
 use crate::harness::launch::{self, LaunchRequest};
@@ -179,7 +179,16 @@ impl ConformanceRunner<'_> {
             let _ = std::fs::remove_dir_all(marker);
         }
         let watched = watched?;
-        Ok(observe(watched, files, dir, home, &setup.teammate, cli))
+        let fleet_root = host_folder(&self.ctx.paths.fleet_root);
+        Ok(observe(
+            watched,
+            files,
+            dir,
+            home,
+            &setup.teammate,
+            cli,
+            fleet_root,
+        ))
     }
 
     /// The throwaway task folder `dir` of 1 launch of `check`: its work
@@ -705,6 +714,7 @@ fn observe(
     private_home: PrivateHome,
     teammate: &Teammate,
     cli: ExecCli,
+    fleet_root: HostFolder,
 ) -> Observation {
     let Watched { end, seen } = watched;
     let end = match (seen.dialog, seen.no_event_in_time) {
@@ -749,5 +759,24 @@ fn observe(
         compaction_setting: cli != ExecCli::Antigravity,
         stop_hook: seen.stop_hook,
         repair_started,
+        fleet_root,
+    }
+}
+
+/// The identity of `folder` on the host, read by the runner outside the
+/// sandbox: `<device>:<inode>`.
+fn host_folder(folder: &Path) -> HostFolder {
+    #[cfg(unix)]
+    let id = std::fs::metadata(folder)
+        .map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            format!("{}:{}", m.dev(), m.ino())
+        })
+        .map_err(|e| e.to_string());
+    #[cfg(not(unix))]
+    let id = Err("this OS gives no device and inode of a folder".to_owned());
+    HostFolder {
+        path: folder.display().to_string(),
+        id,
     }
 }
