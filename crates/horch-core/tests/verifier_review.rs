@@ -867,11 +867,19 @@ fn claim_attempt_finish_is_unchanged() {
     let names: Vec<&str> = r.steps.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         names,
-        ["check", "complexity-sweep", "land", "pr", "cleanup"]
+        [
+            "check",
+            "comment-sweep",
+            "complexity-sweep",
+            "land",
+            "pr",
+            "cleanup"
+        ]
     );
     assert_eq!(r.steps[0].status, "not_applicable");
     assert_eq!(r.steps[1].status, "not_applicable");
-    assert_eq!(r.steps[2].status, "passed");
+    assert_eq!(r.steps[2].status, "not_applicable");
+    assert_eq!(r.steps[3].status, "passed");
     assert_eq!(w.status(&task), "verifying");
     // The verifier of fleetd does not touch a claim attempt.
     assert!(w.pass().is_empty());
