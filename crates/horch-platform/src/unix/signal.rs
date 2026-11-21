@@ -66,33 +66,61 @@ pub(crate) fn on_termination_set(
     Ok(())
 }
 
-/// The group of [`kill_group_on_termination`]. Null until the first call.
-static GROUP: AtomicPtr<AtomicI32> = AtomicPtr::new(std::ptr::null_mut());
+/// The groups of [`kill_group_on_termination`], 1 slot for each distinct
+/// static. A null slot is free.
+static GROUPS: [AtomicPtr<AtomicI32>; GROUP_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; GROUP_SLOTS];
+const GROUP_SLOTS: usize = 8;
 static INSTALL: Once = Once::new();
 
 extern "C" fn kill_group(sig: libc::c_int) {
-    let group = GROUP.load(Ordering::SeqCst);
-    let pgid = if group.is_null() {
-        0
-    } else {
-        // SAFETY: the pointer comes from a `&'static AtomicI32`, so it is
-        // valid for the whole process. An atomic swap is async-signal-safe.
-        unsafe { (*group).swap(0, Ordering::SeqCst) }
-    };
-    // SAFETY: killpg, signal and raise are async-signal-safe. The default
-    // action is put back and the signal raised again, so the process ends as
-    // it would have without this handler.
-    unsafe {
-        if pgid > 0 {
-            libc::killpg(pgid, libc::SIGKILL);
+    for slot in &GROUPS {
+        let group = slot.load(Ordering::SeqCst);
+        if group.is_null() {
+            continue;
         }
+        // SAFETY: the pointer comes from a `&'static AtomicI32`, so it is
+        // valid for the whole process. An atomic swap and killpg are
+        // async-signal-safe.
+        unsafe {
+            let pgid = (*group).swap(0, Ordering::SeqCst);
+            if pgid > 0 {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
+    // SAFETY: signal and raise are async-signal-safe. The default action is
+    // put back and the signal raised again, so the process ends as it would
+    // have without this handler.
+    unsafe {
         libc::signal(sig, libc::SIG_DFL);
         libc::raise(sig);
     }
 }
 
+/// Put `group` in a free slot of [`GROUPS`], once.
+fn register(group: &'static AtomicI32) {
+    let ptr = std::ptr::from_ref(group).cast_mut();
+    if GROUPS.iter().any(|s| s.load(Ordering::SeqCst) == ptr) {
+        return;
+    }
+    let taken = GROUPS.iter().any(|s| {
+        s.compare_exchange(
+            std::ptr::null_mut(),
+            ptr,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
+    });
+    assert!(
+        taken,
+        "more than {GROUP_SLOTS} groups for kill_group_on_termination"
+    );
+}
+
 pub(crate) fn kill_group_on_termination(group: &'static AtomicI32) -> Result<(), NotSupported> {
-    GROUP.store(std::ptr::from_ref(group).cast_mut(), Ordering::SeqCst);
+    register(group);
     INSTALL.call_once(|| {
         let handler = kill_group as extern "C" fn(libc::c_int) as libc::sighandler_t;
         // SAFETY: the handler only calls async-signal-safe functions; the

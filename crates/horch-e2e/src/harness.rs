@@ -833,7 +833,14 @@ fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<
         signalled.extend(late.iter().map(|p| (p.pid, p.pgid)));
         groups.extend(late_groups);
         if std::time::Instant::now() >= until {
-            let mut kill: Vec<u32> = left
+            let states = states_of(&left);
+            let (exiting, running): (Vec<Process>, Vec<Process>) = left
+                .into_iter()
+                .filter(|p| after_grace(states.get(&p.pid).map(String::as_str)) != AfterGrace::Gone)
+                .partition(|p| {
+                    after_grace(states.get(&p.pid).map(String::as_str)) == AfterGrace::InExit
+                });
+            let mut kill: Vec<u32> = running
                 .iter()
                 .map(|p| p.pgid)
                 .filter(|g| *g > 1 && Some(*g) != own_group)
@@ -841,7 +848,7 @@ fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<
             kill.sort_unstable();
             kill.dedup();
             signal_groups(&kill, "KILL");
-            return Ok(left
+            let mut leaked: Vec<String> = running
                 .into_iter()
                 .map(|p| {
                     let when = if first.contains(&p.pid) {
@@ -851,7 +858,9 @@ fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<
                     };
                     format!("{} {} ({when})", p.pid, p.command)
                 })
-                .collect());
+                .collect();
+            leaked.extend(wait_exits(exiting, EXIT_LIMIT, states_of));
+            return Ok(leaked);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -860,6 +869,110 @@ fn reap(root: &Path, log: &Path, grace: std::time::Duration) -> std::io::Result<
 #[cfg(not(unix))]
 fn reap(_root: &Path, _log: &Path, _grace: std::time::Duration) -> std::io::Result<Vec<String>> {
     Ok(Vec::new())
+}
+
+/// How long teardown waits, after the grace, for a process that is in its
+/// exit to be gone. At load average 81 processes stayed in their exit for
+/// up to 120 s after SIGTERM (T-276).
+#[cfg(unix)]
+const EXIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// What a process left after the grace is, from its `ps` state.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterGrace {
+    /// `ps` does not list it.
+    Gone,
+    /// A zombie (`Z`, or `X` on Linux) or in its exit (the macOS flag `E`):
+    /// it took the signal, and only the kernel still works on it.
+    InExit,
+    /// Any other state, `U` too: a process in an uninterruptible syscall
+    /// with the signal pending has not yet acted on it.
+    Running,
+}
+
+#[cfg(unix)]
+fn after_grace(state: Option<&str>) -> AfterGrace {
+    match state {
+        None => AfterGrace::Gone,
+        Some(s) if s.starts_with(['Z', 'X']) || s.contains('E') => AfterGrace::InExit,
+        Some(_) => AfterGrace::Running,
+    }
+}
+
+/// The `ps` state of each of `processes` that `ps` still lists. A failed
+/// `ps` is tried again for 5 s, then gives no states.
+#[cfg(unix)]
+fn states_of(processes: &[crate::process::Process]) -> std::collections::HashMap<u32, String> {
+    if processes.is_empty() {
+        return Default::default();
+    }
+    let pids: Vec<String> = processes.iter().map(|p| p.pid.to_string()).collect();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        // ps exits 1 when 1 pid is gone, so only its output counts.
+        match std::process::Command::new("/bin/ps")
+            .args(["-o", "pid=,stat=", "-p", &pids.join(",")])
+            .output()
+        {
+            Ok(out) => {
+                return String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut parts = line.split_whitespace();
+                        Some((parts.next()?.parse().ok()?, parts.next()?.to_string()))
+                    })
+                    .collect()
+            }
+            Err(_) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return Default::default(),
+        }
+    }
+}
+
+/// Wait at most `limit` for each of `exiting` to be gone, and print how
+/// long each took. A pid that `states` lists in a state out of its exit is
+/// a new process: an exit does not go back. The processes still in their
+/// exit after `limit` leaked.
+#[cfg(unix)]
+fn wait_exits(
+    mut exiting: Vec<crate::process::Process>,
+    limit: std::time::Duration,
+    states: impl Fn(&[crate::process::Process]) -> std::collections::HashMap<u32, String>,
+) -> Vec<String> {
+    let start = std::time::Instant::now();
+    loop {
+        let now = states(&exiting);
+        exiting.retain(|p| {
+            let still = after_grace(now.get(&p.pid).map(String::as_str)) == AfterGrace::InExit;
+            if !still {
+                eprintln!(
+                    "teardown: {} {} was in its exit at the end of the grace and was gone {:?} later",
+                    p.pid,
+                    p.command,
+                    start.elapsed()
+                );
+            }
+            still
+        });
+        if exiting.is_empty() {
+            return Vec::new();
+        }
+        if start.elapsed() >= limit {
+            return exiting
+                .into_iter()
+                .map(|p| {
+                    format!(
+                        "{} {} (in its exit for more than {limit:?})",
+                        p.pid, p.command
+                    )
+                })
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// The file in each harness root that names the test process that owns it:
@@ -1267,6 +1380,66 @@ mod tests {
         build_command, built_dir_of, cargo_profile, choose_harness_root, listed,
         process_list_or_sandbox, reap, reap_grace, stop_stale_harnesses, OWNER_FILE,
     };
+
+    /// T-276: after the grace, a zombie or a process in its exit is not a
+    /// leak; a process in any other state is, state U too.
+    #[cfg(unix)]
+    #[test]
+    fn after_the_grace_a_process_in_its_exit_is_told_from_a_running_one() {
+        use super::{after_grace, AfterGrace};
+        assert_eq!(after_grace(None), AfterGrace::Gone);
+        for state in ["Z", "Z+", "X", "?E", "UE", "SE", "RE+"] {
+            assert_eq!(after_grace(Some(state)), AfterGrace::InExit, "{state}");
+        }
+        for state in ["S", "Ss", "S+", "R", "R+", "U", "Us", "T", "I", "SN"] {
+            assert_eq!(after_grace(Some(state)), AfterGrace::Running, "{state}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn process(pid: u32) -> crate::process::Process {
+        crate::process::Process {
+            pid,
+            pgid: pid,
+            command: format!("horch job run {pid}"),
+        }
+    }
+
+    /// A process in its exit that is gone before the limit is no leak; 1
+    /// that stays in its exit after the limit is. A pid in a running state
+    /// is a new process, since an exit does not go back.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_in_its_exit_leaks_only_when_its_exit_outlasts_the_limit() {
+        use std::collections::HashMap;
+        let polls = Cell::new(0);
+        let ends = |_: &[crate::process::Process]| {
+            polls.set(polls.get() + 1);
+            let mut states = HashMap::new();
+            if polls.get() < 3 {
+                states.insert(7, "?E".to_string());
+                states.insert(8, "Z".to_string());
+            } else {
+                states.insert(8, "S".to_string());
+            }
+            states
+        };
+        let leaked = super::wait_exits(vec![process(7), process(8)], Duration::from_secs(60), ends);
+        assert_eq!(leaked, Vec::<String>::new());
+        assert_eq!(
+            polls.get(),
+            3,
+            "the wait ends when both are out of their exit"
+        );
+
+        let stays = |_: &[crate::process::Process]| HashMap::from([(9, "?E".to_string())]);
+        let leaked = super::wait_exits(vec![process(9)], Duration::from_millis(300), stays);
+        assert_eq!(leaked.len(), 1, "{leaked:?}");
+        assert!(
+            leaked[0].starts_with("9 horch job run 9 (in its exit"),
+            "{leaked:?}"
+        );
+    }
 
     /// T-842: the harness builds `horch` and the fakes before their first
     /// use, so no binary is older than a source file it is built from.

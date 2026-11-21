@@ -107,8 +107,8 @@ pub fn on_termination_set(
 /// signal with its default action, as without the handler. The handler sets
 /// `group` to 0 when it takes it. The caller stores the group of the work
 /// that must not outlive it, and 0 when none runs. The handlers are
-/// installed at the first call only. A later call points them at the
-/// `group` of that call.
+/// installed at the first call only. Each call adds its `group`: the
+/// handler kills the group of every call, at most 8 distinct statics.
 ///
 /// Windows gives [`NotSupported`]: it has no signal handlers and no
 /// process groups. `docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
