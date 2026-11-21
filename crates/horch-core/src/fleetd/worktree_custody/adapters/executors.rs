@@ -18,6 +18,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{self, Kind};
 use crate::fleetd::integration::adapters::git::CliGitGateway;
 use crate::fleetd::integration::application::branches;
 use crate::fleetd::task_execution::adapters::sqlite::attempts_of_worker;
+use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worktree_custody::adapters::git::{self, CliWorktreeGit};
 use crate::fleetd::worktree_custody::adapters::remove_git::{self, CliRemoval, Owner};
 use crate::fleetd::worktree_custody::adapters::rescue_git;
@@ -185,13 +186,16 @@ fn owner(conn: &Connection, tree: &WorktreeRow) -> Result<Owner> {
     let found = attempts_of_worker(conn, worker)?
         .into_iter()
         .find(|a| a.id == attempt);
-    match found.map(|a| a.process) {
+    match found {
         None => unknown("is not an attempt of the worker of the row"),
-        Some(None) => unknown("has no recorded process"),
-        Some(Some(p)) => Ok(Owner::Process {
-            pid: p.pid,
-            start: p.pid_start,
-        }),
+        Some(a) => match a.process {
+            Some(p) => Ok(Owner::Process {
+                pid: p.pid,
+                start: p.pid_start,
+            }),
+            None if a.state == AttemptState::Ended => Ok(Owner::Ended),
+            None => unknown("has no recorded process"),
+        },
     }
 }
 

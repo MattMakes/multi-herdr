@@ -3388,7 +3388,11 @@ fn take(
 /// git writer only when it is the oldest due git writer of its repository
 /// and no git writer of its repository runs (MAP.md of fleetd-p3, Q12). A
 /// writer that waits keeps its turn: the git writers of 1 repository start
-/// first in, first out, so newer writers do not pass it.
+/// first in, first out, so newer writers do not pass it. A job that
+/// [`jobs::excludes`] a running job of its repository waits, and a
+/// `worktree_list` waits while a `worktree_remove` of its repository is
+/// due: a removal waits for at most the list that runs, also when a list
+/// comes each period.
 fn startable(
     tx: &Transaction<'_>,
     due: &[JobRow],
@@ -3411,6 +3415,15 @@ fn startable(
         }
         if let (true, Some(repo)) = (jobs::is_git_writer(job.kind), job.repo.as_deref()) {
             if oldest.get(repo) != Some(&job.id) || jobs::git_writer_busy(tx, repo)? {
+                continue;
+            }
+        }
+        if let Some(repo) = job.repo.as_deref() {
+            let removal_due = job.kind == Kind::WorktreeList
+                && due
+                    .iter()
+                    .any(|d| d.kind == Kind::WorktreeRemove && d.repo == job.repo);
+            if removal_due || jobs::excluded(tx, job.kind, repo)? {
                 continue;
             }
         }
@@ -5584,6 +5597,24 @@ mod tests {
         let newer = queue(&conn, Kind::Fetch, "fetch-2");
         assert_eq!(starts(&mut conn), [rescue]);
         end(&conn, rescue);
+        assert_eq!(starts(&mut conn), [newer]);
+    }
+
+    /// A `worktree_list` runs git in each tree: a removal does not start
+    /// while 1 runs, and no list starts while a removal is due or runs. So
+    /// lists that keep coming do not starve the removal.
+    #[test]
+    fn worktree_list_and_worktree_remove_of_1_repository_do_not_run_together() {
+        let mut conn = ledger();
+        let list = queue(&conn, Kind::WorktreeList, "list-1");
+        assert_eq!(starts(&mut conn), [list]);
+        let remove = queue(&conn, Kind::WorktreeRemove, "tree-1");
+        assert_eq!(starts(&mut conn), Vec::<i64>::new(), "the removal waits");
+        let newer = queue(&conn, Kind::WorktreeList, "list-2");
+        end(&conn, list);
+        assert_eq!(starts(&mut conn), [remove], "the newer list waits");
+        assert_eq!(starts(&mut conn), Vec::<i64>::new(), "the list waits");
+        end(&conn, remove);
         assert_eq!(starts(&mut conn), [newer]);
     }
 

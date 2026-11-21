@@ -875,6 +875,24 @@ pub fn git_writers_running(conn: &Connection, repo: &str) -> Result<Vec<JobRow>>
         .collect())
 }
 
+/// Whether a run of `a` and a run of `b` of 1 repository may not run at the
+/// same time: a `worktree_list` runs git in each tree of the repository,
+/// and the guard of a `worktree_remove` refuses a process in its tree.
+pub fn excludes(a: Kind, b: Kind) -> bool {
+    matches!(
+        (a, b),
+        (Kind::WorktreeList, Kind::WorktreeRemove) | (Kind::WorktreeRemove, Kind::WorktreeList)
+    )
+}
+
+/// Whether a `running` run of the repository `repo` [`excludes`] a run of
+/// `kind`.
+pub fn excluded(conn: &Connection, kind: Kind, repo: &str) -> Result<bool> {
+    Ok(store::running(conn)?
+        .iter()
+        .any(|r| excludes(kind, r.kind) && r.repo.as_deref() == Some(repo)))
+}
+
 /// Whether a run of a git writer of the repository `repo` is `running`,
 /// or a member of the group of an abandoned one still runs
 /// ([`note_group_left`]) ("1 git writer for each repository").
