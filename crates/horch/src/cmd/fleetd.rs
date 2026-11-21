@@ -734,7 +734,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     write_start_heartbeat(root, started.generation, &own_exe)?;
-    let settings = settings(ctx, started.generation, &horch)?;
+    let settings = settings(ctx, started.generation)?;
     take_over(ctx, &mut store, &settings)?;
     drop(store);
     let period = Duration::from_secs(settings.config.pass_period_s);
@@ -1107,14 +1107,16 @@ fn idea_lead_spec(
     spawn_spec(ctx, herdr, push).map(Some)
 }
 
-/// The settings of the fleetd of `generation` that runs `horch`.
-fn settings(ctx: &RuntimeContext, generation: Generation, horch: &Path) -> Result<Settings> {
+/// The settings of the fleetd of `generation`. Its job hosts run the
+/// sibling `horch` of this binary, never this binary itself: a unit test
+/// that runs a pass then starts no test binary as `job run <n>`.
+fn settings(ctx: &RuntimeContext, generation: Generation) -> Result<Settings> {
     let root = &ctx.paths.fleet_root;
     Ok(Settings {
         fleet_root: root.clone(),
         generation,
         config: config_file::load(root)?,
-        horch: horch.to_path_buf(),
+        horch: ctx.bins.horch_exe.clone(),
         faults: ctx.settings.faults.clone(),
     })
 }
@@ -1210,13 +1212,12 @@ pub(crate) enum Once {
 /// and takes over the old watchdogs. When a fleetd holds the lock, it runs
 /// no pass and stops nothing.
 pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
-    let horch = std::env::current_exe().context("finding the horch binary")?;
     let writer = LedgerWriter::fleetd();
     let mut store = writer.open(&ctx.paths.ledger_db)?;
     let Some(started) = fleetd_row::start(&ctx.paths.fleet_root, &mut store)? else {
         return Ok(Once::Held(read_row(&ctx.paths.ledger_db)?));
     };
-    let settings = settings(ctx, started.generation, &horch)?;
+    let settings = settings(ctx, started.generation)?;
     take_over(ctx, &mut store, &settings)?;
     drop(store);
     let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
@@ -2010,5 +2011,36 @@ mod tests {
         // not a new binary.
         std::fs::remove_file(&exe).unwrap();
         assert!(!binary_changed(&started), "a missing binary");
+    }
+
+    /// A pass of a unit test must not start the test binary as `job run
+    /// <n>`: the test binary reads those words as test filters, runs a pass
+    /// again, and starts the next one with no end.
+    #[test]
+    fn a_job_host_of_the_pass_runs_the_sibling_horch_and_not_this_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = dir.path().join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let test_binary = deps.join("horch-0123456789abcdef");
+        let sibling = deps.join(format!("horch{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&test_binary, "").unwrap();
+        std::fs::write(&sibling, "").unwrap();
+        let env = MapEnv::new(dir.path())
+            .with(
+                "HORCH_STATE_DIR",
+                dir.path().join("state").to_str().unwrap(),
+            )
+            .with("HORCH_DATA_DIR", dir.path().join("data").to_str().unwrap())
+            .with_exe(&test_binary);
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let settings = settings(&ctx, Generation(1)).unwrap();
+        let spec = horch_core::fleetd::fleet_runtime::application::jobs::job_spec(
+            &settings.horch,
+            1,
+            None,
+        );
+        assert_eq!(spec.program, sibling);
+        assert_ne!(spec.program, test_binary);
+        assert_ne!(spec.program, std::env::current_exe().unwrap());
     }
 }
