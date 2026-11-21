@@ -1319,7 +1319,7 @@ fn trf_43_assign_is_gone() {
 fn the_whole_flow_on_the_fake_herdr() {
     let mut h = finish_world("tl-e2e");
     // Each reviewer of the flow finds its findings file at its start (ticket
-    // 258): the reviews of C run during the stall ladder of step 5.
+    // 258).
     let _findings = FindingsWriter::start(&h);
     h.stop_fleetd();
     h.set("HORCH_STOP_GRACE_MS", "2000");
@@ -1393,6 +1393,10 @@ fn the_whole_flow_on_the_fake_herdr() {
                     && e["text"].as_str().unwrap().contains("Tasks can start")),
             "no wake for C: {events}"
         );
+    // C and its reviews end before the stall ladder. The ladder stops
+    // fleetd, and a spawn of a `watch --once` pass with fleetd down fails
+    // on its session record, which waits in a request file (ticket 258).
+    wait_done_playing_reviewers(&h, "T-3");
     // 5. B's checks and the stall ladder; A's worker is untouched.
     stall_by_the_ladder(&h, &wb, bpid, bstart);
     assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
@@ -1405,8 +1409,8 @@ fn the_whole_flow_on_the_fake_herdr() {
         "{wakes:?}"
     );
     // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
-    // Then fleetd launches C, and B again as attempt 2 of T-1, which
-    // replaces the stalled worker.
+    // Then fleetd launches B again as attempt 2 of T-1, which replaces the
+    // stalled worker.
     h.advance_fleet_clock(30);
     let c_tree = wait_push("C's worktree", || task_worktree(&h, "T-3"));
     let t1 = json_of(&h, &["ledger", "show", "T-1", "--json"]);
