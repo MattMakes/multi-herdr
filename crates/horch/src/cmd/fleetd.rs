@@ -98,7 +98,7 @@ use horch_core::taskledger::store::{canonical, default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{watchdog, LedgerWriter, Store};
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 use horch_platform::channel::User;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
@@ -119,7 +119,7 @@ pub enum FleetdCommand {
 }
 
 /// fleetd and `horch fleet` drive only the `herdr` pane host: the
-/// adapters of fleetd call [`Herdr`] and not `PaneHost`.
+/// adapters of fleetd use only the herdr backend of `PaneHost`.
 pub(crate) const HC_REFUSED: &str = "fleetd runs its workers only on herdr: \
      the hc pane host (herdr-core and the Herdr desktop app) has no fleetd adapter. \
      Run this command with --backend herdr, or unset HORCH_BACKEND";
@@ -918,7 +918,7 @@ struct LiveIdeas<'a> {
     ctx: &'a RuntimeContext,
     sandboxes: &'a WorkerSandboxes,
     git: ProjectGitGateway,
-    herdr: Herdr,
+    herdr: PaneHost,
 }
 
 impl LiveIdeas<'_> {
@@ -1030,7 +1030,7 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
 /// `horch spawn <persona> --attempt <id>` (ticket 10 of Phase 4).
 struct PushSpawns<'a> {
     ctx: &'a RuntimeContext,
-    herdr: Herdr,
+    herdr: PaneHost,
 }
 
 impl Launches for PushSpawns<'_> {
@@ -1051,7 +1051,7 @@ impl Launches for PushSpawns<'_> {
 /// The launch of the attempt of `l`: [`super::recipes::push_launch_spec`]
 /// with the pane of [`launch_pane`]. Each push attempt and each idea-lead
 /// attempt launches through it.
-fn spawn_spec(ctx: &RuntimeContext, herdr: &Herdr, mut l: PushLaunch) -> Result<LaunchSpec> {
+fn spawn_spec(ctx: &RuntimeContext, herdr: &PaneHost, mut l: PushLaunch) -> Result<LaunchSpec> {
     let (pane, workspace) = launch_pane(herdr, &l)?;
     l.from_pane = Some(pane);
     l.workspace_id = Some(workspace);
@@ -1064,7 +1064,7 @@ fn spawn_spec(ctx: &RuntimeContext, herdr: &Herdr, mut l: PushLaunch) -> Result<
 /// no run has an orchestrator pane, so the recorded pane is often missing.
 /// No other workspace is used: with neither, the launch fails, and the
 /// start timeout of the pass ends the attempt.
-fn launch_pane(herdr: &Herdr, l: &PushLaunch) -> Result<(String, String)> {
+fn launch_pane(herdr: &PaneHost, l: &PushLaunch) -> Result<(String, String)> {
     if let Some(pane) = &l.from_pane {
         let workspace = match &l.workspace_id {
             Some(w) => w.clone(),
@@ -1108,7 +1108,7 @@ fn launch_pane(herdr: &Herdr, l: &PushLaunch) -> Result<(String, String)> {
 /// rows. `None` when `a` is not an idea-lead attempt.
 fn idea_lead_spec(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     a: &AttemptRow,
 ) -> Result<Option<LaunchSpec>> {
     let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
@@ -1175,7 +1175,10 @@ fn with_pass<T>(
     force: bool,
     f: impl FnOnce(&mut Pass<'_>, &WatchdogDuties<'_>) -> T,
 ) -> T {
-    let herdr = || Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(HERDR_CALL_LIMIT);
+    let herdr = || {
+        PaneHost::for_backend(ctx, horch_core::runtime::Backend::Herdr)
+            .with_timeout(HERDR_CALL_LIMIT)
+    };
     let outside = Live {
         ctx,
         herdr: herdr(),
@@ -1345,7 +1348,7 @@ fn run_loop(
 /// What a pass reads and does outside the ledger on this machine.
 struct Live<'a> {
     ctx: &'a RuntimeContext,
-    herdr: Herdr,
+    herdr: PaneHost,
     /// herdr and the transcript of a live attempt.
     observer: HerdrObserver,
 }
@@ -1683,6 +1686,25 @@ mod tests {
 
     use super::test_fleet::{alive, ended, World};
     use super::*;
+
+    /// fleetd and `horch fleet` refuse the hc pane host with 1 line that
+    /// names the fix, and take herdr (T-330).
+    #[test]
+    fn the_hc_backend_is_refused_with_its_fix_and_herdr_is_taken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let on = |backend: &str| {
+            let env = MapEnv::new(tmp.path())
+                .with("HOME", &tmp.path().to_string_lossy())
+                .with("HORCH_BACKEND", backend);
+            RuntimeContext::from_env(&env).unwrap()
+        };
+        let error = refuse_hc(&on("hc")).unwrap_err().to_string();
+        assert_eq!(error, HC_REFUSED);
+        assert!(error.contains("--backend herdr"), "{error}");
+        assert!(refuse_hc(&on("herdr")).is_ok());
+        let fleet = super::super::recipes::fleet_with(&on("hc"), None, &Default::default());
+        assert_eq!(fleet.unwrap_err().to_string(), HC_REFUSED);
+    }
 
     #[test]
     fn check_with_no_row_starts_nothing() {

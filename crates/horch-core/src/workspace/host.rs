@@ -247,6 +247,19 @@ impl PaneHost {
         }
     }
 
+    /// The pid of the process that the host started in `pane`. Only
+    /// `herdr` tells it (`pane process-info`).
+    pub fn pane_shell_pid(&self, pane: &str) -> Result<u32> {
+        match &self.inner {
+            Inner::Herdr(h) => h.pane_shell_pid(pane),
+            Inner::Hc(_) => Err(Unsupported {
+                call: "pane_shell_pid",
+                backend: Backend::Hc,
+            }
+            .into()),
+        }
+    }
+
     pub fn pane_close(&self, pane: &str) -> Result<()> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_close(pane),
@@ -500,6 +513,7 @@ mod tests {
         assert_eq!(ctx.herdr.backend, Backend::Herdr);
 
         let store = ExecutionStore::open_in(&ctx).unwrap();
+        let _fleetd = crate::execution::store::test_serve(store.db());
         store
             .insert(LedgerRecordV1 {
                 record_id: "r-hc".into(),

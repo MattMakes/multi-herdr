@@ -143,7 +143,7 @@ mod tests {
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
     #[cfg(unix)]
-    use horch_core::workspace::herdr::Herdr;
+    use horch_core::workspace::PaneHost;
     use std::path::Path;
     #[cfg(unix)]
     use std::time::{Duration, UNIX_EPOCH};
@@ -184,7 +184,7 @@ mod tests {
     /// screen; `p2` has a screen but no status; `p3` has a status but no
     /// screen; any other pane fails both.
     #[cfg(unix)]
-    fn herdr(dir: &Path) -> Herdr {
+    fn herdr(dir: &Path) -> PaneHost {
         let bin = dir.join("herdr");
         // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
@@ -201,7 +201,7 @@ mod tests {
             &["warm"],
         );
         assert!(warm.status.success());
-        Herdr::with_bin(bin)
+        PaneHost::herdr_bin(bin)
     }
 
     #[cfg(unix)]
