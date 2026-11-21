@@ -577,8 +577,12 @@ fn i10_crash_before_and_after_the_rescue_of_a_forced_update_loses_no_tip() {
     assert!(w.feature_rescues().is_empty(), "no rescue ref yet");
     assert_eq!(w.tip(FEATURE_BRANCH), Some(old.clone()), "no tip moved");
 
-    // The next pass writes the rescue ref of the old tip.
-    w.pass();
+    // A later pass writes the rescue ref of the old tip. Under load a pass
+    // can reach its time budget (PL-5) before this effect, and the next
+    // pass gives it again, so wait for the ref, not for 1 pass.
+    w.pass_until("the rescue ref of the old tip", |w| {
+        (!w.feature_rescues().is_empty()).then_some(())
+    });
     let rescues = w.feature_rescues();
     assert_eq!(rescues.len(), 1, "{rescues:?}\n{}", w.diagnostics());
     assert_eq!(rescues[0].1, old, "the rescue ref holds the old tip");
