@@ -59,9 +59,17 @@ fn sealed(dir: &Path, name: &str) -> PathBuf {
     script
 }
 
-/// A test machine in `/tmp`: a home, the horch folders, a fleet root and
-/// the scratch folder of the throwaway task folders. Each CLI binary is a
-/// fake.
+/// The folder of each test machine. On Linux the sandbox mounts a new
+/// empty tmpfs on `/tmp`, so a folder in `/tmp` is not visible in it.
+const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
+    "/var/tmp"
+} else {
+    "/tmp"
+};
+
+/// A test machine in [`MACHINE_ROOT`]: a home, the horch folders, a fleet
+/// root and the scratch folder of the throwaway task folders. Each CLI
+/// binary is a fake.
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
@@ -69,7 +77,11 @@ struct Machine {
 
 impl Machine {
     fn new() -> Machine {
-        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        Machine::new_in(MACHINE_ROOT)
+    }
+
+    fn new_in(root: &str) -> Machine {
+        let tmp = tempfile::tempdir_in(root).unwrap();
         for d in ["home", "state", "data", "ledger/fleet", "scratch", "bin"] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
@@ -348,6 +360,34 @@ fn sandbox_write_outside_is_refused() {
     let r = m.check(&claude(), "conformance", Check::SandboxBoundary);
     assert_verdict(&r, Check::SandboxBoundary, Verdict::Pass);
     assert!(r.evidence.contains("refused"), "{r:?}");
+}
+
+/// The outside write of a throwaway folder that the sandbox does not see
+/// proves nothing, so the probe does not run it and the check fails.
+#[test]
+fn sandbox_boundary_fails_when_the_sandbox_does_not_see_the_real_folder() {
+    let not_seen = |r: &CheckResult| {
+        assert_verdict(r, Check::SandboxBoundary, Verdict::Fail);
+        assert!(
+            r.evidence
+                .starts_with("the outside write: not run: the sandbox does not see the real "),
+            "{r:?}"
+        );
+    };
+    let m = Machine::new();
+    let settings = m.home().join("override-settings.json");
+    let rules =
+        json!({"sandbox": {"enabled": true, "filesystem": {"denyRead": [m.path("scratch")]}}});
+    std::fs::write(&settings, rules.to_string()).unwrap();
+    let mut t = claude();
+    t.args = vec!["--settings".into(), settings.to_string_lossy().into_owned()];
+    not_seen(&m.check(&t, "conformance", Check::SandboxBoundary));
+
+    // The old fixture: on Linux the sandbox hides each path in /tmp.
+    if cfg!(target_os = "linux") {
+        let old = Machine::new_in("/tmp");
+        not_seen(&old.check(&claude(), "conformance", Check::SandboxBoundary));
+    }
 }
 
 #[test]
