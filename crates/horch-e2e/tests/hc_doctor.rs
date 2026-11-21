@@ -3,7 +3,7 @@
 use horch_e2e::harness::{fixtures, Harness};
 
 fn world(name: &str) -> Harness {
-    let mut h = Harness::new(name);
+    let mut h = Harness::new(name).with_git();
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_FAULT", "delivery-probe-ms:500");
     h.set(
