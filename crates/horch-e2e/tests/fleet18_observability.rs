@@ -374,6 +374,9 @@ fn serve_state_fleetd(h: &mut Harness) {
     h.serve_fleetd();
 }
 
+/// A launch is 4 serial process starts (spawn, pane, supervisor, agent)
+/// beside the conformance jobs of fleetd. At load 50 it took 29.7 s from
+/// the task row to the agent start, so it gets the harness DEADLINE.
 const LAUNCH_WAIT: std::time::Duration = DEADLINE;
 
 fn wait<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
