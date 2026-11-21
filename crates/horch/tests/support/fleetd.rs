@@ -31,8 +31,18 @@ impl TestFleetd {
     /// this environment gives. The output of fleetd goes to
     /// `<fleet_root>/fleetd.stdout` and `fleetd.stderr`. Returns when
     /// fleetd accepts a connection on its channel.
+    ///
+    /// The `PATH` of a test is short (`/usr/bin:/bin`), and there a bare
+    /// `git` can be the Apple git, older than the 2.41 that the rescue and
+    /// the start of fleetd need. Unless `cmd` sets `HORCH_GIT_BIN`, fleetd
+    /// gets the first git of the real `PATH`, as the e2e harness does.
     pub fn start(mut cmd: Command, fleet_root: &Path) -> TestFleetd {
         std::fs::create_dir_all(fleet_root).unwrap();
+        if !cmd.get_envs().any(|(k, _)| k == "HORCH_GIT_BIN") {
+            if let Some(git) = git_on_real_path() {
+                cmd.env("HORCH_GIT_BIN", git);
+            }
+        }
         let file = |ext: &str| std::fs::File::create(fleet_root.join(format!("fleetd.{ext}")));
         let child = cmd
             .arg("fleetd")
@@ -73,6 +83,14 @@ impl Drop for TestFleetd {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The first `git` of the `PATH` of this test process.
+fn git_on_real_path() -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|d| d.join("git"))
+        .find(|p| p.is_file())
 }
 
 /// The channel of the fleet at `fleet_root`.
