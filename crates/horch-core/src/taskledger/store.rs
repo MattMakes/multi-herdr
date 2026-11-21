@@ -570,6 +570,42 @@ mod tests {
         assert!(text.contains("Insert"), "{text}");
     }
 
+    /// The savepoint of `one_snapshot` is a read, and a write inside it is
+    /// still traced. Another savepoint, and a name that only starts with
+    /// `one_snapshot`, are traced.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_trace_counts_only_the_snapshot_savepoint_as_a_read() {
+        let dir = temp();
+        let path = dir.path().join("ledger.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap();
+        let trace = dir.path().join("trace.txt");
+        trace_to(store.conn(), trace.clone());
+        let conn = store.conn();
+        one_snapshot(conn, || {
+            let _: i64 = conn.query_row("SELECT count(*) FROM projects", [], |r| r.get(0))?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(one_snapshot(conn, || Err::<(), _>(anyhow::anyhow!("x"))).is_err());
+        assert!(!trace.exists(), "a snapshot read is not traced");
+        let written = one_snapshot(conn, || {
+            Ok(conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])?)
+        });
+        assert!(written.is_err(), "the read-only ledger refuses the insert");
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("Insert"), "{text}");
+        std::fs::remove_file(&trace).unwrap();
+        for name in ["other", "one_snapshot_x"] {
+            conn.execute_batch(&format!("SAVEPOINT {name}; RELEASE {name}"))
+                .unwrap();
+        }
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("\"other\""), "{text}");
+        assert!(text.contains("\"one_snapshot_x\""), "{text}");
+    }
+
     #[test]
     fn a_read_only_failure_names_the_command_the_statement_and_the_ledger() {
         let dir = temp();
