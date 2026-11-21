@@ -1,6 +1,6 @@
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use horch_core::taskledger::map::ticket_facts;
@@ -357,9 +357,12 @@ fn assert_board_events(events: &[String]) {
 #[test]
 fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     let w = World::new();
-    assert!(w
-        .ok(&["ledger", "path"])
-        .ends_with("/home/.horch/ledger.sqlite3\n"));
+    let printed = w.ok(&["ledger", "path"]);
+    assert!(printed.ends_with('\n'), "{printed}");
+    assert!(
+        Path::new(printed.trim_end()).ends_with("home/.horch/ledger.sqlite3"),
+        "{printed}"
+    );
     assert_eq!(w.ok(&["ledger", "unfinished"]), "No unfinished work.\n");
     assert_eq!(w.ok(&["ledger", "unfinished", "--json"]), "[]\n");
     assert_eq!(

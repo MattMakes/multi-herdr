@@ -531,7 +531,7 @@ fn context_policy_warnings_name_a_copied_messages_base() {
         "{:?}",
         roster.check()
     );
-    let path = dir.path().join("_base/context-messages.md");
+    let path = dir.path().join("_base").join("context-messages.md");
     assert_eq!(
         warnings(&roster),
         vec![format!(

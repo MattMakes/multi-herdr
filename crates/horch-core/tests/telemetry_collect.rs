@@ -788,7 +788,9 @@ fn a_live_record_with_an_old_update_keeps_its_cursor() {
 /// The review's scenario (R2): a state root whose path holds a `|`, so the
 /// Prime session id (its file path) does too. The tidy finds the cursor's
 /// file and owner from the cursor's fields, not by splitting its key, and
-/// keeps the cursor of the live session.
+/// keeps the cursor of the live session. A Windows path cannot hold a `|`, so
+/// the case has no Windows form.
+#[cfg(unix)]
 #[test]
 fn r2_a_prime_cursor_survives_when_its_session_path_contains_a_pipe() {
     let tmp = tempfile::tempdir().unwrap();

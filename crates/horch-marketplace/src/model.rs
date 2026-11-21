@@ -171,7 +171,7 @@ pub fn parse_source(spec: &str) -> Result<SkillSource> {
     let spec = spec.trim();
     if let Some(name) = spec.strip_prefix("bundled:") {
         parse_bundled(name)
-    } else if spec.starts_with('/') {
+    } else if is_absolute_path_text(spec) {
         Ok(SkillSource::Local {
             path: PathBuf::from(spec),
         })
@@ -183,6 +183,19 @@ pub fn parse_source(spec: &str) -> Result<SkillSource> {
             None => parse_github(spec, subdir),
         }
     }
+}
+
+/// Whether `spec` is an absolute path in the text form of an OS: `/dir`, or on
+/// Windows `C:\dir`, `C:/dir`, `\\server\share` and `\\?\C:\dir`. The logic is
+/// text only, so it is the same on each OS.
+fn is_absolute_path_text(spec: &str) -> bool {
+    let b = spec.as_bytes();
+    spec.starts_with('/')
+        || spec.starts_with("\\\\")
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/'))
 }
 
 /// `head` and the optional suffix of a split of `s`; `s` whole when there
@@ -282,6 +295,28 @@ fn check_scheme(scheme: &str, authority: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Windows absolute path is a local source (`skills_cli.rs`
+    /// `mkt_09_cli_list_show_json` in CI run 5 passed `\\?\C:\...`).
+    #[test]
+    fn a_windows_absolute_path_is_a_local_source() {
+        for spec in [
+            r"C:\Users\a\src\demo",
+            "C:/Users/a/src/demo",
+            r"\\?\C:\Users\a\src\demo",
+            r"\\server\share\demo",
+        ] {
+            assert_eq!(
+                SkillSource::parse(spec).unwrap(),
+                SkillSource::Local {
+                    path: PathBuf::from(spec)
+                },
+                "{spec}"
+            );
+        }
+        assert!(SkillSource::parse("owner/repo").is_ok());
+        assert!(SkillSource::parse("c:x").is_err());
+    }
 
     #[test]
     fn parses_specs() {

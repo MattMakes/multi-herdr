@@ -103,7 +103,8 @@ fn the_legacy_subcommands_write_read_and_report_a_session() {
         path.trim_end(),
         w.tmp
             .path()
-            .join("state/ledger.sqlite3")
+            .join("state")
+            .join("ledger.sqlite3")
             .display()
             .to_string()
     );
