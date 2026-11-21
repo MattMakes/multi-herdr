@@ -341,6 +341,18 @@ pub fn set_rescue_ref(tx: &Connection, id: &str, rescue_ref: &str) -> Result<()>
     updated(changed, id)
 }
 
+/// Record that the work of the row `id` landed at `commit`: the status
+/// `landed`, its landed commit and its time, as the land of today writes
+/// them. The move of `state` to `landed` goes through the door.
+pub fn set_landed(tx: &Connection, id: &str, commit: &str) -> Result<()> {
+    let changed = tx.execute(
+        "UPDATE worktrees SET status = ?2, landed_commit = ?3, landed_at = ?4, reason = NULL
+         WHERE worktree_id = ?1",
+        params![id, WorktreeStatus::Landed.as_str(), commit, util::now()],
+    )?;
+    updated(changed, id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

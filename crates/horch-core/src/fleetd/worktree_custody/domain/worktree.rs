@@ -133,6 +133,23 @@ pub enum Attempt {
     Missing,
 }
 
+/// The state of the task of an `active` row, as the owner rule reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskNow {
+    /// The verifier checks the result of the attempt.
+    Verifying,
+    /// The verifier verified the task: `done`.
+    Done,
+    /// The task waits for its next attempt: `ready`, `blocked_on_user` or
+    /// `waiting_quota`.
+    Retried,
+    /// The task is parked by `done --unlanded`.
+    Parked,
+    Cancelled,
+    /// Each other state, and a row with no task.
+    Other,
+}
+
 /// The facts of the owner of an `active` row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner {
@@ -140,16 +157,31 @@ pub struct Owner {
     pub attempt: Option<Attempt>,
     /// The worker of the row is live (Q23).
     pub worker_live: bool,
-    /// The task is parked by `done --unlanded`.
-    pub task_parked: bool,
-    pub task_cancelled: bool,
+    pub task: TaskNow,
+    /// The owner attempt ended with an outcome of a process that did not
+    /// die: [`clean_end`].
+    pub ended_clean: bool,
+}
+
+/// Whether the attempt outcome `outcome` is a clean end: the verifier
+/// rejected the result, or the worker asked, hit a usage limit, has an open
+/// CRITICAL item or reached its context limit. A crash, a kill, a time
+/// limit, a stall and an exit with no result are a dead owner.
+pub fn clean_end(outcome: Option<&str>) -> bool {
+    matches!(
+        outcome,
+        Some("rejected" | "asked" | "quota" | "critical_open" | "context_limit")
+    )
 }
 
 /// Where an `active` row goes when its owner is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnerGone {
-    /// `created`, with no owner: the next attempt of the task takes it.
-    Created,
+    /// `created`, with no owner, for this cause: the next attempt of the
+    /// task takes it.
+    Created(&'static str),
+    /// `landing`: the attempt ended verified.
+    Landing,
     /// `orphaned`, for this cause (FM-25).
     Orphaned(&'static str),
 }
@@ -160,14 +192,24 @@ pub const CANCELLED: &str = "its task is cancelled";
 pub const OWNER_ENDED: &str = "its owner attempt ended";
 /// The cause of a tree with no owner attempt and no live worker.
 pub const NO_LIVE_OWNER: &str = "it has no owner attempt and its worker is not live";
+/// The cause of a tree of a task parked by `done --unlanded`.
+pub const PARKED: &str = "its task is parked by done --unlanded";
+/// The cause of a tree of a task that waits for its next attempt.
+pub const RETRIED: &str = "its task waits for its next attempt";
+/// The cause of a tree whose attempt ended verified.
+pub const VERIFIED: &str = "its attempt ended verified";
 
 /// What happens to an `active` row with the owner `o`; `None` while the
-/// owner holds it. A task parked by `done --unlanded` keeps its tree as
-/// `created`. Each other end orphans the tree: the outcome of the attempt
-/// is not read, and `orphaned` is the safe state, as a rescue comes first
-/// (Q10; the choice of the orchestrator for ticket 09).
+/// owner holds it, or while the verifier checks the task. The design row
+/// `active`: "The attempt ends: verified → `landing`; retried → back to
+/// `created`, so the next attempt continues in the same tree; owner dead →
+/// `orphaned`". A retry is a task that waits for its next attempt after a
+/// clean end of the attempt; after a dead owner the tree is orphaned. A
+/// task parked by `done --unlanded` keeps its tree as `created` (Q10). A
+/// cancelled task, and each other end, orphans the tree: a rescue comes
+/// first.
 pub fn owner_gone(o: &Owner) -> Option<OwnerGone> {
-    if o.task_cancelled {
+    if o.task == TaskNow::Cancelled {
         return Some(OwnerGone::Orphaned(CANCELLED));
     }
     let cause = match o.attempt {
@@ -176,11 +218,49 @@ pub fn owner_gone(o: &Owner) -> Option<OwnerGone> {
         None if o.worker_live => return None,
         None => NO_LIVE_OWNER,
     };
-    Some(if o.task_parked {
-        OwnerGone::Created
-    } else {
-        OwnerGone::Orphaned(cause)
-    })
+    match o.task {
+        TaskNow::Verifying => None,
+        TaskNow::Done => Some(OwnerGone::Landing),
+        TaskNow::Retried if o.ended_clean => Some(OwnerGone::Created(RETRIED)),
+        TaskNow::Parked => Some(OwnerGone::Created(PARKED)),
+        TaskNow::Retried | TaskNow::Cancelled | TaskNow::Other => Some(OwnerGone::Orphaned(cause)),
+    }
+}
+
+/// What a `landing` row does when its task branch is in the landing state
+/// `branch` (`None`: no row of the branch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LandingTree {
+    /// The branch is `landed`: the tree moves to `landed`.
+    Landed,
+    /// The branch is `abandoned`: fleetd queues a rescue job, and the
+    /// verified rescue moves the tree to `rescued`.
+    Rescue,
+}
+
+/// The design row `landing`: "Its branch is `landed` on the feature branch
+/// → `landed`. Its branch is `abandoned` → fleetd queues a rescue job".
+/// Each other landing state keeps the tree in `landing`, where a resolver
+/// or fix attempt of its branch runs.
+pub fn landing_next(branch: Option<&str>) -> Option<LandingTree> {
+    match branch {
+        Some("landed") => Some(LandingTree::Landed),
+        Some("abandoned") => Some(LandingTree::Rescue),
+        _ => None,
+    }
+}
+
+/// Whether the `worktree_list` read of a `landing` row at `seen_at` came
+/// after its branch landed at `landed_at`: only then is its HEAD the landed
+/// commit. No writer moves the tree between the landing and that read. A
+/// branch with no event of its landing (a row that a migration wrote
+/// `landed`) landed before each read.
+pub fn read_after_landing(seen_at: Option<&str>, landed_at: Option<&str>) -> bool {
+    match (seen_at, landed_at) {
+        (Some(seen), Some(landed)) => seen >= landed,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// Whether a row in `state` has lost its folder: the scan saw it missing,
@@ -371,8 +451,8 @@ mod tests {
         Owner {
             attempt,
             worker_live,
-            task_parked: false,
-            task_cancelled: false,
+            task: TaskNow::Other,
+            ended_clean: false,
         }
     }
 
@@ -394,15 +474,92 @@ mod tests {
             Some(OwnerGone::Orphaned(NO_LIVE_OWNER))
         );
         let parked = Owner {
-            task_parked: true,
+            task: TaskNow::Parked,
             ..owner(Some(Attempt::Ended), false)
         };
-        assert_eq!(gone(parked), Some(OwnerGone::Created));
+        assert_eq!(gone(parked), Some(OwnerGone::Created(PARKED)));
         let cancelled = Owner {
-            task_cancelled: true,
+            task: TaskNow::Cancelled,
             ..owner(Some(Attempt::Holds), true)
         };
         assert_eq!(gone(cancelled), Some(OwnerGone::Orphaned(CANCELLED)));
+    }
+
+    #[test]
+    fn owner_gone_lands_a_verified_tree_and_keeps_a_retried_one() {
+        let ended = |task| Owner {
+            task,
+            ..owner(Some(Attempt::Ended), false)
+        };
+        assert_eq!(owner_gone(&ended(TaskNow::Done)), Some(OwnerGone::Landing));
+        assert_eq!(owner_gone(&ended(TaskNow::Verifying)), None);
+        assert_eq!(
+            owner_gone(&ended(TaskNow::Retried)),
+            Some(OwnerGone::Orphaned(OWNER_ENDED)),
+            "a dead owner"
+        );
+        let clean = Owner {
+            ended_clean: true,
+            ..ended(TaskNow::Retried)
+        };
+        assert_eq!(owner_gone(&clean), Some(OwnerGone::Created(RETRIED)));
+        let held = Owner {
+            task: TaskNow::Done,
+            ..owner(Some(Attempt::Holds), true)
+        };
+        assert_eq!(owner_gone(&held), None);
+    }
+
+    #[test]
+    fn a_clean_end_is_an_outcome_of_a_process_that_did_not_die() {
+        for o in [
+            "rejected",
+            "asked",
+            "quota",
+            "critical_open",
+            "context_limit",
+        ] {
+            assert!(clean_end(Some(o)), "{o}");
+        }
+        for o in [
+            "crashed",
+            "killed",
+            "timed_out",
+            "stalled",
+            "no_result",
+            "done",
+        ] {
+            assert!(!clean_end(Some(o)), "{o}");
+        }
+        assert!(!clean_end(None));
+    }
+
+    #[test]
+    fn landing_next_follows_a_landed_or_abandoned_branch_only() {
+        assert_eq!(landing_next(Some("landed")), Some(LandingTree::Landed));
+        assert_eq!(landing_next(Some("abandoned")), Some(LandingTree::Rescue));
+        for state in [
+            "building",
+            "verifying",
+            "ready",
+            "in_bundle",
+            "conflicted",
+            "gate_failed",
+        ] {
+            assert_eq!(landing_next(Some(state)), None, "{state}");
+        }
+        assert_eq!(landing_next(None), None);
+    }
+
+    #[test]
+    fn a_read_counts_only_at_or_after_the_landing() {
+        let at = Some("2026-11-20T10:00:00Z");
+        assert!(read_after_landing(Some("2026-11-20T10:00:00Z"), at));
+        assert!(read_after_landing(Some("2026-11-20T10:00:01Z"), at));
+        assert!(!read_after_landing(Some("2026-11-20T09:59:59Z"), at));
+        assert!(!read_after_landing(None, at));
+        assert!(read_after_landing(Some("2026-11-20T10:00:00Z"), None));
+        assert!(!read_after_landing(None, None));
     }
 
     #[test]

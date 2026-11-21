@@ -27,7 +27,7 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{
 };
 use crate::fleetd::worktree_custody::application::create::{self, RunJob};
 use crate::fleetd::worktree_custody::domain::removal;
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, WorktreeStatus};
 use crate::taskledger::util;
 
 /// Queue 1 `worktree_remove` run of the tree of `row`, in `tx`: subject
@@ -127,7 +127,7 @@ pub enum Observed {
 
 /// Observe the remove run `job`, in `tx`:
 /// - `passed`: the row moves to `removed` from `landed` or `rescued`, with
-///   today's `cleaned_at`, and the needs-you item of a failed removal of
+///   today's `cleaned_at` (and the status `cleaned` for landed work), and the needs-you item of a failed removal of
 ///   the tree ends. The door refuses each other state and records it.
 /// - `failed`: the row stays, and 1 needs-you item opens with the reason.
 /// - `abandoned` (its time limit or a lost process), `queued` or
@@ -183,9 +183,18 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
         refusals,
     ) {
         Ok(Moved::Changed) => {
+            // A tree of landed work is `cleaned`, as the cleanup of today
+            // leaves it; a rescued tree keeps its status.
             tx.execute(
-                "UPDATE worktrees SET cleaned_at = ?2 WHERE worktree_id = ?1",
-                params![id, util::now()],
+                "UPDATE worktrees SET cleaned_at = ?2,
+                    status = CASE WHEN status = ?3 THEN ?4 ELSE status END
+                 WHERE worktree_id = ?1",
+                params![
+                    id,
+                    util::now(),
+                    WorktreeStatus::Landed.as_str(),
+                    WorktreeStatus::Cleaned.as_str()
+                ],
             )?;
         }
         Ok(Moved::Unchanged) => {}

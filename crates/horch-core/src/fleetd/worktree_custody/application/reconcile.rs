@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store;
@@ -50,7 +50,8 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{
 use crate::fleetd::worktree_custody::application::{create, remove, rescue};
 use crate::fleetd::worktree_custody::domain::removal::quarantine_path;
 use crate::fleetd::worktree_custody::domain::worktree::{
-    self as rules, Attempt, Breach, Folder, Owner, OwnerGone, RunBranch, Seen, TreeJob,
+    self as rules, Attempt, Breach, Folder, LandingTree, Owner, OwnerGone, RunBranch, Seen,
+    TaskNow, TreeJob,
 };
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus, WorktreeStatus};
 use crate::taskledger::{runs, tasks, util, workers};
@@ -93,8 +94,13 @@ pub struct Report {
     pub observed: Vec<i64>,
     pub adopted: Vec<String>,
     pub orphaned: Vec<String>,
-    /// Moved to `created`: the task is parked by `done --unlanded`.
+    /// Moved to `created`: the task is parked by `done --unlanded`, or it
+    /// waits for its next attempt.
     pub created: Vec<String>,
+    /// Moved to `landing`: the attempt ended verified.
+    pub landing: Vec<String>,
+    /// Moved from `landing` to `landed`: the task branch is `landed`.
+    pub landed: Vec<String>,
     pub vanished: Vec<String>,
     /// The rows that got new facts from a `worktree_list` result.
     pub refreshed: Vec<String>,
@@ -120,7 +126,9 @@ fn by_horch(text: &str) -> Cause<'_> {
 /// tree with no row as `orphaned`; write the facts of the `worktree_list`
 /// results; move each `active` row whose owner is gone; escalate each
 /// vanished folder; queue the rescue of each orphan and the removal of each
-/// landed tree. Each step reads the rows that the step before it wrote.
+/// landed tree. Between the owners and the escalation, each `landing` row
+/// follows its task branch. Each step reads the rows that the step before
+/// it wrote.
 pub fn reconcile_worktrees(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -132,6 +140,7 @@ pub fn reconcile_worktrees(
     adopt(ctx, tx, facts, &mut report)?;
     refresh(tx, facts, &mut report)?;
     owners(ctx, tx, &mut report)?;
+    landings(ctx, tx, &mut report)?;
     escalate_vanished(ctx, tx, facts, clock, &mut report)?;
     act(ctx, tx, clock, &mut report)?;
     Ok(report)
@@ -510,25 +519,52 @@ fn owner(tx: &Connection, row: &WorktreeRow) -> Result<Owner> {
     Ok(Owner {
         attempt,
         worker_live,
-        task_parked: task.as_ref().is_some_and(|t| t.is_parked()),
-        task_cancelled: task
-            .as_ref()
-            .is_some_and(|t| t.status == TaskStatus::Cancelled.as_str()),
+        task: task.as_ref().map_or(TaskNow::Other, task_now),
+        ended_clean: rules::clean_end(outcome_of(tx, row)?.as_deref()),
     })
 }
 
-/// Move each `active` row whose owner is gone: `created` for a parked
-/// task, else `orphaned` in this pass (FM-25, Q10, Q23).
+/// The outcome that the owner attempt of `row` recorded, if any.
+fn outcome_of(tx: &Connection, row: &WorktreeRow) -> Result<Option<String>> {
+    let Some(attempt) = row.owner_attempt.as_deref() else {
+        return Ok(None);
+    };
+    let outcome: Option<Option<String>> = tx
+        .query_row(
+            "SELECT outcome FROM attempts WHERE id = ?1",
+            [attempt],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(outcome.flatten())
+}
+
+/// The state of `task` as the owner rule reads it.
+fn task_now(task: &tasks::Task) -> TaskNow {
+    if task.is_parked() {
+        return TaskNow::Parked;
+    }
+    match TaskStatus::parse(&task.status) {
+        Ok(TaskStatus::Verifying) => TaskNow::Verifying,
+        Ok(TaskStatus::Done) => TaskNow::Done,
+        Ok(TaskStatus::Ready | TaskStatus::BlockedOnUser | TaskStatus::WaitingQuota) => {
+            TaskNow::Retried
+        }
+        Ok(TaskStatus::Cancelled) => TaskNow::Cancelled,
+        _ => TaskNow::Other,
+    }
+}
+
+/// Move each `active` row whose owner is gone: `landing` for a verified
+/// task, `created` for a parked or retried task, else `orphaned` in this
+/// pass (FM-25, Q10, Q23).
 fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     for row in store::in_states(tx, &[WorktreeState::Active])? {
         let id = row.worktree_id.as_str();
         let (to, cause, list) = match rules::owner_gone(&owner(tx, &row)?) {
             None => continue,
-            Some(OwnerGone::Created) => (
-                "created",
-                "its task is parked by done --unlanded",
-                &mut report.created,
-            ),
+            Some(OwnerGone::Created(cause)) => ("created", cause, &mut report.created),
+            Some(OwnerGone::Landing) => ("landing", rules::VERIFIED, &mut report.landing),
             Some(OwnerGone::Orphaned(cause)) => ("orphaned", cause, &mut report.orphaned),
         };
         if moved(ctx, tx, id, to, cause)? {
@@ -538,6 +574,50 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
                 store::set_owner(tx, id, None)?;
             }
             list.push(id.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The landing state of the task branch of `row`, and when it last moved
+/// to `landed`.
+fn branch_of(tx: &Connection, row: &WorktreeRow) -> Result<(Option<String>, Option<String>)> {
+    let state: Option<Option<String>> = tx
+        .query_row(
+            "SELECT landing_state FROM branches WHERE name = ?1 AND task_id IS NOT NULL",
+            [&row.branch],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let landed_at: Option<String> = tx.query_row(
+        "SELECT max(at) FROM events WHERE entity = ?1 AND entity_id = ?2 AND to_state = 'landed'",
+        [Entity::TaskBranch.as_str(), row.branch.as_str()],
+        |r| r.get(0),
+    )?;
+    Ok((state.flatten(), landed_at))
+}
+
+/// Move each `landing` row whose task branch is `landed` to `landed`, at
+/// the HEAD that a `worktree_list` run read after the landing: its landed
+/// commit, the 1 record of the landing for the removal guard and for
+/// `horch ledger unfinished`. A row with no such read waits for it. A row
+/// whose branch is `abandoned` gets its rescue in [`act`].
+fn landings(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
+    for row in store::in_states(tx, &[WorktreeState::Landing])? {
+        let (state, landed_at) = branch_of(tx, &row)?;
+        if rules::landing_next(state.as_deref()) != Some(LandingTree::Landed) {
+            continue;
+        }
+        let Some(head) = row.head_sha.as_deref() else {
+            continue;
+        };
+        if !rules::read_after_landing(row.seen_at.as_deref(), landed_at.as_deref()) {
+            continue;
+        }
+        let id = row.worktree_id.as_str();
+        store::set_landed(tx, id, head)?;
+        if moved(ctx, tx, id, "landed", "its task branch is landed")? {
+            report.landed.push(id.to_string());
         }
     }
     Ok(())
@@ -667,7 +747,8 @@ fn escalate_vanished(
     Ok(())
 }
 
-/// Queue 1 `rescue` run of each `orphaned` row with no rescue ref, and 1
+/// Queue 1 `rescue` run of each `orphaned` row and of each `landing` row
+/// whose task branch is `abandoned`, and 1
 /// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9) and of
 /// each `rescued` row whose idea is `merged` ("Ideas finish clean"). A row
 /// whose folder vanished is escalated, not queued. A row with an active run
@@ -687,6 +768,14 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
             Some(TreeJob::Remove) => {
                 if remove::queue_auto_remove(ctx, tx, &row, "its tree is landed", clock)? {
                     report.removals.push(id.to_string());
+                }
+            }
+            Some(TreeJob::Add) | None if row.state == WorktreeState::Landing => {
+                let (state, _) = branch_of(tx, &row)?;
+                if rules::landing_next(state.as_deref()) == Some(LandingTree::Rescue)
+                    && queue_rescue(ctx, tx, &row, clock)?
+                {
+                    report.rescues.push(id.to_string());
                 }
             }
             Some(TreeJob::Add) | None => {

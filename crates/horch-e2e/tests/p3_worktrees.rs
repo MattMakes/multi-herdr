@@ -695,64 +695,58 @@ fn fm27_trees_that_are_not_landed_are_not_removed() {
 #[test]
 fn fm27_only_landed_or_rescued_trees_are_removed() {
     let _serial = serial();
-    horch_e2e::expected::check(
-        file!(),
-        "fm27_only_landed_or_rescued_trees_are_removed",
-        || {
-            let h = world("p3-fm27-only");
-            commit_gates(&h);
-            let run = seed(&h, "fm27", Some("land"));
-            let ((w1, t1), (_, t2)) = h.without_fleetd(|| {
-                queue(&h, &run, "t1");
-                queue(&h, &run, "t2");
-                (bind_next(&h), bind_next(&h))
-            });
-            let landed = active_tree(&h, &t1);
-            let w = work_in(&h, &landed, "lands");
-            std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
-            std::fs::remove_file(landed.join("lands-untracked.txt")).unwrap();
-            let landed_head = w.commits[0].clone();
-            let o = in_attempt(&h, &w1, &["ledger", "finish", "--json"]);
-            assert!(o.status.success(), "{}", text(&o));
+    let h = world("p3-fm27-only");
+    commit_gates(&h);
+    let run = seed(&h, "fm27", Some("land"));
+    let ((w1, t1), (_, t2)) = h.without_fleetd(|| {
+        queue(&h, &run, "t1");
+        queue(&h, &run, "t2");
+        (bind_next(&h), bind_next(&h))
+    });
+    let landed = active_tree(&h, &t1);
+    let w = work_in(&h, &landed, "lands");
+    std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
+    std::fs::remove_file(landed.join("lands-untracked.txt")).unwrap();
+    let landed_head = w.commits[0].clone();
+    let o = in_attempt(&h, &w1, &["ledger", "finish", "--json"]);
+    assert!(o.status.success(), "{}", text(&o));
 
-            let open = active_tree(&h, &t2);
-            let open_work = work_in(&h, &open, "open");
-            let hand = hand_tree(&h, "hand", "hand-branch");
+    let open = active_tree(&h, &t2);
+    let open_work = work_in(&h, &open, "open");
+    let hand = hand_tree(&h, "hand", "hand-branch");
 
-            pass(&h);
-            until(
-                &h,
-                "the removal of the landed tree (a landing through a bundle never makes a landed tree; ticket 168 (T-207) of fleetd-finish removes this entry)",
-                2 * LIST_PERIOD_S,
-                |h| state(h, &landed).as_deref() == Some("removed"),
-            );
-            for _ in 0..(LIST_PERIOD_S / PASS_S) {
-                step(&h);
-            }
-            assert!(!landed.exists(), "{}", board(&h));
-            let id = column(&h, &landed, "worktree_id").unwrap();
-            let ms = moves(&h, &id);
-            assert!(ms.ends_with(&["landed>removed".to_string()]), "{ms:?}");
-            let run_branch = run_branch(&h, "fm27");
-            let project = h.project.clone();
-            git_in(
-                &h,
-                &project,
-                &["merge-base", "--is-ancestor", &landed_head, &run_branch],
-            );
-            for tree in [&open, &hand.tree] {
-                let s = state(&h, tree).unwrap();
-                assert!(
-                    ["active", "orphaned", "rescued"].contains(&s.as_str()),
-                    "{}: {s}\n{}",
-                    tree.display(),
-                    board(&h)
-                );
-                assert!(tree.is_dir(), "{}", board(&h));
-            }
-            assert_kept(&h, &[&open_work, &hand]);
-        },
+    pass(&h);
+    until(
+        &h,
+        "the removal of the landed tree",
+        2 * LIST_PERIOD_S,
+        |h| state(h, &landed).as_deref() == Some("removed"),
     );
+    for _ in 0..(LIST_PERIOD_S / PASS_S) {
+        step(&h);
+    }
+    assert!(!landed.exists(), "{}", board(&h));
+    let id = column(&h, &landed, "worktree_id").unwrap();
+    let ms = moves(&h, &id);
+    assert!(ms.ends_with(&["landed>removed".to_string()]), "{ms:?}");
+    let run_branch = run_branch(&h, "fm27");
+    let project = h.project.clone();
+    git_in(
+        &h,
+        &project,
+        &["merge-base", "--is-ancestor", &landed_head, &run_branch],
+    );
+    for tree in [&open, &hand.tree] {
+        let s = state(&h, tree).unwrap();
+        assert!(
+            ["active", "orphaned", "rescued"].contains(&s.as_str()),
+            "{}: {s}\n{}",
+            tree.display(),
+            board(&h)
+        );
+        assert!(tree.is_dir(), "{}", board(&h));
+    }
+    assert_kept(&h, &[&open_work, &hand]);
 }
 
 #[test]

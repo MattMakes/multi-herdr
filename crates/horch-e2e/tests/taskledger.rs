@@ -651,34 +651,26 @@ fn push_finish_world(name: &str, scenario: &str) -> Harness {
 
 #[test]
 fn a_task_finishes_through_review_land_pr_and_cleanup() {
-    horch_e2e::expected::check(
-        file!(),
-        "a_task_finishes_through_review_land_pr_and_cleanup",
-        || {
-            let h = push_finish_world("tl-finish", "exec,stay,commit,result");
-            let run = seed_run(&h, "alpha", None, "w1:p1");
-            let p = ticket(&h, "01-a", "# 01: Feature\n");
-            seed_task_with(&h, &run, &p, "opus", |new| {
-                new.land_check = Some("test -f fake-claude.txt".into());
-                new.issue_url = Some("https://github.com/o/r/issues/29".into());
-            });
-            h.serve_fleetd();
-            let tree = wait_push("the worktree of T-1", || task_worktree(&h, "T-1"));
-            let reviews = wait_done_playing_reviewers(&h, "T-1");
-            assert!(reviews >= 2, "bugs and clarity at least: {reviews}");
-            wait_pipeline("the branch of T-1 landed", || task_branch_landed(&h, 1));
-            let project = h.project.clone();
-            let log = git_in(&h, &project, &["log", "--oneline", "fleet/alpha"]);
-            assert!(log.contains("fake claude: commit"), "{log}");
-            // Known fault (ticket 168, T-207): no code removes the tree of
-            // landed work.
-            wait_push("the worktree of T-1 is gone", || {
-                (!tree.exists()).then_some(())
-            });
-            let st = json_of(&h, &["ledger", "status", "--json"]);
-            assert_eq!(st["worktrees"][0]["status"], "cleaned", "{st}");
-        },
-    );
+    let h = push_finish_world("tl-finish", "exec,stay,commit,result");
+    let run = seed_run(&h, "alpha", None, "w1:p1");
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    seed_task_with(&h, &run, &p, "opus", |new| {
+        new.land_check = Some("test -f fake-claude.txt".into());
+        new.issue_url = Some("https://github.com/o/r/issues/29".into());
+    });
+    h.serve_fleetd();
+    let tree = wait_push("the worktree of T-1", || task_worktree(&h, "T-1"));
+    let reviews = wait_done_playing_reviewers(&h, "T-1");
+    assert!(reviews >= 2, "bugs and clarity at least: {reviews}");
+    wait_pipeline("the branch of T-1 landed", || task_branch_landed(&h, 1));
+    let project = h.project.clone();
+    let log = git_in(&h, &project, &["log", "--oneline", "fleet/alpha"]);
+    assert!(log.contains("fake claude: commit"), "{log}");
+    // The tree of landed work is removed (ticket 168): its folder
+    // goes, and the next pass records the removal as `cleaned`.
+    wait_push("the worktree of T-1 is gone and cleaned", || {
+        (!tree.exists() && tree_status(&h, "T-1").as_deref() == Some("cleaned")).then_some(())
+    });
 }
 
 fn open_reviews(h: &Harness) -> Vec<(String, PathBuf)> {
@@ -1377,25 +1369,28 @@ fn the_whole_flow_on_the_fake_herdr() {
         // folder is gone, and C can start.
         let reviews = land_by_push(&h, "T-2", &a_tree);
         assert!(reviews > 0, "the code-sweep of A queued its reviews");
+        // FM-16: no orchestrator is woken for C. Under fleetd the wake
+        // `Tasks can start` is retired (wakes.rs, `startable_wake`): the
+        // dispatcher launches C with no command, in step 5.
         let events = json_of(&h, &["ledger", "events", "--json"]);
         assert!(
-            events
+            !events
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|e| e["kind"] == "woke"
-                    && e["text"].as_str().unwrap().contains("Tasks can start: T-3")),
-            "the orchestrator is woken for C: {events}"
+                    && e["text"].as_str().unwrap().contains("Tasks can start")),
+            "no wake for C: {events}"
         );
         // 5. B's checks and the stall ladder; A's worker is untouched.
         stall_by_the_ladder(&h, &wb, bpid, bstart);
         assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-1");
-        // The orchestrator got the wake for B.
+        // FM-16: no orchestrator is woken for B. With no live
+        // sub-orchestrator of the feature, a stall writes no wake; the stall
+        // ladder of fleetd acts on the attempt (wakes.rs).
         let wakes = outbox(&h);
         assert!(
-            wakes
-                .iter()
-                .any(|w| w.contains("codex-terra-1 on T-1 shows no progress")),
+            !wakes.iter().any(|w| w.contains("shows no progress")),
             "{wakes:?}"
         );
         // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
@@ -1409,7 +1404,10 @@ fn the_whole_flow_on_the_fake_herdr() {
                 .into_iter()
                 .find(|w| w["task_id"] == t1["task"]["task_id"] && w["attempt"] == 2)
         });
-        assert_eq!(rb["previous_worker_id"], wb.as_str(), "{rb}");
+        // FM-16: fleetd launches attempt 2 of T-1 on a new worker; no
+        // `horch spawn --replaces` names the stalled one (wakes.rs,
+        // `spawn_advice`).
+        assert_ne!(rb["worker_id"], wb.as_str(), "{rb}");
 
         // 6. No task is left for a spare worker of opus.
         let none = try_bind(&h, "opus", None);
@@ -1428,7 +1426,8 @@ fn the_whole_flow_on_the_fake_herdr() {
                 .unwrap()
                 .iter()
                 .all(|w| w["status"] == "cleaned"),
-            "{st}"
+            "{}\n{st}",
+            not_cleaned(&st)
         );
         let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
         for t in ["T-1", "T-2", "T-3"] {
@@ -1527,17 +1526,57 @@ fn task_worktree(h: &Harness, short: &str) -> Option<PathBuf> {
         .map(|w| PathBuf::from(w["path"].as_str().unwrap()))
 }
 
-/// Wait until the task `short` is `done` and its worktree `tree` is gone.
+/// Wait until the task `short` is `done` and its worktree `tree` is gone
+/// and `cleaned`.
 /// Its agent ends with `horch result`, and fleetd runs the verifier, the
 /// review steps and the land. The test plays each reviewer: it writes the
 /// findings file of each review task with no findings. Gives the count of
 /// findings files that it wrote.
 fn land_by_push(h: &Harness, short: &str, tree: &Path) -> usize {
     let written = wait_done_playing_reviewers(h, short);
-    wait_push(&format!("the worktree of {short} is gone"), || {
-        (!tree.exists()).then_some(())
-    });
+    wait_push(
+        &format!("the worktree of {short} is gone and cleaned"),
+        || (!tree.exists() && tree_status(h, short).as_deref() == Some("cleaned")).then_some(()),
+    );
     written
+}
+
+/// 1 line for each tree of the status `st` that is not `cleaned`: "the
+/// gate tree gate-F-0001 stays open".
+fn not_cleaned(st: &serde_json::Value) -> String {
+    let trees = st["worktrees"].as_array().cloned().unwrap_or_default();
+    trees
+        .iter()
+        .filter(|w| w["status"] != "cleaned")
+        .map(|w| {
+            let path = w["path"].as_str().unwrap_or_default();
+            let name = Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let kind = if name.starts_with("gate-") {
+                "gate tree"
+            } else {
+                "tree"
+            };
+            format!(
+                "the {kind} {name} stays {}",
+                w["status"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The status of the worktree of the task `short`, as `ledger status`
+/// shows it.
+fn tree_status(h: &Harness, short: &str) -> Option<String> {
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    st["worktrees"]
+        .as_array()?
+        .iter()
+        .find(|w| w["task"] == short)
+        .and_then(|w| w["status"].as_str().map(str::to_string))
 }
 
 fn wait_done_playing_reviewers(h: &Harness, short: &str) -> usize {

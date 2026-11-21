@@ -263,12 +263,15 @@ fn stored(h: &Harness, path: &Path) -> String {
     }
 }
 
-/// 1 column of the 1 row of the folder `path` that is not `removed`.
+/// 1 column of the newest row of the folder `path`, in each state: a
+/// landed tree can be `removed` before the test reads it, and a path is
+/// unique only among the rows that are not `removed`.
 fn column(h: &Harness, path: &Path, name: &str) -> String {
     let rows = query(
         h,
         &format!(
-            "SELECT {name} FROM worktrees WHERE path = '{}' AND state <> 'removed'",
+            "SELECT {name} FROM worktrees WHERE path = '{}' \
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
             stored(h, path)
         ),
     );
@@ -737,26 +740,35 @@ fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> PathBuf {
 
 #[test]
 fn rr15_landed_work_of_a_done_task_is_not_listed() {
-    horch_e2e::expected::check(
-        file!(),
-        "rr15_landed_work_of_a_done_task_is_not_listed",
+    let h = world("p3-unl-landed");
+    let path = orphan_then_land(&h, |_| {});
+    // The tree follows its landed branch to `landed` at the HEAD that the
+    // next `worktree_list` run reads: its landed commit (ticket 168).
+    let mut passes = 0;
+    wait_for_or(
+        "the landed tree",
         || {
-            let h = world("p3-unl-landed");
-            let path = orphan_then_land(&h, |_| {});
-            let list = unfinished(&h);
-            assert!(
-            list.is_empty(),
-            "unfinished lists landed work: a landing through a bundle never sets worktrees.landed_commit; ticket 168 (T-207) of fleetd-finish removes this entry\n{list:?}"
-        );
-            let id = column(&h, &path, "worktree_id");
-            assert_eq!(
-                query(
-                    &h,
-                    &format!("SELECT status FROM import_findings WHERE worktree_id = '{id}'")
-                ),
-                ["open"]
-            );
+            passes += 1;
+            if passes % 8 == 0 {
+                h.advance_fleet_clock(60);
+            }
+            pass_flat(&h);
+            let state = column(&h, &path, "state");
+            ["landed", "removed"]
+                .contains(&state.as_str())
+                .then_some(())
         },
+        || dump(&h),
+    );
+    let list = unfinished(&h);
+    assert!(list.is_empty(), "unfinished lists landed work\n{list:?}");
+    let id = column(&h, &path, "worktree_id");
+    assert_eq!(
+        query(
+            &h,
+            &format!("SELECT status FROM import_findings WHERE worktree_id = '{id}'")
+        ),
+        ["open"]
     );
 }
 

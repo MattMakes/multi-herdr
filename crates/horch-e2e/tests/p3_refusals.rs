@@ -125,6 +125,11 @@ fn seed_alpha(h: &Harness, steps: &str) -> Run {
 /// worker bound to it, and its worktree `feat`. Gives the worker, the
 /// task id and the path of the tree.
 fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
+    claimed_as(h, steps, None)
+}
+
+/// [`claimed`] with `agent` as the agent process of the attempt.
+fn claimed_as(h: &Harness, steps: &str, agent: Option<u32>) -> (String, String, PathBuf) {
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -151,7 +156,7 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
                 [&task.task_id],
             )
             .unwrap();
-        horch_e2e::bind::bind(h, "opus", None)
+        horch_e2e::bind::bind(h, "opus", agent)
     });
     let (w, task) = (bound.worker_id, bound.task_id);
     let path = wait_for("the active tree of the task", || {
@@ -643,10 +648,13 @@ fn dump(h: &Harness) -> String {
     format!("{tasks:#?}\n{trees:#?}\n{branches:#?}\n{ideas:#?}\n{jobs:#?}")
 }
 
-fn finish_and_rescue(h: &Harness, w: &str, path: &Path) {
+/// Finish the attempt of `w`, and wait until its task branch lands and
+/// its tree follows the branch to `landed` (or on to `removed`): the
+/// design rows `landing` and `landed` (ticket 168 of fleetd-finish).
+fn finish_and_land(h: &Harness, w: &str, path: &Path) {
     send_finish(h, w);
     wait_for_or(
-        "the landing of the branch and the rescue of its tree",
+        "the landing of the branch and of its tree",
         || {
             h.advance_fleet_clock(30);
             pass(h);
@@ -655,20 +663,26 @@ fn finish_and_rescue(h: &Harness, w: &str, path: &Path) {
                 "SELECT name FROM branches WHERE task_id IS NOT NULL AND landing_state = 'landed'",
             )
             .is_empty();
-            (landed && column(h, path, "state") == "rescued").then_some(())
+            let state = column(h, path, "state");
+            (landed && ["landed", "removed"].contains(&state.as_str())).then_some(())
         },
         || dump(h),
     );
 }
 
 fn merge_idea_of(h: &Harness, task: &str) {
+    set_idea_of(h, task, "merged");
+}
+
+/// Write `state` as the state of the idea of `task`.
+fn set_idea_of(h: &Harness, task: &str, state: &str) {
     Store::open(&ledger(h))
         .unwrap()
         .conn()
         .execute(
-            "UPDATE ideas SET state = 'merged'
+            "UPDATE ideas SET state = ?2
              WHERE id = (SELECT idea_id FROM tasks WHERE task_id = ?1)",
-            [task],
+            [task, state],
         )
         .unwrap();
 }
@@ -677,14 +691,14 @@ fn merge_idea_of(h: &Harness, task: &str) {
 #[ignore = "flaky until T-199: a git child of fleetd races the removal guard, and a failed removal is not tried again"]
 fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     let h = world("p3-ref-cleanup");
-    let (w, task, path) = claimed(&h, "land,cleanup");
+    let (w, _task, path) = claimed(&h, "land,cleanup");
     let head = commit_file(&h, &path, "feature.txt");
     let branch = git_in(&h, &path, &["branch", "--show-current"]);
-    finish_and_rescue(&h, &w, &path);
-    assert!(path.exists());
-    merge_idea_of(&h, &task);
+    finish_and_land(&h, &w, &path);
+    // The design: verified → `landing` → `landed` → removed at the land
+    // of the branch. The idea is not merged, and no rescue runs.
     wait_for_or(
-        "the removal of the rescued tree of the merged idea",
+        "the removal of the landed tree",
         || {
             h.advance_fleet_clock(30);
             pass(&h);
@@ -700,17 +714,18 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     ));
     let m = moves(&h, &path);
     assert!(
-        m.ends_with(&["orphaned>rescued".into(), "rescued>removed".into()]),
+        m.ends_with(&[
+            "active>landing".into(),
+            "landing>landed".into(),
+            "landed>removed".into()
+        ]),
         "{m:?}"
     );
-    assert_eq!(jobs(&h, "rescue"), ["passed"]);
+    assert!(jobs(&h, "rescue").is_empty(), "{:?}", jobs(&h, "rescue"));
     assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
-    assert_eq!(column(&h, &path, "state"), "removed");
+    assert_eq!(column(&h, &path, "status"), "cleaned");
     let id = column(&h, &path, "worktree_id");
-    assert_eq!(
-        refs(&h, &format!("refs/horch/rescue/{id}/")),
-        [format!("refs/horch/rescue/{id}/1")]
-    );
+    assert!(refs(&h, &format!("refs/horch/rescue/{id}/")).is_empty());
     assert!(!git_ok(
         &h,
         &h.project,
@@ -718,19 +733,75 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     ));
 }
 
+/// The path of an orphan: its owner is dead → `orphaned` → `rescued`, and
+/// the tree is removed when its idea is `merged` ("Ideas finish clean").
+/// The rescue ref stays.
+#[test]
+#[ignore = "flaky until T-199: a git child of fleetd races the removal guard, and a failed removal is not tried again"]
+fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
+    let h = world("p3-ref-orphan-merged");
+    let mut agent = std::process::Command::new("/bin/sleep")
+        .arg("600")
+        .spawn()
+        .unwrap();
+    let (_, task, path) = claimed_as(&h, "land,cleanup", Some(agent.id()));
+    commit_file(&h, &path, "feature.txt");
+    // The idea is parked, so fleetd starts no next attempt of the task.
+    // Then the agent dies: its owner is dead.
+    set_idea_of(&h, &task, "parked");
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+    wait_for_or(
+        "the rescue of the orphaned tree",
+        || {
+            h.advance_fleet_clock(30);
+            pass(&h);
+            (column(&h, &path, "state") == "rescued").then_some(())
+        },
+        || dump(&h),
+    );
+    assert!(path.exists());
+    merge_idea_of(&h, &task);
+    wait_for_or(
+        "the removal of the rescued tree of the merged idea",
+        || {
+            h.advance_fleet_clock(30);
+            pass(&h);
+            (column(&h, &path, "state") == "removed").then_some(())
+        },
+        || dump(&h),
+    );
+    assert!(!path.exists());
+    let m = moves(&h, &path);
+    assert!(
+        m.ends_with(&[
+            "active>orphaned".into(),
+            "orphaned>rescued".into(),
+            "rescued>removed".into()
+        ]),
+        "{m:?}"
+    );
+    assert_eq!(jobs(&h, "rescue"), ["passed"]);
+    assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
+    let id = column(&h, &path, "worktree_id");
+    assert_eq!(
+        refs(&h, &format!("refs/horch/rescue/{id}/")),
+        [format!("refs/horch/rescue/{id}/1")]
+    );
+}
+
 #[test]
 fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup_failed() {
     let mut h = world("p3-ref-cleanup-refused");
-    let (w, task, path) = claimed(&h, "land,cleanup");
+    let (w, _task, path) = claimed(&h, "land,cleanup");
     commit_file(&h, &path, "feature.txt");
     // The untracked file comes after today's checks of the cleanup step
     // passed, as the remove job reads the HEAD of the tree: the guard of
-    // the job refuses it.
+    // the job refuses it (RR-13).
     let late = path.join("late.txt");
     let hook = format!("echo late > '{}'", late.display());
     git_with_hook(&mut h, "--show-toplevel --verify HEAD", &late, &hook);
-    finish_and_rescue(&h, &w, &path);
-    merge_idea_of(&h, &task);
+    finish_and_land(&h, &w, &path);
     wait_for_or(
         "the refusal of the removal of the tree",
         || {
@@ -746,7 +817,7 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
         Some("late\n")
     );
     assert_eq!(jobs(&h, "worktree_remove"), ["failed"]);
-    assert_eq!(column(&h, &path, "state"), "rescued");
+    assert_eq!(column(&h, &path, "state"), "landed");
     let id = column(&h, &path, "worktree_id");
     let items = query(
         &h,
@@ -757,7 +828,7 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
     );
     assert_eq!(items.len(), 1, "{items:?}");
     assert!(
-        items[0].contains("late.txt") || items[0].contains("differs"),
+        items[0].contains("untracked") || items[0].contains("late.txt"),
         "{}",
         items[0]
     );
