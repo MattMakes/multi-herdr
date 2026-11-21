@@ -56,13 +56,6 @@ pub(crate) fn detach(_cmd: &mut Command) -> Result<(), NotSupported> {
 /// of this process is not changed by it: std passes a duplicate of an
 /// inherited std handle, made inheritable, to each child. The lock keeps 2
 /// spawns of this function from restoring a flag that the other cleared.
-///
-/// It fails closed: when the flag of a valid std handle cannot be read or
-/// cleared, nothing spawns, because the child would hold the pipe of the
-/// caller. A failed restore after the spawn returns the child and writes the
-/// failure to stderr: the child already runs, and an error would make the
-/// caller lose it. A flag that stays cleared changes no later std spawn,
-/// which passes its own inheritable duplicate.
 pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -74,12 +67,8 @@ pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Resul
     spawn_with_cleared(&SystemFlag, std_handles, || cmd.spawn())
 }
 
-/// The inherit flag of a handle of this process. A test replaces the
-/// system calls to make each one fail.
 trait InheritFlag {
-    /// Whether `handle` is inheritable (`GetHandleInformation`).
     fn inherits(&self, handle: HANDLE) -> std::io::Result<bool>;
-    /// Set the inherit flag of `handle` to `on` (`SetHandleInformation`).
     fn set(&self, handle: HANDLE, on: bool) -> std::io::Result<()>;
 }
 
@@ -105,9 +94,6 @@ impl InheritFlag for SystemFlag {
     }
 }
 
-/// Run `spawn` while each inheritable handle of `handles` is not
-/// inheritable, then set each flag back. A query or clear failure restores
-/// the handles already cleared and gives the error before `spawn` runs.
 fn spawn_with_cleared<T>(
     flag: &impl InheritFlag,
     handles: [HANDLE; 3],
@@ -121,8 +107,6 @@ fn spawn_with_cleared<T>(
     spawned
 }
 
-/// The handles of `handles` whose inherit flag this call cleared. A handle
-/// that is not valid (no console) is not a failure.
 fn clear_inherit(flag: &impl InheritFlag, handles: [HANDLE; 3]) -> std::io::Result<Vec<HANDLE>> {
     let mut cleared: Vec<HANDLE> = Vec::new();
     for handle in handles {
@@ -150,8 +134,6 @@ fn clear_inherit(flag: &impl InheritFlag, handles: [HANDLE; 3]) -> std::io::Resu
     Ok(cleared)
 }
 
-/// Set the inherit flag of each of `cleared` back on. Each handle gets a
-/// try; the first failure is the result.
 fn restore_inherit(flag: &impl InheritFlag, cleared: &[HANDLE]) -> std::io::Result<()> {
     let mut first = Ok(());
     for &handle in cleared {
@@ -265,7 +247,6 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// The calls that fail: the query, the clear or the restore of 1 handle.
     #[derive(Default)]
     struct Fail {
         query: Option<HANDLE>,
@@ -273,7 +254,6 @@ mod tests {
         restore: Option<HANDLE>,
     }
 
-    /// Flags in memory. Each handle starts inheritable.
     struct FakeFlag {
         fail: Fail,
         off: RefCell<Vec<HANDLE>>,
