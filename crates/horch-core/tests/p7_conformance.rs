@@ -67,9 +67,6 @@ const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
     "/tmp"
 };
 
-/// A test machine in [`MACHINE_ROOT`]: a home, the horch folders, a fleet
-/// root and the scratch folder of the throwaway task folders. Each CLI
-/// binary is a fake.
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
@@ -362,8 +359,6 @@ fn sandbox_write_outside_is_refused() {
     assert!(r.evidence.contains("refused"), "{r:?}");
 }
 
-/// The outside write of a throwaway folder that the sandbox does not see
-/// proves nothing, so the probe does not run it and the check fails.
 #[test]
 fn sandbox_boundary_fails_when_the_sandbox_does_not_see_the_real_folder() {
     let not_seen = |r: &CheckResult| {
@@ -383,7 +378,6 @@ fn sandbox_boundary_fails_when_the_sandbox_does_not_see_the_real_folder() {
     t.args = vec!["--settings".into(), settings.to_string_lossy().into_owned()];
     not_seen(&m.check(&t, "conformance", Check::SandboxBoundary));
 
-    // The old fixture: on Linux the sandbox hides each path in /tmp.
     if cfg!(target_os = "linux") {
         let old = Machine::new_in("/tmp");
         not_seen(&old.check(&claude(), "conformance", Check::SandboxBoundary));

@@ -114,7 +114,6 @@ fn do_act(act: &str, path: &Path) -> Result<(), String> {
     }
 }
 
-/// The identity of `path` as this process sees it: `<device>:<inode>`.
 #[cfg(unix)]
 fn identity(path: &Path) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
@@ -511,9 +510,6 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
     Value::Object(report)
 }
 
-/// The outside write of the probe, at a path that is real on the host:
-/// the sandbox must see the real folder of `path`, and after the write
-/// the host must have no file at `path`.
 fn write_outside(rules: Option<&Rules>, path: &Path) -> String {
     let folder = path.parent().unwrap_or(path);
     let host = identity(folder);
@@ -535,8 +531,6 @@ fn write_outside(rules: Option<&Rules>, path: &Path) -> String {
     result
 }
 
-/// The identity of `path` that a child under `rules` sees, or `refused:
-/// <why>`.
 fn seen_in_child(rules: Option<&Rules>, path: &Path) -> String {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,

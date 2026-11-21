@@ -116,8 +116,6 @@ This is a conformance check of horch. Do each step, then give 1 JSON object as y
     )
 }
 
-/// The identity of the folder of its argument, as the process sees it:
-/// `<device>:<inode>`, or `refused: <the error>`.
 const FLEET_ROOT_PERL: &str =
     r#"if (my @s = stat($ARGV[0])) { print "$s[0]:$s[1]" } else { print "refused: $!" }"#;
 
@@ -544,17 +542,14 @@ pub fn operator_unreachable(unreachable: &[String]) -> CheckResult {
     )
 }
 
-/// What 1 act result of a probe proves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Allowed,
-    /// The sandbox refused the act: its error is in [`REFUSAL_ERRORS`].
     Refused,
     /// The path is not there. On Linux a correct sandbox hides a denied
     /// folder with an empty tmpfs, so this is a refusal only when the
     /// probe sees the real fleet root.
     NotFound,
-    /// No result, or a refusal with another error: it proves nothing.
     NoProof,
 }
 
@@ -575,7 +570,6 @@ const REFUSAL_ERRORS: [&str; 9] = [
     "the read gave no bytes",
 ];
 
-/// The errors of a path that is not there, in lower case.
 const NOT_FOUND_ERRORS: [&str; 6] = [
     "no such file",
     "enoent",
@@ -605,9 +599,6 @@ fn outcome(said: Option<&str>) -> Outcome {
     }
 }
 
-/// `Ok` when the agent sees the real fleet root: the identity that it
-/// reports is the one that the runner read on the host. A missing
-/// identity on either side is not a proof.
 fn fleet_root_seen(host: &HostFolder, seen: Option<&str>) -> Result<(), String> {
     let path = &host.path;
     let id = host
@@ -780,9 +771,6 @@ mod tests {
         );
     }
 
-    /// An observation of "Operator boundary" where each act of the agent
-    /// and of its orphan gives `said`, the agent sees the fleet root as
-    /// `seen`, and the host has the identity `host`.
     fn boundary(said: &str, seen: Option<&str>, host: Result<&str, &str>) -> Observation {
         let s = || Some(said.to_owned());
         Observation {

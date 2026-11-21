@@ -76,9 +76,6 @@ const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
     "/tmp"
 };
 
-/// A test machine in [`MACHINE_ROOT`]: a home, the horch folders, the
-/// scratch folder and a fleet root with a real token file, a real channel
-/// socket and a request folder.
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
@@ -420,8 +417,6 @@ fn assert_not_visible(r: &CheckResult, fleet_root: &Path) {
     assert!(r.evidence.starts_with(&want), "{r:?}");
 }
 
-/// A sandbox that does not see the real fleet root cannot prove a
-/// refusal, so the verdict is fail with the path, never pass.
 #[test]
 fn operator_boundary_fails_when_the_sandbox_does_not_see_the_real_fleet_root() {
     let m = Machine::new(Codex::WithNetworkProxy);
@@ -430,7 +425,6 @@ fn operator_boundary_fails_when_the_sandbox_does_not_see_the_real_fleet_root() {
     assert_not_visible(&m.check(&t), &root);
     m.assert_clean();
 
-    // The old fixture: on Linux the sandbox hides each path in /tmp.
     if cfg!(target_os = "linux") {
         let old = Machine::new_in(Codex::WithNetworkProxy, "/tmp");
         let r = old.check(&profile(HarnessKind::Claude));
