@@ -133,7 +133,7 @@ impl World {
         cmd.current_dir(&self.root)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
-            .env("HOME", self.root.join("home"))
+            .env(horch_platform::path::HOME_VAR, self.root.join("home"))
             .env("HORCH_STATE_DIR", self.root.join("state"))
             .env("HORCH_LEDGER_DB", self.ledger_db())
             .env("FLEET_ROOT", self.fleet_root())

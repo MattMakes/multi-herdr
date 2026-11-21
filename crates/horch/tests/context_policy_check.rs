@@ -12,7 +12,7 @@ fn horch(root: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env_clear()
-        .env("HOME", root.join("home"))
+        .env(horch_platform::path::HOME_VAR, root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("HORCH_STATE_DIR", root.join("state"))
         .env("HORCH_TEAMMATES_DIR", root.join("teammates"))

@@ -118,7 +118,7 @@ impl World {
         cmd.args(args)
             .current_dir(&self.root)
             .env_clear()
-            .env("HOME", self.root.join("home"))
+            .env(horch_platform::path::HOME_VAR, self.root.join("home"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("HORCH_STATE_DIR", self.root.join("state"))
             .env("HORCH_PROJECT_DIR", "/oracle/project")

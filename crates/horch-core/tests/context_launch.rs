@@ -55,7 +55,7 @@ impl World {
 
     fn ctx(&self, vars: &[(&str, &str)]) -> RuntimeContext {
         let mut env = MapEnv::new(&self.workdir)
-            .with("HOME", &self.home.to_string_lossy())
+            .with(horch_platform::path::HOME_VAR, &self.home.to_string_lossy())
             .with("PATH", &self.home.with_file_name("bin").to_string_lossy())
             .with(
                 "HORCH_CLAUDE_MANAGED_SETTINGS",

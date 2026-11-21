@@ -942,7 +942,7 @@ pub(crate) mod testkit {
             let state = tmp.path().join("state");
             std::fs::create_dir_all(&project).unwrap();
             let env = MapEnv::new(&project)
-                .with("HOME", &home.to_string_lossy())
+                .with(horch_platform::path::HOME_VAR, &home.to_string_lossy())
                 .with("HORCH_STATE_DIR", &state.to_string_lossy())
                 .with("HORCH_PROJECT_DIR", &project.to_string_lossy())
                 .with("HORCH_WORKSPACE_ID", "w1")

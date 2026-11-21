@@ -277,7 +277,7 @@ impl Inherited {
     pub fn from_env(env: &dyn EnvSource) -> Inherited {
         let nonempty = |key: &str| env.var(key).filter(|s| !s.is_empty());
         Inherited {
-            home_var: env.var_os("HOME"),
+            home_var: env.var_os(horch_platform::path::HOME_VAR),
             path: env.var_os("PATH"),
             claude_base_url_host: nonempty("ANTHROPIC_BASE_URL").map(|url| base_url_host(&url)),
             pathext: env.var("PATHEXT"),
