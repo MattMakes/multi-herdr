@@ -56,6 +56,13 @@ pub(crate) fn detach(_cmd: &mut Command) -> Result<(), NotSupported> {
 /// of this process is not changed by it: std passes a duplicate of an
 /// inherited std handle, made inheritable, to each child. The lock keeps 2
 /// spawns of this function from restoring a flag that the other cleared.
+///
+/// It fails closed: when the flag of a valid std handle cannot be read or
+/// cleared, nothing spawns, because the child would hold the pipe of the
+/// caller. A failed restore after the spawn returns the child and writes the
+/// failure to stderr: the child already runs, and an error would make the
+/// caller lose it. A flag that stays cleared changes no later std spawn,
+/// which passes its own inheritable duplicate.
 pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
