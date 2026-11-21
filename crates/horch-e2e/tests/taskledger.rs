@@ -1906,10 +1906,25 @@ fn sandbox_calls(h: &Harness) -> Vec<Value> {
         .collect()
 }
 
+/// The processes with `marker` in their command line.
+fn marked(marker: &str) -> Vec<String> {
+    horch_e2e::process::try_processes()
+        .expect("listing the processes")
+        .into_iter()
+        .filter(|p| p.command.contains(marker))
+        .map(|p| format!("{} {}", p.pid, p.command))
+        .collect()
+}
+
 fn assert_check_killed_at_its_limit(name: &str, persona: &str) -> (Claimed, Harness) {
     let h = push_finish_world(name, PUSH_SCENARIO);
-    let check = "echo $PPID > host.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait";
-    let c = push_claimed(&h, persona, "check", Some(check), "a.txt");
+    // The marker is in the command line of each process of the check job
+    // but `sleep`: on Linux the PIDs in the files are of the PID namespace
+    // of the sandbox, not of the host.
+    let marker = format!("tl-check-marker-{}-{name}", std::process::id());
+    let check =
+        format!("echo $PPID > host.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait; : {marker}");
+    let c = push_claimed(&h, persona, "check", Some(&check), "a.txt");
     h.serve_fleetd();
     c.ready(&h);
     if persona.starts_with("codex") {
@@ -1923,18 +1938,28 @@ fn assert_check_killed_at_its_limit(name: &str, persona: &str) -> (Claimed, Harn
         assert!(warmed.status.success(), "warming the fake codex failed");
     }
     let job = queue_check(&h, &c.task_id, 2);
+    let mut seen = false;
     let row = wait_push("the job to end at its time limit", || {
         let row = job_row(&h, job);
+        seen = seen || !marked(&marker).is_empty();
         (row.state != JobState::Queued && row.state != JobState::Running).then_some(row)
     });
     assert_eq!(row.state, JobState::Abandoned, "{row:?}");
+    assert!(seen, "the search finds the processes of the running check");
     for file in ["sleep.pid", "host.pid"] {
         let pid = std::fs::read_to_string(c.path.join(file))
             .unwrap_or_else(|e| panic!("the check wrote no {file}: {e}"))
             .trim()
             .to_string();
-        wait_gone(file, &pid);
+        if cfg!(not(target_os = "linux")) {
+            wait_gone(file, &pid);
+        }
     }
+    // On Linux the sandbox ends with its namespace init, and the kernel
+    // then ends `sleep` too.
+    wait_for("each process of the check to be gone", || {
+        marked(&marker).is_empty().then_some(())
+    });
     (c, h)
 }
 
