@@ -449,13 +449,6 @@ fn persona_of(t: &Task) -> String {
         .unwrap_or_default()
 }
 
-struct RunFacts {
-    project_id: String,
-    project_root: String,
-    run_branch: Option<String>,
-    base_branch: Option<String>,
-}
-
 struct LiveTree {
     orphaned: bool,
     branch: String,
@@ -470,7 +463,7 @@ struct ReadyRows {
     own: BTreeMap<String, Vec<String>>,
     open: BTreeMap<String, String>,
     trees: BTreeMap<String, LiveTree>,
-    runs: BTreeMap<String, RunFacts>,
+    runs: BTreeMap<String, Run>,
 }
 
 impl ReadyRows {
@@ -507,27 +500,19 @@ impl ReadyRows {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
+        let parked_ideas = ideas_store::ids_in_state(conn, PARKED)?;
         let parked = pairs(
             conn,
             &format!(
-                "SELECT t.task_id, i.id FROM tasks t JOIN ideas i ON i.id = t.idea_id
-                 WHERE t.status = {ready} AND i.state = ?1"
+                "SELECT task_id, idea_id FROM tasks
+                 WHERE status = {ready} AND idea_id IS NOT NULL"
             ),
-            [PARKED],
+            [],
         )?
         .into_iter()
+        .filter(|(_, idea)| parked_ideas.contains(idea))
         .collect();
-        let mut own: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (task_id, path) in pairs(
-            conn,
-            &format!(
-                "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
-                 WHERE t.status = {ready} AND f.mode = ?1 ORDER BY f.task_id, f.path"
-            ),
-            [FileMode::Own.as_str()],
-        )? {
-            own.entry(task_id).or_default().push(path);
-        }
+        let own = tasks::files_of_tasks_in(conn, &[TaskStatus::Ready], FileMode::Own)?;
         let mut open = BTreeMap::new();
         for (task_id, id) in pairs(
             conn,
@@ -539,24 +524,26 @@ impl ReadyRows {
         )? {
             open.entry(task_id).or_insert(id);
         }
+        let trees = live_trees(conn, &tasks)?;
+        let runs = runs::of_ids(conn, tasks.iter().map(|t| t.run_id.as_str()))?;
         Ok(ReadyRows {
             tasks,
             cancelled,
             parked,
             own,
             open,
-            trees: live_trees(conn)?,
-            runs: ready_runs(conn)?,
+            trees,
+            runs,
         })
     }
 
-    fn run(&self, run_id: &str) -> Result<&RunFacts> {
+    fn run(&self, run_id: &str) -> Result<&Run> {
         self.runs
             .get(run_id)
             .with_context(|| format!("no run {run_id}"))
     }
 
-    fn tree_base(&self, run: &RunFacts, task: &Task) -> Option<String> {
+    fn tree_base(&self, run: &Run, task: &Task) -> Option<String> {
         match judged_task(&task.kind, task.parent_task_id.as_deref()) {
             Some(judged) => self.trees.get(judged).map(|t| t.branch.clone()),
             None => run.run_branch.clone().or(run.base_branch.clone()),
@@ -596,57 +583,22 @@ fn pairs(
     Ok(rows)
 }
 
-/// SQLite takes the bare columns from the row of `max(rowid)`: the newest
-/// row, as [`trees::of_task`] reads it.
-fn live_trees(conn: &Connection) -> Result<BTreeMap<String, LiveTree>> {
-    let ready = word(TaskStatus::Ready);
-    let mut stmt = conn.prepare(&format!(
-        "SELECT w.task_id, w.status, w.state, w.branch, max(w.rowid) FROM worktrees w
-         WHERE w.state <> 'removed' AND w.task_id IN (
-             SELECT task_id FROM tasks WHERE status = {ready}
-             UNION SELECT parent_task_id FROM tasks WHERE status = {ready})
-         GROUP BY w.task_id"
-    ))?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+/// The newest tree of each ready task and of its parent, as
+/// [`trees::of_task`] reads it, when it is not gone.
+fn live_trees(conn: &Connection, ready: &[Task]) -> Result<BTreeMap<String, LiveTree>> {
+    let ids = ready
+        .iter()
+        .flat_map(|t| std::iter::once(t.task_id.as_str()).chain(t.parent_task_id.as_deref()));
     let mut out = BTreeMap::new();
-    for (task_id, status, state, branch) in rows {
-        if WORKTREES_GONE.contains(&WorktreeStatus::parse(&status)?) {
+    for tree in trees::newest_of_tasks(conn, ids)? {
+        if WORKTREES_GONE.contains(&WorktreeStatus::parse(&tree.status)?) {
             continue;
         }
-        let orphaned = WorktreeState::parse(&state)? == WorktreeState::Orphaned;
-        out.insert(task_id, LiveTree { orphaned, branch });
+        let orphaned = WorktreeState::parse(&tree.state)? == WorktreeState::Orphaned;
+        let branch = tree.branch;
+        out.insert(tree.task_id, LiveTree { orphaned, branch });
     }
     Ok(out)
-}
-
-fn ready_runs(conn: &Connection) -> Result<BTreeMap<String, RunFacts>> {
-    let ready = word(TaskStatus::Ready);
-    let mut stmt = conn.prepare(&format!(
-        "SELECT r.run_id, r.project_id, p.root, r.run_branch, r.base_branch
-         FROM runs r JOIN projects p ON p.project_id = r.project_id
-         WHERE r.run_id IN (SELECT run_id FROM tasks WHERE status = {ready})"
-    ))?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            RunFacts {
-                project_id: r.get(1)?,
-                project_root: r.get(2)?,
-                run_branch: r.get(3)?,
-                base_branch: r.get(4)?,
-            },
-        ))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// 2 statements for any count of tasks, on 1 snapshot: a bind compares its
@@ -658,18 +610,7 @@ fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
 fn running_tasks_now(conn: &Connection) -> Result<Vec<RunningTask>> {
     let words: Vec<String> = HOLDING.iter().map(|s| word(*s)).collect();
     let holding = words.join(", ");
-    let mut own: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut stmt = conn.prepare(&format!(
-        "SELECT f.task_id, f.path FROM task_files f JOIN tasks t ON t.task_id = f.task_id
-         WHERE t.status IN ({holding}) AND f.mode = ?1 ORDER BY f.task_id, f.path"
-    ))?;
-    let rows = stmt.query_map([FileMode::Own.as_str()], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (task_id, path) = row?;
-        own.entry(task_id).or_default().push(path);
-    }
+    let mut own = tasks::files_of_tasks_in(conn, &HOLDING, FileMode::Own)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT * FROM tasks WHERE status IN ({holding}) ORDER BY run_id, seq"
     ))?;

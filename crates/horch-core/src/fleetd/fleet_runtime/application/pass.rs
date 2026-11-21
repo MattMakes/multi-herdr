@@ -3175,9 +3175,7 @@ fn quota_hinted(tx: &Connection, attempt: &str) -> Result<bool> {
 }
 
 fn worker_personas(tx: &Connection) -> Result<BTreeMap<String, Option<String>>> {
-    let mut stmt = tx.prepare("SELECT worker_id, persona FROM workers")?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    attempts_store::worker_personas(tx)
 }
 
 /// The cause of the hold of each project with no fast gate, by project

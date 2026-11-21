@@ -208,6 +208,40 @@ pub fn of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> 
     one(conn, &sql, task_id)
 }
 
+/// The newest row that is not `removed` of a task, as [`of_task`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTree {
+    pub task_id: String,
+    pub status: String,
+    pub state: String,
+    pub branch: String,
+}
+
+/// The newest row that is not `removed` of each task of `task_ids`: 1
+/// statement for any count of tasks. SQLite takes the bare columns from
+/// the row of `max(rowid)`.
+pub fn newest_of_tasks<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<TaskTree>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT task_id, status, state, branch, max(rowid) FROM worktrees
+         WHERE state <> 'removed' AND task_id IN ({}) GROUP BY task_id",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok(TaskTree {
+            task_id: r.get(0)?,
+            status: r.get(1)?,
+            state: r.get(2)?,
+            branch: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The row of the folder `path` that is not `removed`; `None` when no such
 /// row has that path. A `removed` row is history, read by its id.
 pub fn by_path(conn: &Connection, path: &str) -> Result<Option<WorktreeRow>> {

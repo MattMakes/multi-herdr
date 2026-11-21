@@ -105,6 +105,42 @@ pub fn latest(
     )
 }
 
+/// The subject of each `queued` or `running` run of `kind`: 1 statement
+/// for any count of runs.
+pub fn active_subjects(
+    conn: &Connection,
+    kind: Kind,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut stmt = conn
+        .prepare("SELECT subject FROM jobs WHERE kind = ?1 AND state IN ('queued', 'running')")?;
+    let ids = stmt.query_map([kind.as_str()], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The state of the last run of `kind`, as [`latest`] reads it, for each
+/// (subject, input key) of a subject of `subjects`: 1 statement for any
+/// count of subjects. SQLite takes the bare `state` from the row of
+/// `max(run)`.
+pub fn latest_states<'a>(
+    conn: &Connection,
+    kind: Kind,
+    subjects: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<(String, String), String>> {
+    let subjects: Vec<&str> = subjects.into_iter().collect();
+    let sql = format!(
+        "SELECT subject, input_key, state, max(run) FROM jobs
+         WHERE kind = ?1 AND subject IN ({}) GROUP BY subject, input_key",
+        crate::taskledger::sql_words::marks(2, subjects.len())
+    );
+    let mut values = vec![kind.as_str()];
+    values.extend(subjects);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok(((r.get(0)?, r.get(1)?), r.get(2)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The newest run of `kind` and `subject`, of any input key.
 pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRow>> {
     one(

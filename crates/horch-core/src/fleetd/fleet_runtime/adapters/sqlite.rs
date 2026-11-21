@@ -514,6 +514,30 @@ pub fn last_named_facts(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The stamp of the last event of any kind that moved each row of `ids` of
+/// `entity` to `state`, by id: 1 statement for any count of ids. An id
+/// with no such event is not in the map.
+pub fn last_moves_to<'a>(
+    conn: &Connection,
+    entity: Entity,
+    ids: impl IntoIterator<Item = &'a str>,
+    state: &str,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT entity_id, max(at) FROM events
+         WHERE entity = ?1 AND to_state = ?2 AND entity_id IN ({}) GROUP BY entity_id",
+        crate::taskledger::sql_words::marks(3, ids.len())
+    );
+    let mut values = vec![entity.as_str(), state];
+    values.extend(ids);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The stamp of the last `transition` event that moved the row `id` of
 /// `entity` to 1 of `states`, or `None` when no event did.
 pub fn entered_at(
