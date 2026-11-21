@@ -110,10 +110,17 @@ const SELECT: &str =
 /// plain form of [`horch_platform::path::canonicalize`], never a Windows
 /// verbatim path, because each worktree path is made from it.
 pub fn root_key(root: &Path) -> String {
-    horch_platform::path::canonicalize(root)
-        .unwrap_or_else(|_| root.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
+    let real = horch_platform::path::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    stored_root_key(&real.to_string_lossy())
+}
+
+/// The spelling of [`root_key`] for the stored root text `text`: the plain
+/// form of a Windows verbatim path ([`horch_platform::path::plain_of_verbatim`]),
+/// else `text` unchanged. The function is text only, so it gives the same
+/// result on each OS. An older horch stored a verbatim root (D266-F2), and
+/// the schema step of `PROJECT_ROOTS_VERSION` rewrites it with this function.
+pub fn stored_root_key(text: &str) -> String {
+    horch_platform::path::plain_of_verbatim(text).unwrap_or_else(|| text.to_string())
 }
 
 /// The project row for `root`, created when missing.
@@ -1185,6 +1192,22 @@ mod tests {
         );
         let gone = dir.path().join("gone");
         assert_eq!(root_key(&gone), gone.to_string_lossy());
+    }
+
+    #[test]
+    fn stored_root_key_gives_the_plain_form_of_a_windows_verbatim_root() {
+        assert_eq!(stored_root_key(r"\\?\C:\repo"), r"C:\repo");
+        assert_eq!(
+            stored_root_key(r"\\?\UNC\server\share\repo"),
+            r"\\server\share\repo"
+        );
+        for kept in [r"C:\repo", "/private/tmp/repo", r"\\?\C:\repo\con"] {
+            assert_eq!(stored_root_key(kept), kept, "{kept}");
+        }
+        assert_eq!(
+            stored_root_key(&stored_root_key(r"\\?\C:\repo")),
+            r"C:\repo"
+        );
     }
 
     fn commit(root: &Path, file: &str) -> String {

@@ -46,8 +46,13 @@ pub const PHASE_6_VERSION: i64 = PHASE_5_VERSION + 1;
 /// `CHECK` has the event words of the health of a profile (`phase_7`).
 pub const PHASE_7_VERSION: i64 = PHASE_6_VERSION + 1;
 
+/// The version of the step that rewrites each stored project root in the
+/// spelling of [`super::runs::root_key`] and merges 2 rows of 1 root
+/// (`project_roots`, D266-F2).
+pub const PROJECT_ROOTS_VERSION: i64 = PHASE_7_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = PHASE_7_VERSION;
+pub const VERSION: i64 = PROJECT_ROOTS_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -1761,8 +1766,68 @@ fn migrate_unchecked(
         events_kinds(&tx, PHASE_7_VERSION)
             .context("building events again with the event words of the health of a profile")?;
     }
+    if due(PROJECT_ROOTS_VERSION) {
+        project_roots(&tx).context(
+            "rewriting each project root in the plain form and merging 2 rows of 1 root",
+        )?;
+        no_broken_reference(&tx, PROJECT_ROOTS_VERSION)?;
+    }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Version [`PROJECT_ROOTS_VERSION`]: each `projects.root` in the spelling
+/// of [`super::runs::root_key`]. An older Windows horch stored a verbatim
+/// root (`\\?\C:\repo`), and `root_key` now gives the plain form
+/// (`C:\repo`), so a lookup missed the old project and made a second row
+/// (D266-F2). 2 rows with 1 root merge onto the older row: each reference to
+/// the newer id, in each table with a foreign key to `projects`, moves to
+/// the older id, and the newer row goes. A second run changes nothing.
+fn project_roots(conn: &Connection) -> Result<()> {
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT project_id, root FROM projects ORDER BY created_at, project_id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut kept: std::collections::HashMap<String, String> = Default::default();
+    let mut merges = Vec::new();
+    let mut rewrites = Vec::new();
+    for (id, root) in rows {
+        let key = super::runs::stored_root_key(&root);
+        if let Some(older) = kept.get(&key) {
+            merges.push((id, older.clone()));
+            continue;
+        }
+        if key != root {
+            rewrites.push((id.clone(), key.clone()));
+        }
+        kept.insert(key, id);
+    }
+    if merges.is_empty() && rewrites.is_empty() {
+        return Ok(());
+    }
+    let references: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT m.name, f.\"from\" FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+             WHERE m.type = 'table' AND f.\"table\" = 'projects' ORDER BY m.name",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (newer, older) in &merges {
+        for (table, column) in &references {
+            conn.execute(
+                &format!("UPDATE \"{table}\" SET \"{column}\" = ?1 WHERE \"{column}\" = ?2"),
+                [older, newer],
+            )?;
+        }
+        conn.execute("DELETE FROM projects WHERE project_id = ?1", [newer])?;
+    }
+    for (id, key) in &rewrites {
+        conn.execute(
+            "UPDATE projects SET root = ?1 WHERE project_id = ?2",
+            [key, id],
+        )?;
+    }
     Ok(())
 }
 
@@ -2216,7 +2281,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 8, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 9, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -2246,9 +2311,111 @@ mod v7_tests {
         if version >= PHASE_7_VERSION {
             events_kinds(&conn, PHASE_7_VERSION).unwrap();
         }
+        if version >= PROJECT_ROOTS_VERSION {
+            project_roots(&conn).unwrap();
+        }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
         conn.pragma_update(None, "user_version", version).unwrap();
+    }
+
+    /// D266-F2: a ledger of an older Windows horch at version
+    /// [`PHASE_7_VERSION`], with the verbatim root of 1 project and a second
+    /// row in the plain form that the upgraded horch made.
+    fn verbatim_root_file(path: &std::path::Path) {
+        file_at(path, PHASE_7_VERSION);
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&format!(
+            r"INSERT INTO projects VALUES ('old', '\\?\C:\repo', '2026-01-01T00:00:00Z');
+             INSERT INTO projects VALUES ('new', 'C:\repo', '2026-06-01T00:00:00Z');
+             INSERT INTO projects VALUES ('unc', '\\?\UNC\server\share\repo', '2026-01-02T00:00:00Z');
+             INSERT INTO runs (run_id, project_id, slug, status, started_at)
+                 VALUES ('r-old', 'old', 'build', 'active', '2026-01-01T00:00:01Z');
+             INSERT INTO runs (run_id, project_id, slug, status, started_at)
+                 VALUES ('r-new', 'new', 'other', 'active', '2026-06-01T00:00:01Z');
+             INSERT INTO import_findings (project_id, kind, detail, created_at)
+                 VALUES ('new', {kind}, 'd', '2026-06-01T00:00:02Z');",
+            kind = word(FindingKind::EndedWithoutDone),
+        ))
+        .unwrap();
+    }
+
+    /// Every project row, as (id, root), by id.
+    fn project_rows(conn: &Connection) -> Vec<(String, String)> {
+        conn.prepare("SELECT project_id, root FROM projects ORDER BY project_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn d266_f2_a_verbatim_windows_root_migrates_to_1_project_with_its_old_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        verbatim_root_file(&path);
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(
+            project_rows(conn),
+            [
+                ("old".to_string(), r"C:\repo".to_string()),
+                ("p".to_string(), "/r".to_string()),
+                ("unc".to_string(), r"\\server\share\repo".to_string()),
+            ]
+        );
+        let root = std::path::Path::new(r"C:\repo");
+        let runs = super::super::runs::of_project(conn, root).unwrap();
+        let ids: Vec<(&str, &str, &str)> = runs
+            .iter()
+            .map(|r| (r.run_id.as_str(), r.project_id.as_str(), r.status.as_str()))
+            .collect();
+        assert_eq!(
+            ids,
+            [("r-new", "old", "active"), ("r-old", "old", "active")]
+        );
+        assert_eq!(
+            super::super::runs::ensure_project(conn, root).unwrap(),
+            "old"
+        );
+        let finding: String = conn
+            .query_row("SELECT project_id FROM import_findings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(finding, "old");
+        let broken: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(broken, 0);
+    }
+
+    #[test]
+    fn d266_f2_the_project_roots_step_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        verbatim_root_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        project_roots(&conn).unwrap();
+        let once = project_rows(&conn);
+        let runs_once: Vec<(String, String)> = conn
+            .prepare("SELECT run_id, project_id FROM runs ORDER BY run_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        project_roots(&conn).unwrap();
+        assert_eq!(project_rows(&conn), once);
+        let runs_twice: Vec<(String, String)> = conn
+            .prepare("SELECT run_id, project_id FROM runs ORDER BY run_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(runs_twice, runs_once);
     }
 
     /// Every table, index and trigger with its SQL text.
