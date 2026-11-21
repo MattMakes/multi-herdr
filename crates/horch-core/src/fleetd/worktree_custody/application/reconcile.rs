@@ -147,6 +147,7 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
         .collect();
     let known = known_paths(live.iter().copied(), facts);
     let seen = seen(conn, &rows, facts)?;
+    let removing = removing(conn)?;
     let mut out: Vec<Breach> = rules::adoptions(&known, &seen, &[])
         .into_iter()
         .map(|a| Breach::NoRow {
@@ -157,7 +158,12 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
     for r in &rows {
         let id = r.worktree_id.clone();
         let state = r.state.as_str();
-        if rules::vanished(state, folder(facts, &id), false, set_aside(conn, facts, r)?) {
+        if rules::vanished(
+            state,
+            folder(facts, &id),
+            false,
+            set_aside(&removing, facts, r),
+        ) {
             out.push(Breach::NoFolder { id });
         } else if r.state == WorktreeState::Reserved && add_run(conn, r)?.is_none() {
             out.push(Breach::ReservedWithNoJob { id });
@@ -579,7 +585,7 @@ fn names_row(result: &ListResult, path: &str, row: &WorktreeRow) -> bool {
 
 /// Whether a removal set the tree of `row` aside: its remove run is
 /// active, or its quarantine folder is in the work directory.
-fn set_aside(conn: &Connection, facts: &Facts, row: &WorktreeRow) -> Result<bool> {
+fn set_aside(removing: &BTreeSet<String>, facts: &Facts, row: &WorktreeRow) -> bool {
     let quarantine = quarantine_path(Path::new(&row.path), &row.worktree_id);
     let quarantine = quarantine.display().to_string();
     let in_work_dir = facts
@@ -587,7 +593,18 @@ fn set_aside(conn: &Connection, facts: &Facts, row: &WorktreeRow) -> Result<bool
         .iter()
         .filter(|d| d.repo == row.repo_root)
         .any(|d| d.folders.contains(&quarantine));
-    Ok(in_work_dir || jobs_store::active(conn, Kind::WorktreeRemove, &row.worktree_id)?.is_some())
+    in_work_dir || removing.contains(&row.worktree_id)
+}
+
+/// The trees with a `queued` or `running` `worktree_remove` run, read in 1
+/// statement for any count of trees (T-292).
+fn removing(conn: &Connection) -> Result<BTreeSet<String>> {
+    let mut stmt = conn
+        .prepare("SELECT subject FROM jobs WHERE kind = ?1 AND state IN ('queued', 'running')")?;
+    let ids = stmt
+        .query_map([Kind::WorktreeRemove.as_str()], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
 }
 
 /// Escalate each folder that vanished without a removal by fleetd: 1
@@ -599,13 +616,14 @@ fn escalate_vanished(
     clock: FleetSeconds,
     report: &mut Report,
 ) -> Result<()> {
+    let removing = removing(tx)?;
     for row in all_rows(tx)? {
         let id = row.worktree_id.as_str();
         let gone = rules::vanished(
             row.state.as_str(),
             folder(facts, id),
             in_git(facts, &row),
-            set_aside(tx, facts, &row)?,
+            set_aside(&removing, facts, &row),
         );
         if !gone {
             continue;
@@ -722,4 +740,84 @@ fn queue_rescue(
     }
     let queued = jobs::queue(ctx, tx, &key, Some(&row.repo_root), clock)?;
     Ok(matches!(queued, Queued::New(_)))
+}
+
+#[cfg(test)]
+mod removing_tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+    use rusqlite::params;
+
+    /// A ledger with `n` trees of no task.
+    fn ledger(n: usize) -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| {
+                for i in 0..n {
+                    tx.execute(
+                        "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base,
+                             status, created_at)
+                         VALUES (?1, '/p', ?2, ?1, 'main', 'open', 'now')",
+                        params![format!("WT{i:04}"), format!("/p/.worktrees/{i}")],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    fn job(conn: &Connection, kind: &str, id: &str, run: i64, state: &str) {
+        conn.execute(
+            "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)
+             VALUES (?1, ?2, 'k', ?3, ?4, 60, 'now')",
+            params![kind, id, run, state],
+        )
+        .unwrap();
+    }
+
+    /// T-292: the set read names each tree that the read of each tree
+    /// (`jobs_store::active`) finds, on a mixed ledger: a queued removal, a
+    /// running one, a passed one, a failed then queued one, and an active
+    /// job of another kind.
+    #[test]
+    fn removing_names_the_trees_of_the_read_of_each_tree() {
+        let (_tmp, store) = ledger(6);
+        let c = store.conn();
+        job(c, "worktree_remove", "WT0000", 1, "queued");
+        job(c, "worktree_remove", "WT0001", 1, "running");
+        job(c, "worktree_remove", "WT0002", 1, "passed");
+        job(c, "worktree_remove", "WT0003", 1, "failed");
+        job(c, "worktree_remove", "WT0003", 2, "queued");
+        job(c, "worktree_add", "WT0004", 1, "queued");
+        let want: BTreeSet<String> = all_rows(c)
+            .unwrap()
+            .into_iter()
+            .filter(|r| {
+                jobs_store::active(c, Kind::WorktreeRemove, &r.worktree_id)
+                    .unwrap()
+                    .is_some()
+            })
+            .map(|r| r.worktree_id)
+            .collect();
+        assert_eq!(want.len(), 3);
+        assert_eq!(removing(c).unwrap(), want);
+    }
+
+    /// T-292, by count: the I6 check of 3 trees and of 300 runs the same
+    /// statements. It must see each tree, so it stays whole.
+    #[test]
+    fn check_i6_runs_the_same_statements_for_3_and_300_trees() {
+        let count = |n: usize| {
+            let (_tmp, store) = ledger(n);
+            let (breaches, statements) = count_statements(store.conn(), || {
+                check_i6(store.conn(), &Facts::default()).unwrap()
+            });
+            assert_eq!(breaches, vec![]);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }
