@@ -401,26 +401,13 @@ impl Drop for DirLockGuard {
     }
 }
 
-/// Release the lock at `path` taken with `nonce`, waiting up to
-/// `guard_wait` for the [`BreakerGuard`].
 fn release_lock(path: &Path, nonce: Option<&str>, guard_wait: Duration) {
-    // The release holds the breaker guard, as a breaker does: between a
-    // breaker's stale check and its removal, a holder that outlived
-    // `stale_after` cannot release and let a next holder take the lock
-    // that the breaker then removes.
-    //
-    // A release that does not get the guard in `guard_wait` removes
-    // nothing: the guard holder may be a breaker that judged this lock and
-    // will remove it. The release marks the lock released instead, and a
-    // taker breaks a marked lock under the guard (see [`stale_lock`]).
     let Some(_breakers_excluded) = wait_for_guard(path, guard_wait) else {
         if let Some(nonce) = nonce {
             mark_released(path, nonce);
         }
         return;
     };
-    // A holder that outlived `stale_after` may have had its lock broken
-    // and taken by another process; that lock is not ours to remove.
     if let Some(nonce) = nonce {
         if read_owner(path).is_none_or(|o| o.nonce != nonce) {
             return;
@@ -433,22 +420,14 @@ fn release_lock(path: &Path, nonce: Option<&str>, guard_wait: Duration) {
     );
 }
 
-/// Mark the lock at `path` released by the holder of `nonce`, in 1 atomic
-/// create. The lock at `path` may be another holder's by now; the mark then
-/// names a nonce that is not its owner's, and [`stale_lock`] ignores it.
-/// The mark goes with that lock when its holder releases it.
 fn mark_released(path: &Path, nonce: &str) {
     let _ = create_new_file(&released_mark(path, nonce), PRIVATE_FILE);
 }
 
-/// The released mark of the holder of `nonce` in the lock at `path`.
 fn released_mark(path: &Path, nonce: &str) -> PathBuf {
     path.join(format!("released-{nonce}"))
 }
 
-/// The [`BreakerGuard`] of `lock`. A breaker holds it for microseconds, so
-/// this waits up to `wait` ([`BREAKER_STALE_AFTER`], 5 s, outside the
-/// tests); then `None`.
 fn wait_for_guard(lock: &Path, wait: Duration) -> Option<BreakerGuard> {
     let start = Instant::now();
     loop {
@@ -473,15 +452,10 @@ fn read_owner(lock: &Path) -> Option<LockOwner> {
 /// from the renamed directory. A lock that another process took at `path`
 /// after the caller's check fails `is_ours` and is put back, not removed.
 ///
-/// With a working guard the put-back never runs: every remover (a breaker,
-/// a release) holds the guard, and a publisher only fills an empty `path`.
-/// So under the guard the lock at `path` is the one the caller checked.
-///
 /// Limits: the [`BreakerGuard`] holds nothing on Windows and at a `flock`
 /// error. Then a third process can publish at `path` before the put-back.
 /// The put-back fails, 2 processes hold the lock, and this prints "was
 /// taken while another lock was put back".
-/// `renamed` runs once after the rename and before the owner check.
 fn remove_lock(
     path: &Path,
     is_ours: impl FnOnce(Option<&LockOwner>) -> bool,
@@ -670,7 +644,6 @@ fn stale_lock(path: &Path, stale_after: Duration) -> Option<StaleLock> {
         .as_ref()
         .and_then(|o| o.stale_after_s)
         .map_or(stale_after, |s| stale_after.max(Duration::from_secs(s)));
-    // A lock that its holder marked released is free at once.
     let released = owner
         .as_ref()
         .is_some_and(|o| !o.nonce.is_empty() && released_mark(path, &o.nonce).exists());
@@ -709,8 +682,6 @@ fn break_lock(path: &Path, stale_after: Duration) -> bool {
     break_lock_with(path, stale_after, || {}, || {})
 }
 
-/// [`break_lock`], with `judged` run once after the lock is judged stale
-/// and before it is removed, and `renamed` as [`remove_lock`] runs it.
 fn break_lock_with(
     path: &Path,
     stale_after: Duration,
@@ -1382,9 +1353,6 @@ mod tests {
                     let _ = taken.send(());
                     held
                 }));
-                // A release that does not wait for this breaker ends here, and
-                // the next holder has its lock. A release that waits for it
-                // does not end: then this wait only ends the window.
                 let _ = next_took_lock.recv_timeout(Duration::from_millis(500));
             },
             || {},
@@ -1416,10 +1384,6 @@ mod tests {
         assert!(lock.is_dir());
     }
 
-    /// D243-F1: a breaker P judged the lock of A stale and holds the guard
-    /// past the guard wait of A's release. A release that went on without
-    /// the guard removed A's lock, B took it, P renamed B's lock, C took
-    /// the empty path before P's put-back, and B and C both held.
     #[cfg(unix)]
     #[test]
     fn dirlock_release_timeout_does_not_overlap_a_new_holder() {
@@ -1428,8 +1392,6 @@ mod tests {
         let lock = dir.join("events.lock");
         let hour = Duration::from_secs(3600);
         let short = Duration::from_millis(50);
-        // With stale_after zero, A's lock is stale at once. The test
-        // releases A by hand, with a short guard wait.
         let a = std::mem::ManuallyDrop::new(
             DirLock::acquire(&dir, "events", Duration::ZERO, Duration::from_secs(1)).unwrap(),
         );
@@ -1451,11 +1413,6 @@ mod tests {
         assert_eq!(Some(&owner.nonce), holders[0].nonce.as_ref());
     }
 
-    /// A release that cannot get the guard removes nothing and marks its
-    /// lock released, within its guard wait. Once the guard is free, the
-    /// next taker breaks the marked lock at once, although its holder lives
-    /// and its age limit is not over. A mark with another nonce frees no
-    /// lock.
     #[cfg(unix)]
     #[test]
     fn dirlock_release_at_the_guard_timeout_frees_the_lock() {
