@@ -524,7 +524,6 @@ fn owner(tx: &Connection, row: &WorktreeRow) -> Result<Owner> {
     })
 }
 
-/// The outcome that the owner attempt of `row` recorded, if any.
 fn outcome_of(tx: &Connection, row: &WorktreeRow) -> Result<Option<String>> {
     let Some(attempt) = row.owner_attempt.as_deref() else {
         return Ok(None);
@@ -539,7 +538,6 @@ fn outcome_of(tx: &Connection, row: &WorktreeRow) -> Result<Option<String>> {
     Ok(outcome.flatten())
 }
 
-/// The state of `task` as the owner rule reads it.
 fn task_now(task: &tasks::Task) -> TaskNow {
     if task.is_parked() {
         return TaskNow::Parked;
@@ -555,9 +553,6 @@ fn task_now(task: &tasks::Task) -> TaskNow {
     }
 }
 
-/// Move each `active` row whose owner is gone: `landing` for a verified
-/// task, `created` for a parked or retried task, else `orphaned` in this
-/// pass (FM-25, Q10, Q23).
 fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     for row in store::in_states(tx, &[WorktreeState::Active])? {
         let id = row.worktree_id.as_str();
@@ -579,8 +574,6 @@ fn owners(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> 
     Ok(())
 }
 
-/// The landing state of the task branch of `row`, and when it last moved
-/// to `landed`.
 fn branch_of(tx: &Connection, row: &WorktreeRow) -> Result<(Option<String>, Option<String>)> {
     let state: Option<Option<String>> = tx
         .query_row(
@@ -597,11 +590,6 @@ fn branch_of(tx: &Connection, row: &WorktreeRow) -> Result<(Option<String>, Opti
     Ok((state.flatten(), landed_at))
 }
 
-/// Move each `landing` row whose task branch is `landed` to `landed`, at
-/// the HEAD that a `worktree_list` run read after the landing: its landed
-/// commit, the 1 record of the landing for the removal guard and for
-/// `horch ledger unfinished`. A row with no such read waits for it. A row
-/// whose branch is `abandoned` gets its rescue in [`act`].
 fn landings(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     for row in store::in_states(tx, &[WorktreeState::Landing])? {
         let (state, landed_at) = branch_of(tx, &row)?;
@@ -747,12 +735,6 @@ fn escalate_vanished(
     Ok(())
 }
 
-/// Queue 1 `rescue` run of each `orphaned` row and of each `landing` row
-/// whose task branch is `abandoned`, and 1
-/// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9) and of
-/// each `rescued` row whose idea is `merged` ("Ideas finish clean"). A row
-/// whose folder vanished is escalated, not queued. A row with an active run
-/// of that kind is not queued again.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
     for row in all_rows(tx)? {
         let id = row.worktree_id.as_str();

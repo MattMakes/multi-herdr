@@ -192,11 +192,8 @@ pub const CANCELLED: &str = "its task is cancelled";
 pub const OWNER_ENDED: &str = "its owner attempt ended";
 /// The cause of a tree with no owner attempt and no live worker.
 pub const NO_LIVE_OWNER: &str = "it has no owner attempt and its worker is not live";
-/// The cause of a tree of a task parked by `done --unlanded`.
 pub const PARKED: &str = "its task is parked by done --unlanded";
-/// The cause of a tree of a task that waits for its next attempt.
 pub const RETRIED: &str = "its task waits for its next attempt";
-/// The cause of a tree whose attempt ended verified.
 pub const VERIFIED: &str = "its attempt ended verified";
 
 /// What happens to an `active` row with the owner `o`; `None` while the

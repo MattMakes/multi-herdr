@@ -128,7 +128,6 @@ fn claimed(h: &Harness, steps: &str) -> (String, String, PathBuf) {
     claimed_as(h, steps, None)
 }
 
-/// [`claimed`] with `agent` as the agent process of the attempt.
 fn claimed_as(h: &Harness, steps: &str, agent: Option<u32>) -> (String, String, PathBuf) {
     std::fs::write(
         h.project.join("fleet.toml"),
@@ -648,9 +647,6 @@ fn dump(h: &Harness) -> String {
     format!("{tasks:#?}\n{trees:#?}\n{branches:#?}\n{ideas:#?}\n{jobs:#?}")
 }
 
-/// Finish the attempt of `w`, and wait until its task branch lands and
-/// its tree follows the branch to `landed` (or on to `removed`): the
-/// design rows `landing` and `landed` (ticket 168 of fleetd-finish).
 fn finish_and_land(h: &Harness, w: &str, path: &Path) {
     send_finish(h, w);
     wait_for_or(
@@ -674,7 +670,6 @@ fn merge_idea_of(h: &Harness, task: &str) {
     set_idea_of(h, task, "merged");
 }
 
-/// Write `state` as the state of the idea of `task`.
 fn set_idea_of(h: &Harness, task: &str, state: &str) {
     Store::open(&ledger(h))
         .unwrap()
@@ -695,8 +690,6 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     let head = commit_file(&h, &path, "feature.txt");
     let branch = git_in(&h, &path, &["branch", "--show-current"]);
     finish_and_land(&h, &w, &path);
-    // The design: verified → `landing` → `landed` → removed at the land
-    // of the branch. The idea is not merged, and no rescue runs.
     wait_for_or(
         "the removal of the landed tree",
         || {
@@ -733,9 +726,6 @@ fn cleanup_after_land_removes_a_landed_tree_through_the_remove_job() {
     ));
 }
 
-/// The path of an orphan: its owner is dead → `orphaned` → `rescued`, and
-/// the tree is removed when its idea is `merged` ("Ideas finish clean").
-/// The rescue ref stays.
 #[test]
 #[ignore = "flaky until T-199: a git child of fleetd races the removal guard, and a failed removal is not tried again"]
 fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
@@ -746,8 +736,6 @@ fn orphaned_tree_is_rescued_and_removed_when_its_idea_is_merged() {
         .unwrap();
     let (_, task, path) = claimed_as(&h, "land,cleanup", Some(agent.id()));
     commit_file(&h, &path, "feature.txt");
-    // The idea is parked, so fleetd starts no next attempt of the task.
-    // Then the agent dies: its owner is dead.
     set_idea_of(&h, &task, "parked");
     agent.kill().unwrap();
     agent.wait().unwrap();
@@ -795,9 +783,6 @@ fn cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup
     let mut h = world("p3-ref-cleanup-refused");
     let (w, _task, path) = claimed(&h, "land,cleanup");
     commit_file(&h, &path, "feature.txt");
-    // The untracked file comes after today's checks of the cleanup step
-    // passed, as the remove job reads the HEAD of the tree: the guard of
-    // the job refuses it (RR-13).
     let late = path.join("late.txt");
     let hook = format!("echo late > '{}'", late.display());
     git_with_hook(&mut h, "--show-toplevel --verify HEAD", &late, &hook);

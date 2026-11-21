@@ -998,11 +998,7 @@ fn worktree_list_result_refreshes_head_dirty_and_size() {
     assert_eq!(bad_row.seen_at, None);
 }
 
-// ─── the states `landing` and `landed` (ticket 168 of fleetd-finish) ───
-
 impl World {
-    /// The task branch row `branch` of `task` in `state`, written in
-    /// `in_bundle` and moved through the door, so the move has its event.
     fn task_branch(&mut self, branch: &str, task: &str, state: &str) {
         self.sql(
             "INSERT INTO branches (name, feature_id, task_id, landing_state, owner, due_at)
@@ -1014,8 +1010,6 @@ impl World {
         }
     }
 
-    /// The facts of a pass whose `worktree_list` run read the tree of
-    /// `id` at `path` at the HEAD `head`, at `seen_at`.
     fn list_at(&self, id: &str, path: &str, head: &str, seen_at: &str) -> Facts {
         let mut listed = self.listed(&[(path, "b", Some(id))]);
         listed.result.trees[1].head = Some(head.to_string());
@@ -1027,7 +1021,6 @@ impl World {
         }
     }
 
-    /// Move the task branch `branch` to `state` through the door.
     fn task_branch_to(&mut self, branch: &str, state: &str) {
         self.store
             .immediate(|tx| {
@@ -1053,8 +1046,6 @@ impl World {
     }
 }
 
-/// Design, row `active`: "The attempt ends: verified → `landing`". The
-/// tree is not orphaned, and no rescue job is queued.
 #[test]
 fn verified_attempt_moves_its_tree_to_landing_with_no_rescue() {
     let mut w = World::new();
@@ -1093,9 +1084,6 @@ fn verified_attempt_moves_its_tree_to_landing_with_no_rescue() {
     assert_eq!(w.jobs_of("rescue", "wt1"), 0);
 }
 
-/// Design, rows `landing` and `landed`: the branch is `landed` → the tree
-/// is `landed` at the HEAD that a `worktree_list` run read after the
-/// landing, and 1 `worktree_remove` job is queued.
 #[test]
 fn landed_task_branch_moves_its_landing_tree_to_landed_and_queues_1_removal() {
     let mut w = World::new();
@@ -1109,7 +1097,6 @@ fn landed_task_branch_moves_its_landing_tree_to_landed_and_queues_1_removal() {
     assert_eq!(w.row("wt1").state, WorktreeState::Landing, "{report:?}");
 
     w.task_branch_to(&branch, "landed");
-    // A list result read before the landing does not name the landed HEAD.
     let report = w.reconcile(&before);
     assert_eq!(w.row("wt1").state, WorktreeState::Landing, "{report:?}");
 
@@ -1136,8 +1123,6 @@ fn landed_task_branch_moves_its_landing_tree_to_landed_and_queues_1_removal() {
     assert_eq!(w.jobs_of("worktree_remove", "wt1"), 1);
 }
 
-/// Design, row `landing`: "Its branch is `abandoned` → fleetd queues a
-/// rescue job".
 #[test]
 fn abandoned_task_branch_queues_1_rescue_of_its_landing_tree() {
     let mut w = World::new();
@@ -1158,8 +1143,6 @@ fn abandoned_task_branch_queues_1_rescue_of_its_landing_tree() {
     assert_eq!(w.row("wt1").state, WorktreeState::Landing);
 }
 
-/// Design, row `active`: "retried → back to `created`, so the next
-/// attempt continues in the same tree".
 #[test]
 fn retried_attempt_moves_its_tree_to_created_with_no_owner() {
     let mut w = World::new();
@@ -1190,9 +1173,6 @@ fn retried_attempt_moves_its_tree_to_created_with_no_owner() {
     assert_eq!(w.jobs_of("rescue", "wt1"), 0);
 }
 
-/// Design, row `active`: "owner dead → `orphaned`". A crashed attempt
-/// whose task waits for its next attempt is a dead owner: the tree is
-/// orphaned, and its rescue comes first.
 #[test]
 fn crashed_attempt_of_a_retried_task_orphans_its_tree() {
     let mut w = World::new();

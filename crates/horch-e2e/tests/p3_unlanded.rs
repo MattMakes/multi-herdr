@@ -263,9 +263,6 @@ fn stored(h: &Harness, path: &Path) -> String {
     }
 }
 
-/// 1 column of the newest row of the folder `path`, in each state: a
-/// landed tree can be `removed` before the test reads it, and a path is
-/// unique only among the rows that are not `removed`.
 fn column(h: &Harness, path: &Path, name: &str) -> String {
     let rows = query(
         h,
@@ -742,8 +739,6 @@ fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> PathBuf {
 fn rr15_landed_work_of_a_done_task_is_not_listed() {
     let h = world("p3-unl-landed");
     let path = orphan_then_land(&h, |_| {});
-    // The tree follows its landed branch to `landed` at the HEAD that the
-    // next `worktree_list` run reads: its landed commit (ticket 168).
     let mut passes = 0;
     wait_for_or(
         "the landed tree",

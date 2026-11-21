@@ -834,11 +834,6 @@ fn refused_removal_keeps_the_tree_and_is_not_queued_again() {
     assert_eq!(w.open_kinds().len(), 1, "{:?}", w.open_kinds());
 }
 
-/// Design, rows `landing` and `landed`: the task branch of a `landing` tree
-/// is `landed` → the tree is `landed`, 1 `worktree_remove` job removes it,
-/// and the job deletes the branch only when it is merged. The tree of a
-/// branch that is not merged into its base is removed, and its branch
-/// stays (ticket 168 of fleetd-finish).
 #[test]
 fn landing_tree_of_a_landed_branch_is_removed_and_its_branch_deleted_only_if_merged() {
     let mut w = world();
