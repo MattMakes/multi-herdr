@@ -1,5 +1,5 @@
 //! The Godot wave (GDW-01 to GDW-13, `docs/specs/godot.md`): the Godot
-//! requirement, the 19 `godot-*` seats, the 81 `godot-*` skills, the
+//! requirement, the 20 `godot-*` seats, the 82 `godot-*` skills, the
 //! library shelves of each seat and the gate's Godot checks.
 //!
 //! The seat tests read the teammates through the public roster API and
@@ -236,7 +236,7 @@ fn gdw_03_a_csharp_project_adds_the_csharp_skills_to_the_builder_seats() {
             );
         }
     }
-    assert_eq!(builders, 15);
+    assert_eq!(builders, 16);
 }
 
 #[test]
@@ -384,9 +384,9 @@ fn gdw_06_copied_failures_fail_only_above_the_baseline() {
 }
 
 #[test]
-fn gdw_07_the_catalog_has_81_godot_skills_and_no_excluded_one() {
+fn gdw_07_the_catalog_has_82_godot_skills_and_no_excluded_one() {
     let skills = godot_skills();
-    assert_eq!(skills.len(), 81, "{skills:?}");
+    assert_eq!(skills.len(), 82, "{skills:?}");
     for name in EXCLUDED {
         assert!(!skills.contains(name), "{name} is excluded");
     }
@@ -434,7 +434,7 @@ fn gdw_07_godot_skills_carry_no_licence_or_credit_line() {
 fn gdw_08_every_godot_seat_expects_5_to_11_skills_from_the_catalog() {
     let roster = roster();
     let seats = seats(&roster);
-    assert_eq!(seats.len(), 19);
+    assert_eq!(seats.len(), 20);
     let catalog = SkillCatalog::bundled().unwrap();
     for t in seats {
         let n = t.skills.len();
@@ -488,7 +488,7 @@ fn gdw_09_godot_seats_are_claude_fleet_workers_without_mcp_servers() {
 fn gdw_10_every_godot_seat_falls_back_to_codex_sol() {
     let roster = Roster::builtin().unwrap();
     let seats = seats(&roster);
-    assert_eq!(seats.len(), 19);
+    assert_eq!(seats.len(), 20);
     for t in seats {
         assert_eq!(t.fallbacks, ["codex-sol"], "{}", t.name);
     }
@@ -521,7 +521,7 @@ fn gdw_11_the_language_skill_is_on_every_godot_seat() {
     const SKILL: &str = "godot-language-choice";
     let roster = roster();
     let seats = seats(&roster);
-    assert_eq!(seats.len(), 19);
+    assert_eq!(seats.len(), 20);
     for t in seats {
         let expects = t.skills.iter().any(|s| s == SKILL);
         let offers = t.available_skills.iter().any(|s| s == SKILL);
@@ -567,7 +567,7 @@ fn gdw_13_every_godot_seat_names_its_library_shelves_high_in_its_briefing() {
 
     let roster = roster();
     let seats = seats(&roster);
-    assert_eq!(seats.len(), 19);
+    assert_eq!(seats.len(), 20);
     let mut named: BTreeSet<&str> = BTreeSet::new();
     for t in seats {
         assert!(

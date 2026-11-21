@@ -113,6 +113,10 @@ python3 "<skill-dir>/scripts/compare_frames.py" \
 
 The gate is the minimum. For a close recreation, also aim for `mean_mismatch_ratio <= 0.02` and `max_mismatch_ratio <= 0.05`.
 
+## Timing and easing, apart from pixels
+
+A rebuild in the project's own brand cannot match the reference pixel by pixel, and it should not. Judge its motion on its own: `references/motion-fidelity.md` gives the 2 fidelity levels, the per-property motion table, how to fit an easing and a spring from measured frames, the activity curve that compares timing without colour, and the pass numbers for a motion-faithful rebuild.
+
 ## Output
 
 - `motion-match/<scene-id>/ref/keyframes/`, `contact-sheet.png` and `motion-spec.json`.

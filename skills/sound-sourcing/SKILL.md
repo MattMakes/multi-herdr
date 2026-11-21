@@ -52,7 +52,8 @@ Step by step:
 1. Brief. Copy [templates/SOUND_BRIEF.md](templates/SOUND_BRIEF.md) to `audio/SOUND_BRIEF.md` and fill it in:
    concept, picture map, ambience zones, rights, quality bar, files. Pick the brand personality row. Sub-agents get it
    unedited.
-2. Sourcing ([role-sourcing](references/role-sourcing.md)). Categories of a launch film: `ui`, `keyboard`, `motion`,
+2. Sourcing ([role-sourcing](references/role-sourcing.md); search many libraries at once with
+   [Openverse](references/openverse.md)). Categories of a launch film: `ui`, `keyboard`, `motion`,
    `impacts`, `ambience`, `music` (a film with characters adds `foley`). Aim for 15-40 candidates per category, 3-6
    per need. Read rights on the item page. Download 1 file at a time. Measure everything.
 3. Rights ([role-rights-audit](references/role-rights-audit.md), [rights](references/rights.md)). A recording without
