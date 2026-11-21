@@ -741,20 +741,106 @@ fn dispatched_worker(conn: &Connection, task_id: &str) -> Result<NewWorker> {
 
 // ─── the task files ─────────────────────────────────────────────────────
 
-/// The facts of the files of the attempt `attempt_id` under `fleet_root`,
-/// from its rows.
-fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskFacts> {
-    let (task_id, worker_id): (Option<String>, String) = conn
-        .query_row(
-            "SELECT task_id, worker_id FROM attempts WHERE id = ?1",
-            [attempt_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .with_context(|| format!("no attempt {attempt_id}"))?;
-    let task_id = task_id.with_context(|| format!("the attempt {attempt_id} has no task"))?;
-    let task = tasks::get(conn, &task_id)?;
-    let run = runs::get(conn, &task.run_id)?;
-    let worker = workers::get(conn, &worker_id)?;
+/// The rows of 1 attempt that its task files need.
+struct AttemptRows {
+    id: String,
+    task: Task,
+    run: Run,
+    persona: Option<String>,
+    n: Option<i64>,
+}
+
+impl AttemptRows {
+    /// The rows of the attempt `attempt_id`.
+    fn read(conn: &Connection, attempt_id: &str) -> Result<AttemptRows> {
+        let (task_id, worker_id): (Option<String>, String) = conn
+            .query_row(
+                "SELECT task_id, worker_id FROM attempts WHERE id = ?1",
+                [attempt_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .with_context(|| format!("no attempt {attempt_id}"))?;
+        let task_id = task_id.with_context(|| format!("the attempt {attempt_id} has no task"))?;
+        let task = tasks::get(conn, &task_id)?;
+        let run = runs::get(conn, &task.run_id)?;
+        let worker = workers::get(conn, &worker_id)?;
+        Ok(AttemptRows {
+            id: attempt_id.to_string(),
+            task,
+            run,
+            persona: worker.persona,
+            n: worker.attempt,
+        })
+    }
+
+    /// The rows of each push attempt in `launching` with a task, in 3
+    /// statements on 1 snapshot for any count of attempts (D266-F4).
+    fn launching_push(conn: &Connection) -> Result<Vec<AttemptRows>> {
+        one_snapshot(conn, || {
+            const LAUNCHING: &str =
+                "a.via = 'push' AND a.state = 'launching' AND a.task_id IS NOT NULL";
+            let mut stmt = conn.prepare(&format!(
+                "SELECT a.id, a.task_id, w.persona, w.attempt FROM attempts a
+                 JOIN workers w ON w.worker_id = a.worker_id
+                 WHERE {LAUNCHING} ORDER BY a.rowid"
+            ))?;
+            let heads = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<i64>>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut stmt = conn.prepare(&format!(
+                "SELECT * FROM tasks WHERE task_id IN
+                 (SELECT a.task_id FROM attempts a WHERE {LAUNCHING})"
+            ))?;
+            let tasks: BTreeMap<String, Task> = stmt
+                .query_map([], Task::from_row)?
+                .map(|t| t.map(|t| (t.task_id.clone(), t)))
+                .collect::<rusqlite::Result<_>>()?;
+            let runs = runs::of_ids(conn, tasks.values().map(|t| t.run_id.as_str()))?;
+            heads
+                .into_iter()
+                .map(|(id, task_id, persona, n)| {
+                    let task = tasks
+                        .get(&task_id)
+                        .with_context(|| format!("no task {task_id} in the task ledger"))?
+                        .clone();
+                    let run = runs
+                        .get(&task.run_id)
+                        .with_context(|| format!("no run {} in the task ledger", task.run_id))?
+                        .clone();
+                    Ok(AttemptRows {
+                        id,
+                        task,
+                        run,
+                        persona,
+                        n,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// The name `A<n>` of the attempt.
+    fn attempt(&self) -> Result<String> {
+        let n = self
+            .n
+            .with_context(|| format!("the worker of attempt {} has no attempt number", self.id))?;
+        Ok(format!("A{n}"))
+    }
+}
+
+/// The facts of the files of the attempt of `rows` under `fleet_root`.
+fn facts(conn: &Connection, fleet_root: &Path, rows: &AttemptRows) -> Result<TaskFacts> {
+    let attempt_id = rows.id.as_str();
+    let task = rows.task.clone();
+    let run = &rows.run;
+    let task_id = task.task_id.clone();
     let work = match repair::start_section(conn, fleet_root, attempt_id)? {
         Some(section) => Some(section),
         None => review::start_section(conn, &task_id)?,
@@ -769,12 +855,9 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
         .collect();
     let sections: Vec<String> = work.into_iter().chain(answers_section(&answered)).collect();
     let extra = (!sections.is_empty()).then(|| sections.join("\n"));
-    let n = worker
-        .attempt
-        .with_context(|| format!("the worker of attempt {attempt_id} has no attempt number"))?;
     let (worktree, branch) = match task_tree(conn, &task_id)?.filter(|_| task.uses_worktree()) {
         Some(row) => (row.path, row.branch),
-        None => (run.project_root.clone(), base_branch(&run)?),
+        None => (run.project_root.clone(), base_branch(run)?),
     };
     let handoff = outbox_ingest::handoff_of(conn, &task_id)?;
     let (idea, feature) = idea_of(conn, &task_id)?;
@@ -786,9 +869,9 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
     Ok(TaskFacts {
         task: format!("T{}", task.seq),
         task_id,
-        run: run.slug,
-        attempt: format!("A{n}"),
-        profile: worker.persona.unwrap_or_default(),
+        run: run.slug.clone(),
+        attempt: rows.attempt()?,
+        profile: rows.persona.clone().unwrap_or_default(),
         worktree,
         branch,
         read_first: task.task_file.unwrap_or_default(),
@@ -852,25 +935,25 @@ pub fn write_task_files_in(
     attempt_id: &str,
     secrets: &[Secret],
 ) -> Result<AttemptFiles> {
-    let facts = facts(conn, fleet_root, attempt_id)?;
-    write_with_facts(conn, fleet_root, state_root, &facts, secrets)
+    let rows = AttemptRows::read(conn, attempt_id)?;
+    let facts = facts(conn, fleet_root, &rows)?;
+    write_with_facts(fleet_root, state_root, &rows.run, &facts, secrets)
 }
 
+/// Write the files of `facts`; the project facts come from the root of
+/// `run`, which the caller read, so this runs no SQL statement (D266-F4).
 fn write_with_facts(
-    conn: &Connection,
     fleet_root: &Path,
     state_root: Option<&Path>,
+    run: &Run,
     facts: &TaskFacts,
     secrets: &[Secret],
 ) -> Result<AttemptFiles> {
     let project_facts = match state_root {
-        Some(state) => {
-            let run = runs::get(conn, &tasks::get(conn, &facts.task_id)?.run_id)?;
-            Some(crate::project_notes::read(
-                state,
-                Path::new(&run.project_root),
-            )?)
-        }
+        Some(state) => Some(crate::project_notes::read(
+            state,
+            Path::new(&run.project_root),
+        )?),
         None => None,
     };
     Ok(write_attempt_files_with(
@@ -901,22 +984,15 @@ pub fn write_missing_task_files_in(
     state_root: Option<&Path>,
     secrets: &[Secret],
 ) -> Result<Vec<(String, Result<AttemptFiles>)>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM attempts
-         WHERE via = 'push' AND state = 'launching' AND task_id IS NOT NULL ORDER BY rowid",
-    )?;
-    let ids: Vec<String> = stmt
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
-    for id in ids {
-        let facts = facts(conn, fleet_root, &id)?;
-        let dir = attempt_dir(fleet_root, &facts.task_id, &facts.attempt);
+    for rows in AttemptRows::launching_push(conn)? {
+        let dir = attempt_dir(fleet_root, &rows.task.task_id, &rows.attempt()?);
         if dir.join("task.yaml").exists() {
             continue;
         }
-        let written = write_with_facts(conn, fleet_root, state_root, &facts, secrets);
-        out.push((id, written));
+        let facts = facts(conn, fleet_root, &rows)?;
+        let written = write_with_facts(fleet_root, state_root, &rows.run, &facts, secrets);
+        out.push((rows.id, written));
     }
     Ok(out)
 }
@@ -1119,5 +1195,90 @@ mod ready_rows_race_tests {
         assert_eq!(in_tasks, rows.own.contains_key("n"));
         let a_in_tasks = rows.tasks.iter().any(|t| t.task_id == "a");
         assert_eq!(a_in_tasks, rows.own.contains_key("a"));
+    }
+}
+
+#[cfg(test)]
+mod missing_task_files_tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+
+    /// A ledger with `n` leased tasks, each with 1 push attempt in
+    /// `launching` and no task files.
+    fn ledger(n: usize) -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', ?1, 'now')",
+                    [root.to_str().unwrap()],
+                )?;
+                tx.execute_batch(
+                    "INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at,
+                         run_branch)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now', 'fleet/r1');",
+                )?;
+                let idea = crate::taskledger::schema::run_idea(tx, "r1", "now", true)?;
+                for i in 0..n {
+                    let id = format!("t{i}");
+                    tx.execute(
+                        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                             claimable_by, status, worktree_mode, created_at, updated_at, idea_id)
+                         VALUES (?1, 'r1', ?2, ?1, 'a.md', 'opus', 'opus', 'leased', 'shared',
+                             'now', 'now', ?3)",
+                        params![id, i + 1, idea],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO workers (worker_id, run_id, persona, host, status, task_id,
+                             attempt)
+                         VALUES ('w' || ?1, 'r1', 'opus', 'h', 'spawning', ?1, 1)",
+                        [&id],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO attempts (id, task_id, worker_id, state, via)
+                         VALUES ('a' || ?1, ?1, 'w' || ?1, 'launching', 'push')",
+                        [&id],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        (tmp, store)
+    }
+
+    /// The statements of 1 write of the missing task files of `n` attempts
+    /// into a new fleet root, with the project facts of `state` or none.
+    fn statements(n: usize, state: bool) -> usize {
+        let (tmp, store) = ledger(n);
+        let fleet_root = tmp.path().join("fleet");
+        let state_root = tmp.path().join("state");
+        let state_root = state.then_some(state_root.as_path());
+        let (written, count) = count_statements(store.conn(), || {
+            write_missing_task_files_in(store.conn(), &fleet_root, state_root, &[]).unwrap()
+        });
+        assert_eq!(written.len(), n);
+        for (id, files) in &written {
+            assert!(files.as_ref().unwrap().task_yaml.is_file(), "{id}");
+        }
+        let (again, count_again) = count_statements(store.conn(), || {
+            write_missing_task_files_in(store.conn(), &fleet_root, state_root, &[]).unwrap()
+        });
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(count_again, ATTEMPT_ROWS_READS, "attempts with files: {n}");
+        count
+    }
+
+    /// The statements of [`AttemptRows::launching_push`].
+    const ATTEMPT_ROWS_READS: usize = 4;
+
+    #[test]
+    fn project_facts_of_3_and_300_missing_attempts_run_no_statement() {
+        for n in [3, 300] {
+            assert_eq!(statements(n, true), statements(n, false), "{n} attempts");
+        }
     }
 }
