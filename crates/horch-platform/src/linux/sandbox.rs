@@ -31,9 +31,6 @@ use std::path::{Path, PathBuf};
 use crate::sandbox::{Network, Rule};
 use crate::NotSupported;
 
-/// The `setsid` of util-linux, at the first of these paths that exists.
-/// A fixed path, not the `PATH` of the command: the disk is bound
-/// read-only, so the path is the same inside the sandbox.
 const SETSID: [&str; 2] = ["/usr/bin/setsid", "/bin/setsid"];
 
 /// The first executable `bwrap` in the absolute folders of `path`. A host
@@ -141,9 +138,6 @@ mod tests {
         println!("RESULT tty={} sti={}", word(tty >= 0), word(pushed));
     }
 
-    /// The result line of [`terminal_child`], run with a new pty as its
-    /// controlling terminal and its stdin, in the sandbox `sandbox`.
-    /// `None` on a host with no sandbox.
     fn on_a_terminal(sandbox: Option<Sandbox>) -> Option<String> {
         // SAFETY: posix_openpt gives a new fd or -1, and the 3 calls after
         // it take that fd and a buffer of its length.
@@ -219,10 +213,6 @@ mod tests {
     type Sandbox =
         fn(Command, &[std::path::PathBuf], &Denials) -> Result<Command, crate::NotSupported>;
 
-    /// The reason of the new session: a sandboxed command has no
-    /// controlling terminal, so it cannot push input into the terminal of
-    /// the process that started the sandbox (`TIOCSTI`). A job and a
-    /// command with the PIDs of the host both hold it.
     #[test]
     fn sandboxed_command_has_no_controlling_terminal_and_cannot_push_input() {
         let outside = on_a_terminal(None).unwrap();

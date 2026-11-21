@@ -351,8 +351,6 @@ mod tests {
     /// (RFC 5737, TEST-NET-1). A connect to it never reaches a webhook.
     const OFF_HOST: &str = "192.0.2.1:9";
     const TARGET: &str = "SANDBOX_CHILD_TARGET";
-    /// The target of the child test that connects to a loopback listener
-    /// of its own, inside the sandbox.
     const INSIDE: &str = "inside";
 
     #[test]
@@ -399,12 +397,10 @@ mod tests {
         )
     }
 
-    /// The count in the heartbeat file of a sandboxed command.
     fn beat(path: &std::path::Path) -> Option<u64> {
         std::fs::read_to_string(path).ok()?.trim().parse().ok()
     }
 
-    /// Wait up to 10 s for the heartbeat at `path` to change from `from`.
     fn beats_after(path: &std::path::Path, from: Option<u64>) -> bool {
         let until = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < until {
@@ -416,10 +412,6 @@ mod tests {
         false
     }
 
-    /// A sandboxed command lives while its sandbox lives, also when the
-    /// thread that started it ended. A kill of the group that the sandbox
-    /// leads ends each process of the sandbox, as the job hosts kill it.
-    /// On Linux the command runs in a new session there.
     #[test]
     fn sandboxed_command_outlives_its_start_thread_and_ends_with_its_sandbox() {
         let dir = tempfile::tempdir().unwrap();

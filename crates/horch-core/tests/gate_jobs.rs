@@ -967,13 +967,10 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     assert_eq!(beat(&beat_file), stopped, "the heartbeat of the gate stops");
 }
 
-/// The count in the heartbeat file of a gate, once the gate wrote it.
 fn beat(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// The host processes with `marker` in their command line, as
-/// `<pid> <command line>`.
 #[cfg(target_os = "linux")]
 fn marked(marker: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -989,8 +986,6 @@ fn marked(marker: &str) -> Vec<String> {
     found
 }
 
-/// The host processes with `marker` in their command line, as
-/// `<pid> <command line>`.
 #[cfg(not(target_os = "linux"))]
 fn marked(marker: &str) -> Vec<String> {
     let out = Command::new("ps")

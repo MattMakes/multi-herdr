@@ -1656,7 +1656,6 @@ pub(crate) fn sandbox_host_problem(path: Option<&std::ffi::OsStr>) -> Option<Str
                     missing.join(" and ")
                 ));
             }
-            // The platform sandbox also needs setsid (util-linux).
             host.map(|gap| gap.to_string())
         }
         other => host.map(|_| format!("Claude Code has no sandbox on {other}")),
