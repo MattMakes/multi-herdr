@@ -242,7 +242,12 @@ fn spawn_worker(
     } else {
         worker_task(ledger)
     };
-    let req = build_request(&args, &task)?;
+    let mut req = build_request(&args, &task)?;
+    req.resume_session = ledger
+        .and_then(|l| l.push.as_ref())
+        .and_then(|p| p.resume.clone())
+        .map(SessionId::new)
+        .transpose()?;
     let sc = spawn_context(ctx)?;
     let existing = resume_record(&req, &sc)?;
     let planned = plan_request(ctx, &req, &sc, existing.as_ref());

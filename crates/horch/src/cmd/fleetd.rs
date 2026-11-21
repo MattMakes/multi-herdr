@@ -1022,6 +1022,17 @@ impl Launches for PushSpawns<'_> {
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec> {
         spawn_spec(self.ctx, &self.herdr, l.clone())
     }
+
+    /// The harness of `persona` in the roster as `horch spawn` loads it,
+    /// when its adapter has a resume form (RR-12).
+    fn resuming_harness(&self, persona: &str) -> Option<String> {
+        let roster = super::load_roster_unwarned(self.ctx, None).ok()?;
+        let agent = roster.get(persona)?.agent;
+        agent
+            .capabilities()
+            .resumes
+            .then(|| agent.as_str().to_string())
+    }
 }
 
 /// The launch of the attempt of `l`: [`super::recipes::push_launch_spec`]

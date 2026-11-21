@@ -19,6 +19,10 @@
 //!   launch, and an attempt with no record is launched by the next pass.
 //!   The record names no process: the spawn opens the pane and exits, and
 //!   the agent of the attempt is not the spawn.
+//! - [`resume_of`]: RR-12. Before the launch record, the worker row of an
+//!   attempt after an answered question records the session it resumes
+//!   (`workers.resumed_from_session`). The spawn reads it there, so no
+//!   argument of a CLI user can start a resume.
 
 use std::path::Path;
 
@@ -362,6 +366,76 @@ pub trait Launches {
 
     /// The launch of `horch spawn <persona> --attempt <id>` for `l`.
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec>;
+
+    /// The harness of `persona` when its adapter has a resume form, else
+    /// `None`: the next attempt then starts a fresh session. A host that
+    /// knows no roster resumes nothing.
+    fn resuming_harness(&self, _persona: &str) -> Option<String> {
+        None
+    }
+}
+
+/// The most bytes of a session id that a resume passes to a CLI.
+pub const SESSION_ID_MAX_BYTES: usize = 128;
+
+/// Whether `id` has the form of a session id that a resume can pass as 1
+/// CLI argument: 1 to [`SESSION_ID_MAX_BYTES`] ASCII letters, digits, `-`
+/// and `_`, and no `-` first, so it is never an option.
+pub fn session_id_ok(id: &str) -> bool {
+    (1..=SESSION_ID_MAX_BYTES).contains(&id.len())
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The session that the attempt `p` resumes (RR-12, design line 1015):
+/// the session of the attempt just before it, when that attempt ended
+/// `asked`, a question of it is answered, the session id that fleetd
+/// ingested has the form of [`session_id_ok`], and both personas run on 1
+/// harness with a resume form. Else `None`, and a fresh session starts
+/// from the question, the answer and the committed work. A resume that
+/// fails ends its attempt with an outcome other than `asked` (`no_result`
+/// for an exit with no result), so the attempt after it is fresh.
+pub fn resume_of(conn: &Connection, p_id: &str, ports: &dyn Launches) -> Result<Option<String>> {
+    let Some(p) = pending_one(conn, p_id)? else {
+        return Ok(None);
+    };
+    let prev = conn
+        .query_row(
+            "SELECT a.id, a.outcome, w.session_id, w.persona
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.task_id = ?1 AND a.id <> ?2
+             ORDER BY a.rowid DESC LIMIT 1",
+            params![p.task_id, p.id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((prev_id, outcome, Some(session), prev_persona)) = prev else {
+        return Ok(None);
+    };
+    if outcome.as_deref() != Some(Outcome::Asked.as_str()) || !session_id_ok(&session) {
+        return Ok(None);
+    }
+    let answered: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM questions
+         WHERE state = 'answered' AND substr(id, 1, length(?1) + 1) = ?1 || '/')",
+        [&prev_id],
+        |r| r.get(0),
+    )?;
+    let persona = workers::get(conn, &p.worker_id)?
+        .persona
+        .unwrap_or_default();
+    let now = ports.resuming_harness(&persona);
+    let then = ports.resuming_harness(prev_persona.as_deref().unwrap_or_default());
+    Ok((answered && now.is_some() && now == then).then_some(session))
 }
 
 /// What [`launch`] did.
@@ -415,6 +489,12 @@ pub fn launch(
         }
     }
     let l = push_launch(conn, &p)?;
+    // The row comes before the effect: the spawn reads the resume here.
+    let resume = resume_of(conn, attempt_id, ports)?;
+    conn.execute(
+        "UPDATE workers SET resumed_from_session = ?2 WHERE worker_id = ?1",
+        params![l.worker_id, resume],
+    )?;
     let record = LaunchRecord {
         attempt: attempt_id.to_string(),
         launched_at: clock,
@@ -685,6 +765,10 @@ mod tests {
                 detach: false,
                 output: None,
             })
+        }
+
+        fn resuming_harness(&self, _: &str) -> Option<String> {
+            Some("claude".into())
         }
     }
 
@@ -982,5 +1066,31 @@ mod tests {
         assert_eq!(decide(TreeFact::Ready, &[OLD]), Decision::Stop(vec![OLD]));
         assert_eq!(decide(TreeFact::Adding, &[]), Decision::WaitTree);
         assert_eq!(decide(TreeFact::Ready, &[]), Decision::Launch);
+    }
+
+    /// Security of RR-12: a session id becomes 1 CLI argument, so only a
+    /// plain id of a bounded length passes, and never an option.
+    #[test]
+    fn session_id_form_refuses_an_option_and_odd_bytes() {
+        assert!(session_id_ok("5bd39a10-8a9f-43b8-a26f-3e68992c7d58"));
+        assert!(session_id_ok("thread_1"));
+        for bad in ["", "-c", "--resume", "a b", "a;b", "a/b", "a\nb", "é"] {
+            assert!(!session_id_ok(bad), "{bad:?}");
+        }
+        assert!(session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES)));
+        assert!(!session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES + 1)));
+    }
+
+    /// RR-12: the worker row of a launch with no answered question records
+    /// no resume.
+    #[test]
+    fn launch_with_no_question_records_no_resume() {
+        let mut w = World::new();
+        let b = bound_with_tree(&mut w, "fresh");
+        let f = Fake::default();
+        reap(w.launch(&b.attempt_id, &f).unwrap());
+        let worker = workers::get(w.store.conn(), &b.worker_id).unwrap();
+        assert_eq!(worker.resumed_from_session, None);
+        assert_eq!(resume_of(w.store.conn(), &b.attempt_id, &f).unwrap(), None);
     }
 }

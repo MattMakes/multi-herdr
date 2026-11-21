@@ -280,6 +280,10 @@ pub struct SpawnRequest {
     pub teammate: Option<TeammateName>,
     /// A record id or session id to resume.
     pub resume: Option<String>,
+    /// The session of an earlier attempt that a fleetd push attempt
+    /// resumes (RR-12). The spawn sets it only from the worker row that
+    /// fleetd wrote; the attempt still gets its own fresh record.
+    pub resume_session: Option<SessionId>,
     /// Empty for an idle worker.
     pub task: String,
     pub phase: Option<Phase>,
@@ -309,6 +313,7 @@ impl SpawnRequest {
         SpawnRequest {
             teammate,
             resume: None,
+            resume_session: None,
             task: task.into(),
             phase: None,
             effort: None,

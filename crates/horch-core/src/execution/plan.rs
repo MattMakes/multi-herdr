@@ -166,6 +166,15 @@ fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
     )
 }
 
+/// The session of a fresh record: the resume of `req.resume_session` when
+/// the harness has a resume form (RR-12), else [`fresh_session`].
+fn attempt_session(agent: HarnessKind, req: &SpawnRequest, minted: &SessionId) -> SessionMode {
+    match &req.resume_session {
+        Some(id) if agent.capabilities().resumes => SessionMode::Resume(id.clone()),
+        _ => fresh_session(agent, minted),
+    }
+}
+
 /// The launch as decided so far, before the gate.
 struct Draft {
     teammate: Teammate,
@@ -327,7 +336,7 @@ fn draft_fresh(name: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     Ok(Draft {
         model: teammate.model.clone().unwrap_or_default(),
         model_source,
-        session: fresh_session(teammate.agent, &inputs.ids.session),
+        session: attempt_session(teammate.agent, req, &inputs.ids.session),
         teammate,
         via: None,
         substitution_reason: None,

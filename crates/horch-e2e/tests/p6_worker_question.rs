@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::time::{Duration, Instant};
 
-use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+use horch_e2e::harness::{fixtures, wait_for_or, Harness, DEADLINE};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags};
 
@@ -47,6 +48,11 @@ struct World {
 
 impl World {
     fn new(name: &str, scenario: &str, first: &str) -> World {
+        World::with(name, scenario, first, false)
+    }
+
+    /// A world whose fake CLI refuses each resume when `refuse_resume`.
+    fn with(name: &str, scenario: &str, first: &str, refuse_resume: bool) -> World {
         let mut h = Harness::new(name).with_git();
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
@@ -70,7 +76,9 @@ impl World {
         if !horch.exists() {
             std::os::unix::fs::symlink(Harness::horch_bin(), horch).unwrap();
         }
-        let wrapper = wrapper(&h.root, first);
+        // The worker has no git on its PATH: `@GIT@` names the git of the harness.
+        let git = shell_word(&h.git_bin().expect("a git").to_string_lossy());
+        let wrapper = wrapper(&h.root, &first.replace("@GIT@", &git), refuse_resume);
         let path = h.write_warmed("claude-wrapper", wrapper.as_bytes());
         h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
         let workspace = h.fleet_workspace();
@@ -266,13 +274,41 @@ impl World {
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
+
+    /// [`World::wait`] past a retry backoff of rung 6: the backoff of the
+    /// roster is 120 s of fleet time, so this waits 3 deadlines.
+    fn wait_past_backoff<T>(&self, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
+        let until = Instant::now() + 3 * DEADLINE;
+        while Instant::now() < until {
+            if let Some(v) = f() {
+                return v;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!(
+            "timed out after {} s waiting for {what}\n{}",
+            (3 * DEADLINE).as_secs(),
+            self.context()
+        );
+    }
 }
 
-fn wrapper(root: &Path, first: &str) -> String {
+/// The CLI of each attempt: the first launch runs `first` in place of the
+/// fake CLI. With `refuse_resume`, a resume ends at once with a failure.
+fn wrapper(root: &Path, first: &str, refuse_resume: bool) -> String {
     let fake = Harness::horch_bin().with_file_name("fake-claude");
+    let refuse = if refuse_resume {
+        format!(
+            "*--resume*) echo \"$*\" >> {}; \
+             echo 'No conversation found with session ID' >&2; exit 1 ;;\n",
+            shell_word(&root.join(REFUSED_LOG).to_string_lossy())
+        )
+    } else {
+        String::new()
+    };
     format!(
         "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
-         case \"$*\" in\n*horch-conformance*) ;;\n*/inbox/START.md*)\n\
+         case \"$*\" in\n*horch-conformance*) ;;\n{refuse}*/inbox/START.md*)\n\
          if [ ! -e {log} ]; then {{ {first}\n}} > {log} 2>&1; exit 0; fi ;;\nesac\n\
          exec {fake} \"$@\"\n",
         log = shell_word(&root.join(FIRST_LOG).to_string_lossy()),
@@ -281,6 +317,9 @@ fn wrapper(root: &Path, first: &str) -> String {
 }
 
 const FIRST_LOG: &str = "first-launch.log";
+
+/// The argv of each resume that the refusing CLI refused, 1 line each.
+const REFUSED_LOG: &str = "refused-resume.log";
 
 fn horch_ask(text: &str) -> String {
     format!("horch ask {}", shell_word(text))
@@ -327,6 +366,32 @@ fn assert_1_row_of_the_first_attempt(w: &World, task: &str) -> String {
     id
 }
 
+/// Answer the question `id` of `task` with `answer`, as the owner does:
+/// `horch tell <role> --answers <mail id>`.
+fn answer_by_tell(w: &World, task: &str, id: &str, answer: &str) {
+    let mail_id = w
+        .one(&format!(
+            "SELECT json_extract(data_json, '$.mail_id') FROM events
+             WHERE kind = 'question' AND entity_id = {}
+               AND json_extract(data_json, '$.question_id') = {}",
+            quoted(task),
+            quoted(id)
+        ))
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| panic!("the row holds the mail id\n{}", w.context()));
+    let role = w
+        .one(&format!(
+            "SELECT w.role FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.id = {}",
+            quoted(id.rsplit_once('/').map_or("", |(a, _)| a))
+        ))
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| panic!("the worker of the attempt has a role\n{}", w.context()));
+    let o = w.h.run(&["tell", &role, "--answers", &mail_id, answer]);
+    assert!(o.status.success(), "horch tell --answers: {}", text(&o));
+    assert_eq!(w.questions(task)[0].1, "answered", "{}", w.context());
+}
+
 #[test]
 fn horch_ask_of_a_push_worker_gives_1_row_with_its_owner() {
     let w = World::new("p6-wq-ask", "stay", &horch_ask(QUESTION));
@@ -349,28 +414,8 @@ fn answer_by_tell_answers_reaches_the_next_attempt() {
     let task = w.task();
     w.blocked(&task);
     let id = assert_1_row_of_the_first_attempt(&w, &task);
-    let mail_id = w
-        .one(&format!(
-            "SELECT json_extract(data_json, '$.mail_id') FROM events
-             WHERE kind = 'question' AND entity_id = {}
-               AND json_extract(data_json, '$.question_id') = {}",
-            quoted(&task),
-            quoted(&id)
-        ))
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| panic!("the row holds the mail id\n{}", w.context()));
-    let role = w
-        .one(&format!(
-            "SELECT w.role FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
-             WHERE a.id = {}",
-            quoted(id.rsplit_once('/').map_or("", |(a, _)| a))
-        ))
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| panic!("the worker of the attempt has a role\n{}", w.context()));
     let answer = "The guide names port 8080.";
-    let o = w.h.run(&["tell", &role, "--answers", &mail_id, answer]);
-    assert!(o.status.success(), "horch tell --answers: {}", text(&o));
-    assert_eq!(w.questions(&task)[0].1, "answered", "{}", w.context());
+    answer_by_tell(&w, &task, &id, answer);
     let next = w.wait("the next attempt of the task", || {
         w.attempts(&task).get(1).map(|a| a.0.clone())
     });
@@ -378,6 +423,155 @@ fn answer_by_tell_answers_reaches_the_next_attempt() {
     assert!(
         start.contains(QUESTION) && start.contains(answer),
         "START.md of the next attempt holds the question and the answer:\n{start}"
+    );
+}
+
+/// The column `col` of the worker row of attempt `attempt`.
+fn worker_of(w: &World, attempt: &str, col: &str) -> String {
+    w.one(&format!(
+        "SELECT w.{col} FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+         WHERE a.id = {}",
+        quoted(attempt)
+    ))
+    .unwrap_or_default()
+}
+
+/// The argv of each call of the fake CLI that names START.md of `attempt`.
+fn argv_of(w: &World, attempt: &str) -> Vec<Vec<String>> {
+    let start = w.attempt_dir(attempt).join("inbox/START.md");
+    let start = start.to_string_lossy();
+    w.h.calls_of("claude")
+        .into_iter()
+        .map(|c| {
+            c["argv"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|a| a.as_str().unwrap_or_default().to_string())
+                .collect::<Vec<String>>()
+        })
+        .filter(|argv| argv.iter().any(|a| a.contains(start.as_ref())))
+        .collect()
+}
+
+/// Whether `argv` holds `--resume <session>`.
+fn resumes(argv: &[String], session: &str) -> bool {
+    argv.windows(2)
+        .any(|p| p[0] == "--resume" && p[1] == session)
+}
+
+/// The session id that the worker of `attempt` recorded.
+fn session_of(w: &World, attempt: &str) -> String {
+    w.wait("the session id of the first attempt", || {
+        Some(worker_of(w, attempt, "session_id")).filter(|s| !s.is_empty())
+    })
+}
+
+/// RR-12, design line 1015: fleetd resumes the session of the worker with
+/// the answer, through the resume form of the adapter, and records it.
+#[test]
+fn answered_question_resumes_the_session_of_the_worker() {
+    let w = World::new("p6-wq-resume", "stay", &question_tell(QUESTION));
+    let task = w.task();
+    w.blocked(&task);
+    let id = assert_1_row_of_the_first_attempt(&w, &task);
+    let first = w.attempts(&task)[0].0.clone();
+    let session = session_of(&w, &first);
+    answer_by_tell(&w, &task, &id, "The guide names port 8080.");
+    let next = w.wait("the next attempt of the task", || {
+        w.attempts(&task).get(1).map(|a| a.0.clone())
+    });
+    let argv = w.wait("the CLI of the next attempt", || {
+        argv_of(&w, &next).into_iter().next()
+    });
+    assert!(
+        resumes(&argv, &session),
+        "the next attempt runs claude --resume {session}: {argv:?}\n{}",
+        w.context()
+    );
+    assert_eq!(
+        worker_of(&w, &next, "resumed_from_session"),
+        session,
+        "the worker row records the resumed session\n{}",
+        w.context()
+    );
+    // T-15 retired the manual resume: no CLI user can start one.
+    let o = w.h.run(&["spawn", "--resume", &session]);
+    assert!(!o.status.success(), "horch spawn --resume: {}", text(&o));
+    assert_eq!(w.attempts(&task).len(), 2, "{}", w.context());
+}
+
+/// RR-12, design line 1015: a resume that fails at once gives a fresh
+/// attempt from the question, the answer and the committed work.
+#[test]
+fn failed_resume_gives_a_fresh_attempt_with_the_answer_and_the_work() {
+    let commit = "printf 'work\\n' > work.txt && @GIT@ add work.txt && \
+                  @GIT@ -c user.name=t -c user.email=t@t -c commit.gpgSign=false \
+                  commit -q --no-verify -m 'work in progress'";
+    // The CLI starts in the project root; the worker works in the tree
+    // that `task.yaml` names.
+    let tree =
+        "cd \"$(/usr/bin/sed -n 's/^worktree: //p' \"$HORCH_TASK_YAML\" | /usr/bin/tr -d '\"')\"";
+    let first = format!("{tree} && {commit} && {}", question_tell(QUESTION));
+    let w = World::with("p6-wq-refused", "stay", &first, true);
+    let task = w.task();
+    w.blocked(&task);
+    let id = assert_1_row_of_the_first_attempt(&w, &task);
+    let a1 = w.attempts(&task)[0].0.clone();
+    let session = session_of(&w, &a1);
+    let answer = "The guide names port 8080.";
+    answer_by_tell(&w, &task, &id, answer);
+    // Design line 1236: an exit with no result ends `no_result`, and line
+    // 1237: it burns 1 attempt, so the fresh attempt waits its backoff.
+    let a3 = w.wait_past_backoff("the fresh attempt after the failed resume", || {
+        w.attempts(&task).get(2).map(|a| a.0.clone())
+    });
+    let a2 = w.attempts(&task)[1].clone();
+    assert_eq!(
+        (a2.1.as_str(), a2.2.as_str()),
+        ("ended", "no_result"),
+        "the refused resume ends no_result\n{}",
+        w.context()
+    );
+    assert_eq!(worker_of(&w, &a2.0, "resumed_from_session"), session);
+    let refused = std::fs::read_to_string(w.h.root.join(REFUSED_LOG)).unwrap_or_default();
+    assert!(
+        refused.lines().any(|l| {
+            let argv: Vec<String> = l.split_whitespace().map(str::to_string).collect();
+            resumes(&argv, &session)
+        }),
+        "the CLI of the resumed attempt got --resume {session}: {refused:?}\n{}",
+        w.context()
+    );
+    let argv = w.wait("the CLI of the fresh attempt", || {
+        argv_of(&w, &a3).into_iter().next()
+    });
+    assert!(
+        !argv.iter().any(|a| a == "--resume"),
+        "the fresh attempt does not resume: {argv:?}"
+    );
+    assert_eq!(worker_of(&w, &a3, "resumed_from_session"), "");
+    let start = w.wait("START.md of the fresh attempt", || w.start_md(&a3));
+    assert!(
+        start.contains(QUESTION) && start.contains(answer),
+        "START.md of the fresh attempt holds the question and the answer:\n{start}"
+    );
+    let tree = w
+        .one(&format!(
+            "SELECT path FROM worktrees WHERE task_id = {}",
+            quoted(&task)
+        ))
+        .unwrap_or_else(|| panic!("the task has a tree\n{}", w.context()));
+    let log =
+        w.h.git_cmd(&["-C", &tree, "log", "--format=%s"])
+            .output()
+            .unwrap();
+    assert!(
+        String::from_utf8_lossy(&log.stdout).contains("work in progress")
+            && Path::new(&tree).join("work.txt").is_file(),
+        "the fresh attempt keeps the committed work: {}\n{}",
+        text(&log),
+        w.context()
     );
 }
 
