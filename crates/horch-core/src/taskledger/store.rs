@@ -468,6 +468,23 @@ impl Store {
     }
 }
 
+/// Run the reads of `f` on 1 snapshot of the ledger. A read of 2 or more
+/// statements needs it: without it, a commit of another connection between
+/// 2 statements gives a torn read. The savepoint is a deferred transaction
+/// when `conn` has none (in WAL mode, 1 transaction reads 1 snapshot), and
+/// it nests in the open transaction of a caller with no new `BEGIN`.
+pub fn one_snapshot<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch("SAVEPOINT one_snapshot")?;
+    let out = f();
+    let end = if out.is_ok() {
+        "RELEASE one_snapshot"
+    } else {
+        "ROLLBACK TO one_snapshot; RELEASE one_snapshot"
+    };
+    conn.execute_batch(end)?;
+    out
+}
+
 /// 1 optional value of a query.
 pub fn optional<T>(r: rusqlite::Result<T>) -> Result<Option<T>> {
     Ok(r.optional()?)

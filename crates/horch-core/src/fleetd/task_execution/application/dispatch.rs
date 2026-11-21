@@ -62,6 +62,7 @@ use crate::taskledger::git::Git;
 use crate::taskledger::model::{Actor, FileMode, TaskStatus, WorkerKind, WorktreeStatus};
 use crate::taskledger::runs::{self, Run};
 use crate::taskledger::sql_words::{word, WORKTREES_GONE};
+use crate::taskledger::store::one_snapshot;
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::util;
 use crate::taskledger::workers::{self, NewWorker};
@@ -473,7 +474,20 @@ struct ReadyRows {
 }
 
 impl ReadyRows {
+    /// The rows of 1 moment: the statements run on 1 snapshot, so a task
+    /// that fleetd makes ready or binds between 2 statements is in every
+    /// set or in none.
     fn read(conn: &Connection) -> Result<ReadyRows> {
+        Self::read_with(conn, || Ok(()))
+    }
+
+    /// [`ReadyRows::read`], with `between` called after the read of the
+    /// ready tasks and before the other reads: the hook of the read race test.
+    fn read_with(conn: &Connection, between: impl FnOnce() -> Result<()>) -> Result<ReadyRows> {
+        one_snapshot(conn, || Self::read_now(conn, between))
+    }
+
+    fn read_now(conn: &Connection, between: impl FnOnce() -> Result<()>) -> Result<ReadyRows> {
         let ready = word(TaskStatus::Ready);
         let mut stmt = conn.prepare(&format!(
             "SELECT * FROM tasks WHERE status = {ready} ORDER BY run_id, seq"
@@ -481,6 +495,7 @@ impl ReadyRows {
         let tasks = stmt
             .query_map([], Task::from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        between()?;
         let cancelled = pairs(
             conn,
             &format!(
@@ -634,9 +649,13 @@ fn ready_runs(conn: &Connection) -> Result<BTreeMap<String, RunFacts>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// 2 statements for any count of tasks: a bind compares its Own files with
-/// each running task, so this read stays whole.
+/// 2 statements for any count of tasks, on 1 snapshot: a bind compares its
+/// Own files with each running task, so this read stays whole.
 fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
+    one_snapshot(conn, || running_tasks_now(conn))
+}
+
+fn running_tasks_now(conn: &Connection) -> Result<Vec<RunningTask>> {
     let words: Vec<String> = HOLDING.iter().map(|s| word(*s)).collect();
     let holding = words.join(", ");
     let mut own: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -676,6 +695,17 @@ fn running_tasks(conn: &Connection) -> Result<Vec<RunningTask>> {
 /// too. `target` names the task that goes first: the target of a spawn,
 /// or the task of the worker that a replacement replaces (L2).
 pub fn choices(
+    conn: &Connection,
+    holds: &Holds,
+    sandboxes: &dyn CheckSandboxes,
+    target: Option<&str>,
+) -> Result<Vec<Choice>> {
+    one_snapshot(conn, || choices_now(conn, holds, sandboxes, target))
+}
+
+/// [`choices`] on the snapshot of its caller: the ready and the running
+/// tasks are of 1 moment.
+fn choices_now(
     conn: &Connection,
     holds: &Holds,
     sandboxes: &dyn CheckSandboxes,
@@ -1041,5 +1071,65 @@ mod running_tasks_tests {
             statements
         };
         assert_eq!(count(3), count(300));
+    }
+}
+
+#[cfg(test)]
+mod ready_rows_race_tests {
+    use super::*;
+    use crate::taskledger::store::Store;
+
+    fn add_task(tx: &Connection, id: &str, run: &str, own: &str) -> Result<()> {
+        let idea = crate::taskledger::schema::run_idea(tx, run, "now", true)?;
+        tx.execute(
+            "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                 claimable_by, status, created_at, updated_at, idea_id)
+             VALUES (?1, ?2, (SELECT count(*) + 1 FROM tasks), ?1, 'a.md', 'opus', 'opus',
+                 'ready', 'now', 'now', ?3)",
+            params![id, run, idea],
+        )?;
+        tx.execute(
+            "INSERT INTO task_files (task_id, path, mode) VALUES (?1, ?2, 'own')",
+            params![id, own],
+        )?;
+        Ok(())
+    }
+
+    /// A second connection commits between the read of the ready tasks and
+    /// the other reads: it binds the only ready task of `r1` and adds a
+    /// ready task of `r2`. The reader sees 1 moment: each task it gives has
+    /// its run, and the new task is in the tasks and in the Own files, or in
+    /// neither.
+    #[test]
+    fn ready_rows_read_one_moment_while_another_connection_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ledger.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/p', 'now');
+                     INSERT INTO runs (run_id, project_id, slug, finish_steps, status, started_at)
+                     VALUES ('r1', 'p1', 'r1', '[]', 'active', 'now'),
+                            ('r2', 'p1', 'r2', '[]', 'active', 'now');",
+                )?;
+                add_task(tx, "a", "r1", "a.rs")
+            })
+            .unwrap();
+        let mut other = Store::open(&path).unwrap();
+        let rows = ReadyRows::read_with(store.conn(), || {
+            other.immediate(|tx| {
+                tx.execute("UPDATE tasks SET status = 'leased' WHERE task_id = 'a'", [])?;
+                add_task(tx, "n", "r2", "n.rs")
+            })
+        })
+        .unwrap();
+        for t in &rows.tasks {
+            rows.run(&t.run_id).unwrap();
+        }
+        let in_tasks = rows.tasks.iter().any(|t| t.task_id == "n");
+        assert_eq!(in_tasks, rows.own.contains_key("n"));
+        let a_in_tasks = rows.tasks.iter().any(|t| t.task_id == "a");
+        assert_eq!(a_in_tasks, rows.own.contains_key("a"));
     }
 }

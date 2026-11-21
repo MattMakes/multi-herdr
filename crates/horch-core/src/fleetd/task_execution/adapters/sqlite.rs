@@ -12,6 +12,7 @@ use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, Rows, TaskRow, WorkerRow,
 };
 use crate::taskledger::model::{TaskStatus, WorkerKind, WorkerStatus};
+use crate::taskledger::store::one_snapshot;
 
 /// A recorded process from its pid and start time columns. A pid that
 /// cannot name 1 process is no process.
@@ -238,14 +239,17 @@ fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<Str
 }
 
 /// The rows of the reap path: each attempt and each worker row, and the
-/// task of each live attempt. `host` is the host of this machine.
+/// task of each live attempt. `host` is the host of this machine. The 3
+/// reads run on 1 snapshot, so each live attempt has its task.
 pub fn rows(conn: &Connection, host: &str) -> Result<Rows> {
-    let attempts = attempts_where(conn, "", &[])?;
-    let tasks = live_tasks(conn, &attempts)?;
-    Ok(Rows {
-        attempts,
-        workers: workers(conn, host)?,
-        tasks,
+    one_snapshot(conn, || {
+        let attempts = attempts_where(conn, "", &[])?;
+        let tasks = live_tasks(conn, &attempts)?;
+        Ok(Rows {
+            attempts,
+            workers: workers(conn, host)?,
+            tasks,
+        })
     })
 }
 
