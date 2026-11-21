@@ -65,6 +65,26 @@ pub fn detach(cmd: &mut impl Start) -> Result<(), NotSupported> {
     os::detach(cmd.std_mut(TOKEN))
 }
 
+/// Start a detached child of `cmd` ([`detach`]) that inherits no handle of
+/// this process: only the stdin, stdout and stderr that `cmd` sets. Each
+/// name of [`crate::start::FORBIDDEN_ENV`] is removed before the start.
+///
+/// macOS and Linux: std opens each descriptor close-on-exec, so this is
+/// [`detach`] and a spawn. Windows: std always starts a child with handle
+/// inheritance on, so a detached child also gets the stdout and stderr of
+/// this process. A caller that reads the output of this process through a
+/// pipe then waits until the detached child ends (CI run 4: the mail courier
+/// held the pipe of `horch tell` for hours). Windows clears the inherit flag
+/// of the 3 std handles of this process for the spawn, then sets it back.
+pub fn spawn_detached(cmd: &mut impl Start) -> std::io::Result<Child> {
+    let cmd = cmd.std_mut(TOKEN);
+    for key in crate::start::FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    let _ = os::detach(cmd);
+    os::spawn_without_inherited_stdio(cmd)
+}
+
 /// Whether process group `pgid` is still the one whose leader started at
 /// `started` (a start time of [`crate::process::start_time`]). True when the
 /// leader runs with that start time and still leads the group, or when the

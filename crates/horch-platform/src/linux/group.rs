@@ -3,7 +3,8 @@
 use std::process::Child;
 
 pub(crate) use crate::unix::group::{
-    detach, is_same_group, kill_child_group, kill_group_id, new_group, Contained,
+    detach, is_same_group, kill_child_group, kill_group_id, new_group,
+    spawn_without_inherited_stdio, Contained,
 };
 
 pub(crate) fn exited_without_reap(child: &mut Child) -> std::io::Result<bool> {

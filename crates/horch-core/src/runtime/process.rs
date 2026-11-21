@@ -251,7 +251,7 @@ where
 /// the grid tidy) can carry a forbidden key, whatever its caller set.
 pub fn spawn_detached(cmd: &mut impl ChildCommand) -> std::io::Result<Child> {
     detach(cmd);
-    cmd.start()
+    horch_platform::group::spawn_detached(cmd)
 }
 
 /// The pane identity of the process that starts a detached child (#218).
@@ -298,8 +298,6 @@ fn scrub_pane_identity(cmd: &mut impl ChildCommand, inherited: &dyn super::conte
 fn detach(cmd: &mut impl ChildCommand) {
     scrub_child_env(cmd);
     scrub_pane_identity(cmd, &super::context::ProcessEnv);
-    // Windows has no detach: the child dies with the pane there, as before.
-    let _ = horch_platform::group::detach(cmd);
 }
 
 #[cfg(test)]

@@ -388,9 +388,10 @@ impl Harness {
             .map_err(|e| format!("{e:#}"))
     }
 
-    /// Run `horch`, returning its output.
+    /// Run `horch`, returning its output, for at most [`DEADLINE`]
+    /// ([`output_within`]).
     pub fn run(&self, args: &[&str]) -> Output {
-        self.horch(args).output().expect("running horch")
+        output_within(&mut self.horch(args), DEADLINE)
     }
 
     /// Apply the sealed environment to any command.
@@ -1292,6 +1293,83 @@ pub fn wait_for_or<T>(
     );
 }
 
+/// `cmd.output()`, for at most `limit`: the child must exit, and its stdout
+/// and stderr must close, before `limit`. Else the child and its process
+/// group are killed, and the call panics with the command line and the
+/// output so far. A pipe stays open after the exit when a process that the
+/// child started holds it: on Windows the detached mail courier of
+/// `horch tell` did so for hours (CI run 4).
+pub fn output_within(cmd: &mut Command, limit: Duration) -> Output {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+    let line = format!("{cmd:?}");
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    horch_platform::group::new_group(cmd);
+    let began = Instant::now();
+    let mut child = cmd
+        .spawn()
+        .unwrap_or_else(|e| panic!("starting {line}: {e}"));
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let text = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&text);
+        let reader = std::thread::spawn(move || {
+            let Some(mut pipe) = pipe else { return };
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    return;
+                }
+                into.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        });
+        (text, reader)
+    };
+    let (stdout, out_reader) = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let (stderr, err_reader) = read(child.stderr.take().map(|p| Box::new(p) as _));
+    let mut status = None;
+    while began.elapsed() < limit {
+        if status.is_none() {
+            status = match child.try_wait() {
+                Ok(status) => status,
+                Err(e) => {
+                    horch_platform::group::kill_child_group(&mut child);
+                    let _ = child.wait();
+                    panic!("waiting for {line}: {e}");
+                }
+            };
+        }
+        if let Some(status) =
+            status.filter(|_| out_reader.is_finished() && err_reader.is_finished())
+        {
+            let _ = (out_reader.join(), err_reader.join());
+            // The child is reaped: `wait` gives the status that `try_wait` kept.
+            let status = child.wait().unwrap_or(status);
+            let take = |text: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *text.lock().unwrap());
+            return Output {
+                status,
+                stdout: take(stdout),
+                stderr: take(stderr),
+            };
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    horch_platform::group::kill_child_group(&mut child);
+    let _ = child.wait();
+    let state = match status {
+        Some(status) => format!("exited with {status}, but its stdout or stderr stayed open"),
+        None => "did not exit".to_string(),
+    };
+    let text = |t: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&t.lock().unwrap()).into_owned();
+    panic!(
+        "{line} {state} after {} s; its process group was killed\n--- stdout so far ---\n{}\n--- stderr so far ---\n{}",
+        limit.as_secs_f32(),
+        text(&stdout),
+        text(&stderr)
+    );
+}
+
 /// The repository root, from this crate's manifest dir.
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1386,6 +1464,64 @@ mod tests {
         for state in ["S", "Ss", "S+", "R", "R+", "U", "Us", "T", "I", "SN"] {
             assert_eq!(after_grace(Some(state)), AfterGrace::Running, "{state}");
         }
+    }
+
+    /// The panic message of `output_within(sh -c script, limit)`.
+    #[cfg(unix)]
+    fn bounded_panic(script: &str, limit: Duration) -> String {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::output_within(&mut cmd, limit)
+        }))
+        .expect_err("the wait must end with a panic");
+        panic.downcast_ref::<String>().cloned().unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_within_its_limit_gives_its_output() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let out = super::output_within(&mut cmd, Duration::from_secs(60));
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    /// The hang of CI run 4: the child exits, and a process that it
+    /// started holds its stdout for hours. `output()` waits for it.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_that_a_grandchild_holds_open_ends_the_wait_with_a_panic() {
+        let began = std::time::Instant::now();
+        let message = bounded_panic("sleep 600 & echo $!", Duration::from_secs(2));
+        assert!(began.elapsed() < Duration::from_secs(30), "{message}");
+        assert!(
+            message.contains("exited with exit status: 0, but its stdout or stderr stayed open"),
+            "{message}"
+        );
+        assert!(message.contains("sleep 600 & echo $!"), "{message}");
+        let sleeper: u32 = message
+            .split("--- stdout so far ---\n")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .and_then(|pid| pid.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no pid in the stdout so far: {message}"));
+        crate::harness::wait_for("the end of the killed grandchild", || {
+            (!horch_core::procid::alive(sleeper, None)).then_some(())
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_never_exits_ends_the_wait_with_a_panic() {
+        let message = bounded_panic("echo started; sleep 600", Duration::from_secs(1));
+        assert!(message.contains("did not exit after 1 s"), "{message}");
+        assert!(
+            message.contains("--- stdout so far ---\nstarted\n"),
+            "{message}"
+        );
     }
 
     #[cfg(unix)]

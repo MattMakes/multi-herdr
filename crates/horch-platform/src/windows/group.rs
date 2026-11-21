@@ -41,6 +41,51 @@ pub(crate) fn detach(_cmd: &mut Command) -> Result<(), NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
+/// Spawn `cmd` while the std handles of this process are not inheritable.
+///
+/// std calls `CreateProcessW` with handle inheritance on, so a child gets
+/// every inheritable handle of this process. A std handle that this process
+/// got from its parent is inheritable. The handle list of the start info
+/// (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) would name only the 3 handles of
+/// the child, but stable std has no way to pass it (`raw_attribute` is
+/// unstable), and a direct `CreateProcessW` gives no `std::process::Child`.
+/// So the flag of the parent handles changes for the spawn. Another spawn
+/// of this process is not changed by it: std passes a duplicate of an
+/// inherited std handle, made inheritable, to each child. The lock keeps 2
+/// spawns of this function from restoring a flag that the other cleared.
+pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, SetHandleInformation, HANDLE_FLAG_INHERIT,
+    };
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let std_handles: [HANDLE; 3] = [
+        std::io::stdin().as_raw_handle() as HANDLE,
+        std::io::stdout().as_raw_handle() as HANDLE,
+        std::io::stderr().as_raw_handle() as HANDLE,
+    ];
+    let mut cleared: Vec<HANDLE> = Vec::new();
+    for handle in std_handles {
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE || cleared.contains(&handle) {
+            continue;
+        }
+        let mut flags = 0u32;
+        // SAFETY: `handle` is a std handle of this process; `flags` is live.
+        let inherits = unsafe { GetHandleInformation(handle, &mut flags) } != 0
+            && flags & HANDLE_FLAG_INHERIT != 0;
+        // SAFETY: as above; only the inherit flag changes.
+        if inherits && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } != 0 {
+            cleared.push(handle);
+        }
+    }
+    let child = cmd.spawn();
+    for handle in cleared {
+        // SAFETY: as above; the flag goes back to what it was.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    child
+}
+
 pub(crate) fn is_same_group(_pgid: u32, _started: u64) -> Result<bool, NotSupported> {
     Err(NOT_SUPPORTED)
 }

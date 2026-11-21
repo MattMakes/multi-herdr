@@ -61,6 +61,12 @@ pub(crate) fn detach(cmd: &mut Command) -> Result<(), NotSupported> {
     Ok(())
 }
 
+/// std opens each descriptor close-on-exec: the child inherits only its
+/// stdio.
+pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
 pub(crate) fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupported> {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return Ok(false);

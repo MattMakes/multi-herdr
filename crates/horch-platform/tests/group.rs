@@ -176,3 +176,86 @@ fn detach_and_kill_group_id_are_not_supported_on_windows() {
     assert!(group::kill_group_id(std::process::id()).is_err());
     assert!(group::is_same_group(std::process::id(), 0).is_err());
 }
+
+/// The hang of CI run 4 on Windows: a process that reads the output of
+/// `horch tell` through a pipe waited until the detached mail courier
+/// ended, because the courier inherited the stdout and stderr of `horch
+/// tell`. This test runs itself as that parent: the helper starts a
+/// detached child that runs 60 s, writes its pid and exits. The pipe of the
+/// helper must close when the helper exits.
+#[test]
+fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
+    const HELPER: &str = "HORCH_PLATFORM_DETACHED_CHILD_PID_FILE";
+    if let Some(pid_file) = std::env::var_os(HELPER) {
+        let mut cmd = long_child();
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = group::spawn_detached(&mut cmd).expect("start the detached child");
+        std::fs::write(pid_file, child.id().to_string()).expect("write the pid");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let mut helper = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_detached_child_does_not_hold_the_pipe_of_its_parent",
+        ])
+        .env(HELPER, &pid_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the helper");
+    let mut pipes = (helper.stdout.take().unwrap(), helper.stderr.take().unwrap());
+    let (closed, eof) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut text = Vec::new();
+        let _ = pipes.0.read_to_end(&mut text);
+        let _ = pipes.1.read_to_end(&mut text);
+        let _ = closed.send(text);
+    });
+    let status = helper.wait().expect("reap the helper");
+    let output = eof.recv_timeout(std::time::Duration::from_secs(30));
+    let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
+    stop(pid.trim());
+    let output = output.expect("the pipe of the helper stayed open after its exit");
+    assert!(
+        status.success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(!pid.trim().is_empty(), "the helper wrote no pid");
+}
+
+/// A child that runs 60 s.
+fn long_child() -> Command {
+    #[cfg(unix)]
+    {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        cmd
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "60", "127.0.0.1"]);
+        cmd
+    }
+}
+
+/// End the detached child of [`long_child`] by its pid.
+fn stop(pid: &str) {
+    let Ok(pid) = pid.parse::<u32>() else { return };
+    #[cfg(unix)]
+    // SAFETY: plain call; a pid that has gone answers -1.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
+}
