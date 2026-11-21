@@ -1199,3 +1199,81 @@ fn crashed_attempt_of_a_retried_task_orphans_its_tree() {
     assert!(report.created.is_empty(), "{report:?}");
     assert_eq!(w.row("wt1").state, WorktreeState::Orphaned);
 }
+
+/// D244-F2: the owner step reads the attempts, workers and tasks of all
+/// `active` rows in set reads on 1 snapshot. A pass over 3 and over 300
+/// active trees with live owners runs the same count of statements.
+#[test]
+fn owner_reads_of_3_and_of_300_active_trees_run_the_same_count_of_statements() {
+    let count = |n: u32| {
+        let mut w = World::new();
+        for i in 1..=n {
+            let (task, worker, attempt) = w.claimed(i);
+            let path = w.folder(&format!("T{i}-feat"));
+            w.row_in(
+                &format!("wt{i}"),
+                &path,
+                "active",
+                (Some(&task), Some(&worker), Some(&attempt)),
+            );
+        }
+        let config = w.config.clone();
+        let conn = w.store.conn();
+        let (report, statements) = horch_core::taskledger::testing::count_statements(conn, || {
+            reconcile_worktrees(&ctx(&config), conn, &Facts::default(), CLOCK).unwrap()
+        });
+        assert!(report.orphaned.is_empty(), "{report:?}");
+        assert_eq!(w.row("wt1").state, WorktreeState::Active);
+        statements
+    };
+    assert_eq!(count(3), count(300));
+}
+
+/// D244-F2: the edges of the owner facts of the set reads give the result
+/// of the reads of 1 row each: an owner attempt with no row orphans the
+/// tree, a live attempt holds the tree of a worker with no row, and a task
+/// id with no task row fails the pass.
+/// The foreign keys of the ledger refuse such a row, so the test turns
+/// them off to write it.
+#[test]
+fn owner_with_no_attempt_row_no_worker_row_or_no_task_row() {
+    let mut w = World::new();
+    w.conn().execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    let (task, worker, _) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some("no-such-attempt")),
+    );
+    let (task2, _, attempt2) = w.claimed(2);
+    let path2 = w.folder("T2-feat");
+    w.row_in(
+        "wt2",
+        &path2,
+        "active",
+        (Some(&task2), Some("no-such-worker"), Some(&attempt2)),
+    );
+    let report = w.reconcile(&Facts::default());
+    assert_eq!(report.orphaned, ["wt1"], "{report:?}");
+    assert_eq!(w.row("wt2").state, WorktreeState::Active);
+
+    let (_, worker3, attempt3) = w.claimed(3);
+    let path3 = w.folder("T3-feat");
+    w.row_in(
+        "wt3",
+        &path3,
+        "active",
+        (Some("no-such-task"), Some(&worker3), Some(&attempt3)),
+    );
+    let config = w.config.clone();
+    let err = w
+        .store
+        .immediate(|tx| reconcile_worktrees(&ctx(&config), tx, &Facts::default(), CLOCK))
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("no task no-such-task"),
+        "{err:#}"
+    );
+}

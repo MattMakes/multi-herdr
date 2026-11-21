@@ -254,6 +254,62 @@ pub fn outcomes_of<'a>(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The owner facts of the worktree rows of the custody pass. An id with no
+/// row is not in its map.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OwnerFacts {
+    pub attempt_states: BTreeMap<String, String>,
+    pub worker_statuses: BTreeMap<String, String>,
+    /// Status and held reason, by task id.
+    pub tasks: BTreeMap<String, (String, Option<String>)>,
+}
+
+/// The state of each attempt of `attempts`, the status of each worker of
+/// `workers`, and the status and held reason of each task of `tasks`: 3
+/// statements for any count of ids.
+pub fn owner_facts<'a>(
+    conn: &Connection,
+    attempts: impl IntoIterator<Item = &'a str>,
+    workers: impl IntoIterator<Item = &'a str>,
+    tasks: impl IntoIterator<Item = &'a str>,
+) -> Result<OwnerFacts> {
+    fn by_id<T>(
+        conn: &Connection,
+        sql: &str,
+        ids: Vec<&str>,
+        row: impl Fn(&Row<'_>) -> rusqlite::Result<(String, T)>,
+    ) -> Result<BTreeMap<String, T>> {
+        let sql = sql.replace(
+            "{marks}",
+            &crate::taskledger::sql_words::marks(1, ids.len()),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids), row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    let pair = |r: &Row<'_>| Ok((r.get(0)?, r.get(1)?));
+    Ok(OwnerFacts {
+        attempt_states: by_id(
+            conn,
+            "SELECT id, state FROM attempts WHERE id IN ({marks})",
+            attempts.into_iter().collect(),
+            pair,
+        )?,
+        worker_statuses: by_id(
+            conn,
+            "SELECT worker_id, status FROM workers WHERE worker_id IN ({marks})",
+            workers.into_iter().collect(),
+            pair,
+        )?,
+        tasks: by_id(
+            conn,
+            "SELECT task_id, status, held_reason FROM tasks WHERE task_id IN ({marks})",
+            tasks.into_iter().collect(),
+            |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))),
+        )?,
+    })
+}
+
 /// 2 statements for any count of live tasks: each live attempt is judged in
 /// each pass, so this read stays whole.
 fn live_tasks(conn: &Connection, attempts: &[AttemptRow]) -> Result<BTreeMap<String, TaskRow>> {
