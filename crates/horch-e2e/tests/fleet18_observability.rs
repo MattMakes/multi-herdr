@@ -409,7 +409,8 @@ fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
             std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
             seed_task(&h, &run, &file, "codex-terra");
             serve_fast_fleetd(&h);
-            let (worker, pid, started) = wait("the ingested agent PID", || {
+            // A launch: the wait of launch_attempt.
+            let (worker, pid, started) = wait_up_to("the ingested agent PID", DEADLINE, || {
                 let state: serde_json::Value =
                     serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
                 let w = state["workers"]
@@ -454,7 +455,8 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
     }
     // fleetd dispatches both tasks in 1 pass (Phase 4).
     serve_fast_fleetd(&h);
-    let workers = wait("two session transcripts", || {
+    // 2 launches: the wait of launch_attempt.
+    let workers = wait_up_to("two session transcripts", DEADLINE, || {
         let state: serde_json::Value =
             // The running tasks keep the run open, so status exits 1 (TRF-15).
             serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
@@ -464,10 +466,15 @@ fn two_concurrent_workers(name: &str) -> (Harness, Vec<serde_json::Value>) {
             .map(|w| w["worker"].clone())
             .filter(|w| w["kind"] == "worker")
             .collect();
+        // The session can come before fleetd ingests the agent PID, and
+        // stop_and_wait_for_exit reads the PID and its start time.
         (ws.len() == 2
-            && ws
-                .iter()
-                .all(|w| w["session_id"].is_string() && w["transcript_path"].is_string()))
+            && ws.iter().all(|w| {
+                w["session_id"].is_string()
+                    && w["transcript_path"].is_string()
+                    && w["agent_pid"].is_u64()
+                    && w["agent_started"].is_u64()
+            }))
         .then_some(ws)
     });
     (h, workers)
