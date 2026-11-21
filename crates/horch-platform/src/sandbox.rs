@@ -59,7 +59,8 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// macOS when [`SANDBOX_EXEC`] is missing.
 ///
 /// The command keeps the PIDs of the host, so a process that reports its
-/// own PID, as a worker wrapper does, can use it. On Linux a kill of the
+/// own PID, as a worker wrapper does, can use it: fleetd checks the peer of
+/// a request by its host PID, parent and group (FR-10). On Linux a kill of the
 /// group of the caller does not end the command. A job uses
 /// [`sandboxed_job`].
 pub fn sandboxed<C: Start>(
@@ -412,6 +413,9 @@ mod tests {
         false
     }
 
+    /// A sandboxed command lives while its sandbox lives, also when the
+    /// thread that started it ended. A kill of the group that the sandbox
+    /// leads ends each process of the sandbox, as the job hosts kill it.
     #[test]
     fn sandboxed_command_outlives_its_start_thread_and_ends_with_its_sandbox() {
         let dir = tempfile::tempdir().unwrap();
