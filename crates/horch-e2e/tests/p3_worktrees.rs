@@ -667,8 +667,6 @@ fn fm27_trees_that_are_not_landed_are_not_removed() {
         queue(&h, &run, "t1");
         live_bind(&h, &mut agents)
     });
-    // The test runs longer than a lease of the fleet clock and has no
-    // worker that renews it: the lease of the live attempt is long.
     exec(
         &h,
         &format!("UPDATE leases SET expires_at = expires_at + 86400 WHERE task_id = '{task}'"),
@@ -803,8 +801,6 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
         queue(&h, &live_run, "live");
         live_bind(&h, &mut agents)
     });
-    // The test runs longer than a lease of the fleet clock and has no
-    // worker that renews it: the lease of the live attempt is long.
     exec(
         &h,
         &format!("UPDATE leases SET expires_at = expires_at + 86400 WHERE task_id = '{task}'"),
@@ -1006,8 +1002,6 @@ fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after
     let mut h = fleet("p3-slow-add");
     slow_git(&mut h);
     let mut agents = Agents(Vec::new());
-    // No pass dispatches the task before the bind. The fleetd that starts
-    // again has the slow git of the test in its environment.
     let (_, task) = h.without_fleetd(|| {
         let run = seed(&h, "slow", None);
         queue(&h, &run, "t1");

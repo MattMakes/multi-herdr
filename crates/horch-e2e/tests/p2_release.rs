@@ -105,10 +105,6 @@ impl Drop for Agent {
     }
 }
 
-/// The wrapper of the attempt: a process of its own that runs each worker
-/// command as its child. The test is never the wrapper, since a fleet
-/// process starts no fleetd (T-171) and the test starts fleetd. Killed and
-/// waited on drop.
 struct Wrapper {
     child: Child,
     stdin: std::process::ChildStdin,

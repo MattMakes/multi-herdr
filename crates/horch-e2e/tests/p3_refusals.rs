@@ -546,8 +546,6 @@ fn drop_of_a_scratch_tree_rescues_it_and_keeps_its_branch_until_the_removal() {
     let (w, _, _) = claimed(&h, "land");
     for (path, branch, _) in dropped_scratch_trees(&h, &w) {
         let id = column(&h, &path, "worktree_id");
-        // A drop makes 2 rescue runs for 1 tree until T-199 corrects it: the
-        // first rescue ref is the one that this test needs.
         let rescue = refs(&h, &format!("refs/horch/rescue/{id}/"));
         assert_eq!(rescue.first(), Some(&format!("refs/horch/rescue/{id}/1")));
         assert!(path.is_dir());
