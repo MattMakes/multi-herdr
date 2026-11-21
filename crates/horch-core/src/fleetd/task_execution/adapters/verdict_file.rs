@@ -135,6 +135,21 @@ pub fn newest(conn: &Connection, task_id: &str) -> Result<Option<Verdict>> {
     Ok(recorded(conn, task_id)?.pop())
 }
 
+/// The newest verdict of each task of `task_ids`, by task: 1 statement for
+/// any count of tasks. A task with no verdict is not in the map.
+pub fn newest_of<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, Verdict>> {
+    let mut out = std::collections::BTreeMap::new();
+    for row in &door::facts_of_ids(conn, Entity::Task, task_ids, EventKind::Verdict)? {
+        if let Some(v) = from_row(row)? {
+            out.insert(row.entity_id.clone(), v);
+        }
+    }
+    Ok(out)
+}
+
 /// Write the file of each verdict row after [`CURSOR`], oldest first, then
 /// move the cursor. Gives the files that this call wrote or found with the
 /// same bytes. A file with other bytes stops the call, and the cursor stays

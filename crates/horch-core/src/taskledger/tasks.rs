@@ -1503,6 +1503,33 @@ pub fn task_facts(
     rows.map(|raw| Ok(serde_json::from_str(&raw?)?)).collect()
 }
 
+/// [`task_facts`] of each task of `task_ids`, as (task id, fact), oldest
+/// first: 1 statement for any count of tasks.
+pub fn task_facts_of<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+    kind: EventKind,
+) -> Result<Vec<(String, serde_json::Value)>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT task_id, data_json FROM events WHERE kind = ?1 AND entity = ?2
+           AND data_json IS NOT NULL AND task_id IN ({})
+         ORDER BY event_id",
+        crate::taskledger::sql_words::marks(3, ids.len())
+    );
+    let mut values = vec![kind.as_str(), Entity::Task.as_str()];
+    values.extend(ids);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (task_id, raw) = row?;
+        Ok((task_id, serde_json::from_str(&raw)?))
+    })
+    .collect()
+}
+
 /// The answer to question `question_id` frees task `task_id`: a
 /// `blocked_on_user` task moves to `ready`, cause `question_answered`, in
 /// the open transaction of `conn`. Its worktree stays, so the next claim

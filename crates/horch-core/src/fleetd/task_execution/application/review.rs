@@ -409,9 +409,22 @@ pub fn steps_through(conn: &Connection, task: &Task, attempt_id: &str) -> Result
 /// newest verdict of the task is a failed review step: its verdict file
 /// and its reason, which holds the list of findings or functions.
 pub fn start_section(conn: &Connection, task_id: &str) -> Result<Option<String>> {
-    let Some(v) = verdict_file::newest(conn, task_id)? else {
-        return Ok(None);
-    };
+    Ok(verdict_file::newest(conn, task_id)?.and_then(|v| section_of(&v)))
+}
+
+/// [`start_section`] of each task of `task_ids`, by task: 1 statement for
+/// any count of tasks. A task with no such section is not in the map.
+pub fn start_sections<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    Ok(verdict_file::newest_of(conn, task_ids)?
+        .into_iter()
+        .filter_map(|(task_id, v)| section_of(&v).map(|s| (task_id, s)))
+        .collect())
+}
+
+fn section_of(v: &crate::fleetd::task_execution::domain::verification::Verdict) -> Option<String> {
     let review_step = [
         StepName::CodeSweep,
         StepName::ComplexitySweep,
@@ -420,15 +433,15 @@ pub fn start_section(conn: &Connection, task_id: &str) -> Result<Option<String>>
     .iter()
     .any(|n| v.reason.starts_with(&format!("{}: ", n.as_str())));
     if v.decision != Decision::Failed || !review_step {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(format!(
+    Some(format!(
         "## The review of the last attempt\n\n\
          `{}` of attempt {}: {}\n",
         verdict_file::file_name(v.n),
         v.attempt,
         v.reason
-    )))
+    ))
 }
 
 #[cfg(test)]

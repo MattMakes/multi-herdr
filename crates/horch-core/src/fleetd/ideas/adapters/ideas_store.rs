@@ -211,6 +211,47 @@ pub fn covers(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// The ids of the requirements that each task of `task_ids` covers, by
+/// task, as [`covers`] gives them: 1 statement for any count of tasks.
+pub fn covers_of<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT task_id, req_id FROM task_covers WHERE task_id IN ({}) ORDER BY rowid",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for row in rows {
+        let (task_id, req) = row?;
+        out.entry(task_id).or_default().push(req);
+    }
+    Ok(out)
+}
+
+/// The feature of each idea of `ids`, by idea: 1 statement for any count
+/// of ids. An id with no idea is not in the map.
+pub fn features_of<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT id, feature_id FROM ideas WHERE id IN ({})",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The ids of the ideas in `state`: 1 statement for any count of ideas.
 pub fn ids_in_state(conn: &Connection, state: &str) -> Result<std::collections::BTreeSet<String>> {
     let mut stmt = conn.prepare("SELECT id FROM ideas WHERE state = ?1")?;

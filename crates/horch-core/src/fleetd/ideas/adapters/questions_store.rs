@@ -156,6 +156,22 @@ pub fn of_task(conn: &Connection, task_id: &str) -> Result<Vec<Question>> {
     rows_where(conn, "task_id = ?1", [task_id])
 }
 
+/// The rows of each task of `task_ids`, oldest first: 1 statement for any
+/// count of tasks.
+pub fn of_tasks<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<Question>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT {COLUMNS} FROM questions WHERE task_id IN ({}) ORDER BY asked_at, rowid",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), question)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 fn rows_where(conn: &Connection, filter: &str, args: [&str; 1]) -> Result<Vec<Question>> {
     let sql = format!("SELECT {COLUMNS} FROM questions WHERE {filter} ORDER BY asked_at, rowid");
     let mut stmt = conn.prepare(&sql)?;

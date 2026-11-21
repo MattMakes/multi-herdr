@@ -836,81 +836,112 @@ impl AttemptRows {
 }
 
 /// The facts of the files of the attempt of `rows` under `fleet_root`.
-fn facts(conn: &Connection, fleet_root: &Path, rows: &AttemptRows) -> Result<TaskFacts> {
-    let attempt_id = rows.id.as_str();
-    let task = rows.task.clone();
-    let run = &rows.run;
-    let task_id = task.task_id.clone();
-    let work = match repair::start_section(conn, fleet_root, attempt_id)? {
-        Some(section) => Some(section),
-        None => review::start_section(conn, &task_id)?,
-    };
-    let answered: Vec<AnsweredQuestion> = questions::answered_of_task(conn, &task_id)?
-        .into_iter()
-        .map(|q| AnsweredQuestion {
-            id: q.id,
-            question: q.question,
-            answer: q.answer,
+/// The other rows of the task files of a set of attempts, by attempt or
+/// task id: a fixed count of statements for any count of attempts
+/// (D266-F4).
+struct FileRows {
+    repairs: BTreeMap<String, String>,
+    reviews: BTreeMap<String, String>,
+    answered: BTreeMap<String, Vec<questions::Answered>>,
+    trees: BTreeMap<String, trees::TaskTree>,
+    handoffs: BTreeMap<String, String>,
+    marks: BTreeMap<String, (Option<String>, Option<String>)>,
+    features: BTreeMap<String, String>,
+    covers: BTreeMap<String, Vec<String>>,
+}
+
+impl FileRows {
+    fn read(conn: &Connection, fleet_root: &Path, attempts: &[AttemptRows]) -> Result<FileRows> {
+        let task_ids: Vec<&str> = attempts.iter().map(|a| a.task.task_id.as_str()).collect();
+        let ids = || task_ids.iter().copied();
+        let marks: BTreeMap<String, (Option<String>, Option<String>)> = {
+            let sql = format!(
+                "SELECT task_id, idea_id, json_extract(spec_json, '$.kind') FROM tasks
+                 WHERE task_id IN ({})",
+                crate::taskledger::sql_words::marks(1, task_ids.len())
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(ids()), |r| {
+                Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let idea_ids = marks.values().filter_map(|(idea, _)| idea.as_deref());
+        let features = ideas_store::features_of(conn, idea_ids)?;
+        let mut trees = BTreeMap::new();
+        for tree in trees::newest_of_tasks(conn, ids())? {
+            if !WORKTREES_GONE.contains(&WorktreeStatus::parse(&tree.status)?) {
+                trees.insert(tree.task_id.clone(), tree);
+            }
+        }
+        Ok(FileRows {
+            repairs: repair::start_sections(
+                conn,
+                fleet_root,
+                attempts.iter().map(|a| a.id.as_str()),
+            )?,
+            reviews: review::start_sections(conn, ids())?,
+            answered: questions::answered_of_tasks(conn, ids())?,
+            trees,
+            handoffs: outbox_ingest::handoffs_of(conn, ids())?,
+            marks,
+            features,
+            covers: ideas_store::covers_of(conn, ids())?,
         })
-        .collect();
-    let sections: Vec<String> = work.into_iter().chain(answers_section(&answered)).collect();
-    let extra = (!sections.is_empty()).then(|| sections.join("\n"));
-    let (worktree, branch) = match task_tree(conn, &task_id)?.filter(|_| task.uses_worktree()) {
-        Some(row) => (row.path, row.branch),
-        None => (run.project_root.clone(), base_branch(run)?),
-    };
-    let handoff = outbox_ingest::handoff_of(conn, &task_id)?;
-    let (idea, feature) = idea_of(conn, &task_id)?;
-    let covers = ideas_store::covers(conn, &task_id)?;
-    let kind = match task.work_kind {
-        Some(kind) => Some(kind),
-        None => spec_kind(conn, &task_id)?,
-    };
-    Ok(TaskFacts {
-        task: format!("T{}", task.seq),
-        task_id,
-        run: run.slug.clone(),
-        attempt: rows.attempt()?,
-        profile: rows.persona.clone().unwrap_or_default(),
-        worktree,
-        branch,
-        read_first: task.task_file.unwrap_or_default(),
-        goal: task.title,
-        check: task.land_check,
-        kind,
-        ticket_snapshot: task.ticket_snapshot.unwrap_or_default(),
-        extra,
-        handoff,
-        idea,
-        feature,
-        covers,
-        // The fix attempt of a judged task gives its verdict file (ticket 41).
-        verdict: None,
-    })
-}
+    }
 
-fn spec_kind(conn: &Connection, task_id: &str) -> Result<Option<String>> {
-    Ok(conn
-        .query_row(
-            "SELECT json_extract(spec_json, '$.kind') FROM tasks WHERE task_id = ?1",
-            [task_id],
-            |r| r.get::<_, Option<String>>(0),
-        )?
-        .filter(|kind| !kind.is_empty()))
-}
-
-/// The idea of task `task_id` and the feature of that idea (RR-12).
-fn idea_of(conn: &Connection, task_id: &str) -> Result<(Option<String>, Option<String>)> {
-    let idea: Option<String> = conn.query_row(
-        "SELECT idea_id FROM tasks WHERE task_id = ?1",
-        [task_id],
-        |r| r.get(0),
-    )?;
-    let Some(idea) = idea else {
-        return Ok((None, None));
-    };
-    let feature = ideas_store::idea(conn, &idea)?.map(|row| row.feature_id);
-    Ok((Some(idea), feature))
+    /// The facts of the files of the attempt of `rows`.
+    fn facts(&self, rows: &AttemptRows) -> Result<TaskFacts> {
+        let task = rows.task.clone();
+        let run = &rows.run;
+        let task_id = task.task_id.clone();
+        let work = match self.repairs.get(&rows.id) {
+            Some(section) => Some(section.clone()),
+            None => self.reviews.get(&task_id).cloned(),
+        };
+        let answered: Vec<AnsweredQuestion> = self
+            .answered
+            .get(&task_id)
+            .into_iter()
+            .flatten()
+            .map(|q| AnsweredQuestion {
+                id: q.id.clone(),
+                question: q.question.clone(),
+                answer: q.answer.clone(),
+            })
+            .collect();
+        let sections: Vec<String> = work.into_iter().chain(answers_section(&answered)).collect();
+        let extra = (!sections.is_empty()).then(|| sections.join("\n"));
+        let tree = self.trees.get(&task_id).filter(|_| task.uses_worktree());
+        let (worktree, branch) = match tree {
+            Some(row) => (row.path.clone(), row.branch.clone()),
+            None => (run.project_root.clone(), base_branch(run)?),
+        };
+        let (idea, spec_kind) = self.marks.get(&task_id).cloned().unwrap_or_default();
+        let feature = idea.as_ref().and_then(|i| self.features.get(i)).cloned();
+        let kind = task.work_kind.or(spec_kind.filter(|kind| !kind.is_empty()));
+        Ok(TaskFacts {
+            task: format!("T{}", task.seq),
+            handoff: self.handoffs.get(&task_id).cloned(),
+            covers: self.covers.get(&task_id).cloned().unwrap_or_default(),
+            task_id,
+            run: run.slug.clone(),
+            attempt: rows.attempt()?,
+            profile: rows.persona.clone().unwrap_or_default(),
+            worktree,
+            branch,
+            read_first: task.task_file.unwrap_or_default(),
+            goal: task.title,
+            check: task.land_check,
+            kind,
+            ticket_snapshot: task.ticket_snapshot.unwrap_or_default(),
+            extra,
+            idea,
+            feature,
+            // The fix attempt of a judged task gives its verdict file (ticket 41).
+            verdict: None,
+        })
+    }
 }
 
 /// Write `task.yaml` and `START.md` of the attempt `attempt_id` under
@@ -936,7 +967,7 @@ pub fn write_task_files_in(
     secrets: &[Secret],
 ) -> Result<AttemptFiles> {
     let rows = AttemptRows::read(conn, attempt_id)?;
-    let facts = facts(conn, fleet_root, &rows)?;
+    let facts = FileRows::read(conn, fleet_root, std::slice::from_ref(&rows))?.facts(&rows)?;
     write_with_facts(fleet_root, state_root, &rows.run, &facts, secrets)
 }
 
@@ -984,13 +1015,26 @@ pub fn write_missing_task_files_in(
     state_root: Option<&Path>,
     secrets: &[Secret],
 ) -> Result<Vec<(String, Result<AttemptFiles>)>> {
-    let mut out = Vec::new();
-    for rows in AttemptRows::launching_push(conn)? {
-        let dir = attempt_dir(fleet_root, &rows.task.task_id, &rows.attempt()?);
-        if dir.join("task.yaml").exists() {
-            continue;
+    let (missing, file_rows) = one_snapshot(conn, || {
+        let mut missing = Vec::new();
+        for rows in AttemptRows::launching_push(conn)? {
+            let dir = attempt_dir(fleet_root, &rows.task.task_id, &rows.attempt()?);
+            if !dir.join("task.yaml").exists() {
+                missing.push(rows);
+            }
         }
-        let facts = facts(conn, fleet_root, &rows)?;
+        if missing.is_empty() {
+            return Ok((missing, None));
+        }
+        let file_rows = FileRows::read(conn, fleet_root, &missing)?;
+        Ok((missing, Some(file_rows)))
+    })?;
+    let Some(file_rows) = file_rows else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for rows in missing {
+        let facts = file_rows.facts(&rows)?;
         let written = write_with_facts(fleet_root, state_root, &rows.run, &facts, secrets);
         out.push((rows.id, written));
     }
@@ -1201,6 +1245,8 @@ mod ready_rows_race_tests {
 #[cfg(test)]
 mod missing_task_files_tests {
     use super::*;
+    use crate::fleetd::task_execution::adapters::verdict_file;
+    use crate::fleetd::task_execution::domain::verification::{Decision, Verdict};
     use crate::taskledger::store::Store;
     use crate::taskledger::testing::count_statements;
 
@@ -1274,6 +1320,96 @@ mod missing_task_files_tests {
 
     /// The statements of [`AttemptRows::launching_push`].
     const ATTEMPT_ROWS_READS: usize = 4;
+
+    /// Task `t0` has an answered question, 2 covered requirements and a
+    /// handed-off attempt; `t1` has a failed review verdict; `t2` has none.
+    fn add_task_rows(store: &mut Store) {
+        store
+            .immediate(|tx| {
+                tx.execute_batch(
+                    "INSERT INTO questions (id, task_id, feature_id, owner, state, due_at,
+                         asked_at, answered_at)
+                     VALUES ('q1', 't0', 'F-1', 'o', 'answered', 0, 'now', 'now');
+                     INSERT INTO events (at, actor, kind, text, entity, entity_id, task_id,
+                         data_json)
+                     VALUES ('now', 'horch', 'question', 'q', 'task', 't0', 't0',
+                             '{\"question_id\": \"q1\", \"text\": \"why\"}'),
+                            ('now', 'horch', 'answered', 'a', 'task', 't0', 't0',
+                             '{\"question_id\": \"q1\", \"text\": \"because\"}');
+                     INSERT INTO task_covers (task_id, req_id) VALUES ('t0', 'R1'), ('t0', 'R2');
+                     INSERT INTO workers (worker_id, run_id, persona, host, status, task_id,
+                         attempt, handoff_path)
+                     VALUES ('wold', 'r1', 'opus', 'h', 'stopped', 't0', 0, '/h.md');
+                     INSERT INTO attempts (id, task_id, worker_id, state, outcome)
+                     VALUES ('aold', 't0', 'wold', 'ended', 'handed_off');",
+                )?;
+                verdict_file::record(
+                    tx,
+                    None,
+                    Verdict {
+                        task_id: "t1".into(),
+                        attempt: "A1".into(),
+                        n: 0,
+                        decision: Decision::Failed,
+                        tip: "abc".into(),
+                        check_hash: "h".into(),
+                        job: None,
+                        reason: "code-sweep: F1".into(),
+                    },
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn file_rows_give_the_rows_of_the_read_of_each_task() {
+        let (tmp, mut store) = ledger(3);
+        add_task_rows(&mut store);
+        let conn = store.conn();
+        let fleet_root = tmp.path().join("fleet");
+        let attempts = AttemptRows::launching_push(conn).unwrap();
+        let file_rows = FileRows::read(conn, &fleet_root, &attempts).unwrap();
+        for rows in &attempts {
+            let facts = file_rows.facts(rows).unwrap();
+            let task_id = rows.task.task_id.as_str();
+            let answered: Vec<AnsweredQuestion> = questions::answered_of_task(conn, task_id)
+                .unwrap()
+                .into_iter()
+                .map(|q| AnsweredQuestion {
+                    id: q.id,
+                    question: q.question,
+                    answer: q.answer,
+                })
+                .collect();
+            let review = review::start_section(conn, task_id).unwrap();
+            let sections: Vec<String> = review
+                .into_iter()
+                .chain(answers_section(&answered))
+                .collect();
+            let extra = (!sections.is_empty()).then(|| sections.join("\n"));
+            let idea = ideas_store::idea(conn, facts.idea.as_deref().unwrap()).unwrap();
+            assert_eq!(facts.extra, extra, "{task_id}");
+            assert_eq!(
+                facts.handoff,
+                outbox_ingest::handoff_of(conn, task_id).unwrap()
+            );
+            assert_eq!(facts.covers, ideas_store::covers(conn, task_id).unwrap());
+            assert_eq!(facts.feature, idea.map(|row| row.feature_id));
+        }
+        let t0 = file_rows.facts(&attempts[0]).unwrap();
+        assert!(t0.extra.unwrap().contains("because"));
+        assert_eq!(t0.handoff.as_deref(), Some("/h.md"));
+        assert_eq!(t0.covers, ["R1", "R2"]);
+        let t1 = file_rows.facts(&attempts[1]).unwrap();
+        assert!(t1.extra.unwrap().contains("code-sweep: F1"));
+        assert_eq!(file_rows.facts(&attempts[2]).unwrap().extra, None);
+    }
+
+    #[test]
+    fn missing_task_files_of_3_and_300_attempts_run_the_same_statements() {
+        assert_eq!(statements(3, true), statements(300, true));
+    }
 
     #[test]
     fn project_facts_of_3_and_300_missing_attempts_run_no_statement() {

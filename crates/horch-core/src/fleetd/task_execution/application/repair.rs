@@ -258,10 +258,11 @@ fn repair_fact(conn: &Connection, attempt_id: &str) -> Result<Option<RepairFact>
         EventKind::Note,
         REPAIR_CAUSE,
     )?;
-    let Some(data) = data else {
-        return Ok(None);
-    };
-    let v: serde_json::Value = serde_json::from_str(&data)?;
+    data.as_deref().map_or(Ok(None), parse_fact)
+}
+
+fn parse_fact(data: &str) -> Result<Option<RepairFact>> {
+    let v: serde_json::Value = serde_json::from_str(data)?;
     let kind = v[REPAIR_KEY].as_str().and_then(RepairKind::parse);
     let branch = v["branch"].as_str();
     Ok(kind.zip(branch).map(|(kind, branch)| RepairFact {
@@ -668,9 +669,43 @@ pub fn start_section(
     fleet_root: &Path,
     attempt_id: &str,
 ) -> Result<Option<String>> {
-    let Some(RepairFact { kind, branch, .. }) = repair_fact(conn, attempt_id)? else {
-        return Ok(None);
-    };
+    match repair_fact(conn, attempt_id)? {
+        Some(fact) => Ok(Some(section_of(conn, fleet_root, attempt_id, fact)?)),
+        None => Ok(None),
+    }
+}
+
+/// [`start_section`] of each attempt of `attempt_ids`, by attempt. 1
+/// statement finds the repair attempts for any count of attempts; each
+/// repair attempt then reads its own branch rows.
+pub fn start_sections<'a>(
+    conn: &Connection,
+    fleet_root: &Path,
+    attempt_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let data = door::fact_data_of_ids(
+        conn,
+        Entity::Attempt,
+        attempt_ids,
+        EventKind::Note,
+        REPAIR_CAUSE,
+    )?;
+    let mut out = std::collections::BTreeMap::new();
+    for (attempt_id, data) in data {
+        if let Some(fact) = parse_fact(&data)? {
+            let section = section_of(conn, fleet_root, &attempt_id, fact)?;
+            out.insert(attempt_id, section);
+        }
+    }
+    Ok(out)
+}
+
+fn section_of(
+    conn: &Connection,
+    fleet_root: &Path,
+    attempt_id: &str,
+    RepairFact { kind, branch, .. }: RepairFact,
+) -> Result<String> {
     let task_id: String = conn
         .query_row(
             "SELECT task_id FROM attempts WHERE id = ?1",
@@ -699,7 +734,7 @@ pub fn start_section(
             fix_section(&branch, &output, &check)
         }
     };
-    Ok(Some(section))
+    Ok(section)
 }
 
 /// The check of `task`: its own, else the default check of its run.

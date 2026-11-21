@@ -215,6 +215,7 @@ pub struct TaskTree {
     pub status: String,
     pub state: String,
     pub branch: String,
+    pub path: String,
 }
 
 /// The newest row that is not `removed` of each task of `task_ids`: 1
@@ -226,7 +227,7 @@ pub fn newest_of_tasks<'a>(
 ) -> Result<Vec<TaskTree>> {
     let ids: Vec<&str> = task_ids.into_iter().collect();
     let sql = format!(
-        "SELECT task_id, status, state, branch, max(rowid) FROM worktrees
+        "SELECT task_id, status, state, branch, path, max(rowid) FROM worktrees
          WHERE state <> 'removed' AND task_id IN ({}) GROUP BY task_id",
         crate::taskledger::sql_words::marks(1, ids.len())
     );
@@ -237,6 +238,7 @@ pub fn newest_of_tasks<'a>(
             status: r.get(1)?,
             state: r.get(2)?,
             branch: r.get(3)?,
+            path: r.get(4)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

@@ -420,6 +420,59 @@ pub fn facts_of(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The events of kind `kind` with no state change about each row of `ids`
+/// of `entity`, oldest first: 1 statement for any count of ids.
+pub fn facts_of_ids<'a>(
+    conn: &Connection,
+    entity: Entity,
+    ids: impl IntoIterator<Item = &'a str>,
+    kind: EventKind,
+) -> Result<Vec<FactRow>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT {FACT_COLUMNS} FROM events
+         WHERE entity = ?1 AND kind = ?2 AND to_state IS NULL AND entity_id IN ({})
+         ORDER BY event_id",
+        crate::taskledger::sql_words::marks(3, ids.len())
+    );
+    let mut values = vec![entity.as_str(), kind.as_str()];
+    values.extend(ids);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), fact_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// [`fact_data`] of each row of `ids` of `entity`, by id: 1 statement for
+/// any count of ids. An id with no such fact is not in the map.
+pub fn fact_data_of_ids<'a>(
+    conn: &Connection,
+    entity: Entity,
+    ids: impl IntoIterator<Item = &'a str>,
+    kind: EventKind,
+    cause: &str,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT entity_id, data_json, min(event_id) FROM events
+         WHERE entity = ?1 AND kind = ?2 AND cause = ?3 AND entity_id IN ({})
+         GROUP BY entity_id",
+        crate::taskledger::sql_words::marks(4, ids.len())
+    );
+    let mut values = vec![entity.as_str(), kind.as_str(), cause];
+    values.extend(ids);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let mut out = std::collections::BTreeMap::new();
+    for row in rows {
+        if let (id, Some(data)) = row? {
+            out.insert(id, data);
+        }
+    }
+    Ok(out)
+}
+
 /// The events of kind `kind` with no state change about rows of `entity`
 /// after the event `after`, oldest first.
 pub fn facts_after(

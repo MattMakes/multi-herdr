@@ -163,17 +163,54 @@ pub struct Answered {
     pub answer: Option<String>,
 }
 
+/// [`answered_of_task`] of each task of `task_ids`, by task: 3 statements
+/// for any count of tasks. A task with no answered row is not in the map.
+pub fn answered_of_tasks<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str> + Clone,
+) -> Result<std::collections::BTreeMap<String, Vec<Answered>>> {
+    let facts_by_task = |kind| -> Result<std::collections::BTreeMap<String, Vec<Fact>>> {
+        let mut out: std::collections::BTreeMap<String, Vec<Fact>> = Default::default();
+        for (task_id, v) in tasks::task_facts_of(conn, task_ids.clone(), kind)? {
+            out.entry(task_id)
+                .or_default()
+                .push(serde_json::from_value(v)?);
+        }
+        Ok(out)
+    };
+    let asked = facts_by_task(EventKind::Question)?;
+    let answers = facts_by_task(EventKind::Answered)?;
+    let mut out: std::collections::BTreeMap<String, Vec<Answered>> = Default::default();
+    for q in store::of_tasks(conn, task_ids)? {
+        if q.state != State::Answered {
+            continue;
+        }
+        let text = |facts: &std::collections::BTreeMap<String, Vec<Fact>>| {
+            text_of(facts.get(&q.task_id).map_or(&[][..], Vec::as_slice), &q.id)
+        };
+        let answered = Answered {
+            question: text(&asked),
+            answer: text(&answers),
+            id: q.id.clone(),
+        };
+        out.entry(q.task_id).or_default().push(answered);
+    }
+    Ok(out)
+}
+
+/// The text of the newest fact of `facts` about question `id` that holds 1.
+fn text_of(facts: &[Fact], id: &str) -> Option<String> {
+    facts
+        .iter()
+        .rev()
+        .find(|f| f.question_id == id && f.text.is_some())
+        .and_then(|f| f.text.clone())
+}
+
 /// The answered rows of task `task_id`, oldest first, with their texts.
 pub fn answered_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Answered>> {
     let asked = facts(conn, task_id, EventKind::Question)?;
     let answers = facts(conn, task_id, EventKind::Answered)?;
-    let text_of = |facts: &[Fact], id: &str| {
-        facts
-            .iter()
-            .rev()
-            .find(|f| f.question_id == id && f.text.is_some())
-            .and_then(|f| f.text.clone())
-    };
     Ok(store::of_task(conn, task_id)?
         .into_iter()
         .filter(|q| q.state == State::Answered)

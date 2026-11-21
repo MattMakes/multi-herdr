@@ -325,27 +325,45 @@ fn hand_off(
 /// the kept handoff file of its last ended attempt, when that attempt
 /// ended `handed_off` or `context_limit` (fleetd-p7 ticket 18).
 pub fn handoff_of(conn: &Connection, task_id: &str) -> Result<Option<String>> {
-    Ok(conn
-        .query_row(
-            "SELECT a.outcome, w.handoff_path FROM attempts a
-             JOIN workers w ON w.worker_id = a.worker_id
-             WHERE a.task_id = ?1 AND a.state = ?2
-             ORDER BY a.rowid DESC LIMIT 1",
-            params![task_id, AttemptState::Ended.as_str()],
-            |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                ))
-            },
-        )
-        .optional()?
-        .and_then(|(outcome, path)| {
-            let handed = [handed_off_word(), Outcome::ContextLimit.as_str()];
-            outcome
-                .is_some_and(|o| handed.contains(&o.as_str()))
-                .then_some(path)?
-        }))
+    Ok(handoffs_of(conn, [task_id])?.remove(task_id))
+}
+
+/// [`handoff_of`] of each task of `task_ids`, by task: 1 statement for any
+/// count of tasks. A task with no handoff is not in the map.
+pub fn handoffs_of<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = task_ids.into_iter().collect();
+    let sql = format!(
+        "SELECT a.task_id, a.outcome, w.handoff_path, max(a.rowid) FROM attempts a
+         JOIN workers w ON w.worker_id = a.worker_id
+         WHERE a.state = ?1 AND a.task_id IN ({})
+         GROUP BY a.task_id",
+        crate::taskledger::sql_words::marks(2, ids.len())
+    );
+    let ended = AttemptState::Ended.as_str();
+    let mut values = vec![ended];
+    values.extend(ids);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let handed = [handed_off_word(), Outcome::ContextLimit.as_str()];
+    let mut out = std::collections::BTreeMap::new();
+    for row in rows {
+        let (task_id, outcome, path) = row?;
+        if outcome.is_some_and(|o| handed.contains(&o.as_str())) {
+            if let Some(path) = path {
+                out.insert(task_id, path);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Record the log `p` of `a` from the offset that part 1 read. A second
