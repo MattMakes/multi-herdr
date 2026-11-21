@@ -969,9 +969,6 @@ fn failed_host_launch_ends_the_attempt_at_once_and_rung_6_bounds_the_retries() {
     assert_eq!(w.attempts(&id).len(), limit as usize);
 }
 
-// ─── a large ready queue (T-313) ────────────────────────────────────────
-
-/// `text` with each task id of the ledger of `w` as its `T-<seq>`.
 fn with_shorts(w: &World, text: String) -> String {
     let mut stmt = w
         .store
@@ -988,7 +985,6 @@ fn with_shorts(w: &World, text: String) -> String {
     })
 }
 
-/// A world with `n` ready tasks, each with its own Own file.
 fn ready_queue(n: usize) -> World {
     let w = World::new();
     let run = w.run.clone();
@@ -1006,8 +1002,6 @@ fn ready_queue(n: usize) -> World {
     w
 }
 
-/// A32 (T-313): the choice and the read of the base tips run the same
-/// number of statements for 30 and for 3000 ready tasks.
 #[test]
 fn dispatch_reads_of_a_large_ready_queue_run_a_fixed_number_of_statements() {
     let count = |n: usize| {

@@ -448,7 +448,6 @@ fn persona_of(t: &Task) -> String {
         .unwrap_or_default()
 }
 
-/// The facts of a run that the choice and a new tree read.
 struct RunFacts {
     project_id: String,
     project_root: String,
@@ -456,27 +455,17 @@ struct RunFacts {
     base_branch: Option<String>,
 }
 
-/// The live tree of a task: its newest row that is not `removed` and that
-/// no drop or cleanup ended ([`task_tree`]).
 struct LiveTree {
     orphaned: bool,
     branch: String,
 }
 
-/// The rows of the ready tasks, read in a fixed number of statements for
-/// any count of ready tasks (A32: no statement for each row of a pass).
 struct ReadyRows {
-    /// The ready tasks, in seq order of each run.
     tasks: Vec<Task>,
-    /// Each ready task whose cancel waits for the stop of an attempt.
     cancelled: BTreeSet<String>,
-    /// The `parked` idea of each ready task of a parked idea.
     parked: BTreeMap<String, String>,
     own: BTreeMap<String, Vec<String>>,
-    /// The first attempt that is not ended of each ready task.
     open: BTreeMap<String, String>,
-    /// The live tree of each ready task and of each task that a ready task
-    /// judges.
     trees: BTreeMap<String, LiveTree>,
     runs: BTreeMap<String, RunFacts>,
 }
@@ -550,8 +539,6 @@ impl ReadyRows {
             .with_context(|| format!("no run {run_id}"))
     }
 
-    /// The base branch of a new tree of `task` ([`tree_base`]); `None`
-    /// when it is not known.
     fn tree_base(&self, run: &RunFacts, task: &Task) -> Option<String> {
         match judged_task(&task.kind, task.parent_task_id.as_deref()) {
             Some(judged) => self.trees.get(judged).map(|t| t.branch.clone()),
@@ -580,7 +567,6 @@ impl ReadyRows {
     }
 }
 
-/// The 2 text columns of each row of `sql`.
 fn pairs(
     conn: &Connection,
     sql: &str,
@@ -593,9 +579,7 @@ fn pairs(
     Ok(rows)
 }
 
-/// The live tree of each ready task and of each task that a ready task
-/// judges, in 1 statement. SQLite takes the bare columns from the row of
-/// `max(rowid)`: the newest row, as [`trees::of_task`] reads it.
+/// SQLite takes the bare columns from the row of `max(rowid)`.
 fn live_trees(conn: &Connection) -> Result<BTreeMap<String, LiveTree>> {
     let ready = word(TaskStatus::Ready);
     let mut stmt = conn.prepare(&format!(
@@ -626,7 +610,6 @@ fn live_trees(conn: &Connection) -> Result<BTreeMap<String, LiveTree>> {
     Ok(out)
 }
 
-/// The facts of each run of a ready task, in 1 statement.
 fn ready_runs(conn: &Connection) -> Result<BTreeMap<String, RunFacts>> {
     let ready = word(TaskStatus::Ready);
     let mut stmt = conn.prepare(&format!(
