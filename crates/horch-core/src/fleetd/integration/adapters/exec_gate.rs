@@ -469,14 +469,19 @@ static GATE_GROUP: AtomicI32 = AtomicI32::new(0);
 
 /// Start `spec` through `host` and wait for it. The gate leads its own
 /// group. A stop of this job process at its deadline kills that group
-/// first, so no gate outlives its job. Windows has no signal handlers:
-/// there the gate lives on after the stop
-/// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
-/// row "Signals and stop").
+/// first, so no gate outlives its job. A stop between the launch and the
+/// store of the group waits in the hold until the group is stored
+/// (T-369). Windows has no signal handlers: there the gate lives on after
+/// the stop (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
+/// section 6, row "Signals and stop").
 fn run_gate(host: &dyn ProcessHost, spec: &LaunchSpec) -> Result<ExitStatus> {
     let _ = horch_platform::signal::kill_group_on_termination(&GATE_GROUP);
-    let mut launched = host.launch(spec)?;
-    GATE_GROUP.store(i32::try_from(launched.pid).unwrap_or(0), Ordering::SeqCst);
+    let mut launched = {
+        let _hold = horch_platform::signal::hold_termination();
+        let launched = host.launch(spec)?;
+        GATE_GROUP.store(i32::try_from(launched.pid).unwrap_or(0), Ordering::SeqCst);
+        launched
+    };
     let status = launched.child.wait();
     GATE_GROUP.store(0, Ordering::SeqCst);
     Ok(status?)
@@ -494,5 +499,23 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     Cause {
         actor: Actor::Horch,
         text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleetd::fleet_runtime::application::jobs::stop_window;
+
+    /// A `SIGTERM` of the job process between the launch of the gate and
+    /// the store of its group ends the gate group (T-369, F4).
+    #[test]
+    fn a_stop_between_the_launch_and_the_store_of_the_gate_ends_its_group() {
+        stop_window::prove(
+            "fleetd::integration::adapters::exec_gate::tests::a_stop_between_the_launch_and_the_store_of_the_gate_ends_its_group",
+            |host, spec| {
+                let _ = run_gate(host, spec);
+            },
+        );
     }
 }

@@ -1706,16 +1706,128 @@ static CHECK_GROUP: AtomicI32 = AtomicI32::new(0);
 
 /// Start `spec` through `host` and wait for it. The check leads its own
 /// group. A stop of this job process at its deadline (`SIGTERM`) kills
-/// that group first, so no check outlives its job. Windows has no signal
-/// handlers: there the check lives on after the stop
+/// that group first, so no check outlives its job. The handler is armed
+/// before the launch, and a stop between the launch and the store of the
+/// group waits in the hold until the group is stored (T-369). Windows has
+/// no signal handlers: there the check lives on after the stop
 /// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
 /// row "Signals and stop").
 fn run_check(host: &dyn ProcessHost, spec: &LaunchSpec) -> Result<std::process::ExitStatus> {
-    let mut launched = host.launch(spec)?;
-    let group = i32::try_from(launched.pid).unwrap_or(0);
-    CHECK_GROUP.store(group, Ordering::SeqCst);
     let _ = horch_platform::signal::kill_group_on_termination(&CHECK_GROUP);
+    let mut launched = {
+        let _hold = horch_platform::signal::hold_termination();
+        let launched = host.launch(spec)?;
+        CHECK_GROUP.store(i32::try_from(launched.pid).unwrap_or(0), Ordering::SeqCst);
+        launched
+    };
     let status = launched.child.wait();
     CHECK_GROUP.store(0, Ordering::SeqCst);
     Ok(status?)
+}
+
+/// The proof of the stop window of a job process (T-369): a `SIGTERM` that
+/// comes between the launch of a check or a gate and the store of its
+/// group still ends that group.
+#[cfg(test)]
+pub(crate) mod stop_window {
+    use super::*;
+    use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
+    use crate::fleetd::worker_profiles::application::ports::{EnvRule, LaunchError, Launched};
+    use std::time::{Duration, Instant};
+
+    /// The key of the job child: the file where it records the launched
+    /// group.
+    const CHILD: &str = "HORCH_STOP_WINDOW_CHILD";
+
+    /// A host that launches through [`Launcher`], records the pid and the
+    /// start time of the launched group, and then sends `SIGTERM` to this
+    /// process before it returns: the stop comes after the launch and
+    /// before the caller can store the group.
+    struct TermAtLaunch {
+        record: PathBuf,
+    }
+
+    impl ProcessHost for TermAtLaunch {
+        fn launch(&self, spec: &LaunchSpec) -> Result<Launched, LaunchError> {
+            let launched = Launcher.launch(spec)?;
+            let started = launched.pid_start.unwrap_or(0);
+            std::fs::write(&self.record, format!("{} {started}", launched.pid))
+                .expect("the record of the launched group is written");
+            let me = std::process::id();
+            let me_started = horch_platform::process::start_time(me).expect("this process runs");
+            assert!(horch_platform::signal::stop_same(
+                me,
+                me_started,
+                horch_platform::signal::Stop::Term
+            ));
+            Ok(launched)
+        }
+    }
+
+    /// Run the test `test` (its full path in this test binary) as a job
+    /// child that calls `run` with [`TermAtLaunch`] and a command that
+    /// sleeps 600 s. The proof: the child ends by the signal, and the
+    /// launched group is gone within 10 s.
+    pub(crate) fn prove(test: &str, run: impl FnOnce(&dyn ProcessHost, &LaunchSpec)) {
+        if let Ok(record) = std::env::var(CHILD) {
+            let spec = LaunchSpec {
+                program: PathBuf::from("/bin/sh"),
+                args: vec!["-c".into(), "sleep 600".into()],
+                cwd: None,
+                env_rule: EnvRule { vars: Vec::new() },
+                detach: false,
+                output: None,
+            };
+            run(
+                &TermAtLaunch {
+                    record: PathBuf::from(record),
+                },
+                &spec,
+            );
+            panic!("the job process lives on after the TERM");
+        }
+        // Windows has no process groups and no termination handler.
+        if horch_platform::group::kill_group_id(0).is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("group");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .env(CHILD, &record)
+            .status()
+            .unwrap();
+        assert!(
+            status.code().is_none(),
+            "the job child ends by the signal, not by an exit: {status:?}"
+        );
+        let text = std::fs::read_to_string(&record).expect("the child launched the command");
+        let (pid, started) = text.split_once(' ').unwrap();
+        let (pid, started): (u32, u64) = (pid.parse().unwrap(), started.parse().unwrap());
+        let until = Instant::now() + Duration::from_secs(10);
+        while horch_platform::process::start_time(pid) == Some(started) {
+            if Instant::now() >= until {
+                let _ = horch_platform::group::kill_group_id(pid);
+                panic!("the group {pid} of the command outlives its job process");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `SIGTERM` of the job process between the launch of the check and
+    /// the store of its group ends the check group (T-369, F4).
+    #[test]
+    fn a_stop_between_the_launch_and_the_store_of_the_check_ends_its_group() {
+        stop_window::prove(
+            "fleetd::fleet_runtime::application::jobs::tests::a_stop_between_the_launch_and_the_store_of_the_check_ends_its_group",
+            |host, spec| {
+                let _ = run_check(host, spec);
+            },
+        );
+    }
 }
