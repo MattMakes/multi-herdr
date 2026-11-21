@@ -767,10 +767,6 @@ fn own_outbox(ctx: &RuntimeContext, store: &Store) -> Result<OutboxWriter> {
     OutboxWriter::of_this_process(&ctx.paths.fleet_root, store.conn(), &config, &PlatformFacts)
 }
 
-/// Write `result.json` with `status: completed` and `summary` to the
-/// outbox of the own attempt: `horch ledger done` and `finish`. The reason
-/// of `done --unlanded` is the key `unlanded`, and fleetd parks the task
-/// (RR-14).
 pub(super) fn write_completed(
     ctx: &RuntimeContext,
     summary: &str,

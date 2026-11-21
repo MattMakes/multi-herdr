@@ -350,8 +350,6 @@ fn finding_of(h: &Harness, path: &Path) -> Value {
     of[0].clone()
 }
 
-/// The worker `w` runs `horch ledger done --unlanded` in its fleetd
-/// attempt. The next passes park its task.
 fn park(h: &Harness, w: &str, reason: &str) {
     ok_in_attempt(h, w, &["ledger", "done", "--unlanded", reason, "parked"]);
 }
@@ -422,7 +420,6 @@ fn rr14_done_unlanded_in_a_fleetd_attempt_parks_the_task() {
     until("the park of the task", &h, || {
         (task(&h, 1)["held_reason"] == "unlanded").then_some(())
     });
-    // More passes move nothing: the verifier does not end it done.
     for _ in 0..3 {
         pass(&h);
     }
@@ -437,7 +434,6 @@ fn rr14_done_unlanded_in_a_fleetd_attempt_parks_the_task() {
     );
     assert_eq!(outcome, ["unlanded"], "{}", dump(&h));
 
-    // The tree is kept: not rescued, not removed, with each file.
     assert_eq!(column(&h, &path, "state"), "created", "{}", dump(&h));
     assert_eq!(column(&h, &path, "status"), "unlanded");
     assert_eq!(column(&h, &path, "owner_attempt"), "");
@@ -445,11 +441,9 @@ fn rr14_done_unlanded_in_a_fleetd_attempt_parks_the_task() {
     assert!(path.join("feat.txt").is_file());
     assert!(path.join("notes.txt").is_file());
 
-    // The dependent waits.
     assert_eq!(task(&h, 2)["state"], "pending");
     assert!(try_bind(&h, "opus-b", None).is_err(), "T-2 waits for T-1");
 
-    // A requeue resumes the task in the same tree.
     ok(&h, &["ledger", "requeue", "T-1", "fixed", "--run", "alpha"]);
     let b = bind(&h, "opus-a", None);
     assert_eq!(b.task_id, t1["task_id"], "{b:?}");

@@ -237,8 +237,6 @@ fn from_value(value: Json) -> Result<ResultFile, String> {
     })
 }
 
-/// The reason of the key `unlanded`: a string that is not empty, with the
-/// status `completed`.
 fn unlanded(value: Option<&Json>, status: ResultStatus) -> Result<Option<String>, String> {
     let reason = match value {
         None => return Ok(None),

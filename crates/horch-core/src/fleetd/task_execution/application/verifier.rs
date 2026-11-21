@@ -394,13 +394,6 @@ fn end_as(
 /// (`horch ledger done --unlanded`, RR-14). It burns no attempt.
 pub const UNLANDED: &str = "unlanded";
 
-/// The result of attempt `attempt_id` has the key `unlanded` with `reason`,
-/// and its task is in `verifying`: park the task (RR-14, 04 L5). The task
-/// moves to `escalated` with `held_reason` unlanded, and no check job runs.
-/// Its tree stays: `unlanded`, with no owner, and an `active` tree moves to
-/// `created`, so a requeue resumes the task in it. Its dependents stay
-/// `pending`. The attempt ends `unlanded`. `reason` and `summary` are
-/// untrusted text of the worker (SR-6): each is 1 printable line.
 pub(crate) fn park_unlanded(
     tx: &Connection,
     guard: Option<Generation>,
