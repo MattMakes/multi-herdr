@@ -365,6 +365,17 @@ impl GitRunner {
 
     /// Run `git <args>` in `dir` and return its output whatever the exit code.
     pub fn output(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
+        self.output_with(dir, args, &mut group::exited_without_reap)
+    }
+
+    /// [`Self::output`] with `exited`, the look at a limited child that
+    /// does not reap it: the seam of the tests of D254-F2.
+    fn output_with(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        exited: &mut dyn FnMut(&mut Child) -> io::Result<bool>,
+    ) -> Result<GitOutput, GitError> {
         if dir.as_os_str().is_empty() {
             return Err(GitError::NoDir);
         }
@@ -420,7 +431,7 @@ impl GitRunner {
                 stderr: out.stderr,
             });
         };
-        match output_within(&mut cmd, limit).map_err(spawn)? {
+        match output_within(&mut cmd, limit, exited).map_err(spawn)? {
             Limited::Ended(out) => Ok(out),
             Limited::Stopped { by_term } => Err(GitError::TimedOut {
                 args: args.iter().map(|a| (*a).to_owned()).collect(),
@@ -458,10 +469,44 @@ enum Limited {
     Stopped { by_term: bool },
 }
 
+/// The child of a limited git and its group, held from the spawn to the
+/// reap. A drop while armed kills the group and reaps the child, so an
+/// early return leaves no git that keeps a `.lock` (D254-F2).
+struct Held {
+    child: Child,
+    contained: Contained,
+    armed: bool,
+}
+
+impl Held {
+    /// The reap of the child, then no kill at the drop: with the child
+    /// reaped, its pid can go to another process.
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        let status = self.child.wait()?;
+        self.armed = false;
+        Ok(status)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if self.armed {
+            self.contained.terminate();
+            group::kill_child_group(&mut self.child);
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// Run `cmd` with its stdout and stderr read, and stop its group at
 /// `limit`. The child stays unreaped until its group is stopped, so its pid
-/// names its group and no other process.
-fn output_within(cmd: &mut Command, limit: Duration) -> io::Result<Limited> {
+/// names its group and no other process. `exited` looks at the child
+/// without a reap; an `EINTR` of it is retried (D254-F2).
+fn output_within(
+    cmd: &mut Command,
+    limit: Duration,
+    exited: &mut dyn FnMut(&mut Child) -> io::Result<bool>,
+) -> io::Result<Limited> {
     let deadline = Instant::now() + limit;
     Contained::prepare(cmd);
     let mut child = cmd.spawn()?;
@@ -475,11 +520,22 @@ fn output_within(cmd: &mut Command, limit: Duration) -> io::Result<Limited> {
     };
     let stdout = read_all(child.stdout.take());
     let stderr = read_all(child.stderr.take());
+    let mut held = Held {
+        child,
+        contained,
+        armed: true,
+    };
+    let mut exited = |child: &mut Child| loop {
+        match exited(child) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    };
     let mut look = Duration::from_millis(1);
     let ended = loop {
         // The readers end when each process with the pipes ends, also a
         // process that git leaves in its group.
-        if group::exited_without_reap(&mut child)? && stdout.is_finished() && stderr.is_finished() {
+        if exited(&mut held.child)? && stdout.is_finished() && stderr.is_finished() {
             break true;
         }
         let now = Instant::now();
@@ -490,38 +546,41 @@ fn output_within(cmd: &mut Command, limit: Duration) -> io::Result<Limited> {
         look = (look * 2).min(LOOK_MAX);
     };
     if ended {
-        let status = child.wait()?;
+        let status = held.wait()?;
         return Ok(Limited::Ended(GitOutput {
             status: status.code().unwrap_or(-1),
             stdout: stdout.join().unwrap_or_default(),
             stderr: stderr.join().unwrap_or_default(),
         }));
     }
-    let by_term = stop(&mut child, &contained)?;
-    let _ = child.wait();
+    let by_term = stop(&mut held, &mut exited)?;
+    let _ = held.wait();
     let _ = stdout.join();
     let _ = stderr.join();
     Ok(Limited::Stopped { by_term })
 }
 
-/// `SIGTERM` to the group of `child`, a wait of [`TERM_GRACE`] for the
-/// child to end, then `SIGKILL` to the group. The kill also comes when the
-/// child ended in the grace, for a process that it left in its group.
-/// Whether the child ended in the grace.
-fn stop(child: &mut Child, contained: &Contained) -> io::Result<bool> {
+/// `SIGTERM` to the group of the child of `held`, a wait of [`TERM_GRACE`]
+/// for the child to end, then `SIGKILL` to the group. The kill also comes
+/// when the child ended in the grace, for a process that it left in its
+/// group. Whether the child ended in the grace.
+fn stop(
+    held: &mut Held,
+    exited: &mut dyn FnMut(&mut Child) -> io::Result<bool>,
+) -> io::Result<bool> {
     let grace_end = Instant::now() + TERM_GRACE;
     let mut by_term = false;
-    if group::term_child_group(child) {
+    if group::term_child_group(&mut held.child) {
         while Instant::now() < grace_end {
-            if group::exited_without_reap(child)? {
+            if exited(&mut held.child)? {
                 by_term = true;
                 break;
             }
             std::thread::sleep(LOOK_MAX);
         }
     }
-    contained.terminate();
-    group::kill_child_group(child);
+    held.contained.terminate();
+    group::kill_child_group(&mut held.child);
     Ok(by_term)
 }
 
@@ -601,12 +660,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let chmod = std::process::Command::new("chmod")
-            .arg("+x")
-            .arg(&bin)
-            .status()
-            .unwrap();
-        assert!(chmod.success());
+        horch_platform::fs::make_executable(&bin).unwrap();
         (bin, pids)
     }
 
@@ -682,6 +736,59 @@ mod tests {
             e.to_string().contains("a .lock file of git can stay"),
             "{e}"
         );
+        all_gone(&pids);
+    }
+
+    /// A limited git in `dir` whose look at the child gives `error` 1 time,
+    /// after the fake git recorded its pids. The seam waits for the pids, so
+    /// a slow start on a loaded host cannot end the run before them. The
+    /// result of the run.
+    fn run_with_1_error(
+        dir: &Path,
+        error: io::ErrorKind,
+    ) -> (Result<GitOutput, GitError>, PathBuf) {
+        let (bin, pids) = fake_git(dir, "trap 'exit 143' TERM");
+        let mut given = false;
+        let mut exited = |child: &mut Child| {
+            if !given {
+                let until = Instant::now() + Duration::from_secs(30);
+                while !pids.is_file() {
+                    assert!(Instant::now() < until, "the fake git records its pids");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                given = true;
+                return Err(io::Error::from(error));
+            }
+            group::exited_without_reap(child)
+        };
+        let got = GitRunner::new(&bin)
+            .with_time_limit(Duration::from_secs(1))
+            .output_with(dir, &["update-ref", "x"], &mut exited);
+        (got, pids)
+    }
+
+    #[test]
+    fn an_interrupted_wait_still_stops_and_reaps_the_limited_git() {
+        if no_groups() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (got, pids) = run_with_1_error(dir.path(), io::ErrorKind::Interrupted);
+        assert!(
+            matches!(got, Err(GitError::TimedOut { by_term: true, .. })),
+            "the wait goes on after EINTR: {got:?}"
+        );
+        all_gone(&pids);
+    }
+
+    #[test]
+    fn an_error_of_the_wait_kills_and_reaps_the_limited_git() {
+        if no_groups() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (got, pids) = run_with_1_error(dir.path(), io::ErrorKind::Other);
+        assert!(matches!(got, Err(GitError::Spawn { .. })), "{got:?}");
         all_gone(&pids);
     }
 
