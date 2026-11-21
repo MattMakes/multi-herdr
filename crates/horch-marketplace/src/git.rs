@@ -655,8 +655,8 @@ mod tests {
         std::fs::write(
             &bin,
             format!(
-                "#!/bin/sh\n{body}\nsleep 600 &\necho \"$$ $!\" > '{}'\nwait\n",
-                pids.display()
+                "#!/bin/sh\n{body}\nsleep 600 &\necho \"$$ $!\" > '{pids}.new'\nmv '{pids}.new' '{pids}'\nwait\n",
+                pids = pids.display()
             ),
         )
         .unwrap();
@@ -681,19 +681,48 @@ mod tests {
         group::kill_group_id(0).is_err()
     }
 
+    /// A run of the fake git of `dir` with `body`, with a time limit of
+    /// 1 s. The first look at the child waits for the pids file, the ready
+    /// mark that the fake writes after `body`: on a loaded host the shell
+    /// can start later than the limit, and a TERM before its `trap` ends it.
+    /// That first look then gives `error`, or looks at the child. The
+    /// result, the pids file, and the time of the ready mark.
+    fn run_when_ready(
+        dir: &Path,
+        body: &str,
+        error: Option<io::ErrorKind>,
+    ) -> (Result<GitOutput, GitError>, PathBuf, Instant) {
+        let (bin, pids) = fake_git(dir, body);
+        let mut ready = None;
+        let mut exited = |child: &mut Child| {
+            if ready.is_none() {
+                let until = Instant::now() + Duration::from_secs(30);
+                while !pids.is_file() {
+                    assert!(Instant::now() < until, "the fake git records its pids");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                ready = Some(Instant::now());
+                if let Some(error) = error {
+                    return Err(io::Error::from(error));
+                }
+            }
+            group::exited_without_reap(child)
+        };
+        let got = GitRunner::new(&bin)
+            .with_time_limit(Duration::from_secs(1))
+            .output_with(dir, &["update-ref", "x"], &mut exited);
+        (got, pids, ready.expect("the fake git is ready"))
+    }
+
     #[test]
     fn a_git_past_its_time_limit_ends_by_term_with_its_group() {
         if no_groups() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let (bin, pids) = fake_git(dir.path(), "trap 'exit 143' TERM");
-        let started = Instant::now();
-        let e = GitRunner::new(&bin)
-            .with_time_limit(Duration::from_secs(1))
-            .output(dir.path(), &["update-ref", "x"])
-            .unwrap_err();
-        let took = started.elapsed();
+        let (got, pids, ready) = run_when_ready(dir.path(), "trap 'exit 143' TERM", None);
+        let took = ready.elapsed();
+        let e = got.unwrap_err();
         assert!(
             matches!(e, GitError::TimedOut { by_term: true, .. }),
             "{e:?}"
@@ -716,14 +745,11 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        // The child `sleep` gets the ignored TERM too.
-        let (bin, pids) = fake_git(dir.path(), "trap '' TERM");
         let started = Instant::now();
-        let e = GitRunner::new(&bin)
-            .with_time_limit(Duration::from_secs(1))
-            .output(dir.path(), &["update-ref", "x"])
-            .unwrap_err();
+        // The child `sleep` gets the ignored TERM too.
+        let (got, pids, _) = run_when_ready(dir.path(), "trap '' TERM", None);
         let took = started.elapsed();
+        let e = got.unwrap_err();
         assert!(
             matches!(e, GitError::TimedOut { by_term: false, .. }),
             "{e:?}"
@@ -739,41 +765,14 @@ mod tests {
         all_gone(&pids);
     }
 
-    /// A limited git in `dir` whose look at the child gives `error` 1 time,
-    /// after the fake git recorded its pids. The seam waits for the pids, so
-    /// a slow start on a loaded host cannot end the run before them. The
-    /// result of the run.
-    fn run_with_1_error(
-        dir: &Path,
-        error: io::ErrorKind,
-    ) -> (Result<GitOutput, GitError>, PathBuf) {
-        let (bin, pids) = fake_git(dir, "trap 'exit 143' TERM");
-        let mut given = false;
-        let mut exited = |child: &mut Child| {
-            if !given {
-                let until = Instant::now() + Duration::from_secs(30);
-                while !pids.is_file() {
-                    assert!(Instant::now() < until, "the fake git records its pids");
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                given = true;
-                return Err(io::Error::from(error));
-            }
-            group::exited_without_reap(child)
-        };
-        let got = GitRunner::new(&bin)
-            .with_time_limit(Duration::from_secs(1))
-            .output_with(dir, &["update-ref", "x"], &mut exited);
-        (got, pids)
-    }
-
     #[test]
     fn an_interrupted_wait_still_stops_and_reaps_the_limited_git() {
         if no_groups() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let (got, pids) = run_with_1_error(dir.path(), io::ErrorKind::Interrupted);
+        let interrupted = Some(io::ErrorKind::Interrupted);
+        let (got, pids, _) = run_when_ready(dir.path(), "trap 'exit 143' TERM", interrupted);
         assert!(
             matches!(got, Err(GitError::TimedOut { by_term: true, .. })),
             "the wait goes on after EINTR: {got:?}"
@@ -787,7 +786,8 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let (got, pids) = run_with_1_error(dir.path(), io::ErrorKind::Other);
+        let other = Some(io::ErrorKind::Other);
+        let (got, pids, _) = run_when_ready(dir.path(), "trap 'exit 143' TERM", other);
         assert!(matches!(got, Err(GitError::Spawn { .. })), "{got:?}");
         all_gone(&pids);
     }
