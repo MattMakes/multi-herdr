@@ -35,14 +35,8 @@ use serde_json::Value;
 /// The grace of a polite stop, in s, in the `fleet.toml` of each test.
 const GRACE_S: u64 = 1;
 
-/// The time budget of a pass (`pass_time_budget_s`, its default).
 const PASS_BUDGET_S: u64 = 20;
 
-/// A wide guard only: 2 passes of [`PASS_BUDGET_S`] plus the grace, plus
-/// 4 s for the start of fleetd. FM-22 is proven by the count of passes in
-/// [`StopPasses`]. Under load a pass of fleetd takes 9 s or more, because 1
-/// rename or fsync of the kernel takes seconds (measured: the rename of the
-/// heartbeat took 7 s at a load average of 20 to 48).
 const STOPPED_IN: Duration = Duration::from_secs(2 * PASS_BUDGET_S + GRACE_S + 4);
 
 /// A process group that the test started, by the pid and start time of
@@ -233,16 +227,12 @@ fn open_items(store: &Store) -> Vec<String> {
         .unwrap()
 }
 
-/// The awake time of the last heartbeat of fleetd. fleetd writes 1
-/// heartbeat at its start and 1 at the end of each pass.
 fn heartbeat_at(h: &Harness) -> Option<u64> {
     let path: PathBuf = h.root.join("fleet").join("run").join("heartbeat.json");
     let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     v["awake"]["awake_ms"].as_u64()
 }
 
-/// The steps of a stop that the `stops` rows of the ledger record: the
-/// polite stop, the kill, and the close of the pane.
 fn stop_steps(store: &Store) -> (bool, bool, bool) {
     let has = |sql: &str| -> bool {
         store
@@ -258,10 +248,6 @@ fn stop_steps(store: &Store) -> (bool, bool, bool) {
     )
 }
 
-/// The heartbeats that fleetd wrote before each step of a stop. Each poll
-/// reads the heartbeat first and the ledger after it. So a heartbeat counts
-/// before a step only when fleetd wrote it before that step. A late poll
-/// sees fewer heartbeats, never more, and the load of the host cannot add 1.
 #[derive(Default)]
 struct StopPasses {
     before_polite: BTreeSet<u64>,
@@ -269,7 +255,6 @@ struct StopPasses {
 }
 
 impl StopPasses {
-    /// 1 poll. True when the ledger records each step.
     fn poll(&mut self, h: &Harness, store: &Store) -> bool {
         let heartbeat = heartbeat_at(h);
         let (polite, kill, close) = stop_steps(store);
@@ -285,7 +270,6 @@ impl StopPasses {
     }
 }
 
-/// Wait until fleetd wrote `passes` more heartbeats: `passes` more passes.
 fn wait_passes(h: &Harness, passes: usize) {
     let mut seen = Vec::new();
     wait_for("fleetd passes", || {
@@ -337,8 +321,6 @@ fn fm22_orphan_process_and_pane_after_a_reap_are_stopped() {
         || passes.poll(&h, &store).then_some(()),
         || format!("{:?}", stop_steps(&store)),
     );
-    // The heartbeat of the start comes before pass 1, and the heartbeat of
-    // pass 1 comes before pass 2.
     assert!(
         passes.before_polite.len() <= 1,
         "fleetd sent the polite stop after {} heartbeats; FM-22 sends it in \
