@@ -378,6 +378,8 @@ fn trace_to(conn: &Connection, file: PathBuf) {
 
 /// An open task ledger.
 pub struct Store {
+    // `conn` is declared before `record`, so it is dropped first: the trace
+    // callback of `record_statements` reads `record` while `conn` is open.
     conn: Connection,
     path: PathBuf,
     record: Option<ReadOnlyRecord>,
