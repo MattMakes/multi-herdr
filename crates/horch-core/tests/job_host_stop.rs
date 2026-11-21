@@ -1,9 +1,3 @@
-//! The stop of a job host (`horch job run`): a SIGTERM must end every
-//! process group that the job host registered with
-//! `horch_platform::signal::kill_group_on_termination`. The job host can
-//! register more than 1: the check of `jobs.rs`, the gate of
-//! `exec_gate.rs` and the land check of `land.rs` each keep their own.
-
 #![cfg(unix)]
 
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -21,9 +15,6 @@ fn sleeping_group() -> std::process::Child {
         .expect("start a group")
 }
 
-/// A helper run of this test binary registers 2 groups, each in its own
-/// static, and then gets SIGTERM. Both groups end by SIGKILL, and the
-/// helper ends by SIGTERM.
 #[test]
 fn a_sigterm_kills_every_registered_group() {
     let mut first = sleeping_group();
@@ -38,8 +29,6 @@ fn a_sigterm_kills_every_registered_group() {
         .env(HELPER, format!("{} {}", first.id(), second.id()))
         .output()
         .expect("run the helper");
-    // A killed group can still be in its exit, so each gets 5 s to end. A
-    // group that the handler did not kill must not outlive the test.
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until
         && [&mut first, &mut second]
@@ -80,7 +69,6 @@ fn a_sigterm_kills_every_registered_group() {
     );
 }
 
-/// The helper of the test above. It does nothing in a normal test run.
 #[test]
 fn two_registrations_helper() {
     static FIRST: AtomicI32 = AtomicI32::new(0);

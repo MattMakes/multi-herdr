@@ -877,11 +877,9 @@ fn reap(_root: &Path, _log: &Path, _grace: std::time::Duration) -> std::io::Resu
 #[cfg(unix)]
 const EXIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// What a process left after the grace is, from its `ps` state.
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterGrace {
-    /// `ps` does not list it.
     Gone,
     /// A zombie (`Z`, or `X` on Linux) or in its exit (the macOS flag `E`):
     /// it took the signal, and only the kernel still works on it.
@@ -900,8 +898,6 @@ fn after_grace(state: Option<&str>) -> AfterGrace {
     }
 }
 
-/// The `ps` state of each of `processes` that `ps` still lists. A failed
-/// `ps` is tried again for 5 s, then gives no states.
 #[cfg(unix)]
 fn states_of(processes: &[crate::process::Process]) -> std::collections::HashMap<u32, String> {
     if processes.is_empty() {
@@ -932,10 +928,8 @@ fn states_of(processes: &[crate::process::Process]) -> std::collections::HashMap
     }
 }
 
-/// Wait at most `limit` for each of `exiting` to be gone, and print how
-/// long each took. A pid that `states` lists in a state out of its exit is
-/// a new process: an exit does not go back. The processes still in their
-/// exit after `limit` leaked.
+/// A pid that `states` lists in a state out of its exit is a new process:
+/// an exit does not go back.
 #[cfg(unix)]
 fn wait_exits(
     mut exiting: Vec<crate::process::Process>,
@@ -1381,8 +1375,6 @@ mod tests {
         process_list_or_sandbox, reap, reap_grace, stop_stale_harnesses, OWNER_FILE,
     };
 
-    /// T-276: after the grace, a zombie or a process in its exit is not a
-    /// leak; a process in any other state is, state U too.
     #[cfg(unix)]
     #[test]
     fn after_the_grace_a_process_in_its_exit_is_told_from_a_running_one() {
@@ -1405,9 +1397,6 @@ mod tests {
         }
     }
 
-    /// A process in its exit that is gone before the limit is no leak; 1
-    /// that stays in its exit after the limit is. A pid in a running state
-    /// is a new process, since an exit does not go back.
     #[cfg(unix)]
     #[test]
     fn a_process_in_its_exit_leaks_only_when_its_exit_outlasts_the_limit() {

@@ -66,8 +66,6 @@ pub(crate) fn on_termination_set(
     Ok(())
 }
 
-/// The groups of [`kill_group_on_termination`], 1 slot for each distinct
-/// static. A null slot is free.
 static GROUPS: [AtomicPtr<AtomicI32>; GROUP_SLOTS] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; GROUP_SLOTS];
 const GROUP_SLOTS: usize = 8;
@@ -98,7 +96,6 @@ extern "C" fn kill_group(sig: libc::c_int) {
     }
 }
 
-/// Put `group` in a free slot of [`GROUPS`], once.
 fn register(group: &'static AtomicI32) {
     let ptr = std::ptr::from_ref(group).cast_mut();
     if GROUPS.iter().any(|s| s.load(Ordering::SeqCst) == ptr) {
