@@ -14,10 +14,12 @@
 //! - After the commit of its pass, fleetd moves each file to
 //!   `run/jobs/archive/`.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use horch_platform::channel::User;
+use horch_platform::fs as platform;
 use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
@@ -31,9 +33,6 @@ const ARCHIVE: &str = "archive";
 
 /// The part of a name that marks a temp file (protocol rule 1).
 const TMP: &str = ".tmp";
-
-/// The mode of a result file.
-const FILE_MODE: u32 = 0o600;
 
 /// What a job process writes: the run that it ran, and its outcome.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,12 +82,45 @@ pub fn path(fleet_root: &Path, job_id: i64, run: i64) -> PathBuf {
 
 /// Write `result` atomically to its file under `fleet_root`, with mode
 /// 0600, in the folder `run/jobs/` with mode 0700. Gives the path.
+///
+/// The folder and the file get access for this user only at the create
+/// ([`platform::create_dir_owner_only`], [`platform::create_new_owner_only`]).
+/// On Windows a std create gives an elevated token the owner
+/// `Administrators` and an inherited DACL, and [`read_folder`] refuses
+/// such a file, so its run never ends.
 pub fn write(fleet_root: &Path, result: &JobResult) -> Result<PathBuf> {
-    fsx::ensure_private_dir(&folder(fleet_root))?;
+    let dir = folder(fleet_root);
+    platform::create_dir_owner_only(&dir).with_context(|| format!("making {}", dir.display()))?;
+    fsx::ensure_private_dir(&dir)?;
     let path = path(fleet_root, result.job_id, result.run);
     let bytes = serde_json::to_vec(result).context("serializing a job result")?;
-    fsx::write_atomic(&path, &bytes, FILE_MODE)?;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let tmp = dir.join(format!(
+        "{}-{}.json{TMP}-{}",
+        result.job_id,
+        result.run,
+        &nonce[..12]
+    ));
+    let written = write_new(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing {}", path.display()));
+    }
+    match platform::sync_dir(&dir) {
+        Err(e)
+            if e.get_ref()
+                .is_some_and(|i| i.is::<horch_platform::NotSupported>()) => {}
+        synced => synced.with_context(|| format!("syncing {}", dir.display()))?,
+    }
     Ok(path)
+}
+
+/// Create the new file `path` with access for this user only, write
+/// `bytes` and sync it.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = platform::create_new_owner_only(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Read each result file under `fleet_root`, in the order of the names,
@@ -189,5 +221,36 @@ pub fn archive(fleet_root: &Path, path: &Path) -> Result<()> {
     match std::fs::rename(path, to.join(name)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         r => r.with_context(|| format!("archiving {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file that [`write`] makes passes each check of [`read_folder`]:
+    /// its owner is this user and only this user has access to it and to
+    /// `run/jobs/`.
+    #[test]
+    fn a_written_result_passes_the_protected_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = horch_platform::path::canonicalize(dir.path()).unwrap();
+        let result = JobResult {
+            job_id: 7,
+            run: 2,
+            passed: true,
+            verdict: true,
+            text: "ok".into(),
+            data: None,
+        };
+        let path = write(&root, &result).unwrap();
+        assert_eq!(path, folder(&root).join("7-2.json"));
+        let owner = User::current().unwrap();
+        let reads = read_folder(&root, &owner, 4096, &mut |_| Ok(false)).unwrap();
+        assert_eq!(reads.len(), 1, "{reads:?}");
+        match &reads[0].read {
+            Read::Valid { result: got, .. } => assert_eq!(got, &result),
+            other => panic!("{other:?}"),
+        }
     }
 }
