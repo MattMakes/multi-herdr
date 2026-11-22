@@ -386,19 +386,8 @@ fn create_worktree(
 ) -> Result<WorktreeRow> {
     let run = runs::get(store.conn(), &task.run_id)?;
     let root = PathBuf::from(&run.project_root);
-    let base = run
-        .run_branch
-        .clone()
-        .or(run.base_branch.clone())
-        .context("the run has no run branch: create runs in a git repository")?;
-    let slug = format!("T{}-{}", task.seq, safe(name));
-    let path = root.join(".worktrees").join(&slug);
-    let branch = format!(
-        "{}-T{}-{}",
-        run.run_branch.as_deref().unwrap_or("fleet"),
-        task.seq,
-        safe(name)
-    );
+    let base = worktree_base(&run)?;
+    let (path, branch) = worktree_place(&run, task, name);
     if path.exists() {
         bail!(
             "{} exists but the ledger has no row for it; pick another name",
@@ -425,10 +414,34 @@ fn create_worktree(
         bytes_on_disk: None,
         reason: None,
     };
-    insert_worktree(store, &row, &task.run_id)
+    insert_worktree(store, &row, &task.run_id, Actor::Worker)
 }
 
-fn insert_worktree(store: &mut Store, row: &WorktreeRow, run_id: &str) -> Result<WorktreeRow> {
+pub(crate) fn worktree_base(run: &Run) -> Result<String> {
+    run.run_branch
+        .clone()
+        .or(run.base_branch.clone())
+        .context("the run has no run branch: create runs in a git repository")
+}
+
+pub(crate) fn worktree_place(run: &Run, task: &Task, name: &str) -> (PathBuf, String) {
+    let slug = format!("T{}-{}", task.seq, safe(name));
+    let path = Path::new(&run.project_root).join(".worktrees").join(slug);
+    let branch = format!(
+        "{}-T{}-{}",
+        run.run_branch.as_deref().unwrap_or("fleet"),
+        task.seq,
+        safe(name)
+    );
+    (path, branch)
+}
+
+pub(crate) fn insert_worktree(
+    store: &mut Store,
+    row: &WorktreeRow,
+    run_id: &str,
+    actor: Actor,
+) -> Result<WorktreeRow> {
     store.immediate(|tx| {
         tx.execute(
             &format!(
@@ -456,7 +469,7 @@ fn insert_worktree(store: &mut Store, row: &WorktreeRow, run_id: &str) -> Result
                 task: row.task_id.as_deref(),
                 worker: row.worker_id.as_deref(),
             },
-            Actor::Worker,
+            actor,
             EventKind::Progress,
             &format!(
                 "Worktree {} on branch {} from {}.",

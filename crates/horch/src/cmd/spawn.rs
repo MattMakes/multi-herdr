@@ -10,6 +10,7 @@ use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{
     ExecutionPlan, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
 };
+use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{HorchAccess, Phase, Roster, Teammate};
@@ -195,7 +196,20 @@ fn spawn_worker(
     }
     let mut plan = planned?;
     plan.controller = controller;
+    if let Some(l) = ledger.filter(|_| needs_prestaged_worktree(&args, &plan.launch.teammate)) {
+        if let Some(path) = l.prestage_worktree(ctx)? {
+            plan.execution.workdir = Some(path);
+        }
+    }
     launch(ctx, &sc, plan, args.role.as_deref(), ledger, sandboxed)
+}
+
+fn needs_prestaged_worktree(args: &SpawnArgs, teammate: &Teammate) -> bool {
+    !has_task_text(args)
+        && args.resume.is_none()
+        && teammate.agent == HarnessKind::Claude
+        && teammate.sandbox.is_some()
+        && teammate.horch_access == HorchAccess::Full
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
