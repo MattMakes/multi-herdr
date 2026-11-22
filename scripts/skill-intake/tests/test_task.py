@@ -106,6 +106,40 @@ class FleetModeTest(IntakeTestCase):
         self.assertEqual(tasklib.create(str(self.tmp / "b")).base, self.tmp / "b")
 
 
+class ModeDetectionTest(IntakeTestCase):
+    def setUp(self):
+        super().setUp()
+        os.environ["SKILL_INTAKE_HORCH"] = "/usr/bin/true"
+        os.environ["HORCH_ROLE"] = "skill-importer-1"
+        os.environ["HORCH_RECORD_ID"] = "rec-1"
+
+    def test_a_herdr_pane_is_fleet(self):
+        os.environ["HERDR_PANE_ID"] = "p0"
+        self.assertEqual(tasklib.mode(), "fleet")
+
+    def test_an_hc_pane_is_fleet(self):
+        os.environ["HC_TERMINAL_ID"] = "t0"
+        self.assertEqual(tasklib.mode(), "fleet")
+
+    def test_no_pane_is_plain(self):
+        self.assertEqual(tasklib.mode(), "plain")
+
+    def test_empty_pane_variables_are_plain(self):
+        os.environ["HERDR_PANE_ID"] = ""
+        os.environ["HC_TERMINAL_ID"] = ""
+        self.assertEqual(tasklib.mode(), "plain")
+
+    def test_a_pane_without_a_role_is_plain(self):
+        del os.environ["HORCH_ROLE"]
+        os.environ["HC_TERMINAL_ID"] = "t0"
+        self.assertEqual(tasklib.mode(), "plain")
+
+    def test_a_pane_with_a_failing_horch_is_plain(self):
+        os.environ["SKILL_INTAKE_HORCH"] = "/usr/bin/false"
+        os.environ["HC_TERMINAL_ID"] = "t0"
+        self.assertEqual(tasklib.mode(), "plain")
+
+
 class UnsafeBaseTest(IntakeTestCase):
     """T-04: a --base inside a skills location, a repo or a synced folder is refused."""
 
