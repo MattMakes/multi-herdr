@@ -428,9 +428,10 @@ fn skills_bundled_size_budget() {
 /// checker script, the checker's tests and an HTML starter page.
 /// `skill-intake` ships its `intake` tool as real `.py` files, so the gate's
 /// tests and the skill digest cover the tool itself. The own-text
-/// `incremental-game-design` ships its simulator and workbook scripts, its
-/// Godot project scan and 2 JSON assets (an example model and a reference
-/// curve).
+/// `incremental-game-design` ships its solver, proof, simulator and workbook
+/// scripts, its Godot project scan, JSON assets (the system catalog, example
+/// models and targets), and Godot files: the tuning bench addon, a sample
+/// game and a scan fixture (`.gd`, `.tscn`, `.godot`, `.gdignore`).
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",

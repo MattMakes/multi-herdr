@@ -1,0 +1,27 @@
+{
+  "sizing": {
+    "screen_fraction": 0.8,
+    "scale_step": 0.25,
+    "min_scale": 1.0,
+    "base_width": 1280,
+    "base_height": 720,
+    "min_window_width": 960,
+    "min_window_height": 540,
+    "scale_presets": [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+  },
+  "window_modes": ["windowed", "fullscreen"],
+  "master_volume_min": 0.0,
+  "master_volume_max": 1.0,
+  "defaults": {
+    "window_mode": "windowed",
+    "window_scale": 0.0,
+    "vsync": true,
+    "master_volume": 0.8,
+    "sfx_enabled": true,
+    "reduced_motion": false,
+    "show_debug_controls": true
+  },
+  "steam_deck_defaults": {
+    "window_mode": "fullscreen"
+  }
+}

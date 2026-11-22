@@ -4,16 +4,20 @@
 
 ## Unreleased
 
-- New teammate `game-design-incremental-specialist` for incremental, idle and
-  upgrade-driven games. Run `horch spawn game-design-incremental-specialist` in
-  a game project, or hand it a design document or a one-page idea. It reviews
-  a build, designs the math of a new game, designs core and meta loops, and
-  proposes new systems. Its new `incremental-game-design` skill turns the game
-  into a model, plays it under 3 reset habits, and writes a pacing workbook
-  (.xlsx) that shows the beats, the lulls and the cause of each lull. A
-  proposed system is tested against a numbers-only control. On a Godot project
-  the skill's scan finds the cost formulas, the unlock signals and the
-  feedback each one fires. The scripts need Python 3 and `openpyxl`.
+- New teammate `game-design-incremental-specialist` for the math of
+  incremental, idle and upgrade-driven games. Run
+  `horch spawn game-design-incremental-specialist` in a game project, or hand
+  it a design document or a one-page idea. Its new `incremental-game-design`
+  skill asks the play pattern and the targets, lets the designer select
+  systems from a catalog, solves the costs, unlocks and resets from proven
+  ranges, and proves them with a proof sheet and a simulation of several
+  player types. The verdict is "ready", "ready (simulated)" or "not ready"
+  with the fix: do not build from a "not ready" design. For a built Godot
+  game it reads the math out of the code and proposes the smallest change.
+  On request it installs a tuning bench in a Godot game: a panel with
+  controls and meters (game length, time between upgrades, effect of an
+  upgrade) that a simulation of the real game code fills. The scripts need
+  Python 3; the pacing workbook (.xlsx) needs `openpyxl`.
 - New teammate `addictive-game-design-reviewer` for a gameplay review of a
   built incremental, idle or upgrade-driven game. Run
   `horch spawn addictive-game-design-reviewer` in a game project and name the

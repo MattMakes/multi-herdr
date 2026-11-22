@@ -1,0 +1,20 @@
+{
+ "play_pattern": "continuous",
+ "targets": {
+  "length_h": {"value": 2.5, "tolerance": 0.2, "unsupported": false},
+  "purchase_gap": {"largest_max_min": 2, "first_max_min": 2, "unlock_max_min": 10, "unlock_first_hour_max_min": 5,
+                   "unsupported": false},
+  "unlocks": {"first_5_min_min": 3, "first_hour": 11, "first_hour_tolerance": 0, "each_later_hour_min": 5,
+              "unsupported": true},
+  "idle": {"open_1h": [0.0, 1.0], "open_8h": [0.0, 1.0], "open_24h": [0.0, 1.0], "open_7d": [0.0, 1.0],
+           "unsupported": false},
+  "active_factor": {"value": 1.25, "unsupported": false},
+  "play_test_speed": {"k": 10, "D_h_s": 2, "unsupported": true},
+  "active_slow_max": 1.25
+ },
+ "notes": [
+  "The designer chose the band 2 to 3 hours (interview A3.1 b). The band rule of interview section 2 gives value 2.5 (the middle) and tolerance 0.2 (the half width 0.5 divided by 2.5).",
+  "The game has no reset layer, so the file has no reset_gap and no run_min (interview section 2, rule of run_min).",
+  "unlocks: the unlock gaps 5 and 10 minutes force 11 unlocks in the first hour and 5 in each later hour (interview A1.3 and A1.4). No source counts unlocks, so the group is unsupported."
+ ]
+}

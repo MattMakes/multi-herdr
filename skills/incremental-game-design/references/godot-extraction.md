@@ -6,12 +6,20 @@ document says. Where the two differ, the difference is a finding.
 ## 1. Scan
 
 ```bash
-python3 scripts/scan_godot.py <project_dir> --out <work_dir>/scan.json
+python3 scripts/scan_godot.py <project_dir> --pattern <continuous|check_in> --out <work_dir>/scan.json --systems-out <work_dir>/systems.json --content-out <work_dir>/content.json
 ```
 
 The scan finds `project.godot` (also in a subfolder; if there are several, it prints all and
-the one it chose). It skips `addons`, `tmp`, `out`, `logs`, `ai_docs`, build folders, and
-nested projects. The report on stdout is short. `scan.json` holds the full lists.
+the one it chose). When no project is in a normal folder, it also looks in hidden folders, for
+example a git worktree in `.worktrees/`. It skips `addons`, `tmp`, `out`, `logs`, `ai_docs`, build
+folders, and nested projects. The report on stdout is short. `scan.json` holds the full lists.
+
+The scan does not read these data files for the economy (map key `data_skipped`):
+
+1. A file in a folder of documents: `doc`, `docs`, `design`, `notes` or `research`. A design copy
+   of the data is old or a proposal, not the build.
+2. A byte copy of 200 bytes or more of another data file. A test fixture or a backup must not
+   count 2 times.
 
 - **Economy signal.** One verdict line: strong, medium, or weak, from three counts: lines
   with `pow(` and a cost word, data files that have both a cost key and a growth key, and
@@ -21,7 +29,7 @@ nested projects. The report on stdout is short. `scan.json` holds the full lists
 - **Autoloads.** Global state lives here. Names such as `Data`, `Meta`, `GameState`,
   `Economy`, `Save`, `Events`, and `Telemetry` are the first files to read.
 - **Existing balance tooling.** Files and folders named for a simulator, diagnostics,
-  balance tests, tuning targets, or autoplay policies. Open them before you model: a project
+  balance tests, tuning targets, autoplay policies, parity tests or fixtures. Open them before you model: a project
   that has its own simulator has a better source of truth than a new model (part 4).
 - **Data files with economy keys.** JSON, `.tres`, `.cfg`, and CSV files with keys such as
   `cost`, `growth`, `mult`, `unlock`, `tier`. Keys match as whole words, so `scale_w` and
@@ -34,6 +42,27 @@ nested projects. The report on stdout is short. `scan.json` holds the full lists
 - **Beat hooks.** The signals whose names carry an economy or unlock word, where each is
   emitted, the handler functions, and the feedback found in each handler (part 5).
 - **Feedback code** (script hits and scene node types) and the **feel checks** (part 5).
+- **Catalog map.** The last section maps the code to the 28 systems of the catalog: found,
+  unsure, not found, the missing core systems of each play pattern, the currencies, the spine,
+  the purchase lines with `r`, the reset exponents and its clear function, the offline rule, and
+  each parameter outside its proven range. `--systems-out`
+  writes the full map as JSON. To fit a built game into the proven formulas, follow
+  `references/reverse-engineering.md`.
+- **Content file.** `--content-out` writes each purchase line, reward and system with its
+  unlock point. The design solver rebalances it (`pw_design.py --content`,
+  `references/design-solver.md`). Check it against the code before the solve
+  (`references/reverse-engineering.md` section 7). A model written by hand from the sections
+  below is for a question that the solver does not answer, not the default path.
+- **Model-format file.** A data file with the keys `purchases`, `currencies` and `prestige`,
+  `ladders` or `milestones` is a model of this skill (`references/model-schema.md`). The scan reads
+  it first and names it in the map key `model_file`. Check it against the code like any data file:
+  the code can change a value after the load.
+- **Reset by shape.** The scan does not need the word `prestige`. It finds the function that
+  clears 2 or more saved values and adds to another value. A reset name adds to the score. The
+  map gives the function in `reset.clear_function`, and the other candidate in `reset.unsure`
+  when 2 scores are near.
+- **Confirm.** Write the decisions of a person in a confirm file and run the scan again with
+  `--confirm` (`references/reverse-engineering.md` section 8).
 
 Files in `tests/` and `tools/` come last in each list. The scan ranks. It does not
 understand. Each hit is a lead: read the file before you state it as a fact.

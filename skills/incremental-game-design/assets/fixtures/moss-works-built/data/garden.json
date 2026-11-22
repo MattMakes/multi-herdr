@@ -1,0 +1,13 @@
+{
+  "unlock_stage": 7,
+  "drip_seconds": 60.0,
+  "initial_beds": 1,
+  "dew_per_bed": 1,
+  "bed": {"id":"bed","name":"Dew Bed","currency":"dew","cost":5.0,"growth":1.4,"max_level":null,"effect":{"stat":"dew_per_drip","add":1}},
+  "tonics": [
+    {"id":"drip_line","milestone_id":"dew_t1","name":"Drip Line","unlock_lifetime_dew":30,"purchasable":true,"currency":"dew","cost":10.0,"growth":1.6,"max_level":null,"effect":{"stat":"grow_power","mult":1.15}},
+    {"id":"morning_mist","milestone_id":"dew_t2","name":"Morning Mist","unlock_lifetime_dew":250,"purchasable":true,"currency":"dew","cost":40.0,"growth":1.5,"max_level":null,"effect":{"stat":"spores_per_sec","mult":1.25}},
+    {"id":"leaf_mould","milestone_id":"dew_t3","name":"Leaf Mould","unlock_lifetime_dew":1000,"purchasable":false,"currency":"dew","cost":0.0,"growth":1.0,"max_level":1,"effect":{"stat":"compost","cap":10}},
+    {"id":"glass_dome","milestone_id":"dew_t4","name":"Glass Dome","unlock_lifetime_dew":3000,"purchasable":false,"currency":"dew","cost":0.0,"growth":1.0,"max_level":1,"effect":{"stat":"grow_power","mult":3.0}}
+  ]
+}

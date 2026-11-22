@@ -1,0 +1,15 @@
+[
+  {"id":"mister","name":"Mister","system":"jar","currency":"spores","cost":10.0,"growth":1.15,"max_level":null,"unlock_stage":0,"unlock_milestone":null,"unlock_lifetime_mycelium":0,"effect":{"stat":"spores_per_sec","add":1.0}},
+  {"id":"lamp","name":"Grow Lamp","system":"jar","currency":"spores","cost":100.0,"growth":1.18,"max_level":null,"unlock_stage":0,"unlock_milestone":null,"unlock_lifetime_mycelium":0,"effect":{"stat":"grow_power","add":2.0}},
+  {"id":"compost","name":"Compost","system":"jar","currency":"spores","cost":500.0,"growth":1.5,"max_level":20,"unlock_stage":3,"unlock_milestone":"open_compost","unlock_lifetime_mycelium":0,"effect":{"stat":"spores_per_sec","bonus_pct":0.25}},
+  {"id":"trellis","name":"Trellis","system":"jar","currency":"spores","cost":2000.0,"growth":2.0,"max_level":12,"unlock_stage":4,"unlock_milestone":"open_trellis","unlock_lifetime_mycelium":0,"effect":{"stat":"grow_power","mult":1.6}},
+  {"id":"spore_bank","name":"Spore Bank","system":"jar","currency":"spores","cost":50000.0,"growth":3.0,"max_level":5,"unlock_stage":12,"unlock_milestone":"open_bank","unlock_lifetime_mycelium":0,"effect":{"stat":"spores_per_sec","mult":2.0}},
+  {"id":"fogger","name":"Fogger","system":"jar","currency":"spores","cost":5000000.0,"growth":2.2,"max_level":15,"unlock_stage":16,"unlock_milestone":"open_fogger","unlock_lifetime_mycelium":0,"effect":{"stat":"spores_per_sec","mult":1.5}},
+  {"id":"mirror","name":"Mirror Wall","system":"jar","currency":"spores","cost":1000000000.0,"growth":2.0,"max_level":20,"unlock_stage":22,"unlock_milestone":"open_mirror","unlock_lifetime_mycelium":0,"effect":{"stat":"grow_power","mult":1.4}},
+  {"id":"ring","name":"Mushroom Ring","system":"jar","currency":"spores","cost":1000000000000.0,"growth":3.0,"max_level":10,"unlock_stage":28,"unlock_milestone":"open_ring","unlock_lifetime_mycelium":0,"effect":{"stat":"spores_per_sec","mult":2.0}},
+  {"id":"canopy","name":"Canopy Net","system":"jar","currency":"spores","cost":1000000000000000.0,"growth":3.0,"max_level":10,"unlock_stage":34,"unlock_milestone":"open_canopy","unlock_lifetime_mycelium":0,"effect":{"stat":"grow_power","mult":2.0}},
+  {"id":"root_memory","name":"Root Memory","system":"regrow","currency":"mycelium","cost":1.0,"growth":2.0,"max_level":null,"unlock_stage":10,"unlock_milestone":"open_regrow","unlock_lifetime_mycelium":0,"effect":{"stat":"spores_per_sec","mult":2.0}},
+  {"id":"deep_roots","name":"Deep Roots","system":"regrow","currency":"mycelium","cost":3.0,"growth":2.2,"max_level":null,"unlock_stage":10,"unlock_milestone":"net_1","unlock_lifetime_mycelium":3,"effect":{"stat":"grow_power","mult":1.5}},
+  {"id":"rich_humus","name":"Rich Humus","system":"regrow","currency":"mycelium","cost":4.0,"growth":2.0,"max_level":4,"unlock_stage":10,"unlock_milestone":"net_2","unlock_lifetime_mycelium":8,"effect":{"stat":"compost","cap":5}},
+  {"id":"spore_vault","name":"Spore Vault","system":"regrow","currency":"mycelium","cost":8.0,"growth":2.0,"max_level":5,"unlock_stage":10,"unlock_milestone":"net_3","unlock_lifetime_mycelium":16,"effect":{"stat":"spore_bank","cap":1}}
+]

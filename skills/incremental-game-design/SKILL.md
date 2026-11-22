@@ -1,295 +1,433 @@
 ---
 name: incremental-game-design
-description: "Use when reviewing, designing or extending the progression of an incremental, idle or upgrade-driven game (Godot project, design document or idea): core and meta loops, cost curves, unlock pacing, prestige, new systems. Simulates a model and writes a pacing workbook (.xlsx) with beats and lulls."
+description: "Use when designing, proving, rebalancing or reviewing the math of an incremental, idle or upgrade-driven game (idea, design document or Godot project): systems, costs, unlocks, resets, pacing, content. Says not ready when the proof fails; installs a tuning bench in a Godot game."
 ---
 
-# Incremental game design: review, model, ideate
+# Incremental game design: prove the math, then build
 
-This skill turns a game's progression into a model, plays the model, and shows where the
-game is exciting and where it goes quiet. It then proposes systems that fix the quiet parts.
-The reference case is Idle Obelisk Miner, a game with about 45 systems (60 with sub-systems)
-around one core loop. Its patterns are in `references/reference-game-patterns.md`.
+This skill makes the math of an incremental game before the game exists, or reads it out of a built game. It proves the
+math with formulas and a simulation of several player types. A design goes to the build only when the proof passes.
 
-Two rules shape all the work:
+## The spirit of the game comes before the numbers
 
-- **Evidence before opinion.** Each claim about pacing or balance points at a number: a
-  formula in the code, a row in the Timeline, an indicator on the Dashboard. A review that
-  says "the mid game feels slow" is not useful. "No beat between hour 2.9 and hour 5.6,
-  because depth 25 needs x1.9 power and the only multiplier left costs x2.2 for each level"
-  is useful.
-- **Patterns, not copies.** The reference game shows what works. Ideas for the reviewed game
-  use its own theme, its own verbs, and its own scale. Never propose a system by its name in
-  the reference game.
+The numbers serve the game. A first version is simple, lovable and complete (`references/content-step.md` section 1):
 
-`<skill_dir>` in the commands below is the folder that holds this file. The scripts need
-Python 3.9 or later. The workbook script also needs `openpyxl`
-(`python3 -c "import openpyxl"`). If it is missing, install it into a virtual environment
-(`python3 -m venv <work_dir>/.venv && <work_dir>/.venv/bin/pip install openpyxl`) and run the
-script with that Python, or stop and say so: the analysis JSON alone is not the deliverable.
+- **Simple.** Few systems. Each selected system adds a decision of the player. Never add a system only to meet a number.
+- **Lovable.** Before the solver runs, write the **promise of the pitch** in 2 to 4 lines in the words of the designer:
+  the fantasy, what grows, and what the player watches get bigger. After the solver, the **promise check** compares the
+  design with each line, with numbers. A design that breaks the promise is not ready, whatever its rows say.
+- **Complete.** No stub, no empty content slot, a real end, and each selected system in the model.
 
-Do not use this skill for combat tuning, level design, or the difficulty of one encounter.
+This copy of the skill has no `tests/` folder and no `tools/` folder. A reference that names a file in `tests/` or
+`tools/skill-v2/` names the test set of the skill, which is not in this copy. Do not look for those files.
 
-## What the user can ask for
+`<skill_dir>` is the folder of this file. `<work>` is 1 output folder for the whole task. Put it outside the `res://`
+tree of a Godot project, so that Godot does not import the files. The scripts need Python 3. Only the workbook needs
+`openpyxl` (`python3 -c "import openpyxl"`). If it is missing, install it in a virtual environment, or say that the
+workbook was not made. The workbook is a deliverable, so do not drop it in silence.
 
-| Request | Do |
-| --- | --- |
-| Review a game or a build | Steps 1 to 7 |
-| Judge or design the math of an idea or a design document | Steps 1, 3 to 7 (write the model from the document) |
-| Ideas for new systems | Steps 1 to 6. If a workbook exists, start at step 5 |
-| A spreadsheet of the game's math | Steps 1 to 4, then 6 |
-| "What would a good version of this look like?" | Steps 1 to 5, then write `model-target.json` with your changes and run it with `--compare` |
+## Pick the mode
 
-When the request is small, do the small thing. A question about one cost curve does not need
-a full review: model that line, show the Curves numbers, answer.
+| The user has | Mode | Start at |
+| --- | --- | --- |
+| An idea, a pitch or a design note, and no code | Design forward | "Design forward" |
+| Code or data of a game (a Godot project, data files, a save) | Existing game | "Existing game" |
+| A design or a game, and the designer wants to tune the numbers by hand | Tuning bench | "Tuning bench" |
+| A request to add 1 system to a design or a game | The mode of what exists, then "Add a system" | The mode, step 1 |
+| A small question (1 cost curve, 1 formula) | Answer it with the law of `references/balance-math.md` and 1 run of the script that measures it | Do not run the full flow |
 
-## Step 1: Find the source of truth
+A design note with code beside it is an existing game: the code is the truth, and each difference is a finding.
 
-- **Godot project:** read `references/godot-extraction.md`, then run
-  `python3 <skill_dir>/scripts/scan_godot.py <project_dir> --out <work_dir>/scan.json`.
-  Read the files that the scan ranks highest. The build is the truth. A design document
-  tells you the intent, and each difference between the two is a finding.
-- **The scan says the economy signal is weak:** stop. The project is possibly not an upgrade
-  economy. Tell the user what the game has in its place. Do not force a model onto it.
-- **The project has its own simulator or balance tools:** the scan lists them. Read them
-  first. Their numbers and targets are a better source of truth than a new model.
-- **Design document or idea only:** the document is the truth. Each number that it does not
-  give is an assumption that you choose and list.
-- **Three inputs change each result:** the session length, the hours of play that the game
-  must last, and the share of time that the player is active. Take them from the design
-  document or the project. If they are not written, ask one time. If the user is not
-  available, assume 20 minutes, 20 hours, and 1.0, and put that assumption first in the
-  report.
-- Treat the project as read-only unless the user asks for changes. Put all output in one
-  work folder. Default: `progression-review/` in the current directory, outside the Godot
-  project's `res://` tree, so that Godot does not import the files.
+## Two rules from version 1 that stay
 
-## Step 2: Describe the loops in words
+- **Evidence before opinion.** Each claim points at a number: a proof row, a player row, a formula with a file and a
+  line. "The mid game feels slow" is not a finding. "PC4 fails: no unlock from minute 10.4 to minute 25.6" is a finding.
+- **Patterns, not copies.** The catalog cites real games for each formula. Use the formula and its range. Use the theme,
+  the verbs and the names of the user's game. Never propose a system by its name in another game.
 
-Before any numbers, write five short answers. They go at the top of the report.
+## Design forward
 
-1. **Core loop:** the action, what it pays, what the pay buys, and how that makes the action
-   stronger. One sentence.
-2. **Spine:** the one number that says how far a player is (stage, depth, level). What does
-   each step give now, and what does it open later?
-3. **Meta loop:** what resets, what the reset pays, what survives. If there is no reset, what
-   is permanent? In a run-based game, each run is the reset.
-4. **Ribs:** each system that is not the core loop (a minigame, a collection, a tree), with
-   what it gives the core loop and what it needs from it.
-5. **Clocks:** what moves on game time, on real time, and on player action. A system with
-   its own clock gives the player something to do while the core loop waits.
+### Step 1. Ask the play pattern, then the targets
 
-If you cannot write one of these answers, the game does not have that part yet. Say so. It
-is the most important finding.
+Read `references/interview.md` sections 1 and 2. Ask the play pattern first, because it changes the core set, the
+targets and the proof rows:
 
-## Step 3: Write the model
+- `continuous` (the request names Steam, desktop or PC): long sittings, no idle or offline benefit. The offline rule
+  S06 and the presence gate are optional. S05 (an active action), S24 (automation) and S28 (a hard end) are core.
+- `check_in` (the request names mobile or phone): an idle game with sessions of about 15 minutes and offline gains. S06
+  and 1 or more presence gates (S07, S08, S09) are core. If the request names no platform, ask.
 
-Read `references/model-schema.md`. Copy `assets/example_model.json` to
-`<work_dir>/model.json` and replace its content.
+Follow the order of the interview (`references/interview.md`, "The order of the interview"): each question uses only
+earlier answers. Ask the targets before any number, in groups of 4 questions or fewer, because the solver derives each
+parameter from them. Ask each target as "about X" with its range: a target is a range, not an exact limit, and a target
+with no game source is loose (interview section 2). Name each thing in the words of the game first and the catalog code
+second. Compare each answer with the evidence that the interview gives. A target that no proven game supports gets 1
+question ("keep your value, or use the proven value?") and then `"unsupported": true`. Do not take the numbers of a
+design note as fixed: a note is a wish, not a proof.
 
-- Model each purchase line with its real cost formula, each gate, each reset, and the spine
-  as a ladder. Set `game.progress_axis` to the id of that ladder.
-- Choose `pct` (additive pool) or `mult` (multiplicative) from the code, line by line. This
-  choice changes the result more than any other. If the game adds inside a system and
-  multiplies between systems, set `pct_grouping: "system"`.
-- Mark each system unlock as a milestone of kind `system_unlock`.
-- **Decide what a beat is before the run.** A beat is an event that a player remembers. The
-  default beat weight is 3. A new ladder step and the first purchase of a line have weight
-  2, so they are not beats. If a spine step is the main progress that the player sees (a
-  stage clear, a new depth), set `excitement: 3` on the ladder for the first run. A strict
-  rule that leaves fewer than about five beats makes one lull of the full game and hides
-  where the game dies. If you doubt the weight, run both (`--beat-weight 2` is the fast
-  way), report both, and base the headline on the run that matches what the player sees.
-  Check the weights against what the game shows: the juice audit can prove that a "weight
-  5" moment has the feedback of a purchase.
-- **Say what the reset takes.** Set `persists` on each milestone and `effects_persist` on
-  each ladder in a system that the reset clears. A permanent x2 and a x2 for each run are
-  different games. For a run that ends by a timer or by death, use `prestige.run_seconds`.
-- If the game is played in short sessions with time away, set `away_minutes` and
-  `offline_rate`.
-- Put each guess and each simplification in `game.assumptions`.
-- Aim for 10 to 60 purchase lines. Group lines that are identical in shape (twenty skill
-  nodes with one formula can be three representative lines) and state the grouping.
+### Step 2. Choose the systems
 
-## Step 4: Simulate and build the workbook
+Offer a starter set of the play pattern first as a shortcut (section 3): K7, K9 (1 long run with no reset) or K8 for
+`continuous`, K1 to K6 for `check_in`. The set with the shape of the pitch has the label: a pitch that names no reset, no
+prestige, no rebirth, no runs and no shifts has the shape of K9. A game with no reset is a valid design, and it is not
+rated below a game with a reset. Before part C, run the content need of step 3b and tell the designer the shortfall. After a set, show its answers in 1 confirm question, and ask only what it does not
+answer. With no set, ask part B (a variant of each core system). Ask part C as multi-select groups of 4 systems or fewer,
+and apply the answer rules of section 6 after each group, because an answer removes the questions that depend on it. Each optional question states the player decision that the system adds, its scope and the
+systems that it needs. `references/systems-catalog.md` holds each card, and `assets/systems.json` holds the variant ids
+and the proven ranges.
+
+Each option states what it gives: a proved model, a simulated model, or no model (interview section 1, `proof_class`
+in `assets/systems.json`). The interview holds each recommendation. If the designer picks a variant that no law covers,
+keep it: the solver takes the simulation path (step 4b). Say before the solve when a choice gives no model.
+
+**When no person can answer** (a 1-line request, a batch run), do not stop and do not invent answers in silence:
+
+1. Take the play pattern from the platform words of the request. With no platform words, take `continuous`, the default
+   pattern of this skill.
+2. Take the selection of interview section 7: for `continuous` the set with the shape of the pitch (K9 or K7), for
+   `check_in` the Recommended answers of part B.
+3. Take the default band of each target. For `continuous`, copy `assets/default_targets.json`.
+4. Set `"designer_answered": false` (for `continuous`: `"starter_set": "<set>", "selected": [], "refused": []`), and
+   write the first line of the report of interview section 7, with the class of the selection. Do step 3b with no
+   question: name the content that the pitch gives, and report the rest as missing.
+
+### Step 3. Write the selection file and the targets file
+
+The interview ends with 1 selection record (interview section 8). Write it as 2 files, so that the designer can change
+the targets and keep the selection:
+
+- `<work>/selection.json`: `designer_answered`, `starter_set`, `selected` (system, variant, parameters, and the optional
+  `id` and `role`), `refused`, `notes`. Copy the shape of `assets/example_selection.json`. A system can have more than 1
+  entry, each with its own `id`: for example 3 S02 groups, 1 with the role `care` for the upkeep card S30
+  (`references/design-solver.md`, "Selection entries" and "Upkeep").
+- `<work>/targets.json`: `play_pattern` and `targets`. Copy the shape of `assets/example_targets.json` (a `continuous`
+  game) and change the values. Its `demo_end` names a system of the example game: remove it when the game has no demo.
+  The exact keys of both patterns are in `references/design-solver.md`, "Inputs".
+
+### Step 3b. Turn the pitch into content
+
+Read `references/content-step.md`. Write the promise of the pitch, and count the content elements that the targets need:
+```bash
+python3 <skill_dir>/scripts/pw_content.py need <work>/targets.json --selection <work>/selection.json
+```
+
+A content element is a first purchase of a line, a first milestone or the first reset, not a stage of the spine alone.
+List the nouns and the verbs of the pitch that can be content: things that the player buys, unlocks or lights up.
+Propose named elements, 1 line each: the name in the words of the pitch, the kind (a purchase line, a single purchase, a
+milestone, a new system), the system card, and the part of the game where it opens. Propose the need or more. Ask the
+designer to confirm or change the list in groups, with the tool for questions. Write `<work>/content.json`
+(`pw_content.py template` writes the frame), run the need again with `--content`, solve with `--content`, and check that the model holds each named element. An empty
+or unnamed slot is never a result: say "content is missing: N elements", and name the minutes.
+
+### Step 4. Run the solver
 
 ```bash
-python3 <skill_dir>/scripts/progression_workbook.py <work_dir>/model.json <work_dir>/<game>-progression.xlsx
+python3 <skill_dir>/scripts/pw_design.py <work>/selection.json <work>/targets.json --out <work>/model.json --report <work>/report.md --proof <work>/proof.json
 ```
 
-The script plays the model with a greedy buyer and writes the workbook and
-`<game>-progression.analysis.json`. It prints the lulls with a probable cause, the dead
-zones, and one line for each buyer profile. A model error prints one line that names the
-field: fix it and run again.
+The solver computes r for each line, R for each phase, lambda and s of the reset loop, and takes each parameter from a
+proven range of the catalog (`references/balance-math.md`, section 3, the design procedure). It then runs the proof
+sheet with strict ranges. Exit code 0 is ready, 1 is not ready, 2 is bad input, 3 is simulated (step 4b). A failed proof
+row gives exit code 1 with the model and the proof of the round with the fewest failed rows. A variant that no law
+covers (for example `S04.none`) takes the simulation path of step 4b. A solve takes about 2 seconds.
 
-**Buyer profiles.** When to reset is the player's decision, and the lulls depend on it. So
-the script plays the game under three reset rules (`eager`, `patient`, `doubler`). The
-primary profile fills the Timeline. Each lull is marked "robust" (all profiles show it) or
-"depends on reset policy". Report a robust lull as a property of the game. Report the other
-kind as a property of one play style, and say which. If the script warns that the primary
-profile never resets, run again with `--profile doubler`.
+### Step 4b. The simulation path, when the laws do not cover the selection
 
-**Check the run before you read it.** If the first purchase is at minute 40, or the buyer
-stalls at minute 2, the model is wrong, not the game. Read the warnings of the script.
-Compare one or two prices and one unlock time with the build (godot-extraction.md, part 4).
+On a variant conflict, `scripts/pw_scaffold.py` writes the model (a stub for each system that it cannot express), and a
+timing fit sets the walls, unlock points and first costs by simulation. The key `simulation_path` marks each part `law`,
+`simulated` or `not written`. Read `references/simulation-path.md`. Then write each stub and each mechanic with no catalog card as model lines ("Complete a stub"), and fit again (line 1). Run
+the proof sheet (step 5) and the players (step 6): a row with no law gets "simulated, not proved", never pass. Compare 2
+buyers, and change each hand-set number by 20% (line 2). Report 2 lists, "Proved" and "Simulated, not proved", and for
+each simulated part what a play test must confirm.
+```bash
+python3 <skill_dir>/scripts/pw_scaffold.py --fit <work>/model.json <work>/targets.json --out <work>/model.json
+python3 <skill_dir>/scripts/pw_scaffold.py --vary <work>/model.json <work>/targets.json
+```
 
-The workbook holds each result two times: "at build" (a plain value of the script run,
-readable in any viewer) and "live" (a formula that follows the yellow cells on Params).
-Charts read the plain values.
+### Step 5. Read the proof sheet
 
-| Sheet | Shows |
-| --- | --- |
-| Dashboard | Each indicator with its band and status, the review findings, the warnings, and the pacing chart with the lulls marked |
-| Params | The thresholds for a beat and a lull. Yellow cells are inputs |
-| Beats | One row for each moment, with its gap, its gap ratio, and the lull mark |
-| Lulls | Each lull: robust or not, probable cause, the data behind the cause, dead zone, your diagnosis and fix |
-| Swimlane | Heat map of systems against time: which system gives the player something, and when |
-| Profiles | The main indicators for each buyer profile |
-| Timeline | Each event in order. Lulls are red. System unlocks are green |
-| Sessions | Beats and excitement for each session. Dry sessions are red |
-| Target | The beats against an ideal curve (each gap x1.12 longer than the one before) |
-| Walls | Each step of the spine: what it needs, when the buyer reached it, the wait |
-| Purchases | Each line from the simulation: first bought, highest level, share of spend, payback |
-| Prestige | Each run: length, gain, gain each minute, new beats |
-| Ledger | Sources and sinks for each currency |
-| Sensitivity | Which number moves the pacing: each tested parameter at x0.95 and x1.05 |
-| Compare | Before and after, when you pass `--compare` |
-| Income | Income growth and decision density over time |
-| Curves | Cost at levels for each line. The yellow base and growth cells change this sheet only |
-| Systems, Matrix, Links | The systems, their roles, and which system feeds which |
-| Ideas | The proposed systems |
-| Reference | The unlock curve of the game against the reference game |
+Open `<work>/report.md`. The top says "ready", "simulated" (the verdict word is "ready (simulated)") or "not ready", and for "not ready" the target, the obligation, the range
+and 2 or more ways out. Read `references/design-solver.md`, "How to read the report", and `references/proof-sheet.md`
+for the rows and statuses.
 
-A change to a Params cell moves the lull marks and the Dashboard. A change to a cost or a
-growth value does not move the pacing in the open workbook: edit `model.json` and run the
-script again (4 to 8 seconds). Tell the user this, because "play with the numbers" is the
-main use of the workbook. The Sensitivity sheet shows which numbers are worth a change.
+To run the proof sheet again on a changed model, with the play-test speed:
+```bash
+python3 <skill_dir>/scripts/pw_proof.py <work>/model.json --strict-ranges --speed --json <work>/proof.json
+```
 
-## Step 5: Diagnose
+Exit code 0 is ready, 3 is simulated and 1 is not ready. PO13 can fail at the default play-test speed x10 when the model has no auto-buy
+(section "The play-test speed"). The fix names the speed: write it in `<work>/targets.json` as `play_test_speed.k`, and
+solve again. A model with too little content fails PC4 (the longest wait for something new) or the content row CG, and
+it can fail PV. Each row names how many more elements the game needs and in which minutes. Add them to the content file
+of step 3b (`references/reverse-engineering.md` section 7, examples in `assets/examples/`), and solve again with
+`--content`. When no person can answer, do 1 round of content, then report the result with the fix. A loop of tuning
+with no designer makes the designer's choices.
 
-Read `references/indicators.md` for the meaning of each indicator and for the limits of the
-simulation. Then explain each problem by its cause.
+Before you read a report, know 3 rules of the solver (`references/design-solver.md`): "Second income" (a person
+confirms the spine stat in the code), "Automation" (PC6 counts the manual purchases only) and "Cap raisers".
 
-The Lulls sheet proposes a cause for each lull from the simulation data. Treat it as a lead.
-Confirm it from the Timeline rows of the gap, then write your diagnosis.
+When the solver reports a conflict, choose 1 way out with the designer (`references/design-solver.md`, "What to do with
+a conflict"): relax the target, select another variant, or add a named system. Never leave a proven range to get a pass:
+a fix text that names a value outside a proven range is not a way out.
 
-| Cause | Sign | Direction |
-| --- | --- | --- |
-| Wall | The next spine step needs much more than the player has, and income is flat | Add a multiplier source, slow the wall, or place a side goal at the wall |
-| Empty shop | Options within 5 minutes falls below 2 | A second clock, more purchase lines in that range, or cheaper steps |
-| Flat menu | Many purchases in the gap, none is a beat | Milestones, tiers, a collection, or a feature at that point |
-| End of content | Stall, or most capped lines at the cap and no new system later | A reset layer, cap raisers, cross-system chains |
-| Reset that does not pay | Two or more resets in the gap and no run reached something new | A stronger or earlier prestige multiplier, new content deeper in the run, or automation as a prestige reward |
+### Step 6. Confirm with the players and the workbook
 
-`references/system-archetypes.md` maps more symptoms to system types.
+```bash
+python3 <skill_dir>/scripts/progression_workbook.py <work>/model.json <work>/<game>-progression.xlsx --players all
+```
 
-Then check the structure: orphan systems, currencies with no source or sink (Ledger),
-purchases that the buyer never wants (Purchases), prestiges after a run with nothing new
-(Prestige), and the unlock curve against the reference curve.
+The script plays the model with the players of `references/model-schema.md`, "Players". It writes the workbook and
+`<game>-progression.analysis.json`, and it prints 1 line for each player and each band that is out (5 to 20 seconds).
 
-**Juice audit (if there is a build).** For each beat kind on the Timeline, find the row in
-the beat hooks table of the scan, open the handler, and fill the audit table
-(godot-extraction.md, part 5). A system unlock with the same feedback as a purchase is a
-finding. A verdict on juice needs a file and a line. With none, write "not audited".
+Read each `PLAYER` line against the targets, and each `BAND OUT` line (`references/indicators.md`). PC1 tests the active
+greedy player only, so check the end of each reset player against `length_h`. A design needs the proof and the players,
+because a short game does not reach the asymptotes of the laws. For a `continuous` model, the script leaves out the
+closed players and prints 1 line `LEFT OUT:`. Copy that line into the report.
 
-Use the reference patterns as questions. Each pattern in
-`references/reference-game-patterns.md` ends with a question to ask about the game. Answer
-the ones that apply. Three to five answers with evidence are better than fifteen without.
-For formulas, multiplier stacking, premium currency, and odds, use
-`references/reference-game-math.md`. For what other games do (cost ratios, prestige
-formulas, softcaps, walls, reset timing), use `references/other-games-math.md`: a verdict on
-a formula is stronger with more than one game behind it.
+Then do the beat and lull analysis on the workbook (section "Beats and lulls"), the section "Design
+review", and then the section "Fun analysis". Then do the promise check (`references/content-step.md` section 1).
 
-## Step 6: Ideate, then prove
+### Step 7. Report
 
-Read `references/system-archetypes.md`. For each real problem, propose one to three systems.
-Each idea names the problem with its time or level, what it pays to the core loop, what it
-needs, where it opens, its scope, its one memorable moment, and its main risk.
+Use the template of section "Report", with the promise check first. Apply the gate before you write the verdict. Give
+each generic id of the model (`coin`, `gen`, `m1`) its name in the theme of the game in the report, and keep the ids in
+the files. In a rebalance, `field_map` of the model gives the game id of each model id.
+The build specification of a ready design includes the tuning bench (`references/tuning-bench.md` section 3): the 3 layers
+of `references/game-core.md`, each balance number in a data file, and `pw_bench.py corecheck` with exit code 0. The targets
+of the design go to the bench: `pw_bench.py init <project> --targets <work>/targets.json`.
 
-Then test the best idea with three runs:
+## Existing game
 
-1. **Before:** the current model. You have its analysis JSON.
-2. **Control:** `model-control.json`. Change numbers only (cheaper costs, a slower wall) to
-   attack the same lull with no new system. This run answers "is a new system necessary, or
-   is this a tuning problem?"
-3. **With the idea:** `model-with-<idea>.json`. Add the system: its currency, its purchase
-   lines, its unlock milestone, its effect on the core loop.
+Read `references/existing-game.md` for the detail of each step, and `references/reverse-engineering.md` for the
+procedure and the content file. Steps 1 to 4 describe the game as built, and steps 5 to 10 change it. When the designer
+wants to tune by hand, install the tuning bench before the rebalance (section "Tuning bench").
 
-Run the control and the idea with `--compare <before>.analysis.json`. Report the indicators
-of all three. If the control fixes the lull, say so: the cheapest fix wins, and the new
-system must earn its place for a different reason (a later lull, a link for an orphan, a
-clock). An idea that does not shorten the lull needs a different attachment point or a
-stronger effect.
+1. **Scan.** Ask the play pattern first (step 3). For a Godot project, read `references/godot-extraction.md` first.
+   ```bash
+   python3 <skill_dir>/scripts/scan_godot.py <project_dir> --pattern continuous --out <work>/scan.json --systems-out <work>/systems.json --content-out <work>/content.json
+   ```
+2. **Confirm the map and the content in the code.** Check each unsure system, `spine_stat` with `stats` (a second
+   income, or `spine_unsure`), the `values` of S03 and S04, and the roles. Write each decision with its reason in
+   `<work>/edits.json`, and scan again. Then add `base_income` to `content-confirmed.json` by hand, because the edits
+   file has no key for it.
+   ```bash
+   python3 <skill_dir>/scripts/scan_godot.py <project_dir> --pattern continuous --confirm <work>/edits.json --systems-out <work>/systems-confirmed.json --content-out <work>/content-confirmed.json
+   ```
+3. **Ask the play pattern and the targets** (design forward, step 1). Turn each complaint into a target and its proof
+   row.
+4. **Prove the map and the game as built**, the "before" of each comparison. Exit code 1 of a proof is "not ready".
+   ```bash
+   python3 <skill_dir>/scripts/pw_proof.py --systems <work>/systems-confirmed.json --pattern continuous --json <work>/proof-map.json
+   python3 <skill_dir>/scripts/pw_design.py <work>/targets.json --content <work>/content-confirmed.json --as-built --out <work>/model-built.json
+   python3 <skill_dir>/scripts/pw_proof.py <work>/model-built.json --strict-ranges --speed --json <work>/proof-built.json
+   ```
+5. **Rebalance: propose the smallest change.** Write `<work>/selection.json` with the systems of the game plus each
+   missing core system (copy the shape of `assets/example_selection.json`). The rebalance keeps the rules, the reset count (`max_resets` in the S04 values) and the cap states of the game. The report section "Structure of the game" lists each structure option; only the designer accepts one, with `--accept-change <name>`. Row WS checks the wall table steps. A selected system that nothing writes gives exit code 1. Read the report sections that
+   `references/existing-game.md` section 5 names.
+   ```bash
+   python3 <skill_dir>/scripts/pw_design.py <work>/selection.json <work>/targets.json --content <work>/content-confirmed.json --out <work>/model.json --report <work>/report.md --proof <work>/proof.json
+   ```
+6. **Design review** of the rebalance against the game as built (section "Design review").
+7. **Fun analysis** of the rebalance with `--build <work>/model-built.json` (section "Fun analysis").
+8. **Confirm with the players** (design forward, step 6) on `<work>/model-built.json`, then on `<work>/model.json` with
+   `--compare <work>/<game>-built-progression.analysis.json`.
+9. **Compare the model with the real game** only when the user agrees (`references/existing-game.md` section 9).
+10. **Juice audit**, if there is a build (`references/godot-extraction.md` section 5). With none, write "not audited".
 
-Check that the result is more than a count. A system that adds forty milestones adds forty
-beats by definition. Run the idea one more time with its own events below the beat weight:
-the spine and the old systems must still move faster. If they do not, the idea adds a clock,
-not progress. That can be the correct fix, but say which of the two it is.
+## Design review
 
-The model can express a new income source, purchase lines, multipliers, milestones, a
-ladder, a cap raise, a cost in several currencies, and a run of fixed length. It cannot
-express chance, a second reset layer, a rule change, or an offline cap. For an idea of that
-kind, do the arithmetic by hand (what it adds to the gating stat at the lull, against what
-the wall needs) and label the result "estimated, not simulated".
+A design can pass each row and still be a bad game. This review is your own judgment, so label it as judgment in the
+report. Do it after the proof sheet, on each design and each rebalance, with evidence from the report, the model or the
+workbook:
 
-Write the findings, the lull notes, and the ideas into `review` in the model, and run the
-script one more time. The workbook then carries the full review.
+1. **Does each element keep what makes it different?** Compare each line with the game or the note: the stat, the
+   family, the cost shape, the cap and the level count. 10 lines with the same cost and step lost their identity.
+2. **Is each element reached?** Read "Reachable" (PC5) and `never_bought` and `never_reached` in the analysis JSON. An
+   element that opens after the hard end is cut content.
+3. **Does each reward keep its sense?** A penalty stays a penalty. A side system whose only sink has 1 level has no use
+   after 1 purchase. A cap raise of a line with no cap is a dead purchase.
+4. **Are the first 10 minutes good?** The first purchase, 3 or more unlocks in the first 5 minutes (PO11), and a new
+   action before minute 10 (the Timeline sheet).
 
-## Step 7: Report
+Report each "no" with its fix. A lost identity or cut content breaks the promise of the pitch: it goes into the promise
+check, and the verdict is then not ready.
 
-Use this structure. Keep it short: the workbook holds the detail.
+## Fun analysis
+
+A design can pass each proof row and still be dull. The fun sheet finds the known faults of a dull game. Run it after
+the proof sheet and the design review. For a new design, leave out `--build`. For a rebalance, `--build` puts the game
+as built beside each row and marks each row that the rebalance made worse:
+```bash
+python3 <skill_dir>/scripts/pw_fun.py <work>/model.json --build <work>/model-built.json --md <work>/fun.md --json <work>/fun.json
+```
+
+The rows FM-1 to FM-8 count: 2 or more out give "likely dull", 1 gives "watch". The rows FM-9 to FM-12 are advice. Copy
+each counting row that is out, with its reason and its change, into the report section "Fun analysis". A change with no
+control is content to add (case 3 of the gate). `references/fun-analysis.md` gives the rows, their controls, the play
+test and tuning by hand. State its limits in the report. The rows are proxies. They count events, sizes and times. The
+result is advice with evidence marks, not a proof. It never changes the gate. A sheet with no finding
+does not prove that the game is fun. Only a play test tells why a player stops.
+
+## Tuning bench
+
+The solver gives the first numbers. The designer makes the last decisions on the bench: a panel in the Godot game with
+controls and meters, which a simulation of the real game code fills in seconds (`references/tuning-bench.md`). A saved
+bench setting is the decision of the designer: the skill does not overrule it with the solver.
+1. Follow the order of `references/tuning-bench.md` section 3: `install`; name the core or write the adapter (with its side-effect
+   list and its `bought` events); `init --phases-only`; a first `run`; `inventory`; class and `confirm` each number in the code.
+2. Move each balance number in code to a data file, or record why it stays. Then `init` writes the controls.
+3. `check` and `selfcheck` must exit with code 0. A dead number with no proved reason is a finding: report it, do not hide it.
+4. Give the designer the meters of `run`, the line "not reviewed" of `check` (0 with `--strict`), and the hotkey of the panel.
+
+The game has 3 layers (`references/game-core.md`). The core holds all the math as static functions over plain state. The session
+is the only owner of the state. The view sends intents and animates on events. `pw_bench.py corecheck` proves that the core is
+pure. For an existing game, refactor to it in the steps of that reference: the bench result is the before-and-after test.
+
+## Add a system
+
+Design only the systems that the designer selected. A system that the designer did not choose is scope nobody asked for.
+
+1. A new idea comes from the catalog (`references/system-archetypes.md` maps a symptom to catalog ids). Check the
+   compatibility table and the minimum set (`references/systems-catalog.md`, "Compatibility of the optional systems").
+2. State the player decision that the system adds. A system that only multiplies adds none: label it "multiplier only".
+3. Ask the designer with the part C question form of the interview. Add the system only after a yes.
+4. Prove it with 3 runs: **before** (the current model), **control** (numbers only, no new system, against the same
+   problem) and **with the idea**. Run the solver or the proof sheet on each, and the workbook with
+   `--compare <before>.analysis.json`. If the control fixes the problem, say so: the cheapest fix wins.
+5. A system that the laws do not cover (chance, a chain of 3 or more currencies, a second reset layer) is "simulated,
+   not proved". A system that the model cannot express gets hand arithmetic, labelled "estimated, not simulated".
+
+## The gate
+
+The result has 3 words. **Ready**: each gate row passes. **Ready (simulated)** (exit code 3): each gate row passes or is
+"simulated, not proved", and no part is a stub (`references/proof-sheet.md`, "The result"). A design that is ready
+(simulated) can go to a build, and the report names what a play test must confirm for each simulated part. **Not
+ready**: 1 of the items below is true. A game with no reset layer is a valid design: do not rate it below a reset game.
+
+- **The promise check fails**: the design breaks 1 line of the promise of the pitch (`references/content-step.md`).
+- `pw_proof.py --strict-ranges` exits 1 (or `pw_design.py` exits 1). These rows decide the verdict
+  (`references/proof-sheet.md`):
+  - PO1 to PO13: the 13 obligations of the laws, for each play pattern.
+  - PC1 to PC6, for `continuous` only: the hard end inside the length target, the gaps between purchases, new content
+    in each hour past the demo end, the gaps between unlocks, each element reached, and the purchases in 1 minute.
+  - PV: each level of each line gives at least the purchase value floor (default 10%).
+  - A core line that stops early (row CL): a generator line has its last purchase before half of the length, so the
+    thing that the pitch grows stops to grow.
+  - A content drought (row CG): a wait with no new content element outside its range. A stage alone is not content.
+  - An empty content slot (row PC3): a milestone with no effect that only fills a place. It is missing content.
+  - A core row: a missing core system of the play pattern (`--systems`).
+- 1 player of the workbook misses the range of a target (a `PLAYER` line against the targets, or a `BAND OUT` line).
+
+**Targets are ranges.** A law row is exact. A target row has 3 zones: pass, pass in range (past the target and inside
+its tolerance) and fail. Only a value outside the range fails. `references/proof-sheet.md` holds the tolerance of a
+sourced target and of a target with no game source. The report counts the rows that are in range but past the target,
+and names each one with its value and its target.
+
+A "not ready" result names each failed item and the change that fixes it: the fix text of the proof row, or the way out
+of the solver. Do not present such a design as ready to build, as "a proof of direction", "mostly ready" or "good enough
+to prototype". A team that builds a failed design builds the failure. "Not ready" with a named fix is the honest result.
+
+Sort each failed row into 1 of 3 cases, because each case has its own fix:
+
+1. The solver can meet it: change a target, a variant or a system, and solve again.
+2. The limit is a default with no source (for example PC4): the designer keeps it or sets a value.
+3. Content is missing: the report says "content is missing: N elements" with the minutes (CG, PC4, an empty slot, or
+   PC2: 1 cheap purchase in a gap). No change of a parameter fixes it. "Not ready" with case 3 only is a valid result:
+   give it to the designer with the list of content to add.
+
+When a target has `"unsupported": true`, the design can be ready against that target. Say in the report that no proven
+game supports the target.
+
+## The play-test speed
+
+A play-test build runs the game clock k times faster. A human needs about 2 real seconds for each decision, so above a
+limit the test measures the human, not the game. Row PO13 (`--speed`) gives 2 largest speeds: the formula
+`floor(T_X / (10 x D_h))` and the simulated speed with a slow-down under 1.1. The smaller value decides. State it in the
+report. With no auto-buy, the simulated value is often much smaller (`references/proof-sheet.md`). For runs of about 15
+minutes, x100 is not valid (law L9).
+
+## Beats and lulls
+
+A proof row says that the gaps are short. The beats say if the player notices the events in the gaps. A beat is an
+event that a player remembers: decide the beat weight before the run (`references/model-schema.md`), or run both weights
+(`--beat-weight 2`) and report both. The Lulls sheet proposes a cause for each lull (a wall, an empty shop, a flat menu,
+the end of content, a reset that does not pay: `references/indicators.md`, `references/system-archetypes.md`). Confirm
+it from the Timeline rows of the gap. Report if a lull is "robust" (each buyer profile shows it) or depends on 1 reset
+policy. Check the structure on the workbook: orphan systems, currencies with no limited sink, lines that no player buys.
+
+## Report
+
+Write `<work>/<game>-report.md`. Keep `<work>/report.md` of the solver beside it as the full detail, and link to it.
+Keep the summary short. The workbook and the proof JSON hold the detail.
 
 ```markdown
-# <Game>: progression review
+# <Game>: <design | rebalance> <ready | ready (simulated) | not ready>
 
-## The loops
-Core loop, spine, meta loop, ribs, clocks (from step 2).
-
+<If the designer did not answer: the first line of interview section 7.>
+## Promise check
+| Line of the promise | Number of the design | Kept |
+This table comes first. A broken line makes the verdict not ready.
 ## Verdict
-| Area | Verdict | Evidence |
-| Balance | ... | ... |
-| Scope | ... | ... |
-| Juice | ... | ... |
-| Feel | ... | ... |
-
-## Pacing
-First purchase, first new system, first prestige. Beats for each hour. The lulls, each with
-its start, its length, its cause, and "robust" or the profile that shows it.
-
-## What to change in the numbers
-Specific changes with the expected effect ("bellows growth 1.6 -> 1.45: the hour-3 lull
-falls from 160 to 40 minutes"), each from a run of the changed model.
-
-## Systems to add
-The ranked ideas, each with the problem it fixes. For the tested idea: before, control, and
-with the idea.
-
-## Targets to build toward
-Indicator values that define "good" for this game. The team reruns the workbook after each
-balance change and reads the status cells.
-
-## Assumptions and limits
-Session length, target hours, active share. Each guessed number. What the model does not
-cover. The buyer is a fast, greedy player: real players are slower.
-
+Ready, ready (simulated) or not ready. For not ready: each failed item (promise line, proof row or player band) with
+its value, its limit and the change that fixes it. For ready (simulated): what a play test must confirm. The count of
+rows in range but past the target. "Content is missing: N elements" with the minutes, when it is.
+## Play pattern and targets
+| Target | Value | Band of the evidence | Source | Unsupported |
+## Selected systems
+| System | Variant | Player decision | Refused systems | Systems that the solver did not write (simulation only) |
+## Parameters
+| Parameter | Value | Proven range | Source | Set by (target or obligation) |
+(For a rebalance: old value, new value, reason.)
+## Proof sheet
+| Id | Value | Limit | Status | Fix |
+PO1 to PO13, PC1 to PC6 (`continuous`), PV, CG and each core row. For PO13, give both largest speeds.
+For a rebalance, give the status of the game as built beside each row. For PV, the table "Purchase value" of the
+solver report: | Line | Gain of 1 level | Floor | Status |
+## Players
+| Player | Hours to the end | Active minutes | Resets | Target band | In band |
+Idle curve, policy gap, play-test speed (the value of "The play-test speed"). For `continuous`, the `LEFT OUT:` line.
+## Design review
+The 4 questions of section "Design review", each with its answer, evidence and fix.
+## Fun analysis
+The result line of the fun sheet. Advice with evidence marks, not a proof.
+| Id | Value | Band (mark) | Status | Reason | Change to try |
+The counting rows FM-1 to FM-8 (for a rebalance, with the value as built), the advice rows that are out, the limits.
+## Beats, lulls and juice
+The lulls with start, length, cause, robust or not. The juice audit or "not audited".
+## Open risks
+Each risk with the row, the system or the assumption it comes from.
+## Proved, and simulated, not proved
+The 2 lists of `references/simulation-path.md` ("The report rule"), what is hand arithmetic, and what was not compared.
 ## Files
-The paths of the model, the workbook, and the analysis JSON.
+selection.json, targets.json, model.json, proof.json, fun.md, fun.json, the workbook, the analysis JSON. For an
+existing game also: edits.json, the confirmed map and content, model-built.json, proof-built.json.
 ```
 
-State plainly what you did not verify. If no spreadsheet application was available, say that
-the charts and the live formula cells were not opened.
+State what you did not verify. If no spreadsheet application opened the workbook, say that the charts and the live
+formula cells were not checked.
 
-## Files in this skill
+## References
 
-| File | Read it when |
+| File | Read this when |
 | --- | --- |
-| `references/godot-extraction.md` | The source is a Godot project. Also holds the juice audit |
-| `references/model-schema.md` | You write or change a model. Also holds all command-line options |
-| `references/indicators.md` | You read a workbook or set targets |
-| `references/reference-game-patterns.md` | You diagnose structure or look for what a strong incremental game does |
-| `references/reference-game-math.md` | You judge formulas, multiplier stacking, premium-currency flow, or odds |
-| `references/other-games-math.md` | You choose or judge a formula and want what other incremental games use: cost ratios, prestige shapes, softcaps, walls, stacking, reset timing |
-| `references/system-archetypes.md` | You propose systems |
-| `scripts/scan_godot.py` | Inventory of a Godot project |
-| `scripts/progression_workbook.py` | Simulation and workbook (the `pw_*.py` files beside it are its modules) |
-| `assets/example_model.json` | A complete small model to copy |
-| `assets/reference_unlock_curve.json` | The unlock curve of the reference game, used by the Reference sheet |
+| `references/interview.md` | You ask the play pattern, the targets and the systems, or no person can answer |
+| `references/content-step.md`, `scripts/pw_content.py` | The promise of the pitch and its check, the content need, the named content elements, the content file |
+| `references/systems-catalog.md` | You need a card: the player decision, formula families, ranges, links, risks, core set, compatibility, starter sets |
+| `assets/systems.json` | You write a selection: the variant ids, the proven ranges, the answer rules |
+| `references/short-games.md` | The play pattern is `continuous`: the target bands of 11 short Steam games |
+| `references/balance-math.md` | You need a law (L1 to L10, L10 for a second income), the design procedure, or a proof obligation |
+| `references/design-solver.md`, `scripts/pw_design.py` | You run the solver (a design, a rebalance with `--content`, the game as built with `--as-built`), read its report, or resolve a conflict |
+| `references/simulation-path.md`, `scripts/pw_scaffold.py` | The laws do not cover the selection: the scaffold, the fit, the marks |
+| `references/proof-sheet.md`, `scripts/pw_proof.py` | You read or run the proof sheet of a model or of a scanned game: the rows, the statuses, the tolerances, the `--systems` mode |
+| `references/existing-game.md` | The game exists: the detail of each of the 10 steps, what to check in the code, and how to compare with the real game |
+| `references/reverse-engineering.md` | The game exists: the procedure, a formula that fits no family, the model against the game, the content file |
+| `references/godot-extraction.md`, `scripts/scan_godot.py` | The game is a Godot project: the scan (`--pattern`, `--systems-out`, `--content-out`, `--confirm`). Also holds the juice audit |
+| `references/tuning-bench.md`, `scripts/pw_bench.py`, `assets/godot/` | The designer tunes by hand: the bench procedure, the number ledger, the roles, the controls, the meters, the self-check, the addon and a sample game |
+| `references/game-core.md` | You write a build specification, or refactor a game: the 3 layers (core, session, view), the core contract, `corecheck` |
+| `references/model-schema.md` | You write or change a model by hand. Also holds the players and the command-line options |
+| `references/indicators.md`, `scripts/progression_workbook.py` | You read the workbook, the player lines, or the bands. The script makes the players and the workbook (`--players all`); the `pw_*.py` files beside it are its modules |
+| `references/fun-analysis.md`, `scripts/pw_fun.py` | The fun sheet: the 24 fun metrics, the result rule, the controls, the play test, tuning by hand, the limits |
+| `references/system-archetypes.md` | You look for a system that fixes a symptom |
+| `references/reference-game-patterns.md`, `references/reference-game-math.md`, `references/other-games-math.md` | You diagnose structure against a strong incremental game, or judge formulas, multiplier stacking, premium currency or odds. The last file: what other incremental games use (cost ratios, prestige shapes, softcaps, walls) |
+| `assets/example_selection.json`, `assets/example_targets.json`, `assets/example_model.json` | The shape of the 2 input files of the solver (Moss Works, `continuous`), and a small complete model to copy for a hand-written model. `assets/default_targets.json`: the targets of a `continuous` game when no person answers: the default bands, no demo end |
+| `references/examples.md`, `assets/examples/` | 2 worked designs (ready, simulated): selection, targets, content file, model, report |

@@ -436,7 +436,7 @@ registry to update.
 | `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
 | `opus-creative`        | Claude | Opus   | high   | Creative council seat |
 | `game-design-juicer`   | Claude | Fable (Opus fallback) | high | Studies a game or design doc; proposes balanced juice |
-| `game-design-incremental-specialist` | Claude | Opus | high | Incremental and idle game progression: models loops and costs, simulates pacing, proposes systems |
+| `game-design-incremental-specialist` | Claude | Opus | high | Incremental and idle game math: designs, proves and rebalances progression; says "not ready" when the proof fails |
 | `addictive-game-design-reviewer` | Claude | Opus | high | Reviews a built incremental game's source; ranks what to rebalance, redo, add or remove |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |

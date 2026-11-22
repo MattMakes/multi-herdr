@@ -1,0 +1,446 @@
+{
+ "currencies": [
+  {
+   "base_income": 0.8,
+   "id": "coin",
+   "name": "Main currency",
+   "system": "s01"
+  }
+ ],
+ "game": {
+  "assumptions": [
+   "pw_design.py wrote this model from the selection and the targets. Each parameter and its source is in the report of the solver.",
+   "Power is the income at the active rate. The active factor multiplies income only while the player is present.",
+   "1 long run: no reset layer. R = 1, so the income grows as e^(g t) and the stages come at a constant rate (BM, 1 long run with no reset).",
+   "Play pattern continuous: the game pays nothing while it is closed (offline_rate 0)."
+  ],
+  "name": "Design of pw_design.py",
+  "offline_rate": 0.0,
+  "play_pattern": "continuous",
+  "presence": {
+   "open_rate": 1.0,
+   "visit_minutes": 2
+  },
+  "primary_profile": "model",
+  "progress_axis": "stage",
+  "session_minutes": 15.0,
+  "target_hours": 2.5,
+  "targets": {
+   "first_hour_unlock_gap_minutes": 5,
+   "first_purchase_minutes": 2,
+   "hard_end": {
+    "axis_step": 28
+   },
+   "idle": {
+    "open": {
+     "1": [
+      0.0,
+      1.0
+     ],
+     "168": [
+      0.0,
+      1.0
+     ],
+     "24": [
+      0.0,
+      1.0
+     ],
+     "8": [
+      0.0,
+      1.0
+     ]
+    }
+   },
+   "largest_purchase_gap_minutes": 2,
+   "largest_unlock_gap_minutes": 10,
+   "length_hours": [
+    2.0,
+    3.0
+   ],
+   "play_test_speed": 10,
+   "policy_gap": [
+    0,
+    2.0
+   ],
+   "purchase_rate_max_per_minute": 30,
+   "purchase_value": {
+    "floor": 0.1,
+    "source": "designer target; default 10%: the low end of the proven step d 1.1 to 2 of S02.levelled_factor (assets/systems.json, O:188, D:195)"
+   },
+   "unlocks_first_hour": [
+    11,
+    60
+   ],
+   "unlocks_per_hour": [
+    5,
+    60
+   ]
+  }
+ },
+ "ladders": [
+  {
+   "count": 28,
+   "excitement": 3,
+   "id": "stage",
+   "name": "Stage {n}",
+   "requires": {
+    "base": 3.5,
+    "currency": "coin",
+    "growth": 2.7613385754650914,
+    "table": [
+     3.5,
+     31.0,
+     73.0,
+     180.0,
+     260.0,
+     600.0,
+     850.0,
+     1700.0,
+     2800.0,
+     3900.0,
+     9400.0,
+     16000.0,
+     29000.0,
+     51000.0,
+     74000.0,
+     180000.0
+    ],
+    "type": "rate"
+   },
+   "system": "s03"
+  }
+ ],
+ "milestones": [
+  {
+   "effects": [
+    {
+     "active": true,
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.25
+    }
+   ],
+   "id": "active_play",
+   "kind": "feature",
+   "name": "Active play multiplies income",
+   "persists": true,
+   "system": "s05"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_2",
+   "kind": "reward",
+   "name": "First district",
+   "place_minutes": 18.0,
+   "requires": [
+    {
+     "amount": 270400.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_3",
+   "kind": "reward",
+   "name": "Better layout",
+   "place_minutes": 27.0,
+   "requires": [
+    {
+     "amount": 1029000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_4",
+   "kind": "reward",
+   "name": "Second district",
+   "place_minutes": 36.0,
+   "requires": [
+    {
+     "amount": 3599000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_6",
+   "kind": "reward",
+   "name": "Third district",
+   "place_minutes": 54.0,
+   "requires": [
+    {
+     "amount": 47420000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_7",
+   "kind": "reward",
+   "name": "Night shift",
+   "place_minutes": 72.0,
+   "requires": [
+    {
+     "amount": 723500000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_8",
+   "kind": "reward",
+   "name": "Fourth district",
+   "place_minutes": 90.0,
+   "requires": [
+    {
+     "amount": 10140000000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_10",
+   "kind": "reward",
+   "name": "Fifth district",
+   "place_minutes": 126.0,
+   "requires": [
+    {
+     "amount": 1273000000000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  },
+  {
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.05
+    }
+   ],
+   "id": "element_11",
+   "kind": "reward",
+   "name": "Last district",
+   "place_minutes": 142.0,
+   "requires": [
+    {
+     "amount": 9330000000000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s03"
+  }
+ ],
+ "prestige": {
+  "enabled": false
+ },
+ "purchases": [
+  {
+   "base_cost": 10.0,
+   "cost_currency": "coin",
+   "cost_growth": 1.15,
+   "count_steps": {
+    "every": 10,
+    "mult": 1.52
+   },
+   "effects": [
+    {
+     "kind": "add",
+     "target": "coin",
+     "value": 0.5
+    }
+   ],
+   "id": "gen",
+   "name": "Workshop",
+   "system": "s01"
+  },
+  {
+   "base_cost": 3448.0,
+   "cost_currency": "coin",
+   "cost_growth": 1.3745760953112651,
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.1
+    }
+   ],
+   "id": "m1",
+   "name": "Better tools",
+   "system": "s02"
+  },
+  {
+   "base_cost": 34480.0,
+   "cost_currency": "coin",
+   "cost_growth": 1.3745760953112651,
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.1
+    }
+   ],
+   "id": "m2",
+   "name": "Faster work",
+   "system": "s02"
+  },
+  {
+   "base_cost": 6050.0,
+   "cost_currency": "coin",
+   "cost_growth": 1.21,
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.1
+    }
+   ],
+   "id": "element_1",
+   "max_level": 1,
+   "name": "Tool rack",
+   "place_minutes": 9.0,
+   "requires": [
+    {
+     "amount": 45100.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s02"
+  },
+  {
+   "base_cost": 1050000.0,
+   "cost_currency": "coin",
+   "cost_growth": 1.21,
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.1
+    }
+   ],
+   "id": "element_5",
+   "max_level": 1,
+   "name": "Training",
+   "place_minutes": 45.0,
+   "requires": [
+    {
+     "amount": 12760000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s02"
+  },
+  {
+   "base_cost": 8060000000.0,
+   "cost_currency": "coin",
+   "cost_growth": 1.21,
+   "effects": [
+    {
+     "kind": "mult",
+     "target": "coin",
+     "value": 1.1
+    }
+   ],
+   "id": "element_9",
+   "max_level": 1,
+   "name": "Fine tuning",
+   "place_minutes": 108.0,
+   "requires": [
+    {
+     "amount": 125100000000.0,
+     "currency": "coin",
+     "type": "total"
+    }
+   ],
+   "system": "s02"
+  }
+ ],
+ "systems": [
+  {
+   "id": "s01",
+   "loop": "core"
+  },
+  {
+   "id": "s02",
+   "loop": "core"
+  },
+  {
+   "id": "s03",
+   "loop": "core"
+  },
+  {
+   "id": "s05",
+   "loop": "core"
+  },
+  {
+   "id": "s28",
+   "loop": "core"
+  }
+ ]
+}

@@ -1448,7 +1448,7 @@
       "name": "incremental-game-design",
       "copied_files": [],
       "verbatim": false,
-      "budget_exempt": "ships its tools: the progression simulator and workbook writer (5 Python modules) and the Godot project scan, plus the reference-game pattern and math references"
+      "budget_exempt": "ships its tools: the solver, the proof sheet, the simulator and the workbook writer (17 Python scripts), the tuning bench for a Godot game (GDScript addon and a sample game), the system catalog and the math references"
     },
     {
       "name": "ios-simulator-run",

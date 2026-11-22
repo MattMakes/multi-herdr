@@ -1,0 +1,25 @@
+{
+  "designer_answered": true,
+  "starter_set": null,
+  "selected": [
+    {"system": "S01", "variant": "S01.geometric", "parameters": {}},
+    {"system": "S02", "variant": "S02.levelled_factor", "parameters": {}},
+    {"system": "S03", "variant": "S03.exponential", "parameters": {}},
+    {"system": "S04", "variant": "S04.power", "parameters": {}},
+    {"system": "S05", "variant": "S05.active_lane", "parameters": {}},
+    {"system": "S08", "variant": "S08.timed_bank", "parameters": {}},
+    {"system": "S13", "variant": "S13.raised_cap", "parameters": {}},
+    {"system": "S15", "variant": "S15.geometric", "parameters": {}},
+    {"system": "S23", "variant": "S23.product_export", "parameters": {}},
+    {"system": "S24", "variant": "S24.auto_buy", "parameters": {}},
+    {"system": "S28", "variant": "S28.last_step", "parameters": {}}
+  ],
+  "refused": ["S06"],
+  "notes": [
+    "Moss Works on Steam. The selection keeps the systems of the built game (assets/fixtures/moss-works-built/ and the catalog map of scripts/scan_godot.py): S01 Mister, S02 the jar upgrades, S03 the stages, S04 Regrow, S13 the Trellis cap that the specimens raise, S15 Root Memory, S23 the Dew Garden.",
+    "S05.active_lane is the active action of the solve. The catalog default for continuous play is S05.manual_then_automate (decision D10). The laws of the solver do not prove its manual phase, so a simulation of the game must check it.",
+    "S24.auto_buy ends the manual phase. S28.last_step is the hard end: the last stage. S08.timed_bank is the bank of dew charges. It fills only while the game runs.",
+    "S04 stays: Regrow is in the built game. Decision D10 permits S04.none with S29 or S22.",
+    "S06 is refused: play pattern continuous, no offline gain (decision D9)."
+  ]
+}

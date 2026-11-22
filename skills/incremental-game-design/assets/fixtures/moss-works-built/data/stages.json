@@ -1,0 +1,26 @@
+{
+  "base_spores_per_sec": 1.0,
+  "base_grow_power": 1.0,
+  "count": 40,
+  "hp_base": 20.0,
+  "hp_growth": 1.9,
+  "clear_seconds": 10.0,
+  "reward_base": 25.0,
+  "reward_growth": 1.6,
+  "garden_unlock_stage": 7,
+  "prestige_unlock_stage": 10,
+  "prestige_divisor": 100000.0,
+  "prestige_exponent": 0.5,
+  "prestige_min_run_seconds": 300.0,
+  "offline_cap_seconds": 28800.0,
+  "autosave_interval_seconds": 30.0,
+  "specimens": [
+    {"id": "specimen_5", "name": "Pressed specimen: stage 5", "unlock_stage": 5, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]},
+    {"id": "specimen_15", "name": "Pressed specimen: stage 15", "unlock_stage": 15, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]},
+    {"id": "specimen_20", "name": "Pressed specimen: stage 20", "unlock_stage": 20, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]},
+    {"id": "specimen_25", "name": "Pressed specimen: stage 25", "unlock_stage": 25, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]},
+    {"id": "specimen_30", "name": "Pressed specimen: stage 30", "unlock_stage": 30, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]},
+    {"id": "specimen_35", "name": "Pressed specimen: stage 35", "unlock_stage": 35, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]},
+    {"id": "specimen_40", "name": "Pressed specimen: stage 40", "unlock_stage": 40, "effects": [{"target": "trellis", "kind": "cap", "value": 2}, {"target": "spores_per_sec", "kind": "mult", "value": 1.25}]}
+  ]
+}
