@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cursor::Cursor;
 use super::readers::{self, Cursors, Located, Polled, Unreadable};
+use super::refresh::{self, AccountWatch};
 use super::store::{self, GroupSums, Kept, Rollup, Store, Table, UnpricedRow};
 use super::timing::TickTiming;
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
@@ -156,6 +157,8 @@ pub struct Collector {
     pub print_timing: bool,
     snapshot_hash: Option<u64>,
     tidied_at: Option<DateTime<Utc>>,
+    accounts: AccountWatch,
+    started: bool,
 }
 
 impl Collector {
@@ -202,6 +205,11 @@ impl Collector {
         let mut c = c.with_faults(&ctx.settings.faults);
         c.task_ledger = Some(ctx.paths.ledger_db.clone());
         c.session_db = execution_store::session_db(&ctx.paths);
+        c.accounts = AccountWatch::new(
+            &c.loc.home,
+            ctx.inherited.claude_config_dir.as_deref(),
+            ctx.inherited.codex_home.as_deref(),
+        );
         use crate::runtime::EnvSource;
         c.print_timing = crate::runtime::ProcessEnv
             .var("HORCH_TELEMETRY_TIMING")
@@ -222,6 +230,7 @@ impl Collector {
         let dir = super::dir(state_root);
         let store = Store::open(&dir, now, policy.retention_days)?;
         let cursors = store::load_cursors(&dir);
+        let accounts = AccountWatch::new(&loc.home, None, None);
         Ok(Collector {
             state_root: state_root.to_path_buf(),
             bins: ProbeBins {
@@ -254,6 +263,8 @@ impl Collector {
             print_timing: false,
             snapshot_hash: None,
             tidied_at: None,
+            accounts,
+            started: false,
         })
     }
 
@@ -565,12 +576,11 @@ impl Collector {
             .flatten();
         let mut file = on_disk.clone().unwrap_or_default();
         file.apply_signals(signals, &self.policy);
-        let due = match self.probing {
-            Probing::Never => false,
-            Probing::Scheduled => quota::probe_due(&file, now, self.policy.probe_interval_min),
-            Probing::OnDemand => quota::probe_due(&file, now, self.policy.probe_on_demand_age_min),
+        let requests = match self.probing {
+            Probing::Never => Vec::new(),
+            _ => refresh::pending(&self.state_root),
         };
-        if due {
+        if self.probe_wanted(&file, now, !requests.is_empty()) {
             quota_probe::probe_all(
                 &mut file,
                 &self.bins,
@@ -585,7 +595,22 @@ impl Collector {
             let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
             self.timing.wrote("quota", bytes);
         }
+        refresh::clear(&requests);
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
+    }
+
+    fn probe_wanted(&mut self, file: &QuotaFile, now: DateTime<Utc>, requested: bool) -> bool {
+        let aged = match self.probing {
+            Probing::Never => return false,
+            Probing::Scheduled => quota::probe_due(file, now, self.policy.probe_interval_min),
+            Probing::OnDemand => quota::probe_due(file, now, self.policy.probe_on_demand_age_min),
+        };
+        if self.probing != Probing::Scheduled {
+            return aged || requested;
+        }
+        let first = !std::mem::replace(&mut self.started, true);
+        let account = self.accounts.changed();
+        aged || requested || first || account || file.has_passed_reset(now)
     }
 }
 

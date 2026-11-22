@@ -5,6 +5,7 @@ pub mod map;
 pub mod model;
 pub mod orchestrator;
 pub mod outbox;
+pub mod prestage;
 pub mod runs;
 pub mod schema;
 pub mod sql_words;

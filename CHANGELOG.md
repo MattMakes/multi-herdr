@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Usage readings now refresh every 5 min, on an account switch, on a collector
+  start and after a limit reset. `horch quota --refresh` now always gets a new
+  reading.
+
 ## v0.5.3 - 2026-11-22
 
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film

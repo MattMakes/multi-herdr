@@ -350,8 +350,8 @@ An optional `state_root/policy.json`. Every key has a compiled default, and an u
 |---|---|---|
 | `tick_ms` | 2000 | collector |
 | `retention_days` | 35 | store |
-| `probe_interval_min` | 15 | quota (OD5) |
-| `probe_on_demand_age_min` | 10 | spawn gate, `horch quota` |
+| `probe_interval_min` | 5 | quota (OD5) |
+| `probe_on_demand_age_min` | 10 | spawn gate |
 | `stale_after_min` | 30 | quota state `unknown` |
 | `tight_used` | 0.85 | state rules |
 | `exhausted_used` | 0.98 | state rules |
@@ -404,7 +404,10 @@ Windows can be scoped to a model family (`seven_day_opus`, `seven_day_sonnet`, `
 Probe rules:
 
 - The Claude probe runs `--model haiku`, so any accidental turn costs the least. The probe never writes a user message. The fake used in tests fails loudly if one arrives (section 16.3).
-- Probes run inside the collector every `probe_interval_min`. `horch quota --refresh` and the spawn gate probe only when no live collector holds the lock and the reading is older than `probe_on_demand_age_min`.
+- Probes run inside the collector every `probe_interval_min`. The spawn gate probes only when no live collector holds the lock and the reading is older than `probe_on_demand_age_min`.
+- `horch quota --refresh` always probes. With no live collector, it probes at once. With a live collector, it writes a request file under `telemetry/quota-refresh/`, and the collector probes on its next tick and removes the file after it writes `quota.json`. At the deadline, the command prints a failure line and exits non-zero.
+- A scheduled collector also forces a probe on its first tick, on a request file, on an account change, and when a stored window has a `resets_at` in the past. The passed-reset trigger fires only when the `probed_at` of the pool is absent or earlier than that `resets_at`, so each reset forces 1 probe, also when the probe fails.
+- Account detection reads only `oauthAccount.accountUuid` from `.claude.json` when its mtime changes, and keeps only a hash in memory. It uses only the mtime and size of Codex `auth.json` and of `~/.gemini/google_accounts.json`.
 - Probe output is parsed field by field into the normalized form, and every other field is dropped. Account ids, emails and spend in dollars never leave the parser (TEL-11).
 - The harness version (`claude --version`, `codex --version`, read once per collector start) is stored with each reading.
 

@@ -244,6 +244,13 @@ impl PaneHost {
         }
     }
 
+    pub fn pane_ended(&self, pane: &str) -> bool {
+        match &self.inner {
+            Inner::Herdr(_) => false,
+            Inner::Hc(h) => h.pane_ended(pane),
+        }
+    }
+
     pub fn pane_read(&self, pane: &str, source: &str) -> Result<String> {
         match &self.inner {
             Inner::Herdr(h) => h.pane_read(pane, source),

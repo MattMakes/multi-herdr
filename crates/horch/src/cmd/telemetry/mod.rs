@@ -493,6 +493,8 @@ fn sleep_until_shutdown(d: Duration) {
     }
 }
 
+const PANE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub fn ensure(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool) -> Result<()> {
     ensure_current(ctx, herdr, quiet, &ctx.bins.exe()?, true)
 }
@@ -523,13 +525,14 @@ fn ensure_current(
         }
         _ => start_if_none,
     };
-    if !go || start_pending(&root, quiet) {
+    if !go || start_pending(ctx, &root, quiet) {
         return Ok(());
     }
+    let stopped_pane = old_location.as_ref().and_then(|(_, pane)| pane.clone());
     let target_host = old_location
         .and_then(|(ws, pane)| host_holding_collector(ctx, herdr, ws.as_deref(), pane.as_deref()))
         .unwrap_or_else(|| herdr.clone());
-    start(ctx, &target_host, quiet, exe)
+    start(ctx, &target_host, quiet, exe, stopped_pane.as_deref())
 }
 
 fn candidate_hosts(ctx: &RuntimeContext, primary: &PaneHost) -> Vec<PaneHost> {
@@ -596,8 +599,13 @@ fn replaced_line(pid: u32, ran: Option<&horch_core::exeid::ExeIdentity>, exe: &P
     format!("stopped telemetry collector pid {pid}: {why}")
 }
 
-fn start_pending(root: &Path, quiet: bool) -> bool {
-    match start::pending(root) {
+fn start_pending(ctx: &RuntimeContext, root: &Path, quiet: bool) -> bool {
+    let pane_ended = |request: &start::Request| {
+        PaneHost::for_backend(ctx, request.backend)
+            .with_timeout(PANE_CHECK_TIMEOUT)
+            .pane_ended(&request.pane_id)
+    };
+    match start::pending_with(root, pane_ended) {
         start::Pending::Starting(request) => {
             report_starting(&request, quiet);
             true
@@ -673,7 +681,13 @@ fn old_collector_workspaces(
         .collect()
 }
 
-fn start(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool, exe: &Path) -> Result<()> {
+fn start(
+    ctx: &RuntimeContext,
+    herdr: &PaneHost,
+    quiet: bool,
+    exe: &Path,
+    stopped_pane: Option<&str>,
+) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     let id = start::new_id();
     let command = collector_command(ctx, exe, &id);
@@ -690,7 +704,7 @@ fn start(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool, exe: &Path) -> Res
             create_host = host.clone();
         }
         let old = old_collector_workspaces(&all, &live_collector_in(&host, &root));
-        if let Some(reused) = start_in_old(ctx, &host, &id, &command, &old)? {
+        if let Some(reused) = start_in_old(ctx, &host, &id, &command, &old, stopped_pane)? {
             started = Some(reused);
             break;
         }
@@ -730,9 +744,15 @@ fn start_in_old(
     id: &str,
     command: &str,
     old: &[String],
+    stopped_pane: Option<&str>,
 ) -> Result<Option<(String, String)>> {
+    let exits_with_collector = |pane: &str| {
+        herdr.backend() == horch_core::runtime::Backend::Hc && stopped_pane == Some(pane)
+    };
     let reusable = old.iter().find_map(|ws| match herdr.pane_list(ws) {
-        Ok(panes) if panes.len() == 1 => Some((ws.clone(), panes[0].pane_id.clone())),
+        Ok(panes) if panes.len() == 1 && !exits_with_collector(&panes[0].pane_id) => {
+            Some((ws.clone(), panes[0].pane_id.clone()))
+        }
         _ => None,
     });
     let Some((ws, pane)) = reusable else {

@@ -1,9 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Result};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::runtime::RuntimeContext;
+use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, EventKind, RunStatus, WorkerKind};
+use horch_core::taskledger::prestage::{self, Prestaged};
 use horch_core::taskledger::runs::{self, Run};
 use horch_core::taskledger::util::{self, About};
 use horch_core::taskledger::workers::{self, NewWorker};
@@ -18,6 +20,7 @@ pub const CLAIM_TARGET_ENV: &str = "HORCH_CLAIM_TARGET";
 
 pub struct LedgerSpawn {
     store: std::cell::RefCell<Store>,
+    prestaged: std::cell::RefCell<Option<(Git, Prestaged)>>,
     pub run: Run,
     pub worker_id: String,
 }
@@ -48,6 +51,7 @@ pub fn prepare(
     }
     Ok(Some(LedgerSpawn {
         store: std::cell::RefCell::new(store),
+        prestaged: std::cell::RefCell::new(None),
         run,
         worker_id: id,
     }))
@@ -281,6 +285,28 @@ impl LedgerSpawn {
         if let Err(e) = r {
             eprintln!("horch spawn: the task ledger did not record the failed start: {e:#}");
         }
+        if let Some((git, staged)) = self.prestaged.borrow_mut().take() {
+            let released = prestage::release(&mut self.store.borrow_mut(), &git, &staged);
+            if let Err(e) = released {
+                eprintln!(
+                    "horch spawn: worktree {} stays for its task: {e:#}",
+                    staged.path.display()
+                );
+            }
+        }
+    }
+
+    pub fn prestage_worktree(&self, ctx: &RuntimeContext) -> Result<Option<PathBuf>> {
+        let git = Git::new(&ctx.bins.harness.git);
+        let staged = prestage::prestage(
+            &mut self.store.borrow_mut(),
+            &git,
+            &self.worker_id,
+            &|task| super::taskledger::slug(&task.title),
+        )?;
+        let path = staged.as_ref().map(|s| s.path.clone());
+        *self.prestaged.borrow_mut() = staged.map(|s| (git, s));
+        Ok(path)
     }
 }
 

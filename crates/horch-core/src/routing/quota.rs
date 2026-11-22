@@ -189,6 +189,23 @@ pub(crate) fn quota_path(state_root: &Path) -> PathBuf {
 }
 
 impl QuotaFile {
+    pub(crate) fn has_passed_reset(&self, now: DateTime<Utc>) -> bool {
+        self.pools.values().any(|p| {
+            let probed = p.probed_at.as_deref().and_then(clock::parse);
+            p.windows.iter().any(|w| {
+                w.resets()
+                    .is_some_and(|r| r <= now && probed.is_none_or(|t| t < r))
+            })
+        })
+    }
+
+    pub(crate) fn latest_probe(&self) -> Option<&str> {
+        self.pools
+            .values()
+            .filter_map(|p| p.probed_at.as_deref())
+            .max()
+    }
+
     pub(crate) fn apply_signals(&mut self, signals: &[QuotaSignal], policy: &Policy) {
         for s in signals {
             match s {

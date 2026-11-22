@@ -845,6 +845,26 @@ pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
     }
 }
 
+pub fn reserve_for_worktree(conn: &Connection, worker_id: &str) -> Result<Option<Task>> {
+    let w = workers::get(conn, worker_id)?;
+    let (run_id, persona) = check_claimer(&w)?;
+    let Some(task) = pick_task(conn, &w, &run_id, &persona)? else {
+        return Ok(None);
+    };
+    if !task.uses_worktree() || task.is_review() {
+        return Ok(None);
+    }
+    let others = reservations(conn, &run_id, Some(worker_id))?;
+    if others.values().any(|t| *t == task.task_id) {
+        bail!("{} is reserved by another worker", task.short());
+    }
+    conn.execute(
+        "UPDATE workers SET target_task_id = ?2 WHERE worker_id = ?1",
+        params![worker_id, task.task_id],
+    )?;
+    Ok(Some(task))
+}
+
 fn held_task(conn: &Connection, w: &Worker) -> Result<Option<Task>> {
     match (&w.task_id, w.status()? == WorkerStatus::Working) {
         (Some(t), true) => Ok(Some(get(conn, t)?)),
