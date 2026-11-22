@@ -470,10 +470,7 @@ mod tests {
         env
     }
 
-    #[test]
-    fn arc_05_context_from_map_env() {
-        let ctx = RuntimeContext::from_env(&full_env()).unwrap();
-
+    fn assert_full_paths(ctx: &RuntimeContext) {
         assert_eq!(ctx.paths.cwd, Some(PathBuf::from("/cwd")));
         assert_eq!(ctx.paths.project_dir, Some(PathBuf::from("/proj")));
         assert_eq!(ctx.paths.state_root, PathBuf::from("/state"));
@@ -484,7 +481,9 @@ mod tests {
 
         assert_eq!(ctx.herdr.workspace.as_ref().unwrap().as_str(), "w7");
         assert_eq!(ctx.herdr.pane.as_ref().unwrap().as_str(), "p_2");
+    }
 
+    fn assert_full_bins(ctx: &RuntimeContext) {
         assert_eq!(ctx.bins.roster_override, Some(PathBuf::from("/roster")));
         assert_eq!(
             ctx.bins.current_exe,
@@ -505,7 +504,9 @@ mod tests {
             PathBuf::from("/fake/HORCH_HERDR_APP_BIN")
         );
         assert_eq!(ctx.bins.overrides.env_pairs().len(), 12);
+    }
 
+    fn assert_full_settings(ctx: &RuntimeContext) {
         let s = &ctx.settings;
         assert_eq!(s.now, crate::clock::parse("2026-09-28T18:00:00Z"));
         assert_eq!(s.now_unparsable, None);
@@ -518,7 +519,9 @@ mod tests {
         assert_eq!(s.tell_grace, Some(Duration::ZERO));
         assert_eq!(s.spawn_wait, Some(Duration::from_millis(1500)));
         assert!(s.faults.has("after-append") && s.faults.has("abort-after-append"));
+    }
 
+    fn assert_full_inherited(ctx: &RuntimeContext) {
         let i = &ctx.inherited;
         assert_eq!(i.home_var, Some(OsString::from("/home/a")));
         assert_eq!(i.opencode_config_content.as_deref(), Some("{}"));
@@ -531,13 +534,16 @@ mod tests {
         assert_eq!(i.hostname.as_deref(), Some("box"));
         assert_eq!(i.herdr_session.as_deref(), Some("s"));
         assert_eq!(i.herdr_socket_path, Some(PathBuf::from("/herdr.sock")));
+    }
 
+    fn assert_full_worker(ctx: &RuntimeContext) {
         let w = ctx.worker.as_ref().unwrap();
         assert_eq!(w.role.as_deref(), Some("sonnet-1"));
         assert_eq!(w.record_id.as_deref(), Some("r1"));
         assert_eq!(w.task.as_deref(), Some("t"));
+    }
 
-        let ctx = RuntimeContext::from_env(&MapEnv::default()).unwrap();
+    fn assert_default_paths_and_bins(ctx: &RuntimeContext) {
         assert_eq!(ctx.paths.cwd, None);
         assert_eq!(ctx.paths.project_dir, None);
         assert_eq!(ctx.paths.home, PathBuf::from("."));
@@ -551,6 +557,9 @@ mod tests {
         assert!(ctx.bins.overrides.is_empty());
         assert_eq!(ctx.bins.harness.claude, PathBuf::from("claude"));
         assert_eq!(ctx.bins.harness.codex, PathBuf::from("codex"));
+    }
+
+    fn assert_default_settings_and_rest(ctx: &RuntimeContext) {
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.tiling, TilingMode::Automatic);
         assert_eq!(ctx.settings.probe_timeout, None);
@@ -560,6 +569,20 @@ mod tests {
         assert!(ctx.settings.faults.is_empty());
         assert_eq!(ctx.inherited, Inherited::default());
         assert_eq!(ctx.worker, None);
+    }
+
+    #[test]
+    fn arc_05_context_from_map_env() {
+        let ctx = RuntimeContext::from_env(&full_env()).unwrap();
+        assert_full_paths(&ctx);
+        assert_full_bins(&ctx);
+        assert_full_settings(&ctx);
+        assert_full_inherited(&ctx);
+        assert_full_worker(&ctx);
+
+        let ctx = RuntimeContext::from_env(&MapEnv::default()).unwrap();
+        assert_default_paths_and_bins(&ctx);
+        assert_default_settings_and_rest(&ctx);
     }
 
     #[test]
