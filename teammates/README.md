@@ -475,6 +475,14 @@ It carries `comment-pruning`, written clean-room with `skill-intake` (see [docs/
 
 Its persona holds the operator's brief word for word, so `horch spawn comment-purger` with no further task runs that brief on the project the fleet is in. A task may narrow the scope to named paths. It works in any repository: it uses a comment lint, a skill and an ADR folder where they exist, and builds them where they do not. In this repository they exist (`scripts/comments/comment_lint.py`, `.claude/skills/delete-comment/`, [ADR 0004](../docs/adr/0004-no-comments-in-code.md)). It differs from `comment-remover`, which sweeps only the lines of 1 task's diff and is never offered.
 
+## The plan-review-host teammate
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `plan-review-host` | implementation | claude, sonnet, medium | `codex-sol` | Opens a browser page where the operator comments on or signs off a plan or doc, then returns the annotations. |
+
+It carries `plan-annotation`, written clean-room with `skill-intake` (see [docs/cleanroom/plan-annotation/](../docs/cleanroom/plan-annotation/)). It is offered in every project.
+
 ## The effort-matrix personas
 
 Eight more Claude specialists split the work by model tier and effort level

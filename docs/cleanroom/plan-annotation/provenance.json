@@ -1,0 +1,26 @@
+{
+  "task_id": "20261122-010031-feaa44",
+  "fetched_at": "2026-11-22T01:00:31+00:00",
+  "source": {
+    "kind": "github",
+    "name": "https://github.com/backnotprop/plannotator.git",
+    "ref": null,
+    "commit": "d85cafaaffaa2fa8ceb15f4eeef6eb14f4388f03",
+    "subdir": "apps/skills/core/plannotator-annotate"
+  },
+  "content_sha256": "349937e555b7131807de1e68d21439324a87b1b386866ac72ec5ea6786432d98",
+  "archive_sha256": null,
+  "licence": {
+    "spdx": "Apache-2.0",
+    "class": "permissive",
+    "flag": null
+  },
+  "skills": [
+    {
+      "name": "plan-annotation",
+      "renamed_from": null,
+      "sha256": "6c8a85ef161249fd8b4e1fb05646a294c90e36333be0ba0ec72586051820707e"
+    }
+  ],
+  "gate2": "pass"
+}

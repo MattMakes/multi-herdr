@@ -378,3 +378,13 @@ The specs the writer worked from and the sweep result are in [docs/cleanroom/des
 | --- | --- |
 | [design-system-cli-guide](design-system-cli-guide/SKILL.md) | own text (clean-room) |
 
+## Clean-room intake: plan-annotation
+
+`plan-annotation` belongs to no phase. It is own text, written clean-room with `skill-intake`. A security sweep read https://github.com/backnotprop/plannotator (Apache-2.0, commit `d85cafaaffaa`) in a quarantine, one role worker wrote behaviour specs in its own words, and a second role worker that never saw the source wrote the skill from the specs alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+The specs the writer worked from and the sweep result are in [docs/cleanroom/plan-annotation/](../docs/cleanroom/plan-annotation/).
+
+| Skill | Kind |
+| --- | --- |
+| [plan-annotation](plan-annotation/SKILL.md) | own text (clean-room) |
+

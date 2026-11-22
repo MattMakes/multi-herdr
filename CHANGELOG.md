@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- New teammate `plan-review-host` carries the new clean-room skill `plan-annotation`, which `product-lead` and `staff-engineer` also name. Imported with `skill-intake` from https://github.com/backnotprop/plannotator (Apache-2.0); specs in `docs/cleanroom/plan-annotation/`.
 - New clean-room skill `design-system-cli-guide`, named by `design-system-engineer` and `frontend-developer`. Imported with `skill-intake` from https://github.com/meta/astryx (MIT); specs in `docs/cleanroom/design-system-cli-guide/`.
 
 ## v0.5.2 - 2026-11-21

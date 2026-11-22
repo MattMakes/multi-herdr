@@ -413,6 +413,10 @@ installs only what passes 2 gates.
 
 `design-system-engineer` and `frontend-developer` name the clean-room skill `design-system-cli-guide` under `available_skills`, so a worker loads it on demand. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
 
+### Clean-room intake: plan-annotation
+
+`plan-review-host` carries the clean-room skill `plan-annotation`. `product-lead` and `staff-engineer` also name it under `available_skills`, so a worker loads it on demand. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
+
 ## `horch agent-list`: which harnesses can this machine run
 
 ```bash

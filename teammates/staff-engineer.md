@@ -21,7 +21,7 @@ subagent_model: haiku
 # plugins are switched off; the portable plan skills are supplied by horch.
 inherit_plugins: false
 skills: [create-plan, pre-flight, system-design, codebase-design]
-available_skills: [api-contracts, data-migrations, improve-codebase-architecture]
+available_skills: [api-contracts, data-migrations, improve-codebase-architecture, plan-annotation]
 mcp_servers: {}
 first_instruction: |-
   Write the plan to a file under ai_docs/ and reply with the file path. Do not

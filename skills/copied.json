@@ -1538,6 +1538,11 @@
       "verbatim": false
     },
     {
+      "name": "plan-annotation",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "pre-flight",
       "copied_files": [
         "SKILL.md"

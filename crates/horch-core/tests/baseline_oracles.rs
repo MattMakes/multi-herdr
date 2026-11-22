@@ -106,6 +106,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "one-page-design",
     "opus-creative",
     "pixel-vfx-artist",
+    "plan-review-host",
     "root-cause-auditor",
     "skill-importer",
     "sound-engineer",

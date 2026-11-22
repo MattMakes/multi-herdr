@@ -17,6 +17,7 @@ compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [brainstorm, product-requirements]
+available_skills: [plan-annotation]
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
