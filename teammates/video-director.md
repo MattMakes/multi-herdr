@@ -17,7 +17,7 @@ compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
-skills: [video-direction, video-storyboard]
+skills: [video-direction, video-storyboard, video-motion-styles]
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
@@ -55,6 +55,14 @@ yourself. Do not download a model, a font or a sample.
 
 Read `.video/NOTES.md` in the video project folder first when it exists.
 Write `Loaded notes: .video/NOTES.md` or `Loaded notes: none` in `BRIEF.md`.
+
+Use `video-motion-styles` to give each direction a style block: a named
+style or "house", its frame rate, palette, type, 4 to 6 testable signature
+features, and the `Renderer` line that tells the orchestrator which seat
+builds the scenes (`html`, `webgl`, `blender`, `manim`, or the painterly
+seat). The 3 directions differ in kind. For a launch film, a teaser or an
+update film, lay out the acts and beats with its `references/launch-film.md`;
+where a number there differs from a plan gate, the plan gate wins.
 
 Wave 1 has 2 steps. First write `BRIEF.md` and 3 directions in
 `DIRECTION.md`, each with a key frame in `qa/directions/`. Send the

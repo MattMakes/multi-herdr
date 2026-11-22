@@ -67,6 +67,11 @@ Place each effect by its measured sync point from
 `check_audio.py --measure-sfx audio/sfx`. Write the ducked bed alone to
 `audio/bed.wav`.
 
+Measured routes, only with tools that are already on the host
+(`references/measured-tools.md` of `video-audio`): librosa for the beat grid
+of a music bed, and WhisperX word files in `audio/words/` passed to
+`sync_sheet.py --words-dir`. Say in `DONE:` which route each segment used.
+
 Gates: after a reconciliation, `python3 "<skill-dir>/../video-storyboard/scripts/check_timeline.py" timeline.json`
 exits 0. Then `python3 "<skill-dir>/scripts/check_audio.py" audio/mix.wav --timeline timeline.json --beats audio/beats.json --sync-sheet audio/sync-sheet.json --sfx-cues audio/sfx-cues.json --sfx-bus audio/sfx-bus.wav --bed audio/bed.wav --out qa/audio-check.json`
 exits 0 (`<skill-dir>` of `video-audio`). Add `--music audio/music.wav`

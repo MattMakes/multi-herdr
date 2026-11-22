@@ -222,7 +222,7 @@ them, `horch doctor` checks that `git lfs version` works.
 
 ## The Godot team
 
-Nineteen `godot-*` specialists staff Godot 4 work. Each sets
+Twenty `godot-*` specialists staff Godot 4 work. Each sets
 `offer_when: ["project.godot"]`, so the fleet orchestrator is offered them
 only when the project has a `project.godot` file at the top level or one
 level down. Each also sets `requires: [godot]`, and `horch doctor` then looks
@@ -247,6 +247,7 @@ seat and link it in the skill's index.
 | `godot-qa-engineer` | 1 | validation | claude, sonnet, high | headless parse checks, GUT and gdUnit4 tests, bug repros |
 | `godot-code-reviewer` | 1 | validation | claude, opus, high | GDScript and C# review; never edits |
 | `godot-animator` | 2 | implementation | claude, opus, medium | AnimationPlayer, AnimationTree, tweens, sprite animation |
+| `godot-cutscene-director` | 2 | implementation | claude, opus, medium | cutscenes: skippable in-engine sequences, camera staging, timing, subtitles, music sync, Movie Maker capture |
 | `godot-ai-programmer` | 2 | implementation | claude, opus, medium | navigation, state machines, LimboAI and Beehave behavior trees |
 | `godot-network-engineer` | 2 | implementation | claude, opus, medium | MultiplayerAPI, RPCs, spawners, synchronizers, dedicated servers |
 | `godot-world-builder` | 2 | implementation | claude, opus, medium | TileMap layers, GridMap, CSG, procedural levels, cameras |
@@ -269,8 +270,18 @@ that edits scenes carries `godot-scene-files`. `godot-code-reviewer` denies
 `Edit`, `Write` and `NotebookEdit`, the same as `ue-code-reviewer`.
 `godot-release-engineer` builds export artifacts and never uploads them (no
 `butler push`, no store upload); like `app-release-preparer`, it ends at a
-plan for the orchestrator. `available_skills:` names 3 related skills per
-teammate.
+plan for the orchestrator. `available_skills:` names the related skills of
+each teammate, 3 for most.
+
+`godot-cutscene-director` carries the own-text `godot-cutscenes` skill. A
+game cutscene must give control back in a known state, so the skill builds
+every scene on 1 clock (an `AnimationPlayer`), sets every kept fact in 1
+function that a full play and a skip both call, and tests that a skip at 5
+times gives the end state of a full play. It also carries the film team's
+techniques in engine form: timing and easing by role, beat markers from
+`audio/beats.json`, subtitle cues from `audio/sync-sheet.json`, painterly
+parallax, mask reveals, line boil, particles that scrub and the post-effect
+finish. It hands a Movie Maker plate to the `video-*` team for a trailer.
 
 C# is a language, not a domain. Every builder except `godot-csharp-engineer`
 sets `skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}`,
@@ -296,6 +307,7 @@ latest stable release on 2026-10-04 (4.7.2).
 | `blender-builder` | implementation | claude, opus, medium | Blender assets for any target (Godot, Unity, Unreal, Roblox, web, render): model, UV, PBR, bake, export |
 | `blender-qa` | validation | claude, sonnet, high | Blender asset QA: topology, UVs, scale, materials, budgets, exports; reports numbers and renders, fixes nothing |
 | `blender-3d-printer` | implementation | claude, opus, medium | Cleans Blender, STL, 3MF and OBJ models for FDM and resin printing: watertight, walls, overhangs, scale, export |
+| `blender-cinematographer` | implementation | claude, opus, medium | Blender film shots for the video team: camera moves, lighting, look-dev, headless frame renders as timeline plates |
 
 `offer_when: ["*.blend", "*.uproject"]`. It drives Blender through the
 official Blender Lab MCP server, pinned by commit, with no telemetry and no
@@ -310,22 +322,37 @@ and `blender-baking`, and names `ue-editor-scripting`. It
 exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
 or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
 
+`blender-cinematographer` makes the 3D shots of a video. It is offered on a
+`*.blend` file, a `timeline.json` or a `video` folder, and requires Blender.
+It carries `blender-core`, `blender-scene-setup`, `blender-animation`,
+`blender-lighting-lookdev`, `blender-rendering` and `video-plates`, has no
+MCP server, and works headless from a shot script so that another worker can
+render the shot again. It renders frames to a folder, encodes once, and
+delivers a plate with a sidecar to the video team. A model, a rig or a
+material that a shot needs is a task for `blender-builder`. No fallback.
+
 ## The video team
 
-Seven specialists make a rendered video: a launch film, product demo, CLI
-walkthrough, concept explainer or social cut. They carry the 10 own-text
+Ten specialists make a rendered video: a launch film, product demo, CLI
+walkthrough, concept explainer or social cut. They carry the 16 own-text
 `video-*` skills by name. The orchestrator runs them in wave 0 and 6 build
 waves from
-`skills/orchestrate/references/video-pipeline.md`.
+`skills/orchestrate/references/video-pipeline.md`. 3 of them are scene
+builders for 1 kind of scene each, next to `video-animator`: the director's
+`Renderer` line in `DIRECTION.md` says which builder a scene needs. A Blender
+shot comes from `blender-cinematographer` (see "The Blender teammate").
 
 | teammate | phase | agent, model, effort | skills | use for |
 |---|---|---|---|---|
 | `video-producer` | plan | claude, opus, high | `video-produce` | workflow pick, `PRODUCTION.md`, blind A/B labels, taste notes, batch summary, share kit |
-| `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard` | brief, direction, storyboard, `timeline.json` and the plan gate |
+| `video-director` | plan | claude, opus, high | `video-direction`, `video-storyboard`, `video-motion-styles` | brief, direction with a named style per direction, storyboard, `timeline.json` and the plan gate |
 | `video-capture` | implementation | claude, sonnet, medium | `video-capture` | deterministic browser and terminal plates with telemetry |
 | `video-audio` | implementation | claude, sonnet, medium | `video-audio`, `video-storyboard` | voice-over, timing reconciliation, beat grid, SFX, -14 LUFS master |
-| `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-motion-match`, `motion-gsap` | deterministic HTML scenes, character rigs, reference matching |
-| `video-editor` | implementation | claude, sonnet, medium | `video-render` | frame-stepped render, `render/master.mp4`, aspect variants, publish pack |
+| `video-animator` | implementation | claude, opus, medium | `video-motion`, `video-character`, `video-motion-match`, `motion-gsap`, `video-motion-craft` | deterministic HTML scenes, character rigs, reference matching, animator timing and the audit for template motion |
+| `video-illustrator` | implementation | claude, opus, medium | `video-art-motion`, `video-motion`, `video-motion-craft` | painterly and hand-drawn scenes in code: living paintings in an art style, doodles, line boil, seamless loops |
+| `video-math-animator` | implementation | claude, opus, medium | `video-manim`, `video-plates`, `video-motion-craft` | Manim scenes (formulas, graphs, geometry, algorithm steps) as frame-exact plates |
+| `video-3d-animator` | implementation | claude, opus, medium | `video-webgl`, `video-motion`, `video-motion-craft`, `video-plates` | three.js scenes, particle systems, shaders and the post-processing finish, deterministic per frame |
+| `video-editor` | implementation | claude, sonnet, medium | `video-render`, `video-plates` | plate checks and layer composites, frame-stepped render, `render/master.mp4`, aspect variants, publish pack |
 | `video-critic` | validation | claude, opus, high | `video-qa`, `video-direction` | numeric render QA and a blind 8-axis review |
 
 No `offer_when`: an ordinary code repo asks for a launch video before any
@@ -337,6 +364,17 @@ reports `BLOCKED:` with the install step. No fallback: Chrome, `ffmpeg` and
 sibling skill, and a bundle holds only the teammate's own skills.
 `video-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its
 `qa/` reports. Spawn a new `video-critic` for each review round.
+
+Optional tools are never installed or downloaded by a teammate. Each one is
+used only when the host already has it, and its persona's preflight names
+the install step: Manim (and LaTeX) for `video-math-animator`; a vendored
+three.js, particle, post-processing or tuning-panel library for
+`video-3d-animator`; librosa and WhisperX for `video-audio`
+(`sync_sheet.py --words-dir` takes the word files); the EffectCraft command
+line for a layer composite; Remotion, only after the operator answers its
+licence question; and the Openverse search for `sound-engineer`, which is a
+network service. `skills/README.md` lists the public projects whose
+techniques each skill restates.
 
 ## The pixel VFX teammate
 

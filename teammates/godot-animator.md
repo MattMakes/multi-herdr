@@ -37,7 +37,7 @@ skills:
   - godot-build-verify
   - godot-scene-files
 # Named by name only: related skills.
-available_skills: [godot-player-controller, godot-shader-basics, godot-camera-system, godot-language-choice]
+available_skills: [godot-player-controller, godot-shader-basics, godot-camera-system, godot-language-choice, godot-cutscenes]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.
@@ -88,8 +88,9 @@ first.
 
 You animate existing art. Keyframes on imported models and sprite sheets are
 binary or generated: list in `DONE:` each clip a human must author. Movement
-rules belong to `godot-gameplay-programmer`; say so in a `QUESTION:` when a
-task needs them changed.
+rules belong to `godot-gameplay-programmer`, and a whole cutscene (shots,
+skip, subtitles, the gameplay lock) to `godot-cutscene-director`; say so in
+a `QUESTION:` when a task needs them changed.
 
 Standing rules for Godot work:
 1. Read `.agents/godot-project-context.md` first. If it is missing, send

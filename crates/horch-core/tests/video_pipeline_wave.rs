@@ -13,7 +13,7 @@ type Seat = (
     &'static [&'static str],
 );
 
-const SEATS: [Seat; 7] = [
+const SEATS: [Seat; 10] = [
     (
         "video-producer",
         Phase::Plan,
@@ -26,7 +26,7 @@ const SEATS: [Seat; 7] = [
         Phase::Plan,
         "opus",
         "high",
-        &["video-direction", "video-storyboard"],
+        &["video-direction", "video-storyboard", "video-motion-styles"],
     ),
     (
         "video-capture",
@@ -52,6 +52,33 @@ const SEATS: [Seat; 7] = [
             "video-character",
             "video-motion-match",
             "motion-gsap",
+            "video-motion-craft",
+        ],
+    ),
+    (
+        "video-illustrator",
+        Phase::Implementation,
+        "opus",
+        "medium",
+        &["video-art-motion", "video-motion", "video-motion-craft"],
+    ),
+    (
+        "video-math-animator",
+        Phase::Implementation,
+        "opus",
+        "medium",
+        &["video-manim", "video-plates", "video-motion-craft"],
+    ),
+    (
+        "video-3d-animator",
+        Phase::Implementation,
+        "opus",
+        "medium",
+        &[
+            "video-webgl",
+            "video-motion",
+            "video-motion-craft",
+            "video-plates",
         ],
     ),
     (
@@ -59,7 +86,7 @@ const SEATS: [Seat; 7] = [
         Phase::Implementation,
         "sonnet",
         "medium",
-        &["video-render"],
+        &["video-render", "video-plates"],
     ),
     (
         "video-critic",
@@ -70,7 +97,7 @@ const SEATS: [Seat; 7] = [
     ),
 ];
 
-const VIDEO_SKILLS: [&str; 10] = [
+const VIDEO_SKILLS: [&str; 16] = [
     "video-produce",
     "video-direction",
     "video-storyboard",
@@ -81,6 +108,12 @@ const VIDEO_SKILLS: [&str; 10] = [
     "video-motion-match",
     "video-render",
     "video-qa",
+    "video-motion-craft",
+    "video-motion-styles",
+    "video-art-motion",
+    "video-plates",
+    "video-manim",
+    "video-webgl",
 ];
 
 const ENTRYPOINTS: [&str; 10] = [
@@ -166,7 +199,7 @@ fn names_file_lowercase(text: &str, stem: &str) -> bool {
 }
 
 #[test]
-fn vpw_01_seven_video_seats_have_the_pinned_shape() {
+fn vpw_01_ten_video_seats_have_the_pinned_shape() {
     let roster = roster();
     let found: BTreeSet<&str> = roster
         .names()

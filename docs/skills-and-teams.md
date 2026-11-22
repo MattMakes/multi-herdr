@@ -195,12 +195,13 @@ each team.
 | team | offered when the project has | skills | rules every member follows |
 |---|---|---|---|
 | Unreal Engine (11 `ue-*`) | `*.uproject` | 31 copied `ue-*` skills, plus 2 house skills, `ue-build-verify` and `ue-editor-scripting` | read `.agents/ue-project-context.md` first; never write asset bytes; check the engine headers; 1 build at a time; a `DONE:` that names target, configuration and filter; the Git LFS lock rules |
-| Godot (19 `godot-*`) | `project.godot` | 81 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; `godot-library`, a reference library of advanced techniques whose shelves each seat names at the top of its briefing; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
+| Godot (20 `godot-*`) | `project.godot` | 82 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; `godot-library`, a reference library of advanced techniques whose shelves each seat names at the top of its briefing; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
+| Blender (`blender-cinematographer`) | `*.blend`, `timeline.json` or a `video` folder | 5 copied `blender-*` skills for staging, animation, light and rendering, plus `video-plates` | no MCP server; headless shot scripts; renders frames, encodes once, hands a plate with a sidecar to the video team |
 | Blender (`blender-builder`, `blender-qa`, `blender-3d-printer`) | `*.blend`; the printer also `*.stl`, `*.3mf` or `*.obj` | the 28 copied EL4CTEO `blender-*` skills and the own-text `blender-3d-print` | ahujasid MCP server, pinned, telemetry off, network asset tools denied; headless by default; QA reports and fixes nothing |
-| Video (7 `video-*`) | no gate: always offered | 10 own-text `video-*` skills: `video-produce`, `video-direction`, `video-storyboard`, `video-capture`, `video-audio`, `video-motion`, `video-character`, `video-motion-match`, `video-render`, `video-qa` | work offline with local `ffmpeg`, Chrome and macOS `say`; `timeline.json` is the single source of truth; every wave passes a numeric gate; a fresh `video-critic` for each review round |
+| Video (10 `video-*`) | no gate: always offered | 16 own-text `video-*` skills: `video-produce`, `video-direction`, `video-storyboard`, `video-capture`, `video-audio`, `video-motion`, `video-character`, `video-motion-match`, `video-render`, `video-qa`, and 6 text-only craft and renderer skills: `video-motion-craft`, `video-motion-styles`, `video-art-motion`, `video-plates`, `video-manim`, `video-webgl` | work offline with local `ffmpeg`, Chrome and macOS `say`; `timeline.json` is the single source of truth; every wave passes a numeric gate; a fresh `video-critic` for each review round |
 
 ### Unreal Engine and Git LFS
 
@@ -344,9 +345,27 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 ### The video team
 
 `video-producer` and `video-director` (plan), `video-capture`, `video-audio`,
-`video-animator`, `video-editor` (implementation) and `video-critic`
+`video-animator`, `video-illustrator`, `video-3d-animator`,
+`video-math-animator`, `video-editor` (implementation) and `video-critic`
 (validation) make a rendered video from 1 project folder that holds
-`timeline.json`.
+`timeline.json`. `blender-cinematographer` adds rendered 3D shots.
+
+- Wave 4 has 5 scene builders, 1 per kind of scene. `video-animator` builds
+  HTML, SVG, Canvas and GSAP scenes. `video-illustrator` builds painted and
+  hand-drawn scenes in code. `video-3d-animator` builds three.js scenes with
+  particles and a post-processing finish. `video-math-animator` renders Manim
+  scenes, and `blender-cinematographer` renders Blender shots; both deliver a
+  frame-exact plate with a sidecar (`video-plates`). The director's style
+  block (`video-motion-styles`) carries a `Renderer` line that tells the
+  orchestrator which builder a scene needs.
+- `video-motion-craft` is the shared craft skill of every scene builder:
+  durations by size and distance, easing by role, budgets, transitions
+  planned on both sides of a cut, and an audit for template motion.
+  `video-critic` names it under `available_skills`.
+- Manim, three.js and its libraries, librosa, WhisperX, the EffectCraft
+  command line and Remotion are optional. A teammate uses one only when the
+  host already has it, and never installs or downloads it. Remotion also
+  needs the operator's answer to its licence question.
 
 - `video-producer` runs wave 0. It picks the workflow (launch film, app
   explainer, A/B on 1 brief, or a batch of films) and writes
@@ -362,7 +381,7 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
   social vertical or Steam) is 1 production. It also updates a series that
   exists.
 - The plan gate (`check_timeline.py`), the audio gate (`check_audio.py`) and
-  the render gate (`qa_video.py`) are scripts with numeric rules. 8 of the 10
+  the render gate (`qa_video.py`) are scripts with numeric rules. 8 of the 16
   skills ship scripts, so `skills_catalog.rs` lists them in
   `EXEMPT_FROM_TEXT_ONLY`.
 - Scripts use the Python standard library, Node built-ins, `ffmpeg` and

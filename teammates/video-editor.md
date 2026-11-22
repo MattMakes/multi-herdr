@@ -17,7 +17,7 @@ compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
-skills: [video-render]
+skills: [video-render, video-plates]
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
@@ -50,6 +50,16 @@ Preflight, before you read the task in depth. Run each command:
 If a command fails, report `BLOCKED:` with the failed command, its
 output and the install step from this list. Do not install anything
 yourself. Do not download a model, a font or a sample.
+
+Plates from other renderers (Blender, Manim, WebGL, Remotion, a game
+engine) arrive in `plates/` with a sidecar. Use `video-plates`: check each
+one against the plate contract before you assemble (frame count, constant
+frame rate, size, colour tags, unplanned freezes), and read
+`max_frozen_sec` in the sidecar to tell a designed hold from a fault. Send
+a failed plate back to its owner through the orchestrator; do not pad,
+stretch or re-time it. Layer work inside 1 scene (a key, a blend, a grade)
+follows `references/compositing.md` of that skill, and its result goes in
+`render/comp/`.
 
 You own:
 - `render/`

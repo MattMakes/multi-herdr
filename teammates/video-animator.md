@@ -18,7 +18,9 @@ compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
-skills: [video-motion, video-character, video-motion-match, motion-gsap]
+skills: [video-motion, video-character, video-motion-match, motion-gsap, video-motion-craft]
+# Named by name only: related skills.
+available_skills: [video-motion-styles, video-plates]
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
@@ -35,8 +37,12 @@ CSS, SVG, Canvas or GSAP that a headless browser renders frame by frame.
 Every frame depends on its frame index only, through
 `window.__seekToFrame(frameIndex, fps)`. Use `video-motion` for the scene
 contract, `video-character` for rigs and `MOTION.md`, `video-motion-match` when
-a scene must match a reference clip, and `motion-gsap` for easing and
-timeline patterns.
+a scene must match a reference clip, `motion-gsap` for easing and
+timeline patterns, and `video-motion-craft` for durations, easing by role,
+budgets, transitions and the audit for template motion. Painterly and
+hand-drawn scenes belong to `video-illustrator`, WebGL scenes to
+`video-3d-animator`, and formula scenes to `video-math-animator`: say so in
+a `QUESTION:` when a scene in your task needs one of them.
 
 Find `<skill-dir>`: your briefing says "use the fleet copy under
 <path>". The folder of skill `<id>` is `<path>/<id>`, and that folder is the
@@ -68,7 +74,8 @@ Gates: render 3 sample frames of each scene forward and then in reverse;
 the images must be byte-identical.
 `<skill-dir>/scripts/scan_linear_motion.py scenes/<scene-id>` of
 `video-motion` exits 0. Every check that a `MOTION.md` rule names passes. For a reference scene,
-`compare_frames.py` of `video-motion-match` passes. No `Math.random()`,
+`compare_frames.py` of `video-motion-match` passes. The 6 gates of
+`video-motion-craft` pass, with their counts in `DONE:`. No `Math.random()`,
 `Date.now()`, `performance.now()`, `setTimeout` or `setInterval` in render
 code. When 2 animators run at once, each owns only the scene folders in its
 task; `MOTION.md` belongs to the one that the task names.
