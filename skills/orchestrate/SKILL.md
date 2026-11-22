@@ -116,7 +116,7 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
 4. Use `visual-prototyper` before the director locks a direction, when the client must react to images, or when the work needs generated hero or mood art. Its output is a prototype, not production code.
 5. Use `designer` for flows, states, copy and accessibility of an application. Use `design-director` for the look and feel.
 6. Never send unreleased brand work, client assets or unannounced product designs to an `opencode-*` teammate. Those providers train on input.
-7. For a rendered video, follow `references/video-pipeline.md` with the 6 `video-*` teammates.
+7. For a rendered video, follow `references/video-pipeline.md` with the `video-*` teammates.
 
 ## 10. Creative work
 

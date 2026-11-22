@@ -229,20 +229,51 @@ These 29 skills belong to no phase; a teammate attaches them by name. 28 of them
 
 ## Video skills
 
-These 10 skills are own text and belong to no phase; a `video-*` teammate attaches them by name (see [`teammates/README.md`](../teammates/README.md)). 8 ship runnable scripts that use only the Python standard library, Node built-ins, `ffmpeg` and `ffprobe`: `video-audio`, `video-capture`, `video-motion`, `video-produce`, `video-qa`, `video-motion-match`, `video-render` and `video-storyboard`. A script calls a sibling skill only when the same teammate carries it. The orchestrator's wave recipe is in [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md).
+These 16 skills are own text and belong to no phase; a `video-*` teammate attaches them by name (see [`teammates/README.md`](../teammates/README.md)). 8 ship runnable scripts that use only the Python standard library, Node built-ins, `ffmpeg` and `ffprobe`: `video-audio`, `video-capture`, `video-motion`, `video-produce`, `video-qa`, `video-motion-match`, `video-render` and `video-storyboard`. A script calls a sibling skill only when the same teammate carries it. The orchestrator's wave recipe is in [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md).
 
 | Skill | Kind |
 | --- | --- |
+| [video-art-motion](video-art-motion/SKILL.md) | own text |
 | [video-audio](video-audio/SKILL.md) | own text |
 | [video-capture](video-capture/SKILL.md) | own text |
 | [video-character](video-character/SKILL.md) | own text |
 | [video-direction](video-direction/SKILL.md) | own text |
+| [video-manim](video-manim/SKILL.md) | own text |
 | [video-motion](video-motion/SKILL.md) | own text |
+| [video-motion-craft](video-motion-craft/SKILL.md) | own text |
 | [video-motion-match](video-motion-match/SKILL.md) | own text |
+| [video-motion-styles](video-motion-styles/SKILL.md) | own text |
+| [video-plates](video-plates/SKILL.md) | own text |
 | [video-produce](video-produce/SKILL.md) | own text |
 | [video-qa](video-qa/SKILL.md) | own text |
 | [video-render](video-render/SKILL.md) | own text |
 | [video-storyboard](video-storyboard/SKILL.md) | own text |
+| [video-webgl](video-webgl/SKILL.md) | own text |
+
+6 of the 16 are text only and restate techniques that public projects teach: `video-motion-craft`, `video-motion-styles`, `video-art-motion`, `video-plates`, `video-manim` and `video-webgl`. So does the own-text `godot-cutscenes` skill, the page `video-motion-match/references/motion-fidelity.md`, the page `video-audio/references/measured-tools.md` and the page `sound-sourcing/references/openverse.md`. One reader went through each project and wrote a digest of its methods and numbers in its own words; the skills were written from the digests, the tools' public behaviour and this repository's own pipeline rules. No text, code or asset was copied, no skill downloads anything, and each tool is optional: a teammate uses it only when the host already has it.
+
+| Project | Licence | What the skills take from it | Where |
+| --- | --- | --- | --- |
+| NiazMorshed2007/reanimate | MIT | fidelity levels, the per-property motion table, easing and spring fits from measured frames, the activity curve, pass numbers | `video-motion-match` |
+| LottieFiles/motion-design-skill | MIT | motion personalities, durations by size and distance, easing by role, layer and stagger budgets, the principles with amounts | `video-motion-craft`, `godot-cutscenes` |
+| Tejashmakwana/motionmaxxing | Apache-2.0 | measured defaults of professional films, the 2-sided transition row, blur grammar, frame clocks, the tells of template motion | `video-motion-craft` |
+| Vincentwei1021/mg-styles-15 | MIT | 15 motion-graphics styles as testable features | `video-motion-styles` |
+| Leonxlnx/cinetic | MIT | the launch-film form: spine, acts, type and product beats, the carried element, pacing limits | `video-motion-styles` |
+| alchaincyf/huashu-art-motion | MIT | the 2-pass stroke renderer, per-style recipes, stable seeded strokes, stepped paint time | `video-art-motion`, `godot-cutscenes` |
+| alexgreensh/anidoodle | Apache-2.0 | the pen ribbon, wobble and boil, draw-on order, seamless loops, seams by meaning | `video-art-motion`, `godot-cutscenes` |
+| ManimCommunity/manim | MIT | formula and graph animation rendered to frames | `video-manim` |
+| EL4CTEO/blender-skills | MIT | the 28 copied `blender-*` skills (already bundled); the film page adds camera rigs and the render order | `video-plates` |
+| Alchemist0823/three.quarks | MIT | particle systems, replayed at a fixed step | `video-webgl` |
+| pmndrs/react-postprocessing, pmndrs/postprocessing | MIT, Zlib | the effect chain and its order | `video-webgl` |
+| cocopon/tweakpane | MIT | sliders for look-development, frozen into `look.json` | `video-webgl` |
+| storytold/effectcraft | MIT OR Apache-2.0 | layer composites from its command line (alpha software) | `video-plates` |
+| remotion-dev/skills | Remotion licence, not open source | frame-pure composition rules, the caption shape, render commands; the operator answers the licence question first | `video-plates` |
+| Openverse API | service; each recording has its own terms | 1 search over many open libraries, then the usual rights audit | `sound-sourcing` |
+| librosa/librosa | ISC | beat, onset and energy measurements written to files | `video-audio` |
+| m-bain/whisperX | BSD-2-Clause | word times, read by `sync_sheet.py --words-dir` | `video-audio` |
+| FFmpeg | LGPL or GPL by build | encode, checks and composites; already required | `video-plates`, `video-render` |
+
+The licences of the first 7 rows, `blender-skills`, `effectcraft` and the Remotion skills were read from each repository on 2026-11-21. The other rows are from general knowledge and were not read in that session. Check a licence on the project's own page before you rely on this table.
 
 ## Skill intake
 
@@ -264,7 +295,7 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 
 ## Godot skills
 
-Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 81 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 14 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`, `godot-save-security`, `godot-library`). `godot-library` is a reference library, not a procedure: its `SKILL.md` is an index and each of its 35 `references/*.md` shelves holds the advanced and less-common techniques of one area, written from the stable manual, the class reference and the engine team's release notes and articles. Every Godot teammate expects it and names the shelves for its role in the 2nd paragraph of its briefing. Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the other own-text skills was run on Godot 4.7.2; the library's code blocks were checked against the 4.7.2 class reference and get their first engine parse in the gate. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
+Skills for the 20 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 82 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 15 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, cutscenes, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`, `godot-save-security`, `godot-library`). `godot-library` is a reference library, not a procedure: its `SKILL.md` is an index and each of its 35 `references/*.md` shelves holds the advanced and less-common techniques of one area, written from the stable manual, the class reference and the engine team's release notes and articles. Every Godot teammate expects it and names the shelves for its role in the 2nd paragraph of its briefing. Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the other own-text skills was run on Godot 4.7.2, except `godot-cutscenes`: the session that wrote it had no engine, so every block in it carries `proof: not run (needs Godot)` and gets its first parse in the gate on a host with Godot; the library's code blocks were checked against the 4.7.2 class reference and get their first engine parse in the gate. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
 
 **Proof levels.** A note `proof: <level>` next to a claim says how far this repository proved it on Godot 4.7.2:
 
@@ -295,6 +326,7 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-component-system](godot-component-system/SKILL.md) | combined |
 | [godot-csharp-godot](godot-csharp-godot/SKILL.md) | renamed |
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | renamed |
+| [godot-cutscenes](godot-cutscenes/SKILL.md) | own text |
 | [godot-debugging](godot-debugging/SKILL.md) | combined |
 | [godot-dedicated-server](godot-dedicated-server/SKILL.md) | combined |
 | [godot-dependency-injection](godot-dependency-injection/SKILL.md) | combined |

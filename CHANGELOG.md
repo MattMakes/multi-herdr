@@ -4,6 +4,33 @@
 
 ## Unreleased
 
+- The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film
+  can mix kinds of scene. `video-illustrator` builds painted and hand-drawn
+  scenes in code (living paintings in an art style, doodles, line boil,
+  loops). `video-3d-animator` builds three.js scenes with particles and a
+  post-processing finish that render the same on every run.
+  `video-math-animator` renders Manim scenes, and `blender-cinematographer`
+  renders Blender shots; both hand over a frame-exact plate with a sidecar.
+  The director now gives each direction a named style with testable features
+  and a `Renderer` line that tells the orchestrator which seat builds a scene.
+- Every scene builder carries the new `video-motion-craft` skill: durations
+  by size and distance, easing by role, budgets, transitions planned on both
+  sides of a cut, and an audit that finds template motion. 5 more skills are
+  new: `video-motion-styles` (15 styles and the launch-film form),
+  `video-art-motion`, `video-plates`, `video-manim` and `video-webgl`.
+- `godot-cutscene-director` is a new Godot seat with the new `godot-cutscenes`
+  skill. It builds cutscenes that a player can skip: 1 clock, 1 function that
+  sets the end state on a full play and on a skip, a gameplay lock, a borrowed
+  camera, subtitles from translation keys, music sync and Movie Maker capture.
+  Its GDScript was written on a host with no Godot: run the gate on a host
+  with Godot 4.7.2 before you rely on it.
+- `sync_sheet.py` of `video-audio` takes `--words-dir`: word times from
+  WhisperX or another aligner give a measured sync sheet. New reference pages
+  cover librosa beat grids, the Openverse search for `sound-engineer`, and
+  motion checks that do not depend on pixels for a reference match. Manim,
+  three.js libraries, librosa, WhisperX, EffectCraft and Remotion stay
+  optional: no teammate installs or downloads one.
+
 ## v0.5.2 - 2026-11-21
 
 - Fix: the video, design and `ui-prop-tester` tools no longer leave copies of

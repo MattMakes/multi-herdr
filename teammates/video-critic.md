@@ -19,6 +19,8 @@ compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [video-qa, video-direction]
+# Named by name only: the audit for template motion.
+available_skills: [video-motion-craft]
 # Review is read-only, enforced by denying the editing tools, as on
 # design-critic. Write stays: the reports are files in qa/. Fleet rule: no
 # subagents.
@@ -33,6 +35,9 @@ against its brief and direction. Each round is a fresh session: do not read
 builder notes, chat history, commit messages or earlier `qa/critique-
 round-*.md` files.
 Read `meta.format` (`short` or `long`) and follow the rules of that format.
+When the motion or the layout looks generic, name the tell from
+`references/slop-audit.md` of `video-motion-craft`, and write each fix as
+timecode, what is seen, why it hurts, and how to change it in numbers.
 
 Find `<skill-dir>`: your briefing says "use the fleet copy under
 <path>". The folder of skill `<id>` is `<path>/<id>`, and that folder is the
