@@ -159,7 +159,6 @@ pub struct Collector {
     tidied_at: Option<DateTime<Utc>>,
     accounts: AccountWatch,
     started: bool,
-    last_probe: Option<DateTime<Utc>>,
 }
 
 impl Collector {
@@ -266,7 +265,6 @@ impl Collector {
             tidied_at: None,
             accounts,
             started: false,
-            last_probe: None,
         })
     }
 
@@ -583,7 +581,6 @@ impl Collector {
             _ => refresh::pending(&self.state_root),
         };
         if self.probe_wanted(&file, now, !requests.is_empty()) {
-            self.last_probe = Some(now);
             quota_probe::probe_all(
                 &mut file,
                 &self.bins,
@@ -613,9 +610,7 @@ impl Collector {
         }
         let first = !std::mem::replace(&mut self.started, true);
         let account = self.accounts.changed();
-        let reset = file.has_passed_reset(now)
-            && (self.last_probe).is_none_or(|t| now - t >= Duration::minutes(RESET_PROBE_GAP_MIN));
-        aged || requested || first || account || reset
+        aged || requested || first || account || file.has_passed_reset(now)
     }
 }
 
@@ -741,8 +736,6 @@ struct LedgerSnapshot {
 }
 
 const FRESH_MIN: i64 = 10;
-
-const RESET_PROBE_GAP_MIN: i64 = 1;
 
 pub const QUIET_H: i64 = 24;
 

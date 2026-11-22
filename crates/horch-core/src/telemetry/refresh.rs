@@ -170,8 +170,9 @@ mod tests {
             r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"horch-quota-1","response":{{"rate_limits_available":true,"rate_limits":{{"five_hour":{{"utilization":12,"resets_at":"{resets_at}"}}}}}}}}}}"#
         );
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nread line\necho probe >> '{}'\necho '{reply}'\n",
-            log.display()
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nread line\necho probe >> '{}'\nif [ -e '{}' ]; then exit 1; fi\necho '{reply}'\n",
+            log.display(),
+            log.with_extension("fail").display()
         );
         assert!(
             crate::test_support::write_warmed(&claude, &script, &["warm"])
@@ -269,20 +270,43 @@ mod tests {
     }
 
     #[test]
-    fn a_passed_reset_probes_at_most_once_per_minute() {
+    fn a_passed_reset_forces_one_probe_when_the_reply_keeps_it() {
         let r = rig("2026-11-22T10:00:30Z");
         let mut c = r.collector(Probing::Scheduled);
         c.tick(at(0)).unwrap();
         assert_eq!(r.probes(), 1);
-        let second = at(0) + Duration::seconds(40);
-        c.tick(second).unwrap();
-        assert_eq!(r.probes(), 1, "under 1 min since the last probe");
-        c.tick(at(1)).unwrap();
+        c.tick(at(0) + Duration::seconds(20)).unwrap();
+        assert_eq!(r.probes(), 1, "the reset is still ahead");
+        c.tick(at(0) + Duration::seconds(40)).unwrap();
         assert_eq!(r.probes(), 2, "the stored reset has passed");
-        c.tick(at(1) + Duration::seconds(59)).unwrap();
-        assert_eq!(r.probes(), 2, "the pool keeps the old reset");
+        c.tick(at(1)).unwrap();
         c.tick(at(2)).unwrap();
-        assert_eq!(r.probes(), 3);
+        assert_eq!(r.probes(), 2, "the pool keeps the old reset");
+    }
+
+    #[test]
+    fn a_passed_reset_forces_one_probe_when_the_probe_fails() {
+        let r = rig("2026-11-22T10:00:30Z");
+        std::fs::write(
+            r.state.join("policy.json"),
+            r#"{"probe_interval_min": 1000}"#,
+        )
+        .unwrap();
+        let mut c = r.collector(Probing::Scheduled);
+        c.tick(at(0)).unwrap();
+        assert_eq!(r.probes(), 1);
+        std::fs::write(r.log.with_extension("fail"), "").unwrap();
+        for minute in 1..=10 {
+            c.tick(at(minute)).unwrap();
+            assert_eq!(r.probes(), 2, "minute {minute}");
+        }
+        let file = QuotaFile::load(&r.state, None).unwrap();
+        let claude = &file.pools["claude"];
+        assert!(claude.error.is_some());
+        assert_eq!(
+            claude.windows[0].resets_at.as_deref(),
+            Some("2026-11-22T10:00:30Z")
+        );
     }
 
     #[test]
