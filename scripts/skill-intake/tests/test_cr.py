@@ -288,14 +288,15 @@ class ScanTests(Base):
 
     def test_skill_name_that_holds_the_source_name_may_cross_the_wall(self):
         prov = read_json(self.task.c / "provenance.json")
-        prov["source"] = {"kind": "local", "input": "/opt/work/manifest"}
+        prov["source"] = {"kind": "local", "input": "/opt/work/blueskill"}
         write_json(self.task.c / "provenance.json", prov)
         spec = copy.deepcopy(GOOD_SPEC)
-        spec["summary"] = "The manifest-tool skill turns key=value text into a mapping."
+        spec["skill"]["name"] = "blueskill-tool"
+        spec["summary"] = "The blueskill-tool skill turns key=value text into a mapping."
         self.assertEqual(self.check(spec), [])
-        spec["summary"] = "A port of manifest. The manifest-tool skill turns text into a mapping."
+        spec["summary"] = "A port of blueskill. The blueskill-tool skill turns text into a mapping."
         self.assertIn("source-name", self.check(spec))
-        spec["summary"] = "The manifest-tool-extra skill turns text into a mapping."
+        spec["summary"] = "The blueskill-tool-extra skill turns text into a mapping."
         self.assertIn("source-name", self.check(spec))
 
     def test_decompiler_marker(self):
