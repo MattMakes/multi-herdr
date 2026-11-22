@@ -1133,7 +1133,10 @@ mod phase4 {
         assert!(registered.status.success(), "{registered:?}");
         a.launch("agy", "ask");
         let calls = a.h.calls_of("antigravity");
-        let ask = &calls.last().unwrap()["ask"];
+        let ask = &calls
+            .iter()
+            .rfind(|call| call["argv"][2] == "--prompt-interactive")
+            .unwrap()["ask"];
         assert_eq!(ask["exit"], 0, "{calls:?}");
         assert!(
             ask["text"].as_str().unwrap().starts_with("QUESTION: "),
@@ -1736,7 +1739,14 @@ mod phase6 {
 
     fn last_call(h: &Harness, name: &str) -> Value {
         let fake = if name == "codex" { "codex" } else { "claude" };
-        h.calls_of(fake).pop().expect("the fake logged no call")
+        h.calls_of(fake)
+            .into_iter()
+            .rfind(|call| {
+                call["argv"][0]
+                    .as_str()
+                    .is_some_and(|arg| arg.starts_with("idea "))
+            })
+            .expect("the fake logged no call")
     }
 
     fn horch_argvs(call: &Value, key: &str) -> Vec<Vec<String>> {
