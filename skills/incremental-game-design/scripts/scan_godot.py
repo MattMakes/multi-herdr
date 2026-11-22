@@ -92,7 +92,8 @@ BEAT_KINDS = [
     ("reward", re.compile(r"reward|payout|earned|loot_(?:granted|dropped)")),
 ]
 NOT_BEAT = re.compile(r"request|pressed|clicked|refused|denied|failed|hovered|selected|focus")
-KIND_ORDER = {k: i for i, k in enumerate(["purchase", "unlock", "ladder step", "level up", "milestone", "reward", "reset"])}
+KINDS = ["purchase", "unlock", "ladder step", "level up", "milestone", "reward", "reset"]
+KIND_ORDER = dict(zip(KINDS, range(len(KINDS))))
 TOOLING = re.compile(r"(?:^|[_\-./])(?:sim|sims|simulator|simulation|simulate|balance|balancing|diag|diagnostics?|"
                      r"tune|tuning|tuner|calibrat\w*|polic(?:y|ies)|sweeps?|autoplay\w*|playstyle\w*|headless|"
                      r"full_run|fun_targets|(?:\w+_)?targets|parity|fixtures?)(?:[_\-./]|$)", re.I)

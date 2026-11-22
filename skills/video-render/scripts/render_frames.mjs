@@ -1268,21 +1268,30 @@ export function coverSecFor({ meta }, hook) {
   return last ? heroCover(last, Number(meta.duration_sec)) : hookCover(hook);
 }
 
-export async function packagePublish(opts) {
-  opts.aspects.forEach(checkAspect);
-  const timeline = loadTimeline(opts.timelineFile);
-  const dropped = opts.aspects.filter((a) => !publishAspects(timeline.meta, opts.aspects).includes(a));
-  opts = { ...opts, aspects: publishAspects(timeline.meta, opts.aspects) };
+async function publishContext(opts, timeline) {
   const info = await probe(opts.master);
   mkdirSync(opts.outDir, { recursive: true });
   const hook = hookScene(timeline);
-  const ctx = { ...opts, coverSec: opts.coverSec ?? coverSecFor(timeline, hook), timeline, info, hook, report: { outputs: [], warnings: [], reframe: {} } };
-  ctx.report.warnings.push(...dropped.map((a) => `${a}: skipped; meta.format is long and ships 16x9 only`));
+  const coverSec = opts.coverSec ?? coverSecFor(timeline, hook);
+  return { ...opts, coverSec, timeline, info, hook, report: { outputs: [], warnings: [], reframe: {} } };
+}
+
+async function writePublishOutputs(ctx) {
   writeTextFiles(ctx);
   await writeCover(ctx);
   await writePreviews(ctx);
-  await inSequence(opts.aspects, (aspect) => writeAspect(ctx, aspect));
+  await inSequence(ctx.aspects, (aspect) => writeAspect(ctx, aspect));
   ctx.report.frame_counts = await encodedFrameCounts(ctx);
+}
+
+export async function packagePublish(opts) {
+  opts.aspects.forEach(checkAspect);
+  const timeline = loadTimeline(opts.timelineFile);
+  const kept = publishAspects(timeline.meta, opts.aspects);
+  const dropped = opts.aspects.filter((a) => !kept.includes(a));
+  const ctx = await publishContext({ ...opts, aspects: kept }, timeline);
+  ctx.report.warnings.push(...dropped.map((a) => `${a}: skipped; meta.format is long and ships 16x9 only`));
+  await writePublishOutputs(ctx);
   return ctx.report;
 }
 
@@ -1733,14 +1742,22 @@ const RASTER_TIMELINE = {
 const noQa = () => !existsSync(join(QA_SCRIPTS, "qa_video.py"));
 const NO_QA = "qa_video.py is not next to this skill; report format checked only";
 
+function isNotRealPx(sample) {
+  return !sample.real_px;
+}
+
+function hasNoDetailError(sample) {
+  return !sample.detail_error;
+}
+
 async function testRasterClean(root) {
   const dir = await rasterDir(root, "raster-clean", ["img.png"]);
   writeFileSync(join(dir, "clean.html"), imgHtml(100));
   await rasterRender(join(dir, "clean.html"), join(dir, "clean"), join(dir, "clean.json"));
   const samples = readJson(join(dir, "clean.json")).samples;
   assertEq(samples.length, 5, "5 samples in 0.5 s");
-  check(samples.every((sample) => !sample.real_px), "sharp 100 px frame is reported as pre-upscaled");
-  check(samples.every((sample) => !sample.detail_error), "the pre-upscale check could not read the image pixels");
+  check(samples.every(isNotRealPx), "sharp 100 px frame is reported as pre-upscaled");
+  check(samples.every(hasNoDetailError), "the pre-upscale check could not read the image pixels");
   if (noQa()) return NO_QA;
   check(qaRasterPasses(join(dir, "clean.json")), "qa_video raster_upscale fails the clean 1x report");
 }

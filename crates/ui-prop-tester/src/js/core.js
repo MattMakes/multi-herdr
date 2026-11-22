@@ -23,15 +23,18 @@ function cellName(cell) {
   return registry.cellNames.get(cell.id) ?? `cell#${cell.id}`;
 }
 
-function freeze(value) {
-  if (value !== null && typeof value === "object") {
-    Object.freeze(value);
-    for (let cursor = 0, entries = Object.keys(value); cursor < entries.length; cursor += 1) {
-      const key = entries[cursor];
-      freeze(value[key]);
-    }
-  }
+function failType(message) {
+  throw new TypeError(message);
+}
+
+function freezeObject(value) {
+  Object.freeze(value);
+  Object.values(value).forEach(freeze);
   return value;
+}
+
+function freeze(value) {
+  return value !== null && typeof value === "object" ? freezeObject(value) : value;
 }
 
 function snapshot(value) {
@@ -94,6 +97,19 @@ export function isGenerator(value) {
 
 const UNITS = { milliseconds: 1, millisecond: 1, ms: 1, seconds: 1000, second: 1000, s: 1000 };
 
+function requireBoundable(op) {
+  return op === "always" || op === "eventually" ? op : failType(".within() applies to always(...) and eventually(...) only");
+}
+
+function requireAmount(amount) {
+  return typeof amount === "number" && amount >= 0 ? amount : failType(".within() needs a nonnegative number");
+}
+
+function unitScale(unit) {
+  const scale = UNITS[unit];
+  return scale === undefined ? failType(`.within() unit must be "milliseconds" or "seconds", not ${JSON.stringify(unit)}`) : scale;
+}
+
 class Formula {
   constructor(op, args, bound) {
     this[FORMULA] = true;
@@ -104,16 +120,9 @@ class Formula {
   }
 
   within(amount, unit) {
-    if (this.op !== "always" && this.op !== "eventually") {
-      throw new TypeError(".within() applies to always(...) and eventually(...) only");
-    }
-    if (typeof amount !== "number" || !(amount >= 0)) {
-      throw new TypeError(".within() needs a nonnegative number");
-    }
-    const scale = UNITS[unit];
-    if (scale === undefined) {
-      throw new TypeError(`.within() unit must be "milliseconds" or "seconds", not ${JSON.stringify(unit)}`);
-    }
+    requireBoundable(this.op);
+    requireAmount(amount);
+    const scale = unitScale(unit);
     return new Formula(this.op, this.args, { ms: amount * scale, amount, unit });
   }
 }
@@ -157,12 +166,20 @@ export function next(f) {
   return new Formula("next", [toFormula(f, "next()")]);
 }
 
+function andArgument(f) {
+  return toFormula(f, "and()");
+}
+
 export function and(...fs) {
-  return new Formula("and", fs.map((f) => toFormula(f, "and()")));
+  return new Formula("and", fs.map(andArgument));
+}
+
+function orArgument(f) {
+  return toFormula(f, "or()");
 }
 
 export function or(...fs) {
-  return new Formula("or", fs.map((f) => toFormula(f, "or()")));
+  return new Formula("or", fs.map(orArgument));
 }
 
 export function not(f) {
@@ -216,93 +233,167 @@ function callPredicate(fn, ctx) {
   return { result, reads };
 }
 
-function evaluate(formula, ctx, trail) {
-  switch (formula.op) {
-    case "now": {
-      const here = trail.push("now");
-      const { result, reads } = callPredicate(formula.args[0], ctx);
-      const after = here.withReads(reads);
-      if (result === true) {
-        return holds(after);
-      }
-      if (result === false) {
-        return fails(after, ctx, "the predicate returned false");
-      }
-      if (isFormula(result) || typeof result === "function") {
-        return evaluate(toFormula(result, "now()"), ctx, after);
-      }
-      throw new TypeError(`a now() callback must return a boolean or a formula, got ${describe(result)}`);
-    }
-    case "next":
-      return pending(new NextObligation(formula.args[0], trail.push("next")));
-    case "always": {
-      const obligation = new AlwaysObligation(formula.args[0], trail.push(label(formula)), deadline(formula, ctx), formula.bound);
-      return obligation.step(ctx);
-    }
-    case "eventually": {
-      const obligation = new EventuallyObligation(formula.args[0], trail.push(label(formula)), deadline(formula, ctx), formula.bound);
-      return obligation.step(ctx);
-    }
-    case "and": {
-      const residuals = [];
-      for (let i = 0; i < formula.args.length; i += 1) {
-        const outcome = evaluate(formula.args[i], ctx, trail.push(`and[${i}]`));
-        if (outcome.verdict === false) {
-          return outcome;
-        }
-        if (outcome.verdict === null) {
-          residuals.push(outcome.residual);
-        }
-      }
-      return residuals.length === 0 ? holds(trail) : pending(new AndObligation(residuals, trail));
-    }
-    case "or": {
-      const residuals = [];
-      const failures = [];
-      for (let i = 0; i < formula.args.length; i += 1) {
-        const outcome = evaluate(formula.args[i], ctx, trail.push(`or[${i}]`));
-        if (outcome.verdict === true) {
-          return outcome;
-        }
-        if (outcome.verdict === false) {
-          failures.push(outcome.failure);
-        } else {
-          residuals.push(outcome.residual);
-        }
-      }
-      if (residuals.length === 0) {
-        return combineFailures(failures, trail, ctx);
-      }
-      return pending(new OrObligation(residuals, failures, trail));
-    }
-    case "not": {
-      const here = trail.push("not");
-      const outcome = evaluate(formula.args[0], ctx, here);
-      return negate(outcome, here, ctx);
-    }
-    case "implies": {
-      const here = trail.push("implies");
-      const antecedent = evaluate(formula.args[0], ctx, here.push("if"));
-      if (antecedent.verdict === false) {
-        return holds(trail);
-      }
-      const thenTrail = antecedent.verdict === true ? here.withReads(antecedent.trail.reads.slice(here.reads.length)) : here;
-      const consequent = evaluate(formula.args[1], ctx, thenTrail.push("then"));
-      if (antecedent.verdict === true || consequent.verdict === true) {
-        return consequent;
-      }
-      const residuals = [new NotObligation(antecedent.residual, here.push("if"))];
-      const failures = [];
-      if (consequent.verdict === null) {
-        residuals.push(consequent.residual);
-      } else {
-        failures.push(consequent.failure);
-      }
-      return pending(new OrObligation(residuals, failures, here));
-    }
-    default:
-      throw new TypeError(`unknown formula operator ${formula.op}`);
+function firstWith(items, verdict, run, visit) {
+  let found = null;
+  function stops(item, i) {
+    const outcome = run(item, i);
+    const stop = outcome.verdict === verdict;
+    found = stop ? outcome : found;
+    stop ? null : visit(outcome);
+    return stop;
   }
+  items.some(stops);
+  return found;
+}
+
+function residualsOf(outcome) {
+  return outcome.verdict === null ? [outcome.residual] : [];
+}
+
+function keeper(kept) {
+  function keep(outcome) {
+    kept.push(...residualsOf(outcome));
+  }
+  return keep;
+}
+
+function outcomeSorter(residuals, failures) {
+  function sortOutcome(outcome) {
+    outcome.verdict === false ? failures.push(outcome.failure) : residuals.push(outcome.residual);
+  }
+  return sortOutcome;
+}
+
+function collector(outcomes) {
+  function collect(outcome) {
+    outcomes.push(outcome);
+  }
+  return collect;
+}
+
+function ignoreOutcome() {
+  return undefined;
+}
+
+function identity(value) {
+  return value;
+}
+
+function stepWith(ctx) {
+  function stepOne(obligation) {
+    return obligation.step(ctx);
+  }
+  return stepOne;
+}
+
+function endWith(ctx) {
+  function endOne(obligation) {
+    return obligation.end(ctx);
+  }
+  return endOne;
+}
+
+function inWindow(deadlineMs, ctx) {
+  return deadlineMs === null || ctx.timestamp <= deadlineMs;
+}
+
+function nestedNow(result, ctx, after) {
+  const nested = isFormula(result) || typeof result === "function";
+  return nested ? evaluate(toFormula(result, "now()"), ctx, after) : failType(`a now() callback must return a boolean or a formula, got ${describe(result)}`);
+}
+
+function falseOrNested(result, ctx, after) {
+  return result === false ? fails(after, ctx, "the predicate returned false") : nestedNow(result, ctx, after);
+}
+
+function evaluateNow(formula, ctx, trail) {
+  const here = trail.push("now");
+  const { result, reads } = callPredicate(formula.args[0], ctx);
+  const after = here.withReads(reads);
+  return result === true ? holds(after) : falseOrNested(result, ctx, after);
+}
+
+function evaluateNext(formula, ctx, trail) {
+  return pending(new NextObligation(formula.args[0], trail.push("next")));
+}
+
+function evaluateAlways(formula, ctx, trail) {
+  const here = trail.push(label(formula));
+  return new AlwaysObligation(formula.args[0], here, deadline(formula, ctx), formula.bound).step(ctx);
+}
+
+function evaluateEventually(formula, ctx, trail) {
+  const here = trail.push(label(formula));
+  return new EventuallyObligation(formula.args[0], here, deadline(formula, ctx), formula.bound).step(ctx);
+}
+
+function andResult(kept, trail) {
+  return kept.length === 0 ? holds(trail) : pending(new AndObligation(kept, trail));
+}
+
+function evaluateAnd(formula, ctx, trail) {
+  const kept = [];
+  function runArgument(argument, i) {
+    return evaluate(argument, ctx, trail.push(`and[${i}]`));
+  }
+  return firstWith(formula.args, false, runArgument, keeper(kept)) ?? andResult(kept, trail);
+}
+
+function orResult(residuals, failures, trail, ctx) {
+  return residuals.length === 0 ? combineFailures(failures, trail, ctx) : pending(new OrObligation(residuals, failures, trail));
+}
+
+function evaluateOr(formula, ctx, trail) {
+  const residuals = [];
+  const failures = [];
+  function runArgument(argument, i) {
+    return evaluate(argument, ctx, trail.push(`or[${i}]`));
+  }
+  const won = firstWith(formula.args, true, runArgument, outcomeSorter(residuals, failures));
+  return won ?? orResult(residuals, failures, trail, ctx);
+}
+
+function evaluateNot(formula, ctx, trail) {
+  const here = trail.push("not");
+  return negate(evaluate(formula.args[0], ctx, here), here, ctx);
+}
+
+function pendingImplication(antecedent, consequent, here) {
+  const first = new NotObligation(antecedent.residual, here.push("if"));
+  const failures = consequent.verdict === null ? [] : [consequent.failure];
+  return pending(new OrObligation([first, ...residualsOf(consequent)], failures, here));
+}
+
+function thenTrailOf(antecedent, here) {
+  return antecedent.verdict === true ? here.withReads(antecedent.trail.reads.slice(here.reads.length)) : here;
+}
+
+function impliesConsequent(formula, ctx, here, antecedent) {
+  const consequent = evaluate(formula.args[1], ctx, thenTrailOf(antecedent, here).push("then"));
+  const decided = antecedent.verdict === true || consequent.verdict === true;
+  return decided ? consequent : pendingImplication(antecedent, consequent, here);
+}
+
+function evaluateImplies(formula, ctx, trail) {
+  const here = trail.push("implies");
+  const antecedent = evaluate(formula.args[0], ctx, here.push("if"));
+  return antecedent.verdict === false ? holds(trail) : impliesConsequent(formula, ctx, here, antecedent);
+}
+
+const EVALUATORS = new Map([
+  ["now", evaluateNow],
+  ["next", evaluateNext],
+  ["always", evaluateAlways],
+  ["eventually", evaluateEventually],
+  ["and", evaluateAnd],
+  ["or", evaluateOr],
+  ["not", evaluateNot],
+  ["implies", evaluateImplies],
+]);
+
+function evaluate(formula, ctx, trail) {
+  const run = EVALUATORS.get(formula.op);
+  return run ? run(formula, ctx, trail) : failType(`unknown formula operator ${formula.op}`);
 }
 
 function label(formula) {
@@ -326,22 +417,27 @@ function negate(outcome, here, ctx) {
   return pending(new NotObligation(outcome.residual, here));
 }
 
+function readsOf(failure) {
+  return failure.reads;
+}
+
+function failurePath(last, trail) {
+  return last ? last.path : trail.path.join(" > ");
+}
+
+function lastMessage(last) {
+  return last ? last.message : "no alternative held";
+}
+
+function failureMessage(failures, last) {
+  return failures.length > 1 ? "every alternative failed" : lastMessage(last);
+}
+
 function combineFailures(failures, trail, ctx) {
   const last = failures[failures.length - 1];
-  const reads = [];
-  for (let cursor = 0, entries = failures; cursor < entries.length; cursor += 1) {
-    const failure = entries[cursor];
-    reads.push(...failure.reads);
-  }
-  return {
-    verdict: false,
-    failure: {
-      path: last ? last.path : trail.path.join(" > "),
-      reads,
-      index: ctx.index,
-      message: failures.length > 1 ? "every alternative failed" : last ? last.message : "no alternative held",
-    },
-  };
+  const path = failurePath(last, trail);
+  const message = failureMessage(failures, last);
+  return { verdict: false, failure: { path, reads: failures.flatMap(readsOf), index: ctx.index, message } };
 }
 
 class NextObligation {
@@ -370,40 +466,31 @@ class AlwaysObligation {
 
   step(ctx) {
     const kept = [];
-    for (let cursor = 0, entries = this.instances; cursor < entries.length; cursor += 1) {
-      const instance = entries[cursor];
-      const outcome = instance.step(ctx);
-      if (outcome.verdict === false) {
-        return outcome;
-      }
-      if (outcome.verdict === null) {
-        kept.push(outcome.residual);
-      }
-    }
-    if (this.deadline === null || ctx.timestamp <= this.deadline) {
-      const outcome = evaluate(this.formula, ctx, this.trail);
-      if (outcome.verdict === false) {
-        return outcome;
-      }
-      if (outcome.verdict === null) {
-        kept.push(outcome.residual);
-      }
-    } else if (kept.length === 0) {
-      return holds(this.trail);
-    }
+    const failed = firstWith(this.instances, false, stepWith(ctx), keeper(kept));
+    return failed ?? this.advance(ctx, kept);
+  }
+
+  advance(ctx, kept) {
+    return inWindow(this.deadline, ctx) ? this.startInstance(ctx, kept) : this.closeWindow(kept);
+  }
+
+  startInstance(ctx, kept) {
+    const outcome = evaluate(this.formula, ctx, this.trail);
+    kept.push(...residualsOf(outcome));
+    return outcome.verdict === false ? outcome : this.keep(kept);
+  }
+
+  closeWindow(kept) {
+    return kept.length === 0 ? holds(this.trail) : this.keep(kept);
+  }
+
+  keep(kept) {
     this.instances = kept;
     return pending(this);
   }
 
   end(ctx) {
-    for (let cursor = 0, entries = this.instances; cursor < entries.length; cursor += 1) {
-      const instance = entries[cursor];
-      const outcome = instance.end(ctx);
-      if (outcome.verdict === false) {
-        return outcome;
-      }
-    }
-    return holds(this.trail);
+    return firstWith(this.instances, false, endWith(ctx), ignoreOutcome) ?? holds(this.trail);
   }
 }
 
@@ -419,47 +506,57 @@ class EventuallyObligation {
 
   step(ctx) {
     const kept = [];
-    for (let cursor = 0, entries = this.instances; cursor < entries.length; cursor += 1) {
-      const instance = entries[cursor];
-      const outcome = instance.step(ctx);
-      if (outcome.verdict === true) {
-        return outcome;
-      }
-      if (outcome.verdict === null) {
-        kept.push(outcome.residual);
-      } else {
-        this.lastReads = outcome.failure.reads;
-      }
+    const won = firstWith(this.instances, true, stepWith(ctx), this.absorber(kept));
+    return won ?? this.advance(ctx, kept);
+  }
+
+  absorber(kept) {
+    const owner = this;
+    function absorb(outcome) {
+      outcome.verdict === null ? kept.push(outcome.residual) : owner.noteFailure(outcome);
     }
-    if (this.deadline === null || ctx.timestamp <= this.deadline) {
-      const outcome = evaluate(this.formula, ctx, this.trail);
-      if (outcome.verdict === true) {
-        return outcome;
-      }
-      if (outcome.verdict === null) {
-        kept.push(outcome.residual);
-      } else {
-        this.lastReads = outcome.failure.reads;
-      }
-    } else if (kept.length === 0) {
-      return fails(this.trail, ctx, `did not hold within ${this.bound.amount} ${this.bound.unit}`, this.lastReads);
-    }
+    return absorb;
+  }
+
+  noteFailure(outcome) {
+    this.lastReads = outcome.failure.reads;
+  }
+
+  advance(ctx, kept) {
+    return inWindow(this.deadline, ctx) ? this.startInstance(ctx, kept) : this.closeWindow(ctx, kept);
+  }
+
+  startInstance(ctx, kept) {
+    const outcome = evaluate(this.formula, ctx, this.trail);
+    return outcome.verdict === true ? outcome : this.absorbAndKeep(outcome, kept);
+  }
+
+  absorbAndKeep(outcome, kept) {
+    this.absorber(kept)(outcome);
+    return this.keep(kept);
+  }
+
+  closeWindow(ctx, kept) {
+    const message = `did not hold within ${this.bound.amount} ${this.bound.unit}`;
+    return kept.length === 0 ? fails(this.trail, ctx, message, this.lastReads) : this.keep(kept);
+  }
+
+  keep(kept) {
     this.instances = kept;
     return pending(this);
   }
 
-  end(ctx) {
-    for (let cursor = 0, entries = this.instances; cursor < entries.length; cursor += 1) {
-      const instance = entries[cursor];
-      const outcome = instance.end(ctx);
-      if (outcome.verdict === true) {
-        return outcome;
-      }
-      if (outcome.verdict === false) {
-        this.lastReads = outcome.failure.reads;
-      }
+  failureNoter() {
+    const owner = this;
+    function noteIfFailed(outcome) {
+      outcome.verdict === false ? owner.noteFailure(outcome) : null;
     }
-    return fails(this.trail, ctx, "still pending when the trace ended", this.lastReads);
+    return noteIfFailed;
+  }
+
+  end(ctx) {
+    const won = firstWith(this.instances, true, endWith(ctx), this.failureNoter());
+    return won ?? fails(this.trail, ctx, "still pending when the trace ended", this.lastReads);
   }
 }
 
@@ -471,29 +568,16 @@ class AndObligation {
 
   step(ctx) {
     const kept = [];
-    for (let cursor = 0, entries = this.residuals; cursor < entries.length; cursor += 1) {
-      const residual = entries[cursor];
-      const outcome = residual.step(ctx);
-      if (outcome.verdict === false) {
-        return outcome;
-      }
-      if (outcome.verdict === null) {
-        kept.push(outcome.residual);
-      }
-    }
+    return firstWith(this.residuals, false, stepWith(ctx), keeper(kept)) ?? this.keep(kept);
+  }
+
+  keep(kept) {
     this.residuals = kept;
     return kept.length === 0 ? holds(this.trail) : pending(this);
   }
 
   end(ctx) {
-    for (let cursor = 0, entries = this.residuals; cursor < entries.length; cursor += 1) {
-      const residual = entries[cursor];
-      const outcome = residual.end(ctx);
-      if (outcome.verdict === false) {
-        return outcome;
-      }
-    }
-    return holds(this.trail);
+    return firstWith(this.residuals, false, endWith(ctx), ignoreOutcome) ?? holds(this.trail);
   }
 }
 
@@ -506,48 +590,22 @@ class OrObligation {
 
   settle(outcomes, ctx) {
     const kept = [];
-    for (let cursor = 0, entries = outcomes; cursor < entries.length; cursor += 1) {
-      const outcome = entries[cursor];
-      if (outcome.verdict === true) {
-        return outcome;
-      }
-      if (outcome.verdict === false) {
-        this.failures.push(outcome.failure);
-      } else {
-        kept.push(outcome.residual);
-      }
-    }
+    return firstWith(outcomes, true, identity, outcomeSorter(kept, this.failures)) ?? this.keep(kept, ctx);
+  }
+
+  keep(kept, ctx) {
     this.residuals = kept;
-    if (kept.length === 0) {
-      return combineFailures(this.failures, this.trail, ctx);
-    }
-    return pending(this);
+    return kept.length === 0 ? combineFailures(this.failures, this.trail, ctx) : pending(this);
   }
 
   step(ctx) {
     const outcomes = [];
-    for (let cursor = 0, entries = this.residuals; cursor < entries.length; cursor += 1) {
-      const residual = entries[cursor];
-      const outcome = residual.step(ctx);
-      if (outcome.verdict === true) {
-        return outcome;
-      }
-      outcomes.push(outcome);
-    }
-    return this.settle(outcomes, ctx);
+    return firstWith(this.residuals, true, stepWith(ctx), collector(outcomes)) ?? this.settle(outcomes, ctx);
   }
 
   end(ctx) {
     const outcomes = [];
-    for (let cursor = 0, entries = this.residuals; cursor < entries.length; cursor += 1) {
-      const residual = entries[cursor];
-      const outcome = residual.end(ctx);
-      if (outcome.verdict === true) {
-        return outcome;
-      }
-      outcomes.push(outcome);
-    }
-    return this.settle(outcomes, ctx);
+    return firstWith(this.residuals, true, endWith(ctx), collector(outcomes)) ?? this.settle(outcomes, ctx);
   }
 }
 
@@ -603,21 +661,15 @@ class Generator {
 }
 
 function requireFunction(fn, where) {
-  if (typeof fn !== "function") {
-    throw new TypeError(`${where} needs a function`);
-  }
+  return typeof fn === "function" ? fn : failType(`${where} needs a function`);
 }
 
 function requireWeight(n, where) {
-  if (!Number.isInteger(n) || n < 0) {
-    throw new TypeError(`${where} needs a nonnegative integer weight, got ${JSON.stringify(n)}`);
-  }
+  return Number.isInteger(n) && n >= 0 ? n : failType(`${where} needs a nonnegative integer weight, got ${JSON.stringify(n)}`);
 }
 
 function requireNumber(value, where) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new TypeError(`${where} needs finite numbers`);
-  }
+  return typeof value === "number" && Number.isFinite(value) ? value : failType(`${where} needs finite numbers`);
 }
 
 function lengths(options, where) {
@@ -679,8 +731,12 @@ export function text(options) {
   return new Generator({ kind: "text", min, max });
 }
 
+function isString(entry) {
+  return typeof entry === "string";
+}
+
 export function chars(characters, options) {
-  const isList = Array.isArray(characters) && characters.every((entry) => typeof entry === "string");
+  const isList = Array.isArray(characters) && characters.every(isString);
   if ((typeof characters !== "string" && !isList) || characters.length === 0) {
     throw new TypeError("chars() needs a nonempty string or a nonempty array of strings");
   }
@@ -698,23 +754,34 @@ export function action(template) {
   return new Generator({ kind: "action", template });
 }
 
+function oneOfChild(g) {
+  return requireGenerator(g, "oneOf()");
+}
+
+function toChoice(g) {
+  return { weight: g.weightValue, generator: g };
+}
+
 export function oneOf(...generators) {
-  const children = generators.flat().map((g) => requireGenerator(g, "oneOf()"));
-  return new Generator({ kind: "choice", choices: children.map((g) => ({ weight: g.weightValue, generator: g })) });
+  const children = generators.flat().map(oneOfChild);
+  return new Generator({ kind: "choice", choices: children.map(toChoice) });
+}
+
+function requirePair(pair) {
+  return Array.isArray(pair) && pair.length === 2 ? pair : failType("weighted() needs [weight, generator] pairs");
+}
+
+function weightedChoice(pair) {
+  requirePair(pair);
+  requireWeight(pair[0], "weighted()");
+  return { weight: pair[0], generator: requireGenerator(pair[1], "weighted()") };
 }
 
 export function weighted(pairs) {
   if (!Array.isArray(pairs)) {
     throw new TypeError("weighted() needs an array of [weight, generator] pairs");
   }
-  const choices = pairs.map((pair) => {
-    if (!Array.isArray(pair) || pair.length !== 2) {
-      throw new TypeError("weighted() needs [weight, generator] pairs");
-    }
-    requireWeight(pair[0], "weighted()");
-    return { weight: pair[0], generator: requireGenerator(pair[1], "weighted()") };
-  });
-  return new Generator({ kind: "choice", choices });
+  return new Generator({ kind: "choice", choices: pairs.map(weightedChoice) });
 }
 
 export function actions(fn) {
@@ -753,229 +820,328 @@ function below(n) {
   return native.below(n);
 }
 
+function drawConstant(impl) {
+  return impl.value;
+}
+
+function drawFrom(impl) {
+  return impl.values.length === 0 ? NONE : impl.values[below(impl.values.length)];
+}
+
+function drawInteger(impl) {
+  return impl.min + below(impl.max - impl.min + 1);
+}
+
+function drawFloat(impl) {
+  return impl.min + native.unit() * (impl.max - impl.min);
+}
+
+function drawRegex(impl) {
+  return native.regex(impl.source);
+}
+
+function drawEmail() {
+  return native.email();
+}
+
+function drawText(impl) {
+  return native.text(impl.min, impl.max);
+}
+
+function drawChars(impl) {
+  const length = impl.min + below(impl.max - impl.min + 1);
+  let out = "";
+  for (let i = 0; i < length; i += 1) {
+    out += impl.characters[below(impl.characters.length)];
+  }
+  return out;
+}
+
+function drawAction(impl) {
+  return drawTemplate(impl.template);
+}
+
+function drawChoiceValue(impl) {
+  return drawChoice(impl.choices).value;
+}
+
+function drawOffered(offered) {
+  return offered === null ? NONE : draw(offered);
+}
+
+function drawDynamic(impl) {
+  return drawOffered(offer(impl.fn(), "actions()"));
+}
+
+function drawMap(impl) {
+  const value = draw(impl.inner);
+  return value === NONE ? NONE : impl.fn(value);
+}
+
+function filterAttempt(impl) {
+  const value = draw(impl.inner);
+  return value === NONE || impl.fn(value) ? { value } : null;
+}
+
+function drawFilter(impl) {
+  let found = null;
+  for (let attempt = 0; attempt < 100 && found === null; attempt += 1) {
+    found = filterAttempt(impl);
+  }
+  return found === null ? NONE : found.value;
+}
+
+function drawFlatMap(impl) {
+  const value = draw(impl.inner);
+  return value === NONE ? NONE : drawOffered(offer(impl.fn(value), "flatMap()"));
+}
+
+function drawWhen(impl) {
+  return conditionHolds(impl.condition) ? draw(impl.inner) : NONE;
+}
+
+const DRAWERS = new Map([
+  ["constant", drawConstant],
+  ["from", drawFrom],
+  ["integer", drawInteger],
+  ["float", drawFloat],
+  ["regex", drawRegex],
+  ["email", drawEmail],
+  ["text", drawText],
+  ["chars", drawChars],
+  ["action", drawAction],
+  ["choice", drawChoiceValue],
+  ["dynamic", drawDynamic],
+  ["map", drawMap],
+  ["filter", drawFilter],
+  ["flatMap", drawFlatMap],
+  ["when", drawWhen],
+]);
+
 function draw(generator) {
   const impl = generator.impl;
-  switch (impl.kind) {
-    case "constant":
-      return impl.value;
-    case "from":
-      return impl.values.length === 0 ? NONE : impl.values[below(impl.values.length)];
-    case "integer":
-      return impl.min + below(impl.max - impl.min + 1);
-    case "float":
-      return impl.min + native.unit() * (impl.max - impl.min);
-    case "regex":
-      return native.regex(impl.source);
-    case "email":
-      return native.email();
-    case "text":
-      return native.text(impl.min, impl.max);
-    case "chars": {
-      const length = impl.min + below(impl.max - impl.min + 1);
-      let out = "";
-      for (let i = 0; i < length; i += 1) {
-        out += impl.characters[below(impl.characters.length)];
-      }
-      return out;
-    }
-    case "action":
-      return drawTemplate(impl.template);
-    case "choice":
-      return drawChoice(impl.choices).value;
-    case "dynamic": {
-      const offered = offer(impl.fn(), "actions()");
-      return offered === null ? NONE : draw(offered);
-    }
-    case "map": {
-      const value = draw(impl.inner);
-      return value === NONE ? NONE : impl.fn(value);
-    }
-    case "filter": {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const value = draw(impl.inner);
-        if (value === NONE) {
-          return NONE;
-        }
-        if (impl.fn(value)) {
-          return value;
-        }
-      }
-      return NONE;
-    }
-    case "flatMap": {
-      const value = draw(impl.inner);
-      if (value === NONE) {
-        return NONE;
-      }
-      const offered = offer(impl.fn(value), "flatMap()");
-      return offered === null ? NONE : draw(offered);
-    }
-    case "when":
-      return conditionHolds(impl.condition) ? draw(impl.inner) : NONE;
-    default:
-      throw new TypeError(`unknown generator ${impl.kind}`);
+  const run = DRAWERS.get(impl.kind);
+  return run ? run(impl) : failType(`unknown generator ${impl.kind}`);
+}
+
+function hasWeight(choice) {
+  return choice.weight > 0;
+}
+
+function addWeight(total, choice) {
+  return total + choice.weight;
+}
+
+function pickIndex(live, firstTicket) {
+  let ticket = firstTicket;
+  let picked = 0;
+  while (ticket >= live[picked].weight) {
+    ticket -= live[picked].weight;
+    picked += 1;
   }
+  return picked;
+}
+
+function drawLive(live) {
+  const picked = pickIndex(live, below(live.reduce(addWeight, 0)));
+  const value = draw(live[picked].generator);
+  return { value, choice: live[picked], picked };
 }
 
 function drawChoice(choices) {
-  let live = choices.filter((choice) => choice.weight > 0);
-  while (live.length > 0) {
-    let total = 0;
-    for (let cursor = 0, entries = live; cursor < entries.length; cursor += 1) {
-      const choice = entries[cursor];
-      total += choice.weight;
-    }
-    let ticket = below(total);
-    let picked = 0;
-    while (ticket >= live[picked].weight) {
-      ticket -= live[picked].weight;
-      picked += 1;
-    }
-    const value = draw(live[picked].generator);
-    if (value !== NONE) {
-      return { value, choice: live[picked] };
-    }
-    live = live.filter((_, i) => i !== picked);
+  let live = choices.filter(hasWeight);
+  let drawn = { value: NONE, choice: null };
+  while (drawn.value === NONE && live.length > 0) {
+    drawn = drawLive(live);
+    live = [...live.slice(0, drawn.picked), ...live.slice(drawn.picked + 1)];
   }
-  return { value: NONE, choice: null };
+  return drawn.value === NONE ? { value: NONE, choice: null } : drawn;
+}
+
+function isPlainTemplate(template) {
+  return template !== null && typeof template === "object" && !isCell(template);
+}
+
+function drawList(template) {
+  const out = [];
+  function add(item) {
+    const value = drawTemplate(item);
+    out.push(value);
+    return value !== NONE;
+  }
+  return Array.from(template).every(add) ? out : NONE;
+}
+
+function drawRecord(template) {
+  const out = {};
+  function add(key) {
+    const value = drawTemplate(template[key]);
+    out[key] = value;
+    return value !== NONE;
+  }
+  return Object.keys(template).every(add) ? out : NONE;
+}
+
+function drawRecordOrValue(template) {
+  return isPlainTemplate(template) ? drawRecord(template) : template;
+}
+
+function drawStructure(template) {
+  return Array.isArray(template) ? drawList(template) : drawRecordOrValue(template);
 }
 
 function drawTemplate(template) {
-  if (isGenerator(template)) {
-    return draw(template);
-  }
-  if (Array.isArray(template)) {
-    const out = [];
-    for (let cursor = 0, entries = template; cursor < entries.length; cursor += 1) {
-      const item = entries[cursor];
-      const value = drawTemplate(item);
-      if (value === NONE) {
-        return NONE;
-      }
-      out.push(value);
-    }
-    return out;
-  }
-  if (template !== null && typeof template === "object" && !isCell(template)) {
-    const out = {};
-    for (let cursor = 0, entries = Object.keys(template); cursor < entries.length; cursor += 1) {
-      const key = entries[cursor];
-      const value = drawTemplate(template[key]);
-      if (value === NONE) {
-        return NONE;
-      }
-      out[key] = value;
-    }
-    return out;
-  }
-  return template;
+  return isGenerator(template) ? draw(template) : drawStructure(template);
 }
 
 const ENUMERATION_LIMIT = 2000;
 
+function enumerateConstant(impl) {
+  return [impl.value];
+}
+
+function enumerateFrom(impl) {
+  return impl.values.slice(0, ENUMERATION_LIMIT);
+}
+
+function integerRange(impl) {
+  const out = [];
+  for (let n = impl.min; n <= impl.max; n += 1) {
+    out.push(n);
+  }
+  return out;
+}
+
+function enumerateInteger(impl, generator) {
+  return impl.max - impl.min < 64 ? integerRange(impl) : [draw(generator)];
+}
+
+function enumerateDrawn(impl, generator) {
+  return [draw(generator)];
+}
+
+function enumerateAction(impl) {
+  return enumerateTemplate(impl.template);
+}
+
+function choiceOptions(choice) {
+  return choice.weight > 0 ? enumerate(choice.generator) : [];
+}
+
+function enumerateChoice(impl) {
+  const out = [];
+  function add(choice) {
+    out.push(...choiceOptions(choice));
+    return out.length >= ENUMERATION_LIMIT;
+  }
+  impl.choices.some(add);
+  return out.slice(0, ENUMERATION_LIMIT);
+}
+
+function enumerateOffered(offered) {
+  return offered === null ? [] : enumerate(offered);
+}
+
+function enumerateDynamic(impl) {
+  return enumerateOffered(offer(impl.fn(), "actions()"));
+}
+
+function enumerateMap(impl) {
+  function apply(value) {
+    return impl.fn(value);
+  }
+  return enumerate(impl.inner).map(apply);
+}
+
+function enumerateFilter(impl) {
+  function apply(value) {
+    return impl.fn(value);
+  }
+  return enumerate(impl.inner).filter(apply);
+}
+
+function enumerateFlatMap(impl) {
+  const out = [];
+  function add(value) {
+    out.push(...enumerateOffered(offer(impl.fn(value), "flatMap()")));
+    return out.length >= ENUMERATION_LIMIT;
+  }
+  enumerate(impl.inner).some(add);
+  return out.slice(0, ENUMERATION_LIMIT);
+}
+
+function enumerateWhen(impl) {
+  return conditionHolds(impl.condition) ? enumerate(impl.inner) : [];
+}
+
+const ENUMERATORS = new Map([
+  ["constant", enumerateConstant],
+  ["from", enumerateFrom],
+  ["integer", enumerateInteger],
+  ["float", enumerateDrawn],
+  ["regex", enumerateDrawn],
+  ["email", enumerateDrawn],
+  ["text", enumerateDrawn],
+  ["chars", enumerateDrawn],
+  ["action", enumerateAction],
+  ["choice", enumerateChoice],
+  ["dynamic", enumerateDynamic],
+  ["map", enumerateMap],
+  ["filter", enumerateFilter],
+  ["flatMap", enumerateFlatMap],
+  ["when", enumerateWhen],
+]);
+
 function enumerate(generator) {
   const impl = generator.impl;
-  switch (impl.kind) {
-    case "constant":
-      return [impl.value];
-    case "from":
-      return impl.values.slice(0, ENUMERATION_LIMIT);
-    case "integer":
-      if (impl.max - impl.min < 64) {
-        const out = [];
-        for (let n = impl.min; n <= impl.max; n += 1) {
-          out.push(n);
-        }
-        return out;
-      }
-      return [draw(generator)];
-    case "float":
-    case "regex":
-    case "email":
-    case "text":
-    case "chars":
-      return [draw(generator)];
-    case "action":
-      return enumerateTemplate(impl.template);
-    case "choice": {
-      const out = [];
-      for (let cursor = 0, entries = impl.choices; cursor < entries.length; cursor += 1) {
-        const choice = entries[cursor];
-        if (choice.weight > 0) {
-          out.push(...enumerate(choice.generator));
-        }
-        if (out.length >= ENUMERATION_LIMIT) {
-          break;
-        }
-      }
-      return out.slice(0, ENUMERATION_LIMIT);
+  const run = ENUMERATORS.get(impl.kind);
+  return run ? run(impl, generator) : failType(`unknown generator ${impl.kind}`);
+}
+
+function appendOption(combo, option) {
+  return [...combo, option];
+}
+
+function extendList(combos, item) {
+  return product(combos, enumerateTemplate(item), appendOption);
+}
+
+function enumerateList(template) {
+  return Array.from(template).reduce(extendList, [[]]);
+}
+
+function enumerateRecord(template) {
+  function extend(combos, key) {
+    function withKey(combo, option) {
+      return { ...combo, [key]: option };
     }
-    case "dynamic": {
-      const offered = offer(impl.fn(), "actions()");
-      return offered === null ? [] : enumerate(offered);
-    }
-    case "map":
-      return enumerate(impl.inner).map((value) => impl.fn(value));
-    case "filter":
-      return enumerate(impl.inner).filter((value) => impl.fn(value));
-    case "flatMap": {
-      const out = [];
-      for (let cursor = 0, entries = enumerate(impl.inner); cursor < entries.length; cursor += 1) {
-        const value = entries[cursor];
-        const offered = offer(impl.fn(value), "flatMap()");
-        if (offered !== null) {
-          out.push(...enumerate(offered));
-        }
-        if (out.length >= ENUMERATION_LIMIT) {
-          break;
-        }
-      }
-      return out.slice(0, ENUMERATION_LIMIT);
-    }
-    case "when":
-      return conditionHolds(impl.condition) ? enumerate(impl.inner) : [];
-    default:
-      throw new TypeError(`unknown generator ${impl.kind}`);
+    return product(combos, enumerateTemplate(template[key]), withKey);
   }
+  return Object.keys(template).reduce(extend, [{}]);
+}
+
+function enumerateRecordOrValue(template) {
+  return isPlainTemplate(template) ? enumerateRecord(template) : [template];
+}
+
+function enumerateStructure(template) {
+  return Array.isArray(template) ? enumerateList(template) : enumerateRecordOrValue(template);
 }
 
 function enumerateTemplate(template) {
-  if (isGenerator(template)) {
-    return enumerate(template);
-  }
-  if (Array.isArray(template)) {
-    let combos = [[]];
-    for (let cursor = 0, entries = template; cursor < entries.length; cursor += 1) {
-      const item = entries[cursor];
-      const options = enumerateTemplate(item);
-      combos = product(combos, options, (combo, option) => [...combo, option]);
-    }
-    return combos;
-  }
-  if (template !== null && typeof template === "object" && !isCell(template)) {
-    let combos = [{}];
-    for (let cursor = 0, entries = Object.keys(template); cursor < entries.length; cursor += 1) {
-      const key = entries[cursor];
-      const options = enumerateTemplate(template[key]);
-      combos = product(combos, options, (combo, option) => ({ ...combo, [key]: option }));
-    }
-    return combos;
-  }
-  return [template];
+  return isGenerator(template) ? enumerate(template) : enumerateStructure(template);
 }
 
 function product(left, right, join) {
   const out = [];
-  for (let cursor = 0, entries = left; cursor < entries.length; cursor += 1) {
-    const a = entries[cursor];
-    for (let cursor = 0, entries = right; cursor < entries.length; cursor += 1) {
-      const b = entries[cursor];
+  function addPairs(a) {
+    function addPair(b) {
       out.push(join(a, b));
-      if (out.length >= ENUMERATION_LIMIT) {
-        return out;
-      }
+      return out.length >= ENUMERATION_LIMIT;
     }
+    return right.some(addPair);
   }
+  left.some(addPairs);
   return out;
 }
 
@@ -987,37 +1153,35 @@ function checkAction(value, category) {
   return JSON.parse(text);
 }
 
+function applyAdapter(state, adapter) {
+  const result = adapter(state);
+  return result === undefined ? state : result;
+}
+
 function adaptState(state) {
-  let adapted = state;
-  for (let cursor = 0, entries = registry.adapters; cursor < entries.length; cursor += 1) {
-    const adapter = entries[cursor];
-    const result = adapter(adapted);
-    if (result !== undefined) {
-      adapted = result;
-    }
-  }
-  return adapted;
+  return registry.adapters.reduce(applyAdapter, state);
+}
+
+function isReadyEntry([id]) {
+  const cell = registry.cells[id];
+  return Boolean(cell && cell.ready);
+}
+
+function readyCellEntry([id, name]) {
+  return [name, registry.cells[id].value];
 }
 
 function cellsFor(names) {
-  const out = {};
-  for (const [id, name] of names) {
-    const cell = registry.cells[id];
-    if (cell && cell.ready) {
-      out[name] = cell.value;
-    }
-  }
-  return out;
+  return Object.fromEntries([...names].filter(isReadyEntry).map(readyCellEntry));
+}
+
+function readEntry(index, read) {
+  const key = read.index === index ? read.name : `${read.name}@${read.index}`;
+  return [key, read.value];
 }
 
 function readsToCells(reads, index) {
-  const out = {};
-  for (let cursor = 0, entries = reads; cursor < entries.length; cursor += 1) {
-    const read = entries[cursor];
-    const key = read.index === index ? read.name : `${read.name}@${read.index}`;
-    out[key] = read.value;
-  }
-  return out;
+  return Object.fromEntries(reads.map(readEntry.bind(null, index)));
 }
 
 function report(name, failure) {
@@ -1028,6 +1192,123 @@ function report(name, failure) {
     message: failure.message,
     cells: readsToCells(failure.reads, failure.index),
   };
+}
+
+function isUnnamedCell(value, exported) {
+  return isCell(value) && !exported.has(value.id) && !registry.cellNames.has(value.id);
+}
+
+function recordCellName(value, key, exported, isSpec) {
+  registry.cellNames.set(value.id, key);
+  isSpec ? exported.set(value.id, key) : null;
+}
+
+function nameNamespace(spec, exported, namespace) {
+  function nameKey(key) {
+    const value = namespace[key];
+    isUnnamedCell(value, exported) ? recordCellName(value, key, exported, namespace === spec) : null;
+  }
+  Object.keys(namespace).forEach(nameKey);
+}
+
+function addProperty(name, formula) {
+  registry.properties.push({ name, formula, residual: null, started: false, done: false });
+}
+
+function addCategory(name, generator) {
+  registry.categories.push({ name, generator });
+}
+
+function generatorEntry(value) {
+  return isGenerator(value) ? addCategory : ignoreOutcome;
+}
+
+function registerSpecKey(spec, key) {
+  const value = spec[key];
+  const add = isFormula(value) ? addProperty : generatorEntry(value);
+  add(key, value);
+}
+
+function nameOf(entry) {
+  return entry.name;
+}
+
+function extractorInfo(cell) {
+  return { id: cell.id, name: cellName(cell), source: cell.fn.toString() };
+}
+
+function installSummary() {
+  return JSON.stringify({
+    properties: registry.properties.map(nameOf),
+    categories: registry.categories.map(nameOf),
+    extractors: registry.cells.map(extractorInfo),
+    customActions: registry.customActions,
+  });
+}
+
+function markCells(ready) {
+  function mark(cell) {
+    cell.ready = ready;
+  }
+  registry.cells.forEach(mark);
+}
+
+function extractCell(state, cell) {
+  registry.activity = `the extractor ${cellName(cell)}`;
+  const value = cell.fn(state);
+  cell.value = snapshot(value);
+}
+
+function setCellValue(values, cell, i) {
+  cell.value = freeze(values[i] ?? null);
+  cell.ready = true;
+}
+
+function isOpenProperty(property) {
+  return !property.done;
+}
+
+function isStartedProperty(property) {
+  return !property.done && property.started;
+}
+
+function firstOutcome(property, ctx) {
+  return property.started ? property.residual.step(ctx) : evaluate(property.formula, ctx, ROOT);
+}
+
+function stepProperty(ctx, violations, property) {
+  registry.activity = `the property ${property.name}`;
+  const outcome = firstOutcome(property, ctx);
+  property.started = true;
+  settle(property, outcome, violations);
+}
+
+function finishProperty(ctx, violations, property) {
+  registry.activity = `the property ${property.name}`;
+  settle(property, property.residual.end(ctx), violations);
+}
+
+function categoryChoice(category) {
+  return { weight: category.generator.weightValue, generator: category.generator, name: category.name };
+}
+
+function pickedActionText(value, choice) {
+  const picked = checkAction(value, choice.name);
+  picked.category = choice.name;
+  return JSON.stringify(picked);
+}
+
+function isOfferedCategory(category) {
+  return category.generator.weightValue !== 0;
+}
+
+function categoryOffers(category) {
+  function tagged(value) {
+    const offeredAction = checkAction(value, category.name);
+    offeredAction.category = category.name;
+    return offeredAction;
+  }
+  return enumerate(category.generator).map(tagged);
 }
 
 const engine = {
@@ -1050,35 +1331,10 @@ const engine = {
   install(spec, ...others) {
     registry.loading = false;
     const exported = new Map();
-    for (let cursor = 0, entries = [spec, ...others]; cursor < entries.length; cursor += 1) {
-      const namespace = entries[cursor];
-      for (let cursor = 0, entries = Object.keys(namespace); cursor < entries.length; cursor += 1) {
-        const key = entries[cursor];
-        const value = namespace[key];
-        if (isCell(value) && !exported.has(value.id) && !registry.cellNames.has(value.id)) {
-          registry.cellNames.set(value.id, key);
-          if (namespace === spec) {
-            exported.set(value.id, key);
-          }
-        }
-      }
-    }
+    [spec, ...others].forEach(nameNamespace.bind(null, spec, exported));
     registry.exportedCells = exported;
-    for (let cursor = 0, entries = Object.keys(spec); cursor < entries.length; cursor += 1) {
-      const key = entries[cursor];
-      const value = spec[key];
-      if (isFormula(value)) {
-        registry.properties.push({ name: key, formula: value, residual: null, started: false, done: false });
-      } else if (isGenerator(value)) {
-        registry.categories.push({ name: key, generator: value });
-      }
-    }
-    return JSON.stringify({
-      properties: registry.properties.map((p) => p.name),
-      categories: registry.categories.map((c) => c.name),
-      extractors: registry.cells.map((cell) => ({ id: cell.id, name: cellName(cell), source: cell.fn.toString() })),
-      customActions: registry.customActions,
-    });
+    Object.keys(spec).forEach(registerSpecKey.bind(null, spec));
+    return installSummary();
   },
 
   activity() {
@@ -1087,31 +1343,16 @@ const engine = {
 
   extractLocal(stateText) {
     const state = adaptState(JSON.parse(stateText));
-    for (let cursor = 0, entries = registry.cells; cursor < entries.length; cursor += 1) {
-      const cell = entries[cursor];
-      cell.ready = false;
-    }
+    markCells(false);
     registry.extracting = true;
-    for (let cursor = 0, entries = registry.cells; cursor < entries.length; cursor += 1) {
-      const cell = entries[cursor];
-      registry.activity = `the extractor ${cellName(cell)}`;
-      const value = cell.fn(state);
-      cell.value = snapshot(value);
-    }
+    registry.cells.forEach(extractCell.bind(null, state));
     registry.extracting = false;
     registry.activity = null;
-    for (let cursor = 0, entries = registry.cells; cursor < entries.length; cursor += 1) {
-      const cell = entries[cursor];
-      cell.ready = true;
-    }
+    markCells(true);
   },
 
   setCellValues(valuesText) {
-    const values = JSON.parse(valuesText);
-    registry.cells.forEach((cell, i) => {
-      cell.value = freeze(values[i] ?? null);
-      cell.ready = true;
-    });
+    registry.cells.forEach(setCellValue.bind(null, JSON.parse(valuesText)));
   },
 
   exportedCells() {
@@ -1119,33 +1360,15 @@ const engine = {
   },
 
   step(index, timestamp) {
-    const ctx = { index, timestamp };
     const violations = [];
-    for (let cursor = 0, entries = registry.properties; cursor < entries.length; cursor += 1) {
-      const property = entries[cursor];
-      if (property.done) {
-        continue;
-      }
-      registry.activity = `the property ${property.name}`;
-      const outcome = property.started ? property.residual.step(ctx) : evaluate(property.formula, ctx, ROOT);
-      property.started = true;
-      settle(property, outcome, violations);
-    }
+    registry.properties.filter(isOpenProperty).forEach(stepProperty.bind(null, { index, timestamp }, violations));
     registry.activity = null;
     return JSON.stringify(violations);
   },
 
   finish(index, timestamp) {
-    const ctx = { index, timestamp };
     const violations = [];
-    for (let cursor = 0, entries = registry.properties; cursor < entries.length; cursor += 1) {
-      const property = entries[cursor];
-      if (property.done || !property.started) {
-        continue;
-      }
-      registry.activity = `the property ${property.name}`;
-      settle(property, property.residual.end(ctx), violations);
-    }
+    registry.properties.filter(isStartedProperty).forEach(finishProperty.bind(null, { index, timestamp }, violations));
     registry.activity = null;
     return JSON.stringify(violations);
   },
@@ -1153,50 +1376,40 @@ const engine = {
   sample(enabledText) {
     registry.activity = "the action generators";
     const enabled = new Set(JSON.parse(enabledText));
-    const choices = registry.categories
-      .filter((category) => enabled.has(category.name))
-      .map((category) => ({ weight: category.generator.weightValue, generator: category.generator, name: category.name }));
-    const { value, choice } = drawChoice(choices);
-    if (value === NONE) {
-      registry.activity = null;
-      return null;
+    function isEnabled(category) {
+      return enabled.has(category.name);
     }
-    const picked = checkAction(value, choice.name);
-    picked.category = choice.name;
+    const { value, choice } = drawChoice(registry.categories.filter(isEnabled).map(categoryChoice));
+    const text = value === NONE ? null : pickedActionText(value, choice);
     registry.activity = null;
-    return JSON.stringify(picked);
+    return text;
   },
 
   offered() {
     registry.activity = "the action generators";
-    const out = [];
-    for (let cursor = 0, entries = registry.categories; cursor < entries.length; cursor += 1) {
-      const category = entries[cursor];
-      if (category.generator.weightValue === 0) {
-        continue;
-      }
-      for (let cursor = 0, entries = enumerate(category.generator); cursor < entries.length; cursor += 1) {
-        const value = entries[cursor];
-        const offeredAction = checkAction(value, category.name);
-        offeredAction.category = category.name;
-        out.push(offeredAction);
-      }
-    }
+    const out = registry.categories.filter(isOfferedCategory).flatMap(categoryOffers);
     registry.activity = null;
     return JSON.stringify(out);
   },
 };
 
-function settle(property, outcome, violations) {
-  if (outcome.verdict === null) {
-    property.residual = outcome.residual;
-    return;
-  }
+function keepResidual(property, outcome) {
+  property.residual = outcome.residual;
+}
+
+function failureReports(property, outcome) {
+  return outcome.verdict === false ? [report(property.name, outcome.failure)] : [];
+}
+
+function closeProperty(property, outcome, violations) {
   property.done = true;
   property.residual = null;
-  if (outcome.verdict === false) {
-    violations.push(report(property.name, outcome.failure));
-  }
+  violations.push(...failureReports(property, outcome));
+}
+
+function settle(property, outcome, violations) {
+  const close = outcome.verdict === null ? keepResidual : closeProperty;
+  close(property, outcome, violations);
 }
 
 Object.defineProperty(globalThis, "__uiPropTesterEngine", { value: engine, enumerable: false });

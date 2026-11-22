@@ -37,52 +37,93 @@ export const noConsoleErrors = always(() => consoleErrors.current.length === 0);
 export const clicks = actions(() =>
   page.current.clickables.map((candidate) => click(candidate))).weight(100);
 
-export const inputs = actions(() => {
+function plainTextFor(inputType) {
+  return textInputTypes.includes(inputType) ? text({ min: 1, max: 16 }) : null;
+}
+
+function digitsOrTextFor(inputType) {
+  return inputType === "number" ? chars("0123456789", { min: 1, max: 5 }) : plainTextFor(inputType);
+}
+
+function inputTextFor(inputType) {
+  return inputType === "email" ? email() : digitsOrTextFor(inputType);
+}
+
+function typedInputField(focused) {
+  const generator = focused.tag === "input" ? inputTextFor(focused.input_type) : null;
+  return generator ? [3, generator] : null;
+}
+
+function typedInput(focused) {
+  return focused.tag === "textarea" ? [4, text({ min: 1, max: 24 })] : typedInputField(focused);
+}
+
+function inputChoices() {
   const focused = page.current.focused;
   if (!focused) return null;
   const keys = key(from(editingKeys));
-  if (focused.tag === "textarea") {
-    return weighted([[4, type(text({ min: 1, max: 24 }))], [1, keys]]);
-  }
-  if (focused.tag !== "input") return null;
-  if (focused.input_type === "email") {
-    return weighted([[3, type(email())], [1, keys]]);
-  }
-  if (focused.input_type === "number") {
-    return weighted([[3, type(chars("0123456789", { min: 1, max: 5 }))], [1, keys]]);
-  }
-  if (textInputTypes.includes(focused.input_type)) {
-    return weighted([[3, type(text({ min: 1, max: 16 }))], [1, keys]]);
-  }
-  return null;
-}).weight(100);
+  const typed = typedInput(focused);
+  return typed ? weighted([[typed[0], type(typed[1])], [1, keys]]) : null;
+}
 
-export const scrolling = actions(() => {
-  const state = page.current;
-  if (!state.content.is_html || !state.content.has_body) return null;
-  if (state.scroll.y < state.scroll.max_y) {
-    const most = Math.max(1, Math.floor(state.viewport.height / 2));
-    return scrollBy(integer(1, most));
-  }
-  if (state.scroll.y > 0) return scrollToTop();
-  return null;
-}).weight(50);
+export const inputs = actions(inputChoices).weight(100);
 
-export const navigation = actions(() => {
+function scrollDown(state) {
+  const most = Math.max(1, Math.floor(state.viewport.height / 2));
+  return scrollBy(integer(1, most));
+}
+
+function scrollBackUp(state) {
+  return state.scroll.y > 0 ? scrollToTop() : null;
+}
+
+function scrollChoice(state) {
+  return state.scroll.y < state.scroll.max_y ? scrollDown(state) : scrollBackUp(state);
+}
+
+function scrollChoices() {
   const state = page.current;
-  const entries = state.history.entries;
-  const index = state.history.index;
-  const choices = [];
-  if (index > 0 && isRealEntry(entries[index - 1])) choices.push([10, back()]);
-  const following = entries[index + 1];
-  if (following && originOf(following.url) === originOf(state.url)) choices.push([1, forward()]);
-  const last = state.last_action;
-  if (!last || (last.kind !== "reload" && last.kind !== "wait")) choices.push([1, reload()]);
+  return state.content.is_html && state.content.has_body ? scrollChoice(state) : null;
+}
+
+export const scrolling = actions(scrollChoices).weight(50);
+
+function canGoBack(history) {
+  return history.index > 0 && isRealEntry(history.entries[history.index - 1]);
+}
+
+function canGoForward(state) {
+  const following = state.history.entries[state.history.index + 1];
+  return following && originOf(following.url) === originOf(state.url);
+}
+
+function canReload(last) {
+  return !last || (last.kind !== "reload" && last.kind !== "wait");
+}
+
+function backChoices(state) {
+  return canGoBack(state.history) ? [[10, back()]] : [];
+}
+
+function forwardChoices(state) {
+  return canGoForward(state) ? [[1, forward()]] : [];
+}
+
+function reloadChoices(state) {
+  return canReload(state.last_action) ? [[1, reload()]] : [];
+}
+
+function navigationChoices() {
+  const state = page.current;
+  const choices = [...backChoices(state), ...forwardChoices(state), ...reloadChoices(state)];
   return choices.length ? weighted(choices) : null;
-}).weight(10);
+}
 
-export const waiting = actions(() => {
+export const navigation = actions(navigationChoices).weight(10);
+
+function waitChoice() {
   const last = page.current.last_action;
-  if (last && last.kind === "wait") return null;
-  return wait(integer(100, 1000));
-}).weight(1);
+  return last && last.kind === "wait" ? null : wait(integer(100, 1000));
+}
+
+export const waiting = actions(waitChoice).weight(1);

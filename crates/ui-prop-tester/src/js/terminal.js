@@ -18,42 +18,47 @@ const DEFAULT_CELL = {
   overline: false,
 };
 
+function isIndex(value, count) {
+  return Number.isInteger(value) && value >= 0 && !(value >= count);
+}
+
+function cellEntry(cell) {
+  return [cell.row + ":" + cell.column, cell];
+}
+
+function indexCells(cells) {
+  return new Map(cells.map(cellEntry));
+}
+
 function cellLookup(cells, rowCount, columnCount) {
   let index = null;
-  return (row, column) => {
-    if (
-      !Number.isInteger(row) ||
-      !Number.isInteger(column) ||
-      row < 0 ||
-      column < 0 ||
-      row >= rowCount ||
-      column >= columnCount
-    ) {
-      return null;
-    }
-    if (index === null) {
-      index = new Map();
-      for (const cell of cells) {
-        index.set(cell.row + ":" + cell.column, cell);
-      }
-    }
+  function lookup(row, column) {
+    if (!isIndex(row, rowCount) || !isIndex(column, columnCount)) return null;
+    index = index === null ? indexCells(cells) : index;
     const found = index.get(row + ":" + column);
     return Object.assign({}, DEFAULT_CELL, { row, column }, found || {});
-  };
+  }
+  return lookup;
+}
+
+function isTerminalState(state) {
+  return state !== null && typeof state === "object" && Array.isArray(state.cells);
+}
+
+function adaptScrollback(state) {
+  const scrollback = state.scrollback || { lines: [], cells: [] };
+  const rowCount = (scrollback.lines || []).length;
+  const cell = cellLookup(scrollback.cells || [], rowCount, state.columns);
+  return Object.assign({}, scrollback, { cell });
+}
+
+function withCellLookups(state) {
+  const cell = cellLookup(state.cells, state.rows, state.columns);
+  return Object.assign({}, state, { scrollback: adaptScrollback(state), cell });
 }
 
 function adaptTerminalState(state) {
-  if (state === null || typeof state !== "object" || !Array.isArray(state.cells)) {
-    return state;
-  }
-  const scrollback = state.scrollback || { lines: [], cells: [] };
-  const adaptedScrollback = Object.assign({}, scrollback, {
-    cell: cellLookup(scrollback.cells || [], (scrollback.lines || []).length, state.columns),
-  });
-  return Object.assign({}, state, {
-    scrollback: adaptedScrollback,
-    cell: cellLookup(state.cells, state.rows, state.columns),
-  });
+  return isTerminalState(state) ? withCellLookups(state) : state;
 }
 
 registerStateAdapter(adaptTerminalState);
@@ -85,8 +90,12 @@ export function scrollToBottom() {
   return action({ kind: "scroll_to_bottom" });
 }
 
+function writeSequence(sequence) {
+  return write(sequence);
+}
+
 function keys(sequences) {
-  return oneOf(...sequences.map((sequence) => write(sequence)));
+  return oneOf(...sequences.map(writeSequence));
 }
 
 function codePointRange(first, last) {

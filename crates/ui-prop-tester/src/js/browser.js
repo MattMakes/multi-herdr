@@ -1,13 +1,8 @@
 import { action, always, extract, next, not, now } from "ui-prop-tester";
 import { registerCustomAction } from "ui-prop-tester/internal";
 
-export const page = extract((state) => {
-  const result = {};
-  for (const key of Object.keys(state)) {
-    if (key !== "document" && key !== "window") result[key] = state[key];
-  }
-  return result;
-});
+export const page = extract((state) => Object.fromEntries(
+  Object.entries(state).filter((entry) => entry[0] !== "document" && entry[0] !== "window")));
 
 export const resources = extract((state) => state.resources);
 
@@ -69,30 +64,39 @@ export function custom(name, args) {
 
 export function defineAction(name, handler) {
   registerCustomAction(name, handler);
-  return (args) => custom(name, args);
+  function customAction(args) {
+    return custom(name, args);
+  }
+  return customAction;
+}
+
+function failGrowth(message) {
+  throw new Error("resourceGrowth" + message);
+}
+
+function requireGrowthWindow(size) {
+  return Number.isInteger(size) && size >= 1 ? size : failGrowth(" needs a window of at least 1 state");
+}
+
+function readResource(metric) {
+  const value = resources.current[metric];
+  return typeof value === "number" ? value : failGrowth(": unknown resource metric " + metric);
+}
+
+function grows(rule, previous, start, remaining) {
+  function grewAgain() {
+    const value = readResource(rule.metric);
+    return value > previous && grows(rule, value, start, remaining - 1);
+  }
+  return remaining === 0 ? previous - start >= rule.growth : next(now(grewAgain));
 }
 
 export function resourceGrowth({ metric, window: size, minimumGrowth }) {
-  if (!Number.isInteger(size) || size < 1) {
-    throw new Error("resourceGrowth needs a window of at least 1 state");
+  requireGrowthWindow(size);
+  const rule = { metric, growth: minimumGrowth === undefined ? 1 : minimumGrowth };
+  function neverGrows() {
+    const start = readResource(metric);
+    return not(grows(rule, start, start, size));
   }
-  const growth = minimumGrowth === undefined ? 1 : minimumGrowth;
-  const read = () => {
-    const value = resources.current[metric];
-    if (typeof value !== "number") {
-      throw new Error("resourceGrowth: unknown resource metric " + metric);
-    }
-    return value;
-  };
-  const grows = (previous, start, remaining) => {
-    if (remaining === 0) return previous - start >= growth;
-    return next(now(() => {
-      const value = read();
-      return value > previous && grows(value, start, remaining - 1);
-    }));
-  };
-  return always(now(() => {
-    const start = read();
-    return not(grows(start, start, size));
-  }));
+  return always(now(neverGrows));
 }
