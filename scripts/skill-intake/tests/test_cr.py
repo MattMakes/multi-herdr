@@ -286,6 +286,18 @@ class ScanTests(Base):
         spec["summary"] = "The manifest-tool skill turns key=value text into a mapping."
         self.assertEqual(self.check(spec), [])
 
+    def test_skill_name_that_holds_the_source_name_may_cross_the_wall(self):
+        prov = read_json(self.task.c / "provenance.json")
+        prov["source"] = {"kind": "local", "input": "/opt/work/manifest"}
+        write_json(self.task.c / "provenance.json", prov)
+        spec = copy.deepcopy(GOOD_SPEC)
+        spec["summary"] = "The manifest-tool skill turns key=value text into a mapping."
+        self.assertEqual(self.check(spec), [])
+        spec["summary"] = "A port of manifest. The manifest-tool skill turns text into a mapping."
+        self.assertIn("source-name", self.check(spec))
+        spec["summary"] = "The manifest-tool-extra skill turns text into a mapping."
+        self.assertIn("source-name", self.check(spec))
+
     def test_decompiler_marker(self):
         spec = copy.deepcopy(GOOD_SPEC)
         spec["summary"] = "Behavior observed in the decompiled build."

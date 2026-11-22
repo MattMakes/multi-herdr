@@ -105,8 +105,11 @@ def scan_text(text: str, task: Task, allowed: set[str] = frozenset()) -> list[Fi
     if any(p.lower() in lowered for p in source_paths(task)):
         findings.append(Finding("source-path", "contains an absolute source path", "block"))
     allowed_lower = {a.lower() for a in allowed}
+    masked = lowered
+    for a in sorted(allowed_lower, key=len, reverse=True):
+        masked = re.sub(rf"(?<![a-z0-9_-]){re.escape(a)}(?![a-z0-9_-])", " ", masked)
     for name in sorted(source_names(task)):
-        if name.lower() not in allowed_lower and re.search(rf"\b{re.escape(name.lower())}\b", lowered):
+        if name.lower() not in allowed_lower and re.search(rf"\b{re.escape(name.lower())}\b", masked):
             findings.append(Finding("source-name", f"mentions the source name '{name}'", "block"))
 
     fp_path = task.c / "contaminated" / "fingerprints.json"
