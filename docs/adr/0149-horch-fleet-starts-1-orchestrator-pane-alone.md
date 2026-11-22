@@ -24,9 +24,10 @@ what the work was, and burned 4 agent sessions holding a greeting.
   well (cezaar#40 measured Opus 5.5 at $4/$20 per Mtok against Fable 5.1 at
   $10/$50. Fable 5.2 is $8/$40). Fable and Astra stay 1 word away for work
   that needs the top tier.
-- `FleetFlavor::model` uses Claude aliases (`opus`, `fable`), which track
-  the latest release, but literal Codex slugs (`gpt-6-astra`,
-  `gpt-6.1-sol`), because the codex CLI has no alias mechanism.
+- `FleetFlavor::model` names a family for every flavor: `opus`, `fable`,
+  `astra` and `sol`. Claude Code resolves its own aliases. The codex CLI has
+  no alias mechanism, so horch resolves a Codex family at launch
+  ([0195](0195-a-model-is-named-by-family-and-the-newest-version-is-chosen-at-launch.md)).
 - `recipes::fleet_with` runs every step that can fail without herdr
   (teammate, session id, skills, ledger record) before it creates the
   workspace, so such a failure leaves nothing to close. From workspace

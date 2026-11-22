@@ -62,7 +62,8 @@ each harness in use for these:
   opencode free list do not. To see what an alias resolves to, run
   `env -u ANTHROPIC_API_KEY claude -p --model <alias> --output-format json "Say ok"`
   and read the `modelUsage` key. On 2026-11-09 `fable` was `claude-fable-5-2`
-  ($8/$40, cache read $0.20). Point `MODEL_ALIASES` in `usage.rs` at it.
+  ($8/$40, cache read $0.20). A family name is priced as its newest row in
+  `builtin_prices`, so a new version needs only its price row.
 - **Prices per MTok:** input, cached input or cache read, cache write, and
   output. Note any promotional price and its end date.
 - **Valid effort levels, and each model's default.** Check the flag or config

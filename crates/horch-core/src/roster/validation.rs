@@ -2989,10 +2989,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 t.name
             );
         }
-        for (name, model) in [
-            ("orchestrator", "fable"),
-            ("orchestrator-codex", "gpt-6-astra"),
-        ] {
+        for (name, model) in [("orchestrator", "fable"), ("orchestrator-codex", "astra")] {
             let t = r.require(name).unwrap();
             assert_eq!(t.model.as_deref(), Some(model));
             assert!(t.hidden, "{name} must never appear in the roster");

@@ -443,6 +443,7 @@ struct PreparedLaunch {
     prepared: super::Prepared,
     decision: WindowDecision,
     v1_catalog_ready: bool,
+    model: String,
 }
 
 fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<PreparedLaunch> {
@@ -450,10 +451,8 @@ fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<Prepa
     if let Some(briefing) = req.briefing_skill {
         offer_briefing_skill(req, skills.as_ref(), briefing)?;
     }
-    let model = req
-        .model_override
-        .or(req.teammate.model.as_deref())
-        .unwrap_or_default();
+    let model = resolved_model(ctx, req)?;
+    let model = model.as_str();
     let workdir = launch_workdir(ctx, req);
     if super::trust::asks_for_trust(req.teammate.agent) {
         trust_workdir(ctx, req.teammate.agent, &workdir);
@@ -479,7 +478,27 @@ fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<Prepa
         prepared,
         decision,
         v1_catalog_ready,
+        model: model.to_string(),
     })
+}
+
+fn resolved_model(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<String> {
+    let named = req
+        .model_override
+        .or(req.teammate.model.as_deref())
+        .unwrap_or_default();
+    let model = req
+        .teammate
+        .agent
+        .adapter()
+        .resolve_model(&LaunchEnv::from_context(ctx), named)?;
+    if model != named {
+        eprintln!(
+            "horch[{}]: {} model {named} is {model}",
+            req.role, req.teammate.agent
+        );
+    }
+    Ok(model)
 }
 
 fn launch_workdir(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> PathBuf {
@@ -551,8 +570,8 @@ fn launch_command(
     launch: &PreparedLaunch,
 ) -> Result<(Command, Teammate)> {
     let mut teammate = req.teammate.clone();
-    if let Some(model) = req.model_override {
-        teammate.model = Some(model.to_string());
+    if !launch.model.is_empty() {
+        teammate.model = Some(launch.model.clone());
     }
     teammate
         .args
@@ -1436,7 +1455,7 @@ mod tests {
         let a = argv(&cmd);
         assert_eq!(a[0], "resume");
         assert_eq!(a[1], "-c");
-        assert_eq!(a[2], r#"model="gpt-5.6-sol""#);
+        assert_eq!(a[2], r#"model="sol""#);
         assert_eq!(a.last().unwrap(), "p");
         assert!(a.contains(&"rid".to_string()));
     }
@@ -1616,7 +1635,7 @@ mod tests {
         )
         .unwrap();
         let a = argv(&cmd);
-        assert!(a.contains(&r#"model="gpt-6-astra""#.to_string()), "{a:?}");
+        assert!(a.contains(&r#"model="astra""#.to_string()), "{a:?}");
         assert!(
             a.contains(&r#"model_reasoning_effort="medium""#.to_string()),
             "{a:?}"
@@ -2628,7 +2647,10 @@ mod tests {
             let bin = root.join(name);
             let seen = root.join(format!("{name}-saw"));
             let script = format!(
-                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\ncp '{}' '{}'\n",
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+                 if [ \"$1 $2\" = 'debug models' ]; then\n\
+                 printf '%s\\n' '{{\"models\":[{{\"slug\":\"gpt-5.6-terra\"}}]}}'; exit 0; fi\n\
+                 cp '{}' '{}'\n",
                 store.display(),
                 seen.display()
             );

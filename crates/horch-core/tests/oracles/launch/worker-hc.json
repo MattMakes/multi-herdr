@@ -31,7 +31,7 @@
       "args": [
         "--no-daemon",
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"sol\"",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -81,7 +81,7 @@
         "--no-daemon",
         "resume",
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"sol\"",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -131,7 +131,7 @@
       "args": [
         "--no-daemon",
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"sol\"",
         "-c",
         "check_for_update_on_startup=false",
         "-c",

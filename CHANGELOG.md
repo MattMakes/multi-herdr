@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+- Codex teammates and the `astra` and `sol` fleet flavors now run on the
+  newest model of their family. A teammate file names a family, `sol`,
+  `terra`, `luna` or `astra`, the way a Claude teammate names `opus`. At each
+  launch horch reads `codex debug models` and starts the highest version of
+  that family, so a new version needs no edit and no release of horch. Until
+  now the roster named `gpt-5.6-sol` and the `sol` flavor named `gpt-6.1-sol`.
+  A worker on `sol` moves to the newest Sol that your Codex lists, which can
+  change what a run costs. To pin a version, write a slug with its version in
+  the teammate file or pass `horch spawn --model <slug>`. When Codex cannot
+  list its models, the family stays on the model of the last launch. A
+  context-window key is now `codex/sol` and serves every Sol version. If you
+  keep your own copy of `_base/context-windows.md`, rename `codex/gpt-5.6-sol`
+  to `codex/sol` and `codex/gpt-5.6-terra` to `codex/terra` in it: the old
+  keys no longer match a teammate whose model is `sol` or `terra`.
+- `horch cost` and `horch teammates --matrix` price a family name as its
+  newest row in the price table, so a new version needs only its price row.
+
 - Fix: a pane host that does not answer no longer reads as "the pane is
   gone". `horch fleet`, a respawn and `horch ledger stop` asked whether a
   pane exists with 1 call, and a timeout or an unreachable herdr answered

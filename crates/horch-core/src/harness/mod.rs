@@ -6,6 +6,7 @@ pub mod codex;
 pub mod cooldown;
 pub mod inventory;
 pub mod launch;
+pub mod models;
 pub(crate) mod none;
 pub mod opencode;
 pub(crate) mod pi;
@@ -95,6 +96,10 @@ pub trait Harness: Sync {
 
     fn model_takes_effort(&self, _model: &str) -> bool {
         !self.capabilities().effort.is_empty()
+    }
+
+    fn resolve_model(&self, _env: &LaunchEnv, model: &str) -> Result<String> {
+        Ok(model.to_string())
     }
 
     fn prepare(&self, _ctx: &RuntimeContext, _req: &PrepareRequest<'_>) -> Result<Prepared> {

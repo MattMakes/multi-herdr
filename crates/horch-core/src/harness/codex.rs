@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{bail, Context, Result};
 
 use super::launch::model_for;
+use super::models;
 use super::{
     generic_validate, CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared,
     Session, WindowInputs, Workdir,
@@ -32,6 +33,12 @@ pub fn codex_home(home: &Path, codex_home_var: Option<&Path>) -> PathBuf {
 }
 
 pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<PathBuf> {
+    let mut catalog = read_catalog(codex_bin)?;
+    pin_multi_agent_v1(catalog_models(&mut catalog)?);
+    write_catalog(&catalog, state_root)
+}
+
+fn read_catalog(codex_bin: &Path) -> Result<serde_json::Value> {
     let mut cmd = Command::new(codex_bin);
     cmd.args(["debug", "models"]);
     let output = run_with_deadline(cmd, Duration::from_secs(5))?;
@@ -44,20 +51,116 @@ pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<Pa
             stderr.trim()
         );
     }
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing {} debug models output", codex_bin.display()))
+}
 
-    let mut catalog: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parsing {} debug models output", codex_bin.display()))?;
-    let models = match &mut catalog {
+fn catalog_models(catalog: &mut serde_json::Value) -> Result<&mut Vec<serde_json::Value>> {
+    match catalog {
         serde_json::Value::Object(root) => root
             .get_mut("models")
             .and_then(serde_json::Value::as_array_mut)
-            .context("model catalog object has no models array")?,
-        serde_json::Value::Array(models) => models,
+            .context("model catalog object has no models array"),
+        serde_json::Value::Array(models) => Ok(models),
         _ => bail!("model catalog is neither an object nor an array"),
-    };
-    pin_multi_agent_v1(models);
+    }
+}
 
-    write_catalog(&catalog, state_root)
+const UNLISTED: [&str; 3] = ["hide", "hidden", "none"];
+
+fn listed_slugs(models: &[serde_json::Value]) -> Vec<String> {
+    models
+        .iter()
+        .filter(|m| {
+            !m.get("visibility")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| UNLISTED.contains(&v))
+        })
+        .filter_map(|m| m.get("slug")?.as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+const FAMILY_MEMO: &str = "codex/model-families.json";
+
+pub(crate) fn resolve_model(env: &LaunchEnv, model: &str) -> Result<String> {
+    if !models::is_family(model) {
+        return Ok(model.to_string());
+    }
+    let memo = env.state_root.as_ref().map(|root| root.join(FAMILY_MEMO));
+    let listed = read_catalog(&env.bins.codex)
+        .and_then(|mut catalog| Ok(listed_slugs(catalog_models(&mut catalog)?)));
+    match listed {
+        Ok(slugs) => {
+            let slug = newest_listed(&slugs, model)?;
+            if let Some(path) = &memo {
+                remember_family(path, model, &slug);
+            }
+            Ok(slug)
+        }
+        Err(e) => match memo.as_deref().and_then(|path| remembered(path, model)) {
+            Some(slug) => {
+                eprintln!(
+                    "horch: NOTE: codex did not list its models ({e:#}); {model} stays on \
+                     {slug}, the model it resolved to at the last launch"
+                );
+                Ok(slug)
+            }
+            None => Err(e.context(format!(
+                "codex names its models by version, and horch could not look up the newest \
+                 {model} model; name a model with horch spawn --model"
+            ))),
+        },
+    }
+}
+
+fn newest_listed(slugs: &[String], family: &str) -> Result<String> {
+    if slugs.iter().any(|slug| slug == family) {
+        return Ok(family.to_string());
+    }
+    match models::newest(slugs.iter().map(String::as_str), family) {
+        Some(slug) => Ok(slug.to_string()),
+        None => bail!(
+            "codex lists no {family} model (it lists: {}); name a model with horch spawn --model",
+            slugs.join(", ")
+        ),
+    }
+}
+
+fn family_memo(path: &Path) -> std::collections::BTreeMap<String, String> {
+    fsx::read_regular_bounded(path)
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn remembered(path: &Path, family: &str) -> Option<String> {
+    family_memo(path).remove(family)
+}
+
+fn remember_family(path: &Path, family: &str, slug: &str) {
+    let mut memo = family_memo(path);
+    if memo.get(family).map(String::as_str) == Some(slug) {
+        return;
+    }
+    memo.insert(family.to_string(), slug.to_string());
+    if let Err(e) = write_family_memo(path, &memo) {
+        eprintln!(
+            "horch: NOTE: {} not written ({e:#}); a launch while codex cannot list its \
+             models will not fall back to {slug}",
+            path.display()
+        );
+    }
+}
+
+fn write_family_memo(path: &Path, memo: &std::collections::BTreeMap<String, String>) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(memo).context("encoding the model families")?;
+    fsx::write_atomic(path, &bytes, fsx::PRIVATE_FILE)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 fn pin_multi_agent_v1(models: &mut [serde_json::Value]) {
@@ -554,6 +657,10 @@ pub struct Codex;
 impl Harness for Codex {
     fn kind(&self) -> HarnessKind {
         HarnessKind::Codex
+    }
+
+    fn resolve_model(&self, env: &LaunchEnv, model: &str) -> Result<String> {
+        resolve_model(env, model)
     }
 
     fn validate(&self, t: &Teammate) -> Vec<&'static str> {
@@ -1327,6 +1434,64 @@ mod tests {
         let warm = crate::test_support::write_warmed(&path, &script, &["warm"]);
         assert!(warm.status.success(), "warming {} failed", path.display());
         path
+    }
+
+    #[cfg(unix)]
+    fn family_env(tmp: &Path, name: &str, body: &str) -> LaunchEnv {
+        let mut env = LaunchEnv::for_test();
+        env.bins.codex = fake_codex(tmp, name, body);
+        env.state_root = Some(tmp.join("state"));
+        env
+    }
+
+    #[cfg(unix)]
+    const LISTED: &str = r#"printf '%s\n' '{"models":[{"slug":"gpt-5.6-sol"},{"slug":"gpt-6.1-sol"},{"slug":"gpt-7-sol","visibility":"hide"},{"slug":"gpt-6-astra"},{"slug":"codex-auto-review","visibility":"hide"},{"slug":"plain"}]}'"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_family_name_resolves_to_the_newest_model_codex_lists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = family_env(tmp.path(), "codex", LISTED);
+        assert_eq!(resolve_model(&env, "sol").unwrap(), "gpt-6.1-sol");
+        assert_eq!(resolve_model(&env, "astra").unwrap(), "gpt-6-astra");
+        assert_eq!(resolve_model(&env, "plain").unwrap(), "plain");
+        let err = format!("{:#}", resolve_model(&env, "terra").unwrap_err());
+        assert!(err.contains("codex lists no terra model"), "{err}");
+        assert!(err.contains("gpt-6.1-sol"), "{err}");
+        assert!(!err.contains("gpt-7-sol"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_model_with_a_version_is_launched_as_named_without_asking_codex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = family_env(tmp.path(), "codex", "exit 1");
+        for model in ["gpt-5.6-sol", "gpt-9-sol", "ollama/qwen3.8", ""] {
+            assert_eq!(resolve_model(&env, model).unwrap(), model);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_family_keeps_its_last_model_while_codex_cannot_list_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let silent = family_env(tmp.path(), "codex-silent", "echo nope >&2; exit 1");
+        let err = format!("{:#}", resolve_model(&silent, "sol").unwrap_err());
+        assert!(
+            err.contains("could not look up the newest sol model"),
+            "{err}"
+        );
+        assert!(err.contains("nope"), "{err}");
+
+        let listing = family_env(tmp.path(), "codex-listing", LISTED);
+        assert_eq!(resolve_model(&listing, "sol").unwrap(), "gpt-6.1-sol");
+        assert_eq!(resolve_model(&silent, "sol").unwrap(), "gpt-6.1-sol");
+        assert!(resolve_model(&silent, "astra").is_err());
+        let memo = std::fs::read_to_string(tmp.path().join("state").join(FAMILY_MEMO)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&memo).unwrap(),
+            serde_json::json!({"sol": "gpt-6.1-sol"})
+        );
     }
 
     #[cfg(unix)]

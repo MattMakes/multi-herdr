@@ -11,8 +11,8 @@ windows:
   claude/orchestrator: 300000
   claude/opus: 200000
   claude/sonnet: 150000
-  codex/gpt-5.6-sol: 200000
-  codex/gpt-5.6-terra: 150000
+  codex/sol: 200000
+  codex/terra: 150000
 # Harnesses whose compaction live check passed (CTX-17). Others use the
 # fresh-session route.
 in_place: [claude, codex, opencode]

@@ -1129,7 +1129,7 @@ fn bal_05_substituted_record_fields() {
         .find(|r| r["tier"] == "researcher")
         .unwrap();
     assert_eq!(r["agent"], "codex");
-    assert_eq!(r["model"], "gpt-5.6-sol");
+    assert_eq!(r["model"], "sol");
     assert_eq!(r["via"], "codex-sol");
     assert_eq!(
         r["substitution_reason"],

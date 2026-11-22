@@ -53,14 +53,16 @@ pub fn fleet_window(
     if let Some(n) = teammate_override {
         return Some((n, format!("teammate {teammate} compact_window")));
     }
-    [teammate, model]
+    let family = crate::harness::models::family_of(model);
+    let found = [teammate, model, family.as_str()]
         .into_iter()
         .filter(|name| !name.is_empty())
         .map(|name| format!("{harness}/{name}"))
         .find_map(|key| {
             let n = *windows.get(&key)?;
             Some((n, format!("context-policy windows {key}")))
-        })
+        });
+    found
 }
 
 pub fn decide(operator: Option<OperatorWindow>, fleet: Option<(u64, String)>) -> WindowDecision {

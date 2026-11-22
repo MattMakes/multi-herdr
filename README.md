@@ -877,7 +877,7 @@ Every teammate states its model and effort in its file, and `horch teammates
 | agent | model | effort levels | notes |
 |---|---|---|---|
 | `claude` | alias: `fable` (Fable 5.2) `opus` `sonnet` `haiku`, or a `claude-*` id | `low` `medium` `high` `xhigh` `max` | Not on `haiku`: Haiku 4.5 has no effort setting |
-| `codex` | literal slug, e.g. `gpt-5.6-sol` | `none` `low` `medium` `high` `xhigh` `max` | Required on an offered teammate. Never `minimal` (API error) or `ultra` (multiplies spend) |
+| `codex` | family: `sol` `terra` `luna` `astra` (the newest version `codex debug models` lists), or a slug with a version to pin it | `none` `low` `medium` `high` `xhigh` `max` | Required on an offered teammate. Never `minimal` (API error) or `ultra` (multiplies spend) |
 | `opencode` | `provider/model` | the model's variants | The free `opencode/*` models have none, so no effort |
 | `pi` `prime` | `provider/id` | `off` `minimal` `low` `medium` `high` `xhigh` `max` | |
 

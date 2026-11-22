@@ -147,19 +147,14 @@ pub fn load_prices(path: Option<&Path>) -> Result<BTreeMap<String, Price>> {
     Ok(prices)
 }
 
-pub(crate) fn canonical_model(model: &str) -> String {
+pub(crate) fn canonical_model(prices: &BTreeMap<String, Price>, model: &str) -> String {
     let lowered = model.trim().to_ascii_lowercase();
     let m = strip_model_noise(&lowered);
-    let alias = MODEL_ALIASES.iter().find(|(name, _)| *name == m);
-    alias.map_or(m, |(_, key)| key).to_string()
+    let newest = crate::harness::models::is_family(m)
+        .then(|| crate::harness::models::newest(prices.keys().map(String::as_str), m))
+        .flatten();
+    newest.unwrap_or(m).to_string()
 }
-
-const MODEL_ALIASES: [(&str, &str); 4] = [
-    ("fable", "claude-fable-5-2"),
-    ("opus", "claude-opus-5-5"),
-    ("sonnet", "claude-sonnet-5-5"),
-    ("haiku", "claude-haiku-4-5"),
-];
 
 fn strip_model_noise(m: &str) -> &str {
     let m = m.strip_suffix("[1m]").unwrap_or(m);
@@ -187,7 +182,7 @@ pub fn price_for(prices: &BTreeMap<String, Price>, model: &str) -> Option<Price>
     }
     prices
         .get(model)
-        .or_else(|| prices.get(&canonical_model(model)))
+        .or_else(|| prices.get(&canonical_model(prices, model)))
         .copied()
 }
 
@@ -788,8 +783,10 @@ mod tests {
             ("opus", "claude-opus-5-5"),
             ("sonnet", "claude-sonnet-5-5"),
             ("GPT-5.6-Sol", "gpt-5.6-sol"),
+            ("sol", "gpt-5.6-sol"),
+            ("astra", "gpt-6-astra"),
         ] {
-            assert_eq!(canonical_model(raw), key, "{raw}");
+            assert_eq!(canonical_model(&builtin_prices(), raw), key, "{raw}");
         }
         let prices = builtin_prices();
         assert_eq!(
@@ -825,8 +822,21 @@ mod tests {
             ("gpt-5.6-sol", "gpt-5.6-sol"),
             ("nodashname", "nodashname"),
         ] {
-            assert_eq!(canonical_model(raw), key, "{raw}");
+            assert_eq!(canonical_model(&builtin_prices(), raw), key, "{raw}");
         }
+    }
+
+    #[test]
+    fn a_family_name_is_priced_as_its_newest_model_in_the_price_table() {
+        let mut prices = builtin_prices();
+        assert_eq!(canonical_model(&prices, "opus"), "claude-opus-5-5");
+        prices.insert("claude-opus-5-6".into(), Price::new(6.0, 30.0, 0.60));
+        prices.insert("gpt-6.3-sol".into(), Price::new(5.0, 25.0, 0.50));
+        assert_eq!(canonical_model(&prices, "opus"), "claude-opus-5-6");
+        assert_eq!(price_for(&prices, "opus").unwrap().input, 6.0);
+        assert_eq!(price_for(&prices, "sol").unwrap().input, 5.0);
+        assert_eq!(price_for(&prices, "gpt-5.6-sol").unwrap().input, 4.0);
+        assert_eq!(price_for(&prices, "gpt-7-sol"), None);
     }
 
     #[test]

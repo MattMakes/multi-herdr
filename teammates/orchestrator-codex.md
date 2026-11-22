@@ -6,7 +6,7 @@ base: fleet-orchestrator
 agent: codex
 phase: plan
 skills: [orchestrate, make-videos]
-model: gpt-6-astra
+model: astra
 effort: medium
 compact_at: 300000
 permission_mode: auto

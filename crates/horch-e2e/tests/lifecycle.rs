@@ -348,6 +348,29 @@ fn tel_session_recorded_when_agent_ends_fast() {
 }
 
 #[test]
+fn a_codex_family_launches_on_the_newest_model_codex_lists() {
+    let h = fleet("codex-family", "exec,stay");
+    spawn(&h, &["codex-sol"]);
+    let fresh = records(&h)
+        .into_iter()
+        .find(|r| r["tier"] == "codex-sol")
+        .expect("the spawn wrote a record");
+    assert_eq!(fresh["model"], "sol", "{fresh}");
+
+    let launched = wait_for("the fake's model argument", || {
+        h.calls_of("codex").iter().find_map(|c| {
+            c["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|a| a.starts_with("model="))
+                .map(str::to_owned)
+        })
+    });
+    assert_eq!(launched, r#"model="gpt-5.6-sol""#);
+}
+
+#[test]
 fn tel_session_recorded_when_prime_ends_fast() {
     let h = fleet("tel-fast-end-prime", "exec,stay");
     let pane = spawn(&h, &["prime"]);

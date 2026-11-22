@@ -30,7 +30,7 @@
     "fresh": {
       "args": [
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"sol\"",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -79,7 +79,7 @@
       "args": [
         "resume",
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"sol\"",
         "-c",
         "check_for_update_on_startup=false",
         "-c",
@@ -128,7 +128,7 @@
     "unmanaged": {
       "args": [
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"sol\"",
         "-c",
         "check_for_update_on_startup=false",
         "-c",

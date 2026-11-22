@@ -40,7 +40,7 @@ choose from** — there is no registry to update and nothing to recompile.
   into one. An orchestrator starts with no task, so both orchestrator
   briefings end with "Acknowledge and await further instruction."
 - **The top tier is reserved for the orchestrator and the creative council.**
-  `fable` and `gpt-6-astra` are refused by `horch spawn` for every worker but
+  `fable` and `astra` are refused by `horch spawn` for every worker but
   the 2 seats `fable-creative` (Fable) and `astra-creative` (Astra), which
   start only when named: never as a fallback or a router's choice. The seats
   are a list in the code (`TOP_TIER_SEATS`), so a file cannot add one. The
@@ -125,7 +125,7 @@ by name, not by phase, so `--phase` never hands them to another teammate.
 | `landing-page-builder` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | landing and marketing pages |
 | `design-system-engineer` | implementation | claude, sonnet, medium | playwright, context7 | tokens, themes, components, brand kit |
 | `motion-engineer` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | GSAP scroll scenes and transitions |
-| `visual-prototyper` | implementation | codex, gpt-5.6-sol, medium | none | generated images and a static prototype |
+| `visual-prototyper` | implementation | codex, sol, medium | none | generated images and a static prototype |
 | `one-page-design` | research | claude, opus, medium | none | one printable one-page design sheet (HTML) of a game or feature design, picture first |
 
 `design-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its one
@@ -419,7 +419,7 @@ orchestrator is offered them only on an Apple project. All except
 | `swift-qa-engineer` | validation | claude, sonnet, high | none | Swift Testing, XCTest migration, simulator repros |
 | `apple-accessibility-auditor` | validation | claude, sonnet, high | `codex-terra` | VoiceOver, Dynamic Type, Voice Control, UI copy; never edits |
 | `app-release-preparer` | implementation | claude, sonnet, medium | none | archive, export, readiness audit, notes; writes the upload command for a human; never uploads or submits |
-| `codex-swift-reviewer` | validation | codex, gpt-5.6-sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
+| `codex-swift-reviewer` | validation | codex, sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
 
 Every persona's first move is a toolchain check (`xcodebuild -version`,
 `swift --version`, `xcrun simctl list devices available`). A builder or QA
@@ -654,12 +654,13 @@ The native window, first match wins:
 1. The operator's own harness setting (then horch applies nothing).
 2. The teammate's `compact_window`.
 3. `windows` of `_base/context-windows.md` (`<harness>/<teammate>`, then
-   `<harness>/<model>`): the fallback for overlays and substitutions.
+   `<harness>/<model>`, then `<harness>/<family>`, so `codex/sol` serves
+   every Sol version): the fallback for overlays and substitutions.
 4. The harness default.
 
 The values in the files are the thresholds of 2026-10-07 on the operator's
 machine: 300000 for Claude (the operator's 500000 window), 160000 for Codex
-`gpt-5.6-sol`, 120000 for `gpt-5.6-terra`, and the computed value for pi,
+`sol`, 120000 for `terra`, and the computed value for pi,
 Prime and opencode. `horch context --windows` shows each teammate's
 `compact_at` and its source (`teammate` or `fleet base`) beside the
 threshold.

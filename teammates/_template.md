@@ -63,11 +63,13 @@ base: fleet-worker
 agent: claude
 
 # claude:   a family alias (sonnet | opus) so it tracks the latest.
-# codex:    a literal slug (gpt-5.6-sol | gpt-5.6-terra); no alias mechanism.
+# codex:    a family name (sol | terra | luna). horch launches the newest
+#           model of that family that `codex debug models` lists. A slug
+#           with a version (gpt-5.6-sol) pins that version.
 # opencode: provider/model, e.g. opencode/big-pickle. `opencode models` lists
 #           them; the `opencode/...` provider is the free tier.
 # pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5-5.
-# Not fable, and not gpt-6-astra: only the orchestrator and the 2 code-defined
+# Not fable, and not astra: only the orchestrator and the 2 code-defined
 # creative seats may use those tiers. A seat starts only by its exact name;
 # routers, planners, fallbacks and competitions never choose it. Adding a file
 # cannot grant another seat. Reach for opus or codex-sol instead.
@@ -87,7 +89,7 @@ fallbacks: []
 #             Not on haiku: Haiku 4.5 has no effort setting.
 # codex    -> `-c model_reasoning_effort="<level>"`
 #             (none | low | medium | high | xhigh | max). Never `minimal` (an
-#             API error on gpt-5.6) or `ultra` (fans out, multiplies spend).
+#             API error) or `ultra` (fans out, multiplies spend).
 #             REQUIRED on an offered codex teammate: unset, the pane inherits
 #             the operator's ~/.codex/config.toml.
 # opencode -> the build agent's `variant`, via OPENCODE_CONFIG_CONTENT

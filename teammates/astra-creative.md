@@ -5,7 +5,7 @@ base: fleet-worker
 agent: codex
 phase: plan
 # A top-tier seat (TOP_TIER_SEATS): spawned by name only, never routed.
-model: gpt-6-astra
+model: astra
 # No fallbacks: a substitute model would give the council 2 designs from 1
 # model. The orchestrator runs with the seats that start (orchestrate §10).
 # high: open design is where reasoning depth pays. Raise one spawn with

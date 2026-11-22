@@ -110,8 +110,8 @@ impl FleetFlavor {
         match self {
             FleetFlavor::Opus | FleetFlavor::Auto => "opus",
             FleetFlavor::Fable => "fable",
-            FleetFlavor::Astra => "gpt-6-astra",
-            FleetFlavor::Sol => "gpt-6.1-sol",
+            FleetFlavor::Astra => "astra",
+            FleetFlavor::Sol => "sol",
         }
     }
 
@@ -700,7 +700,7 @@ fn flavor_of_model(model: &str) -> FleetFlavor {
         FleetFlavor::Sol,
     ]
     .into_iter()
-    .find(|f| f.model() == model)
+    .find(|f| f.model() == horch_core::harness::models::family_of(model))
     .unwrap_or_default()
 }
 
@@ -1342,13 +1342,9 @@ mod tests {
             (
                 FleetFlavor::Astra,
                 PaneKind::FleetCodexOrchestrator,
-                "gpt-6-astra",
+                "astra",
             ),
-            (
-                FleetFlavor::Sol,
-                PaneKind::FleetCodexOrchestrator,
-                "gpt-6.1-sol",
-            ),
+            (FleetFlavor::Sol, PaneKind::FleetCodexOrchestrator, "sol"),
         ] {
             assert_eq!(flavor.pane_kind(), kind, "{flavor}");
             assert_eq!(flavor.model(), model, "{flavor}");
@@ -1901,6 +1897,15 @@ mod tests {
             FleetFlavor::Sol,
         ] {
             assert_eq!(flavor_of_model(f.model()), f);
+        }
+        for (recorded, flavor) in [
+            ("gpt-6-astra", FleetFlavor::Astra),
+            ("gpt-6.1-sol", FleetFlavor::Sol),
+            ("gpt-7.2-sol", FleetFlavor::Sol),
+            ("claude-opus-5-6", FleetFlavor::Opus),
+            ("claude-fable-5-2", FleetFlavor::Fable),
+        ] {
+            assert_eq!(flavor_of_model(recorded), flavor, "{recorded}");
         }
         assert_eq!(flavor_of_model("some-model"), FleetFlavor::Opus);
     }

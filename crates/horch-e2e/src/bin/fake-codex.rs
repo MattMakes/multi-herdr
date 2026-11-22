@@ -11,7 +11,9 @@ fn main() {
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("models")
     {
-        say(r#"{"models":[{"slug":"gpt-5.6-sol","multi_agent_version":"v2"}]}"#);
+        say(
+            r#"{"models":[{"slug":"gpt-5.6-sol","multi_agent_version":"v2"},{"slug":"gpt-5.5-sol"},{"slug":"gpt-5.6-terra"},{"slug":"gpt-5.6-luna"},{"slug":"gpt-6-astra"},{"slug":"gpt-7-sol","visibility":"hide"}]}"#,
+        );
         return;
     }
     let mut call = Call::start("codex");
