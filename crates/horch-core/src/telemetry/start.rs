@@ -108,6 +108,10 @@ pub fn clear(state_root: &Path) {
 }
 
 pub fn pending(state_root: &Path) -> Pending {
+    pending_with(state_root, |_| false)
+}
+
+pub fn pending_with(state_root: &Path, pane_ended: impl Fn(&Request) -> bool) -> Pending {
     let path = request_path(state_root);
     let Some(request) = read::<Request>(&path) else {
         return Pending::None;
@@ -124,6 +128,13 @@ pub fn pending(state_root: &Path) -> Pending {
                 "no collector process started in pane {} within {} s",
                 request.pane_id,
                 UNSEEN_AFTER.as_secs()
+            );
+            Pending::Failed(request, why)
+        }
+        None if pane_ended(&request) => {
+            let why = format!(
+                "pane {} finished before a collector started",
+                request.pane_id
             );
             Pending::Failed(request, why)
         }
@@ -176,6 +187,27 @@ mod tests {
         };
         assert_eq!(r.id, "a");
         assert!(why.contains("pane w2:p1"), "{why}");
+    }
+
+    #[test]
+    fn an_ended_pane_fails_only_a_start_without_a_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        record(tmp.path(), &request("a")).unwrap();
+        assert_eq!(
+            pending_with(tmp.path(), |_| false),
+            Pending::Starting(request("a"))
+        );
+        let Pending::Failed(r, why) = pending_with(tmp.path(), |_| true) else {
+            panic!("{:?}", pending_with(tmp.path(), |_| true));
+        };
+        assert_eq!(r.id, "a");
+        assert!(why.contains("pane w2:p1 finished"), "{why}");
+
+        mark(tmp.path(), "a", "now").unwrap();
+        assert_eq!(
+            pending_with(tmp.path(), |_| true),
+            Pending::Starting(request("a"))
+        );
     }
 
     #[cfg(unix)]

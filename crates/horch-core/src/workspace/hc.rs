@@ -383,6 +383,11 @@ impl HcApp {
         self.pane_get(address).is_ok()
     }
 
+    pub fn pane_ended(&self, address: &str) -> bool {
+        self.pane_get(address)
+            .is_err_and(|e| e.downcast_ref::<HcFailed>().is_some_and(HcFailed::is_gone))
+    }
+
     pub fn pane_list(&self, workspace_id: &str) -> Result<Vec<Pane>> {
         let scoped = self.scoped();
         let label = format!("herdr.space={workspace_id}");
