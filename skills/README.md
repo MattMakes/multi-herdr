@@ -368,3 +368,13 @@ The specs the writer worked from and the sweep result are in [docs/cleanroom/com
 | [comment-pruning](comment-pruning/SKILL.md) | own text (clean-room) |
 
 
+## Clean-room intake: design-system-cli-guide
+
+`design-system-cli-guide` belongs to no phase. It is own text, written clean-room with `skill-intake`. A security sweep read https://github.com/meta/astryx (MIT, commit `b6ba5ee38384`) in a quarantine, one role worker wrote behaviour specs in its own words, and a second role worker that never saw the source wrote the skill from the specs alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+The specs the writer worked from and the sweep result are in [docs/cleanroom/design-system-cli-guide/](../docs/cleanroom/design-system-cli-guide/).
+
+| Skill | Kind |
+| --- | --- |
+| [design-system-cli-guide](design-system-cli-guide/SKILL.md) | own text (clean-room) |
+

@@ -35,6 +35,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "comment-pruning",
     "creative-council",
     "data-migrations",
+    "design-system-cli-guide",
     "game-juice",
     "godot-build-verify",
     "godot-combat-system",

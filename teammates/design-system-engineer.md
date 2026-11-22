@@ -19,6 +19,7 @@ compact_window: 150000
 compact_at: 300000
 permission_mode: auto
 skills: [design-system, ui-taste, brand-identity]
+available_skills: [design-system-cli-guide]
 inherit_plugins: false
 
 # Playwright renders the component states and takes the screenshots; context7

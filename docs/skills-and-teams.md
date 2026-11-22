@@ -409,6 +409,10 @@ installs only what passes 2 gates.
 
 `comment-remover` carries the clean-room skill `comment-pruning`. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
 
+### Clean-room intake: design-system-cli-guide
+
+`design-system-engineer` and `frontend-developer` name the clean-room skill `design-system-cli-guide` under `available_skills`, so a worker loads it on demand. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
+
 ## `horch agent-list`: which harnesses can this machine run
 
 ```bash

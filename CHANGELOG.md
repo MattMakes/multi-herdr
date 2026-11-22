@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- New clean-room skill `design-system-cli-guide`, named by `design-system-engineer` and `frontend-developer`. Imported with `skill-intake` from https://github.com/meta/astryx (MIT); specs in `docs/cleanroom/design-system-cli-guide/`.
+
 ## v0.5.2 - 2026-11-21
 
 - Fix: the video, design and `ui-prop-tester` tools no longer leave copies of

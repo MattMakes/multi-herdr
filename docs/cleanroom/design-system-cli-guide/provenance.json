@@ -1,0 +1,26 @@
+{
+  "task_id": "20261122-010952-710ab1",
+  "fetched_at": "2026-11-22T01:09:52+00:00",
+  "source": {
+    "kind": "github",
+    "name": "https://github.com/meta/astryx.git",
+    "ref": null,
+    "commit": "b6ba5ee38384c2858e5edc33bc490c754a2975a3",
+    "subdir": "plugins/astryx"
+  },
+  "content_sha256": "7c65968951a7c9ee6a88ed69ba40f16c384fc9276c5ec39ee29d8328897f5387",
+  "archive_sha256": null,
+  "licence": {
+    "spdx": "MIT",
+    "class": "permissive",
+    "flag": null
+  },
+  "skills": [
+    {
+      "name": "design-system-cli-guide",
+      "renamed_from": null,
+      "sha256": "9f3d50f73310880ad2c6865f9ea069836a98a9433adaeb820d218652eb756f07"
+    }
+  ],
+  "gate2": "pass"
+}
