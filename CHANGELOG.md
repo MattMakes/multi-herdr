@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.3 - 2026-11-22
+
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film
   can mix kinds of scene. `video-illustrator` builds painted and hand-drawn
   scenes in code (living paintings in an art style, doodles, line boil,
