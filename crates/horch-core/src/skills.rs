@@ -362,6 +362,7 @@ mod tests {
                 "data-migrations",
                 "handoff",
                 "improve-codebase-architecture",
+                "plan-annotation",
                 "pre-flight",
                 "system-design"
             ]
