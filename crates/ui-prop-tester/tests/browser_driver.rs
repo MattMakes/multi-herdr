@@ -554,13 +554,15 @@ mod navigation {
         };
         session.click_id("get");
         assert!(session.url().ends_with('/'));
-        let download = session.state["downloads"][0].clone();
-        assert_eq!(download["suggested_filename"], "report.csv");
-        assert!(download["url"].as_str().unwrap().ends_with("/report.csv"));
         let state = session.wait_until(
             "(state) => state.downloads.length && state.downloads[0].state === 'completed'",
         );
         assert_eq!(state, json!(true));
+        session.apply(json!({"kind": "wait", "ms": 0}));
+        let download = session.state["downloads"][0].clone();
+        assert_eq!(download["suggested_filename"], "report.csv");
+        assert!(download["url"].as_str().unwrap().ends_with("/report.csv"));
+        assert_eq!(download["state"], "completed");
         let path = session.state["downloads"][0]["path"]
             .as_str()
             .map(str::to_string);
