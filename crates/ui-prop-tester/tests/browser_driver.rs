@@ -554,12 +554,10 @@ mod navigation {
         };
         session.click_id("get");
         assert!(session.url().ends_with('/'));
-        let state = session.wait_until(
-            "(state) => state.downloads.length && state.downloads[0].state === 'completed'",
-        );
-        assert_eq!(state, json!(true));
-        session.apply(json!({"kind": "wait", "ms": 0}));
-        let download = session.state["downloads"][0].clone();
+        let download = session.wait_for_state("the download to complete", |state| {
+            state["downloads"][0]["state"] == "completed"
+        })["downloads"][0]
+            .clone();
         assert_eq!(download["suggested_filename"], "report.csv");
         assert!(download["url"].as_str().unwrap().ends_with("/report.csv"));
         assert_eq!(download["state"], "completed");
@@ -674,7 +672,7 @@ mod actions {
             match request.path.as_str() {
             "/" => page(
                 "<button id=twice ondblclick=\"document.title = 'double'\">twice</button>\
-                 <button id=later onclick=\"setTimeout(() => { document.title = 'later'; }, 300)\">later</button>",
+                 <button id=later onclick=\"setTimeout(() => { document.title = 'later'; }, 1000)\">later</button>",
             ),
             _ => Reply::not_found(),
         }
@@ -690,11 +688,13 @@ mod actions {
         session.click_id("later");
         assert_ne!(session.title(), "later");
         session.apply(json!({"kind": "wait", "ms": 600}));
-        assert_eq!(session.title(), "later");
         assert_eq!(
             session.state["last_action"],
             json!({"kind": "wait", "ms": 600})
         );
+        session.wait_for_state("the timer to set the title", |state| {
+            state["title"] == "later"
+        });
         session.shutdown();
     }
 
@@ -1232,8 +1232,7 @@ mod live {
         let Some(mut session) = Session::open(config(&site.url("/"))) else {
             return;
         };
-        session.apply(json!({"kind": "wait", "ms": 800}));
-        assert_eq!(session.title(), "events 3");
+        session.wait_for_state("3 server-sent events", |state| state["title"] == "events 3");
         session.shutdown();
     }
 
@@ -1268,15 +1267,16 @@ mod live {
     #[test]
     fn a_late_exception_appears_in_a_following_state() {
         let site = Fixture::start(|_| {
-            page("<button id=arm onclick=\"setTimeout(() => { throw new Error('late'); }, 400)\">arm</button>")
+            page("<button id=arm onclick=\"setTimeout(() => { throw new Error('late'); }, 1000)\">arm</button>")
         });
         let Some(mut session) = Session::open(config(&site.url("/"))) else {
             return;
         };
         session.click_id("arm");
         assert_eq!(session.state["exceptions"], json!([]));
-        session.apply(json!({"kind": "wait", "ms": 700}));
-        assert_eq!(session.state["exceptions"][0]["message"], "Error: late");
+        session.wait_for_state("the late exception", |state| {
+            state["exceptions"][0]["message"] == "Error: late"
+        });
         session.shutdown();
     }
 }

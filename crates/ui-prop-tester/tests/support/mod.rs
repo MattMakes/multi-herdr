@@ -174,7 +174,7 @@ impl Session {
     pub fn wait_until(&mut self, source: &str) -> Value {
         for _ in 0..100 {
             let value = self.eval(source);
-            if value != Value::Null && value != Value::Bool(false) {
+            if !falsy(&value) {
                 return value;
             }
             self.apply(json!({"kind": "wait", "ms": 100}));
@@ -182,8 +182,28 @@ impl Session {
         panic!("{source} never held");
     }
 
+    pub fn wait_for_state(&mut self, what: &str, held: impl Fn(&Value) -> bool) -> &Value {
+        for _ in 0..100 {
+            if held(&self.state) {
+                return &self.state;
+            }
+            self.apply(json!({"kind": "wait", "ms": 100}));
+        }
+        panic!("{what} never held: {}", self.state);
+    }
+
     pub fn shutdown(mut self) {
         self.driver.shutdown().expect("shutdown");
+    }
+}
+
+fn falsy(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Bool(b) => !b,
+        Value::Number(n) => n.as_f64() == Some(0.0),
+        Value::String(s) => s.is_empty(),
+        _ => false,
     }
 }
 
