@@ -57,7 +57,7 @@ impl Default for Policy {
         Policy {
             tick_ms: 2000,
             retention_days: 35,
-            probe_interval_min: 15,
+            probe_interval_min: 5,
             probe_on_demand_age_min: 10,
             stale_after_min: 30,
             tight_used: 0.85,
@@ -115,6 +115,13 @@ mod tests {
         assert_eq!(p.tight_used, 0.7);
         assert_eq!(p.balance_mode, BalanceMode::Advise);
         assert_eq!(p.exhausted_used, 0.98);
+    }
+
+    #[test]
+    fn the_probe_interval_defaults_to_5_min_and_policy_json_overrides_it() {
+        assert_eq!(Policy::default().probe_interval_min, 5);
+        let p = Policy::parse(r#"{"probe_interval_min": 20}"#).unwrap();
+        assert_eq!(p.probe_interval_min, 20);
     }
 
     #[test]

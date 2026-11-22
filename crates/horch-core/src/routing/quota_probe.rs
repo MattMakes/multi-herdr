@@ -437,6 +437,10 @@ impl ProbeBins {
 
 pub(crate) const PROBE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
+pub(crate) fn probe_budget(bins: &ProbeBins, timeout: Option<StdDuration>) -> StdDuration {
+    VERSION_TIMEOUT + timeout.unwrap_or(PROBE_TIMEOUT) * 3 + bins.local_timeout * 2
+}
+
 pub(crate) fn probe_all(
     file: &mut QuotaFile,
     bins: &ProbeBins,

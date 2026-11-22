@@ -30,7 +30,12 @@ pub fn quota(ctx: &RuntimeContext, json: bool, refresh: bool) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     super::telemetry::report_failed_start(&root);
     let policy = load_policy(ctx, &root)?;
-    let view = snapshot::obtain(&root, clock::now(), &policy, refresh, &quota_env(ctx))?;
+    let env = quota_env(ctx);
+    let view = if refresh {
+        snapshot::refresh(&root, clock::now(), &policy, &env)?
+    } else {
+        snapshot::obtain(&root, clock::now(), &policy, false, &env)?
+    };
     if json {
         output::println(&serde_json::to_string_pretty(&assessed(&view))?);
     } else {

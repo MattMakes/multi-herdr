@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use crate::clock;
 use crate::routing::policy::{self, Policy};
 use crate::routing::quota::{probe_due, quota_path, QuotaFile, QuotaView};
-use crate::routing::quota_probe::{probe_all, ProbeBins};
+use crate::routing::quota_probe::{probe_all, probe_budget, ProbeBins};
 
 #[derive(Debug, Clone)]
 pub struct QuotaEnv {
@@ -110,4 +110,54 @@ pub fn obtain(
         file.write(state_root, now, policy)?;
     }
     Ok(QuotaView::new(file, now, policy.clone(), false))
+}
+
+const REFRESH_POLL: StdDuration = StdDuration::from_millis(50);
+
+pub fn refresh(
+    state_root: &Path,
+    now: DateTime<Utc>,
+    policy: &Policy,
+    env: &QuotaEnv,
+) -> Result<QuotaView> {
+    if env.quota_file.is_some() {
+        return obtain(state_root, now, policy, false, env);
+    }
+    if crate::telemetry::lock::collector_live(state_root) {
+        let tick = StdDuration::from_millis(policy.tick_ms);
+        let wait = (tick + probe_budget(&env.bins, env.probe_timeout)) * 2;
+        return refresh_through_collector(state_root, now, policy, wait);
+    }
+    let mut file = QuotaFile::load(state_root, None).unwrap_or_default();
+    probe_all(&mut file, &env.bins, now, env.probe_timeout, &env.temp_root);
+    file.write(state_root, now, policy)?;
+    Ok(QuotaView::new(file, now, policy.clone(), false))
+}
+
+pub(crate) fn refresh_through_collector(
+    state_root: &Path,
+    now: DateTime<Utc>,
+    policy: &Policy,
+    wait: StdDuration,
+) -> Result<QuotaView> {
+    let before = QuotaFile::load(state_root, None)
+        .unwrap_or_default()
+        .latest_probe()
+        .map(str::to_owned);
+    let request = crate::telemetry::refresh::request(state_root)?;
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        if !request.exists() {
+            let file = QuotaFile::load(state_root, None)?;
+            if file.latest_probe().is_some() && file.latest_probe() >= before.as_deref() {
+                return Ok(QuotaView::new(file, now, policy.clone(), false));
+            }
+        }
+        std::thread::sleep(REFRESH_POLL);
+    }
+    crate::telemetry::refresh::clear(&[request]);
+    anyhow::bail!(
+        "quota refresh failed: the collector published no new reading within {} s",
+        wait.as_secs()
+    )
 }

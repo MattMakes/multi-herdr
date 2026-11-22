@@ -638,10 +638,10 @@ fn quota_probe_records_a_crashing_harness() {
 }
 
 #[test]
-fn quo_07_cli_does_not_probe_when_collector_live() {
+fn quo_07_plain_quota_does_not_probe_when_collector_live() {
     let h = corpus("quo07a");
     hold_lock(&h);
-    assert!(h.run(&["quota", "--refresh"]).status.success());
+    assert!(h.run(&["quota"]).status.success());
     assert!(
         probes_of(&h, "claude", "stream-json").is_empty(),
         "no probe with a live collector"
@@ -659,10 +659,7 @@ fn quo_07_probe_cadence() {
     assert_eq!(count(&h), 1);
     h.set("HORCH_NOW", "2026-09-28T18:05:00Z");
     h.run(&["quota", "--refresh"]);
-    assert_eq!(count(&h), 1, "5 min later: still fresh");
-    h.set("HORCH_NOW", "2026-09-28T18:11:00Z");
-    h.run(&["quota", "--refresh"]);
-    assert_eq!(count(&h), 2, "older than probe_on_demand_age_min");
+    assert_eq!(count(&h), 2, "--refresh ignores the reading age");
     h.run(&["quota"]);
     assert_eq!(count(&h), 2, "plain `horch quota` never probes");
 }

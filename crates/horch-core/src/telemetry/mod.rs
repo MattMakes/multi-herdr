@@ -3,6 +3,7 @@ pub mod context;
 pub(crate) mod cursor;
 pub mod lock;
 pub mod readers;
+pub(crate) mod refresh;
 pub mod start;
 pub mod store;
 pub mod timing;
