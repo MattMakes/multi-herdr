@@ -270,3 +270,22 @@ Result for S2: `opencode` passes its compaction round trip, so
 too small to compact) and Prime (the agent_status known gap) stay on the
 fresh route. Follow-up for the Prime gap: horch reports the Prime pane state
 with `herdr pane report-agent`, or herdr learns to detect `prime-agent`.
+
+## 2026-11-22, part D: the compaction hooks (slice 4)
+
+Not a step of `scripts/live/context.sh` yet. Run by hand in a cloud Linux
+container, not on the operator's Mac: Claude Code 2.1.330, headless
+(`claude -p`), model `haiku`, the subscription login
+(`env -u ANTHROPIC_API_KEY`). The automatic compactions were forced with
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000` and
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30`, so Claude Code also printed
+"Autocompact is thrashing" at the end of each run; that comes from the low
+test threshold.
+
+| step | requirement | result | evidence |
+|---|---|---|---|
+| D1 each hook's stdout, manual `/compact` | CTX-29, CTX-30 | PASS | 3 shell hooks, each with its own word; a question that names no word. The session knew the `PreCompact` word (from the summary), the `PostCompact` word (from the `/compact` command output) and the `SessionStart` word |
+| D2 each hook's stdout, automatic compaction | CTX-29, CTX-30 | PASS | as D1 in 1 agentic turn. The session knew the `PreCompact` word and the `SessionStart` word. It answered `unknown` for the `PostCompact` word: after an automatic compaction `PostCompact` stdout does not reach the model |
+| D3 the summary follows `summary-format` | CTX-29 | PASS | a `PreCompact` hook that prints the rendered `summary-format` line. The `compact_summary` in the `PostCompact` input has the 6 sections in order, with "First action" under `4. Next` |
+| D4 the 4 real hooks, automatic compaction | CTX-28 to CTX-31 | PASS | the 4 `horch hook` commands of `harness-defaults.md` on a scratch ledger record (`sonnet-1`). 3 compactions in a 6-step task. Each wrote `ai_docs/handoffs/sonnet-1-whats-next.md` with the mark line and the 6 sections, and 1 `whats-next-saved` event (`... from the auto compaction summary; 2615 characters`, then 3558, then 3656). The task finished: all 3 files written |
+| D5 a fleet pane (the TUI in herdr, the compaction job, the operator's 500000 window) | CTX-13, CTX-28 to CTX-31 | NOT RUN | needs herdr and the operator's machine |

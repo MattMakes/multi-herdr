@@ -707,8 +707,8 @@ orchestrator included, and 150000 on sonnet. `horch context --windows` shows
 each teammate's `compact_at` and its source (`teammate` or `fleet base`)
 beside the threshold.
 
-In a Claude Code pane 3 hooks do the asking and the reading back, with no
-turn of the orchestrator: see "Harness defaults" and
+In a Claude Code pane 4 hooks make the compaction write the whats-next,
+save it and point the session at it, with no turn of the orchestrator: see "Harness defaults" and
 `docs/specs/context-policy.md` §4.6.
 
 `horch teammates --check` fails:

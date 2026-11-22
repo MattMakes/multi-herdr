@@ -1026,12 +1026,15 @@ compacted at about 150,000 tokens: 90% of its work stays in the first
 150,000. A worker's own `horch note` also prints a warning when it is over.
 The handoff goes to `ai_docs/handoffs/<role>-whats-next.md`.
 
-A Claude Code pane does this through 3 hooks, with no turn of the
-orchestrator. After a batch of tool calls, `horch hook context` asks a
-session that is over its threshold to write its handoff. Before any
-compaction, `horch hook pre-compact` gives the summary its keep-list. After
-any compaction, `horch hook post-compact` puts the handoff file back into
-the context. The hooks are data in `teammates/_base/harness-defaults.md`.
+A Claude Code pane does this through 4 hooks, with no turn of the
+orchestrator: precompact, whats-next, compact, postcompact, hydrate. Before
+any compaction, `horch hook pre-compact` tells the summary to be a
+whats-next handoff, so the compaction writes the whats-next itself. After
+it, `horch hook post-compact` saves that summary as the handoff file, and
+`horch hook session-start` tells the session that the summary is its
+whats-next. `horch hook context` asks a session that is over its threshold
+to stop, where Claude Code's own trigger is far above it. The hooks are data
+in `teammates/_base/harness-defaults.md`.
 
 Your settings win: where your own config sets a native window
 (`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `~/.claude/settings.json`,

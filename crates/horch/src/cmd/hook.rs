@@ -21,11 +21,16 @@ pub enum HookEvent {
     Context,
     PreCompact,
     PostCompact,
+    SessionStart,
 }
 
 const STDIN_LIMIT: u64 = 64 * 1024 * 1024;
 
 pub const HYDRATE_LIMIT: usize = 8_000;
+
+pub const SUMMARY_MARK: &str = "<!-- horch: saved from the compaction summary -->";
+
+pub const EVENT_SAVED: &str = "whats-next-saved";
 
 pub fn hook(ctx: &RuntimeContext, event: HookEvent) -> ExitCode {
     let input = read_input();
@@ -71,7 +76,8 @@ pub(crate) fn output(
     match event {
         HookEvent::Context => Ok(super::messaging::hook_check(&src, record_id)?.map(batch_context)),
         HookEvent::PreCompact => pre_compact(&src, record_id, input),
-        HookEvent::PostCompact => post_compact(&src, record_id, now),
+        HookEvent::PostCompact => post_compact(&src, record_id, input, now).map(|_| None),
+        HookEvent::SessionStart => session_start(&src, record_id, now),
     }
 }
 
@@ -106,48 +112,113 @@ fn message(src: &Sources, record: &Record, worker: &str, orchestrator: &str) -> 
     prompts::context_message(src.roster, key, &vars)
 }
 
+fn input_text(input: &str, key: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(input).ok()?;
+    let text = value.get(key)?.as_str()?.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 fn pre_compact(src: &Sources, record_id: &str, input: &str) -> Result<Option<String>> {
-    if has_instructions(input) {
+    let Some(record) = live_record(src, record_id)? else {
         return Ok(None);
+    };
+    let format = message(src, &record, "summary-format", "summary-format")?;
+    if input_text(input, "custom_instructions").is_some() {
+        return Ok(Some(format));
     }
+    let keep = message(src, &record, "instructions", "instructions-orchestrator")?;
+    Ok(Some(format!("{keep}\n{format}")))
+}
+
+enum Handoff {
+    Written(String),
+    FromSummary,
+    Absent,
+}
+
+fn handoff_state(path: &Path, record: &Record, now: SystemTime) -> Handoff {
+    let Some(meta) = std::fs::metadata(path).ok().filter(|m| m.is_file()) else {
+        return Handoff::Absent;
+    };
+    let text = std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .unwrap_or_default();
+    if text.starts_with(SUMMARY_MARK) {
+        return Handoff::FromSummary;
+    }
+    let asked = policy::asked_at(&record.history);
+    let fresh = policy::handoff_fresh(meta.modified().ok(), asked, now).is_ok();
+    if fresh && !text.is_empty() {
+        Handoff::Written(text)
+    } else {
+        Handoff::Absent
+    }
+}
+
+fn handoff_file(src: &Sources, record: &Record) -> std::path::PathBuf {
+    record_workdir(src.ctx, record).join(policy::handoff_path(&record.role))
+}
+
+fn post_compact(src: &Sources, record_id: &str, input: &str, now: SystemTime) -> Result<bool> {
+    let Some(record) = live_record(src, record_id)? else {
+        return Ok(false);
+    };
+    let Some(summary) = input_text(input, "compact_summary") else {
+        return Ok(false);
+    };
+    let path = handoff_file(src, &record);
+    if matches!(handoff_state(&path, &record, now), Handoff::Written(_)) {
+        return Ok(false);
+    }
+    let body = summary_body(&summary);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    horch_core::fsx::write_atomic(&path, format!("{SUMMARY_MARK}\n{body}\n").as_bytes(), 0o644)?;
+    let trigger = input_text(input, "trigger").unwrap_or_else(|| "unknown".into());
+    let _ = src.ledger.record_event(
+        record_id,
+        EVENT_SAVED,
+        &format!(
+            "{} from the {trigger} compaction summary; {} characters",
+            policy::handoff_path(&record.role),
+            body.chars().count()
+        ),
+    );
+    Ok(true)
+}
+
+fn summary_body(summary: &str) -> String {
+    let after = summary
+        .split_once("</analysis>")
+        .map_or(summary, |(_, rest)| rest)
+        .trim();
+    let inner = after.strip_prefix("<summary>").unwrap_or(after);
+    inner
+        .strip_suffix("</summary>")
+        .unwrap_or(inner)
+        .trim()
+        .to_string()
+}
+
+fn session_start(src: &Sources, record_id: &str, now: SystemTime) -> Result<Option<String>> {
     let Some(record) = live_record(src, record_id)? else {
         return Ok(None);
     };
-    message(src, &record, "instructions", "instructions-orchestrator").map(Some)
-}
-
-fn has_instructions(input: &str) -> bool {
-    serde_json::from_str::<Value>(input)
-        .ok()
-        .and_then(|v| {
-            v.get("custom_instructions")
-                .and_then(Value::as_str)
-                .map(|s| !s.trim().is_empty())
-        })
-        .unwrap_or(false)
-}
-
-fn post_compact(src: &Sources, record_id: &str, now: SystemTime) -> Result<Option<String>> {
-    let Some(record) = live_record(src, record_id)? else {
-        return Ok(None);
-    };
-    let path = record_workdir(src.ctx, &record).join(policy::handoff_path(&record.role));
-    match fresh_handoff(&path, &record, now) {
-        Some(text) => {
+    let path = handoff_file(src, &record);
+    match handoff_state(&path, &record, now) {
+        Handoff::Written(text) => {
             let head = message(src, &record, "hydrate", "hydrate-orchestrator")?;
             Ok(Some(format!("{head}\n\n{}", cut(&text, &path))))
         }
-        None => message(src, &record, "hydrate-missing", "hydrate-missing").map(Some),
+        Handoff::FromSummary | Handoff::Absent => message(
+            src,
+            &record,
+            "hydrate-summary",
+            "hydrate-summary-orchestrator",
+        )
+        .map(Some),
     }
-}
-
-fn fresh_handoff(path: &Path, record: &Record, now: SystemTime) -> Option<String> {
-    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
-    let asked = policy::asked_at(&record.history);
-    policy::handoff_fresh(meta.modified().ok(), asked, now).ok()?;
-    let bytes = std::fs::read(path).ok()?;
-    let text = String::from_utf8_lossy(&bytes).trim().to_string();
-    (!text.is_empty()).then_some(text)
 }
 
 fn cut(text: &str, path: &Path) -> String {
@@ -166,17 +237,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ctx_29_pre_compact_is_silent_when_the_command_carries_instructions() {
-        assert!(has_instructions(
-            r#"{"trigger":"manual","custom_instructions":"Keep X"}"#
-        ));
-        assert!(!has_instructions(
-            r#"{"trigger":"auto","custom_instructions":null}"#
-        ));
-        assert!(!has_instructions(
-            r#"{"trigger":"manual","custom_instructions":"  "}"#
-        ));
-        assert!(!has_instructions("not json"));
+    fn ctx_31_the_summary_body_drops_the_analysis_and_the_tags() {
+        let raw = "<analysis>\nthinking\n</analysis>\n\n<summary>\n1. Request: x\n</summary>";
+        assert_eq!(summary_body(raw), "1. Request: x");
+        assert_eq!(summary_body("  plain text  "), "plain text");
+        assert_eq!(summary_body("<summary>a</summary>"), "a");
     }
 
     #[test]
@@ -198,10 +263,19 @@ mod tests {
         use super::super::*;
 
         const HANDOFF: &str = "ai_docs/handoffs/sonnet-1-whats-next.md";
+        const AUTO: &str = r#"{"trigger":"auto","custom_instructions":null}"#;
 
-        fn handoff_file(w: &World, id: &str) -> std::path::PathBuf {
-            let record = w.ledger.get(id).unwrap();
-            record_workdir(&w.ctx, &record).join(HANDOFF)
+        fn file_of(w: &World, id: &str) -> std::path::PathBuf {
+            handoff_file(&w.sources(), &w.ledger.get(id).unwrap())
+        }
+
+        fn write(path: &Path, text: &str) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+
+        fn summary_input(trigger: &str, summary: &str) -> String {
+            json!({"trigger": trigger, "compact_summary": summary}).to_string()
         }
 
         #[test]
@@ -241,43 +315,92 @@ mod tests {
         }
 
         #[test]
-        fn ctx_29_pre_compact_prints_the_keep_list_for_a_bare_compaction() {
+        fn ctx_29_pre_compact_asks_for_a_whats_next_summary() {
             let w = World::new();
             w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
             w.orchestrator("o-1", Some(SMALL));
-            let auto = r#"{"trigger":"auto","custom_instructions":null}"#;
-            let worker = pre_compact(&w.sources(), "r-1", auto).unwrap().unwrap();
+            let worker = pre_compact(&w.sources(), "r-1", AUTO).unwrap().unwrap();
+            let (keep, format) = worker.split_once('\n').expect("2 lines");
             assert!(
-                worker.starts_with("Keep in the summary: your role sonnet-1,"),
-                "{worker}"
+                keep.starts_with("Keep in the summary: your role sonnet-1,"),
+                "{keep}"
             );
-            assert!(worker.ends_with(&format!("The full state is in {HANDOFF}.")));
-            let orchestrator = pre_compact(&w.sources(), "o-1", auto).unwrap().unwrap();
+            assert!(
+                format.starts_with("Write the summary as the whats-next handoff of sonnet-1,"),
+                "{format}"
+            );
+            assert!(format.contains("4. Next:"), "{format}");
+            assert!(worker.chars().count() < 10_000);
+            let orchestrator = pre_compact(&w.sources(), "o-1", AUTO).unwrap().unwrap();
             assert!(
                 orchestrator.starts_with("Keep in the summary: your actual run slug,"),
                 "{orchestrator}"
             );
             let typed = r#"{"trigger":"manual","custom_instructions":"Keep in the summary: x"}"#;
-            assert_eq!(pre_compact(&w.sources(), "r-1", typed).unwrap(), None);
+            let only_format = pre_compact(&w.sources(), "r-1", typed).unwrap().unwrap();
+            assert_eq!(only_format, format);
         }
 
         #[test]
-        fn ctx_30_post_compact_prints_a_fresh_handoff_or_says_it_is_missing() {
+        fn ctx_31_post_compact_saves_the_summary_as_the_whats_next_file() {
             let w = World::new();
             w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
             let now = SystemTime::now();
-            let missing = post_compact(&w.sources(), "r-1", now).unwrap().unwrap();
-            assert!(
-                missing.starts_with("NOTE: Handoff. This session was compacted with no current"),
-                "{missing}"
+            let input = summary_input(
+                "auto",
+                "<analysis>a</analysis>\n<summary>\n4. Next: run step 4\n</summary>",
             );
-            assert!(!missing.contains('\n'));
-            let file = handoff_file(&w, "r-1");
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(&file, "# What is next\nRun step 4.\n").unwrap();
-            let fresh = post_compact(&w.sources(), "r-1", now).unwrap().unwrap();
+            assert!(post_compact(&w.sources(), "r-1", &input, now).unwrap());
+            let file = file_of(&w, "r-1");
             assert_eq!(
-                fresh,
+                std::fs::read_to_string(&file).unwrap(),
+                format!("{SUMMARY_MARK}\n4. Next: run step 4\n")
+            );
+            assert_eq!(
+                w.events("r-1", EVENT_SAVED),
+                [format!(
+                    "{HANDOFF} from the auto compaction summary; 19 characters"
+                )]
+            );
+            let later = summary_input("manual", "4. Next: run step 5");
+            assert!(post_compact(&w.sources(), "r-1", &later, now).unwrap());
+            assert!(std::fs::read_to_string(&file)
+                .unwrap()
+                .ends_with("run step 5\n"));
+            assert!(!post_compact(&w.sources(), "r-1", "{}", now).unwrap());
+        }
+
+        #[test]
+        fn ctx_31_post_compact_keeps_a_handoff_the_session_wrote() {
+            let w = World::new();
+            w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+            let file = file_of(&w, "r-1");
+            write(&file, "# What is next\nRun step 4.\n");
+            let input = summary_input("manual", "a summary");
+            assert!(!post_compact(&w.sources(), "r-1", &input, SystemTime::now()).unwrap());
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                "# What is next\nRun step 4.\n"
+            );
+            assert!(w.events("r-1", EVENT_SAVED).is_empty());
+        }
+
+        #[test]
+        fn ctx_30_session_start_gives_the_written_handoff_or_points_at_the_summary() {
+            let w = World::new();
+            w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+            let now = SystemTime::now();
+            let summary_line =
+                "NOTE: Handoff. This session was compacted. The summary above is your \
+                                whats-next.";
+            let none = session_start(&w.sources(), "r-1", now).unwrap().unwrap();
+            assert!(none.starts_with(summary_line), "{none}");
+            assert!(!none.contains('\n'));
+            let file = file_of(&w, "r-1");
+            write(&file, "# What is next\nRun step 4.\n");
+            let written = session_start(&w.sources(), "r-1", now).unwrap().unwrap();
+            assert_eq!(
+                written,
                 format!(
                     "NOTE: Handoff. This session was compacted. Your handoff file {HANDOFF} \
                      follows. Continue your task from its next step. Do not repeat finished \
@@ -291,22 +414,35 @@ mod tests {
                 "context-warned",
                 "tokens 1 threshold 1",
             );
-            let stale = post_compact(&w.sources(), "r-1", now).unwrap().unwrap();
-            assert!(stale.starts_with("NOTE: Handoff. This session was compacted with no current"));
+            let stale = session_start(&w.sources(), "r-1", now).unwrap().unwrap();
+            assert!(stale.starts_with(summary_line), "{stale}");
+        }
+
+        #[test]
+        fn ctx_30_a_summary_file_is_not_printed_a_second_time() {
+            let w = World::new();
+            w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+            let now = SystemTime::now();
+            let input = summary_input("auto", "4. Next: run step 4");
+            assert!(post_compact(&w.sources(), "r-1", &input, now).unwrap());
+            let text = session_start(&w.sources(), "r-1", now).unwrap().unwrap();
+            assert!(!text.contains("run step 4"), "{text}");
+            assert!(
+                text.contains(&format!("horch saved it as {HANDOFF}")),
+                "{text}"
+            );
         }
 
         #[test]
         fn ctx_30_the_orchestrator_gets_its_own_first_line() {
             let w = World::new();
             w.orchestrator("o-1", Some(SMALL));
-            let record = w.ledger.get("o-1").unwrap();
-            let file =
-                record_workdir(&w.ctx, &record).join("ai_docs/handoffs/orchestrator-whats-next.md");
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(&file, "run slug: x").unwrap();
-            let text = post_compact(&w.sources(), "o-1", SystemTime::now())
-                .unwrap()
-                .unwrap();
+            let now = SystemTime::now();
+            let pointed = session_start(&w.sources(), "o-1", now).unwrap().unwrap();
+            assert!(pointed.contains("rebuild roster and ownership from horch ledger status"));
+            let file = file_of(&w, "o-1");
+            write(&file, "run slug: x");
+            let text = session_start(&w.sources(), "o-1", now).unwrap().unwrap();
             assert!(text.contains("rebuild roster and ownership from horch ledger status"));
             assert!(text.ends_with("\n\nrun slug: x"));
         }

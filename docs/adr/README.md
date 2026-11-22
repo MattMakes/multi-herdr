@@ -256,4 +256,4 @@ records (a title that states the decision, 1 or 2 paragraphs, then
 - [0192](0192-the-tuning-bench-never-changes-the-running-game.md) The tuning bench never changes the running game
 - [0193](0193-video-frames-and-audio-are-computed-from-exact-time.md) Video frames and audio are computed from exact time
 - [0194](0194-video-scripts-drive-headless-chrome-with-bounded-starts-and-stops.md) Video scripts drive headless Chrome with bounded starts and stops
-- [0197](0197-claude-panes-ask-for-feed-and-return-the-handoff-through-hooks.md) Claude panes ask for, feed and return the handoff through hooks
+- [0197](0197-in-a-claude-pane-the-compaction-writes-the-whats-next.md) In a Claude pane the compaction writes the whats-next, and hooks save and return it

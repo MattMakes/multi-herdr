@@ -586,15 +586,20 @@ fn ctx_28_every_claude_launch_carries_the_context_hooks() {
             "{name}"
         );
         assert_eq!(
-            command_of(hooks, "SessionStart").as_deref(),
+            command_of(hooks, "PostCompact").as_deref(),
             Some("horch hook post-compact"),
+            "{name}"
+        );
+        assert_eq!(
+            command_of(hooks, "SessionStart").as_deref(),
+            Some("horch hook session-start"),
             "{name}"
         );
         assert_eq!(hooks["SessionStart"][0]["matcher"], "compact", "{name}");
         assert_eq!(
             hooks.as_object().map(|o| o.len()),
-            Some(3),
-            "{name}: only the 3 context hooks"
+            Some(4),
+            "{name}: only the 4 context hooks"
         );
     }
     let codex = roster.require("codex-sol").unwrap();

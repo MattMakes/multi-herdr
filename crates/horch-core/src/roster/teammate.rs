@@ -283,17 +283,19 @@ pub(crate) const CONTEXT_WINDOWS_BASE: &str = "context-windows";
 
 pub(crate) const CONTEXT_MESSAGES_BASE: &str = "context-messages";
 
-pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 12] = [
+pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 14] = [
     "request",
     "warning",
     "warning-orchestrator",
     "instructions",
     "instructions-orchestrator",
+    "summary-format",
     "resume",
     "resume-orchestrator",
     "hydrate",
     "hydrate-orchestrator",
-    "hydrate-missing",
+    "hydrate-summary",
+    "hydrate-summary-orchestrator",
     "reported",
     "failed",
 ];

@@ -1377,7 +1377,8 @@ mod tests {
         serde_json::json!({
             "PostToolBatch": [{"hooks": [run("context")]}],
             "PreCompact": [{"hooks": [run("pre-compact")]}],
-            "SessionStart": [{"matcher": "compact", "hooks": [run("post-compact")]}],
+            "PostCompact": [{"hooks": [run("post-compact")]}],
+            "SessionStart": [{"matcher": "compact", "hooks": [run("session-start")]}],
         })
     }
 
@@ -1408,7 +1409,7 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"hooks":{"PostToolBatch":[{"hooks":[{"command":"horch hook context","timeout":20,"type":"command"}]}],"PreCompact":[{"hooks":[{"command":"horch hook pre-compact","timeout":20,"type":"command"}]}],"SessionStart":[{"hooks":[{"command":"horch hook post-compact","timeout":20,"type":"command"}],"matcher":"compact"}]},"includeCoAuthoredBy":false,"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"hooks":{"PostCompact":[{"hooks":[{"command":"horch hook post-compact","timeout":20,"type":"command"}]}],"PostToolBatch":[{"hooks":[{"command":"horch hook context","timeout":20,"type":"command"}]}],"PreCompact":[{"hooks":[{"command":"horch hook pre-compact","timeout":20,"type":"command"}]}],"SessionStart":[{"hooks":[{"command":"horch hook session-start","timeout":20,"type":"command"}],"matcher":"compact"}]},"includeCoAuthoredBy":false,"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"

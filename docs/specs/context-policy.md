@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check (part C) has run: OpenCode compacts in place; pi and Prime stay on the fresh route. Slice 3 (`compact_at`, the native count; u11a) is implemented. Slice 4 (2026-11-21, operator request): the watch base is 135,000, and every Claude Code pane gets 3 hooks that ask for the handoff, feed the summary and give the handoff back (§4.6). |
+| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check (part C) has run: OpenCode compacts in place; pi and Prime stay on the fresh route. Slice 3 (`compact_at`, the native count; u11a) is implemented. Slice 4 (2026-11-21, operator request): the watch base is 135,000, and every Claude Code pane gets 4 hooks: the compaction writes its summary as the whats-next, horch saves it, and the session is pointed at it (§4.6). |
 | Date | 2026-10-06 |
 | Authors | product-lead-1 (requirements), staff-engineer-1 and staff-engineer-2 (design), architect-reviewer-1 (review), backend-developer units u0 to u7 (build). |
 | Evidence | The W1 requirements and design (`ai_docs/plans/wave2/w1/requirements.md`, `design.md`), the 14 review decisions (`review-decisions.md`), and the live check `scripts/live/context.sh` with its result in [`docs/live-checks/context.md`](../live-checks/context.md). [SEEN] marks a fact read on the operator's Mac on 2026-10-06. |
@@ -126,7 +126,8 @@ The settings in this table were read on 2026-10-06; the thresholds are those
 of slice 4. The operator's 500k Claude window is the operator's own value, so
 horch does not change it (G4): on this machine a Claude pane is asked at
 135,000 and compacted by horch at its next stopping point, and Claude Code's
-own auto-compact stays far above, at 467,000. To make about 150,000 a hard
+own auto-compact stays far above, at 467,000 (§4.6 says what the hooks do
+in each case). To make about 150,000 a hard
 limit there too, the operator lowers or removes
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `~/.claude/settings.json`; the fleet
 values of §3.2 then apply.
@@ -384,44 +385,64 @@ message as the argument, so the keep-list holds there even when a harness
 ignores the block. The live check plants a canary in the block and reports
 per harness whether a summary honours it.
 
-### 4.6 Claude Code hooks (slice 4; CTX-28, CTX-29, CTX-30)
+### 4.6 Claude Code hooks (slice 4; CTX-28 to CTX-31)
 
-Every Claude pane that horch launches gets 3 hooks through the `--settings`
-overlay. They are data: the `hooks` entry in
-`teammates/_base/harness-defaults.md`. Each runs `horch hook <event>`, which
-reads the hook input on stdin, finds its session by `HORCH_RECORD_ID`, prints
-at most 1 text and always exits 0. A pane with no record id (a report
-worker, the smoke agent) gets no output. The facts below were read from the
-Claude Code hooks reference and checked in the 2.1.330 CLI on 2026-11-21.
+The operator's order is: precompact, run whats-next, compact, then
+postcompact, hydrate with that whats-next. Every Claude pane that horch
+launches gets 4 hooks through the `--settings` overlay for it. They are
+data: the `hooks` entry in `teammates/_base/harness-defaults.md`. Each runs
+`horch hook <event>`, which reads the hook input on stdin, finds its session
+by `HORCH_RECORD_ID`, prints at most 1 text and always exits 0. A pane with
+no record id (a report worker, the smoke agent) gets no output.
 
 | step | Claude Code event | command | what it does |
 |---|---|---|---|
-| 1. ask for the handoff | `PostToolBatch` (after each batch of tool calls, before the next model request) | `horch hook context` | Builds the session's row as `horch context` does. When the state is `over`, it records `context-warned` and returns the `request` line (a worker) or `warning-orchestrator` (the orchestrator) as `hookSpecificOutput.additionalContext`, so the model reads it in its next request. Once per compaction cycle, by rule A. The row then shows `requested` |
-| 2. feed the summary | `PreCompact` (`manual` and `auto`) | `horch hook pre-compact` | When the compaction has no argument (Claude Code's own auto-compact, or a bare `/compact`), it prints the `instructions` or `instructions-orchestrator` keep-list; Claude Code uses the stdout as instructions for the summary. When `custom_instructions` is set (the horch job types the keep-list itself) it prints nothing. It never blocks |
-| 3. give the handoff back | `SessionStart`, matcher `compact` | `horch hook post-compact` | After every compaction, native or horch-driven, it prints the `hydrate` line and then the handoff file, cut at 8,000 characters with the path of the rest. Claude Code adds the stdout to the context before the next prompt. With no current handoff file (missing, or older than the newest ask, or with no ask older than 60 minutes: the rule of CTX-14) it prints `hydrate-missing` |
+| 1. precompact: run whats-next | `PreCompact` (`manual` and `auto`) | `horch hook pre-compact` | Prints the `summary-format` line. Claude Code uses a `PreCompact` hook's stdout as instructions for the summary, so the compaction itself writes the whats-next: a handoff in 6 sections (Request, Done, Checked, Next with the 1 action to run first, Avoid, Pointers). When the compaction has no argument (Claude Code's own auto-compact, or a bare `/compact`) the `instructions` or `instructions-orchestrator` keep-list comes first. It never blocks |
+| 2. compact | - | - | Claude Code compacts. The summary is the whats-next, written from the full context at the moment of the compaction |
+| 3. postcompact: keep that whats-next | `PostCompact` (`manual` and `auto`) | `horch hook post-compact` | Reads `compact_summary` from its input, drops the `<analysis>` block and the `<summary>` tags, and saves the text as `ai_docs/handoffs/<role>-whats-next.md` under the record's workdir. The first line of the file is `<!-- horch: saved from the compaction summary -->`. It records `whats-next-saved` on the ledger. It does not replace a current handoff file that the session wrote itself (the freshness rule of CTX-14). It prints nothing |
+| 4. hydrate | `SessionStart`, matcher `compact` | `horch hook session-start` | Prints 1 text that Claude Code adds to the context before the next request. With no handoff file of the session's own: `hydrate-summary` (the summary above is your whats-next, saved at the path; continue from its next step). With a current handoff file that the session wrote: `hydrate` and the file, cut at 8,000 characters with the path of the rest |
+| the ask, where the native trigger is far away | `PostToolBatch` (after each batch of tool calls, before the next model request) | `horch hook context` | Builds the session's row as `horch context` does. When the state is `over`, it records `context-warned` and returns the `request` line (a worker) or `warning-orchestrator` (the orchestrator) as `hookSpecificOutput.additionalContext`. Once per compaction cycle, by rule A. The row then shows `requested` |
 
-The order the operator asked for is: before the compaction, write the
-handoff; compact; after it, read the handoff back. Step 1 is the "before":
-a `PreCompact` hook is a command and cannot make the model write a file, and
-`PostCompact` output is not added to the context, so the ask moves 1 step
-earlier and the read-back uses `SessionStart`. Because the threshold is at
-most 0.8 of the native trigger (§3), step 1 always comes before Claude Code's
-own auto-compact.
+Why the read-back is in `SessionStart` and not in `PostCompact`. Both run
+after a compaction. Live check part D (2026-11-22, Claude Code 2.1.330)
+gave each hook its own word and asked the compacted session which words it
+knew:
 
-What does not change: the worker still writes its handoff with the
-`horch:handoff` skill, records it with `horch note` (which starts the
-compaction job, §4.1) and sends `COMPACT-READY`; the orchestrator's
+| compaction | `PreCompact` stdout | `PostCompact` stdout | `SessionStart` (`compact`) stdout |
+|---|---|---|---|
+| automatic | in the summary | not known to the model | known to the model |
+| manual `/compact` | in the summary | known to the model, inside the output of the `/compact` command | known to the model |
+
+So `PostCompact` cannot give text to the model after an automatic
+compaction, and `SessionStart` can after both. `PostCompact` is the event
+that receives the summary, so it does the saving. The saved file serves the
+operator, the orchestrator, and a replacement session on the handoff route
+(§4.2): its claim prints `PRIOR WORK: read <path> first`.
+
+What a compaction costs now. Before slice 4, a session wrote its handoff in
+a turn of its own (about 10,000 to 40,000 tokens), reported `COMPACT-READY`,
+waited for the orchestrator, and read the file again after the compaction.
+With the hooks, Claude Code's own auto-compact needs none of that: no turn of
+the session, no turn of the orchestrator, and no second read.
+
+The ask (`PostToolBatch`) stays for 1 case: a pane whose native trigger is
+far above the threshold. On the operator's machine the Claude window is
+500,000 (§3.1), so auto-compact does not fire near 150,000. There the ask at
+135,000 makes the session end its turn (§4.1), and the horch job types
+`/compact`; the same 3 hooks then shape, save and return the whats-next.
+Where the fleet window applies (§3.2), auto-compact fires first, in the
+middle of a turn, and the session goes on with no ask. The orchestrator's
 checkpoint (`horch context --over`) stays as the watch for every other
 harness and as the fallback when a pane has no hooks. A hooked worker's row
 is `requested` when the orchestrator looks, so the orchestrator spends no
-turn on the ask. The `resume` line now tells the session to read its handoff
+turn on the ask. The `resume` line tells the session to read its handoff
 only when no `NOTE: Handoff` line is above it.
 
 Why `PreCompact` never blocks. Exit code 2 blocks a compaction, but a
 blocked auto-compact is counted: the 2.1.330 CLI stops trying after 3 blocks
-in a row, and a blocked reactive compaction fails the request. The model also
-needs 2 requests after a block before it can have written the file. So a
-block could switch auto-compact off for the session.
+in a row, and a blocked compaction that recovers from a context-limit error
+fails the request. With the summary written as the whats-next, there is
+nothing to wait for.
 
 Limits:
 
@@ -431,15 +452,19 @@ Limits:
 - Claude Code holds hooks back until the workspace trust dialog is accepted;
   horch already accepts it for fleet panes (`harness/trust.rs`).
 - `disableAllHooks` or `allowManagedHooksOnly` in the operator's or the
-  organization's settings switches the 3 hooks off. The protocol of §4.1
+  organization's settings switches the 4 hooks off. The protocol of §4.1
   still works then.
 - The transcript can lag the conversation in memory, so the ask can come 1
   batch late.
-- Hook stdout is capped at 10,000 characters by Claude Code; horch cuts the
-  handoff at 8,000.
-- The hooks have not run in a live fleet yet: `scripts/live/context.sh` has
-  no step for them. Until that check passes on the operator's machine, treat
-  §4.6 as built and unit-tested, not as proved.
+- Claude Code caps hook stdout at 10,000 characters; the `PreCompact` text
+  is under 2,000, and horch cuts a returned handoff file at 8,000.
+- The summary model cannot run a command. A whats-next from the summary
+  holds what the session saw, not a new `git status`; the `hydrate-summary`
+  line tells the session to run it.
+- Part D ran headless (`claude -p`) on the haiku model with a lowered
+  auto-compact threshold. A fleet pane (the TUI, in herdr, with the
+  compaction job) has not been run yet: `scripts/live/context.sh` needs a
+  step for it.
 
 ## 5. CLI contract
 
@@ -668,8 +693,9 @@ operator may copy the whole file to
 placeholders `{role}`, `{tokens}`, `{threshold}`, `{handoff}`, `{pre}`,
 `{post}`, `{step}`, `{reason}`, `{log}`. Each message is 1 line (a newline
 would submit early). Keys: `request`, `warning`, `warning-orchestrator`,
-`instructions`, `instructions-orchestrator`, `resume`, `resume-orchestrator`,
-`hydrate`, `hydrate-orchestrator`, `hydrate-missing`, `reported`, `failed`.
+`instructions`, `instructions-orchestrator`, `summary-format`, `resume`,
+`resume-orchestrator`, `hydrate`, `hydrate-orchestrator`, `hydrate-summary`,
+`hydrate-summary-orchestrator`, `reported`, `failed`.
 Operators do not copy this file; `horch teammates --check` warns when an
 overlay replaces it. The briefings name these prefixes, and each starts (or
 is in) the matching message:
@@ -679,7 +705,7 @@ is in) the matching message:
 | `NOTE: Your context is` | starts `request` |
 | `NOTE: Context warning` | starts `warning`, `warning-orchestrator` |
 | `NOTE: COMPACT-READY` | `request` and `warning` contain `[{role}] NOTE: COMPACT-READY {handoff}` |
-| `NOTE: Handoff` | starts `hydrate`, `hydrate-orchestrator`, `hydrate-missing`; `resume` and `resume-orchestrator` name it |
+| `NOTE: Handoff` | starts `hydrate`, `hydrate-orchestrator`, `hydrate-summary`, `hydrate-summary-orchestrator`; `resume` and `resume-orchestrator` name it |
 | `[horch] NOTE:` | starts `reported` |
 | `[horch] BLOCKED:` | starts `failed` |
 
@@ -736,6 +762,7 @@ Free-text history events on the session's record, shown by
 | `compact-requested` | `tokens <n> threshold <t>` | `horch compact <role> --request` |
 | `context-warned` | `tokens <n> threshold <t>` | the `horch note` check |
 | `compacted` | `<pre> -> <post> tokens; handoff <path>` (`unknown` for a missing number) | the job |
+| `whats-next-saved` | `<path> from the <trigger> compaction summary; <n> characters` | `horch hook post-compact` (CTX-31) |
 | `compact-failed` | `step <step>: <reason>` | the job, the child, the parent at a failed start, or the first reader of a lost job (`step <step>: the job process is lost; log <path>`) |
 
 Handoff cost = `pre` of `compacted` minus `tokens` of `compact-requested`.
@@ -868,9 +895,10 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-25 | Each row counts the session's compactions: COMPACTIONS `<native>n/<horch>h` in the table, `native_compactions` and `horch_compactions` in `--json`. A marker is horch-driven when a `compacted` event is at or after it and at most 15 minutes after it; each event matches 1 marker; the rest are native. | W1 | ctx_25_counts_native_and_horch_compactions, ctx_25_cli_counts_native_and_horch_compactions |
 | CTX-26 | `horch context` with 10 sessions under 1 s; the `horch note` check under 0.5 s. | W1 | ctx_26_tail_read_is_bounded, ctx_26_marker_cache_reads_only_new_bytes |
 | CTX-27 | No CTX code reads, sets or passes `ANTHROPIC_API_KEY`; `runtime/context.rs` captures no `FORBIDDEN_ENV` name; live checks unset it. | W1 | ctx_27_no_api_key_in_context_policy_code |
-| CTX-28 | Every Claude pane horch launches carries the 3 context hooks of §4.6 in its `--settings` overlay, from the `hooks` entry of `harness-defaults.md`. `horch hook context` returns the `request` line (a worker) or `warning-orchestrator` (the orchestrator) as `PostToolBatch` `additionalContext` when the session's row is `over`, records `context-warned`, and is silent for the rest of the compaction cycle and under the threshold. `horch hook` always exits 0 and prints nothing in a pane with no record id. | W1 | ctx_28_every_claude_launch_carries_the_context_hooks, ctx_28_the_hook_asks_once_with_the_request_line, ctx_28_the_hook_is_silent_under_the_threshold |
-| CTX-29 | `horch hook pre-compact` prints the `instructions` or `instructions-orchestrator` keep-list for a compaction with no argument and nothing when `custom_instructions` is set. It never blocks a compaction. | W1 | ctx_29_pre_compact_is_silent_when_the_command_carries_instructions, ctx_29_pre_compact_prints_the_keep_list_for_a_bare_compaction |
-| CTX-30 | `horch hook post-compact` prints the `hydrate` line (or `hydrate-orchestrator`) and the handoff file, cut at 8,000 characters with the path of the rest, when the file passes the freshness rule of CTX-14; else the `hydrate-missing` line. The `resume` lines tell a session to read its handoff only when no `NOTE: Handoff` line is above. | W1 | ctx_30_hydration_cuts_a_long_handoff_and_names_the_file, ctx_30_post_compact_prints_a_fresh_handoff_or_says_it_is_missing, ctx_30_the_orchestrator_gets_its_own_first_line |
+| CTX-28 | Every Claude pane horch launches carries the 4 context hooks of §4.6 in its `--settings` overlay, from the `hooks` entry of `harness-defaults.md`. `horch hook context` returns the `request` line (a worker) or `warning-orchestrator` (the orchestrator) as `PostToolBatch` `additionalContext` when the session's row is `over`, records `context-warned`, and is silent for the rest of the compaction cycle and under the threshold. `horch hook` always exits 0 and prints nothing in a pane with no record id. | W1 | ctx_28_every_claude_launch_carries_the_context_hooks, ctx_28_the_hook_asks_once_with_the_request_line, ctx_28_the_hook_is_silent_under_the_threshold |
+| CTX-29 | `horch hook pre-compact` prints the `summary-format` line for every compaction, so the summary is a whats-next handoff in 6 sections; for a compaction with no argument the `instructions` or `instructions-orchestrator` keep-list comes first. It never blocks a compaction. | W1 | ctx_29_pre_compact_asks_for_a_whats_next_summary |
+| CTX-30 | `horch hook session-start` prints the `hydrate-summary` line (or `hydrate-summary-orchestrator`) after a compaction when the session has no current handoff file of its own, a file saved from a summary included; with one, the `hydrate` line (or `hydrate-orchestrator`) and the file, cut at 8,000 characters with the path of the rest. The `resume` lines tell a session to read its handoff only when no `NOTE: Handoff` line is above. | W1 | ctx_30_hydration_cuts_a_long_handoff_and_names_the_file, ctx_30_session_start_gives_the_written_handoff_or_points_at_the_summary, ctx_30_a_summary_file_is_not_printed_a_second_time, ctx_30_the_orchestrator_gets_its_own_first_line |
+| CTX-31 | `horch hook post-compact` saves `compact_summary`, without its `<analysis>` block and `<summary>` tags, as the session's handoff file with the mark line first, and records `whats-next-saved` `<path> from the <trigger> compaction summary; <n> characters`. It replaces a file saved from an earlier summary and never a current handoff file the session wrote. It prints nothing. | W1 | ctx_31_post_compact_saves_the_summary_as_the_whats_next_file, ctx_31_post_compact_keeps_a_handoff_the_session_wrote, ctx_31_the_summary_body_drops_the_analysis_and_the_tags |
 
 ### 10.2 HDF: harness defaults
 

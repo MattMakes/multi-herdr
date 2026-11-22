@@ -15,7 +15,9 @@ messages:
   resume: "NOTE: Compaction is complete. If no line that starts \"NOTE: Handoff\" is above this line, read {handoff} now. Then continue your task from its next step. Do not repeat finished steps."
   hydrate: "NOTE: Handoff. This session was compacted. Your handoff file {handoff} follows. Continue your task from its next step. Do not repeat finished steps. Where the summary is newer than the file, the summary is correct."
   hydrate-orchestrator: "NOTE: Handoff. This session was compacted. Your handoff file {handoff} follows. Read ai_docs/plans/<run-slug>/decisions.md. In a ledger run, rebuild roster and ownership from horch ledger status. Where the summary is newer than the file, the summary is correct."
-  hydrate-missing: "NOTE: Handoff. This session was compacted with no current handoff file: {handoff} is missing or older than your last context warning. Use the summary. Before you continue, read your plan or ticket file again and run git status."
+  hydrate-summary: "NOTE: Handoff. This session was compacted. The summary above is your whats-next. horch saved it as {handoff}. Continue your task from its next step. Do not repeat finished steps. Run git status before you trust a file state."
+  hydrate-summary-orchestrator: "NOTE: Handoff. This session was compacted. The summary above is your whats-next. horch saved it as {handoff}. Read ai_docs/plans/<run-slug>/decisions.md. In a ledger run, rebuild roster and ownership from horch ledger status. Then go on with the run."
+  summary-format: "Write the summary as the whats-next handoff of {role}, with these 6 sections in this order. 1. Request: the original request, later steering, the accepted scope and the constraints. 2. Done: the finished work with its files and symbols, and what is committed, uncommitted or temporary. 3. Checked: each verification command, its result and the state it ran on, and what was not run. 4. Next: the remaining tasks in dependency order with exact paths, and the 1 action to run first. 5. Avoid: failed approaches, observed errors and hypotheses not yet tested. 6. Pointers: the plan, ticket, design and report paths. Keep open questions apart from decisions. Write facts only, with exact paths, commands and identifiers."
   reported: "[horch] NOTE: {role} compacted. Context {pre} -> {post} tokens. Handoff: {handoff}."
   failed: "[horch] BLOCKED: Compaction of {role} failed at step {step}: {reason}. Log: {log}. Run horch compact {role} --request, or use horch ledger handoff."
 ---
@@ -28,13 +30,15 @@ horch types these lines into a pane for the context watch.
 | `request` | a worker | the orchestrator asks it to prepare for compaction, or the `PostToolBatch` hook of a Claude Code pane finds it at or over its threshold |
 | `warning` | a worker | its `horch note` call finds it at or over its threshold |
 | `warning-orchestrator` | the orchestrator | its own context is at or over its threshold |
-| `instructions` | a worker | the argument of `/compact`, where the harness takes one; the output of the `PreCompact` hook for a compaction with no argument |
+| `instructions` | a worker | the argument of `/compact`, where the harness takes one; the first line of the `PreCompact` hook output for a compaction with no argument |
 | `instructions-orchestrator` | the orchestrator | the argument of its own `/compact`; the `PreCompact` hook output |
 | `resume` | a compacted worker | after horch confirms the compaction |
 | `resume-orchestrator` | the compacted orchestrator | after compaction, with the command card |
-| `hydrate` | a compacted worker (Claude Code hook) | the first line of the text the `SessionStart` hook adds after any compaction; the handoff file follows it |
+| `summary-format` | the summary model (Claude Code hook) | the `PreCompact` hook prints it for every compaction, so the summary has the 6 sections of a whats-next handoff |
+| `hydrate` | a compacted worker (Claude Code hook) | the first line of the text the `SessionStart` hook adds after a compaction when the session wrote its own handoff file; the file follows it |
 | `hydrate-orchestrator` | the compacted orchestrator (Claude Code hook) | as `hydrate` |
-| `hydrate-missing` | a compacted session (Claude Code hook) | after a compaction with no current handoff file |
+| `hydrate-summary` | a compacted worker (Claude Code hook) | after a compaction with no handoff file of the session's own: the summary is the whats-next, and the `PostCompact` hook saved it |
+| `hydrate-summary-orchestrator` | the compacted orchestrator (Claude Code hook) | as `hydrate-summary` |
 | `reported` | the orchestrator | after a compaction succeeds |
 | `failed` | the orchestrator | after a compaction fails |
 
@@ -51,7 +55,7 @@ each line stays 1 line.
 | `NOTE: Your context is` | starts `request` |
 | `NOTE: Context warning` | starts `warning`, `warning-orchestrator` |
 | `NOTE: COMPACT-READY` | `request` and `warning` contain `[{role}] NOTE: COMPACT-READY {handoff}` |
-| `NOTE: Handoff` | starts `hydrate`, `hydrate-orchestrator`, `hydrate-missing`; `resume` and `resume-orchestrator` name it |
+| `NOTE: Handoff` | starts `hydrate`, `hydrate-orchestrator`, `hydrate-summary`, `hydrate-summary-orchestrator`; `resume` and `resume-orchestrator` name it |
 | `[horch] NOTE:` | starts `reported` |
 | `[horch] BLOCKED:` | starts `failed` |
 

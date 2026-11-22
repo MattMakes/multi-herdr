@@ -11,15 +11,20 @@
   `compact_at`. The fleet window of the Claude orchestrator is 200,000 (it
   was 300,000). Your own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still wins over the
   fleet window.
-- Claude Code panes use 3 hooks for compaction, with no turn of the
-  orchestrator. After a batch of tool calls, `horch hook context` asks a
-  session that is over its threshold to write its handoff file. Before a
-  compaction, `horch hook pre-compact` gives the summary its keep-list.
-  After a compaction, `horch hook post-compact` puts the handoff file back
-  into the context, so the session does not read it again. This also covers a
-  compaction that Claude Code starts by itself. The hooks are in
-  `teammates/_base/harness-defaults.md`. They are unit-tested and were not
-  yet run in a live fleet.
+- Claude Code panes compact through 4 hooks: precompact, whats-next,
+  compact, postcompact, hydrate. Before a compaction, `horch hook
+  pre-compact` tells the summary to be a whats-next handoff in 6 sections, so
+  the compaction itself writes the whats-next. After it, `horch hook
+  post-compact` saves that summary as `ai_docs/handoffs/<role>-whats-next.md`
+  and `horch hook session-start` tells the session that the summary is its
+  whats-next. A compaction that Claude Code starts by itself now costs no
+  turn of the session and no turn of the orchestrator, and the session does
+  not read the file again. `horch hook context` asks a session to stop at
+  its threshold only where Claude Code's own trigger is far above it, for
+  example with your own 500,000 window. The hooks are in
+  `teammates/_base/harness-defaults.md`. They ran in a headless Claude Code
+  2.1.330 session (`docs/live-checks/context.md`, part D) and not yet in a
+  fleet pane.
 - The fleet ceiling is Opus 5.5 at medium effort. 39 teammates that ran at
   `high` or `max` now run at `medium`; their models did not change. A
   teammate runs above the ceiling only with a `signoff: "<yyyy-mm-dd> <who>:

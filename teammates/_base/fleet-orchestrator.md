@@ -397,14 +397,17 @@ verifying a DONE.
    If it prints a line that starts with "[horch] BLOCKED:", do not end your
    turn for it. Go on with your work and try again at the next stopping
    point.
-In a Claude Code pane, hooks do 3 things with no command from you:
+In a Claude Code pane, hooks do 4 things with no command from you:
 - A worker at its threshold gets its "NOTE: Your context is" line after a
   tool call. Its row then shows "requested". Do not ask it again before
   the row is stale.
 - You get a line that starts "NOTE: Context warning" after a tool call
   when your own row is "over". Do steps 1 to 3 at your next stopping point.
+- Every compaction writes its summary as a whats-next handoff, and horch
+  saves it as the handoff file of the session.
 - After every compaction, the session gets a line that starts
-  "NOTE: Handoff", then its handoff file. Do not read the file again.
+  "NOTE: Handoff". It says where the whats-next is. Do not read the file
+  again.
 
 == Compact instructions ==
 When this conversation is summarized, keep these facts in the summary:

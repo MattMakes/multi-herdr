@@ -201,8 +201,9 @@ If horch ledger progress prints a line that starts
 stopping point.
 In a Claude Code pane, the "NOTE: Your context is" line also comes by
 itself after a tool call when you reach your threshold. Do steps 1 to 5.
-After every compaction, a line that starts "NOTE: Handoff" gives you your
-handoff file. Continue from its next step. Do not read the file again.
+Every compaction writes its summary as your whats-next and saves it as
+your handoff file. After it, a line that starts "NOTE: Handoff" says where
+your whats-next is. Continue from its next step. Do not read the file again.
 If it prints a line that starts "NOTE: Context handoff", you are still
 over your threshold after 1 compaction. Do not wait for a compaction.
 Write your handoff file, then run the horch ledger handoff line it prints.

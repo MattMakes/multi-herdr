@@ -1714,7 +1714,7 @@ mod tests {
         assert!(inbox_roles.reminds() && !inbox_mail.reminds());
         assert!(!parse(&["horch", "tile"]).reminds());
         assert!(!parse(&["horch", "worker", "r"]).watched());
-        let hook = parse(&["horch", "hook", "pre-compact"]);
+        let hook = parse(&["horch", "hook", "post-compact"]);
         assert!(!hook.reminds() && !hook.watched() && !hook.adopts_identity());
         assert!(!parse(&["horch", "install"]).watched());
         assert!(!parse(&["horch", "ledger", "watch"]).watched());

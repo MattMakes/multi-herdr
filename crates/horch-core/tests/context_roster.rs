@@ -5,17 +5,19 @@ use horch_core::harness::HarnessKind;
 use horch_core::prompts::context_message;
 use horch_core::roster::{Roster, Teammate};
 
-const MESSAGE_KEYS: [&str; 12] = [
+const MESSAGE_KEYS: [&str; 14] = [
     "request",
     "warning",
     "warning-orchestrator",
     "instructions",
     "instructions-orchestrator",
+    "summary-format",
     "resume",
     "resume-orchestrator",
     "hydrate",
     "hydrate-orchestrator",
-    "hydrate-missing",
+    "hydrate-summary",
+    "hydrate-summary-orchestrator",
     "reported",
     "failed",
 ];
