@@ -215,6 +215,13 @@ impl World {
             INSTALLED_PLUGINS_JSON,
         )
         .unwrap();
+        let ambient_git_config: Vec<_> = std::env::vars_os()
+            .map(|(key, _)| key)
+            .filter(|key| key.to_string_lossy().starts_with("GIT_CONFIG_"))
+            .collect();
+        for key in ambient_git_config {
+            std::env::remove_var(key);
+        }
         let mut saved = Vec::new();
         for (key, value) in PINNED {
             saved.push((key, std::env::var_os(key)));

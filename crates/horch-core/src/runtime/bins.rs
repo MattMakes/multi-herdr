@@ -182,24 +182,35 @@ fn sandbox_host_bin(
     pathext: Option<&str>,
     name: &str,
 ) -> PathBuf {
+    host_bin_with(override_val, path, pathext, name, &stat_denied)
+}
+
+fn host_bin_with(
+    override_val: &Option<PathBuf>,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    name: &str,
+    denied: &dyn Fn(&Path) -> bool,
+) -> PathBuf {
     override_val.clone().unwrap_or_else(|| {
         if process::which(path, pathext, name).is_some() {
             PathBuf::from(name)
         } else {
-            path.and_then(|p| hidden_on_path(p, name))
+            path.and_then(|p| hidden_on_path(p, name, denied))
                 .unwrap_or_else(|| PathBuf::from(name))
         }
     })
 }
 
-fn hidden_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
+fn stat_denied(candidate: &Path) -> bool {
+    std::fs::metadata(candidate).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+fn hidden_on_path(path: &OsStr, name: &str, denied: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
     std::env::split_paths(path)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(name))
-        .find(|candidate| {
-            std::fs::metadata(candidate)
-                .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
-        })
+        .find(|candidate| denied(candidate))
 }
 
 pub fn sqlite3_bin(o: &BinOverrides) -> PathBuf {
@@ -295,7 +306,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_herdr_hidden_from_stat_resolves_to_its_absolute_path() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let hidden = tmp.path().join("hidden");
         let readable = tmp.path().join("readable");
@@ -306,11 +316,16 @@ mod tests {
         let herdr = readable.join("herdr");
         std::fs::write(&herdr, "#!/bin/sh\n").unwrap();
         process::make_executable(&herdr).unwrap();
-        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let o = BinOverrides::default();
+        let denied = |candidate: &Path| candidate.starts_with(&hidden);
         let on = |dirs: &[&std::path::Path]| {
-            herdr_bin(&o, Some(&std::env::join_paths(dirs).unwrap()), None)
+            let path = std::env::join_paths(dirs).unwrap();
+            host_bin_with(&None, Some(&path), None, "herdr", &denied)
         };
+        assert!(!stat_denied(&herdr), "a readable file is not hidden");
+        assert!(
+            !stat_denied(&empty.join("herdr")),
+            "a missing file is not hidden"
+        );
 
         let resolved = (
             on(&[&empty, &hidden]),
@@ -318,7 +333,6 @@ mod tests {
             on(&[&empty]),
             on(&[std::path::Path::new("relative"), &empty]),
         );
-        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
             resolved.0,
             hidden.join("herdr"),

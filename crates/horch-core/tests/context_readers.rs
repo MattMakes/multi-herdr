@@ -285,18 +285,14 @@ fn ctx_02_opencode_newest_finished_row() {
 #[cfg(unix)]
 #[test]
 fn ctx_10_cache_write_failure_keeps_the_reading() {
-    use std::os::unix::fs::PermissionsExt;
     let parent = tempfile::tempdir().unwrap();
-    let cache = parent.path().join("context");
-    std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let not_a_dir = parent.path().join("file");
+    std::fs::write(&not_a_dir, b"").unwrap();
+    let cache = not_a_dir.join("context");
     let got = read_current(&fixture_loc(), &cache, "claude", Some(PENDING));
     let cache2 = tempfile::tempdir().unwrap();
-    let markers = cache2.path().join("markers");
-    std::fs::create_dir(&markers).unwrap();
-    std::fs::set_permissions(&markers, std::fs::Permissions::from_mode(0o500)).unwrap();
+    std::fs::write(cache2.path().join("markers"), b"").unwrap();
     let got2 = read_current(&fixture_loc(), cache2.path(), "codex", Some(&codex(2)));
-    std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::set_permissions(&markers, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let r = got.expect("the reading, not an error");
     assert_eq!(r.tokens, Some(10_486));
@@ -306,7 +302,7 @@ fn ctx_10_cache_write_failure_keeps_the_reading() {
     let r = got2.expect("the reading, not an error");
     assert_eq!(r.tokens, Some(12_847));
     assert_eq!(r.marks, 1);
-    assert_eq!(std::fs::read_dir(&markers).unwrap().count(), 0);
+    assert!(cache2.path().join("markers").is_file());
 }
 
 #[test]

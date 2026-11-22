@@ -58,7 +58,11 @@ pub fn world(part: Part) -> World {
         copy(&from, &to, part);
     }
     install_ledgers(&state);
-    let _ = build_opencode_db(&home.join(".local/share/opencode/opencode.db"));
+    let db = home.join(".local/share/opencode/opencode.db");
+    if build_opencode_db(&db).is_none() {
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        std::fs::write(&db, b"").unwrap();
+    }
     let loc = locations(&home);
     World {
         _tmp: tmp,

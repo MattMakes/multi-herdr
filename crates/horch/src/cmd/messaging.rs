@@ -1534,10 +1534,9 @@ mod tests {
 
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
                 let broken = w.tmp.path().join("broken-roster");
-                std::fs::create_dir_all(&broken).unwrap();
-                std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o000)).unwrap();
+                std::fs::create_dir_all(broken.join("system_prompt")).unwrap();
+                std::fs::write(broken.join("system_prompt/unreadable.md"), [0xff]).unwrap();
                 let bad = World::with_env(&fixture_home(), |e| {
                     e.with("HORCH_TEAMMATES_DIR", &broken.to_string_lossy())
                 });
@@ -1545,7 +1544,6 @@ mod tests {
                 bad.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
                 bad.ledger.note("r-1", "x").unwrap();
                 let line = quiet_note_check(&bad.ctx, "r-1");
-                std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o700)).unwrap();
                 assert_eq!(line, None);
                 assert_eq!(bad.events("r-1", "note"), ["x"]);
             }
@@ -1573,14 +1571,12 @@ mod tests {
 
         #[cfg(unix)]
         #[test]
-        fn ctx_10_note_warns_with_a_read_only_cache_dir() {
-            use std::os::unix::fs::PermissionsExt;
+        fn ctx_10_note_warns_when_the_cache_dir_cannot_be_written() {
             let w = World::new();
             w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
-            std::fs::create_dir_all(&w.cache).unwrap();
-            std::fs::set_permissions(&w.cache, std::fs::Permissions::from_mode(0o500)).unwrap();
+            std::fs::create_dir_all(w.cache.parent().unwrap()).unwrap();
+            std::fs::write(&w.cache, b"").unwrap();
             let line = note_in(&w, "r-1", "x");
-            std::fs::set_permissions(&w.cache, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert_eq!(line, Some(sonnet_warning(&w)));
             assert!(!w.cache.join("markers").exists());
         }

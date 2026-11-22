@@ -75,14 +75,12 @@ fn created_a_workspace(h: &Harness) -> bool {
 #[cfg(unix)]
 #[test]
 fn a_fleet_whose_roster_fails_to_load_creates_no_workspace() {
-    use std::os::unix::fs::PermissionsExt;
     let mut h = harness("f217-roster", "");
     let teammates = h.root.join("teammates");
-    std::fs::create_dir_all(&teammates).unwrap();
-    std::fs::set_permissions(&teammates, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::create_dir_all(teammates.join("system_prompt")).unwrap();
+    std::fs::write(teammates.join("system_prompt/unreadable.md"), [0xff]).unwrap();
     h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
     let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
-    std::fs::set_permissions(&teammates, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
     let reason = format!("loading teammates from {}", teammates.display());
     assert!(err(&o).contains(&reason), "{}", err(&o));
