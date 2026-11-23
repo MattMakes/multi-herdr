@@ -422,6 +422,10 @@ pub(crate) fn mode_of(_meta: &Metadata) -> Result<u32, NotSupported> {
     Err(NOT_SUPPORTED)
 }
 
+pub(crate) fn link_count(_meta: &Metadata) -> Result<u64, NotSupported> {
+    Err(NOT_SUPPORTED)
+}
+
 pub(crate) fn current_uid() -> Result<u32, NotSupported> {
     Err(NOT_SUPPORTED)
 }

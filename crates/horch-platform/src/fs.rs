@@ -76,6 +76,10 @@ pub fn mode_of(meta: &Metadata) -> Result<u32, NotSupported> {
     os::mode_of(meta)
 }
 
+pub fn link_count(meta: &Metadata) -> Result<u64, NotSupported> {
+    os::link_count(meta)
+}
+
 pub fn current_uid() -> Result<u32, NotSupported> {
     os::current_uid()
 }

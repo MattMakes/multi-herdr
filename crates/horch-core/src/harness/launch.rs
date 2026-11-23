@@ -627,13 +627,52 @@ fn agent_git_env(ctx: &RuntimeContext, teammate: &Teammate) -> Result<Vec<(Strin
     Ok(launch_env::git_env(&ctx.paths.fleet_root).to_vec())
 }
 
+const HOOK_MODE: u32 = 0o755;
+
 pub fn write_agent_hooks(fleet_root: &Path) -> Result<PathBuf> {
+    let uid = horch_platform::fs::current_uid().ok();
+    write_changed_hooks(fleet_root, uid, |path, text| {
+        Ok(crate::fsx::write_atomic(path, text, HOOK_MODE)?)
+    })
+}
+
+fn write_changed_hooks(
+    fleet_root: &Path,
+    uid: Option<u32>,
+    mut write: impl FnMut(&Path, &[u8]) -> Result<()>,
+) -> Result<PathBuf> {
     let dir = launch_env::hooks_dir(fleet_root);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     for (name, text) in launch_env::hook_files() {
-        crate::fsx::write_atomic(&dir.join(name), text.as_bytes(), 0o755)?;
+        let path = dir.join(name);
+        if !hook_is_current(&path, text.as_bytes(), uid) {
+            write(&path, text.as_bytes())?;
+        }
     }
     Ok(dir)
+}
+
+fn hook_is_current(path: &Path, text: &[u8], uid: Option<u32>) -> bool {
+    use std::io::Read as _;
+    let Ok(file) = horch_platform::fs::open_no_follow(path) else {
+        return false;
+    };
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    let owner = horch_platform::fs::owner_and_mode(&meta).ok();
+    let guarded = meta.is_file()
+        && horch_platform::fs::link_count(&meta).ok() == Some(1)
+        && owner.is_some_and(|o| Some(o.uid) == uid && o.mode & 0o7777 == HOOK_MODE);
+    if !guarded {
+        return false;
+    }
+    let mut bytes = Vec::with_capacity(text.len());
+    (&file)
+        .take(text.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_ok()
+        && bytes == text
 }
 
 fn launch_workdir(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> PathBuf {
@@ -1269,6 +1308,102 @@ pub fn sandbox_host_problem(ctx: &RuntimeContext) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn written_hooks(fleet: &Path, uid: u32) -> Vec<String> {
+        let mut names = Vec::new();
+        write_changed_hooks(fleet, Some(uid), |path, text| {
+            names.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            Ok(crate::fsx::write_atomic(path, text, HOOK_MODE)?)
+        })
+        .unwrap();
+        names
+    }
+
+    #[cfg(unix)]
+    fn hook_world() -> (tempfile::TempDir, PathBuf, PathBuf, u32) {
+        let tmp = tempfile::tempdir().unwrap();
+        let fleet = tmp.path().join("fleet");
+        let uid = horch_platform::fs::current_uid().unwrap();
+        let all = written_hooks(&fleet, uid);
+        assert_eq!(all.len(), launch_env::hook_files().count());
+        let hook = launch_env::hooks_dir(&fleet).join("pre-push");
+        (tmp, fleet, hook, uid)
+    }
+
+    #[cfg(unix)]
+    fn assert_only_pre_push_is_rewritten(fleet: &Path, hook: &Path, uid: u32, text: &str) {
+        assert_eq!(written_hooks(fleet, uid), ["pre-push"]);
+        let meta = std::fs::symlink_metadata(hook).unwrap();
+        assert!(meta.is_file());
+        assert_eq!(horch_platform::fs::link_count(&meta).unwrap(), 1);
+        assert_eq!(
+            horch_platform::fs::mode_of(&meta).unwrap() & 0o7777,
+            HOOK_MODE
+        );
+        assert_eq!(std::fs::read_to_string(hook).unwrap(), text);
+        assert!(written_hooks(fleet, uid).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_equal_hook_is_not_written() {
+        let (_tmp, fleet, _, uid) = hook_world();
+        assert!(written_hooks(&fleet, uid).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_with_other_bytes_is_rewritten() {
+        let (_tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+        std::fs::write(&hook, format!("{text}\n")).unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_with_another_mode_is_rewritten() {
+        let (_tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        for mode in [0o644, 0o775, 0o4755] {
+            horch_platform::fs::set_mode(&hook, mode).unwrap();
+            assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_an_equal_hook_is_rewritten() {
+        let (tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        let other = tmp.path().join("other");
+        std::fs::rename(&hook, &other).unwrap();
+        std::os::unix::fs::symlink(&other, &hook).unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_with_a_second_hard_link_is_rewritten() {
+        let (tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        std::fs::hard_link(&hook, tmp.path().join("other")).unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_of_another_owner_is_rewritten() {
+        let (_tmp, fleet, _, uid) = hook_world();
+        assert_eq!(
+            written_hooks(&fleet, uid + 1).len(),
+            launch_env::hook_files().count()
+        );
+    }
 
     fn skill_ref(
         id: &str,
