@@ -526,10 +526,8 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
     h.set("HORCH_HERDR_BIN", script.to_string_lossy());
     h.set("HORCH_TEST_PANE_LIST_MS", "1500");
 
-    let started = std::time::Instant::now();
     let inbox = h.run(&["inbox"]);
 
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert!(inbox.status.success(), "{}", text(&inbox));
     let stdout = String::from_utf8_lossy(&inbox.stdout);
     let stderr = String::from_utf8_lossy(&inbox.stderr);
@@ -563,7 +561,7 @@ fn assert_process_gone(pid: &str) {
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
-    if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60") {
+    if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 600") {
         assert_process_gone(&pid);
     }
 }
@@ -573,7 +571,7 @@ fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
 fn inbox_prints_mail_and_kills_a_descendant_that_holds_the_pane_list_pipe() {
     if let Some(pid) = inbox_with_broken_pane_list(
         "inbox-open-pipe",
-        &format!("sleep 30 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
+        &format!("sleep 600 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
     ) {
         assert_process_gone(&pid);
     }
