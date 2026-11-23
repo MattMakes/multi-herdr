@@ -202,6 +202,10 @@ pub(crate) fn mode_of(meta: &Metadata) -> Result<u32, NotSupported> {
     Ok(meta.permissions().mode())
 }
 
+pub(crate) fn link_count(meta: &Metadata) -> Result<u64, NotSupported> {
+    Ok(meta.nlink())
+}
+
 pub(crate) fn current_uid() -> Result<u32, NotSupported> {
     // SAFETY: getuid has no preconditions and cannot fail.
     Ok(unsafe { libc::getuid() })
