@@ -5,7 +5,7 @@ Report id: FM-6. Size: M.
 
 Path short forms: `TL` is `crates/horch-core/src/taskledger`, `H` is
 `crates/horch-core/src/harness`, and `CMD` is `crates/horch/src/cmd`. A `CODE` label without a
-commit is at MAIN `06930d95`.
+commit is at MAIN `06930d95`. `Stop` here is a `turn stop`: the end of 1 model turn, not a signal.
 
 ## Problem
 
@@ -115,17 +115,14 @@ Do not copy these 2 defects of FINISH:
      wait row is only a copy that `sync_questions` writes [CODE `TL/workers.rs:751`].
    - f. The newest agent `progress` event of this worker starts with `handoff:` and is at most
      900 s old. This is the compaction path [CODE `teammates/_base/fleet-worker.md:193-196`].
-3. **H07-R3.** In every other case with `stop_hook_active: false`, the command refuses. The reason
-   text names the task and gives the 3 valid actions: run `horch ledger finish`, record
-   `horch ledger progress "waiting: <what>"`, or send `QUESTION:`.
+3. **H07-R3.** In every other case with `stop_hook_active: false`, the command refuses. The reason text names the task and gives the 3 valid actions: run `horch ledger finish` and, when every step passes, run `horch ledger done`; record `horch ledger progress "waiting: <what>"`; or send `QUESTION:`. A passed finish leaves the status `working` until `done` (`CODE TL/finish/mod.rs:730`, `:1028`).
 4. **H07-R4.** The limit is 1 refusal for each incoming prompt. With `stop_hook_active: true`, the
    command always allows. Both CLIs supply this field [MEASURED, binary schema and strings]. This
    limit needs no counter and no schema change.
 5. **H07-R5.** When R4 allows a stop that R2 does not allow, the command queues 1 notice to the
    orchestrator with `mail::queue_notice` [CODE `crates/horch-core/src/messaging/mail.rs:682`].
    The notice names the worker and the task.
-6. **H07-R6.** The command fails open. On each error (bad JSON, ledger error, roster error, mail
-   error) it prints nothing on stdout and exits 0.
+6. **H07-R6.** The command fails open. On each error (bad JSON, ledger error, roster error, mail error) it prints nothing on stdout and exits 0. It appends 1 line to `<state root>/turn-gate-errors.log`, because the hook sends stderr to `/dev/null`. At 64 KiB, it moves the file to `.1`. A failed append is ignored.
 7. **H07-R7.** The command writes nothing to the ledger. It opens the ledger with
    `Store::open_read_only` [CODE `TL/store.rs:160`] and sets a busy timeout of 2 s. It must not
    call `workers::waiting`, because that function deletes expired rows [CODE `TL/workers.rs:670-671`].
@@ -136,9 +133,8 @@ Do not copy these 2 defects of FINISH:
    [CODE `H/codex.rs:1084`]. MAIN already passes `--dangerously-bypass-hook-trust`
    [CODE `H/codex.rs:1097`], and the `hooks` feature is stable and on in Codex 0.166.0 [MEASURED].
 10. **H07-R10.** horch installs the hook only when the child environment has a non-empty
-    `HORCH_WORKER_ID`, and only on Unix. The hook command is
-    `'<horch>' ledger turn-check 2>/dev/null || true`. The `|| true` makes an old `horch` allow the
-    stop. Windows keeps its behavior of today, because `|| true` needs a POSIX shell.
+    `HORCH_WORKER_ID`, and only on Unix. The hook command is `<quoted horch> ledger turn-check 2>/dev/null || true`. `PaneShell::Posix.quote` (`CODE crates/horch-core/src/workspace/paneshell.rs:86`) quotes the path.
+    The `|| true` makes an old `horch` allow the stop. Windows keeps its behavior of today, because `|| true` needs a POSIX shell.
 11. **H07-R11.** `turn-check` does not start the watchdog and does not print mail reminders. Output
     from either would corrupt the hook answer [CODE `crates/horch/src/main.rs:873`, `:883`].
 12. **H07-R12.** The refusal and notice texts live in `teammates/_base/context-messages.md`. Rust
@@ -170,6 +166,7 @@ This fix adds no operator setting. It adds 3 constants:
 1. Refusals for each prompt: 1. The reason text is complete, so a second refusal adds cost only.
 2. Handoff window: 900 s. It covers the delay from `COMPACT-READY` to the compaction, and no more.
 3. Ledger busy timeout: 2 s. A hook must not hold the end of a turn for the 30 s default.
+4. Diagnostic file limit: 64 KiB, so a repeated error cannot fill the disk.
 
 ### Not ported
 
@@ -229,7 +226,7 @@ test fails at `out.status.success()`, because the command exits 2 (step M3).
 Each test is NOT RUN, because the run limits forbid `cargo`. "MAIN today" is the result of the same
 test on MAIN. On MAIN, `turn-check` exits 2 with `unrecognized subcommand`.
 
-1. **V1 (H07-R1, H07-R3). NOT RUN.** The test of `## Reproduce` passes. MAIN today: fails.
+1. **V1 (H07-R1, H07-R3). NOT RUN.** The test of `## Reproduce` passes. A second test completes finish, gets 1 refusal that names `horch ledger done`, runs done, then gets an allow. MAIN today: fails.
 2. **V2 (H07-R2). NOT RUN.** A table test of `turn_gate::decide` covers cases a to f and the
    opposite of each. A `handoff:` event of 901 s refuses. A `reviewers` wait with all review tasks
    done refuses. MAIN today: does not compile, no such module.
@@ -239,8 +236,7 @@ test on MAIN. On MAIN, `turn-check` exits 2 with `unrecognized subcommand`.
    stdout. MAIN today: exit 2.
 5. **V5 (H07-R5). NOT RUN.** After V4, the orchestrator mailbox has 1 notice with the role and the
    task. After an allow from H07-R2, it has 0 notices. MAIN today: exit 2 and 0 notices.
-6. **V6 (H07-R6). NOT RUN.** Invalid JSON, and a missing ledger file, each exit 0 with empty
-   stdout. MAIN today: exit 2.
+6. **V6 (H07-R6). NOT RUN.** Invalid JSON, a missing ledger file, and a denied mail folder (`chmod 000`, to model a sandbox denial) each exit 0 with empty stdout and add 1 diagnostic line. MAIN today: exit 2.
 7. **V7 (H07-R7). NOT RUN.** With an expired wait row, the command refuses and the row still
    exists. MAIN today: exit 2 and no refusal JSON.
 8. **V8 (H07-R8). NOT RUN.** With `settings_arg` and `turn_gate: true` on each of the 3 routes,
@@ -248,7 +244,7 @@ test on MAIN. On MAIN, `turn-check` exits 2 with `unrecognized subcommand`.
 9. **V9 (H07-R9). NOT RUN.** `config_pairs` of a Codex launch holds `hooks.Stop=...`, after the
    teammate args. MAIN today: the pair is absent.
 10. **V10 (H07-R10). NOT RUN.** A launch with `HORCH_WORKER_ID` has the exact command with
-    `|| true`. MAIN today: fails. A launch without it has no hook, and the files in
+    `|| true`, for paths with a space, a quote, `$` and a newline. MAIN today: fails. A launch without it has no hook, and the files in
     `crates/horch-core/tests/oracles/launch/` do not change. MAIN today: passes, so this half
     only guards against a regression.
 11. **V11 (H07-R11). NOT RUN.** With a pending reminder and no watchdog, stdout is empty or 1 JSON
@@ -279,8 +275,7 @@ checks on 2 CLIs.
 Risks:
 1. **K1. A false `waiting:` can hide a stalled worker for 24 h** [CODE `TL/workers.rs:377`]. Today
    that worker is reaped in about 33 min. Land spec 03 (wait caps) before this spec or with it.
-2. **K2. The Codex sandbox can block the ledger read or the notice** [NOT VERIFIED]. H07-R6 then
-   allows each stop, so the fix has no effect on Codex and shows no error. V-M2 detects this.
+2. **K2. The Codex sandbox can block the ledger read or the notice** [NOT VERIFIED]. H07-R6 then allows each stop and writes a diagnostic line. If the sandbox also blocks that file, no error shows. V-M2 detects this.
 3. **K3. Codex `-c hooks.Stop` can replace other Stop hooks of the session** [NOT VERIFIED]. The
    operator's Codex config has 0 Stop hooks today [MEASURED].
 4. **K4. A Stop hook can fire on a usage-limit message** [NOT VERIFIED]. Claude has a separate
@@ -288,9 +283,7 @@ Risks:
 5. **K5. A prompt to a working worker with no wait can cost 1 more model turn.**
 6. **K6. The benefit is small:** 7 reaps in 23 days (0.17% of claims).
 
-Files that other specs can also change: `TL/workers.rs` (spec 03). I did not read the other specs
-for `CMD/taskledger.rs`, `crates/horch/src/main.rs`, `H/launch.rs`, `H/claude.rs` and `H/codex.rs`.
-Compare them when the guide orders the work.
+Files that other specs also change: `TL/workers.rs` (spec 03), `CMD/taskledger.rs` (specs 01, 06, 08 and 10), `H/codex.rs` (spec 01) and `TL/mod.rs` (specs 06 and 10).
 
 Open questions for the operator:
 1. **Q1.** Do you accept 1 extra model turn when a worker stops with no recorded wait (K5)? I

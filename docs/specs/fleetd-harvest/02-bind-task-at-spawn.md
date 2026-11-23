@@ -150,12 +150,8 @@ After the row ends, `startable_rewake` wakes the orchestrator within 120 s plus 
    - Add `pub fn bind_spawn(conn, run_id, worker_id) -> Result<SpawnBind>`. It calls `spawn_refusal`
      and returns `Refused(why)` on `Some`. It then calls `pick_task`. On `None` it returns
      `Refused`. On a task it writes `workers.target_task_id` and returns `Bound(task_id)`.
-2. `crates/horch/src/cmd/taskledger_spawn.rs`: in `insert_row`, when `args.task.trim().is_empty()`,
-   call `tasks::bind_spawn` in the `store.immediate` closure of `workers::insert`. On
-   `Refused(why)`, call `workers::launch_failed` there with `horch spawn refused: {why}`. Add
-   `pub refused: Option<String>` to `LedgerSpawn`.
-3. `crates/horch/src/cmd/spawn.rs`: change `refuse_over_plan` to bail with `l.refused`. The later
-   `l.launch_failed` is a no-op [CODE `crates/horch-core/src/taskledger/workers.rs:252`].
+2. `crates/horch/src/cmd/taskledger_spawn.rs`: `insert_row` returns `Result<(String, Option<String>)>`: the worker id and the refusal. When `args.task.trim().is_empty()`, it calls `tasks::bind_spawn` in the `store.immediate` closure of `workers::insert`. On `Refused(why)`, it calls `workers::launch_failed` there with `horch spawn refused: {why}` and returns `Some(why)`. `prepare` destructures the pair and sets the new field `pub refused: Option<String>` of `LedgerSpawn`.
+3. `crates/horch/src/cmd/spawn.rs`: in `refuse_before_launch` (spec 08), the first test bails with `l.refused`, in place of `refuse_over_plan`. A disk check runs only after it. The later `l.launch_failed` is a no-op [CODE `crates/horch-core/src/taskledger/workers.rs:252`].
 4. `crates/horch-e2e/tests/taskledger.rs` and the `tests` module of `tasks.rs`: add the tests.
 
 ### Settings
@@ -214,8 +210,8 @@ Expected on MAIN [NOT VERIFIED]: the test fails at the first assertion with `lef
 
 ### Manual (NOT RUN)
 
-Warning: this starts 2 real agents. Use a scratch repository, a separate herdr workspace and a
-scratch `HORCH_LEDGER_DB`, because a development build can migrate the shared ledger.
+These steps start no agent. Use a scratch repository and a scratch `HORCH_LEDGER_DB`, because a
+development build can migrate the shared ledger.
 
 1. NOT RUN. Build MAIN, then set `H=<checkout>/target/debug/horch`.
 2. NOT RUN. In a scratch git repository, run `export HORCH_LEDGER_DB=/tmp/h02/ledger.sqlite3`.
@@ -225,10 +221,10 @@ scratch `HORCH_LEDGER_DB`, because a development build can migrate the shared le
 6. NOT RUN. Run `$H ledger add --file tickets/02-b.md --primary codex-sol --own src/shared.rs`.
 7. NOT RUN. Run `$H ledger plan-workers`. MAIN prints:
    `codex-sol: spawn 1 (1 can start, 0 on the way).` and `opus: spawn 1 (1 can start, 0 on the way).`
-8. NOT RUN. Run `$H spawn codex-sol --run h02; $H spawn opus --run h02` as 1 line.
-   MAIN starts both workers.
-9. NOT RUN. Wait for the claims, then run `$H ledger status`. MAIN shows `codex-sol-1` as `no_task` with
-   the reason `no task for persona codex-sol` [NOT VERIFIED].
+8. NOT RUN. Run `A=$($H ledger worker new --persona codex-sol)`, then
+   `B=$($H ledger worker new --persona opus)`. No agent runs, so neither row claims early.
+9. NOT RUN. Run `HORCH_WORKER_ID=$A $H ledger claim`. MAIN ends `A` as `no_task` with the reason
+   `no task for persona codex-sol`, because task 01 holds the slot [NOT VERIFIED].
 
 ## Validate
 
@@ -244,7 +240,7 @@ Add the core tests to the `tests` module of `tasks.rs`, with its helpers `queue`
    8 threads insert and bind, with 3 tasks. Assert 3 `Bound` and 5 `Refused`. MAIN has no
    `bind_spawn`. To show the fault on MAIN, insert 2 rows for 1 task: `spawn_refusal` refuses both.
 3. NOT RUN. **H02-R2:** `h02_r2_a_spawn_with_no_task_opens_no_pane`. Assert a non-zero exit, 0 fake
-   agent calls and `launch_failed`. MAIN passes, so this test only guards behavior.
+   agent calls, `launch_failed`, and `LedgerSpawn.refused` is `Some` here and `None` on a bound spawn. MAIN has no field.
 4. NOT RUN. **H02-R3:** `h02_r3_a_reservation_blocks_a_conflicting_task`. Queue A and B with 1 same
    `Own` path, and bind a `q` worker to B. Assert `startable` is `[B]`. MAIN gives `[A, B]`.
 5. NOT RUN. **H02-R3:** `h02_r3_an_exclusive_reserved_task_stays_startable_for_its_holder`. Bind to
@@ -259,11 +255,11 @@ Add the core tests to the `tests` module of `tasks.rs`, with its helpers `queue`
 
 ### Manual (NOT RUN)
 
-Repeat steps 1 to 8 of the manual reproduction with the fixed build.
+Repeat steps 1 to 7 of the manual reproduction with the fixed build. Warning: step 2 starts 1 agent.
 
 1. NOT RUN. Step 7 prints the same 2 lines.
-2. NOT RUN. Step 8 starts `codex-sol-1`. The second spawn exits non-zero and prints
-   `horch spawn refused: persona opus has 0 startable task(s), ...`. MAIN starts both.
+2. NOT RUN. Run `$H spawn codex-sol --run h02; $H spawn opus --run h02`. The second spawn exits
+   non-zero and prints `horch spawn refused: persona opus has 0 startable task(s), ...`. MAIN starts both.
 3. NOT RUN. `$H ledger status` shows `codex-sol-1` as `working` on T-2. MAIN shows `no_task`.
 4. NOT RUN. After T-2 finishes, `$H ledger plan-workers` prints `opus: spawn 1`. MAIN does too.
 
@@ -290,7 +286,7 @@ Size: S, 0.5 to 1 worker-day. The change is about 60 lines in 3 files, plus test
    folders found none [MEASURED]. Inline `src` tests were not searched. A full test run must confirm.
 4. **R4: the value is small.** The remaining path has 0 recorded occurrences in 515 spawns.
 
-Other specs that can change a file here: 08 and 06 can change `crates/horch/src/cmd/spawn.rs`.
+Spec 08 also changes `crates/horch/src/cmd/spawn.rs`, and specs 06 and 08 change `tasks.rs`.
 
 Open questions for the operator:
 

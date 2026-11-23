@@ -8,7 +8,7 @@ Path short forms: `TL` is `crates/horch-core/src/taskledger`. `CMD` is `crates/h
 `crates/horch-core/src/fleetd` at FINISH.
 
 Labels: `CODE` (read at the pinned commit), `MEASURED` (read-only query, 2026-11-22), `REPORT`,
-`NOT VERIFIED`. No `cargo` command ran for this spec, so each test step is `NOT RUN`.
+`NOT VERIFIED`. No `cargo` command ran for this spec, so each test step is `NOT RUN`. Here, `check` means a `watchdog check`: 1 observation of 1 worker.
 
 ## Problem
 
@@ -129,24 +129,27 @@ worker holds a review, and asks the waiter to respond before horch reaps it.
 7. H03-R7. The third `no_progress` check reaps the worker through the existing path.
 8. H03-R8. A ledger call before round 3 resets the rounds. A `waiting:` line opens a new 2 h wait.
 9. H03-R9. A stall with no wait before it keeps the behavior of MAIN: round 1 wakes the orchestrator.
-10. H03-R10. The detached finish wait keeps its limit of `3 * check + 3600` s.
+10. H03-R10. A detached finish keeps its wait limit of `3 * task check timeout + 3600` s. An agent
+    `progress` line during the finish does not replace or clear that wait.
 11. H03-R11. A dead agent process is still `dead` at the first check, with or without a wait.
 
 ### Files of MAIN to change
 
 1. `TL/workers.rs`
    - Add `pub const BACKGROUND_WAIT_SECS: i64 = 2 * 3600;` and use it in `progress` (line 377).
+   - In `progress`, skip `set_wait` and `clear_wait` when the `background` row has the reason
+     `detach::FINISH_WAIT_REASON`. Do not add a wait kind: `kind` has a `CHECK` list (`CODE TL/schema.rs:370`).
    - Add `pub const QUESTION_WAIT_SECS: i64 = 12 * 3600;`. Set `REVIEWS_WAIT_SECS` to `2 * 3600`.
    - Add `pub fn renew_review_waits(conn, worker) -> Result<()>` for H03-R3.
    - In `sync_questions` (line 751), search from the newest with `.iter().rev()`, because
      `open_questions` sorts oldest first (`CODE crates/horch-core/src/messaging/mail.rs:317`).
    - In `sync_questions`, if the question is past the cap, call `clear_wait` and go to the next worker.
 2. `TL/finish/codesweep.rs:618` and `TL/finish/comments.rs:96`: use `workers::REVIEWS_WAIT_SECS`.
+   `TL/finish/detach.rs`: add `FINISH_WAIT_REASON`. `CMD/taskledger_finish.rs:124`: use it.
 3. `TL/watchdog.rs`
    - In `check_worker` (line 183), call `workers::renew_review_waits` before `workers::waiting`.
    - Add `after_wait: bool` and the ended wait reason to `Checked` (line 59). `after_wait` is true
-     when the newest check with `round = 0` has a note that starts with `waiting:`. Read it before
-     `record_check`.
+     when the newest check with `round = 0` has a note that starts with `waiting:`. Read it before `record_check`.
 4. `CMD/taskledger_watch.rs`, `act_on` (line 264): add 2 match arms before the `first_stall` arm.
    - `"no_progress" if c.after_wait && c.round == 1` calls the new `tell_waiter`.
    - `"no_progress" if c.after_wait && c.round == 2` wakes the orchestrator.
@@ -168,17 +171,15 @@ at the same 7-day limit. `CODE crates/horch-core/src/messaging/mail.rs:14`, `:30
 No new user setting and no schema change. The 3 constants are:
 
 1. Background wait: 2 h. Of 99 streaks, 10 reached 2 h (`MEASURED`). A healthy waiter answers 1 line.
-   The default detached finish limit is also 2 h (3 x 20 min + 1 h). `CODE TL/finish/land.rs:21`
+   The default detached finish limit is also 2 h (3 x 20 min + 1 h). `CODE TL/finish/land.rs:21`, `CMD/taskledger_finish.rs:119-127`
 2. Reviewers wait: 2 h after the last live review. A live review has its own watchdog check.
 3. Question wait: 12 h. This covers a night without a reap. Of 15 streaks, 1 reached 12 h (`MEASURED`).
 
 ### Not ported
 
 - Leases, the fleet clock and `due_at`: the `deadline` column already holds the limit.
-- The child-process proof: no source shows that a background command of each harness stays in the
-  agent process group (`NOT VERIFIED`). The message to the waiter works for each harness.
-- A queued review as a proof: no worker is active on it. The startable wake covers a queued task.
-  `CODE TL/watchdog.rs:707`
+- The child-process proof: no source shows that a background command of each harness stays in the agent process group (`NOT VERIFIED`). The message to the waiter works for each harness.
+- A queued review as a proof: no worker is active on it. The startable wake covers a queued task. `CODE TL/watchdog.rs:707`
 
 ### Effect at upgrade
 
@@ -220,8 +221,8 @@ Warning: use a scratch project and set `HORCH_LEDGER_DB` to a scratch file.
 2. NOT RUN. In the worker pane, run `horch ledger progress "waiting: manual test"`.
 3. NOT RUN. Run `sqlite3 -readonly "$HORCH_LEDGER_DB" "select kind, started_at, deadline from worker_waits"`.
    MAIN prints a `background` row with a deadline 24 h after `started_at`.
-4. NOT RUN. Leave the worker idle for 2 checks (20 min). Run `horch ledger status`. MAIN still shows
-   `waiting: manual test`, and the `checks` table has verdict `progress`.
+4. NOT RUN. Run `HORCH_NOW=<started_at + 3 h> horch ledger watch --run <slug> --once --force --json`.
+   MAIN prints verdict `progress`, because its 24 h wait is open. The fix prints `no_progress`.
 
 ## Validate
 
@@ -246,11 +247,13 @@ the step names another file. "MAIN" is the result before the fix.
 9. NOT RUN. H03-R8: a `waiting:` line after round 1 gives `progress` and a new 2 h deadline. MAIN
    gives `progress`, and the 2 h assertion fails with 24 h.
 
-These 4 tests guard existing behavior. They pass on MAIN, so they do not prove the fix:
+10. NOT RUN. H03-R10: during a detached finish, send `waiting: x`, then a plain progress line. The
+    finish deadline does not change. MAIN fails: the first line replaces it, and the second clears it.
 
-10. NOT RUN. H03-R7: the third check gives `dead` and the task is queued again.
-11. NOT RUN. H03-R9: a stall with no earlier wait wakes the orchestrator at round 1.
-12. NOT RUN. H03-R10: a finish wait with a limit above 2 h keeps its deadline after 1 check.
+These 3 tests guard existing behavior. They pass on MAIN, so they do not prove the fix:
+
+11. NOT RUN. H03-R7: the third check gives `dead` and the task is queued again.
+12. NOT RUN. H03-R9: a stall with no earlier wait wakes the orchestrator at round 1.
 13. NOT RUN. H03-R11: a dead process during a wait gives `dead`.
 
 Manual steps after the fix, in the scratch project:
@@ -279,10 +282,9 @@ Estimate: 1 worker-day.
   gets 1 message. A waiter that does not answer within 2 checks is reaped and uses 1 of 3 attempts.
 - R2. A reap of a question waiter closes its pane. The replacement reads the answer from task history.
 - R3. The message costs 1 agent turn for each 2 h of a long wait.
-- R4. A `waiting:` line during a detached finish replaces the finish limit with 2 h, because both use
-  kind `background` (`CODE TL/finish/detach.rs:7`). The worst result is 1 extra message.
-- R5. A typed message can move herdr's state counter, which counts as a proxy checkin. A stuck agent
-  then gets about 10 min more before the reap. `NOT VERIFIED`
+- R4. A detached finish that dies keeps its wait until the next `finish` or the deadline, because
+  `progress` no longer clears it (`CODE TL/finish/detach.rs:7`, `TL/workers.rs:379`).
+- R5. A typed message can move herdr's state counter, a proxy checkin. A stuck agent then gets about 10 min more. `NOT VERIFIED`
 
 Files that other specs of this run can also change:
 

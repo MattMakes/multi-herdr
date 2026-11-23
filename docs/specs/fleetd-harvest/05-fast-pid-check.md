@@ -5,6 +5,7 @@ Report id: FM-4. Size: S.
 
 Paths: `TL` is `crates/horch-core/src/taskledger`. `CMD` is `crates/horch/src/cmd`.
 Labels: `CODE`, `MEASURED`, `REPORT`, `NOT VERIFIED`. Each `CODE` label without a commit is at MAIN.
+Here, `check` means a `watchdog check`: 1 observation of 1 worker.
 
 ## Problem
 
@@ -116,8 +117,8 @@ Requirements:
    supervisor is `Dead` and the pane is `Missing`. Any other combination keeps the 600 s schedule.
    A worker with no recorded agent PID, supervisor PID or pane keeps the 600 s schedule.
 4. **H05-R4.** Before an early check, the watchdog reads the worker row again and requires the
-   status `working`. It also requires that the worker runs on this host. This prevents a false
-   `dead` for a worker that finished during the pass.
+   status `working`. It also requires that `host` equals this host. A missing `host` is unknown and
+   keeps the 600 s schedule. This prevents a false `dead` for a finished or foreign worker.
 5. **H05-R5.** An early check uses the existing path: verdict `dead`, note `the agent process is
    gone`, `reap_dead`, requeue, and the wake of the orchestrator.
 6. **H05-R6.** The pane host is called only after both processes are `Dead`. A healthy worker
@@ -145,7 +146,7 @@ fn due_early(conn: &Connection, o: &dyn Observer, w: &Worker, p: Option<&Prev>) 
     if p.is_some_and(|p| p.verdict == Verdict::Dead.as_str()) {
         return Ok(false);
     }
-    if w.host.as_deref().is_some_and(|h| h != util::host_name().as_str()) {
+    if w.host.as_deref() != Some(util::host_name().as_str()) {
         return Ok(false);
     }
     if !o.recorded_gone(w) {
@@ -227,7 +228,8 @@ The tests are `NOT RUN`, because the limits of this run forbid `cargo`.
 2. **V2. H05-R1. `NOT RUN`.** `procid.rs`, test `h05_r1_classify_gives_3_states`:
    `classify(false, Some(7), || Some(7))` is `Dead`. `classify(true, Some(7), || Some(8))` is
    `Dead`. `classify(true, Some(7), || Some(7))` is `Alive`. `classify(true, None, || None)` is
-   `Alive`. `classify(true, Some(7), || None)` is `Unknown`. MAIN today: it does not compile.
+   `Alive`. `classify(false, None, || None)` is `Dead`. `classify(true, Some(7), || None)` is
+   `Unknown`. A `state` test uses a gone PID with no start time. MAIN today: it does not compile.
 3. **V3. H05-R2. `NOT RUN`.** `herdr.rs` and `hc.rs`, test `h05_r2_only_not_found_is_missing`:
    `pane_not_found` and `not_found` are `Missing`. A connection error, a timeout and text that is
    not JSON are `Unknown`. MAIN today: it does not compile, and `pane_exists` is `false` for each
@@ -238,8 +240,8 @@ The tests are `NOT RUN`, because the limits of this run forbid `cargo`.
    today: it does not compile.
 5. **V5. H05-R4. `NOT RUN`.** `TL/watchdog.rs`, test `h05_r4_a_finished_or_remote_worker_is_not_due`:
    use an `Observer` whose `recorded_gone` is `true`. Set the row to `done` and keep the old
-   `Worker` value. `due_early` is `false`. Then set `host` to another name. `due_early` is `false`.
-   MAIN today: it does not compile.
+   `Worker` value. `due_early` is `false`. Then set `host` to another name, then to `NULL`.
+   `due_early` is `false` each time. MAIN today: it does not compile.
 6. **V6. H05-R6. `NOT RUN`.** `CMD/taskledger_watch.rs`, test `h05_r6_a_live_worker_makes_no_pane_call`:
    use a fake pane host that appends each call to a file, and the PID of the test process. Call
    `recorded_gone`. The file does not exist. Copy the test at line 709. MAIN: it does not compile.

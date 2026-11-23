@@ -94,33 +94,29 @@ fleetd is a daemon with a pass loop, a job queue and a needs-you list. MAIN has 
 3. `H08-R3`: `horch ledger worktree new` and `horch ledger worktree scratch` refuse when they must
    create a worktree and free disk is below the floor. They exit 1. They create no folder, branch
    or ledger row.
-4. `H08-R4`: The refusal message names the free space, the floor, the setting, and at most 5 of the
-   largest entries of `<project>/.worktrees`, largest first. Format:
-   `free disk 7.5 GB is below the floor of 20 GB (HORCH_MIN_FREE_DISK_GB). Largest worktrees: T14-a 6.1 GB, T9-b 459.0 MB. The operator can free space with: horch worktree triage`
+4. `H08-R4`: The refusal message names the free space, the floor, the setting and the triage command. It scans no folder. Format:
+   `free disk 7.5 GB is below the floor of 20 GB (HORCH_MIN_FREE_DISK_GB). The operator can free space with: horch worktree triage`
 5. `H08-R5`: An unknown free-disk reading does not refuse. The command prints 1 stderr line:
    `horch: NOTE: free disk is unknown; the disk floor is not checked`.
 6. `H08-R6`: The floor does not stop work that frees disk or continues held work. `horch spawn`
    does not check the floor for `--resume`, for `--replaces`, for the persona `worktree-steward`,
-   or for a ledger spawn whose persona has a queued `review` task in the run.
+   or for a ledger spawn whose `target_task_id` names a queued `review` task.
 7. `H08-R7`: `horch ledger worktree new` does not check the floor when the held task already has a
    worktree, or when the worker persona is `worktree-steward`.
 8. `H08-R8`: When the operator sets `HORCH_MIN_FREE_DISK_GB`, `horch spawn` passes the value to
    the worker, so the worker's `horch ledger worktree new` uses the same floor.
-9. `H08-R9`: The size scan for the message stops after 5 s. The message then adds
-   `<n> worktrees not measured`. The refusal does not wait for a full scan.
+9. `H08-R9`: `horch spawn` applies its refusals in 1 fixed order. The plan refusal comes first, and the floor applies only to a spawn that can proceed. A spawn with no task and low disk keeps the no-task reason.
 
 The reason for `H08-R6`: finish needs reviewers and the comment-remover before land and cleanup
 free the worktree. If the floor refused them, a full disk could not drain. Review tasks create no
-worktree (`MEASURED`: 3,688 of 3,688 have `worktree_mode = 'shared'`). `H08-R3` still stops a
-worker that claims work instead.
+worktree (`MEASURED`: 3,688 of 3,688 have `worktree_mode = 'shared'`). Horch spawns these reviewers with an exact target (`CODE crates/horch/src/cmd/taskledger_spawn.rs:311`). A persona match is not enough, because claim takes the first startable task of the persona (`CODE TL tasks.rs:886-907`). `H08-R3` still stops a worker whose target ended and that claims work.
 
 ### Files of MAIN to change
 
 1. New `crates/horch-core/src/runtime/disk_floor.rs`. It holds
    `DEFAULT_MIN_FREE_DISK_GB = 20`, a pure function from `Known<u64>` and the floor to clear,
-   unknown or below, and `check(ctx, root)`. `check` calls `machine::probe` with
-   `ctx.settings.machine_file` and builds the message. Copy the walk of `dir_bytes`, add a
-   deadline, and format sizes with `triage::human_bytes`.
+   unknown or below, and `check(ctx)`. `check` calls `machine::probe` with
+   `ctx.settings.machine_file` and builds the message. Format sizes with `triage::human_bytes`.
 2. `crates/horch-core/src/runtime/mod.rs`: add `pub mod disk_floor;`.
 3. `crates/horch-core/src/runtime/context.rs`: add `min_free_disk_gb: Option<u64>` to `Settings`
    (line 128). Parse it next to `machine_file` (line 324).
@@ -129,14 +125,9 @@ worker that claims work instead.
    Add it to `transport_env` (line 96) when it is set. Add it to the literal at line 199.
 5. `crates/horch-core/src/execution/service.rs`: set the brief field next to `ledger_db` (line 209).
    Add `None` to the literals in `execution/lifecycle.rs` (lines 1278, 1373, 1769).
-6. `crates/horch-core/src/taskledger/tasks.rs`: add `has_queued_review(conn, run_id, persona)`. It
-   finds a task with `status = 'queued'`, `kind = 'review'` and
-   `COALESCE(claimable_by, primary_persona) = persona`.
-7. `crates/horch/src/cmd/spawn.rs`: add `refuse_below_floor(ctx, &args, ledger.as_ref())` in `spawn`
-   after `prepare` (line 131) and before both `spawn_worker` calls. A refusal after `prepare` lets
-   the existing `l.launch_failed` record it. Use `bail!("horch spawn refused: {why}")`, as
-   `refuse_over_plan` does. Use `l.run.project_root` as the root, or `ctx.paths.project()` when no
-   ledger run exists.
+6. `crates/horch-core/src/taskledger/tasks.rs`: add `is_review_target(conn, worker_id)`. It reads
+   the worker's `target_task_id` and is true when that task has `status = 'queued'` and `kind = 'review'`.
+7. `crates/horch/src/cmd/spawn.rs`: add `refuse_before_launch(ctx, &args, ledger.as_ref(), brief)` in `spawn` after `prepare` (line 131), in place of the 2 branches, and before `spawn_worker`. It runs the plan refusal for a ledger spawn with no task text (`refuse_over_plan`, or `l.refused` after spec 02), then `refuse_below_floor`. A refusal after `prepare` lets the existing `l.launch_failed` record it. Use `bail!("horch spawn refused: {why}")`.
 8. `crates/horch/src/cmd/taskledger.rs`: in `worktree_cmd` (line 1051), check the floor before
    `worktree_ops::create` for `New` and `Scratch`. Use the `project_root` of the worker's run.
    Skip the check for `New` when `finish::worktree_of` finds a worktree for the held task.
@@ -247,21 +238,20 @@ file. All steps are `NOT RUN`, except V13.
    `launch_failed` and `end_reason` contains `below the floor`. MAIN: the spawn succeeds.
 4. V4, `H08-R3`, `NOT RUN`. `h08_r3_worktree_new_is_refused_below_the_floor` passes. Also assert no
    branch and no `worktrees` row. Repeat for `scratch`. MAIN: fails, the worktree is created.
-5. V5, `H08-R4`, `NOT RUN`. `h08_r4_message_names_space_floor_and_largest`: make 6 folders of known
-   sizes under `.worktrees`. Assert the 5 largest in order, `1.0 GB` and `20 GB`. MAIN: no message.
+5. V5, `H08-R4`, `NOT RUN`. `h08_r4_message_names_space_floor_and_triage`: assert `1.0 GB`, `20 GB`
+   and `horch worktree triage`. MAIN: no message.
 6. V6, `H08-R5`, `NOT RUN`. `h08_r5_unknown_reading_does_not_refuse`: `disk_free_bytes: null`. The
    spawn succeeds and stderr has the NOTE. MAIN: the spawn succeeds with no NOTE, so the test fails.
 7. V7, `H08-R6`, `NOT RUN`. `h08_r6_exempt_spawns_start_below_the_floor`: 1 case each for
-   `--resume`, `--replaces`, `worktree-steward` and a persona with a queued review task. MAIN: each
-   spawn succeeds, so this test proves the exemption only together with V2.
+   `--resume`, `--replaces`, `worktree-steward` and an exact review target. A second test queues 1 review and 1 higher-priority work task for 1 persona, with no target, and asserts a refusal. MAIN: each spawn succeeds, so the second test fails.
 8. V8, `H08-R7`, `NOT RUN`. `h08_r7_existing_worktree_is_returned_below_the_floor`: create the
    worktree at a high reading, then call `new` at 1 GB. The same path returns. MAIN: passes, so
    this test only guards the fix against a regression.
 9. V9, `H08-R8`, `NOT RUN`. Unit test in `messaging/brief.rs`, next to
    `transport_env_carries_identity_paths_and_every_override` (line 272): a brief with the field
    gives the env pair. MAIN: the field does not exist.
-10. V10, `H08-R9`, `NOT RUN`. Unit test in `disk_floor.rs`: a deadline in the past gives
-    `<n> worktrees not measured`. MAIN: the function does not exist.
+10. V10, `H08-R9`, `NOT RUN`. `h08_r9_no_task_and_low_disk_keeps_the_no_task_reason`: 0 startable
+    tasks and 1 GB free. Assert that `end_reason` names `startable` and not `floor`. MAIN: passes, so this test only guards the order.
 11. V11, manual, `NOT RUN`. Repeat M3 to M6 on the fix. Expect exit 1, and stderr:
     `horch: horch ledger worktree new refused: free disk 1.0 GB is below the floor of 20 GB (HORCH_MIN_FREE_DISK_GB). ...`
     Then `git -C /tmp/h08/p worktree list` shows 1 worktree. MAIN: exit 0 and 2 worktrees.
@@ -286,15 +276,11 @@ Risks:
    risk for e2e tests. A new test that does not use `Harness` must set the variable.
 4. R4: A sandbox can deny `statvfs` (`NOT VERIFIED`). `H08-R5` then lets the command run.
 
-Files that another spec of this run can also change: `crates/horch/src/cmd/spawn.rs` (spec 06 reads
-quota at spawn), and `prepare` in `crates/horch/src/cmd/taskledger_spawn.rs` (spec 02 binds the task
-at spawn). This spec calls `prepare` and does not change it.
+Files that another spec also changes: `crates/horch/src/cmd/spawn.rs` (spec 02), `tasks.rs` (specs 02 and 06), `cmd/taskledger.rs` (specs 01, 06, 07 and 10), and `runtime/mod.rs` (spec 01). This spec calls `prepare` and does not change it.
 
 Open questions for the operator:
 
 1. Q1: Is 20 GB the right default? Recommendation: yes, for the 3 reasons under `### New setting`.
-2. Q2: Should the message also name `<project>/target`? Recommendation: yes. On 2026-11-22 the
-   `target` of the main checkout was 111.2 GB and `.worktrees` was 13.6 GB (`MEASURED`). The ticket
-   asks only for worktrees, so this spec does not include it.
+2. Q2: Should a follow-up add ranked sizes, with `<project>/target`, to `horch worktree triage`? Recommendation: yes, as a separate ticket. On 2026-11-22 the `target` of the main checkout was 111.2 GB and `.worktrees` was 13.6 GB (`MEASURED`). The refusal stays constant-time.
 3. Q3: Should `horch worktree new` (`CODE crates/horch/src/cmd/worktree.rs:49`), the path outside
    the ledger, also check the floor? Recommendation: no. The ticket names only the ledger command.

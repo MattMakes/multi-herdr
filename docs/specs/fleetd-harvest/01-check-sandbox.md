@@ -3,7 +3,7 @@
 Status: proposed. Target: `main` at `06930d95`. Source of the idea: fleetd at `9bc3bf70`.
 Report id: P2 (R4), with finding CR-05-F1 (R5). Size: M.
 
-Labels: `CODE` (read at the pinned commit), `MEASURED` (read-only query that I ran), `REPORT` (a report says it, and I did not check it), `NOT VERIFIED`. A path with no commit is at MAIN. `FINISH:` marks a path at `9bc3bf70`.
+Labels: `CODE` (read at the pinned commit), `MEASURED` (read-only query that I ran), `REPORT` (a report says it, and I did not check it), `NOT VERIFIED`. A path with no commit is at MAIN. `FINISH:` marks a path at `9bc3bf70`. In this spec, `check` means a `task check`: the build or test command of a task. It does not mean a `watchdog check`.
 
 ## Problem
 
@@ -61,7 +61,7 @@ Do not copy these 4 fleetd defects:
 1. CR-05-F1: the Codex branch keeps `codex sandbox` with broad reads and network. `CODE FINISH:check_sandbox.rs:280`, `:291`. `REPORT research/07-confirm-codex-findings.md`.
 2. `sandboxed_local` can read the whole disk except a short deny list. `CODE FINISH:sandbox.rs:46-49`.
 3. `find_bwrap` searches `PATH`. This is safe in fleetd because fleetd owns its `PATH`. On MAIN the worker starts `horch ledger finish`, so the worker controls `PATH`. `CODE FINISH:linux/sandbox.rs:109`, `crates/horch/src/cmd/taskledger_finish.rs:140`.
-4. On macOS, `Network::Local` also allows the LAN addresses of the host (R8-F2). No Seatbelt rule separates them from loopback. `CODE FINISH:mac/sandbox.rs:78`, `REPORT FINISH:docs/specs/fleetd/gates/macos-check-sandbox-lan.md:40`.
+4. On macOS, `Network::Local` also allows the LAN addresses of the host (R8-F2). No Seatbelt rule separates them from loopback. `CODE FINISH:mac/sandbox.rs:78`, `REPORT FINISH:docs/specs/fleetd/gates/macos-check-sandbox-lan.md:40`. This spec therefore does not use that rule as its default (`H01-R9`).
 
 ## Fix
 
@@ -77,8 +77,8 @@ The boundary: the sandbox limits the check process. It does not limit a worker t
 6. `H01-R6`: The check cannot write `<dir>/.git` or the git common folder. When `dir` is the project root (shared checkout), it also cannot write `<root>/.worktrees`.
 7. `H01-R7`: The check starts from an empty environment. horch copies only `PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `USER`, `LOGNAME`, `SHELL` and `TZ`. horch sets `HOME`, `TMPDIR`, `TMP`, `TEMP` and the 4 `XDG_*_HOME` variables to folders in the scratch folder. It sets `CARGO_HOME` and `RUSTUP_HOME` to the real tool folders when they exist.
 8. `H01-R8`: horch finds the real home with `getpwuid_r`, not `$HOME`. It uses `/usr/bin/sandbox-exec` on macOS, and `/usr/bin/bwrap` or `/bin/bwrap` on Linux. It never finds the sandbox tool through `PATH`.
-9. `H01-R9`: The default network rule is `local`: loopback and Unix sockets that the file rules allow. horch sets `CARGO_NET_OFFLINE=true` in this mode, so `cargo` fails at once with a clear error.
-10. `H01-R10`: 1 task asks for the network with the ticket line `**Check-Network:** open` or `horch ledger add --check-network open`. A gate asks with `horch ledger run gate --check-network open`, and a worker gets a refusal. `horch worktree land --check` is always `local`. Mode `open` changes only the network rule.
+9. `H01-R9`: The default network mode is `none`. On macOS, `none` refuses each IP connection with `(deny network-outbound (remote ip))`. On Linux, `none` uses `--unshare-net`, so the check has only a private loopback. In both, Unix sockets that the file rules allow still connect. horch sets `CARGO_NET_OFFLINE=true` in `none` and `host`, so `cargo` fails at once with a clear error.
+10. `H01-R10`: 1 task asks for a wider mode with the ticket line `**Check-Network:** host` or `open`, or with `horch ledger add --check-network <mode>`. A gate asks with `horch ledger run gate --check-network <mode>`, and a worker gets a refusal. Mode `host` permits each address of this host. On macOS this includes the LAN addresses of the host, because no Seatbelt rule separates them from loopback. On Linux, `host` is the same as `none`. `horch worktree land --check` is always `none`. A mode changes only the network rule.
 11. `H01-R11`: On macOS the profile also denies `lsopen`, `appleevent-send`, read and write of `/dev/tty`, and the Mach service `com.apple.coreservices.launchservicesd`.
 12. `H01-R12`: On Linux the sandbox hides `/run/user/<uid>`. On both systems it denies connect to `/var/run/docker.sock` and `/run/docker.sock`.
 13. `H01-R13`: Before each check, horch runs `/bin/sh -c :` in the same sandbox. If the sandbox tool is missing or this probe fails, the check step fails with the verdict `no sandbox` and names the cause and the fix. horch never falls back to an unsandboxed run unless `H01-R14` applies.
@@ -88,7 +88,7 @@ The boundary: the sandbox limits the check process. It does not limit a worker t
 ### Files of MAIN to change
 
 1. New `crates/horch-core/src/runtime/check_sandbox.rs`, registered in `runtime/mod.rs`. Port `Network`, `Rule`, `denying`, `resolved` and the macOS and Linux `args` from FINISH. Use `std::process::Command` directly. Do not port the `Start` trait or the crate `horch-platform`.
-2. `crates/horch-core/src/taskledger/finish/land.rs`: `check_process` calls `wrap`. `check_in` drops the Codex branch and keeps the scratch folder until the check ends. Add `set_check_network` and `check_network` beside `set_check_timeout`.
+2. `crates/horch-core/src/taskledger/finish/land.rs`: `check_process` calls `wrap`. `check_in` drops the Codex branch. It returns the scratch-folder guard with its result, so the folder lives until the check ends and the caller has read `HEAD` after it (spec 09, `H09-R2`). A sandbox setup failure returns before the check starts, and the caller reports it before any tip comparison. Add `set_check_network` and `check_network` beside `set_check_timeout`.
 3. `crates/horch-core/src/taskledger/finish/mod.rs`: replace `CodexSandbox` with `CheckSandbox` in `Tools`. `CheckSandbox` has no `Default`, so no caller gets an open sandbox by accident.
 4. `crates/horch-core/src/taskledger/runs.rs`: `run_gate` takes `&CheckSandbox` and the network rule.
 5. `crates/horch-core/src/vcs/landing.rs`: `run_check` uses `wrap`. Add `with_check_sandbox`. `crates/horch/src/cmd/worktree.rs:13` passes it.
@@ -103,7 +103,7 @@ The boundary: the sandbox limits the check process. It does not limit a worker t
 1. File `<real home>/.config/horch/check-sandbox.json`. An environment variable cannot hold this setting, because the worker sets the environment of `horch ledger finish`.
 2. `read`: a list of absolute paths. Default `[]`, because each added path widens what a check can read. Sealed paths still win.
 3. `unsandboxed`: Default `false`, because a missing sandbox must stop the check and not remove the protection.
-4. Task file `<evidence root>/<task>/check-network`, with the value `open`. Default: no file, which means `local`. This copies the pattern of `check-timeout-s` and needs no ledger migration. `CODE land.rs:28-45`.
+4. Task file `<evidence root>/<task>/check-network`, with the value `host` or `open`. Default: no file, which means `none`. This copies the pattern of `check-timeout-s` and needs no ledger migration. `CODE land.rs:28-45`.
 
 ### What is not ported
 
@@ -113,7 +113,7 @@ The daemon, operator token, channel, needs-you items, roster fallback, job proce
 
 1. Ledger: no schema change. Old rows stay valid.
 2. Running worker: its next `horch ledger finish` uses the sandbox. A check that needs the network or a hidden path can fail.
-3. Recovery for a running task: the operator writes `open` to its `check-network` file, or adds a path to `read`.
+3. Recovery for a running task: the operator writes `host` or `open` to its `check-network` file, or adds a path to `read`.
 4. Existing worktrees and runs need no change.
 5. Windows: each check stops until the operator sets `unsandboxed`. Put this in the release note.
 
@@ -166,8 +166,8 @@ Each test goes in `crates/horch-core/tests/check_sandbox.rs`, unless the item na
 6. `H01-R6` `h01_r6_git_folder_is_read_only`: `git status` works, and a write to `.git/config` is refused. MAIN: the write check fails.
 7. `H01-R7` `h01_r7_env_is_an_allow_list`: `HORCH_CHECK_CANARY` is absent, and no `FORBIDDEN_ENV` name is in the allow list. MAIN: fails. Do not set the forbidden variable in this test.
 8. `H01-R8` `h01_r8_fake_home_and_path_do_not_move_rules`: a fake `HOME` and a fake `bwrap` first on `PATH` change nothing. MAIN: fails, because no rule exists.
-9. `H01-R9` `h01_r9_local_network`: a loopback listener of the check connects, and an off-host connect is refused. MAIN: the refusal fails.
-10. `H01-R10` `h01_r10_ticket_asks_for_network`: in `map.rs`, the ticket line parses, and a worker gate with `open` is refused. MAIN: fails.
+9. `H01-R9` `h01_r9_none_refuses_a_lan_address_of_this_host`: the test binds a service on a non-loopback address of the host, and a check in mode `none` cannot connect to it. The test skips only when the host has no such address. MAIN: the refusal fails.
+10. `H01-R10` `h01_r10_ticket_asks_for_network`: in `map.rs`, the lines `host` and `open` parse, and a worker gate with either mode is refused. MAIN: fails.
 11. `H01-R11` `h01_r11_macos_no_launch_escape` (macOS only): `open`, `osascript` and `launchctl submit` do not create a marker file. MAIN: fails.
 12. `H01-R12` `h01_r12_linux_runtime_dir_hidden` (Linux only): a Unix socket in the fake runtime folder refuses the connect. MAIN: fails.
 13. `H01-R13` `h01_r13_probe_failure_fails_closed`: a failed probe gives the verdict `no sandbox`, and the check does not run. MAIN: fails.
@@ -185,7 +185,7 @@ Repeat steps 1 to 4 and 9 of `## Reproduce`. Expected output after the fix:
 2. Step 6 prints `Run gate failed`. MAIN passes.
 3. Step 7 prints `Run gate failed`. MAIN passes.
 4. Step 8 prints `Run gate failed`, and `.git/probe` does not exist. MAIN passes and creates it.
-5. In the multi-herdr repository, run `cargo test --workspace --locked` as a gate with a warm cargo cache. It must pass. This also passes on MAIN, so it proves compatibility only.
+5. In the multi-herdr repository, run `cargo test --workspace --locked` as a gate with `--check-network host` and a warm cargo cache. It must pass. This also passes on MAIN, so it proves compatibility only.
 
 ### Ledger count after 2 weeks (NOT RUN)
 
@@ -207,17 +207,17 @@ Size: M, 4 worker-days. Porting the rules takes 1 day, the 3 runners and setting
 2. `RK2`: `cargo` may need a write in a read-only `CARGO_HOME` for its package lock. `NOT VERIFIED`. Do not make `CARGO_HOME` writable, because a check could then plant code that the operator later runs. If it fails, give the check a scratch `CARGO_HOME` that reads a copy or a source replacement.
 3. `RK3`: A sandboxed Claude teammate that runs `horch ledger finish` is already in Seatbelt, so `sandbox-exec` fails and `H01-R13` stops its check. 7 teammates declare `sandbox:` (`CODE teammates/*.md`). Whether they run `finish` is `NOT VERIFIED`.
 4. `RK4`: `(allow default)` leaves other Mach services open on macOS. `H01-R11` closes the known launch paths, but it does not prove that no other path exists. `NOT VERIFIED`.
-5. `RK5`: On macOS a `local` check can reach loopback services and LAN addresses of the host. Blocking them makes 24 fleetd tests fail. `REPORT FINISH:docs/specs/fleetd/gates/macos-check-sandbox-lan.md`.
+5. `RK5`: On macOS, mode `none` also refuses loopback. At FINISH this rule failed 24 tests, and 21 of them are in 3 test files that MAIN also has (`REPORT FINISH:docs/specs/fleetd/gates/macos-check-sandbox-lan.md`, `CODE crates/horch-e2e/tests/update.rs`, `crates/horch/tests/self_update_cli.rs`, `crates/horch/tests/r_cli_cmds_selfupdate.rs`). A macOS task check of this repository needs `**Check-Network:** host`, and that mode can reach the host LAN addresses. `horch worktree land --check` cannot run these tests on macOS.
 6. `RK6`: A check can still change tracked and ignored files in `dir`, and an unsandboxed worker can write `.git` directly. horch passes only `core.hooksPath=/dev/null` to git, so a `core.fsmonitor` value that a worker plants can still run. `CODE crates/horch-marketplace/src/git.rs:55`, `:182`. Fix this in a separate change.
 7. `RK7`: An unsandboxed worker can edit `check-sandbox.json` or a `check-network` file. This matches the boundary stated at the top of `## Fix`.
 8. `RK8`: Ubuntu runners can restrict user namespaces, which stops `bwrap`. `NOT VERIFIED`. `H01-R13` makes this a clear failure.
 
 ### Files that other specs can also change
 
-`finish/land.rs`, `finish/mod.rs`, `runs.rs` and `cmd/taskledger.rs` are likely shared with spec 09 (verdict tied to commit) and spec 10 (ticket and ledger compare). `map.rs` is likely shared with spec 10. `NOT VERIFIED`: those specs did not exist when I wrote this one. Land this spec first, or rebase on the `Tools` field change.
+`finish/land.rs`: spec 09 changes the same `check_in` call in `rebased_and_checked`. `runs.rs`: spec 10. `cmd/taskledger.rs`: specs 06, 07, 08 and 10. `runtime/mod.rs`: spec 08. `harness/codex.rs`: spec 07. The order is in `README.md`.
 
 ### Open questions for the operator
 
-1. `Q1`: Is the default network `local`, with `open` per task? I recommend yes. The cost is that a check with a cold dependency cache fails until the cache is warm.
+1. `Q1`: Is the default network `none`, with `host` or `open` per task? I recommend yes, because `none` is the only macOS mode that keeps a check off the host LAN addresses. The cost: a check with a cold dependency cache fails until the cache is warm, and a macOS check with loopback test servers needs `host`.
 2. `Q2`: Does Windows stop each check until the operator sets `unsandboxed`? I recommend yes. The ledger has 0 Windows hosts (`MEASURED`: 2 hosts, both macOS names), and `main` still ships a Windows build. `CODE .github/workflows/release.yml:57`.
 3. `Q3`: Is the hidden-home rule acceptable, or do you prefer the smaller deny-list rule of fleetd? I recommend hidden home, because a deny list misses each secret that it does not name.

@@ -6,7 +6,7 @@ Report id: FM-12. Size: S.
 Labels: `CODE` (read at the pinned commit), `MEASURED` (read-only query), `REPORT` (a report
 says it, not checked), `NOT VERIFIED`. Path short forms: `TL` is
 `crates/horch-core/src/taskledger`, `CMD` is `crates/horch/src/cmd`, and `FLEETD` is
-`crates/horch-core/src/fleetd/fleet_runtime` at `9bc3bf70`.
+`crates/horch-core/src/fleetd/fleet_runtime` at `9bc3bf70`. `Stop` here is a `process stop` (a signal).
 
 ## Problem
 
@@ -103,40 +103,39 @@ timeout. `CODE CMD/taskledger_watch.rs:180`, `CODE crates/horch-marketplace/src/
 2. **H04-R2.** The watchdog writes the beat file in each pass, directly after `checkin` succeeds.
 3. **H04-R3.** The beat holds the awake clock in milliseconds, as decimal text. The awake clock
    does not count machine sleep.
-4. **H04-R4.** `ensure` treats a lock holder as hung when the run has a task in `running` or
-   `landing` and the awake time since the beat is more than `HUNG_AFTER_S`.
+4. **H04-R4.** `ensure` treats a lock holder as hung when the watchdog has duties and the awake time since the beat is more than `hung_after_s(run)`. Duties are a task of the run in `queued`, `running` or `landing`, or any worktree of the ledger in `cleanup_failed`, because each pass retries all of them.
 5. **H04-R5.** A missing beat, an unreadable beat, an unavailable clock, or a clock reading before
    the beat is not a hang. horch sends no signal in these cases.
-6. **H04-R6.** horch stops a hung watchdog with SIGKILL, by its exact PID and recorded start time
-   (ADR 0002). With no recorded start time, horch sends no signal and prints a warning.
+6. **H04-R6.** horch stops a hung watchdog with SIGKILL, by its exact PID and recorded start time (ADR 0002), only when its process group holds that PID and no other. With no recorded start time, horch sends no signal and prints a warning.
 7. **H04-R7.** After the stop, horch starts a new watchdog, prints 1 warning, and writes 1 `note`
    event whose text starts with `Watchdog hung:`.
 8. **H04-R8.** `ensure` checks for a hang before it checks for a replaced binary, because the
    SIGTERM path cannot stop a hung watchdog.
+9. **H04-R9.** When the group holds another PID, or horch cannot read the group, horch sends no signal and starts no watchdog. A live child can hold a git lock, so a new watchdog can hang at the same step. horch prints each child PID and writes 1 `Watchdog hung: child` event for each holder. The operator ends the child, and the pass then continues.
 
 ### Files to change
 
 1. `crates/horch-core/src/clock.rs`: add `pub fn awake_ms() -> Option<u64>`. Use
    `libc::clock_gettime` with the 2 clocks above. Return `None` on each other platform.
 2. `crates/horch-core/src/taskledger/watchdog.rs`:
-   - Add `pub const HUNG_AFTER_S: u64 = 600` and `const BEAT_FILE: &str = "beat"`.
+   - Add `const MIN_HUNG_AFTER_S: u64 = 600`, `pub fn hung_after_s(run) -> u64`, and `const BEAT_FILE: &str = "beat"`.
    - Add `pub fn write_beat(dir, run_id) -> Result<()>`. Use `fsx::write_atomic`.
    - Add `pub beat_ms: Option<u64>` to `LockHolder`, and read it in `holder`. Add
      `beat_ms: None` to the 3 test literals at lines 1380, 1389 and 1397.
    - Add `pub fn is_hung(beat_ms: Option<u64>, now_ms: Option<u64>, limit_ms: u64) -> bool`. It is
      true only when both values exist and `now.checked_sub(beat)` is more than `limit_ms`.
-   - Move the `count(*)` query of `needs_restart` into `pub fn in_flight(conn, run_id)`. Do not
-     change the result of `needs_restart`.
+   - Add `pub fn has_duties(conn, run_id)` for H04-R4. Do not change `needs_restart`.
+   - Add the pure `hung_action(pid, members)`: `Kill` for exactly `[pid]`, else `Report`. `procid::group_members` (`CODE crates/horch-core/src/procid.rs:58`) returns an empty list on a read failure, and the watchdog leads its group through `setsid` (`CODE crates/horch-core/src/runtime/process.rs:214`).
    - Add `LockHolder::kill(wait)`. Copy `stop` at line 571 and send `libc::SIGKILL`. The non-Unix
      form returns an error.
 3. `crates/horch/src/cmd/taskledger_watch.rs`:
    - In `take_lock`, call `write_beat` before `record_exe`. On an error, print a warning and go on.
    - In `pass`, call `write_beat` after `checkin`. On an error, print a warning and go on.
-   - Add `hung(ctx, store, run, h)`: `in_flight > 0` and `is_hung(h.beat_ms, awake_ms(), limit)`.
+   - Add `hung(ctx, store, run, h)`: `has_duties` and `is_hung(h.beat_ms, awake_ms(), limit)`.
      The limit is the test fault `HORCH_FAULT=watchdog-hung-after-ms:<n>`
-     (`crates/horch-core/src/runtime/fault.rs:32`), or else `HUNG_AFTER_S * 1000`.
+     (`crates/horch-core/src/runtime/fault.rs:32`), or else `hung_after_s(run) * 1000`.
    - In `keep_or_replace`, call `hung` first. If it is true, call `replace_hung` and return.
-   - Add `replace_hung`: call `h.kill(5 s)`, call `start_detached`, print the warning, and write
+   - Add `replace_hung`: on `Report`, print the warning, write the H04-R9 event once, and return. On `Kill`, call `h.kill(5 s)`, call `start_detached`, print the warning, and write
      the event with `util::event` and `About { run: Some(&run.run_id), ..Default::default() }`.
      Copy the event form at `TL/runs.rs:551`. Use the binary choice at lines 431 to 436.
 
@@ -145,11 +144,10 @@ started PID <new>`.
 
 ### Settings
 
-`HUNG_AFTER_S` is a constant with the value **600 s**, not a run setting. A healthy watchdog
+No new setting. `hung_after_s(run)` is `max(run.check_every_s, 600)`, so the default is **600 s** and the run setting of spec 05 is the 1 source of watchdog timing (`CODE TL/schema.rs:45`). A healthy watchdog
 writes a beat at least every 30 s plus the time of 1 pass. `CODE CMD/taskledger_watch.rs:383`.
-The value allows 14 times the slowest measured cleanup (42 s), SQLite waits of 30 s
-(`CODE TL/store.rs:9`) and reaps with a 10 s grace (`CODE CMD/taskledger.rs:1632`). A pass runs
-no gate (`CODE CMD/taskledger_watch.rs:117`), so a long gate cannot delay the beat on MAIN.
+The 600 s floor allows 14 times the slowest measured cleanup (42 s), SQLite waits of 30 s
+(`CODE TL/store.rs:9`) and reaps with a 10 s grace (`CODE CMD/taskledger.rs:1632`). A pass runs no gate (`CODE CMD/taskledger_watch.rs:117`).
 
 ### Not ported
 
@@ -241,9 +239,7 @@ Each step is `NOT RUN`, except V11. "MAIN" is the result today, before the fix.
    forward on macOS and Linux. MAIN: does not compile.
 5. **V5, H04-R4 (NOT RUN).** In `watchdog.rs`, assert `is_hung(Some(0), Some(600_000), 600_000)`
    is false and `is_hung(Some(0), Some(600_001), 600_000)` is true. MAIN: does not compile.
-6. **V6, H04-R4 (NOT RUN).** In `watchdog_liveness.rs`, use `watchdog_world` (no task in flight),
-   send SIGSTOP, set the fault, run `ledger status`. Assert that the PID runs and the output has
-   no `was hung`. MAIN: passes, so this test only guards the in-flight condition.
+6. **V6, H04-R4 (NOT RUN).** In `watchdog_liveness.rs`, use `watchdog_world` (no task and no `cleanup_failed` row), send SIGSTOP, set the fault, run `ledger status`. Assert that the PID runs and the output has no `was hung`. MAIN: passes, so this test only guards the idle case.
 7. **V7, H04-R5 (NOT RUN).** In `watchdog.rs`, assert `is_hung` is false for `(None, Some(1))`,
    `(Some(1), None)` and `(Some(5), Some(1))`. MAIN: does not compile.
 8. **V8, H04-R6 (NOT RUN).** Copy `stop_ends_only_the_process_with_the_recorded_start_time` at
@@ -266,19 +262,18 @@ Each step is `NOT RUN`, except V11. "MAIN" is the result today, before the fix.
 13. **V13, sleep (NOT RUN).** On a Mac, start a healthy watchdog in the scratch run with no fault.
     Run `pmset sleepnow`. Wake the machine after more than 10 minutes. Run `"$H" ledger status`.
     Expect no `was hung`. MAIN: no `was hung`, so this step only proves no false stop.
+14. **V14, H04-R4 (NOT RUN).** With no open task and 1 `cleanup_failed` row, a stopped watchdog is replaced. MAIN: no `was hung`.
+15. **V15, H04-R9 (NOT RUN).** `hung_action` gives `Kill` for `[p]` and `Report` for `[]` and `[p, c]`. An e2e test sets `HORCH_GIT_BIN` to a script that creates `.git/index.lock` and sleeps. Assert that the watchdog and the child still run, and the output names the child. MAIN: does not compile.
+16. **V16, H04-R4 (NOT RUN).** `hung_after_s` gives 600 for `check_every_s` 1 and 600, and 1200 for 1200. MAIN: does not compile.
 
-After 2 weeks of use, run the V11 query again. A count above 0 shows real hangs that the fix
-caught. For each event, read `watchdog-<run>.log` to find the step that hung.
+After 2 weeks, run the V11 query again. A count above 0 shows real hangs. Read `watchdog-<run>.log` for the step that hung.
 
 ## Size and risks
 
 Estimate: **0.75 worker-day**, 3 production files and 9 new tests.
 
-1. **RK1.** A healthy pass over 600 s of awake time gets SIGKILL. `retry_cleanup` handles all
-   failed worktrees of the ledger in 1 pass (`CODE TL/finish/land.rs:1041`). That the next pass
-   repairs each partial effect is `NOT VERIFIED`.
-2. **RK2.** SIGKILL does not end a child of the watchdog, such as a hung `git`. ADR 0002 forbids a
-   wider stop. The child can hold a git lock and hang the new watchdog at the same step.
+1. **RK1.** A healthy pass with no child over the limit gets SIGKILL. `retry_cleanup` handles all failed worktrees of the ledger in 1 pass (`CODE TL/finish/land.rs:1041`). That the next pass repairs each partial effect is `NOT VERIFIED`.
+2. **RK2.** A hang inside `git` stays until the operator ends the child (H04-R9). ADR 0002 forbids a wider stop, so horch does not signal a PID that it did not record.
 3. **RK3.** A restart does not remove the cause of a hang, so the watchdog can hang and restart
    every 600 s. Each restart writes 1 event, so the fault is visible.
 4. **RK4.** 2 commands can see the same hang. The second start exits with `already runs`. Its
@@ -286,12 +281,10 @@ Estimate: **0.75 worker-day**, 3 production files and 9 new tests.
 5. **RK5.** A command in a Codex sandbox may be unable to send the signal. It then prints a
    warning, and a later command outside the sandbox does the stop. `NOT VERIFIED`.
 
-Shared files, from tickets 03 and 05. Neither spec had landed when this spec was written.
+Shared files:
 
-1. `crates/horch-core/src/taskledger/watchdog.rs`: spec 03 changes the wait rule near line 333,
-   and spec 05 adds a PID check. This spec changes `LockHolder`, `holder` and `needs_restart`.
-2. `crates/horch/src/cmd/taskledger_watch.rs`: spec 05 can add work to `pass` or `reconcile_at`.
-   Check any work added to `pass` against `HUNG_AFTER_S`.
+1. `crates/horch-core/src/taskledger/watchdog.rs`: specs 03, 05 and 06 change `check_worker`. This spec changes `LockHolder` and `holder`.
+2. `crates/horch/src/cmd/taskledger_watch.rs`: specs 03, 05 and 06. Check any work added to `pass` against `hung_after_s`.
 
 Open questions for the operator:
 

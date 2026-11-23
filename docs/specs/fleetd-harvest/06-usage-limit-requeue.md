@@ -5,7 +5,7 @@ Report id: FM-5. Size: M.
 
 Labels: `CODE` is read at the pinned commit. `MEASURED` is a read-only query or file read on
 2026-11-22. `REPORT` is a report claim that was not checked. `NOT VERIFIED` has no proof.
-Paths: `TL` is `crates/horch-core/src/taskledger`. `CMD` is `crates/horch/src/cmd`.
+Paths: `TL` is `crates/horch-core/src/taskledger`. `CMD` is `crates/horch/src/cmd`. `check` is a `watchdog check`.
 
 ## Problem
 
@@ -138,13 +138,13 @@ Behavior:
 6. `H06-R6` End of hold. At the first check at or after the end, wake the orchestrator 1 time with
    `horch tell <role> "[orchestrator] The usage limit has reset. Continue your task."`. Then the
    normal stall count runs. A record of progress ends the hold at any time.
-7. `H06-R7` No attempt lost. `tasks::requeue` computes
-   `used = attempts - attempt_floor - min(limit_ends, 3)`. `limit_ends` counts the workers of the
-   task with `attempt > attempt_floor` and an end reason that starts with `usage limit:`.
+7. `H06-R7` No attempt lost. `tasks::requeue` computes `used = attempts - attempt_floor - limit_ends`,
+   with no cap. `limit_ends` counts the workers of the task with `attempt > attempt_floor` and an end reason that starts with `usage limit:`.
 8. `H06-R8` Reaps at a limit. When the agent is alive and detection finds a limit, the watchdog reap
    and `horch ledger reap` end the worker with `usage limit: <text>`, and not with `dead:`.
 9. `H06-R9` Briefing. Replace the sentence at `teammates/_base/fleet-orchestrator.md:131` with:
    "horch detects a usage limit, keeps the attempt and wakes you. Do not reap a worker at a limit."
+10. `H06-R10` Repeat notice. From the third limit end of 1 task, each wake names the count and asks the orchestrator to check for a false signal. The notice does not change attempts and does not hold the task.
 
 Files of MAIN to change:
 1. New `TL/usage_limit.rs`: `UsageLimit { text, resets_at }` and `detect(worker, screen, timer_s)`.
@@ -158,15 +158,14 @@ Files of MAIN to change:
    `fallback` call it with `Actor::Orchestrator`.
 5. `CMD/taskledger_watch.rs`: in `act_on` and `reap_dead`, apply the move, the wakes and
    `end_at_limit`. Load the roster with `load_roster_unwarned` (`CODE CMD/mod.rs:52`).
-6. `CMD/taskledger.rs:1398`: in `reap_cmd`, apply `H06-R8`. The briefing file: apply `H06-R9`.
+6. `CMD/taskledger.rs:1398`: in `reap_cmd`, apply `H06-R8`. The briefing file: apply `H06-R9`, and update its 3 pins at `crates/horch-core/tests/golden_prompts.rs:543`, `:1571` and `:1583` in the same commit.
 
 New settings: none. The fix adds these constants in `TL/usage_limit.rs`:
 1. `TAIL_BYTES = 262144`. It bounds the read of a large transcript.
 2. `SCREEN_LINES = 12`. The text is near the pane bottom, and older output must not match.
 3. `UNKNOWN_HOLD_S = 21600`. 6 h exceeds the 5-hour Claude window. Codex is `NOT VERIFIED`.
 4. `MAX_HOLD_S = 691200`. 8 days clamps a bad reset value and is longer than the 7-day window.
-5. `MAX_FREE_LIMIT_ENDS = 3`. It equals the default `max_attempts` and stops an endless loop from a
-   false signal. A task has at most 6 claims with default settings.
+5. `LIMIT_ENDS_NOTICE = 3`. It equals the default `max_attempts`. It only starts the `H06-R10` notice.
 
 Not ported:
 1. The daemon, the exec wrapper, the `waiting_quota` state and leases.
@@ -232,8 +231,7 @@ Manual:
    `requeued` and `reaped`. The output is `22:33:35Z claimed`, `23:13:54Z requeued` and
    `23:13:54Z reaped` by the actor `watchdog`, all on 2026-11-07.
 4. `NOT RUN` Live fault. Use a scratch run on an account that is at its limit. Spawn 1 worker. Wait
-   until its pane shows the limit. Wait 30 minutes. Run `horch ledger show T-1`. MAIN shows a
-   `reaped` event, and the next claim prints `attempt 2`.
+   until its pane shows the limit. Poll `horch ledger show T-1` until 3 due watchdog checks are recorded, for at most 70 minutes. MAIN then shows a `reaped` event, and the next claim prints `attempt 2`.
 
 ## Validate
 
@@ -254,11 +252,11 @@ test does not compile on MAIN, because `usage_limit` does not exist.
 8. `H06-R5` `h06_r5_hold_writes_round_0_and_wakes_once`: 3 checks give 1 wake. MAIN: `dead`.
 9. `H06-R6` `h06_r6_end_of_hold_wakes_once_then_counts`: after the reset, 1 wake, then `dead` after
    3 more stalled checks. MAIN: `dead` before the reset.
-10. `H06-R7` A2 passes, and `h06_r7_free_ends_stop_at_3`: the fourth limit end counts. MAIN: A2
-    fails with `Held`.
+10. `H06-R7` A2 passes, and `h06_r7_a_fourth_limit_end_costs_no_attempt`. MAIN: A2 fails with `Held`.
 11. `H06-R8` `h06_r8_reap_cmd_at_limit_ends_as_usage_limit`: the prefix is `usage limit:`, with no
     `reaped` event. MAIN: the prefix is `dead:`, with a `reaped` event.
 12. `H06-R9` `h06_r9_briefing_names_the_limit_rule`: MAIN fails, because the sentence is absent.
+13. `H06-R10` `h06_r10_third_limit_end_adds_the_notice`: the task stays queued. MAIN: no notice.
 
 Manual after the fix:
 1. `NOT RUN` Repeat manual step 4 of `## Reproduce` with no fallback on another pool. Expect a
@@ -281,7 +279,7 @@ Risks:
 1. `R1` A Claude release changes the record. Detection returns `None`, and today's behavior returns.
 2. `R2` The Codex pane rendering is `NOT VERIFIED`. The text is `MEASURED` in the binary, but no real
    pane capture exists. Do manual step 3 of `## Validate` before release.
-3. `R3` A false Codex match holds a hung worker for at most 6 h. `MAX_FREE_LIMIT_ENDS` bounds repeats.
+3. `R3` A false Codex match holds a hung worker for at most 6 h per cycle, and it costs no attempt. No cap ends the repeat. Each cycle needs a new spawn, and `H06-R10` tells the orchestrator.
 4. `R4` A held task can wait up to 7 days on a weekly limit. The first wake gives the reset time.
 5. `R5` The move does not read the fallback pool. A fallback at its own limit holds, and the task
    does not move back, because the worker persona equals the fallback persona.

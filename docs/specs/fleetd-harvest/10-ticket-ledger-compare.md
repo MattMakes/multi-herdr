@@ -37,16 +37,16 @@ Measurement date: 2026-11-22T23:14Z. The ledger starts on 2026-10-31. Save this 
 repository and run `python3 -I measure.py "$(horch ledger path)"`. It opens the ledger read-only.
 
 ```python
-import sqlite3, os, re, collections, sys
+import sqlite3, os, re, collections, sys, hashlib
 db = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
 def is_ticket(p):
     n = os.path.basename(p)
     if not n.endswith('.md') or n.startswith('MAP') or not os.path.isfile(p): return False
     t = open(p, errors='ignore').read()
     return bool(re.search(r'<!--\s*horch-ticket:', t)) or bool(re.search(r'\*\*persona:\*\*.*primary', t, re.I))
-known = collections.defaultdict(set)
-for pid, root, f in db.execute("select r.project_id,p.root,t.task_file from tasks t join runs r using(run_id) join projects p using(project_id) where t.task_file is not null"):
-    known[pid].add(os.path.realpath(f if os.path.isabs(f) else os.path.join(root, f)))
+known = collections.defaultdict(list)
+for run, pid, root, f, sha in db.execute("select t.run_id,r.project_id,p.root,t.task_file,t.ticket_sha from tasks t join runs r using(run_id) join projects p using(project_id) where t.task_file is not null"):
+    known[pid].append((run, os.path.realpath(f if os.path.isabs(f) else os.path.join(root, f)), sha))
 s = collections.Counter(); refuse = []
 for run_id, pid, slug, status, root in db.execute("select r.run_id,r.project_id,r.slug,r.status,p.root from runs r join projects p using(project_id) where r.slug not like 'solo-%'").fetchall():
     s['runs'] += 1; dirs = set(); tb = os.path.realpath(os.path.join(root, 'docs/tickets'))
@@ -63,7 +63,8 @@ for run_id, pid, slug, status, root in db.execute("select r.run_id,r.project_id,
             p = os.path.join(d, n)
             if is_ticket(p):
                 s['tickets'] += 1
-                if os.path.realpath(p) not in known[pid]: miss.append(os.path.relpath(p, root))
+                h = hashlib.sha256(open(p, 'rb').read()).hexdigest(); r = os.path.realpath(p)
+                if not any(x == h or (u == run_id and q == r) for u, q, x in known[pid]): miss.append(os.path.relpath(p, root))
     s['missing'] += len(miss)
     if miss: refuse.append((slug, status, miss))
 print(dict(s)); print('runs refused:', refuse)
@@ -73,10 +74,8 @@ Results, all `MEASURED`:
 
 1. The ledger has 42 runs: 21 solo runs and 21 other runs. Of the 21 other runs, 14 have a ticket
    folder and 7 have none.
-2. The script compares 412 tickets, counted once for each run that reads the folder. 0 tickets have
-   no task. 0 runs are refused. The fix therefore blocks no existing run.
-3. A match inside the same run only is wrong. It refuses 3 runs: `godot` (3 tickets), `skill-v2`
-   (48) and `skill-v2b` (1). Their tickets have tasks in another run of the project.
+2. The script compares 412 tickets, counted once for each run that reads the folder. 0 tickets have no task in any run. With the match rule of H10-R3, 360 match in their run and 52 do not.
+3. The 52 have a task only in another run, and that task has no stored sha: `skill-v2` (48, abandoned), `godot` (3, done) and `skill-v2b` (1, active). A closed run does not close again, so the fix refuses 1 live run until it passes 1 `--leave-out`.
 4. `docs/tickets/` holds 21 folders and 302 tickets across all projects. 12 tickets have no task in
    any run: 4 in `quiet-orchestrator-mail` and 8 in `video-formats`. Commit `05ee2342` (2026-11-10)
    added both folders.
@@ -117,15 +116,9 @@ Requirements:
    ignores a brief in a temporary directory.
 2. **H10-R2, ticket files.** A ticket is a direct-child `*.md` file whose name does not start with
    `MAP`, and for which `map::ticket_facts` returns a `version` or a `primary`
-   (`CODE TL/map.rs:223`). horch reads the folder on disk at the project root and at the run-branch
-   tip, and joins the 2 lists.
-3. **H10-R3, match.** A ticket has a task when a task of any run of the same project, in any status,
-   has the same repo-relative path, or has a `ticket_sha` equal to the sha256 of the ticket text.
-   The sha match keeps a renamed ticket matched. Before the compare, remove an absolute project-root
-   prefix and a leading `.worktrees/<name>/`. A cancelled task counts, because a cancel is a
-   recorded decision.
-4. **H10-R4, refuse.** `horch ledger run close` without `--abandon` refuses when a ticket has no
-   task, and changes nothing. This check runs before the gate check. The error is:
+   (`CODE TL/map.rs:223`). horch reads the folder on disk at the project root and at the run-branch tip. For a path in both, the run-tip text supplies the facts and the sha, and a different disk copy is a changed ticket (H10-R9).
+3. **H10-R3, match.** A ticket has a task when a task of this run, in any status, has the same repo-relative path or the same `ticket_sha`, or when a task of another run of the project has a `ticket_sha` equal to the sha256 of the ticket text. A path match in another run does not count, because the text can differ. The sha match keeps a renamed ticket matched. Before the compare, remove an absolute project-root prefix and a leading `.worktrees/<name>/`. A cancelled task counts, because a cancel is a recorded decision.
+4. **H10-R4, refuse.** `horch ledger run close` without `--abandon` reads the tickets inside the write transaction, directly before the status update, and refuses when a ticket has no task. It also refuses when the run branch moved since the guards read it. It changes nothing on a refusal. This check runs before the gate check. The error is:
    `run <slug> cannot close: <n> ticket(s) have no task: <paths>. Queue each with horch ledger add --file <path> --primary <persona>, or run horch ledger run close --run <slug> --leave-out <path>="<reason>"`.
 5. **H10-R5, accept a ticket.** `--leave-out <path>=<reason>` can repeat. Each value accepts 1
    ticket. horch refuses a path that is not in the missing list, and an empty reason. On a close
@@ -149,11 +142,9 @@ Files of MAIN to change:
 1. New `TL/ticket_compare.rs`: `read_run_tickets(conn, git, run, tip)` for H10-R1, R2 and R8, and
    `compare(conn, run, &tickets)`, which returns the missing and changed tickets (H10-R3, R9).
 2. `TL/mod.rs:1-21`: add `pub mod ticket_compare;`.
-3. `TL/runs.rs:824`: add `tickets` and `left_out` to `CloseGuards`. `TL/runs.rs:830`: call `compare`
-   first in `check_guards`, refuse, and write the events. `TL/runs.rs:946`: update the test helper.
+3. `TL/runs.rs:824`: add `left_out` to `CloseGuards`. `TL/runs.rs:530`: pass `git` to `check_guards`. `TL/runs.rs:830`: call `read_run_tickets` and `compare` first, refuse, and write the events. `TL/runs.rs:946`: update the test helper.
 4. `CMD:315`: add `--leave-out` to `RunCommand::Close`, with `conflicts_with = "abandon"`.
-   `CMD:1696`, `CMD:1707`, `CMD:1747`: pass the values, and read the tickets in `close_guards`,
-   outside the write transaction. `CMD:1765`: print the H10-R7 notes in `gate_cmd`.
+   `CMD:1696`, `CMD:1707`, `CMD:1747`: pass the values. `CMD:1765`: print the H10-R7 notes in `gate_cmd`.
 5. `teammates/_base/fleet-orchestrator.md:143` and its pin `crates/horch-core/tests/golden_prompts.rs:1607`:
    add the new refusal and `--leave-out` to step 3 of "Close the run". Change both in 1 commit.
 6. `skills/orchestrate/SKILL.md:21`: add `--leave-out` to the flags of the close command.
@@ -167,7 +158,7 @@ and the daemon. Requirement coverage already has `scripts/check-req-coverage.sh`
 Effect at upgrade:
 
 1. Ledger: no schema change and no migration. The fix reads existing columns.
-2. Existing run: the check applies at its next close. The measurement refuses 0 of 14 runs.
+2. Existing run: the check applies at its next close. Of 14 measured runs, 1 live run (`skill-v2b`) needs 1 `--leave-out`.
 3. Live worker: no effect. Workers do not call `run close`.
 4. Live orchestrator: its prompt lacks `--leave-out` until it restarts. The refusal prints the flag.
 
@@ -235,11 +226,10 @@ All are `NOT RUN`. "MAIN today" is the result that the code of MAIN gives.
    refusal. MAIN today: closes, so the test fails.
 3. `h10_r2_ignores_notes_and_maps`: the folder also holds `notes.md` and `MAP-old.md`. Expect a
    close. MAIN today: closes. This test is a guard against a false refusal, and it proves no fix.
-4. `h10_r3_counts_a_task_of_another_run`: an earlier run of the project queued the ticket. Expect a
-   close. MAIN today: closes. This test is a guard only.
+4. `h10_r3_other_run_needs_the_same_sha`: an earlier run queued the ticket. With the same text, expect a close. With changed text at the same path, expect a refusal. MAIN today: closes both, so the second case fails.
 5. `h10_r3_counts_a_renamed_ticket_by_sha`: rename a queued ticket and keep its text. Expect a close.
    MAIN today: closes. This test is a guard only.
-6. `h10_r4_close_refuses_a_ticket_with_no_task`: MAIN today: closes, so the test fails.
+6. `h10_r4_close_refuses_a_ticket_with_no_task`: MAIN today: closes, so the test fails. Add `h10_r4_a_ticket_written_during_close_refuses`: a `#[cfg(test)]` barrier writes a ticket after `close_guards` and before the transaction. MAIN today: closes.
 7. `h10_r5_leave_out_closes_and_records_the_reason`: expect a close and 1 `note` event. MAIN today:
    clap refuses the unknown flag `--leave-out`, so the test fails.
 8. `h10_r5_leave_out_refuses_a_wrong_path_and_an_empty_reason`: expect 2 refusals and 0 events. MAIN
@@ -251,8 +241,7 @@ All are `NOT RUN`. "MAIN today" is the result that the code of MAIN gives.
     today: exit 0 and no line, so the test fails.
 11. `h10_r8_unreadable_folder_refuses`: `chmod 000` the folder, and restore it at the end of the
     test. Expect a refusal that names the path. MAIN today: closes, so the test fails.
-12. `h10_r9_changed_ticket_prints_a_note`: edit a queued ticket after `add-map`. Expect a close and
-    the `NOTE:` line. MAIN today: closes with no line, so the test fails.
+12. `h10_r9_changed_ticket_prints_a_note`: edit a queued ticket after `add-map`. Expect a close and the `NOTE:` line. Add a case with different text on disk and at the run tip: the sha is the run-tip sha. MAIN today: closes with no line, so the test fails.
 
 Manual steps with the new output (`NOT RUN`). Repeat steps 1 to 6 of `## Reproduce`, then:
 
@@ -267,7 +256,7 @@ Manual steps with the new output (`NOT RUN`). Repeat steps 1 to 6 of `## Reprodu
 
 Measure again 2 weeks after the fix lands:
 
-1. Run the script of `## Evidence on main`. Target: `missing` stays 0.
+1. Run the script of `## Evidence on main`. Target: `missing` stays at the 52 of today or falls.
 2. Count the accepted tickets:
    `sqlite3 -readonly "$(horch ledger path)" "select count(*) from events where kind='note' and text like 'ticket left out:%'"`.
    Baseline on MAIN: 0, because no code writes this text. Read each reason to find a bypass.
@@ -285,12 +274,9 @@ Risks:
    work after a merge is `NOT VERIFIED`.
 3. RISK-3: a folder that no run links is not checked. This covers the 12 tickets of evidence result
    4, because their folder name is no run slug and no task names a file in it. See Q1.
-4. RISK-4: `read_run_tickets` runs outside the write transaction, so a ticket written between the
-   read and the close is missed.
+4. RISK-4: `read_run_tickets` runs inside the write transaction, so a slow folder read delays other ledger writers. A ticket written after that read is written after the close decision.
 
-Files that another spec of this run can also change: `TL/runs.rs` and `CMD` near the run gate. The
-ticket of spec 09 (verdict tied to commit) cites the run gate rule. Whether spec 09 edits
-`check_guards` or `gate_cmd` is `NOT VERIFIED`, because that spec is not on my base commit.
+Files that another spec also changes: `TL/runs.rs` (spec 01), `CMD` (specs 01, 06, 07 and 08), `TL/mod.rs` (specs 06 and 07) and `teammates/_base/fleet-orchestrator.md` (spec 06). Spec 09 changes neither `check_guards` nor `gate_cmd`.
 
 Open questions for the operator:
 

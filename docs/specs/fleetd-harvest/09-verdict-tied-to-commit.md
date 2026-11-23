@@ -97,9 +97,7 @@ The fix changes 1 file. It adds no column and no setting.
 
 Requirements:
 
-1. **H09-R1.** Before the land rebases, it compares the tree of `HEAD` with `judged_rev` of each
-   earlier step that passed or is not applicable. If 1 differs, the land fails and no ref moves.
-   The note names each stale step.
+1. **H09-R1.** Directly before the land reads `tip`, it compares the tree of `HEAD` with `judged_rev` of each earlier step that passed or is not applicable. If 1 differs, the land fails and no ref moves. The note names each stale step. This narrows F3 and does not close it (risk 3).
 2. **H09-R2.** The land reads the `HEAD` commit before and after its check. If the 2 ids differ,
    the land fails and does not fast-forward. This applies to a green and to a red check.
 3. **H09-R3.** A land that fails for H09-R1 or H09-R2 does not run `git reset`. The branch keeps
@@ -112,8 +110,7 @@ Requirements:
 Changes in `crates/horch-core/src/taskledger/finish/land.rs`:
 
 1. Add the variant `Moved(String)` to `enum Stop` (`:452`).
-2. Add this function. Call it in `land_stages` after `still_mine` (`:481`) and before
-   `set_worktree` (`:482`):
+2. Add this function. Call it in `land_stages` directly before `let tip` (`:490`):
 
    ```rust
    fn require_judged_tip(store: &Store, cx: &Ctx<'_>, dir: &Path) -> Result<(), Stop> {
@@ -157,7 +154,7 @@ Changes in `crates/horch-core/src/taskledger/finish/land.rs`:
 5. In `land` (`:422`), use `Err(Stop::Red(why) | Stop::Moved(why)) => red(store, cx, &wt, log, why),`.
 
 H09-R2 compares a commit id, because that id is the exact commit that lands. H09-R1 compares a
-tree id, because `judged_rev` holds a tree id.
+tree id, because `judged_rev` holds a tree id. Merge with spec 01: if the sandbox setup fails, no check started, so return that failure before the second `HEAD` read. Keep the scratch folder until that read ends.
 
 Not ported, and why:
 
@@ -240,7 +237,7 @@ Each step in this section is **NOT RUN**, for the reason in `## Reproduce`.
 Automated, 1 test for each requirement, in the same `tests` module:
 
 1. **H09-R1**, `h09_r1_a_commit_after_the_check_step_stops_the_land`. **NOT RUN**
-   Setup: `World::new(LATE)`, then `set_steps(&[StepName::Check, StepName::Land])`.
+   Setup: `World::new("true")`, steps `[Check, Land]`, and a `#[cfg(test)]` thread-local `BEFORE_LAND` hook, as `LOCK_WAIT` does (`land.rs` tests), that commits at the start of `land`.
    Assert: the first finish is not complete, its land note contains `check judged it`, and the
    run branch did not move. MAIN today: FAILS, because the finish is complete.
 2. **H09-R2**, `h09_r2_a_commit_during_the_land_check_does_not_land`, from `## Reproduce`.
@@ -289,10 +286,9 @@ Risks:
 
 1. A worker that commits during finish now sees a failed land and must run finish again.
 2. A check command that adds a new commit on each run fails each land. Such a check is a defect.
-3. A small window remains. A commit between `require_judged_tip` and the read of `judged` gets the
-   land check but not the sweeps. H09-R2 still ensures that the check judged the landed commit.
+3. A window remains. A commit between `require_judged_tip` and the read of `judged` gets the land check but not the sweeps. H09-R2 still ensures that the check judged the landed commit. A second tree compare after the land check is rejected: `judged_rev` is the tree before the rebase, so each real rebase would differ and H09-R5 would break.
 
-Other specs: spec 01 (check sandbox) also changes `finish/land.rs`. Land the 2 fixes in sequence.
+Other specs: spec 01 changes the same `check_in` call in `finish/land.rs`. Land the 2 fixes in sequence.
 
 Open questions for the operator:
 
