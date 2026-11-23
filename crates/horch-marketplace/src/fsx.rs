@@ -41,6 +41,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         let mut f = File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
+        drop(f);
         fs::rename(&tmp, path)?;
         sync_dir(dir)
     };
@@ -51,7 +52,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 pub fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    File::open(dir)?.sync_all()
+    match horch_platform::fs::sync_dir(dir) {
+        Err(e)
+            if e.get_ref()
+                .is_some_and(|inner| inner.is::<horch_platform::NotSupported>()) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 fn no_parent() -> std::io::Error {
