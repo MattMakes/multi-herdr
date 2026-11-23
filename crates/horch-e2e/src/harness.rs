@@ -360,6 +360,11 @@ impl Harness {
             "HORCH_GIT_BIN".into(),
             no_git_path(&self.root).to_string_lossy().into_owned(),
         );
+        if !env.contains_key("HORCH_GIT_BIN") {
+            if let Some(git) = find_on_real_path("git") {
+                env.insert("HORCH_GIT_BIN".into(), git.to_string_lossy().into_owned());
+            }
+        }
         for (name, key) in [
             ("claude", "HORCH_CLAUDE_BIN"),
             ("codex", "HORCH_CODEX_BIN"),

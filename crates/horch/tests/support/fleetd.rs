@@ -59,10 +59,9 @@ impl Drop for TestFleetd {
 }
 
 fn git_on_real_path() -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|d| d.join("git"))
-        .find(|p| p.is_file())
+    let path = std::env::var_os("PATH");
+    let pathext = std::env::var("PATHEXT").ok();
+    horch_core::runtime::process::which(path.as_deref(), pathext.as_deref(), "git")
 }
 
 fn socket(fleet_root: &Path) -> PathBuf {
