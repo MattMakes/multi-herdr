@@ -21,9 +21,10 @@ use windows_sys::Win32::Security::{
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+    CreateDirectoryW, CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 
 use crate::channel::User;
@@ -433,8 +434,36 @@ pub(crate) fn make_executable(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn file_identity(meta: &Metadata) -> (u64, u64) {
-    (0, meta.creation_time())
+pub(crate) fn file_identity_of(file: &File) -> io::Result<(u64, u64)> {
+    // SAFETY: BY_HANDLE_FILE_INFORMATION holds only integers, so all zero
+    // bytes are a valid value.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle of `file` is open for the call, and `info` is valid
+    // for 1 write.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
+}
+
+fn identity_by_open(path: &Path, flags: u32) -> io::Result<(u64, u64)> {
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(flags)
+        .open(path)?;
+    file_identity_of(&file)
+}
+
+pub(crate) fn file_identity_at(path: &Path) -> io::Result<(u64, u64)> {
+    identity_by_open(
+        path,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+    )
+}
+
+pub(crate) fn file_identity_of_target(path: &Path) -> io::Result<(u64, u64)> {
+    identity_by_open(path, FILE_FLAG_BACKUP_SEMANTICS)
 }
 
 pub(crate) fn device_and_inode(_meta: &Metadata) -> Result<(u64, u64), NotSupported> {

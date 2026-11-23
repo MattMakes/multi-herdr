@@ -88,8 +88,16 @@ pub fn make_executable(path: &Path) -> io::Result<()> {
     os::make_executable(path)
 }
 
-pub fn file_identity(meta: &Metadata) -> (u64, u64) {
-    os::file_identity(meta)
+pub fn file_identity_of(file: &File) -> io::Result<(u64, u64)> {
+    os::file_identity_of(file)
+}
+
+pub fn file_identity_at(path: &Path) -> io::Result<(u64, u64)> {
+    os::file_identity_at(path)
+}
+
+pub fn file_identity_of_target(path: &Path) -> io::Result<(u64, u64)> {
+    os::file_identity_of_target(path)
 }
 
 pub fn device_and_inode(meta: &Metadata) -> Result<(u64, u64), NotSupported> {

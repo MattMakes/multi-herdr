@@ -752,11 +752,8 @@ fn unread_row(r: &Record, why: Unreadable) -> Unread {
 
 fn stamp(path: &Path) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
-    Some((
-        m.len(),
-        super::cursor::file_identity(&m).1,
-        m.modified().ok(),
-    ))
+    let identity = horch_platform::fs::file_identity_of_target(path).ok()?;
+    Some((m.len(), identity.1, m.modified().ok()))
 }
 
 struct Listing {

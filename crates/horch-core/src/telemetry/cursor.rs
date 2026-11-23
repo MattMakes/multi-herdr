@@ -55,10 +55,6 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
-pub(crate) fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
-    horch_platform::fs::file_identity(meta)
-}
-
 impl Cursor {
     pub(crate) fn remember(&mut self, seen: Seen) {
         self.recent.retain(|s| s.id != seen.id);
@@ -106,7 +102,7 @@ pub(crate) fn poll_lines_until(
 ) -> std::io::Result<bool> {
     let file = std::fs::File::open(path)?;
     let meta = file.metadata()?;
-    let (dev, ino) = file_identity(&meta);
+    let (dev, ino) = horch_platform::fs::file_identity_of(&file)?;
     let path_str = path.to_string_lossy().into_owned();
     reset_if_moved(cursor, dev, ino, meta.len(), path_str);
     let mut reader = BufReader::with_capacity(1 << 20, file);
@@ -283,13 +279,11 @@ mod tests {
         let b = tmp.path().join("b");
         std::fs::write(&a, "1").unwrap();
         std::fs::write(&b, "2").unwrap();
-        let ia = file_identity(&std::fs::metadata(&a).unwrap());
-        let ib = file_identity(&std::fs::metadata(&b).unwrap());
-        assert_eq!(ia, file_identity(&std::fs::metadata(&a).unwrap()), "stable");
-        #[cfg(unix)]
+        let id = |p: &Path| horch_platform::fs::file_identity_of(&std::fs::File::open(p).unwrap());
+        let ia = id(&a).unwrap();
+        let ib = id(&b).unwrap();
+        assert_eq!(ia, id(&a).unwrap(), "stable");
         assert_ne!(ia, ib, "two files, two identities");
-        #[cfg(windows)]
-        let _ = ib;
     }
 
     #[test]

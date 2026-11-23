@@ -135,6 +135,8 @@ fn old_key(name: &str) -> Option<(u32, u64)> {
 }
 
 fn read_old(path: &Path, (pid, start): (u32, u64)) -> std::result::Result<Polite, String> {
+    let identity =
+        horch_platform::fs::file_identity_at(path).map_err(|e| format!("not readable ({e})"))?;
     let meta = std::fs::symlink_metadata(path).map_err(|e| format!("not readable ({e})"))?;
     if !meta.file_type().is_file() {
         return Err("not a regular file".into());
@@ -148,8 +150,9 @@ fn read_old(path: &Path, (pid, start): (u32, u64)) -> std::result::Result<Polite
         return Err(format!("larger than {OLD_FILE_MAX_BYTES} bytes"));
     }
     let file = std::fs::File::open(path).map_err(|e| format!("not readable ({e})"))?;
-    let open = file.metadata().map_err(|e| format!("not readable ({e})"))?;
-    if horch_platform::fs::file_identity(&open) != horch_platform::fs::file_identity(&meta) {
+    let opened =
+        horch_platform::fs::file_identity_of(&file).map_err(|e| format!("not readable ({e})"))?;
+    if opened != identity {
         return Err("another file replaced it while it was read".into());
     }
     let mut bytes = Vec::new();

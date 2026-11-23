@@ -198,10 +198,11 @@ fn the_listener_accepts_a_next_client_after_the_first() {
     let place = place();
     let listener = Listener::bind(&place.name).unwrap();
     for _ in 0..2 {
-        let client = Stream::connect(&place.name, deadline()).unwrap();
+        let name = place.name.clone();
+        let client = std::thread::spawn(move || Stream::connect(&name, deadline()).unwrap());
         let (_stream, peer) = listener.accept().unwrap();
         assert_eq!(peer.pid, Ok(std::process::id()));
-        drop(client);
+        drop(client.join().unwrap());
     }
 }
 

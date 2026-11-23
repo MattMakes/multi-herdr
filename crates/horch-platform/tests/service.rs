@@ -259,19 +259,30 @@ fn stand_in(dir: &Path, folder: &Path, status: i32) -> (PathBuf, PathBuf) {
     (script, log)
 }
 
+fn windows_stand_in_text(folder: &Path, log: &Path, status: i32) -> String {
+    format!(
+        "@echo off\r\nset n=0\r\nfor %%f in (\"{}\\*\") do set /a n+=1\r\n>> \"{}\" echo %* ^| %n%\r\nexit /b {status}\r\n",
+        folder.display(),
+        log.display()
+    )
+}
+
+#[test]
+fn windows_stand_in_has_no_number_before_its_redirect() {
+    let text = windows_stand_in_text(Path::new("defs"), Path::new("calls.log"), 0);
+    let line = text
+        .split("\r\n")
+        .find(|line| line.contains(">>"))
+        .expect("the line that writes the log");
+    assert!(line.starts_with(">> "), "{line}");
+    assert!(line.ends_with("%n%"), "{line}");
+}
+
 #[cfg(windows)]
 fn stand_in(dir: &Path, folder: &Path, status: i32) -> (PathBuf, PathBuf) {
     let log = dir.join("calls.log");
     let script = dir.join("manager.cmd");
-    std::fs::write(
-        &script,
-        format!(
-            "@echo off\r\nset n=0\r\nfor %%f in (\"{}\\*\") do set /a n+=1\r\necho %* ^| %n%>> \"{}\"\r\nexit /b {status}\r\n",
-            folder.display(),
-            log.display()
-        ),
-    )
-    .unwrap();
+    std::fs::write(&script, windows_stand_in_text(folder, &log, status)).unwrap();
     (script, log)
 }
 

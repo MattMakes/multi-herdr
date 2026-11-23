@@ -18,6 +18,8 @@ pub struct Rejected {
 }
 
 pub fn read_protected(path: &Path, rule: &Rule<'_>) -> Result<Vec<u8>, Rejected> {
+    let identity =
+        platform::file_identity_at(path).map_err(|e| reject(format!("stat failed: {e}")))?;
     let before = fs::symlink_metadata(path).map_err(|e| reject(format!("stat failed: {e}")))?;
     if before.file_type().is_symlink() {
         return Err(reject("the file is a link".into()));
@@ -30,7 +32,9 @@ pub fn read_protected(path: &Path, rule: &Rule<'_>) -> Result<Vec<u8>, Rejected>
     let meta = file
         .metadata()
         .map_err(|e| reject(format!("stat of the open file failed: {e}")))?;
-    if !meta.is_file() || platform::file_identity(&meta) != platform::file_identity(&before) {
+    let opened = platform::file_identity_of(&file)
+        .map_err(|e| reject(format!("stat of the open file failed: {e}")))?;
+    if !meta.is_file() || opened != identity {
         return Err(reject(
             "the file changed between the check and the open".into(),
         ));

@@ -217,8 +217,16 @@ pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, perms)
 }
 
-pub(crate) fn file_identity(meta: &Metadata) -> (u64, u64) {
-    (meta.dev(), meta.ino())
+pub(crate) fn file_identity_of(file: &File) -> io::Result<(u64, u64)> {
+    file.metadata().map(|meta| (meta.dev(), meta.ino()))
+}
+
+pub(crate) fn file_identity_at(path: &Path) -> io::Result<(u64, u64)> {
+    std::fs::symlink_metadata(path).map(|meta| (meta.dev(), meta.ino()))
+}
+
+pub(crate) fn file_identity_of_target(path: &Path) -> io::Result<(u64, u64)> {
+    std::fs::metadata(path).map(|meta| (meta.dev(), meta.ino()))
 }
 
 pub(crate) fn device_and_inode(meta: &Metadata) -> Result<(u64, u64), NotSupported> {

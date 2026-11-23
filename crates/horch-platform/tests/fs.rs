@@ -134,6 +134,53 @@ mod unix {
         fs::sync_dir(dir.path()).unwrap();
     }
 
+    fn device_and_inode(meta: &std::fs::Metadata) -> (u64, u64) {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev(), meta.ino())
+    }
+
+    #[test]
+    fn file_identity_at_a_link_is_the_link_and_the_target_form_follows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::write(&target, b"x").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let of_link = device_and_inode(&std::fs::symlink_metadata(&link).unwrap());
+        let of_target = device_and_inode(&std::fs::metadata(&target).unwrap());
+        assert_ne!(of_link, of_target);
+        assert_eq!(fs::file_identity_at(&link).unwrap(), of_link);
+        assert_eq!(fs::file_identity_of_target(&link).unwrap(), of_target);
+
+        std::fs::remove_file(&target).unwrap();
+        assert_eq!(fs::file_identity_at(&link).unwrap(), of_link);
+        assert!(fs::file_identity_of_target(&link).is_err());
+    }
+
+    #[test]
+    fn file_identity_of_a_fifo_does_not_wait_for_a_peer() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `name` is a valid C string for the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let want = device_and_inode(&std::fs::symlink_metadata(&fifo).unwrap());
+
+        let (sent, got) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let at = fs::file_identity_at(&path).unwrap();
+            let target = fs::file_identity_of_target(&path).unwrap();
+            sent.send((at, target)).unwrap();
+        });
+        let (at, target) = got
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the identity of a FIFO returns with no reader and no writer");
+        assert_eq!((at, target), (want, want));
+    }
+
     #[test]
     fn remove_dir_below_removes_the_folder_and_all_in_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -221,10 +268,14 @@ fn file_identity_differs_for_2_files_and_is_stable_for_1() {
     let b = dir.path().join("b");
     std::fs::write(&a, b"a").unwrap();
     std::fs::write(&b, b"b").unwrap();
-    let id = |p: &Path| fs::file_identity(&std::fs::metadata(p).unwrap());
+    let id = |p: &Path| fs::file_identity_at(p).unwrap();
     assert_ne!(id(&a), id(&b));
     let a_id = id(&a);
     assert_eq!(id(&a), a_id);
+    let open = std::fs::File::open(&a).unwrap();
+    assert_eq!(fs::file_identity_of(&open).unwrap(), a_id);
+    assert_eq!(fs::file_identity_of_target(&a).unwrap(), a_id);
+    drop(open);
     std::fs::write(&a, b"new text").unwrap();
     assert_eq!(id(&a), a_id, "a write keeps the identity");
 }
